@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logo Verebona - Animation 3D</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #020B1A;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    /* Animation du cube 3D */
+    @keyframes cube-3d {
+      0% {
+        transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg);
+      }
+      33% {
+        transform: rotateX(360deg) rotateY(180deg) rotateZ(0deg);
+      }
+      66% {
+        transform: rotateX(360deg) rotateY(360deg) rotateZ(180deg);
+      }
+      100% {
+        transform: rotateX(360deg) rotateY(360deg) rotateZ(360deg);
+      }
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    /* Grille 3x3 */
+    .logo-grid {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 3.4px;
+    }
+
+    .logo-row {
+      display: flex;
+      gap: 3.4px;
+    }
+
+    .logo-square {
+      width: 22.8px;
+      height: 22.8px;
+      background-color: white;
+      border-radius: 1px;
+    }
+
+    .logo-square.empty {
+      background-color: transparent;
+    }
+
+    /* Cube 3D bleu */
+    .cube-container {
+      position: absolute;
+      top: -8px;
+      right: -4.5px;
+      width: 22.8px;
+      height: 22.8px;
+      perspective: 1000px;
+      transform-style: preserve-3d;
+    }
+
+    .cube-3d {
+      width: 100%;
+      height: 100%;
+      transform-style: preserve-3d;
+      animation: cube-3d 12s linear infinite;
+    }
+
+    .cube-face {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border-radius: 1px;
+    }
+
+    .cube-face.front {
+      background-color: #4A7FE5;
+      transform: translateZ(11.4px);
+      box-shadow: 0 0 10px rgba(74, 127, 229, 0.4);
+    }
+
+    .cube-face.back {
+      background-color: #3563d4;
+      transform: translateZ(-11.4px) rotateY(180deg);
+    }
+
+    .cube-face.right {
+      background-color: #5a8ff0;
+      transform: rotateY(90deg) translateZ(11.4px);
+    }
+
+    .cube-face.left {
+      background-color: #2e5bc0;
+      transform: rotateY(-90deg) translateZ(11.4px);
+    }
+
+    .cube-face.top {
+      background-color: #6ba3ff;
+      transform: rotateX(90deg) translateZ(11.4px);
+    }
+
+    .cube-face.bottom {
+      background-color: #2447a8;
+      transform: rotateX(-90deg) translateZ(11.4px);
+    }
+
+    /* Texte */
+    .logo-text {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .logo-title {
+      font-size: 36px;
+      font-weight: 600;
+      color: white;
+      line-height: 1;
+    }
+
+    .logo-baseline {
+      font-size: 14px;
+      color: #9CA3AF;
+      line-height: 1.2;
+      margin-top: 4px;
+    }
+
+    /* Thème clair (optionnel) */
+    body.theme-beige {
+      background: #F5EDE2;
+    }
+
+    body.theme-beige .logo-square {
+      background-color: #2F3941;
+    }
+
+    body.theme-beige .logo-title {
+      color: #2F3941;
+    }
+
+    body.theme-beige .logo-baseline {
+      color: #4B5563;
+    }
+
+    /* Contrôles */
+    .controls {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    body.theme-beige .btn {
+      background: rgba(47, 57, 65, 0.1);
+      color: #2F3941;
+      border-color: rgba(47, 57, 65, 0.2);
+    }
+
+    body.theme-beige .btn:hover {
+      background: rgba(47, 57, 65, 0.2);
+    }
+
+    /* Tailles variables */
+    .size-controls {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 10px;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 12px 20px;
+      border-radius: 8px;
+      backdrop-filter: blur(10px);
+    }
+
+    .size-controls input {
+      width: 150px;
+    }
+
+    .size-controls label {
+      color: white;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    body.theme-beige .size-controls {
+      background: rgba(47, 57, 65, 0.1);
+    }
+
+    body.theme-beige .size-controls label {
+      color: #2F3941;
+    }
+  </style>
+</head>
+<body>
+  <!-- Contrôles -->
+  <div class="controls">
+    <button class="btn" onclick="toggleTheme()">Changer le thème</button>
+    <button class="btn" onclick="toggleBaseline()">Avec/Sans baseline</button>
+  </div>
+
+  <!-- Logo -->
+  <div class="logo-container">
+    <!-- Grille 3x3 avec carrés blancs -->
+    <div class="logo-grid">
+      <!-- Row 1 -->
+      <div class="logo-row">
+        <div class="logo-square"></div>
+        <div class="logo-square"></div>
+        <div class="logo-square empty"></div>
+      </div>
+      
+      <!-- Row 2 -->
+      <div class="logo-row">
+        <div class="logo-square"></div>
+        <div class="logo-square"></div>
+        <div class="logo-square"></div>
+      </div>
+      
+      <!-- Row 3 -->
+      <div class="logo-row">
+        <div class="logo-square"></div>
+        <div class="logo-square"></div>
+        <div class="logo-square"></div>
+      </div>
+      
+      <!-- Cube 3D bleu animé -->
+      <div class="cube-container">
+        <div class="cube-3d">
+          <div class="cube-face front"></div>
+          <div class="cube-face back"></div>
+          <div class="cube-face right"></div>
+          <div class="cube-face left"></div>
+          <div class="cube-face top"></div>
+          <div class="cube-face bottom"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Texte -->
+    <div class="logo-text">
+      <span class="logo-title">Verebona</span>
+      <span class="logo-baseline" style="display: none;">One place. Higher value.</span>
+    </div>
+  </div>
+
+  <!-- Contrôles de taille -->
+  <div class="size-controls">
+    <label>
+      Taille:
+      <input type="range" min="30" max="100" value="40" oninput="updateSize(this.value)">
+      <span id="sizeValue">40px</span>
+    </label>
+  </div>
+
+  <script>
+    // Changer de thème
+    function toggleTheme() {
+      document.body.classList.toggle('theme-beige');
+    }
+
+    // Afficher/cacher baseline
+    function toggleBaseline() {
+      const baseline = document.querySelector('.logo-baseline');
+      baseline.style.display = baseline.style.display === 'none' ? 'block' : 'none';
+    }
+
+    // Ajuster la taille du logo
+    function updateSize(size) {
+      const gridSize = size;
+      const squareSize = gridSize / 3.5;
+      const gap = squareSize * 0.15;
+      const textSize = size * 0.9;
+      const baselineSize = size * 0.35;
+      
+      // Mise à jour de la grille
+      document.querySelector('.logo-grid').style.gap = `${gap}px`;
+      document.querySelectorAll('.logo-row').forEach(row => {
+        row.style.gap = `${gap}px`;
+      });
+      
+      // Mise à jour des carrés
+      document.querySelectorAll('.logo-square').forEach(square => {
+        square.style.width = `${squareSize}px`;
+        square.style.height = `${squareSize}px`;
+      });
+      
+      // Mise à jour du cube
+      const cubeContainer = document.querySelector('.cube-container');
+      cubeContainer.style.width = `${squareSize}px`;
+      cubeContainer.style.height = `${squareSize}px`;
+      cubeContainer.style.top = `${squareSize * -0.35}px`;
+      cubeContainer.style.right = `${squareSize * -0.2}px`;
+      
+      // Mise à jour des faces du cube
+      document.querySelectorAll('.cube-face').forEach(face => {
+        const halfSize = squareSize / 2;
+        if (face.classList.contains('front')) {
+          face.style.transform = `translateZ(${halfSize}px)`;
+        } else if (face.classList.contains('back')) {
+          face.style.transform = `translateZ(-${halfSize}px) rotateY(180deg)`;
+        } else if (face.classList.contains('right')) {
+          face.style.transform = `rotateY(90deg) translateZ(${halfSize}px)`;
+        } else if (face.classList.contains('left')) {
+          face.style.transform = `rotateY(-90deg) translateZ(${halfSize}px)`;
+        } else if (face.classList.contains('top')) {
+          face.style.transform = `rotateX(90deg) translateZ(${halfSize}px)`;
+        } else if (face.classList.contains('bottom')) {
+          face.style.transform = `rotateX(-90deg) translateZ(${halfSize}px)`;
+        }
+      });
+      
+      // Mise à jour du texte
+      document.querySelector('.logo-title').style.fontSize = `${textSize}px`;
+      document.querySelector('.logo-baseline').style.fontSize = `${baselineSize}px`;
+      
+      // Mise à jour de l'affichage de la valeur
+      document.getElementById('sizeValue').textContent = `${size}px`;
+    }
+  </script>
+</body>
+</html>
