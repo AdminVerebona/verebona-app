@@ -23,7 +23,7 @@
         "@aws-sdk/client-s3": "^3.934.0",
         "@aws-sdk/s3-request-presigner": "^3.934.0",
         "@babel/parser": "^7.28.5",
-        "@google-cloud/vertexai": "^1.10.4",
+        "@google-cloud/vertexai": "^1.12.0",
         "@google/generative-ai": "^0.24.1",
         "@headlessui/react": "^2.2.9",
         "@heroicons/react": "^2.2.0",
@@ -68,7 +68,7 @@
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
         "date-fns": "^4.1.0",
-        "drizzle-orm": "^0.44.7",
+        "drizzle-orm": "^0.45.2",
         "embla-carousel-react": "^8.6.0",
         "enhanced-resolve": "^5.20.1",
         "estree-walker": "2.0.2",
@@ -78,7 +78,7 @@
         "input-otp": "^1.4.2",
         "jose": "^6.2.2",
         "jsonwebtoken": "^9.0.2",
-        "jspdf": "^3.0.4",
+        "jspdf": "^4.2.1",
         "jspdf-autotable": "^5.0.2",
         "jszip": "^3.10.1",
         "lucide-react": "^0.552.0",
@@ -95,7 +95,7 @@
         "react-intersection-observer": "^10.0.0",
         "react-resizable-panels": "^3.0.3",
         "react-server-dom-webpack": "^19.2.0",
-        "react-syntax-highlighter": "^15.6.1",
+        "react-syntax-highlighter": "^16.1.1",
         "recharts": "^3.0.2",
         "resend": "^6.12.0",
         "sharp": "^0.34.5",
@@ -110,6 +110,9 @@
         "uuid": "^13.0.0",
         "vaul": "^1.1.2",
         "zod": "^4.1.12"
+    },
+    "overrides": {
+        "gaxios": ">=7.0.0"
     },
     "devDependencies": {
         "@eslint/eslintrc": "^3.3.1",
