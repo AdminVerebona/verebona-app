@@ -56,6 +56,12 @@ export async function POST(
   (async () => {
     try {
       const session = await getSession(request);
+
+      if (!session) {
+        await writer.write(sseEvent({ type: 'error', code: 'UNAUTHORIZED' }));
+        return;
+      }
+      
       const { id: rawId } = await params;
       const accountId = session.currentAccountId;
 
