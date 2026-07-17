@@ -4,7 +4,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { aiUsageAccountCounter, aiAdminAuditLog, accounts, users } from '@/db/schema';
+import { aiUsageAccountCounter, aiAdminAuditLog, users } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 

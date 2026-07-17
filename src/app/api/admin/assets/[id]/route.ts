@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { assets, users, assetFiles, events, deadlines, adminAuditLog, assetTypes, accounts, assetTransmissions } from '@/db/schema';
-import { eq, and, sql, isNull, desc, or } from 'drizzle-orm';
+import { assets, users, assetFiles, events, deadlines, adminAuditLog, assetTypes, assetTransmissions } from '@/db/schema';
+import { eq, and, sql, isNull, desc } from 'drizzle-orm';
 import { requireAdmin, getSession } from '@/lib/auth-guards';
 
 export async function GET(

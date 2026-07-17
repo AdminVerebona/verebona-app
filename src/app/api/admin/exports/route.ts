@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { exportGenerations, users, assets, accounts } from '@/db/schema';
-import { eq, and, desc, count, sql, gte, lte, like, or, inArray } from 'drizzle-orm';
+import { eq, and, desc, count, gte, lte, like, or } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 
 export async function GET(request: NextRequest) {

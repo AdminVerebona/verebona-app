@@ -13,7 +13,6 @@ import {
   OBJECT_CATEGORY_LABELS,
 } from '@/types/domain';
 import { apiClient } from '@/lib/api-client';
-import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { DOCUMENT_TYPE_LABELS as DOC_TYPE_LABELS } from '@/lib/document-type-constants';

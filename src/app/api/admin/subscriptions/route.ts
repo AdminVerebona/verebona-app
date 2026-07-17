@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { accounts, accountMemberships, users } from '@/db/schema';
+import { accounts, users } from '@/db/schema';
 import { desc, or, isNotNull, gte, eq } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 

@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { pgClient } from '@/db';
-import { accounts, users, aiUsageAccountCounter, aiOperation, aiSecurityLock, accountAnalysisCounters } from '@/db/schema';
+import { accounts, users, aiOperation, aiSecurityLock, accountAnalysisCounters } from '@/db/schema';
 import { eq, sql, and, like, isNull } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 

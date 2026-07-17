@@ -8,7 +8,7 @@ import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import {
   assets, assetCilProfiles, energyMaterials, energyWorks,
-  cilBlockResolutions, assetFiles, exportGenerations, equipments, agendaItems,
+  cilBlockResolutions, assetFiles, exportGenerations, equipments,
 } from '@/db/schema';
 import { eq, and, ne, desc } from 'drizzle-orm';
 

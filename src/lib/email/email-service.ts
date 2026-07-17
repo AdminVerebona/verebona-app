@@ -1,7 +1,7 @@
 import { Resend } from 'resend';
 import { db } from '@/db';
-import { emailTemplates, emailSettings, emailLogs, systemLogos } from '@/db/schema';
-import { eq, or } from 'drizzle-orm';
+import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 
 // Couleur Verebona fixe
 const VEREBONA_PRIMARY_COLOR = '#3B82F6';
@@ -68,7 +68,7 @@ class EmailService {
     if (!url) return null;
     if (url.startsWith('http')) return url;
     if (url.startsWith('data:')) return url;
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'https://verebona.vercel.app';
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'https://app.verebona.fr';
     const cleanUrl = url.startsWith('/') ? url : `/${url}`;
     return `${baseUrl}${cleanUrl}`;
   }

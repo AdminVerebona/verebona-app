@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import Link from 'next/link';
 import Image from 'next/image';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -18,7 +18,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Edit, Trash2, Download, Eye, FileText, File } from 'lucide-react';
+import { Trash2, Download, Eye, FileText, File } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { LinkedEventsSection } from '@/components/documents/linked-events-section';
 import { useSession } from '@/hooks/useSession';

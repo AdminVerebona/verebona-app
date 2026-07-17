@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -11,8 +11,8 @@ import { LogoWithBaseline } from '@/components/Logo';
 import { PasswordInput } from '@/components/ui/password-input';
 import { AuthFooter } from '@/components/LandingFooter';
 import { ArrowLeft } from 'lucide-react';
-import { toast } from 'sonner';
 import { ForceTheme } from '@/components/ForceTheme';
+import { publicSiteUrl } from '@/lib/external-urls';
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -26,6 +26,17 @@ function LoginForm() {
   const [error, setError] = useState('');
   const [errorCode, setErrorCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // Si l'utilisateur est deja connecte, ne pas afficher le formulaire : rediriger
+  useEffect(() => {
+    const token =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('bearer_token')
+        : null;
+    if (token) {
+      router.replace(returnUrl);
+    }
+  }, [router, returnUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,13 +101,13 @@ function LoginForm() {
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-md bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
-            <Link
-              href="/"
+            <a
+              href={publicSiteUrl("/")}
               className="inline-flex items-center gap-2 text-sm text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors w-fit"
             >
               <ArrowLeft className="w-4 h-4" />
               Retour à l'accueil
-            </Link>
+            </a>
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>

@@ -7,7 +7,6 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import {
   Sheet,
   SheetContent,
@@ -30,7 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { FileText, File, Link as LinkIcon, SlidersHorizontal, X, LayoutGrid, List, Plus, Wand2, Download, Trash2, Loader2, CheckSquare, Square, Video, Sparkles, AlertTriangle, AlertCircle } from 'lucide-react';
+import { FileText, File, Link as LinkIcon, SlidersHorizontal, X, LayoutGrid, List, Plus, Download, Trash2, Loader2, CheckSquare, Square, Video, Sparkles, AlertTriangle, AlertCircle } from 'lucide-react';
 import JSZip from 'jszip';
 import { DatePicker } from '@/components/ui/date-picker';
 import { Skeleton } from '@/components/ui/skeleton';

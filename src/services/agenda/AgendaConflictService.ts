@@ -2,7 +2,7 @@
  * AgendaConflictService — conflict creation and resolution
  */
 import { db } from '@/db';
-import { agendaDataConflicts, agendaItems } from '@/db/schema';
+import { agendaDataConflicts } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { createAgendaItem } from './AgendaWriteService';
 

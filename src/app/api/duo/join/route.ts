@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { users, duoAccounts, duoMemberships, accountMemberships, accounts } from '@/db/schema';
+import { users, duoAccounts, duoMemberships } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 
 /**

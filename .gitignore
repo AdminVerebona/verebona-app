@@ -21,3 +21,6 @@ node_modules
 dist
 build
 coverage
+
+# VS Code Local History
+.history/

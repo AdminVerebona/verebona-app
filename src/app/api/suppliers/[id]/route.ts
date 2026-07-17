@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { suppliers, documentSuppliers, equipmentSuppliers, assetFiles, assets, supplierReviewItems } from '@/db/schema';
+import { suppliers, documentSuppliers, assetFiles, assets, supplierReviewItems } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';

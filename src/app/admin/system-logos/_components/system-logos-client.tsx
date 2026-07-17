@@ -142,7 +142,7 @@ export const SystemLogosClient = () => {
               // Inline SVG content wrapped in span to avoid global div scale rule
               <span
                 className="block max-w-full max-h-full"
-                // eslint-disable-next-line react/no-danger
+                 
                 dangerouslySetInnerHTML={{ __html: logo.logoContent }}
               />
             )}

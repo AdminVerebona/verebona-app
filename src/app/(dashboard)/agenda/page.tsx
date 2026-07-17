@@ -4,7 +4,6 @@ import { useState, useEffect, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Calendar, List, SlidersHorizontal, Plus, AlertCircle, CalendarDays, CalendarRange } from 'lucide-react';
 import dynamic from 'next/dynamic';

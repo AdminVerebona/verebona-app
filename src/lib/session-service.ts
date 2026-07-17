@@ -3,7 +3,7 @@ import { verifyToken } from './jwt';
 import { ApiErrors } from './api-errors';
 import type { PlanType, UserRole, UserStatus } from '@/types/domain';
 import { db } from '@/db';
-import { users, accounts, accountMemberships } from '@/db/schema';
+import { users, accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from './server-cache';
 

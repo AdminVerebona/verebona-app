@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import {
-  accounts,
   accountMemberships,
   referralLinks,
   referralEmailSends,

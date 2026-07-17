@@ -13,6 +13,7 @@ import { PasswordInput } from '@/components/ui/password-input';
 import { LandingFooter } from '@/components/LandingFooter';
 import { ArrowLeft, Crown, Users } from 'lucide-react';
 import { ForceTheme } from '@/components/ForceTheme';
+import { publicSiteUrl } from '@/lib/external-urls';
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH } from '@/lib/auth/password-rules';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -197,13 +198,13 @@ export default function SignupPage() {
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-lg bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
-            <Link
-              href="/"
+            <a
+              href={publicSiteUrl("/")}
               className="inline-flex items-center gap-2 text-sm text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors w-fit"
             >
               <ArrowLeft className="w-4 h-4" />
               Retour à l'accueil
-            </Link>
+            </a>
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>

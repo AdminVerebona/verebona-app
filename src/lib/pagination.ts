@@ -23,7 +23,6 @@
  * }
  */
 
-import { SQL } from 'drizzle-orm';
 
 export interface PaginationParams {
   limit?: number;

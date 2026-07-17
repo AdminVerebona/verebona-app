@@ -310,7 +310,7 @@ export function UnifiedDocumentDialog({
     });
     if (!confirmRes.ok) throw new Error('Échec de la confirmation du téléchargement');
     return fileId as number;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [assetId, selectedSubstructureId, selectedEquipmentId, documentType, documentDate, title, supplier]);
 
 

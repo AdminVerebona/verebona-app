@@ -7,7 +7,7 @@
 
 import { db } from '@/db';
 import { assets, assetFiles, aiFieldUpdates, agendaItems, agendaAssetLinks } from '@/db/schema';
-import { eq, and, isNull, not, or, inArray } from 'drizzle-orm';
+import { eq, and, isNull, not, or } from 'drizzle-orm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai';
@@ -15,7 +15,6 @@ import { AiUsageTracker } from './ai-usage-tracker';
 import { emitAssetUpdated } from '../coherence/impact-propagation.service';
 import { getAllowedFieldsSet } from '@/lib/field-validator';
 import { calcCostMicros } from './gemini-client';
-import type { AiBusinessResult } from '@/types/ai-usage';
 
 // ─── Section / field registry (mirrors apply-ai-suggestions.ts) ──────────
 

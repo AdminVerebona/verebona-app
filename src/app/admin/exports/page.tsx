@@ -23,13 +23,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  Download,
   Search,
   Trash2,
   AlertCircle,
   CheckCircle,
   Clock,
-  XCircle,
   Loader2,
   ChevronLeft,
   ChevronRight,

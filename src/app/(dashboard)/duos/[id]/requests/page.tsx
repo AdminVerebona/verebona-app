@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSession } from '@/hooks/useSession';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { 
   CheckCircle2, 
@@ -12,10 +12,8 @@ import {
   Loader2, 
   Clock,
   Trash2,
-  ExternalLink,
   ChevronRight,
-  ShieldCheck,
-  AlertTriangle
+  ShieldCheck
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { Badge } from '@/components/ui/badge';
@@ -63,7 +61,7 @@ export default function DuoInboxPage({ params }: { params: { id: string } }) {
     try {
       const endpoint = type === 'MOVE' ? `/api/move-requests/${requestId}/respond` : `/api/delete-requests/${requestId}/respond`;
       
-      let body: any = { action };
+      const body: any = { action };
       if (type === 'MOVE' && action === 'ACCEPT') {
         // Par défaut on propose MOVE_ONLY pour la simplicité dans l'inbox
         // Une modal plus complexe pourrait proposer MOVE_AND_COPY

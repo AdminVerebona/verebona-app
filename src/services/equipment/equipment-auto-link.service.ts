@@ -20,7 +20,7 @@ import {
   equipments, assetFiles, agendaItems, agendaAssetLinks, agendaEquipmentLinks,
   suppliers, assetSuppliers, equipmentSuppliers, documentSuppliers,
 } from '@/db/schema';
-import { eq, and, isNull, notInArray, inArray } from 'drizzle-orm';
+import { eq, and, isNull, inArray } from 'drizzle-orm';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -379,7 +379,7 @@ export async function runEquipmentAutoLink(
     .innerJoin(suppliers, eq(suppliers.id, assetSuppliers.supplierId))
     .where(eq(assetSuppliers.assetId, assetId));
 
-  let candidateSuppliers = linkedSupplierIds.length > 0
+  const candidateSuppliers = linkedSupplierIds.length > 0
     ? assetSupplierRows.filter(s => !linkedSupplierIds.includes(s.id))
     : assetSupplierRows;
 

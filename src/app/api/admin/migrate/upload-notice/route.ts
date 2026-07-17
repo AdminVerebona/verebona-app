@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
 import { verifyAccessToken } from '@/lib/jwt';
 import { db } from '@/db';
-import { users } from '@/db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 
 export async function POST(request: NextRequest) {
   const token = extractAccessToken(request);

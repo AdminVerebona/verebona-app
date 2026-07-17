@@ -50,7 +50,7 @@ export async function GET(
     // Format YYYYMMDD
     const dateStr = e.date.replace(/-/g, '').split('T')[0];
     const summary = e.categorie ? `Échéance — ${e.categorie.charAt(0).toUpperCase() + e.categorie.slice(1)}` : 'Échéance';
-    const description = `Lien : ${process.env.NEXT_PUBLIC_APP_URL || 'https://app.verebona.com'}/events/${e.id}`;
+    const description = `Lien : ${process.env.NEXT_PUBLIC_APP_URL || 'https://app.verebona.fr'}/events/${e.id}`;
     
     const icsContent = [
       'BEGIN:VCALENDAR',

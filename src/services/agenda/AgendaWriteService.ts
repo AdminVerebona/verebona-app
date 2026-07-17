@@ -2,7 +2,6 @@
  * AgendaWriteService — create, update, delete agenda items
  */
 import { db } from '@/db';
-import type { Database } from '@/db';
 import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
   assetFiles, substructures, equipments, assets,
@@ -62,7 +61,7 @@ async function resolveIndirectLinks(
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 export async function updateAgendaLinks(
   tx: any,
   agendaItemId: number,

@@ -8,7 +8,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Upload, Check, ImageIcon, X, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';

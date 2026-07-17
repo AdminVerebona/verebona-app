@@ -3,7 +3,6 @@ import { db } from '@/db';
 import { assetFiles, users, assets } from '@/db/schema';
 import { eq, and, like, isNull, desc, lt } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
-import { ApiErrors } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 
 export async function GET(request: NextRequest) {

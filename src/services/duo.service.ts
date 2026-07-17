@@ -4,9 +4,7 @@ import {
   notifications, users, accounts, accountMemberships 
 } from '@/db/schema';
 import { eq, and, or, isNull, ne, sql } from 'drizzle-orm';
-import type { 
-  DuoSubscriptionStatus, DuoMembershipStatus, AssetLockState, 
-  MoveRequestStatus, DeleteRequestStatus, ResolutionMode, ResolvedByType 
+import type { ResolutionMode, ResolvedByType 
 } from '@/types/duo';
 
 export class DuoService {

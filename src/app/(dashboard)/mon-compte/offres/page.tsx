@@ -7,7 +7,7 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import { Check, Lock, Loader2, Gift } from 'lucide-react';
+import { Check, Loader2, Gift } from 'lucide-react';
 import { DowngradeConfirmDialog } from '@/components/subscription/DowngradeConfirmDialog';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';

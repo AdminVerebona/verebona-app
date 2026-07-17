@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   FileText, Download, Trash2, ExternalLink, Loader2,
-  Calendar, Euro, User, FileQuestion, Pencil, Building2, LayoutGrid, Wrench, Wand2, Check, CalendarPlus, X, Video,
+  Calendar, Euro, User, FileQuestion, Pencil, Building2, LayoutGrid, Wrench, Wand2, Check, CalendarPlus, X,
   Sparkles, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Lock, RefreshCw, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
@@ -47,7 +47,7 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
-import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS, DOCUMENT_TYPE_LIST, PICKER_DOCUMENT_TYPES, resolveDocumentTypeCode } from '@/lib/document-type-constants';
+import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS, PICKER_DOCUMENT_TYPES, resolveDocumentTypeCode } from '@/lib/document-type-constants';
 import type { RoomDrawerItem } from '@/components/assets/RoomDrawer';
 import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';

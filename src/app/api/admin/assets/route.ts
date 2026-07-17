@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { assets, users, assetTypes, accounts, accountMemberships } from '@/db/schema';
+import { assets, users, assetTypes, accounts } from '@/db/schema';
 import { eq, like, and, desc, isNull, sql } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 

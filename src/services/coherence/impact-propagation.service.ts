@@ -116,7 +116,7 @@ async function extractDocumentFields(item: ImpactQueueItem): Promise<Record<stri
   if (!doc) return {};
   if (!doc.extractedText) return {};
 
-  let analysisFields: Record<string, unknown> = {};
+  const analysisFields: Record<string, unknown> = {};
 
   // Use AI-extracted fields from the enrich pipeline
   if (item.metadata?.aiExtractedFields) {

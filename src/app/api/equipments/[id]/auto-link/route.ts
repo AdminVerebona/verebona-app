@@ -2,9 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { runEquipmentAutoLink } from '@/services/equipment/equipment-auto-link.service';
-import { db } from '@/db';
-import { equipments, accounts } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
 
 // POST /api/equipments/[id]/auto-link — AI auto-linking for equipment
 export async function POST(

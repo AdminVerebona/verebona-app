@@ -7,12 +7,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-  ArrowLeft, Loader2, Activity, FileText, Shield, Clock,
-  CheckCircle2, AlertTriangle, Lock, Unlock, RotateCcw, Settings2,
-  ChevronDown, ChevronRight, Cpu, TrendingUp, Euro, Database, Search,
+  ArrowLeft, Loader2, Activity, FileText, Shield,
+  CheckCircle2, AlertTriangle, Lock, Unlock,
+  ChevronDown, ChevronRight, Euro, Database, Search,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';

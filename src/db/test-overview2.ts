@@ -1,6 +1,6 @@
 import { db } from './index';
 import { aiOperation } from './schema';
-import { sql, eq } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 
 async function main() {
   try {

@@ -7,7 +7,6 @@
  * Supprime automatiquement le fichier Gemini après l'analyse (TTL 48h max, mais on nettoie).
  */
 
-import { GoogleAIFileManager, FileState } from '@google/generative-ai/server';
 
 const VIDEO_MIME_TYPES = new Set([
   'video/mp4',

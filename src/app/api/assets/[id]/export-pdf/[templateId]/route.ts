@@ -100,7 +100,7 @@ async function loadAssetData(assetId: number, userId: number) {
   }
 
   // ✅ Déterminer quelle photo utiliser (mainPhotoUrl ou thumbnailUrl comme fallback)
-  let photoUrl: string | null = keyChars.mainPhotoUrl || asset.thumbnailUrl || null;
+  const photoUrl: string | null = keyChars.mainPhotoUrl || asset.thumbnailUrl || null;
   
   // ✅ Générer une URL signée pour que PDFMonkey puisse accéder à la photo
   let signedPhotoUrl: string | null = null;

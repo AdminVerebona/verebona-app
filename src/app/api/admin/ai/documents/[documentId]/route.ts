@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles, accounts, aiOperation, aiPipelineStep, aiAnalysisVersion } from '@/db/schema';
-import { eq, and, desc, asc } from 'drizzle-orm';
+import { eq, desc, asc } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 
 export async function GET(

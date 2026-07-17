@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { useState, useEffect, useCallback } from 'react';
+import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -14,7 +14,6 @@ import {
   ChevronDown, ChevronRight, Image, Wrench,
   X, Download, FileDown, Check, Link, CalendarDays, AlertCircle,
   CheckCircle2, HelpCircle, MinusCircle, XCircle, ChevronUp, ArrowRight,
-  Plus, Trash2,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';

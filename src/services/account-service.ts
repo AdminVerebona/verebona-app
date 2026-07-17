@@ -6,7 +6,7 @@ import {
   users,
   notifications,
 } from '@/db/schema';
-import { eq, and, sql, or } from 'drizzle-orm';
+import { eq, and, or } from 'drizzle-orm';
 import crypto from 'crypto';
 import { emailService } from '@/lib/email/email-service';
 import type { PlanType, SubscriptionTier, SubscriptionStatus, MembershipRole, MembershipStatus } from '@/types/domain';
@@ -251,8 +251,8 @@ export class AccountService {
 
       try {
         const invitationLink = existingUser 
-          ? `${process.env.NEXT_PUBLIC_APP_URL || 'https://verebona.com'}/mon-compte/partage?inviteToken=${inviteToken}`
-          : `${process.env.NEXT_PUBLIC_APP_URL || 'https://verebona.com'}/signup?inviteToken=${inviteToken}`;
+          ? `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.verebona.fr'}/mon-compte/partage?inviteToken=${inviteToken}`
+          : `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.verebona.fr'}/signup?inviteToken=${inviteToken}`;
         
         await emailService.send({
           templateCode: 'ACCOUNT_INVITATION',
