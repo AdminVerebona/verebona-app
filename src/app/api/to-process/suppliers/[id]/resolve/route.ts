@@ -48,8 +48,10 @@ export async function POST(
         siren: 'siren', siret: 'siret', vatNumber: 'vat_number',
         ibanHolderName: 'iban_holder_name',
       };
-      const colName = SUPPLIER_FIELD_MAP[item.conflictingField] ?? item.conflictingField;
-      // Drizzle dynamic update via raw sql
+      const colName = SUPPLIER_FIELD_MAP[item.conflictingField];
+      if (!colName) {
+        return apiError(400, 'INVALID_INPUT', 'Champ de conflit non autorisé');
+      }
       await db.execute(
         sql`UPDATE suppliers SET ${sql.raw(colName)} = ${item.detectedValue}, updated_at = NOW() WHERE id = ${item.supplierId}`
       );
