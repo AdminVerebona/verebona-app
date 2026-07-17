@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { assets, users, accounts as accountsTable, substructures, equipments, assetTransmissions } from '@/db/schema';
+import { assets, accounts as accountsTable, assetTransmissions } from '@/db/schema';
 import { eq, like, and, lt, desc, count, isNull, notInArray } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';

@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
     if (!snapshot?.documents) { skipped++; continue; }
 
     // Parse selectedPayload
-    let selected = {
+    const selected = {
       includeDocuments: true as boolean,
       selectedDocIds: [] as number[],
     };

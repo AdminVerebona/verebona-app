@@ -67,7 +67,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         />
       </head>
       <body suppressHydrationWarning>
-        {/* eslint-disable-next-line @next/next/no-before-interactive-script-outside-document */}
+        { }
         <script
           defer
           src="https://slelguoygbfzlpylpxfs.supabase.co/storage/v1/object/public/scripts/orchids-browser-logs.js"

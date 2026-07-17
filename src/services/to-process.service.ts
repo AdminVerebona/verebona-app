@@ -4,8 +4,8 @@
  */
 import { db } from '@/db';
 import {
-  assetFiles, equipments, assets, accounts,
-  agendaItems, agendaAssetLinks,
+  assetFiles, equipments, assets,
+  agendaItems,
   suppliers, supplierReviewItems,
 } from '@/db/schema';
 import { eq, and, or, isNull, isNotNull, ne, desc, sql, inArray } from 'drizzle-orm';
@@ -13,7 +13,7 @@ import { getAgendaAttentionItems } from '@/services/agenda/AgendaQueryService';
 import { normalizeName } from '@/services/suppliers/supplier-service';
 import type {
   ToProcessItem, ToProcessFamily, ToProcessResponse, ToProcessCounters,
-  Priority, ObjectType, ToProcessFilters,
+  Priority, ToProcessFilters,
 } from '@/types/to-process';
 
 // ─── Motif → Action mapping for documents ──────────────────────────────

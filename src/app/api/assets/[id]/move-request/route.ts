@@ -3,7 +3,7 @@ import { extractAccessToken } from '@/lib/auth/token-extractor';
 import { verifyAccessToken } from '@/lib/jwt';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
-import { eq, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { DuoService } from '@/services/duo.service';
 
 export async function POST(

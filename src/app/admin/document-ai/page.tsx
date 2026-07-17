@@ -8,7 +8,7 @@
  * Chaque groupe = une carte : ce que l'IA a lu, ce qu'elle propose d'écrire, Accept / Reject.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';

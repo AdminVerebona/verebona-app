@@ -16,7 +16,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { events, users, assets, calendarAdditions } from '@/db/schema';
+import { events, assets, calendarAdditions } from '@/db/schema';
 import { eq, like, and, gt, desc } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';

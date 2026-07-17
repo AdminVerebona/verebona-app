@@ -9,14 +9,10 @@ import {
   supplierContactObservations,
   documentSuppliers,
   equipmentSuppliers,
-  assetSuppliers,
   supplierReviewItems,
   assetFiles,
-  equipments,
-  assets,
-  accounts,
 } from '@/db/schema';
-import { eq, and, or, ilike, isNotNull, inArray } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 
 // ─── Name normalization ───────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { referralLinks, referralEvents, accounts, users } from '@/db/schema';
-import { eq, desc, count, and, sql } from 'drizzle-orm';
+import { eq, desc, count, sql } from 'drizzle-orm';
 
 /**
  * GET /api/admin/referrals

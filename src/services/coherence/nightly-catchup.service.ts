@@ -16,9 +16,9 @@
 
 import { db } from '@/db';
 import { assets, assetFiles, objectVersions } from '@/db/schema';
-import { eq, and, isNull, not, lt, sql, or } from 'drizzle-orm';
+import { eq, and, isNull, not, lt, or } from 'drizzle-orm';
 import { processPendingImpacts } from './impact-propagation.service';
-import { recoverStaleItems, dequeue, enqueue } from './impact-queue.service';
+import { recoverStaleItems, enqueue } from './impact-queue.service';
 import { markVerified } from './version-tracker.service';
 import type { PropagationResult } from './impact-propagation.service';
 

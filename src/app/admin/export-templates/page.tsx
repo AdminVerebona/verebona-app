@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -11,10 +10,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { 
   FileType, 
   Plus, 
-  Search, 
-  Filter,
+  Search,
   Edit,
-  Eye,
   Trash2,
   AlertCircle,
   CheckCircle,

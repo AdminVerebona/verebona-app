@@ -1,4 +1,3 @@
-import { Card } from "@/components/ui/card";
 import { SystemLogosClient } from "./_components/system-logos-client";
 
 export default function SystemLogosPage() {

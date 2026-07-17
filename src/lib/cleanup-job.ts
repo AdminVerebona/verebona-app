@@ -11,7 +11,7 @@
  * - Job serverless (ex: Vercel Cron)
  */
 
-import { S3Client, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { and, lt, isNotNull, sql } from 'drizzle-orm';

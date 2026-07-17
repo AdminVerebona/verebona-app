@@ -1,7 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
 import { runCleanupJob, getCleanupStats } from '@/lib/cleanup-job';
 import { apiError } from '@/lib/api-errors';
 import { requireAdmin } from '@/lib/auth-guards';

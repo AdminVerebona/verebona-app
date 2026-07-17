@@ -47,8 +47,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   Search, Download, FileIcon, Image, FileText, Trash2, MoveHorizontal,
-  AlertCircle, Clock, CheckCircle2, XCircle, Pencil, MoreHorizontal,
-  Info, Database, Brain, Calendar, Tag, Hash, FileType2, User, Building,
+  AlertCircle, Clock, CheckCircle2, XCircle, Pencil, MoreHorizontal, Database, Brain, Calendar, Tag, Hash, FileType2, User,
   Sparkles, LinkIcon, Copy, Check,
 } from 'lucide-react';
 import { toast } from 'sonner';

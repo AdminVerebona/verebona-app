@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
-import { documentLots, documentLotItems, documentAnalysisRuns, documentAnalysisProposals, assetFiles } from '@/db/schema';
+import { documentLots, documentLotItems, documentAnalysisProposals, assetFiles } from '@/db/schema';
 import { eq, and, count } from 'drizzle-orm';
 
 export async function GET(

@@ -6,7 +6,7 @@ import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
   agendaDataConflicts, assets, assetFiles, substructures, equipments, agendaItemSources,
 } from '@/db/schema';
-import { eq, and, or, isNull, isNotNull, gte, lte, inArray, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
 import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
 
 export interface AgendaQueryParams {

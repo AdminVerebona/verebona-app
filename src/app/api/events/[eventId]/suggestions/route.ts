@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { events, assetFiles, eventDocuments } from '@/db/schema';
-import { eq, and, gt, isNull, notInArray, sql, or } from 'drizzle-orm';
+import { eq, and, gt, isNull, notInArray, or } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 
 // Time window for recent documents (in minutes)

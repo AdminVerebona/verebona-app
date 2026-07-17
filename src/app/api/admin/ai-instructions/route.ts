@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { aiInstructions, users } from '@/db/schema';
+import { aiInstructions } from '@/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import postgres from 'postgres';

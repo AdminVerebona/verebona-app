@@ -15,7 +15,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
@@ -23,19 +22,16 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import {
   Activity, Building2, FileText, BarChart3,
-  RefreshCw, Loader2, CheckCircle2,
-  TrendingUp, TrendingDown, Zap, Search, ExternalLink,
-  Lock, Unlock, RotateCcw, Settings2, Sparkles, MessageSquare,
+  RefreshCw, Loader2, CheckCircle2, Search, ExternalLink,
+  Lock, RotateCcw, Settings2, Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import {
   AI_BUSINESS_RESULT_LABELS,
-  AI_OPERATION_CATEGORY_LABELS,
 
   formatCostMicros,
   quotaPercent,
-  type AiSecurityLockDetail,
   type AdminAiAccountSummary,
 } from '@/types/ai-usage';
 

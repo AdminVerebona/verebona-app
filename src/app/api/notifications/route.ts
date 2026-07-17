@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
     const unreadOnly = url.searchParams.get('unread') === 'true';
     const limit = parseInt(url.searchParams.get('limit') || '20', 10);
 
-    let query = db
+    const query = db
       .select()
       .from(notifications)
       .where(

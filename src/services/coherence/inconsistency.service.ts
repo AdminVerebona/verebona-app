@@ -12,7 +12,7 @@
 
 import { db } from '@/db';
 import { inconsistencyRegistry } from '@/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 
 export type InconsistencyType = 'certain' | 'probable' | 'conflictual';
 export type InconsistencyStatus = 'open' | 'accepted' | 'rejected' | 'auto_resolved';

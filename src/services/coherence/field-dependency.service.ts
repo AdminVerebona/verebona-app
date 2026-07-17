@@ -10,7 +10,7 @@
 
 import { db } from '@/db';
 import { fieldDependencies } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 export type ImpactType = 'propagation' | 'agenda_creation' | 'recalculation' | 'index_update';
 export type Confidence  = 'certain' | 'probable' | 'conflictual';

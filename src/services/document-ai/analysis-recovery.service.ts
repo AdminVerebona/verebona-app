@@ -19,7 +19,7 @@
 
 import { db } from '@/db';
 import { assetFiles, accounts } from '@/db/schema';
-import { eq, inArray, isNull, and, lt, or, isNotNull } from 'drizzle-orm';
+import { eq, inArray, isNull, and, lt, or } from 'drizzle-orm';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { runUnifiedAnalysisPipeline } from './unified-analysis-pipeline';
 

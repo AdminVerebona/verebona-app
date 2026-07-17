@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/db';
-import { duoAccounts, dunningEvents, duoMemberships, users } from '@/db/schema';
-import { eq, and, isNull, lt, sql } from 'drizzle-orm';
+import { duoAccounts, dunningEvents } from '@/db/schema';
+import { eq, and, lt } from 'drizzle-orm';
 
 /**
  * GET /api/cron/duo-dunning

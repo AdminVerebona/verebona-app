@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { User, CreditCard, Key, ExternalLink, ArrowRight, Loader2, ShieldAlert, Users, Calendar, Copy, RefreshCw, ChevronDown, Lock, Trash2, AlertTriangle, Save, Crown } from 'lucide-react';
+import { User, CreditCard, Key, ExternalLink, Loader2, ShieldAlert, Users, Calendar, Copy, RefreshCw, ChevronDown, Lock, Trash2, AlertTriangle, Save, Crown } from 'lucide-react';
 import { AiHistoryBlock } from '@/components/account/AiHistoryBlock';
 import { Switch } from '@/components/ui/switch';
 import { DuoInvitationPanel } from '@/components/subscription/DuoInvitationPanel';
@@ -28,7 +28,6 @@ import {
 import { PasswordInput } from '@/components/ui/password-input';
 import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { getPlanTheme } from '@/lib/plan-theme';
-import { SUBSCRIPTION_LIMITS } from '@/lib/subscription-limits';
 import { AiUsageQuotaWidget } from '@/components/account/AiUsageQuotaWidget';
 import { ReferralBlock } from '@/components/account/ReferralBlock';
 
@@ -321,7 +320,7 @@ export default function InformationsTab() {
   };
 
   const calFeedUrl = calToken
-    ? `webcal://${typeof window !== 'undefined' ? window.location.host : 'verebona.vercel.app'}/api/calendar/${calToken}.ics`
+    ? `webcal://${typeof window !== 'undefined' ? window.location.host : 'app.verebona.fr'}/api/calendar/${calToken}.ics`
     : null;
 
   const handleCopyCalUrl = () => {

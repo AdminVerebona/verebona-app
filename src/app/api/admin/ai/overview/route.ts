@@ -4,7 +4,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { aiOperation, aiUsageAccountCounter, aiSecurityLock, accounts } from '@/db/schema';
+import { aiOperation, aiSecurityLock, accounts } from '@/db/schema';
 import { eq, sql, and, gte, isNull } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { users, assets, adminAuditLog, accounts, accountMemberships } from '@/db/schema';
-import { eq, desc, count, sql, gte, and, inArray, or } from 'drizzle-orm';
+import { eq, desc, count, sql, gte, and, inArray } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3';
 

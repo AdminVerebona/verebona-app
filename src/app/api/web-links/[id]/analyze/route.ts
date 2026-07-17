@@ -67,7 +67,7 @@ async function callGeminiTextOnly(prompt: string): Promise<{ parsed: unknown; ra
 /** Extrait le texte utile d'une page HTML (strip les balises). */
 function extractTextFromHtml(html: string): string {
   // Remove scripts, styles, nav, footer, header blocks
-  let text = html
+  const text = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<nav[\s\S]*?<\/nav>/gi, ' ')

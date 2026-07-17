@@ -21,7 +21,6 @@ import {
   Eye,
   Edit,
   File,
-  ChevronDown,
   Loader2,
   Receipt,
   ShieldCheck,
@@ -34,7 +33,6 @@ import {
   FileCheck,
   BookOpen,
   Link as LinkIcon,
-  Wand2,
   CheckSquare,
   Square,
   Sparkles,
@@ -46,7 +44,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -85,7 +82,6 @@ const ExportCilDialog = lazy(() => import('./export-preset-dialogs').then(m => (
 const ExportDossierCompletDialog = lazy(() => import('./export-preset-dialogs').then(m => ({ default: m.ExportDossierCompletDialog })));
 const ExportTemplateDialog = lazy(() => import('./export-template-dialog').then(m => ({ default: m.ExportTemplateDialog })));
 import { apiClient } from '@/lib/api-client';
-import { DOCUMENT_TYPE_LABELS } from '@/lib/document-type-constants';
 import { PdfThumbnail } from '@/components/ui/pdf-thumbnail';
 
 // ── Document card visual helpers ─────────────────────────────────────────────

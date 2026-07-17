@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { users, assets, accountMemberships, accounts } from '@/db/schema';
-import { eq, like, and, or, desc, count, lt, sql } from 'drizzle-orm';
+import { eq, like, and, or, desc, lt, sql } from 'drizzle-orm';
 import { parsePaginationParams, getCursorId, encodeCursor } from '@/lib/pagination';
 import { requireAdmin } from '@/lib/auth-guards';
 import { SessionService } from '@/lib/session-service';

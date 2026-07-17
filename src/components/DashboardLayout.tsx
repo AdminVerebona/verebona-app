@@ -10,17 +10,16 @@ const DocumentDrawer = dynamic(
   { ssr: false }
 );
 import { Logo } from './Logo';
+import { publicSiteUrl } from '@/lib/external-urls';
 import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
 import { Sun, Moon } from 'lucide-react';
 import { BottomNavigation } from './mobile/bottom-navigation';
 const MobileSearchOverlay = dynamic(() => import('./mobile/MobileSearchOverlay').then(m => ({ default: m.MobileSearchOverlay })), { ssr: false });
-import { DuoGracePeriodBanner } from './premium/DuoGracePeriodBanner';
 import {
     House,
     Package,
     FileText,
-    Calendar,
     CalendarDays,
     CircleAlert,
     User,
@@ -28,9 +27,6 @@ import {
     Menu,
     X,
     Shield,
-    Users,
-    ChevronLeft,
-    Bell,
     Plus,
     Search,
   } from 'lucide-react';
@@ -60,7 +56,7 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
-import { AnalysisBanner, MobileAnalysisBanner } from './AnalysisBanner';
+import { MobileAnalysisBanner } from './AnalysisBanner';
 
 function getPlanLabel(plan: string, duoRole?: 'BILLING_OWNER' | 'MEMBER'): string {
   if (plan === 'PREMIUM_DUO') return duoRole === 'MEMBER' ? 'Premium Duo (membre)' : 'Premium Duo';
@@ -245,7 +241,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       localStorage.removeItem('bearer_token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
-      router.push('/');
+      // Deconnexion : retour au site vitrine (cross-domain)
+      window.location.href = publicSiteUrl('/');
     }
   }, [router]);
 

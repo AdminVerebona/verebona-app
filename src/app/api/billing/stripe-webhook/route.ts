@@ -3,8 +3,6 @@ import Stripe from 'stripe';
 import { db } from '@/db';
 import {
   accounts,
-  accountMemberships,
-  assets,
   duoAccounts,
   duoMemberships,
   users,
@@ -13,11 +11,10 @@ import {
   dunningEvents,
   accountSubscriptions,
 } from '@/db/schema';
-import { eq, and, asc, sql, isNull } from 'drizzle-orm';
+import { eq, and, sql, isNull } from 'drizzle-orm';
 import {
   sendPremiumConfirmationEmail,
   sendDowngradeToStandardEmail,
-  sendMemberRemovedDueToDowngradeEmail,
   sendTrialConfirmationEmail,
 } from '@/lib/email/billing-emails';
 import { getTierFromPriceId, STRIPE_PRODUCTS } from '@/lib/stripe';

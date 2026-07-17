@@ -15,8 +15,8 @@ import {
   assetFiles,
   accounts,
 } from '@/db/schema';
-import { eq, and, inArray, isNull, isNotNull } from 'drizzle-orm';
-import type { AgendaEffect, CommitResult, LotItemCommitStatus } from '@/types/document-ai';
+import { eq, and, inArray, isNull } from 'drizzle-orm';
+import type { AgendaEffect, CommitResult } from '@/types/document-ai';
 import { processSupplierFromExtraction } from '@/services/suppliers/supplier-service';
 import { linkDocumentToEquipments } from '@/services/equipment/equipment-auto-link.service';
 

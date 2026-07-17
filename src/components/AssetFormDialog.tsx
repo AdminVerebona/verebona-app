@@ -1,13 +1,11 @@
 "use client"
 
 import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
-  SheetDescription,
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,7 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Save, Lock, Package, ChevronDown, X, Check, Loader2, Info } from 'lucide-react';
+import { Lock, Package, X, Check, Loader2, Info } from 'lucide-react';
 import { toast } from 'sonner';
 import { ThumbnailUpload } from '@/components/thumbnail-upload';
 import { DatePicker } from '@/components/ui/date-picker';
@@ -27,9 +25,6 @@ import { NumberInput } from '@/components/ui/number-input';
 import { useRouter } from 'next/navigation';
 import {
   OBJECT_CATEGORY_LABELS,
-  DEVICE_TYPE_LABELS,
-  SPORT_TYPE_LABELS,
-  HOME_ITEM_TYPE_LABELS,
 } from '@/types/domain';
 
 const IMMOBILIER_SUBTYPES = [

@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { deadlines, users, assets, adminAuditLog } from '@/db/schema';
-import { eq, like, and, gt, desc, gte, lte, or, sql } from 'drizzle-orm';
-import { parsePaginationParams, buildPaginationResponse, getCursorId, encodeCursor } from '@/lib/pagination';
+import { eq, like, and, gt, desc, gte, lte, or } from 'drizzle-orm';
+import { parsePaginationParams, getCursorId, encodeCursor } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
 import { requireAdmin } from '@/lib/auth-guards';
-import { SessionService } from '@/lib/session-service';
 
 const VALID_DEADLINE_TYPES = ['ENTRETIEN', 'CONTROLE_TECHNIQUE', 'ASSURANCE', 'GARANTIE', 'ADMINISTRATIF', 'AUTRE'] as const;
 

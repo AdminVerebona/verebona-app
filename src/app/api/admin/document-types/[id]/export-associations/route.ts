@@ -100,7 +100,7 @@ export async function POST(
 
     // Check if association already exists
     let existingAssociation = null;
-    let whereConditions = [eq(documentTypeExportAssociations.documentTypeId, documentTypeId)];
+    const whereConditions = [eq(documentTypeExportAssociations.documentTypeId, documentTypeId)];
 
     if (exportTemplateId !== undefined && exportTemplateId !== null) {
       whereConditions.push(eq(documentTypeExportAssociations.exportTemplateId, parseInt(exportTemplateId)));

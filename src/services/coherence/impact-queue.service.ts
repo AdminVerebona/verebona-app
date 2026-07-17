@@ -11,7 +11,7 @@
 
 import { db } from '@/db';
 import { impactQueue } from '@/db/schema';
-import { eq, and, or, lt, isNull, sql, inArray, desc, asc } from 'drizzle-orm';
+import { eq, and, or, lt, isNull, sql } from 'drizzle-orm';
 
 export type ImpactStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
 export type TriggerType =

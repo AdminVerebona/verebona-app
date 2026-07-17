@@ -1,6 +1,6 @@
 import { db } from './index';
-import { aiOperation, aiSecurityLock, accounts } from './schema';
-import { sql, gte, eq } from 'drizzle-orm';
+import { aiOperation, aiSecurityLock } from './schema';
+import { sql, eq } from 'drizzle-orm';
 
 async function main() {
   const now = new Date();

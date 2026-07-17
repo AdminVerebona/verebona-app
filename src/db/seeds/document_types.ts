@@ -1,7 +1,6 @@
 
 import { db } from '@/db';
 import { documentTypes, documentTypeAssetAssociations, documentTypeExportAssociations } from '@/db/schema';
-import { eq } from 'drizzle-orm';
 
 async function main() {
     // Check if document types already exist

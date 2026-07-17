@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Lock, FileDown, Send, FileText, Home, Shield, Package, RefreshCw, Download, AlertCircle, CheckCircle2, Clock, XCircle, X, Crown, CalendarDays, Trash2 } from 'lucide-react';
+import { FileDown, Send, FileText, Home, Shield, Package, RefreshCw, Download, AlertCircle, CheckCircle2, Clock, XCircle, X, Crown, CalendarDays, Trash2 } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,

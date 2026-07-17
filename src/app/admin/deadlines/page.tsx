@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Search, ChevronLeft, ChevronRight, Calendar, CheckCircle2, Clock, AlertTriangle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, Calendar, CheckCircle2, Clock } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 
 interface Deadline {

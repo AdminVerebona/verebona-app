@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Logo } from './Logo';
+import { publicSiteUrl } from '@/lib/external-urls';
 
 const COLUMNS = [
   {
@@ -50,9 +51,9 @@ export function LandingFooter() {
 
           {/* Colonne logo + baseline */}
           <div className="public-page col-span-2 md:col-span-1 flex flex-col gap-3">
-            <Link href="/">
+            <a href={publicSiteUrl("/")}>
               <Logo size={42} withText={true} withBaseline={true} />
-            </Link>
+            </a>
             <p className="text-xs text-white/30 mt-auto pt-4">
               © {new Date().getFullYear()} Verebona. Tous droits réservés.
             </p>
