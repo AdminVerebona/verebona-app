@@ -538,8 +538,13 @@ export const subscriptionPlans = pgTable('subscription_plans', {
   code: text('code').notNull().unique(), // standard | premium | premium_duo | premium_pro
   label: text('label').notNull(),
   yearlyPriceCents: integer('yearly_price_cents'),
+  monthlyPriceCents: integer('monthly_price_cents'),
+  /** @deprecated remplace par monthlyPriceCents (affichage uniquement) */
   monthlyEquivalentCents: integer('monthly_equivalent_cents'),
+  /** @deprecated remplace par stripePriceIdMonthly / stripePriceIdYearly */
   stripePriceId: text('stripe_price_id'),
+  stripePriceIdMonthly: text('stripe_price_id_monthly'),
+  stripePriceIdYearly: text('stripe_price_id_yearly'),
   isVisible: boolean('is_visible').notNull().default(true),
   isSubscribable: boolean('is_subscribable').notNull().default(true),
   displayOrder: integer('display_order').notNull().default(0),
@@ -554,6 +559,7 @@ export const planLimits = pgTable('plan_limits', {
   id: serial('id').primaryKey(),
   planCode: text('plan_code').notNull(),
   maxAssets: integer('max_assets').notNull(),
+  maxDocuments: integer('max_documents').notNull().default(0),
   maxUsers: integer('max_users').notNull().default(1),
   trialAnalysisQuota: integer('trial_analysis_quota').notNull(),
   yearlyAnalysisQuota: integer('yearly_analysis_quota').notNull(),
@@ -884,6 +890,12 @@ export const accountSubscriptions = pgTable('account_subscriptions', {
   accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }).unique(),
   planCode: text('plan_code').notNull().default('standard'),
   status: text('status').notNull().default('active'), // trialing | active | readonly | past_due | canceled
+  billingPeriod: text('billing_period'), // monthly | yearly — NULL pendant l'essai
+  trialConsumed: boolean('trial_consumed').notNull().default(false),
+  // Changement programme (CDC §10) — applique au prochain renouvellement
+  scheduledPlanCode: text('scheduled_plan_code'),
+  scheduledBillingPeriod: text('scheduled_billing_period'),
+  scheduledChangeAt: tstzOptional('scheduled_change_at'),
   stripeCustomerId: text('stripe_customer_id'),
   stripeSubscriptionId: text('stripe_subscription_id'),
   trialStartedAt: tstzOptional('trial_started_at'),
@@ -900,6 +912,44 @@ export const accountSubscriptions = pgTable('account_subscriptions', {
   statusIdx: index('account_subscriptions_status_idx').on(table.status),
   stripeCustomerIdIdx: index('account_subscriptions_stripe_customer_id_idx').on(table.stripeCustomerId),
   stripeSubscriptionIdIdx: index('account_subscriptions_stripe_subscription_id_idx').on(table.stripeSubscriptionId),
+}));
+
+/**
+ * Unicite de l'essai gratuit (anti-fraude).
+ * Une ligne par adresse email normalisee ; conservee meme si le compte est
+ * supprime, afin qu'un meme email ne puisse pas relancer un second essai.
+ */
+/**
+ * Evenements du parcours de souscription (CDC tarification §17).
+ * Alimente les indicateurs d'activation et de conversion.
+ */
+export const funnelEvents = pgTable('funnel_events', {
+  id: serial('id').primaryKey(),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  eventType: text('event_type').notNull(),
+  planCode: text('plan_code'),
+  billingPeriod: text('billing_period'),
+  metadata: jsonb('metadata'),
+  occurredAt: tstz('occurred_at'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  accountIdx: index('funnel_events_account_idx').on(table.accountId),
+  typeIdx: index('funnel_events_type_idx').on(table.eventType),
+  dateIdx: index('funnel_events_date_idx').on(table.occurredAt),
+}));
+
+export const trialGrants = pgTable('trial_grants', {
+  id: serial('id').primaryKey(),
+  emailNormalized: text('email_normalized').notNull(),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  grantedAt: tstz('granted_at'),
+  expiresAt: tstz('expires_at'),
+  convertedAt: tstzOptional('converted_at'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  emailIdx: uniqueIndex('trial_grants_email_uidx').on(table.emailNormalized),
+  accountIdIdx: index('trial_grants_account_id_idx').on(table.accountId),
 }));
 
 export const accountAnalysisCounters = pgTable('account_analysis_counters', {

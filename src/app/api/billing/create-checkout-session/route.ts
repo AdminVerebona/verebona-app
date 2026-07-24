@@ -4,8 +4,10 @@ import { db } from '@/db';
 import { users, accounts, accountMemberships, referralLinks, referralEvents, accountSubscriptions } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getStripeServer, STRIPE_PRODUCTS } from '@/lib/stripe';
+import { resolvePriceId, isBillingPeriod, type BillingPeriod } from '@/lib/stripe-prices';
 import Stripe from 'stripe';
 import { mapLegacyPlanTypeToCommercialCode } from '@/services/commercial-model.service';
+import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 
 /**
  * POST /api/billing/create-checkout-session
@@ -94,6 +96,24 @@ export async function POST(request: NextRequest) {
         const referralCode = typeof body.referralCode === 'string' ? body.referralCode.trim() : '';
         const entryPoint = body.entry_point || 'app_subscription_page';
         const product = STRIPE_PRODUCTS[normalizedRequestedPlan as keyof typeof STRIPE_PRODUCTS] || STRIPE_PRODUCTS.PREMIUM;
+
+        // ── Tarification V2 (CDC) : le client choisit une offre ET une periodicite.
+        // Le Price ID n'est JAMAIS transmis par le frontend : il est resolu ici
+        // depuis une table serveur (CDC §5.6 / §16).
+        const billingPeriod: BillingPeriod = isBillingPeriod(body.billing_period)
+            ? body.billing_period
+            : 'yearly'; // defaut retrocompatible avec l'ancien modele annuel
+
+        let resolvedPriceId: string;
+        try {
+            resolvedPriceId = resolvePriceId(product.tier, billingPeriod);
+        } catch (priceError) {
+            console.error('[checkout] resolution du prix impossible:', priceError);
+            return NextResponse.json(
+                { error: 'Offre indisponible', code: 'PRICE_NOT_CONFIGURED' },
+                { status: 400 },
+            );
+        }
 
         // Si requestedPlan est présent et différent de account.planType, renvoyer PLAN_MISMATCH
         // Utiliser la valeur déjà normalisée (body.plan peut contenir alias 'duo')
@@ -310,7 +330,7 @@ export async function POST(request: NextRequest) {
                 );
             }
 
-            const alreadyOnDuoPrice = existingItem.price.id === product.priceId;
+            const alreadyOnDuoPrice = existingItem.price.id === resolvedPriceId;
 
             if (alreadyOnDuoPrice) {
                 // Stripe est déjà sur PREMIUM_DUO — synchroniser la DB et rediriger vers succès
@@ -331,7 +351,7 @@ export async function POST(request: NextRequest) {
 
             // Mettre à jour la subscription avec le nouveau price DUO
             await stripe.subscriptions.update(account.stripeSubscriptionId, {
-                items: [{ id: existingItem.id, price: product.priceId }],
+                items: [{ id: existingItem.id, price: resolvedPriceId }],
                 proration_behavior: 'create_prorations',
                 metadata: {
                     userId: user.id.toString(),
@@ -363,12 +383,19 @@ export async function POST(request: NextRequest) {
         }
 
         // ── Nouvelle subscription ──
+        void trackFunnelEvent({
+            event: 'checkout_opened',
+            accountId: account.id,
+            planCode: product.tier,
+            billingPeriod,
+        });
+
         const checkoutSession = await stripe.checkout.sessions.create({
             mode: 'subscription',
             customer: customerId,
             line_items: [
                 {
-                    price: product.priceId,
+                    price: resolvedPriceId,
                     quantity: 1,
                 },
             ],
@@ -379,6 +406,8 @@ export async function POST(request: NextRequest) {
                 accountId: account.id.toString(),
                 duoId: duoId?.toString() || '',
                 planTier: product.tier,
+                billing_period: billingPeriod,
+                environment: process.env.NEXT_PUBLIC_APP_ENV || 'unknown',
                 entry_point: entryPoint,
                 referralCode: resolvedReferral ? referralCode : '',
             },
@@ -389,12 +418,15 @@ export async function POST(request: NextRequest) {
                 address: 'auto',
             },
             subscription_data: {
-                ...(isTrialEligible ? { trial_period_days: resolvedReferral ? 90 : 60 } : {}),
+                // CDC §4.2 : AUCUNE periode d'essai Stripe. L'essai de 7 jours est
+                // gere entierement dans Verebona, avant toute souscription.
                 metadata: {
                     userId: user.id.toString(),
                     accountId: account.id.toString(),
                     duoId: duoId?.toString() || '',
                     planTier: product.tier,
+                    billing_period: billingPeriod,
+                    environment: process.env.NEXT_PUBLIC_APP_ENV || 'unknown',
                 },
             },
         });

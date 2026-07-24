@@ -323,34 +323,26 @@ export async function grantReferralRewardForFirstBilling(
     .limit(1);
 
   if (!event) return false;
-  if (event.status === 'reward_granted') return false;
+  if (event.status === 'first_billed' || event.status === 'reward_granted') return false;
 
   // Idempotence : si l'invoice a déjà été traitée, on skip
   if (stripeInvoiceId && event.stripeInvoiceId === stripeInvoiceId) return false;
 
-  await db.transaction(async (tx) => {
-    await tx
-      .insert(accountAnalysisCredits)
-      .values({
-        accountId: event.referrerAccountId,
-        source: 'referral',
-        amountInitial: event.rewardCredits,
-        amountRemaining: event.rewardCredits,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-    await tx
-      .update(referralEvents)
-      .set({
-        status: 'reward_granted',
-        rewardGrantedAt: new Date(),
-        firstBilledAt: new Date(),
-        ...(stripeInvoiceId ? { stripeInvoiceId } : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(referralEvents.id, event.id));
-  });
+  // CDC tarification §13 : la recompense n'est plus un lot de credits d'analyse
+  // mais UN MOIS D'ABONNEMENT OFFERT, attribue apres le delai de retractation
+  // par la tache /api/cron/referral-rewards.
+  //
+  // Cette fonction se limite desormais a marquer la premiere facturation :
+  // c'est ce marquage qui rend l'evenement eligible a l'attribution.
+  await db
+    .update(referralEvents)
+    .set({
+      status: 'first_billed',
+      firstBilledAt: new Date(),
+      ...(stripeInvoiceId ? { stripeInvoiceId } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(referralEvents.id, event.id));
 
   // Notification interne au parrain
   try {
@@ -367,7 +359,6 @@ export async function grantReferralRewardForFirstBilling(
         type: NOTIFICATION_TYPES.REFERRAL_REWARD_GRANTED,
         payloadJson: JSON.stringify({
           referralEventId: event.id,
-          rewardCredits: event.rewardCredits,
           referredAccountId,
         }),
         dedupeKey,

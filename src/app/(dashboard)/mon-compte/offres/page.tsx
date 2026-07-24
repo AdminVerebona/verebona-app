@@ -12,6 +12,7 @@ import { DowngradeConfirmDialog } from '@/components/subscription/DowngradeConfi
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { getPlanTheme } from '@/lib/plan-theme';
+import { SubscriptionSummary } from '@/components/subscription/SubscriptionSummary';
 
 interface BillingInfo {
   plan_type: string;
@@ -23,8 +24,8 @@ interface BillingInfo {
 const offers = [
   {
     id: 'STANDARD',
-    price: '19 €',
-    priceDetail: 'par an',
+    monthlyPrice: '2,90 €',
+    yearlyPrice: '29 €',
     features: [
       '2 biens actifs',
       '10 documents analysés pendant essai',
@@ -36,8 +37,8 @@ const offers = [
   },
   {
     id: 'PREMIUM',
-    price: '59 €',
-    priceDetail: 'par an',
+    monthlyPrice: '5,90 €',
+    yearlyPrice: '59 €',
     features: [
       'Tout Standard inclus',
       '10 biens actifs',
@@ -51,8 +52,8 @@ const offers = [
   },
   {
     id: 'PREMIUM_DUO',
-    price: '79 €',
-    priceDetail: 'par an',
+    monthlyPrice: '8,90 €',
+    yearlyPrice: '89 €',
     features: [
       'Tout Premium inclus',
       '2 membres sur un même compte',
@@ -65,8 +66,8 @@ const offers = [
   },
   {
     id: 'PREMIUM_PRO',
-    price: 'Bientôt disponible',
-    priceDetail: '',
+    monthlyPrice: '',
+    yearlyPrice: '',
     features: [
       'Tout Premium inclus',
       'Gestion matériel professionnel',
@@ -93,17 +94,17 @@ export default function OffresPage() {
   const [billingInfo, setBillingInfo] = useState<BillingInfo | null>(null);
   const [billingLoaded, setBillingLoaded] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  // CDC §4.1 : l'utilisateur choisit son offre ET sa periodicite.
+  const [billingPeriod, setBillingPeriod] = useState<'monthly' | 'yearly'>('yearly');
 
   // Code de parrainage — depuis URL (?ref=CODE) ou cookie
   const [referralCode, setReferralCode] = useState<string | null>(null);
   const [referralValid, setReferralValid] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const refFromUrl = searchParams?.get('ref');
-    const refFromCookie = typeof document !== 'undefined'
-      ? document.cookie.split('; ').find(r => r.startsWith('referral_code='))?.split('=')?.[1] ?? null
-      : null;
-    const code = refFromUrl || refFromCookie;
+    // CDC §4.3 : le code provient uniquement du parcours en cours (URL).
+    // Aucune lecture de cookie ni de stockage local.
+    const code = searchParams?.get('ref');
     if (code) {
       setReferralCode(code.toUpperCase());
       // Valider le code
@@ -145,6 +146,7 @@ export default function OffresPage() {
     try {
       const data = await apiClient.post<any>('/api/billing/create-checkout-session', {
         plan: planId.toLowerCase(),
+        billing_period: billingPeriod,
         entry_point: 'app_offer_comparison',
         ...(referralValid && referralCode ? { referralCode } : {}),
       });
@@ -235,6 +237,46 @@ export default function OffresPage() {
           </div>
         )}
 
+        {/* Etat de l'abonnement (CDC §9.1 / §9.4) */}
+        <SubscriptionSummary />
+
+        {/* Choix de la periodicite (CDC §4.1) */}
+        <div className="mb-5 flex flex-wrap items-center gap-3">
+          <div
+            role="group"
+            aria-label="Periodicite de facturation"
+            className="inline-flex gap-1 rounded-full border border-[color:var(--border)] bg-[color:var(--bg-subtle)] p-1"
+          >
+            <button
+              type="button"
+              onClick={() => setBillingPeriod('monthly')}
+              className={
+                billingPeriod === 'monthly'
+                  ? 'rounded-full bg-[color:var(--bg-page)] px-4 py-1.5 text-sm font-medium text-[color:var(--text-primary)] shadow-sm'
+                  : 'rounded-full px-4 py-1.5 text-sm font-medium text-[color:var(--text-muted)]'
+              }
+            >
+              Mensuel
+            </button>
+            <button
+              type="button"
+              onClick={() => setBillingPeriod('yearly')}
+              className={
+                billingPeriod === 'yearly'
+                  ? 'rounded-full bg-[color:var(--bg-page)] px-4 py-1.5 text-sm font-medium text-[color:var(--text-primary)] shadow-sm'
+                  : 'rounded-full px-4 py-1.5 text-sm font-medium text-[color:var(--text-muted)]'
+              }
+            >
+              Annuel
+            </button>
+          </div>
+          {billingPeriod === 'yearly' && (
+            <span className="text-sm text-[color:var(--text-muted)]">
+              En annuel, vous economisez l&apos;equivalent de 2 mois.
+            </span>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-6xl">
           {offers.map((offer) => {
             const theme = getPlanTheme(offer.id as any);
@@ -265,10 +307,12 @@ export default function OffresPage() {
                     <p className="text-sm text-[color:var(--text-muted)] italic">Bientôt disponible</p>
                   ) : (
                     <>
-                      <span className="text-2xl font-bold text-[color:var(--text-primary)]">{offer.price}</span>
-                      {offer.priceDetail && (
-                        <span className="text-sm text-[color:var(--text-muted)] ml-1">{offer.priceDetail}</span>
-                      )}
+                      <span className="text-2xl font-bold text-[color:var(--text-primary)]">
+                        {billingPeriod === 'yearly' ? offer.yearlyPrice : offer.monthlyPrice}
+                      </span>
+                      <span className="text-sm text-[color:var(--text-muted)] ml-1">
+                        {billingPeriod === 'yearly' ? 'par an' : 'par mois'}
+                      </span>
                     </>
                   )}
                 </div>

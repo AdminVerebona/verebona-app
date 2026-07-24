@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/jwt';
 import { revokeToken, hashToken } from '@/db';
+import { logUserActivity } from '@/lib/audit-logger';
 
 /**
  * Logout endpoint
@@ -10,12 +11,9 @@ import { revokeToken, hashToken } from '@/db';
 export async function POST(request: NextRequest) {
   // Révoquer le refresh token en base pour invalider la session côté serveur
   // Priorité : Authorization header > cookie > body JSON
-  const authHeader = request.headers.get('authorization');
-  const refreshToken =
-    (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null) ??
-    request.cookies.get('refresh_token')?.value ??
-    // Support corps JSON { refreshToken: "..." }
-    await request.json().then((b: { refreshToken?: string }) => b.refreshToken).catch(() => null);
+  // CDC §7.2 / §8 : le jeton est lu uniquement depuis le cookie HttpOnly.
+  // La revocation cote serveur est indispensable : effacer le cookie ne suffit pas.
+  const refreshToken = request.cookies.get('refresh_token')?.value;
 
   if (refreshToken) {
     try {
@@ -31,6 +29,12 @@ export async function POST(request: NextRequest) {
       // Non-fatal : on efface les cookies même si la révocation échoue
     }
   }
+
+  void logUserActivity({
+    activityType: 'AUTH_LOGOUT',
+    userEmail: '',
+    request,
+  });
 
   const response = NextResponse.json({
     success: true,

@@ -67,9 +67,10 @@ export default function SignupPage() {
     const ref = params.get('ref');
 
     if (ref) {
+      // CDC §4.2/§4.3 : le code de parrainage n'est conserve nulle part de
+      // maniere persistante. Il vit uniquement en memoire pour la duree du
+      // parcours, puis est propage par le parametre d'URL (§4.4).
       setReferralCode(ref.toUpperCase());
-      // S'assurer que le cookie est bien posé (au cas où il aurait été perdu)
-      document.cookie = `referral_code=${ref.toUpperCase()}; max-age=${30 * 24 * 60 * 60}; path=/; samesite=lax`;
     }
     if (token) {
       setInviteToken(token);
@@ -147,9 +148,9 @@ export default function SignupPage() {
       localStorage.removeItem('user');
 
       const response = await fetch('/api/users', {
+      credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({
           email: formData.email,
           password: formData.password,

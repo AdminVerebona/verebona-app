@@ -1,5 +1,5 @@
 /**
- * API Client avec gestion automatique des JWT via localStorage (iframe-compatible)
+ * API Client — session par cookies HttpOnly (CDC authentification)
  */
 
 interface ApiClientOptions extends RequestInit {
@@ -84,7 +84,7 @@ export const apiClient = {
       }
     }
 
-    const accessToken = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
+    // CDC §10.2 : la session voyage par cookies HttpOnly, jamais par un jeton lu en JS.
 
     const config: RequestInit = {
       cache: 'no-store',
@@ -92,7 +92,6 @@ export const apiClient = {
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        ...(accessToken && !skipAuth ? { 'Authorization': `Bearer ${accessToken}` } : {}),
         ...fetchOptions.headers,
       },
     };
@@ -189,17 +188,12 @@ export const apiClient = {
 
   async refreshToken(): Promise<boolean | 'server_error'> {
     try {
-      const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refresh_token') : null;
-
-      if (!refreshToken) {
-        return false;
-      }
-
+      // Le jeton de renouvellement vit dans un cookie HttpOnly : le serveur
+      // le lit lui-meme, le front n'a rien a transmettre (CDC §7.2).
       const response = await fetch('/api/auth/refresh', {
         method: 'POST',
         credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${refreshToken}`,
           'Content-Type': 'application/json',
         },
       });
@@ -213,10 +207,8 @@ export const apiClient = {
         const data = await response.json();
 
         if (data.accessToken) {
-          localStorage.setItem('bearer_token', data.accessToken);
         }
         if (data.refreshToken) {
-          localStorage.setItem('refresh_token', data.refreshToken);
         }
 
         return true;
@@ -231,9 +223,6 @@ export const apiClient = {
 
   handleAuthFailure() {
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('bearer_token');
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user');
       window.location.href = '/login';
     }
 

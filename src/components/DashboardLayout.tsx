@@ -11,6 +11,7 @@ const DocumentDrawer = dynamic(
 );
 import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
+import { TrialBanner } from '@/components/subscription/TrialBanner';
 import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
 import { Sun, Moon } from 'lucide-react';
@@ -617,6 +618,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
 
           {/* Main Content */}
           <div id="main-scroll-container" className="flex-1 flex flex-col min-w-0 overflow-x-hidden pt-16 md:pt-0 overflow-y-auto relative scroll-smooth">
+            {/* Bandeau d'essai / fin d'essai (CDC §9.2) */}
+            <TrialBanner />
             <main className="flex-1 p-4 md:p-6 lg:p-8 w-full">
               <div className="max-w-full overflow-x-hidden">
                 {children}

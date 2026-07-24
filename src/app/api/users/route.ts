@@ -5,6 +5,7 @@ import { eq, like, or, and } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
 import { emailService } from '@/lib/email/email-service';
+import { grantTrial } from '@/services/trial.service';
 
 const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
@@ -303,6 +304,19 @@ export async function POST(request: NextRequest) {
           createdAt: now,
           updatedAt: now,
         });
+
+        // Essai gratuit de 7 jours (CDC §3) : automatique, sans carte bancaire
+        // et sans objet Stripe. Refuse silencieusement si l'email a deja
+        // consomme son essai (anti-fraude via trial_grants).
+        try {
+          const trial = await grantTrial({ accountId: newAccount.id, email: newUser.email, now });
+          if (!trial.granted) {
+            console.info('[signup] essai non accorde (deja consomme) pour', newUser.email);
+          }
+        } catch (trialError) {
+          // Un echec d'attribution ne doit pas bloquer la creation du compte.
+          console.error('[signup] echec attribution essai:', trialError);
+        }
       }
 
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'http://localhost:3000';

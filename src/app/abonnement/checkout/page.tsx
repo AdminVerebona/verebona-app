@@ -13,17 +13,15 @@ function CheckoutRedirect() {
   const router = useRouter();
   const rawPlan = searchParams.get('plan') || 'standard';
   const plan = rawPlan === 'duo' ? 'premium_duo' : rawPlan;
+  const billingPeriod = searchParams.get('billing_period') === 'monthly' ? 'monthly' : 'yearly';
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
-    if (!token) {
-      router.replace(`/login?returnUrl=/abonnement/checkout?plan=${plan}`);
-      return;
-    }
 
     apiClient.post<{ checkout_url?: string; message?: string }>('/api/billing/create-checkout-session', {
       plan,
+      // CDC §4.1 : periodicite transmise avec l'offre (defaut annuel).
+      billing_period: billingPeriod,
       entry_point: 'signup_offer_flow',
     })
       .then((data) => {

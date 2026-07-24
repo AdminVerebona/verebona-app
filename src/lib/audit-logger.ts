@@ -2,7 +2,10 @@ import { db } from '@/db';
 import { userActivityLog } from '@/db/schema';
 import { NextRequest } from 'next/server';
 
-type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE_UPDATE' | 'PASSWORD_CHANGE' | 'SERVER_ERROR';
+type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE_UPDATE' | 'PASSWORD_CHANGE' | 'SERVER_ERROR' |
+  // Evenements d'authentification (CDC cookies §13)
+  'AUTH_TOKEN_REFRESH' | 'AUTH_TOKEN_REUSE_DETECTED' | 'AUTH_LOGOUT' |
+  'AUTH_SESSION_REVOKED' | 'AUTH_SESSION_EXPIRED';
 
 interface LogActivityParams {
   activityType: ActivityType;

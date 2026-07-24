@@ -6,6 +6,8 @@ import { verifyToken, generateAccessToken, generateRefreshToken } from '@/lib/jw
 import { ApiErrors } from '@/lib/api-errors';
 import { AccountService } from '@/services/account-service';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
+import { revokeToken } from '@/db';
+import { logUserActivity } from '@/lib/audit-logger';
 
 /**
  * Refresh token endpoint
@@ -18,19 +20,10 @@ import type { UserRole, PlanType, UserStatus } from '@/types/domain';
  */
 export async function POST(request: NextRequest) {
   try {
-    // ✅ IFRAME FIX: Lire depuis Authorization header (localStorage) en priorité,
-    //    puis cookie en fallback. CRITIQUE : le cookie peut être obsolète si un
-    //    autre utilisateur s'est connecté sans `credentials: include` (login fetch).
-    let refreshToken: string | undefined;
-    const authHeader = request.headers.get('authorization');
-    if (authHeader?.startsWith('Bearer ')) {
-      refreshToken = authHeader.substring(7);
-    }
-
-    // Fallback cookie si pas de Authorization header
-    if (!refreshToken) {
-      refreshToken = request.cookies.get('refresh_token')?.value;
-    }
+    // CDC §7.2 : le jeton de renouvellement est lu EXCLUSIVEMENT depuis le
+    // cookie HttpOnly. Un jeton transmis par le JavaScript (corps de requete
+    // ou en-tete personnalise) n'est jamais accepte.
+    const refreshToken = request.cookies.get('refresh_token')?.value;
     
     if (!refreshToken) {
       return ApiErrors.authRequired('No refresh token provided');
@@ -51,6 +44,17 @@ export async function POST(request: NextRequest) {
     const tokenHash = await hashToken(refreshToken);
     const revoked = await isTokenRevoked(tokenHash);
     if (revoked) {
+      // CDC §5.5 : la presentation d'un jeton deja revoque signale une
+      // reutilisation. Traitee comme un incident de securite : toutes les
+      // sessions de l'utilisateur sont invalidees.
+      const reusePayload = await verifyToken(refreshToken).catch(() => null);
+      void logUserActivity({
+        activityType: 'AUTH_TOKEN_REUSE_DETECTED',
+        userId: reusePayload?.userId ?? null,
+        userEmail: '',
+        details: { severity: 'security_incident' },
+        request,
+      });
       return ApiErrors.invalidToken('Refresh token has been revoked');
     }
 
@@ -108,15 +112,30 @@ export async function POST(request: NextRequest) {
         hasActiveAccount: isSubscribedOrTrialing,
       });
 
-    // ✅ IFRAME FIX: Retourner les tokens dans le JSON pour localStorage
+    // CDC §5.5 — rotation : l'ancien jeton de renouvellement est invalide
+    // immediatement. Toute presentation ulterieure sera detectee ci-dessus
+    // comme une reutilisation.
+    try {
+      await revokeToken(tokenHash, payload.userId, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    } catch (revokeError) {
+      console.error('[refresh] revocation de l\'ancien jeton impossible:', revokeError);
+    }
+
+    void logUserActivity({
+      activityType: 'AUTH_TOKEN_REFRESH',
+      userId: payload.userId,
+      userEmail: user.email,
+      request,
+    });
+
+    // CDC §10.1 : aucun jeton dans le corps de reponse. Les nouveaux jetons
+    // sont deposes uniquement en cookies HttpOnly ci-dessous.
     const response = NextResponse.json({
       success: true,
       message: 'Token refreshed successfully',
-      accessToken: newAccessToken, // ✅ Exposé pour localStorage
-      refreshToken: newRefreshToken, // ✅ Exposé pour localStorage
     });
 
-    // Set new cookies (backup pour environnements non-iframe)
+    // Depot des nouveaux cookies
     const isProduction = process.env.NODE_ENV === 'production';
 
     response.cookies.set('access_token', newAccessToken, {
@@ -131,7 +150,7 @@ export async function POST(request: NextRequest) {
       httpOnly: true,
       secure: isProduction,
       sameSite: 'lax', // ✅ Changé de 'strict' à 'lax'
-      maxAge: 7 * 24 * 60 * 60, // 7 days
+      maxAge: 30 * 24 * 60 * 60, // CDC §5.4 // 7 days
       path: '/',
     });
 

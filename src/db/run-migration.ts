@@ -9,8 +9,7 @@ import { join } from 'path';
 const sql = postgres(process.env.DATABASE_URL!, { max: 1 });
 
 async function main() {
-  const migrationSql = readFileSync(join(__dirname, 'migrations/0050_agenda_items.sql'), 'utf-8');
-
+const migrationSql = readFileSync(join(__dirname, 'migrations/0072_pricing_v2_trial.sql'), 'utf-8');
   await sql.unsafe(migrationSql);
   await sql.end();
 }

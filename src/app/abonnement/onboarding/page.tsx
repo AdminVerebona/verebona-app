@@ -6,6 +6,7 @@ import { ForceTheme } from '@/components/ForceTheme';
 import { LogoWithBaseline } from '@/components/Logo';
 import { Loader2, ShieldCheck, Gift, Calendar, ArrowRight, AlertCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
+import { runAuthStorageMigration } from '@/lib/auth-migration';
 
 function OnboardingContent() {
   const searchParams = useSearchParams();
@@ -18,12 +19,12 @@ function OnboardingContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // CDC §5.1 / §16.4 : plus aucun jeton n'est transporte par l'URL ni ecrit
+  // dans le navigateur. La session est deja etablie par les cookies HttpOnly
+  // poses lors de la connexion ; les parametres `at` et `rt` sont ignores.
   useEffect(() => {
-    if (at && rt && typeof window !== 'undefined') {
-      localStorage.setItem('bearer_token', at);
-      localStorage.setItem('refresh_token', rt);
-    }
-  }, [at, rt]);
+    runAuthStorageMigration();
+  }, []);
 
   const handleStartTrial = async () => {
     setLoading(true);
@@ -39,6 +40,8 @@ function OnboardingContent() {
       }
       const payload: any = { entry_point: 'onboarding_page' };
       if (planToSend) payload.plan = planToSend;
+      // CDC §4.1 : periodicite choisie (defaut annuel).
+      payload.billing_period = searchParams.get('billing_period') === 'monthly' ? 'monthly' : 'yearly';
 
       const data = await apiClient.post<{ checkout_url?: string; message?: string }>('/api/billing/create-checkout-session', payload);
       if (data.checkout_url) {

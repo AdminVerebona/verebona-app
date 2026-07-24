@@ -206,8 +206,8 @@ export async function POST(request: NextRequest) {
         status: user.status,
         locale: user.locale,
       },
-      accessToken,
-      refreshToken,
+      // CDC §10.1 : les jetons ne sont JAMAIS renvoyes dans le corps JSON.
+      // Ils sont deposes uniquement en cookies HttpOnly ci-dessous.
     });
 
     const isProduction = process.env.NODE_ENV === 'production';
@@ -224,7 +224,7 @@ export async function POST(request: NextRequest) {
       httpOnly: true,
       secure: isProduction,
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60,
+      maxAge: 30 * 24 * 60 * 60, // CDC §5.4
       path: '/',
     });
 

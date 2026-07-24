@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { verifyToken, extractToken } from './src/lib/jwt';
+import { verifyRequestOrigin } from '@/lib/csrf';
 
 // ─── Rate limiting in-memory pour le middleware Edge ────────────────────────
 // Sliding window : 5 tentatives / 15 minutes / IP
@@ -101,12 +102,23 @@ export async function middleware(request: NextRequest) {
 
   // ===== PROTECTION DES ROUTES API =====
   if (pathname.startsWith('/api/')) {
-    // 🔍 LOG: Vérifier si Authorization header est envoyé
-    console.log('[MW] API request', {
-      pathname,
-      authorization: request.headers.get('authorization')?.slice(0, 30) ?? null,
-      hasCookie: !!request.cookies.get('access_token'),
-    });
+    // ── Protection CSRF (CDC §9.1) ──
+    // La session voyageant par cookies, toute requete modifiant des donnees
+    // doit provenir d'une origine autorisee. Verifie avant l'authentification
+    // pour rejeter au plus tot les requetes inter-sites.
+    const csrf = verifyRequestOrigin(request);
+    if (!csrf.allowed) {
+      console.warn('[MW] requete rejetee (CSRF)', {
+        pathname,
+        method: request.method,
+        reason: csrf.reason,
+        origin: csrf.origin,
+      });
+      return NextResponse.json(
+        { error: 'Origine non autorisee', code: 'CSRF_ORIGIN_REJECTED' },
+        { status: 403 },
+      );
+    }
 
     // Routes publiques (pas besoin de JWT)
     const publicRoutes = [

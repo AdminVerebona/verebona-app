@@ -18,6 +18,9 @@ import {
   sendTrialConfirmationEmail,
 } from '@/lib/email/billing-emails';
 import { getTierFromPriceId, STRIPE_PRODUCTS } from '@/lib/stripe';
+import { resolvePlanFromPriceId } from '@/lib/stripe-prices';
+import { applyScheduledChange } from '@/services/plan-change.service';
+import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { enforceStandardLimits } from '@/lib/plan-enforcement';
 import { grantReferralRewardForFirstBilling, mapLegacyPlanTypeToCommercialCode } from '@/services/commercial-model.service';
 
@@ -108,6 +111,20 @@ export async function POST(request: NextRequest) {
         break;
       case 'invoice.payment_failed':
         await handlePaymentFailed(event.data.object as Stripe.Invoice);
+        break;
+      // ── Evenements ajoutes par le CDC §6.1 ──
+      case 'invoice.paid':
+        // Alias moderne de invoice.payment_succeeded : meme traitement.
+        await handlePaymentSucceeded(event.data.object as Stripe.Invoice);
+        break;
+      case 'invoice.payment_action_required':
+        await handlePaymentActionRequired(event.data.object as Stripe.Invoice);
+        break;
+      case 'charge.refunded':
+        await handleChargeRefunded(event.data.object as Stripe.Charge);
+        break;
+      case 'charge.dispute.created':
+        await handleDisputeCreated(event.data.object as Stripe.Dispute);
         break;
       default:
     }
@@ -212,6 +229,9 @@ async function handleSubscriptionUpdated(
   const currentPeriodEnd = ((subscription.items.data[0] as any).current_period_end ?? (subscription as any).current_period_end) as number; // Unix seconds
   const cancelAtPeriodEnd = subscription.cancel_at_period_end;
   const priceId = subscription.items.data[0]?.price.id;
+  // Offre + periodicite deduites du Price ID reel (CDC : ne jamais se fier
+  // aux seules metadonnees pour accorder des droits).
+  const resolvedBilling = resolvePlanFromPriceId(priceId);
   const tier = getTierFromPriceId(priceId);
 
   if (!tier) {
@@ -338,6 +358,8 @@ async function handleSubscriptionUpdated(
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     currentPeriodEndAt: isPaidPlan ? new Date(currentPeriodEnd * 1000) : null,
+    // Periodicite deduite du Price ID reel (jamais des metadonnees seules)
+    ...(resolvedBilling ? { billingPeriod: resolvedBilling.period } : {}),
     ...(trialStartUnix ? { trialStartedAt: new Date(trialStartUnix * 1000) } : {}),
     ...(trialEndUnix ? { trialEndsAt: new Date(trialEndUnix * 1000) } : {}),
     updatedAt: new Date(),
@@ -582,6 +604,44 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
 
   await grantReferralRewardForFirstBilling(account.id, invoice.id).catch((err: Error) => {
     console.error('[Webhook] referral reward grant failed:', err.message);
+  });
+
+  // CDC §17 : paiement abouti, et denouement de l'essai.
+  void (async () => {
+    const [subRow] = await db
+      .select({
+        planCode: accountSubscriptions.planCode,
+        billingPeriod: accountSubscriptions.billingPeriod,
+        trialEndsAt: accountSubscriptions.trialEndsAt,
+      })
+      .from(accountSubscriptions)
+      .where(eq(accountSubscriptions.accountId, account.id))
+      .limit(1);
+
+    await trackFunnelEvent({
+      event: 'payment_succeeded',
+      accountId: account.id,
+      planCode: subRow?.planCode ?? null,
+      billingPeriod: subRow?.billingPeriod ?? null,
+    });
+
+    const expired = subRow?.trialEndsAt ? subRow.trialEndsAt.getTime() < Date.now() : false;
+    await trackFunnelEvent({
+      event: expired ? 'converted_after_expiry' : 'converted_before_expiry',
+      accountId: account.id,
+      planCode: subRow?.planCode ?? null,
+      billingPeriod: subRow?.billingPeriod ?? null,
+    });
+  })().catch((err: Error) => console.error('[Webhook] suivi analytique:', err.message));
+
+  // CDC §10 : un changement d'offre ou de periodicite programme prend effet
+  // au renouvellement, sans prorata.
+  await applyScheduledChange(account.id).then((r) => {
+    if (r.applied) {
+      console.info('[Webhook] changement programme applique:', r.planCode, r.billingPeriod);
+    }
+  }).catch((err: Error) => {
+    console.error('[Webhook] application du changement programme echouee:', err.message);
   });
 
   // Always sync users.planType so badge matches account plan
@@ -902,3 +962,45 @@ async function triggerRetroactiveAnalysis(accountId: number): Promise<void> {
 }
 
 // enforceStandardLimits is imported from @/lib/plan-enforcement
+
+/**
+ * invoice.payment_action_required — authentification 3D Secure requise.
+ * Aucun droit n'est accorde ni retire : on journalise et on laisse Stripe
+ * relancer le client. Le statut passera via invoice.paid ou payment_failed.
+ */
+async function handlePaymentActionRequired(invoice: Stripe.Invoice) {
+  const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+  console.warn('[stripe-webhook] action requise (3DS) pour le client', customerId, 'facture', invoice.id);
+
+  await db
+    .update(accountSubscriptions)
+    .set({ status: 'past_due', updatedAt: new Date() })
+    .where(eq(accountSubscriptions.stripeCustomerId, customerId ?? ''));
+}
+
+/**
+ * charge.refunded — remboursement.
+ * On journalise pour l'administration ; la revocation eventuelle des droits
+ * arrive via customer.subscription.updated/deleted si l'abonnement est annule.
+ */
+async function handleChargeRefunded(charge: Stripe.Charge) {
+  const customerId = typeof charge.customer === 'string' ? charge.customer : charge.customer?.id;
+  console.warn(
+    '[stripe-webhook] remboursement',
+    charge.id,
+    'client',
+    customerId,
+    'montant',
+    charge.amount_refunded,
+  );
+}
+
+/**
+ * charge.dispute.created — litige (chargeback).
+ * Le compte passe en past_due : les droits restent le temps de l'instruction,
+ * mais l'etat est visible en administration.
+ */
+async function handleDisputeCreated(dispute: Stripe.Dispute) {
+  const charge = typeof dispute.charge === 'string' ? dispute.charge : dispute.charge?.id;
+  console.error('[stripe-webhook] LITIGE ouvert', dispute.id, 'sur la charge', charge, 'motif', dispute.reason);
+}
