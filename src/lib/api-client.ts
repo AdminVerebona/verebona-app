@@ -1,3 +1,4 @@
+import { runAuthStorageMigration } from '@/lib/auth-migration';
 /**
  * API Client — session par cookies HttpOnly (CDC authentification)
  */
@@ -67,6 +68,9 @@ function fetchWithTimeout(url: string, config: RequestInit, timeoutMs: number): 
   const id = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, { ...config, signal: controller.signal }).finally(() => clearTimeout(id));
 }
+
+/** Promesse de renouvellement en cours (CDC §7.3). */
+let pendingRefresh: Promise<boolean | 'server_error'> | null = null;
 
 export const apiClient = {
   async fetch<T = unknown>(
@@ -187,12 +191,18 @@ export const apiClient = {
   },
 
   async refreshToken(): Promise<boolean | 'server_error'> {
+    // CDC §7.3 : une seule requete de renouvellement a la fois. Les appels
+    // concurrents partagent la meme promesse plutot que de declencher
+    // plusieurs rotations, ce qui invaliderait les jetons les uns apres
+    // les autres et deconnecterait l'utilisateur.
+    if (pendingRefresh) return pendingRefresh;
+    pendingRefresh = (async () => {
     try {
       // Le jeton de renouvellement vit dans un cookie HttpOnly : le serveur
       // le lit lui-meme, le front n'a rien a transmettre (CDC §7.2).
       const response = await fetch('/api/auth/refresh', {
+      credentials: 'include',
         method: 'POST',
-        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -219,14 +229,45 @@ export const apiClient = {
       // Network error — treat as transient server error, don't log out
       return 'server_error';
     }
+    })();
+    try { return await pendingRefresh; } finally { pendingRefresh = null; }
   },
 
+  /**
+   * Session definitivement expiree (CDC cookies §6.3).
+   *
+   * Le renouvellement a echoue : on invalide la session cote serveur pour que
+   * les cookies soient effaces, on vide l'etat en memoire, puis on redirige
+   * vers la connexion avec un message neutre. La page en cours est conservee
+   * pour y revenir apres reconnexion.
+   *
+   * Aucune boucle possible : la redirection est ignoree si l'on se trouve
+   * deja sur une page d'authentification.
+   */
   handleAuthFailure() {
-    if (typeof window !== 'undefined') {
-      window.location.href = '/login';
-    }
-
     requestCache.clear();
+    pendingRefresh = null;
+
+    if (typeof window === 'undefined') return;
+
+    // Evite toute boucle de redirection sur les pages d'authentification.
+    const path = window.location.pathname;
+    if (path.startsWith('/login') || path.startsWith('/signup')) return;
+
+    // Purge des eventuelles traces d'authentification historiques.
+    runAuthStorageMigration();
+
+    const returnUrl = `${window.location.pathname}${window.location.search}`;
+    const target = `/login?expired=1&returnUrl=${encodeURIComponent(returnUrl)}`;
+
+    // Invalidation cote serveur : effacer le cookie sans revoquer la session
+    // ne suffit pas (CDC §8). La redirection a lieu quel qu'en soit le
+    // resultat, pour ne jamais laisser l'utilisateur bloque.
+    void fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
+      .catch(() => undefined)
+      .finally(() => {
+        window.location.href = target;
+      });
   },
 
   get<T = unknown>(url: string, options?: ApiClientOptions): Promise<T> {

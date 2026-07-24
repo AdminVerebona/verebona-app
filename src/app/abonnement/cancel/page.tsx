@@ -54,6 +54,16 @@ function CancelContent() {
 }
 
 export default function AbonnementCancelPage() {
+  // CDC §17 : retour depuis Stripe sans paiement
+  useEffect(() => {
+    void fetch('/api/analytics/track', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'checkout_abandoned' }),
+    }).catch(() => undefined);
+  }, []);
+
   return (
     <Suspense fallback={
       <div className="min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]" />

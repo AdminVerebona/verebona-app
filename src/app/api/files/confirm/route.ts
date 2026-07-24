@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
+import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 
 export async function POST(request: NextRequest) {
   try {
@@ -147,6 +148,9 @@ export async function POST(request: NextRequest) {
         } catch { /* non-blocking */ }
       })();
     }
+
+    // CDC §17 : activation — premier document enregistre
+    void trackFunnelEvent({ event: 'first_document_added', accountId });
 
     return NextResponse.json(
       {

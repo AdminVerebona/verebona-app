@@ -6,6 +6,8 @@ import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/l
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { getFeatureFlags, canCreateAsset } from '@/lib/feature-flags';
+import { canCreateAsset as canCreateAssetEntitlement } from '@/services/entitlements.service';
+import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { isValidObjectCategory } from '@/types/domain';
 import type { PlanType } from '@/types/domain';
 
@@ -184,7 +186,17 @@ export async function POST(request: NextRequest) {
 
     const currentAssetCount = assetCountResult?.count || 0;
 
-    // SPECS V1: Vérifier la limite de biens
+    // CDC tarification §8.2 : le quota de biens est controle cote serveur a
+    // partir des droits effectifs (essai / Standard / Premium / Duo / restreint).
+    const assetDecision = await canCreateAssetEntitlement(session.currentAccountId, currentAssetCount);
+    if (!assetDecision.allowed) {
+      return apiError(403, assetDecision.reason ?? 'ASSET_LIMIT_REACHED', assetDecision.message ?? 'Quota atteint', {
+        current_count: currentAssetCount,
+        max_assets: assetDecision.limit,
+      });
+    }
+
+    // Controle historique conserve le temps de la transition.
     if (!canCreateAsset(currentAssetCount, features)) {
       return apiError(
         403,
@@ -289,6 +301,12 @@ export async function POST(request: NextRequest) {
     }
 
     const newAsset = await db.insert(assets).values(insertData).returning();
+
+    // CDC §17 : activation — premier bien enregistre (dedoublonne en base)
+    void trackFunnelEvent({
+      event: 'first_asset_added',
+      accountId: session.currentAccountId,
+    });
 
     return NextResponse.json(newAsset[0], { status: 201 });
   } catch (error) {

@@ -13,6 +13,7 @@ import { AuthFooter } from '@/components/LandingFooter';
 import { ArrowLeft } from 'lucide-react';
 import { ForceTheme } from '@/components/ForceTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
+import { runAuthStorageMigration } from '@/lib/auth-migration';
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -23,19 +24,32 @@ function LoginForm() {
   
   const [email, setEmail] = useState(searchParams.get('email') ?? '');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  // CDC §6.3 : message neutre lorsque la session a expire. Il n'indique pas
+  // si un compte existe, et n'expose aucun detail technique.
+  const [error, setError] = useState(
+    searchParams.get('expired') === '1'
+      ? 'Votre session a expiré. Merci de vous reconnecter.'
+      : '',
+  );
   const [errorCode, setErrorCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // Si l'utilisateur est deja connecte, ne pas afficher le formulaire : rediriger
+  // Si une session valide existe deja (cookie HttpOnly), ne pas afficher le
+  // formulaire. L'etat de session n'est plus lisible en JavaScript : on
+  // interroge le serveur (CDC §5.6).
   useEffect(() => {
-    const token =
-      typeof window !== 'undefined'
-        ? localStorage.getItem('bearer_token')
-        : null;
-    if (token) {
-      router.replace(returnUrl);
-    }
+    let cancelled = false;
+    (async () => {
+      // Nettoyage des sessions historiques (CDC §11.2)
+      runAuthStorageMigration();
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'include' });
+        if (!cancelled && res.ok) router.replace(returnUrl);
+      } catch {
+        // Pas de session : on laisse le formulaire s'afficher.
+      }
+    })();
+    return () => { cancelled = true; };
   }, [router, returnUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -47,8 +61,8 @@ function LoginForm() {
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
+        credentials: 'include', // cookies HttpOnly deposes par le serveur
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({ email, password }),
       });
 
@@ -69,20 +83,18 @@ function LoginForm() {
       }
 
       if (data.accessToken) {
-        localStorage.setItem('bearer_token', data.accessToken);
       }
       if (data.refreshToken) {
-        localStorage.setItem('refresh_token', data.refreshToken);
       }
 
       // Pré-remplir le cache user avec le bon format (subscription.plan requis par useSession)
       try {
         const meRes = await fetch('/api/users/me', {
+      credentials: 'include',
           headers: { Authorization: `Bearer ${data.accessToken}` },
         });
         if (meRes.ok) {
           const meData = await meRes.json();
-          localStorage.setItem('user', JSON.stringify(meData));
         }
       } catch { /* silently ignore — useSession refera l'appel */ }
 

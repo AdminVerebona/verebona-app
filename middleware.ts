@@ -102,6 +102,26 @@ export async function middleware(request: NextRequest) {
 
   // ===== PROTECTION DES ROUTES API =====
   if (pathname.startsWith('/api/')) {
+    // ── CORS restreint (CDC cookies §9.1) ──
+    // Seule la vitrine est autorisee a appeler l'API depuis une autre origine,
+    // et uniquement pour le formulaire de contact. Jamais de joker, jamais de
+    // cookies partages avec un tiers.
+    const publicSite = (process.env.NEXT_PUBLIC_PUBLIC_SITE_URL || '').replace(/\/+$/, '');
+    const requestOrigin = request.headers.get('origin');
+    const isPublicSiteCall = Boolean(publicSite) && requestOrigin === publicSite;
+
+    if (request.method === 'OPTIONS' && isPublicSiteCall) {
+      return new NextResponse(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': publicSite,
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '86400',
+        },
+      });
+    }
+
     // ── Protection CSRF (CDC §9.1) ──
     // La session voyageant par cookies, toute requete modifiant des donnees
     // doit provenir d'une origine autorisee. Verifie avant l'authentification
@@ -129,6 +149,7 @@ export async function middleware(request: NextRequest) {
       '/api/users', // Public pour signup
       '/api/billing/stripe-webhook', // Stripe signe ses propres requêtes — pas de JWT
       '/api/referral/validate', // Validation publique du code parrainage
+      '/api/contact', // Formulaire de contact du site vitrine (visiteur non connecte)
     ];
 
     // Cron endpoints utilisent leur propre CRON_SECRET — pas de JWT

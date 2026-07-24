@@ -96,6 +96,64 @@ export default function OffresPage() {
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   // CDC §4.1 : l'utilisateur choisit son offre ET sa periodicite.
   const [billingPeriod, setBillingPeriod] = useState<'monthly' | 'yearly'>('yearly');
+  // Periodicite reellement facturee, pour distinguer souscription et changement
+  const [activePeriod, setActivePeriod] = useState<'monthly' | 'yearly' | null>(null);
+  const [hasSubscription, setHasSubscription] = useState(false);
+
+  useEffect(() => {
+    // CDC §17 : consultation des offres
+    void fetch('/api/analytics/track', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'offers_viewed' }),
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/billing/trial-status', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setHasSubscription(Boolean(data.subscription?.hasStripeSubscription));
+        setActivePeriod(data.subscription?.billingPeriod ?? null);
+        if (data.subscription?.billingPeriod) setBillingPeriod(data.subscription.billingPeriod);
+      } catch {
+        // Sans cette information, on reste sur le comportement de souscription.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  /** Programme un changement d'offre ou de periodicite (CDC §10). */
+  const handleScheduleChange = async (planId: string) => {
+    setCheckoutLoading(planId);
+    try {
+      const res = await fetch('/api/billing/schedule-change', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_code: planId.toLowerCase(), billing_period: billingPeriod }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(
+          data.effectiveAt
+            ? `Changement programmé pour le ${new Date(data.effectiveAt).toLocaleDateString('fr-FR')}.`
+            : 'Changement programmé pour la prochaine échéance.',
+        );
+      } else {
+        toast.error(data.message || 'Impossible de programmer ce changement.');
+      }
+    } catch {
+      toast.error('Une erreur est survenue.');
+    } finally {
+      setCheckoutLoading(null);
+    }
+  };
 
   // Code de parrainage — depuis URL (?ref=CODE) ou cookie
   const [referralCode, setReferralCode] = useState<string | null>(null);
@@ -170,8 +228,24 @@ export default function OffresPage() {
     if (offerId === 'PREMIUM_PRO') {
       return { label: 'Bientôt disponible', action: null, variant: 'outline', disabled: true };
     }
-    if (offerId === currentPlan) {
+    // Offre ET periodicite identiques : rien a proposer.
+    if (offerId === currentPlan && (!activePeriod || activePeriod === billingPeriod)) {
       return { label: 'Offre actuelle', action: null, variant: 'outline', disabled: true };
+    }
+
+    // CDC §10 : pour un compte deja abonne, tout changement — d'offre comme de
+    // periodicite — est programme pour la prochaine echeance, jamais immediat.
+    if (hasSubscription) {
+      const theme = getPlanTheme(offerId as any);
+      const sameOffer = offerId === currentPlan;
+      return {
+        label: sameOffer
+          ? `Passer en ${billingPeriod === 'monthly' ? 'mensuel' : 'annuel'}`
+          : `Programmer ${theme.label}`,
+        action: () => handleScheduleChange(offerId),
+        variant: sameOffer ? 'outline' : 'default',
+        disabled: false,
+      };
     }
     if (isDuoMember) {
       return { label: 'Lecture seule', action: null, variant: 'ghost', disabled: true };
