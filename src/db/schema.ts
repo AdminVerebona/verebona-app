@@ -2203,3 +2203,5 @@ export const newsConsents = pgTable('news_consents', {
   userIdx: index('news_consents_user_idx').on(table.userId),
   consentedIdx: index('news_consents_consented_idx').on(table.consented),
 }));
+
+export * from './verebona-schema';

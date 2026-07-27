@@ -9,6 +9,12 @@ const DocumentDrawer = dynamic(
   () => import('@/components/assets/DocumentDrawer').then(m => ({ default: m.DocumentDrawer })),
   { ssr: false }
 );
+// Verebona Assistant — drawer monté une seule fois dans la coquille authentifiée (CDC §7.1).
+const VerebonaDrawer = dynamic(
+  () => import('@/components/verebona').then(m => ({ default: m.VerebonaDrawer })),
+  { ssr: false }
+);
+import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { TrialBanner } from '@/components/subscription/TrialBanner';
@@ -701,6 +707,12 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
             hasItems={availableAssets.length > 0}
           />
         )}
+
+        {/* Assistant Verebona — bouton flottant + drawer (CDC §7). */}
+        <VerebonaDrawer
+          pageContext={{ route: pathname }}
+          suggestions={suggestionsForRoute(pathname).map((s) => ({ id: s.id, label: s.label }))}
+        />
 
 
     </TooltipProvider>
