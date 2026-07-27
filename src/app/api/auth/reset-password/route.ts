@@ -4,6 +4,7 @@ import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
+import { emit } from '@/lib/notifications';
 
 /**
  * Route pour réinitialiser le mot de passe avec un token
@@ -85,7 +86,21 @@ export async function POST(request: NextRequest) {
       })
       .where(eq(users.id, user.id));
     
-    
+    // Événement de sécurité obligatoire (cloche + email, CDC §7.7).
+    try {
+      await emit({
+        type: 'PASSWORD_RESET_COMPLETED',
+        recipientUserIds: [user.id],
+        entityType: 'user',
+        entityId: user.id,
+        payload: {},
+        // Une réinitialisation par occurrence (l'horodatage garantit l'unicité).
+        dedupeKey: `security:password-reset:${user.id}:${Date.now()}`,
+      });
+    } catch (err) {
+      console.error('[reset-password] emit PASSWORD_RESET_COMPLETED échoué:', err);
+    }
+
     return NextResponse.json({
       success: true,
       message: 'Mot de passe réinitialisé avec succès'

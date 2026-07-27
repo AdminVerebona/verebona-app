@@ -876,6 +876,15 @@ export const notifications = pgTable('notifications', {
   payloadJson: text('payload_json'),
   dedupeKey: text('dedupe_key').unique(),
   mustDeliver: boolean('must_deliver').notNull().default(false),
+  // ── Lot 1 — contenu rendu côté serveur (cf. CDC §12.5) ────────────────────
+  // Le rendu ne dépend plus d'un switch client incomplet : le serveur produit
+  // un contenu stable. `type` et `payload_json` restent conservés pour les
+  // interactions spécifiques et le fallback des lignes historiques.
+  outboxId: uuid('outbox_id'), // FK logique → notification_outbox.id (nullable)
+  title: text('title'),
+  body: text('body'),
+  href: text('href'),
+  category: text('category'),
   createdAt: tstz('created_at'),
   readAt: tstzOptional('read_at'),
 }, (table) => ({
@@ -883,6 +892,7 @@ export const notifications = pgTable('notifications', {
   typeIdx: index('notifications_type_idx').on(table.type),
   readAtIdx: index('notifications_read_at_idx').on(table.readAt),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
+  outboxIdIdx: index('notifications_outbox_id_idx').on(table.outboxId),
 }));
 
 export const accountSubscriptions = pgTable('account_subscriptions', {
@@ -2036,4 +2046,160 @@ export const objectVersions = pgTable('object_versions', {
   accountIdIdx:             index('object_versions_account_id_idx').on(table.accountId),
   contentHashIdx:           index('object_versions_content_hash_idx').on(table.contentHash),
   lastVerifiedIdx:          index('object_versions_last_verified_idx').on(table.lastVerifiedAt),
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOT 1 — Socle multicanal de notifications (cf. CDC §12)
+// Séparation événement / livraison : un événement métier (outbox) donne lieu
+// à une ou plusieurs livraisons (deliveries), une par canal et, pour le push,
+// par appareil. Les préférences sont TOUJOURS au niveau user_id, jamais compte.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// §12.1 — Préférences par utilisateur. Une ligne n'est créée que lorsqu'un
+// utilisateur modifie un réglage ; les valeurs par défaut sont calculées dans
+// le catalogue central. L'API renvoie toujours la matrice complète fusionnée.
+export const notificationPreferences = pgTable('notification_preferences', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  category: text('category').notNull(),
+  deliveryMode: text('delivery_mode').notNull().default('immediate'), // immediate | daily_digest
+  channel: text('channel').notNull(), // push | email  (la cloche n'est pas configurable en V1)
+  enabled: boolean('enabled').notNull(),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  userChannelUnique: unique('notification_preferences_unique').on(
+    table.userId, table.category, table.deliveryMode, table.channel,
+  ),
+  userIdIdx: index('notification_preferences_user_id_idx').on(table.userId),
+  deliveryModeCheck: check('notification_preferences_delivery_mode_check',
+    sql`${table.deliveryMode} IN ('immediate','daily_digest')`),
+  channelCheck: check('notification_preferences_channel_check',
+    sql`${table.channel} IN ('push','email')`),
+}));
+
+// §12.2 — Abonnements Web Push, un par appareil. endpoint + clés = données
+// sensibles de capacité : jamais en clair dans les logs, chiffrement applicatif
+// au repos recommandé (à brancher au Lot 2 via un wrapper crypto).
+export const pushSubscriptions = pgTable('push_subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  endpoint: text('endpoint').notNull().unique(),
+  p256dhKey: text('p256dh_key').notNull(),
+  authKey: text('auth_key').notNull(),
+  userAgent: text('user_agent'), // minimisé
+  platform: text('platform'),
+  deviceLabel: text('device_label'),
+  status: text('status').notNull().default('active'), // active | revoked | expired | failed
+  failureCount: integer('failure_count').notNull().default(0),
+  lastSuccessAt: tstzOptional('last_success_at'),
+  lastFailureAt: tstzOptional('last_failure_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  userIdIdx: index('push_subscriptions_user_id_idx').on(table.userId),
+  statusIdx: index('push_subscriptions_status_idx').on(table.status),
+  statusCheck: check('push_subscriptions_status_check',
+    sql`${table.status} IN ('active','revoked','expired','failed')`),
+}));
+
+// §12.3 — File persistante des événements métier à traiter. Une source unique :
+// aucun service ne doit plus insérer directement une notification pour un
+// événement couvert par le CDC. dedupe_key garantit qu'une relance technique ne
+// crée jamais un second fait utilisateur (cf. §4.4).
+export const notificationOutbox = pgTable('notification_outbox', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  eventType: text('event_type').notNull(),
+  category: text('category'),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  recipientUserId: integer('recipient_user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  entityType: text('entity_type'),
+  entityId: text('entity_id'),
+  payloadJson: jsonb('payload_json'),
+  deepLink: text('deep_link'),
+  priority: text('priority').notNull().default('normal'), // low | normal | high
+  mandatoryBell: boolean('mandatory_bell').notNull().default(false),
+  mandatoryEmail: boolean('mandatory_email').notNull().default(false),
+  dedupeKey: text('dedupe_key').notNull().unique(),
+  scheduledFor: tstzOptional('scheduled_for'),
+  status: text('status').notNull().default('pending'), // pending | processing | sent | partial | failed | cancelled
+  attemptCount: integer('attempt_count').notNull().default(0),
+  lastError: text('last_error'),
+  createdAt: tstz('created_at'),
+  processedAt: tstzOptional('processed_at'),
+}, (table) => ({
+  recipientIdx: index('notification_outbox_recipient_idx').on(table.recipientUserId),
+  // Index de scrutation du dispatcher : événements dus et non terminés.
+  dueIdx: index('notification_outbox_due_idx').on(table.status, table.scheduledFor),
+  priorityCheck: check('notification_outbox_priority_check',
+    sql`${table.priority} IN ('low','normal','high')`),
+  statusCheck: check('notification_outbox_status_check',
+    sql`${table.status} IN ('pending','processing','sent','partial','failed','cancelled')`),
+}));
+
+// §12.4 — Journal de livraison multicanal. Une ligne par canal et, pour le
+// push, par appareil : permet de distinguer un échec partiel d'un échec global
+// et de savoir si une livraison a été envoyée, ignorée par préférence, rejetée,
+// expirée ou retentée.
+export const notificationDeliveries = pgTable('notification_deliveries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  outboxId: uuid('outbox_id').notNull().references(() => notificationOutbox.id, { onDelete: 'cascade' }),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  channel: text('channel').notNull(), // bell | push | email
+  pushSubscriptionId: uuid('push_subscription_id').references(() => pushSubscriptions.id, { onDelete: 'set null' }),
+  status: text('status').notNull().default('pending'), // pending | sent | failed | skipped_preference | skipped_unavailable | expired
+  providerMessageId: text('provider_message_id'),
+  attemptCount: integer('attempt_count').notNull().default(0),
+  lastErrorCode: text('last_error_code'),
+  lastErrorMessage: text('last_error_message'), // minimisé
+  attemptedAt: tstzOptional('attempted_at'),
+  sentAt: tstzOptional('sent_at'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  outboxIdIdx: index('notification_deliveries_outbox_id_idx').on(table.outboxId),
+  channelStatusIdx: index('notification_deliveries_channel_status_idx').on(table.channel, table.status),
+  channelCheck: check('notification_deliveries_channel_check',
+    sql`${table.channel} IN ('bell','push','email')`),
+  statusCheck: check('notification_deliveries_status_check',
+    sql`${table.status} IN ('pending','sent','failed','skipped_preference','skipped_unavailable','expired')`),
+}));
+
+// §7.3 / §12.6 — État persistant de la vue « À traiter » (Lot 4). Détecte les
+// entrées/sorties de la vue calculée pour notifier une fois par cycle actif.
+export const toProcessItemState = pgTable('to_process_item_state', {
+  id: serial('id').primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  itemKey: text('item_key').notNull(),
+  problemKey: text('problem_key'),
+  firstSeenAt: tstz('first_seen_at'),
+  lastSeenAt: tstz('last_seen_at'),
+  activeSince: tstzOptional('active_since'),
+  resolvedAt: tstzOptional('resolved_at'),
+  cycleNumber: integer('cycle_number').notNull().default(1),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  accountItemUnique: unique('to_process_item_state_unique').on(table.accountId, table.itemKey),
+  accountIdx: index('to_process_item_state_account_idx').on(table.accountId),
+  activeIdx: index('to_process_item_state_active_idx').on(table.accountId, table.isActive),
+}));
+
+// §7.8 / §19.5 — Consentement aux actualités (Lot 5+). Jamais activé par
+// défaut ni déduit de l'autorisation push ; retrait immédiat ; preuve conservée.
+export const newsConsents = pgTable('news_consents', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  consented: boolean('consented').notNull().default(false),
+  source: text('source'),
+  version: text('version'),
+  consentedAt: tstzOptional('consented_at'),
+  revokedAt: tstzOptional('revoked_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  userUnique: unique('news_consents_user_unique').on(table.userId),
+  userIdx: index('news_consents_user_idx').on(table.userId),
+  consentedIdx: index('news_consents_consented_idx').on(table.consented),
 }));

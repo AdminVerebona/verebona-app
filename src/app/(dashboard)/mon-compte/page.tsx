@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import InformationsTab from './informations/InformationsTab';
+import { NotificationsCard } from '@/components/account/NotificationsCard';
 
 export default function MonComptePage() {
   const { setBreadcrumbs } = useBreadcrumb();
@@ -18,6 +19,7 @@ export default function MonComptePage() {
         <p className="text-muted-foreground mt-1">Gérez vos informations personnelles et votre abonnement</p>
       </div>
       <InformationsTab />
+      <NotificationsCard />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { ReactNode, useEffect } from 'react';
 import { Toaster } from 'sonner';
 import { ScrollToTop } from '@/components/ScrollToTop';
 import { NavigationProgress } from '@/components/NavigationProgress';
+import { ServiceWorkerRegistration } from '@/components/ServiceWorkerRegistration';
 
 function ChunkErrorHandler() {
   useEffect(() => {
@@ -56,6 +57,7 @@ export function ClientShell({ children }: { children: ReactNode }) {
   return (
     <>
       <ChunkErrorHandler />
+      <ServiceWorkerRegistration />
       <NavigationProgress />
       {children}
       <Toaster closeButton position="top-center" richColors />

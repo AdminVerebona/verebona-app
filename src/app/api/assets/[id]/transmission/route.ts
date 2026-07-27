@@ -11,9 +11,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { assets, assetTransmissions, accountMemberships, users, emailTemplates, notifications } from '@/db/schema';
+import { assets, assetTransmissions, accountMemberships, users, emailTemplates } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
-import { NOTIFICATION_TYPES } from '@/types/notifications';
+import { emit } from '@/lib/notifications';
 import { buildAssetSnapshot } from '@/services/export-snapshot.service';
 import { randomUUID } from 'crypto';
 import { Resend } from 'resend';
@@ -297,15 +297,13 @@ export async function POST(
       .limit(1);
 
     if (recipientUser) {
-      await db.insert(notifications).values({
-        userId: recipientUser.id,
-        type: NOTIFICATION_TYPES.TRANSMISSION_RECEIVED,
-        mustDeliver: true,
-        payloadJson: JSON.stringify({
-          senderName,
-          assetName: asset.name,
-          transmissionToken: token,
-        }),
+      await emit({
+        type: 'TRANSMISSION_RECEIVED',
+        recipientUserIds: [recipientUser.id],
+        entityType: 'asset_transmission',
+        entityId: row.id,
+        payload: { senderName, assetName: asset.name, transmissionToken: token },
+        dedupeKey: `transmission:received:${row.id}`,
       });
     }
 

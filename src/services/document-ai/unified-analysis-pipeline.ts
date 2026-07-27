@@ -21,9 +21,9 @@ import {
   agendaItems,
   rooms,
   equipments,
-  notifications,
 } from '@/db/schema';
 import { eq, and, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
+import { emit } from '@/lib/notifications';
 import { analyzeDocument } from './analyze-document';
 import { commitDocument } from './commit-engine';
 import { PROMPT_VERSIONS, callGeminiWithFallback } from './gemini-client';
@@ -289,14 +289,14 @@ async function autoCommitHighConfFields(
 
 // ── Broadcast final + notification ───────────────────────────────────────────
 
-async function broadcastFinal(leadFileId: number, finalState: string, userId: number) {
-  const [fileRow, finalProposals] = await Promise.all([
-    db.select({ retainedTitle: assetFiles.retainedTitle, originalFilename: assetFiles.originalFilename })
-      .from(assetFiles).where(eq(assetFiles.id, leadFileId)).limit(1).then(r => r[0]),
-    db.select().from(documentAnalysisProposals).where(eq(documentAnalysisProposals.assetFileId, leadFileId)),
-  ]);
-
-  const documentTitle = fileRow?.retainedTitle || fileRow?.originalFilename || undefined;
+// Diffuse l'état final d'un groupe vers les onglets ouverts (SSE).
+// NB (Lot 0) : ne crée plus de notification par fichier. La notification
+// document est désormais émise une seule fois à la clôture du lot, dans
+// `runUnifiedAnalysisPipeline` (cf. CDC §7.2 « une seule notification par lot »).
+async function broadcastFinal(leadFileId: number, finalState: string) {
+  const finalProposals = await db
+    .select().from(documentAnalysisProposals)
+    .where(eq(documentAnalysisProposals.assetFileId, leadFileId));
 
   broadcast(leadFileId, {
     type: 'done',
@@ -311,17 +311,6 @@ async function broadcastFinal(leadFileId: number, finalState: string, userId: nu
       status: p.status,
     })),
   });
-
-  try {
-    await db.insert(notifications).values({
-      userId,
-      type: 'DOCUMENT_ANALYZED',
-      payloadJson: JSON.stringify({ assetFileId: leadFileId, analysedCount: 1, failedCount: 0, documentTitle }),
-      dedupeKey: `document_analyzed_${leadFileId}_${Date.now()}`,
-      mustDeliver: true,
-      createdAt: new Date(),
-    }).onConflictDoNothing();
-  } catch { /* non-bloquant */ }
 }
 
 // ── Point d'entrée principal ──────────────────────────────────────────────────
@@ -551,7 +540,7 @@ export async function runUnifiedAnalysisPipeline(
           }).catch(() => {});
         }
         // Broadcast final avec FUSION_SUGGESTED
-        await broadcastFinal(leadFile.id, 'FUSION_SUGGESTED', userId);
+        await broadcastFinal(leadFile.id, 'FUSION_SUGGESTED');
         return; // Pas de post-processing pour un doublon
       }
 
@@ -597,7 +586,7 @@ export async function runUnifiedAnalysisPipeline(
       }
 
       // Broadcast final + notification
-      await broadcastFinal(leadFile.id, finalState, userId);
+      await broadcastFinal(leadFile.id, finalState);
 
       // Post-commit non-bloquant
       if (finalState === 'ANALYZED') {
@@ -640,13 +629,15 @@ export async function runUnifiedAnalysisPipeline(
             .from(assetFiles).where(eq(assetFiles.id, fid)).limit(1);
           if (fileRow?.userId && fileRow.analysisState === 'ANALYSIS_FAILED') {
             const documentTitle = fileRow.retainedTitle || fileRow.originalFilename || undefined;
-            await db.insert(notifications).values({
-              userId: fileRow.userId,
+            await emit({
               type: 'ANALYSIS_FAILED_PERSISTENT',
-              payloadJson: JSON.stringify({ assetFileId: fid, documentTitle, errorReason: failReason }),
-              dedupeKey: `analysis_failed_persistent_${fid}`,
-              createdAt: new Date(),
-            }).onConflictDoNothing();
+              recipientUserIds: [fileRow.userId],
+              accountId,
+              entityType: 'asset_file',
+              entityId: fid,
+              payload: { assetFileId: fid, documentTitle, errorReason: failReason },
+              dedupeKey: `document:analysis-failed-persistent:${fid}`,
+            });
           }
         }
       }
@@ -659,15 +650,38 @@ export async function runUnifiedAnalysisPipeline(
   }
 
   // ── Mettre à jour le statut du lot ────────────────────────────────────────
-  const failedItems = await db.select({ id: documentLotItems.id })
+  const lotItemStatuses = await db.select({ status: documentLotItems.analysisStatus })
     .from(documentLotItems)
-    .where(and(
-      eq(documentLotItems.lotId, lotId),
-      eq(documentLotItems.analysisStatus as any, 'failed'),
-    ));
+    .where(eq(documentLotItems.lotId, lotId));
 
-  const lotFinalStatus = failedItems.length > 0 ? 'partially_failed' : 'committed';
+  const failedCount = lotItemStatuses.filter(i => i.status === 'failed').length;
+  const completedCount = lotItemStatuses.filter(i => i.status === 'completed').length;
+
+  const lotFinalStatus = failedCount > 0 ? 'partially_failed' : 'committed';
   await db.update(documentLots)
     .set({ status: lotFinalStatus, committedAt: new Date() })
     .where(eq(documentLots.id, lotId));
+
+  // ── Notification unique par lot (cf. CDC §7.2) ─────────────────────────────
+  // Émise via le service central : un seul enregistrement, quel que soit le
+  // nombre de fichiers/groupes ; canaux et préférences appliqués par le moteur.
+  try {
+    const batchType =
+      completedCount === 0 ? 'DOCUMENT_BATCH_FAILED'
+      : failedCount > 0 ? 'DOCUMENT_BATCH_PARTIALLY_FAILED'
+      : 'DOCUMENT_BATCH_COMPLETED';
+
+    await emit({
+      type: batchType,
+      recipientUserIds: [userId],
+      accountId,
+      entityType: 'document_lot',
+      entityId: lotId,
+      payload: { lotId, analysedCount: completedCount, failedCount },
+      // Clé stable par lot (le moteur ajoute l'utilisateur).
+      dedupeKey: `document:batch-complete:${lotId}`,
+    });
+  } catch (err) {
+    console.error('[unified-pipeline] notification de lot échouée (non-bloquant):', err);
+  }
 }

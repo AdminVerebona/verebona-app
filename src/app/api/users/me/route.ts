@@ -6,6 +6,7 @@ import { db } from '@/db';
 import { users, accounts, accountMemberships, duoAccounts, duoMemberships } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
+import { deleteUserNotificationData } from '@/lib/notifications/account-cleanup';
 
 export async function GET(request: NextRequest) {
   try {
@@ -177,6 +178,15 @@ export async function DELETE(req: NextRequest) {
 
     // Soft-delete: mark user as DELETED and anonymise PII
     const deletedAt = new Date();
+
+    // RGPD (§19.4) : supprimer explicitement les données de notification,
+    // car l'anonymisation ne déclenche pas les cascades FK.
+    try {
+      await deleteUserNotificationData(session.userId);
+    } catch (err) {
+      console.error('[users/me DELETE] purge notifications échouée:', err);
+    }
+
     await db.update(users).set({
       status: 'DELETED',
       email: `deleted_${session.userId}_${Date.now()}@deleted.invalid`,

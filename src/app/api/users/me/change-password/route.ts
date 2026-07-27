@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
 import { SessionService } from '@/lib/session-service';
+import { emit } from '@/lib/notifications';
 
 export async function POST(request: NextRequest) {
   try {
@@ -58,6 +59,20 @@ export async function POST(request: NextRequest) {
         updatedAt: new Date(),
       })
       .where(eq(users.id, session.userId));
+
+    // Événement de sécurité obligatoire (cloche + email, CDC §7.7).
+    try {
+      await emit({
+        type: 'PASSWORD_CHANGED',
+        recipientUserIds: [session.userId],
+        entityType: 'user',
+        entityId: session.userId,
+        payload: {},
+        dedupeKey: `security:password-changed:${session.userId}:${Date.now()}`,
+      });
+    } catch (err) {
+      console.error('[change-password] emit PASSWORD_CHANGED échoué:', err);
+    }
 
     return NextResponse.json({ message: 'Mot de passe mis à jour avec succès' });
   } catch (error) {

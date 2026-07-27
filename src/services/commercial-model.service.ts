@@ -8,10 +8,10 @@ import {
   accountAnalysisCounters,
   accountAnalysisCredits,
   notificationEvents,
-  notifications,
   referralEvents,
 } from '@/db/schema';
 import { NOTIFICATION_TYPES } from '@/types/notifications';
+import { emit } from '@/lib/notifications';
 
 export type CommercialPlanCode = 'standard' | 'premium' | 'premium_duo' | 'premium_pro';
 export type AnalysisPeriodType = 'trial' | 'annual';
@@ -197,24 +197,25 @@ async function emitThresholdNotifications(accountId: number, includedConsumed: n
     });
 
     const cta = planCode === 'standard' ? 'upgrade_premium' : 'buy_pack';
-    await Promise.all(
-      Array.from(userIds).map((userId) =>
-        db.insert(notifications).values({
-          userId,
-          type: threshold.type,
-          payloadJson: JSON.stringify({
-            accountId,
-            threshold: threshold.threshold,
-            includedConsumed,
-            includedQuota,
-            cta,
-            planCode,
-          }),
-          dedupeKey: `${dedupeKey}_user_${userId}`,
-          createdAt: new Date(),
-        }),
-      ),
-    );
+    // Émission via le service central : un seul appel, éclaté par le moteur sur
+    // tous les membres actifs (dédup par utilisateur via la clé). La dédup
+    // « une fois par période » reste assurée ci-dessus par notification_events.
+    await emit({
+      type: threshold.type,
+      recipientUserIds: Array.from(userIds),
+      accountId,
+      entityType: 'analysis_period_counter',
+      entityId: counterId,
+      payload: {
+        accountId,
+        threshold: threshold.threshold,
+        includedConsumed,
+        includedQuota,
+        cta,
+        planCode,
+      },
+      dedupeKey: `account:${dedupeKey}`,
+    });
   }
 }
 
@@ -353,17 +354,17 @@ export async function grantReferralRewardForFirstBilling(
       .limit(1);
 
     if (referrerAccount?.ownerUserId) {
-      const dedupeKey = `referral_reward_granted_${event.id}`;
-      await db.insert(notifications).values({
-        userId: referrerAccount.ownerUserId,
+      await emit({
         type: NOTIFICATION_TYPES.REFERRAL_REWARD_GRANTED,
-        payloadJson: JSON.stringify({
+        recipientUserIds: [referrerAccount.ownerUserId],
+        entityType: 'referral_event',
+        entityId: event.id,
+        payload: {
           referralEventId: event.id,
           referredAccountId,
-        }),
-        dedupeKey,
-        createdAt: new Date(),
-      }).onConflictDoNothing();
+        },
+        dedupeKey: `account:referral-reward-granted:${event.id}`,
+      });
     }
   } catch (err) {
     // Ne pas bloquer le reward si la notif échoue
