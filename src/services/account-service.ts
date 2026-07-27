@@ -4,11 +4,11 @@ import {
   accountMemberships,
   accountAuditLog,
   users,
-  notifications,
 } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
 import crypto from 'crypto';
 import { emailService } from '@/lib/email/email-service';
+import { emit } from '@/lib/notifications';
 import type { PlanType, SubscriptionTier, SubscriptionStatus, MembershipRole, MembershipStatus } from '@/types/domain';
 
 export interface Account {
@@ -272,17 +272,18 @@ export class AccountService {
 
       if (existingUser) {
         try {
-          await db.insert(notifications).values({
-            userId: existingUser.id,
+          await emit({
             type: 'ACCOUNT_INVITATION',
-            payloadJson: JSON.stringify({
+            recipientUserIds: [existingUser.id],
+            accountId: account.id,
+            entityType: 'account_membership',
+            entityId: membership.id,
+            payload: {
               inviterName: `${inviter.firstName} ${inviter.lastName}`,
               accountName: account.name,
               inviteToken,
-            }),
-            dedupeKey: `account_invitation_${membership.id}`,
-            mustDeliver: true,
-            createdAt: now,
+            },
+            dedupeKey: `account-invitation:${membership.id}`,
           });
         } catch (notifError) {
           console.error('Failed to create ACCOUNT_INVITATION notification:', notifError);

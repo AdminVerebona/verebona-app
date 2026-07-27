@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { expireOverdueTrials } from '@/services/trial.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
+import { emit } from '@/lib/notifications';
 
 /**
  * GET /api/cron/expire-trials
@@ -25,6 +26,15 @@ export async function GET(request: Request) {
 
     for (const accountId of accountIds) {
       void trackFunnelEvent({ event: 'expired_without_conversion', accountId });
+      // Fin d'essai (configurable, cloche + email par défaut, CDC §7.6).
+      void emit({
+        type: 'TRIAL_ENDED',
+        accountId,
+        entityType: 'account',
+        entityId: accountId,
+        payload: {},
+        dedupeKey: `account:trial-ended:${accountId}`,
+      }).catch((err) => console.error('[cron/expire-trials] emit TRIAL_ENDED échoué:', err));
     }
 
     if (expired > 0) {

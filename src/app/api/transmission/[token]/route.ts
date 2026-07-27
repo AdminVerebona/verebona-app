@@ -19,9 +19,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { accountMemberships, assetTransmissions, assets, assetFiles, agendaItems, agendaAssetLinks, users, notifications } from '@/db/schema';
+import { accountMemberships, assetTransmissions, assets, assetFiles, agendaItems, agendaAssetLinks, users } from '@/db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
-import { NOTIFICATION_TYPES } from '@/types/notifications';
+import { emit } from '@/lib/notifications';
 import { SessionService } from '@/lib/session-service';
 import { CopyObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client, S3_BUCKET } from '@/lib/s3-client';
@@ -216,13 +216,13 @@ export async function POST(
     let snapshot: any = null;
     try { snapshot = JSON.parse(row.snapshotPayload || '{}'); } catch {}
     const refuserName = row.recipientEmail;
-    await db.insert(notifications).values({
-      userId: row.initiatorUserId,
-      type: NOTIFICATION_TYPES.TRANSMISSION_REFUSED,
-      payloadJson: JSON.stringify({
-        recipientName: refuserName,
-        assetName: snapshot?.name ?? 'votre bien',
-      }),
+    await emit({
+      type: 'TRANSMISSION_REFUSED',
+      recipientUserIds: [row.initiatorUserId],
+      entityType: 'asset_transmission',
+      entityId: row.id,
+      payload: { recipientName: refuserName, assetName: snapshot?.name ?? 'votre bien' },
+      dedupeKey: `transmission:refused:${row.id}`,
     });
 
     return NextResponse.json({ success: true, status: 'refused' });
@@ -651,13 +651,13 @@ export async function POST(
   const recipientDisplayName = recipientUserInfo
     ? [recipientUserInfo.firstName, recipientUserInfo.lastName].filter(Boolean).join(' ') || recipientUserInfo.email
     : row.recipientEmail;
-  await db.insert(notifications).values({
-    userId: row.initiatorUserId,
-    type: NOTIFICATION_TYPES.TRANSMISSION_ACCEPTED,
-    payloadJson: JSON.stringify({
-      recipientName: recipientDisplayName,
-      assetName: snapshot?.name ?? 'votre bien',
-    }),
+  await emit({
+    type: 'TRANSMISSION_ACCEPTED',
+    recipientUserIds: [row.initiatorUserId],
+    entityType: 'asset_transmission',
+    entityId: row.id,
+    payload: { recipientName: recipientDisplayName, assetName: snapshot?.name ?? 'votre bien' },
+    dedupeKey: `transmission:accepted:${row.id}`,
   });
 
   // Check if recipient has an account (for redirect hint)

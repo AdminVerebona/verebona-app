@@ -27,6 +27,25 @@ export interface HelpArticle {
 
 export const HELP_ARTICLES: HelpArticle[] = [
   {
+    slug: 'gerer-mes-notifications',
+    title: 'Gérer mes notifications',
+    seoTitle: 'Gérer mes notifications Verebona',
+    tags: { themes: ['compte', 'notifications'], offers: ['standard'], states: ['new'] },
+    isPublished: true,
+    publishedAt: '2026-07-01',
+    summary: 'Choisissez ce que vous recevez par notification sur vos appareils et par email.',
+    intro: `Verebona peut vous prévenir avant vos échéances, à la fin de vos analyses de documents, pour les demandes de votre compte partagé, et pour les événements importants de sécurité ou de paiement. Vous décidez, catégorie par catégorie, de recevoir un push et/ou un email.`,
+    description: `Les réglages se trouvent dans Mon compte > Notifications. Les push arrivent sur votre appareil même lorsque Verebona est fermé ; ils ne sont jamais activés sans votre autorisation explicite. Certains emails essentiels — sécurité, incidents de paiement, demandes de votre compte partagé nécessitant votre décision — restent toujours activés. Les éléments « À traiter » ne sont jamais ajoutés dans la cloche : ils restent visibles sur leur page dédiée, et vous pouvez choisir d'en être prévenu immédiatement et/ou par un récapitulatif quotidien à 8 h 30.`,
+    steps: [
+      { title: 'Ouvrir vos réglages', body: 'Depuis **Mon compte**, ouvrez la carte **Notifications** puis **Gérer mes notifications**.' },
+      { title: 'Activer les notifications sur cet appareil', body: `Cliquez sur **Activer les notifications** et acceptez la demande du navigateur. Sur iPhone ou iPad, ajoutez d'abord Verebona à votre écran d'accueil.` },
+      { title: 'Choisir vos catégories', body: `Pour chaque catégorie (échéances, documents, partage, transmission, compte, sécurité…), activez le **push** et/ou l'**email**. Les emails obligatoires sont indiqués par un cadenas.` },
+      { title: 'Régler « À traiter »', body: `Choisissez d'être prévenu **immédiatement** lorsqu'un nouvel élément apparaît, et/ou via un **récapitulatif quotidien à 8 h 30**, par push et par email indépendamment.` },
+      { title: 'Gérer vos appareils', body: 'Retrouvez la liste de vos appareils autorisés et retirez ceux que vous n’utilisez plus. À la déconnexion, un appareil partagé cesse de recevoir vos notifications.' },
+    ],
+    illustration: '/aide/gerer-mon-compte.jpg',
+  },
+  {
     slug: 'creer-un-bien',
     title: 'Créer un bien',
     seoTitle: 'Créer un bien',

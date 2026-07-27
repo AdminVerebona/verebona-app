@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server';
 export const maxDuration = 300; // 5 minutes — Vercel only
 import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
-import { assetFiles, assets, notifications } from '@/db/schema';
+import { assetFiles, assets } from '@/db/schema';
 import { eq, and, isNull, isNotNull } from 'drizzle-orm';
 import { analyzeDocument } from '@/services/document-ai/analyze-document';
 import { PROMPT_VERSIONS } from '@/services/document-ai/gemini-client';
@@ -30,9 +30,10 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // Read body before response streaming begins (body can only be consumed once)
-  const body = await request.json().catch(() => ({}));
-  const skipNotification = body?.skipNotification === true;
+  // Consommer le body avant le début du streaming (il ne peut être lu qu'une fois).
+  // Lot 0 : l'ancien flag `skipNotification` est retiré — cette route ne crée plus
+  // de notification par fichier (cf. CDC §7.2).
+  await request.json().catch(() => ({}));
 
   const encoder = new TextEncoder();
 
@@ -316,21 +317,12 @@ export async function POST(
           });
         }
 
-        // Toujours créer la notification cloche — le polling de la NotificationBell
-        // déclenchera document-analysis-complete côté client (et refresh de la home).
-        try {
-          const [analyzed] = await db.select({ retainedTitle: assetFiles.retainedTitle, originalFilename: assetFiles.originalFilename })
-            .from(assetFiles).where(eq(assetFiles.id, assetFileId)).limit(1);
-          const documentTitle = analyzed?.retainedTitle || analyzed?.originalFilename || undefined;
-          await db.insert(notifications).values({
-            userId: session.userId,
-            type: 'DOCUMENT_ANALYZED',
-            payloadJson: JSON.stringify({ assetFileId, analysedCount: 1, failedCount: 0, documentTitle }),
-            dedupeKey: `document_analyzed_file_${assetFileId}_${Date.now()}`,
-            mustDeliver: true,
-            createdAt: new Date(),
-          });
-        } catch { /* non-blocking */ }
+        // Lot 0 — plus de notification cloche par fichier ici (cf. CDC §7.2 :
+        // « la clôture du lot devient l'unique source métier »). Cette route est
+        // une ré-analyse d'un document unique effectuée pendant que l'utilisateur
+        // le consulte : il reçoit déjà l'événement SSE `done` ci-dessous. Les
+        // imports multi-documents passent par runUnifiedAnalysisPipeline, qui émet
+        // une seule notification de lot.
 
         await consumeAnalysisCredits(accountId, 1);
 

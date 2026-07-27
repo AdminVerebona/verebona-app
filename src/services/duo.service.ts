@@ -1,9 +1,10 @@
 import { db } from '@/db';
 import { 
   duoAccounts, duoMemberships, assets, assetMoveRequests, assetDeleteRequests, 
-  notifications, users, accounts, accountMemberships 
+  users, accounts, accountMemberships 
 } from '@/db/schema';
 import { eq, and, or, isNull, ne, sql } from 'drizzle-orm';
+import { emit } from '@/lib/notifications';
 import type { ResolutionMode, ResolvedByType 
 } from '@/types/duo';
 
@@ -160,7 +161,7 @@ export class DuoService {
         .set({ lockState: 'PENDING_MOVE', updatedAt: now })
         .where(eq(assets.id, params.assetId));
 
-      await tx.insert(assetMoveRequests).values({
+      const [moveRequest] = await tx.insert(assetMoveRequests).values({
         assetId: params.assetId,
         duoId: params.duoId,
         targetAccountId: params.targetAccountId,
@@ -172,19 +173,23 @@ export class DuoService {
         targetUserSnapshot: params.targetUserDisplay,
         initiatorUserSnapshot: params.initiatorUserDisplay,
         createdAt: now,
-      });
+      }).returning({ id: assetMoveRequests.id });
 
-      await tx.insert(notifications).values({
-        userId: params.validatorUserId,
+      await emit({
         type: 'DUO_MOVE_REQUEST',
-        payloadJson: JSON.stringify({
+        recipientUserIds: [params.validatorUserId],
+        actorUserId: params.initiatorUserId,
+        entityType: 'asset_move_request',
+        entityId: moveRequest.id,
+        payload: {
+          requestId: moveRequest.id,
+          duoId: params.duoId,
           assetId: params.assetId,
           assetLabel: params.assetLabel,
-          initiator: params.initiatorUserDisplay,
-        }),
-        dedupeKey: `move_request_${params.assetId}_${now}`,
-        mustDeliver: false,
-        createdAt: now,
+          initiatorName: params.initiatorUserDisplay,
+        },
+        dedupeKey: `duo:move-request:${moveRequest.id}`,
+        tx,
       });
     });
   }
@@ -235,7 +240,7 @@ export class DuoService {
         .set({ lockState: 'PENDING_DELETE', updatedAt: now })
         .where(eq(assets.id, params.assetId));
 
-      await tx.insert(assetDeleteRequests).values({
+      const [deleteRequest] = await tx.insert(assetDeleteRequests).values({
         assetId: params.assetId,
         duoId: params.duoId,
         initiatorUserId: params.initiatorUserId,
@@ -244,19 +249,23 @@ export class DuoService {
         assetLabelSnapshot: params.assetLabel,
         initiatorUserSnapshot: params.initiatorUserDisplay,
         createdAt: now,
-      });
+      }).returning({ id: assetDeleteRequests.id });
 
-      await tx.insert(notifications).values({
-        userId: params.validatorUserId,
+      await emit({
         type: 'DUO_DELETE_REQUEST',
-        payloadJson: JSON.stringify({
+        recipientUserIds: [params.validatorUserId],
+        actorUserId: params.initiatorUserId,
+        entityType: 'asset_delete_request',
+        entityId: deleteRequest.id,
+        payload: {
+          requestId: deleteRequest.id,
+          duoId: params.duoId,
           assetId: params.assetId,
           assetLabel: params.assetLabel,
-          initiator: params.initiatorUserDisplay,
-        }),
-        dedupeKey: `delete_request_${params.assetId}_${now}`,
-        mustDeliver: false,
-        createdAt: now,
+          initiatorName: params.initiatorUserDisplay,
+        },
+        dedupeKey: `duo:delete-request:${deleteRequest.id}`,
+        tx,
       });
     });
   }
@@ -307,16 +316,15 @@ export class DuoService {
           })
           .where(eq(assetMoveRequests.id, params.requestId));
 
-        await tx.insert(notifications).values({
-          userId: request.initiatorUserId,
+        await emit({
           type: 'DUO_MOVE_ACCEPTED',
-          payloadJson: JSON.stringify({
-            assetLabel: request.assetLabelSnapshot,
-            resolutionMode: params.resolutionMode || 'MOVE_ONLY',
-          }),
-          dedupeKey: `move_accepted_${params.requestId}_${now}`,
-          mustDeliver: false,
-          createdAt: now,
+          recipientUserIds: [request.initiatorUserId],
+          actorUserId: params.resolvedByUserId,
+          entityType: 'asset_move_request',
+          entityId: params.requestId,
+          payload: { requestId: params.requestId, assetLabel: request.assetLabelSnapshot },
+          dedupeKey: `duo:move-accepted:${params.requestId}`,
+          tx,
         });
 
         return { status: 'ACCEPTED', resolutionMode: params.resolutionMode || 'MOVE_ONLY' };
@@ -336,15 +344,15 @@ export class DuoService {
           })
           .where(eq(assetMoveRequests.id, params.requestId));
 
-        await tx.insert(notifications).values({
-          userId: request.initiatorUserId,
+        await emit({
           type: 'DUO_MOVE_REFUSED',
-          payloadJson: JSON.stringify({
-            assetLabel: request.assetLabelSnapshot,
-          }),
-          dedupeKey: `move_refused_${params.requestId}_${now}`,
-          mustDeliver: false,
-          createdAt: now,
+          recipientUserIds: [request.initiatorUserId],
+          actorUserId: params.resolvedByUserId,
+          entityType: 'asset_move_request',
+          entityId: params.requestId,
+          payload: { requestId: params.requestId, assetLabel: request.assetLabelSnapshot },
+          dedupeKey: `duo:move-refused:${params.requestId}`,
+          tx,
         });
 
         return { status: 'REFUSED' };
@@ -395,15 +403,15 @@ export class DuoService {
           })
           .where(eq(assetDeleteRequests.id, params.requestId));
 
-        await tx.insert(notifications).values({
-          userId: request.initiatorUserId,
+        await emit({
           type: 'DUO_DELETE_ACCEPTED',
-          payloadJson: JSON.stringify({
-            assetLabel: request.assetLabelSnapshot,
-          }),
-          dedupeKey: `delete_accepted_${params.requestId}_${now}`,
-          mustDeliver: false,
-          createdAt: now,
+          recipientUserIds: [request.initiatorUserId],
+          actorUserId: params.resolvedByUserId,
+          entityType: 'asset_delete_request',
+          entityId: params.requestId,
+          payload: { requestId: params.requestId, assetLabel: request.assetLabelSnapshot },
+          dedupeKey: `duo:delete-accepted:${params.requestId}`,
+          tx,
         });
 
         return { status: 'ACCEPTED' };
@@ -423,15 +431,15 @@ export class DuoService {
           })
           .where(eq(assetDeleteRequests.id, params.requestId));
 
-        await tx.insert(notifications).values({
-          userId: request.initiatorUserId,
+        await emit({
           type: 'DUO_DELETE_REFUSED',
-          payloadJson: JSON.stringify({
-            assetLabel: request.assetLabelSnapshot,
-          }),
-          dedupeKey: `delete_refused_${params.requestId}_${now}`,
-          mustDeliver: false,
-          createdAt: now,
+          recipientUserIds: [request.initiatorUserId],
+          actorUserId: params.resolvedByUserId,
+          entityType: 'asset_delete_request',
+          entityId: params.requestId,
+          payload: { requestId: params.requestId, assetLabel: request.assetLabelSnapshot },
+          dedupeKey: `duo:delete-refused:${params.requestId}`,
+          tx,
         });
 
         return { status: 'REFUSED' };

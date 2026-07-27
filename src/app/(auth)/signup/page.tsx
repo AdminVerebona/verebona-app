@@ -246,7 +246,7 @@ export default function SignupPage() {
               <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
                 <span className="text-xl flex-shrink-0">🎁</span>
                 <div className="text-sm">
-                  <span className="font-medium text-blue-300">3 mois d'essai offerts — parrainage</span>
+                  <span className="font-medium text-blue-300">Un mois offert grâce au parrainage</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
                     Code <span className="font-mono font-semibold text-blue-400">{referralCode}</span> appliqué. Profitez d'un mois supplémentaire grâce à votre parrain.
                   </p>
@@ -349,6 +349,25 @@ export default function SignupPage() {
                 {errors.confirmPassword && (
                   <p className="text-sm text-destructive">{errors.confirmPassword}</p>
                 )}
+              </div>
+
+              {/* Code de parrainage — saisie manuelle (CDC §4.1).
+                  Pre-rempli si l'utilisateur est arrive par un lien ?ref=. */}
+              <div className="space-y-2">
+                <Label htmlFor="referralCode">Code de parrainage (facultatif)</Label>
+                <Input
+                  id="referralCode"
+                  type="text"
+                  placeholder="Ex. ABC123"
+                  value={referralCode ?? ''}
+                  onChange={(e) => setReferralCode(e.target.value.toUpperCase().trim() || null)}
+                  disabled={isLoading}
+                  autoComplete="off"
+                />
+                <p className="text-xs text-[color:var(--text-muted)]">
+                  Un proche vous a invité ? Saisissez son code pour profiter d&apos;un mois offert
+                  à l&apos;abonnement annuel.
+                </p>
               </div>
 
               <div className="space-y-3 pt-2">

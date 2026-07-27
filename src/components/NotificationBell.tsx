@@ -19,11 +19,18 @@ interface NotificationPayload {
   inviteToken?: string;
   lotId?: number;
   assetFileId?: number;
+  // Duo
+  duoId?: number;
+  requestId?: number;
   // Transmission
   senderName?: string;
   assetName?: string;
   transmissionToken?: string;
   recipientName?: string;
+  // Quota / parrainage
+  threshold?: number;
+  cta?: string;
+  referralEventId?: number;
 }
 
 interface Notification {
@@ -55,8 +62,18 @@ function getNotificationText(type: string, payload: NotificationPayload | null):
       return `Votre demande de suppression de ${p.assetLabel ?? 'votre bien'} a été acceptée`;
     case 'DUO_DELETE_REFUSED':
       return `Votre demande de suppression de ${p.assetLabel ?? 'votre bien'} a été refusée`;
+    case 'DUO_INVITATION_RECEIVED':
+      return `${p.initiatorName ?? 'Quelqu\'un'} vous invite à rejoindre son compte Duo`;
     case 'ACCOUNT_INVITATION':
       return `${p.inviterName ?? 'Quelqu\'un'} vous a invité(e) à rejoindre ${p.accountName ?? 'un compte'}`;
+    // ── Documents : une notification par lot (cf. CDC §7.2) ──────────────────
+    case 'DOCUMENT_BATCH_COMPLETED':
+      return `Analyse terminée : ${p.analysedCount ?? 0} document(s) analysé(s)`;
+    case 'DOCUMENT_BATCH_PARTIALLY_FAILED':
+      return `Analyse terminée avec une anomalie : ${p.analysedCount ?? 0} document(s) analysé(s), ${p.failedCount ?? 0} à vérifier`;
+    case 'DOCUMENT_BATCH_FAILED':
+      return `Analyse impossible — notre équipe en est informée`;
+    // DOCUMENT_ANALYZED : conservé pour les lignes historiques (cf. CDC §22.1).
     case 'DOCUMENT_ANALYZED':
       if (p.failedCount && !p.analysedCount) {
         return `Analyse échouée${p.documentTitle ? ` : ${p.documentTitle}` : ''}`;
@@ -64,6 +81,12 @@ function getNotificationText(type: string, payload: NotificationPayload | null):
       return p.documentTitle
         ? `Analyse terminée : ${p.documentTitle}`
         : `Analyse terminée : ${p.analysedCount ?? 0} document(s) traité(s)${p.failedCount ? `, ${p.failedCount} échoué(s)` : ''}`;
+    case 'ANALYSIS_QUOTA_90':
+      return `Vous avez utilisé 90 % de votre quota d'analyses ce mois-ci`;
+    case 'ANALYSIS_QUOTA_100':
+      return `Vous avez atteint votre quota d'analyses ce mois-ci`;
+    case 'REFERRAL_REWARD_GRANTED':
+      return `Votre récompense de parrainage a été créditée`;
     case 'ANALYSIS_FAILED_PERSISTENT': {
       const title = p.documentTitle ? ` : ${p.documentTitle}` : '';
       const reason = p.errorReason ? ` (${p.errorReason})` : '';
@@ -82,20 +105,33 @@ function getNotificationText(type: string, payload: NotificationPayload | null):
 
 function getNotificationHref(type: string, payload: NotificationPayload | null): string | null {
   const p = payload ?? {};
-  if (type === 'ACCOUNT_INVITATION' && p.inviteToken) {
+  if ((type === 'ACCOUNT_INVITATION' || type === 'DUO_INVITATION_RECEIVED') && p.inviteToken) {
     return `/mon-compte/partage?inviteToken=${p.inviteToken}`;
   }
+  // Demande Duo → boîte de réception des demandes du Duo concerné (cf. CDC §17).
+  // La page réelle est /duos/{duoId}/requests (l'ancien lien /duo était mort).
   if (type === 'DUO_MOVE_REQUEST' || type === 'DUO_DELETE_REQUEST') {
-    return '/duo';
+    if (p.duoId) {
+      return `/duos/${p.duoId}/requests${p.requestId ? `?request=${p.requestId}` : ''}`;
+    }
+    return null;
   }
   if (type === 'TRANSMISSION_RECEIVED' && p.transmissionToken) {
     return `/transmission/${p.transmissionToken}`;
   }
-  if (type === 'DOCUMENT_ANALYZED' && (p.lotId || p.assetFileId)) {
-    return '#';
+  // Documents : vue du document concerné, ou liste des documents pour un lot.
+  if (type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_BATCH_PARTIALLY_FAILED' || type === 'DOCUMENT_BATCH_FAILED') {
+    return '/documents';
+  }
+  if (type === 'DOCUMENT_ANALYZED') {
+    return p.assetFileId ? `/documents/${p.assetFileId}` : '/documents';
   }
   if (type === 'ANALYSIS_FAILED_PERSISTENT' && p.assetFileId) {
-    return '#';
+    return `/documents/${p.assetFileId}`;
+  }
+  // Quota / abonnement / parrainage → offres (cf. CDC §17).
+  if (type === 'ANALYSIS_QUOTA_90' || type === 'ANALYSIS_QUOTA_100' || type === 'REFERRAL_REWARD_GRANTED') {
+    return '/mon-compte/offres';
   }
   return null;
 }

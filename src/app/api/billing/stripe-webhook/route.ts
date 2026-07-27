@@ -23,6 +23,7 @@ import { applyScheduledChange } from '@/services/plan-change.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { enforceStandardLimits } from '@/lib/plan-enforcement';
 import { grantReferralRewardForFirstBilling, mapLegacyPlanTypeToCommercialCode } from '@/services/commercial-model.service';
+import { emit } from '@/lib/notifications';
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
@@ -496,6 +497,20 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
     createdAt: new Date(),
   });
 
+  // Résiliation d'abonnement (configurable, cloche + email par défaut, CDC §7.6).
+  try {
+    await emit({
+      type: 'SUBSCRIPTION_CANCELLED',
+      accountId: account.id,
+      entityType: 'subscription',
+      entityId: subscription.id,
+      payload: {},
+      dedupeKey: `account:subscription-cancelled:${subscription.id}`,
+    });
+  } catch (err) {
+    console.error('[stripe-webhook] emit SUBSCRIPTION_CANCELLED échoué:', err);
+  }
+
   // Sync users.planType so the badge matches
   if (oldPlanType !== 'STANDARD') {
     await db
@@ -578,6 +593,23 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
       updatedAt: new Date(),
     })
     .where(eq(accounts.id, account.id));
+
+  // Renouvellement (configurable). On ne notifie que les cycles de renouvellement
+  // réels, pas le premier paiement (activation), pour ne pas sur-notifier.
+  if ((invoice as any).billing_reason === 'subscription_cycle') {
+    try {
+      await emit({
+        type: 'SUBSCRIPTION_RENEWED',
+        accountId: account.id,
+        entityType: 'invoice',
+        entityId: invoice.id,
+        payload: { planCode: resolvedPlanType },
+        dedupeKey: `account:subscription-renewed:${invoice.id}`,
+      });
+    } catch (err) {
+      console.error('[stripe-webhook] emit SUBSCRIPTION_RENEWED échoué:', err);
+    }
+  }
 
   await db.insert(accountSubscriptions).values({
     accountId: account.id,
@@ -697,6 +729,21 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
           sentAt: now,
         }).onConflictDoNothing();
 
+        // Incident de paiement obligatoire pour le titulaire de la facturation Duo.
+        if (duoAccount.billingOwnerUserId) {
+          try {
+            await emit({
+              type: 'PAYMENT_FAILED',
+              recipientUserIds: [duoAccount.billingOwnerUserId],
+              entityType: 'invoice',
+              entityId: invoice.id,
+              payload: { duoId: duoAccount.id },
+              dedupeKey: `account:payment-failed:${invoice.id}`,
+            });
+          } catch (err) {
+            console.error('[stripe-webhook] emit PAYMENT_FAILED (duo) échoué:', err);
+          }
+        }
       }
       return;
     }
@@ -728,7 +775,19 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
       })
       .where(eq(accounts.id, account.id));
 
-    // TODO: send dunning email to account owner
+    // Incident de paiement obligatoire (cloche + email, CDC §7.6).
+    try {
+      await emit({
+        type: 'PAYMENT_FAILED',
+        accountId: account.id,
+        entityType: 'invoice',
+        entityId: invoice.id,
+        payload: { accountId: account.id },
+        dedupeKey: `account:payment-failed:${invoice.id}`,
+      });
+    } catch (err) {
+      console.error('[stripe-webhook] emit PAYMENT_FAILED échoué:', err);
+    }
   }
 }
 
@@ -976,6 +1035,26 @@ async function handlePaymentActionRequired(invoice: Stripe.Invoice) {
     .update(accountSubscriptions)
     .set({ status: 'past_due', updatedAt: new Date() })
     .where(eq(accountSubscriptions.stripeCustomerId, customerId ?? ''));
+
+  // Action requise sur le paiement — obligatoire (cloche + email, CDC §7.6).
+  try {
+    if (customerId) {
+      const [account] = await db.select({ id: accounts.id }).from(accounts)
+        .where(eq(accounts.stripeCustomerId, customerId)).limit(1);
+      if (account) {
+        await emit({
+          type: 'PAYMENT_ACTION_REQUIRED',
+          accountId: account.id,
+          entityType: 'invoice',
+          entityId: invoice.id,
+          payload: { accountId: account.id },
+          dedupeKey: `account:payment-action-required:${invoice.id}`,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[stripe-webhook] emit PAYMENT_ACTION_REQUIRED échoué:', err);
+  }
 }
 
 /**

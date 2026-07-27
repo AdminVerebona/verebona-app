@@ -46,6 +46,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useSession, User as SessionUser } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
+import { unsubscribeCurrentDevice } from '@/lib/push/push-client';
 import { isPremiumPlan } from '@/types/domain';
 const AssetFormDialog = dynamic(() => import('./AssetFormDialog').then(m => ({ default: m.AssetFormDialog })), { ssr: false });
 const UnifiedDocumentDialog = dynamic(() => import('./documents/unified-document-dialog').then(m => ({ default: m.UnifiedDocumentDialog })), { ssr: false });
@@ -232,6 +233,10 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   }, []);
 
       const handleLogout = useCallback(async () => {
+
+    // Désassocier le push de cet appareil AVANT d'invalider la session (§10.2) :
+    // un appareil partagé ne doit plus recevoir les notifications de ce compte.
+    try { await unsubscribeCurrentDevice(); } catch { /* best-effort */ }
 
     try {
       await apiClient.post('/api/auth/logout');
