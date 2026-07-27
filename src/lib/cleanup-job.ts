@@ -62,6 +62,16 @@ export async function runCleanupJob(): Promise<CleanupResult> {
 
   try {
 
+    // Verebona Assistant — purge de l'historique conversationnel expiré (> 7 j, CDC §28.13).
+    // Best-effort : ne doit jamais interrompre le cleanup S3 principal.
+    try {
+      const { purgeExpired } = await import('@/services/verebona-assistant/core/conversation.service');
+      const purged = await purgeExpired();
+      if (purged) console.log(`[CLEANUP] Verebona conversations purgées: ${purged}`);
+    } catch (verebonaError) {
+      console.error('[CLEANUP] Purge Verebona échouée:', verebonaError);
+    }
+
     // Calculer la date limite (30 jours en arrière)
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - SOFT_DELETE_RETENTION_DAYS);

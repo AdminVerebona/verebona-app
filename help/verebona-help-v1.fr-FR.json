@@ -1,0 +1,43 @@
+{
+  "contentVersion": "help-content-v1.0",
+  "locale": "fr-FR",
+  "note": "Seed d'amorçage (CDC §10). À enrichir/valider par le PO à partir de src/lib/help-content/articles.ts. Chargé dans verebona_help_entries (status='published' une fois validé).",
+  "entries": [
+    {
+      "slug": "ajouter-un-document",
+      "title": "Ajouter un document à un bien",
+      "questionPatterns": ["comment ajouter un document", "importer une facture", "joindre un fichier à un bien"],
+      "shortAnswer": "Ouvrez la fiche du bien concerné, puis utilisez « Ajouter un document » pour importer votre fichier.",
+      "detailedAnswer": "Depuis la fiche d'un bien, la section Documents propose « Ajouter un document ». Vous pouvez importer une facture, une garantie, un manuel ou un contrat. Le document est ensuite analysé automatiquement pour en extraire les informations utiles.",
+      "planScope": ["STANDARD", "PREMIUM", "PREMIUM_DUO", "PREMIUM_PRO"],
+      "actions": [{ "type": "START_ADD_DOCUMENT" }]
+    },
+    {
+      "slug": "document-en-analyse",
+      "title": "Pourquoi un document est-il « en analyse » ?",
+      "questionPatterns": ["document en analyse", "pourquoi mon document est en cours", "statut analyse"],
+      "shortAnswer": "« En analyse » signifie que Verebona lit votre document pour en extraire les informations. Cela ne dure généralement que quelques instants.",
+      "detailedAnswer": "Après l'import, chaque document passe par une analyse automatique qui identifie le type, la date, le montant et le fournisseur. Tant que l'analyse est en cours, le statut reste « en analyse ». Les données extraites sont ensuite proposées à la validation.",
+      "planScope": ["STANDARD", "PREMIUM", "PREMIUM_DUO", "PREMIUM_PRO"],
+      "actions": [{ "type": "OPEN_TO_PROCESS" }]
+    },
+    {
+      "slug": "limite-offre-standard",
+      "title": "Limites de l'offre Standard",
+      "questionPatterns": ["combien de biens en standard", "limite standard", "pourquoi je ne peux pas ajouter"],
+      "shortAnswer": "L'offre Standard permet 2 biens et 30 documents. Passez à Premium pour augmenter ces limites et activer les réponses intelligentes.",
+      "detailedAnswer": "L'offre Standard inclut 2 biens et 30 documents. L'offre Premium porte ces limites à 10 biens et 150 documents et active les questions à Verebona. L'offre Premium Duo ajoute un second utilisateur.",
+      "planScope": ["STANDARD"],
+      "actions": [{ "type": "OPEN_PRICING" }]
+    },
+    {
+      "slug": "preparer-un-export",
+      "title": "Préparer un export / dossier",
+      "questionPatterns": ["exporter mes documents", "créer un dossier", "générer un pdf"],
+      "shortAnswer": "Depuis un bien, ouvrez la zone d'export pour générer un dossier regroupant ses documents.",
+      "detailedAnswer": "La zone d'export permet de regrouper les documents d'un bien dans un dossier prêt à transmettre. Vous pouvez choisir les documents à inclure et le format de sortie.",
+      "planScope": ["PREMIUM", "PREMIUM_DUO", "PREMIUM_PRO"],
+      "actions": [{ "type": "OPEN_EXPORT_AREA" }]
+    }
+  ]
+}
