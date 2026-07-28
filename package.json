@@ -17,7 +17,14 @@
         "env:recette": "copy .env.recette.local .env.local",
         "env:prod": "copy .env.production.local .env.local",
         "dev:recette": "npm run env:recette && next dev --turbopack",
-        "dev:prod": "npm run env:prod && next dev --turbopack"
+        "dev:prod": "npm run env:prod && next dev --turbopack",
+        "test": "vitest",
+        "test:run": "vitest --run",
+        "test:coverage": "vitest --run --coverage",
+        "ai:inventory": "tsx scripts/ai-inventory.ts",
+        "ai:inventory:json": "tsx scripts/ai-inventory.ts --json",
+        "ai:check-legacy": "node scripts/check-legacy-ai.mjs --phase=1",
+        "ai:verify": "npm run typecheck && npm run lint && npm run test:run && npm run ai:inventory && npm run ai:check-legacy"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.934.0",
@@ -88,10 +95,13 @@
         "@eslint/eslintrc": "^3.3.1",
         "@types/dotenv": "^8.2.3",
         "@types/web-push": "^3.6.4",
+        "@vitest/coverage-v8": "^3.2.7",
         "dotenv": "^17.4.2",
         "drizzle-kit": "^0.31.10",
         "eslint": "^9.38.0",
         "eslint-config-next": "^15.0.0",
-        "eslint-plugin-unused-imports": "^4.4.1"
+        "eslint-plugin-unused-imports": "^4.4.1",
+        "tsx": "^4.23.1",
+        "vitest": "^3.2.7"
     }
 }

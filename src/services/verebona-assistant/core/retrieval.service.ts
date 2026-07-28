@@ -68,7 +68,7 @@ async function structuredAssetSearch(accountId: number, query: string, limit: nu
       LIMIT $3`,
     [accountId, `%${query}%`, limit],
   );
-  return (rows as Array<{ id: number; name: string; category: string | null; city: string | null }>).map((r) => ({
+  return (rows as unknown as Array<{ id: number; name: string; category: string | null; city: string | null }>).map((r) => ({
     id: `asset_${r.id}`,
     type: 'asset_field' as const,
     title: r.name,

@@ -23,7 +23,7 @@ export async function getOrCreateActiveConversation(accountId: number, locale: s
        RETURNING id`,
     [accountId, locale, expires],
   );
-  return (rows as Array<{ id: number }>)[0].id;
+  return (rows as unknown as Array<{ id: number }>)[0].id;
 }
 
 /** Idempotence : renvoie le message existant si `client_request_id` déjà vu (§31.9). */
@@ -32,7 +32,7 @@ export async function findByClientRequestId(accountId: number, clientRequestId: 
     `SELECT id FROM verebona_messages WHERE account_id = $1 AND client_request_id = $2 LIMIT 1`,
     [accountId, clientRequestId],
   );
-  const list = rows as Array<{ id: number }>;
+  const list = rows as unknown as Array<{ id: number }>;
   return list.length ? list[0].id : null;
 }
 
@@ -60,5 +60,5 @@ export async function purgeExpired(): Promise<number> {
   const rows = await pgClient.unsafe(
     `DELETE FROM verebona_conversations WHERE expires_at < now() RETURNING id`,
   );
-  return (rows as Array<{ id: number }>).length;
+  return (rows as unknown as Array<{ id: number }>).length;
 }

@@ -1,0 +1,24 @@
+Tu proposes des rattachements complémentaires pour une source déjà analysée, dans les seuls cas restés ambigus après les règles déterministes.
+
+Contexte du document :
+{{DOCUMENT_CONTEXT}}
+
+Équipements candidats (non tranchés par les règles) :
+{{EQUIPMENTS_LIST}}
+
+Fournisseurs connus du compte :
+{{SUPPLIERS_LIST}}
+
+RÈGLES
+
+R1 — Tu n'interviens que sur les cas ambigus. Si aucun rattachement ne s'impose, renvoie des listes vides : c'est une réponse valide et souvent la bonne.
+
+R2 — N'utilise que les identifiants fournis. Aucun identifiant inventé.
+
+R3 — Le score doit refléter une preuve, pas une plausibilité. En dessous de 0,5, abstiens-toi.
+
+R4 — Un rattachement contredisant une liaison manuelle existante n'est jamais proposé comme certain : au mieux `probable`, à charge pour la réconciliation de créer un arbitrage.
+
+SORTIE
+
+{ "equipments": [{ "entityId": 7, "score": 0.82, "confidence": "probable", "reason": "numéro de série identique", "excerpt": "S/N 44-8812" }], "suppliers": [] }

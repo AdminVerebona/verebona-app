@@ -1,0 +1,355 @@
+/**
+ * Pipeline commun d'analyse unifiée des sources — USAGE IA n°1.
+ *
+ * Implémente les quatorze étapes du CDC §4.1.4. Remplace
+ * `document-ai/unified-analysis-pipeline.ts`, `web-links/[id]/analyze` et le
+ * chaînage d'appels post-analyse constaté à l'audit.
+ *
+ * TROIS CORRECTIONS STRUCTURELLES PAR RAPPORT À L'EXISTANT
+ *
+ *  1. Plus aucun appel IA en cascade après l'analyse (défaut n°1). L'ancien
+ *     pipeline appelait `applyAiSuggestionsToAsset`, `linkDocumentToEquipments`
+ *     puis, une heure plus tard, `enrich-and-coherence` : jusqu'à cinq appels
+ *     modèles pour un seul dépôt. Ici, l'analyse ÉMET un événement ; la
+ *     réconciliation décide seule.
+ *
+ *  2. Les fichiers secondaires d'un groupe ne sont supprimés qu'APRÈS
+ *     persistance complète et succès des rattachements (§4.1.7). L'ancien code
+ *     les effaçait dès l'état `ANALYZED`, avant les rattachements.
+ *
+ *  3. Le résultat est identique pour un fichier et pour un lien web
+ *     (critère d'acceptation n°6).
+ */
+import { db } from '@/db';
+import { assetFiles, assets, rooms, equipments, documentLots, documentLotItems } from '@/db/schema';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { canConsumeAnalysis, consumeAnalysisCredits } from '@/services/commercial-model.service';
+
+import { getSourceAdapter } from './adapters';
+import { groupSources } from './steps/group-sources.step';
+import { extractSource } from './steps/extract-source.step';
+import { classifyDocument } from './steps/classify-document.step';
+import { identifyEntities } from './steps/identify-entities.step';
+import { buildAgendaCandidates } from './steps/build-agenda-candidates.step';
+import { persistEvidence } from './steps/persist-evidence.step';
+import { persistAnalysisResult } from './persistence/analysis-result.repository';
+import { broadcast } from './stream/broadcast';
+import { combineTraces, emptyTrace } from './trace';
+import { emitSourceAnalyzed } from './events';
+import type {
+  SourceInput, SourceType, SourceAnalysisResult, AnalysisContext, AnalysisWarning,
+} from './types';
+
+export interface RunSourceAnalysisInput {
+  sourceType: SourceType;
+  sourceIds: number[];
+  accountId: number;
+  userId: number;
+  linkedAssetId?: number | null;
+  /** Consommer un crédit d'analyse. false pour une réanalyse technique. */
+  billable?: boolean;
+}
+
+export interface RunSourceAnalysisOutput {
+  results: SourceAnalysisResult[];
+  analysedCount: number;
+  skippedReason?: 'quota' | 'already_running' | 'no_valid_source';
+}
+
+/**
+ * Point d'entrée unique de l'usage 1. Toute source, quelle qu'elle soit, passe
+ * par ici : il n'existe aucune autre voie d'analyse dans l'application.
+ */
+export async function runSourceAnalysis(
+  req: RunSourceAnalysisInput,
+): Promise<RunSourceAnalysisOutput> {
+  // ── Étape 1 : contrôle d'accès et appartenance ──────────────────────────
+  const ownedIds = await filterOwnedSources(req.sourceIds, req.accountId);
+  if (ownedIds.length === 0) {
+    return { results: [], analysedCount: 0, skippedReason: 'no_valid_source' };
+  }
+
+  // Déduplication : ne pas relancer une analyse déjà en cours (§5.7).
+  const pendingIds = await excludeInProgress(ownedIds);
+  if (pendingIds.length === 0) {
+    return { results: [], analysedCount: 0, skippedReason: 'already_running' };
+  }
+
+  // Quota : vérifié avant tout appel facturable.
+  if (req.billable !== false) {
+    const gate = await canConsumeAnalysis(req.accountId, pendingIds.length);
+    if (!gate.allowed) return { results: [], analysedCount: 0, skippedReason: 'quota' };
+  }
+
+  const lotId = await openLot(req.accountId, pendingIds);
+  await setState(pendingIds, 'ANALYZING');
+
+  // ── Étapes 2 et 3 : qualification et préparation par l'adaptateur ───────
+  const adapter = getSourceAdapter(req.sourceType);
+  let input: SourceInput;
+  try {
+    input = await adapter.prepare({
+      sourceIds: pendingIds,
+      accountId: req.accountId,
+      userId: req.userId,
+      linkedAssetId: req.linkedAssetId,
+    });
+  } catch (e) {
+    await failSources(pendingIds, (e as Error).message, lotId);
+    return { results: [], analysedCount: 0, skippedReason: 'no_valid_source' };
+  }
+
+  // ── Étape 4 : regroupement (interne, jamais un usage) ───────────────────
+  const { groups, trace: groupTrace } = await groupSources(input);
+
+  const ctx = await loadAnalysisContext(req.accountId, input.linkedAssetId ?? null);
+
+  // ── Étapes 5 à 12, par groupe ───────────────────────────────────────────
+  const results: SourceAnalysisResult[] = [];
+  let analysedCount = 0;
+
+  for (const groupIndices of groups) {
+    const leadSourceId = input.sourceIds[groupIndices[0]];
+    const groupSourceIds = groupIndices.map((i) => input.sourceIds[i]);
+
+    broadcast(leadSourceId, { type: 'progress', stage: 'extraction' });
+
+    try {
+      const result = await analyseGroup(input, groupIndices, ctx, groupTrace);
+
+      broadcast(leadSourceId, { type: 'progress', stage: 'persistance' });
+
+      // Étape 12 — persistance, idempotente.
+      const persisted = await persistAnalysisResult({
+        input, leadSourceId, groupSourceIds, lotId, result,
+      });
+
+      // Étape 9 (suite) — preuves, uniquement si un bien est déterminé.
+      const assetId = resolveAssetId(result, input);
+      if (assetId) {
+        await persistEvidence({
+          input,
+          leadSourceId,
+          assetId,
+          fields: result.extractedFields,
+          documentType: result.document.type?.value,
+          documentDate: result.document.date?.value,
+          trace: result.operationTrace,
+        });
+      }
+
+      // ⚠️ CORRECTION §4.1.7 — la suppression des fichiers secondaires
+      // n'intervient qu'ici, après persistance ET preuves réussies.
+      if (groupSourceIds.length > 1) {
+        await softDeleteSecondarySources(groupSourceIds.slice(1), lotId);
+      }
+
+      await markLotItems(lotId, groupSourceIds, 'completed', persisted.runId);
+      await setState(groupSourceIds, computeFinalState(result));
+
+      if (!persisted.deduplicated) analysedCount++;
+      results.push(result);
+
+      // ── Étapes 13 et 14 : déclenchement des moteurs aval ────────────────
+      // Émission d'événement, jamais d'import direct : le pipeline ne connaît
+      // ni la réconciliation ni l'agenda, ce qui permet le mode shadow (§10.2).
+      await emitSourceAnalyzed({
+        accountId: req.accountId,
+        userId: req.userId,
+        assetId,
+        leadSourceId,
+        result,
+      });
+    } catch (e) {
+      await failSources(groupSourceIds, (e as Error).message, lotId);
+    }
+  }
+
+  if (analysedCount > 0 && req.billable !== false) {
+    await consumeAnalysisCredits(req.accountId, analysedCount).catch(() => {});
+  }
+
+  await closeLot(lotId);
+  return { results, analysedCount };
+}
+
+/** Étapes 5 à 11 pour un groupe de sources constituant un même document. */
+async function analyseGroup(
+  input: SourceInput,
+  groupIndices: number[],
+  ctx: AnalysisContext,
+  groupTrace: SourceAnalysisResult['operationTrace'],
+): Promise<SourceAnalysisResult> {
+  const warnings: AnalysisWarning[] = [];
+
+  // Étapes 5 et 7 — extraction du contenu et des informations structurées.
+  const extracted = await extractSource(input, groupIndices, ctx);
+  warnings.push(...extracted.warnings);
+
+  const hints = {
+    title: extracted.document.title?.value,
+    supplierName: extracted.document.supplier?.value.name,
+    extractedText: extracted.document.transcription,
+  };
+
+  // Étapes 6 et 8 — parallélisables : aucune ne dépend de l'autre.
+  const [classified, entities] = await Promise.all([
+    classifyDocument(input, groupIndices, hints),
+    identifyEntities(input, groupIndices, ctx, hints),
+  ]);
+  warnings.push(...entities.warnings);
+
+  // Étape 11 — candidats agenda, déterministes.
+  const agendaCandidates = buildAgendaCandidates(extracted.extractedFields, hints.title);
+
+  return {
+    sourceGroup: {
+      sourceIds: groupIndices.map((i) => input.sourceIds[i]),
+      leadSourceId: input.sourceIds[groupIndices[0]],
+    },
+    document: { ...extracted.document, type: classified.type ?? extracted.document.type },
+    assetCandidates: entities.assetCandidates,
+    roomCandidates: entities.roomCandidates,
+    // Étape 10 — les équipements sortent de l'analyse (§4.1.7), plus d'un
+    // service autonome appelé après coup.
+    equipmentCandidates: entities.equipmentCandidates,
+    extractedFields: extracted.extractedFields,
+    agendaCandidates,
+    warnings,
+    operationTrace: combineTraces(
+      groupTrace, extracted.trace, classified.trace, entities.trace,
+    ),
+  };
+}
+
+// ── Helpers d'état et de persistance ───────────────────────────────────────
+
+function resolveAssetId(result: SourceAnalysisResult, input: SourceInput): number | null {
+  if (input.linkedAssetId) return input.linkedAssetId;
+  const verified = result.assetCandidates.filter((c) => c.verified && c.entityId !== null);
+  // Un seul candidat certain : rattachement possible. Sinon, la réconciliation
+  // arbitrera — l'analyse ne tranche pas un rattachement ambigu.
+  if (verified.length === 1 && verified[0].confidence === 'certain') return verified[0].entityId;
+  return null;
+}
+
+function computeFinalState(result: SourceAnalysisResult): string {
+  if (result.warnings.some((w) => w.code === 'NO_EXPLOITABLE_CONTENT')) return 'VALIDATION_REQUIRED';
+  if (result.warnings.some((w) => w.code === 'AMBIGUOUS_ASSET' || w.code === 'MULTI_ASSET_DOCUMENT')) {
+    return 'VALIDATION_REQUIRED';
+  }
+  return 'ANALYZED';
+}
+
+async function filterOwnedSources(ids: number[], accountId: number): Promise<number[]> {
+  if (ids.length === 0) return [];
+  const rows = await db.select({ id: assetFiles.id }).from(assetFiles).where(and(
+    inArray(assetFiles.id, ids),
+    eq(assetFiles.accountId, accountId),
+    isNull(assetFiles.deletedAt),
+  ));
+  return rows.map((r) => r.id);
+}
+
+async function excludeInProgress(ids: number[]): Promise<number[]> {
+  const rows = await db.select({ id: assetFiles.id, state: assetFiles.analysisState })
+    .from(assetFiles).where(inArray(assetFiles.id, ids));
+  return rows.filter((r) => r.state !== 'ANALYZING').map((r) => r.id);
+}
+
+async function setState(ids: number[], state: string): Promise<void> {
+  if (ids.length === 0) return;
+  await db.update(assetFiles)
+    .set({ analysisState: state, updatedAt: new Date(), analysisRetryCount: 0 })
+    .where(inArray(assetFiles.id, ids));
+  for (const id of ids) broadcast(id, { type: 'state_update', analysisState: state });
+}
+
+async function failSources(ids: number[], reason: string, lotId: number | null): Promise<void> {
+  await db.update(assetFiles)
+    .set({
+      analysisState: 'ANALYSIS_FAILED',
+      analysisFailReason: reason,
+      analysisRetryCount: sql`${assetFiles.analysisRetryCount} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(inArray(assetFiles.id, ids));
+  for (const id of ids) broadcast(id, { type: 'error', analysisState: 'ANALYSIS_FAILED', message: reason });
+  await markLotItems(lotId, ids, 'failed');
+}
+
+async function softDeleteSecondarySources(ids: number[], lotId: number | null): Promise<void> {
+  await db.update(assetFiles).set({ deletedAt: new Date() }).where(inArray(assetFiles.id, ids));
+  if (lotId) {
+    await db.update(documentLotItems).set({ commitStatus: 'committed' })
+      .where(and(eq(documentLotItems.lotId, lotId), inArray(documentLotItems.assetFileId, ids)));
+  }
+}
+
+async function openLot(accountId: number, ids: number[]): Promise<number> {
+  const [lot] = await db.insert(documentLots)
+    .values({ accountId, status: 'analyzing' })
+    .returning({ id: documentLots.id });
+
+  await db.insert(documentLotItems).values(
+    ids.map((id, i) => ({ lotId: lot.id, assetFileId: id, position: i, analysisStatus: 'analyzing' as const })),
+  );
+  return lot.id;
+}
+
+async function markLotItems(
+  lotId: number | null, ids: number[], status: 'completed' | 'failed', runId?: number,
+): Promise<void> {
+  if (!lotId || ids.length === 0) return;
+  await db.update(documentLotItems)
+    .set({ analysisStatus: status, ...(runId ? { currentAnalysisRunId: runId } : {}) })
+    .where(and(eq(documentLotItems.lotId, lotId), inArray(documentLotItems.assetFileId, ids)));
+}
+
+async function closeLot(lotId: number | null): Promise<void> {
+  if (!lotId) return;
+  const items = await db.select({ status: documentLotItems.analysisStatus })
+    .from(documentLotItems).where(eq(documentLotItems.lotId, lotId));
+  const failed = items.filter((i) => i.status === 'failed').length;
+  await db.update(documentLots)
+    .set({ status: failed > 0 ? 'partially_failed' : 'committed', committedAt: new Date() })
+    .where(eq(documentLots.id, lotId));
+}
+
+/** Contexte du compte — borné, réutilisé par toutes les étapes (§5.6). */
+async function loadAnalysisContext(
+  accountId: number, linkedAssetId: number | null,
+): Promise<AnalysisContext> {
+  const assetRows = await db
+    .select({ id: assets.id, name: assets.name, category: assets.category, subtype: assets.subtype })
+    .from(assets)
+    .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt)))
+    .limit(200);
+
+  const assetIds = assetRows.map((a) => a.id);
+
+  const [roomRows, equipRows, titleRows] = await Promise.all([
+    assetIds.length
+      ? db.select({ id: rooms.id, name: rooms.name, assetId: rooms.assetId })
+          .from(rooms).where(inArray(rooms.assetId, assetIds)).limit(300)
+      : Promise.resolve([]),
+    assetIds.length
+      ? db.select({ id: equipments.id, name: equipments.name, type: equipments.type, assetId: equipments.assetId })
+          .from(equipments).where(inArray(equipments.assetId, assetIds)).limit(300)
+      : Promise.resolve([]),
+    db.select({ title: assetFiles.retainedTitle })
+      .from(assetFiles)
+      .where(and(eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)))
+      .limit(100),
+  ]);
+
+  return {
+    accountId,
+    userId: 0,
+    assets: assetRows,
+    rooms: roomRows as AnalysisContext['rooms'],
+    equipments: equipRows as AnalysisContext['equipments'],
+    existingTitles: titleRows.map((t) => t.title).filter((t): t is string => Boolean(t)),
+    linkedAssetId,
+  };
+}

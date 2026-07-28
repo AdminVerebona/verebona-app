@@ -1,0 +1,77 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Intégration continue — VERSION FINALE, phase 7
+# CDC §12, critères d'acceptation n°22 et 23.
+#
+# La variable AI_MIGRATION_PHASE vaut 7 : tous les contrôles anti-réintroduction
+# sont actifs. C'est cette configuration qui doit être en place au moment de la
+# bascule réglementaire, et le rester ensuite.
+# ──────────────────────────────────────────────────────────────────────────────
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  AI_MIGRATION_PHASE: "7"
+
+jobs:
+  quality:
+    name: Qualité et conformité IA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+
+      - name: Installation
+        run: npm ci
+
+      - name: Typage
+        run: npm run typecheck
+
+      - name: Lint — interdiction d'accès direct au SDK (critère n°4)
+        run: npm run lint
+
+      - name: Tests unitaires et de non-régression (critère n°22)
+        run: npm run test:run
+
+      - name: Inventaire d'exécution — exactement cinq usages (critère n°1)
+        run: npx tsx scripts/ai-inventory.ts
+
+      - name: Anti-réintroduction des moteurs historiques (critère n°23)
+        run: node scripts/check-legacy-ai.mjs --phase=${{ env.AI_MIGRATION_PHASE }}
+
+      - name: Un seul module accède au SDK fournisseur (critère n°4)
+        run: |
+          COUNT=$(grep -rl "GoogleGenerativeAI" src/ | grep -v "gateway/providers/" | wc -l)
+          if [ "$COUNT" -ne 0 ]; then
+            echo "✖ $COUNT fichier(s) accèdent directement au SDK hors adaptateur :"
+            grep -rl "GoogleGenerativeAI" src/ | grep -v "gateway/providers/"
+            exit 1
+          fi
+          echo "✓ Accès au SDK confiné à l'adaptateur"
+
+  conformity-report:
+    name: Rapport de conformité
+    if: github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - run: npm ci
+      - name: Génération de l'inventaire
+        run: npx tsx scripts/ai-inventory.ts --json > ai-inventory.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inventaire-usages-ia
+          # Conservation longue : c'est la preuve opposable du §8.1.
+          path: ai-inventory.json
+          retention-days: 365

@@ -26,7 +26,7 @@ export async function searchHelp(query: string, planType: string, locale = 'fr-F
       LIMIT 3`,
     [locale, `%${query}%`],
   );
-  return (rows as Array<{ slug: string; title: string; short_answer: string; detailed_answer: string | null }>).map((r) => ({
+  return (rows as unknown as Array<{ slug: string; title: string; short_answer: string; detailed_answer: string | null }>).map((r) => ({
     slug: r.slug, title: r.title, shortAnswer: r.short_answer, detailedAnswer: r.detailed_answer,
   }));
 }

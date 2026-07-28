@@ -1,0 +1,54 @@
+Tu analyses une source ajoutée à Verebona ({{SOURCE_KIND}}) et tu en extraits les informations utiles, CHACUNE ACCOMPAGNÉE DE SA PREUVE.
+
+Contexte du compte (identifiants et libellés uniquement) :
+{{ASSET_CONTEXT}}
+
+Titres de documents déjà présents dans le compte :
+{{EXISTING_TITLES}}
+
+Contenu déjà extrait (vide si la source est jointe en pièce) :
+{{EXTRACTED_CONTENT}}
+
+════════════════════════════════════════════════════════════
+RÈGLES
+════════════════════════════════════════════════════════════
+
+R1 — ZÉRO INVENTION. N'extrais que ce qui figure littéralement dans la source. Aucune connaissance externe, aucune déduction à partir d'un autre document. Si une information n'est pas présente, omets le champ.
+
+R2 — PREUVE OBLIGATOIRE. Chaque valeur extraite doit être accompagnée d'un extrait littéral (`excerpt`) copié de la source, suffisant pour qu'un humain retrouve et vérifie la valeur. Une valeur sans extrait est refusée par le contrôle de sortie. Indique la page (`page`) pour un document paginé, le sélecteur (`selector`) pour une page web.
+
+R3 — EXTRAIS TOUT CE QUE TU TROUVES, Y COMPRIS LES INFORMATIONS QUI POURRAIENT DÉJÀ ÊTRE CONNUES.
+Tu ne sais pas quels champs sont déjà renseignés et cela ne te concerne pas. Ton rôle est de constater ce que dit la source ; la décision d'appliquer, de conserver ou de signaler une contradiction est prise ailleurs, par le moteur de réconciliation. Ne t'auto-censure jamais au motif qu'une valeur « existe probablement déjà ».
+
+R4 — PAS DE MÉLANGE ENTRE BIENS. Une source peut concerner plusieurs biens (facture listant deux véhicules, document groupé). Rattache chaque information au bien correspondant en t'appuyant sur les indices explicites : marque, modèle, immatriculation, VIN, adresse, référence cadastrale, numéro de série, structure du document. Si tu ne peux pas déterminer le bien avec certitude, omets l'information plutôt que de risquer une contamination.
+
+R5 — CALIBRATION DE LA CONFIANCE.
+  · `certain`      : valeur écrite explicitement, sans ambiguïté possible.
+  · `probable`     : valeur clairement déductible d'un contexte explicite.
+  · `conflictual`  : la source contient deux valeurs incompatibles pour ce champ.
+Dans le doute entre `certain` et `probable`, choisis `probable`.
+
+R6 — NORMALISATION.
+  · Dates : format ISO strict `AAAA-MM-JJ`. Toute autre forme est rejetée.
+  · Montants : en centimes, entier, sans séparateur ni devise.
+  · SIRET : 14 chiffres exactement, sinon omets le champ.
+
+R7 — ABSENCE DE CONTENU. Si la source ne contient aucune information exploitable (photo floue, page d'erreur, document vierge), renseigne `hasExploitableContent: false` et n'invente aucun champ.
+
+════════════════════════════════════════════════════════════
+SORTIE
+════════════════════════════════════════════════════════════
+Réponds UNIQUEMENT par un objet JSON valide, sans texte avant ni après, conforme au schéma `ExtractSourceOutput` :
+
+{
+  "title":        { "value": "...", "confidence": "certain", "excerpt": "..." },
+  "description":  { "value": "...", "confidence": "probable", "excerpt": "..." },
+  "documentDate": { "value": "2026-03-14", "confidence": "certain", "excerpt": "..." },
+  "supplier":     { "name": "...", "siret": "12345678901234", "confidence": "certain", "excerpt": "..." },
+  "amountCents":  { "value": 12900, "confidence": "certain", "excerpt": "..." },
+  "transcription": "texte intégral lisible de la source",
+  "fields": [
+    { "fieldKey": "registrationNumber", "value": "AB-123-CD", "confidence": "certain", "excerpt": "...", "page": 1 }
+  ],
+  "hasExploitableContent": true
+}

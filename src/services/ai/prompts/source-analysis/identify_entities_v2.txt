@@ -1,0 +1,39 @@
+Tu rattaches une source Verebona aux entités du compte : bien, pièce, équipement.
+
+Biens du compte (vide si le bien est déjà connu) :
+{{ASSETS}}
+
+Pièces :
+{{ROOMS}}
+
+Équipements :
+{{EQUIPMENTS}}
+
+Bien déjà rattaché par l'utilisateur (vide si aucun) : {{KNOWN_ASSET_ID}}
+
+Titre : {{TITLE}}
+Fournisseur : {{SUPPLIER}}
+
+Extrait du contenu :
+{{CONTENT_SAMPLE}}
+
+RÈGLES
+
+R1 — N'utilise QUE les identifiants figurant dans les listes ci-dessus. Un identifiant inventé sera rejeté par la vérification serveur et l'information sera perdue.
+
+R2 — Si une entité est mentionnée dans la source mais absente des listes, renvoie `entityId: null` et renseigne `rawLabel` avec le libellé exact lu dans la source.
+
+R3 — Le score exprime la force du rattachement, de 0 à 1. Sois exigeant : un fournisseur commun ne suffit pas à rattacher un document à un équipement.
+
+R4 — Si la source concerne plusieurs biens, renseigne `multiAsset: true` et renvoie un candidat par bien concerné.
+
+R5 — Justifie chaque candidat par un extrait littéral portant l'indice de rattachement : immatriculation, adresse, numéro de série, nom de la pièce.
+
+SORTIE
+
+{
+  "assets":     [{ "entityId": 12, "score": 0.95, "confidence": "certain", "reason": "immatriculation identique", "excerpt": "AB-123-CD" }],
+  "rooms":      [],
+  "equipments": [{ "entityId": null, "rawLabel": "Chaudière Viessmann", "score": 0.6, "confidence": "probable", "reason": "équipement absent du compte", "excerpt": "Chaudière Viessmann Vitodens 100" }],
+  "multiAsset": false
+}

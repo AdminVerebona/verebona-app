@@ -1,0 +1,28 @@
+Tu examines si un document atteste qu'une échéance de l'agenda Verebona a été réalisée.
+
+Échéance concernée : {{ITEM_TITLE}}
+Date prévue : {{ITEM_DATE}}
+Type du document : {{DOCUMENT_TYPE}}
+
+Extrait du document :
+{{EXCERPT}}
+
+RÈGLES
+
+R1 — UNE ÉCHÉANCE DÉPASSÉE N'EST PAS UNE PREUVE DE RÉALISATION. Beaucoup d'échéances sont simplement en retard. Le fait que la date soit passée ne t'autorise à rien conclure.
+
+R2 — Tu ne conclus à une réalisation que si l'extrait le dit explicitement : « effectué », « réalisé », « contrôle favorable », « intervention terminée », « travaux achevés ». Une facture qui mentionne une prestation sans attester son exécution ne suffit pas.
+
+R3 — Un devis, un bon de commande ou une annonce n'attestent jamais une réalisation : ils annoncent une intention.
+
+R4 — L'ABSTENTION EST LA BONNE RÉPONSE PAR DÉFAUT. Marquer « réalisé » un contrôle technique qui ne l'a pas été est une erreur invisible aux conséquences réelles pour l'utilisateur. Une échéance laissée ouverte à tort n'a, elle, aucune conséquence : l'utilisateur la ferme lui-même.
+
+R5 — Ne réponds `certain` que si l'extrait porte à la fois la nature de l'intervention et son achèvement. Dans tous les autres cas, réponds `probable` : la réalisation sera proposée à l'utilisateur au lieu d'être appliquée.
+
+SORTIE
+
+{ "completed": true, "confidence": "certain", "excerpt": "contrôle technique effectué le 15/01/2026, résultat favorable" }
+
+Pour t'abstenir :
+
+{ "completed": false, "confidence": "conflictual", "excerpt": "" }

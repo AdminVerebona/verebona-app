@@ -1,36 +1,47 @@
 /**
- * Instrumentation serveur Next.js.
+ * Amorçage applicatif — convention Next.js 15.
  *
- * Le scheduler de reprise d'analyse est désactivé par défaut.
- * Pour l'activer explicitement :
- * ENABLE_ANALYSIS_RECOVERY_SCHEDULER=true
+ * Point unique où le domaine IA est câblé. Trois responsabilités :
+ *   1. contrôles de cohérence qui doivent faire échouer le démarrage ;
+ *   2. synchronisation du référentiel vers la base ;
+ *   3. abonnement des moteurs aval aux événements d'analyse.
+ *
+ * L'ordre compte : les contrôles avant le câblage, pour qu'une configuration
+ * incohérente n'ait jamais l'occasion de traiter un document.
  */
-export async function register() {
-  if (process.env.NEXT_RUNTIME !== "nodejs") {
-    return;
-  }
+export async function register(): Promise<void> {
+  if (process.env.NEXT_RUNTIME !== 'nodejs') return;
 
-  // Verebona Assistant — contrôle de configuration au démarrage (CDC §15.14).
-  // Échoue vite en cas de config incohérente (web grounding activé, > 2 appels IA,
-  // store=true, alias "latest"…). N'empêche pas le boot ici ; en prod stricte, on
-  // peut relancer l'erreur pour bloquer un démarrage mal configuré.
-  try {
-    const { assertAssistantStartup } = await import("@/services/verebona-assistant");
-    assertAssistantStartup();
-  } catch (e) {
-    console.error(
-      "[verebona-assistant] configuration refusée au démarrage:",
-      (e as Error).message,
-    );
-  }
+  const { assertAiRegistryStartup, syncAiRegistry } = await import('@/services/ai/registry');
+  const { assertPricingReady } = await import('@/services/ai/gateway/cost-catalog');
 
-  if (process.env.ENABLE_ANALYSIS_RECOVERY_SCHEDULER !== "true") {
-    return;
-  }
+  // 1. Référentiel : un usage inconnu ou une opération mal rattachée doit
+  //    empêcher le démarrage, pas produire des mesures fausses en silence.
+  assertAiRegistryStartup();
 
-  const { startAnalysisRecoveryScheduler } = await import(
-    "@/services/document-ai/analysis-recovery-scheduler"
-  );
+  // 2. Tarifs : en production, un modèle sans tarif bloque le démarrage.
+  //    Corrige le défaut n°10 — mieux vaut ne pas démarrer que facturer faux.
+  await assertPricingReady();
 
-  startAnalysisRecoveryScheduler();
+  // 3. Projection du référentiel en base, pour l'administration et les
+  //    jointures SQL avec les tables de suivi.
+  await syncAiRegistry();
+
+  // 4. Câblage des usages. L'analyse (usage 1) émet des événements ; la
+  //    réconciliation (usage 2) et l'agenda (usage 4) s'y abonnent. Aucun
+  //    import direct entre eux : c'est ce qui rend le mode observation possible.
+  const { registerReconciliationHandlers } = await import('@/services/ai/reconciliation');
+  const { registerAgendaHandlers } = await import('@/services/ai/agenda');
+  const { initAssistant } = await import('@/services/ai/assistant');
+
+  registerReconciliationHandlers();
+  initAssistant();
+
+  // L'agenda reçoit ses accès base par injection : le module reste testable
+  // sans démarrer l'application.
+  const { loadExistingAgendaItems, persistAgendaDecisions } =
+    await import('@/services/agenda/agenda-persistence');
+  registerAgendaHandlers(loadExistingAgendaItems, persistAgendaDecisions);
+
+  console.info('[ai] domaine IA câblé — 5 usages actifs');
 }

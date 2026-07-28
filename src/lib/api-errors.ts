@@ -55,7 +55,23 @@ export type ErrorCode =
     | 'EVENT_NOT_FOUND'
     | 'ASSET_NOT_FOUND'
     | 'NO_UPDATES'
-    | 'PLAN_UPGRADE_REQUIRED';
+    | 'PLAN_UPGRADE_REQUIRED'
+
+    // Refus de droits — miroir de `DenialReason` (entitlements.service.ts).
+    // Ces codes sont renvoyés tels quels au client : chacun appelle une action
+    // différente côté interface (proposer une offre, expliquer un quota,
+    // signaler une fin d'essai). Les regrouper sous un code générique ferait
+    // perdre cette distinction, que le CDC tarification §8.3 exploite.
+    //
+    // `PREMIUM_REQUIRED` figurait déjà dans le contrat de fait : trois routes
+    // l'émettent (api/account/calendar-token et sa variante toggle), sans
+    // passer par apiError, donc sans contrôle de type.
+    | 'ASSET_QUOTA_REACHED'
+    | 'DOCUMENT_QUOTA_REACHED'
+    | 'USER_QUOTA_REACHED'
+    | 'PREMIUM_REQUIRED'
+    | 'TRIAL_EXPIRED'
+    | 'SUBSCRIPTION_REQUIRED';
 
 export interface ApiErrorResponse {
   error: string;

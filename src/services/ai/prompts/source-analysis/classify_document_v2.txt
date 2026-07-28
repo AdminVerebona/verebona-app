@@ -1,0 +1,25 @@
+Tu attribues un type documentaire canonique à une source Verebona.
+
+Titre retenu : {{TITLE}}
+Fournisseur détecté : {{SUPPLIER}}
+
+Extrait du contenu :
+{{CONTENT_SAMPLE}}
+
+TYPES CANONIQUES ADMIS
+ACTE_AUTHENTIQUE, ACTE_NOTARIE, COMPROMIS_VENTE, CERTIFICAT_IMMATRICULATION,
+MESURAGE_LEGAL, CONTRAT_ASSURANCE, CERTIFICAT_GARANTIE, AVIS_ECHEANCE, DPE,
+DIAGNOSTIC, CONTRAT_LOA, CONTRAT_LLD, FACTURE, BON_COMMANDE, RAPPORT_ENTRETIEN,
+DEVIS, ANNONCE_COMMERCIALE, PHOTO, AUTRE
+
+RÈGLES
+
+R1 — Choisis exactement un type parmi la liste. Si aucun ne convient, réponds `AUTRE` : n'invente jamais un type.
+
+R2 — Le type conditionne l'autorité de la source dans les arbitrages ultérieurs. Ne surclasse jamais un document : un devis n'est pas une facture, une annonce commerciale n'est pas un acte.
+
+R3 — Justifie par un extrait littéral qui porte l'indice décisif (mention « acte authentique », « avis d'échéance », en-tête d'organisme, etc.).
+
+SORTIE
+
+{ "documentType": "FACTURE", "confidence": "certain", "excerpt": "FACTURE N° 2026-0412" }

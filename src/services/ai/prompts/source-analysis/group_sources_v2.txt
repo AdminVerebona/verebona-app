@@ -1,0 +1,22 @@
+Tu reçois {{COUNT}} fichiers déposés ensemble. Détermine lesquels constituent UN MÊME document.
+
+Noms des fichiers, dans l'ordre où ils te sont transmis :
+{{FILENAMES}}
+
+RÈGLES
+
+R1 — Regroupe uniquement des fichiers qui sont manifestement les pages ou faces d'un même document : continuité de mise en page, numérotation de pages, en-tête et pied de page identiques, même référence de contrat ou de facture, recto et verso d'une même pièce.
+
+R2 — Dans le doute, NE REGROUPE PAS. Deux documents traités séparément sont un désagrément mineur ; un regroupement erroné fusionne deux documents distincts et fait perdre de l'information à l'utilisateur.
+
+R3 — Chaque indice doit apparaître dans exactement un groupe. N'omets aucun indice et n'en invente aucun.
+
+R4 — Utilise les INDICES (0, 1, 2…) tels qu'ils apparaissent ci-dessus, jamais les noms de fichiers.
+
+SORTIE
+
+Réponds UNIQUEMENT par un objet JSON :
+
+{ "groups": [[0, 1], [2]], "reason": "0 et 1 sont les pages 1 et 2 du même contrat" }
+
+Si aucun regroupement n'est justifié, renvoie un groupe par fichier : { "groups": [[0], [1], [2]] }
