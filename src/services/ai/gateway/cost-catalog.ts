@@ -18,6 +18,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { listLlmOperations } from '../registry/operations';
+import { isUseCaseRunning, listRunningUseCases } from '../flags/use-case-flags';
 import { getCachedPrice, getCacheState, loadPricingCache } from './pricing/pricing.repository';
 
 const warnedModels = new Set<string>();
@@ -57,10 +58,22 @@ export function calcCostMicros(
   return Math.round(inputTokens * price.inputMicros + outputTokens * price.outputMicros);
 }
 
+export interface PricingScope {
+  /**
+   * Ne considérer que les usages dont le drapeau vaut `enabled` ou `shadow`.
+   *
+   * Par défaut `false` : l'administration affiche l'état complet du référentiel,
+   * y compris les usages non encore basculés, pour que le tarif puisse être
+   * saisi *avant* la bascule et non pendant.
+   */
+  runningOnly?: boolean;
+}
+
 /** Modèles du référentiel dépourvus de tarif dans le cache. */
-export function listModelsWithoutPricing(): string[] {
+export function listModelsWithoutPricing({ runningOnly = false }: PricingScope = {}): string[] {
   const missing = new Set<string>();
   for (const op of listLlmOperations()) {
+    if (runningOnly && !isUseCaseRunning(op.useCaseCode)) continue;
     for (const model of [op.primaryModel, ...op.fallbackModels]) {
       if (!getCachedPrice(op.provider, model)) missing.add(`${op.provider}/${model}`);
     }
@@ -69,9 +82,10 @@ export function listModelsWithoutPricing(): string[] {
 }
 
 /** Modèles dont le tarif a été saisi manuellement sans confirmation. */
-export function listUnverifiedPricing(): string[] {
+export function listUnverifiedPricing({ runningOnly = false }: PricingScope = {}): string[] {
   const unverified = new Set<string>();
   for (const op of listLlmOperations()) {
+    if (runningOnly && !isUseCaseRunning(op.useCaseCode)) continue;
     for (const model of [op.primaryModel, ...op.fallbackModels]) {
       const price = getCachedPrice(op.provider, model);
       if (price && !price.verified) unverified.add(`${op.provider}/${model}`);
@@ -80,27 +94,80 @@ export function listUnverifiedPricing(): string[] {
   return [...unverified];
 }
 
+export interface PricingReadiness {
+  /** Usages dont le nouveau moteur s'exécute (`enabled` ou `shadow`). */
+  runningUseCases: string[];
+  /** Tarifs manquants sur le périmètre réellement actif — seuls bloquants. */
+  missingForRunning: string[];
+  /** Tarifs manquants sur l'ensemble du référentiel — informatif. */
+  missingOverall: string[];
+  unverified: string[];
+  cacheDegraded: boolean;
+  /** Le démarrage doit-il être refusé en production ? */
+  blocking: boolean;
+}
+
+/**
+ * État du catalogue tarifaire, sans effet de bord. Destiné à l'administration
+ * (`/api/admin/ai/inventory`) et au contrôle de démarrage ci-dessous.
+ */
+export function getPricingReadiness(): PricingReadiness {
+  const runningUseCases = listRunningUseCases();
+  const missingForRunning = listModelsWithoutPricing({ runningOnly: true });
+  return {
+    runningUseCases,
+    missingForRunning,
+    missingOverall: listModelsWithoutPricing(),
+    unverified: listUnverifiedPricing(),
+    cacheDegraded: getCacheState().degraded,
+    blocking: runningUseCases.length > 0 && missingForRunning.length > 0,
+  };
+}
+
 /**
  * Contrôle de démarrage — CDC Assistant §15.14.
  *
- * En production, un tarif manquant empêche le démarrage. Hors production, un
- * avertissement suffit : les tests et le développement local n'ont pas à
- * dépendre de la disponibilité de l'API de facturation.
+ * ⚠️ CORRECTION D'UN DÉFAUT BLOQUANT. La première version refusait le démarrage
+ * en production dès qu'un modèle du référentiel n'avait pas de tarif — y compris
+ * lorsque les cinq drapeaux valaient `legacy`, c'est-à-dire lorsqu'AUCUN appel
+ * ne passait par la nouvelle gateway. Le code livré était donc indéployable :
+ * il exigeait, pour démarrer, des tarifs portant sur des appels qui n'avaient
+ * pas lieu.
+ *
+ * La garantie du §15.14 est conservée, mais rapportée à son périmètre réel :
+ * un tarif manquant ne bloque que si l'usage qui l'emploie s'exécute
+ * effectivement (`enabled` ou `shadow`). Le mode observation est inclus
+ * délibérément : il consomme des appels modèles, donc de l'argent.
+ *
+ * Hors production, jamais de blocage : les tests et le développement local n'ont
+ * pas à dépendre de la disponibilité de l'API de facturation.
  */
 export async function assertPricingReady(): Promise<void> {
-  if (getCacheState().size === 0) await loadPricingCache();
+  // `loadedAt` et non `size` : un catalogue vide mais chargé est un état connu,
+  // pas une raison de réinterroger la base à chaque appel.
+  if (getCacheState().loadedAt === null) await loadPricingCache();
 
-  const missing = listModelsWithoutPricing();
-  const unverified = listUnverifiedPricing();
+  const state = getPricingReadiness();
 
-  if (missing.length > 0) {
-    const message = `[ai-cost] Modèles sans tarif : ${missing.join(', ')}.`;
+  if (state.runningUseCases.length === 0) {
+    console.info(
+      '[ai-cost] Aucun usage IA basculé — contrôle tarifaire sans objet. ' +
+      `${state.missingOverall.length} modèle(s) du référentiel restent sans tarif, ` +
+      'à renseigner avant la première bascule.',
+    );
+    return;
+  }
+
+  if (state.missingForRunning.length > 0) {
+    const message =
+      `[ai-cost] Modèles sans tarif sur un usage actif (${state.runningUseCases.join(', ')}) : ` +
+      `${state.missingForRunning.join(', ')}.`;
     if (process.env.NODE_ENV === 'production') throw new Error(message);
     console.warn(`${message} — coûts non calculables hors production.`);
   }
 
-  if (unverified.length > 0) {
-    console.warn(`[ai-cost] ⚠️ Tarifs saisis manuellement non confirmés : ${unverified.join(', ')}`);
+  if (state.unverified.length > 0) {
+    console.warn(`[ai-cost] ⚠️ Tarifs saisis manuellement non confirmés : ${state.unverified.join(', ')}`);
   }
 }
 

@@ -21,9 +21,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Fire-and-forget
-    import('@/services/document-ai/unified-analysis-pipeline').then(({ runUnifiedAnalysisPipeline }) => {
-      runUnifiedAnalysisPipeline(fileIds, accountId).catch((err: Error) => {
-        console.error('[analyze-batch] pipeline failed:', err);
+    import('@/services/ai/source-analysis/entrypoint').then(({ analyzeFileSources }) => {
+      void analyzeFileSources(fileIds, accountId, {
+        userId: session.userId,
+        origin: 'documents/analyze-batch',
       });
     }).catch(() => {});
 

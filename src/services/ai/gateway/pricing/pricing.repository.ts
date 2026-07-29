@@ -16,21 +16,59 @@ export interface CachedPrice extends ModelPrice {
 
 const cache = new Map<string, CachedPrice>();
 let loadedAt: Date | null = null;
+let degraded = false;
+let lastError: string | null = null;
+
+/** PostgreSQL `undefined_table` — la migration 0111 n'est pas encore appliquée. */
+const UNDEFINED_TABLE = '42P01';
 
 function key(provider: string, model: string): string {
   return `${provider}:${model}`;
 }
 
-/** Charge le tarif le plus récent de chaque modèle. À appeler au démarrage. */
+/**
+ * Charge le tarif le plus récent de chaque modèle. À appeler au démarrage.
+ *
+ * ⚠️ NE LÈVE JAMAIS. Le premier déploiement lit forcément cette table avant
+ * qu'elle n'existe : `ensureMigrations()` et le chargement du cache sont dans le
+ * même processus de démarrage, et une exception ici empêchait purement et
+ * simplement l'application de démarrer.
+ *
+ * L'échec est donc absorbé, mais jamais silencieux : le cache passe en état
+ * `degraded`, visible en administration et exploité par `assertPricingReady()`.
+ * Un coût non mesurable reste préférable à un coût inventé — et très préférable
+ * à une application qui ne démarre pas.
+ *
+ * @returns nombre de tarifs chargés (0 si la table est absente ou illisible).
+ */
 export async function loadPricingCache(): Promise<number> {
-  const rows = await pgClient.unsafe(
-    `SELECT DISTINCT ON (provider, model)
-            provider, model, input_micros, output_micros, currency,
-            source, source_reference, verified, fetched_at
-       FROM ai_model_pricing
-      WHERE effective_from <= NOW()
-      ORDER BY provider, model, effective_from DESC`,
-  );
+  let rows: unknown;
+  try {
+    rows = await pgClient.unsafe(
+      `SELECT DISTINCT ON (provider, model)
+              provider, model, input_micros, output_micros, currency,
+              source, source_reference, verified, fetched_at
+         FROM ai_model_pricing
+        WHERE effective_from <= NOW()
+        ORDER BY provider, model, effective_from DESC`,
+    );
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    cache.clear();
+    loadedAt = new Date();
+    degraded = true;
+    lastError = err.message ?? String(e);
+
+    if (err.code === UNDEFINED_TABLE) {
+      console.warn(
+        '[ai-cost] Table `ai_model_pricing` absente — catalogue tarifaire vide. ' +
+        'Appliquez la migration 0111, puis /api/cron/ai/refresh-model-pricing.',
+      );
+    } else {
+      console.error(`[ai-cost] Catalogue tarifaire illisible : ${lastError}`);
+    }
+    return 0;
+  }
 
   cache.clear();
   for (const r of rows as Array<Record<string, unknown>>) {
@@ -49,6 +87,8 @@ export async function loadPricingCache(): Promise<number> {
   }
 
   loadedAt = new Date();
+  degraded = false;
+  lastError = null;
   return cache.size;
 }
 
@@ -61,19 +101,31 @@ export async function loadPricingCache(): Promise<number> {
 export function primePricingCache(prices: CachedPrice[]): void {
   for (const p of prices) cache.set(key(p.provider, p.model), p);
   loadedAt = new Date();
+  degraded = false;
+  lastError = null;
 }
 
 export function clearPricingCache(): void {
   cache.clear();
   loadedAt = null;
+  degraded = false;
+  lastError = null;
 }
 
 export function getCachedPrice(provider: string, model: string): CachedPrice | null {
   return cache.get(key(provider, model)) ?? null;
 }
 
-export function getCacheState(): { size: number; loadedAt: Date | null } {
-  return { size: cache.size, loadedAt };
+export interface PricingCacheState {
+  size: number;
+  loadedAt: Date | null;
+  /** Le dernier chargement a échoué : les coûts ne sont pas mesurables. */
+  degraded: boolean;
+  lastError: string | null;
+}
+
+export function getCacheState(): PricingCacheState {
+  return { size: cache.size, loadedAt, degraded, lastError };
 }
 
 /**

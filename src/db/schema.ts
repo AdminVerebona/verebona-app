@@ -2205,3 +2205,10 @@ export const newsConsents = pgTable('news_consents', {
 }));
 
 export * from './verebona-schema';
+// Tables du socle IA (CDC §5.1, §5.4, §5.7) — migrations 0101 à 0111.
+//
+// ⚠️ Cette ligne manquait. Les tables existaient en base par les migrations,
+// mais `drizzle-kit` ne les voyait pas : ni `db:studio`, ni `db:generate`, ni
+// la vérification de dérive du schéma. `field-evidence.service.ts` importait
+// directement `@/db/ai-schema`, court-circuitant le schéma principal.
+export * from './ai-schema';

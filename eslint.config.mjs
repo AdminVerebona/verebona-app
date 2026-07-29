@@ -79,6 +79,47 @@ const eslintConfig = [
     },
   },
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // CLIQUET DE DETTE — AJOUT DU LOT 0
+  //
+  // Les quatorze fichiers ci-dessous violent déjà la règle précédente : ce sont
+  // les moteurs historiques que le chantier doit supprimer. Tant qu'ils
+  // existent, `npm run lint` échoue, donc la CI ne peut pas passer, donc le
+  // garde-fou est désactivé pendant toute la durée des travaux.
+  //
+  // Cette liste est la dette connue, et rien d'autre :
+  //   • un fichier ABSENT de la liste qui importe le SDK ⇒ erreur, build rouge ;
+  //   • un fichier retiré de la liste ne peut plus y revenir sans une
+  //     modification visible de ce fichier, relue en revue.
+  //
+  // ⚠️ Cette liste ne doit JAMAIS s'allonger. Elle est vidée lot après lot et
+  //    disparaît au lot 7, en même temps que le bloc ci-dessous.
+  //    Elle est tenue en cohérence avec `scripts/ai-legacy-baseline.json`.
+  // ─────────────────────────────────────────────────────────────────────────
+  {
+    files: [
+      'src/app/api/admin/ai-instructions/apply/route.ts',   // lot 6
+      // ⚠️ Les crochets de segment dynamique Next.js sont interprétés par
+      //    minimatch comme une classe de caractères : `[id]` matche « i » ou
+      //    « d », jamais la chaîne littérale. D'où le joker.
+      'src/app/api/assets/*/ai-suggestions/route.ts',       // lot 3
+      'src/app/api/documents/*/analyze/route.ts',           // lot 2
+      'src/app/api/documents/*/commit/route.ts',            // lot 2
+      'src/app/api/search/intelligent/route.ts',            // lot 5
+      'src/app/api/search/route.ts',                        // lot 5
+      'src/lib/gemini-search.ts',                           // lot 5
+      'src/lib/intelligent-search.ts',                      // lot 5
+      'src/services/agenda/AgendaClassificationService.ts', // lot 4
+      'src/services/document-ai/apply-ai-suggestions.ts',   // lot 3
+      'src/services/document-ai/enrich-and-coherence.service.ts', // lot 3
+      'src/services/document-ai/gemini-client.ts',          // lot 7
+      'src/services/document-ai/unified-analysis-pipeline.ts',    // lot 7
+    ],
+    rules: {
+      'no-restricted-imports': 'off',
+    },
+  },
+
   {
     // Fichiers/dossiers a NE PAS linter
     ignores: [

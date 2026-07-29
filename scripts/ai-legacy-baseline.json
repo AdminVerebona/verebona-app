@@ -1,0 +1,21 @@
+{
+  "$comment": [
+    "Dette IA historique connue — CDC §8.1. Généré par scripts/check-legacy-ai.mjs.",
+    "Ce fichier ne doit JAMAIS grossir. Chaque entrée retirée devient définitivement interdite.",
+    "Régénération après résorption : npm run ai:baseline"
+  ],
+  "generatedAt": "2026-07-29T09:59:29.441Z",
+  "phase": 1,
+  "count": 9,
+  "allowed": [
+    "sdk:src/app/api/admin/ai-instructions/apply/route.ts",
+    "sdk:src/app/api/assets/[id]/ai-suggestions/route.ts",
+    "sdk:src/lib/gemini-search.ts",
+    "sdk:src/lib/intelligent-search.ts",
+    "sdk:src/services/agenda/AgendaClassificationService.ts",
+    "sdk:src/services/document-ai/apply-ai-suggestions.ts",
+    "sdk:src/services/document-ai/enrich-and-coherence.service.ts",
+    "sdk:src/services/document-ai/gemini-client.ts",
+    "sdk:src/services/verebona-assistant/providers/gemini-genai-provider.ts"
+  ]
+}

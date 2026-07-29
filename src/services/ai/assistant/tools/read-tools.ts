@@ -15,7 +15,7 @@ import {
   aiFieldUpdates, inconsistencyRegistry,
 } from '@/db/schema';
 import { and, eq, ilike, or, isNull, desc, gte, lte } from 'drizzle-orm';
-import type { AssistantTool, ToolContext, ToolResult, SourceRef } from './tool.port';
+import type { AssistantTool, ToolResult } from './tool.port';
 import { clampExcerpt } from './tool.port';
 import { assertValidContext, assertRowsInScope, buildResult } from './account-scope';
 import { isAiExcludedField } from '../../reconciliation/decision/ai-exclusion';

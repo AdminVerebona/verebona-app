@@ -132,9 +132,13 @@ export async function POST(request: NextRequest) {
       const allFileIds: number[] = Array.isArray(batchFileIds) && batchFileIds.length > 0
         ? batchFileIds.map(Number)
         : [fileIdInt];
-      import('@/services/document-ai/unified-analysis-pipeline').then(({ runUnifiedAnalysisPipeline }) => {
-        runUnifiedAnalysisPipeline(allFileIds, accountId).catch((err: Error) => {
-          console.error('[confirm] unified-analysis-pipeline failed:', err);
+      // Aiguillage unique (CDC §10.1) : le moteur est choisi dans
+      // `source-analysis/entrypoint`, jamais ici. Voir l'en-tête de ce module
+      // pour la raison — huit appelants, un seul test de drapeau.
+      import('@/services/ai/source-analysis/entrypoint').then(({ analyzeFileSources }) => {
+        void analyzeFileSources(allFileIds, accountId, {
+          userId,
+          origin: 'files/confirm',
         });
       }).catch(() => {});
     }

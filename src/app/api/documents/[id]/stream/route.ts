@@ -10,7 +10,7 @@ import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { registerStreamWriter } from '@/services/document-ai/unified-analysis-pipeline';
+import { registerAnalysisStreamWriter } from '@/services/ai/source-analysis/entrypoint';
 import { isTerminalAnalysisState } from '@/types/domain';
 
 export const maxDuration = 300;
@@ -86,8 +86,10 @@ export async function GET(
         try { await writer.write(sseEvent({ type: 'ping' })); } catch { clearInterval(keepAlive); }
       }, 20_000);
 
-      // Register as SSE subscriber
-      const unregister = registerStreamWriter(assetFileId, async (data) => {
+      // Abonnement aux deux registres de diffusion — voir
+       // `registerAnalysisStreamWriter`. Sans cela, le flux se tairait dès que
+       // le drapeau passe à `enabled`.
+      const unregister = await registerAnalysisStreamWriter(assetFileId, async (data) => {
         try {
           await writer.write(sseEvent(data));
           // Close stream on terminal state

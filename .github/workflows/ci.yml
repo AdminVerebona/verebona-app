@@ -1,10 +1,19 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# Intégration continue — VERSION FINALE, phase 7
-# CDC §12, critères d'acceptation n°22 et 23.
+# Intégration continue — CDC §12, critères d'acceptation n°22 et 23.
 #
-# La variable AI_MIGRATION_PHASE vaut 7 : tous les contrôles anti-réintroduction
-# sont actifs. C'est cette configuration qui doit être en place au moment de la
-# bascule réglementaire, et le rester ensuite.
+# ⚠️ CORRECTION DU LOT 0. La version précédente fixait AI_MIGRATION_PHASE à 7 :
+# tous les contrôles d'extinction étaient actifs alors qu'aucun lot de bascule
+# n'avait commencé. Résultat : 26 violations, CI rouge en permanence, et aucune
+# pull request mergeable pendant les mois du chantier. Un garde-fou toujours
+# rouge n'est pas un garde-fou.
+#
+# La phase est désormais une variable de dépôt (Settings → Variables), avancée
+# explicitement à la fin de chaque lot. Valeur cible finale : 7. C'est cette
+# configuration qui doit être en place au moment de la bascule réglementaire.
+#
+# Le contrôle anti-réintroduction fonctionne par cliquet : la dette connue
+# (`scripts/ai-legacy-baseline.json`) ne casse pas le build, toute violation
+# nouvelle le casse. Voir l'en-tête de `scripts/check-legacy-ai.mjs`.
 # ──────────────────────────────────────────────────────────────────────────────
 name: CI
 
@@ -14,7 +23,9 @@ on:
     branches: [main]
 
 env:
-  AI_MIGRATION_PHASE: "7"
+  # Phase du chantier. À incrémenter à la clôture de chaque lot, jamais avant.
+  # Lot 0 terminé ⇒ 1.
+  AI_MIGRATION_PHASE: ${{ vars.AI_MIGRATION_PHASE || '1' }}
 
 jobs:
   quality:
@@ -27,6 +38,13 @@ jobs:
           node-version: "22.13.0"
           cache: npm
 
+      # ⚠️ `npm ci` échoue hors du réseau interne : le package-lock.json résout
+      #    tous les paquets vers nexus.intra.agrial.net. Sur un runner GitHub
+      #    hébergé, l'installation s'arrête sur ENOTFOUND avant le premier
+      #    contrôle. Deux options, à trancher (cf. LOT0-MODIFICATIONS.md §6) :
+      #      a) runner auto-hébergé sur le réseau interne — aucun changement ;
+      #      b) lock régénéré sur registry.npmjs.org — runner GitHub standard.
+      #    En attendant, le miroir est déclaré ici pour rendre l'échec explicite.
       - name: Installation
         run: npm ci
 
@@ -42,18 +60,11 @@ jobs:
       - name: Inventaire d'exécution — exactement cinq usages (critère n°1)
         run: npx tsx scripts/ai-inventory.ts
 
+      # `--strict` : la référence de dette doit être à jour. Un développeur qui
+      # supprime un moteur historique doit régénérer le fichier (`npm run
+      # ai:baseline`), faute de quoi la violation resterait tolérée par erreur.
       - name: Anti-réintroduction des moteurs historiques (critère n°23)
-        run: node scripts/check-legacy-ai.mjs --phase=${{ env.AI_MIGRATION_PHASE }}
-
-      - name: Un seul module accède au SDK fournisseur (critère n°4)
-        run: |
-          COUNT=$(grep -rl "GoogleGenerativeAI" src/ | grep -v "gateway/providers/" | wc -l)
-          if [ "$COUNT" -ne 0 ]; then
-            echo "✖ $COUNT fichier(s) accèdent directement au SDK hors adaptateur :"
-            grep -rl "GoogleGenerativeAI" src/ | grep -v "gateway/providers/"
-            exit 1
-          fi
-          echo "✓ Accès au SDK confiné à l'adaptateur"
+        run: node scripts/check-legacy-ai.mjs --strict
 
   conformity-report:
     name: Rapport de conformité
@@ -73,5 +84,7 @@ jobs:
         with:
           name: inventaire-usages-ia
           # Conservation longue : c'est la preuve opposable du §8.1.
-          path: ai-inventory.json
+          path: |
+            ai-inventory.json
+            scripts/ai-legacy-baseline.json
           retention-days: 365

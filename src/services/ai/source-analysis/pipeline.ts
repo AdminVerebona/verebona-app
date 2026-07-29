@@ -34,7 +34,7 @@ import { buildAgendaCandidates } from './steps/build-agenda-candidates.step';
 import { persistEvidence } from './steps/persist-evidence.step';
 import { persistAnalysisResult } from './persistence/analysis-result.repository';
 import { broadcast } from './stream/broadcast';
-import { combineTraces, emptyTrace } from './trace';
+import { combineTraces } from './trace';
 import { emitSourceAnalyzed } from './events';
 import type {
   SourceInput, SourceType, SourceAnalysisResult, AnalysisContext, AnalysisWarning,

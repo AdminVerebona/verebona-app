@@ -11,7 +11,7 @@ import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { commitDocument } from '@/services/document-ai/commit-engine';
-import { applyAiSuggestionsToAsset } from '@/services/document-ai/apply-ai-suggestions';
+import { isUnifiedAnalysisActive } from '@/services/ai/source-analysis/entrypoint';
 import type { AgendaEffect } from '@/types/document-ai';
 
 export async function POST(
@@ -43,7 +43,17 @@ export async function POST(
     // Relire l'assetId après commit (peut avoir été mis à jour par la proposal matchedAssetId)
     const [updated] = await db.select({ assetId: assetFiles.assetId }).from(assetFiles).where(eq(assetFiles.id, assetFileId)).limit(1);
     const resolvedAssetId = updated?.assetId;
-    if (resolvedAssetId) {
+    // ⚠️ Option A retenue : l'écran de validation disparaît, absorbé par
+    // « À arbitrer » (CDC §7.1). Une fois le pipeline unifié actif, la fiche du
+    // bien est alimentée par la réconciliation (usage 2) à partir des preuves,
+    // et non plus par un second appel modèle déclenché au commit.
+    //
+    // Cette route devient alors sans objet : le pipeline écrit directement,
+    // il ne reste aucune proposition en attente. `commitDocument` ci-dessus est
+    // un passage à vide, conservé le temps que l'interface cesse de l'appeler.
+    // Suppression prévue au lot 3, avec l'écran correspondant.
+    if (resolvedAssetId && !isUnifiedAnalysisActive()) {
+      const { applyAiSuggestionsToAsset } = await import('@/services/document-ai/apply-ai-suggestions');
       applyAiSuggestionsToAsset({ assetId: resolvedAssetId, accountId, assetFileId }).catch(err =>
         console.error('[commit] applyAiSuggestionsToAsset failed (non-blocking):', err)
       );

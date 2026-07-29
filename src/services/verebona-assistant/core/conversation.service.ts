@@ -7,7 +7,7 @@
  *
  * Utilise les tables verebona_* (voir migration 0100). Câblé sur `@/db` (postgres.js).
  */
-import { db, pgClient } from '@/db';
+import { pgClient } from '@/db';
 import type { AssistantRunResult, AssistantRequestInput } from '../types/contracts';
 import { getAssistantConfig } from '../config/assistant-config';
 

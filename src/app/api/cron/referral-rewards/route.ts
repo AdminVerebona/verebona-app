@@ -4,7 +4,6 @@ import { referralEvents, accountSubscriptions } from '@/db/schema';
 import { and, eq, isNull, isNotNull, lte } from 'drizzle-orm';
 import {
   postponeNextBillingByOneMonth,
-  withdrawalDeadline,
   WITHDRAWAL_PERIOD_DAYS,
 } from '@/services/referral-reward.service';
 

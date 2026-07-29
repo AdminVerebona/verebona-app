@@ -3,7 +3,7 @@ import { db } from '@/db';
 import { assetFiles, assets } from '@/db/schema';
 import { eq, and, inArray, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
-import { runUnifiedAnalysisPipeline } from '@/services/document-ai/unified-analysis-pipeline';
+import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 
 export async function POST(request: NextRequest) {
   try {
@@ -87,7 +87,11 @@ export async function POST(request: NextRequest) {
         .filter(f => f.analysisState != null && f.analysisState !== 'UPLOADING' && f.analysisState !== 'UPLOADED')
         .map(f => f.id);
       for (const fileId of analysedIds) {
-        runUnifiedAnalysisPipeline([fileId], accountId).catch(err => {
+        analyzeFileSources([fileId], accountId, {
+          userId,
+          billable: false,
+          origin: 'documents/bulk-move',
+        }).catch(err => {
           console.error(`[bulk-move] re-analyse après déplacement échouée (file ${fileId}):`, err);
         });
       }

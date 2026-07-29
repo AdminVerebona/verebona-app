@@ -21,7 +21,7 @@ import { db } from '@/db';
 import { assetFiles, accounts } from '@/db/schema';
 import { eq, inArray, isNull, and, lt, or } from 'drizzle-orm';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
-import { runUnifiedAnalysisPipeline } from './unified-analysis-pipeline';
+import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 
 const BATCH_SIZE = 3;
 const BATCH_DELAY_MS = 3_000;
@@ -147,7 +147,10 @@ export async function runAnalysisRecovery(targetAccountId?: number): Promise<Rec
         batch.map(async (doc) => {
           if (!doc.accountId) return;
           try {
-            runUnifiedAnalysisPipeline([doc.id], doc.accountId).catch((err: Error) => {
+            analyzeFileSources([doc.id], doc.accountId, {
+              billable: false,
+              origin: 'analysis-recovery',
+            }).catch((err: Error) => {
               console.error(`[analysis-recovery] File ${doc.id} failed:`, err.message);
             });
             result.retried++;

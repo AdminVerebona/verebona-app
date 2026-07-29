@@ -9,7 +9,7 @@
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and, isNull, or } from 'drizzle-orm';
-import { runUnifiedAnalysisPipeline } from './unified-analysis-pipeline';
+import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 
 const BATCH_SIZE = 5;
 const BATCH_DELAY_MS = 2000;
@@ -57,7 +57,7 @@ export async function scheduleRetroactiveAnalysis(accountId: number): Promise<vo
     // Traiter le batch en parallèle (5 analyses simultanées max)
     await Promise.allSettled(
       batch.map(file =>
-        runUnifiedAnalysisPipeline([file.id], accountId).catch(err =>
+        analyzeFileSources([file.id], accountId, { origin: 'retroactive-analysis' }).catch(err =>
           console.error(`[retroactive] File ${file.id} failed:`, err)
         )
       )

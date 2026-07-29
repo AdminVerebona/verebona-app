@@ -44,10 +44,9 @@ export async function GET(request: NextRequest) {
     if (pending.length === 0) return NextResponse.json({ pending: 0 });
 
     // Déclencher en arrière-plan sans bloquer la réponse
-    import('@/services/document-ai/unified-analysis-pipeline').then(({ runUnifiedAnalysisPipeline }) => {
-      const ids = pending.map(p => p.id);
-      runUnifiedAnalysisPipeline(ids, accountId).catch((err: Error) => {
-        console.error('[check-pending] pipeline error:', err.message);
+    import('@/services/ai/source-analysis/entrypoint').then(({ analyzeFileSources }) => {
+      void analyzeFileSources(pending.map(p => p.id), accountId, {
+        origin: 'analysis/check-pending',
       });
     }).catch(() => {});
 

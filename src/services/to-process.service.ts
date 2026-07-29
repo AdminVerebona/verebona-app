@@ -10,6 +10,7 @@ import {
 } from '@/db/schema';
 import { eq, and, or, isNull, isNotNull, ne, desc, sql, inArray } from 'drizzle-orm';
 import { getAgendaAttentionItems } from '@/services/agenda/AgendaQueryService';
+import { listOpenReconciliationConflicts } from '@/services/ai/reconciliation/to-process-conflicts';
 import { normalizeName } from '@/services/suppliers/supplier-service';
 import type {
   ToProcessItem, ToProcessFamily, ToProcessResponse, ToProcessCounters,
@@ -499,6 +500,15 @@ export async function getToProcessItems(
       }
     }
   }
+
+  // ── Conflits de réconciliation — CDC §4.2.9, critère d'acceptation n°13 ──
+  // « Les contradictions non résolues alimentent la page À traiter, catégorie
+  //   À arbitrer. » Sans cette lecture, le moteur de réconciliation écrit ses
+  // conflits en base sans que personne ne les voie jamais.
+  //
+  // Aucun test de drapeau : la table est vide tant que la réconciliation n'a
+  // rien écrit, et le jour de la bascule la page se remplit d'elle-même.
+  items.push(...(await listOpenReconciliationConflicts(accountId)));
 
   // Équipements
   for (const eq of equipementsSansBien) {

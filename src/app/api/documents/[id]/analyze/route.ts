@@ -3,6 +3,26 @@
  * [id] = asset_files.id
  * Déclenche un run d'analyse IA sur un document.
  * Utilise un stream SSE pour garder la connexion ouverte (évite le timeout HTTP de 120s en dev).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 2 — ÉTAPE 2. Deux chemins, jamais les deux (CDC §10.4).
+ *
+ * `enabled` : délégation intégrale au pipeline unifié. Quota, déduplication,
+ *   état du fichier, contexte du compte, preuves, crédits et déclenchement des
+ *   moteurs aval sont assurés par `runSourceAnalysis`. La route ne fait plus que
+ *   de l'authentification et du transport SSE.
+ *
+ * `legacy` : le code d'origine, inchangé, ci-dessous. Il reste lisible d'un
+ *   bloc — c'est délibéré : un chemin de repli qu'on n'ose plus lire n'est pas
+ *   un chemin de repli.
+ *
+ * Ce que la bascule fait disparaître, et qui est le cœur du défaut n°1 :
+ *   • `applyAiSuggestionsToAsset` appelé après chaque analyse ;
+ *   • le calcul d'état final à partir du seuil de confiance 0,7, remplacé par
+ *     les règles de `computeFinalState` du pipeline ;
+ *   • le suivi de coûts par `AiUsageTracker`, remplacé par la télémétrie de la
+ *     gateway — un seul point de mesure, aux tarifs de `ai_model_pricing`.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { NextRequest } from 'next/server';
@@ -82,6 +102,19 @@ export async function POST(
         await writer.write(sseEvent({ type: 'error', code: 'INVALID_ID' }));
         return;
       }
+
+      // ── Chemin unifié ────────────────────────────────────────────────────
+      const { isUnifiedAnalysisActive } = await import('@/services/ai/source-analysis/entrypoint');
+      if (isUnifiedAnalysisActive()) {
+        await streamUnifiedAnalysis({
+          assetFileId,
+          accountId,
+          userId: session.userId,
+          write: (data) => writer.write(sseEvent(data)),
+        });
+        return;
+      }
+      // ── Chemin historique, à partir d'ici et jusqu'à la fin ──────────────
 
       const [file] = await db.select().from(assetFiles).where(
         and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId))
@@ -361,4 +394,68 @@ export async function POST(
   })();
 
   return response;
+}
+
+/**
+ * Chemin unifié : authentification déjà faite, transport SSE uniquement.
+ *
+ * Le contrat vis-à-vis de l'interface est conservé à l'identique — mêmes types
+ * d'événements, mêmes codes d'erreur — pour que la bascule n'impose aucune
+ * modification du front. `runId` disparaît du `done` : le pipeline unifié
+ * n'expose pas cette notion, et l'interface ne s'en sert que pour un rechargement
+ * qu'elle déclenche de toute façon sur `state_update`.
+ */
+async function streamUnifiedAnalysis(args: {
+  assetFileId: number;
+  accountId: number;
+  userId: number;
+  write: (data: Record<string, unknown>) => Promise<void>;
+}): Promise<void> {
+  const { assetFileId, accountId, userId, write } = args;
+
+  const [owned] = await db
+    .select({ id: assetFiles.id })
+    .from(assetFiles)
+    .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId)))
+    .limit(1);
+
+  if (!owned) {
+    await write({ type: 'error', code: 'NOT_FOUND' });
+    return;
+  }
+
+  const { analyzeFileSources, registerAnalysisStreamWriter } =
+    await import('@/services/ai/source-analysis/entrypoint');
+
+  // Relais de la progression émise par le pipeline vers ce flux.
+  const unregister = await registerAnalysisStreamWriter(assetFileId, (data) => {
+    void write(data);
+  });
+
+  const keepAlive = setInterval(() => { void write({ type: 'ping' }); }, 20_000);
+
+  try {
+    const outcome = await analyzeFileSources([assetFileId], accountId, {
+      userId,
+      origin: 'documents/analyze',
+    });
+
+    // Le pipeline gère quota et déduplication : la route se contente de
+    // traduire son verdict dans les codes que l'interface connaît déjà.
+    const code = {
+      quota: 'ANALYSIS_QUOTA_REACHED',
+      already_running: 'ALREADY_ANALYZING',
+      no_valid_source: 'NOT_FOUND',
+    }[outcome?.skippedReason ?? ''] ?? null;
+
+    if (code) {
+      await write({ type: 'error', code });
+      return;
+    }
+
+    await write({ type: 'done' });
+  } finally {
+    clearInterval(keepAlive);
+    unregister();
+  }
 }

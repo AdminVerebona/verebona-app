@@ -40,8 +40,6 @@ const FIELD_AUTHORITY_ORDER: Record<string, string[]> = {
   registrationNumber: ['CERTIFICAT_IMMATRICULATION', 'CARTE_GRISE', 'CONTRAT_ASSURANCE', 'RAPPORT_ENTRETIEN', 'FACTURE'],
 
   // prime d'assurance : avis d'échéance le plus récent > contrat initial
-
-  // prime d'assurance : avis d'échéance le plus récent > contrat initial
   insurancePremium: ['AVIS_ECHEANCE', 'CONTRAT_ASSURANCE'],
 
   // fin de garantie : certificat > facture avec durée explicite > estimation
@@ -49,8 +47,6 @@ const FIELD_AUTHORITY_ORDER: Record<string, string[]> = {
 
   // surface : acte ou mesurage légal > DPE > annonce commerciale
   livingArea: ['ACTE_AUTHENTIQUE', 'ACTE_NOTARIE', 'MESURAGE_LEGAL', 'DPE', 'DIAGNOSTIC', 'ANNONCE_COMMERCIALE'],
-
-  // fin de garantie : certificat > facture avec durée explicite > estimation
 };
 
 /**
@@ -144,10 +140,26 @@ export function resolveAuthority(input: AuthorityInput): AuthorityRule {
 }
 
 /** Types de documents faisant autorité pour un champ critique (§4.2.6). */
+const ADDRESS_AUTHORITY = ['ACTE_AUTHENTIQUE', 'ACTE_NOTARIE', 'COMPROMIS_VENTE', 'CONTRAT_ASSURANCE'];
+
 const CRITICAL_ALLOWED_TYPES: Record<string, string[]> = {
   // Liste restreinte aux trois familles retenues par le métier le 28/07/2026 :
   // adresse du bien, plaque d'immatriculation, prix d'achat.
-  address1: ['ACTE_AUTHENTIQUE', 'ACTE_NOTARIE', 'COMPROMIS_VENTE', 'CONTRAT_ASSURANCE'],
+  //
+  // ⚠️ CORRECTIF LOT 3. Seul `address1` figurait ici, alors que `CRITICAL_FIELDS`
+  // compte quatre clés d'adresse. Or `isAuthorizedForCriticalField` refuse par
+  // défaut : le code postal, la ville et le complément d'adresse ne pouvaient
+  // donc JAMAIS être corrigés automatiquement, par aucun type de document.
+  // Chaque correction d'adresse serait partie en arbitrage, indéfiniment.
+  //
+  // Les quatre clés forment une seule information métier — « l'adresse du
+  // bien » de la question 3 — et partagent donc la même autorité.
+  // L'invariant est désormais tenu par un test : tout champ critique doit
+  // avoir une liste explicite.
+  address1: ADDRESS_AUTHORITY,
+  address2: ADDRESS_AUTHORITY,
+  postalCode: ADDRESS_AUTHORITY,
+  city: ADDRESS_AUTHORITY,
   registrationNumber: ['CERTIFICAT_IMMATRICULATION', 'CARTE_GRISE'],
   acquisitionPrice: ['ACTE_AUTHENTIQUE', 'ACTE_NOTARIE', 'COMPROMIS_VENTE', 'FACTURE'],
 };

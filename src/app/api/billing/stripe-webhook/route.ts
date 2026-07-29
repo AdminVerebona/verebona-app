@@ -1005,11 +1005,11 @@ async function triggerRetroactiveAnalysis(accountId: number): Promise<void> {
 
   console.info(`[retroactive] Account ${accountId}: scheduling ${unanalyzed.length} files`);
 
-  const { runUnifiedAnalysisPipeline } = await import('@/services/document-ai/unified-analysis-pipeline');
+  const { analyzeFileSources } = await import('@/services/ai/source-analysis/entrypoint');
 
   for (const file of unanalyzed) {
     try {
-      await runUnifiedAnalysisPipeline([file.id], accountId);
+      await analyzeFileSources([file.id], accountId, { origin: 'stripe-webhook/retroactive' });
     } catch (err) {
       console.error(`[retroactive] File ${file.id} failed:`, err);
     }

@@ -12,9 +12,11 @@
  * des `equipment_candidates` pour éviter les appels IA redondants.
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+// CDC §12 critère n°4 : plus aucun accès direct au SDK. Les deux départages
+// modèles de ce service passent par l'opération `reconcile_links` de la
+// gateway (usage 2), qui porte le modèle, le prompt versionné, le schéma de
+// sortie, le coût et l'idempotence.
+import { reconcileLinks, retainAbove, LINK_SCORE_THRESHOLDS } from '@/services/ai/reconciliation/link-reconciler';
 import { db } from '@/db';
 import {
   equipments, assetFiles, agendaItems, agendaAssetLinks, agendaEquipmentLinks,
@@ -143,13 +145,6 @@ function deterministicMatch(
   return { score: 0, reason: 'Aucune correspondance trouvée' };
 }
 
-// ── Prompt loader ─────────────────────────────────────────────────────────────
-
-function loadPrompt(): string {
-  const path = join(process.cwd(), 'src', 'services', 'document-ai', 'prompts', 'equipment_link_v1.txt');
-  return readFileSync(path, 'utf8');
-}
-
 // ── Context builders ──────────────────────────────────────────────────────────
 
 function buildDocumentsList(docs: CandidateDoc[]): string {
@@ -185,25 +180,6 @@ function buildSuppliersList(sups: CandidateSupplier[]): string {
     if (s.phone) parts.push(`tél:${s.phone}`);
     return parts.join(' | ');
   }).join('\n');
-}
-
-function sanitizeJson(text: string): unknown {
-  const attempts = [
-    () => JSON.parse(text),
-    () => JSON.parse(text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')),
-    () => {
-      const m = text.match(/```(?:json)?\s*([\s\S]+?)```/);
-      if (!m) throw new Error('no block');
-      return JSON.parse(m[1].trim());
-    },
-    () => {
-      const s = text.indexOf('{'); const e = text.lastIndexOf('}');
-      if (s === -1 || e === -1) throw new Error('no obj');
-      return JSON.parse(text.slice(s, e + 1));
-    },
-  ];
-  for (const fn of attempts) { try { return fn(); } catch { /* next */ } }
-  throw new Error('No valid JSON found in Gemini response');
 }
 
 // ── Deterministic resolution ────────────────────────────────────────────────
@@ -437,42 +413,23 @@ export async function runEquipmentAutoLink(
 
   if (hasAmbiguous) {
     // 9. Call AI only for remaining ambiguous candidates
-    let prompt = loadPrompt();
-    prompt = prompt
-      .replace('{{EQUIPMENT_NAME}}', equip.name)
-      .replace('{{EQUIPMENT_TYPE}}', equip.type ?? 'Non spécifié')
-      .replace('{{EQUIPMENT_ROOM}}', equip.substructureId ? `Pièce #${equip.substructureId}` : 'Non spécifié')
-      .replace('{{DOCUMENTS_LIST}}', buildDocumentsList(ambiguous.documents))
-      .replace('{{AGENDA_LIST}}', buildAgendaList(ambiguous.agendaItems))
-      .replace('{{SUPPLIERS_LIST}}', buildSuppliersList(ambiguous.suppliers));
+    const linked = await reconcileLinks({
+      accountId,
+      variables: {
+        SUBJECT_CONTEXT: `Équipement "${equip.name}" (type: ${equip.type ?? 'non spécifié'}` +
+          `${equip.substructureId ? `, pièce #${equip.substructureId}` : ''})`,
+        DOCUMENTS_LIST: buildDocumentsList(ambiguous.documents),
+        AGENDA_LIST: buildAgendaList(ambiguous.agendaItems),
+        SUPPLIERS_LIST: buildSuppliersList(ambiguous.suppliers),
+        EQUIPMENTS_LIST: '(sans objet)',
+      },
+      sourceIds: ambiguous.documents.map(d => d.id),
+    });
 
-    let rawText: string | undefined;
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        // No API key — apply only deterministic matches
-        aiMatchedDocs = [];
-        aiMatchedAgenda = [];
-        aiMatchedSuppliers = [];
-      } else {
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const result = await model.generateContent([{ text: prompt }]);
-        rawText = result.response.text();
-        const parsed = sanitizeJson(rawText) as {
-          documents?: { id: number; score: number; reason: string }[];
-          agendaItems?: { id: number; score: number; reason: string }[];
-          suppliers?: { id: number; score: number; reason: string }[];
-        };
-
-        aiMatchedDocs = (parsed.documents ?? []).filter(d => d.score >= 0.4);
-        aiMatchedAgenda = (parsed.agendaItems ?? []).filter(a => a.score >= 0.4);
-        aiMatchedSuppliers = (parsed.suppliers ?? []).filter(s => s.score >= 0.4);
-      }
-    } catch (err) {
-      console.error('[equipment-auto-link] AI call failed (non-blocking):', err);
-      // Deterministic matches are still applied even if AI fails
-    }
+    const threshold = LINK_SCORE_THRESHOLDS.equipmentToObjects;
+    aiMatchedDocs = retainAbove(linked.documents, threshold);
+    aiMatchedAgenda = retainAbove(linked.agendaItems, threshold);
+    aiMatchedSuppliers = retainAbove(linked.suppliers, threshold);
   }
 
   // 10. Merge deterministic + AI results (deduplicated)
@@ -553,22 +510,6 @@ export async function runEquipmentAutoLink(
 }
 
 // ── Document → Equipment linker (called after document analysis) ──────────────
-
-const EQUIPMENT_MATCH_PROMPT = `Tu es un assistant de gestion de patrimoine (Verebona).
-Un document vient d'être analysé. Détermine à quel(s) équipement(s) de la liste il appartient.
-
-Document :
-{{DOCUMENT_CONTEXT}}
-
-Équipements disponibles sur ce bien :
-{{EQUIPMENTS_LIST}}
-
-Pour chaque équipement pertinent, retourne son id et un score de pertinence (0.0 à 1.0).
-Ne retourne que les équipements avec un lien clairement justifiable (score >= 0.5).
-Réponds uniquement en JSON valide.
-
-Format attendu :
-{ "matches": [ { "id": number, "score": number, "reason": "explication courte" } ] }`;
 
 function deterministicDocumentEquipmentMatch(
   equipmentName: string,
@@ -727,26 +668,22 @@ export async function linkDocumentToEquipments(
     .map(e => `[id:${e.id}] "${e.name}"${e.type ? ` (type: ${e.type})` : ''}`)
     .join('\n');
 
-  const prompt = EQUIPMENT_MATCH_PROMPT
-    .replace('{{DOCUMENT_CONTEXT}}', docParts.join(' | '))
-    .replace('{{EQUIPMENTS_LIST}}', equipmentsList);
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return;
+  const linked = await reconcileLinks({
+    accountId,
+    variables: {
+      SUBJECT_CONTEXT: `Document — ${docParts.join(' | ')}`,
+      DOCUMENTS_LIST: '(sans objet)',
+      AGENDA_LIST: '(sans objet)',
+      SUPPLIERS_LIST: '(sans objet)',
+      EQUIPMENTS_LIST: equipmentsList,
+    },
+    sourceIds: [assetFileId],
+  });
 
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const result = await model.generateContent([{ text: prompt }]);
-    const rawText = result.response.text();
-
-    const parsed = sanitizeJson(rawText) as { matches?: { id: number; score: number; reason: string }[] };
-    const matches = (parsed.matches ?? []).filter(m => m.score >= 0.5);
-
+    const matches = retainAbove(linked.matches, LINK_SCORE_THRESHOLDS.documentToEquipment);
     if (matches.length === 0) return;
 
-    // Link to the best-scoring equipment
-    matches.sort((a, b) => b.score - a.score);
     const best = matches[0];
     const validEquip = [...ambiguousEquipments, ...assetEquipments.filter(e =>
       deterministicMatches.some(m => m.id === e.id)

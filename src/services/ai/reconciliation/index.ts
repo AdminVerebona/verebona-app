@@ -12,6 +12,10 @@ export { normalize, areEquivalent } from './decision/normalizers';
 export { REASON_CODES, reasonLabel } from './decision/reason-codes';
 export { readOrigin, writeOrigin, isHumanOrigin } from './field-origin';
 export { writeConflict, resolveObsoleteConflict } from './conflict-writer';
+export { getShadowReport, summarizeShadowDecisions } from './shadow-report.service';
+export { listOpenReconciliationConflicts, fieldLabel } from './to-process-conflicts';
+export { reconcileLinks, retainAbove, ReconcileLinksOutput, LINK_SCORE_THRESHOLDS } from './link-reconciler';
+export type { ShadowReport, ShadowSummary, ShadowDecisionRow } from './shadow-report.service';
 
 export type {
   ReconciliationAction, ReconciliationDecision, ReconciliationRun,

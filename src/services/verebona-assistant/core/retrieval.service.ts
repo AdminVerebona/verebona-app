@@ -10,7 +10,7 @@
  *    REMPLACE `src/lib/gemini-search.ts` + la partie « chargement de contexte » de
  *    `src/lib/intelligent-search.ts`.
  */
-import { db, pgClient, ensureUnaccent } from '@/db';
+import { pgClient, ensureUnaccent } from '@/db';
 import type { IntentRoute } from '../types/contracts';
 import type { AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource } from '../types/sources';

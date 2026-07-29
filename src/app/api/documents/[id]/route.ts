@@ -3,7 +3,7 @@ import { db } from '@/db';
 import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
-import { runUnifiedAnalysisPipeline } from '@/services/document-ai/unified-analysis-pipeline';
+import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 
 export async function PUT(
   request: NextRequest,
@@ -162,7 +162,13 @@ export async function PUT(
     const accountId = session.currentAccountId;
 
     if (hasBeenAnalysed && accountId) {
-      runUnifiedAnalysisPipeline([documentId], accountId).catch(err => {
+      // Réanalyse consécutive à une correction manuelle : pas de crédit
+      // consommé, l'utilisateur n'a pas déposé de nouveau document.
+      analyzeFileSources([documentId], accountId, {
+        userId: session.userId,
+        billable: false,
+        origin: 'documents/PUT',
+      }).catch(err => {
         console.error(`[documents/PUT] re-analyse après modification manuelle échouée (file ${documentId}):`, err);
       });
     }
