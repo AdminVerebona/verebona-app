@@ -45,7 +45,19 @@ export default function SignupPage() {
   const router = useRouter();
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [referralCode, setReferralCode] = useState<string | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<'standard' | 'premium' | 'premium_duo'>('standard');
+  // ══════════════════════════════════════════════════════════════════════════
+  // AUCUNE OFFRE N'EST CHOISIE A L'INSCRIPTION — CDC tarification §3.1
+  //
+  // « Tout nouveau compte beneficie automatiquement d'un essai gratuit unique
+  //   de 7 jours [...] L'utilisateur ne choisit donc pas Standard, Premium ou
+  //   Premium Duo lors de la creation de son compte. »
+  //
+  // L'ecran precedent proposait « activer Standard (2 mois offerts) », lisait
+  // un parametre `?plan=` et redirigeait vers un paiement. Ce parcours n'existe
+  // plus : ni carte bancaire, ni abonnement Stripe avant la fin de l'essai
+  // (§4.2). Le parametre `plan` eventuellement present dans un ancien lien est
+  // desormais ignore.
+  // ══════════════════════════════════════════════════════════════════════════
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -62,7 +74,6 @@ export default function SignupPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get('inviteToken');
-    const plan = params.get('plan');
     const emailParam = params.get('email');
     const ref = params.get('ref');
 
@@ -74,13 +85,6 @@ export default function SignupPage() {
     }
     if (token) {
       setInviteToken(token);
-    }
-    if (plan === 'standard') {
-      setSelectedPlan('standard');
-    } else if (plan === 'premium') {
-      setSelectedPlan('premium');
-    } else if (plan === 'duo' || plan === 'premium_duo') {
-      setSelectedPlan('premium_duo');
     }
     if (emailParam) {
       setFormData(prev => ({ ...prev, email: emailParam }));
@@ -145,10 +149,11 @@ export default function SignupPage() {
       }
 
     try {
-      localStorage.removeItem('user');
-
+      // Aucune ecriture dans le stockage du navigateur : la session repose sur
+      // des cookies HttpOnly, et le code de parrainage ne doit survivre ni a la
+      // fermeture de l'onglet ni au parcours (CDC parrainage §4.2).
       const response = await fetch('/api/users', {
-      credentials: 'include',
+        credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -157,10 +162,12 @@ export default function SignupPage() {
           firstName: formData.firstName,
           lastName: formData.lastName,
           username: formData.username || undefined,
+          // Pas de `signupPlan` : l'essai de 7 jours est attribue par le
+          // serveur (`grantTrial`), et l'offre est choisie plus tard.
           planType: 'STANDARD',
-          signupPlan: selectedPlan,
           acceptedTerms: formData.acceptedTerms,
           termsVersion: '1.0',
+          referralCode: referralCode || undefined,
           inviteToken: inviteToken || undefined
         }),
       });
@@ -175,18 +182,19 @@ export default function SignupPage() {
             } else if (data.code === 'WEAK_PASSWORD') {
             setError(data.message || 'Le mot de passe ne respecte pas les exigences de sécurité.');
           } else {
-            setError(data.error || 'Une erreur est survenue lors de la création du compte.');
+            // La reference technique permet de retrouver l'incident dans les
+            // journaux sans exposer la cause a l'utilisateur.
+            const ref = data.reference ? ` (réf. ${data.reference})` : '';
+            setError((data.error || 'Une erreur est survenue lors de la création du compte.') + ref);
           }
           setIsLoading(false);
           return;
         }
 
-        localStorage.setItem('pending_checkout_plan', selectedPlan);
-
-        // Redirect to email verification page - user must verify before login
-        const planParam = selectedPlan;
+        // Verification de l'email obligatoire avant connexion. Aucune offre
+        // n'est transportee : l'essai de 7 jours est deja actif cote serveur.
         const refParam = referralCode ? `&ref=${referralCode}` : '';
-        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}&plan=${planParam}${refParam}`);
+        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}${refParam}`);
     } catch (err) {
       setError('Une erreur est survenue. Veuillez réessayer.');
       setIsLoading(false);
@@ -211,33 +219,38 @@ export default function SignupPage() {
             </div>
             <CardTitle className="text-center text-[color:var(--text-primary)]">Créer un compte</CardTitle>
             <CardDescription className="text-center text-[color:var(--text-muted)]">
-              {selectedPlan === 'premium'
-                ? 'Créez votre compte puis passez à Premium'
-                : selectedPlan === 'premium_duo'
-                ? 'Créez votre compte puis passez à Premium Duo'
-                : 'Créez votre compte puis activez Standard (2 mois offerts)'
-              }
+              {inviteToken
+                ? 'Créez votre compte pour rejoindre le compte partagé'
+                : 'Votre essai gratuit de 7 jours commence dès la création du compte'}
             </CardDescription>
 
-            {selectedPlan === 'premium' && (
+            {/* Essai de 7 jours — CDC tarification §3.1 à §3.3. Les trois
+                mentions rassurantes sont explicitement demandées au §14 :
+                aucune carte, aucun prélèvement, données conservées. */}
+            {!inviteToken && (
               <div className="bg-gradient-to-r from-blue-950/40 to-emerald-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
                 <Crown className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <span className="font-medium text-blue-300">Offre Premium — 59 €/an</span>
+                  <span className="font-medium text-blue-300">7 jours d&apos;essai, toutes les fonctions Premium</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
-                    2 mois d'essai gratuits, puis facturation. Les infos de paiement sont demandées maintenant.
+                    Sans carte bancaire et sans engagement. Aucun prélèvement automatique
+                    à la fin de l&apos;essai : vous choisirez votre offre à ce moment-là,
+                    et vos données sont conservées.
+                  </p>
+                  <p className="text-[color:var(--text-muted)] text-xs mt-1">
+                    Pendant l&apos;essai : 2 biens et 30 documents.
                   </p>
                 </div>
               </div>
             )}
 
-            {selectedPlan === 'premium_duo' && (
+            {inviteToken && (
               <div className="bg-gradient-to-r from-emerald-950/40 to-emerald-900/20 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-3">
                 <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <span className="font-medium text-emerald-300">Offre Premium Duo — 79 €/an</span>
+                  <span className="font-medium text-emerald-300">Invitation à un compte partagé</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
-                    2 mois d'essai gratuits, puis facturation. Les infos de paiement sont demandées maintenant.
+                    Vous rejoignez un compte Premium Duo existant. Rien ne vous sera facturé.
                   </p>
                 </div>
               </div>
@@ -413,10 +426,7 @@ export default function SignupPage() {
                       variant="outline"
                       size="sm"
                       className="w-full border-destructive/40 text-destructive hover:bg-destructive/10"
-                      onClick={() => {
-                        const plan = selectedPlan ? `?plan=${selectedPlan}` : '';
-                        router.push(`/login${plan}`);
-                      }}
+                      onClick={() => router.push('/login')}
                     >
                       Se connecter
                     </Button>
@@ -427,11 +437,9 @@ export default function SignupPage() {
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading
                   ? 'Création...'
-                  : selectedPlan === 'premium'
-                  ? 'Créer mon compte et passer à Premium'
-                  : selectedPlan === 'premium_duo'
-                  ? 'Créer mon compte et passer à Premium Duo'
-                  : 'Créer mon compte et activer Standard'
+                  : inviteToken
+                  ? 'Créer mon compte et rejoindre'
+                  : 'Créer mon compte et démarrer l\u2019essai gratuit'
                 }
               </Button>
 

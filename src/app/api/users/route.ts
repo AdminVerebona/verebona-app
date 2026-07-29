@@ -6,6 +6,7 @@ import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
 import { emailService } from '@/lib/email/email-service';
 import { grantTrial } from '@/services/trial.service';
+import { recordSignupReferral } from '@/services/referral-attribution.service';
 
 const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
@@ -97,7 +98,8 @@ export async function POST(request: NextRequest) {
       acceptedTerms,
       termsVersion,
       inviteToken,
-      signupPlan: rawSignupPlan, // 'standard' | 'premium' | 'premium_duo' | 'duo' — plan choisi au signup, pour rediriger vers Stripe après vérification
+      referralCode, // CDC parrainage §4.3 : transmis directement au serveur a la creation du compte
+      signupPlan: rawSignupPlan, // conserve pour compatibilite : l'inscription ne choisit plus d'offre (CDC tarification §3.1)
     } = body;
 
     const signupPlan = rawSignupPlan === 'duo' ? 'premium_duo' : rawSignupPlan;
@@ -162,8 +164,16 @@ export async function POST(request: NextRequest) {
     await releaseUnverifiedEmail(sanitizedEmail);
 
     // Check if a verified account already exists with this email
+    //
+    // ⚠️ Projection EXPLICITE, jamais `select()`. Drizzle traduit `select()` par
+    // l'enumeration de toutes les colonnes declarees dans le schema : une seule
+    // colonne absente en base (cf. migration 0112) faisait echouer ce simple
+    // controle d'unicite, bien avant toute insertion, et l'inscription
+    // repondait « Une erreur interne est survenue ». Ne demander que ce qu'on
+    // lit rend le parcours insensible a une derive de schema sur des colonnes
+    // qui ne le concernent pas.
     const existingUserByEmail = await db
-      .select()
+      .select({ id: users.id })
       .from(users)
       .where(and(eq(users.email, sanitizedEmail), eq(users.isActive, true)))
       .limit(1);
@@ -181,7 +191,7 @@ export async function POST(request: NextRequest) {
     // Check if user already exists with this username (if provided)
     if (sanitizedUsername) {
       const existingUserByUsername = await db
-        .select()
+        .select({ id: users.id })
         .from(users)
         .where(eq(users.username, sanitizedUsername))
         .limit(1);
@@ -313,6 +323,27 @@ export async function POST(request: NextRequest) {
           // Un echec d'attribution ne doit pas bloquer la creation du compte.
           console.error('[signup] echec attribution essai:', trialError);
         }
+
+        // Parrainage : l'attribution est memorisee ici, a la creation effective
+        // du compte (CDC parrainage §4.5). L'AVANTAGE, lui, reste acquis a la
+        // souscription d'un abonnement annuel (CDC tarification §13) : ce sont
+        // deux moments distincts.
+        //
+        // Sans cette memorisation, le code etait perdu entre l'inscription et
+        // la souscription — separees par une verification d'email et jusqu'a
+        // sept jours d'essai.
+        const attributed = await recordSignupReferral({
+          userId: newUser.id,
+          accountId: newAccount.id,
+          rawCode: referralCode,
+          entryPoint: 'direct_signup',
+          now,
+        });
+        if (attributed) {
+          console.info(
+            `[signup] parrainage attribue : compte ${newAccount.id} parraine par ${attributed.referrerAccountId}`,
+          );
+        }
       }
 
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'http://localhost:3000';
@@ -375,13 +406,63 @@ export async function POST(request: NextRequest) {
       }
 
       return NextResponse.json(
-        { error: 'Erreur lors de la création du compte. Veuillez réessayer.', code: 'DATABASE_ERROR' },
+        {
+          error: 'Erreur lors de la création du compte. Veuillez réessayer.',
+          code: 'DATABASE_ERROR',
+          ...describeSchemaDrift(dbError),
+        },
         { status: 500 }
       );
     }
   } catch (error) {
-    console.error('POST error:', error);
-    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
+    // ══════════════════════════════════════════════════════════════════════
+    // NE PLUS RENVOYER UNE ERREUR MUETTE
+    //
+    // Ce bloc attrapait tout et repondait « Une erreur interne est survenue »
+    // sans code exploitable. Une colonne absente en base produisait donc
+    // exactement le meme message qu'une panne reseau, et l'inscription
+    // paraissait cassee sans qu'on puisse dire pourquoi depuis le navigateur.
+    //
+    // La cause reelle reste hors de la reponse — elle n'a rien a faire chez
+    // l'utilisateur — mais le code technique et la reference de journal
+    // permettent de la retrouver en une recherche.
+    // ══════════════════════════════════════════════════════════════════════
+    const err = error as { message?: string; code?: string };
+    const ref = `SIGNUP-${Date.now().toString(36).toUpperCase()}`;
+    console.error(
+      `[signup][${ref}] echec avant insertion (${err.code ?? 'sans code'}) : ${err.message ?? error}`,
+      error,
+    );
+    return NextResponse.json(
+      {
+        error: 'Une erreur interne est survenue.',
+        code: 'INTERNAL_ERROR',
+        reference: ref,
+        ...describeSchemaDrift(error),
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Traduit les erreurs PostgreSQL qui trahissent un schema desaligne.
+ *
+ * Ces trois codes ne signalent jamais une saisie utilisateur fautive : ils
+ * signalent que la base ne correspond pas au code deploye — typiquement une
+ * migration jamais appliquee. Les nommer evite des heures de recherche.
+ */
+function describeSchemaDrift(error: unknown): { schemaHint?: string } {
+  const code = (error as { code?: string })?.code;
+  switch (code) {
+    case '42703': // undefined_column
+      return { schemaHint: 'MISSING_COLUMN' };
+    case '42P01': // undefined_table
+      return { schemaHint: 'MISSING_TABLE' };
+    case '23514': // check_violation
+      return { schemaHint: 'CHECK_CONSTRAINT' };
+    default:
+      return {};
   }
 }
 

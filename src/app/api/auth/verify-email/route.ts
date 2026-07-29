@@ -43,8 +43,18 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // Projection explicite : `select()` enumere toutes les colonnes du schema
+    // et fait echouer la verification des qu'une seule manque en base.
     const userResult = await db
-      .select()
+      .select({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        isActive: users.isActive,
+        role: users.role,
+        planType: users.planType,
+        status: users.status,
+      })
       .from(users)
       .where(eq(users.email, email))
       .limit(1);
@@ -95,11 +105,20 @@ export async function GET(request: NextRequest) {
         generateRefreshToken(tokenPayload),
       ]);
 
-      const params = new URLSearchParams({
-        status: 'success',
-        at: accessToken,
-        rt: refreshToken,
-      });
+      // ══════════════════════════════════════════════════════════════════
+      // AUCUN JETON DANS L'URL — CDC cookies §5.1 et §13
+      //
+      // Cette redirection transportait `at` et `rt` en clair dans la query
+      // string. Une URL finit dans l'historique du navigateur, dans l'en-tete
+      // `Referer` envoye aux tiers, dans les journaux du reverse proxy et dans
+      // les outils de mesure : c'est exactement la fuite de jeton que le
+      // chantier « suppression du stockage local » vise a supprimer.
+      //
+      // Les deux jetons sont deja poses en cookies HttpOnly sur cette meme
+      // reponse (ci-dessous) : la session est etablie sans eux. La page de
+      // destination les ignorait d'ailleurs deja.
+      // ══════════════════════════════════════════════════════════════════
+      const params = new URLSearchParams({ status: 'success' });
       if (normalizedPlan) params.set('plan', normalizedPlan);
 
       const targetPath = normalizedPlan ? '/abonnement/onboarding' : '/verify-email';

@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+    getStoredReferralCode,
+    normalizeReferralCode,
+    resolveReferralCode,
+} from '@/services/referral-attribution.service';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { users, accounts, accountMemberships, referralLinks, referralEvents, accountSubscriptions } from '@/db/schema';
+import { users, accounts, accountMemberships, referralEvents, accountSubscriptions } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getStripeServer, STRIPE_PRODUCTS } from '@/lib/stripe';
 import { resolvePriceId, isBillingPeriod, type BillingPeriod } from '@/lib/stripe-prices';
@@ -93,7 +98,7 @@ export async function POST(request: NextRequest) {
         }
 
         const normalizedRequestedPlan = requestedPlan;
-        const referralCode = typeof body.referralCode === 'string' ? body.referralCode.trim() : '';
+        const referralCodeFromBody = normalizeReferralCode(body.referralCode);
         const entryPoint = body.entry_point || 'app_subscription_page';
         const product = STRIPE_PRODUCTS[normalizedRequestedPlan as keyof typeof STRIPE_PRODUCTS] || STRIPE_PRODUCTS.PREMIUM;
 
@@ -259,19 +264,21 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // Résoudre éventuellement un code de parrainage valide (3 mois offerts)
-        let resolvedReferral: { linkId: number; referrerAccountId: number } | null = null;
-        if (referralCode.length > 0) {
-            const [link] = await db
-                .select({ id: referralLinks.id, accountId: referralLinks.accountId, isActive: referralLinks.isActive })
-                .from(referralLinks)
-                .where(eq(referralLinks.code, referralCode))
-                .limit(1);
+        // ── Parrainage ────────────────────────────────────────────────────
+        //
+        // Le code presente ici est rarement dans la requete : le filleul
+        // souscrit plusieurs jours apres son inscription, apres une
+        // verification d'email et un essai de sept jours. Le code retenu a
+        // l'inscription (CDC parrainage §4.5) prend donc le relais.
+        //
+        // Un code explicitement transmis reste prioritaire : il traduit une
+        // action volontaire au moment de souscrire.
+        const referralCode =
+            referralCodeFromBody ?? (await getStoredReferralCode(user.id));
 
-            if (link?.isActive && link.accountId !== account.id) {
-                resolvedReferral = { linkId: link.id, referrerAccountId: link.accountId };
-            }
-        }
+        const resolvedReferral = referralCode
+            ? await resolveReferralCode(referralCode, account.id)
+            : null;
 
         // Préparer le duo_account si nécessaire
         let duoId: number | null = null;
@@ -409,7 +416,7 @@ export async function POST(request: NextRequest) {
                 billing_period: billingPeriod,
                 environment: process.env.NEXT_PUBLIC_APP_ENV || 'unknown',
                 entry_point: entryPoint,
-                referralCode: resolvedReferral ? referralCode : '',
+                referralCode: resolvedReferral ? (referralCode ?? '') : '',
             },
             billing_address_collection: 'auto',
             payment_method_collection: 'always',
@@ -439,7 +446,7 @@ export async function POST(request: NextRequest) {
                 referredUserId: user.id,
                 status: 'link_used',
                 rewardCredits: 10,
-                metadataJson: { checkoutSessionId: checkoutSession.id, referralCode },
+                metadataJson: { checkoutSessionId: checkoutSession.id, referralCode: referralCode ?? '' },
                 createdAt: new Date(),
                 updatedAt: new Date(),
             }).onConflictDoNothing();

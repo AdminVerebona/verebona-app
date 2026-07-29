@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
+import { db, getMigrationFailures } from '@/db';
 import { sql } from 'drizzle-orm';
 import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3';
 
@@ -32,6 +32,18 @@ interface HealthCheckResult {
       responseTime?: number;
       error?: string;
     };
+    /**
+     * Migrations que le lanceur n'a pas pu appliquer au demarrage.
+     *
+     * Un schema incomplet ne se voit pas : il se manifeste bien plus tard, par
+     * une colonne absente et une erreur 500 incomprehensible. C'est exactement
+     * ce qui a rendu la creation de compte impossible. Le rendre visible ici
+     * transforme un incident silencieux en alerte de supervision.
+     */
+    migrations: {
+      status: 'ok' | 'error';
+      failed?: string[];
+    };
   };
 }
 
@@ -62,6 +74,9 @@ export async function GET(request: NextRequest) {
         status: 'ok',
       },
       s3: {
+        status: 'ok',
+      },
+      migrations: {
         status: 'ok',
       },
     },
@@ -103,9 +118,20 @@ export async function GET(request: NextRequest) {
     // Ne pas marquer comme degraded si S3 n'est simplement pas configuré
   }
 
+  // Check 3: migrations appliquees au demarrage
+  const migrationFailures = getMigrationFailures();
+  if (migrationFailures.length > 0) {
+    result.checks.migrations.status = 'error';
+    result.checks.migrations.failed = migrationFailures.map((f) => f.filename);
+    result.status = 'degraded';
+  }
+
   // Déterminer le status global
   if (result.checks.database.status === 'error') {
     result.status = 'down';
+  } else if (result.checks.migrations.status === 'error') {
+    // Schema potentiellement incomplet : degrade, jamais 'ok'.
+    result.status = 'degraded';
   } else if (result.checks.s3.status === 'error' && process.env.OVH_S3_ACCESS_KEY_ID) {
     // Seulement degraded si S3 est configuré mais ne répond pas
     result.status = 'degraded';

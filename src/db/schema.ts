@@ -1063,6 +1063,10 @@ export const promoCodes = pgTable('promo_codes', {
 
 export const signupContexts = pgTable('signup_contexts', {
   id: uuid('id').primaryKey().defaultRandom(),
+  // Rattachement à l'inscrit (migration 0113). Nullable : les contextes
+  // anonymes historiques n'en portent pas.
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   entryPoint: text('entry_point').notNull().default('direct_signup'),
   targetOffer: text('target_offer'),
   rawCode: text('raw_code'),
@@ -1076,6 +1080,8 @@ export const signupContexts = pgTable('signup_contexts', {
   expiresAt: tstz('expires_at'),
 }, (table) => ({
   scCreatedAtIdx: index('signup_contexts_created_at_idx').on(table.createdAt),
+  scUserIdx: index('signup_contexts_user_id_idx').on(table.userId),
+  scAccountIdx: index('signup_contexts_account_id_idx').on(table.accountId),
 }));
 
 export const notificationEvents = pgTable('notification_events', {

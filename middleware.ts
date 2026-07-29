@@ -141,10 +141,33 @@ export async function middleware(request: NextRequest) {
     }
 
     // Routes publiques (pas besoin de JWT)
+    //
+    // ══════════════════════════════════════════════════════════════════════
+    // LES ROUTES DU CYCLE DE VIE DU COMPTE MANQUAIENT
+    //
+    // `verify-email`, `resend-verification`, `forgot-password` et
+    // `reset-password` sont par nature appelees SANS session : l'utilisateur
+    // n'a pas encore de compte actif, ou ne peut plus se connecter. Elles
+    // n'etaient pourtant pas listees ici, et tombaient donc dans le controle
+    // JWT plus bas.
+    //
+    // Consequence : le lien de verification recu par email renvoyait un JSON
+    // « 401 MISSING_TOKEN » dans le navigateur. Aucun compte cree ne pouvait
+    // etre active, et aucun mot de passe oublie ne pouvait etre reinitialise.
+    //
+    // Le defaut etait masque par la liste `authRateLimitedRoutes` juste en
+    // dessous, qui limite le debit de trois de ces routes — un traitement qui
+    // n'etait jamais atteint puisqu'il est imbrique DANS le bloc des routes
+    // publiques.
+    // ══════════════════════════════════════════════════════════════════════
     const publicRoutes = [
       '/api/auth/login',
       '/api/auth/refresh',
       '/api/auth/logout',
+      '/api/auth/verify-email',      // lien clique depuis l'email, sans session
+      '/api/auth/resend-verification',
+      '/api/auth/forgot-password',
+      '/api/auth/reset-password',
       '/api/health',
       '/api/users', // Public pour signup
       '/api/billing/stripe-webhook', // Stripe signe ses propres requêtes — pas de JWT

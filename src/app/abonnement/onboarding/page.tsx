@@ -12,8 +12,6 @@ function OnboardingContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const cancelled = searchParams.get('cancelled') === 'true';
-  const at = searchParams.get('at');
-  const rt = searchParams.get('rt');
   const rawPlanParam = searchParams.get('plan');
   const planFromUrl = rawPlanParam === 'duo' ? 'premium_duo' : rawPlanParam || null;
   const [loading, setLoading] = useState(false);
@@ -21,7 +19,8 @@ function OnboardingContent() {
 
   // CDC §5.1 / §16.4 : plus aucun jeton n'est transporte par l'URL ni ecrit
   // dans le navigateur. La session est deja etablie par les cookies HttpOnly
-  // poses lors de la connexion ; les parametres `at` et `rt` sont ignores.
+  // poses lors de la verification. Les anciens parametres `at` et `rt` ne sont
+  // plus emis par `/api/auth/verify-email` et ne sont plus lus ici.
   useEffect(() => {
     runAuthStorageMigration();
   }, []);
@@ -30,16 +29,12 @@ function OnboardingContent() {
     setLoading(true);
     setError(null);
     try {
-      // Lors de l'inscription avec un plan choisi (premium/duo/standard), on passe le plan pour que
-      // l'utilisateur obtienne bien le plan sélectionné (avec essai gratuit de 2 mois avant tout paiement).
-      // Fallback sur le localStorage si jamais le param n'est pas présent.
-      const pendingPlan = (typeof window !== 'undefined' && localStorage.getItem('pending_checkout_plan')) || null;
-      let planToSend: string | undefined = planFromUrl || undefined;
-      if (!planToSend && pendingPlan) {
-        planToSend = pendingPlan === 'duo' ? 'premium_duo' : pendingPlan;
-      }
+      // L'offre provient uniquement de l'URL. Le repli sur
+      // `localStorage.getItem('pending_checkout_plan')` a ete retire : plus
+      // aucune ecriture de parcours dans le navigateur (CDC cookies §5.1), et
+      // l'inscription ne choisit plus d'offre (CDC tarification §3.1).
       const payload: any = { entry_point: 'onboarding_page' };
-      if (planToSend) payload.plan = planToSend;
+      if (planFromUrl) payload.plan = planFromUrl;
       // CDC §4.1 : periodicite choisie (defaut annuel).
       payload.billing_period = searchParams.get('billing_period') === 'monthly' ? 'monthly' : 'yearly';
 
