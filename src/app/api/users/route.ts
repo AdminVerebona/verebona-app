@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(usersWithoutPasswords, { status: 200 });
   } catch (error) {
     console.error('GET error:', error);
-    return NextResponse.json({ error: 'Internal server error: ' + (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }
 
@@ -157,13 +157,9 @@ export async function POST(request: NextRequest) {
     const sanitizedLastName = lastName.trim();
     const sanitizedUsername = username ? String(username).trim() : null;
 
-    // Delete any unverified account with this email — unverified = not a real account
-    await db.delete(users).where(
-      and(
-        eq(users.email, sanitizedEmail),
-        eq(users.isActive, false)
-      )
-    );
+    // Libère l'email d'un compte jamais vérifié — un compte non vérifié n'est
+    // pas un vrai compte, l'email doit rester réutilisable.
+    await releaseUnverifiedEmail(sanitizedEmail);
 
     // Check if a verified account already exists with this email
     const existingUserByEmail = await db
@@ -385,7 +381,7 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     console.error('POST error:', error);
-    return NextResponse.json({ error: 'Internal server error: ' + (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }
 
@@ -457,7 +453,7 @@ export async function PUT(request: NextRequest) {
     }
   } catch (error) {
     console.error('PUT error:', error);
-    return NextResponse.json({ error: 'Internal server error: ' + (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }
 
@@ -488,6 +484,59 @@ export async function DELETE(request: NextRequest) {
     );
   } catch (error) {
     console.error('DELETE error:', error);
-    return NextResponse.json({ error: 'Internal server error: ' + (error as Error).message }, { status: 500 });
+    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
+  }
+}
+
+/**
+ * Libère l'adresse email d'un compte jamais vérifié.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI CE N'EST PLUS UN SIMPLE DELETE
+ *
+ * L'inscription supprimait la ligne `users` restée non vérifiée pour le même
+ * email. Une soixantaine de tables référencent `users.id` ; quatre d'entre
+ * elles le font sans `ON DELETE`, et une trace laissée par une tentative
+ * précédente suffit alors à faire échouer la suppression. L'inscription
+ * renvoyait un 500 et devenait définitivement impossible avec cet email.
+ *
+ * La suppression est tentée d'abord, parce qu'elle laisse la base propre. Si
+ * une contrainte la refuse, l'email est neutralisé : la ligne est conservée
+ * mais son adresse devient inutilisable, ce qui libère l'index unique et
+ * permet la nouvelle inscription.
+ *
+ * Neutraliser plutôt qu'échouer : un compte jamais vérifié ne porte aucune
+ * donnée utilisateur à protéger, et un inscrit bloqué ne réessaie pas.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+async function releaseUnverifiedEmail(email: string): Promise<void> {
+  const stale = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.email, email), eq(users.isActive, false)));
+
+  if (stale.length === 0) return;
+
+  try {
+    await db.delete(users).where(and(eq(users.email, email), eq(users.isActive, false)));
+    return;
+  } catch (e) {
+    console.warn(
+      `[signup] Suppression du compte non vérifié impossible (${(e as Error).message}) — ` +
+      'neutralisation de l\'email à la place.',
+    );
+  }
+
+  // Repli : l'adresse est rendue inutilisable, la ligne reste en base.
+  // Le suffixe garantit l'unicité même après plusieurs tentatives.
+  for (const row of stale) {
+    await db
+      .update(users)
+      .set({
+        email: `released+${row.id}+${Date.now()}@invalid.local`,
+        isActive: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, row.id));
   }
 }

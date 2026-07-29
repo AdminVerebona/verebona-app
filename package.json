@@ -16,6 +16,7 @@
         "db:studio": "drizzle-kit studio",
         "db:push": "drizzle-kit push",
         "db:seed:prompts": "tsx src/db/seeds/ai-prompts.seed.ts",
+        "db:seed:pricing": "tsx src/db/seeds/ai-model-pricing.seed.ts",
         "env:recette": "copy .env.recette.local .env.local",
         "env:prod": "copy .env.production.local .env.local",
         "dev:recette": "npm run env:recette && next dev --turbopack",

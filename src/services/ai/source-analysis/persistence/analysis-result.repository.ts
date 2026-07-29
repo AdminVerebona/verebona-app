@@ -28,14 +28,16 @@ export interface PersistedRun {
   /** true si un run identique existait déjà : aucun doublon n'a été créé. */
   deduplicated: boolean;
   /**
-   * Propositions écrites pour ce run — CDC §4.2.4, « preuve probable ou
-   * ambiguë → proposition ou revue IA ciblée ».
+   * Nombre de propositions écrites pour ce run — CDC §4.2.4, « preuve probable
+   * ou ambiguë → proposition ou revue IA ciblée ».
    *
-   * ⚠️ VAUT 0 AUJOURD'HUI : le pipeline unifié n'écrit encore aucune
-   * proposition de rattachement. Le champ est typé plutôt que sous-entendu
-   * pour que `computeFinalState` s'appuie sur un fait mesuré et non sur une
-   * hypothèse — et pour que l'écart soit visible au compilateur le jour où
-   * les propositions seront produites.
+   * Compte réel, jamais estimé : `computeFinalState` s'en sert pour décider si
+   * le document doit être présenté à valider. Un document marqué à valider sans
+   * proposition serait une impasse pour l'utilisateur — il verrait « décision
+   * attendue » sans rien à décider.
+   *
+   * Vaut 0 sur un run dédupliqué : les propositions du run d'origine sont
+   * toujours en base, aucune n'est réécrite (§4.1.7).
    */
   proposalCount: number;
 }
@@ -54,7 +56,16 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     ))
     .limit(1);
 
-  if (existing) return { runId: existing.id, deduplicated: true , proposalCount: 0 };
+  if (existing) {
+    // Run déjà connu : les propositions existantes sont conservées telles
+    // quelles. On les recompte pour que l'état du document reste cohérent avec
+    // ce qui lui est réellement présenté.
+    return {
+      runId: existing.id,
+      deduplicated: true,
+      proposalCount: await countProposals(existing.id),
+    };
+  }
 
   // Un seul run de référence par document : on libère l'ancien avant d'insérer.
   await db.update(documentAnalysisRuns)
@@ -78,13 +89,23 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     rawResponseJson: JSON.stringify(p.result),
   }).returning({ id: documentAnalysisRuns.id });
 
-  await insertProposals(run.id, p);
+  const proposalCount = await insertProposals(run.id, p);
   await updateSourceMetadata(p);
 
-  return { runId: run.id, deduplicated: false , proposalCount: 0 };
+  return { runId: run.id, deduplicated: false, proposalCount };
 }
 
-async function insertProposals(runId: number, p: PersistResultInput): Promise<void> {
+/** Propositions déjà en base pour un run — utilisé sur le chemin dédupliqué. */
+async function countProposals(runId: number): Promise<number> {
+  const rows = await db
+    .select({ id: documentAnalysisProposals.id })
+    .from(documentAnalysisProposals)
+    .where(eq(documentAnalysisProposals.runId, runId));
+  return rows.length;
+}
+
+/** @returns nombre de propositions écrites. */
+async function insertProposals(runId: number, p: PersistResultInput): Promise<number> {
   const rows: Array<typeof documentAnalysisProposals.$inferInsert> = [];
 
   for (const f of p.result.extractedFields) {
@@ -134,6 +155,7 @@ async function insertProposals(runId: number, p: PersistResultInput): Promise<vo
   }
 
   if (rows.length > 0) await db.insert(documentAnalysisProposals).values(rows);
+  return rows.length;
 }
 
 /** Métadonnées documentaires directement portées par le fichier. */
