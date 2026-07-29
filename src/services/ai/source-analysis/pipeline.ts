@@ -145,7 +145,10 @@ export async function runSourceAnalysis(
       }
 
       await markLotItems(lotId, groupSourceIds, 'completed', persisted.runId);
-      await setState(groupSourceIds, computeFinalState(result));
+      // `persisted.proposalCount` : nombre de propositions réellement écrites.
+      // Voir `computeFinalState` — un document n'est mis à valider que s'il a
+      // quelque chose à faire valider.
+      await setState(groupSourceIds, computeFinalState(result, persisted.proposalCount ?? 0));
 
       if (!persisted.deduplicated) analysedCount++;
       results.push(result);
@@ -233,11 +236,38 @@ function resolveAssetId(result: SourceAnalysisResult, input: SourceInput): numbe
   return null;
 }
 
-function computeFinalState(result: SourceAnalysisResult): string {
-  if (result.warnings.some((w) => w.code === 'NO_EXPLOITABLE_CONTENT')) return 'VALIDATION_REQUIRED';
-  if (result.warnings.some((w) => w.code === 'AMBIGUOUS_ASSET' || w.code === 'MULTI_ASSET_DOCUMENT')) {
-    return 'VALIDATION_REQUIRED';
-  }
+/**
+ * État final du document — CDC §4.2.4.
+ *
+ * ⚠️ `VALIDATION_REQUIRED` est une PROMESSE FAITE À L'UTILISATEUR : « ouvrez ce
+ * document, il y a une décision à prendre ». Elle n'est tenable que si une
+ * proposition l'accompagne. Un document marqué à valider dont le tiroir ne
+ * montre rien est une impasse : l'utilisateur ne peut ni décider, ni sortir de
+ * l'état.
+ *
+ * Deux corrections par rapport à la version précédente :
+ *
+ * • `NO_EXPLOITABLE_CONTENT` ne met plus le document à valider. Un document
+ *   illisible n'appelle AUCUNE décision de l'utilisateur — il n'y a rien à
+ *   trancher. Il est classé `ANALYZED`, l'avertissement restant consultable
+ *   dans le résultat d'analyse.
+ *
+ * • L'ambiguïté de rattachement ne met le document à valider QUE si une
+ *   proposition a effectivement été écrite. Le §4.2.4 est explicite :
+ *   « preuve probable ou ambiguë → proposition ou revue IA ciblée ». Pas un
+ *   état, une proposition. Tant que le pipeline n'en écrit pas, marquer le
+ *   document à valider promet une décision qu'on ne présente jamais.
+ */
+function computeFinalState(result: SourceAnalysisResult, proposalCount: number): string {
+  const ambiguous = result.warnings.some(
+    (w) => w.code === 'AMBIGUOUS_ASSET' || w.code === 'MULTI_ASSET_DOCUMENT',
+  );
+
+  // La condition porte sur les propositions écrites, jamais sur l'ambiguïté
+  // seule : c'est ce qui garantit qu'un document à valider a toujours quelque
+  // chose à montrer.
+  if (ambiguous && proposalCount > 0) return 'VALIDATION_REQUIRED';
+
   return 'ANALYZED';
 }
 

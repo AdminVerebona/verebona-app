@@ -26,6 +26,7 @@
  */
 
 import { NextRequest } from 'next/server';
+import type { RunSourceAnalysisOutput } from '@/services/ai/source-analysis/pipeline';
 
 export const maxDuration = 300; // 5 minutes — Vercel only
 import { getSession } from '@/lib/auth-guards';
@@ -442,14 +443,18 @@ async function streamUnifiedAnalysis(args: {
 
     // Le pipeline gère quota et déduplication : la route se contente de
     // traduire son verdict dans les codes que l'interface connaît déjà.
-    const code = {
+    //
+    // Table typée sur les motifs réels de `RunSourceAnalysisOutput` : si le
+    // pipeline en ajoute un, le compilateur exige sa traduction ici plutôt que
+    // de laisser l'interface recevoir un `done` trompeur.
+    const SKIP_CODES: Record<NonNullable<RunSourceAnalysisOutput['skippedReason']>, string> = {
       quota: 'ANALYSIS_QUOTA_REACHED',
       already_running: 'ALREADY_ANALYZING',
       no_valid_source: 'NOT_FOUND',
-    }[outcome?.skippedReason ?? ''] ?? null;
+    };
 
-    if (code) {
-      await write({ type: 'error', code });
+    if (outcome?.skippedReason) {
+      await write({ type: 'error', code: SKIP_CODES[outcome.skippedReason] });
       return;
     }
 

@@ -30,6 +30,15 @@ export interface ToProcessContext {
   fusionRunId?: number | null;
   source?: Source;
   assetName?: string;
+  // Sources des deux valeurs d'un arbitrage — CDC §7.1 : « valeur actuelle ;
+  // valeur concurrente ; source de chacune ». Sans elles, la carte affiche deux
+  // nombres entre lesquels rien ne permet de choisir.
+  currentSourceLabel?: string;
+  proposedSourceLabel?: string;
+  currentSourceDocumentId?: number;
+  proposedSourceDocumentId?: number;
+  /** Règle d'autorité appliquée, pour expliquer la proposition. */
+  authorityRule?: string;
 }
 
 export type PrimaryAction =

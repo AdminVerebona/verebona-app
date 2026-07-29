@@ -2,8 +2,11 @@
  * Fabrique des ports de l'orchestrateur — CDC §25.5.
  *
  * Assemble les implémentations concrètes (retrieval, sources, actions, persistance)
- * et les injecte dans `runAssistant`. C'est ici que la Phase 3 branchera la génération
- * Gemini réelle (via gemini-router + prompt-builder + provider + response-validator).
+ * et les injecte dans `runAssistant`.
+ *
+ * La génération est désormais branchée (`generation.adapter.ts`), via la
+ * gateway et non un client fournisseur direct. Elle reste inactive tant que
+ * `AI_INTELLIGENT_ASSISTANT` vaut `legacy`.
  */
 import type { OrchestratorPorts } from './assistant-orchestrator.service';
 import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
@@ -13,6 +16,8 @@ import { resolveSourcesForDisplay } from './source-resolver.service';
 import { resolveActions, type AccessChecker } from './action-resolver.service';
 import { persistResult } from './conversation.service';
 import { pgClient } from '@/db';
+import { buildGenerationPort } from './generation.adapter';
+import { buildClassificationPort } from './classification.adapter';
 
 /** Vérificateurs d'accès câblés sur les tables réelles du repo (§22.7). */
 function buildAccessChecker(): AccessChecker {
@@ -42,9 +47,16 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
 
     resolveSources: async (sources: RetrievedSource[]) => resolveSourcesForDisplay(sources),
 
-    // Phase 3 : brancher classifyWithAI / generateWithAI ici (laissés indéfinis en Phase 1-2).
-    classifyWithAI: undefined,
-    generateWithAI: undefined,
+    // ── Génération (usage 3) ─────────────────────────────────────────────
+    // Branchée, mais gouvernée par AI_INTELLIGENT_ASSISTANT : le port reste
+    // `undefined` tant que le drapeau vaut `legacy`, et l'orchestrateur
+    // n'entre alors jamais dans l'état GENERATING.
+    //
+    // Rester `undefined` est essentiel : l'orchestrateur teste la PRÉSENCE du
+    // port pour décider d'appeler un modèle. Une fonction inerte lui ferait
+    // traverser l'état pour rien.
+    classifyWithAI: buildClassificationPort(),
+    generateWithAI: buildGenerationPort(),
 
     resolveActions: (route, input, entityIds) =>
       resolveActions({

@@ -27,10 +27,28 @@ const SECURITY_THRESHOLDS = {
 import type {
   AiOperationCategory, AiBusinessResult, AiPipelineStepStatus, AiOperationOrigin,
 } from '@/types/ai-usage';
+import { resolveLegacyUseCase } from '@/services/ai/registry/legacy-usage-mapping';
 
 // ─── Configuration routage multi-provider ────────────────────────────────────
 
-/** Provider par défaut par catégorie — Flash en priorité, Pro en fallback */
+/**
+ * Routage par catégorie — chemin historique uniquement.
+ *
+ * ⚠️ Les modèles déclarés ici (`gemini-2.0-flash`, `gemini-2.0-pro`) ne figurent
+ * dans AUCUNE opération du référentiel : c'est le défaut n°10 de l'audit. Les
+ * lignes `ai_operation` écrites par ce chemin portent donc un nom de modèle qui
+ * ne correspond pas à l'appel réellement passé, et leur coût est faux.
+ *
+ * Corrigé de fait par la bascule : le pipeline unifié n'utilise pas ce tracker,
+ * il passe par la télémétrie de la gateway, aux modèles du référentiel. Cette
+ * constante disparaît au lot 7 avec le reste du chemin historique — elle figure
+ * déjà dans les symboles interdits de `check-legacy-ai.mjs` à partir de la
+ * phase 6.
+ *
+ * Ne pas la « corriger » ici : réaligner les modèles rendrait l'historique
+ * illisible, une même catégorie changeant de modèle sans qu'aucun appel n'ait
+ * changé.
+ */
 export const DEFAULT_PROVIDER_ROUTING: Record<AiOperationCategory, { primary: string; fallback: string; primaryModel: string; fallbackModel: string }> = {
   document_analysis: { primary: 'gemini', fallback: 'gemini', primaryModel: 'gemini-2.0-flash', fallbackModel: 'gemini-2.0-pro' },
   agenda_extraction: { primary: 'gemini', fallback: 'gemini', primaryModel: 'gemini-2.0-flash', fallbackModel: 'gemini-2.0-pro' },
@@ -42,6 +60,7 @@ export const DEFAULT_PROVIDER_ROUTING: Record<AiOperationCategory, { primary: st
   search:            { primary: 'gemini', fallback: 'gemini', primaryModel: 'gemini-2.0-flash', fallbackModel: 'gemini-2.0-pro' },
   retroactive:       { primary: 'gemini', fallback: 'gemini', primaryModel: 'gemini-2.0-flash', fallbackModel: 'gemini-2.0-pro' },
 };
+
 
 // ─── Types internes ───────────────────────────────────────────────────────────
 
@@ -478,6 +497,11 @@ export class AiUsageTracker {
         userId: opts.userId ?? null,
         assetFileId: opts.assetFileId ?? null,
         operationType: opts.operationType,
+        // Rattachement à l'écriture. La migration 0110 ne complète que les
+        // lignes existantes ; sans ceci, tout événement produit par un moteur
+        // historique après le déploiement reste non rattaché — et les moteurs
+        // historiques tournent tant que les drapeaux valent `legacy`.
+        useCaseCode: resolveLegacyUseCase(opts.operationType),
         provider: opts.provider ?? null,
         model: opts.model ?? null,
         isBillable: opts.isBillable ?? true,

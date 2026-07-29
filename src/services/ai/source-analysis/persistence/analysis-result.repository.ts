@@ -27,6 +27,17 @@ export interface PersistedRun {
   runId: number;
   /** true si un run identique existait déjà : aucun doublon n'a été créé. */
   deduplicated: boolean;
+  /**
+   * Propositions écrites pour ce run — CDC §4.2.4, « preuve probable ou
+   * ambiguë → proposition ou revue IA ciblée ».
+   *
+   * ⚠️ VAUT 0 AUJOURD'HUI : le pipeline unifié n'écrit encore aucune
+   * proposition de rattachement. Le champ est typé plutôt que sous-entendu
+   * pour que `computeFinalState` s'appuie sur un fait mesuré et non sur une
+   * hypothèse — et pour que l'écart soit visible au compilateur le jour où
+   * les propositions seront produites.
+   */
+  proposalCount: number;
 }
 
 export async function persistAnalysisResult(p: PersistResultInput): Promise<PersistedRun> {
@@ -43,7 +54,7 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     ))
     .limit(1);
 
-  if (existing) return { runId: existing.id, deduplicated: true };
+  if (existing) return { runId: existing.id, deduplicated: true , proposalCount: 0 };
 
   // Un seul run de référence par document : on libère l'ancien avant d'insérer.
   await db.update(documentAnalysisRuns)
@@ -70,7 +81,7 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
   await insertProposals(run.id, p);
   await updateSourceMetadata(p);
 
-  return { runId: run.id, deduplicated: false };
+  return { runId: run.id, deduplicated: false , proposalCount: 0 };
 }
 
 async function insertProposals(runId: number, p: PersistResultInput): Promise<void> {

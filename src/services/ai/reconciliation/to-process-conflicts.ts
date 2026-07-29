@@ -64,9 +64,46 @@ interface ConflictRow {
   current_value: string | null;
   proposed_value: string | null;
   source_detail: string | null;
+  authority_rule: string | null;
   inconsistency_type: string | null;
   created_at: string;
   asset_name: string | null;
+  /** Source de la valeur en place — CDC §7.1, « source de chacune ». */
+  current_source: string | null;
+  current_source_id: number | null;
+  /** Source de la valeur concurrente. */
+  proposed_source: string | null;
+  proposed_source_id: number | null;
+}
+
+/**
+ * Libellés des types de documents.
+ *
+ * C'est le renseignement qui permet de trancher. « 82 m² contre 78,4 m² » ne se
+ * décide pas ; « 82 m² d'après l'annonce, 78,4 m² d'après l'acte notarié » se
+ * décide en une seconde. Le CDC §7.1 l'exige explicitement.
+ */
+const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  ACTE_AUTHENTIQUE: 'Acte authentique',
+  ACTE_NOTARIE: 'Acte notarié',
+  COMPROMIS_VENTE: 'Compromis de vente',
+  MESURAGE_LEGAL: 'Mesurage officiel',
+  DPE: 'Diagnostic de performance énergétique',
+  DIAGNOSTIC: 'Diagnostic',
+  ANNONCE_COMMERCIALE: 'Annonce commerciale',
+  CARTE_GRISE: 'Carte grise',
+  CERTIFICAT_IMMATRICULATION: "Certificat d'immatriculation",
+  CONTRAT_ASSURANCE: "Contrat d'assurance",
+  AVIS_ECHEANCE: "Avis d'échéance",
+  FACTURE: 'Facture',
+  CERTIFICAT_GARANTIE: 'Certificat de garantie',
+  RAPPORT_ENTRETIEN: "Rapport d'entretien",
+  SAISIE_MANUELLE: 'Saisie manuelle',
+};
+
+export function documentTypeLabel(type: string | null): string {
+  if (!type) return 'Source inconnue';
+  return DOCUMENT_TYPE_LABELS[type] ?? type;
 }
 
 /**
@@ -84,11 +121,27 @@ export async function listOpenReconciliationConflicts(
 
   try {
     rows = (await pgClient.unsafe(
+      // Les preuves des deux côtés sont jointes pour restituer la SOURCE de
+      // chaque valeur (§7.1). `current_evidence_ids` et `proposed_evidence_ids`
+      // sont des tableaux : on retient la preuve la plus autorisée de chacun,
+      // c'est celle sur laquelle la décision s'est appuyée.
       `SELECT i.id, i.asset_id, i.field_key, i.current_value, i.proposed_value,
-              i.source_detail, i.inconsistency_type, i.created_at,
-              a.name AS asset_name
+              i.source_detail, i.authority_rule, i.inconsistency_type, i.created_at,
+              a.name AS asset_name,
+              ce.document_type AS current_source,  ce.source_id AS current_source_id,
+              pe.document_type AS proposed_source, pe.source_id AS proposed_source_id
          FROM inconsistency_registry i
          LEFT JOIN assets a ON a.id = i.asset_id AND a.deleted_at IS NULL
+         LEFT JOIN LATERAL (
+           SELECT document_type, source_id FROM field_evidence
+            WHERE id = ANY (SELECT jsonb_array_elements_text(i.current_evidence_ids)::int)
+            ORDER BY authority_score DESC, extracted_at DESC LIMIT 1
+         ) ce ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT document_type, source_id FROM field_evidence
+            WHERE id = ANY (SELECT jsonb_array_elements_text(i.proposed_evidence_ids)::int)
+            ORDER BY authority_score DESC, extracted_at DESC LIMIT 1
+         ) pe ON TRUE
         WHERE i.account_id = $1
           AND i.status = 'open'
           AND i.source_type = 'reconciliation'
@@ -129,13 +182,26 @@ function toItem(row: ConflictRow): ToProcessItem {
       // Les deux valeurs côte à côte, avec leur origine. L'utilisateur doit
       // pouvoir trancher sans ouvrir les documents — et pouvoir les ouvrir
       // quand même s'il hésite (§4.2.9).
+      // Le libellé porte la source : c'est ce qui rend l'arbitrage possible
+      // sans ouvrir les documents (§7.1).
       conflictingValues: [
-        { label: 'Valeur actuelle', value: row.current_value ?? '(vide)' },
-        { label: 'Valeur proposée', value: row.proposed_value ?? '(vide)' },
+        {
+          label: `Valeur actuelle — ${documentTypeLabel(row.current_source)}`,
+          value: row.current_value ?? '(vide)',
+        },
+        {
+          label: `Valeur proposée — ${documentTypeLabel(row.proposed_source)}`,
+          value: row.proposed_value ?? '(vide)',
+        },
       ],
       currentValue: row.current_value ?? undefined,
       detectedValue: row.proposed_value ?? undefined,
       assetName: row.asset_name ?? undefined,
+      currentSourceLabel: documentTypeLabel(row.current_source),
+      proposedSourceLabel: documentTypeLabel(row.proposed_source),
+      currentSourceDocumentId: row.current_source_id ?? undefined,
+      proposedSourceDocumentId: row.proposed_source_id ?? undefined,
+      authorityRule: row.authority_rule ?? undefined,
       source: 'document_ai',
       createdAt: new Date(row.created_at).toISOString(),
     },

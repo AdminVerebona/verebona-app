@@ -1725,6 +1725,10 @@ export const aiUsageEvent = pgTable('ai_usage_event', {
   userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
   assetFileId: integer('asset_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
   operationType: text('operation_type').notNull(),
+  // Rattachement aux cinq usages (migration 0101). La colonne existait en base
+  // mais n'était pas déclarée ici : Drizzle ne pouvait donc pas l'écrire, et
+  // tout événement produit après la 0110 repartait non rattaché.
+  useCaseCode: text('use_case_code'),
   provider: text('provider'),
   model: text('model'),
   isBillable: boolean('is_billable').notNull().default(true),
