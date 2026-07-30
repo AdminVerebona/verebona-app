@@ -58,11 +58,6 @@ export default function AdminEmailLogsPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       // Build query params
       const params = new URLSearchParams({
@@ -75,8 +70,8 @@ export default function AdminEmailLogsPage() {
       }
 
       const response = await fetch(`/api/admin/email-logs?${params.toString()}`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });

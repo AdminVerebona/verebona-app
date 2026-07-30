@@ -127,15 +127,10 @@ export default function AdminDocumentTypesPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       const response = await fetch('/api/admin/document-types', {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -160,12 +155,9 @@ export default function AdminDocumentTypesPage() {
 
   const loadAssetTypes = async () => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/asset-types', {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -230,9 +222,6 @@ export default function AdminDocumentTypesPage() {
     try {
       setAddLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       // Build asset associations
       const assetAssociations: any[] = [];
       
@@ -265,10 +254,10 @@ export default function AdminDocumentTypesPage() {
       });
 
       const response = await fetch('/api/admin/document-types', {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           ...formData,
@@ -332,9 +321,6 @@ export default function AdminDocumentTypesPage() {
     try {
       setEditLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       // Build asset associations
       const assetAssociations: any[] = [];
       
@@ -365,10 +351,10 @@ export default function AdminDocumentTypesPage() {
       });
 
       const response = await fetch(`/api/admin/document-types/${editingType.id}`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           label: formData.label,
@@ -399,13 +385,10 @@ export default function AdminDocumentTypesPage() {
     try {
       setDeleteLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/document-types/${id}`, {
+      credentials: 'include',
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ confirmId: id }),

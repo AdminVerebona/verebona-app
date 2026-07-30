@@ -135,12 +135,9 @@ export default function EditExportTemplatePage() {
 
   const loadAssetTypes = async () => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/asset-types', {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -179,15 +176,10 @@ export default function EditExportTemplatePage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        router.push('/login?redirect=/admin/export-templates');
-        return;
-      }
 
       const response = await fetch(`/api/admin/export-templates/${templateId}`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -234,7 +226,6 @@ export default function EditExportTemplatePage() {
 
     try {
       setIsSaving(true);
-      const token = localStorage.getItem('bearer_token');
 
       let parsedVariables = null;
       if (formData.variables.trim()) {
@@ -251,9 +242,9 @@ export default function EditExportTemplatePage() {
       }
 
       const response = await fetch(`/api/admin/export-templates/${templateId}`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({

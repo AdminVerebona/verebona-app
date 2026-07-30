@@ -90,8 +90,8 @@ export function DocumentClassificationSection({
     setError(null);
     try {
       const r = await fetch(`/api/documents/${documentId}/classification`, {
+      credentials: 'include',
         method: 'PATCH',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         // Les deux champs sont transmis explicitement, `null` compris : c'est
         // une modification voulue, pas une omission.

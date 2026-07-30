@@ -28,6 +28,14 @@ export async function GET(
     const queryToken = searchParams.get('token');
 
     let token: string | null = queryToken;
+
+    // ⚠️ CHAÎNE DE REPLI RÉTABLIE — le codemod l'avait supprimée.
+    //
+    // Elle est désormais le SEUL chemin fonctionnel. Le paramètre `?token=`
+    // a été retiré des appels côté navigateur — un jeton n'a rien à faire
+    // dans une URL, qui finit dans l'historique, les en-têtes `Referer` et
+    // les journaux du proxy. Sans ce repli sur le cookie, chaque
+    // prévisualisation d'image ou de PDF renverrait 401.
     if (!token) {
       const authHeader = request.headers.get('authorization');
       if (authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);

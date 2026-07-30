@@ -17,12 +17,11 @@ export default function FixUserIdsPage() {
     setResult(null);
 
     try {
-      const token = localStorage.getItem("bearer_token");
       const response = await fetch("/api/admin/events/fix-user-ids", {
+      credentials: 'include',
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(token && { Authorization: `Bearer ${token}` }),
         },
       });
 

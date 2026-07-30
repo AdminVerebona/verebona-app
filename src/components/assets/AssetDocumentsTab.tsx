@@ -58,9 +58,8 @@ export function AssetDocumentsTab({ assetId, assetCategory, assetName, assetType
   const [drawerDoc, setDrawerDoc] = useState<DocumentDrawerItem | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerIndex, setDrawerIndex] = useState<number>(-1);
-  const [bearerToken, setBearerToken] = useState('');
+  const [setBearerToken] = useState('');
 
-  useEffect(() => { setBearerToken(localStorage.getItem('bearer_token') || ''); }, []);
 
   // Pagination state
   const [pageSize, setPageSize] = useState<PageSize>(50);
@@ -134,9 +133,9 @@ export function AssetDocumentsTab({ assetId, assetCategory, assetName, assetType
     sizeBytes: f.size,
     createdAt: f.createdAt,
     documentDate: f.documentDate,
-    previewUrl: f.mimeType?.startsWith('image/') ? `/api/files/${f.id}/proxy${bearerToken ? `?token=${encodeURIComponent(bearerToken)}` : ''}` : (f.previewUrl ?? undefined),
+    previewUrl: f.mimeType?.startsWith('image/') ? `/api/files/${f.id}/proxy` : (f.previewUrl ?? undefined),
     iconType: (f.mimeType.startsWith('image/') ? 'image' : f.mimeType === 'application/pdf' ? 'pdf' : 'other') as 'image' | 'pdf' | 'other',
-  })), [files, bearerToken]);
+  })), [files]);
 
   const openDocumentAtIndex = useCallback((index: number) => {
     const file = files[index];

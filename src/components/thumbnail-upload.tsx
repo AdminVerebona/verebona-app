@@ -58,16 +58,9 @@ export function ThumbnailUpload({ currentThumbnail, onThumbnailChange, assetId }
       // Fetch signed URL from API
       setIsLoadingSignedUrl(true);
       try {
-        const token = localStorage.getItem('bearer_token');
-        if (!token) {
-          setImageError(true);
-          return;
-        }
 
         const response = await fetch(`/api/assets/${assetId}/thumbnail`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
+      credentials: 'include',
         });
 
         if (response.ok) {
@@ -113,10 +106,6 @@ export function ThumbnailUpload({ currentThumbnail, onThumbnailChange, assetId }
       throw new Error('Fichier vide');
     }
 
-    const token = localStorage.getItem('bearer_token');
-    if (!token) {
-      throw new Error('SESSION_EXPIRED');
-    }
 
     // Calculate hash
     setUploadProgress(10);
@@ -129,10 +118,10 @@ export function ThumbnailUpload({ currentThumbnail, onThumbnailChange, assetId }
     const targetAssetId = assetId || 0;
     
     const presignResponse = await fetch('/api/files/presign', {
+      credentials: 'include',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({
         assetId: targetAssetId,
@@ -188,10 +177,10 @@ export function ThumbnailUpload({ currentThumbnail, onThumbnailChange, assetId }
 
     // Confirm upload
     const confirmResponse = await fetch('/api/files/confirm', {
+      credentials: 'include',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({ fileId: dbFileId }),
     });
@@ -244,7 +233,6 @@ export function ThumbnailUpload({ currentThumbnail, onThumbnailChange, assetId }
           action: {
             label: 'Se reconnecter',
             onClick: () => {
-              localStorage.removeItem('bearer_token');
               router.push('/login?redirect=' + encodeURIComponent(window.location.pathname));
             },
           },

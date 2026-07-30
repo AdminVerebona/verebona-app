@@ -250,7 +250,6 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       console.error('Logout error:', error);
     } finally {
       // Nettoyer complètement le localStorage
-      localStorage.removeItem('bearer_token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
       // Deconnexion : retour au site vitrine (cross-domain)

@@ -259,7 +259,7 @@ export default function AssetDetailPage() {
   useEffect(() => {
     const assetId = parseInt(params.id as string);
     if (!params.id || isNaN(assetId)) return;
-    const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('bearer_token');
+    const hasToken = typeof window !== 'undefined' && true;
     if (hasToken) {
       apiClient.get<AssetDetail>(`/api/assets?id=${assetId}`, { useCache: true }).catch(() => {});
       apiClient.get(`/api/assets/${assetId}/overview`, { useCache: true }).catch(() => {});

@@ -23,10 +23,9 @@ function AbonnementSuccessContent() {
     const poll = async () => {
       if (stopped) return;
       try {
-        const token = localStorage.getItem('bearer_token');
         const url = sessionId ? `/api/billing/me?session_id=${encodeURIComponent(sessionId)}` : '/api/billing/me';
         const res = await fetch(url, {
-          headers: { Authorization: `Bearer ${token}` },
+          credentials: 'include',
         });
         if (res.ok) {
           const data = await res.json();
@@ -41,13 +40,12 @@ function AbonnementSuccessContent() {
             // Force a refresh of the user session / JWT token
             try {
               const refreshRes = await fetch('/api/auth/refresh', {
+      credentials: 'include',
                 method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
               });
               if (refreshRes.ok) {
                 const refreshData = await refreshRes.json();
                 if (refreshData.accessToken) {
-                  localStorage.setItem('bearer_token', refreshData.accessToken);
                 }
               }
             } catch (err) {

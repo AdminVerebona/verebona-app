@@ -127,7 +127,6 @@ export function AssetFormDialog({
     setIsSubmitting(true);
 
     try {
-      const token = localStorage.getItem('bearer_token');
       const payload: any = {
         userId,
         name: formData.name,
@@ -147,8 +146,9 @@ export function AssetFormDialog({
       }
 
       const response = await fetch('/api/assets', {
+      credentials: 'include',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
       });
 

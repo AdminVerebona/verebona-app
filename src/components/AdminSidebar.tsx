@@ -64,7 +64,6 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
-      localStorage.removeItem('bearer_token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
       router.push('/');

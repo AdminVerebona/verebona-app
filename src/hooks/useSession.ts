@@ -62,14 +62,14 @@ export function useSession(
   const [user, setUser] = useState<User | null>(() => getCachedUser());
   const [isLoading, setIsLoading] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
-    const hasToken = !!localStorage.getItem('bearer_token');
+    const hasToken = true;
     // Only skip loading if we have a valid cached user (correct shape)
     return !(hasToken && getCachedUser() !== null);
   });
   const [error, setError] = useState<string | null>(null);
 
   const fetchUser = async () => {
-    const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('bearer_token');
+    const hasToken = typeof window !== 'undefined' && true;
 
     if (!hasToken) {
       setUser(null);

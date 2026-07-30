@@ -100,11 +100,6 @@ export default function AdminAuditLogPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       // Build query params for admin logs
       const adminParams = new URLSearchParams({
@@ -129,14 +124,14 @@ export default function AdminAuditLogPage() {
       // Fetch both logs in parallel
       const [adminResponse, userActivityResponse] = await Promise.all([
         fetch(`/api/admin/audit-log?${adminParams.toString()}`, {
+      credentials: 'include',
           headers: {
-            'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
         }),
         fetch(`/api/admin/user-activity-log?${userParams.toString()}`, {
+      credentials: 'include',
           headers: {
-            'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
         }),
@@ -214,11 +209,6 @@ export default function AdminAuditLogPage() {
   const handleExportCSV = async () => {
     try {
       setIsExporting(true);
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        toast.error('Non authentifié');
-        return;
-      }
 
       // Build query params
       const params = new URLSearchParams();
@@ -229,9 +219,7 @@ export default function AdminAuditLogPage() {
       if (endDate) params.append('endDate', new Date(endDate).toISOString());
 
       const response = await fetch(`/api/admin/audit-log/export?${params.toString()}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {

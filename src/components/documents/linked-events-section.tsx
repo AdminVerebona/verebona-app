@@ -83,13 +83,7 @@ export function LinkedEventsSection({
   const fetchLinkedEvents = async () => {
     setIsLoading(true);
     try {
-      const token = localStorage.getItem('bearer_token');
       
-      if (!token) {
-        console.error('No bearer token found');
-        toast.error('Session expirée, veuillez vous reconnecter');
-        return;
-      }
 
       if (!documentId || isNaN(documentId)) {
         console.error('Invalid documentId:', documentId);
@@ -98,9 +92,7 @@ export function LinkedEventsSection({
       }
 
       const response = await fetch(`/api/documents/${documentId}/events`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {
@@ -127,17 +119,10 @@ export function LinkedEventsSection({
     }
 
     try {
-      const token = localStorage.getItem('bearer_token');
       
-      if (!token) {
-        toast.error('Session expirée, veuillez vous reconnecter');
-        return;
-      }
 
       const response = await fetch(`/api/events?assetId=${assetId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {
@@ -171,12 +156,11 @@ export function LinkedEventsSection({
 
     setIsLinking(true);
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/documents/${documentId}/events`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           eventIds: selectedEventIds,
@@ -209,12 +193,9 @@ export function LinkedEventsSection({
     if (!pendingDeleteId) return;
     try {
       setIsDeleting(true);
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/documents/${documentId}/events?eventId=${pendingDeleteId}`, {
+      credentials: 'include',
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
       });
 
       if (!response.ok) {
@@ -237,12 +218,11 @@ export function LinkedEventsSection({
   // ➕ Après création, lier automatiquement le nouvel événement au document
   const handleEventCreatedAndLink = async (createdEventId: number) => {
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/documents/${documentId}/events`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({ eventIds: [createdEventId] }),
       });

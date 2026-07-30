@@ -154,7 +154,10 @@ $fichiers = @(
   'src/services/ai/governance/corpus/corpus-comparator.ts',
   'src/services/ai/governance/corpus/corpus-runner.ts',
   'src/services/ai/governance/corpus/analysis-runner.ts',
-  'src/services/ai/governance/corpus/__tests__/corpus-comparator.test.ts'
+  'src/services/ai/governance/corpus/__tests__/corpus-comparator.test.ts',
+  'src/db/seeds/corpus/seed-corpus-account.ts',
+  'src/scripts/migrate-auth-storage.ts',
+  'src/lib/__tests__/no-bearer-token.test.ts'
 )
 
 $manquants = @()

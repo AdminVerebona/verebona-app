@@ -58,13 +58,8 @@ export function useThumbnailUrl(assetId: number | null | undefined, thumbnailUrl
     const fetchSignedUrl = async () => {
       setIsLoading(true);
       try {
-        const token = localStorage.getItem('bearer_token');
-        if (!token) return;
-
         const response = await fetch(`/api/assets/${assetId}/thumbnail`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
+      credentials: 'include',
         });
 
         if (!response.ok) {

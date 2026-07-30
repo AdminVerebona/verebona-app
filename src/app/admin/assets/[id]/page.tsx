@@ -124,15 +124,10 @@ export default function AdminAssetDetailPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       const response = await fetch(`/api/admin/assets/${assetId}`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -163,14 +158,11 @@ export default function AdminAssetDetailPage() {
 
     try {
       setStatusLoading(true);
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/assets/${assetId}`, {
+      credentials: 'include',
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({ status: selectedStatus }),
       });
@@ -195,14 +187,11 @@ export default function AdminAssetDetailPage() {
     try {
       setDeleteLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/assets/${assetId}`, {
+      credentials: 'include',
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           confirmId: parseInt(assetId),

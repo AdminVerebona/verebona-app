@@ -98,17 +98,12 @@ export function ExportTemplateDialog({
       setIsGenerating(true);
       toast.info('Génération du PDF en cours...');
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        toast.error('Session expirée. Veuillez vous reconnecter.');
-        return;
-      }
 
       // Call generic PDFMonkey API route with template ID
       const response = await fetch(`/api/assets/${assetId}/export-pdf/${template.id}`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -139,7 +134,7 @@ export function ExportTemplateDialog({
           selectedDocs.map(async (doc) => {
             try {
               const downloadResponse = await fetch(`/api/files/${doc.id}/download`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
               });
 
               if (downloadResponse.ok) {

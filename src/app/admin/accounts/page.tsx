@@ -50,9 +50,8 @@ export default function AdminAccountsPage() {
     try {
       setLoading(true);
       setFetchError(null);
-      const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
       const res = await fetch('/api/admin/accounts', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
       });
       if (res.status === 401 || res.status === 403) {
         router.push('/login?returnUrl=/admin/accounts');

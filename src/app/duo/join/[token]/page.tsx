@@ -35,13 +35,9 @@ function DuoJoinContent() {
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
-    if (!token) {
-      setPageState('invalid');
-      return;
-    }
 
     // Validate the token
-    fetch(`/api/duo/join?token=${encodeURIComponent(token)}`)
+    fetch(`/api/duo/join`, { credentials: 'include' })
       .then(async (res) => {
         const data = await res.json();
         if (res.ok && data.valid) {
@@ -67,12 +63,11 @@ function DuoJoinContent() {
 
     setPageState('joining');
     try {
-      const bearerToken = localStorage.getItem('bearer_token');
       const res = await fetch('/api/duo/join', {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${bearerToken}`,
         },
         body: JSON.stringify({ token }),
       });

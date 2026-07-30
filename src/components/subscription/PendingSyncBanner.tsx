@@ -22,8 +22,7 @@ export function PendingSyncBanner({ onSynced }: PendingSyncBannerProps) {
       if (stopped || count >= MAX) { clearInterval(interval); return; }
       count++;
       try {
-        const token = localStorage.getItem('bearer_token');
-        const res = await fetch('/api/billing/me', { headers: { Authorization: `Bearer ${token}` } });
+        const res = await fetch('/api/billing/me', { credentials: 'include' });
         if (res.ok) {
           const data = await res.json();
           const plan = data.plan_type?.toUpperCase();
@@ -46,9 +45,8 @@ export function PendingSyncBanner({ onSynced }: PendingSyncBannerProps) {
     setIsChecking(true);
     setShowSlowMessage(false);
     try {
-      const token = localStorage.getItem('bearer_token');
       const res = await fetch('/api/billing/me', {
-        headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();

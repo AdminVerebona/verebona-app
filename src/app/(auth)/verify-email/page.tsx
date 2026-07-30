@@ -93,8 +93,8 @@ function VerifyEmailContent() {
     setResendState('sending');
     try {
       const response = await fetch('/api/auth/resend-verification', {
+      credentials: 'include',
         method: 'POST',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: resendEmail }),
       });

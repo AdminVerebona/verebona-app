@@ -128,8 +128,8 @@ export function SubscriptionSummary() {
     setCancelLoading(true);
     try {
       const res = await fetch('/api/billing/schedule-change', {
+      credentials: 'include',
         method: 'DELETE',
-        credentials: 'include',
       });
       if (res.ok) {
         toast.success('Changement programmé annulé.');

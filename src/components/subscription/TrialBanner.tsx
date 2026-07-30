@@ -36,7 +36,7 @@ export function TrialBanner() {
     const load = async () => {
       try {
         const res = await fetch('/api/billing/trial-status', {
-          credentials: 'include',
+      credentials: 'include',
         });
         if (!res.ok) return;
         const json = (await res.json()) as TrialStatus;

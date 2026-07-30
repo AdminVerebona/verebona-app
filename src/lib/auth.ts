@@ -18,7 +18,11 @@ export interface CurrentUser {
  */
 export async function getCurrentUser(request: NextRequest): Promise<CurrentUser | null> {
   const token = extractAccessToken(request);
-  
+
+  // Garde rétablie : le codemod de migration l'a retirée à tort. `token` est
+  // ici extrait de la requête serveur — en-tête ou cookie — et non du
+  // stockage du navigateur. Sans elle, une requête anonyme lève au lieu de
+  // rendre `null`, ce qui transformerait chaque appel non authentifié en 500.
   if (!token) {
     return null;
   }

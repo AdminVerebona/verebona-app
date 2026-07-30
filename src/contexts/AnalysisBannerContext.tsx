@@ -87,10 +87,8 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
   // Au montage : vérifier si des documents non analysés existent et déclencher leur analyse.
   // Couvre le cas où l'utilisateur avait épuisé son quota puis a rechargé du crédit / upgradé.
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
-    if (!token) return;
     fetch('/api/analysis/check-pending', {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
     }).catch(() => {});
   }, []);
 
@@ -103,15 +101,12 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
       const ids = analyzingFileIdsRef.current.filter(id => id > 0);
       if (ids.length === 0) return;
 
-      const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
-      if (!token) return;
-
       try {
         // Vérifier l'état de chaque doc en cours via l'API analysis-status
         await Promise.all(ids.map(async (fileId) => {
           try {
             const res = await fetch(`/api/documents/${fileId}/analysis-status`, {
-              headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
             });
             if (!res.ok) return;
             const data = await res.json();

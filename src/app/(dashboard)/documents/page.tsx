@@ -163,7 +163,7 @@ export default function DocumentsPage() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [bearerToken, setBearerToken] = useState('');
+  const [setBearerToken] = useState('');
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -177,7 +177,6 @@ export default function DocumentsPage() {
   }, []);
   const deselectAll = useCallback(() => setSelectedIds([]), []);
 
-  useEffect(() => { setBearerToken(localStorage.getItem('bearer_token') || ''); }, []);
 
   const docTypeLabels = useMemo(() => {
     const m: Record<string, string> = {};
@@ -189,10 +188,10 @@ export default function DocumentsPage() {
   const hasActiveFilters = assetFilters.length > 0 || typeFilters.length > 0 || formatFilters.length > 0 || !!supplierFilter || !!dateFrom || !!dateTo;
   const activeFilterCount = [assetFilters.length > 0, typeFilters.length > 0, formatFilters.length > 0, !!supplierFilter, !!dateFrom || !!dateTo].filter(Boolean).length;
 
-  const loadImagePreviews = useCallback((docs: Document[], token: string) => {
+  const loadImagePreviews = useCallback((docs: Document[]) => {
     const urls: Record<number, string> = {};
     docs.filter(d => d.mimeType?.includes('image/')).forEach(d => {
-      urls[d.id] = token ? `/api/files/${d.id}/proxy?token=${encodeURIComponent(token)}` : `/api/files/${d.id}/proxy`;
+      urls[d.id] = `/api/files/${d.id}/proxy`;
     });
     setFilePreviewUrls(urls);
   }, []);
@@ -219,7 +218,7 @@ export default function DocumentsPage() {
       const list: Document[] = result.data || [];
       setDocuments(list);
       setPagination(result.pagination);
-      await loadImagePreviews(list, localStorage.getItem('bearer_token') || '');
+      await loadImagePreviews(list);
     } catch { toast.error('Erreur lors du chargement des documents'); }
     finally { setIsLoading(false); }
   }, [loadImagePreviews]);
@@ -569,9 +568,9 @@ export default function DocumentsPage() {
                   {/* Background layer */}
                   {isImage && previewUrl ? (
                     <Image src={previewUrl} alt="" fill className="object-cover" unoptimized />
-                  ) : isPdf && bearerToken ? (
+                  ) : isPdf ? (
                     <iframe
-                      src={`/api/files/${doc.id}/proxy?token=${encodeURIComponent(bearerToken)}`}
+                      src={`/api/files/${doc.id}/proxy`}
                       className="absolute inset-0 w-full h-full border-0 pointer-events-none"
                       title={doc.fileName}
                       loading="lazy"

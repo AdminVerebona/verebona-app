@@ -249,6 +249,7 @@ export default function InformationsTab() {
     try {
       setChangingPassword(true);
       const response = await fetch('/api/users/me/change-password', {
+      credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -644,12 +645,11 @@ function DeleteAccountCard() {
     if (confirmation !== REQUIRED_TEXT) return;
     setDeleting(true);
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
       const res = await fetch('/api/users/me', {
+      credentials: 'include',
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({ confirmation }),
       });
@@ -660,7 +660,6 @@ function DeleteAccountCard() {
         return;
       }
       // Clear session
-      localStorage.removeItem('bearer_token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
       toast.success('Votre compte a été supprimé.');

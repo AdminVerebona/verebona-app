@@ -85,7 +85,7 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
 
   const handleMouseEnter = () => {
     // Pre-warm cache on hover so data is ready before click
-    const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('bearer_token');
+    const hasToken = typeof window !== 'undefined' && true;
     if (hasToken && !isBlocked) {
       apiClient.get(`/api/assets?id=${asset.id}`, { useCache: true }).catch(() => {});
       apiClient.get(`/api/assets/${asset.id}/overview`, { useCache: true }).catch(() => {});
@@ -242,7 +242,7 @@ function AssetsPageContent() {
 
   // Pre-warm assets list cache immediately (token available before session resolves)
   useEffect(() => {
-    const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('bearer_token');
+    const hasToken = typeof window !== 'undefined' && true;
     if (hasToken) {
       apiClient.get(`/api/assets?limit=100&includeArchived=true`, { useCache: true }).catch(() => {});
     }

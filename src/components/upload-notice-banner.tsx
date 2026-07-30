@@ -18,15 +18,10 @@ export function UploadNoticeBanner({ onClose }: UploadNoticeBannerProps) {
     
     setHasMarkedAsSeen(true);
     
-    const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
-    if (!token) return;
-
     try {
       await fetch('/api/users/me/upload-notice', {
+      credentials: 'include',
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
       });
     } catch (error) {
       console.error('[UploadNoticeBanner] Error marking notice as seen:', error);
@@ -35,14 +30,9 @@ export function UploadNoticeBanner({ onClose }: UploadNoticeBannerProps) {
 
   useEffect(() => {
     const checkUserStatus = async () => {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
-      if (!token) return;
-
       try {
         const response = await fetch('/api/users/me', {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
+      credentials: 'include',
         });
 
         if (response.ok) {

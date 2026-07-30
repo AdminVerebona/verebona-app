@@ -125,10 +125,8 @@ function PdfPreview({ fileId, viewUrl, filename }: { fileId: number; viewUrl: st
 
   useEffect(() => {
     let objectUrl: string | null = null;
-    const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
-    if (!token) { setLoading(false); setError('no_token'); return; }
 
-    fetch(`/api/files/${fileId}/proxy?token=${encodeURIComponent(token)}`)
+    fetch(`/api/files/${fileId}/proxy`, { credentials: 'include' })
       .then(res => {
         if (!res.ok) return res.json().then(j => Promise.reject(j?.error ?? res.status));
         return res.blob();
@@ -352,16 +350,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   // SSE subscription for live analysis state
   useEffect(() => {
     if (!open || !doc || !analysisState || analysisState !== 'ANALYZING') return;
-    const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
-    if (!token) return;
-
     const ctrl = new AbortController();
     sseAbortRef.current = ctrl;
 
     (async () => {
       try {
         const res = await fetch(`/api/documents/${doc.id}/stream`, {
-          headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
           signal: ctrl.signal,
         });
         if (!res.ok || !res.body) return;
@@ -453,18 +448,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     const load = async () => {
       setIsLoadingPreview(true);
       try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
         const [fileData, viewData, assetsData, typesData, proposalsRes, agendaRes] = await Promise.allSettled([
           apiClient.get<any>(`/api/files/${doc.id}`),
           apiClient.get<{ viewUrl: string }>(`/api/files/${doc.id}/view`),
           apiClient.get<any>('/api/assets?limit=100', { useCache: true }),
           apiClient.get<any>('/api/document-types', { useCache: true }),
-          token
-            ? fetch(`/api/documents/${doc.id}/analysis-proposals`, { headers: { Authorization: `Bearer ${token}` } })
-            : Promise.reject('no token'),
-          token
-            ? fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { headers: { Authorization: `Bearer ${token}` } })
-            : Promise.reject('no token'),
+          fetch(`/api/documents/${doc.id}/analysis-proposals`, { credentials: 'include' }),
+          fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' }),
         ]);
         if (cancelled) return;
         if (fileData.status === 'fulfilled') {
@@ -638,9 +628,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       setEditSubstructureId(null);
       setEditEquipmentId(null);
       // Load substructures/equipments for newly matched asset
-      const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
       Promise.all([
         fetch(`/api/assets/${aiMatchedAssetId}/substructures`, { credentials: 'include', headers }).then(r => r.ok ? r.json() : []),
         fetch(`/api/assets/${aiMatchedAssetId}/equipments`, { credentials: 'include', headers }).then(r => r.ok ? r.json() : []),
@@ -760,7 +748,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     if (!editFilename.trim()) { toast.error('Le nom du fichier est requis'); return; }
     setIsSaving(true);
     try {
-      const token = localStorage.getItem('bearer_token');
       const amountCents = editAmount ? Math.round(parseFloat(editAmount) * 100) : null;
       const validDocType = resolveDocumentTypeCode(editDocType);
       // Compute userEditedFields: mark fields that differ from what AI detected
@@ -775,8 +762,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     }
 
     const response = await fetch(`/api/documents/${doc.id}`, {
+      credentials: 'include',
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json'},
         body: JSON.stringify({
           fileName: editFilename.trim(),
           retainedTitle: editFilename.trim(),
@@ -802,8 +790,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       const needsCommit = fieldProposals.length > 0 || analysisState === 'VALIDATION_REQUIRED';
       if (needsCommit) {
         await fetch(`/api/documents/${doc.id}/commit`, {
+      credentials: 'include',
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json'},
           body: JSON.stringify({ agendaEffects: [] }),
         }).catch(() => {});
         setFieldProposals([]);
@@ -842,14 +831,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setAgendaSuggestions([]);
     setPendingAiProposals(null);
     window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId: doc.id } }));
-    const token = localStorage.getItem('bearer_token');
 
     try {
       // Si le document est bloqué en ANALYZING, le réinitialiser d'abord
       if (analysisState === 'ANALYZING') {
         await fetch(`/api/documents/${doc.id}/reset-analysis`, {
+      credentials: 'include',
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
         }).catch(() => { /* non-bloquant */ });
         setAnalysisState('ANALYSIS_FAILED');
       }
@@ -857,8 +845,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       // Stream SSE pour éviter le timeout HTTP de 120s
       // skipNotification=true: drawer is open — no bell needed; client will create it if drawer closes
       const startRes = await fetch(`/api/documents/${doc.id}/analyze`, {
+      credentials: 'include',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json'},
         body: JSON.stringify({ skipNotification: true }),
       });
       if (!startRes.ok || !startRes.body) {
@@ -910,7 +899,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       const [refreshedFile, propRes] = await Promise.all([
         apiClient.get<any>(`/api/files/${doc.id}`).catch(() => null),
         fetch(`/api/documents/${doc.id}/analysis-proposals`, {
-          headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
         }),
       ]);
 
@@ -1719,8 +1708,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                             onClick={async () => {
                               setLoadingAgendaItem(item.id);
                               try {
-                                const token = localStorage.getItem('bearer_token');
-                                const res = await fetch(`/api/agenda/${item.id}`, { headers: { Authorization: `Bearer ${token}` } });
+                                const res = await fetch(`/api/agenda/${item.id}`, { credentials: 'include' });
                                 if (res.ok) {
                                   const data = await res.json();
                                   setAgendaDrawerItem(data.item ?? data);
@@ -1886,19 +1874,18 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           setAgendaDrawerOpen(false);
           // Mark the proposal as rejected so the suggestion never comes back, even if the user renamed it
           if (pendingAgendaProposalId && doc) {
-            const token = localStorage.getItem('bearer_token');
             fetch(`/api/documents/${doc.id}/analysis-proposals`, {
+      credentials: 'include',
               method: 'PATCH',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              headers: { 'Content-Type': 'application/json'},
               body: JSON.stringify({ proposalId: pendingAgendaProposalId, action: 'reject' }),
             }).catch(() => {});
             setAgendaSuggestions(prev => prev.filter(s => s.proposalId !== pendingAgendaProposalId));
             setPendingAgendaProposalId(null);
           }
           // Refresh linked agenda items
-          const token = localStorage.getItem('bearer_token');
-          if (token && doc) {
-            fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { headers: { Authorization: `Bearer ${token}` } })
+          if (doc) {
+            fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' })
               .then(r => r.ok ? r.json() : null)
               .then(data => { if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus }))); })
               .catch(() => {});
@@ -1945,9 +1932,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           onMutated={() => {
             setAgendaDrawerItem(null);
             // Refresh linked agenda items list
-            const token = localStorage.getItem('bearer_token');
-            if (token && doc) {
-              fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=true`, { headers: { Authorization: `Bearer ${token}` } })
+            if (doc) {
+              fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=true`, { credentials: 'include' })
                 .then(r => r.ok ? r.json() : null)
                 .then(data => { if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus }))); })
                 .catch(() => {});

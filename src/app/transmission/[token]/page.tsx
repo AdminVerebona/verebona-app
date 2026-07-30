@@ -41,7 +41,7 @@ export default function TransmissionPage() {
   const [recipientHasAccount, setRecipientHasAccount] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch(`/api/transmission/${token}`)
+    fetch(`/api/transmission/${token}`, { credentials: 'include' })
       .then(r => r.json())
       .then((data: TransmissionData) => {
         setTransmission(data);
@@ -64,18 +64,17 @@ export default function TransmissionPage() {
 
   const isAlreadyLoggedIn = () => {
     if (typeof window === 'undefined') return false;
-    return !!localStorage.getItem('bearer_token');
+    return true;
   };
 
   const handleAction = async (action: 'accept' | 'refuse', confirmDuplicate = false) => {
     setPageState(action === 'accept' ? 'accepting' : 'refusing');
 
     try {
-      const bearerToken = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (bearerToken) headers['Authorization'] = `Bearer ${bearerToken}`;
 
       const res = await fetch(`/api/transmission/${token}`, {
+      credentials: 'include',
         method: 'POST',
         headers,
         body: JSON.stringify({ action, confirmDuplicate }),

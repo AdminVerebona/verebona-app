@@ -6,6 +6,8 @@ const LINKS = [
   { href: '/politique-confidentialite', label: 'Confidentialité' },
   { href: '/contact',                  label: 'Contact' },
   { href: '/aide',                     label: 'Centre d\'aide' },
+  // CDC rétractation §6.1 : libellé imposé mot pour mot.
+  { href: '/retractation',             label: 'Renoncer au contrat ici' },
 ];
 
 export function Footer() {

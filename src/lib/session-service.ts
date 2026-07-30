@@ -41,10 +41,21 @@ export class SessionService {
       token = authHeader.substring(7);
     }
 
+    // ⚠️ REPLI SUR LE COOKIE — c'est par ici que passe désormais TOUTE
+    // l'authentification. Depuis la suppression des en-têtes construits côté
+    // navigateur, l'en-tête `Authorization` n'est plus renseigné par le
+    // client : sans ce repli, aucune requête authentifiée n'aboutirait.
     if (!token) {
       token = request.cookies.get('access_token')?.value;
     }
 
+    // Garde rétablie : `token` vient de la requête — en-tête ou cookie — et
+    // non du stockage du navigateur. Le codemod de migration l'avait retirée
+    // sur la seule foi du nom de la variable.
+    //
+    // Le code d'erreur doit rester `AUTH_REQUIRED` : c'est celui que
+    // `handleSessionError` traduit en 401. Tout autre libellé tomberait dans
+    // le cas par défaut et produirait un 500 sur une simple absence de session.
     if (!token) {
       throw new Error('AUTH_REQUIRED');
     }

@@ -172,15 +172,10 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       const response = await fetch(`/api/admin/users/${userId}`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -217,14 +212,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setActionLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/users/${userId}/suspend`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           reason: 'Suspension via interface admin',
@@ -249,14 +241,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setActionLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/users/${userId}/reactivate`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
       });
 
@@ -278,14 +267,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setActionLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/users/${userId}/send-password-reset`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
       });
 
@@ -306,14 +292,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setActionLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/users/${userId}/force-logout`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
       });
 
@@ -335,14 +318,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setActionLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/users/${userId}`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify(editForm),
       });
@@ -366,18 +346,12 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setActionLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        toast.error('Non authentifié. Veuillez vous reconnecter.');
-        setActionLoading(false);
-        return;
-      }
 
       const response = await fetch(`/api/admin/users/${userId}`, {
+      credentials: 'include',
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           confirmId: parseInt(userId),
@@ -406,14 +380,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setActionLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/assets/${assetToDelete.id}`, {
+      credentials: 'include',
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           confirmId: assetToDelete.id,
@@ -445,14 +416,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     try {
       setIsSyncingStripe(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/users/${userId}/sync-stripe`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
       });
 

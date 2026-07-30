@@ -178,8 +178,7 @@ export function UnifiedDocumentDialog({
       setLoadingTypes(true);
       setLoadingData(true);
       try {
-        const token = localStorage.getItem('bearer_token');
-        const headers = { Authorization: `Bearer ${token}` };
+        const headers = {};
 
         const dtResponse = await fetch('/api/document-types', { headers });
         if (dtResponse.ok) {
@@ -270,13 +269,13 @@ export function UnifiedDocumentDialog({
 
   // ── Core upload helper (presign → S3 PUT → confirm) ─────────────────────────
   const doUpload = useCallback(async (file: File): Promise<number> => {
-    const token = localStorage.getItem('bearer_token');
     const targetAssetId = assetId && assetId !== '0' ? parseInt(assetId) : null;
     const sha256Hash = await calculateHash(file);
 
     const presignRes = await fetch('/api/files/presign', {
+      credentials: 'include',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json'},
       body: JSON.stringify({ filename: file.name, mimeType: normalizeMimeType(file), size: file.size, sha256Hash, assetId: targetAssetId }),
     });
     if (!presignRes.ok) throw new Error('Échec de la préparation du téléchargement');
@@ -298,8 +297,9 @@ export function UnifiedDocumentDialog({
     if (!uploadRes.ok) throw new Error('Échec du téléchargement du fichier');
 
     const confirmRes = await fetch('/api/files/confirm', {
+      credentials: 'include',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json'},
       body: JSON.stringify({
         fileId, assetId: targetAssetId,
         substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
@@ -400,20 +400,14 @@ export function UnifiedDocumentDialog({
     const amountCents = amount ? Math.round(parseFloat(amount) * 100) : null;
 
     try {
-      const token = localStorage.getItem('bearer_token');
       let uploadedFileIds: number[] = [];
 
       if (mode === 'weblink') {
         // ── Création du lien web ──────────────────────────────────────────────
-        if (!token) {
-          toast.error('Session expirée, veuillez vous reconnecter');
-          setIsUploading(false);
-          return;
-        }
         const wlRes = await fetch('/api/web-links', {
+      credentials: 'include',
           method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json'},
           body: JSON.stringify({
             url: webLinkUrl,
             title: webLinkTitle,
@@ -446,8 +440,9 @@ export function UnifiedDocumentDialog({
           const sha256Hash = await calculateHash(file);
 
           const presignResponse = await fetch('/api/files/presign', {
+      credentials: 'include',
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            headers: { 'Content-Type': 'application/json'},
             body: JSON.stringify({
               filename: file.name,
               mimeType: normalizeMimeType(file),
@@ -485,8 +480,9 @@ export function UnifiedDocumentDialog({
         // Étape 2 : un seul confirm avec tous les fileIds du batch
         // Le pipeline unifié côté serveur gère le regroupement et l'analyse en une seule passe
         const confirmResponse = await fetch('/api/files/confirm', {
+      credentials: 'include',
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json'},
           body: JSON.stringify({
             fileId: allFileIds[0],
             fileIds: allFileIds,
@@ -507,8 +503,9 @@ export function UnifiedDocumentDialog({
       // Associate with events
       for (const eventId of selectedEventIds) {
         await fetch(`/api/events/${eventId}/documents`, {
+      credentials: 'include',
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json'},
           body: JSON.stringify({ fileIds: uploadedFileIds }),
         }).catch(() => {});
       }
@@ -521,8 +518,9 @@ export function UnifiedDocumentDialog({
           const categoryLabel = EVENT_CATEGORIES.find(c => c.value === eventType)?.label;
           const eventTitle = categoryLabel || documentTypes.find(dt => dt.code === documentType)?.label || 'Document ajouté';
           const eventResponse = await fetch('/api/events', {
+      credentials: 'include',
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            headers: { 'Content-Type': 'application/json'},
             body: JSON.stringify({
               userId: user.id, assetId: parseInt(assetId),
               substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
@@ -537,8 +535,9 @@ export function UnifiedDocumentDialog({
           if (eventResponse.ok) {
             const { event } = await eventResponse.json();
             await fetch(`/api/events/${event.id}/documents`, {
+      credentials: 'include',
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              headers: { 'Content-Type': 'application/json'},
               body: JSON.stringify({ fileIds: uploadedFileIds }),
             }).catch(() => {});
           }

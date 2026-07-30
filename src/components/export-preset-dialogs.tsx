@@ -105,12 +105,11 @@ export const ExportReventeDialog = memo(({
   const handleGenerate = useCallback(async () => {
     try {
       setIsGenerating(true);
-      const token = localStorage.getItem('bearer_token');
 
       const response = await fetch('/api/exports/revente', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -374,12 +373,11 @@ export const ExportAssuranceDevisDialog = memo(({
 
     try {
       setIsGenerating(true);
-      const token = localStorage.getItem('bearer_token');
 
       const response = await fetch('/api/exports/assurance-devis', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -409,7 +407,7 @@ export const ExportAssuranceDevisDialog = memo(({
           selectedDocs.map(async (doc) => {
             try {
               const { downloadUrl } = await (await fetch(`/api/files/${doc.id}/download`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
               })).json();
               
               const fileResponse = await fetch(downloadUrl);
@@ -695,12 +693,11 @@ export const ExportAssuranceSinistreDialog = memo(({
 
     try {
       setIsGenerating(true);
-      const token = localStorage.getItem('bearer_token');
 
       const response = await fetch('/api/exports/assurance-sinistre', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -730,7 +727,7 @@ export const ExportAssuranceSinistreDialog = memo(({
           selectedDocs.map(async (doc) => {
             try {
               const { downloadUrl } = await (await fetch(`/api/files/${doc.id}/download`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
               })).json();
               
               const fileResponse = await fetch(downloadUrl);
@@ -1028,12 +1025,11 @@ export const ExportSavGarantieDialog = memo(({
 
     try {
       setIsGenerating(true);
-      const token = localStorage.getItem('bearer_token');
 
       const response = await fetch('/api/exports/sav-garantie', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -1062,7 +1058,7 @@ export const ExportSavGarantieDialog = memo(({
           selectedDocs.map(async (doc) => {
             try {
               const { downloadUrl } = await (await fetch(`/api/files/${doc.id}/download`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
               })).json();
               
               const fileResponse = await fetch(downloadUrl);
@@ -1320,12 +1316,11 @@ export const ExportCilDialog = memo(({
 
     try {
       setIsGenerating(true);
-      const token = localStorage.getItem('bearer_token');
 
       const response = await fetch('/api/exports/cil', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -1355,7 +1350,7 @@ export const ExportCilDialog = memo(({
           selectedDocs.map(async (doc) => {
             try {
               const { downloadUrl } = await (await fetch(`/api/files/${doc.id}/download`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
               })).json();
               
               const fileResponse = await fetch(downloadUrl);
@@ -1598,12 +1593,11 @@ export const ExportDossierCompletDialog = memo(({
   const handleGenerate = useCallback(async () => {
     try {
       setIsGenerating(true);
-      const token = localStorage.getItem('bearer_token');
 
       const response = await fetch('/api/exports/dossier-complet', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -1630,7 +1624,7 @@ export const ExportDossierCompletDialog = memo(({
           selectedDocs.map(async (doc) => {
             try {
               const { downloadUrl } = await (await fetch(`/api/files/${doc.id}/download`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
               })).json();
               
               const fileResponse = await fetch(downloadUrl);

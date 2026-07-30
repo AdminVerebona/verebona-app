@@ -75,11 +75,6 @@ export default function AdminFilesPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       // Build query params
       const params = new URLSearchParams({
@@ -92,8 +87,8 @@ export default function AdminFilesPage() {
       if (statusFilter && statusFilter !== 'all') params.append('uploadStatus', statusFilter);
 
       const response = await fetch(`/api/admin/files?${params.toString()}`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -119,12 +114,9 @@ export default function AdminFilesPage() {
 
   const handleDownload = async (file: AdminFile) => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/files/${file.id}/download`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -163,13 +155,10 @@ export default function AdminFilesPage() {
     try {
       setIsDeleting(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/files/${fileToDelete.id}`, {
+      credentials: 'include',
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });

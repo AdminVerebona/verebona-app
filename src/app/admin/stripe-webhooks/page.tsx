@@ -45,16 +45,9 @@ export default function AdminStripeWebhooksPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       const response = await fetch('/api/admin/stripe-webhooks', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {

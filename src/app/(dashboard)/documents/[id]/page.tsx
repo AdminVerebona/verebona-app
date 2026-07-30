@@ -101,11 +101,8 @@ export default function DocumentDetailPage() {
 
   const loadDocument = async () => {
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/documents/${params.id}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {
@@ -118,9 +115,7 @@ export default function DocumentDetailPage() {
       // Load preview for images
       if (data.document.mimeType.startsWith('image/')) {
         const viewResponse = await fetch(`/api/files/${data.document.id}/view`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
+      credentials: 'include',
         });
         if (viewResponse.ok) {
           const viewData = await viewResponse.json();
@@ -140,11 +135,8 @@ export default function DocumentDetailPage() {
     if (!document) return;
     
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/files/${document.id}/download`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {
@@ -171,11 +163,8 @@ export default function DocumentDetailPage() {
     if (!document) return;
     
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/files/${document.id}/view`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {
@@ -203,13 +192,10 @@ export default function DocumentDetailPage() {
 
     try {
       setIsDeleting(true);
-      const token = localStorage.getItem('bearer_token');
       
       const response = await fetch(`/api/documents/${document.id}`, {
+      credentials: 'include',
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
       });
 
       if (!response.ok) {

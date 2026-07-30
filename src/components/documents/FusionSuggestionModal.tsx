@@ -36,10 +36,10 @@ export function FusionSuggestionModal({ open, onOpenChange, newFileId, newFilena
   const handleAction = async (action: 'dismiss' | 'merge' | 'replace') => {
     setLoading(true);
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
       const res = await fetch(`/api/documents/${newFileId}/fusion`, {
+      credentials: 'include',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json'},
         body: JSON.stringify({ action, candidateFileId: candidate.fileId }),
       });
       if (!res.ok) {

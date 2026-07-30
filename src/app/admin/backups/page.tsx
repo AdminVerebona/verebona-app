@@ -51,15 +51,10 @@ export default function AdminBackupsPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       const response = await fetch('/api/admin/backups', {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -83,13 +78,10 @@ export default function AdminBackupsPage() {
     try {
       setIsCreatingBackup(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/backups', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });

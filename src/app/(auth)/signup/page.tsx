@@ -95,12 +95,12 @@ export default function SignupPage() {
       // parcours, puis est propage par le parametre d'URL (§4.4).
       setReferralCode(ref.toUpperCase());
     }
-    if (token) {
+    {
       setInviteToken(token);
     }
 
     // La version applicable est figée pour toute la durée du parcours.
-    fetch('/api/legal/cgvu/current')
+    fetch('/api/legal/cgvu/current', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.versionCode) {
@@ -178,7 +178,7 @@ export default function SignupPage() {
       // des cookies HttpOnly, et le code de parrainage ne doit survivre ni a la
       // fermeture de l'onglet ni au parcours (CDC parrainage §4.2).
       const response = await fetch('/api/users', {
-        credentials: 'include',
+      credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

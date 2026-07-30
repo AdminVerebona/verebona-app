@@ -18,11 +18,9 @@ export function PdfThumbnail({ fileId, className = '' }: PdfThumbnailProps) {
     async function render() {
       try {
         // Get signed URL for the PDF
-        const token = localStorage.getItem('bearer_token');
-        if (!token) { setStatus('error'); return; }
 
         const res = await fetch(`/api/files/${fileId}/view`, {
-          headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
         });
         if (!res.ok) { setStatus('error'); return; }
         const { viewUrl } = await res.json();

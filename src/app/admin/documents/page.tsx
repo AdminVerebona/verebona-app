@@ -467,13 +467,10 @@ export default function AdminDocumentsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, userFilter, assetFilter, formatFilter, typeFilter, sortOption, includeDeleted, page]);
 
-  const getToken = () => localStorage.getItem('bearer_token');
 
   const loadUsers = async () => {
     try {
-      const token = getToken();
-      if (!token) return;
-      const res = await fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch('/api/admin/users', { credentials: 'include' });
       if (!res.ok) return;
       const data = await res.json();
       setUsers(data.data || data.users || []);
@@ -482,9 +479,7 @@ export default function AdminDocumentsPage() {
 
   const loadAssets = async () => {
     try {
-      const token = getToken();
-      if (!token) return;
-      const res = await fetch('/api/admin/assets', { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch('/api/admin/assets', { credentials: 'include' });
       if (!res.ok) return;
       const data = await res.json();
       setAssets(data.assets || data.data || []);
@@ -493,9 +488,7 @@ export default function AdminDocumentsPage() {
 
   const loadDocumentTypes = async () => {
     try {
-      const token = getToken();
-      if (!token) return;
-      const res = await fetch('/api/admin/document-types', { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch('/api/admin/document-types', { credentials: 'include' });
       if (!res.ok) return;
       const data = await res.json();
       setDocumentTypes(data);
@@ -506,8 +499,6 @@ export default function AdminDocumentsPage() {
     try {
       setIsLoading(true);
       setError(null);
-      const token = getToken();
-      if (!token) { setError('Non authentifié'); return; }
 
       const params = new URLSearchParams({ limit: limit.toString(), includeDeleted: includeDeleted.toString() });
       if (search) params.append('search', search);
@@ -515,7 +506,8 @@ export default function AdminDocumentsPage() {
       if (assetFilter !== 'all') params.append('assetId', assetFilter);
 
       const res = await fetch(`/api/admin/files?${params}`, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
       });
       if (!res.ok) throw new Error('Erreur lors du chargement des documents');
 
@@ -560,9 +552,7 @@ export default function AdminDocumentsPage() {
 
   const handleDownload = async (doc: AdminDocument) => {
     try {
-      const token = getToken();
-      if (!token) return;
-      const res = await fetch(`/api/files/${doc.id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`/api/files/${doc.id}/download`, { credentials: 'include' });
       if (!res.ok) throw new Error();
       const { downloadUrl } = await res.json();
       if (window.self !== window.top) {
@@ -580,11 +570,9 @@ export default function AdminDocumentsPage() {
     if (!documentToDelete) return;
     try {
       setIsDeleting(true);
-      const token = getToken();
-      if (!token) return;
       const res = await fetch(`/api/files/${documentToDelete.id}`, {
+      credentials: 'include',
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error();
       toast.success('Document supprimé avec succès');
@@ -602,11 +590,10 @@ export default function AdminDocumentsPage() {
     if (!documentToMove || !targetAssetId) { toast.error('Veuillez sélectionner un bien'); return; }
     try {
       setIsMoving(true);
-      const token = getToken();
-      if (!token) return;
       const res = await fetch('/api/documents/bulk-move', {
+      credentials: 'include',
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ documentIds: [documentToMove.id], targetAssetId: parseInt(targetAssetId) }),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.message || ''); }
@@ -627,11 +614,10 @@ export default function AdminDocumentsPage() {
     if (!editFormData.documentType) { toast.error('Le type de document est requis'); return; }
     try {
       setIsEditing(true);
-      const token = getToken();
-      if (!token) return;
       const res = await fetch(`/api/documents/${documentToEdit.id}`, {
+      credentials: 'include',
         method: 'PUT',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileName: editFormData.fileName.trim(),
           documentType: editFormData.documentType,

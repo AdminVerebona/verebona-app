@@ -95,15 +95,10 @@ export default function AdminEmailTemplatesPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       const response = await fetch('/api/admin/email-templates', {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -130,13 +125,8 @@ export default function AdminEmailTemplatesPage() {
 
   const loadSettings = async () => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/email-settings', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (response.ok) {
@@ -153,14 +143,11 @@ export default function AdminEmailTemplatesPage() {
     try {
       setSettingsLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/email-settings', {
+      credentials: 'include',
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify(settingsFormData),
       });
@@ -196,14 +183,11 @@ export default function AdminEmailTemplatesPage() {
     try {
       setEditLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/email-templates/${editingTemplate.id}`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify(formData),
       });
@@ -240,14 +224,11 @@ export default function AdminEmailTemplatesPage() {
     try {
       setTestLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/email-templates/${testTemplate.id}/test`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({ testEmail }),
       });
@@ -269,17 +250,10 @@ export default function AdminEmailTemplatesPage() {
   // Réinitialiser un template à sa version par défaut (avec logo centré)
   const handleReset = async (template: EmailTemplate) => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        toast.error('Non authentifié');
-        return;
-      }
       setResettingId(template.id);
       const res = await fetch(`/api/admin/email-templates/${template.id}/reset`, {
+      credentials: 'include',
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -297,12 +271,10 @@ export default function AdminEmailTemplatesPage() {
   const handleSeed = async () => {
     try {
       setSeeding(true);
-      const token = localStorage.getItem('bearer_token');
-      if (!token) { toast.error('Non authentifié'); return; }
 
       const res = await fetch('/api/admin/email-templates/seed', {
+      credentials: 'include',
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erreur lors du seed');

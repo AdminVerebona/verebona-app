@@ -208,14 +208,9 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
   // Load assets + details whenever the drawer opens (preload so data is ready when edit starts)
   useEffect(() => {
     if (!open) return;
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("bearer_token")
-        : null;
-    const headers: Record<string, string> = {
+        const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
     fetch("/api/assets?limit=100", { credentials: "include", headers })
       .then((r) => (r.ok ? r.json() : { data: [] }))
       .then(async (d) => {

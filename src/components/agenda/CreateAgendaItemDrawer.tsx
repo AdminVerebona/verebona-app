@@ -113,14 +113,9 @@ export function CreateAgendaItemDrawer({
   // Load assets list + their details on open
   useEffect(() => {
     if (!open) return;
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("bearer_token")
-        : null;
-    const headers: Record<string, string> = {
+        const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
 
     fetch("/api/assets?limit=100", { credentials: "include", headers })
       .then((r) => (r.ok ? r.json() : { data: [] }))

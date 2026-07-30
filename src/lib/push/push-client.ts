@@ -36,7 +36,7 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
 
 async function getPublicKey(): Promise<string | null> {
   try {
-    const res = await fetch('/api/push/public-key');
+    const res = await fetch('/api/push/public-key', { credentials: 'include' });
     if (!res.ok) return null;
     const data = await res.json();
     return data.publicKey ?? null;
@@ -78,9 +78,9 @@ export async function subscribeCurrentDevice(deviceLabel?: string): Promise<Subs
 
     const json = subscription.toJSON();
     const res = await fetch('/api/push/subscriptions', {
+      credentials: 'include',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
       body: JSON.stringify({
         endpoint: json.endpoint,
         keys: json.keys,
@@ -107,9 +107,9 @@ export async function unsubscribeCurrentDevice(): Promise<void> {
     const subscription = await registration?.pushManager.getSubscription();
     if (!subscription) return;
     await fetch('/api/push/subscriptions/current', {
+      credentials: 'include',
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
       body: JSON.stringify({ endpoint: subscription.endpoint }),
     }).catch(() => undefined);
   } catch {

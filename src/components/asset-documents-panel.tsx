@@ -241,13 +241,8 @@ export function AssetDocumentsPanel({
   // ✅ Load document types
   const loadDocumentTypes = useCallback(async () => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/document-types', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (response.ok) {
@@ -266,9 +261,6 @@ export function AssetDocumentsPanel({
   const loadExportTemplates = useCallback(async () => {
     try {
       setLoadingTemplates(true);
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       // Build query params for filtering
       const params = new URLSearchParams();
       params.append('isActive', 'true');
@@ -282,8 +274,8 @@ export function AssetDocumentsPanel({
 
       // ✅ FIXED: Use public API endpoint instead of admin-only endpoint
       const response = await fetch(`/api/export-templates?${params.toString()}`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });

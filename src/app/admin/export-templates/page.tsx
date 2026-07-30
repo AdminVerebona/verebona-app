@@ -161,12 +161,9 @@ export default function ExportTemplatesPage() {
   // Load asset types and subcategories
   const loadAssetTypes = async () => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/asset-types', {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -191,11 +188,6 @@ export default function ExportTemplatesPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        router.push('/login?redirect=/admin/export-templates');
-        return;
-      }
 
       const params = new URLSearchParams();
       if (categoryFilter !== 'all') params.append('category', categoryFilter);
@@ -204,8 +196,8 @@ export default function ExportTemplatesPage() {
       params.append('limit', '100');
 
       const response = await fetch(`/api/admin/export-templates?${params.toString()}`, {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -241,7 +233,6 @@ export default function ExportTemplatesPage() {
 
     try {
       setIsCreating(true);
-      const token = localStorage.getItem('bearer_token');
 
       // Parse variables if provided
       let parsedVariables = null;
@@ -255,9 +246,9 @@ export default function ExportTemplatesPage() {
       }
 
       const response = await fetch('/api/admin/export-templates', {
+      credentials: 'include',
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -307,12 +298,11 @@ export default function ExportTemplatesPage() {
 
     try {
       setIsDeleting(true);
-      const token = localStorage.getItem('bearer_token');
 
       const response = await fetch(`/api/admin/export-templates/${deleteDialog.template.id}`, {
+      credentials: 'include',
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({

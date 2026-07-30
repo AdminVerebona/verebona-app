@@ -61,9 +61,8 @@ export const SystemLogosClient = () => {
       try {
         setLoading(true);
         setError(null);
-        const token = localStorage.getItem("bearer_token");
         const res = await fetch(`/api/admin/system-logos?limit=100&page=1`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      credentials: 'include',
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -188,12 +187,11 @@ export const SystemLogosClient = () => {
         isActive: form.get("isActive") === "on",
         version: Number(form.get("version") || 1),
       };
-      const token = localStorage.getItem("bearer_token");
       const res = await fetch("/api/admin/system-logos", {
+      credentials: 'include',
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(payload),
       });
@@ -226,12 +224,11 @@ export const SystemLogosClient = () => {
         isActive: form.get("isActive") === "on",
         version: Number(form.get("version") || editLogo.version || 1),
       };
-      const token = localStorage.getItem("bearer_token");
       const res = await fetch(`/api/admin/system-logos?id=${editLogo.id}`, {
+      credentials: 'include',
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(payload),
       });
@@ -255,12 +252,11 @@ export const SystemLogosClient = () => {
         toast.error("Veuillez saisir l'ID pour confirmer");
         return;
       }
-      const token = localStorage.getItem("bearer_token");
       const res = await fetch(`/api/admin/system-logos?id=${deleteLogo.id}`, {
+      credentials: 'include',
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({ confirmId: deleteLogo.id }),
       });

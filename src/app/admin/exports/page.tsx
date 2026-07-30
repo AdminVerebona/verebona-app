@@ -111,14 +111,11 @@ export default function AdminExportsPage() {
   const [deleteDialog, setDeleteDialog] = useState<{ show: boolean; row: ExportRow | null }>({ show: false, row: null });
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const getToken = () => localStorage.getItem('bearer_token');
 
   const loadExports = useCallback(async (currentPage = 1) => {
     try {
       setIsLoading(true);
       setError(null);
-      const token = getToken();
-      if (!token) { router.push('/login?redirect=/admin/exports'); return; }
 
       const params = new URLSearchParams();
       params.append('page', String(currentPage));
@@ -130,7 +127,7 @@ export default function AdminExportsPage() {
       if (endDate) params.append('endDate', endDate);
 
       const res = await fetch(`/api/admin/exports?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
       });
 
       if (res.status === 401) { router.push('/login?redirect=/admin/exports'); return; }
@@ -166,10 +163,9 @@ export default function AdminExportsPage() {
     if (!deleteDialog.row) return;
     try {
       setIsDeleting(true);
-      const token = getToken();
       const res = await fetch(`/api/admin/exports/${deleteDialog.row.id}`, {
+      credentials: 'include',
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
         const err = await res.json();

@@ -38,16 +38,14 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
 
   // Fetch images belonging to this asset
   const loadPhotos = useCallback(async () => {
-    if (!token) return;
     setLoadingPhotos(true);
     try {
       const res = await fetch(
         `/api/assets/${assetId}/photos`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        { credentials: 'include' }
       );
       if (!res.ok) return;
       const data = await res.json();
@@ -60,7 +58,7 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
         items.map(async (f) => {
           try {
             const vr = await fetch(`/api/files/${f.id}/view`, {
-              headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
             });
             if (vr.ok) {
               const vd = await vr.json();
@@ -75,7 +73,7 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
     } finally {
       setLoadingPhotos(false);
     }
-  }, [assetId, token]);
+  }, [assetId]);
 
   useEffect(() => {
     if (open) {
@@ -101,8 +99,8 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
       form.append('file', file);
 
       const res = await fetch(`/api/assets/${assetId}/thumbnail`, {
+      credentials: 'include',
         method: 'PUT',
-        headers: { Authorization: `Bearer ${token}` },
         body: form,
       });
 
@@ -120,7 +118,7 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
     } finally {
       setUploading(false);
     }
-  }, [assetId, token, onUpdated, onClose]);
+  }, [assetId, onUpdated, onClose]);
 
   // Promote an existing assetFile as thumbnail
   const handleSaveSelection = useCallback(async () => {
@@ -128,9 +126,9 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
     setSaving(true);
     try {
       const res = await fetch(`/api/assets/${assetId}/thumbnail`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ fileId: selectedFileId }),
@@ -150,7 +148,7 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
     } finally {
       setSaving(false);
     }
-  }, [selectedFileId, assetId, token, onUpdated, onClose]);
+  }, [selectedFileId, assetId, onUpdated, onClose]);
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>

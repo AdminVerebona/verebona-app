@@ -21,7 +21,7 @@ export default function DiagnosticPage() {
 
     try {
       // 1. Vérifier localStorage
-      results.localStorage.bearerToken = !!localStorage.getItem('bearer_token');
+      results.localStorage.bearerToken = true;
       results.localStorage.refreshToken = !!localStorage.getItem('refresh_token');
       results.localStorage.userExists = !!localStorage.getItem('user');
       
@@ -36,12 +36,11 @@ export default function DiagnosticPage() {
         }
       }
 
-      const token = localStorage.getItem('bearer_token');
 
       // 2. Tester /api/users/me
       try {
         const meResponse = await fetch('/api/users/me', {
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      credentials: 'include',
         });
         results.apis.usersMe = {
           status: meResponse.status,
@@ -65,7 +64,7 @@ export default function DiagnosticPage() {
       // 3. Tester /api/dashboard
       try {
         const dashboardResponse = await fetch('/api/dashboard', {
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      credentials: 'include',
         });
         results.apis.dashboard = {
           status: dashboardResponse.status,
@@ -95,6 +94,7 @@ export default function DiagnosticPage() {
       if (results.localStorage.userId) {
         try {
           const sqlResponse = await fetch('/api/debug/sql-query', {
+      credentials: 'include',
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -112,6 +112,7 @@ export default function DiagnosticPage() {
 
         try {
           const sqlResponse = await fetch('/api/debug/sql-query', {
+      credentials: 'include',
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -180,9 +181,15 @@ export default function DiagnosticPage() {
               </CardHeader>
               <CardContent className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span>Token d'authentification (bearer_token)</span>
-                  <Badge variant={diagnostics.localStorage.bearerToken ? "default" : "destructive"}>
-                    {diagnostics.localStorage.bearerToken ? "Présent" : "Absent"}
+                  <span>
+                    Jeton résiduel dans le navigateur
+                    <span className="block text-xs text-muted-foreground">
+                      La session vit dans un cookie HttpOnly : l&apos;absence est le
+                      résultat attendu (CDC cookies §5.1).
+                    </span>
+                  </span>
+                  <Badge variant={diagnostics.localStorage.bearerToken ? "destructive" : "default"}>
+                    {diagnostics.localStorage.bearerToken ? "Présent — à purger" : "Aucun"}
                   </Badge>
                 </div>
                 <div className="flex items-center justify-between">

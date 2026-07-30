@@ -60,8 +60,8 @@ function LoginForm() {
 
     try {
       const response = await fetch('/api/auth/login', {
+      credentials: 'include',
         method: 'POST',
-        credentials: 'include', // cookies HttpOnly deposes par le serveur
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
@@ -91,7 +91,6 @@ function LoginForm() {
       try {
         const meRes = await fetch('/api/users/me', {
       credentials: 'include',
-          headers: { Authorization: `Bearer ${data.accessToken}` },
         });
         if (meRes.ok) {
           const meData = await meRes.json();
@@ -171,6 +170,14 @@ function LoginForm() {
                 <div className="text-muted-foreground">
                   <Link href="/forgot-password" className="text-primary hover:underline">
                     Mot de passe oublié ?
+                  </Link>
+                </div>
+                {/* CDC rétractation §6.1 : le lien doit figurer sur l'écran de
+                    connexion. Un consommateur qui ne parvient plus à se
+                    connecter doit pouvoir exercer son droit. */}
+                <div className="text-center text-xs mt-2">
+                  <Link href="/retractation" className="text-[color:var(--text-muted)] hover:underline">
+                    Renoncer au contrat ici
                   </Link>
                 </div>
                 

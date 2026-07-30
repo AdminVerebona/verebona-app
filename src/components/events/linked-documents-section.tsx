@@ -54,11 +54,8 @@ export function LinkedDocumentsSection({
   const fetchLinkedDocuments = async () => {
     setIsLoading(true);
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/events/${eventId}/documents`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {
@@ -77,11 +74,8 @@ export function LinkedDocumentsSection({
 
   const fetchAvailableDocuments = async () => {
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/documents?assetId=${assetId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      credentials: 'include',
       });
 
       if (!response.ok) {
@@ -114,12 +108,11 @@ export function LinkedDocumentsSection({
 
     setIsLinking(true);
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/events/${eventId}/documents`, {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           fileIds: selectedDocIds,
@@ -149,12 +142,9 @@ export function LinkedDocumentsSection({
     }
 
     try {
-      const token = localStorage.getItem('bearer_token');
       const response = await fetch(`/api/events/${eventId}/documents?fileId=${documentId}`, {
+      credentials: 'include',
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
       });
 
       if (!response.ok) {

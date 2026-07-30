@@ -67,7 +67,7 @@ export function LegalInformationCard() {
       fetch('/api/me/legal/acceptances', { credentials: 'include' })
         .then((r) => (r.ok ? r.json() : { acceptances: [] }))
         .catch(() => ({ acceptances: [] })),
-      fetch('/api/legal/cgvu/current')
+      fetch('/api/legal/cgvu/current', { credentials: 'include' })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
     ]).then(([mine, currentVersion]) => {

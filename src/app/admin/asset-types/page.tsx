@@ -108,15 +108,10 @@ export default function AdminAssetTypesPage() {
       setIsLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        setError('Non authentifié');
-        return;
-      }
 
       const response = await fetch('/api/admin/asset-types', {
+      credentials: 'include',
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
@@ -171,14 +166,11 @@ export default function AdminAssetTypesPage() {
     try {
       setAddTypeLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/asset-types', {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify(typeFormData),
       });
@@ -216,14 +208,11 @@ export default function AdminAssetTypesPage() {
     try {
       setEditTypeLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/asset-types/${editingType.id}`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           label: typeFormData.label,
@@ -270,14 +259,11 @@ export default function AdminAssetTypesPage() {
     try {
       setAddSubcategoryLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch('/api/admin/asset-type-subcategories', {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           assetTypeId: selectedTypeForAdd.id,
@@ -318,14 +304,11 @@ export default function AdminAssetTypesPage() {
     try {
       setEditSubcategoryLoading(true);
 
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/asset-type-subcategories/${editingSubcategory.id}`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           label: subcategoryFormData.label,
@@ -351,14 +334,9 @@ export default function AdminAssetTypesPage() {
 
   const handleDeleteSubcategory = async (id: number) => {
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) return;
-
       const response = await fetch(`/api/admin/asset-type-subcategories/${id}`, {
+      credentials: 'include',
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
       });
 
       if (!response.ok) {

@@ -103,8 +103,8 @@ export default function OffresPage() {
   useEffect(() => {
     // CDC §17 : consultation des offres
     void fetch('/api/analytics/track', {
-      method: 'POST',
       credentials: 'include',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event: 'offers_viewed' }),
     }).catch(() => undefined);
@@ -133,8 +133,8 @@ export default function OffresPage() {
     setCheckoutLoading(planId);
     try {
       const res = await fetch('/api/billing/schedule-change', {
+      credentials: 'include',
         method: 'POST',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plan_code: planId.toLowerCase(), billing_period: billingPeriod }),
       });
@@ -166,7 +166,7 @@ export default function OffresPage() {
     if (code) {
       setReferralCode(code.toUpperCase());
       // Valider le code
-      fetch(`/api/referral/validate/${code.toUpperCase()}`)
+      fetch(`/api/referral/validate/${code.toUpperCase()}`, { credentials: 'include' })
         .then((r) => r.json())
         .then((data) => setReferralValid(data.valid === true))
         .catch(() => setReferralValid(false));

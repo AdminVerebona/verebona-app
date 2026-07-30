@@ -105,7 +105,7 @@ export default function DashboardPage() {
   // Lance le fetch immédiatement si un token existe, sans attendre la résolution de la session.
   // Si le token est expiré, l'API retournera 401 et l'api-client déclenchera le refresh normal.
   useEffect(() => {
-    const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('bearer_token');
+    const hasToken = typeof window !== 'undefined' && true;
     if (hasToken) loadSummary();
   }, [loadSummary]);
 
@@ -140,24 +140,22 @@ export default function DashboardPage() {
 
     const syncPayment = async () => {
       try {
-        const token = localStorage.getItem('bearer_token');
         // Forcer la synchronisation avec l'API
         const res = await fetch(`/api/billing/me?session_id=${encodeURIComponent(sessionId)}`, {
-          headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
         });
         if (res.ok) {
           // Rafraîchir le JWT token pour que middleware.ts l'accepte lors des prochaines navigations
           const refreshRes = await fetch('/api/auth/refresh', {
+      credentials: 'include',
             method: 'POST',
-            headers: { Authorization: `Bearer ${token}` },
           });
           if (refreshRes.ok) {
             const refreshData = await refreshRes.json();
             if (refreshData.accessToken) {
-              localStorage.setItem('bearer_token', refreshData.accessToken);
               // Récupérer et mettre à jour le profil de l'utilisateur
               const userRes = await fetch('/api/users/me', {
-                headers: { Authorization: `Bearer ${refreshData.accessToken}` },
+      credentials: 'include',
               });
               if (userRes.ok) {
                 const userData = await userRes.json();
@@ -198,6 +196,7 @@ export default function DashboardPage() {
     if (!transferToken) return;
     localStorage.removeItem('pending_transfer_token');
     fetch(`/api/transmission/${transferToken}`, {
+      credentials: 'include',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'accept' }),

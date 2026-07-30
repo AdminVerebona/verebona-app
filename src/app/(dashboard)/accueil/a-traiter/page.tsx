@@ -234,9 +234,8 @@ function DocImagePreview({ docId, isImage }: { docId: number; isImage: boolean }
     const load = async () => {
       setStatus('loading');
       try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('bearer_token') : null;
         const res = await fetch(`/api/files/${docId}/view`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
         });
         if (!res.ok) throw new Error('fetch failed');
         const data = await res.json();

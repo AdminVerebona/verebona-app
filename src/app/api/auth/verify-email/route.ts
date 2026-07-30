@@ -21,6 +21,9 @@ export async function GET(request: NextRequest) {
   const normalizedPlan = plan === 'duo' ? 'premium_duo' : plan;
   const planSuffix = normalizedPlan ? `&plan=${normalizedPlan}` : '';
 
+  // Garde rétablie : `token` provient de la query string du lien reçu par
+  // email, sans rapport avec le stockage local. Le codemod de migration l'a
+  // retirée par excès de zèle.
   if (!token) {
     return redirect('/verify-email?error=missing_token');
   }

@@ -24,6 +24,8 @@ const COLUMNS = [
     links: [
       { href: '/legal',                     label: 'Mentions légales' },
       { href: '/cgvu',                      label: 'CGVU' },
+      // CDC rétractation §6.1 : libellé imposé mot pour mot.
+      { href: '/retractation',              label: 'Renoncer au contrat ici' },
       { href: '/politique-confidentialite', label: 'Confidentialité' },
     ],
   },

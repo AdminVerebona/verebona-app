@@ -111,19 +111,15 @@ export function DocumentEditDialog({
     setIsUpdating(true);
 
     try {
-      const token = localStorage.getItem('bearer_token');
-      if (!token) {
-        throw new Error('Non authentifié');
-      }
 
       // Convert assetId - send null if "0" (no asset selected)
       const targetAssetId = assetId === '0' ? null : parseInt(assetId);
 
       const response = await fetch(`/api/documents/${document.id}`, {
+      credentials: 'include',
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
         },
           body: JSON.stringify({
             fileName: fileName.trim(),
