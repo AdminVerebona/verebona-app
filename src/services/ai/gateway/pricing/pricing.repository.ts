@@ -8,10 +8,12 @@
 import { pgClient } from '@/db';
 import type { ModelPrice } from './pricing-source.port';
 
+export type PriceSource = 'billing_api' | 'public_catalog' | 'manual';
+
 export interface CachedPrice extends ModelPrice {
   verified: boolean;
   fetchedAt: Date;
-  source: 'billing_api' | 'manual';
+  source: PriceSource;
 }
 
 const cache = new Map<string, CachedPrice>();
@@ -78,7 +80,7 @@ export async function loadPricingCache(): Promise<number> {
       inputMicros: Number(r.input_micros),
       outputMicros: Number(r.output_micros),
       currency: String(r.currency),
-      source: r.source as 'billing_api' | 'manual',
+      source: r.source as PriceSource,
       sourceReference: r.source_reference ? String(r.source_reference) : undefined,
       verified: Boolean(r.verified),
       fetchedAt: new Date(String(r.fetched_at)),
@@ -134,7 +136,7 @@ export function getCacheState(): PricingCacheState {
  */
 export async function upsertPrice(
   price: ModelPrice,
-  source: 'billing_api' | 'manual',
+  source: PriceSource,
   verified: boolean,
   verifiedBy?: number,
 ): Promise<void> {

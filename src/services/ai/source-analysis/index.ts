@@ -5,7 +5,7 @@
 // Aiguillage legacy/unifié — SEUL point d'entrée autorisé depuis le code
 // applicatif. `runSourceAnalysis` ci-dessous est le moteur lui-même : il ne
 // doit être appelé que par cet aiguillage (§10.4).
-export { analyzeFileSources } from './entrypoint';
+export { analyzeFileSources, analyzeWebLinkSource } from './entrypoint';
 export type { AnalyzeFileSourcesOptions } from './entrypoint';
 
 export { runSourceAnalysis } from './pipeline';

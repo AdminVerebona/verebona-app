@@ -17,7 +17,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
-import { runSourceAnalysis } from '@/services/ai/source-analysis';
+import { analyzeWebLinkSource } from '@/services/ai/source-analysis';
 
 export async function POST(
   req: NextRequest,
@@ -45,10 +45,7 @@ export async function POST(
 
   // L'appartenance au compte est revérifiée par l'adaptateur : le pipeline ne
   // fait jamais confiance à l'appelant sur ce point (§11.4).
-  const outcome = await runSourceAnalysis({
-    sourceType: 'web_link',
-    sourceIds: [sourceId],
-    accountId,
+  const outcome = await analyzeWebLinkSource(sourceId, accountId, {
     userId: session.userId,
   });
 

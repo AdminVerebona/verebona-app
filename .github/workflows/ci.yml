@@ -38,13 +38,12 @@ jobs:
           node-version: "22.13.0"
           cache: npm
 
-      # ⚠️ `npm ci` échoue hors du réseau interne : le package-lock.json résout
-      #    tous les paquets vers nexus.intra.agrial.net. Sur un runner GitHub
-      #    hébergé, l'installation s'arrête sur ENOTFOUND avant le premier
-      #    contrôle. Deux options, à trancher (cf. LOT0-MODIFICATIONS.md §6) :
-      #      a) runner auto-hébergé sur le réseau interne — aucun changement ;
-      #      b) lock régénéré sur registry.npmjs.org — runner GitHub standard.
-      #    En attendant, le miroir est déclaré ici pour rendre l'échec explicite.
+      # Vérifié le 30/07/2026 : `package-lock.json` résout l'intégralité de ses
+      # paquets vers registry.npmjs.org, et `npm ci` aboutit sur un runner
+      # GitHub standard. L'avertissement précédent, qui annonçait un échec sur
+      # un miroir interne (nexus.intra.agrial.net), ne correspondait plus au
+      # dépôt : ce miroir n'apparaît nulle part dans le lock. Aucun runner
+      # auto-hébergé n'est nécessaire.
       - name: Installation
         run: npm ci
 

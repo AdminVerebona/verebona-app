@@ -11,10 +11,26 @@
 import { pgClient } from '@/db';
 import { listLlmOperations } from '../../registry/operations';
 import { GeminiPricingSource } from './gemini-pricing.source';
+import { GeminiPublicPricingSource } from './gemini-public.source';
 import { upsertPrice, loadPricingCache } from './pricing.repository';
-import type { PricingSource } from './pricing-source.port';
+import type { PricingSource, ModelPrice } from './pricing-source.port';
 
-const sources: PricingSource[] = [new GeminiPricingSource()];
+/**
+ * Sources par ordre de priorité CROISSANTE : la dernière configurée l'emporte.
+ *
+ *   1. Catalogue public — toujours disponible, tarifs relevés à la main puis
+ *      contrôlés contre la page officielle.
+ *   2. Cloud Billing Catalog — la grille réellement facturée au compte, seule
+ *      à refléter d'éventuels tarifs négociés (CDC §29.5). Ne prend le relais
+ *      que si `GOOGLE_BILLING_API_KEY` est fournie.
+ *
+ * Sans clé de facturation, l'application dispose donc de tarifs justes au
+ * tarif public — et non plus de tarifs inventés.
+ */
+const sources: PricingSource[] = [
+  new GeminiPublicPricingSource(),
+  new GeminiPricingSource(),
+];
 
 export interface RefreshResult {
   status: 'completed' | 'partial' | 'failed';
@@ -44,27 +60,41 @@ export async function refreshModelPricing(): Promise<RefreshResult> {
   let updated = 0;
 
   try {
+    // Les tarifs sont d'abord collectés de toutes les sources, PUIS écrits.
+    // La version précédente écrivait source par source et comptait comme
+    // manquant tout modèle qu'une source ne connaissait pas — y compris quand
+    // une autre source l'avait fourni.
+    const resolved = new Map<string, { price: ModelPrice; sourceName: string }>();
+    const providers = new Set(sources.map((s) => s.provider));
+
     for (const source of sources) {
       const models = [...(wanted.get(source.provider) ?? [])];
-      if (models.length === 0) continue;
-
-      if (!source.isConfigured()) {
-        missing.push(...models);
-        continue;
-      }
+      if (models.length === 0 || !source.isConfigured()) continue;
 
       const prices = await source.fetchPrices(models);
-      found += prices.length;
-
       for (const price of prices) {
-        // Un tarif relevé automatiquement est considéré comme vérifié : il vient
-        // de la grille facturée au compte, pas d'une estimation.
-        await upsertPrice(price, 'billing_api', true);
-        updated++;
+        // Source plus prioritaire : elle remplace la précédente.
+        resolved.set(`${price.provider}:${price.model}`, { price, sourceName: source.name });
       }
+    }
 
-      const returned = new Set(prices.map((p) => p.model));
-      missing.push(...models.filter((m) => !returned.has(m)));
+    for (const { price, sourceName } of resolved.values()) {
+      // `verified` distingue la grille du compte (opposable à la facture) du
+      // tarif public (juste, mais sans les remises éventuelles).
+      const fromPublicPage = sourceName === 'google-public-pricing-page';
+      await upsertPrice(
+        price,
+        fromPublicPage ? 'public_catalog' : 'billing_api',
+        !fromPublicPage,
+      );
+      updated++;
+    }
+    found = resolved.size;
+
+    for (const provider of providers) {
+      for (const model of wanted.get(provider) ?? []) {
+        if (!resolved.has(`${provider}:${model}`)) missing.push(model);
+      }
     }
 
     await loadPricingCache();

@@ -43,6 +43,7 @@ export interface AnalyzeFileSourcesOptions {
 }
 
 let shadowWarned = false;
+let webLinkFlagWarned = false;
 
 /**
  * Analyse un ou plusieurs fichiers. Seul point d'entrée autorisé depuis le code
@@ -136,6 +137,63 @@ async function runLegacy(
       (e as Error).message,
     );
   }
+}
+
+/**
+ * Analyse un lien web. Second point d'entrée autorisé.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI LE LIEN WEB NE SUIT PAS LE DRAPEAU
+ *
+ * La route `/api/web-links/[id]/analyze` appelait `runSourceAnalysis`
+ * DIRECTEMENT, court-circuitant cet aiguillage. Conséquence, avec le drapeau
+ * à `legacy` : un fichier partait sur le moteur historique et un lien web sur
+ * le nouveau. Deux schémas de sortie différents pour le même compte, ce que le
+ * §4.1.7 interdit — « un lien web produit les mêmes informations qu'un
+ * document ».
+ *
+ * Ce comportement est en réalité INÉVITABLE, et c'est pourquoi il est nommé
+ * ici plutôt que corrigé : le lien web n'a plus de moteur historique. Sa
+ * logique Gemini propre — 338 lignes inlinées dans la route — a été supprimée
+ * au lot 1 (§4.1.5), puisqu'elle ne servait qu'à lui. Il n'existe donc aucune
+ * branche `legacy` vers laquelle basculer.
+ *
+ * Trois options se présentaient :
+ *   • laisser l'appel direct → l'écart reste, mais invisible ;
+ *   • refuser l'analyse quand le drapeau vaut `legacy` → casse une
+ *     fonctionnalité qui marche, pour une pureté sans bénéfice ;
+ *   • passer par l'aiguillage et NOMMER l'exception → retenu.
+ *
+ * L'invariant « aucun appelant applicatif n'importe le moteur » est ainsi
+ * rétabli, et l'écart devient un message de journal explicite plutôt qu'une
+ * surprise le jour de la bascule. Le contrôle CI (critère 24) empêche
+ * désormais tout nouvel appel direct.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export async function analyzeWebLinkSource(
+  webLinkId: number,
+  accountId: number,
+  options: { userId: number },
+): Promise<RunSourceAnalysisOutput> {
+  const mode = getFlagMode('AI_UNIFIED_SOURCE_ANALYSIS');
+
+  if (mode !== 'enabled' && !webLinkFlagWarned) {
+    webLinkFlagWarned = true;
+    console.info(
+      `[source-analysis] AI_UNIFIED_SOURCE_ANALYSIS=${mode} : les liens web ` +
+      "sont analysés par le moteur unifié malgré tout — ils n'ont pas de " +
+      'moteur historique (CDC §4.1.5). Les fichiers, eux, suivent le drapeau. ' +
+      'Cet écart disparaît dès la bascule à `enabled`.',
+    );
+  }
+
+  const { runSourceAnalysis } = await import('./pipeline');
+  return runSourceAnalysis({
+    sourceType: 'web_link',
+    sourceIds: [webLinkId],
+    accountId,
+    userId: options.userId,
+  });
 }
 
 async function resolveUserId(fileId: number): Promise<number | null> {

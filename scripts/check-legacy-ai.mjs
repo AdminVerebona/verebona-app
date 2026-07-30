@@ -61,6 +61,21 @@ const STRICT = flag('strict');
 /** Chemins autorisés à importer le SDK fournisseur (CDC §12, critère 4). */
 const SDK_ALLOWLIST = ['src/services/ai/gateway/providers/'];
 
+/**
+ * Chemins autorisés à appeler le moteur d'analyse directement (critère 24).
+ *
+ * Le §10.4 interdit que l'ancien et le nouveau moteur puissent s'exécuter sur
+ * la même source. Cela ne tient que si TOUS les appelants passent par
+ * l'aiguillage `entrypoint.ts`. La route d'analyse des liens web l'avait
+ * contourné : avec le drapeau à `legacy`, un fichier partait sur le moteur
+ * historique et un lien web sur le nouveau.
+ *
+ * Un appel direct hors de ces chemins est désormais une violation.
+ */
+const PIPELINE_ALLOWLIST = [
+  'src/services/ai/source-analysis/',
+];
+
 /** Fichiers dont l'existence est interdite à partir du lot indiqué. */
 const FORBIDDEN_FILES = [
   { path: 'src/services/document-ai/prompts/intent_detect_v1.txt', fromPhase: 1, reason: 'prompt orphelin' },
@@ -119,6 +134,18 @@ for (const file of walk(SRC)) {
     violations.push({
       id: `sdk:${rel}`,
       message: `[critère 4] ${rel} accède directement au SDK fournisseur. Passez par AiGateway.`,
+    });
+  }
+
+  if (
+    !PIPELINE_ALLOWLIST.some((p) => rel.startsWith(p)) &&
+    /\brunSourceAnalysis\s*\(/.test(content)
+  ) {
+    violations.push({
+      id: `pipeline:${rel}`,
+      message:
+        `[critère 24] ${rel} appelle runSourceAnalysis directement. ` +
+        'Passez par analyzeFileSources ou analyzeWebLinkSource (§10.4).',
     });
   }
 
