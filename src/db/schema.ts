@@ -318,7 +318,27 @@ export const assetFiles = pgTable('asset_files', {
   s3Bucket: text('s3_bucket'),
   s3Region: text('s3_region'),
   uploadStatus: text('upload_status').default('COMPLETED'),
-  documentType: text('document_type').notNull().default('AUTRE'),
+  /**
+   * Type documentaire. NULLABLE depuis la migration 0119 : le défaut `AUTRE`
+   * rendait indiscernables « type Autre choisi » et « pas encore classé »
+   * (CDC 5 §1.3, constat critique).
+   */
+  documentType: text('document_type'),
+
+  // ── Classement documentaire (CDC 5 §8.2, migration 0119) ────────────────
+  documentCategoryId: integer('document_category_id'),
+  /** CLASSIFIED | TO_CLASSIFY. État système, jamais porté par le type. */
+  classificationState: text('classification_state').notNull().default('TO_CLASSIFY'),
+  /** Scores internes. Jamais exposés au front utilisateur (§8.2). */
+  categoryConfidence: numeric('category_confidence'),
+  typeConfidence: numeric('type_confidence'),
+  /** AI | USER | REFERENCE_CORRECTION. */
+  categorySource: text('category_source'),
+  typeSource: text('type_source'),
+  /** Verrouillages du §5.2 : l'IA ne réécrit pas une correction manuelle. */
+  categoryUserLocked: boolean('category_user_locked').notNull().default(false),
+  typeUserLocked: boolean('type_user_locked').notNull().default(false),
+  classificationUpdatedAt: tstzOptional('classification_updated_at'),
   substructureId: integer('substructure_id').references(() => substructures.id, { onDelete: 'set null' }),
   equipmentId: integer('equipment_id').references(() => equipments.id, { onDelete: 'set null' }),
   documentDate: pgDate('document_date'),
@@ -2404,3 +2424,108 @@ export const withdrawalVerificationTokens = pgTable('withdrawal_verification_tok
 }, (table) => ({
   wvtEmailIdx: index('withdrawal_tokens_email_idx2').on(table.email),
 }));
+
+/**
+ * Journal en ajout seul des rétractations (CDC 6 §18, migration 0118).
+ *
+ * Les colonnes de `withdrawalRequests` portent l'état courant et sont
+ * écrasées ; ce journal porte l'histoire et ne l'est jamais.
+ */
+export const withdrawalEvents = pgTable('withdrawal_events', {
+  id: serial('id').primaryKey(),
+  withdrawalId: integer('withdrawal_id')
+    .notNull()
+    .references(() => withdrawalRequests.id, { onDelete: 'cascade' }),
+  publicReference: text('public_reference').notNull(),
+  occurredAt: tstz('occurred_at'),
+  eventType: text('event_type').notNull(),
+  /** `consumer` | `system` | `stripe` | `admin:<id>`. */
+  actor: text('actor').notNull().default('system'),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  result: text('result').notNull().default('success'),
+  summary: text('summary').notNull(),
+  payloadJson: text('payload_json'),
+}, (table) => ({
+  weRequestIdx: index('withdrawal_events_request_idx2').on(table.withdrawalId),
+  weReferenceIdx: index('withdrawal_events_reference_idx2').on(table.publicReference),
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Référentiel de catégories documentaires (CDC 5 §8, migration 0119)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const documentCategories = pgTable('document_categories', {
+  id: serial('id').primaryKey(),
+  code: text('code').notNull().unique(),
+  genericLabel: text('generic_label').notNull(),
+  description: text('description'),
+  isActive: boolean('is_active').notNull().default(true),
+  /** AUTRES_DOCUMENTS est obligatoire et non désactivable (§6.1). */
+  isSystemRequired: boolean('is_system_required').notNull().default(false),
+  displayOrder: integer('display_order').notNull().default(0),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  dcCodeIdx: index('document_categories_code_idx').on(table.code),
+  dcActiveIdx: index('document_categories_active_idx').on(table.isActive),
+}));
+
+/** Applicabilité par famille de bien et libellés contextualisés (§3.3). */
+export const documentCategoryAssetAssociations = pgTable('document_category_asset_associations', {
+  id: serial('id').primaryKey(),
+  categoryId: integer('category_id').notNull()
+    .references(() => documentCategories.id, { onDelete: 'cascade' }),
+  /** `null` = applicable à toutes les familles. */
+  assetTypeId: integer('asset_type_id').references(() => assetTypes.id, { onDelete: 'cascade' }),
+  assetSubcategoryCode: text('asset_subcategory_code'),
+  contextualLabel: text('contextual_label'),
+  displayOrder: integer('display_order').notNull().default(0),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  dcaaCategoryIdx: index('document_category_asset_category_idx').on(table.categoryId),
+}));
+
+/** Compatibilité type ↔ catégorie (§4.3). */
+export const documentCategoryTypeAssociations = pgTable('document_category_type_associations', {
+  id: serial('id').primaryKey(),
+  categoryId: integer('category_id').notNull()
+    .references(() => documentCategories.id, { onDelete: 'cascade' }),
+  documentTypeId: integer('document_type_id').notNull()
+    .references(() => documentTypes.id, { onDelete: 'cascade' }),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  dctaCategoryIdx: index('document_category_type_category_idx').on(table.categoryId),
+  dctaTypeIdx: index('document_category_type_type_idx2').on(table.documentTypeId),
+}));
+
+/** Signal d'échec de classification de l'IA (§5.2, §7.3). */
+export const documentClassificationFeedback = pgTable('document_classification_feedback', {
+  id: serial('id').primaryKey(),
+  fileId: integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  proposedCategoryId: integer('proposed_category_id')
+    .references(() => documentCategories.id, { onDelete: 'set null' }),
+  proposedTypeCode: text('proposed_type_code'),
+  correctedCategoryId: integer('corrected_category_id')
+    .references(() => documentCategories.id, { onDelete: 'set null' }),
+  correctedTypeCode: text('corrected_type_code'),
+  categoryConfidence: numeric('category_confidence'),
+  typeConfidence: numeric('type_confidence'),
+  pipelineVersion: text('pipeline_version'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  dcfFileIdx: index('document_classification_feedback_file_idx2').on(table.fileId),
+}));
+
+/** Trace inaltérable des correctifs de référentiel (§6.3). */
+export const documentReferenceCorrections = pgTable('document_reference_corrections', {
+  id: serial('id').primaryKey(),
+  executedAt: tstz('executed_at'),
+  executedBy: integer('executed_by').references(() => users.id, { onDelete: 'set null' }),
+  correctionType: text('correction_type').notNull(),
+  description: text('description').notNull(),
+  mappingJson: text('mapping_json'),
+  impactCount: integer('impact_count').notNull().default(0),
+  appliedCount: integer('applied_count').notNull().default(0),
+  unmatchedCount: integer('unmatched_count').notNull().default(0),
+});

@@ -26,6 +26,7 @@ import { createHash, randomBytes } from 'crypto';
 import { db } from '@/db';
 import { withdrawalRequests } from '@/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { recordWithdrawalEvent } from './withdrawal-journal.service';
 import {
   ACTIVE_WITHDRAWAL_STATUSES,
   type ContractSummary,
@@ -185,6 +186,24 @@ export async function recordDeclaration(
       `[withdrawal] déclaration ${row.publicReference} enregistrée ` +
       `(compte ${input.accountId}, canal ${input.channel}, statut ${status}).`,
     );
+
+    // §18 : contenu de la déclaration, date et heure de confirmation, méthode
+    // d'authentification, contrat, date limite calculée.
+    await recordWithdrawalEvent({
+      publicReference: row.publicReference,
+      eventType: 'DECLARATION_RECEIVED',
+      actor: 'consumer',
+      actorUserId: input.userId,
+      summary: `Déclaration reçue via le parcours ${input.channel} (statut ${status}).`,
+      payload: {
+        channel: input.channel,
+        eligibilityVerdict: input.eligibility.verdict,
+        ineligibilityReason: input.eligibility.reason ?? null,
+        declaration: declarationSnapshot,
+        contract: contractSnapshot,
+      },
+      occurredAt: now,
+    });
     return {
       publicReference: row.publicReference,
       status: row.status as WithdrawalStatus,
@@ -291,4 +310,11 @@ export async function markReceiptSent(publicReference: string, at: Date = new Da
     .update(withdrawalRequests)
     .set({ receiptSentAt: at })
     .where(eq(withdrawalRequests.publicReference, publicReference));
+
+  await recordWithdrawalEvent({
+    publicReference,
+    eventType: 'RECEIPT_SENT',
+    summary: 'Accusé de réception remis au consommateur.',
+    occurredAt: at,
+  });
 }

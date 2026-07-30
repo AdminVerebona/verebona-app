@@ -20,6 +20,7 @@
     "db:seed:cgvu": "tsx src/db/seeds/legal/seed-cgvu.ts",
     "db:seed:cgvu-email": "tsx src/db/seeds/legal/email_template_cgvu.ts",
     "db:seed:withdrawal-email": "tsx src/db/seeds/withdrawal/email_template_withdrawal.ts",
+    "db:seed:doc-categories": "tsx src/db/seeds/documents/seed-document-categories.ts",
     "legal:verify": "tsx scripts/verify-legal-integrity.ts",
     "env:recette": "copy .env.recette.local .env.local",
     "env:prod": "copy .env.production.local .env.local",
