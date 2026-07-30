@@ -178,7 +178,18 @@ export async function middleware(request: NextRequest) {
     // Cron endpoints utilisent leur propre CRON_SECRET — pas de JWT
     const isCronRoute = pathname.startsWith('/api/cron/');
 
-    if (publicRoutes.includes(pathname) || pathname.startsWith('/api/referral/validate/') || isCronRoute) {
+    // Préfixes publics : les routes à segment dynamique ne peuvent pas être
+    // listées ci-dessus, qui compare le chemin exact.
+    //
+    // `/api/legal/cgvu/` est public par exigence explicite du §12 : les CGVU
+    // « restent accessibles après la résiliation, la fermeture ou la
+    // suppression du compte ». Les faire dépendre d'une session viderait de
+    // son sens le permalien envoyé par email après souscription.
+    const isPublicPrefix =
+      pathname.startsWith('/api/referral/validate/') ||
+      pathname.startsWith('/api/legal/cgvu/');
+
+    if (publicRoutes.includes(pathname) || isPublicPrefix || isCronRoute) {
       // Rate limiting sur les endpoints d'authentification (anti brute-force)
       const authRateLimitedRoutes = [
         '/api/auth/login',

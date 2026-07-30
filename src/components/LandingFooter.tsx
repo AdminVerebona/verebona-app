@@ -23,7 +23,7 @@ const COLUMNS = [
     title: 'Légal',
     links: [
       { href: '/legal',                     label: 'Mentions légales' },
-      { href: '/cgsu',                      label: 'CGSU' },
+      { href: '/cgvu',                      label: 'CGVU' },
       { href: '/politique-confidentialite', label: 'Confidentialité' },
     ],
   },

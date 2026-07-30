@@ -46,6 +46,18 @@ export default function SignupPage() {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [referralCode, setReferralCode] = useState<string | null>(null);
   // ══════════════════════════════════════════════════════════════════════════
+  // VERSION DES CGVU RÉELLEMENT PRÉSENTÉE — CDC 7 §8.1 et §18
+  //
+  // Chargée à l'ouverture du formulaire et transmise telle quelle au serveur.
+  // Si une nouvelle version devient courante pendant que l'utilisateur remplit
+  // le formulaire, c'est bien celle qu'il a eu sous les yeux qui est
+  // enregistrée : « ne pas remplacer silencieusement le document ».
+  // ══════════════════════════════════════════════════════════════════════════
+  const [legalVersion, setLegalVersion] = useState<{
+    versionCode: string;
+    permalink: string;
+  } | null>(null);
+  // ══════════════════════════════════════════════════════════════════════════
   // AUCUNE OFFRE N'EST CHOISIE A L'INSCRIPTION — CDC tarification §3.1
   //
   // « Tout nouveau compte beneficie automatiquement d'un essai gratuit unique
@@ -86,6 +98,19 @@ export default function SignupPage() {
     if (token) {
       setInviteToken(token);
     }
+
+    // La version applicable est figée pour toute la durée du parcours.
+    fetch('/api/legal/cgvu/current')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.versionCode) {
+          setLegalVersion({ versionCode: data.versionCode, permalink: data.permalink });
+        }
+      })
+      .catch(() => {
+        // Sans version chargée, le serveur retiendra la version courante au
+        // moment de la création. Le parcours n'est pas bloqué pour autant.
+      });
     if (emailParam) {
       setFormData(prev => ({ ...prev, email: emailParam }));
     }
@@ -166,7 +191,8 @@ export default function SignupPage() {
           // serveur (`grantTrial`), et l'offre est choisie plus tard.
           planType: 'STANDARD',
           acceptedTerms: formData.acceptedTerms,
-          termsVersion: '1.0',
+          // Code de la version affichée, jamais « la version courante » (§18).
+          termsVersion: legalVersion?.versionCode,
           referralCode: referralCode || undefined,
           inviteToken: inviteToken || undefined
         }),
@@ -396,7 +422,13 @@ export default function SignupPage() {
                     htmlFor="acceptedTerms" 
                     className="text-base leading-relaxed cursor-pointer font-normal text-foreground"
                   >
-                    J'ai lu et j'accepte les Conditions Générales d'Utilisation et de Services incluant la Politique de confidentialité.
+                    J&apos;ai lu et j&apos;accepte les Conditions générales de vente et
+                    d&apos;utilisation de Verebona, incluant la Politique de confidentialité.
+                    {legalVersion && (
+                      <span className="block text-xs text-[color:var(--text-muted)] mt-1">
+                        Version {legalVersion.versionCode}
+                      </span>
+                    )}
                   </Label>
                 </div>
                 <div className="flex justify-center">
@@ -407,8 +439,14 @@ export default function SignupPage() {
                     asChild
                     disabled={isLoading}
                   >
-                    <Link href="/cgsu" target="_blank">
-                      Lire les CGSU
+                    {/* Ouvre la version EXACTE proposée à cet instant (§8.1),
+                        et non la page courante qui pourrait changer. */}
+                    <Link
+                      href={legalVersion?.permalink ?? '/cgvu'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Lire les conditions générales
                     </Link>
                   </Button>
                 </div>

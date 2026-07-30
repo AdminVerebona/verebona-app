@@ -2222,3 +2222,77 @@ export * from './verebona-schema';
 // la vérification de dérive du schéma. `field-evidence.service.ts` importait
 // directement `@/db/ai-schema`, court-circuitant le schéma principal.
 export * from './ai-schema';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CGVU — versionnement, acceptation, audit (CDC 7, migration 0115)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Une version de CGVU. Figée à la publication par un déclencheur PostgreSQL :
+ * aucune écriture applicative ne peut la modifier, y compris par erreur.
+ */
+export const legalDocumentVersions = pgTable('legal_document_versions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  documentType: text('document_type').notNull().default('CGVU'),
+  /** Format `AAAA-MM-JJ-vN` (§7). Unique par type, jamais réutilisé. */
+  versionCode: text('version_code').notNull(),
+  title: text('title').notNull(),
+  /** DRAFT | PUBLISHED | CURRENT | ARCHIVED (§6.1). */
+  status: text('status').notNull().default('DRAFT'),
+  effectiveAt: tstzOptional('effective_at'),
+  publishedAt: tstzOptional('published_at'),
+  publishedBy: integer('published_by').references(() => users.id, { onDelete: 'set null' }),
+  changeSummary: text('change_summary').notNull(),
+  /** Qualification du §17, décidée avant publication. */
+  requiresReacceptance: boolean('requires_reacceptance').notNull().default(false),
+  /** HTML autonome figé. Fait foi (cf. en-tête de la migration 0115). */
+  htmlContent: text('html_content'),
+  htmlStorageKey: text('html_storage_key'),
+  permalink: text('permalink'),
+  sha256: text('sha256'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  lvCodeIdx: index('legal_versions_code_idx').on(table.documentType, table.versionCode),
+  lvStatusIdx: index('legal_versions_status_idx').on(table.status),
+}));
+
+/**
+ * Preuve d'acceptation. Non modifiable après création (§9) : une correction
+ * passe par un nouvel événement, jamais par une mise à jour.
+ */
+export const legalAcceptances = pgTable('legal_acceptances', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  /** Nullable : la preuve survit à la suppression du compte, pseudonymisée. */
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  legalDocumentVersionId: uuid('legal_document_version_id')
+    .notNull()
+    .references(() => legalDocumentVersions.id),
+  acceptedAt: tstz('accepted_at'),
+  /** ACCOUNT_CREATION | TRIAL_START | PAID_SUBSCRIPTION | VERSION_UPDATE. */
+  acceptanceContext: text('acceptance_context').notNull(),
+  subscriptionId: integer('subscription_id')
+    .references(() => accountSubscriptions.id, { onDelete: 'set null' }),
+  offerCode: text('offer_code'),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  laUserIdx: index('legal_acceptances_user_idx2').on(table.userId),
+  laVersionIdx: index('legal_acceptances_version_idx2').on(table.legalDocumentVersionId),
+}));
+
+/** Journal des opérations sur les documents légaux (§19). */
+export const legalAuditLog = pgTable('legal_audit_log', {
+  id: serial('id').primaryKey(),
+  occurredAt: tstz('occurred_at'),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  actorLabel: text('actor_label').notNull().default('system'),
+  action: text('action').notNull(),
+  versionCode: text('version_code'),
+  versionId: uuid('version_id'),
+  result: text('result').notNull().default('success'),
+  details: text('details'),
+}, (table) => ({
+  lalOccurredIdx: index('legal_audit_occurred_idx2').on(table.occurredAt),
+}));

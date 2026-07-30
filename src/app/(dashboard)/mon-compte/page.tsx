@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import InformationsTab from './informations/InformationsTab';
 import { NotificationsCard } from '@/components/account/NotificationsCard';
+import { LegalInformationCard } from '@/components/account/LegalInformationCard';
 
 export default function MonComptePage() {
   const { setBreadcrumbs } = useBreadcrumb();
@@ -20,6 +21,7 @@ export default function MonComptePage() {
       </div>
       <InformationsTab />
       <NotificationsCard />
+      <LegalInformationCard />
     </div>
   );
 }

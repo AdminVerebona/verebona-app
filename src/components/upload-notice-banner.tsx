@@ -75,12 +75,12 @@ export function UploadNoticeBanner({ onClose }: UploadNoticeBannerProps) {
           <p className="text-sm text-blue-800 dark:text-blue-200 leading-relaxed">
             En déposant un document, vous acceptez qu'il soit traité conformément aux{' '}
             <Link 
-              href="/cgsu" 
+              href="/cgvu" 
               target="_blank" 
               rel="noopener noreferrer"
               className="font-medium underline hover:text-blue-600 dark:hover:text-blue-300 transition-colors"
             >
-              CGSU
+              conditions générales
             </Link>
             {' '}pour son stockage, sa prévisualisation et, si votre offre le permet, son analyse automatisée (OCR).
           </p>

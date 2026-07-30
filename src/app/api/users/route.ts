@@ -7,6 +7,8 @@ import { validatePassword, getPasswordValidationError } from '@/lib/auth/passwor
 import { emailService } from '@/lib/email/email-service';
 import { grantTrial } from '@/services/trial.service';
 import { recordSignupReferral } from '@/services/referral-attribution.service';
+import { getCurrentVersion } from '@/services/legal';
+import { recordAcceptance } from '@/services/legal/legal-acceptances.service';
 
 const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
@@ -121,16 +123,49 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Last name is required', code: 'MISSING_LAST_NAME' }, { status: 400 });
     }
 
-    // Validate CGSU acceptance
+    // ══════════════════════════════════════════════════════════════════════
+    // ACCEPTATION DES CGVU — CDC 7 §8.1, §9 et §18
+    //
+    // La version enregistrée est celle que le formulaire a RÉELLEMENT
+    // présentée, transmise en clair par le client. Résoudre ici « la version
+    // courante » produirait la faute décrite au §18 : si une nouvelle version
+    // devient courante pendant que l'utilisateur remplit le formulaire, il
+    // aurait lu un texte et accepté l'autre.
+    //
+    // Auparavant, `termsVersion` valait « 1.0 » en dur, sans rapport avec
+    // aucun contenu opposable : l'acceptation n'était rattachée à rien.
+    // ══════════════════════════════════════════════════════════════════════
     if (!acceptedTerms) {
       return NextResponse.json(
         {
-          error: "Vous devez accepter les Conditions Générales d'Utilisation et de Services",
+          error: 'Vous devez accepter les Conditions générales de vente et d’utilisation',
           code: 'TERMS_NOT_ACCEPTED',
         },
         { status: 400 }
       );
     }
+
+    const presentedVersionCode =
+      typeof termsVersion === 'string' && termsVersion.trim() ? termsVersion.trim() : null;
+
+    const currentLegalVersion = await getCurrentVersion();
+    if (!currentLegalVersion) {
+      // Aucune version publiée : la création de compte est impossible, faute
+      // de contrat à opposer. Refuser explicitement vaut mieux qu'enregistrer
+      // une acceptation vide.
+      console.error('[signup] aucune version de CGVU publiée — création de compte refusée.');
+      return NextResponse.json(
+        {
+          error: 'Les conditions générales sont momentanément indisponibles. Réessayez dans quelques instants.',
+          code: 'NO_CURRENT_LEGAL_VERSION',
+        },
+        { status: 503 }
+      );
+    }
+
+    // Le client n'a pas transmis de code (ancienne page en cache) : on retient
+    // la version courante, qui est celle qu'il a nécessairement vue.
+    const acceptedVersionCode = presentedVersionCode ?? currentLegalVersion.versionCode;
 
     // Validate email format
     if (!email.includes('@')) {
@@ -249,7 +284,7 @@ export async function POST(request: NextRequest) {
         isActive: inviteToken ? true : false,
         locale: locale || 'fr-FR',
         acceptedTermsAt: now,
-        termsVersion: termsVersion || '1.0',
+        termsVersion: acceptedVersionCode,
         createdAt: now,
         updatedAt: now,
       };
@@ -332,6 +367,27 @@ export async function POST(request: NextRequest) {
         // Sans cette memorisation, le code etait perdu entre l'inscription et
         // la souscription — separees par une verification d'email et jusqu'a
         // sept jours d'essai.
+        // Preuve d'acceptation (§9). Volontairement APRÈS la création du
+        // compte : elle référence l'utilisateur. Un échec ici ne doit pas
+        // annuler un compte déjà créé — il est journalisé et rattrapable,
+        // `users.terms_version` portant déjà le code accepté.
+        try {
+          await recordAcceptance({
+            userId: newUser.id,
+            versionCode: acceptedVersionCode,
+            context: 'ACCOUNT_CREATION',
+            ipAddress: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+            userAgent: request.headers.get('user-agent'),
+            acceptedAt: now,
+          });
+        } catch (acceptanceError) {
+          console.error(
+            `[signup] preuve d'acceptation non enregistrée pour l'utilisateur ${newUser.id} ` +
+            `(version ${acceptedVersionCode}) :`,
+            (acceptanceError as Error).message,
+          );
+        }
+
         const attributed = await recordSignupReferral({
           userId: newUser.id,
           accountId: newAccount.id,
