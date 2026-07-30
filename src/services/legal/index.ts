@@ -65,3 +65,8 @@ export type {
 } from './legal-acceptances.service';
 
 export { renderLegalErrorPage } from './legal-error-page';
+
+export { sendLegalConfirmationEmail } from './legal-confirmation.service';
+export type { LegalConfirmationInput } from './legal-confirmation.service';
+
+export { recordPaidSubscriptionAcceptance } from './legal-subscription.hook';
