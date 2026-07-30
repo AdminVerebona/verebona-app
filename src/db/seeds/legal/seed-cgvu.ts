@@ -7,6 +7,8 @@
  *
  *   npm run db:seed:cgvu
  */
+// ⚠️ EN PREMIER : `@/db` lit DATABASE_URL au chargement du module.
+import '@/lib/load-env';
 import { ensureMigrations, getMigrationFailures } from '@/db';
 import {
   createDraft,

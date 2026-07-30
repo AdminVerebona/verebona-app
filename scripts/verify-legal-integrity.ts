@@ -11,6 +11,8 @@
  * s'automatise pas : un fichier altéré peut l'avoir été volontairement, et
  * l'écraser détruirait la preuve de l'incident.
  */
+// ⚠️ EN PREMIER : `@/db` lit DATABASE_URL au chargement du module.
+import '@/lib/load-env';
 import { ensureMigrations } from '@/db';
 import { verifyIntegrity } from '@/services/legal';
 

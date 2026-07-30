@@ -18,6 +18,8 @@
     "db:seed:prompts": "tsx src/db/seeds/ai-prompts.seed.ts",
     "db:seed:pricing": "tsx src/db/seeds/ai-model-pricing.seed.ts",
     "db:seed:cgvu": "tsx src/db/seeds/legal/seed-cgvu.ts",
+    "db:seed:cgvu-email": "tsx src/db/seeds/legal/email_template_cgvu.ts",
+    "db:seed:withdrawal-email": "tsx src/db/seeds/withdrawal/email_template_withdrawal.ts",
     "legal:verify": "tsx scripts/verify-legal-integrity.ts",
     "env:recette": "copy .env.recette.local .env.local",
     "env:prod": "copy .env.production.local .env.local",

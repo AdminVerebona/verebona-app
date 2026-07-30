@@ -913,6 +913,11 @@ export const accountSubscriptions = pgTable('account_subscriptions', {
   currentPeriodStartAt: tstzOptional('current_period_start_at'),
   currentPeriodEndAt: tstzOptional('current_period_end_at'),
   firstBilledAt: tstzOptional('first_billed_at'),
+  /**
+   * Confirmation de la souscription payante — point de départ du délai de
+   * rétractation (CDC 6 §3.1). Jamais recalculée depuis Stripe.
+   */
+  contractConcludedAt: tstzOptional('contract_concluded_at'),
   cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
   updatedAt: tstz('updated_at'),
   createdAt: tstz('created_at'),
@@ -1016,6 +1021,11 @@ export const referralEvents = pgTable('referral_events', {
   rewardCredits: integer('reward_credits').notNull().default(10),
   rewardGrantedAt: tstzOptional('reward_granted_at'),
   firstBilledAt: tstzOptional('first_billed_at'),
+  /**
+   * Confirmation de la souscription payante — point de départ du délai de
+   * rétractation (CDC 6 §3.1). Jamais recalculée depuis Stripe.
+   */
+  contractConcludedAt: tstzOptional('contract_concluded_at'),
   stripeInvoiceId: text('stripe_invoice_id').unique(), // idempotence: unique par facture Stripe
   metadataJson: jsonb('metadata_json').$type<Record<string, unknown>>(),
   stripeSubscriptionId: text('stripe_subscription_id'),
@@ -2325,4 +2335,72 @@ export const scheduledAccountDeletions = pgTable('scheduled_account_deletions', 
   sadAccountIdx: index('scheduled_deletions_account_idx').on(table.accountId),
   sadScheduledIdx: index('scheduled_deletions_scheduled_idx').on(table.scheduledAt),
   sadUserIdx: index('scheduled_deletions_user_idx2').on(table.userId),
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Rétractation (CDC 6 §11, migration 0117)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const withdrawalRequests = pgTable('withdrawal_requests', {
+  id: serial('id').primaryKey(),
+  /** Référence communiquée au consommateur : `RET-AAAAMMJJ-XXXXXX`. */
+  publicReference: text('public_reference').notNull().unique(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  subscriptionIdInternal: integer('subscription_id_internal')
+    .references(() => accountSubscriptions.id, { onDelete: 'set null' }),
+  stripeSubscriptionId: text('stripe_subscription_id'),
+  /** Date de référence du §3.1. Jamais recalculée depuis Stripe. */
+  contractConcludedAt: tstzOptional('contract_concluded_at'),
+  withdrawalDeadlineAt: tstzOptional('withdrawal_deadline_at'),
+  requestedAt: tstz('requested_at'),
+  confirmedAt: tstzOptional('confirmed_at'),
+  effectiveAt: tstzOptional('effective_at'),
+  /** authenticated | public | email | postal | support. */
+  channel: text('channel').notNull().default('authenticated'),
+  /** received | manual_review | processing | completed | failed | rejected. */
+  status: text('status').notNull().default('received'),
+  consumerFirstName: text('consumer_first_name'),
+  consumerLastName: text('consumer_last_name'),
+  receiptEmail: text('receipt_email'),
+  /** Ce qui a été affiché et confirmé. Figé (§11). */
+  declarationSnapshotJson: text('declaration_snapshot_json'),
+  contractSnapshotJson: text('contract_snapshot_json'),
+  /** En centimes. */
+  amountExpected: integer('amount_expected'),
+  amountRefunded: integer('amount_refunded').notNull().default(0),
+  currency: text('currency').notNull().default('eur'),
+  stripeRefundIds: text('stripe_refund_ids'),
+  stripeRefundStatuses: text('stripe_refund_statuses'),
+  cancellationStatus: text('cancellation_status').notNull().default('pending'),
+  failureCode: text('failure_code'),
+  failureDetails: text('failure_details'),
+  receiptSentAt: tstzOptional('receipt_sent_at'),
+  dataExportDeadlineAt: tstzOptional('data_export_deadline_at'),
+  dataDeletionScheduledAt: tstzOptional('data_deletion_scheduled_at'),
+  idempotencyKey: text('idempotency_key'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  wrUserIdx: index('withdrawal_user_idx2').on(table.userId),
+  wrAccountIdx: index('withdrawal_account_idx2').on(table.accountId),
+  wrStatusIdx: index('withdrawal_status_idx2').on(table.status),
+}));
+
+/** Vérification d'adresse du parcours public. Empreinte seule, jamais le jeton. */
+export const withdrawalVerificationTokens = pgTable('withdrawal_verification_tokens', {
+  id: serial('id').primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  email: text('email').notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  firstName: text('first_name'),
+  lastName: text('last_name'),
+  contractReference: text('contract_reference'),
+  expiresAt: tstz('expires_at'),
+  consumedAt: tstzOptional('consumed_at'),
+  attempts: integer('attempts').notNull().default(0),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  wvtEmailIdx: index('withdrawal_tokens_email_idx2').on(table.email),
 }));

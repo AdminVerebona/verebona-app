@@ -1,3 +1,5 @@
+// ⚠️ EN PREMIER : `@/db` lit DATABASE_URL au chargement du module.
+import '@/lib/load-env';
 import { db, ensureMigrations } from '@/db';
 import { emailTemplates } from '@/db/schema';
 import { inArray } from 'drizzle-orm';

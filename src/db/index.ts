@@ -3,6 +3,18 @@ import postgres from "postgres";
 import * as schema from "@/db/schema";
 
 const connectionString = process.env.DATABASE_URL!;
+
+// Sans URL, le pilote `postgres` ne proteste pas : il applique ses valeurs par
+// defaut et tente une connexion sous le compte systeme courant. L'erreur
+// remontee est alors une authentification refusee pour un utilisateur qui
+// n'existe pas en base — un message qui n'evoque en rien la cause reelle.
+// Silencieux en test : les tests unitaires n'ouvrent aucune connexion.
+if (!connectionString && process.env.NODE_ENV !== 'test') {
+  console.error(
+    '[db] DATABASE_URL absente. La connexion va echouer sous votre compte ' +
+    'systeme. Hors serveur Next, importez `@/lib/load-env` avant `@/db`.',
+  );
+}
 const isServerless = process.env.VERCEL === '1' || process.env.NEXT_RUNTIME === 'nodejs';
 const client = postgres(connectionString, {
   // Dev: 8 connexions pour gérer les appels concurrents (pre-warm + load + tabs)
