@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
+import { recordPaidSubscriptionAcceptance } from '@/services/legal/legal-subscription.hook';
+import {
+    handleRefundEvent,
+    handleSubscriptionCancelled,
+} from '@/services/withdrawal/withdrawal-webhook.service';
+import { cancelDeletion } from '@/services/account/scheduled-deletion.service';
 import { db } from '@/db';
 import {
   accounts,
@@ -106,6 +112,22 @@ export async function POST(request: NextRequest) {
         break;
       case 'customer.subscription.deleted':
         await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+        // CDC rétractation §9.2 : confirme l'annulation, y compris lorsqu'elle
+        // a été effectuée hors de l'application.
+        await handleSubscriptionCancelled((event.data.object as Stripe.Subscription).id);
+        break;
+
+      // ── Suivi des remboursements de rétractation (CDC 6 §9.5, §9.6) ──
+      //
+      // Un remboursement Stripe n'aboutit pas à sa création : il part en
+      // `pending` et devient `succeeded` — ou `failed` — plusieurs jours plus
+      // tard. Sans ces événements, une demande resterait indéfiniment en
+      // traitement et un échec passerait inaperçu.
+      case 'refund.created':
+      case 'refund.updated':
+      case 'refund.failed':
+      case 'charge.refund.updated':
+        await handleRefundEvent(event);
         break;
       case 'invoice.payment_succeeded':
         await handlePaymentSucceeded(event.data.object as Stripe.Invoice);
@@ -215,6 +237,25 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
     .set({ stripeSubscriptionId: subscriptionId, updatedAt: new Date() })
     .where(eq(accounts.id, account.id));
 
+  // CDC CGVU §8.2 et §10.1 : la souscription est rattachée à la version
+  // applicable, et l'email de confirmation porte son permalien.
+  //
+  // Volontairement en dernier, et sans await bloquant sur l'échec : un
+  // incident d'email ou de journal ne doit pas faire échouer un webhook
+  // Stripe, qui serait alors rejoué et pourrait dupliquer des effets de bord
+  // sur l'abonnement lui-même.
+  await recordPaidSubscriptionAcceptance({
+    accountId: account.id,
+    stripeSubscriptionId: subscriptionId,
+  });
+
+  // CDC rétractation §13.3 et scénario n°21 : « annulation automatique de la
+  // suppression si une nouvelle souscription est conclue ». Une souscription
+  // réactive le compte ; laisser courir le compte à rebours détruirait les
+  // données d'un client qui vient de repayer.
+  await cancelDeletion(account.id, 'Nouvelle souscription conclue').catch((e) => {
+    console.error('[Webhook] annulation de suppression impossible :', (e as Error).message);
+  });
 }
 
 // ─── customer.subscription.created / updated ──────────────────────────────────
