@@ -2296,3 +2296,33 @@ export const legalAuditLog = pgTable('legal_audit_log', {
 }, (table) => ({
   lalOccurredIdx: index('legal_audit_occurred_idx2').on(table.occurredAt),
 }));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Suppression planifiée de compte (CDC rétractation §13.3, migration 0116)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const scheduledAccountDeletions = pgTable('scheduled_account_deletions', {
+  id: serial('id').primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  /** WITHDRAWAL | VOLUNTARY | TRIAL_ABANDONED. */
+  reason: text('reason').notNull(),
+  confirmedAt: tstz('confirmed_at'),
+  /** `confirmedAt` + 30 jours, figé à l'écriture. */
+  scheduledAt: tstz('scheduled_at'),
+  /** SCHEDULED | CANCELLED | EXECUTED | FAILED. */
+  status: text('status').notNull().default('SCHEDULED'),
+  cancelledAt: tstzOptional('cancelled_at'),
+  cancellationReason: text('cancellation_reason'),
+  executedAt: tstzOptional('executed_at'),
+  failureReason: text('failure_reason'),
+  reminderJ7SentAt: tstzOptional('reminder_j7_sent_at'),
+  reminderJ1SentAt: tstzOptional('reminder_j1_sent_at'),
+  initialEmailSentAt: tstzOptional('initial_email_sent_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  sadAccountIdx: index('scheduled_deletions_account_idx').on(table.accountId),
+  sadScheduledIdx: index('scheduled_deletions_scheduled_idx').on(table.scheduledAt),
+  sadUserIdx: index('scheduled_deletions_user_idx2').on(table.userId),
+}));
