@@ -8,6 +8,7 @@ import { emailService } from '@/lib/email/email-service';
 import { grantTrial } from '@/services/trial.service';
 import { recordSignupReferral } from '@/services/referral-attribution.service';
 import { getCurrentVersion } from '@/services/legal';
+import { logDatabaseError } from '@/lib/database-diagnostic';
 import { recordAcceptance } from '@/services/legal/legal-acceptances.service';
 
 const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
@@ -465,7 +466,7 @@ export async function POST(request: NextRequest) {
         {
           error: 'Erreur lors de la création du compte. Veuillez réessayer.',
           code: 'DATABASE_ERROR',
-          ...describeSchemaDrift(dbError),
+          ...logDatabaseError('SIGNUP-DB', dbError).diagnostic,
         },
         { status: 500 }
       );
@@ -483,44 +484,21 @@ export async function POST(request: NextRequest) {
     // l'utilisateur — mais le code technique et la reference de journal
     // permettent de la retrouver en une recherche.
     // ══════════════════════════════════════════════════════════════════════
-    const err = error as { message?: string; code?: string };
-    const ref = `SIGNUP-${Date.now().toString(36).toUpperCase()}`;
-    console.error(
-      `[signup][${ref}] echec avant insertion (${err.code ?? 'sans code'}) : ${err.message ?? error}`,
-      error,
-    );
+    // Diagnostic partagé : il reconnaît neuf codes PostgreSQL et traverse
+    // l'enveloppe Drizzle, où le code réel se cache dans `cause`.
+    const { reference, diagnostic } = logDatabaseError('SIGNUP', error);
     return NextResponse.json(
       {
         error: 'Une erreur interne est survenue.',
         code: 'INTERNAL_ERROR',
-        reference: ref,
-        ...describeSchemaDrift(error),
+        reference,
+        ...(diagnostic.schemaHint ? { schemaHint: diagnostic.schemaHint } : {}),
       },
       { status: 500 }
     );
   }
 }
 
-/**
- * Traduit les erreurs PostgreSQL qui trahissent un schema desaligne.
- *
- * Ces trois codes ne signalent jamais une saisie utilisateur fautive : ils
- * signalent que la base ne correspond pas au code deploye — typiquement une
- * migration jamais appliquee. Les nommer evite des heures de recherche.
- */
-function describeSchemaDrift(error: unknown): { schemaHint?: string } {
-  const code = (error as { code?: string })?.code;
-  switch (code) {
-    case '42703': // undefined_column
-      return { schemaHint: 'MISSING_COLUMN' };
-    case '42P01': // undefined_table
-      return { schemaHint: 'MISSING_TABLE' };
-    case '23514': // check_violation
-      return { schemaHint: 'CHECK_CONSTRAINT' };
-    default:
-      return {};
-  }
-}
 
 export async function PUT(request: NextRequest) {
   try {

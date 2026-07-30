@@ -31,6 +31,27 @@
 -- compte utilisateur », et par extension d'un service tiers).
 -- ═══════════════════════════════════════════════════════════════════════════
 
+-- ── 0. Prérequis ──────────────────────────────────────────────────────────
+--
+-- `gen_random_uuid()` est native depuis PostgreSQL 13. En deçà, elle relève de
+-- l'extension pgcrypto, et la migration échouerait sur un 42883
+-- (`function gen_random_uuid() does not exist`).
+--
+-- Cette ligne ne coûte rien sur 13 et au-delà — l'extension y est ignorée —
+-- et évite un échec silencieux sur une base plus ancienne. Elle demande
+-- toutefois le droit de créer une extension : si l'utilisateur applicatif ne
+-- l'a pas, la ligne échoue et la migration entière avec elle. C'est pourquoi
+-- elle est tolérée par un bloc d'exception plutôt qu'imposée.
+
+DO $$
+BEGIN
+  CREATE EXTENSION IF NOT EXISTS pgcrypto;
+EXCEPTION WHEN insufficient_privilege OR OTHERS THEN
+  -- Droits insuffisants : on poursuit. Si `gen_random_uuid()` existe déjà —
+  -- cas de PostgreSQL 13+ — la migration se déroulera normalement.
+  RAISE NOTICE 'pgcrypto non installable : poursuite (gen_random_uuid natif attendu).';
+END $$;
+
 -- ── 1. Versions ────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS legal_document_versions (

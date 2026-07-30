@@ -8,12 +8,31 @@
 import { NextResponse } from 'next/server';
 import { ensureMigrations } from '@/db';
 import { getCurrentVersion, buildDownloadFilename } from '@/services/legal';
+import { logDatabaseError } from '@/lib/database-diagnostic';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   await ensureMigrations();
-  const current = await getCurrentVersion();
+
+  let current;
+  try {
+    current = await getCurrentVersion();
+  } catch (e) {
+    // Une erreur ici signale presque toujours un schéma incomplet : la table
+    // `legal_document_versions` est créée par la migration 0115. Un 500 nu
+    // obligeait à fouiller les journaux pour l'établir.
+    const { reference, diagnostic } = logDatabaseError('CGVU', e);
+    return NextResponse.json(
+      {
+        error: 'Les conditions générales sont momentanément indisponibles.',
+        code: 'LEGAL_UNAVAILABLE',
+        reference,
+        ...(diagnostic.schemaHint ? { schemaHint: diagnostic.schemaHint } : {}),
+      },
+      { status: 503 },
+    );
+  }
 
   if (!current) {
     return NextResponse.json(

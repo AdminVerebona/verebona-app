@@ -20,13 +20,30 @@ import { NextResponse } from 'next/server';
 import { ensureMigrations } from '@/db';
 import { getCurrentVersion } from '@/services/legal';
 import { renderLegalErrorPage } from '@/services/legal/legal-error-page';
+import { logDatabaseError } from '@/lib/database-diagnostic';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   await ensureMigrations();
 
-  const current = await getCurrentVersion();
+  let current;
+  try {
+    current = await getCurrentVersion();
+  } catch (e) {
+    // §16.3 : « retourner une page explicite en cas d'incident ». Un 500 nu
+    // laissait le visiteur — et l'exploitant — sans la moindre indication.
+    const { reference } = logDatabaseError('CGVU-PAGE', e);
+    return new NextResponse(
+      renderLegalErrorPage({
+        title: 'Conditions générales indisponibles',
+        message:
+          'Un incident technique nous empêche de les afficher. Nos équipes en ' +
+          `sont informées (référence ${reference}).`,
+      }),
+      { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    );
+  }
 
   if (!current?.htmlContent) {
     // §16.3 : « retourner une page explicite en cas d'incident ».

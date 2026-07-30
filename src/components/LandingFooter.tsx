@@ -2,34 +2,58 @@ import Link from 'next/link';
 import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
 
-const COLUMNS = [
+/**
+ * Colonnes du pied de page public.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * HUIT LIENS SUR ONZE MÈNENT À LA VITRINE
+ *
+ * Ce pied de page est affiché par l'APPLICATION, mais la plupart de ses liens
+ * désignent des pages de la vitrine. Écrits en relatif, ils pointaient vers
+ * app.verebona.fr, où aucune n'existe : six 404 apparaissaient dans la
+ * console au seul survol, Next préchargeant les liens.
+ *
+ * Seuls `/cgvu` et `/retractation` sont servis par l'application, et c'est
+ * délibéré : le §12 du CDC CGVU exige que les conditions restent accessibles
+ * sans session, et le §6.1 du CDC rétractation impose le même parcours partout.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+const COLUMNS: Array<{
+  title: string;
+  links: Array<{ href: string; label: string; external?: boolean }>;
+}> = [
   {
     title: 'Produit',
     links: [
-      { href: '/pourquoi-verebona', label: 'Pourquoi Verebona ?' },
-      { href: '/comment-ca-marche', label: 'Comment ça marche ?' },
-      { href: '/#pricing',          label: 'Tarifs' },
+      { href: '/pourquoi-verebona', label: 'Pourquoi Verebona ?', external: true },
+      { href: '/comment-ca-marche', label: 'Comment ça marche ?', external: true },
+      { href: '/#pricing',          label: 'Tarifs', external: true },
     ],
   },
   {
     title: 'Support',
     links: [
-      { href: '/#faq',   label: 'FAQ' },
-      { href: '/aide',   label: "Centre d'aide" },
-      { href: '/contact', label: 'Contact' },
+      { href: '/#faq',    label: 'FAQ', external: true },
+      { href: '/aide',    label: "Centre d'aide", external: true },
+      { href: '/contact', label: 'Contact', external: true },
     ],
   },
   {
     title: 'Légal',
     links: [
-      { href: '/legal',                     label: 'Mentions légales' },
-      { href: '/cgvu',                      label: 'CGVU' },
+      { href: '/mentions-legales',  label: 'Mentions légales', external: true },
+      { href: '/cgvu',              label: 'CGVU' },
       // CDC rétractation §6.1 : libellé imposé mot pour mot.
-      { href: '/retractation',              label: 'Renoncer au contrat ici' },
-      { href: '/politique-confidentialite', label: 'Confidentialité' },
+      { href: '/retractation',      label: 'Renoncer au contrat ici' },
+      { href: '/confidentialite',   label: 'Confidentialité', external: true },
     ],
   },
 ];
+
+/** Cible réelle d'un lien : vitrine ou application. */
+function resolveHref(link: { href: string; external?: boolean }): string {
+  return link.external ? publicSiteUrl(link.href) : link.href;
+}
 
 export function AuthFooter() {
   return (
@@ -37,9 +61,9 @@ export function AuthFooter() {
       <p className="text-xs text-white/30">
         © {new Date().getFullYear()} Verebona. Tous droits réservés.
         {' · '}
-        <Link href="/legal" className="hover:text-white/60 transition-colors">Mentions légales</Link>
+        <a href={publicSiteUrl('/mentions-legales')} className="hover:text-white/60 transition-colors">Mentions légales</a>
         {' · '}
-        <Link href="/politique-confidentialite" className="hover:text-white/60 transition-colors">Confidentialité</Link>
+        <a href={publicSiteUrl('/confidentialite')} className="hover:text-white/60 transition-colors">Confidentialité</a>
       </p>
     </footer>
   );
@@ -71,7 +95,7 @@ export function LandingFooter() {
                 {col.links.map((link) => (
                   <li key={link.href}>
                     <Link
-                      href={link.href}
+                      href={resolveHref(link)}
                       className="text-sm text-white/55 hover:text-white transition-colors"
                     >
                       {link.label}

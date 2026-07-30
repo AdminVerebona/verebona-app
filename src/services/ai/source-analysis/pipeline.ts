@@ -33,6 +33,7 @@ import { identifyEntities } from './steps/identify-entities.step';
 import { buildAgendaCandidates } from './steps/build-agenda-candidates.step';
 import { persistEvidence } from './steps/persist-evidence.step';
 import { persistAnalysisResult } from './persistence/analysis-result.repository';
+import { notifyLotCompleted } from './lot-notification';
 import { broadcast } from './stream/broadcast';
 import { combineTraces } from './trace';
 import { emitSourceAnalyzed } from './events';
@@ -173,6 +174,28 @@ export async function runSourceAnalysis(
   }
 
   await closeLot(lotId);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // NOTIFICATION DE FIN DE LOT — CDC notifications §7.2
+  //
+  // Seule pièce que l'ancien pipeline émettait et que le nouveau avait
+  // perdue. Sans elle, la bascule aurait rendu l'analyse muette : le
+  // document apparaît, la fiche s'enrichit, et l'utilisateur n'est prévenu
+  // de rien.
+  //
+  // Contrairement à l'enrichissement — qui passe, lui, par l'événement
+  // `emitSourceAnalyzed` et ses abonnés —, la notification n'a pas de
+  // destinataire naturel dans ce mécanisme : elle porte sur le LOT, pas sur
+  // un bien. Elle est donc émise ici.
+  // ══════════════════════════════════════════════════════════════════════
+  await notifyLotCompleted({
+    accountId: req.accountId,
+    userId: req.userId,
+    lotId,
+    analysedCount,
+    failedCount: Math.max(0, pendingIds.length - analysedCount),
+  });
+
   return { results, analysedCount };
 }
 
