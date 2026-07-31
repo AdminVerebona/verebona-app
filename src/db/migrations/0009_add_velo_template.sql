@@ -1,8 +1,22 @@
 -- Migration: Add DOSSIER_VENTE_VELO_V1 export template
 -- Created: 2025-11-30
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CONVERTIE DEPUIS LA SYNTAXE SQLITE
+--
+-- Cette migration n'a JAMAIS pu s'appliquer : elle employait quatre formes
+-- propres à SQLite, refusées par PostgreSQL.
+--
+--   INSERT OR REPLACE  →  INSERT ... ON CONFLICT ... DO UPDATE
+--   json('...')        →  littéral de chaîne, la colonne étant en TEXT
+--   datetime('now')    →  now()
+--   1 / 0 booléens     →  TRUE / FALSE
+--
+-- L'echec remontait en `42601 syntax error at or near "OR"`, sans que rien
+-- ne signale qu'il s'agissait d'un dialecte étranger.
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- Insert or replace the bike template
-INSERT OR REPLACE INTO export_templates (
+INSERT INTO export_templates (
   code,
   label,
   description,
@@ -17,7 +31,7 @@ INSERT OR REPLACE INTO export_templates (
   'DOSSIER_VENTE_VELO_V1',
   'Dossier de vente - Vélo V1',
   'Template dédié pour la vente de vélos avec sections adaptées',
-  json('{
+  '{
     "page": {
       "size": "A4",
       "orientation": "portrait",
@@ -170,11 +184,22 @@ INSERT OR REPLACE INTO export_templates (
         ]
       }
     ]
-  }'),
+  }',
   'VEHICULE',
   'DOSSIER_VENTE',
+  TRUE,
   1,
-  1,
-  datetime('now'),
-  datetime('now')
-);
+  now(),
+  now()
+)
+-- `code` porte un index unique : le conflit se résout par une mise à jour,
+-- ce que `INSERT OR REPLACE` faisait implicitement sous SQLite.
+ON CONFLICT (code) DO UPDATE SET
+  label            = EXCLUDED.label,
+  description      = EXCLUDED.description,
+  template_content = EXCLUDED.template_content,
+  category         = EXCLUDED.category,
+  export_type      = EXCLUDED.export_type,
+  is_active        = EXCLUDED.is_active,
+  version          = EXCLUDED.version,
+  updated_at       = now();
