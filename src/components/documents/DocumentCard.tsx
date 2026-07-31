@@ -121,7 +121,8 @@ export function DocumentCard({
   hideAssetId,
 }: {
   document: DocumentCardData;
-  onOpen: (id: number) => void;
+  /** Reçoit le document entier : la vue l'a déjà, inutile de le refetcher. */
+  onOpen: (document: DocumentCardData) => void;
   /** Bien courant, masqué des associations dans l'onglet d'un bien (§3). */
   hideAssetId?: number;
 }) {
@@ -135,7 +136,7 @@ export function DocumentCard({
       // détail et la modification ». Toute la ligne est donc cliquable, et
       // c'est un vrai bouton — accessible au clavier sans travail
       // supplémentaire (§9.2).
-      onClick={() => onOpen(document.id)}
+      onClick={() => onOpen(document)}
       className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg
                  border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]
                  hover:border-[color:var(--border-strong)] transition-colors

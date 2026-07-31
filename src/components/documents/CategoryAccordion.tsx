@@ -46,7 +46,7 @@ export function CategoryAccordion({
   hideAssetId,
 }: {
   group: CategoryGroupData;
-  onOpenDocument: (id: number) => void;
+  onOpenDocument: (document: DocumentCardData) => void;
   onLoadMore: (code: string) => void;
   loadingMore?: boolean;
   hideAssetId?: number;

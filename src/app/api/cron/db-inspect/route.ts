@@ -45,7 +45,10 @@ const TABLES_SURVEILLEES = [
   'scheduled_account_deletions', 'withdrawal_requests', 'withdrawal_events',
   'document_categories',
   // Créées par les migrations 0101 à 0107 du socle IA.
-  'ai_use_case_registry', 'field_evidence', 'reconciliation_runs',
+  // Le fichier de migration s'appelle 0101_ai_use_case_registry, mais la
+  // table qu'il crée s'appelle `ai_use_cases`. Ma sonde cherchait le nom du
+  // fichier et rapportait donc une absence qui n'en était pas une.
+  'ai_use_cases', 'ai_operation', 'field_evidence', 'reconciliation_runs',
 ];
 
 export async function GET(req: NextRequest) {
@@ -180,6 +183,51 @@ export async function GET(req: NextRequest) {
     EMAIL_FROM: Boolean(process.env.EMAIL_FROM || process.env.RESEND_FROM),
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? null,
   };
+
+  // ── Journal des envois ────────────────────────────────────────────────
+  //
+  // ══════════════════════════════════════════════════════════════════════
+  // LA CAUSE Y EST DÉJÀ ÉCRITE
+  //
+  // `emailService.send()` consigne CHAQUE tentative dans `email_logs`, avec
+  // son statut et son message d'erreur — y compris quand l'envoi échoue.
+  //
+  // Nous avons cherché la raison d'un email non reçu pendant plusieurs
+  // échanges, alors qu'elle était enregistrée à chaque tentative. Personne
+  // n'avait de moyen de lire cette table.
+  //
+  // Causes typiques lisibles ici :
+  //   · « The verebona.com domain is not verified » — domaine non vérifié
+  //     chez le fournisseur, l'erreur la plus fréquente en préproduction ;
+  //   · « Template X not found » — gabarit non amorcé ;
+  //   · « Email provider not configured » — RESEND_API_KEY absente.
+  // ══════════════════════════════════════════════════════════════════════
+  try {
+    const derniers = await pgClient<{
+      template_code: string; recipient_email: string; status: string;
+      error_message: string | null; sent_at: Date | null;
+    }[]>`
+      SELECT template_code, recipient_email, status, error_message, sent_at
+      FROM email_logs
+      ORDER BY id DESC
+      LIMIT 15
+    `;
+    rapport.derniersEnvois = derniers.map((l) => ({
+      gabarit: l.template_code,
+      // Destinataire tronqué : ce rapport circule en copier-coller.
+      destinataire: l.recipient_email.replace(/^(.{2}).*@/, '$1***@'),
+      statut: l.status,
+      erreur: l.error_message?.slice(0, 200) ?? null,
+      date: l.sent_at,
+    }));
+
+    const echoues = derniers.filter((l) => l.status !== 'sent');
+    rapport.premierEchecEnvoi = echoues[0]
+      ? { gabarit: echoues[0].template_code, erreur: echoues[0].error_message }
+      : null;
+  } catch (e) {
+    rapport.derniersEnvois = { erreur: (e as Error).message };
+  }
 
   return NextResponse.json(rapport, { status: 200 });
 }

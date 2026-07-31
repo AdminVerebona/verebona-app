@@ -108,3 +108,55 @@ describe('accessibilité (§9.2)', () => {
     expect(ACCORDION).toContain('aria-hidden');
   });
 });
+
+describe('les deux écrans partagent la même vue (§1.3, §2 principe 6)', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // C'EST LE DÉFAUT QUE TOUT LE CHANTIER CORRIGE
+  //
+  // « La page globale et l'onglet d'un bien possèdent des implémentations
+  // distinctes. » Deux implémentations dérivent toujours — un filtre corrigé
+  // d'un côté, un compteur calculé autrement de l'autre.
+  //
+  // Ces tests figent l'unicité : si quelqu'un réintroduit une liste dans
+  // l'un des deux écrans, ils le signalent.
+  // ══════════════════════════════════════════════════════════════════════
+  const PAGE = read('src/app/(dashboard)/documents/classement/page.tsx');
+  const ONGLET = read('src/components/assets/AssetDocumentsByCategory.tsx');
+
+  it('les deux rendent DocumentsView', () => {
+    expect(PAGE).toContain('<DocumentsView');
+    expect(ONGLET).toContain('<DocumentsView');
+  });
+
+  it('aucun des deux ne rend de liste par lui-même', () => {
+    // On cherche un RENDU, pas une mention : les deux importent
+    // légitimement le TYPE `DocumentCardData`, ce qui n'est pas rendre une
+    // carte. Interdire le mot interdirait de typer la variable reçue.
+    for (const source of [PAGE, ONGLET]) {
+      expect(source).not.toMatch(/documents\.map\(/);
+      // Bornes explicites : `useState<DocumentCardData | null>` contient
+      // « <DocumentCard » sans rendre quoi que ce soit. Un élément JSX est
+      // suivi d'un espace, d'un `/` ou d'un `>`.
+      expect(source).not.toMatch(/<CategoryAccordion[\s/>]/);
+      expect(source).not.toMatch(/<DocumentCard[\s/>]/);
+    }
+  });
+
+  it('seul l’onglet passe assetId — c’est la seule différence', () => {
+    expect(ONGLET).toMatch(/assetId=\{assetId\}/);
+    expect(PAGE).not.toMatch(/assetId=/);
+  });
+
+  it('aucun des deux ne filtre ni ne trie', () => {
+    // Filtres, tri, compteurs et pagination viennent du serveur : les
+    // refaire ici recréerait la divergence.
+    for (const source of [PAGE, ONGLET]) {
+      expect(source).not.toMatch(/\.filter\(\(?d\)? =>/);
+      expect(source).not.toMatch(/\.sort\(/);
+    }
+  });
+
+  it('l’onglet masque le bien courant des associations (§3)', () => {
+    expect(ONGLET).toMatch(/filter\(\(a\) => a\.id !== assetId\)/);
+  });
+});

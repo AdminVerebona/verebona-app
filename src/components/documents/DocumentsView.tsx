@@ -24,7 +24,7 @@
 
 import { useMemo, useState } from 'react';
 import { CategoryAccordion, CategorySkeleton } from './CategoryAccordion';
-import { EmptyDocuments } from './DocumentCard';
+import { EmptyDocuments, type DocumentCardData } from './DocumentCard';
 import { SortFilterDrawer, SortFilterButton, type TypeOption } from './SortFilterDrawer';
 import { useDocumentBrowser } from './useDocumentBrowser';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
@@ -42,7 +42,7 @@ export function DocumentsView({
   assetId?: number;
   availableTypes: TypeOption[];
   headerActions?: React.ReactNode;
-  onOpenDocument: (id: number) => void;
+  onOpenDocument: (document: DocumentCardData) => void;
 }) {
   const browser = useDocumentBrowser({ assetId });
   const [filtersOpen, setFiltersOpen] = useState(false);
