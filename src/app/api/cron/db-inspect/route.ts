@@ -121,5 +121,34 @@ export async function GET(req: NextRequest) {
     rapport.colonnesAttendues = { erreur: (e as Error).message };
   }
 
+  // ── Contraintes CHECK des tables du parcours d'inscription ────────────
+  //
+  // Une violation `23514` ne dit pas QUELLE contrainte a refusé la valeur.
+  // Les lister permet de comparer l'état réel de la base à ce que le code
+  // écrit, sans avoir à deviner.
+  try {
+    const lignes = await pgClient<{ table_name: string; conname: string; def: string }[]>`
+      SELECT rel.relname AS table_name, con.conname, pg_get_constraintdef(con.oid) AS def
+      FROM pg_constraint con
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+      WHERE ns.nspname = 'public'
+        AND con.contype = 'c'
+        AND rel.relname IN (
+          'users', 'accounts', 'account_memberships', 'account_subscriptions',
+          'trial_grants', 'signup_contexts', 'legal_acceptances',
+          'notification_preferences', 'referral_events'
+        )
+      ORDER BY rel.relname, con.conname
+    `;
+    rapport.contraintesCheck = lignes.map((l) => ({
+      table: l.table_name,
+      nom: l.conname,
+      definition: l.def.slice(0, 220),
+    }));
+  } catch (e) {
+    rapport.contraintesCheck = { erreur: (e as Error).message };
+  }
+
   return NextResponse.json(rapport, { status: 200 });
 }
