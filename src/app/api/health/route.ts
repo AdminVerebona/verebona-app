@@ -42,7 +42,26 @@ interface HealthCheckResult {
      */
     migrations: {
       status: 'ok' | 'error';
+      /** Noms seuls, pour la compatibilité des sondes existantes. */
       failed?: string[];
+      /**
+       * Cause de chaque échec.
+       *
+       * Le lanceur enregistrait déjà message et code ; seuls les noms étaient
+       * exposés. Diagnostiquer une chaîne de migrations bloquée imposait donc
+       * d'accéder aux journaux du serveur — ce qui n'est pas toujours
+       * possible, et jamais immédiat. Le premier échec suffit presque
+       * toujours à expliquer les suivants.
+       */
+      failures?: Array<{ filename: string; code?: string; message: string }>;
+      /**
+       * Migration à corriger EN PREMIER.
+       *
+       * Une chaîne bloquée produit des dizaines d'échecs en cascade : une
+       * table absente en fait échouer dix autres qui la référencent. Seul le
+       * premier échec, dans l'ordre d'application, désigne la cause réelle.
+       */
+      firstFailure?: { filename: string; code?: string; message: string };
     };
   };
 }
@@ -123,6 +142,26 @@ export async function GET(request: NextRequest) {
   if (migrationFailures.length > 0) {
     result.checks.migrations.status = 'error';
     result.checks.migrations.failed = migrationFailures.map((f) => f.filename);
+
+    // Le message est tronqué : certaines erreurs PostgreSQL embarquent la
+    // requête entière, ce qui rendrait la réponse illisible.
+    result.checks.migrations.failures = migrationFailures.map((f) => ({
+      filename: f.filename,
+      code: f.code,
+      message: (f.message ?? '').slice(0, 300),
+    }));
+
+    // Les migrations sont appliquées dans l'ordre lexical : la première en
+    // échec est celle qui a rompu la chaîne. Les suivantes en découlent
+    // souvent — une table absente en fait échouer toutes celles qui la
+    // référencent.
+    const premier = migrationFailures[0];
+    result.checks.migrations.firstFailure = {
+      filename: premier.filename,
+      code: premier.code,
+      message: (premier.message ?? '').slice(0, 300),
+    };
+
     result.status = 'degraded';
   }
 
