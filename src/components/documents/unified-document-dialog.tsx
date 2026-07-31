@@ -291,10 +291,38 @@ export function UnifiedDocumentDialog({
         headers: { 'Content-Type': normalizeMimeType(file) },
         signal: uploadController.signal,
       });
+    } catch (e) {
+      // ══════════════════════════════════════════════════════════════════
+      // UN `TypeError: Failed to fetch` SUR S3 SIGNIFIE PRESQUE TOUJOURS CORS
+      //
+      // Le navigateur envoie le fichier DIRECTEMENT au stockage objet, sur
+      // un autre domaine. Si le bucket n'autorise pas l'origine de
+      // l'application, le contrôle préalable échoue et `fetch` lève un
+      // TypeError nu — sans code, sans statut, sans en-tête.
+      //
+      // Le message générique « Échec du téléchargement » envoyait alors
+      // chercher un défaut applicatif là où c'est une autorisation de
+      // bucket qui manque. La distinction fait gagner des heures.
+      // ══════════════════════════════════════════════════════════════════
+      if ((e as Error).name === 'AbortError') {
+        throw new Error("Le téléchargement a dépassé deux minutes. Réessayez avec un fichier plus léger.");
+      }
+      throw new Error(
+        "Le stockage a refusé le fichier. L'origine de l'application n'est " +
+        'probablement pas autorisée sur le bucket (CORS). ' +
+        'Consultez la console du navigateur pour le détail.',
+      );
     } finally {
       clearTimeout(uploadTimeout);
     }
-    if (!uploadRes.ok) throw new Error('Échec du téléchargement du fichier');
+    if (!uploadRes.ok) {
+      throw new Error(
+        `Le stockage a refusé le fichier (${uploadRes.status}). ` +
+        (uploadRes.status === 403
+          ? "L'URL signée est peut-être expirée : réessayez."
+          : 'Réessayez, ou signalez ce code.'),
+      );
+    }
 
     const confirmRes = await fetch('/api/files/confirm', {
       credentials: 'include',

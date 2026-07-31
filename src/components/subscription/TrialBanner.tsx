@@ -19,6 +19,8 @@ import { Button } from '@/components/ui/button';
 interface TrialStatus {
   trial: {
     status: 'none' | 'active' | 'expired' | 'converted';
+    /** L'adresse a déjà consommé son essai (§3.4) — pas une panne. */
+    dejaConsomme?: boolean;
     daysRemaining: number;
     endsAt: string | null;
     isUrgent: boolean;
@@ -75,8 +77,30 @@ export function TrialBanner() {
   // Le troisième ne doit pas emprunter le vocabulaire du premier.
   // ══════════════════════════════════════════════════════════════════════
 
-  // Essai jamais ouvert sur un compte par ailleurs restreint : anomalie
-  // d'attribution, pas fin d'essai.
+  // Essai déjà consommé par cette adresse (§3.4). Ce n'est pas une panne :
+  // recréer un compte ne redonne pas un essai, et le dire évite de laisser
+  // croire à un incident.
+  if (trial.status === 'none' && trial.dejaConsomme && isRestricted) {
+    return (
+      <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" aria-hidden />
+        <p className="flex-1 text-sm text-[color:var(--text-primary)]">
+          <span className="font-medium">
+            L&apos;essai gratuit a déjà été utilisé avec cette adresse.
+          </span>{' '}
+          <span className="text-[color:var(--text-muted)]">
+            Il est réservé à une première inscription. Choisissez une offre pour
+            continuer.
+          </span>
+        </p>
+        <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
+          Voir les offres
+        </Button>
+      </div>
+    );
+  }
+
+  // Essai jamais ouvert sans trace d'usage : anomalie d'attribution.
   if (trial.status === 'none' && isRestricted) {
     return (
       <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">

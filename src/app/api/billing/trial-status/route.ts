@@ -3,7 +3,7 @@ import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { accountMemberships, assets, assetFiles, accountSubscriptions } from '@/db/schema';
 import { eq, and, isNull, count } from 'drizzle-orm';
-import { getTrialState } from '@/services/trial.service';
+import { getTrialState, hasUsedTrial } from '@/services/trial.service';
 import { getEntitlements, quotaUsage } from '@/services/entitlements.service';
 import { getScheduledChange } from '@/services/plan-change.service';
 
@@ -66,9 +66,23 @@ export async function GET(request: NextRequest) {
     const assetsUsed = assetRow?.value ?? 0;
     const documentsUsed = docRow?.value ?? 0;
 
+    // ══════════════════════════════════════════════════════════════════
+    // « PAS D'ESSAI » A DEUX CAUSES TRÈS DIFFÉRENTES
+    //
+    // Soit l'attribution a échoué — anomalie technique.
+    // Soit l'adresse a DÉJÀ consommé son essai (§3.4) — comportement
+    // attendu, notamment lorsqu'un compte est recréé.
+    //
+    // L'écran annonçait « n'a pas pu être activé » dans les deux cas, ce qui
+    // laisse croire à une panne là où la règle s'applique normalement.
+    // ══════════════════════════════════════════════════════════════════
+    const dejaConsomme =
+      trial.status === 'none' && (await hasUsedTrial(session.email ?? ''));
+
     return NextResponse.json({
       trial: {
         status: trial.status,
+        dejaConsomme,
         daysRemaining: trial.status === 'active' ? trial.daysRemaining : 0,
         endsAt: 'endsAt' in trial ? trial.endsAt.toISOString() : null,
         // A J-2 et J-1, le bandeau doit devenir plus visible (CDC §9.2)
