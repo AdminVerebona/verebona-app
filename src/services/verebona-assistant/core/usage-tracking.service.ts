@@ -27,7 +27,20 @@ export interface AiRunRecord {
 }
 
 export async function recordAiRun(rec: AiRunRecord): Promise<void> {
+  // `estimateCostMicros` rend `null` quand aucun tarif n'est connu — la
+  // colonne est nullable, et `null` y signifie « coût inconnu », ce que `0`
+  // ne dirait pas. Un appel sans tarif n'est pas un appel gratuit.
   const cost = estimateCostMicros(rec.resolvedModelId, rec.inputTokens, rec.outputTokens);
+
+  if (cost === null) {
+    // Signalé, car un tarif manquant se répare : il suffit d'ajouter le
+    // modèle à la grille. Sans ce message, la colonne se remplirait de
+    // `null` sans que personne ne sache pourquoi.
+    console.warn(
+      `[verebona] coût non estimable pour ${rec.resolvedModelId} : ` +
+      'modèle absent de la grille tarifaire et des valeurs de secours.',
+    );
+  }
   await pgClient.unsafe(
     `INSERT INTO verebona_ai_runs
        (request_id, account_id, message_id, provider, model_alias, resolved_model_id,

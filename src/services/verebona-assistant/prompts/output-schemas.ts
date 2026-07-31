@@ -57,15 +57,29 @@ export const assistantResponseSchema = z
 
 export type AssistantResponseParsed = z.infer<typeof assistantResponseSchema>;
 
-/** JSON Schema natif à transmettre au provider (structured output — §18.1). */
+/**
+ * JSON Schema natif à transmettre au provider — §18.1.
+ *
+ * ── LE TODO EST LEVÉ PAR VÉRIFICATION, NON PAR SUPPOSITION ────────────────
+ *
+ * Le code portait « selon la version de zod, brancher le converter
+ * approprié ». Le projet emploie zod 4, où `z.toJSONSchema` est natif — c'est
+ * vérifié par un test, qui échouerait si une mise à jour la retirait.
+ *
+ * Le repli est conservé, avec un message actionnable : une conversion
+ * indisponible empêcherait toute sortie structurée, et un message vague
+ * coûterait une heure de recherche au moment le plus inopportun.
+ */
 export function toJsonSchema(): Record<string, unknown> {
-  // Zod v4 : z.toJSONSchema. Fallback documenté si version différente.
   const anyZ = z as unknown as { toJSONSchema?: (s: unknown) => Record<string, unknown> };
   if (typeof anyZ.toJSONSchema === 'function') {
     return anyZ.toJSONSchema(assistantResponseSchema);
   }
-  // TODO(CDC §18.1) : selon la version de zod, brancher le converter approprié.
-  throw new Error('z.toJSONSchema indisponible — adapter au runtime zod du projet');
+  throw new Error(
+    'z.toJSONSchema indisponible : le projet requiert zod 4 ou supérieur. ' +
+    'Vérifiez la version installée — `npm ls zod` — ou employez ' +
+    'zod-to-json-schema comme convertisseur de remplacement.',
+  );
 }
 
 export const OUTPUT_SCHEMAS = {
