@@ -69,9 +69,36 @@ export async function POST(request: NextRequest) {
     });
     
     if (!result.success) {
+      // ══════════════════════════════════════════════════════════════════
+      // TRANSMETTRE LA CAUSE, PAS SEULEMENT L'ÉCHEC
+      //
+      // Le service la connaît — « Template EMAIL_VERIFICATION not found »,
+      // « Emails disabled » — et la route la jetait. Diagnostiquer imposait
+      // alors d'accéder aux journaux du serveur.
+      //
+      // `cause` est un libellé technique, jamais affiché à l'utilisateur :
+      // l'écran montre `error`. Il est lisible dans l'onglet Réseau, ce qui
+      // suffit à trancher en quelques secondes.
+      // ══════════════════════════════════════════════════════════════════
       console.error('Failed to send verification email:', result.error);
+
+      const cause = result.error ?? 'cause inconnue';
+      const remede =
+        /not found/i.test(cause)
+          ? "Le gabarit d'email n'existe pas en base. Exécuter l'amorçage : GET /api/cron/seed?only=email-system"
+          : /disabled/i.test(cause)
+            ? "Les emails sont désactivés globalement dans email_settings."
+            : /api key|unauthorized|401/i.test(cause)
+              ? "Clé d'API du fournisseur absente ou refusée. Vérifier RESEND_API_KEY."
+              : undefined;
+
       return NextResponse.json(
-        { error: 'Erreur lors de l\'envoi de l\'email' },
+        {
+          error: 'Erreur lors de l\'envoi de l\'email',
+          code: 'EMAIL_SEND_FAILED',
+          cause,
+          ...(remede ? { remede } : {}),
+        },
         { status: 500 }
       );
     }

@@ -315,7 +315,9 @@ export async function seedAccountMembershipEmailTemplates() {
         }
 
         // Map code -> type pour le schema
-        await db.insert(emailTemplates).values({
+        await db
+            .insert(emailTemplates)
+            .values({
           type: template.code,
           subject: template.subject,
           body: template.bodyHtml || template.bodyText,
@@ -324,7 +326,21 @@ export async function seedAccountMembershipEmailTemplates() {
           sender: null,
           updatedAt: new Date(),
           updatedBy: null,
-        });
+        })
+            // Rejouable : appelé par /api/cron/seed à chaque amorçage.
+            .onConflictDoUpdate({
+                target: emailTemplates.type,
+                set: {
+          type: template.code,
+          subject: template.subject,
+          body: template.bodyHtml || template.bodyText,
+          placeholders: template.variables || null,
+          triggerConfig: null,
+          sender: null,
+          updatedAt: new Date(),
+          updatedBy: null,
+        },
+            });
 
       } catch (error) {
         console.error(`  ❌ Failed to create template ${template.code}:`, error);

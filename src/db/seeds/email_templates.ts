@@ -29,7 +29,19 @@ export async function seedBaseEmailTemplates() {
         }
     ];
 
-    await db.insert(emailTemplates).values(sampleEmailTemplates);
+    // Rejouable : ce seed est appelé par `/api/cron/seed`, donc à chaque
+    // amorçage. `type` porte un index unique — sans cette clause, un
+    // second passage échouerait en 23505.
+    //
+    // `DO UPDATE` et non `DO NOTHING` : un gabarit corrigé dans le code doit
+    // se propager. Les modifications faites en back-office sont, elles,
+    // écrasées — c'est le comportement attendu d'un gabarit de référence.
+    for (const gabarit of sampleEmailTemplates) {
+      await db
+        .insert(emailTemplates)
+        .values(gabarit)
+        .onConflictDoUpdate({ target: emailTemplates.type, set: gabarit });
+    }
     
 }
 
