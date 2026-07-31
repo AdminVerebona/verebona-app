@@ -115,6 +115,8 @@ export interface SourceAnalysisResult {
   document: {
     title?: EvidenceValue<string>;
     type?: EvidenceValue<string>;
+    /** Catégorie documentaire proposée (CDC 5 §7.1). */
+    category?: EvidenceValue<string>;
     description?: EvidenceValue<string>;
     transcription?: string;
     date?: EvidenceValue<string>;

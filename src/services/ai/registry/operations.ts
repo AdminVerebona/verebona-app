@@ -94,6 +94,15 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     promptCode: 'classify_document_v2', timeoutMs: 30_000,
     outputSchema: 'ClassifyDocumentOutput', active: true, billable: false,
   },
+  classify_category: {
+    operationCode: 'classify_category', useCaseCode: 'SOURCE_ANALYSIS',
+    label: 'Classement par catégorie documentaire',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: 'classify_category_v1', timeoutMs: 20_000,
+    // Non facturée : le §4.3 tranche déterministiquement la majorité des cas,
+    // et cet appel ne porte que sur les types réellement ambigus.
+    outputSchema: 'ClassifyCategoryOutput', active: true, billable: false,
+  },
   identify_entities: {
     operationCode: 'identify_entities', useCaseCode: 'SOURCE_ANALYSIS',
     label: 'Identification des entités (biens, pièces, équipements, fournisseurs)',

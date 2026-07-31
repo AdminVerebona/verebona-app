@@ -28,6 +28,17 @@ export const ClassifyDocumentOutput = z.object({
 });
 export type ClassifyDocumentOutput = z.infer<typeof ClassifyDocumentOutput>;
 
+// ── classify_category ────────────────────────────────────────────────────────
+//
+// `categoryCode` est un code du référentiel, jamais un libellé libre : la
+// catégorie doit exister pour que le document soit affichable (CDC 5 §2.3).
+export const ClassifyCategoryOutput = z.object({
+  categoryCode: z.string().min(3).max(50).regex(/^[A-Z][A-Z0-9_]{2,49}$/),
+  confidence,
+  excerpt,
+});
+export type ClassifyCategoryOutput = z.infer<typeof ClassifyCategoryOutput>;
+
 // ── extract_source ───────────────────────────────────────────────────────────
 const evidenceField = z.object({
   fieldKey: z.string().min(1).max(120),

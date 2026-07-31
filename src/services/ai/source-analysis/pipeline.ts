@@ -29,6 +29,31 @@ import { getSourceAdapter } from './adapters';
 import { groupSources } from './steps/group-sources.step';
 import { extractSource } from './steps/extract-source.step';
 import { classifyDocument } from './steps/classify-document.step';
+import { classifyCategory } from './steps/classify-category.step';
+import { updateClassification } from '@/services/documents/classification.service';
+
+/**
+ * Version du pipeline, consignée avec chaque correction utilisateur.
+ *
+ * Sans elle, le signal d'échec du §5.2 est inexploitable : on saurait que le
+ * modèle s'est trompé, jamais quelle version s'est trompée — donc jamais si
+ * une évolution a corrigé le défaut ou l'a aggravé.
+ */
+const PIPELINE_VERSION = 'source-analysis-v1';
+
+/**
+ * Traduit la confiance qualitative du modèle en score numérique.
+ *
+ * Les trois niveaux du schéma sont volontairement grossiers : un modèle qui
+ * annonce « 0,87 » invente une précision qu'il n'a pas. La conversion sert au
+ * stockage et à la mesure, jamais à l'affichage (§8.2).
+ */
+function confidenceToScore(c?: 'certain' | 'probable' | 'conflictual'): number | null {
+  if (c === 'certain') return 1;
+  if (c === 'probable') return 0.6;
+  if (c === 'conflictual') return 0.3;
+  return null;
+}
 import { identifyEntities } from './steps/identify-entities.step';
 import { buildAgendaCandidates } from './steps/build-agenda-candidates.step';
 import { persistEvidence } from './steps/persist-evidence.step';
@@ -124,6 +149,44 @@ export async function runSourceAnalysis(
       const persisted = await persistAnalysisResult({
         input, leadSourceId, groupSourceIds, lotId, result,
       });
+
+      // ══════════════════════════════════════════════════════════════════
+      // ÉTAPE 12 bis — ÉCRITURE DU CLASSEMENT (CDC 5 §5.2, §8.4)
+      //
+      // Passe par `updateClassification`, jamais par une écriture directe.
+      // Ce service applique les règles du §4.3 — compatibilité, attribution
+      // automatique, recalcul de l'état — et surtout LES VERROUILLAGES :
+      // une catégorie posée par l'utilisateur n'est pas écrasée par le modèle.
+      //
+      // Écrire directement dans `asset_files` contournerait ces règles, et
+      // l'utilisateur verrait son classement manuel défait à la prochaine
+      // réanalyse — sans rien pour l'expliquer.
+      //
+      // Ne lève jamais : l'analyse a réussi et les résultats sont écrits. Un
+      // classement manqué se rattrape, une analyse perdue non.
+      // ══════════════════════════════════════════════════════════════════
+      if (result.document.category?.value || result.document.type?.value) {
+        await updateClassification({
+          // Les sources SONT les fichiers : `filterOwnedSources` les lit dans
+          // `asset_files`. Le document de tête porte donc le classement du
+          // groupe — c'est lui qui reste visible, les secondaires étant
+          // marqués supprimés au regroupement.
+          fileId: leadSourceId,
+          accountId: input.accountId,
+          categoryCode: result.document.category?.value,
+          documentTypeCode: result.document.type?.value,
+          source: 'AI',
+          // §8.2 : enregistrées, jamais exposées au front.
+          categoryConfidence: confidenceToScore(result.document.category?.confidence),
+          typeConfidence: confidenceToScore(result.document.type?.confidence),
+          pipelineVersion: PIPELINE_VERSION,
+        }).catch((e) => {
+          console.error(
+            `[source-analysis] classement du fichier ${leadSourceId} impossible :`,
+            (e as Error).message,
+          );
+        });
+      }
 
       // Étape 9 (suite) — preuves, uniquement si un bien est déterminé.
       const assetId = resolveAssetId(result, input);
@@ -225,6 +288,25 @@ async function analyseGroup(
   ]);
   warnings.push(...entities.warnings);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // ÉTAPE 6 bis — CATÉGORIE (CDC 5 §7.1)
+  //
+  // APRÈS la classification par type et l'identification des entités, car
+  // elle dépend des deux : le type détermine les catégories possibles (§4.3),
+  // et les biens rattachés les restreignent encore (§4.4).
+  //
+  // La règle déterministe tranche la majorité des cas sans appel modèle — un
+  // DPE, une garantie, un contrôle technique n'admettent qu'une catégorie.
+  // ══════════════════════════════════════════════════════════════════════
+  const categorie = await classifyCategory(input, groupIndices, {
+    documentType: (classified.type ?? extracted.document.type)?.value,
+    assetIds: entities.assetCandidates
+      .map((c) => c.entityId)
+      .filter((id): id is number => typeof id === 'number'),
+    title: hints.title,
+    extractedText: hints.extractedText,
+  });
+
   // Étape 11 — candidats agenda, déterministes.
   const agendaCandidates = buildAgendaCandidates(extracted.extractedFields, hints.title);
 
@@ -233,7 +315,11 @@ async function analyseGroup(
       sourceIds: groupIndices.map((i) => input.sourceIds[i]),
       leadSourceId: input.sourceIds[groupIndices[0]],
     },
-    document: { ...extracted.document, type: classified.type ?? extracted.document.type },
+    document: {
+      ...extracted.document,
+      type: classified.type ?? extracted.document.type,
+      category: categorie.category,
+    },
     assetCandidates: entities.assetCandidates,
     roomCandidates: entities.roomCandidates,
     // Étape 10 — les équipements sortent de l'analyse (§4.1.7), plus d'un
@@ -243,7 +329,7 @@ async function analyseGroup(
     agendaCandidates,
     warnings,
     operationTrace: combineTraces(
-      groupTrace, extracted.trace, classified.trace, entities.trace,
+      groupTrace, extracted.trace, classified.trace, entities.trace, categorie.trace,
     ),
   };
 }
