@@ -1,0 +1,313 @@
+{
+  "version": "1.0.0",
+  "name": "Verebona Mascot Library",
+  "transparent_background_verified": true,
+  "sizes": {
+    "sm": 48,
+    "md": 112,
+    "lg": 160,
+    "xl": 512
+  },
+  "assets": {
+    "neutral": {
+      "title": "Verebona neutral",
+      "alt": "Verebona neutral",
+      "master": "/assets/verebona/mascot/v1/neutral/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/neutral/sm.webp",
+        "md": "/assets/verebona/mascot/v1/neutral/md.webp",
+        "lg": "/assets/verebona/mascot/v1/neutral/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/neutral/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "welcome-wave": {
+      "title": "Verebona accueil / salut",
+      "alt": "Verebona accueil / salut",
+      "master": "/assets/verebona/mascot/v1/welcome-wave/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/welcome-wave/sm.webp",
+        "md": "/assets/verebona/mascot/v1/welcome-wave/md.webp",
+        "lg": "/assets/verebona/mascot/v1/welcome-wave/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/welcome-wave/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "conversation-ready": {
+      "title": "Verebona prêt à dialoguer",
+      "alt": "Verebona prêt à dialoguer",
+      "master": "/assets/verebona/mascot/v1/conversation-ready/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/conversation-ready/sm.webp",
+        "md": "/assets/verebona/mascot/v1/conversation-ready/md.webp",
+        "lg": "/assets/verebona/mascot/v1/conversation-ready/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/conversation-ready/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "search-loupe": {
+      "title": "Verebona recherche",
+      "alt": "Verebona recherche",
+      "master": "/assets/verebona/mascot/v1/search-loupe/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/search-loupe/sm.webp",
+        "md": "/assets/verebona/mascot/v1/search-loupe/md.webp",
+        "lg": "/assets/verebona/mascot/v1/search-loupe/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/search-loupe/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "document-analysis-pdf": {
+      "title": "Verebona analyse un document PDF",
+      "alt": "Verebona analyse un document PDF",
+      "master": "/assets/verebona/mascot/v1/document-analysis-pdf/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/document-analysis-pdf/sm.webp",
+        "md": "/assets/verebona/mascot/v1/document-analysis-pdf/md.webp",
+        "lg": "/assets/verebona/mascot/v1/document-analysis-pdf/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/document-analysis-pdf/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "analysis-in-progress": {
+      "title": "Verebona analyse en cours",
+      "alt": "Verebona analyse en cours",
+      "master": "/assets/verebona/mascot/v1/analysis-in-progress/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/analysis-in-progress/sm.webp",
+        "md": "/assets/verebona/mascot/v1/analysis-in-progress/md.webp",
+        "lg": "/assets/verebona/mascot/v1/analysis-in-progress/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/analysis-in-progress/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "thumbs-up": {
+      "title": "Verebona bravo / validation",
+      "alt": "Verebona bravo / validation",
+      "master": "/assets/verebona/mascot/v1/thumbs-up/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/thumbs-up/sm.webp",
+        "md": "/assets/verebona/mascot/v1/thumbs-up/md.webp",
+        "lg": "/assets/verebona/mascot/v1/thumbs-up/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/thumbs-up/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "success-check": {
+      "title": "Verebona succès / tout est bon",
+      "alt": "Verebona succès / tout est bon",
+      "master": "/assets/verebona/mascot/v1/success-check/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/success-check/sm.webp",
+        "md": "/assets/verebona/mascot/v1/success-check/md.webp",
+        "lg": "/assets/verebona/mascot/v1/success-check/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/success-check/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "alert": {
+      "title": "Verebona alerte / attention",
+      "alt": "Verebona alerte / attention",
+      "master": "/assets/verebona/mascot/v1/alert/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/alert/sm.webp",
+        "md": "/assets/verebona/mascot/v1/alert/md.webp",
+        "lg": "/assets/verebona/mascot/v1/alert/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/alert/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "reminder-bell": {
+      "title": "Verebona rappel / cloche",
+      "alt": "Verebona rappel / cloche",
+      "master": "/assets/verebona/mascot/v1/reminder-bell/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/reminder-bell/sm.webp",
+        "md": "/assets/verebona/mascot/v1/reminder-bell/md.webp",
+        "lg": "/assets/verebona/mascot/v1/reminder-bell/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/reminder-bell/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "composed-hands": {
+      "title": "Verebona calme / mains jointes",
+      "alt": "Verebona calme / mains jointes",
+      "master": "/assets/verebona/mascot/v1/composed-hands/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/composed-hands/sm.webp",
+        "md": "/assets/verebona/mascot/v1/composed-hands/md.webp",
+        "lg": "/assets/verebona/mascot/v1/composed-hands/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/composed-hands/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "dialogue-bubble": {
+      "title": "Verebona dialogue / discussion",
+      "alt": "Verebona dialogue / discussion",
+      "master": "/assets/verebona/mascot/v1/dialogue-bubble/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/dialogue-bubble/sm.webp",
+        "md": "/assets/verebona/mascot/v1/dialogue-bubble/md.webp",
+        "lg": "/assets/verebona/mascot/v1/dialogue-bubble/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/dialogue-bubble/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "alert-folder": {
+      "title": "Verebona dossier d’alerte / à traiter",
+      "alt": "Verebona dossier d’alerte / à traiter",
+      "master": "/assets/verebona/mascot/v1/alert-folder/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/alert-folder/sm.webp",
+        "md": "/assets/verebona/mascot/v1/alert-folder/md.webp",
+        "lg": "/assets/verebona/mascot/v1/alert-folder/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/alert-folder/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "info-card": {
+      "title": "Verebona carte d’information",
+      "alt": "Verebona carte d’information",
+      "master": "/assets/verebona/mascot/v1/info-card/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/info-card/sm.webp",
+        "md": "/assets/verebona/mascot/v1/info-card/md.webp",
+        "lg": "/assets/verebona/mascot/v1/info-card/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/info-card/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "security-shield": {
+      "title": "Verebona sécurité / protection",
+      "alt": "Verebona sécurité / protection",
+      "master": "/assets/verebona/mascot/v1/security-shield/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/security-shield/sm.webp",
+        "md": "/assets/verebona/mascot/v1/security-shield/md.webp",
+        "lg": "/assets/verebona/mascot/v1/security-shield/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/security-shield/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "premium-folder": {
+      "title": "Verebona dossier / premium",
+      "alt": "Verebona dossier / premium",
+      "master": "/assets/verebona/mascot/v1/premium-folder/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/premium-folder/sm.webp",
+        "md": "/assets/verebona/mascot/v1/premium-folder/md.webp",
+        "lg": "/assets/verebona/mascot/v1/premium-folder/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/premium-folder/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "download-file": {
+      "title": "Verebona export / téléchargement",
+      "alt": "Verebona export / téléchargement",
+      "master": "/assets/verebona/mascot/v1/download-file/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/download-file/sm.webp",
+        "md": "/assets/verebona/mascot/v1/download-file/md.webp",
+        "lg": "/assets/verebona/mascot/v1/download-file/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/download-file/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "property-house": {
+      "title": "Verebona bien / maison",
+      "alt": "Verebona bien / maison",
+      "master": "/assets/verebona/mascot/v1/property-house/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/property-house/sm.webp",
+        "md": "/assets/verebona/mascot/v1/property-house/md.webp",
+        "lg": "/assets/verebona/mascot/v1/property-house/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/property-house/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "questioning": {
+      "title": "Verebona question / précision",
+      "alt": "Verebona question / précision",
+      "master": "/assets/verebona/mascot/v1/questioning/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/questioning/sm.webp",
+        "md": "/assets/verebona/mascot/v1/questioning/md.webp",
+        "lg": "/assets/verebona/mascot/v1/questioning/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/questioning/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    "search-card": {
+      "title": "Verebona résultats de recherche",
+      "alt": "Verebona résultats de recherche",
+      "master": "/assets/verebona/mascot/v1/search-card/master.png",
+      "variants": {
+        "sm": "/assets/verebona/mascot/v1/search-card/sm.webp",
+        "md": "/assets/verebona/mascot/v1/search-card/md.webp",
+        "lg": "/assets/verebona/mascot/v1/search-card/lg.webp",
+        "xl": "/assets/verebona/mascot/v1/search-card/xl.webp"
+      },
+      "source_size": {
+        "width": 1254,
+        "height": 1254
+      }
+    }
+  }
+}
