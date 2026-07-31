@@ -150,5 +150,36 @@ export async function GET(req: NextRequest) {
     rapport.contraintesCheck = { erreur: (e as Error).message };
   }
 
+  // ── Gabarits d'email et configuration d'expédition ────────────────────
+  //
+  // Un gabarit absent ne se manifeste qu'au premier envoi : l'inscription
+  // aboutit, l'utilisateur lit « Vérifiez votre boîte mail », et rien ne
+  // part. L'échec est journalisé côté serveur et invisible côté client.
+  try {
+    const gabarits = await pgClient<{ type: string }[]>`
+      SELECT type FROM email_templates ORDER BY type
+    `;
+    const presents = new Set(gabarits.map((g) => g.type));
+    const attendus = [
+      'EMAIL_VERIFICATION', 'WELCOME', 'PASSWORD_RESET',
+      'LEGAL_CONFIRMATION', 'WITHDRAWAL_RECEIPT',
+    ];
+    rapport.gabaritsEmail = {
+      total: presents.size,
+      // `EMAIL_VERIFICATION` conditionne l'activation de tout nouveau compte.
+      manquants: attendus.filter((t) => !presents.has(t)),
+      presents: [...presents],
+    };
+  } catch (e) {
+    rapport.gabaritsEmail = { erreur: (e as Error).message };
+  }
+
+  // Configuration d'expédition : présence seule, jamais les valeurs.
+  rapport.configurationEmail = {
+    RESEND_API_KEY: Boolean(process.env.RESEND_API_KEY),
+    EMAIL_FROM: Boolean(process.env.EMAIL_FROM || process.env.RESEND_FROM),
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? null,
+  };
+
   return NextResponse.json(rapport, { status: 200 });
 }

@@ -1,7 +1,7 @@
 import { db } from '@/db';
 import { emailTemplates } from '@/db/schema';
 
-async function main() {
+export async function seedBaseEmailTemplates() {
     const sampleEmailTemplates = [
         {
             type: 'WELCOME',
@@ -33,6 +33,17 @@ async function main() {
     
 }
 
-main().catch((error) => {
-    console.error('❌ Seeder failed:', error);
-});
+// ⚠️ Exécution CONDITIONNELLE.
+//
+// Ce module est désormais importable par `/api/cron/seed`, qui l'appelle
+// explicitement. Sans cette garde, le seul fait d'importer le fichier
+// déclencherait l'amorçage — donc à chaque démarrage du serveur, effaçant
+// et réécrivant les gabarits en boucle.
+if (process.argv[1]?.includes('email_templates')) {
+  seedBaseEmailTemplates()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error('[seed] échec :', error.message);
+      process.exit(1);
+    });
+}

@@ -14,7 +14,6 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:diagnose": "tsx scripts/diagnose-migrations.ts",
-    "db:fix-constraints": "tsx scripts/fix-constraints.ts",
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push",
     "db:seed:prompts": "tsx src/db/seeds/ai-prompts.seed.ts",

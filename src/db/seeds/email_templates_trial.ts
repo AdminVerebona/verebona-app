@@ -114,7 +114,7 @@ const templates = [
   },
 ];
 
-async function main() {
+export async function seedTrialEmailTemplates() {
   console.log('\nModeles de courriels — essai gratuit\n');
 
   // Remplacement integral : le script est rejouable sans creer de doublon.
@@ -137,9 +137,13 @@ async function main() {
   console.log('\nTermine.\n');
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error('[email_templates_trial] erreur :', err);
-    process.exit(1);
-  });
+// ⚠️ Exécution CONDITIONNELLE : ce module est importable par /api/cron/seed.
+// Sans cette garde, l'importer déclencherait l'amorçage à chaque démarrage.
+if (process.argv[1]?.includes('email_templates_trial')) {
+  seedTrialEmailTemplates()
+    .then(() => process.exit(0))
+    .catch((err: Error) => {
+      console.error('[email_templates_trial] erreur :', err.message);
+      process.exit(1);
+    });
+}
