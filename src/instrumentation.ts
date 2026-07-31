@@ -57,6 +57,19 @@ export async function register(): Promise<void> {
   registerReconciliationHandlers();
   initAssistant();
 
+  // 5 bis. Adaptateurs de récupération de l'assistant.
+  //
+  // Sans cet appel, `getEnabledAdapters()` rend un tableau vide et
+  // `retrieve()` retombe sur son repli minimal : une recherche par NOM DE
+  // BIEN, et rien d'autre. L'assistant ne pouvait trouver ni document, ni
+  // échéance, ni équipement.
+  //
+  // Le code des adaptateurs existait ; il manquait cet enregistrement.
+  const { registerAllRetrievalAdapters } = await import(
+    '@/services/verebona-assistant/registries'
+  );
+  registerAllRetrievalAdapters();
+
   // L'agenda reçoit ses accès base par injection : le module reste testable
   // sans démarrer l'application.
   const { loadExistingAgendaItems, persistAgendaDecisions } =
