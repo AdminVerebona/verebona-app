@@ -4,7 +4,14 @@
 -- NULL = not yet classified (treated as 'action' as safe fallback)
 
 ALTER TABLE agenda_items
-  ADD COLUMN IF NOT EXISTS home_category TEXT,
+  ADD COLUMN IF NOT EXISTS home_category TEXT;
+
+-- `ADD CONSTRAINT` n'accepte pas `IF NOT EXISTS` : on retire puis on repose.
+-- La colonne portait déjà `IF NOT EXISTS`, mais pas la contrainte — d'où un
+-- échec en 42710 dès que le schéma vient de `drizzle-kit push`.
+ALTER TABLE agenda_items
+  DROP CONSTRAINT IF EXISTS agenda_items_home_category_check;
+ALTER TABLE agenda_items
   ADD CONSTRAINT agenda_items_home_category_check
     CHECK (home_category IS NULL OR home_category IN ('action', 'information'));
 

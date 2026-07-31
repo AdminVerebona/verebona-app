@@ -19,9 +19,16 @@ CREATE TABLE IF NOT EXISTS ai_legacy_usage_mapping (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ⚠️ N'insérer que les correspondances dont l'usage cible EXISTE.
+--
+-- `use_case_code` référence `ai_use_cases(code)`. Sur une base dont le
+-- registre des usages n'est pas encore peuplé, l'insertion violait la clé
+-- étrangère (23503) et bloquait la chaîne. Le registre est amorcé par le
+-- back-office, pas par cette migration : elle doit s'y adapter, pas l'imposer.
 INSERT INTO ai_legacy_usage_mapping
   (legacy_identifier, legacy_usage_no, use_case_code, operation_code, note)
-VALUES
+SELECT v.legacy_identifier, v.legacy_usage_no, v.use_case_code, v.operation_code, v.note
+FROM (VALUES
   ('document_analysis',   1, 'SOURCE_ANALYSIS',       'extract_source',      'analyse documentaire historique'),
   ('detect_groups',       1, 'SOURCE_ANALYSIS',       'group_sources',       'regroupement, devenu étape interne'),
   ('extract_full',        2, 'SOURCE_ANALYSIS',       'extract_source',      'extraction complète'),
@@ -34,6 +41,8 @@ VALUES
   ('intelligent_search',  7, 'INTELLIGENT_ASSISTANT', 'generate_answer',     'réponse générative'),
   ('agenda_classify',     8, 'AGENDA_INTELLIGENCE',   'classify_event',      'classification agenda'),
   ('ai_instructions',    11, 'AI_GOVERNANCE',         'analyze_instruction', 'modification de prompts')
+) AS v(legacy_identifier, legacy_usage_no, use_case_code, operation_code, note)
+WHERE EXISTS (SELECT 1 FROM ai_use_cases u WHERE u.code = v.use_case_code)
 ON CONFLICT (legacy_identifier) DO NOTHING;
 
 UPDATE ai_usage_event e

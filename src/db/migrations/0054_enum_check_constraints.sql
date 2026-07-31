@@ -1,3 +1,7 @@
+-- Gardes ajoutées : `ADD CONSTRAINT` n'accepte pas `IF NOT EXISTS`.
+-- Chaque contrainte est retirée puis reposée, ce qui rend la migration
+-- rejouable sur un schéma qui les porte déjà.
+
 -- Migration 0054: DB-level CHECK constraints for all canonical enums
 -- Mirrors the TypeScript enum constants in src/types/domain.ts
 -- Purpose: catch any invalid value written to DB at the earliest possible point.
@@ -10,6 +14,20 @@
 --   agenda_items.origin_type, manual_status              → snake_case lowercase
 
 -- ── users ─────────────────────────────────────────────────────────────────────
+
+
+-- Contraintes retirées avant d'être reposées : `ADD CONSTRAINT`
+-- n'accepte pas `IF NOT EXISTS`, et le schéma peut déjà les porter
+-- lorsqu'il vient de `drizzle-kit push`.
+ALTER TABLE account_memberships DROP CONSTRAINT IF EXISTS chk_memberships_role;
+ALTER TABLE account_memberships DROP CONSTRAINT IF EXISTS chk_memberships_status;
+ALTER TABLE accounts DROP CONSTRAINT IF EXISTS chk_accounts_subscription_status;
+ALTER TABLE accounts DROP CONSTRAINT IF EXISTS chk_accounts_subscription_tier;
+ALTER TABLE agenda_items DROP CONSTRAINT IF EXISTS chk_agenda_items_manual_status;
+ALTER TABLE agenda_items DROP CONSTRAINT IF EXISTS chk_agenda_items_origin_type;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_users_plan_type;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_users_role;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_users_status;
 
 ALTER TABLE users
   ADD CONSTRAINT chk_users_plan_type
