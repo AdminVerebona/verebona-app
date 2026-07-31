@@ -56,7 +56,46 @@ export function TrialBanner() {
 
   const { trial, isRestricted } = data;
 
-  // Essai expire sans souscription → mode restreint
+  // ══════════════════════════════════════════════════════════════════════
+  // « TERMINÉ » ET « JAMAIS COMMENCÉ » NE SONT PAS LA MÊME CHOSE
+  //
+  // Ce bandeau annonçait « Votre essai gratuit est terminé » dès que
+  // `isRestricted` valait vrai — y compris sur un compte créé la minute
+  // précédente, dont l'essai n'avait pas pu être attribué.
+  //
+  // Le message était alors FAUX et alarmant : l'utilisateur venait de
+  // s'inscrire pour un essai de sept jours et apprenait qu'il était fini.
+  //
+  // `isRestricted` couvre trois situations distinctes :
+  //   · essai expiré sans souscription — le message d'origine convient ;
+  //   · abonnement suspendu ou résilié — autre message ;
+  //   · AUCUN abonnement, donc aucun essai jamais ouvert — le cas d'un
+  //     compte neuf dont l'attribution a échoué.
+  //
+  // Le troisième ne doit pas emprunter le vocabulaire du premier.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // Essai jamais ouvert sur un compte par ailleurs restreint : anomalie
+  // d'attribution, pas fin d'essai.
+  if (trial.status === 'none' && isRestricted) {
+    return (
+      <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+        <p className="flex-1 text-sm text-[color:var(--text-primary)]">
+          <span className="font-medium">Votre essai gratuit n&apos;a pas pu être activé.</span>{' '}
+          <span className="text-[color:var(--text-muted)]">
+            Vos données sont conservées. Contactez-nous ou choisissez une offre pour
+            continuer.
+          </span>
+        </p>
+        <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
+          Voir les offres
+        </Button>
+      </div>
+    );
+  }
+
+  // Essai expiré sans souscription → mode restreint
   if (trial.status === 'expired' || isRestricted) {
     return (
       <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">

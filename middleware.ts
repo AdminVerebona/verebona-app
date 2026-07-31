@@ -187,7 +187,13 @@ export async function middleware(request: NextRequest) {
     // son sens le permalien envoyé par email après souscription.
     const isPublicPrefix =
       pathname.startsWith('/api/referral/validate/') ||
-      pathname.startsWith('/api/legal/cgvu/');
+      pathname.startsWith('/api/legal/cgvu/') ||
+      // CDC rétractation §6.1 : « la page doit être accessible sans
+      // authentification ». Un consommateur qui ne parvient plus à se
+      // connecter doit pouvoir exercer son droit — subordonner la
+      // rétractation à une session la rendrait inaccessible à ceux qui en ont
+      // le plus besoin.
+      pathname.startsWith('/api/withdrawal/public/');
 
     if (publicRoutes.includes(pathname) || isPublicPrefix || isCronRoute) {
       // Rate limiting sur les endpoints d'authentification (anti brute-force)
