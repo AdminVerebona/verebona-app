@@ -72,8 +72,25 @@ ALTER TABLE accounts
   DROP CONSTRAINT IF EXISTS chk_accounts_subscription_status;
 ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_plan_type_check;
 ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_subscription_status_check;
+
+-- ⚠️ VALEURS ALIGNÉES SUR LA DÉFINITION LA PLUS RÉCENTE
+--
+-- Cette contrainte est redéfinie plus loin dans la chaîne. Tant que les
+-- migrations s'appliquent dans l'ordre, seule la dernière compte — mais cet
+-- ordre n'est pas garanti.
+--
+-- Une migration qui a ÉCHOUÉ n'est pas enregistrée : elle sera retentée au
+-- démarrage suivant, DONC APRÈS celles qui l'ont suivie entre-temps. Elle
+-- écrase alors une valeur plus récente par une valeur périmée.
+--
+-- C'est exactement ce qui s'est produit en préproduction : 0055 échouait,
+-- 0066 corrigeait la contrainte, puis 0055 réparée l'a rétablie dans son
+-- ancienne forme — et l'inscription refusait le plan `STANDARD`.
+--
+-- Aligner la valeur ici rend l'ordre indifférent.
 ALTER TABLE accounts ADD CONSTRAINT accounts_plan_type_check
-    CHECK (plan_type IN ('FREEMIUM', 'PREMIUM', 'DUO', 'ENTERPRISE')),
+    CHECK (plan_type IN ('STANDARD', 'PREMIUM', 'DUO', 'PREMIUM_DUO', 'PRO',
+                         'FREEMIUM', 'ENTERPRISE')),
   ADD CONSTRAINT accounts_subscription_status_check
     CHECK (subscription_status IN (
       'NONE','ACTIVE','CANCELED','EXPIRED',
@@ -98,7 +115,8 @@ ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_status_check;
 ALTER TABLE assets ADD CONSTRAINT assets_lock_state_check
     CHECK (lock_state IN ('NONE', 'SOFT', 'HARD')),
   ADD CONSTRAINT assets_status_check
-    CHECK (status IN ('EN_SERVICE', 'EN_MAINTENANCE', 'HORS_SERVICE', 'ARCHIVED'));
+    -- 'TRANSMIS' ajouté par 0057 : aligné ici pour la même raison.
+    CHECK (status IN ('EN_SERVICE', 'EN_MAINTENANCE', 'HORS_SERVICE', 'ARCHIVED', 'TRANSMIS'));
 
 -- ─── 15. duo_memberships: business CHECK constraint ──────────────────────────
 ALTER TABLE duo_memberships DROP CONSTRAINT IF EXISTS duo_memberships_status_check;

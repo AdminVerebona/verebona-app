@@ -30,8 +30,25 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_users_role;
 ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_users_status;
 
 ALTER TABLE users
+
+-- ⚠️ VALEURS ALIGNÉES SUR LA DÉFINITION LA PLUS RÉCENTE
+--
+-- Cette contrainte est redéfinie plus loin dans la chaîne. Tant que les
+-- migrations s'appliquent dans l'ordre, seule la dernière compte — mais cet
+-- ordre n'est pas garanti.
+--
+-- Une migration qui a ÉCHOUÉ n'est pas enregistrée : elle sera retentée au
+-- démarrage suivant, DONC APRÈS celles qui l'ont suivie entre-temps. Elle
+-- écrase alors une valeur plus récente par une valeur périmée.
+--
+-- C'est exactement ce qui s'est produit en préproduction : 0055 échouait,
+-- 0066 corrigeait la contrainte, puis 0055 réparée l'a rétablie dans son
+-- ancienne forme — et l'inscription refusait le plan `STANDARD`.
+--
+-- Aligner la valeur ici rend l'ordre indifférent.
   ADD CONSTRAINT chk_users_plan_type
-    CHECK (plan_type IN ('FREEMIUM', 'PREMIUM', 'DUO', 'ENTERPRISE'));
+    CHECK (plan_type IN ('STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO',
+                         'FREEMIUM', 'DUO', 'ENTERPRISE'));
 
 ALTER TABLE users
   ADD CONSTRAINT chk_users_role

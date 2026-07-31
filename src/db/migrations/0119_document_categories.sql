@@ -192,12 +192,15 @@ ALTER TABLE asset_files
 ALTER TABLE asset_files DROP CONSTRAINT IF EXISTS asset_files_category_source_check;
 ALTER TABLE asset_files
   ADD CONSTRAINT asset_files_category_source_check
-    CHECK (category_source IS NULL OR category_source IN ('AI', 'USER', 'REFERENCE_CORRECTION'));
+    -- 'RULE' ajoutée par 0120 : alignée ici pour que l'ordre soit indifférent.
+    CHECK (category_source IS NULL OR category_source IN
+      ('AI', 'USER', 'REFERENCE_CORRECTION', 'RULE'));
 
 ALTER TABLE asset_files DROP CONSTRAINT IF EXISTS asset_files_type_source_check;
 ALTER TABLE asset_files
   ADD CONSTRAINT asset_files_type_source_check
-    CHECK (type_source IS NULL OR type_source IN ('AI', 'USER', 'REFERENCE_CORRECTION'));
+    CHECK (type_source IS NULL OR type_source IN
+      ('AI', 'USER', 'REFERENCE_CORRECTION', 'RULE'));
 
 -- `document_type` devient nullable (§8.2). La valeur par défaut `AUTRE` est
 -- retirée : c'est elle qui rendait indiscernables « Autre » et « non classé ».
