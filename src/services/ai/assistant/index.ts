@@ -5,7 +5,9 @@
  * éligibilité, sujets réservés, sélection d'outils, exécution, génération,
  * vérification des citations.
  */
-import { checkBlockedTopic } from './blocked-topics';
+// Module déplacé vers l'implémentation branchée — voir le commentaire en
+// tête de `verebona-assistant/core/blocked-topics.ts`.
+import { checkBlockedTopic } from '@/services/verebona-assistant/core/blocked-topics';
 import { planTools } from './tool-planner.service';
 import { executeTool, registerReadTools } from './tools/tool-registry';
 import { composeAnswer } from './answer-composer.service';
@@ -87,7 +89,7 @@ export async function answerQuestion(input: AnswerQuestionInput): Promise<Assist
 }
 
 export { registerReadTools } from './tools/tool-registry';
-export { checkBlockedTopic } from './blocked-topics';
+export { checkBlockedTopic } from '@/services/verebona-assistant/core/blocked-topics';
 export { verifyClaims, composeVerifiedText } from './claim-verifier.service';
 export { purgeAssistantData, RETENTION } from './retention/purge-assistant-logs.job';
 export { ASSISTANT_LIMITS } from './tools/tool.port';

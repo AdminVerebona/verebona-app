@@ -6,7 +6,7 @@
  * conseils qu'il n'a pas qualité à donner.
  */
 import { describe, it, expect } from 'vitest';
-import { checkBlockedTopic } from '../blocked-topics';
+import { checkBlockedTopic } from '@/services/verebona-assistant/core/blocked-topics';
 
 describe('questions sur les données — doivent passer', () => {
   it.each([

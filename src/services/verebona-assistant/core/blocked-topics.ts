@@ -1,6 +1,17 @@
 /**
  * Sujets réservés — CDC Assistant §4.3.3 et §13 du CDC Refonte.
  *
+ * ── DÉPLACÉ DEPUIS `src/services/ai/assistant/` ────────────────────────────
+ *
+ * Ce module vivait dans une implémentation d'assistant qui n'est branchée à
+ * aucune route : seul le cron de purge des journaux l'importait. Le contrôle
+ * des sujets réservés n'était donc JAMAIS exécuté sur les questions réelles,
+ * qui passent toutes par `/api/verebona/messages`.
+ *
+ * Ce n'est pas une lacune de confort : le §13 interdit à l'assistant de
+ * donner un conseil juridique, fiscal, médical ou assurantiel personnalisé.
+ * Un contrôle écrit mais non appelé ne protège de rien.
+ *
  * « Aucun conseil juridique, fiscal, médical ou assurantiel personnalisé. »
  *
  * DISTINCTION IMPORTANTE, et c'est tout l'enjeu de ce module : la question

@@ -110,6 +110,14 @@ export interface AssistantRequestInput {
 
 /** Résultat interne complet d'une demande (avant sérialisation API). */
 export interface AssistantRunResult {
+  /**
+   * Motif d'un refus au titre des sujets réservés (§13).
+   *
+   * Sans ce champ, un refus est indiscernable d'une réponse vide dans les
+   * journaux : on ne saurait pas si l'assistant a refusé de répondre ou s'il
+   * n'a rien trouvé — deux situations qui appellent des suites opposées.
+   */
+  blockedReason?: 'legal' | 'tax' | 'medical' | 'insurance_advice' | null;
   requestId: string;
   messageId: string;
   finalState: MachineState;

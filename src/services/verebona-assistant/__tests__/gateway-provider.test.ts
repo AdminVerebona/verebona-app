@@ -178,3 +178,50 @@ describe('§5.2 — aucun accès direct au SDK', () => {
     expect(fabrique).toContain('GatewayAssistantProvider');
   });
 });
+
+describe('sujets réservés — le contrôle est réellement appelé (§13)', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // UN CONTRÔLE ÉCRIT MAIS NON APPELÉ NE PROTÈGE DE RIEN
+  //
+  // `blocked-topics.ts` existait, testé, dans une implémentation d'assistant
+  // qu'aucune route n'appelle : seul le cron de purge l'importait. Les
+  // questions réelles passent par `/api/verebona/messages`, où le contrôle
+  // n'était jamais exécuté.
+  //
+  // Le module était donc correct, ses tests passaient, et l'assistant
+  // pouvait délivrer un conseil juridique personnalisé.
+  // ══════════════════════════════════════════════════════════════════════
+  const ORCHESTRATEUR = readFileSync(
+    join(process.cwd(), 'src/services/verebona-assistant/core/assistant-orchestrator.service.ts'),
+    'utf-8',
+  );
+
+  it('l’orchestrateur appelle checkBlockedTopic', () => {
+    expect(ORCHESTRATEUR).toContain('checkBlockedTopic');
+  });
+
+  it('le contrôle précède le routage et la récupération', () => {
+    // Placé plus loin, il laisserait une question interdite atteindre les
+    // documents du compte et consommer un appel facturé.
+    const posControle = ORCHESTRATEUR.indexOf('checkBlockedTopic(input.message');
+    const posRoutage = ORCHESTRATEUR.indexOf('routeDeterministic({');
+    expect(posControle).toBeGreaterThan(-1);
+    expect(posControle).toBeLessThan(posRoutage);
+  });
+
+  it('un refus ne rend ni source ni action', () => {
+    const bloc = ORCHESTRATEUR.slice(
+      ORCHESTRATEUR.indexOf('if (sujet.blocked)'),
+      ORCHESTRATEUR.indexOf('// ── Routage'),
+    );
+    expect(bloc).toMatch(/sources: \[\]/);
+    expect(bloc).toMatch(/actions: \[\]/);
+    expect(bloc).toMatch(/claims: \[\]/);
+  });
+
+  it('le motif du refus est tracé', () => {
+    // Sans lui, un refus est indiscernable d'une réponse vide dans les
+    // journaux — deux situations aux suites opposées.
+    expect(ORCHESTRATEUR).toContain('blockedReason: sujet.reason');
+  });
+});

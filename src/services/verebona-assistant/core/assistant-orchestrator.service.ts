@@ -17,6 +17,7 @@ import type { VerebonaAction } from '../types/actions';
 import { getAssistantConfig } from '../config/assistant-config';
 import { ConversationMachine } from './conversation-machine';
 import { routeDeterministic } from './intent-router.service';
+import { checkBlockedTopic } from './blocked-topics';
 import { tryDeterministic } from './deterministic-answer.service';
 import { isPlanAiEligible } from '../registries/capability-registry';
 
@@ -51,6 +52,38 @@ export async function runAssistant(
 
   try {
     machine.transition('SUBMITTING');
+
+    // ══════════════════════════════════════════════════════════════════════
+    // SUJETS RÉSERVÉS — §4.3.3 et §13, AVANT TOUT TRAITEMENT
+    //
+    // Le §13 interdit à l'assistant tout conseil juridique, fiscal, médical
+    // ou assurantiel personnalisé.
+    //
+    // Le contrôle vient EN PREMIER, avant le routage, la récupération et
+    // l'appel modèle. Le placer plus loin laisserait une question interdite
+    // atteindre les documents du compte, et lui ferait consommer un appel
+    // facturé pour une réponse qu'on refusera de rendre.
+    //
+    // La distinction porte sur la demande, pas sur le thème : « quel est le
+    // montant de ma prime ? » interroge les DONNÉES du compte et reste
+    // légitime ; « dois-je changer d'assurance ? » demande un CONSEIL.
+    // ══════════════════════════════════════════════════════════════════════
+    const sujet = checkBlockedTopic(input.message ?? '');
+    if (sujet.blocked) {
+      machine.transition('READY');
+      return {
+        ...base,
+        finalState: 'READY',
+        mode: 'deterministic',
+        answer: sujet.message ?? "Cette question sort du périmètre de l'assistant.",
+        // Ni source ni action : rien n'a été lu, et aucune suite n'est
+        // proposée sur un sujet refusé.
+        sources: [],
+        claims: [],
+        actions: [],
+        blockedReason: sujet.reason,
+      };
+    }
 
     // ── Routage (§9.4) ──────────────────────────────────────────────────────
     machine.transition('ROUTING');
