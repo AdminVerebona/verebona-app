@@ -33,6 +33,10 @@ R6 — NORMALISATION.
   · Montants : en centimes, entier, sans séparateur ni devise.
   · SIRET : 14 chiffres exactement, sinon omets le champ.
 
+R7bis — VOCABULAIRE DES CHAMPS.
+{{EXPECTED_FIELDS}}
+Lorsqu'une liste de clés t'est fournie ci-dessus, emploie EXACTEMENT ces noms dans `fieldKey` pour les informations correspondantes. Cette liste ne restreint pas ce que tu extrais : une information présente dans la source mais absente de la liste doit tout de même être rendue, sous une clé de ton choix. Si aucune liste n'est fournie, nomme librement.
+
 R7 — ABSENCE DE CONTENU. Si la source ne contient aucune information exploitable (photo floue, page d'erreur, document vierge), renseigne `hasExploitableContent: false` et n'invente aucun champ.
 
 ════════════════════════════════════════════════════════════

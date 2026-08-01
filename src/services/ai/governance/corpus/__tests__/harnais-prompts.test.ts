@@ -91,3 +91,43 @@ describe('la sortie du prompt est aplatie vers la forme comparée', () => {
     expect(RUNNER).toMatch(/extraction\.costMicros \?\? 0\) \+ \(classification\.costMicros/);
   });
 });
+
+describe('le vocabulaire des champs est imposé au corpus, libre ailleurs', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // 6 CHAMPS CORRECTS SUR 83
+  //
+  // `fieldKey` était un `z.string()` sans vocabulaire : le modèle nommait
+  // librement — l'exemple du prompt étant `registrationNumber`, en anglais —
+  // tandis que le corpus attend `immatriculation`.
+  //
+  // Il extrayait probablement les bonnes valeurs. Le comparateur ne les
+  // reconnaissait pas.
+  // ══════════════════════════════════════════════════════════════════════
+  const ETAPE = read('src/services/ai/source-analysis/steps/extract-source.step.ts');
+
+  it('le prompt accepte une liste de clés', () => {
+    expect(PROMPT_EXTRACT).toContain('{{EXPECTED_FIELDS}}');
+  });
+
+  it('le prompt reste utilisable sans liste', () => {
+    // Le pipeline réel n'en a pas encore : sans cette règle, son marqueur
+    // vide changerait le comportement en production.
+    expect(PROMPT_EXTRACT).toMatch(/Si aucune liste n'est fournie, nomme librement/);
+  });
+
+  it('la liste ne restreint pas ce qui est extrait', () => {
+    // Une information hors liste doit remonter quand même — sinon on
+    // mesurerait la capacité à suivre une consigne, pas à extraire.
+    expect(PROMPT_EXTRACT).toMatch(/ne restreint pas ce que tu extrais/);
+  });
+
+  it('le harnais transmet les clés attendues par le cas', () => {
+    expect(RUNNER).toMatch(/EXPECTED_FIELDS: Object\.keys\(corpusCase\.expected\.fields/);
+  });
+
+  it('le pipeline réel alimente la variable, vide', () => {
+    // Non alimentée, elle laisserait « {{EXPECTED_FIELDS}} » dans le prompt
+    // envoyé en production.
+    expect(ETAPE).toMatch(/EXPECTED_FIELDS: ''/);
+  });
+});

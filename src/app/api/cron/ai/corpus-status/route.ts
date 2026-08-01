@@ -62,7 +62,28 @@ export async function GET(req: NextRequest) {
   const conformes = reference.summary.passed;
   const total = reference.summary.total;
 
+  // ── Tarifs : quels modèles sont couverts ? ─────────────────────────────
+  //
+  // Un coût nul ne dit pas si les tarifs manquent ou s'ils portent sur
+  // d'AUTRES modèles que ceux réellement appelés. La seconde cause est
+  // invisible depuis le seul décompte.
+  let tarifs: Array<{ modele: string; verifie: boolean }> = [];
+  try {
+    const lignes = await pgClient<{ model: string; verified: boolean }[]>`
+      SELECT model, bool_or(verified) AS verified
+      FROM ai_model_pricing GROUP BY model ORDER BY model
+    `;
+    tarifs = lignes.map((l) => ({ modele: l.model, verifie: l.verified }));
+  } catch { /* table absente : rien à dire */ }
+
+  const APPELES = ['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-pro'];
+
   return NextResponse.json({
+    tarifs: {
+      modelesCouverts: tarifs,
+      modelesAppeles: APPELES,
+      manquants: APPELES.filter((m) => !tarifs.some((t) => t.modele === m)),
+    },
     reference: {
       label: reference.label,
       date: reference.startedAt,

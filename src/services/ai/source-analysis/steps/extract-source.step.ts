@@ -46,6 +46,22 @@ export async function extractSource(
       // Pour un lien web, le contenu est déjà extrait par l'adaptateur.
       EXTRACTED_CONTENT: input.extractedContent ?? '',
       SOURCE_KIND: input.sourceType === 'web_link' ? 'page web' : 'document',
+      // ══════════════════════════════════════════════════════════════════
+      // VOCABULAIRE DES CHAMPS — VIDE EN PRODUCTION, POUR L'INSTANT
+      //
+      // Le prompt accepte une liste de clés à employer dans `fieldKey`. Le
+      // corpus de mesure la renseigne : sans elle, le modèle nomme
+      // librement, et les clés attendues ne se rencontrent presque jamais —
+      // 6 champs corrects sur 83 lors de la première campagne.
+      //
+      // Ici elle reste vide, faute de référentiel de champs par type de
+      // document. La règle R7bis du prompt le prévoit : sans liste, le
+      // modèle nomme comme avant. Aucun changement de comportement.
+      //
+      // Le jour où ce référentiel existera, c'est ici qu'il se branchera —
+      // et le classement en tirera le même bénéfice que la mesure.
+      // ══════════════════════════════════════════════════════════════════
+      EXPECTED_FIELDS: '',
     },
     attachments: buildAttachments(input, groupIndices),
     outputSchema: ExtractSourceOutput,
