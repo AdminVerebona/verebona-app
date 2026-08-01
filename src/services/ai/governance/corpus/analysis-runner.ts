@@ -32,11 +32,76 @@ import type { ObservedResult } from './corpus-comparator';
  * nouveaux champs sans qu'on modifie le harnais. La rigueur est apportée par
  * les attentes de chaque cas, pas par ce schéma.
  */
-const CorpusOutputSchema = z.object({
+/**
+ * Sortie de `extract_source`, telle que le prompt la produit réellement.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LE HARNAIS ATTENDAIT UNE FORME QUI N'EXISTE PAS
+ *
+ * Il déclarait `{ documentType, fields: Record, assetRefs }`. Le prompt rend
+ * `{ title, description, documentDate, supplier, amountCents, fields: [] }`
+ * — un TABLEAU d'objets `{ fieldKey, value }`, et aucun `documentType`.
+ *
+ * Conséquence : tous les champs remontaient `missing`, et seuls les deux cas
+ * `document_sans_information` passaient — parce qu'on n'attendait rien d'eux.
+ * La campagne mesurait le harnais, pas le moteur.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+const valeur = z.object({
+  value: z.unknown().optional(),
+  confidence: z.string().optional(),
+  excerpt: z.string().optional(),
+}).passthrough();
+
+const ExtractOutputSchema = z.object({
+  title: valeur.optional(),
+  description: valeur.optional(),
+  documentDate: valeur.optional(),
+  supplier: z.object({ name: z.string().optional() }).passthrough().optional(),
+  amountCents: valeur.optional(),
+  transcription: z.string().optional(),
+  fields: z.array(z.object({
+    fieldKey: z.string(),
+    value: z.unknown().optional(),
+  }).passthrough()).optional(),
+  hasExploitableContent: z.boolean().optional(),
+}).passthrough();
+
+/** Sortie de `classify_document` : le type ne vient pas de l'extraction. */
+const ClassifyOutputSchema = z.object({
   documentType: z.string().nullable().optional(),
-  fields: z.record(z.string(), z.unknown()).optional(),
-  assetRefs: z.array(z.string()).optional(),
-});
+}).passthrough();
+
+/**
+ * Aplatit la sortie du prompt vers la forme que le comparateur attend.
+ *
+ * Les champs nommés — titre, date, montant, fournisseur — sont replacés parmi
+ * les autres : un cas de corpus ne distingue pas un champ « de tête » d'un
+ * champ extrait, et n'a pas à le faire.
+ */
+function aplatir(sortie: z.infer<typeof ExtractOutputSchema>): Record<string, unknown> {
+  const champs: Record<string, unknown> = {};
+
+  for (const f of sortie.fields ?? []) {
+    if (f.value !== undefined && f.value !== null) champs[f.fieldKey] = f.value;
+  }
+
+  // Ajoutés seulement s'ils manquent : un `fieldKey` explicite l'emporte sur
+  // le champ de tête, car il porte la clé attendue par le cas.
+  const tete: Array<[string, unknown]> = [
+    ['title', sortie.title?.value],
+    ['description', sortie.description?.value],
+    ['documentDate', sortie.documentDate?.value],
+    ['dateFacture', sortie.documentDate?.value],
+    ['supplier', sortie.supplier?.name],
+    ['amountCents', sortie.amountCents?.value],
+  ];
+  for (const [cle, v] of tete) {
+    if (v !== undefined && v !== null && champs[cle] === undefined) champs[cle] = v;
+  }
+
+  return champs;
+}
 
 /** Compte technique portant les appels de mesure. */
 function corpusAccountId(): number {
@@ -104,31 +169,65 @@ export function createAnalysisRunner(
     const started = Date.now();
 
     try {
-      const response = await AiGateway.execute({
+      const texte = htmlToPlainText(content);
+
+      // ── 1. Extraction ─────────────────────────────────────────────────
+      //
+      // Les noms de variables sont ceux du prompt : `EXTRACTED_CONTENT`,
+      // `ASSET_CONTEXT`… Le harnais envoyait `documentText` et
+      // `candidateAssets`, que le gabarit ne connaît pas — le modèle
+      // recevait donc un prompt aux marqueurs non substitués.
+      const extraction = await AiGateway.execute({
         useCaseCode: 'SOURCE_ANALYSIS',
         operationCode,
         accountId,
         promptVariables: {
-          documentText: htmlToPlainText(content),
+          EXTRACTED_CONTENT: texte,
+          SOURCE_KIND: 'document',
           // Le corpus déclare les biens candidats : c'est ce qui permet de
           // détecter une fuite. Sans candidats, le moteur ne pourrait
           // rattacher à rien et le contrôle serait vide de sens.
-          candidateAssets: corpusCase.expected.assetRefs ?? [],
+          ASSET_CONTEXT: (corpusCase.expected.assetRefs ?? []).join(', '),
+          EXISTING_TITLES: '',
         },
-        outputSchema: CorpusOutputSchema,
+        outputSchema: ExtractOutputSchema,
         // Clé stable par cas : rejouer la campagne sans changer le prompt ne
         // doit pas facturer deux fois.
-        idempotencyKey: `corpus:${corpusCase.caseId}`,
+        idempotencyKey: `corpus:${corpusCase.caseId}:extract`,
+      });
+
+      const champs = aplatir(extraction.data);
+
+      // ── 2. Classification ─────────────────────────────────────────────
+      //
+      // `extract_source` ne rend AUCUN type : c'est une opération distincte
+      // dans le pipeline. Le harnais lisait `response.data.documentType`,
+      // toujours absent — d'où 26 `typeErrors` sur 28.
+      const classification = await AiGateway.execute({
+        useCaseCode: 'SOURCE_ANALYSIS',
+        operationCode: 'classify_document',
+        accountId,
+        promptVariables: {
+          TITLE: String(extraction.data.title?.value ?? ''),
+          SUPPLIER: extraction.data.supplier?.name ?? '',
+          CONTENT_SAMPLE: texte.slice(0, 3000),
+        },
+        outputSchema: ClassifyOutputSchema,
+        idempotencyKey: `corpus:${corpusCase.caseId}:classify`,
       });
 
       const observed: ObservedResult = {
-        documentType: response.data.documentType ?? undefined,
-        fields: response.data.fields ?? {},
-        assetRefs: response.data.assetRefs ?? [],
+        documentType: classification.data.documentType ?? undefined,
+        fields: champs,
+        // Le corpus mesure la fuite entre biens : un rattachement au-delà des
+        // candidats déclarés en serait une. L'extraction ne le rend pas
+        // aujourd'hui, ce champ reste donc vide — et le contrôle de fuite
+        // porte sur le pipeline complet, pas sur cette étape.
+        assetRefs: [],
         schemaValid: true,
-        usedFallback: response.usedFallback,
-        costMicros: response.costMicros,
-        durationMs: response.durationMs,
+        usedFallback: extraction.usedFallback || classification.usedFallback,
+        costMicros: (extraction.costMicros ?? 0) + (classification.costMicros ?? 0),
+        durationMs: Date.now() - started,
       };
       return observed;
     } catch (e) {
