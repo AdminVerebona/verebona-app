@@ -212,9 +212,53 @@ export async function runSourceAnalysis(
       // `persisted.proposalCount` : nombre de propositions réellement écrites.
       // Voir `computeFinalState` — un document n'est mis à valider que s'il a
       // quelque chose à faire valider.
-      await setState(groupSourceIds, computeFinalState(result, persisted.proposalCount ?? 0));
+      const etatFinal = computeFinalState(result, persisted.proposalCount ?? 0);
 
-      if (!persisted.deduplicated) analysedCount++;
+      // ══════════════════════════════════════════════════════════════════
+      // DÉTECTION DE DOUBLON — ET SES DEUX CONSÉQUENCES
+      //
+      // L'ancien pipeline la pratiquait, le nouveau l'avait perdue. Elle
+      // porte deux effets, et le second est financier :
+      //
+      //   · l'état devient FUSION_SUGGESTED, ce qui fait remonter le
+      //     document dans « À traiter » avec sa suggestion de fusion —
+      //     `to-process.service` et le tableau de bord s'appuient tous deux
+      //     sur cet état ;
+      //
+      //   · le document N'EST PAS COMPTÉ dans le quota. Sans cela, déposer
+      //     deux fois la même facture consomme deux analyses, et
+      //     l'utilisateur paie une seconde fois pour un doublon qu'il n'a pas
+      //     voulu.
+      //
+      // La détection ne doit jamais faire échouer l'analyse : elle a réussi
+      // et ses résultats sont écrits. Un doublon non détecté se rattrape.
+      // ══════════════════════════════════════════════════════════════════
+      let estDoublon = false;
+      if (etatFinal === 'ANALYZED') {
+        try {
+          const { detectFusionCandidates } = await import(
+            '@/services/document-ai/fusion-detector'
+          );
+          const fusion = await detectFusionCandidates(leadSourceId, req.accountId);
+          if (fusion.hasCandidates) {
+            estDoublon = true;
+            await setState(groupSourceIds, 'FUSION_SUGGESTED');
+          }
+        } catch (e) {
+          console.error(
+            `[source-analysis] détection de doublon impossible pour ${leadSourceId} :`,
+            (e as Error).message,
+          );
+        }
+      }
+
+      if (!estDoublon) {
+        await setState(groupSourceIds, etatFinal);
+      }
+
+      // Un doublon ne compte ni dans le total analysé, ni donc dans les
+      // crédits consommés plus bas.
+      if (!persisted.deduplicated && !estDoublon) analysedCount++;
       results.push(result);
 
       // ── Étapes 13 et 14 : déclenchement des moteurs aval ────────────────

@@ -41,6 +41,18 @@ export interface RetrievedSource {
 
 /** Source résolue pour affichage (≤ 240 car. visibles — §19.5). */
 export interface ResolvedSource {
+  /**
+   * Identifiant de la source retenue — « doc_128 », « asset_42 »…
+   *
+   * Il était perdu à la résolution. Sans lui :
+   *   · une citation ne peut plus remonter à son document, alors que le §18.5
+   *     en fait la condition d'une réponse vérifiable ;
+   *   · l'historique du §28 ne peut pas être écrit, la colonne `source_id`
+   *     étant obligatoire ;
+   *   · le « Pourquoi ? » du §19.7 affiche des identifiants bruts faute de
+   *     pouvoir les rapprocher des titres.
+   */
+  id: string;
   type: SourceType;
   typeLabel: string;
   title: string;

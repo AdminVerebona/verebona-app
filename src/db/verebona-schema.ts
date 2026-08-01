@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 /**
  * Définitions Drizzle des tables de l'assistant Verebona — CDC §28.
  *
@@ -24,7 +25,21 @@ export const verebonaConversations = pgTable('verebona_conversations', {
   updatedAt: pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   expiresAt: pgTimestamp('expires_at', { withTimezone: true }).notNull(),
 }, (t) => ({
-  activeAccount: uniqueIndex('verebona_conversations_active_account_uidx').on(t.accountId).where(/* status='active' */ undefined as never),
+  // ⚠️ INDEX PARTIEL — le prédicat est indispensable.
+  //
+  // `.where(undefined as never)` ne produisait AUCUN prédicat : `drizzle-kit
+  // push` créait donc un index unique sur `account_id` seul, et un compte ne
+  // pouvait avoir qu'UNE conversation — jamais une conversation ACTIVE.
+  //
+  // Conséquence observée : après un effacement d'historique (§24.5), la
+  // conversation passe en `deleted` et aucune nouvelle ne peut être créée.
+  // L'assistant écrivait dans un historique effacé.
+  //
+  // La migration 0100 posait le bon index, mais `push` s'exécute avant elle
+  // et son `IF NOT EXISTS` ne corrige pas un index déjà présent.
+  activeAccount: uniqueIndex('verebona_conversations_active_account_uidx')
+    .on(t.accountId)
+    .where(sql`status = 'active'`),
   expiresIdx: index('verebona_conversations_expires_idx').on(t.expiresAt),
 }));
 

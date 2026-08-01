@@ -17,6 +17,8 @@ const TYPE_LABELS: Record<SourceType, string> = {
 export function resolveSourcesForDisplay(sources: RetrievedSource[]): ResolvedSource[] {
   const cfg = getAssistantConfig();
   return sources.slice(0, cfg.maxVisibleSources).map((s) => ({
+    // Conservé : c'est ce qui relie une citation à son document.
+    id: s.id,
     type: s.type,
     typeLabel: TYPE_LABELS[s.type],
     title: s.title,
@@ -28,10 +30,25 @@ export function resolveSourcesForDisplay(sources: RetrievedSource[]): ResolvedSo
   }));
 }
 
-/** Explication « Pourquoi ? » : reconstitue le lien affirmation → sources (§19.7). */
-export function buildExplanation(claims: Claim[], sources: ResolvedSource[]): Array<{ claim: string; sources: string[] }> {
+/**
+ * Explication « Pourquoi ? » — §19.7.
+ *
+ * Rapproche chaque affirmation des TITRES de ses sources, non de leurs
+ * identifiants. « doc_128 » ne dit rien à personne ; « Acte de vente du
+ * 14 mars 2025 » permet de vérifier.
+ *
+ * Un identifiant sans correspondance est conservé tel quel plutôt qu'écarté :
+ * une affirmation dont une source a disparu de l'affichage reste une
+ * affirmation sourcée, et le masquer donnerait à croire qu'elle sort de nulle
+ * part.
+ */
+export function buildExplanation(
+  claims: Claim[],
+  sources: ResolvedSource[],
+): Array<{ claim: string; sources: string[] }> {
+  const titreParId = new Map(sources.map((s) => [s.id, s.title]));
   return claims.map((c) => ({
     claim: c.text,
-    sources: c.sourceIds.map((id) => id), // TODO(CDC §19.7) : mapper vers titres résolus
+    sources: c.sourceIds.map((id) => titreParId.get(id) ?? id),
   }));
 }
