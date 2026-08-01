@@ -21,7 +21,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureMigrations, pgClient } from '@/db';
-import type { CorpusRun } from '@/services/ai/governance/corpus/corpus-runner';
+import { isSafeToSwitch, type CorpusRun } from '@/services/ai/governance/corpus/corpus-runner';
+import { detectRegressions } from '@/services/ai/governance/corpus/corpus-comparator';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,16 +40,22 @@ export async function GET(req: NextRequest) {
 
   await ensureMigrations();
 
-  let reference: CorpusRun | null = null;
-  try {
-    const [row] = await pgClient<Ligne[]>`
-      SELECT id, payload, created_at FROM ai_corpus_baseline WHERE id = 1
-    `;
-    reference = row ? (JSON.parse(row.payload) as CorpusRun) : null;
-  } catch {
-    // La table n'existe que depuis la première campagne enregistrée.
-    reference = null;
+  async function lire(emplacement: number): Promise<CorpusRun | null> {
+    try {
+      const [row] = await pgClient<Ligne[]>`
+        SELECT id, payload, created_at FROM ai_corpus_baseline WHERE id = ${emplacement}
+      `;
+      return row ? (JSON.parse(row.payload) as CorpusRun) : null;
+    } catch {
+      // La table n'existe que depuis la première campagne enregistrée.
+      return null;
+    }
   }
+
+  const reference = await lire(1);
+  // Dernière campagne, quelle qu'elle soit : c'est elle qui permet de composer
+  // la comparaison sans relancer 56 appels pour la relire.
+  const derniere = await lire(2);
 
   if (!reference) {
     return NextResponse.json({
@@ -131,6 +138,33 @@ export async function GET(req: NextRequest) {
           "d'idempotence et ne mesure rien."
         : null,
     ].filter(Boolean),
+    // ══════════════════════════════════════════════════════════════════
+    // LA COMPARAISON, SANS RIEN EXÉCUTER
+    //
+    // Elle vivait dans la réponse de `corpus-run?compare=1` — perdue à
+    // chaque coupure de passerelle, et relire supposait de relancer.
+    // ══════════════════════════════════════════════════════════════════
+    comparaison:
+      derniere && derniere.startedAt !== reference.startedAt
+        ? (() => {
+            const verdict = isSafeToSwitch(reference, derniere);
+            return {
+              reference: { label: reference.label, conformes: reference.summary.passed },
+              derniere: {
+                label: derniere.label,
+                date: derniere.startedAt,
+                conformes: derniere.summary.passed,
+                erreursDeType: derniere.summary.typeErrors,
+                fuites: derniere.summary.leaks,
+                champsCorrects:
+                  `${derniere.summary.fieldsCorrect} / ${derniere.summary.fieldsCompared}`,
+              },
+              ecarts: detectRegressions(reference.results, derniere.results),
+              basculeSure: verdict.safe,
+              motifs: verdict.reasons,
+            };
+          })()
+        : null,
     exploitable:
       total > 0 &&
       conformes > 0 &&

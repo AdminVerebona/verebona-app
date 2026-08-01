@@ -166,3 +166,42 @@ describe('chaque campagne mesure vraiment', () => {
     expect(STATUS).toMatch(/avgDurationMs >= 200/);
   });
 });
+
+describe('une campagne n’est jamais perdue', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // 56 APPELS POUR RELIRE UN RÉSULTAT
+  //
+  // `?compare=1` rendait son verdict dans la réponse HTTP, que la passerelle
+  // coupe à trente secondes. Le résultat était donc perdu à chaque fois, et
+  // le relire supposait de relancer la campagne.
+  // ══════════════════════════════════════════════════════════════════════
+  const RUN = read('src/app/api/cron/ai/corpus-run/route.ts');
+  const STATUS = read('src/app/api/cron/ai/corpus-status/route.ts');
+
+  it('toute campagne réelle est enregistrée', () => {
+    expect(RUN).toMatch(/ecrireRun\(run, DERNIERE\)/);
+  });
+
+  it('la référence garde son emplacement propre', () => {
+    // Écraser la référence à chaque campagne ôterait tout point de
+    // comparaison.
+    expect(RUN).toMatch(/const REFERENCE = 1/);
+    expect(RUN).toMatch(/const DERNIERE = 2/);
+    expect(RUN).toMatch(/ecrireRun\(run, REFERENCE\)/);
+  });
+
+  it('l’enregistrement n’interrompt pas la campagne', () => {
+    // Elle a coûté 56 appels : une écriture ratée ne doit pas la perdre.
+    expect(RUN).toMatch(/ecrireRun\(run, DERNIERE\)\.catch/);
+  });
+
+  it('la consultation compose la comparaison sans exécuter', () => {
+    expect(STATUS).toContain('isSafeToSwitch');
+    expect(STATUS).toContain('detectRegressions');
+    expect(STATUS).not.toMatch(/AiGateway|runCorpus/);
+  });
+
+  it('elle ne compare pas une campagne à elle-même', () => {
+    expect(STATUS).toMatch(/derniere\.startedAt !== reference\.startedAt/);
+  });
+});

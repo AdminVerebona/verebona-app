@@ -55,10 +55,27 @@ export const maxDuration = 800;
  * Un conteneur applicatif est éphémère : un fichier écrit lors d'une campagne
  * aurait disparu à la suivante, et la comparaison n'aurait jamais lieu.
  */
-async function lireReference(): Promise<CorpusRun | null> {
+/**
+ * Emplacements de stockage.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * TOUTE CAMPAGNE EST ENREGISTRÉE, PAS SEULEMENT LA RÉFÉRENCE
+ *
+ * `?compare=1` rendait son verdict dans la réponse HTTP — et la passerelle
+ * coupe à trente secondes. Le résultat était donc perdu à chaque fois, et le
+ * relire supposait de relancer : 56 appels facturés pour consulter.
+ *
+ * L'emplacement 2 conserve la DERNIÈRE campagne, quelle qu'elle soit.
+ * `corpus-status` peut alors composer la comparaison sans rien exécuter.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+const REFERENCE = 1;
+const DERNIERE = 2;
+
+async function lireRun(emplacement: number): Promise<CorpusRun | null> {
   try {
     const [row] = await pgClient<{ payload: string }[]>`
-      SELECT payload FROM ai_corpus_baseline WHERE id = 1
+      SELECT payload FROM ai_corpus_baseline WHERE id = ${emplacement}
     `;
     return row ? (JSON.parse(row.payload) as CorpusRun) : null;
   } catch {
@@ -66,7 +83,9 @@ async function lireReference(): Promise<CorpusRun | null> {
   }
 }
 
-async function ecrireReference(run: CorpusRun): Promise<void> {
+const lireReference = () => lireRun(REFERENCE);
+
+async function ecrireRun(run: CorpusRun, emplacement: number): Promise<void> {
   await pgClient`
     CREATE TABLE IF NOT EXISTS ai_corpus_baseline (
       id         INTEGER PRIMARY KEY,
@@ -76,7 +95,8 @@ async function ecrireReference(run: CorpusRun): Promise<void> {
   `;
   const payload = JSON.stringify(run);
   await pgClient`
-    INSERT INTO ai_corpus_baseline (id, payload, created_at) VALUES (1, ${payload}, now())
+    INSERT INTO ai_corpus_baseline (id, payload, created_at)
+    VALUES (${emplacement}, ${payload}, now())
     ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, created_at = now()
   `;
 }
@@ -148,7 +168,7 @@ export async function GET(req: NextRequest) {
         `Plus d'erreurs (${run.errors.length}) que de cas mesurés ` +
         `(${run.summary.total}) : référence non enregistrée.`;
     } else {
-      await ecrireReference(run);
+      await ecrireRun(run, REFERENCE);
       referenceEnregistree = true;
     }
   }
@@ -191,6 +211,15 @@ export async function GET(req: NextRequest) {
         motifs: verdict.reasons,
       };
     }
+  }
+
+  // Enregistrée systématiquement, y compris en simulation : savoir qu'une
+  // vérification à blanc a eu lieu évite de croire qu'une campagne réelle a
+  // échoué. `corpus-status` distingue les deux par le label.
+  if (!dry) {
+    await ecrireRun(run, DERNIERE).catch((e) =>
+      console.error('[corpus] dernière campagne non enregistrée :', (e as Error).message),
+    );
   }
 
   return NextResponse.json(reponse);
