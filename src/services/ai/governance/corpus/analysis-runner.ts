@@ -79,11 +79,23 @@ export function htmlToPlainText(html: string): string {
 /**
  * Runner réel.
  *
- * @param operationCode opération déclarée au registre. Par défaut celle de
- *   l'analyse de source : c'est elle qu'une bascule met en jeu.
+ * ══════════════════════════════════════════════════════════════════════════
+ * LE CODE D'OPÉRATION EST CELUI DU REGISTRE, PAS UN NOM INVENTÉ
+ *
+ * Ce runner employait `SOURCE_ANALYSIS_EXTRACT`, qui n'existe nulle part :
+ * le registre déclare `extract_source`. Les 28 cas échouaient donc tous avec
+ * « Opération inconnue », avant même le moindre appel modèle.
+ *
+ * Le défaut ne se voyait pas en mode `dry` — qui ne passe pas par la
+ * passerelle — et le contrôle du registre, lui, faisait exactement son
+ * travail : refuser une opération non déclarée (§12, critère 5).
+ *
+ * @param operationCode opération déclarée dans `operations.ts`. Par défaut
+ *   celle de l'extraction : c'est elle qu'une bascule met en jeu.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 export function createAnalysisRunner(
-  operationCode = 'SOURCE_ANALYSIS_EXTRACT',
+  operationCode = 'extract_source',
 ): CorpusRunner {
   // `execute` est statique : la passerelle n'a pas d'état par appelant.
   const accountId = corpusAccountId();

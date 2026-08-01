@@ -125,8 +125,32 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // UNE RÉFÉRENCE VIDE EST PIRE QUE PAS DE RÉFÉRENCE
+  //
+  // La campagne a enregistré une référence de 0 cas alors que les 28 avaient
+  // échoué. Une comparaison ultérieure aurait alors conclu que le nouveau
+  // moteur améliore tout — puisque la référence ne contenait rien.
+  //
+  // On refuse donc d'écraser la référence quand la campagne n'a rien mesuré,
+  // et on dit pourquoi.
+  // ══════════════════════════════════════════════════════════════════════
+  let referenceEnregistree = false;
+  let refusReference: string | undefined;
+
   if (baseline && !dry) {
-    await ecrireReference(run);
+    if (run.summary.total === 0) {
+      refusReference =
+        `Aucun cas mesuré sur ${run.errors.length} tenté(s) : référence non ` +
+        'enregistrée. Corriger la cause avant de relancer.';
+    } else if (run.errors.length > run.summary.total) {
+      refusReference =
+        `Plus d'erreurs (${run.errors.length}) que de cas mesurés ` +
+        `(${run.summary.total}) : référence non enregistrée.`;
+    } else {
+      await ecrireReference(run);
+      referenceEnregistree = true;
+    }
   }
 
   const reponse: Record<string, unknown> = {
@@ -147,7 +171,8 @@ export async function GET(req: NextRequest) {
           .filter((f) => f.verdict !== 'match')
           .map((f) => ({ champ: f.field, verdict: f.verdict, attendu: f.expected, observe: f.observed })),
       })),
-    referenceEnregistree: baseline && !dry,
+    referenceEnregistree,
+    ...(refusReference ? { refusReference } : {}),
   };
 
   if (compare) {
