@@ -77,28 +77,60 @@ export async function GET(req: NextRequest) {
   // Sans tarifs, chaque appel est facturé à zéro : les quotas ne se
   // décrémentent pas et le coût réel de la bascule reste invisible.
   try {
-    const [tarifs] = await pgClient<{ actifs: number; plusRecent: string | null }[]>`
-      SELECT count(*) FILTER (WHERE is_active)::int AS actifs,
-             max(effective_from)::text            AS "plusRecent"
+    // ══════════════════════════════════════════════════════════════════
+    // `verified`, PAS `is_active` — ET LA NUANCE COMPTE
+    //
+    // J'avais deviné le nom de la colonne. La migration 0111 est pourtant
+    // explicite : « un tarif non confirmé n'autorise pas le démarrage en
+    // production ».
+    //
+    // Un tarif relevé automatiquement chez le fournisseur existe mais n'est
+    // pas vérifié : il peut porter sur un SKU voisin, une autre région, une
+    // autre unité. Le compter comme acquis reviendrait à facturer sur une
+    // valeur que personne n'a regardée.
+    // ══════════════════════════════════════════════════════════════════
+    const [tarifs] = await pgClient<{
+      total: number; verifies: number; plusRecent: string | null;
+    }[]>`
+      SELECT count(*)::int                             AS total,
+             count(*) FILTER (WHERE verified)::int     AS verifies,
+             max(effective_from)::text                 AS "plusRecent"
       FROM ai_model_pricing
     `;
 
-    controles.push(
-      (tarifs?.actifs ?? 0) > 0
-        ? {
-            nom: 'grille tarifaire',
-            verdict: 'ok',
-            detail: `${tarifs.actifs} tarif(s) actif(s), le plus récent au ${tarifs.plusRecent ?? '—'}.`,
-          }
-        : {
-            nom: 'grille tarifaire',
-            verdict: 'bloquant',
-            detail: 'Aucun tarif actif.',
-            consequence:
-              'Les appels seraient facturés à zéro : quotas non décrémentés, ' +
-              'coût de la bascule invisible.',
-          },
-    );
+    const total = tarifs?.total ?? 0;
+    const verifies = tarifs?.verifies ?? 0;
+
+    if (total === 0) {
+      controles.push({
+        nom: 'grille tarifaire',
+        verdict: 'bloquant',
+        detail: 'Aucun tarif enregistré.',
+        consequence:
+          'Les appels seraient facturés à zéro : quotas non décrémentés, ' +
+          'coût de la bascule invisible.',
+      });
+    } else if (verifies === 0) {
+      // Distinction volontaire : un tarif relevé mais non confirmé permet de
+      // mesurer, sans engager. Bloquer serait excessif ; se taire le serait
+      // davantage.
+      controles.push({
+        nom: 'grille tarifaire',
+        verdict: 'avertissement',
+        detail: `${total} tarif(s) relevé(s), aucun vérifié.`,
+        consequence:
+          'Les coûts seront mesurés sur des valeurs non confirmées. ' +
+          'Vérifier les tarifs en administration avant toute mise en service.',
+      });
+    } else {
+      controles.push({
+        nom: 'grille tarifaire',
+        verdict: 'ok',
+        detail:
+          `${verifies} tarif(s) vérifié(s) sur ${total}, ` +
+          `le plus récent au ${tarifs.plusRecent ?? '—'}.`,
+      });
+    }
   } catch (e) {
     controles.push({
       nom: 'grille tarifaire',
