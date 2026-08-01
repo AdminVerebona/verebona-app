@@ -285,9 +285,15 @@ export default function SignupPage() {
               <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
                 <span className="text-xl flex-shrink-0">🎁</span>
                 <div className="text-sm">
-                  <span className="font-medium text-blue-300">Un mois offert grâce au parrainage</span>
+                  {/* L'avantage revient au parrain, jamais au filleul.
+                      Ce bandeau annonçait « un mois offert » à qui le lit —
+                      une promesse non tenue, affichée au moment précis où il
+                      décide de payer. */}
+                  <span className="font-medium text-blue-300">Code de parrainage appliqué</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
-                    Code <span className="font-mono font-semibold text-blue-400">{referralCode}</span> appliqué. Profitez d'un mois supplémentaire grâce à votre parrain.
+                    Code <span className="font-mono font-semibold text-blue-400">{referralCode}</span> enregistré.
+                    Votre parrain bénéficiera d&apos;un mois offert lorsque vous souscrirez un
+                    abonnement annuel.
                   </p>
                 </div>
               </div>
@@ -404,8 +410,8 @@ export default function SignupPage() {
                   autoComplete="off"
                 />
                 <p className="text-xs text-[color:var(--text-muted)]">
-                  Un proche vous a invité ? Saisissez son code pour profiter d&apos;un mois offert
-                  à l&apos;abonnement annuel.
+                  Un proche vous a invité ? Saisissez son code : il bénéficiera d&apos;un mois
+                  offert lorsque vous souscrirez un abonnement annuel.
                 </p>
               </div>
 

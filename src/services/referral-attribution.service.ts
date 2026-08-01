@@ -8,7 +8,7 @@
  *     Enregistrée à la création effective du compte (§4.5, premier cas cité).
  *     C'est ce que fait ce service.
  *
- *   • AVANTAGE — « un mois offert au parrain et au filleul ».
+ *   • AVANTAGE — « un mois offert au parrain ». Le filleul ne reçoit rien.
  *     Acquis lorsque le filleul souscrit un abonnement ANNUEL, et attribué
  *     après expiration du délai de rétractation (CDC tarification §13).
  *     C'est le rôle de `referral-reward.service.ts`, inchangé.

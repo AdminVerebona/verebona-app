@@ -11,7 +11,7 @@ import {
  * GET /api/cron/referral-rewards
  *
  * Attribue l'avantage de parrainage (CDC tarification §13) :
- * un mois offert au parrain et au filleul, lorsque le filleul — nouveau
+ * un mois offert AU PARRAIN SEUL, lorsque le filleul — nouveau
  * compte — a souscrit un abonnement ANNUEL et que le delai de retractation
  * de 14 jours est ecoule.
  *
@@ -67,13 +67,27 @@ export async function GET(request: Request) {
           continue;
         }
 
-        // Un mois offert a chacun des deux comptes.
-        const [referred, referrer] = await Promise.all([
-          postponeNextBillingByOneMonth(event.referredAccountId, now),
-          postponeNextBillingByOneMonth(event.referrerAccountId, now),
-        ]);
+        // ══════════════════════════════════════════════════════════════
+        // L'AVANTAGE VA AU PARRAIN SEUL
+        //
+        // Le filleul ne reçoit rien : c'est la règle commerciale retenue.
+        //
+        // Les textes d'inscription ont été repris en conséquence — ils
+        // annonçaient « un mois offert » à celui qui saisit le code, ce qui
+        // serait devenu une promesse non tenue au moment même où il décide
+        // de payer.
+        //
+        // Le déclencheur reste inchangé : l'avantage est acquis quand le
+        // FILLEUL souscrit un abonnement annuel. C'est un point à surveiller
+        // — n'y gagnant plus rien, il a moins de raisons de choisir
+        // l'annuel, donc moins de parrains seront récompensés.
+        // ══════════════════════════════════════════════════════════════
+        const referrer = await postponeNextBillingByOneMonth(
+          event.referrerAccountId,
+          now,
+        );
 
-        if (!referred.granted && !referrer.granted) {
+        if (!referrer.granted) {
           result.skipped++;
           continue;
         }
@@ -85,9 +99,8 @@ export async function GET(request: Request) {
 
         result.granted++;
         console.info(
-          `[cron/referral-rewards] avantage accorde — evenement ${event.id}`,
-          `filleul: ${referred.granted ? 'ok' : referred.reason}`,
-          `parrain: ${referrer.granted ? 'ok' : referrer.reason}`,
+          `[cron/referral-rewards] avantage accordé au parrain — événement ${event.id}, ` +
+          `compte ${event.referrerAccountId}`,
         );
       } catch (error) {
         result.errors++;

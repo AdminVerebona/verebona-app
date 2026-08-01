@@ -1,7 +1,7 @@
 /**
  * Recompense de parrainage — nouvelle formule (CDC §13).
  *
- * Regle : 1 mois offert au parrain ET au filleul lorsque le filleul, sur un
+ * Regle : 1 mois offert AU PARRAIN SEUL lorsque le filleul, sur un
  * NOUVEAU compte, souscrit un abonnement ANNUEL.
  *
  * L'avantage est attribue apres le delai de retractation (14 jours), afin de
@@ -15,6 +15,7 @@
  *   - Filleul annuel  : premiere periode prolongee d'un mois.
  *   - Parrain annuel  : prochaine echeance repoussee d'un mois.
  *   - Parrain mensuel : prochaine mensualite offerte (13e mois offert).
+ *   - Filleul : aucun avantage. Il saisit le code pour son parrain.
  *
  * Les avantages sont cumulables : chaque attribution repousse l'echeance
  * courante d'un mois supplementaire.

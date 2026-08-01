@@ -90,7 +90,10 @@ export async function POST(request: NextRequest) {
           await resend.emails.send({
             from: process.env.RESEND_FROM_EMAIL || 'no-reply@verebona.fr',
             to: email,
-            subject: `${senderName} vous invite à essayer Verebona — 3 mois offerts`,
+            // ⚠️ L'objet promettait « 3 mois offerts » AU DESTINATAIRE.
+            // L'avantage revient au parrain : cette promesse serait non tenue,
+            // et elle est faite par écrit, nominativement, à un tiers.
+            subject: `${senderName} vous invite à découvrir Verebona`,
             html: buildReferralEmailHtml(senderName, referralUrl),
           });
           sentCount++;
@@ -147,9 +150,11 @@ function buildReferralEmailHtml(senderName: string, referralUrl: string): string
               <strong>${senderName}</strong> vous invite à rejoindre <strong>Verebona</strong>, la plateforme de gestion patrimoniale qui simplifie le suivi de vos biens immobiliers et mobiliers.
             </p>
             <div style="background:#eff6ff;border-radius:10px;padding:20px 24px;margin:0 0 28px;">
-              <p style="font-size:15px;color:#1e40af;font-weight:700;margin:0 0 8px;">🎁 Offre exclusive parrainage</p>
+              <p style="font-size:15px;color:#1e40af;font-weight:700;margin:0 0 8px;">Votre essai gratuit</p>
               <p style="font-size:14px;color:#3b82f6;margin:0;line-height:1.5;">
-                En vous inscrivant via ce lien, profitez de <strong>3 mois d'essai offerts</strong> au lieu de 2 — soit 1 mois de plus pour découvrir toutes les fonctionnalités Premium de Verebona.
+                Créez votre compte pour découvrir Verebona. En vous inscrivant via ce lien,
+                <strong>${senderName}</strong> bénéficiera d'un mois offert si vous souscrivez
+                un abonnement annuel.
               </p>
             </div>
             <table width="100%" cellpadding="0" cellspacing="0">
