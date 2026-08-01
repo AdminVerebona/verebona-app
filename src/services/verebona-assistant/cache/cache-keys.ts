@@ -12,6 +12,21 @@ export const cacheKeys = {
   suggestions: (accountId: number, route: string) => `verebona:suggestions:${accountId}:${route}`,
 };
 
-export function accountPrefix(accountId: number): string {
-  return `verebona:*:${accountId}:`;
+/**
+ * Préfixes à invalider pour un compte.
+ *
+ * Une seule expression ne suffit pas : le compte n'occupe pas la même
+ * position dans toutes les clés — `verebona:retrieval:42:…` mais
+ * `verebona:help:fr-FR:…`, qui n'est pas rattachée à un compte.
+ *
+ * Énumérer les familles concernées est plus sûr qu'un motif à joker : on sait
+ * exactement ce qui est vidé, et l'aide produit — partagée entre comptes —
+ * n'est pas invalidée sans raison.
+ */
+export function accountPrefixes(accountId: number): string[] {
+  return [
+    `verebona:retrieval:${accountId}:`,
+    `verebona:suggestions:${accountId}:`,
+    `verebona:entitlements:${accountId}`,
+  ];
 }

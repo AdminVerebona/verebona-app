@@ -17,6 +17,7 @@ import type { VerebonaAction } from '../types/actions';
 import { getAssistantConfig } from '../config/assistant-config';
 import { ConversationMachine } from './conversation-machine';
 import { routeDeterministic } from './intent-router.service';
+import { marquerDisponibilite } from './source-availability.service';
 import { checkBlockedTopic } from './blocked-topics';
 import { tryDeterministic } from './deterministic-answer.service';
 import { isPlanAiEligible } from '../registries/capability-registry';
@@ -198,8 +199,20 @@ async function finalize(
 ): Promise<AssistantRunResult> {
   if (machine.state !== 'VALIDATING') machine.transition('VALIDATING');
   machine.transition('READY');
+
+  // §19.10 — dernier moment utile pour vérifier qu'une source citée existe
+  // encore et reste accessible. Une source supprimée entre sa récupération et
+  // l'affichage produirait un lien mort, et l'historique conservé sept jours
+  // en produirait davantage encore.
+  //
+  // Ne lève jamais : une vérification impossible ne doit pas empêcher
+  // l'affichage d'une réponse.
+  const sourcesVerifiees = await marquerDisponibilite(sources, input.accountId)
+    .catch(() => sources);
+
   const result: AssistantRunResult = {
-    ...base, finalState: machine.state, mode, answer, claims, sources, actions, supportLevel,
+    ...base, finalState: machine.state, mode, answer, claims,
+    sources: sourcesVerifiees, actions, supportLevel,
   };
   await safePersist(ports, result, input);
   return result;

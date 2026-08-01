@@ -25,7 +25,10 @@ export function resolveSourcesForDisplay(sources: RetrievedSource[]): ResolvedSo
     linkedAssetLabel: (s.meta?.assetName as string) ?? null,
     usefulDate: (s.meta?.date as string) ?? null,
     excerpt: s.content.slice(0, 240),
-    isAvailable: true, // TODO(CDC §19.10) : vérifier suppression/permission au moment de l'affichage
+    // Optimiste par défaut ; `marquerDisponibilite` tranche juste avant
+    // l'affichage (§19.10). Vérifier ici forcerait une requête par source
+    // dans une boucle de rendu.
+    isAvailable: true,
     openAction: null,  // rempli par action-resolver si l'ouverture est autorisée
   }));
 }

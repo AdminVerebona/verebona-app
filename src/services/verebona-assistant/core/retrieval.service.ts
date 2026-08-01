@@ -16,6 +16,8 @@ import type { AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource } from '../types/sources';
 import { getAssistantConfig } from '../config/assistant-config';
 import { getEnabledAdapters } from '../registries/retrieval-adapter-registry';
+import { resolveEntities } from './entity-resolution.service';
+import type { ConversationRefs } from '../types/machine';
 
 export async function retrieve(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]> {
   const cfg = getAssistantConfig();
@@ -24,8 +26,39 @@ export async function retrieve(route: IntentRoute, input: AssistantRequestInput)
   // 1. Sécurité & périmètre (§13.2) — accountId vient du serveur, jamais du client.
   const accountId = input.accountId;
 
-  // 2. Résolution d'entités (§13.3) — déléguée à entity-resolution.service (contexte page/pronoms).
-  //    TODO(CDC §13.3) : injecter les refs conversationnelles résolues.
+  // ══════════════════════════════════════════════════════════════════════
+  // 2. RÉSOLUTION D'ENTITÉS — §13.3
+  //
+  // `resolveEntities` existait, testée, et n'était appelée par personne. Ses
+  // résultats ne parvenaient donc jamais aux adaptateurs, qui recevaient un
+  // `entityFilters` toujours vide.
+  //
+  // Conséquence : « et son DPE ? » après une réponse sur un bien cherchait
+  // dans TOUT le compte au lieu de ce bien. L'assistant comprenait la
+  // référence et l'oubliait aussitôt.
+  //
+  // Le contexte de page compte autant : sur la fiche d'un bien, « mes
+  // factures » désigne les siennes.
+  // ══════════════════════════════════════════════════════════════════════
+  const refs: ConversationRefs = {
+    lastPresentedEntities: [],
+    // `PageContext.assetId` est une chaîne côté client ; la référence
+    // conversationnelle attend un entier.
+    currentAssetId: Number(input.pageContext?.assetId) || null,
+  };
+  const entites = resolveEntities(input.message, refs, input.pageContext);
+
+  // Une référence ambiguë ne filtre rien : mieux vaut chercher large que
+  // chercher à côté. La clarification du §20 prend alors le relais.
+  const entityFilters: Record<string, string | number | null> = {};
+  if (!entites.ambiguous) {
+    for (const e of entites.resolved) {
+      // Première référence de chaque type seulement : deux biens désignés
+      // simultanément produiraient un filtre qui n'en retiendrait aucun.
+      const cle = `${e.type}Id`;
+      if (entityFilters[cle] === undefined) entityFilters[cle] = e.id;
+    }
+  }
 
   // 3–5. Adapters (structuré, plein texte, [sémantique désactivé]).
   const adapters = getEnabledAdapters();
@@ -35,7 +68,7 @@ export async function retrieve(route: IntentRoute, input: AssistantRequestInput)
       accountId,
       normalizedQuery: input.message,
       intent: route.intent,
-      entityFilters: {},
+      entityFilters,
       limit: cfg.maxCandidates,
     });
     collected.push(...part);

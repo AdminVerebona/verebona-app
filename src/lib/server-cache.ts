@@ -43,6 +43,39 @@ export function serverCacheDelete(key: string): void {
   store.delete(key);
 }
 
+/**
+ * Supprime toutes les clés dont le préfixe correspond.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI UN PRÉFIXE ET NON UN MOTIF LIBRE
+ *
+ * L'invalidation par compte (§31.8) doit atteindre toutes les entrées d'un
+ * compte, quelles que soient l'intention et l'empreinte de requête qu'elles
+ * portent. Sans cela, une donnée modifiée reste servie jusqu'à l'expiration
+ * du délai — et l'assistant répond sur un état périmé, ce que le §31.7
+ * interdit.
+ *
+ * Un préfixe suffit, parce que les clés sont construites pour cela : compte
+ * en troisième position, le reste ensuite. Accepter une expression
+ * quelconque inviterait à des motifs approximatifs qui videraient le cache
+ * d'autres comptes.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * @returns nombre d'entrées supprimées — utile en journal pour distinguer
+ *          « rien à invalider » de « invalidation qui n'a rien trouvé ».
+ */
+export function serverCacheDeleteByPrefix(prefix: string): number {
+  if (!prefix) return 0;
+  let supprimees = 0;
+  for (const key of [...store.keys()]) {
+    if (key.startsWith(prefix)) {
+      store.delete(key);
+      supprimees += 1;
+    }
+  }
+  return supprimees;
+}
+
 export function serverCacheClear(): void {
   store.clear();
 }
