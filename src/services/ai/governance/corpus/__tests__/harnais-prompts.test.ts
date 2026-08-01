@@ -131,3 +131,38 @@ describe('le vocabulaire des champs est imposé au corpus, libre ailleurs', () =
     expect(ETAPE).toMatch(/EXPECTED_FIELDS: ''/);
   });
 });
+
+describe('chaque campagne mesure vraiment', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // 2 MILLISECONDES PAR CAS
+  //
+  // La clé d'idempotence était `corpus:<cas>:extract`, stable d'une campagne
+  // à l'autre. Le prompt ayant changé — c'est l'objet même des campagnes
+  // successives — la seconde a rejoué les réponses de la première.
+  //
+  // Coût nul, durée de 2 ms, résultats identiques au champ près. Les
+  // chiffres paraissaient plausibles : c'est ce qui rendait le défaut
+  // dangereux.
+  // ══════════════════════════════════════════════════════════════════════
+  const STATUS = read('src/app/api/cron/ai/corpus-status/route.ts');
+
+  it('la clé d’idempotence porte un identifiant de campagne', () => {
+    expect(RUNNER).toMatch(/const campagne = /);
+    expect(RUNNER).toMatch(/corpus:\$\{campagne\}/);
+  });
+
+  it('elle reste distincte entre extraction et classification', () => {
+    // Une clé commune ferait servir la réponse d'extraction à la
+    // classification.
+    expect(RUNNER).toMatch(/:extract`/);
+    expect(RUNNER).toMatch(/:classify`/);
+  });
+
+  it('une campagne trop rapide est signalée', () => {
+    expect(STATUS).toMatch(/avgDurationMs < 200/);
+  });
+
+  it('et elle n’est pas exploitable', () => {
+    expect(STATUS).toMatch(/avgDurationMs >= 200/);
+  });
+});

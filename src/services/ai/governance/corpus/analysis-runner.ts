@@ -162,6 +162,23 @@ export function htmlToPlainText(html: string): string {
 export function createAnalysisRunner(
   operationCode = 'extract_source',
 ): CorpusRunner {
+  // ══════════════════════════════════════════════════════════════════════
+  // UNE CLÉ PAR CAMPAGNE, PAS PAR CAS
+  //
+  // La clé était `corpus:<cas>:extract`, stable d'une campagne à l'autre.
+  // Le commentaire d'alors disait : « rejouer la campagne sans changer le
+  // prompt ne doit pas facturer deux fois ».
+  //
+  // Mais le prompt CHANGE — c'est même l'objet des campagnes successives —
+  // et la clé, elle, ne bougeait pas. La seconde campagne a donc rejoué les
+  // réponses de la première : 2 ms par cas, coût nul, résultats identiques
+  // au champ près. Elle ne mesurait rien.
+  //
+  // L'identifiant de campagne rend chaque exécution distincte. L'idempotence
+  // garde son rôle à l'intérieur d'une campagne — un cas rejoué après une
+  // coupure réseau ne refacture pas.
+  // ══════════════════════════════════════════════════════════════════════
+  const campagne = `${Date.now().toString(36)}`;
   // `execute` est statique : la passerelle n'a pas d'état par appelant.
   const accountId = corpusAccountId();
 
@@ -207,9 +224,7 @@ export function createAnalysisRunner(
           EXPECTED_FIELDS: Object.keys(corpusCase.expected.fields ?? {}).join(', '),
         },
         outputSchema: ExtractOutputSchema,
-        // Clé stable par cas : rejouer la campagne sans changer le prompt ne
-        // doit pas facturer deux fois.
-        idempotencyKey: `corpus:${corpusCase.caseId}:extract`,
+        idempotencyKey: `corpus:${campagne}:${corpusCase.caseId}:extract`,
       });
 
       const champs = aplatir(extraction.data);
@@ -229,7 +244,7 @@ export function createAnalysisRunner(
           CONTENT_SAMPLE: texte.slice(0, 3000),
         },
         outputSchema: ClassifyOutputSchema,
-        idempotencyKey: `corpus:${corpusCase.caseId}:classify`,
+        idempotencyKey: `corpus:${campagne}:${corpusCase.caseId}:classify`,
       });
 
       const observed: ObservedResult = {

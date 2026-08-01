@@ -113,8 +113,21 @@ export async function GET(req: NextRequest) {
       reference.summary.totalCostMicros === 0 && total > 0
         ? 'Coût nul sur une campagne réelle : les tarifs ne sont pas renseignés.'
         : null,
+      // Une campagne de quelques millisecondes n'a appelé personne : elle a
+      // rejoué des réponses mises en cache. Le symptôme est discret — les
+      // chiffres paraissent plausibles — et c'est ce qui le rend dangereux.
+      reference.summary.avgDurationMs < 200 && total > 0
+        ? `Durée moyenne de ${reference.summary.avgDurationMs} ms : aucun appel ` +
+          "modèle n'a eu lieu. La campagne a rejoué des réponses du cache " +
+          "d'idempotence et ne mesure rien."
+        : null,
     ].filter(Boolean),
     exploitable:
-      total > 0 && conformes > 0 && reference.summary.fallbacks < total,
+      total > 0 &&
+      conformes > 0 &&
+      reference.summary.fallbacks < total &&
+      // Une campagne rejouée depuis le cache n'est pas exploitable, quels
+      // que soient ses chiffres.
+      reference.summary.avgDurationMs >= 200,
   });
 }
