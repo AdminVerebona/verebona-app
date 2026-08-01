@@ -56,3 +56,40 @@ describe('une référence vide n’écrase jamais la précédente', () => {
     expect(ROUTE).toMatch(/référence non\s*\` \+\s*'enregistrée|référence non /);
   });
 });
+
+describe('le verdict refuse de conclure sans mesure', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // LE SILENCE A ÉTÉ LU COMME UNE APPROBATION
+  //
+  // `isSafeToSwitch` a rendu `safe: true` en comparant une vérification à
+  // blanc à une référence de zéro cas. Aucune régression n'était détectable
+  // — il n'y avait rien à comparer.
+  //
+  // En l'absence de mesure, la réponse doit être « on ne sait pas ».
+  // ══════════════════════════════════════════════════════════════════════
+  const RUNNER_SRC = read('src/services/ai/governance/corpus/corpus-runner.ts');
+
+  it('refuse une référence vide', () => {
+    expect(RUNNER_SRC).toMatch(/before\.summary\.total === 0/);
+  });
+
+  it('refuse une campagne courante vide', () => {
+    expect(RUNNER_SRC).toMatch(/after\.summary\.total === 0/);
+  });
+
+  it('refuse de comparer une simulation à une mesure', () => {
+    // Une vérification à blanc compare les résultats attendus à eux-mêmes.
+    expect(RUNNER_SRC).toMatch(/à blanc/);
+  });
+
+  it('ces refus précèdent la détection de régressions', () => {
+    // Borné à `isSafeToSwitch` : `detectRegressions` est aussi appelé plus
+    // haut dans le fichier, par une autre fonction. Chercher sa première
+    // occurrence comparerait deux positions sans rapport.
+    const bloc = RUNNER_SRC.slice(RUNNER_SRC.indexOf('export function isSafeToSwitch'));
+    const posGarde = bloc.indexOf('before.summary.total === 0');
+    const posDetect = bloc.indexOf('const regressions = detectRegressions');
+    expect(posGarde).toBeGreaterThan(-1);
+    expect(posGarde).toBeLessThan(posDetect);
+  });
+});

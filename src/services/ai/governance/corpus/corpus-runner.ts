@@ -223,8 +223,48 @@ export function isSafeToSwitch(before: CorpusRun, after: CorpusRun): {
   safe: boolean;
   reasons: string[];
 } {
-  const regressions = detectRegressions(before.results, after.results);
   const reasons: string[] = [];
+
+  // ══════════════════════════════════════════════════════════════════════
+  // UNE COMPARAISON N'A DE SENS QU'ENTRE DEUX MESURES RÉELLES
+  //
+  // Ce verdict a rendu `safe: true` en comparant une vérification à blanc à
+  // une référence de zéro cas. Aucune régression n'était détectable — il n'y
+  // avait rien à comparer — et le silence a été lu comme une approbation.
+  //
+  // C'est l'inverse de ce qu'on attend : en l'absence de mesure, la réponse
+  // doit être « on ne sait pas », jamais « c'est sûr ».
+  // ══════════════════════════════════════════════════════════════════════
+  if (before.summary.total === 0) {
+    return {
+      safe: false,
+      reasons: [
+        'La référence ne contient aucun cas mesuré : rien à comparer. ' +
+        'Relancer la campagne de référence avant de conclure.',
+      ],
+    };
+  }
+
+  if (after.summary.total === 0) {
+    return {
+      safe: false,
+      reasons: ['La campagne courante n’a mesuré aucun cas.'],
+    };
+  }
+
+  // Une simulation ne mesure pas le moteur : elle compare les résultats
+  // attendus à eux-mêmes, et rend toujours cent pour cent.
+  if (before.label.includes('à blanc') || after.label.includes('à blanc')) {
+    return {
+      safe: false,
+      reasons: [
+        'L’une des campagnes est une vérification à blanc, sans appel modèle. ' +
+        'Comparer une simulation à une mesure ne dit rien du moteur.',
+      ],
+    };
+  }
+
+  const regressions = detectRegressions(before.results, after.results);
 
   const newLeaks = regressions.filter((r) => r.kind === 'new_leak');
   if (newLeaks.length > 0) {
