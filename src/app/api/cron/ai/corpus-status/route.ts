@@ -110,8 +110,17 @@ export async function GET(req: NextRequest) {
         ? 'Tous les appels ont employé le modèle de repli : la mesure ne porte ' +
           'pas sur le modèle principal.'
         : null,
+      // Le message distingue les deux causes. Il annonçait des tarifs absents
+      // même quand ils étaient tous là — se contredisant avec le bloc
+      // `tarifs` de la même réponse.
       reference.summary.totalCostMicros === 0 && total > 0
-        ? 'Coût nul sur une campagne réelle : les tarifs ne sont pas renseignés.'
+        ? (tarifs.length === 0
+            ? 'Coût nul : aucun tarif enregistré.'
+            : 'Coût nul alors que tous les modèles appelés sont tarifés. ' +
+              'Le calcul dépend du nombre de jetons, lu dans `usageMetadata` ' +
+              'de la réponse du fournisseur : il est probablement absent. ' +
+              'La comparaison entre moteurs reste valide — l’écart serait le ' +
+              'même des deux côtés — mais le coût de la bascule ne sera pas mesuré.')
         : null,
       // Une campagne de quelques millisecondes n'a appelé personne : elle a
       // rejoué des réponses mises en cache. Le symptôme est discret — les
