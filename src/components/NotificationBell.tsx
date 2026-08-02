@@ -19,6 +19,12 @@ interface NotificationPayload {
   inviteToken?: string;
   lotId?: number;
   assetFileId?: number;
+  // Rétractation et remboursement (CDC 6). Ces champs étaient émis mais
+  // absents du contrat : aucun libellé ne pouvait les exploiter.
+  amount?: number;
+  status?: string;
+  refundId?: string;
+  scheduledAt?: string;
   // Duo
   duoId?: number;
   requestId?: number;
@@ -98,9 +104,76 @@ function getNotificationText(type: string, payload: NotificationPayload | null):
       return `${p.recipientName ?? 'Le destinataire'} a accepté la transmission de "${p.assetName ?? 'votre bien'}"`;
     case 'TRANSMISSION_REFUSED':
       return `${p.recipientName ?? 'Le destinataire'} a refusé la transmission de "${p.assetName ?? 'votre bien'}"`;
+    // ══════════════════════════════════════════════════════════════════
+    // RÉTRACTATION ET REMBOURSEMENT — CDC 6
+    //
+    // Ces neuf types étaient émis sans libellé et tombaient tous sur
+    // « Nouvelle notification ». L'utilisateur voyait une pastille, ouvrait,
+    // et n'apprenait rien.
+    //
+    // Ce sont pourtant les plus sensibles : une demande de rétractation, un
+    // remboursement, une suppression de compte programmée. Les laisser muets
+    // obligeait à chercher ailleurs ce qui venait de se produire.
+    // ══════════════════════════════════════════════════════════════════
+    case 'DECLARATION_RECEIVED':
+      return 'Votre demande de rétractation a bien été reçue';
+    case 'RECEIPT_SENT':
+      return 'Accusé de réception de votre rétractation envoyé';
+    case 'REFUND_REQUESTED':
+      return p.amount
+        ? `Remboursement de ${formatMontant(p.amount)} demandé`
+        : 'Votre remboursement a été demandé';
+    case 'REFUND_STATUS_CHANGED': {
+      // Le statut brut du fournisseur ne veut rien dire pour l'utilisateur.
+      const etats: Record<string, string> = {
+        succeeded: 'effectué',
+        pending: 'en cours de traitement',
+        failed: 'refusé par votre banque',
+        canceled: 'annulé',
+      };
+      const etat = p.status ? etats[String(p.status)] : undefined;
+      return etat
+        ? `Remboursement ${etat}${p.amount ? ` — ${formatMontant(p.amount)}` : ''}`
+        : 'Le statut de votre remboursement a changé';
+    }
+    case 'PAYMENTS_IDENTIFIED':
+      return 'Vos paiements ont été identifiés pour le remboursement';
+    case 'SUBSCRIPTION_CANCELLED':
+      return 'Votre abonnement a été résilié';
+    case 'SUBSCRIPTION_CANCEL_FAILED':
+      // Ne pas dramatiser : l'utilisateur n'a rien à faire, l'équipe agit.
+      return "La résiliation demande une vérification — notre équipe s'en charge";
+    case 'EXPORT_ONLY_ENTERED':
+      return 'Votre compte est passé en consultation seule';
+    case 'DELETION_SCHEDULED':
+      return p.scheduledAt
+        ? `Suppression de votre compte prévue le ${formatDate(p.scheduledAt)}`
+        : 'La suppression de votre compte est programmée';
+
     default:
+      // ⚠️ Repli conservé, mais il ne doit plus jamais s'afficher : un type
+      // émis sans libellé est un défaut, pas un cas normal. Le signaler en
+      // console permet de le voir en recette plutôt qu'en production.
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`[notifications] type sans libellé : ${type}`);
+      }
       return 'Nouvelle notification';
   }
+}
+
+/** Montant en centimes → « 12,90 € ». */
+function formatMontant(centimes: unknown): string {
+  const n = Number(centimes);
+  if (!Number.isFinite(n)) return '';
+  return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' })
+    .format(n / 100);
+}
+
+/** Date ISO → « 14 mars 2026 ». */
+function formatDate(iso: unknown): string {
+  const d = new Date(String(iso));
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
 function getNotificationHref(type: string, payload: NotificationPayload | null): string | null {
