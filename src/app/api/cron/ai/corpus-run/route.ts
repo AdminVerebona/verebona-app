@@ -44,6 +44,7 @@ import {
   createAnalysisRunner,
   createDryRunner,
 } from '@/services/ai/governance/corpus/analysis-runner';
+import { createPipelineRunner } from '@/services/ai/governance/corpus/pipeline-runner';
 import '@/services/ai/governance/corpus/corpus-cases';
 
 export const dynamic = 'force-dynamic';
@@ -111,12 +112,30 @@ export async function GET(req: NextRequest) {
 
   const p = req.nextUrl.searchParams;
   const dry = p.get('dry') === '1';
+  // ══════════════════════════════════════════════════════════════════════
+  // DEUX NIVEAUX DE MESURE, ET ILS NE RÉPONDENT PAS À LA MÊME QUESTION
+  //
+  //   défaut      appelle les opérations directement. Mesure les PROMPTS et
+  //               la passerelle. C'est lui qui a validé le vocabulaire des
+  //               champs — 6 champs corrects sur 83 devenus 61.
+  //
+  //   ?pipeline=1 traverse `analyzeFileSources`, donc le drapeau. Seul
+  //               niveau capable d'arbitrer une bascule de moteur.
+  //
+  // Le premier ne peut pas mesurer une bascule : les deux campagnes rendaient
+  // des résultats identiques à un champ près, faute de traverser
+  // l'aiguillage.
+  // ══════════════════════════════════════════════════════════════════════
+  const pipeline = p.get('pipeline') === '1';
   const baseline = p.get('baseline') === '1';
   const compare = p.get('compare') === '1';
   const categories = p.get('categories')?.split(',').map((c) => c.trim()).filter(Boolean);
 
   const mode = getFlagMode('AI_UNIFIED_SOURCE_ANALYSIS');
-  const label = dry ? 'vérification à blanc' : `moteur ${mode === 'enabled' ? 'unifié' : 'historique'}`;
+  const niveau = pipeline ? 'pipeline' : 'opérations';
+  const label = dry
+    ? 'vérification à blanc'
+    : `moteur ${mode === 'enabled' ? 'unifié' : 'historique'} (${niveau})`;
 
   // Le compte technique n'est requis que pour une campagne réelle.
   if (!dry) {
@@ -137,7 +156,12 @@ export async function GET(req: NextRequest) {
 
   let run: CorpusRun;
   try {
-    run = await runCorpus(dry ? createDryRunner() : createAnalysisRunner(), { label, categories });
+    const runner = dry
+      ? createDryRunner()
+      : pipeline
+        ? createPipelineRunner()
+        : createAnalysisRunner();
+    run = await runCorpus(runner, { label, categories });
   } catch (e) {
     return NextResponse.json(
       { error: 'Campagne impossible.', code: 'RUN_FAILED', cause: (e as Error).message },

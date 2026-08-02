@@ -252,6 +252,25 @@ export function isSafeToSwitch(before: CorpusRun, after: CorpusRun): {
     };
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // DEUX NIVEAUX NE SE COMPARENT PAS
+  //
+  // Une campagne « opérations » appelle les prompts directement ; une
+  // campagne « pipeline » traverse l'aiguillage. Leurs chiffres ne portent
+  // pas sur la même chose — un écart entre les deux ne dirait rien du moteur.
+  // ══════════════════════════════════════════════════════════════════════
+  const niveau = (l: string) => (l.includes('(pipeline)') ? 'pipeline' : 'opérations');
+  if (!before.label.includes('à blanc') && !after.label.includes('à blanc')
+      && niveau(before.label) !== niveau(after.label)) {
+    return {
+      safe: false,
+      reasons: [
+        `Les deux campagnes ne mesurent pas la même chose : ${niveau(before.label)} ` +
+        `contre ${niveau(after.label)}. Relancer la référence au même niveau.`,
+      ],
+    };
+  }
+
   // Une simulation ne mesure pas le moteur : elle compare les résultats
   // attendus à eux-mêmes, et rend toujours cent pour cent.
   if (before.label.includes('à blanc') || after.label.includes('à blanc')) {

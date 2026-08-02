@@ -29,6 +29,7 @@
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq } from 'drizzle-orm';
+import type { SourceType } from './types';
 import { getFlagMode } from '../flags/ai-feature-flags';
 import type { RunSourceAnalysisOutput } from './pipeline';
 
@@ -40,6 +41,28 @@ export interface AnalyzeFileSourcesOptions {
   billable?: boolean;
   /** Appelant, journalisé. Indispensable pour suivre une bascule progressive. */
   origin?: string;
+  /**
+   * Type de source à préparer. `'file'` par défaut — aucun des neuf appelants
+   * existants n'a à changer.
+   *
+   * ══════════════════════════════════════════════════════════════════════
+   * POURQUOI CE PARAMÈTRE EXISTE
+   *
+   * Le corpus de mesure appelait `AiGateway` directement. Il ne traversait
+   * donc jamais cette fonction — seul endroit où le drapeau aiguille — et
+   * les deux campagnes rendaient des résultats identiques à un champ près :
+   * elles exécutaient le même code.
+   *
+   * Le type était écrit en dur plus bas. L'ouvrir permet au corpus de
+   * passer par le pipeline COMPLET, drapeau compris, en servant ses
+   * fixtures par un adaptateur dédié.
+   *
+   * Il reste hors du chemin de production : aucun appelant applicatif ne le
+   * renseigne, et `'future_source'` n'est enregistré que le temps d'une
+   * campagne.
+   * ══════════════════════════════════════════════════════════════════════
+   */
+  sourceType?: SourceType;
 }
 
 let shadowWarned = false;
@@ -95,7 +118,7 @@ async function runUnified(
 
     const { runSourceAnalysis } = await import('./pipeline');
     const outcome = await runSourceAnalysis({
-      sourceType: 'file',
+      sourceType: options.sourceType ?? 'file',
       sourceIds: fileIds,
       accountId,
       userId,

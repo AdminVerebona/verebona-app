@@ -205,3 +205,53 @@ describe('une campagne n’est jamais perdue', () => {
     expect(STATUS).toMatch(/derniere\.startedAt !== reference\.startedAt/);
   });
 });
+
+describe('le niveau pipeline traverse réellement la bascule', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // 4 CONFORMES DES DEUX CÔTÉS
+  //
+  // Le runner d'opérations appelle AiGateway directement : il ne traverse
+  // pas `analyzeFileSources`, seul endroit où AI_UNIFIED_SOURCE_ANALYSIS
+  // aiguille. Les deux campagnes exécutaient le même code, et seul le
+  // libellé changeait.
+  // ══════════════════════════════════════════════════════════════════════
+  const PIPELINE = read('src/services/ai/governance/corpus/pipeline-runner.ts');
+  const ENTREE = read('src/services/ai/source-analysis/entrypoint.ts');
+  const RUNNER_SRC = read('src/services/ai/governance/corpus/corpus-runner.ts');
+
+  it('le runner passe par le point de bascule', () => {
+    // Commentaires retirés : celui du fichier explique justement pourquoi il
+    // n'appelle PAS la passerelle directement. Cinquième fois dans ce projet
+    // qu'un test attrape la documentation de la règle qu'il vérifie.
+    const code = PIPELINE
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    expect(code).toMatch(/await analyzeFileSources\(/);
+    expect(code).not.toMatch(/AiGateway\.execute/);
+  });
+
+  it('le type de source est ouvert, avec « file » par défaut', () => {
+    // Neuf appelants existants : aucun ne doit changer.
+    expect(ENTREE).toMatch(/options\.sourceType \?\? 'file'/);
+  });
+
+  it('la campagne ne consomme pas les crédits du compte technique', () => {
+    expect(PIPELINE).toMatch(/billable: false/);
+  });
+
+  it('les lignes créées sont supprimées, même en cas d’échec', () => {
+    // Sans cela, chaque campagne laisserait 28 documents et la suivante
+    // analyserait un parc qui grossit.
+    expect(PIPELINE).toMatch(/finally \{/);
+    expect(PIPELINE).toMatch(/await supprimerSource\(sourceId\)/);
+  });
+
+  it('le résultat est relu en base, non pris au retour', () => {
+    // analyzeFileSources rend null sur le moteur historique, par conception.
+    expect(PIPELINE).toMatch(/FROM asset_files WHERE id =/);
+  });
+
+  it('deux niveaux de mesure ne se comparent pas', () => {
+    expect(RUNNER_SRC).toMatch(/ne mesurent pas la même chose/);
+  });
+});
