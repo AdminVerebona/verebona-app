@@ -68,11 +68,20 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body suppressHydrationWarning>
         { }
-        <script
-          defer
-          src="https://slelguoygbfzlpylpxfs.supabase.co/storage/v1/object/public/scripts/orchids-browser-logs.js"
-          data-orchids-project-id="5da8aa09-2540-4b03-96bf-bb17130a3250"
-        />
+        {/* ══════════════════════════════════════════════════════════════
+            SCRIPT TIERS RETIRÉ
+
+            Un script d'observation hébergé chez Supabase, avec un
+            identifiant de projet Orchids, chargeait sur chaque page — y
+            compris en préproduction avec de vraies données.
+
+            Il violait la politique de sécurité du contenu à chaque
+            chargement. Celle-ci étant en `report-only`, la violation était
+            journalisée sans être bloquée : le script s'exécutait quand même.
+
+            Résidu de l'outil ayant généré le squelette du projet. Personne
+            ne l'a demandé, et rien ne dit ce qu'il transmet.
+            ══════════════════════════════════════════════════════════════ */}
         <ClientShell>{children}</ClientShell>
       </body>
     </html>
