@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 
@@ -135,12 +135,44 @@ export async function POST(request: NextRequest) {
       // Aiguillage unique (CDC §10.1) : le moteur est choisi dans
       // `source-analysis/entrypoint`, jamais ici. Voir l'en-tête de ce module
       // pour la raison — huit appelants, un seul test de drapeau.
-      import('@/services/ai/source-analysis/entrypoint').then(({ analyzeFileSources }) => {
-        void analyzeFileSources(allFileIds, accountId, {
-          userId,
-          origin: 'files/confirm',
+      // ══════════════════════════════════════════════════════════════════
+      // UNE ERREUR AVALÉE LAISSE LE DOCUMENT « EN COURS » POUR TOUJOURS
+      //
+      // Le `.catch(() => {})` d'origine ne couvrait d'ailleurs que l'échec
+      // d'IMPORT du module. L'analyse elle-même partait en `void` : si elle
+      // rejetait, la promesse n'était rattrapée par personne.
+      //
+      // Résultat observé : le document reste en analyse indéfiniment, le
+      // navigateur sonde toutes les quatre secondes, et rien nulle part ne
+      // dit pourquoi.
+      //
+      // On ne peut pas attendre l'analyse — elle dure des dizaines de
+      // secondes et la requête d'import doit répondre tout de suite. Mais on
+      // peut consigner l'échec, et remettre le document dans un état où
+      // l'utilisateur comprend ce qui s'est passé.
+      // ══════════════════════════════════════════════════════════════════
+      import('@/services/ai/source-analysis/entrypoint')
+        .then(({ analyzeFileSources }) =>
+          analyzeFileSources(allFileIds, accountId, { userId, origin: 'files/confirm' }),
+        )
+        .catch(async (e) => {
+          const err = e as Error & { cause?: { message?: string } };
+          console.error(
+            `[files/confirm] analyse impossible pour ${allFileIds.join(', ')} :`,
+            err.message,
+            err.cause?.message ?? '',
+          );
+          // Sortir de « en cours » : un état d'échec est lisible, une attente
+          // sans fin ne l'est pas.
+          await db
+            .update(assetFiles)
+            // `asset_files` ne porte pas de colonne pour le motif : seul
+            // l'état est écrit, la cause reste au journal. C'est une limite
+            // connue — l'utilisateur voit que ça a échoué, pas pourquoi.
+            .set({ analysisState: 'ANALYSIS_FAILED', updatedAt: new Date() })
+            .where(inArray(assetFiles.id, allFileIds))
+            .catch(() => { /* la trace console suffit */ });
         });
-      }).catch(() => {});
     }
 
     // ── Détection fusion (fire-and-forget) ──────────────────────────────────
