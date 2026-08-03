@@ -71,14 +71,17 @@ export function BottomNavigation() {
             })}
           </div>
 
-          {/* Center Plus Button */}
+          {/* Center Plus Button — le + pivote à 90° à l'ouverture (et au survol) */}
           <div className="flex-shrink-0 flex flex-col items-center gap-1 -mt-10 relative">
             <Button
               size="icon"
               onClick={() => setShowActionsSheet(true)}
-              className="h-16 w-16 rounded-full shadow-relief-2xl hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] hover:scale-110 transition-all border-4 border-[color:var(--bg-page)]"
+              aria-label="Ajouter un bien, un document ou un événement"
+              className="group h-16 w-16 rounded-full shadow-relief-2xl hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] hover:scale-110 transition-all border-4 border-[color:var(--bg-page)]"
             >
-              <Plus className="w-8 h-8 text-white" />
+              <Plus
+                className={`w-8 h-8 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90 ${showActionsSheet ? 'rotate-90' : ''}`}
+              />
             </Button>
             <span className="text-[10px] font-medium text-[color:var(--accent)]">Ajouter</span>
           </div>

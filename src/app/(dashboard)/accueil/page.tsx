@@ -10,7 +10,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { AssetCard } from '@/components/dashboard/AssetCard';
 import { AssetLimitReachedDialog } from '@/components/premium/AssetLimitReachedDialog';
 import { PendingCheckoutModal } from '@/components/subscription/PendingCheckoutModal';
-import { SituationMessage } from '@/components/home/SituationMessage';
+import { MascotGreeting } from '@/components/home/MascotGreeting';
+import { HomeStatsGrid } from '@/components/home/HomeStatsGrid';
 import { ATfaireBlock } from '@/components/home/ATfaireBlock';
 import { ProchainsDatesBlock } from '@/components/home/ProchainsDatesBlock';
 import { ASavoirBlock } from '@/components/home/ASavoirBlock';
@@ -103,7 +104,6 @@ export default function DashboardPage() {
   }, [setBreadcrumbs]);
 
   // Lance le fetch immédiatement si un token existe, sans attendre la résolution de la session.
-  // Si le token est expiré, l'API retournera 401 et l'api-client déclenchera le refresh normal.
   useEffect(() => {
     const hasToken = typeof window !== 'undefined' && true;
     if (hasToken) loadSummary();
@@ -140,22 +140,19 @@ export default function DashboardPage() {
 
     const syncPayment = async () => {
       try {
-        // Forcer la synchronisation avec l'API
         const res = await fetch(`/api/billing/me?session_id=${encodeURIComponent(sessionId)}`, {
-      credentials: 'include',
+          credentials: 'include',
         });
         if (res.ok) {
-          // Rafraîchir le JWT token pour que middleware.ts l'accepte lors des prochaines navigations
           const refreshRes = await fetch('/api/auth/refresh', {
-      credentials: 'include',
+            credentials: 'include',
             method: 'POST',
           });
           if (refreshRes.ok) {
             const refreshData = await refreshRes.json();
             if (refreshData.accessToken) {
-              // Récupérer et mettre à jour le profil de l'utilisateur
               const userRes = await fetch('/api/users/me', {
-      credentials: 'include',
+                credentials: 'include',
               });
               if (userRes.ok) {
                 const userData = await userRes.json();
@@ -167,10 +164,8 @@ export default function DashboardPage() {
       } catch (err) {
         console.error('[Accueil Sync] Failed to sync payment:', err);
       } finally {
-        // Nettoyer l'URL
         const newUrl = window.location.pathname;
         window.history.replaceState({}, '', newUrl);
-        // Recharger l'état de la page
         window.location.reload();
       }
     };
@@ -258,23 +253,17 @@ export default function DashboardPage() {
   if (isSessionLoading || isLoading) {
     return (
       <div className="space-y-6 w-full max-w-full pb-12">
-        <div className="space-y-2">
-          <Skeleton className="h-7 w-48" />
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-4 w-72 mt-1" />
+        <div className="flex items-center gap-6">
+          <Skeleton className="h-[124px] w-[124px] rounded-full" />
+          <Skeleton className="h-32 flex-1 rounded-[22px]" />
         </div>
-        <div className="space-y-2">
-          <Skeleton className="h-4 w-24" />
-          {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14 w-full rounded-xl" />)}
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-32" />
-            {[...Array(2)].map((_, i) => <Skeleton key={i} className="h-14 w-full rounded-xl" />)}
-          </div>
+        <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4">
           <div className="space-y-2">
             <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-14 w-full rounded-xl" />
+            {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14 w-full rounded-xl" />)}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-20 rounded-xl" />)}
           </div>
         </div>
         <div className="space-y-2">
@@ -293,60 +282,112 @@ export default function DashboardPage() {
   const totalAssets = summary?.assets.total ?? 0;
   const isEmpty = summary?.situation.status === 'empty';
 
+  // Compteurs « En un coup d'œil » — utiliser les totaux du summary quand disponibles.
+  const s: any = summary ?? {};
+  const statDocuments = s.documents?.total ?? s.blocks?.documents?.total ?? 0; // TODO: exposer le total documents dans HomeSummaryPayload si absent
+  const statEvenements = s.agenda?.total ?? s.blocks?.upcoming?.total ?? 0;
+  const statATraiter = s.blocks?.todo?.total ?? 0;
+
   return (
     <>
-      <div className="space-y-6 w-full max-w-full overflow-x-hidden pb-12">
+      <div className="space-y-6 w-full max-w-full overflow-x-hidden pb-24">
 
-        {/* Message de situation */}
+        {/* Bandeau mascotte + bulle (remplace SituationMessage) */}
         {summary && (
-          <SituationMessage
+          <MascotGreeting
             situation={summary.situation}
             userName={user.username || user.firstName}
           />
         )}
 
-
-        {/* Bloc À faire */}
+        {/* À faire + En un coup d'œil — 2 colonnes alignées */}
         {summary && !isEmpty && (
-          <ATfaireBlock
-            items={summary.blocks.todo.items}
-            total={summary.blocks.todo.total}
-            onItemClick={handleItemClick}
-          />
-        )}
-
-        {/* Prochaines dates + À savoir — 2 colonnes sur desktop */}
-        {summary && !isEmpty && (
-          summary.blocks.upcoming.total > 0 || summary.blocks.toKnow.items.length > 0
-        ) && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <ProchainsDatesBlock
-              items={summary.blocks.upcoming.items}
-              total={summary.blocks.upcoming.total}
+          <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 items-stretch">
+            <ATfaireBlock
+              items={summary.blocks.todo.items}
+              total={summary.blocks.todo.total}
               onItemClick={handleItemClick}
             />
-            <ASavoirBlock items={summary.blocks.toKnow.items} />
+            <HomeStatsGrid
+              biens={totalAssets}
+              evenements={statEvenements}
+              documents={statDocuments}
+              aTraiter={statATraiter}
+            />
           </div>
         )}
 
-        {/* Bloc Mes biens */}
-        <div className="w-full">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+        {/* Mes biens + Prochaines dates (gauche) / Verebona a organisé + À savoir (droite) */}
+        {summary && !isEmpty ? (
+          <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 items-start">
+            <div className="space-y-6 min-w-0">
+              {/* Bloc Mes biens */}
+              <div className="w-full">
+                <div className="flex items-center justify-between mb-4 h-[18px]">
+                  <span className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+                    Mes biens
+                  </span>
+                  {totalAssets > 3 && (
+                    <Link
+                      href="/assets"
+                      className="flex items-center gap-1 text-xs text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+                    >
+                      Tout afficher
+                      <ChevronRight className="w-3 h-3" />
+                    </Link>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 xl:grid-cols-3 gap-4 w-full">
+                  {assets.slice(0, 3).map((asset, idx) => (
+                    <AssetCard
+                      key={asset.id}
+                      id={asset.id}
+                      name={asset.name}
+                      category={asset.category}
+                      subtype={asset.subtype ?? undefined}
+                      status={asset.status ?? undefined}
+                      thumbnailUrl={asset.thumbnailUrl}
+                      signedThumbnailUrl={asset.signedThumbnailUrl}
+                      documentCount={asset.documentCount}
+                      documentLabels={asset.documentLabels}
+                      priority={idx < 2}
+                      todoCount={asset.todoCount}
+                      nextDate={asset.nextDate}
+                      nextDateTitle={asset.nextDateTitle}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <ProchainsDatesBlock
+                items={summary.blocks.upcoming.items}
+                total={summary.blocks.upcoming.total}
+                onItemClick={handleItemClick}
+              />
+            </div>
+
+            <div className="space-y-6 min-w-0">
+              {summary.blocks.autoEnrichment.events.length > 0 && (
+                <EnrichissementAutomatiqueBlock
+                  events={summary.blocks.autoEnrichment.events}
+                  locked={false}
+                />
+              )}
+              <ASavoirBlock items={summary.blocks.toKnow.items} />
+              {summary.blocks.recentActivity.items.length > 0 && (
+                <ActiviteRecenteBlock
+                  items={summary.blocks.recentActivity.items}
+                  onItemClick={handleItemClick}
+                />
+              )}
+            </div>
+          </div>
+        ) : (
+          /* État vide : carte « Aucun bien pour le moment » */
+          <div className="w-full max-w-2xl">
+            <span className="block text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-4">
               Mes biens
             </span>
-            {totalAssets > 4 && (
-              <Link
-                href="/assets"
-                className="flex items-center gap-1 text-xs text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
-              >
-                Tout afficher
-                <ChevronRight className="w-3 h-3" />
-              </Link>
-            )}
-          </div>
-
-          {assets.length === 0 ? (
             <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
               <CardContent className="flex flex-col sm:flex-row sm:items-center gap-4 py-4 px-5">
                 <div className="flex items-center gap-4 min-w-0">
@@ -371,60 +412,12 @@ export default function DashboardPage() {
                 </Button>
               </CardContent>
             </Card>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4 w-full">
-              {assets.map((asset, idx) => (
-                <AssetCard
-                  key={asset.id}
-                  id={asset.id}
-                  name={asset.name}
-                  category={asset.category}
-                  subtype={asset.subtype ?? undefined}
-                  status={asset.status ?? undefined}
-                  thumbnailUrl={asset.thumbnailUrl}
-                  signedThumbnailUrl={asset.signedThumbnailUrl}
-                  documentCount={asset.documentCount}
-                  documentLabels={asset.documentLabels}
-                  priority={idx < 2}
-                  todoCount={asset.todoCount}
-                  nextDate={asset.nextDate}
-                  nextDateTitle={asset.nextDateTitle}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Activité récente + Enrichissement automatique — 2 colonnes desktop */}
-        {summary && (() => {
-          const isStandard = user?.subscription?.plan === 'STANDARD';
-          const hasActivity = summary.blocks.recentActivity.items.length > 0;
-          const hasEvents = summary.blocks.autoEnrichment.events.length > 0;
-          const showEnrich = !isEmpty && hasEvents;
-
-          if (!hasActivity && !showEnrich) return null;
-
-          return (
-            <div className={`grid grid-cols-1 gap-6 ${hasActivity && showEnrich ? 'md:grid-cols-2' : ''}`}>
-              {hasActivity && (
-                <ActiviteRecenteBlock
-                  items={summary.blocks.recentActivity.items}
-                  onItemClick={handleItemClick}
-                />
-              )}
-              {showEnrich && (
-                  <EnrichissementAutomatiqueBlock
-                    events={summary.blocks.autoEnrichment.events}
-                    locked={false}
-                  />
-              )}
-            </div>
-          );
-        })()}
+          </div>
+        )}
 
       </div>
 
-      {/* ── Dialogs ─────────────────────────────────────────────────────────── */}
+      {/* ── Dialogs (inchangés) ─────────────────────────────────────────────── */}
 
       {showUploadDialog && (
         <UnifiedDocumentDialog
