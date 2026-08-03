@@ -129,7 +129,25 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const meResponse = NextResponse.json({
+    // ══════════════════════════════════════════════════════════════════════
+    // LE CORPS EST CONSTRUIT AVANT LA RÉPONSE, PAS RELU DEPUIS ELLE
+    //
+    // Le code d'origine construisait la réponse, puis appelait
+    // `await meResponse.json()` pour alimenter le cache — et renvoyait la
+    // même réponse.
+    //
+    // Or lire une réponse CONSOMME son flux. La réponse renvoyée était donc
+    // vide et verrouillée :
+    //
+    //   Error: failed to pipe response
+    //     [cause]: TypeError: Invalid state: The ReadableStream is locked
+    //
+    // `/api/users/me` répondait 500. Comme elle porte l'identité, tout ce qui
+    // suivait tombait en 401 : accueil, biens, à-traiter, statut d'essai. Un
+    // import de document paraissait « rester en cours » alors que le
+    // navigateur n'était simplement plus authentifié.
+    // ══════════════════════════════════════════════════════════════════════
+    const corps = {
       id: userData.id,
       email: userData.email,
       firstName: userData.firstName,
@@ -152,9 +170,13 @@ export async function GET(request: NextRequest) {
       isInRecovery: duoInfo?.duoSubscriptionStatus === 'UNPAID_RECOVERY',
       duoEntitlement,
       effectivePlan,
-    });
-    const responseBody = await meResponse.json();
-    serverCacheSet(cacheKey, responseBody, 30_000);
+    };
+
+    // Le cache reçoit l'objet, la réponse est construite après : aucune
+    // lecture de flux, donc aucun verrouillage possible.
+    serverCacheSet(cacheKey, corps, 30_000);
+
+    const meResponse = NextResponse.json(corps);
     meResponse.headers.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
     return meResponse;
   } catch (error) {
