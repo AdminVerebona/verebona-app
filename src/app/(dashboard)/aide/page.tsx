@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { ChevronLeft, ChevronRight, FileText, Lock, Clock, Rocket, Search } from 'lucide-react';
-import { HELP_ARTICLES, HELP_CATS, type HelpCatId, type HelpArticle } from '@/services/help/help-content.fr';
+import { HELP_ARTICLES, HELP_CATS, type HelpArticle, type HelpCatId, type HelpPara } from '@/services/help/help-content';
 import { toast } from 'sonner';
 
 const CAT_ICON: Record<HelpCatId, { icon: React.ElementType; cls: string }> = {
@@ -26,10 +26,10 @@ export default function AidePage() {
   const [articleId, setArticleId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
 
-  const article = articleId ? HELP_ARTICLES.find(a => a.id === articleId) ?? null : null;
+  const article = articleId ? HELP_ARTICLES.find((a: HelpArticle) => a.id === articleId) ?? null : null;
   const openArticle = (a: HelpArticle) => { setArticleId(a.id); setCat(a.cat); };
   const results = query.trim()
-    ? HELP_ARTICLES.filter(a => (a.title + ' ' + a.excerpt).toLowerCase().includes(query.toLowerCase()))
+    ? HELP_ARTICLES.filter((a: HelpArticle) => (a.title + ' ' + a.excerpt).toLowerCase().includes(query.toLowerCase()))
     : null;
 
   return (
@@ -54,7 +54,7 @@ export default function AidePage() {
               <p className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--accent)] mb-1.5">{HELP_CATS[article.cat]}</p>
               <h2 className="text-[19px] font-semibold tracking-tight text-[color:var(--text-primary)] mb-1">{article.title}</h2>
               <p className="text-[11.5px] text-[color:var(--text-muted)] mb-4.5">Mis à jour {article.updated}</p>
-              {article.paras.map((p, i) => p.step ? (
+              {article.paras.map((p: HelpPara, i: number) => p.step ? (
                 <div key={i} className="flex gap-3 mb-3">
                   <span className="w-[22px] h-[22px] flex-shrink-0 rounded-full bg-[color:var(--accent-soft)] border border-blue-500/30 flex items-center justify-center text-[11px] font-bold text-[color:var(--accent)]">{p.step}</span>
                   <span className="text-[13.5px] leading-relaxed text-[color:var(--text-primary)]">{p.text}</span>
@@ -71,7 +71,7 @@ export default function AidePage() {
             <div className="space-y-4">
               <div className="rounded-2xl bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] px-4.5 py-4">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-2.5">Dans la même catégorie</p>
-                {HELP_ARTICLES.filter(a => a.cat === article.cat && a.id !== article.id).map(a => (
+                {HELP_ARTICLES.filter((a: HelpArticle) => a.cat === article.cat && a.id !== article.id).map((a: HelpArticle) => (
                   <button key={a.id} onClick={() => openArticle(a)} className="w-full flex items-center gap-2 px-2 py-1.5 -mx-2 rounded-lg text-left text-[12.5px] text-[color:var(--text-primary)] hover:bg-[color:var(--accent-soft)] transition-colors">
                     <FileText className="w-3 h-3 text-[color:var(--text-muted)] flex-shrink-0" />{a.title}
                   </button>
@@ -93,7 +93,7 @@ export default function AidePage() {
           </button>
           <h2 className="text-base font-semibold text-[color:var(--text-primary)] mb-3">{HELP_CATS[cat]}</h2>
           <div className="max-w-3xl rounded-2xl bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] overflow-hidden">
-            {HELP_ARTICLES.filter(a => a.cat === cat).map((a, i) => (
+            {HELP_ARTICLES.filter((a: HelpArticle) => a.cat === cat).map((a: HelpArticle, i: number) => (
               <button key={a.id} onClick={() => openArticle(a)} className={`w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-white/[.02] transition-colors ${i > 0 ? 'border-t border-[color:var(--border-subtle)]' : ''}`}>
                 <span className="flex-1 min-w-0">
                   <span className="block text-[13.5px] font-medium text-[color:var(--text-primary)]">{a.title}</span>
@@ -115,7 +115,7 @@ export default function AidePage() {
             <div className="max-w-3xl rounded-2xl bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] overflow-hidden mb-6">
               {results.length === 0 ? (
                 <p className="px-5 py-5 text-center text-sm text-[color:var(--text-muted)]">Aucun article pour «&nbsp;{query}&nbsp;». Posez la question à Verebona.</p>
-              ) : results.map((a, i) => (
+              ) : results.map((a: HelpArticle, i: number) => (
                 <button key={a.id} onClick={() => openArticle(a)} className={`w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-white/[.02] transition-colors ${i > 0 ? 'border-t border-[color:var(--border-subtle)]' : ''}`}>
                   <span className="flex-1 min-w-0 text-[13.5px] font-medium text-[color:var(--text-primary)]">{a.title}</span>
                   <span className="text-[11.5px] text-[color:var(--text-muted)]">{HELP_CATS[a.cat]}</span>
@@ -137,7 +137,7 @@ export default function AidePage() {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-7">
                 {(Object.keys(HELP_CATS) as HelpCatId[]).map(c => {
                   const { icon: Icon, cls } = CAT_ICON[c];
-                  const count = HELP_ARTICLES.filter(a => a.cat === c).length;
+                  const count = HELP_ARTICLES.filter((a: HelpArticle) => a.cat === c).length;
                   return (
                     <button key={c} onClick={() => setCat(c)} className="flex flex-col items-start gap-3 p-5 rounded-2xl bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] text-left hover:border-[color:var(--text-muted)] hover:-translate-y-0.5 hover:shadow-relief-md transition-all">
                       <span className={`w-[42px] h-[42px] rounded-xl border flex items-center justify-center ${cls}`}><Icon className="w-[18px] h-[18px]" /></span>
@@ -152,7 +152,7 @@ export default function AidePage() {
               <p className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-3">Articles populaires</p>
               <div className="max-w-3xl rounded-2xl bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] overflow-hidden">
                 {POPULAR.map((id, i) => {
-                  const a = HELP_ARTICLES.find(x => x.id === id)!;
+                  const a = HELP_ARTICLES.find((x: HelpArticle) => x.id === id)!;
                   return (
                     <button key={id} onClick={() => openArticle(a)} className={`w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-white/[.02] transition-colors ${i > 0 ? 'border-t border-[color:var(--border-subtle)]' : ''}`}>
                       <span className="flex-1 min-w-0 text-[13.5px] font-medium text-[color:var(--text-primary)]">{a.title}</span>
