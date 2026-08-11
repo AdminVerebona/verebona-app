@@ -61,6 +61,7 @@ import { NavigationProgress } from './NavigationProgress';
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
@@ -300,8 +301,6 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
 
       {/* TopBar Desktop - pleine largeur, au-dessus de tout */}
       <TopBar
-        onMenuToggle={() => toggleCollapsed(!sidebarCollapsed)}
-        sidebarCollapsed={sidebarCollapsed}
         user={user}
         theme={theme}
         onToggleTheme={toggleTheme}
@@ -315,6 +314,22 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         {/* Sidebar - Desktop */}
         <aside className={`hidden md:flex md:flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] flex-shrink-0 transition-all duration-300 ease-in-out shadow-relief-sm ${sidebarCollapsed ? 'md:w-16' : 'md:w-64'}`}>
           <div className="flex flex-col h-full">
+
+            {/* Hamburger + logo — le menu porte son propre toggle (maquette) */}
+            <div className={`flex items-center gap-2.5 p-3 pb-1 ${sidebarCollapsed ? 'justify-center' : ''}`}>
+              <button
+                onClick={() => toggleCollapsed(!sidebarCollapsed)}
+                aria-label={sidebarCollapsed ? 'Ouvrir le menu' : 'Réduire le menu'}
+                className="flex items-center justify-center w-9 h-9 rounded-lg hover:bg-[color:var(--accent-soft)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all flex-shrink-0"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              {!sidebarCollapsed && (
+                <Link href="/accueil" className="select-none">
+                  <Logo size={28} withText={true} withBaseline={false} />
+                </Link>
+              )}
+            </div>
 
             {/* Navigation */}
             <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-1 p-3">

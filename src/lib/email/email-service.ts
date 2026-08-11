@@ -1,7 +1,7 @@
 import { Resend } from 'resend';
 import { db } from '@/db';
 import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 // Couleur Verebona fixe
 const VEREBONA_PRIMARY_COLOR = '#3B82F6';
@@ -348,10 +348,29 @@ class EmailService {
         return { success: false, error: 'Emails disabled' };
       }
       
+      // ══════════════════════════════════════════════════════════════════
+      // QUINZE GABARITS ÉTAIENT INTROUVABLES PAR CONSTRUCTION
+      //
+      // `toUpperCase()` transformait `notif_document_batch_failed` en
+      // `NOTIF_DOCUMENT_BATCH_FAILED`. Or la migration 0077 les a enregistrés
+      // EN MINUSCULES : aucun des quinze `notif_*` ne pouvait être trouvé.
+      //
+      // Le journal d'envois le disait depuis le 2 août, une ligne sur deux :
+      //
+      //   « Template notif_document_batch_failed not found »
+      //
+      // alors que ce gabarit figure bien en base. Toutes les notifications
+      // par email échouaient — échéances, quotas, incidents de paiement,
+      // invitations, parrainage.
+      //
+      // La comparaison est désormais insensible à la casse, plutôt que de
+      // renommer quinze lignes : le code appelant emploie les deux
+      // conventions, et forcer l'une d'elles casserait l'autre.
+      // ══════════════════════════════════════════════════════════════════
       const templates = await db
         .select()
         .from(emailTemplates)
-        .where(eq(emailTemplates.type, options.templateCode.toUpperCase()))
+        .where(sql`upper(${emailTemplates.type}) = upper(${options.templateCode})`)
         .limit(1);
       
       if (templates.length === 0) {
