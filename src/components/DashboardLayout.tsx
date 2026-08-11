@@ -61,7 +61,7 @@ import { NavigationProgress } from './NavigationProgress';
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
-import { DashboardBreadcrumb } from './DashboardBreadcrumb';
+import { SidebarPlanCard } from './premium/SidebarPlanCard';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
 import { MobileAnalysisBanner } from './AnalysisBanner';
@@ -102,9 +102,10 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('sidebar-collapsed');
-      return stored === null ? true : stored === 'true';
+      // Maquette : sidebar dépliée par défaut
+      return stored === null ? false : stored === 'true';
     }
-    return true;
+    return false;
   });
 
   // Dialogs states
@@ -308,8 +309,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         isAdmin={isAdmin}
       />
 
-      {/* Breadcrumb */}
-      {breadcrumbItems.length > 0 && <DashboardBreadcrumb items={breadcrumbItems} />}
+      {/* Breadcrumb : rendu dans chaque page, au-dessus du H1 (règle projet) */}
 
       <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
         {/* Sidebar - Desktop */}
@@ -327,11 +327,11 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                         <TooltipTrigger asChild>
                           <DropdownMenuTrigger asChild>
                             <button className="w-10 h-10 rounded-full shadow-relief-lg bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] flex items-center justify-center hover:scale-105 transition-all group">
-                              <Plus className="w-5 h-5 text-white transition-transform group-hover:rotate-90" />
+                              <Plus className="w-5 h-5 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90" />
                             </button>
                           </DropdownMenuTrigger>
                         </TooltipTrigger>
-                        <TooltipContent side="right">Ajouter</TooltipContent>
+                        <TooltipContent side="right">Ajouter un bien, un document ou un événement</TooltipContent>
                       </Tooltip>
                       <DropdownMenuContent side="right" align="start" className="w-56 shadow-relief-lg">
                         <DropdownMenuItem onClick={() => setShowAssetDialog(true)} className="cursor-pointer py-2.5">
@@ -350,10 +350,17 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                   <div className="relative w-full">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button size="lg" className="w-full h-11 rounded-xl shadow-relief-lg hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] hover:scale-[1.02] transition-all group flex items-center justify-center gap-2">
-                          <Plus className="w-5 h-5 text-white transition-transform group-hover:rotate-90" />
-                          <span className="font-semibold text-white">Ajouter</span>
-                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              aria-label="Ajouter"
+                              className="h-11 w-11 rounded-full shadow-relief-lg hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] flex items-center justify-center hover:scale-105 transition-all group"
+                            >
+                              <Plus className="w-5 h-5 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="right">Ajouter un bien, un document ou un événement</TooltipContent>
+                        </Tooltip>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="center" className="w-56 shadow-relief-lg">
                         <DropdownMenuItem onClick={() => setShowAssetDialog(true)} className="cursor-pointer py-2.5">
@@ -413,6 +420,14 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                 );
               })}
             </nav>
+
+            {/* Carte plan (essai / standard) — masquée sidebar repliée */}
+            {!sidebarCollapsed && user && (
+              <SidebarPlanCard
+                plan={(user.subscription?.plan || 'STANDARD').toUpperCase()}
+                trialDaysLeft={(user as any).subscription?.trialDaysLeft ?? null}
+              />
+            )}
 
             {/* Guide + Help — always visible at bottom */}
             <div className="flex-shrink-0 border-t border-[color:var(--border-subtle)] p-3 space-y-1">

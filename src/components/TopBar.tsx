@@ -8,6 +8,7 @@ import {
   LayoutDashboard, User, LogOut, Shield, Sun, Moon, ChevronDown, Menu, Building2, Sparkles,
 } from 'lucide-react'
 import { Logo } from './Logo'
+import { ConfirmLogoutDialog } from './ConfirmLogoutDialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   DropdownMenu,
@@ -126,6 +127,7 @@ export function TopBar({
 }: TopBarProps) {
   const router = useRouter()
 
+  const [logoutConfirm, setLogoutConfirm] = useState(false)
   const [query,            setQuery]            = useState('')
   const [isFocused,        setIsFocused]        = useState(false)
   const [results,          setResults]          = useState<SearchResult[]>([])
@@ -532,11 +534,12 @@ export function TopBar({
             <span>Thème {theme === 'blue' ? 'clair' : 'sombre'}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onLogout} className="cursor-pointer text-red-500 focus:text-red-500">
+          <DropdownMenuItem onClick={() => setLogoutConfirm(true)} className="cursor-pointer text-red-500 focus:text-red-500">
             <LogOut className="mr-2 h-4 w-4" /><span>Se déconnecter</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <ConfirmLogoutDialog open={logoutConfirm} onOpenChange={setLogoutConfirm} onConfirm={onLogout} />
       </div>{/* fin Zone contenu */}
     </header>
   )

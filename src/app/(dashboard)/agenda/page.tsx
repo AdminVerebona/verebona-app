@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Calendar, List, SlidersHorizontal, Plus, AlertCircle, CalendarDays, CalendarRange } from 'lucide-react';
+import { Calendar, List, SlidersHorizontal, Plus, AlertCircle, CalendarDays, CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
@@ -520,7 +520,7 @@ function AgendaPageInner() {
                 const [y, m] = month.split('-').map(Number);
                 const d = new Date(y, m - 2, 1);
                 updateURL({ month: d.toISOString().slice(0, 7) });
-              }}>←</Button>
+              }} aria-label="Mois précédent"><ChevronLeft className="h-4 w-4" /></Button>
               <span className="text-sm font-medium w-28 text-center">
                 {new Date(month + '-15').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
               </span>
@@ -528,15 +528,15 @@ function AgendaPageInner() {
                 const [y, m] = month.split('-').map(Number);
                 const d = new Date(y, m, 1);
                 updateURL({ month: d.toISOString().slice(0, 7) });
-              }}>→</Button>
+              }} aria-label="Mois suivant"><ChevronRight className="h-4 w-4" /></Button>
             </div>
           )}
 
           {view === 'year' && (
             <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => updateURL({ year: String(year - 1) })}>←</Button>
+              <Button variant="outline" size="sm" onClick={() => updateURL({ year: String(year - 1) })} aria-label="Année précédente"><ChevronLeft className="h-4 w-4" /></Button>
               <span className="text-sm font-bold w-16 text-center">{year}</span>
-              <Button variant="outline" size="sm" onClick={() => updateURL({ year: String(year + 1) })}>→</Button>
+              <Button variant="outline" size="sm" onClick={() => updateURL({ year: String(year + 1) })} aria-label="Année suivante"><ChevronRight className="h-4 w-4" /></Button>
             </div>
           )}
         </div>
