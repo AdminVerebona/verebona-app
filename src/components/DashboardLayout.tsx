@@ -61,7 +61,6 @@ import { NavigationProgress } from './NavigationProgress';
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
-import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
