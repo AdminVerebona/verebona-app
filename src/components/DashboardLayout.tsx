@@ -485,6 +485,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
               <SidebarPlanCard
                 plan={(user.subscription?.plan || 'STANDARD').toUpperCase()}
                 trialDaysLeft={user.subscription?.trialDaysLeft ?? null}
+                assetsUsed={entitlements?.quotas?.assets?.used}
+                assetsMax={entitlements?.quotas?.assets?.limit}
               />
             )}
 

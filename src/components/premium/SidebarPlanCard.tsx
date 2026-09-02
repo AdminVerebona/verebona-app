@@ -8,7 +8,9 @@ interface SidebarPlanCardProps {
   plan: string;
   /** Jours d'essai restants (null/undefined si pas en essai). */
   trialDaysLeft?: number | null;
-  /** Quotas biens (utilisé / max) pour la carte STANDARD. */
+  /** Quotas biens (utilisé / max) pour la carte STANDARD, servis par le
+   *  serveur. Omis tant qu'ils ne sont pas connus : le compteur disparaît
+   *  alors, au lieu d'afficher une valeur inventée. */
   assetsUsed?: number;
   assetsMax?: number;
 }
@@ -19,12 +21,29 @@ interface SidebarPlanCardProps {
  * - STANDARD : « Plan gratuit » + jauge Biens pleine + « Passer à Premium » → /mon-compte.
  * - PREMIUM / PREMIUM_DUO : rien.
  */
-// Valeurs par défaut alignées sur le CDC §2 : l'offre Standard ouvre 2 biens,
-// pas 3. `DashboardLayout` ne passe pas encore ces props — le repli doit donc
-// être juste.
-export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed = 0, assetsMax = 2 }: SidebarPlanCardProps) {
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LE COMPTEUR DE BIENS ÉTAIT INVENTÉ
+ *
+ * `assetsUsed` et `assetsMax` avaient pour valeurs par défaut 3 et 3, et
+ * `DashboardLayout` ne les renseignait pas : la carte annonçait « 3 / 3 »,
+ * jauge pleine, à tout compte Standard — y compris à celui qui n'a aucun
+ * bien. Un chiffre faux affiché en permanence dans la barre latérale.
+ *
+ * Les valeurs viennent désormais des droits effectifs, servis par
+ * `DashboardLayout`. Elles restent optionnelles : tant que la réponse n'est
+ * pas arrivée, on ne montre pas de compteur plutôt qu'un compteur faux.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed, assetsMax }: SidebarPlanCardProps) {
   const isTrial = typeof trialDaysLeft === 'number' && trialDaysLeft >= 0;
   if (!isTrial && plan !== 'STANDARD') return null;
+
+  // Compteur affichable seulement si les deux valeurs sont connues et la
+  // limite non nulle — un quota à zéro (compte restreint) donnerait une
+  // division par zéro, donc une largeur `NaN%`.
+  const compteurLisible =
+    typeof assetsUsed === 'number' && typeof assetsMax === 'number' && assetsMax > 0;
 
   return (
     <div className="mx-3 mb-2 rounded-[14px] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] px-3.5 py-3">
@@ -51,16 +70,20 @@ export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed = 0, assetsMax
             <Crown className="w-3.5 h-3.5 text-indigo-400" />
             <span className="text-xs font-semibold text-[color:var(--text-primary)]">Plan gratuit</span>
           </div>
-          <div className="flex text-[11px] text-[color:var(--text-muted)] mb-1">
-            <span>Biens</span>
-            <span className="ml-auto font-medium text-[color:var(--text-primary)]">{assetsUsed} / {assetsMax}</span>
-          </div>
-          <div className="h-[5px] rounded-full bg-[color:var(--bg-page)] overflow-hidden mb-2.5">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-blue-500"
-              style={{ width: `${Math.min(100, (assetsUsed / assetsMax) * 100)}%` }}
-            />
-          </div>
+          {compteurLisible && (
+            <>
+              <div className="flex text-[11px] text-[color:var(--text-muted)] mb-1">
+                <span>Biens</span>
+                <span className="ml-auto font-medium text-[color:var(--text-primary)]">{assetsUsed} / {assetsMax}</span>
+              </div>
+              <div className="h-[5px] rounded-full bg-[color:var(--bg-page)] overflow-hidden mb-2.5">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-blue-500"
+                  style={{ width: `${Math.min(100, (assetsUsed! / assetsMax!) * 100)}%` }}
+                />
+              </div>
+            </>
+          )}
         </>
       )}
       <Link
