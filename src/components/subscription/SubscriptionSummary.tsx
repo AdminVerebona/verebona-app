@@ -255,11 +255,23 @@ export function SubscriptionSummary() {
         </div>
       )}
 
-      {/* Consommation (CDC §9.4) */}
-      <div className="mb-5 grid gap-4 sm:grid-cols-2">
-        <QuotaBar label="Biens" quota={quotas.assets} />
-        <QuotaBar label="Documents" quota={quotas.documents} />
-      </div>
+      {/* ══════════════════════════════════════════════════════════════════
+          PAS D'OFFRE ⇒ PAS DE QUOTA À MONTRER
+
+          Un compte restreint n'a aucun quota : `entitlements` renvoie 0. La
+          barre affichait alors « 0 sur 0 » remplie en rouge, et « 2 sur 0 »
+          dès qu'une ligne traînait — un plein sur une capacité nulle, qui se
+          lit comme un dépassement alors qu'il n'y a rien à dépasser.
+
+          Le bandeau au-dessus dit déjà l'essentiel : l'essai est terminé,
+          les données sont conservées. Les jauges n'ajoutent rien.
+          ══════════════════════════════════════════════════════════════ */}
+      {(quotas.assets.limit > 0 || quotas.documents.limit > 0) && (
+        <div className="mb-5 grid gap-4 sm:grid-cols-2">
+          {quotas.assets.limit > 0 && <QuotaBar label="Biens" quota={quotas.assets} />}
+          {quotas.documents.limit > 0 && <QuotaBar label="Documents" quota={quotas.documents} />}
+        </div>
+      )}
 
       {/* Actions */}
       {subscription.hasStripeSubscription && (

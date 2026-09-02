@@ -99,6 +99,10 @@ export default function OffresPage() {
   // Periodicite reellement facturee, pour distinguer souscription et changement
   const [activePeriod, setActivePeriod] = useState<'monthly' | 'yearly' | null>(null);
   const [hasSubscription, setHasSubscription] = useState(false);
+  // Offre réellement souscrite, telle que le serveur la calcule.
+  // `undefined` tant que la réponse n'est pas arrivée, `null` s'il n'y en a
+  // aucune (essai en cours, essai terminé, offre résiliée).
+  const [offreActive, setOffreActive] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     // CDC §17 : consultation des offres
@@ -120,6 +124,14 @@ export default function OffresPage() {
         if (cancelled) return;
         setHasSubscription(Boolean(data.subscription?.hasStripeSubscription));
         setActivePeriod(data.subscription?.billingPeriod ?? null);
+        // `data.plan` vient des droits effectifs : 'trial' | 'standard' |
+        // 'premium' | 'premium_duo' | 'none'. Un essai n'est pas une offre.
+        setOffreActive(
+          data.plan === 'standard' ? 'STANDARD'
+          : data.plan === 'premium' ? 'PREMIUM'
+          : data.plan === 'premium_duo' ? 'PREMIUM_DUO'
+          : null,
+        );
         if (data.subscription?.billingPeriod) setBillingPeriod(data.subscription.billingPeriod);
       } catch {
         // Sans cette information, on reste sur le comportement de souscription.
@@ -192,8 +204,23 @@ export default function OffresPage() {
     }).catch(() => setBillingLoaded(true));
   }, []);
 
-  const rawCurrentPlan = billingInfo?.plan_type || user?.subscription?.plan || 'STANDARD';
-  const currentPlan = rawCurrentPlan;
+  // ══════════════════════════════════════════════════════════════════════════
+  // ⚠️ « OFFRE ACTUELLE » S'AFFICHAIT SUR STANDARD SANS AUCUN ABONNEMENT
+  //
+  // `currentPlan` retombait sur `users.plan_type`, qui vaut STANDARD par
+  // défaut et que ni l'essai ni sa fin ne modifient. La carte Standard
+  // portait donc le badge « Offre actuelle » et son bouton était désactivé,
+  // pendant que l'encadré juste au-dessus annonçait « Aucune offre active ».
+  // L'écran se contredisait, et la seule offre accessible à un compte en
+  // essai était la seule qu'il ne pouvait pas choisir.
+  //
+  // La source est désormais `entitlements` (via /api/billing/trial-status) :
+  // un essai — en cours ou terminé — n'est pas une offre.
+  //
+  // `''` tant que la réponse n'est pas arrivée : aucune carte n'est marquée,
+  // plutôt qu'un badge posé au hasard puis retiré.
+  // ══════════════════════════════════════════════════════════════════════════
+  const currentPlan = offreActive ?? '';
   const isDuoMember = user?.duoRole === 'MEMBER';
   const renewalDate = billingInfo?.premium_until
     ? format(new Date(Number(billingInfo.premium_until) * 1000), 'PPP', { locale: fr })
@@ -258,7 +285,7 @@ export default function OffresPage() {
     if (targetIndex > currentIndex) {
       const theme = getPlanTheme(offerId as any);
       return {
-        label: `Passer à ${theme.label}`,
+        label: `Choisir ${theme.label}`,
         action: () => handleUpgrade(offerId),
         variant: 'default',
         disabled: false,

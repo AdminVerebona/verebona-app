@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { accountMemberships, assets, assetFiles, accountSubscriptions } from '@/db/schema';
-import { eq, and, isNull, count } from 'drizzle-orm';
+import { eq, and, or, isNull, count } from 'drizzle-orm';
 import { getTrialState, hasUsedTrial } from '@/services/trial.service';
 import { getEntitlements, quotaUsage } from '@/services/entitlements.service';
 import { getScheduledChange } from '@/services/plan-change.service';
@@ -58,10 +58,32 @@ export async function GET(request: NextRequest) {
       .from(assets)
       .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt)));
 
+    // ══════════════════════════════════════════════════════════════════
+    // ⚠️ CE COMPTEUR VOYAIT DES DOCUMENTS QUI N'EXISTENT PAS
+    //
+    // Il comptait TOUTES les lignes `asset_files` non supprimées, sans
+    // regarder `upload_status`. Or `/api/files/presign` crée la ligne AVANT
+    // le téléversement : un envoi abandonné, échoué ou interrompu laisse une
+    // ligne `PENDING` derrière lui. Les vignettes de biens passent par le
+    // même chemin.
+    //
+    // L'écran annonçait donc « 2 documents » à un compte dont la page
+    // « Mes documents » affiche « 0 document » — cette page-là, comme le
+    // contrôle de quota du presign, filtre sur `upload_status`.
+    //
+    // Même filtre partout : un document est une ligne téléversée.
+    // ══════════════════════════════════════════════════════════════════
     const [docRow] = await db
       .select({ value: count() })
       .from(assetFiles)
-      .where(and(eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)));
+      .where(and(
+        eq(assetFiles.accountId, accountId),
+        isNull(assetFiles.deletedAt),
+        or(
+          eq(assetFiles.uploadStatus, 'COMPLETED'),
+          isNull(assetFiles.uploadStatus),
+        ),
+      ));
 
     const assetsUsed = assetRow?.value ?? 0;
     const documentsUsed = docRow?.value ?? 0;
