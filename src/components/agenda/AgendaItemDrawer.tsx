@@ -355,14 +355,33 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
   const handleDelete = async () => {
     if (!item) return;
     setDeleting(true);
-    try {
-      await apiClient.delete(`/api/agenda/${item.id}`);
+
+    const confirmDeleted = () => {
       toast.success("Élément supprimé");
       onClose();
       dispatchAgendaMutated();
       onMutated();
-    } catch {
-      toast.error("Erreur lors de la suppression");
+    };
+
+    try {
+      await apiClient.delete(`/api/agenda/${item.id}`);
+      confirmDeleted();
+    } catch (err: any) {
+      // 404 : l'élément n'existe déjà plus côté serveur — deuxième clic,
+      // ou suppression faite depuis un autre onglet. Le geste de
+      // l'utilisateur a abouti ; le traiter en échec le laisserait devant
+      // une ligne fantôme jusqu'au prochain rechargement.
+      if (err?.status === 404) {
+        confirmDeleted();
+        return;
+      }
+      // Le message du serveur remplace le libellé générique : c'est lui qui
+      // rend une violation de contrainte diagnosticable sans ouvrir les
+      // journaux.
+      console.error("[agenda] suppression échouée", err);
+      toast.error(
+        err?.serverMessage || err?.message || "Erreur lors de la suppression",
+      );
     } finally {
       setDeleting(false);
       setShowDeleteConfirm(false);

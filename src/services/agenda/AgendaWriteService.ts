@@ -4,6 +4,7 @@
 import { db } from '@/db';
 import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
+  agendaDataConflicts, agendaItemSources, energyWorks, impactQueue,
   assetFiles, substructures, equipments, assets,
 } from '@/db/schema';
 import { eq, and, inArray, isNull } from 'drizzle-orm';
@@ -297,8 +298,106 @@ export async function updateManualStatus(
   return full;
 }
 
+/**
+ * Exécute un détachement de traçabilité sans pouvoir compromettre la
+ * transaction englobante.
+ *
+ * `tx.transaction()` pose un SAVEPOINT : en cas d'échec, seul le bloc est
+ * annulé, la transaction extérieure reste utilisable. Sans cela, la moindre
+ * erreur — table absente, colonne renommée — abandonnerait toute la
+ * suppression, alors que ces détachements sont accessoires : la table de
+ * traçabilité tolère un lien nul, c'est sa définition même.
+ */
+async function detachSafely(
+  tx: any,
+  libelle: string,
+  run: (t: any) => Promise<unknown>,
+): Promise<void> {
+  try {
+    await tx.transaction(async (inner: any) => { await run(inner); });
+  } catch (e) {
+    console.warn(
+      `[agenda] détachement ignoré (${libelle}) :`,
+      (e as Error).message,
+    );
+  }
+}
+
+/**
+ * Suppression d'un élément d'agenda.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠️ LES LIGNES FILLES SONT SUPPRIMÉES ICI, PAS PAR LA BASE
+ *
+ * La version précédente se contentait d'un `DELETE FROM agenda_items` et
+ * s'en remettait entièrement au `ON DELETE CASCADE` des quatre tables de
+ * liaison et au `ON DELETE SET NULL` des cinq colonnes qui référencent un
+ * élément d'agenda.
+ *
+ * Ces actions référentielles sont déclarées dans `0050_agenda_items.sql`
+ * — en `CREATE TABLE IF NOT EXISTS`. Sur une base où ces tables
+ * préexistaient (`agenda_item_sources` et `impact_queue` ne sont créées par
+ * AUCUNE migration : elles viennent d'un `drizzle-kit push`), la migration
+ * passe en silence et les clés étrangères restent en `NO ACTION`.
+ *
+ * Conséquence observée : tout élément rattaché à un bien — c'est-à-dire la
+ * quasi-totalité — remontait une violation de contrainte, traduite en 500
+ * puis en « Erreur lors de la suppression ». Seuls les éléments sans
+ * aucune liaison se supprimaient.
+ *
+ * Le détachement explicite ci-dessous produit le même résultat que les
+ * cascades, que celles-ci soient correctement posées ou non. La migration
+ * `0126_fix_agenda_delete_fk.sql` répare les contraintes pour l'avenir ;
+ * ce code ne dépend plus d'elle.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 export async function deleteAgendaItem(id: number, accountId: number): Promise<void> {
   const existing = await getAgendaItemById(id, accountId);
   if (!existing) throw new Error('Item not found');
-  await db.delete(agendaItems).where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
+
+  await db.transaction(async tx => {
+    // 1. Liaisons — elles n'ont pas d'existence propre, elles disparaissent.
+    await tx.delete(agendaAssetLinks).where(eq(agendaAssetLinks.agendaItemId, id));
+    await tx.delete(agendaFileLinks).where(eq(agendaFileLinks.agendaItemId, id));
+    await tx.delete(agendaRoomLinks).where(eq(agendaRoomLinks.agendaItemId, id));
+    await tx.delete(agendaEquipmentLinks).where(eq(agendaEquipmentLinks.agendaItemId, id));
+
+    // 2. Références conservées — la trace reste, le lien est détaché.
+    //    Un conflit résolu, une source d'analyse ou un travail énergétique
+    //    documentent une décision passée : les supprimer effacerait
+    //    l'historique exigé par le §4.4.4.
+    //
+    //    Chaque détachement est isolé par un point de sauvegarde. Deux de ces
+    //    tables (`agenda_item_sources`, `impact_queue`) ne sont créées par
+    //    aucune migration : sur une base où le `push` n'est pas passé, elles
+    //    peuvent manquer. Sans isolation, l'absence d'une table de traçabilité
+    //    rendrait de nouveau la suppression impossible — soit exactement le
+    //    défaut que ce correctif traite.
+    await detachSafely(tx, 'agenda_data_conflicts.agenda_item_id', t =>
+      t.update(agendaDataConflicts)
+        .set({ agendaItemId: null })
+        .where(eq(agendaDataConflicts.agendaItemId, id)));
+    await detachSafely(tx, 'agenda_data_conflicts.result_agenda_item_id', t =>
+      t.update(agendaDataConflicts)
+        .set({ resultAgendaItemId: null })
+        .where(eq(agendaDataConflicts.resultAgendaItemId, id)));
+    await detachSafely(tx, 'agenda_item_sources', t =>
+      t.update(agendaItemSources)
+        .set({ agendaItemId: null })
+        .where(eq(agendaItemSources.agendaItemId, id)));
+    await detachSafely(tx, 'energy_works', t =>
+      t.update(energyWorks)
+        .set({ agendaItemId: null })
+        .where(eq(energyWorks.agendaItemId, id)));
+    await detachSafely(tx, 'impact_queue', t =>
+      t.update(impactQueue)
+        .set({ agendaItemId: null })
+        .where(eq(impactQueue.agendaItemId, id)));
+
+    // 3. L'élément lui-même. Le filtre sur le compte est conservé : il est
+    //    la garantie d'isolation, pas une simple redondance avec la lecture
+    //    de contrôle ci-dessus.
+    await tx.delete(agendaItems)
+      .where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
+  });
 }

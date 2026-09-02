@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { resolveConflict } from '@/services/agenda/AgendaConflictService';
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+/** `params` est une promesse depuis Next.js 15 — cf. `../../[id]/route.ts`. */
+type RouteContext = { params: Promise<{ id: string }> };
+
+export async function PATCH(req: NextRequest, context: RouteContext) {
   try {
     let session;
     try {
@@ -13,7 +16,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const accountId = session.currentAccountId;
     if (!accountId) return NextResponse.json({ error: 'No account selected' }, { status: 400 });
 
-    const id = parseInt(params.id);
+    const { id: rawId } = await context.params;
+    const id = parseInt(rawId, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
 
     const body = await req.json();
@@ -27,6 +31,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ conflict });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';
-    return NextResponse.json({ error: message }, { status: message === 'Conflict not found' ? 404 : 500 });
+    const status = message === 'Conflict not found' ? 404 : 500;
+    if (status === 500) console.error('[api/agenda/conflicts/:id] PATCH', err);
+    return NextResponse.json({ error: message }, { status });
   }
 }
