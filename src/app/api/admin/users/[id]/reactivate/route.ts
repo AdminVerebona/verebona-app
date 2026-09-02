@@ -5,8 +5,9 @@ import { eq } from 'drizzle-orm';
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
+  const params = await context.params;
   try {
     // Get admin user ID from header (placeholder auth)
     const adminUserId = request.headers.get('x-user-id');

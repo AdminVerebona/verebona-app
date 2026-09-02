@@ -20,8 +20,9 @@ const RECENT_DOCUMENTS_WINDOW_MINUTES = 10;
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { eventId: string } }
+  context: { params: Promise<{ eventId: string }> }
 ) {
+  const params = await context.params;
   try {
     const eventId = parseInt(params.eventId);
 

@@ -5,7 +5,8 @@ import { eq, and, isNull, inArray, or } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   let session;
   try {
     session = await SessionService.getSession(req);

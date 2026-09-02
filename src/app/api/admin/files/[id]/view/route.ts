@@ -8,8 +8,9 @@ import { requireAdmin } from '@/lib/auth-guards';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
+  const params = await context.params;
   try {
     // Verify admin authentication
     await await requireAdmin(request);

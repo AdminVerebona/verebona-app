@@ -5,7 +5,8 @@ import { eq } from 'drizzle-orm';
 import { getAgendaItems } from '@/services/agenda/AgendaQueryService';
 import { computeICSContent } from '@/services/agenda/AgendaCalendarExportService';
 
-export async function GET(req: NextRequest, { params }: { params: { token: string } }) {
+export async function GET(req: NextRequest, context: { params: Promise<{ token: string }> }) {
+  const params = await context.params;
   try {
     const token = params.token.replace(/\.ics$/, '');
 

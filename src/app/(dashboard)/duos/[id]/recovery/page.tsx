@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import { useSession } from '@/hooks/useSession';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -16,7 +17,11 @@ interface RecoveryAsset {
   lock_state: 'NONE' | 'PENDING_MOVE' | 'PENDING_DELETE';
 }
 
-export default function RecoveryPage({ params }: { params: { id: string } }) {
+export default function RecoveryPage() {
+  // `params` est une promesse depuis Next 15. Dans un composant client, la
+  // convention du dépôt (cf. `admin/assets/[id]`) est `useParams()`, qui rend
+  // la valeur résolue sans `React.use()`.
+  const params = useParams<{ id: string }>();
   const { user } = useSession({ required: true });
   const [assets, setAssets] = useState<RecoveryAsset[]>([]);
   const [isLoading, setIsLoading] = useState(true);

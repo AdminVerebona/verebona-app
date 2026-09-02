@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import { useSession } from '@/hooks/useSession';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -32,7 +33,9 @@ interface DuoRequest {
   actions_allowed: ('ACCEPT' | 'REFUSE')[];
 }
 
-export default function DuoInboxPage({ params }: { params: { id: string } }) {
+export default function DuoInboxPage() {
+  // `params` est une promesse depuis Next 15 — cf. la page « recovery ».
+  const params = useParams<{ id: string }>();
   const { user } = useSession({ required: true });
   const [requests, setRequests] = useState<DuoRequest[]>([]);
   const [isLoading, setIsLoading] = useState(true);
