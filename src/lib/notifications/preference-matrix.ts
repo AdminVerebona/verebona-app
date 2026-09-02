@@ -41,7 +41,9 @@ const CATEGORY_UI: Record<NotificationCategory, CategoryUi> = {
     displayDefault: { push: true, email: true },
   },
   documents: {
-    description: 'Fin d\'analyse de vos documents importés.',
+    // La catégorie couvre la fin d'analyse ET les échecs : le dire évite de
+    // laisser croire qu'un réglage ne porte que sur les analyses réussies.
+    description: 'Fin d\'analyse de vos documents importés, réussie ou non.',
     displayDefault: { push: true, email: false },
   },
   to_process: {

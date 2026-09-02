@@ -132,11 +132,29 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     deepLink: () => '/documents',
     payloadSchema: z.object({ lotId: z.number(), analysedCount: z.number(), failedCount: z.number() }),
   },
+  // ══════════════════════════════════════════════════════════════════════════
+  // ⚠️ PLUS D'EMAIL SUR UN ÉCHEC D'ANALYSE
+  //
+  // Les trois événements d'échec (`DOCUMENT_BATCH_PARTIALLY_FAILED`,
+  // `DOCUMENT_BATCH_FAILED`, `ANALYSIS_FAILED_PERSISTENT`) partaient par
+  // email par défaut, alors que la réussite — `DOCUMENT_BATCH_COMPLETED` —
+  // n'y allait pas.
+  //
+  // Deux conséquences. La première : un utilisateur qui décoche l'email de
+  // la catégorie « Documents » n'a pas conscience d'avoir jamais activé
+  // celui de l'échec, et le reçoit tant que sa préférence n'est pas
+  // enregistrée. La seconde : un même incident peut produire DEUX emails —
+  // celui du lot, puis `ANALYSIS_FAILED_PERSISTENT` après dix tentatives.
+  //
+  // L'information reste dans la cloche et en push. Un échec d'analyse n'est
+  // pas une urgence : le document est là, il est réanalysable, et rien
+  // n'est perdu. L'email est disproportionné.
+  // ══════════════════════════════════════════════════════════════════════════
   [T.DOCUMENT_BATCH_PARTIALLY_FAILED]: {
     type: T.DOCUMENT_BATCH_PARTIALLY_FAILED,
     category: 'documents', priority: 'normal', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
-    defaults: { push: true, email: true }, retentionDays: 90,
+    defaults: { push: true, email: false }, retentionDays: 90,
     render: (p) => content(
       'Analyse terminée avec une anomalie',
       `${p.analysedCount} document(s) analysé(s), ${p.failedCount} à vérifier`,
@@ -150,7 +168,8 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     type: T.DOCUMENT_BATCH_FAILED,
     category: 'documents', priority: 'high', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
-    defaults: { push: true, email: true }, retentionDays: 90,
+    // Pas d'email : cf. le bandeau ci-dessus.
+    defaults: { push: true, email: false }, retentionDays: 90,
     render: () => content(
       'Analyse impossible',
       'Nous n\'avons pas pu analyser vos documents. Notre équipe en est informée.',
@@ -164,7 +183,9 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     type: T.ANALYSIS_FAILED_PERSISTENT,
     category: 'documents', priority: 'high', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
-    defaults: { push: true, email: true }, retentionDays: 90,
+    // Pas d'email : cf. le bandeau ci-dessus. Cet événement suit déjà un
+    // `DOCUMENT_BATCH_*` sur le même incident — deux envois pour un seul fait.
+    defaults: { push: true, email: false }, retentionDays: 90,
     render: (p) => content(
       'Analyse impossible',
       `Nous n\'avons pas pu analyser ce document${p.documentTitle ? ` : ${p.documentTitle}` : ''}. Notre équipe en est informée.`,

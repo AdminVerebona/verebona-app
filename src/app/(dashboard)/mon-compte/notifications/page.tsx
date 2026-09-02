@@ -161,6 +161,14 @@ export default function NotificationsSettingsPage() {
     }
   };
 
+  // Au moins une catégorie attend un push (hors actualités, qui exigent en
+  // plus un consentement distinct).
+  const pushDemande = Boolean(
+    matrix?.categories.some(
+      (c) => c.key !== 'news' && (c.immediate.push.enabled || c.digest?.push.enabled),
+    ),
+  );
+
   return (
     <div className="w-full max-w-3xl space-y-6">
       <div>
@@ -187,6 +195,13 @@ export default function NotificationsSettingsPage() {
           ) : !supported ? (
             <p className="text-sm text-muted-foreground">
               Ce navigateur ne prend pas en charge les notifications. Vos réglages email ci-dessous restent actifs.
+            </p>
+          ) : matrix && !matrix.push.supported ? (
+            // Clé VAPID absente côté serveur : le bouton « Activer » ne peut
+            // qu'échouer. Le dire vaut mieux que de le laisser essayer.
+            <p className="text-sm text-muted-foreground">
+              Le service de notifications n&apos;est pas disponible pour le moment. Vos réglages email
+              ci-dessous restent actifs.
             </p>
           ) : permission === 'denied' ? (
             <div className="space-y-2">
@@ -231,6 +246,28 @@ export default function NotificationsSettingsPage() {
             <CardDescription>Par catégorie, choisissez de recevoir un push et/ou un email.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-1">
+            {/* ══════════════════════════════════════════════════════════════
+                UN RÉGLAGE « PUSH : OUI » SANS APPAREIL AUTORISÉ N'ENVOIE RIEN
+
+                Le réglage par catégorie dit CE QUE l'on veut recevoir ; il
+                n'autorise pas le navigateur à afficher quoi que ce soit.
+                Tant qu'aucun appareil n'est enregistré, le moteur note
+                « aucun abonnement actif » et n'envoie pas — en silence.
+
+                L'utilisateur cochait « Push : oui », n'en voyait jamais
+                arriver, et rien dans l'écran ne le lui expliquait.
+                ══════════════════════════════════════════════════════════ */}
+            {matrix && matrix.push.supported && matrix.push.activeDeviceCount === 0 && pushDemande && (
+              <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                <BellOff className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-500" />
+                <p className="text-sm text-[color:var(--text-primary)]">
+                  Vous avez activé le push pour au moins une catégorie, mais{' '}
+                  <span className="font-medium">aucun appareil n&apos;est autorisé</span> :
+                  ces notifications ne peuvent pas vous parvenir. Utilisez « Activer les
+                  notifications » ci-dessus, sur chaque appareil concerné.
+                </p>
+              </div>
+            )}
             {!matrix ? (
               <div className="space-y-3">
                 {[0, 1, 2, 3].map((i) => <div key={i} className="h-14 animate-pulse rounded-md bg-muted" />)}
