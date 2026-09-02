@@ -189,21 +189,6 @@ export default function DocumentsPage() {
   const hasActiveFilters = assetFilters.length > 0 || typeFilters.length > 0 || formatFilters.length > 0 || !!supplierFilter || !!dateFrom || !!dateTo;
   const activeFilterCount = [assetFilters.length > 0, typeFilters.length > 0, formatFilters.length > 0, !!supplierFilter, !!dateFrom || !!dateTo].filter(Boolean).length;
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // « AUCUN DOCUMENT » N'EST PAS « AUCUN RÉSULTAT »
-  //
-  // Le message s'appuyait sur `pagination.total`, un décompte serveur non
-  // filtré : sur un compte vide, l'écran annonçait pourtant « Aucun document
-  // ne correspond aux filtres » alors qu'aucun filtre n'était posé. On se
-  // fie désormais à ce que l'utilisateur voit — rien d'affiché, aucun filtre
-  // actif — ce qui décrit exactement sa situation.
-  //
-  // Les filtres et le sélecteur de vue sont masqués dans ce seul cas. Les
-  // masquer dès que la liste est vide enfermerait l'utilisateur : un filtre
-  // trop restrictif deviendrait impossible à retirer.
-  // ══════════════════════════════════════════════════════════════════════════
-  const aucunDocument = filteredDocuments.length === 0 && !hasActiveFilters;
-
   const loadImagePreviews = useCallback((docs: Document[]) => {
     const urls: Record<number, string> = {};
     docs.filter(d => d.mimeType?.includes('image/')).forEach(d => {
@@ -317,6 +302,24 @@ export default function DocumentsPage() {
       return true;
     });
   }, [documents, assetFilters, typeFilters, formatFilters, supplierFilter, dateFrom, dateTo]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // « AUCUN DOCUMENT » N'EST PAS « AUCUN RÉSULTAT »
+  //
+  // Le message s'appuyait sur `pagination.total`, un décompte serveur non
+  // filtré : sur un compte vide, l'écran annonçait pourtant « Aucun document
+  // ne correspond aux filtres » alors qu'aucun filtre n'était posé. On se
+  // fie désormais à ce que l'utilisateur voit — rien d'affiché, aucun filtre
+  // actif — ce qui décrit exactement sa situation.
+  //
+  // Les filtres et le sélecteur de vue sont masqués dans ce seul cas. Les
+  // masquer dès que la liste est vide enfermerait l'utilisateur : un filtre
+  // trop restrictif deviendrait impossible à retirer.
+  //
+  // ⚠️ Déclaré APRÈS `filteredDocuments` : une const de bloc lue avant sa
+  // déclaration ne compile pas.
+  // ══════════════════════════════════════════════════════════════════════════
+  const aucunDocument = filteredDocuments.length === 0 && !hasActiveFilters;
 
   const handleView = useCallback(async (docId: number) => {
     try {
