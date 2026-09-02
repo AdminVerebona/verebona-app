@@ -61,6 +61,7 @@ import { NavigationProgress } from './NavigationProgress';
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
 import { getPlanLabel } from '@/lib/plan-label';
 import { HelpCircle } from 'lucide-react';
@@ -302,7 +303,6 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         isAdmin={isAdmin}
       />
 
-      {/* Breadcrumb : rendu dans chaque page, au-dessus du H1 (règle projet) */}
 
       <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
         {/* Sidebar - Desktop */}
@@ -664,6 +664,21 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
           <div id="main-scroll-container" className="flex-1 flex flex-col min-w-0 overflow-x-hidden pt-16 md:pt-0 overflow-y-auto relative scroll-smooth">
             {/* Bandeau d'essai / fin d'essai (CDC §9.2) */}
             <TrialBanner />
+
+            {/* ══════════════════════════════════════════════════════════════
+                LE FIL D'ARIANE N'ÉTAIT RENDU NULLE PART
+
+                Onze pages appellent `setBreadcrumbs(...)`, le composant
+                `DashboardBreadcrumb` existe, et `breadcrumbItems` était même
+                lu ici — sans jamais être affiché. Un commentaire annonçait un
+                rendu « dans chaque page, au-dessus du H1 » : aucune page ne
+                l'a jamais fait. Le fil d'ariane a disparu à ce déplacement.
+
+                Il est rendu une fois, ici : c'est le seul endroit qui voie à
+                la fois le contexte et toutes les pages, et il n'y a plus onze
+                occasions d'oublier.
+                ══════════════════════════════════════════════════════════ */}
+            <DashboardBreadcrumb items={breadcrumbItems} />
             <main className="flex-1 p-4 md:p-6 lg:p-8 w-full">
               <div className="max-w-full overflow-x-hidden">
                 {children}
