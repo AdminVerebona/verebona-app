@@ -33,6 +33,7 @@ import { FileText, File, Link as LinkIcon, SlidersHorizontal, X, LayoutGrid, Lis
 import JSZip from 'jszip';
 import { DatePicker } from '@/components/ui/date-picker';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
@@ -187,6 +188,21 @@ export default function DocumentsPage() {
 
   const hasActiveFilters = assetFilters.length > 0 || typeFilters.length > 0 || formatFilters.length > 0 || !!supplierFilter || !!dateFrom || !!dateTo;
   const activeFilterCount = [assetFilters.length > 0, typeFilters.length > 0, formatFilters.length > 0, !!supplierFilter, !!dateFrom || !!dateTo].filter(Boolean).length;
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // « AUCUN DOCUMENT » N'EST PAS « AUCUN RÉSULTAT »
+  //
+  // Le message s'appuyait sur `pagination.total`, un décompte serveur non
+  // filtré : sur un compte vide, l'écran annonçait pourtant « Aucun document
+  // ne correspond aux filtres » alors qu'aucun filtre n'était posé. On se
+  // fie désormais à ce que l'utilisateur voit — rien d'affiché, aucun filtre
+  // actif — ce qui décrit exactement sa situation.
+  //
+  // Les filtres et le sélecteur de vue sont masqués dans ce seul cas. Les
+  // masquer dès que la liste est vide enfermerait l'utilisateur : un filtre
+  // trop restrictif deviendrait impossible à retirer.
+  // ══════════════════════════════════════════════════════════════════════════
+  const aucunDocument = filteredDocuments.length === 0 && !hasActiveFilters;
 
   const loadImagePreviews = useCallback((docs: Document[]) => {
     const urls: Record<number, string> = {};
@@ -431,7 +447,7 @@ export default function DocumentsPage() {
               {hasActiveFilters && <span className="ml-1 text-[#3b82f6]">· filtré</span>}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-2 ${aucunDocument ? 'hidden' : ''}`}>
             {/* View toggle */}
             <div className="flex items-center rounded-md border border-border overflow-hidden">
               <button
@@ -541,15 +557,30 @@ export default function DocumentsPage() {
 
         {/* Documents */}
         {filteredDocuments.length === 0 ? (
-          <div className="text-center py-16">
-            <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-40" />
-            <p className="text-muted-foreground">
-              {pagination.total === 0 ? 'Aucun document pour le moment' : 'Aucun document ne correspond aux filtres'}
-            </p>
-            {hasActiveFilters && (
+          hasActiveFilters ? (
+            <div className="text-center py-16">
+              <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-40" />
+              <p className="text-muted-foreground">Aucun document ne correspond aux filtres</p>
               <button onClick={resetFilters} className="mt-2 text-sm text-[#3b82f6] hover:underline">Effacer les filtres</button>
-            )}
-          </div>
+            </div>
+          ) : (
+            /* Même bloc que « Mes biens » : une ligne, une explication, une action. */
+            <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
+              <CardContent className="flex items-center gap-4 py-4 px-5">
+                <div className="w-8 h-8 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
+                  <FileText className="w-4 h-4 text-[color:var(--accent)]" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun document pour le moment</p>
+                  <p className="text-xs text-[color:var(--text-muted)] mt-0.5">Ajoutez votre premier document pour commencer</p>
+                </div>
+                <Button onClick={() => setShowUploadDialog(true)} className="btn-add px-4 flex-shrink-0 ml-auto">
+                  <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
+                  Ajouter mon premier document
+                </Button>
+              </CardContent>
+            </Card>
+          )
         ) : viewMode === 'grid' ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
             {filteredDocuments.map((doc, idx) => {

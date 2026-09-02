@@ -391,7 +391,23 @@ nextjs-portal {
 }
 
 /* ── Bouton Ajouter / Créer unifié ─────────────────────────────────────── */
-/* ── Boutons Ajouter (DISCRET - Gris outline) ────────────────────────────────── */
+/*
+ * ⚠️ LE BOUTON « AJOUTER » EST BLEU, PARTOUT.
+ *
+ * Il était gris et sans fond : la même action apparaissait tantôt en bleu —
+ * quand un appelant oubliait la classe et laissait la variante par défaut du
+ * composant Button — tantôt en contour discret. L'action principale de chaque
+ * page se lisait donc différemment d'une page à l'autre.
+ *
+ * La couleur est posée ICI, sur `.btn-add`, et nulle part ailleurs : c'est le
+ * seul point à modifier pour la faire évoluer, et les quelque vingt appelants
+ * n'ont rien à changer. Les variantes `outline` du composant Button sont
+ * volontairement écrasées — la classe l'emporte sur la variante.
+ *
+ * Le bleu est écrit en dur (#3b82f6) plutôt que `var(--accent)` : cette
+ * variable vaut un gris neutre dans le thème shadcn de repli, ce qui rendrait
+ * le bouton invisible là où il compte le plus.
+ */
 .btn-add {
   display: inline-flex;
   align-items: center;
@@ -399,27 +415,29 @@ nextjs-portal {
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
   white-space: nowrap;
-  background-color: transparent;
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
+  background-color: #3b82f6;
+  color: #ffffff;
+  border: 1px solid transparent;
   border-radius: 0.75rem;
   font-weight: 500;
   letter-spacing: 0.01em;
   transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 .btn-add:hover {
-  background-color: transparent;
-  border-color: var(--border-subtle);
+  background-color: #2563eb;
+  border-color: transparent;
+  color: #ffffff;
 }
 
-/* Thème clair (beige) */
+/* Thème clair (beige) — même bleu, le contraste sur blanc reste suffisant. */
 html[data-theme="light"] .btn-add {
-  color: var(--text-primary);
-  border-color: var(--border-subtle);
+  background-color: #3b82f6;
+  color: #ffffff;
+  border-color: transparent;
 }
 html[data-theme="light"] .btn-add:hover {
-  background-color: transparent;
-  border-color: var(--border-subtle);
+  background-color: #2563eb;
+  border-color: transparent;
 }
 
 .btn-add:active {

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent } from '@/components/ui/card';
 import { Calendar, List, SlidersHorizontal, Plus, AlertCircle, CalendarDays, CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
@@ -424,6 +425,24 @@ function AgendaPageInner() {
 
   const activeFiltersCount = (assetIds.length > 0 ? 1 : 0) + (includeCancelled ? 1 : 0) + (period !== 'all' ? 1 : 0);
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // « AGENDA VIDE » N'EST PAS « AUCUN RÉSULTAT »
+  //
+  // Les filtres et les vues ne sont masqués que lorsque l'agenda est
+  // RÉELLEMENT vide : liste complète, aucun filtre actif. Masquer le bouton
+  // Filtres dès que la liste affichée est vide enfermerait l'utilisateur —
+  // un filtre trop restrictif deviendrait impossible à retirer.
+  //
+  // La vue mensuelle ou annuelle restreint par elle-même : un mois sans
+  // événement n'est pas un agenda sans événement. D'où la condition sur la
+  // vue liste.
+  // ══════════════════════════════════════════════════════════════════════════
+  const agendaVide = !loading && items.length === 0 && activeFiltersCount === 0 && view === 'list';
+
+  // Pendant le chargement, on ne sait pas encore : on n'affiche pas des
+  // commandes pour les retirer une seconde plus tard.
+  const masquerCommandes = loading || agendaVide;
+
   // Group items by date for list view
   const grouped = useMemo(() => {
     const filtered = items;
@@ -460,10 +479,14 @@ function AgendaPageInner() {
       <div className="space-y-6 w-full max-w-full overflow-x-hidden">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
-          <div>
+          <div className="min-w-0">
             <h1 className="text-xl md:text-3xl font-bold whitespace-nowrap">Mon agenda</h1>
+            {/* Même en-tête que « Mes biens » : titre puis décompte. */}
+            <p className="text-muted-foreground mt-1">
+              {loading ? '\u00a0' : `${items.length} ${items.length > 1 ? 'éléments' : 'élément'}`}
+            </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-2 ${masquerCommandes ? 'hidden' : ''}`}>
             {isPremium && (
               <Button
                 variant="outline"
@@ -491,8 +514,8 @@ function AgendaPageInner() {
           </div>
         </div>
 
-        {/* View toggle + month/year nav */}
-        <div className="relative flex items-center justify-between mb-4">
+        {/* View toggle + month/year nav — inutile tant qu'il n'y a rien à voir. */}
+        <div className={`relative flex items-center justify-between mb-4 ${masquerCommandes ? 'hidden' : ''}`}>
           <div className="flex rounded-md border overflow-hidden">
             <button
               className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${view === 'list' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
@@ -557,17 +580,30 @@ function AgendaPageInner() {
         ) : view === 'calendar' ? (
           <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={() => setShowCreate(true)} />
         ) : items.length === 0 ? (
-          <div className="text-center py-16 text-muted-foreground">
-            <Calendar className="h-12 w-12 mx-auto mb-3 opacity-30" />
-            <p className="font-medium">Aucun élément</p>
-            {activeFiltersCount > 0 ? (
+          activeFiltersCount > 0 ? (
+            <div className="text-center py-16 text-muted-foreground">
+              <Calendar className="h-12 w-12 mx-auto mb-3 opacity-30" />
+              <p className="font-medium">Aucun élément</p>
               <p className="text-sm mt-1">Aucun résultat avec ces filtres.</p>
-            ) : (
-              <Button size="sm" className="mt-4" onClick={() => setShowCreate(true)}>
-                <Plus className="h-4 w-4 mr-1" /> Créer un élément
-              </Button>
-            )}
-          </div>
+            </div>
+          ) : (
+            /* Même bloc que « Mes biens » : une ligne, une explication, une action. */
+            <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
+              <CardContent className="flex items-center gap-4 py-4 px-5">
+                <div className="w-8 h-8 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
+                  <Calendar className="w-4 h-4 text-[color:var(--accent)]" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun élément pour le moment</p>
+                  <p className="text-xs text-[color:var(--text-muted)] mt-0.5">Ajoutez votre premier élément pour commencer</p>
+                </div>
+                <Button onClick={() => setShowCreate(true)} className="btn-add px-4 flex-shrink-0 ml-auto">
+                  <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
+                  Ajouter mon premier élément
+                </Button>
+              </CardContent>
+            </Card>
+          )
         ) : (
           <div className="space-y-2">
             {grouped.map(group => (
