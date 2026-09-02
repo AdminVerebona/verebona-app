@@ -6,7 +6,7 @@ import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/l
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { getFeatureFlags, canCreateAsset } from '@/lib/feature-flags';
-import { canCreateAsset as canCreateAssetEntitlement } from '@/services/entitlements.service';
+import { canCreateAsset as canCreateAssetEntitlement, canModifyAssets } from '@/services/entitlements.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { isValidObjectCategory } from '@/types/domain';
 import type { PlanType } from '@/types/domain';
@@ -354,6 +354,35 @@ export async function PUT(request: NextRequest) {
       }
       if (existingAsset[0].accountId !== session.currentAccountId) {
         return apiError(403, 'FORBIDDEN', 'Access denied');
+      }
+
+      // ══════════════════════════════════════════════════════════════════════
+      // ECRITURE SUSPENDUE AU-DESSUS DU QUOTA
+      //
+      // Le quota n'etait oppose qu'a la CREATION. Un compte passe d'une offre
+      // a dix biens vers une offre a deux gardait donc dix biens pleinement
+      // modifiables : la limite ne voulait plus rien dire des lors qu'on
+      // l'avait franchie une fois.
+      //
+      // La lecture, l'export et la suppression restent ouverts — c'est par la
+      // que l'utilisateur redescend sous sa limite.
+      // ══════════════════════════════════════════════════════════════════════
+      const [assetCountRow] = await db
+        .select({ value: count() })
+        .from(assets)
+        .where(and(eq(assets.accountId, session.currentAccountId), isNull(assets.deletedAt)));
+
+      const modifyDecision = await canModifyAssets(
+        session.currentAccountId,
+        assetCountRow?.value ?? 0,
+      );
+      if (!modifyDecision.allowed) {
+        return apiError(
+          403,
+          modifyDecision.reason ?? 'ASSET_QUOTA_EXCEEDED',
+          modifyDecision.message ?? 'Modification non autorisee',
+          { max_assets: modifyDecision.limit },
+        );
       }
 
       const body = await request.json();

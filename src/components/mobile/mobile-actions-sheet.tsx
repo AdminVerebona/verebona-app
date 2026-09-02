@@ -7,6 +7,8 @@ import { UnifiedDocumentDialog } from '@/components/documents/unified-document-d
 import { CreateAgendaItemDrawer } from '@/components/agenda/CreateAgendaItemDrawer';
 import { AssetFormDialog } from '@/components/AssetFormDialog';
 import { useSession } from '@/hooks/useSession';
+import { useEntitlements } from '@/hooks/useEntitlements';
+import { notifyWriteBlocked } from '@/lib/write-blocked';
 
 interface MobileActionsSheetProps {
   open: boolean;
@@ -44,11 +46,44 @@ const ACTIONS = [
 
 export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetProps) {
   const { user } = useSession();
+  const { entitlements, isRestricted } = useEntitlements();
   const [selectedAction, setSelectedAction] = useState<ActionType>(null);
+
+  /** Vrai si l'action est refusée — le message et son CTA sont déjà affichés. */
+  const refuserEcriture = (quota: 'assets' | 'documents'): boolean => {
+    if (isRestricted) {
+      notifyWriteBlocked({
+        code: 'TRIAL_EXPIRED',
+        message:
+          "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
+      });
+      return true;
+    }
+    const q = entitlements?.quotas?.[quota];
+    if (q && q.limit > 0 && q.used >= q.limit) {
+      notifyWriteBlocked({
+        code: quota === 'assets' ? 'ASSET_QUOTA_REACHED' : 'DOCUMENT_QUOTA_REACHED',
+        message:
+          quota === 'assets'
+            ? `Vous avez atteint la limite de ${q.limit} biens de votre offre.`
+            : `Vous avez atteint la limite de ${q.limit} documents de votre offre.`,
+        limit: q.limit,
+      });
+      return true;
+    }
+    return false;
+  };
   const [capturedFiles, setCapturedFiles] = useState<File[]>([]);
 
   const handleActionSelect = (action: ActionType) => {
     onOpenChange(false);
+
+    // Même garde que le « + » de la barre latérale : on n'ouvre pas un
+    // formulaire ni un sélecteur de fichier pour une action que le serveur
+    // refusera. Le refus est annoncé avec son chemin de sortie.
+    if (action === 'asset' && refuserEcriture('assets')) return;
+    if (action === 'file' && refuserEcriture('documents')) return;
+
     if (action === 'file') {
       const input = document.createElement('input');
       input.type = 'file';

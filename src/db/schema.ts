@@ -2529,3 +2529,30 @@ export const documentReferenceCorrections = pgTable('document_reference_correcti
   appliedCount: integer('applied_count').notNull().default(0),
   unmatchedCount: integer('unmatched_count').notNull().default(0),
 });
+
+/**
+ * Verrou de tâche planifiée, partagé entre instances.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI UN VERROU EN BASE ET NON EN MÉMOIRE
+ *
+ * `analysis-recovery.service` se protégeait par un booléen de module
+ * (`isRunning`). Ce verrou ne vaut que dans UN processus : deux instances
+ * derrière un répartiteur de charge lancent chacune leur tour, relancent les
+ * mêmes documents et consomment deux fois le crédit d'analyse.
+ *
+ * Un bail daté règle le cas sans dépendre du nombre d'instances : celui qui
+ * pose la ligne travaille, les autres passent leur tour. Si le processus
+ * meurt, le bail expire et le travail reprend — là où un verrou en mémoire
+ * perdu bloquerait jusqu'au redémarrage.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export const jobLocks = pgTable('job_locks', {
+  /** Identifiant de la tâche, ex. `analysis-recovery`. */
+  name: text('name').primaryKey(),
+  /** Fin du bail : passé cette date, un autre processus peut reprendre. */
+  lockedUntil: pgTimestamp('locked_until', { withTimezone: true }).notNull(),
+  /** Détenteur, à titre de journal — jamais utilisé pour décider. */
+  lockedBy: text('locked_by'),
+  updatedAt: pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

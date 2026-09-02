@@ -76,6 +76,27 @@ export async function register(): Promise<void> {
     await import('@/services/agenda/agenda-persistence');
   registerAgendaHandlers(loadExistingAgendaItems, persistAgendaDecisions);
 
+  // 6. Reprise automatique des analyses.
+  //
+  // ══════════════════════════════════════════════════════════════════════════
+  // ⚠️ CE PLANIFICATEUR N'ÉTAIT DÉMARRÉ NULLE PART
+  //
+  // `analysis-recovery.service` sait reprendre les documents jamais analysés,
+  // les échecs récupérables et les analyses bloquées depuis plus de dix
+  // minutes. `startAnalysisRecoveryScheduler()` existait pour le déclencher
+  // toutes les cinq minutes — sans aucun appelant dans le dépôt.
+  //
+  // Un document déposé pendant que le quota était épuisé restait donc en
+  // attente indéfiniment, sauf appel manuel de `/api/cron/retry-analysis`.
+  //
+  // Le tour est protégé par un bail en base : plusieurs instances peuvent
+  // démarrer ce planificateur sans se marcher dessus.
+  // ══════════════════════════════════════════════════════════════════════════
+  const { startAnalysisRecoveryScheduler } = await import(
+    '@/services/document-ai/analysis-recovery-scheduler'
+  );
+  startAnalysisRecoveryScheduler();
+
   const { listRunningUseCases } = await import('@/services/ai/flags/use-case-flags');
   const running = listRunningUseCases();
   console.info(

@@ -28,6 +28,7 @@ import {
 import { PasswordInput } from '@/components/ui/password-input';
 import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { getPlanTheme } from '@/lib/plan-theme';
+import { getPlanLabel } from '@/lib/plan-label';
 import { AiUsageQuotaWidget } from '@/components/account/AiUsageQuotaWidget';
 import { ReferralBlock } from '@/components/account/ReferralBlock';
 
@@ -404,8 +405,18 @@ export default function InformationsTab() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs text-muted-foreground">Plan actuel</p>
+                  {/* Le libellé passe par `getPlanLabel` : `getPlanTheme` ne
+                      connaît que le code de plan, et affichait donc « Standard »
+                      à un compte en essai gratuit — `users.plan_type` vaut
+                      STANDARD pendant l'essai. La couleur, elle, reste tirée du
+                      thème du plan. */}
                   <p className={`text-base font-bold ${getPlanTheme(subscription?.plan_type as any).colors.text}`}>
-                    {getPlanTheme(subscription?.plan_type as any).label}
+                    {getPlanLabel({
+                      plan: subscription?.plan_type,
+                      duoRole: sessionUser?.duoRole,
+                      trialStatus: sessionUser?.subscription?.trialStatus,
+                      trialDaysLeft: sessionUser?.subscription?.trialDaysLeft,
+                    })}
                   </p>
                 </div>
                 {subscription?.premium_until && (

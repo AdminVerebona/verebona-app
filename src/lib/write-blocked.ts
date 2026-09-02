@@ -29,6 +29,7 @@ export const WRITE_BLOCKED_CODES = [
   'TRIAL_EXPIRED',
   'SUBSCRIPTION_REQUIRED',
   'ASSET_QUOTA_REACHED',
+  'ASSET_QUOTA_EXCEEDED',
   'DOCUMENT_QUOTA_REACHED',
   'USER_QUOTA_REACHED',
   'PREMIUM_REQUIRED',
@@ -78,6 +79,8 @@ function defaultMessage(code: WriteBlockedCode): string {
       return 'Un abonnement actif est nécessaire pour effectuer cette action.';
     case 'PREMIUM_REQUIRED':
       return 'Cette fonctionnalité est disponible avec Premium et Premium Duo.';
+    case 'ASSET_QUOTA_EXCEEDED':
+      return "Votre compte dépasse la limite de biens de votre offre. Vos biens restent consultables et exportables ; pour les modifier, supprimez-en ou choisissez une offre supérieure.";
     default:
       return 'Vous avez atteint la limite de votre offre.';
   }
@@ -92,6 +95,8 @@ export function writeBlockedTitle(code: string): string {
       return 'Abonnement nécessaire';
     case 'PREMIUM_REQUIRED':
       return 'Fonctionnalité Premium';
+    case 'ASSET_QUOTA_EXCEEDED':
+      return 'Limite dépassée';
     default:
       return 'Limite atteinte';
   }

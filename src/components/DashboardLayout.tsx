@@ -64,6 +64,8 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
 import { getPlanLabel } from '@/lib/plan-label';
+import { useEntitlements } from '@/hooks/useEntitlements';
+import { notifyWriteBlocked } from '@/lib/write-blocked';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
 import { MobileAnalysisBanner } from './AnalysisBanner';
@@ -267,6 +269,54 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   const isAdmin = useMemo(() => user?.role === 'ADMIN', [user?.role]);
   const { items: breadcrumbItems } = useBreadcrumb();
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // LE « + » GLOBAL DOIT REFUSER AVANT LA SAISIE, COMME LA PAGE « MES BIENS »
+  //
+  // La page des biens annonce le refus au clic sur « Ajouter ». Le « + » de la
+  // barre latérale, celui du menu mobile et celui de la barre du bas, eux,
+  // ouvraient le formulaire quoi qu'il arrive : l'utilisateur remplissait, puis
+  // se faisait refuser. Trois portes d'entrée pour la même action, deux
+  // comportements.
+  //
+  // Le contrôle serveur reste seul juge : ceci évite une saisie inutile,
+  // ce n'est pas une autorisation.
+  // ══════════════════════════════════════════════════════════════════════════
+  const { entitlements, isRestricted } = useEntitlements();
+
+  const refuserEcriture = useCallback((quota: 'assets' | 'documents'): boolean => {
+    if (isRestricted) {
+      notifyWriteBlocked({
+        code: 'TRIAL_EXPIRED',
+        message:
+          "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
+      });
+      return true;
+    }
+    const q = entitlements?.quotas?.[quota];
+    if (q && q.limit > 0 && q.used >= q.limit) {
+      notifyWriteBlocked({
+        code: quota === 'assets' ? 'ASSET_QUOTA_REACHED' : 'DOCUMENT_QUOTA_REACHED',
+        message:
+          quota === 'assets'
+            ? `Vous avez atteint la limite de ${q.limit} biens de votre offre.`
+            : `Vous avez atteint la limite de ${q.limit} documents de votre offre.`,
+        limit: q.limit,
+      });
+      return true;
+    }
+    return false;
+  }, [entitlements, isRestricted]);
+
+  const ouvrirAjoutBien = useCallback(() => {
+    if (refuserEcriture('assets')) return;
+    setShowAssetDialog(true);
+  }, [refuserEcriture]);
+
+  const ouvrirAjoutDocument = useCallback(() => {
+    if (refuserEcriture('documents')) return;
+    setShowDocumentDialog(true);
+  }, [refuserEcriture]);
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
@@ -343,10 +393,10 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                         <TooltipContent side="right">Ajouter un bien, un document ou un événement</TooltipContent>
                       </Tooltip>
                       <DropdownMenuContent side="right" align="start" className="w-56 shadow-relief-lg">
-                        <DropdownMenuItem onClick={() => setShowAssetDialog(true)} className="cursor-pointer py-2.5">
+                        <DropdownMenuItem onClick={ouvrirAjoutBien} className="cursor-pointer py-2.5">
                           <Package className="mr-2 h-4 w-4" /><span>Ajouter un bien</span>
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setShowDocumentDialog(true)} className="cursor-pointer py-2.5" data-guide="add-document">
+                        <DropdownMenuItem onClick={ouvrirAjoutDocument} className="cursor-pointer py-2.5" data-guide="add-document">
                           <FileText className="mr-2 h-4 w-4" /><span>Ajouter un document</span>
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setShowAgendaDrawer(true)} className="cursor-pointer py-2.5" data-guide="add-agenda-item">
@@ -372,10 +422,10 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                         </Tooltip>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="center" className="w-56 shadow-relief-lg">
-                        <DropdownMenuItem onClick={() => setShowAssetDialog(true)} className="cursor-pointer py-2.5">
+                        <DropdownMenuItem onClick={ouvrirAjoutBien} className="cursor-pointer py-2.5">
                           <Package className="mr-2 h-4 w-4" /><span>Ajouter un bien</span>
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setShowDocumentDialog(true)} className="cursor-pointer py-2.5">
+                        <DropdownMenuItem onClick={ouvrirAjoutDocument} className="cursor-pointer py-2.5">
                           <FileText className="mr-2 h-4 w-4" /><span>Ajouter un document</span>
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setShowAgendaDrawer(true)} className="cursor-pointer py-2.5">
@@ -607,11 +657,11 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="center" className="w-56 shadow-relief-lg">
-                          <DropdownMenuItem onClick={() => { setShowAssetDialog(true); setIsMobileMenuOpen(false); }} className="cursor-pointer py-2.5">
+                          <DropdownMenuItem onClick={() => { setIsMobileMenuOpen(false); ouvrirAjoutBien(); }} className="cursor-pointer py-2.5">
                             <Package className="mr-2 h-4 w-4" />
                             <span>Ajouter un bien</span>
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => { setShowDocumentDialog(true); setIsMobileMenuOpen(false); }} className="cursor-pointer py-2.5">
+                          <DropdownMenuItem onClick={() => { setIsMobileMenuOpen(false); ouvrirAjoutDocument(); }} className="cursor-pointer py-2.5">
                             <FileText className="mr-2 h-4 w-4" />
                             <span>Ajouter un document</span>
                           </DropdownMenuItem>

@@ -11,7 +11,8 @@ import {
   AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2 } from 'lucide-react';
+import { useEntitlements } from '@/hooks/useEntitlements';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 
@@ -31,6 +32,19 @@ const OFFER_LABELS: Record<string, string> = {
   PREMIUM_PRO: 'Premium Pro',
 };
 
+/**
+ * Quota de biens par offre (CDC §2), miroir de `PLAN_QUOTAS` côté serveur.
+ *
+ * Dupliqué ici en connaissance de cause : ces valeurs ne servent qu'à
+ * AVERTIR avant le changement. Le contrôle qui fait foi reste
+ * `entitlements.service`, et il s'appliquera de toute façon à l'échéance.
+ */
+const QUOTA_BIENS: Record<string, number> = {
+  STANDARD: 2,
+  PREMIUM: 10,
+  PREMIUM_DUO: 15,
+};
+
 export function DowngradeConfirmDialog({
   open,
   onOpenChange,
@@ -40,6 +54,23 @@ export function DowngradeConfirmDialog({
   onConfirmed,
 }: DowngradeConfirmDialogProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const { entitlements } = useEntitlements();
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // UN DOWNGRADE PEUT METTRE LE COMPTE AU-DESSUS DE SA NOUVELLE LIMITE
+  //
+  // La fenêtre annonçait la date d'effet et rien d'autre. Un compte à cinq
+  // biens pouvait descendre vers une offre qui en autorise deux sans en être
+  // averti, et découvrir à l'échéance que ses biens ne sont plus modifiables.
+  //
+  // Le changement n'est pas empêché — c'est le choix de l'utilisateur, et il
+  // ne perd aucune donnée. Mais il doit savoir ce qui l'attend AVANT de
+  // confirmer, pas après.
+  // ══════════════════════════════════════════════════════════════════════════
+  const biensActuels = entitlements?.quotas?.assets?.used ?? null;
+  const quotaCible = QUOTA_BIENS[targetOffer?.toUpperCase()] ?? null;
+  const depassementPrevu =
+    biensActuels !== null && quotaCible !== null && biensActuels > quotaCible;
 
   const handleConfirm = async () => {
     setIsLoading(true);
@@ -84,6 +115,19 @@ export function DowngradeConfirmDialog({
                   </li>
                 )}
               </ul>
+
+              {depassementPrevu && (
+                <div className="flex items-start gap-2.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                  <p className="text-[color:var(--text-primary)]">
+                    À la prochaine échéance, votre compte contiendra{' '}
+                    <span className="font-medium">{biensActuels} biens</span> pour une limite de{' '}
+                    <span className="font-medium">{quotaCible}</span>. Vos biens resteront
+                    consultables et exportables, mais vous ne pourrez plus les modifier ni en
+                    ajouter tant que vous serez au-dessus de cette limite.
+                  </p>
+                </div>
+              )}
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>

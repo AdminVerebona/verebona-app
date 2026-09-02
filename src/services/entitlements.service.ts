@@ -59,6 +59,7 @@ const NO_QUOTAS: Quotas = { maxAssets: 0, maxDocuments: 0, maxUsers: 1 };
 /** Motifs de blocage, exploitables par l'UI pour afficher le bon message. */
 export type DenialReason =
   | 'ASSET_QUOTA_REACHED'
+  | 'ASSET_QUOTA_EXCEEDED'
   | 'DOCUMENT_QUOTA_REACHED'
   | 'USER_QUOTA_REACHED'
   | 'PREMIUM_REQUIRED'
@@ -199,6 +200,43 @@ export async function canCreateAsset(accountId: number, currentCount: number): P
       reason: 'ASSET_QUOTA_REACHED',
       limit: ent.quotas.maxAssets,
       message: `Vous avez atteint la limite de ${ent.quotas.maxAssets} biens de ${planLabel(ent.plan)}.`,
+    };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Le compte peut-il MODIFIER ses biens ?
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * DEPASSER SON QUOTA N'EFFACE RIEN
+ *
+ * Un compte peut se retrouver au-dessus de sa limite sans avoir rien fait de
+ * mal : quota revu a la baisse, ou changement d'offre vers une offre plus
+ * petite. La regle retenue conserve tout — les biens restent consultables et
+ * exportables — mais suspend l'ecriture tant que le compte est au-dessus.
+ *
+ * Aucun bien n'est designe « en trop », aucun n'est archive d'office : c'est
+ * a l'utilisateur de choisir, en supprimant un bien ou en reprenant une offre
+ * suffisante.
+ *
+ * Noter le `>` et non `>=` : etre PILE a la limite est parfaitement normal et
+ * n'empeche que la creation (cf. `canCreateAsset`).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export async function canModifyAssets(accountId: number, currentCount: number): Promise<Decision> {
+  const ent = await getEntitlements(accountId);
+  if (!ent.canWrite) return restrictedDecision(ent.status);
+
+  if (currentCount > ent.quotas.maxAssets) {
+    return {
+      allowed: false,
+      reason: 'ASSET_QUOTA_EXCEEDED',
+      limit: ent.quotas.maxAssets,
+      message:
+        `Votre compte contient ${currentCount} biens alors que ${planLabel(ent.plan)} en autorise ` +
+        `${ent.quotas.maxAssets}. Vos biens restent consultables et exportables. Pour les modifier a ` +
+        `nouveau, supprimez-en ou choisissez une offre superieure.`,
     };
   }
   return { allowed: true };

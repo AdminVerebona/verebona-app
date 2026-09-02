@@ -67,6 +67,8 @@ export type ErrorCode =
     // l'émettent (api/account/calendar-token et sa variante toggle), sans
     // passer par apiError, donc sans contrôle de type.
     | 'ASSET_QUOTA_REACHED'
+    // Quota déjà franchi — écriture suspendue, lecture et export préservés.
+    | 'ASSET_QUOTA_EXCEEDED'
     | 'DOCUMENT_QUOTA_REACHED'
     | 'USER_QUOTA_REACHED'
     | 'PREMIUM_REQUIRED'

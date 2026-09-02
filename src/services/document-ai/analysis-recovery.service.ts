@@ -22,14 +22,27 @@ import { assetFiles, accounts } from '@/db/schema';
 import { eq, inArray, isNull, and, lt, or } from 'drizzle-orm';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
+import { withJobLock } from '@/lib/job-lock';
 
 const BATCH_SIZE = 3;
 const BATCH_DELAY_MS = 3_000;
 /** Un document en ANALYZING depuis plus de 10 min est considéré bloqué */
 const STUCK_THRESHOLD_MS = 10 * 60 * 1_000;
 
-/** Verrou global pour éviter deux tours simultanés */
-let isRunning = false;
+/**
+ * Nom du bail et durée maximale d'un tour.
+ *
+ * ⚠️ Le verrou en mémoire ne protégeait qu'un processus. Deux instances
+ * derrière un répartiteur relançaient les mêmes documents et consommaient
+ * deux fois le crédit d'analyse. Le bail est désormais en base (`job_locks`).
+ *
+ * 15 minutes : un tour traite au plus 50 documents par lots de 3 espacés de
+ * 3 secondes, l'analyse elle-même étant lancée sans attendre. La marge est
+ * volontairement large — un bail trop court serait repris par une autre
+ * instance pendant que le travail continue.
+ */
+const LOCK_NAME = 'analysis-recovery';
+const LOCK_TTL_MS = 15 * 60 * 1_000;
 
 export interface RecoveryResult {
   found: number;
@@ -44,12 +57,15 @@ export interface RecoveryResult {
  * @param targetAccountId — si fourni, ne traiter que ce compte (ex: après upgrade plan)
  */
 export async function runAnalysisRecovery(targetAccountId?: number): Promise<RecoveryResult> {
-  if (isRunning) {
-    console.info('[analysis-recovery] Déjà en cours, skip.');
+  const issue = await withJobLock(LOCK_NAME, LOCK_TTL_MS, () => runInterne(targetAccountId));
+  if (issue === null) {
+    console.info('[analysis-recovery] Un autre tour est en cours ailleurs, skip.');
     return { found: 0, retried: 0, errors: 0 };
   }
-  isRunning = true;
+  return issue;
+}
 
+async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
   const result: RecoveryResult = { found: 0, retried: 0, errors: 0 };
 
   try {
@@ -169,9 +185,8 @@ export async function runAnalysisRecovery(targetAccountId?: number): Promise<Rec
     console.info(`[analysis-recovery] Terminé — ${result.retried} relancé(s), ${result.errors} erreur(s).`);
   } catch (err) {
     console.error('[analysis-recovery] Erreur globale:', (err as Error).message);
-  } finally {
-    isRunning = false;
   }
+  // Le bail est rendu par `withJobLock`, y compris en cas d'exception.
 
   return result;
 }

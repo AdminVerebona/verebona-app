@@ -227,15 +227,13 @@ function AssetsPageContent() {
   }, [setBreadcrumbs]);
 
   const { user, isLoading: isSessionLoading } = useSession({ required: true });
-  const { 
-    canCreateAsset: checkCanCreateAsset, 
-    getRemainingAssets, 
-    isOverAssetLimit,
-    isStandard,
-    isPremium,
+  // Ne reste ici que ce qui sert encore : le contrôle historique de création
+  // et l'état d'expiration. Les compteurs de biens viennent désormais des
+  // droits effectifs (`useEntitlements`), pas du plan porté par la session.
+  const {
+    canCreateAsset: checkCanCreateAsset,
     isExpired,
-    features,
-    isLoading: isFeaturesLoading 
+    isLoading: isFeaturesLoading,
   } = useFeatureFlags();
 
   // ⚠️ `useFeatureFlags` ne connait que le PLAN porte par la session : un
@@ -405,34 +403,47 @@ function AssetsPageContent() {
     return null;
   }
 
-  const remaining = getRemainingAssets(activeAssets.length);
-  const isOverLimit = isOverAssetLimit(activeAssets.length);
+  // ══════════════════════════════════════════════════════════════════════════
+  // LE BANDEAU DE LIMITE : TON JUSTE, CHIFFRES JUSTES
+  //
+  // L'ancien était rouge « destructive » — la couleur réservée aux erreurs et
+  // aux suppressions — pour annoncer un état parfaitement normal : un compte
+  // qui a rempli son offre. Et son texte était écrit en dur : « 3 biens du
+  // plan gratuit », « passez au plan Premium ». La limite est de 2, l'offre
+  // s'appelle Standard, et l'essai gratuit n'est pas un plan gratuit.
+  //
+  // Le ton passe en ambre, celui déjà employé pour la fin d'essai, et les
+  // chiffres viennent du serveur.
+  // ══════════════════════════════════════════════════════════════════════════
+  const quotaBiens = entitlements?.quotas?.assets ?? null;
+  const limiteDepassee = quotaBiens ? quotaBiens.used > quotaBiens.limit : false;
+  const limiteAtteinte = quotaBiens ? quotaBiens.limit > 0 && quotaBiens.used >= quotaBiens.limit : false;
+  const libelleOffre = entitlements?.plan === 'trial' ? 'votre essai gratuit' : 'votre offre';
 
-  // Message pour la limite selon les specs V1
-  let limitMessage = '';
-  if (isExpired && isOverLimit) {
-    limitMessage = 'Votre abonnement Premium est expiré. Vous dépassez la limite de 3 biens du plan gratuit. Pour retrouver toutes vos fonctionnalités et ajouter de nouveaux biens, passez à Premium.';
-  } else if (isStandard && !checkCanCreateAsset(activeAssets.length)) {
-    limitMessage = 'Vous avez atteint la limite de 3 biens du plan gratuit. Supprimez un bien ou passez au plan Premium pour gérer tous vos biens.';
-  }
+  const limitMessage = !quotaBiens
+    ? ''
+    : limiteDepassee
+      ? `Votre compte contient ${quotaBiens.used} biens alors que ${libelleOffre} en autorise ${quotaBiens.limit}. `
+        + `Vos biens restent consultables et exportables ; pour les modifier à nouveau, supprimez-en ou choisissez une offre supérieure.`
+      : `Vous avez atteint la limite de ${quotaBiens.limit} biens de ${libelleOffre}. Choisissez une offre pour en ajouter d'autres.`;
 
   return (
     <>
       <div className="space-y-6 w-full max-w-full overflow-x-hidden">
         {/* Warning banner si limite dépassée (cas expiration Premium) */}
-        {isOverLimit && (
-          <Card className="border-destructive bg-destructive/10">
+        {limiteAtteinte && !isRestricted && (
+          <Card className="border-amber-500/30 bg-amber-500/10">
             <CardContent className="py-4">
               <div className="flex flex-col sm:flex-row items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
+                <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-destructive font-medium break-words">
+                  <p className="text-sm text-[color:var(--text-primary)] break-words">
                     {limitMessage}
                   </p>
                 </div>
-                <Button asChild size="sm" variant="destructive" className="w-full sm:w-auto flex-shrink-0">
+                <Button asChild size="sm" variant="outline" className="w-full sm:w-auto flex-shrink-0 border-amber-500/40">
                   <Link href="/mon-compte/offres">
-                    Passer en Premium
+                    Choisir une offre
                   </Link>
                 </Button>
               </div>
