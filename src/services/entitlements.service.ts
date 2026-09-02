@@ -89,11 +89,16 @@ function planLabel(plan: EntitlementPlan): string {
  * Calcule les droits effectifs d'un compte.
  * Toujours appeler cette fonction avant une action sensible.
  */
-export async function getEntitlements(accountId: number): Promise<Entitlements> {
+export async function getEntitlements(
+  accountId: number,
+  now: Date = new Date(),
+): Promise<Entitlements> {
   const rows = await db
     .select({
       planCode: accountSubscriptions.planCode,
       status: accountSubscriptions.status,
+      trialEndsAt: accountSubscriptions.trialEndsAt,
+      firstBilledAt: accountSubscriptions.firstBilledAt,
     })
     .from(accountSubscriptions)
     .where(eq(accountSubscriptions.accountId, accountId))
@@ -109,7 +114,31 @@ export async function getEntitlements(accountId: number): Promise<Entitlements> 
     };
   }
 
-  const status = row.status;
+  // ══════════════════════════════════════════════════════════════════════════
+  // ⚠️ L'EXPIRATION DE L'ESSAI EST DEDUITE DE LA DATE, PAS DU STATUT STOCKE
+  //
+  // Le passage `trialing` → `readonly` est realise par `expireOverdueTrials()`,
+  // appele uniquement par `GET /api/cron/expire-trials`. Ce point d'entree
+  // n'est declenche par AUCUNE planification declaree dans le depot : le
+  // statut reste donc `trialing` indefiniment.
+  //
+  // Consequence observee : le bandeau d'essai annonce « termine » — il se
+  // calcule sur `trialEndsAt`, comme `getTrialState()` — pendant que les
+  // droits continuent d'autoriser l'ecriture. Un compte dont l'essai est
+  // fini pouvait ajouter biens et documents sans le moindre refus.
+  //
+  // Les droits se calculent desormais sur la meme source que l'affichage :
+  // la date. Le cron reste utile — il persiste le statut et declenche la
+  // notification de fin d'essai — mais l'application n'en depend plus pour
+  // etre juste.
+  // ══════════════════════════════════════════════════════════════════════════
+  const essaiEchu =
+    row.status === 'trialing' &&
+    !row.firstBilledAt &&
+    row.trialEndsAt !== null &&
+    row.trialEndsAt.getTime() <= now.getTime();
+
+  const status = essaiEchu ? 'readonly' : row.status;
 
   // Mode restreint : essai expire sans souscription, ou abonnement suspendu.
   if (status === 'readonly' || status === 'canceled') {

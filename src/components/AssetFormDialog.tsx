@@ -19,6 +19,11 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Lock, Package, X, Check, Loader2, Info } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  parseWriteBlocked,
+  notifyWriteBlocked,
+  type WriteBlockedInfo,
+} from '@/lib/write-blocked';
 import { ThumbnailUpload } from '@/components/thumbnail-upload';
 import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
@@ -46,7 +51,8 @@ interface AssetFormDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess?: () => void;
-  onLimitReached?: () => void;
+  /** Refus lié aux droits du compte : à présenter avec son CTA. */
+  onLimitReached?: (info: WriteBlockedInfo) => void;
   userId: number;
 }
 
@@ -153,12 +159,33 @@ export function AssetFormDialog({
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        if (errorData.code === 'ASSET_LIMIT_REACHED' || errorData.message?.includes('limite') || errorData.message?.includes('3 biens')) {
+        const errorData = await response.json().catch(() => ({}));
+
+        // ══════════════════════════════════════════════════════════════════
+        // ⚠️ UN REFUS DE DROITS NE DOIT JAMAIS ÊTRE MUET
+        //
+        // La version précédente reconnaissait le refus puis appelait
+        // `onLimitReached?.()` — une prop qu'aucun appelant ne fournissait,
+        // ni la page « Mes biens », ni la barre d'action du tableau de bord.
+        // L'optionnel avalait donc le seul retour utilisateur : le
+        // formulaire se contentait de ne rien faire.
+        //
+        // La détection reposait par ailleurs sur le libellé du message
+        // (`includes('limite')`, `includes('3 biens')`) — le message serveur
+        // a changé, et « Votre essai gratuit est terminé » ne contient aucun
+        // des deux. On s'appuie désormais sur le CODE d'erreur.
+        //
+        // Et quoi qu'il arrive, un message assorti d'un CTA est affiché.
+        // ══════════════════════════════════════════════════════════════════
+        const refus = parseWriteBlocked(errorData);
+        if (refus) {
           setIsSubmitting(false);
-          onLimitReached?.();
+          onOpenChange(false);
+          if (onLimitReached) onLimitReached(refus);
+          else notifyWriteBlocked(refus);
           return;
         }
+
         throw new Error(errorData.message || 'Erreur lors de la création du bien');
       }
 

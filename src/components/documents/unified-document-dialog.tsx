@@ -25,6 +25,29 @@ import { PICKER_DOCUMENT_TYPES } from '@/lib/document-type-constants';
 import { normalizeMimeType, computeFileSha256 } from '@/lib/file-validation';
 import { FusionSuggestionModal } from './FusionSuggestionModal';
 import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
+import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
+
+/**
+ * Echec de la demande d'URL signee.
+ *
+ * ⚠️ LE MOTIF DU REFUS ETAIT PERDU. Les deux appels a `/api/files/presign`
+ * levaient « Échec de la préparation du téléchargement » sans lire le corps
+ * de la reponse. Un refus de droits — essai termine, quota documentaire
+ * atteint — arrivait donc a l'utilisateur sous la forme d'une panne
+ * technique, sans indication ni moyen d'agir.
+ */
+async function presignError(res: Response): Promise<Error> {
+  const body = await res.json().catch(() => ({}));
+  const refus = parseWriteBlocked(body);
+  if (refus) {
+    notifyWriteBlocked(refus);
+    return new Error(refus.message);
+  }
+  return new Error(
+    (body as { message?: string })?.message ||
+      'Échec de la préparation du téléchargement',
+  );
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -278,7 +301,7 @@ export function UnifiedDocumentDialog({
       headers: { 'Content-Type': 'application/json'},
       body: JSON.stringify({ filename: file.name, mimeType: normalizeMimeType(file), size: file.size, sha256Hash, assetId: targetAssetId }),
     });
-    if (!presignRes.ok) throw new Error('Échec de la préparation du téléchargement');
+    if (!presignRes.ok) throw await presignError(presignRes);
     const { uploadUrl, fileId } = await presignRes.json();
 
     const uploadController = new AbortController();
@@ -480,7 +503,7 @@ export function UnifiedDocumentDialog({
             }),
             signal: abortSignal,
           });
-          if (!presignResponse.ok) throw new Error('Échec de la préparation du téléchargement');
+          if (!presignResponse.ok) throw await presignError(presignResponse);
           const { uploadUrl, fileId } = await presignResponse.json();
 
           const uploadTmo = setTimeout(() => uploadAbortRef.current?.abort(), 120_000);

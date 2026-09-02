@@ -8,6 +8,7 @@ import { sanitizeFilename, validateExtension, ALLOWED_MIME_TYPES } from '@/lib/f
 import { generateS3Key } from '@/lib/s3-naming';
 import { rateLimiter } from '@/lib/rate-limiter';
 import { getSession } from '@/lib/auth-guards';
+import { canAddDocument } from '@/services/entitlements.service';
 import { SessionService } from '@/lib/session-service';
 import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 
@@ -199,6 +200,35 @@ export async function POST(request: NextRequest) {
         );
 
       const totalFiles = Number(accountFileCount[0]?.count || 0);
+
+      // ══════════════════════════════════════════════════════════════════════
+      // ⚠️ DROITS D'ECRITURE ET QUOTA DOCUMENTAIRE — CONTROLE MANQUANT
+      //
+      // Cette route est le passage oblige de tout televersement : sans URL
+      // signee, aucun fichier n'atteint le stockage. Elle ne verifiait
+      // pourtant que des limites TECHNIQUES (1000 fichiers, 100 par bien,
+      // type MIME, taille). `canAddDocument()` existait dans le service
+      // d'entitlements sans etre appele nulle part.
+      //
+      // Consequence : un compte en mode restreint — essai termine, offre
+      // resiliee — pouvait continuer d'ajouter des documents, et le quota
+      // documentaire du CDC §8.1 (30 en essai, 150 en Premium, 225 en Duo)
+      // n'etait jamais oppose.
+      // ══════════════════════════════════════════════════════════════════════
+      const documentDecision = await canAddDocument(currentAccountId, totalFiles);
+      if (!documentDecision.allowed) {
+        return NextResponse.json(
+          {
+            error: documentDecision.reason ?? 'DOCUMENT_QUOTA_REACHED',
+            code: documentDecision.reason ?? 'DOCUMENT_QUOTA_REACHED',
+            message: documentDecision.message ?? "L'ajout de documents n'est pas autorise.",
+            limit: documentDecision.limit,
+            currentCount: totalFiles,
+          },
+          { status: 403 },
+        );
+      }
+
       if (totalFiles >= MAX_FILES_PER_USER) {
         return NextResponse.json(
           { 

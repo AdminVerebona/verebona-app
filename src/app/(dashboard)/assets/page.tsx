@@ -36,6 +36,8 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSession } from '@/hooks/useSession';
 import { useFeatureFlags } from '@/hooks/useFeatureFlags';
+import { useEntitlements } from '@/hooks/useEntitlements';
+import { writeBlockedTitle, type WriteBlockedInfo } from '@/lib/write-blocked';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
@@ -235,6 +237,11 @@ function AssetsPageContent() {
     features,
     isLoading: isFeaturesLoading 
   } = useFeatureFlags();
+
+  // ⚠️ `useFeatureFlags` ne connait que le PLAN porte par la session : un
+  // compte dont l'essai est termine y apparait toujours Premium, donc
+  // autorise. Les droits reels viennent du serveur.
+  const { isRestricted, entitlements } = useEntitlements();
   
   const [assets, setAssets] = useState<Asset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -253,6 +260,9 @@ function AssetsPageContent() {
   const [showArchived, setShowArchived] = useState(false);
   const [deleteAssetId, setDeleteAssetId] = useState<number | null>(null);
   const [showLimitModal, setShowLimitModal] = useState(false);
+  // Motif exact du refus, tel que le serveur l'a formule. Null tant qu'aucun
+  // refus n'a eu lieu : la fenetre retombe alors sur son discours generique.
+  const [limitInfo, setLimitInfo] = useState<WriteBlockedInfo | null>(null);
   const [showAssetDialog, setShowAssetDialog] = useState(false);
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const [pendingShowArchived, setPendingShowArchived] = useState(false);
@@ -330,12 +340,36 @@ function AssetsPageContent() {
 
   // ⚡ Mémoïser les handlers
   const handleAddAsset = useCallback(() => {
-    if (!checkCanCreateAsset(activeAssets.length)) {
+    // Mode restreint : inutile de faire remplir un formulaire que le serveur
+    // refusera. Le motif est annonce avant la saisie, pas apres.
+    if (isRestricted) {
+      setLimitInfo({
+        code: 'TRIAL_EXPIRED',
+        message:
+          "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
+      });
       setShowLimitModal(true);
-    } else {
-      setShowAssetDialog(true);
+      return;
     }
-  }, [checkCanCreateAsset, assets.length]);
+
+    const quotaAtteint =
+      entitlements?.quotas?.assets?.isFull ?? !checkCanCreateAsset(activeAssets.length);
+
+    if (quotaAtteint) {
+      const limite = entitlements?.quotas?.assets?.limit;
+      setLimitInfo({
+        code: 'ASSET_QUOTA_REACHED',
+        message: limite
+          ? `Vous avez atteint la limite de ${limite} biens de votre offre.`
+          : 'Vous avez atteint la limite de biens de votre offre.',
+        limit: limite,
+      });
+      setShowLimitModal(true);
+      return;
+    }
+
+    setShowAssetDialog(true);
+  }, [checkCanCreateAsset, activeAssets.length, isRestricted, entitlements]);
 
   const handleDeleteAsset = useCallback(async (id: number) => {
     try {
@@ -516,12 +550,21 @@ function AssetsPageContent() {
                   <Crown className="w-7 h-7 text-white" />
                 </div>
                 <h2 className="text-xl font-bold text-white mb-1">
-                  {isExpired ? 'Abonnement expiré' : 'Limite atteinte'}
+                  {limitInfo
+                    ? writeBlockedTitle(limitInfo.code)
+                    : isExpired
+                      ? 'Abonnement expiré'
+                      : 'Limite atteinte'}
                 </h2>
                 <p className="text-sm text-white/70">
-                  {isExpired
-                    ? 'Renouvelez pour retrouver tous vos biens'
-                    : 'Vous avez utilisé vos 3 biens gratuits'}
+                  {/* Le message vient du serveur : il connait l'offre, le
+                      quota et l'etat de l'essai. Le libelle « vos 3 biens
+                      gratuits » etait faux — l'essai en autorise 2. */}
+                  {limitInfo
+                    ? limitInfo.message
+                    : isExpired
+                      ? 'Renouvelez pour retrouver tous vos biens'
+                      : 'Vous avez atteint la limite de votre offre'}
                 </p>
               </div>
             </div>
@@ -529,13 +572,13 @@ function AssetsPageContent() {
             {/* Body */}
             <div className="px-6 py-5 space-y-4 bg-[color:var(--bg-card)]">
               <p className="text-sm text-muted-foreground text-center">
-                Passez à <strong className="text-foreground">Premium</strong> pour gérer un nombre illimité de biens et débloquer toutes les fonctionnalités.
+                Passez à <strong className="text-foreground">Premium</strong> pour gérer jusqu'à 10 biens et 150 documents, et débloquer toutes les fonctionnalités.
               </p>
 
               <div className="space-y-2.5">
                 {[
                   'Tout Standard inclus',
-                  'Biens et documents illimités',
+                  '10 biens et 150 documents',
                   'Rappels avancés',
                   'Export PDF',
                 ].map((text) => (
@@ -551,7 +594,7 @@ function AssetsPageContent() {
               <div className="pt-1 space-y-2">
                 <Link
                   href="/mon-compte/offres"
-                  onClick={() => setShowLimitModal(false)}
+                  onClick={() => { setShowLimitModal(false); setLimitInfo(null); }}
                   className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
                   style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
                 >
@@ -560,10 +603,10 @@ function AssetsPageContent() {
                   <ArrowRight className="w-4 h-4" />
                 </Link>
                 <button
-                  onClick={() => setShowLimitModal(false)}
+                  onClick={() => { setShowLimitModal(false); setLimitInfo(null); }}
                   className="w-full py-2.5 rounded-xl text-sm text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  Continuer sans Premium
+                  Plus tard
                 </button>
               </div>
             </div>
@@ -577,6 +620,10 @@ function AssetsPageContent() {
               onOpenChange={setShowAssetDialog}
               onSuccess={loadAssets}
               userId={user.id}
+              onLimitReached={(info) => {
+                setLimitInfo(info);
+                setShowLimitModal(true);
+              }}
             />
           )}
         </div>
