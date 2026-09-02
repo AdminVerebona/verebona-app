@@ -16,6 +16,10 @@ export interface User {
   subscription: {
     plan: PlanType;
     status: SubscriptionStatus;
+    /** État d'essai servi par `/api/users/me`. N'accorde aucun droit. */
+    trialStatus?: 'none' | 'active' | 'expired' | 'converted';
+    trialDaysLeft?: number | null;
+    isTrial?: boolean;
   };
   duoId?: number;
   duoStatus?: 'ACTIVE' | 'PAST_DUE_GRACE' | 'UNPAID_RECOVERY' | 'CANCELED';

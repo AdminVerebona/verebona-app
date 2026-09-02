@@ -62,15 +62,10 @@ const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default:
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
+import { getPlanLabel } from '@/lib/plan-label';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
 import { MobileAnalysisBanner } from './AnalysisBanner';
-
-function getPlanLabel(plan: string, duoRole?: 'BILLING_OWNER' | 'MEMBER'): string {
-  if (plan === 'PREMIUM_DUO') return duoRole === 'MEMBER' ? 'Premium Duo (membre)' : 'Premium Duo';
-  const labels: Record<string, string> = { STANDARD: 'Standard', PREMIUM: 'Premium', PREMIUM_DUO: 'Premium Duo', PREMIUM_PRO: 'Premium Pro' };
-  return labels[plan] ?? plan.toLowerCase();
-}
 
 const navigation = [
   { name: 'Accueil', href: '/accueil', icon: House, dataGuide: undefined },
@@ -439,7 +434,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
             {!sidebarCollapsed && user && (
               <SidebarPlanCard
                 plan={(user.subscription?.plan || 'STANDARD').toUpperCase()}
-                trialDaysLeft={(user as any).subscription?.trialDaysLeft ?? null}
+                trialDaysLeft={user.subscription?.trialDaysLeft ?? null}
               />
             )}
 
@@ -535,7 +530,12 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                                 {getUserDisplayName}
                               </div>
                               <div className="text-xs text-[color:var(--accent)] font-medium">
-                                {getPlanLabel(user.subscription.plan, user.duoRole)}
+                                {getPlanLabel({
+                                  plan: user.subscription.plan,
+                                  duoRole: user.duoRole,
+                                  trialStatus: user.subscription.trialStatus,
+                                  trialDaysLeft: user.subscription.trialDaysLeft,
+                                })}
                               </div>
                             </div>
                           </button>
@@ -545,7 +545,12 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                           <div className="font-medium">{getUserDisplayName}</div>
                           <div className="text-xs text-[color:var(--text-muted)]">{user.email}</div>
                           <div className="text-xs text-[color:var(--text-muted)] mt-1">
-                            Plan: <span className="font-medium">{getPlanLabel(user.subscription.plan, user.duoRole)}</span>
+                            Plan: <span className="font-medium">{getPlanLabel({
+                                  plan: user.subscription.plan,
+                                  duoRole: user.duoRole,
+                                  trialStatus: user.subscription.trialStatus,
+                                  trialDaysLeft: user.subscription.trialDaysLeft,
+                                })}</span>
                           </div>
                         </div>
                         <DropdownMenuSeparator />

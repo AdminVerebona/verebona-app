@@ -23,6 +23,7 @@ import { getPlanTheme } from '@/lib/plan-theme'
 import { NotificationBell } from './NotificationBell'
 import { AnalysisBanner } from './AnalysisBanner'
 import { ConfirmLogoutDialog } from './ConfirmLogoutDialog'
+import { getPlanLabel } from '@/lib/plan-label'
 
 interface TopBarUser {
   firstName: string
@@ -31,19 +32,12 @@ interface TopBarUser {
   email: string
   accountName?: string
   role?: string
-  subscription: { plan: string }
-  duoRole?: 'BILLING_OWNER' | 'MEMBER'
-}
-
-function getPlanLabel(plan: string, duoRole?: 'BILLING_OWNER' | 'MEMBER'): string {
-  if (plan === 'PREMIUM_DUO') return duoRole === 'MEMBER' ? 'Premium Duo (membre)' : 'Premium Duo'
-  const labels: Record<string, string> = {
-    STANDARD: 'Standard',
-    PREMIUM: 'Premium',
-    PREMIUM_DUO: 'Premium Duo',
-    PREMIUM_PRO: 'Premium Pro',
+  subscription: {
+    plan: string
+    trialStatus?: 'none' | 'active' | 'expired' | 'converted'
+    trialDaysLeft?: number | null
   }
-  return labels[plan] ?? plan.toLowerCase()
+  duoRole?: 'BILLING_OWNER' | 'MEMBER'
 }
 
 interface TopBarProps {
@@ -105,7 +99,12 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin }: TopBar
               <p className="text-sm font-semibold truncate">{displayName}</p>
               <p className="text-xs text-[color:var(--text-muted)] truncate">{user.email}</p>
               <p className={`text-xs ${getPlanTheme(plan).colors.text} font-medium mt-0.5`}>
-                Plan {getPlanLabel(plan, user.duoRole)}
+                {getPlanLabel({
+                  plan,
+                  duoRole: user.duoRole,
+                  trialStatus: user.subscription.trialStatus,
+                  trialDaysLeft: user.subscription.trialDaysLeft,
+                })}
               </p>
             </div>
           </div>

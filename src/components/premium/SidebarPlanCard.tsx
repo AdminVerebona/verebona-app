@@ -19,7 +19,10 @@ interface SidebarPlanCardProps {
  * - STANDARD : « Plan gratuit » + jauge Biens pleine + « Passer à Premium » → /mon-compte.
  * - PREMIUM / PREMIUM_DUO : rien.
  */
-export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed = 3, assetsMax = 3 }: SidebarPlanCardProps) {
+// Valeurs par défaut alignées sur le CDC §2 : l'offre Standard ouvre 2 biens,
+// pas 3. `DashboardLayout` ne passe pas encore ces props — le repli doit donc
+// être juste.
+export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed = 0, assetsMax = 2 }: SidebarPlanCardProps) {
   const isTrial = typeof trialDaysLeft === 'number' && trialDaysLeft >= 0;
   if (!isTrial && plan !== 'STANDARD') return null;
 

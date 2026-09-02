@@ -7,6 +7,7 @@ import { users, accounts, accountMemberships, duoAccounts, duoMemberships } from
 import { eq, and, or } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
 import { deleteUserNotificationData } from '@/lib/notifications/account-cleanup';
+import { getTrialState } from '@/services/trial.service';
 
 export async function GET(request: NextRequest) {
   try {
@@ -147,6 +148,36 @@ export async function GET(request: NextRequest) {
     // import de document paraissait « rester en cours » alors que le
     // navigateur n'était simplement plus authentifié.
     // ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    // ⚠️ L'ÉTAT D'ESSAI MANQUAIT DANS LA SESSION
+    //
+    // `subscription.plan` vient de `users.plan_type`, que l'attribution
+    // d'essai ne touche pas : l'essai vit dans `account_subscriptions`
+    // (`plan_code = 'premium'`, `status = 'trialing'`). Un compte en essai
+    // porte donc `STANDARD` dans la colonne lue par le menu, qui affichait
+    // « Standard » à un utilisateur en essai gratuit.
+    //
+    // Le même manque rendait `SidebarPlanCard` inerte : `DashboardLayout`
+    // lui passe `subscription?.trialDaysLeft`, une propriété que cette
+    // route n'a jamais servie. La carte « Essai gratuit · J-x » ne
+    // s'affichait donc jamais.
+    //
+    // On sert l'état, on ne change pas le plan : les droits restent ceux de
+    // `plan_type` (cf. `@/lib/plan-label`).
+    // ══════════════════════════════════════════════════════════════════════
+    let trialStatus: 'none' | 'active' | 'expired' | 'converted' = 'none';
+    let trialDaysLeft: number | null = null;
+    if (userData.accountId) {
+      try {
+        const etat = await getTrialState(userData.accountId);
+        trialStatus = etat.status;
+        if (etat.status === 'active') trialDaysLeft = etat.daysRemaining;
+      } catch (err) {
+        // L'identité ne doit jamais tomber pour un libellé d'offre.
+        console.error('[users/me] état d\'essai illisible:', err);
+      }
+    }
+
     const corps = {
       id: userData.id,
       email: userData.email,
@@ -160,6 +191,10 @@ export async function GET(request: NextRequest) {
       subscription: {
         plan: effectivePlan,
         status: finalSubscriptionStatus,
+        // Sert le libellé et la carte de la barre latérale. N'accorde aucun droit.
+        trialStatus,
+        trialDaysLeft,
+        isTrial: trialStatus === 'active',
       },
       subscription_status: finalSubscriptionStatus,
       duoId: duoInfo?.duoId ?? null,
