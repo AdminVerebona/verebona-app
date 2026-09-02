@@ -16,7 +16,7 @@
 import { db } from '@/db';
 import { assets, assetFiles, agendaItems } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
-import { enqueue, dequeueBatch, complete, fail, type ImpactQueueItem } from './impact-queue.service';
+import { enqueue, dequeueBatch, complete, fail, enqueueForAiReview, hasPendingAiReviewForAsset, type ImpactQueueItem } from './impact-queue.service';
 import { resolveImpacts, type DependencyRule } from './field-dependency.service';
 import { computeHash, recordVersion } from './version-tracker.service';
 import { determineAction, createInconsistency, autoResolveForField } from './inconsistency.service';
@@ -384,6 +384,47 @@ export async function processImpact(item: ImpactQueueItem): Promise<PropagationR
       await recordVersion('document', item.documentId, item.accountId, computeHash({ changedFields }), {
         triggerType: item.triggerType,
       });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // UN CONFLIT NON ARBITRÉ DEMANDE UNE RELECTURE IA
+    //
+    // `enqueueForAiReview()` existait, exportée, sans un seul appelant : la
+    // phase 3 de la passe horaire — la seule qui appelle encore un modèle sur
+    // un bien entier — n'avait donc jamais rien à traiter. La relecture
+    // périodique annoncée dans l'en-tête du service n'a jamais tourné.
+    //
+    // Le déclencheur retenu est le plus étroit qui ait du sens : la
+    // propagation déterministe a détecté que deux sources se contredisent et
+    // a ouvert une incohérence, sans pouvoir trancher. C'est exactement le cas
+    // où relire les documents du bien apporte quelque chose — et c'est rare,
+    // ce qui garde le coût borné (5 relectures par tour au maximum).
+    //
+    // Deux gardes contre l'emballement : on n'enfile pas depuis un item qui
+    // EST déjà une relecture (sinon elle se rappellerait elle-même), et une
+    // seule relecture peut être en attente par bien.
+    // ══════════════════════════════════════════════════════════════════════
+    if (result.fieldsConflicted > 0 && item.assetId && !item.metadata?.requires_ai_review) {
+      try {
+        const dejaEnAttente = await hasPendingAiReviewForAsset(item.accountId, item.assetId);
+        if (!dejaEnAttente) {
+          await enqueueForAiReview({
+            accountId: item.accountId,
+            assetId: item.assetId,
+            triggerType: 'manual_request',
+            triggerReason: `${result.fieldsConflicted} conflit(s) non arbitré(s) par la propagation déterministe`,
+            source: 'impact-propagation',
+            priority: 1,
+          });
+          console.info(
+            `[impact-propagation] relecture IA demandée pour le bien ${item.assetId} ` +
+            `(${result.fieldsConflicted} conflit(s))`,
+          );
+        }
+      } catch (err) {
+        // Accessoire : un échec ici ne doit pas faire retomber l'impact en erreur.
+        console.error('[impact-propagation] mise en file de la relecture IA échouée :', err);
+      }
     }
 
     // 8. Mark the impact as completed

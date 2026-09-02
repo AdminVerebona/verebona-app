@@ -133,6 +133,42 @@ export async function enqueueForAiReview(input: EnqueueImpactInput): Promise<Imp
 }
 
 /**
+ * Une relecture IA est-elle déjà en attente pour ce bien ?
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI CE CONTRÔLE EXISTE
+ *
+ * La relecture IA écrit dans la fiche, ce qui émet un nouvel événement
+ * d'impact, qui peut à son tour produire un conflit, qui demanderait une
+ * nouvelle relecture. Sans garde, un bien durablement incohérent
+ * déclencherait un appel modèle par tour de passe horaire, indéfiniment.
+ *
+ * Une seule relecture en attente par bien : les conflits suivants seront
+ * traités par celle-là, ou par la suivante une fois qu'elle aura été
+ * consommée.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export async function hasPendingAiReviewForAsset(
+  accountId: number,
+  assetId: number,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(impactQueue)
+    .where(
+      and(
+        eq(impactQueue.accountId, accountId),
+        eq(impactQueue.assetId, assetId),
+        or(eq(impactQueue.status, 'pending'), eq(impactQueue.status, 'processing')),
+        sql`metadata @> '{"requires_ai_review": true}'`,
+      ),
+    )
+    .limit(1);
+
+  return (row?.count ?? 0) > 0;
+}
+
+/**
  * Dequeue pending items that are flagged for AI review.
  * Only dequeues up to `limit` items. Used by the hourly enrichment cron
  * to perform targeted AI calls only on items explicitly marked.

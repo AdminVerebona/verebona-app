@@ -23,6 +23,7 @@ export {
   enqueue,
   enqueueBatch,
   enqueueForAiReview,
+  hasPendingAiReviewForAsset,
   dequeue,
   dequeueBatch,
   dequeueAiReviewItems,
