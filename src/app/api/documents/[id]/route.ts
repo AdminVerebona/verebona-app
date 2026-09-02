@@ -4,6 +4,7 @@ import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
+import { triggerAssetEnrichment } from '@/services/document-ai/asset-enrichment-trigger';
 
 export async function PUT(
   request: NextRequest,
@@ -170,6 +171,38 @@ export async function PUT(
         origin: 'documents/PUT',
       }).catch(err => {
         console.error(`[documents/PUT] re-analyse après modification manuelle échouée (file ${documentId}):`, err);
+      });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ⚠️ LE RATTACHEMENT À UN BIEN N'ALIMENTAIT PAS LA FICHE
+    //
+    // Rattacher un document déjà analysé à un bien est le geste attendu pour
+    // que ses données remontent dans l'onglet « Informations » — l'adresse
+    // lue sur une facture doit renseigner l'adresse du bien.
+    //
+    // Or aucun des trois déclencheurs de `applyAiSuggestionsToAsset` ne
+    // couvrait ce cas (cf. `asset-enrichment-trigger.ts`). Cette route se
+    // contentait de relancer une analyse complète en tâche de fond, soumise
+    // au quota d'analyse — qui rend la main SANS RIEN FAIRE lorsqu'il est
+    // épuisé — et qui n'alimente la fiche que si elle retombe sur ANALYZED.
+    //
+    // L'alimentation est désormais déclenchée explicitement, sans dépendre
+    // de l'issue de cette réanalyse.
+    // ══════════════════════════════════════════════════════════════════════
+    const nouvelAssetId =
+      assetId === undefined
+        ? undefined
+        : assetId === null || assetId === 0
+          ? null
+          : parseInt(assetId);
+
+    if (accountId && nouvelAssetId && nouvelAssetId !== oldDoc.assetId) {
+      void triggerAssetEnrichment({
+        assetId: nouvelAssetId,
+        accountId,
+        assetFileId: documentId,
+        reason: 'document_attached',
       });
     }
 

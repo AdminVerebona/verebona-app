@@ -32,8 +32,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { s3Client } from '@/lib/s3-client';
 import { linkDocumentToEquipments } from '@/services/equipment/equipment-auto-link.service';
-import { applyAiSuggestionsToAsset } from '@/services/document-ai/apply-ai-suggestions';
-import { emitAssetUpdated } from '@/services/coherence/impact-propagation.service';
+import { triggerAssetEnrichment } from './asset-enrichment-trigger';
 import { canConsumeAnalysis, consumeAnalysisCredits } from '@/services/commercial-model.service';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.7;
@@ -594,10 +593,17 @@ export async function runUnifiedAnalysisPipeline(
           .from(assetFiles).where(eq(assetFiles.id, leadFile.id)).limit(1);
         const resolvedAssetId = refreshed?.assetId ?? linkedAssetId;
         if (resolvedAssetId) {
-          applyAiSuggestionsToAsset({ assetId: resolvedAssetId, accountId, assetFileId: leadFile.id }).catch(() => {});
+          // ⚠️ L'ÉCHEC ÉTAIT AVALÉ. `.catch(() => {})` faisait disparaître
+          // sans trace une clé Gemini absente, un quota atteint ou une
+          // réponse illisible : le traitement d'alimentation « ne tournait
+          // pas » sans qu'aucune ligne de journal ne l'indique.
+          void triggerAssetEnrichment({
+            assetId: resolvedAssetId,
+            accountId,
+            assetFileId: leadFile.id,
+            reason: 'document_analyzed',
+          });
           linkDocumentToEquipments(leadFile.id, accountId, result.equipmentCandidates).catch(() => {});
-          // Déclencher la propagation d'impact après analyse documentaire
-          emitAssetUpdated(accountId, resolvedAssetId, { _trigger: 'document_analyzed', _documentId: leadFile.id }).catch(() => {});
         }
       }
 

@@ -12,6 +12,7 @@ import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { commitDocument } from '@/services/document-ai/commit-engine';
 import { isUnifiedAnalysisActive } from '@/services/ai/source-analysis/entrypoint';
+import { triggerAssetEnrichment } from '@/services/document-ai/asset-enrichment-trigger';
 import type { AgendaEffect } from '@/types/document-ai';
 
 export async function POST(
@@ -53,10 +54,12 @@ export async function POST(
     // un passage à vide, conservé le temps que l'interface cesse de l'appeler.
     // Suppression prévue au lot 3, avec l'écran correspondant.
     if (resolvedAssetId && !isUnifiedAnalysisActive()) {
-      const { applyAiSuggestionsToAsset } = await import('@/services/document-ai/apply-ai-suggestions');
-      applyAiSuggestionsToAsset({ assetId: resolvedAssetId, accountId, assetFileId }).catch(err =>
-        console.error('[commit] applyAiSuggestionsToAsset failed (non-blocking):', err)
-      );
+      void triggerAssetEnrichment({
+        assetId: resolvedAssetId,
+        accountId,
+        assetFileId,
+        reason: 'document_committed',
+      });
     }
 
     return NextResponse.json(result);
