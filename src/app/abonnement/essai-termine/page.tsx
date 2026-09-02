@@ -6,6 +6,7 @@ import { Check, ShieldCheck, Database, CreditCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
+import { isTrialOver } from '@/lib/trial-status';
 
 /**
  * Ecran de fin d'essai (CDC tarification §9.3).
@@ -82,14 +83,33 @@ export default function EssaiTerminePage() {
 
   // Si l'essai est encore actif ou le compte deja abonne, cette page n'a pas
   // lieu d'etre : on renvoie vers l'application.
+  //
+  // ══════════════════════════════════════════════════════════════════════
+  // ⚠️ CETTE REDIRECTION RENVOYAIT LES BONS UTILISATEURS
+  //
+  // Le critere etait `!data.isRestricted`. Le bandeau qui amene ici, lui,
+  // s'affiche sur `trial.status === 'expired' || isRestricted`.
+  //
+  // Deux criteres pour un meme etat : des qu'ils divergent — et ils
+  // divergeaient, `trial.status` se calculant sur `trialEndsAt` quand
+  // `isRestricted` dependait d'un statut en base jamais mis a jour — le
+  // bandeau annoncait la fin de l'essai et son bouton ramenait
+  // instantanement sur /accueil. Vu de l'utilisateur, le bouton ne menait
+  // nulle part.
+  //
+  // `isTrialOver()` est desormais le seul critere, partage avec le bandeau.
+  // ══════════════════════════════════════════════════════════════════════
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch('/api/billing/trial-status', { credentials: 'include' });
+        // Statut illisible : on affiche la page plutot que de rediriger.
+        // Une redirection sur une information manquante est indefendable —
+        // elle prive l'utilisateur du seul ecran ou il peut souscrire.
         if (!res.ok) return;
         const data = await res.json();
-        if (!cancelled && !data.isRestricted) router.replace('/accueil');
+        if (!cancelled && !isTrialOver(data)) router.replace('/accueil');
       } catch {
         // En cas d'echec, on laisse la page s'afficher.
       } finally {

@@ -119,7 +119,14 @@ export function TrialBanner() {
     );
   }
 
-  // Essai expiré sans souscription → mode restreint
+  // Essai expiré sans souscription → mode restreint.
+  //
+  // ⚠️ Cette condition est le critère de référence : c'est elle qui décide
+  // d'afficher le bouton de souscription ci-dessous. L'écran de destination
+  // applique le MÊME critère, via `isTrialOver()` dans `@/lib/trial-status`.
+  // Toute divergence entre les deux rend le bouton inopérant : l'écran se
+  // juge hors sujet et renvoie l'utilisateur d'où il vient. Ne pas modifier
+  // cette ligne sans mettre l'écran à jour.
   if (trial.status === 'expired' || isRestricted) {
     return (
       <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">
