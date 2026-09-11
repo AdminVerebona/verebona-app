@@ -16,6 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { libelleEssai } from '../trial-label';
 
 const SOURCE = readFileSync(
   join(process.cwd(), 'src/components/subscription/TrialBanner.tsx'),
@@ -78,5 +79,32 @@ describe('la page de fin d’essai ne fait plus que rediriger', () => {
   it('elle redirige de façon permanente', () => {
     // Un 307 ferait repasser navigateurs et moteurs par ici indéfiniment.
     expect(PAGE).toContain('permanentRedirect');
+  });
+});
+
+describe('libellé de l’essai en cours', () => {
+  it('dit « gratuit », pas « Premium »', () => {
+    // Ce qui rassure pendant un essai, c'est qu'il ne coûte rien. Le niveau
+    // de fonctionnalités se lit dans la comparaison des offres.
+    expect(libelleEssai(7)).toBe('Essai gratuit en cours — 7 jours restants');
+  });
+
+  it('accorde le singulier', () => {
+    // Un « 1 jours restants » se remarque, et fait douter du reste de l'écran.
+    expect(libelleEssai(1)).toBe('Essai gratuit en cours — 1 jour restant');
+  });
+
+  it('les deux écrans emploient la même fonction', () => {
+    // Deux phrases identiques écrites séparément finissent par diverger :
+    // ce projet en a déjà fait les frais avec les pages d'offres.
+    for (const chemin of [
+      'src/components/subscription/TrialBanner.tsx',
+      'src/components/subscription/SubscriptionSummary.tsx',
+    ]) {
+      const source = readFileSync(join(process.cwd(), chemin), 'utf-8');
+      expect(source, chemin).toContain('libelleEssai(trial.daysRemaining)');
+      // Plus aucune phrase rédigée à la main.
+      expect(source, chemin).not.toMatch(/Essai Premium — \{/);
+    }
   });
 });

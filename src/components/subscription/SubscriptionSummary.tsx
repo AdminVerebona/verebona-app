@@ -6,6 +6,7 @@ import { CreditCard, FileText, AlertTriangle, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
+import { libelleEssai } from './trial-label';
 
 /**
  * Ecran « Mon abonnement » (CDC tarification §9.1 et §9.4).
@@ -217,8 +218,8 @@ export function SubscriptionSummary() {
         <div className="mb-5 flex items-center gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-page)] px-3 py-2">
           <Clock className="h-4 w-4 shrink-0 text-[color:var(--text-muted)]" />
           <p className="text-sm text-[color:var(--text-primary)]">
-            Essai Premium — {trial.daysRemaining} {trial.daysRemaining > 1 ? 'jours restants' : 'jour restant'}.
-            Aucune carte bancaire n&apos;est enregistrée.
+            {libelleEssai(trial.daysRemaining)}.
+            {' '}Aucune carte bancaire n&apos;est enregistrée.
           </p>
         </div>
       )}

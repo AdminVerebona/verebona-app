@@ -4,11 +4,12 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Clock, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { libelleEssai } from './trial-label';
 
 /**
  * Bandeau d'essai (CDC §9.2).
  *
- *  - essai actif   : « Essai Premium — X jours restants » + acces aux offres ;
+ *  - essai actif   : « Essai gratuit en cours — X jours restants » + offres ;
  *  - J-2 / J-1     : bandeau plus visible (ton d'alerte) ;
  *  - essai expire  : message de fin d'essai et invitation a choisir une offre.
  *
@@ -147,7 +148,6 @@ export function TrialBanner() {
   // Essai en cours
   if (trial.status === 'active') {
     const urgent = trial.isUrgent;
-    const jours = trial.daysRemaining > 1 ? 'jours restants' : 'jour restant';
 
     return (
       <div
@@ -160,7 +160,7 @@ export function TrialBanner() {
         <Clock className={urgent ? 'h-4 w-4 shrink-0 text-amber-500' : 'h-4 w-4 shrink-0 text-[color:var(--text-muted)]'} />
         <p className="flex-1 text-sm text-[color:var(--text-primary)]">
           <span className="font-medium">
-            Essai Premium — {trial.daysRemaining} {jours}
+            {libelleEssai(trial.daysRemaining)}
           </span>
           {urgent && (
             <span className="text-[color:var(--text-muted)]">
