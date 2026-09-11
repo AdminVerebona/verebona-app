@@ -65,10 +65,10 @@ import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
 import { getPlanLabel } from '@/lib/plan-label';
 import { useEntitlements } from '@/hooks/useEntitlements';
-import { notifyWriteBlocked } from '@/lib/write-blocked';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
 import { MobileAnalysisBanner } from './AnalysisBanner';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 const navigation = [
   { name: 'Accueil', href: '/accueil', icon: House, dataGuide: undefined },
@@ -283,29 +283,19 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // ══════════════════════════════════════════════════════════════════════════
   const { entitlements, isRestricted } = useEntitlements();
 
+  /**
+   * Garde déportée dans `WriteGuardContext`.
+   *
+   * La logique était recopiée ici et dans le menu mobile, et n'affichait
+   * qu'un bandeau. Un bandeau disparaît : l'utilisateur qui vient de cliquer
+   * sur « Ajouter » ne comprend pas pourquoi rien ne s'ouvre.
+   */
+  const { garder } = useWriteGuard();
   const refuserEcriture = useCallback((quota: 'assets' | 'documents'): boolean => {
-    if (isRestricted) {
-      notifyWriteBlocked({
-        code: 'TRIAL_EXPIRED',
-        message:
-          "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
-      });
-      return true;
-    }
-    const q = entitlements?.quotas?.[quota];
-    if (q && q.limit > 0 && q.used >= q.limit) {
-      notifyWriteBlocked({
-        code: quota === 'assets' ? 'ASSET_QUOTA_REACHED' : 'DOCUMENT_QUOTA_REACHED',
-        message:
-          quota === 'assets'
-            ? `Vous avez atteint la limite de ${q.limit} biens de votre offre.`
-            : `Vous avez atteint la limite de ${q.limit} documents de votre offre.`,
-        limit: q.limit,
-      });
-      return true;
-    }
-    return false;
-  }, [entitlements, isRestricted]);
+    let bloque = true;
+    garder(() => { bloque = false; }, quota);
+    return bloque;
+  }, [garder]);
 
   const ouvrirAjoutBien = useCallback(() => {
     if (refuserEcriture('assets')) return;

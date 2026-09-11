@@ -57,6 +57,7 @@ import { RoomDrawer } from "@/components/assets/RoomDrawer";
 import type { RoomDrawerItem } from "@/components/assets/RoomDrawer";
 import { EquipmentDrawer } from "@/components/assets/EquipmentDrawer";
 import type { EquipmentDrawerItem } from "@/components/assets/EquipmentDrawer";
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 type EffectiveStatus = "a_venir" | "en_retard" | "realise" | "annule";
 
@@ -294,7 +295,15 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
     onClose();
   }, [mode, dirty, onClose]);
 
+  // Ce tiroir n'a pas de mode édition séparé : la garde porte donc sur
+  // l'enregistrement. L'ouverture reste possible — consulter une échéance
+  // n'est pas une écriture.
+  const { garder } = useWriteGuard();
   const handleSave = async () => {
+    let autorise = false;
+    garder(() => { autorise = true; });
+    if (!autorise) return;
+
     if (!item) return;
     setSaving(true);
     setSaveError(null);

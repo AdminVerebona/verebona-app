@@ -8,7 +8,7 @@ import { CreateAgendaItemDrawer } from '@/components/agenda/CreateAgendaItemDraw
 import { AssetFormDialog } from '@/components/AssetFormDialog';
 import { useSession } from '@/hooks/useSession';
 import { useEntitlements } from '@/hooks/useEntitlements';
-import { notifyWriteBlocked } from '@/lib/write-blocked';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 interface MobileActionsSheetProps {
   open: boolean;
@@ -49,29 +49,15 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
   const { entitlements, isRestricted } = useEntitlements();
   const [selectedAction, setSelectedAction] = useState<ActionType>(null);
 
-  /** Vrai si l'action est refusée — le message et son CTA sont déjà affichés. */
-  const refuserEcriture = (quota: 'assets' | 'documents'): boolean => {
-    if (isRestricted) {
-      notifyWriteBlocked({
-        code: 'TRIAL_EXPIRED',
-        message:
-          "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
-      });
-      return true;
-    }
-    const q = entitlements?.quotas?.[quota];
-    if (q && q.limit > 0 && q.used >= q.limit) {
-      notifyWriteBlocked({
-        code: quota === 'assets' ? 'ASSET_QUOTA_REACHED' : 'DOCUMENT_QUOTA_REACHED',
-        message:
-          quota === 'assets'
-            ? `Vous avez atteint la limite de ${q.limit} biens de votre offre.`
-            : `Vous avez atteint la limite de ${q.limit} documents de votre offre.`,
-        limit: q.limit,
-      });
-      return true;
-    }
-    return false;
+  /**
+   * Garde déportée dans `WriteGuardContext` — même fenêtre que le bouton
+   * « + » de la barre latérale, au lieu d'un bandeau qui disparaît.
+   */
+  const { garder } = useWriteGuard();
+  const refuserEcriture = (quota?: 'assets' | 'documents'): boolean => {
+    let bloque = true;
+    garder(() => { bloque = false; }, quota);
+    return bloque;
   };
   const [capturedFiles, setCapturedFiles] = useState<File[]>([]);
 
@@ -83,6 +69,9 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
     // refusera. Le refus est annoncé avec son chemin de sortie.
     if (action === 'asset' && refuserEcriture('assets')) return;
     if (action === 'file' && refuserEcriture('documents')) return;
+    // L'agenda manquait : ajouter une échéance est une écriture, refusée par
+    // le serveur comme les autres. Elle n'a pas de quota propre.
+    if (action === 'agenda' && refuserEcriture()) return;
 
     if (action === 'file') {
       const input = document.createElement('input');

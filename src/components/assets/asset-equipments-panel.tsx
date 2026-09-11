@@ -7,6 +7,7 @@ import { Equipment, Substructure } from '@/types/domain';
 import { Plus, Settings, MapPin } from 'lucide-react';
 import { EquipmentDrawer, EquipmentDrawerItem, EquipmentDrawerSubstructure } from './EquipmentDrawer';
 import { Badge } from '@/components/ui/badge';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 interface AssetEquipmentsPanelProps {
   assetId: number;
@@ -40,10 +41,15 @@ export function AssetEquipmentsPanel({
   const [selectedEq, setSelectedEq] = useState<EquipmentDrawerItem | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
+  // Même garde que les pièces : les deux boutons « Ajouter » de ce panneau
+  // passent par ici.
+  const { garder } = useWriteGuard();
   const handleAdd = useCallback(() => {
-    setSelectedEq(null);
-    setIsDrawerOpen(true);
-  }, []);
+    garder(() => {
+      setSelectedEq(null);
+      setIsDrawerOpen(true);
+    });
+  }, [garder]);
 
   const handleRowClick = useCallback((eq: Equipment) => {
     setSelectedEq({

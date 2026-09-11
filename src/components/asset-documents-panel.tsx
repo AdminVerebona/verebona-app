@@ -83,6 +83,7 @@ const ExportDossierCompletDialog = lazy(() => import('./export-preset-dialogs').
 const ExportTemplateDialog = lazy(() => import('./export-template-dialog').then(m => ({ default: m.ExportTemplateDialog })));
 import { apiClient } from '@/lib/api-client';
 import { PdfThumbnail } from '@/components/ui/pdf-thumbnail';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 // ── Document card visual helpers ─────────────────────────────────────────────
 function getDocumentCardBg(documentType?: string | null, mimeType?: string): string {
@@ -182,6 +183,12 @@ export function AssetDocumentsPanel({
   onRefresh,
   onDocumentClick,
 }: AssetDocumentsPanelProps) {
+  // Les deux boutons « Ajouter » de ce panneau. La garde est posée ici et
+  // non chez l'appelant : `onUploadClick` est fourni par plusieurs pages,
+  // dont aucune ne la connaîtrait.
+  const { garder } = useWriteGuard();
+  const ajouterDocument = () => garder(() => onUploadClick?.(), 'documents');
+
   const router = useRouter();
   
   // View mode state with localStorage persistence
@@ -706,7 +713,7 @@ export function AssetDocumentsPanel({
         </div>
         <div className="flex items-center gap-2">
           {documents.length > 0 && (
-            <Button variant="outline" size="sm" onClick={onUploadClick} className="btn-add">
+            <Button variant="outline" size="sm" onClick={ajouterDocument} className="btn-add">
               <Plus className="w-4 h-4 btn-add-plus-icon mr-2" />
               Ajouter
             </Button>
@@ -798,7 +805,7 @@ export function AssetDocumentsPanel({
               <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun document pour le moment</p>
               <p className="text-xs text-[color:var(--text-muted)] mt-0.5">Importez votre premier document</p>
             </div>
-            <Button onClick={onUploadClick} className="btn-add px-4 flex-shrink-0">
+            <Button onClick={ajouterDocument} className="btn-add px-4 flex-shrink-0">
               <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
               Ajouter mon premier document
             </Button>

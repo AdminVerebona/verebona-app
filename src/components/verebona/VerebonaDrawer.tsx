@@ -22,6 +22,7 @@ import { VerebonaConversation } from './VerebonaConversation';
 import { VerebonaComposer } from './VerebonaComposer';
 import { VerebonaSuggestions } from './VerebonaSuggestions';
 import { VerebonaMascot } from './VerebonaMascot';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 export interface VerebonaDrawerProps {
   pageContext?: Record<string, string>;
@@ -30,6 +31,8 @@ export interface VerebonaDrawerProps {
 
 export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawerProps) {
   const [open, setOpen] = useState(false);
+  const { garder } = useWriteGuard();
+
   const [dimmed, setDimmed] = useState(false);
   const dimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const v = useVerebona(pageContext);
@@ -63,10 +66,18 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
 
   return (
     <Drawer open={open} onOpenChange={setOpen} direction="right">
+      {/* Garde à l'OUVERTURE, non à l'envoi : ouvrir l'assistant pour refuser
+          la question une fois rédigée ferait perdre la saisie. Même principe
+          que les tiroirs d'édition. */}
       {!open && (
         <DrawerTrigger asChild>
           <button
             type="button"
+            onClick={(e) => {
+              let autorise = false;
+              garder(() => { autorise = true; });
+              if (!autorise) e.preventDefault();
+            }}
             aria-label="Demander à Verebona"
             className={`fixed bottom-5 right-6 z-40 flex items-center gap-2.5 transition-all duration-300 hover:-translate-y-0.5 ${dimmed ? 'opacity-25' : 'opacity-100'}`}
           >

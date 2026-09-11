@@ -51,6 +51,7 @@ import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS, PICKER_DOCUMENT_TYPES, re
 import type { RoomDrawerItem } from '@/components/assets/RoomDrawer';
 import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -680,7 +681,15 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     return () => { clearInterval(timer); clearInterval(stages); };
   }, [isAnalyzing]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Les trois boutons « Modifier » du tiroir passent par ici. La garde
+  // précède le chargement des données d'édition : inutile d'aller les
+  // chercher pour une écriture que le serveur refusera.
+  const { garder } = useWriteGuard();
   const enterEditMode = useCallback(async () => {
+    let autorise = false;
+    garder(() => { autorise = true; });
+    if (!autorise) return;
+
     if (!fullData) {
       // fullData not yet loaded — should not normally happen, but guard against it
       setIsEditing(true);

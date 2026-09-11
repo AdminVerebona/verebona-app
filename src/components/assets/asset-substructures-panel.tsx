@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Plus, Home, GripVertical } from 'lucide-react';
 import { RoomDrawer, RoomDrawerItem } from './RoomDrawer';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 interface Substructure {
   id: number;
@@ -26,10 +27,15 @@ export function AssetSubstructuresPanel({
   const [drawerRoom, setDrawerRoom] = useState<RoomDrawerItem | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
+  // Ajouter une pièce est une écriture : essai terminé, le serveur la
+  // refuserait après que l'utilisateur a rempli le formulaire.
+  const { garder } = useWriteGuard();
   const handleAdd = useCallback(() => {
-    setDrawerRoom(null);
-    setIsDrawerOpen(true);
-  }, []);
+    garder(() => {
+      setDrawerRoom(null);
+      setIsDrawerOpen(true);
+    });
+  }, [garder]);
 
   const handleRowClick = useCallback((sub: Substructure) => {
     setDrawerRoom({ id: sub.id, name: sub.name, orderIndex: sub.orderIndex });

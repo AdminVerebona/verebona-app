@@ -5,6 +5,7 @@ import { Toaster } from 'sonner';
 import { ScrollToTop } from '@/components/ScrollToTop';
 import { NavigationProgress } from '@/components/NavigationProgress';
 import { ServiceWorkerRegistration } from '@/components/ServiceWorkerRegistration';
+import { WriteGuardProvider } from '@/contexts/WriteGuardContext';
 
 function ChunkErrorHandler() {
   useEffect(() => {
@@ -59,7 +60,10 @@ export function ClientShell({ children }: { children: ReactNode }) {
       <ChunkErrorHandler />
       <ServiceWorkerRegistration />
       <NavigationProgress />
-      {children}
+      {/* Garde d'écriture montée à la racine : une seule fenêtre pour les
+          douze actions qui peuvent être refusées. La monter plus bas en
+          ouvrirait plusieurs, potentiellement en même temps. */}
+      <WriteGuardProvider>{children}</WriteGuardProvider>
       <Toaster closeButton position="top-center" richColors />
       <ScrollToTop />
     </>

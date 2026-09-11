@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 export interface AiSuggestion {
   value: unknown;
@@ -221,14 +222,18 @@ export function AssetDetailSection({
     });
   }, []);
 
+  // Les boutons « Modifier » des onglets informations passent tous par ici.
+  const { garder } = useWriteGuard();
   const handleEdit = useCallback(() => {
-    setForm({ ...data });
-    setAiInjected(new Set());
-    setAiConflicts({});
-    setDirty(false);
-    setEditing(true);
-    setOpen(true);
-  }, [data]);
+    garder(() => {
+      setForm({ ...data });
+      setAiInjected(new Set());
+      setAiConflicts({});
+      setDirty(false);
+      setEditing(true);
+      setOpen(true);
+    });
+  }, [garder, data]);
 
   const handleCancel = useCallback(() => {
     if (dirty) {

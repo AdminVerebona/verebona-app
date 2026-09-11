@@ -20,11 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import {
-  Dialog,
-  DialogContent,
-} from '@/components/ui/dialog';
-import { Plus, AlertCircle, Lock, Package, Check, ArrowRight, Loader2, Crown, SlidersHorizontal } from 'lucide-react';
+import { Plus, AlertCircle, Lock, Package, Loader2, SlidersHorizontal } from 'lucide-react';
 
 
 import {
@@ -37,11 +33,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useSession } from '@/hooks/useSession';
 import { useFeatureFlags } from '@/hooks/useFeatureFlags';
 import { useEntitlements } from '@/hooks/useEntitlements';
-import { writeBlockedTitle, type WriteBlockedInfo } from '@/lib/write-blocked';
+import { type WriteBlockedInfo } from '@/lib/write-blocked';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
+import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
 
 // ⚡ Lazy load AssetFormDialog
 const AssetFormDialog = dynamic(
@@ -550,79 +547,14 @@ function AssetsPageContent() {
           </AlertDialogContent>
         </AlertDialog>
 
-        {/* Premium upsell modal */}
-        <Dialog open={showLimitModal} onOpenChange={setShowLimitModal}>
-          <DialogContent className="p-0 overflow-hidden sm:max-w-md border-0">
-            {/* Header gradient */}
-            <div className="relative px-6 pt-8 pb-6 text-center" style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e3a5f 100%)' }}>
-              <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at 30% 20%, #6366f1 0%, transparent 50%), radial-gradient(circle at 70% 80%, #3b82f6 0%, transparent 50%)' }} />
-              <div className="relative z-10">
-                <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}>
-                  <Crown className="w-7 h-7 text-white" />
-                </div>
-                <h2 className="text-xl font-bold text-white mb-1">
-                  {limitInfo
-                    ? writeBlockedTitle(limitInfo.code)
-                    : isExpired
-                      ? 'Abonnement expiré'
-                      : 'Limite atteinte'}
-                </h2>
-                <p className="text-sm text-white/70">
-                  {/* Le message vient du serveur : il connait l'offre, le
-                      quota et l'etat de l'essai. Le libelle « vos 3 biens
-                      gratuits » etait faux — l'essai en autorise 2. */}
-                  {limitInfo
-                    ? limitInfo.message
-                    : isExpired
-                      ? 'Renouvelez pour retrouver tous vos biens'
-                      : 'Vous avez atteint la limite de votre offre'}
-                </p>
-              </div>
-            </div>
-
-            {/* Body */}
-            <div className="px-6 py-5 space-y-4 bg-[color:var(--bg-card)]">
-              <p className="text-sm text-muted-foreground text-center">
-                Passez à <strong className="text-foreground">Premium</strong> pour gérer jusqu'à 10 biens et 150 documents, et débloquer toutes les fonctionnalités.
-              </p>
-
-              <div className="space-y-2.5">
-                {[
-                  'Tout Standard inclus',
-                  '10 biens et 150 documents',
-                  'Rappels avancés',
-                  'Export PDF',
-                ].map((text) => (
-                  <div key={text} className="flex items-center gap-3 text-sm">
-                    <div className="w-6 h-6 rounded-full bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-                      <Check className="w-3.5 h-3.5 text-blue-500" />
-                    </div>
-                    <span className="text-foreground/80">{text}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="pt-1 space-y-2">
-                <Link
-                  href="/mon-compte/offres"
-                  onClick={() => { setShowLimitModal(false); setLimitInfo(null); }}
-                  className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
-                  style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
-                >
-                  <Crown className="w-4 h-4" />
-                  Passer à Premium
-                  <ArrowRight className="w-4 h-4" />
-                </Link>
-                <button
-                  onClick={() => { setShowLimitModal(false); setLimitInfo(null); }}
-                  className="w-full py-2.5 rounded-xl text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  Plus tard
-                </button>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
+        {/* Fenêtre de refus — extraite dans `WriteBlockedDialog`.
+            Elle doit se déclencher depuis une douzaine d'actions ; recopier
+            73 lignes de JSX autant de fois garantissait la divergence. */}
+        <WriteBlockedDialog
+          open={showLimitModal}
+          onOpenChange={(o) => { setShowLimitModal(o); if (!o) setLimitInfo(null); }}
+          info={limitInfo}
+        />
 
         {/* ⚡ Dialog chargé uniquement quand showAssetDialog est true */}
         {showAssetDialog && user?.id && (

@@ -19,6 +19,7 @@ import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { ExportPrepareDrawer } from './ExportPrepareDrawer';
 import { getPlanTheme } from '@/lib/plan-theme';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 export type ExportType =
   | 'CIL_REGLEMENTAIRE'
@@ -177,6 +178,23 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
   const [exports, setExports] = useState<ExportRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [drawerUsage, setDrawerUsage] = useState<ExportType | 'TRANSMISSION' | null>(null);
+
+  /**
+   * Ouverture d'un export, gardée pour les dossiers préparés.
+   *
+   * `premiumOnly` distingue déjà les deux familles : la transmission et
+   * l'export de données brutes restent accessibles, essai terminé ou non.
+   * Les fermer priverait l'utilisateur de ses propres données — ce que le
+   * message « vos données sont conservées » promet précisément.
+   */
+  const { garder } = useWriteGuard();
+  const ouvrirExport = useCallback(
+    (type: ExportType | 'TRANSMISSION', premiumOnly: boolean) => {
+      if (!premiumOnly) { setDrawerUsage(type); return; }
+      garder(() => setDrawerUsage(type));
+    },
+    [garder],
+  );
   const [retrying, setRetrying] = useState<number | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<ExportRecord | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
@@ -346,7 +364,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
             return (
               <button
                 key={usage.type}
-                onClick={() => setDrawerUsage(usage.type)}
+                onClick={() => ouvrirExport(usage.type, usage.premiumOnly)}
                 className={`flex items-start gap-3 p-4 rounded-lg border text-left transition-colors w-full ${
                   locked
                     ? `border-blue-500/30 bg-blue-500/5 ${premiumTheme.colors.bgDark} hover:bg-blue-500/10`
@@ -408,7 +426,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
             return (
               <button
                 key={usage.type}
-                onClick={() => setDrawerUsage(usage.type)}
+                onClick={() => ouvrirExport(usage.type, usage.premiumOnly)}
                 className={`flex items-start gap-3 p-4 rounded-lg border text-left transition-colors w-full ${
                   locked
                     ? `border-blue-500/30 bg-blue-500/5 ${premiumTheme.colors.bgDark} hover:bg-blue-500/10`

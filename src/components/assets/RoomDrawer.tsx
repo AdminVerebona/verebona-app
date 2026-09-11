@@ -14,6 +14,7 @@ import {
 import { Home, Pencil, Trash2, Loader2, X, Save, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 export interface RoomDrawerItem {
   id: number;
@@ -50,10 +51,15 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
     }
   }, [open, room, isCreateMode]);
 
+  // Modifier une pièce est une écriture : le serveur la refuserait après
+  // que l'utilisateur a saisi le nouveau nom.
+  const { garder } = useWriteGuard();
   const enterEditMode = useCallback(() => {
-    setName(room?.name ?? '');
-    setIsEditing(true);
-  }, [room]);
+    garder(() => {
+      setName(room?.name ?? '');
+      setIsEditing(true);
+    });
+  }, [garder, room]);
 
   const handleSave = useCallback(async () => {
     if (!name.trim()) { toast.error('Le nom est obligatoire'); return; }

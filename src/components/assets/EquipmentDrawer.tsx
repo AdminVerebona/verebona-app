@@ -20,6 +20,7 @@ import {
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 export interface EquipmentDrawerItem {
   id: number;
@@ -243,13 +244,18 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     loadSubstructures(aid);
   }, [loadSubstructures]);
 
+  // Même garde que les pièces — l'édition est refusée avant la saisie,
+  // pas après.
+  const { garder } = useWriteGuard();
   const enterEditMode = useCallback(() => {
-    setName(eq?.name ?? '');
-    setType(eq?.type ?? '');
-    setStatus(eq?.status ?? 'EN_SERVICE');
-    setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
-    setIsEditing(true);
-  }, [eq]);
+    garder(() => {
+      setName(eq?.name ?? '');
+      setType(eq?.type ?? '');
+      setStatus(eq?.status ?? 'EN_SERVICE');
+      setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
+      setIsEditing(true);
+    });
+  }, [garder, eq]);
 
   const handleSave = useCallback(async () => {
     if (!name.trim()) { toast.error('Le nom est obligatoire'); return; }
