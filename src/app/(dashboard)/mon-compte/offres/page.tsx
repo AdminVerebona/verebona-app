@@ -27,12 +27,12 @@ const offers = [
     monthlyPrice: '2,90 €',
     yearlyPrice: '29 €',
     features: [
-      '2 biens actifs',
-      '10 documents analysés pendant essai',
-      '50 documents analysés par an',
-      'Agenda de mes biens',
-      'Accès desktop et mobile',
-      'Export ZIP de mes documents',
+      "Jusqu'à 2 biens",
+      "Jusqu'à 30 documents",
+      '1 utilisateur',
+      'Analyse et organisation automatiques de vos documents',
+      'Agenda et rappels de vos échéances',
+      'Export complet et transmission de vos biens',
     ],
   },
   {
@@ -40,14 +40,13 @@ const offers = [
     monthlyPrice: '5,90 €',
     yearlyPrice: '59 €',
     features: [
-      'Tout Standard inclus',
-      '10 biens actifs',
-      '30 documents analysés pendant essai',
-      '200 documents analysés par an',
-      'Analyse automatique des documents IA',
-      'Synchronisation avec votre agenda personnel',
-      'Exports documentaires prêts à utiliser',
-      'Support prioritaire',
+      'Tout Standard +',
+      "Jusqu'à 10 biens",
+      "Jusqu'à 150 documents",
+      '1 utilisateur',
+      'Interrogez Verebona sur vos biens, documents et échéances',
+      'Synchronisation de vos échéances avec votre agenda personnel',
+      "Dossiers prêts à l'emploi",
     ],
   },
   {
@@ -55,13 +54,11 @@ const offers = [
     monthlyPrice: '8,90 €',
     yearlyPrice: '89 €',
     features: [
-      'Tout Premium inclus',
-      '2 membres sur un même compte',
-      '15 biens actifs',
-      '50 documents analysés pendant essai',
-      '300 documents analysés par an',
-      'Espace commun : biens, documents, échéances',
-      'Gestion collaborative',
+      'Tout Premium +',
+      "Jusqu'à 15 biens",
+      "Jusqu'à 225 documents",
+      '2 utilisateurs',
+      'Gestion partagée de vos biens, documents et échéances',
     ],
   },
   {
@@ -323,7 +320,7 @@ export default function OffresPage() {
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             {essaiTermine
-              ? 'Choisissez l\'offre qui vous convient pour reprendre l\'ajout et la modification de vos biens et documents.'
+              ? "Choisissez l'offre qui vous convient pour reprendre l'ajout et la modification de vos biens et documents."
               : 'Comparez les offres et choisissez celle qui vous convient.'}
           </p>
         </div>
@@ -334,7 +331,7 @@ export default function OffresPage() {
         {essaiTermine && (
           <div className="grid gap-3 sm:grid-cols-3">
             {[
-              { Icone: CreditCard, fort: 'Aucun prélèvement', suite: 'n\'a été effectué.' },
+              { Icone: CreditCard, fort: 'Aucun prélèvement', suite: "n\'a été effectué." },
               { Icone: Database, fort: 'Vos données sont conservées', suite: 'et restent consultables.' },
               { Icone: ShieldCheck, fort: 'Sans engagement', suite: ', résiliable à tout moment.' },
             ].map(({ Icone, fort, suite }) => (
