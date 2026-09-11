@@ -291,7 +291,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
    * sur « Ajouter » ne comprend pas pourquoi rien ne s'ouvre.
    */
   const { garder } = useWriteGuard();
-  const refuserEcriture = useCallback((quota: 'assets' | 'documents'): boolean => {
+  const refuserEcriture = useCallback((quota?: 'assets' | 'documents'): boolean => {
     let bloque = true;
     garder(() => { bloque = false; }, quota);
     return bloque;
@@ -300,6 +300,16 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   const ouvrirAjoutBien = useCallback(() => {
     if (refuserEcriture('assets')) return;
     setShowAssetDialog(true);
+  }, [refuserEcriture]);
+
+  /**
+   * L'agenda manquait : les deux autres entrées du menu « + » passaient par
+   * `refuserEcriture`, celle-ci ouvrait le tiroir directement. Ajouter une
+   * échéance est une écriture que le serveur refuse comme les autres.
+   */
+  const ouvrirAjoutAgenda = useCallback(() => {
+    if (refuserEcriture()) return;
+    setShowAgendaDrawer(true);
   }, [refuserEcriture]);
 
   const ouvrirAjoutDocument = useCallback(() => {
@@ -389,7 +399,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                         <DropdownMenuItem onClick={ouvrirAjoutDocument} className="cursor-pointer py-2.5" data-guide="add-document">
                           <FileText className="mr-2 h-4 w-4" /><span>Ajouter un document</span>
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setShowAgendaDrawer(true)} className="cursor-pointer py-2.5" data-guide="add-agenda-item">
+                        <DropdownMenuItem onClick={ouvrirAjoutAgenda} className="cursor-pointer py-2.5" data-guide="add-agenda-item">
                           <CalendarDays className="mr-2 h-4 w-4" /><span>Ajouter à l'agenda</span>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
@@ -398,19 +408,32 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                 ) : (
                   <div className="relative w-full">
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
+                      {/* ══════════════════════════════════════════════════
+                          L'ORDRE D'IMBRICATION DÉCIDE SI LE BOUTON RÉPOND
+
+                          `DropdownMenuTrigger asChild` transmet ses gestionnaires
+                          à son unique enfant. Il enveloppait `<Tooltip>`, qui est
+                          un fournisseur de contexte et non un élément du DOM :
+                          le `onClick` n'atteignait jamais le bouton, et le menu
+                          ne s'ouvrait pas.
+
+                          La branche « menu replié », quinze lignes plus haut,
+                          imbriquait déjà correctement — d'où un bouton qui
+                          fonctionnait d'un côté seulement.
+                          ══════════════════════════════════════════════════ */}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <DropdownMenuTrigger asChild>
                             <button
                               aria-label="Ajouter"
                               className="h-11 w-11 rounded-full shadow-relief-lg hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] flex items-center justify-center hover:scale-105 transition-all group"
                             >
                               <Plus className="w-5 h-5 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90" />
                             </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="right">Ajouter un bien, un document ou un événement</TooltipContent>
-                        </Tooltip>
-                      </DropdownMenuTrigger>
+                          </DropdownMenuTrigger>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">Ajouter un bien, un document ou un événement</TooltipContent>
+                      </Tooltip>
                       <DropdownMenuContent align="center" className="w-56 shadow-relief-lg">
                         <DropdownMenuItem onClick={ouvrirAjoutBien} className="cursor-pointer py-2.5">
                           <Package className="mr-2 h-4 w-4" /><span>Ajouter un bien</span>
@@ -418,7 +441,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                         <DropdownMenuItem onClick={ouvrirAjoutDocument} className="cursor-pointer py-2.5">
                           <FileText className="mr-2 h-4 w-4" /><span>Ajouter un document</span>
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setShowAgendaDrawer(true)} className="cursor-pointer py-2.5">
+                        <DropdownMenuItem onClick={ouvrirAjoutAgenda} className="cursor-pointer py-2.5">
                           <CalendarDays className="mr-2 h-4 w-4" /><span>Ajouter à l'agenda</span>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
