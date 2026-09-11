@@ -30,7 +30,7 @@ export function ReferralBlock() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [email, setEmail] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
-  const [stats, setStats] = useState<{ validatedCount: number; creditsEarned: number } | null>(null);
+  const [stats, setStats] = useState<{ validatedCount: number; monthsEarned: number } | null>(null);
 
   useEffect(() => {
     loadReferralData();
@@ -47,7 +47,7 @@ export function ReferralBlock() {
       if (result.stats) {
         setStats({
           validatedCount: result.stats.validatedCount || 0,
-          creditsEarned: result.stats.creditsEarned || 0,
+          monthsEarned: result.stats.monthsEarned || 0,
         });
       }
     } catch (err) {
@@ -143,11 +143,11 @@ export function ReferralBlock() {
           Parrainage
         </h4>
         <p className="text-xs text-muted-foreground">
-          Disponible après votre première facturation sur les offres Premium ou Premium Duo.
+          Disponible après votre première facturation sur les offres Premium ou Premium Duo annuelles.
         </p>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Users className="w-3.5 h-3.5 flex-shrink-0" />
-          <span>Parrainez vos proches et gagnez <strong>10 analyses IA</strong> par parrainage validé.</span>
+          <span>Parrainez vos proches et gagnez <strong>1 mois d&apos;abonnement</strong> par parrainage validé.</span>
         </div>
       </div>
     );
@@ -162,7 +162,7 @@ export function ReferralBlock() {
           Parrainage
         </h4>
         <p className="text-xs text-muted-foreground">
-          Parrainez vos proches et gagnez <strong>+10 analyses IA</strong> pour chaque filleul qui souscrit un abonnement.
+          Parrainez vos proches et gagnez <strong>1 mois d&apos;abonnement</strong> pour chaque filleul qui souscrit une offre annuelle.
           Votre filleul bénéficie de <strong>3 mois d'essai</strong> au lieu de 2.
         </p>
         <Button onClick={handleCreateLink} disabled={creatingLink} size="sm">
@@ -197,7 +197,7 @@ export function ReferralBlock() {
         {(stats?.validatedCount ?? 0) > 0 && (
           <Badge variant="secondary" className="flex-shrink-0 text-xs gap-1">
             <Sparkles className="w-3 h-3" />
-            {stats!.creditsEarned} crédits
+            {stats!.monthsEarned} mois offert{stats!.monthsEarned > 1 ? 's' : ''}
           </Badge>
         )}
       </div>
@@ -210,8 +210,13 @@ export function ReferralBlock() {
             <div className="text-xs text-muted-foreground">parrainage{stats.validatedCount > 1 ? 's' : ''} validé{stats.validatedCount > 1 ? 's' : ''}</div>
           </div>
           <div className="rounded-lg border bg-muted/30 px-3 py-2 text-center">
-            <div className="text-lg font-bold text-primary">{stats.creditsEarned}</div>
-            <div className="text-xs text-muted-foreground">analyses IA gagnées</div>
+            {/* La récompense n'est plus un lot d'analyses mais un mois
+                d'abonnement. Le compteur affichait encore `validatedCount * 10`,
+                soit une unité qui n'existe plus. */}
+            <div className="text-lg font-bold text-primary">{stats.monthsEarned}</div>
+            <div className="text-xs text-muted-foreground">
+              mois offert{stats.monthsEarned > 1 ? 's' : ''}
+            </div>
           </div>
         </div>
       )}

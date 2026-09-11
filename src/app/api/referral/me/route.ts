@@ -101,7 +101,18 @@ export async function GET(request: NextRequest) {
       .where(eq(referralEvents.referrerAccountId, membership.accountId));
 
     const validatedCount = validatedRow?.total ?? 0;
-    const creditsEarned = validatedCount * 10;
+    // ══════════════════════════════════════════════════════════════════
+    // UN MOIS PAR PARRAINAGE VALIDÉ, PLUS DIX ANALYSES
+    //
+    // Le calcul rendait `validatedCount * 10` — l'ancienne récompense. La
+    // règle actuelle diffère la prochaine échéance d'un mois, ce que
+    // `postponeNextBillingByOneMonth` applique dans le cron.
+    //
+    // Le rapport reste explicite plutôt que sous-entendu : si la règle passe
+    // un jour à deux mois, c'est ici que ça se change, pas dans l'affichage.
+    // ══════════════════════════════════════════════════════════════════
+    const MOIS_PAR_PARRAINAGE = 1;
+    const monthsEarned = validatedCount * MOIS_PAR_PARRAINAGE;
 
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 
@@ -116,7 +127,7 @@ export async function GET(request: NextRequest) {
       stats: {
         usedCount: usedRow?.total ?? 0,
         validatedCount,
-        creditsEarned,
+        monthsEarned,
       },
     });
   } catch (error) {

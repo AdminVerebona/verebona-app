@@ -73,3 +73,38 @@ describe('rien ne promet plus un avantage au filleul', () => {
     expect(INVITATION).toMatch(/bénéficiera d'un mois offert/);
   });
 });
+
+describe('le bloc « Mon compte » annonce la bonne récompense', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // « 10 ANALYSES IA » ÉTAIT L'ANCIENNE RÈGLE
+  //
+  // Le compteur calculait encore `validatedCount * 10`, une unité qui
+  // n'existe plus : la récompense diffère la prochaine échéance d'un mois.
+  //
+  // C'est le cinquième endroit qui portait une version périmée de cette
+  // règle, après le cron, l'écran d'inscription, l'email d'invitation, la
+  // vitrine et la page des offres.
+  // ══════════════════════════════════════════════════════════════════════
+  const BLOC = sansCommentaires(read('src/components/account/ReferralBlock.tsx'));
+  const API = sansCommentaires(read('src/app/api/referral/me/route.ts'));
+
+  it('plus aucune mention d’analyses IA ni de crédits', () => {
+    expect(BLOC).not.toMatch(/analyses IA/);
+    expect(BLOC).not.toMatch(/crédits/);
+    expect(API).not.toMatch(/creditsEarned/);
+  });
+
+  it('la récompense est un mois d’abonnement', () => {
+    expect(BLOC).toMatch(/1 mois d&apos;abonnement/);
+  });
+
+  it('le rapport est explicite, pas sous-entendu', () => {
+    // Si la règle passe un jour à deux mois, c'est ici que ça se change.
+    expect(API).toMatch(/MOIS_PAR_PARRAINAGE = 1/);
+    expect(API).toMatch(/validatedCount \* MOIS_PAR_PARRAINAGE/);
+  });
+
+  it('l’éligibilité annoncée mentionne les offres annuelles', () => {
+    expect(BLOC).toMatch(/Premium ou Premium Duo annuelles/);
+  });
+});
