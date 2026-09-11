@@ -165,15 +165,26 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        if (!product.priceId) {
-            return NextResponse.json(
-                {
-                    code: 'STRIPE_NOT_CONFIGURED',
-                    message: `Stripe Price ID not configured for plan ${requestedPlan}.`,
-                },
-                { status: 500 }
-            );
-        }
+        // ══════════════════════════════════════════════════════════════════
+        // CONTRÔLE MORT RETIRÉ
+        //
+        // Ce bloc testait `product.priceId`, qui lit `STRIPE_PRICE_STANDARD` —
+        // l'ancienne variable du modèle à périodicité unique. La tarification
+        // V2 résout le prix vingt lignes plus haut, par couple offre/période :
+        //
+        //     resolvedPriceId = resolvePriceId(product.tier, billingPeriod);
+        //
+        // C'est `resolvedPriceId` qui alimente la session Stripe (l. 361, 405).
+        // `product.priceId` n'était plus lu nulle part dans ce fichier.
+        //
+        // Le contrôle rejetait donc une requête dont le prix était correctement
+        // résolu — « Stripe Price ID not configured for plan STANDARD » alors
+        // que STRIPE_PRICE_STANDARD_YEARLY était bien renseignée.
+        //
+        // Le 500 était trompeur par-dessus le marché : rien n'avait planté.
+        // `resolvePriceId` lève déjà si le prix manque, et cet échec est traité
+        // en 400 `PRICE_NOT_CONFIGURED` juste au-dessus.
+        // ══════════════════════════════════════════════════════════════════
 
         const stripe = getStripeServer();
 
