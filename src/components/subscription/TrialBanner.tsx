@@ -137,7 +137,7 @@ export function TrialBanner() {
             Aucun prélèvement n&apos;a été effectué et vos données sont conservées.
           </span>
         </p>
-        <Button size="sm" onClick={() => router.push('/abonnement/essai-termine')}>
+        <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
           Choisir mon abonnement
         </Button>
       </div>

@@ -7,7 +7,7 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import { Check, Loader2, Gift } from 'lucide-react';
+import { Check, Loader2, Gift, CreditCard, Database, ShieldCheck } from 'lucide-react';
 import { DowngradeConfirmDialog } from '@/components/subscription/DowngradeConfirmDialog';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
@@ -103,6 +103,15 @@ export default function OffresPage() {
   // `undefined` tant que la réponse n'est pas arrivée, `null` s'il n'y en a
   // aucune (essai en cours, essai terminé, offre résiliée).
   const [offreActive, setOffreActive] = useState<string | null | undefined>(undefined);
+  /**
+   * Essai terminé sans souscription — CDC 1 §9.2.
+   *
+   * `/api/billing/trial-status` rend déjà cette information : la page l'ignorait
+   * et affichait le même en-tête à tout le monde. C'est ce qui a justifié la
+   * création d'une page `/abonnement/essai-termine` séparée, laquelle a
+   * ensuite divergé.
+   */
+  const [essaiTermine, setEssaiTermine] = useState(false);
 
   useEffect(() => {
     // CDC §17 : consultation des offres
@@ -132,6 +141,9 @@ export default function OffresPage() {
           : data.plan === 'premium_duo' ? 'PREMIUM_DUO'
           : null,
         );
+        // `isRestricted` couvre aussi l'abonnement résilié : c'est bien « vous
+        // n'avez plus accès », pas seulement « votre essai a expiré ».
+        setEssaiTermine(data.trial?.status === 'expired' || Boolean(data.isRestricted));
         if (data.subscription?.billingPeriod) setBillingPeriod(data.subscription.billingPeriod);
       } catch {
         // Sans cette information, on reste sur le comportement de souscription.
@@ -307,12 +319,34 @@ export default function OffresPage() {
 
         <div>
           <h1 className="text-xl md:text-3xl font-bold">
-            Choisissez votre abonnement
+            {essaiTermine ? 'Votre essai gratuit est terminé' : 'Choisissez votre abonnement'}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Comparez les offres et choisissez celle qui vous convient.
+            {essaiTermine
+              ? 'Choisissez l\'offre qui vous convient pour reprendre l\'ajout et la modification de vos biens et documents.'
+              : 'Comparez les offres et choisissez celle qui vous convient.'}
           </p>
         </div>
+
+        {/* Trois rassurances, reprises de l'ancienne page dédiée.
+            Affichées seulement quand elles répondent à une inquiétude : les
+            montrer en permanence les viderait de leur sens. */}
+        {essaiTermine && (
+          <div className="grid gap-3 sm:grid-cols-3">
+            {[
+              { Icone: CreditCard, fort: 'Aucun prélèvement', suite: 'n\'a été effectué.' },
+              { Icone: Database, fort: 'Vos données sont conservées', suite: 'et restent consultables.' },
+              { Icone: ShieldCheck, fort: 'Sans engagement', suite: ', résiliable à tout moment.' },
+            ].map(({ Icone, fort, suite }) => (
+              <div key={fort} className="flex items-start gap-2.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-4 py-3">
+                <Icone className="w-4 h-4 mt-0.5 flex-shrink-0 text-muted-foreground" aria-hidden />
+                <p className="text-sm text-[color:var(--text-primary)]">
+                  <span className="font-medium">{fort}</span> {suite}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Bandeau parrainage filleul */}
         {referralValid && referralCode && (
@@ -320,7 +354,11 @@ export default function OffresPage() {
             <Gift className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
             <div>
               <p className="text-sm font-semibold text-blue-200">Offre parrainage active — code <span className="font-mono">{referralCode}</span></p>
-              <p className="text-xs text-blue-300 mt-0.5">En souscrivant maintenant, vous bénéficiez de <strong>3 mois d'essai offerts</strong> au lieu de 2, grâce à votre parrain.</p>
+              {/* ⚠️ Promettait « 3 mois d'essai offerts » AU FILLEUL. L'avantage
+                  revient au parrain seul — règle appliquée dans le cron, sur
+                  l'écran d'inscription, dans l'email d'invitation et sur la
+                  vitrine. Cet écran avait été oublié. */}
+              <p className="text-xs text-blue-300 mt-0.5">En souscrivant une offre annuelle, <strong>votre parrain bénéficiera d'un mois offert</strong>.</p>
             </div>
           </div>
         )}

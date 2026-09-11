@@ -54,4 +54,29 @@ describe('les trois états restreints sont distingués', () => {
     expect(bloc).toContain('/mon-compte/offres');
     expect(bloc).not.toContain('essai-termine');
   });
+
+  it('aucun bouton ne pointe vers la page supprimée', () => {
+    // Elle ne fait plus que rediriger : y envoyer coûterait un aller-retour
+    // serveur, et laisserait croire que deux écrans coexistent encore.
+    expect(SOURCE).not.toContain('/abonnement/essai-termine');
+  });
+});
+
+describe('la page de fin d’essai ne fait plus que rediriger', () => {
+  const PAGE = readFileSync(
+    join(process.cwd(), 'src/app/abonnement/essai-termine/page.tsx'),
+    'utf-8',
+  );
+
+  it('elle ne rend plus de grille tarifaire', () => {
+    // Deux grilles maintenues séparément divergent : celle-ci ignorait déjà
+    // le parrainage et la programmation de changement d'offre.
+    expect(PAGE).not.toMatch(/create-checkout-session/);
+    expect(PAGE).not.toMatch(/Choisir Premium/);
+  });
+
+  it('elle redirige de façon permanente', () => {
+    // Un 307 ferait repasser navigateurs et moteurs par ici indéfiniment.
+    expect(PAGE).toContain('permanentRedirect');
+  });
 });
