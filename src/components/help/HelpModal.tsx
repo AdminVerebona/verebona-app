@@ -5,6 +5,7 @@ import Fuse from 'fuse.js';
 import { Search, X, ExternalLink, Sparkles, PlayCircle } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { HELP_ARTICLES, HELP_QUICK_LINKS, type HelpArticle } from '@/lib/help-content/articles';
+import { publicSiteUrl } from '@/lib/external-urls';
 
 // ── Synonymes de normalisation pour améliorer la recherche ───────────────────
 const SYNONYM_MAP: Record<string, string> = {
@@ -73,13 +74,31 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
   function handleSearchSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (query.trim()) {
-      window.open(`/aide?q=${encodeURIComponent(query.trim())}`, '_blank');
+      // La recherche mène aux articles, qui vivent sur la vitrine.
+      window.open(
+        publicSiteUrl(`/aide?q=${encodeURIComponent(query.trim())}`),
+        '_blank',
+        'noopener,noreferrer',
+      );
       onOpenChange(false);
     }
   }
 
+  /**
+   * ══════════════════════════════════════════════════════════════════════
+   * LES ARTICLES VIVENT SUR LA VITRINE
+   *
+   * Ces liens étaient RELATIFS : `/aide/<slug>` ouvrait la page d'aide de
+   * l'application, pas celle du site public. Deux centres d'aide
+   * coexistaient, avec des contenus qui n'ont jamais été rapprochés.
+   *
+   * `publicSiteUrl` construit l'adresse absolue depuis
+   * `NEXT_PUBLIC_PUBLIC_SITE_URL`, qui diffère par environnement : l'écrire
+   * en dur enverrait la préproduction vers la production.
+   * ══════════════════════════════════════════════════════════════════════
+   */
   function openArticle(slug: string) {
-    window.open(`/aide/${slug}`, '_blank');
+    window.open(publicSiteUrl(`/aide/${slug}`), '_blank', 'noopener,noreferrer');
     onOpenChange(false);
   }
 
@@ -128,7 +147,14 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
               </button>
             ))}
             <button
-              onClick={() => { window.open(`/aide?q=${encodeURIComponent(query.trim())}`, '_blank'); onOpenChange(false); }}
+              onClick={() => {
+                window.open(
+                  publicSiteUrl(`/aide?q=${encodeURIComponent(query.trim())}`),
+                  '_blank',
+                  'noopener,noreferrer',
+                );
+                onOpenChange(false);
+              }}
               className="w-full text-center text-xs text-primary hover:underline pt-1"
             >
               Voir tous les résultats →
@@ -189,7 +215,10 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
             <span>Revoir le guide de bienvenue</span>
           </button>
           <button
-            onClick={() => { window.open('/aide', '_blank'); onOpenChange(false); }}
+            onClick={() => {
+              window.open(publicSiteUrl('/aide'), '_blank', 'noopener,noreferrer');
+              onOpenChange(false);
+            }}
             className="w-full text-center text-sm text-primary hover:underline pt-1"
           >
             Voir tous les articles →
