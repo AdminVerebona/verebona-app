@@ -6,8 +6,7 @@ import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Users, Package, UserCheck, TrendingUp, Clock, Building2, UserPlus, UsersRound, AlertCircle, Database, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Users, Package, UserCheck, TrendingUp, Clock, Building2, UserPlus, UsersRound, AlertCircle, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 
 interface BackupStatus {
@@ -170,12 +169,11 @@ export default function AdminDashboard() {
                   </p>
                 </div>
               </div>
-              <Link href="/admin/backups" className="flex-shrink-0">
-                <Button variant="outline" size="sm">
-                  <Database className="h-4 w-4 mr-2" />
-                  Gérer les backups
-                </Button>
-              </Link>
+              {/* Écran de gestion retiré : les sauvegardes sont assurées par
+                  l'add-on PostgreSQL de Scalingo, qui produit des `pg_dump`
+                  restaurables, les chiffre et les conserve hors du conteneur.
+                  Le téléchargement et la restauration se font depuis sa
+                  console — ce que cet écran ne savait pas faire. */}
             </div>
           </CardContent>
         </Card>
