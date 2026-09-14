@@ -36,14 +36,17 @@ export function MascotGreeting({ situation, userName, quickQuestions }: MascotGr
   const today = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
 
   return (
-    <div className="flex items-center gap-6">
+    <div className="flex items-center gap-3 sm:gap-6">
+      {/* 124 px fixes occupaient près d'un tiers de la largeur sur mobile,
+          au détriment du message qu'elle est censée porter. La mascotte
+          reprend sa taille dès qu'il y a la place. */}
       <Image
         src="/mascot/dialogue-bubble.webp"
         alt="Verebona"
         width={124}
         height={124}
         priority
-        className="flex-shrink-0 select-none animate-[vb-float_6s_ease-in-out_infinite] [filter:drop-shadow(0_20px_32px_rgba(4,10,26,.6))]"
+        className="w-16 h-16 sm:w-[124px] sm:h-[124px] flex-shrink-0 select-none animate-[vb-float_6s_ease-in-out_infinite] [filter:drop-shadow(0_20px_32px_rgba(4,10,26,.6))]"
       />
       <div className="flex-1 min-w-0 rounded-[22px] rounded-bl-md bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] shadow-relief-md px-5 py-4">
         <h1 className="text-[21px] font-semibold tracking-tight text-[color:var(--text-primary)]">

@@ -80,10 +80,20 @@ export function AiUsageQuotaWidget({ isDuoMember = false }: AiUsageQuotaWidgetPr
       {/* Bannière quota bloqué — message différencié limite commerciale */}
       {isAnyQuotaBlocked && (
         <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
-          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-          <div className="text-xs text-amber-200">
+          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          {/* ══════════════════════════════════════════════════════════
+              amber-200 SUR BLANC EST ILLISIBLE
+
+              Ces teintes claires sont pensées pour un fond sombre. En mode
+              clair, du jaune pâle sur blanc tombe sous le seuil de contraste
+              — le texte est visible, pas lisible.
+
+              `amber-800` en clair, `amber-200` en sombre : le même rôle, deux
+              valeurs. Le reste du fichier emploie la même convention.
+              ══════════════════════════════════════════════════════════ */}
+          <div className="text-xs text-amber-800 dark:text-amber-200">
             <p className="font-semibold">Limite de votre offre atteinte</p>
-            <p className="text-amber-300/80 mt-0.5">
+            <p className="text-amber-700 dark:text-amber-300/80 mt-0.5">
               {essaiTermine
                 ? 'Vous n’avez plus de bien actif. Choisissez une offre pour continuer.'
                 : <>
