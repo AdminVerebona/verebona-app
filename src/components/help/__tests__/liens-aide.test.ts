@@ -50,3 +50,38 @@ describe('aucun lien d’aide ne reste dans l’application', () => {
     expect(isolees).toBe(ouvertures);
   });
 });
+
+describe('les articles cités existent sur la vitrine', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // DEUX DÉPÔTS, UNE SEULE LISTE D'IDENTIFIANTS
+  //
+  // La modale ouvre `verebona.fr/aide/<id>`. Si un article est ajouté ici
+  // sans l'être sur la vitrine, le lien répond 404 — et rien ne le signale
+  // avant qu'un utilisateur ne clique.
+  //
+  // Ce test fige la liste. Elle doit être reportée dans
+  // `verebona-public/src/content/help-articles.ts` à chaque changement.
+  // ══════════════════════════════════════════════════════════════════════
+  const ARTICLES = readFileSync(
+    join(process.cwd(), 'src/services/help/help-content.ts'),
+    'utf-8',
+  );
+
+  /** Identifiants présents des deux côtés au moment de la migration. */
+  const MIGRES = [
+    'archiver-bien', 'assistant', 'decouvrir-accueil', 'dossier-vente',
+    'duo', 'import-analyse', 'organiser-docs', 'premier-bien',
+    'rappels', 'retard', 'securite', 'vues-agenda',
+  ];
+
+  it('aucun article n’a été ajouté sans être porté sur la vitrine', () => {
+    const ids = [...ARTICLES.matchAll(/\{ id: '([a-z0-9-]+)'/g)].map((m) => m[1]);
+    const absents = ids.filter((id) => !MIGRES.includes(id));
+
+    expect(
+      absents,
+      `Ces articles n'existent pas sur la vitrine — leur lien répondra 404 :\n  ${absents.join('\n  ')}\n` +
+      `Les ajouter à verebona-public/src/content/help-articles.ts, puis à MIGRES.`,
+    ).toEqual([]);
+  });
+});
