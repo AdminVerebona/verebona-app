@@ -10,6 +10,7 @@ import { apiClient } from '@/lib/api-client';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Home, FileText, AlertTriangle, Lock } from 'lucide-react';
 import type { AccountAiUsageResponse } from '@/types/ai-usage';
+import { useEntitlements } from '@/hooks/useEntitlements';
 
 interface AiUsageQuotaWidgetProps {
   isDuoMember?: boolean;
@@ -33,6 +34,7 @@ function QuotaBar({ percent, blocked }: { percent: number; blocked: boolean }) {
 
 export function AiUsageQuotaWidget({ isDuoMember = false }: AiUsageQuotaWidgetProps) {
   const [data, setData] = useState<AccountAiUsageResponse | null>(null);
+  const { entitlements } = useEntitlements();
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -59,6 +61,17 @@ export function AiUsageQuotaWidget({ isDuoMember = false }: AiUsageQuotaWidgetPr
     isAnyQuotaBlocked,
   } = data;
 
+  // ══════════════════════════════════════════════════════════════════════
+  // UN ESSAI TERMINÉ N'EST PAS UN QUOTA DÉPASSÉ
+  //
+  // Le message disait « Passez à une offre supérieure » — juste pour un
+  // abonné Standard qui bute sur sa limite. Un essai terminé n'a AUCUNE
+  // offre : il n'y a pas de supérieure, il y a un choix à faire.
+  //
+  // Le quota vaut alors 0, et « 2 / 0 » se lit mal sans cette explication.
+  // ══════════════════════════════════════════════════════════════════════
+  const essaiTermine = entitlements?.trial.status === 'expired';
+
   const assetsBlocked = assetsCount >= assetsQuota;
   const docsBlocked = documentsAnalyzedCount >= documentsAnalyzedQuota;
 
@@ -71,13 +84,17 @@ export function AiUsageQuotaWidget({ isDuoMember = false }: AiUsageQuotaWidgetPr
           <div className="text-xs text-amber-200">
             <p className="font-semibold">Limite de votre offre atteinte</p>
             <p className="text-amber-300/80 mt-0.5">
-              {assetsBlocked && docsBlocked
-                ? 'Votre quota de biens et de documents analysés est atteint.'
-                : assetsBlocked
-                ? 'Votre quota de biens actifs est atteint.'
-                : 'Votre quota de documents analysés est atteint.'
-              }{' '}
-              Passez à une offre supérieure pour continuer.
+              {essaiTermine
+                ? 'Vous n’avez plus de bien actif. Choisissez une offre pour continuer.'
+                : <>
+                    {assetsBlocked && docsBlocked
+                      ? 'Votre quota de biens et de documents analysés est atteint.'
+                      : assetsBlocked
+                      ? 'Votre quota de biens actifs est atteint.'
+                      : 'Votre quota de documents analysés est atteint.'
+                    }{' '}
+                    Passez à une offre supérieure pour continuer.
+                  </>}
             </p>
           </div>
         </div>
