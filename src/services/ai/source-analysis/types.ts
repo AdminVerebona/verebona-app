@@ -117,6 +117,20 @@ export interface SourceAnalysisResult {
     type?: EvidenceValue<string>;
     /** Catégorie documentaire proposée (CDC 5 §7.1). */
     category?: EvidenceValue<string>;
+    /**
+     * Classement V2 (CDC V2 §3, §11.4).
+     *
+     * Structure distincte de `category` : la confiance y est NUMÉRIQUE, le
+     * §11.2 raisonnant sur un seuil de 90 % que trois niveaux qualitatifs ne
+     * permettent pas de situer.
+     */
+    rubric?: {
+      rubricCode: string;
+      documentTypeCode: string | null;
+      confidence: number;
+      excerpt: string;
+      promptVersion: string | null;
+    };
     description?: EvidenceValue<string>;
     transcription?: string;
     date?: EvidenceValue<string>;

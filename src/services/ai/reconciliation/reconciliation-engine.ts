@@ -24,6 +24,7 @@ import { applyDecision } from './apply-decision';
 import { writeConflict, resolveObsoleteConflict } from './conflict-writer';
 import { openRun, closeRun, recordDecisions } from './reconciliation-run.repository';
 import { shouldWrite } from '../flags/ai-feature-flags';
+import { syncReconciliationToProcess } from '@/services/to-process/reconciliation-bridge';
 import type { ReconciliationDecision, ReconciliationRun } from './types';
 
 export interface ReconcileInput {
@@ -107,6 +108,30 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
   }
 
   await recordDecisions(runId, input.accountId, input.assetId, decisions);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ALIMENTATION DE LA FILE « À TRAITER » V2 (CDC V2 §11.1, §10.5)
+  //
+  // Le §11.1 interdit un second moteur : les décisions produites ci-dessus
+  // sont traduites en actions, elles ne sont pas recalculées. Le pont filtre
+  // par le catalogue §10 — un champ sans règle ne produit aucune carte,
+  // conformément à P-06.
+  //
+  // En mode observation, rien n'est écrit : la file refléterait des décisions
+  // que la base ne porte pas, et l'utilisateur arbitrerait dans le vide.
+  // ══════════════════════════════════════════════════════════════════════
+  if (!shadow) {
+    await syncReconciliationToProcess({
+      accountId: input.accountId,
+      assetId: input.assetId,
+      decisions,
+    }).catch((e) => {
+      console.error(
+        `[reconciliation] file « À traiter » non synchronisée pour le bien ${input.assetId} :`,
+        (e as Error).message,
+      );
+    });
+  }
 
   const summary: ReconciliationRun = {
     runId,

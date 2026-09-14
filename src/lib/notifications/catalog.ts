@@ -221,7 +221,14 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       undefined, 'notif_to_process_digest',
     ),
     deepLink: () => '/accueil/a-traiter',
-    payloadSchema: z.object({ total: z.number(), byFamily: z.record(z.string(), z.number()) }),
+    // CDC V2 §14 : `byKind` et `byPriority` remplacent `byFamily`, laissé
+    // optionnel le temps que les notifications déjà en file soient envoyées.
+    payloadSchema: z.object({
+      total: z.number(),
+      byKind: z.record(z.string(), z.number()).optional(),
+      byPriority: z.record(z.string(), z.number()).optional(),
+      byFamily: z.record(z.string(), z.number()).optional(),
+    }),
   },
 
   // ── Partage et Duo — décisions obligatoires (§2.11 / §7.4) ─────────────────

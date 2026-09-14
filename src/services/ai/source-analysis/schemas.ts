@@ -39,6 +39,27 @@ export const ClassifyCategoryOutput = z.object({
 });
 export type ClassifyCategoryOutput = z.infer<typeof ClassifyCategoryOutput>;
 
+// ── classify_rubric (CDC V2 §11.4, §11.5) ────────────────────────────────────
+//
+// ⚠️ La confiance est ici NUMÉRIQUE, là où les autres opérations emploient
+// trois niveaux qualitatifs.
+//
+// Ce n'est pas une incohérence de style : le §11.2 impose « un seuil fixe de
+// 90 % » appliqué à toute proposition susceptible d'écrire une donnée. Trois
+// niveaux ne permettent pas de situer une proposition par rapport à 0,90 —
+// « probable » est-il au-dessus ou en dessous ? La question n'a pas de
+// réponse, et c'est le seuil qui deviendrait un réglage.
+//
+// Le score n'est jamais affiché à l'utilisateur (§11.2, dernier alinéa).
+export const ClassifyRubricOutput = z.object({
+  rubricCode: z.string().min(3).max(60).regex(/^[A-Z][A-Z0-9_]{2,59}$/),
+  /** Facultatif : une Rubrique sans Type reste un classement valide (§2.2). */
+  documentTypeCode: z.string().min(3).max(60).regex(/^[A-Z][A-Z0-9_]{2,59}$/).nullable().optional(),
+  confidence: z.number().min(0).max(1),
+  excerpt,
+});
+export type ClassifyRubricOutput = z.infer<typeof ClassifyRubricOutput>;
+
 // ── extract_source ───────────────────────────────────────────────────────────
 const evidenceField = z.object({
   fieldKey: z.string().min(1).max(120),

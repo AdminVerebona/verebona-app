@@ -71,6 +71,20 @@ export const assets = pgTable('assets', {
   objectCategory: text('object_category'),
   objectDetails: text('object_details'),
   archivedReason: text('archived_reason'), // NULL | 'user' | 'transmitted'
+
+  // ── « Bien mis en location » (CDC V2 §6.1, migration 0128) ───────────────
+  /**
+   * Immobilier uniquement. Défaut `false`, qui est une VALEUR SYSTÈME et non
+   * une validation utilisateur : `isRentedUserValidated` fait la différence.
+   * Sans cette distinction, un bien jamais renseigné serait protégé comme
+   * s'il avait été explicitement déclaré non loué, et l'IA ne pourrait plus
+   * jamais le corriger (§6.1, alinéas 4 et 6).
+   */
+  isRented: boolean('is_rented').notNull().default(false),
+  isRentedOrigin: text('is_rented_origin').notNull().default('SYSTEM_RULE'),
+  isRentedUserValidated: boolean('is_rented_user_validated').notNull().default(false),
+  isRentedUpdatedAt: tstzOptional('is_rented_updated_at'),
+
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -339,6 +353,34 @@ export const assetFiles = pgTable('asset_files', {
   categoryUserLocked: boolean('category_user_locked').notNull().default(false),
   typeUserLocked: boolean('type_user_locked').notNull().default(false),
   classificationUpdatedAt: tstzOptional('classification_updated_at'),
+
+  // ── Classement V2 : Rubrique / Type (CDC V2 §13.1, migration 0128) ──────
+  //
+  // Colonnes NOUVELLES, posées à côté des colonnes V1 plutôt qu'à leur place.
+  // Le §15 impose un retraitement complet du parc par le moteur
+  // d'optimisation : pendant ce temps, `documentCategoryId` reste la source
+  // d'affichage. Renommer les colonnes V1 aurait forcé un basculement
+  // instantané, sans retour possible si le retraitement révélait un défaut.
+  //
+  // `rubricCode` NULL ⇒ « Sans rubrique » (§13.1). L'état « classé / à
+  // classer » devient dérivable et n'est plus stocké : deux sources de vérité
+  // pour le même fait finissent toujours par diverger.
+  /** Code de Rubrique du référentiel versionné. NULL = « Sans rubrique ». */
+  rubricCode: text('rubric_code'),
+  /** Type documentaire V2. Appartient à `rubricCode` lorsqu'il est renseigné. */
+  documentTypeCode: text('document_type_code'),
+  /** USER | DOCUMENT_EXTRACTION | RECONCILIATION | IMPORT | SYSTEM_RULE | ADMIN. */
+  rubricOrigin: text('rubric_origin'),
+  typeOrigin: text('type_origin'),
+  /** §12.2 — protège contre tout remplacement automatique. */
+  rubricUserValidated: boolean('rubric_user_validated').notNull().default(false),
+  typeUserValidated: boolean('type_user_validated').notNull().default(false),
+  /** Interne, jamais exposé dans l'UX (§11.2). */
+  rubricConfidence: numeric('rubric_confidence'),
+  typeConfidenceV2: numeric('type_confidence_v2'),
+  /** Version du référentiel ayant produit la décision (§11.6). */
+  classificationReferentialVersion: text('classification_referential_version'),
+
   substructureId: integer('substructure_id').references(() => substructures.id, { onDelete: 'set null' }),
   equipmentId: integer('equipment_id').references(() => equipments.id, { onDelete: 'set null' }),
   documentDate: pgDate('document_date'),
@@ -378,6 +420,9 @@ export const assetFiles = pgTable('asset_files', {
   scopeIdx: index('asset_files_scope_idx').on(table.scope),
   // Composite index for the most common query filter: accountId + deletedAt
   accountIdDeletedAtIdx: index('asset_files_account_id_deleted_at_idx').on(table.accountId, table.deletedAt),
+  // Le regroupement par Rubrique est calculé côté serveur (§16.3) : c'est le
+  // filtre le plus fréquent des deux pages documentaires.
+  rubricCodeIdx: index('asset_files_rubric_code_idx').on(table.accountId, table.rubricCode),
   scopeCheck: check('asset_files_scope_check', sql`${table.scope} IN ('personal', 'duo')`),
 }));
 
@@ -2556,3 +2601,87 @@ export const jobLocks = pgTable('job_locks', {
   lockedBy: text('locked_by'),
   updatedAt: pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// File d'actions « À traiter » — CDC V2.0 §7, §13.3, §13.4 (migration 0128)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Une ligne = une action, jamais un objet (§7.1).
+ *
+ * ── POURQUOI LES ACTIONS RÉSOLUES RESTENT ─────────────────────────────────
+ *
+ * Le §7.1 est catégorique côté utilisateur : « L'utilisateur ne voit aucun
+ * historique des actions résolues. » On pourrait en conclure qu'il faut les
+ * supprimer. Le §7.3 dit l'inverse : « l'ancienne résolution reste historisée
+ * techniquement », et le §7.4 s'appuie dessus — « Le moteur ne recrée pas la
+ * même action sans nouvel élément déclencheur ».
+ *
+ * Supprimer la ligne ferait réapparaître au passage suivant l'action que
+ * l'utilisateur vient de marquer « Non applicable ». L'historique n'est pas
+ * une commodité d'audit : c'est ce qui rend la résolution durable.
+ */
+export const toProcessActions = pgTable('to_process_actions', {
+  id: serial('id').primaryKey(),
+  publicId: uuid('public_id').defaultRandom().unique().notNull(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+
+  /** DOCUMENT | ASSET | EQUIPMENT | AGENDA_ITEM | SUPPLIER. */
+  targetType: text('target_type').notNull(),
+  targetId: integer('target_id').notNull(),
+
+  /** Donnée concernée. Exclusif avec `relationKey` (§13.3). */
+  fieldKey: text('field_key'),
+  /** Relation concernée. Exclusif avec `fieldKey`. */
+  relationKey: text('relation_key'),
+
+  /** ARBITRATE | COMPLETE (§7.2). */
+  actionKind: text('action_kind').notNull(),
+  /** Règle du catalogue §10 ayant créé l'action. */
+  ruleCode: text('rule_code').notNull(),
+  /** DO_FIRST | DO_NEXT | CAN_WAIT (§9.1). */
+  priority: text('priority').notNull().default('DO_NEXT'),
+
+  /** Question affichée en élément dominant de la carte (§8.4). */
+  question: text('question').notNull(),
+  /** Propositions actives, valeur actuelle si utile, sources légères (§13.3). */
+  proposalsJson: jsonb('proposals_json'),
+
+  /** Échéance associée, quand la règle en porte une (§9.2). */
+  dueDate: pgTimestamp('due_date', { withTimezone: true }),
+
+  activeSince: tstz('active_since'),
+  lastSeenAt: tstz('last_seen_at'),
+  resolvedAt: tstzOptional('resolved_at'),
+  /** USER_ARBITRATED | USER_COMPLETED | NOT_APPLICABLE | OBSOLETE | TARGET_DELETED. */
+  resolutionReason: text('resolution_reason'),
+
+  /** Permet la réapparition d'un problème réellement nouveau (§7.3). */
+  cycleNumber: integer('cycle_number').notNull().default(1),
+
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  accountIdx: index('to_process_actions_account_idx').on(table.accountId),
+  // Le filtre de la page : actions actives d'un compte, ordonnées (§8.2).
+  activeIdx: index('to_process_actions_active_idx')
+    .on(table.accountId, table.resolvedAt, table.priority),
+  targetIdx: index('to_process_actions_target_idx')
+    .on(table.targetType, table.targetId),
+  publicIdIdx: index('to_process_actions_public_id_idx').on(table.publicId),
+  kindCheck: check(
+    'to_process_actions_kind_check',
+    sql`${table.actionKind} IN ('ARBITRATE', 'COMPLETE')`,
+  ),
+  priorityCheck: check(
+    'to_process_actions_priority_check',
+    sql`${table.priority} IN ('DO_FIRST', 'DO_NEXT', 'CAN_WAIT')`,
+  ),
+  // Exactement l'une des deux clés : la clé d'unicité du §7.3 en dépend.
+  keyCheck: check(
+    'to_process_actions_key_check',
+    sql`(${table.fieldKey} IS NULL) <> (${table.relationKey} IS NULL)`,
+  ),
+  // L'unicité logique du §13.4 est un index PARTIEL sur les actions actives ;
+  // Drizzle ne l'exprimant pas, il est posé par la migration 0128.
+}));

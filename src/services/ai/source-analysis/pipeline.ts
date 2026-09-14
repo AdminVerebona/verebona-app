@@ -30,7 +30,9 @@ import { groupSources } from './steps/group-sources.step';
 import { extractSource } from './steps/extract-source.step';
 import { classifyDocument } from './steps/classify-document.step';
 import { classifyCategory } from './steps/classify-category.step';
+import { classifyRubric, loadAssetFamilies } from './steps/classify-rubric.step';
 import { updateClassification } from '@/services/documents/classification.service';
+import { applyV2Classification } from '@/services/documents/apply-v2-classification.service';
 
 /**
  * Version du pipeline, consignée avec chaque correction utilisateur.
@@ -188,6 +190,44 @@ export async function runSourceAnalysis(
         });
       }
 
+      // ══════════════════════════════════════════════════════════════════
+      // ÉTAPE 12 ter — CLASSEMENT V2 ET FILE « À TRAITER » (CDC V2 §10.2, §11.3)
+      //
+      // Appelé même SANS proposition : c'est ce qui distingue DOC-RUB-03
+      // (« Rubrique absente + aucune proposition → À compléter ») du silence.
+      // Un document que le modèle n'a pas su classer doit produire une action,
+      // sans quoi il resterait « Sans rubrique » sans que rien ne le signale.
+      //
+      // Ne lève jamais, pour la même raison que le classement V1 : une analyse
+      // réussie ne doit pas être perdue parce qu'une carte n'a pas pu être
+      // créée.
+      // ══════════════════════════════════════════════════════════════════
+      const assetIdsForV2 = result.assetCandidates
+        .map((c) => c.entityId)
+        .filter((id): id is number => typeof id === 'number');
+
+      await applyV2Classification({
+        fileId: leadSourceId,
+        accountId: input.accountId,
+        proposal: result.document.rubric
+          ? {
+              rubricCode: result.document.rubric.rubricCode,
+              documentTypeCode: result.document.rubric.documentTypeCode,
+              confidence: result.document.rubric.confidence,
+              excerpt: result.document.rubric.excerpt,
+            }
+          : null,
+        origin: 'DOCUMENT_EXTRACTION',
+        assetFamilies: await loadAssetFamilies(assetIdsForV2),
+        promptVersion: result.document.rubric?.promptVersion ?? null,
+        pipelineVersion: PIPELINE_VERSION,
+      }).catch((e) => {
+        console.error(
+          `[source-analysis] classement V2 du fichier ${leadSourceId} impossible :`,
+          (e as Error).message,
+        );
+      });
+
       // Étape 9 (suite) — preuves, uniquement si un bien est déterminé.
       const assetId = resolveAssetId(result, input);
       if (assetId) {
@@ -342,14 +382,41 @@ async function analyseGroup(
   // La règle déterministe tranche la majorité des cas sans appel modèle — un
   // DPE, une garantie, un contrôle technique n'admettent qu'une catégorie.
   // ══════════════════════════════════════════════════════════════════════
-  const categorie = await classifyCategory(input, groupIndices, {
-    documentType: (classified.type ?? extracted.document.type)?.value,
-    assetIds: entities.assetCandidates
-      .map((c) => c.entityId)
-      .filter((id): id is number => typeof id === 'number'),
-    title: hints.title,
-    extractedText: hints.extractedText,
-  });
+  // ══════════════════════════════════════════════════════════════════════
+  // ÉTAPE 6 ter — RUBRIQUE V2 (CDC V2 §3.4, §11.4)
+  //
+  // Menée EN PARALLÈLE du classement V1, et non à sa place : le §15 impose
+  // que le parc soit retraité avant que la V2 serve l'affichage. Tant que ce
+  // retraitement n'est pas vérifié, les deux classements se remplissent, et
+  // c'est le déploiement du lot 3 qui bascule l'affichage.
+  //
+  // Le coût de ce doublon est faible : le §2.2 rend la Rubrique déductible
+  // dès qu'un Type est déterminé, et la majorité des documents ne déclenche
+  // donc aucun appel modèle supplémentaire.
+  // ══════════════════════════════════════════════════════════════════════
+  const [categorie, rubrique] = await Promise.all([
+    classifyCategory(input, groupIndices, {
+      documentType: (classified.type ?? extracted.document.type)?.value,
+      assetIds: entities.assetCandidates
+        .map((c) => c.entityId)
+        .filter((id): id is number => typeof id === 'number'),
+      title: hints.title,
+      extractedText: hints.extractedText,
+    }),
+    classifyRubric(input, groupIndices, {
+      documentType: (classified.type ?? extracted.document.type)?.value,
+      assetIds: entities.assetCandidates
+        .map((c) => c.entityId)
+        .filter((id): id is number => typeof id === 'number'),
+      title: hints.title,
+      extractedText: hints.extractedText,
+    }).catch((e) => {
+      // Le classement V2 ne sert encore aucun écran : son échec ne doit pas
+      // compromettre une analyse par ailleurs réussie.
+      console.error('[source-analysis] classement V2 indisponible :', (e as Error).message);
+      return null;
+    }),
+  ]);
 
   // Étape 11 — candidats agenda, déterministes.
   const agendaCandidates = buildAgendaCandidates(extracted.extractedFields, hints.title);
@@ -363,6 +430,15 @@ async function analyseGroup(
       ...extracted.document,
       type: classified.type ?? extracted.document.type,
       category: categorie.category,
+      rubric: rubrique?.proposal
+        ? {
+            rubricCode: rubrique.proposal.rubricCode,
+            documentTypeCode: rubrique.proposal.documentTypeCode,
+            confidence: rubrique.proposal.confidence,
+            excerpt: rubrique.proposal.excerpt,
+            promptVersion: rubrique.promptVersion,
+          }
+        : undefined,
     },
     assetCandidates: entities.assetCandidates,
     roomCandidates: entities.roomCandidates,
@@ -374,6 +450,7 @@ async function analyseGroup(
     warnings,
     operationTrace: combineTraces(
       groupTrace, extracted.trace, classified.trace, entities.trace, categorie.trace,
+      ...(rubrique ? [rubrique.trace] : []),
     ),
   };
 }

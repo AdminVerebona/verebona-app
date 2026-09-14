@@ -5,6 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { AssetDetailSection, type AiSuggestion, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
+import { RentalStatusField } from './v2/RentalStatusField';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
 import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
@@ -496,6 +497,20 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
 
   return (
     <div className="space-y-3">
+      {/* ══════════════════════════════════════════════════════════════════
+          « Bien mis en location » — CDC V2 §6.1.
+
+          Placé en tête de l'onglet et non dans une section : il ne décrit pas
+          le bien, il conditionne la visibilité de la Rubrique « Gestion
+          locative » (§6.2). L'enfouir dans « Informations générales » le
+          rendrait introuvable au moment où l'utilisateur cherche pourquoi ses
+          documents de location n'ont nulle part où aller.
+
+          Le composant se retire de lui-même hors immobilier : l'API répond
+          NOT_APPLICABLE et rien n'est rendu.
+          ══════════════════════════════════════════════════════════════════ */}
+      <RentalStatusField assetId={asset.id} readOnly={readOnly} onChanged={onRefresh} />
+
       <ValuationHistoryDrawer
         open={valuationDrawerOpen}
         onClose={() => setValuationDrawerOpen(false)}

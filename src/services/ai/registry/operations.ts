@@ -103,6 +103,16 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     // et cet appel ne porte que sur les types réellement ambigus.
     outputSchema: 'ClassifyCategoryOutput', active: true, billable: false,
   },
+  classify_rubric: {
+    operationCode: 'classify_rubric', useCaseCode: 'SOURCE_ANALYSIS',
+    label: 'Classement par Rubrique documentaire (CDC V2)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: 'classify_rubric_v1', timeoutMs: 20_000,
+    // Non facturée, et sollicitée bien plus rarement que `classify_category` :
+    // le §2.2 rend la Rubrique déductible dès qu'un Type V2 est déterminé, ce
+    // qui écarte l'appel modèle pour la majorité des documents.
+    outputSchema: 'ClassifyRubricOutput', active: true, billable: false,
+  },
   identify_entities: {
     operationCode: 'identify_entities', useCaseCode: 'SOURCE_ANALYSIS',
     label: 'Identification des entités (biens, pièces, équipements, fournisseurs)',

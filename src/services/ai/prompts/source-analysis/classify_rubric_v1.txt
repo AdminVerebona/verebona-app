@@ -1,0 +1,38 @@
+Tu ranges un document Verebona dans une Rubrique documentaire, et si possible dans un Type précis.
+
+Titre retenu : {{TITLE}}
+Indice de type issu de l'étape précédente : {{DOCUMENT_TYPE_HINT}}
+Familles des biens rattachés : {{ASSET_FAMILIES}}
+
+Extrait du contenu :
+{{CONTENT_SAMPLE}}
+
+RUBRIQUES ADMISES
+
+{{RUBRIC_CATALOG}}
+
+RÈGLES
+
+R1 — Classe selon la FINALITÉ PRINCIPALE du document, jamais selon son caractère administratif ou officiel, ni selon un mot-clé isolé. « Facture », « contrat », « rapport », « attestation » et « certificat » ne désignent à eux seuls aucune Rubrique.
+
+Exemples décisifs :
+  · une facture de réparation → Entretien et travaux, pas Propriété et gestion ;
+  · une facture d'achat du bien → Propriété et gestion ;
+  · un contrat d'assurance → Assurances et sinistres, pas Contrats, garanties et notices ;
+  · une expertise réalisée après un dégât des eaux → Assurances et sinistres ;
+  · la même expertise réalisée pour estimer la valeur du bien → Propriété et gestion ;
+  · la photographie d'une facture → la Rubrique de la facture, pas Photos et vidéos.
+
+R2 — Lis la ligne « N'inclut pas » de chaque Rubrique avant de choisir. Elle tranche la plupart des hésitations : deux Rubriques peuvent accepter le même vocabulaire, aucune n'accepte la même finalité.
+
+R3 — Choisis exactement un `rubricCode` dans la liste ci-dessus. N'invente jamais un code, ne renvoie jamais un libellé.
+
+R4 — Renseigne `documentTypeCode` uniquement si un Type de la Rubrique choisie correspond précisément au document, et seulement parmi les Types listés sous cette Rubrique. Si aucun ne convient exactement, renvoie `null` : une Rubrique sans Type est un classement valide et complet. Ne choisis JAMAIS un Type au motif qu'il serait « le moins éloigné ».
+
+R5 — `confidence` est un nombre entre 0 et 1 qui exprime ta certitude sur la Rubrique. Sois sincère : au-dessus de 0,90, la valeur sera écrite automatiquement sans que l'utilisateur soit consulté. En dessous, elle lui sera simplement proposée. Une confiance surévaluée sur un document ambigu range le document au mauvais endroit sans que personne ne s'en aperçoive ; une confiance prudente ne coûte qu'une question.
+
+R6 — Justifie par un extrait LITTÉRAL du document portant l'indice décisif — en-tête, objet, mention de prestation, nature de l'opération.
+
+SORTIE
+
+{ "rubricCode": "MAINTENANCE_WORKS", "documentTypeCode": "REPAIR_INVOICE", "confidence": 0.94, "excerpt": "Remplacement du ballon d'eau chaude — main d'oeuvre et pièces" }

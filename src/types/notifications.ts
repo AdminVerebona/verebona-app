@@ -89,7 +89,18 @@ export interface NotificationPayloadMap {
   ANALYSIS_FAILED_PERSISTENT: { assetFileId: number; documentTitle?: string; errorReason?: string };
 
   TO_PROCESS_ITEM_CREATED: { family: 'arbitrate' | 'attach' | 'confirm' | 'complete'; itemKey: string };
-  TO_PROCESS_DAILY_DIGEST: { total: number; byFamily: Record<string, number> };
+  /**
+   * CDC V2 §14 — deux natures au lieu des quatre familles historiques, plus
+   * un décompte par priorité. `byFamily` est conservé pour les notifications
+   * déjà en file au moment du déploiement : les relire avec un schéma qui
+   * ignore leur charge utile les ferait échouer à l'envoi.
+   */
+  TO_PROCESS_DAILY_DIGEST: {
+    total: number;
+    byKind?: Record<string, number>;
+    byPriority?: Record<string, number>;
+    byFamily?: Record<string, number>;
+  };
 
   DUO_INVITATION_RECEIVED: { duoId?: number; inviteToken?: string; initiatorName?: string };
   ACCOUNT_INVITATION: { inviteToken?: string; inviterName?: string; accountName?: string };

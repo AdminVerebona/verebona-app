@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { isToProcessV2Enabled } from '@/lib/v2-rollout';
+import { ToProcessQueue } from '@/components/to-process/ToProcessQueue';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -321,7 +323,7 @@ function LoadingSkeleton() {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function ATraiterPage() {
+function ATraiterPageV1() {
   const { setBreadcrumbs } = useBreadcrumb();
 
   useEffect(() => {
@@ -1180,4 +1182,34 @@ export default function ATraiterPage() {
       />
     </>
   );
+}
+
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * BASCULE V2 (CDC V2 §7, §8) — NEXT_PUBLIC_VEREBONA_V2_TO_PROCESS
+ *
+ * Une coquille qui choisit, plutôt qu'un test à l'intérieur du composant V1 :
+ * celui-ci appelle une quinzaine de hooks, et un retour anticipé avant eux
+ * violerait leur règle d'ordre — React rendrait la page instable au moment
+ * précis où l'on bascule.
+ *
+ * Le code V1 reste en place sous ce garde. La bascule est la seule étape non
+ * réversible du chantier : une page V2 qui se révélerait incomplète sur un
+ * compte réel laisserait l'utilisateur sans l'ancienne. Un retour arrière est
+ * ici un changement de variable, pas un redéploiement.
+ *
+ * Le retrait définitif du code V1 se fait une fois la bascule tenue sur
+ * l'ensemble du parc — voir scripts/drop-v1-classification.ts.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export default function ATraiterPage() {
+  if (isToProcessV2Enabled()) {
+    return (
+      <div className="mx-auto w-full max-w-3xl px-4 py-6">
+        <ToProcessQueue />
+      </div>
+    );
+  }
+  return <ATraiterPageV1 />;
 }

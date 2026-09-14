@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { isDocumentsV2Enabled } from '@/lib/v2-rollout';
+import { DocumentsByRubric } from '@/components/documents/v2/DocumentsByRubric';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -119,7 +121,7 @@ const fmtDate = (d: string | null) => {
   catch { return d; }
 };
 
-export default function DocumentsPage() {
+function DocumentsPageV1() {
   const { user, isLoading: isSessionLoading } = useSession({ required: true });
   const { setBreadcrumbs } = useBreadcrumb();
 
@@ -1010,4 +1012,33 @@ export default function DocumentsPage() {
       )}
     </>
   );
+}
+
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * BASCULE V2 (CDC V2 §4) — NEXT_PUBLIC_VEREBONA_V2_DOCUMENTS
+ *
+ * Une coquille qui choisit, et non un test à l'intérieur du composant V1 :
+ * celui-ci appelle une vingtaine de hooks, et un retour anticipé avant eux
+ * violerait leur règle d'ordre — React rendrait la page instable au moment
+ * précis où l'on bascule.
+ *
+ * La page V2 porte désormais téléversement, suppression, tri, filtres et
+ * pagination. Elle n'a PAS de champ de recherche local : le §4.2 et le
+ * critère UX-01 l'interdisent, la recherche restant centralisée. Son absence
+ * est une exigence, pas un manque — c'est le point qui sera « corrigé » de
+ * bonne foi si personne ne le sait.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export default function DocumentsPage() {
+  if (isDocumentsV2Enabled()) {
+    return (
+      <main className="mx-auto w-full max-w-3xl px-4 py-6">
+        <h1 className="mb-4 text-xl font-semibold">Mes documents</h1>
+        <DocumentsByRubric />
+      </main>
+    );
+  }
+  return <DocumentsPageV1 />;
 }
