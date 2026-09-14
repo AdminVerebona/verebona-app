@@ -200,7 +200,7 @@ function DuoJoinContent() {
         </div>
 
         {!sessionLoading && !user && (
-          <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg px-4 py-3 text-sm text-blue-200">
+          <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg px-4 py-3 text-sm text-[color:var(--text-info-soft)]">
             Vous devez être connecté pour rejoindre cet espace. Créez un compte ou connectez-vous pour continuer.
           </div>
         )}

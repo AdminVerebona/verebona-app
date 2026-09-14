@@ -77,10 +77,10 @@ function OnboardingContent() {
             </div>
 
             {cancelled && (
-              <div className="flex items-start gap-3 p-4 bg-blue-950/30 border border-blue-900/50 rounded-xl text-blue-300 text-sm">
+              <div className="flex items-start gap-3 p-4 bg-blue-950/30 border border-blue-900/50 rounded-xl text-[color:var(--text-info)] text-sm">
                 <AlertCircle className="w-5 h-5 flex-shrink-0 text-blue-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="font-semibold text-blue-200">Paiement annulé</p>
+                  <p className="font-semibold text-[color:var(--text-info-soft)]">Paiement annulé</p>
                   <p className="text-xs text-blue-400">
                     Pas d'inquiétude, aucune somme n'a été débitée. Vous pouvez reprendre votre inscription à tout moment ci-dessous.
                   </p>
@@ -89,10 +89,10 @@ function OnboardingContent() {
             )}
 
             {error && (
-              <div className="flex items-start gap-3 p-4 bg-red-950/30 border border-red-900/50 rounded-xl text-red-300 text-sm animate-shake">
+              <div className="flex items-start gap-3 p-4 bg-red-950/30 border border-red-900/50 rounded-xl text-[color:var(--text-danger)] text-sm animate-shake">
                 <AlertCircle className="w-5 h-5 flex-shrink-0 text-red-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="font-semibold text-red-200">Une erreur s'est produite</p>
+                  <p className="font-semibold text-[color:var(--text-danger-soft)]">Une erreur s'est produite</p>
                   <p className="text-xs text-red-400">{error}</p>
                 </div>
               </div>

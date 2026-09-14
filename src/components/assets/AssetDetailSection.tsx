@@ -479,12 +479,12 @@ export function AssetDetailSection({
                                 <TooltipContent side="top" className="max-w-sm text-xs space-y-1.5">
                                   <div className="flex items-start gap-1.5">
                                     <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
-                                    <p className="text-amber-300 font-medium leading-snug">{alert.issue}</p>
+                                    <p className="text-[color:var(--text-warning)] font-medium leading-snug">{alert.issue}</p>
                                   </div>
                                   {alert.suggestedValue && (
                                     <div className="bg-amber-400/5 border border-amber-400/15 rounded px-2 py-1">
                                       <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-semibold">Valeur suggérée</p>
-                                      <p className="text-xs font-semibold text-amber-300">{alert.suggestedValue}</p>
+                                      <p className="text-xs font-semibold text-[color:var(--text-warning)]">{alert.suggestedValue}</p>
                                     </div>
                                   )}
                                   {alert.sourceDocument && (
@@ -498,7 +498,7 @@ export function AssetDetailSection({
                             {alert.suggestedValue && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); onApplyAlert?.(alert.field, alert.suggestedValue!); }}
-                                className="inline-flex items-center ml-1 text-[9px] font-semibold text-emerald-400 bg-emerald-400/10 hover:bg-emerald-400/20 hover:text-emerald-300 rounded px-1.5 py-0.5 transition-colors"
+                                className="inline-flex items-center ml-1 text-[9px] font-semibold text-emerald-400 bg-emerald-400/10 hover:bg-emerald-400/20 hover:text-[color:var(--text-success)] rounded px-1.5 py-0.5 transition-colors"
                                 title="Appliquer la valeur suggérée"
                               >
                                 Appliquer
@@ -506,7 +506,7 @@ export function AssetDetailSection({
                             )}
                             <button
                               onClick={(e) => { e.stopPropagation(); onDismissAlert?.(alert.field); }}
-                              className="inline-flex items-center ml-1 text-[9px] font-semibold text-amber-400 bg-amber-400/10 hover:bg-amber-400/20 hover:text-amber-300 rounded px-1.5 py-0.5 transition-colors"
+                              className="inline-flex items-center ml-1 text-[9px] font-semibold text-amber-400 bg-amber-400/10 hover:bg-amber-400/20 hover:text-[color:var(--text-warning)] rounded px-1.5 py-0.5 transition-colors"
                               title="Conserver ma valeur et ignorer cette incohérence"
                             >
                               Conserver

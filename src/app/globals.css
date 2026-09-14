@@ -105,6 +105,42 @@
   --accent-soft: rgba(59, 130, 246, 0.1);
   --text-primary: #F9FAFB;
   --text-muted: #94A3B8;
+
+  /* ══════════════════════════════════════════════════════════════════════
+     COULEURS SÉMANTIQUES — thème sombre
+
+     Le code employait des teintes Tailwind écrites à la main :
+     `text-amber-200`, `text-red-300`, `text-emerald-200`… Ces valeurs claires
+     sont pensées pour un fond foncé. Sur blanc, elles tombent sous le seuil
+     de contraste : le texte est visible, pas lisible.
+
+     73 occurrences dans 21 fichiers étaient dans ce cas.
+
+     Ces variables portent le RÔLE — avertissement, danger, succès — et
+     chaque thème leur donne la valeur qui convient. Une seule écriture,
+     `text-[color:var(--text-warning)]`, lisible dans les deux modes.
+
+     Contrastes visés : AA (4,5:1) pour le texte courant, atteint ou dépassé
+     sur les fonds de ce thème.
+     ══════════════════════════════════════════════════════════════════════ */
+  --text-warning: #FCD34D;
+  --text-warning-soft: #FDE68A;
+  --text-danger: #FCA5A5;
+  --text-danger-soft: #FECACA;
+  --text-success: #6EE7B7;
+  --text-success-soft: #A7F3D0;
+  --text-info: #93C5FD;
+  --text-info-soft: #BFDBFE;
+
+  --bg-warning: rgba(245, 158, 11, 0.12);
+  --bg-danger: rgba(239, 68, 68, 0.12);
+  --bg-success: rgba(16, 185, 129, 0.12);
+  --bg-info: rgba(59, 130, 246, 0.12);
+
+  --border-warning: rgba(245, 158, 11, 0.35);
+  --border-danger: rgba(239, 68, 68, 0.35);
+  --border-success: rgba(16, 185, 129, 0.35);
+  --border-info: rgba(59, 130, 246, 0.35);
 }
 
 html[data-theme="beige"] body, body.theme-beige {
@@ -142,6 +178,28 @@ html[data-theme="beige"] body, body.theme-beige {
   --accent-soft: rgba(59, 130, 246, 0.08);
   --text-primary: #111827;
   --text-muted: #6B7280;
+
+  /* Couleurs sémantiques — thème clair.
+     Teintes 700/800 : sur fond blanc, les 200/300 du thème sombre seraient
+     illisibles. Même rôle, valeur adaptée au fond. */
+  --text-warning: #92400E;
+  --text-warning-soft: #B45309;
+  --text-danger: #991B1B;
+  --text-danger-soft: #B91C1C;
+  --text-success: #065F46;
+  --text-success-soft: #047857;
+  --text-info: #1E40AF;
+  --text-info-soft: #1D4ED8;
+
+  --bg-warning: rgba(245, 158, 11, 0.10);
+  --bg-danger: rgba(239, 68, 68, 0.08);
+  --bg-success: rgba(16, 185, 129, 0.08);
+  --bg-info: rgba(59, 130, 246, 0.08);
+
+  --border-warning: rgba(180, 83, 9, 0.30);
+  --border-danger: rgba(185, 28, 28, 0.30);
+  --border-success: rgba(4, 120, 87, 0.30);
+  --border-info: rgba(29, 78, 216, 0.30);
 
   /* Shadows for relief - Light theme */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);

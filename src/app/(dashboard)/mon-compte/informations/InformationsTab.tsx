@@ -431,7 +431,7 @@ export default function InformationsTab() {
               <AiUsageQuotaWidget isDuoMember={sessionUser?.duoRole === 'MEMBER'} />
 
               {sessionUser?.duoRole === 'MEMBER' ? (
-                <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-500/30 rounded-lg px-3 py-2.5 text-sm text-amber-200">
+                <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-500/30 rounded-lg px-3 py-2.5 text-sm text-[color:var(--text-warning-soft)]">
                   <ShieldAlert className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
                   <p>Seul le titulaire de l'abonnement peut modifier l'offre et gérer le paiement.</p>
                 </div>
@@ -757,7 +757,7 @@ function DeleteAccountCard() {
                     Cette opération <strong>ne peut pas être annulée</strong>.
                   </p>
                   <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3">
-                    <p className="text-sm text-amber-300 font-medium">
+                    <p className="text-sm text-[color:var(--text-warning)] font-medium">
                       Toutes vos données seront supprimées immédiatement et de façon permanente.
                     </p>
                   </div>

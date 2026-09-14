@@ -257,7 +257,7 @@ export default function SignupPage() {
               <div className="bg-gradient-to-r from-blue-950/40 to-emerald-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
                 <Crown className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <span className="font-medium text-blue-300">7 jours d&apos;essai, toutes les fonctions Premium</span>
+                  <span className="font-medium text-[color:var(--text-info)]">7 jours d&apos;essai, toutes les fonctions Premium</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
                     Sans carte bancaire et sans engagement. Aucun prélèvement automatique
                     à la fin de l&apos;essai : vous choisirez votre offre à ce moment-là,
@@ -274,7 +274,7 @@ export default function SignupPage() {
               <div className="bg-gradient-to-r from-emerald-950/40 to-emerald-900/20 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-3">
                 <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <span className="font-medium text-emerald-300">Invitation à un compte partagé</span>
+                  <span className="font-medium text-[color:var(--text-success)]">Invitation à un compte partagé</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
                     Vous rejoignez un compte Premium Duo existant. Rien ne vous sera facturé.
                   </p>
@@ -289,7 +289,7 @@ export default function SignupPage() {
                       Ce bandeau annonçait « un mois offert » à qui le lit —
                       une promesse non tenue, affichée au moment précis où il
                       décide de payer. */}
-                  <span className="font-medium text-blue-300">Code de parrainage appliqué</span>
+                  <span className="font-medium text-[color:var(--text-info)]">Code de parrainage appliqué</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
                     Code <span className="font-mono font-semibold text-blue-400">{referralCode}</span> enregistré.
                     Votre parrain bénéficiera d&apos;un mois offert lorsque vous souscrirez un

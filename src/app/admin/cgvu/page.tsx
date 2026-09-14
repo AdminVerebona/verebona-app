@@ -53,8 +53,8 @@ interface AuditEntry {
 
 const STATUS_STYLES: Record<Version['status'], { label: string; className: string }> = {
   DRAFT: { label: 'Brouillon', className: 'bg-slate-500/15 text-slate-300 border-slate-500/30' },
-  PUBLISHED: { label: 'Publiée', className: 'bg-blue-500/15 text-blue-300 border-blue-500/30' },
-  CURRENT: { label: 'En vigueur', className: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' },
+  PUBLISHED: { label: 'Publiée', className: 'bg-blue-500/15 text-[color:var(--text-info)] border-blue-500/30' },
+  CURRENT: { label: 'En vigueur', className: 'bg-emerald-500/15 text-[color:var(--text-success)] border-emerald-500/30' },
   ARCHIVED: { label: 'Archivée', className: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30' },
 };
 
@@ -308,7 +308,7 @@ export default function AdminCgvuPage() {
                     {STATUS_STYLES[v.status].label}
                   </Badge>
                   {v.requiresReacceptance && (
-                    <Badge variant="outline" className="bg-amber-500/15 text-amber-300 border-amber-500/30">
+                    <Badge variant="outline" className="bg-amber-500/15 text-[color:var(--text-warning)] border-amber-500/30">
                       Réacceptation requise
                     </Badge>
                   )}

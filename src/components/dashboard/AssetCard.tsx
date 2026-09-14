@@ -124,7 +124,7 @@ export const AssetCard = memo(({
                 {hasTodo && (
                   <div className="flex items-center gap-1 bg-amber-500/25 border border-amber-500/30 rounded-full px-2 py-0.5">
                     <AlertCircle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                    <span className="text-[9.5px] font-semibold text-amber-300">
+                    <span className="text-[9.5px] font-semibold text-[color:var(--text-warning)]">
                       {todoCount === 1 ? '1 action à faire' : `${todoCount} actions à faire`}
                     </span>
                   </div>

@@ -126,7 +126,7 @@ export function DuoInvitationPanel() {
       <div className="flex items-center gap-3 bg-green-950/30 border border-green-500/30 rounded-lg px-4 py-3">
         <UserCheck className="w-4 h-4 text-green-400 flex-shrink-0" />
         <div className="text-sm">
-          <p className="text-green-300 font-medium">2e utilisateur actif</p>
+          <p className="text-[color:var(--text-success)] font-medium">2e utilisateur actif</p>
           {data.memberEmail && (
             <p className="text-[color:var(--text-muted)] text-xs mt-0.5">{data.memberEmail}</p>
           )}

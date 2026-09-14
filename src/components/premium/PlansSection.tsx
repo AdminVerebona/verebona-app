@@ -64,7 +64,7 @@ export function PlansSection({ currentPlan, onChoose }: PlansSectionProps) {
               {isCurrent ? (
                 <span className="absolute top-3.5 right-3.5 text-[10px] font-semibold px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">Votre offre</span>
               ) : p.featured ? (
-                <span className="absolute top-3.5 right-3.5 text-[10px] font-semibold px-2.5 py-1 rounded-full bg-blue-500/20 border border-blue-400/50 text-blue-300">Recommandé</span>
+                <span className="absolute top-3.5 right-3.5 text-[10px] font-semibold px-2.5 py-1 rounded-full bg-blue-500/20 border border-blue-400/50 text-[color:var(--text-info)]">Recommandé</span>
               ) : null}
               <p className="text-[15px] font-semibold text-[color:var(--text-primary)] mb-1">{p.name}</p>
               <p className="text-[11.5px] text-[color:var(--text-muted)] leading-relaxed mb-3 min-h-[34px]">{p.desc}</p>

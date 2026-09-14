@@ -350,12 +350,12 @@ export default function OffresPage() {
           <div className="flex items-start gap-3 bg-blue-950/30 border border-blue-500/30 rounded-lg px-4 py-3">
             <Gift className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm font-semibold text-blue-200">Offre parrainage active — code <span className="font-mono">{referralCode}</span></p>
+              <p className="text-sm font-semibold text-[color:var(--text-info-soft)]">Offre parrainage active — code <span className="font-mono">{referralCode}</span></p>
               {/* ⚠️ Promettait « 3 mois d'essai offerts » AU FILLEUL. L'avantage
                   revient au parrain seul — règle appliquée dans le cron, sur
                   l'écran d'inscription, dans l'email d'invitation et sur la
                   vitrine. Cet écran avait été oublié. */}
-              <p className="text-xs text-blue-300 mt-0.5">En souscrivant une offre annuelle, <strong>votre parrain bénéficiera d'un mois offert</strong>.</p>
+              <p className="text-xs text-[color:var(--text-info)] mt-0.5">En souscrivant une offre annuelle, <strong>votre parrain bénéficiera d'un mois offert</strong>.</p>
             </div>
           </div>
         )}
@@ -363,12 +363,12 @@ export default function OffresPage() {
         {referralCode && referralValid === false && (
           <div className="flex items-start gap-3 bg-amber-950/30 border border-amber-500/30 rounded-lg px-4 py-3">
             <Gift className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-amber-200">Le code de parrainage <span className="font-mono font-semibold">{referralCode}</span> n'est pas valide ou a expiré.</p>
+            <p className="text-sm text-[color:var(--text-warning-soft)]">Le code de parrainage <span className="font-mono font-semibold">{referralCode}</span> n'est pas valide ou a expiré.</p>
           </div>
         )}
 
         {isDuoMember && (
-          <div className="bg-amber-950/30 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-amber-200">
+          <div className="bg-amber-950/30 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-[color:var(--text-warning-soft)]">
             {"Seul le titulaire de l'abonnement peut modifier l'offre et gérer le paiement."}
           </div>
         )}

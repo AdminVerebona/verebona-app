@@ -88,7 +88,7 @@ function WebLinkThumbnail({ url }: { url?: string | null }) {
         <LinkIcon className="w-9 h-9 text-sky-400/60" />
       )}
       {domain && (
-        <span className="text-[10px] text-sky-300/70 font-medium truncate max-w-[90%] px-1">{domain}</span>
+        <span className="text-[10px] text-[color:var(--text-info)] font-medium truncate max-w-[90%] px-1">{domain}</span>
       )}
     </div>
   );

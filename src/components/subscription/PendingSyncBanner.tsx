@@ -67,11 +67,11 @@ export function PendingSyncBanner({ onSynced }: PendingSyncBannerProps) {
     <div className="w-full bg-blue-950/60 border border-blue-500/30 rounded-lg px-4 py-3 flex items-center gap-3">
       <Loader2 className="w-4 h-4 text-blue-400 animate-spin flex-shrink-0" />
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-blue-200 font-medium">
+        <p className="text-sm text-[color:var(--text-info-soft)] font-medium">
           Votre abonnement est en cours de mise à jour.
         </p>
         {showSlowMessage && (
-          <p className="text-xs text-blue-300 mt-0.5">
+          <p className="text-xs text-[color:var(--text-info)] mt-0.5">
             La mise à jour prend plus de temps que prévu.
           </p>
         )}
@@ -80,7 +80,7 @@ export function PendingSyncBanner({ onSynced }: PendingSyncBannerProps) {
         <Button
           size="sm"
           variant="outline"
-          className="border-blue-500/50 text-blue-300 hover:bg-blue-900/40 flex-shrink-0"
+          className="border-blue-500/50 text-[color:var(--text-info)] hover:bg-blue-900/40 flex-shrink-0"
           onClick={handleRefresh}
           disabled={isChecking}
         >

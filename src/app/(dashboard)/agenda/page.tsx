@@ -130,13 +130,13 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
 
 // Colors assigned per asset — avoids brand colors (blue=Premium, green=PremiumDuo, violet=AI)
 const ASSET_PALETTE = [
-  { pill: 'bg-amber-500/15 text-amber-300',   dot: 'bg-amber-400' },
+  { pill: 'bg-amber-500/15 text-[color:var(--text-warning)]',   dot: 'bg-amber-400' },
   { pill: 'bg-orange-500/15 text-orange-300', dot: 'bg-orange-400' },
-  { pill: 'bg-rose-500/15 text-rose-300',     dot: 'bg-rose-400' },
+  { pill: 'bg-rose-500/15 text-[color:var(--text-danger)]',     dot: 'bg-rose-400' },
   { pill: 'bg-pink-500/15 text-pink-300',     dot: 'bg-pink-400' },
   { pill: 'bg-fuchsia-500/15 text-fuchsia-300', dot: 'bg-fuchsia-400' },
   { pill: 'bg-cyan-500/15 text-cyan-300',     dot: 'bg-cyan-400' },
-  { pill: 'bg-red-500/15 text-red-300',       dot: 'bg-red-400' },
+  { pill: 'bg-red-500/15 text-[color:var(--text-danger)]',       dot: 'bg-red-400' },
   { pill: 'bg-indigo-500/15 text-indigo-300', dot: 'bg-indigo-400' },
 ];
 const NO_ASSET = { pill: 'bg-muted/60 text-muted-foreground', dot: 'bg-muted-foreground/40' };

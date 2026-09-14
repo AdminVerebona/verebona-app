@@ -179,7 +179,7 @@ export function DocumentCard({
       {toClassify && (
         <Badge
           variant="outline"
-          className="shrink-0 text-[11px] bg-amber-500/10 text-amber-300 border-amber-500/30"
+          className="shrink-0 text-[11px] bg-amber-500/10 text-[color:var(--text-warning)] border-amber-500/30"
         >
           À classer
         </Badge>

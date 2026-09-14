@@ -102,7 +102,7 @@ function SearchLogRow({ log }: { log: any }) {
           {log.blockReason && (
             <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20">
               <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-              <p className="text-xs text-red-300">{log.blockReason}</p>
+              <p className="text-xs text-[color:var(--text-danger)]">{log.blockReason}</p>
             </div>
           )}
         </div>
@@ -216,7 +216,7 @@ function OperationRow({ op }: { op: any }) {
               {op.usedFallback && (
                 <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <p className="text-xs text-amber-300">Fallback utilisé — le modèle nominal n'a pas répondu correctement</p>
+                  <p className="text-xs text-[color:var(--text-warning)]">Fallback utilisé — le modèle nominal n'a pas répondu correctement</p>
                 </div>
               )}
               {opDetail?.fileName && (
@@ -268,13 +268,13 @@ function OperationRow({ op }: { op: any }) {
               {op.errorMessage && (
                 <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20">
                   <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-                  <p className="text-xs text-red-300 font-mono break-all">{op.errorMessage}</p>
+                  <p className="text-xs text-[color:var(--text-danger)] font-mono break-all">{op.errorMessage}</p>
                 </div>
               )}
               {op.warningMessage && (
                 <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                  <p className="text-xs text-amber-300">{op.warningMessage}</p>
+                  <p className="text-xs text-[color:var(--text-warning)]">{op.warningMessage}</p>
                 </div>
               )}
             </div>
@@ -345,7 +345,7 @@ export default function AdminAiUsageAccountPage() {
           <Button
             size="sm"
             variant="outline"
-            className="border-red-500/30 text-red-300 hover:bg-red-500/10 shrink-0"
+            className="border-red-500/30 text-[color:var(--text-danger)] hover:bg-red-500/10 shrink-0"
             onClick={() => setUnlockDialog({ open: true, reason: '' })}
           >
             <Unlock className="w-3.5 h-3.5 mr-1.5" />Débloquer ({activeLocks.length})
@@ -370,11 +370,11 @@ export default function AdminAiUsageAccountPage() {
         </div>
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
           <p className="text-xs text-[color:var(--text-muted)]">Coût total (année)</p>
-          <p className="text-xl font-bold text-amber-300">{formatCostMicros(data.totalCostMicrosThisYear)}</p>
+          <p className="text-xl font-bold text-[color:var(--text-warning)]">{formatCostMicros(data.totalCostMicrosThisYear)}</p>
         </div>
         <div className={`rounded-xl border p-3 ${activeLocks.length > 0 ? 'border-red-500/30 bg-red-500/5' : 'border-emerald-500/30 bg-emerald-500/5'}`}>
           <p className="text-xs text-[color:var(--text-muted)]">Blocages sécurité</p>
-          <p className={`text-xl font-bold ${activeLocks.length > 0 ? 'text-red-300' : 'text-emerald-300'}`}>{activeLocks.length}</p>
+          <p className={`text-xl font-bold ${activeLocks.length > 0 ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-success)]'}`}>{activeLocks.length}</p>
         </div>
         <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3">
           <p className="text-xs text-[color:var(--text-muted)]">Analyses récentes</p>
@@ -479,7 +479,7 @@ export default function AdminAiUsageAccountPage() {
                   <p className="text-xs text-[color:var(--text-secondary)] font-mono bg-[color:var(--bg-page)] px-3 py-2 rounded-lg">{lock.triggerDetails}</p>
                 )}
                 {lock.isResolved && lock.resolutionNotes && (
-                  <p className="text-xs text-emerald-300/70 italic">{lock.resolutionNotes}</p>
+                  <p className="text-xs text-[color:var(--text-success)] italic">{lock.resolutionNotes}</p>
                 )}
               </div>
             ))
@@ -516,7 +516,7 @@ export default function AdminAiUsageAccountPage() {
                 <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-violet-500/5">
                     <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Usage client (opérations utilisateur)</h3>
-                    <span className="text-sm font-bold text-amber-300">{formatCostMicros(total)}</span>
+                    <span className="text-sm font-bold text-[color:var(--text-warning)]">{formatCostMicros(total)}</span>
                   </div>
                   {allRows.length === 0 ? (
                     <p className="text-xs text-[color:var(--text-muted)] px-4 py-3">Aucune opération cette année.</p>
@@ -583,11 +583,11 @@ export default function AdminAiUsageAccountPage() {
                     </div>
                     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
                       <p className="text-xs text-[color:var(--text-muted)]">Coût total</p>
-                      <p className="text-xl font-bold text-amber-300">{formatCostMicros(ss.costMicros)}</p>
+                      <p className="text-xl font-bold text-[color:var(--text-warning)]">{formatCostMicros(ss.costMicros)}</p>
                     </div>
                     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3">
                       <p className="text-xs text-[color:var(--text-muted)]">Avec réponse IA</p>
-                      <p className="text-xl font-bold text-emerald-300">{ss.answerCount}</p>
+                      <p className="text-xl font-bold text-[color:var(--text-success)]">{ss.answerCount}</p>
                     </div>
                     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3">
                       <p className="text-xs text-[color:var(--text-muted)]">Durée moy.</p>

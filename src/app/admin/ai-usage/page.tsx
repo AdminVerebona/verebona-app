@@ -53,9 +53,9 @@ function StatCard({ label, value, sub, color = 'default' }: {
   const textColors = {
     default: 'text-[color:var(--text-primary)]',
     violet: 'text-violet-300',
-    emerald: 'text-emerald-300',
-    amber: 'text-amber-300',
-    red: 'text-red-300',
+    emerald: 'text-[color:var(--text-success)]',
+    amber: 'text-[color:var(--text-warning)]',
+    red: 'text-[color:var(--text-danger)]',
   };
   return (
     <div className={`rounded-xl border p-4 ${colors[color]}`}>
@@ -142,7 +142,7 @@ function OverviewTab() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
           <p className="text-xs text-[color:var(--text-muted)]">Coût clients</p>
-          <p className="text-2xl font-bold text-amber-300">{formatCostMicros(data.clientCostMicrosThisYear ?? 0)}</p>
+          <p className="text-2xl font-bold text-[color:var(--text-warning)]">{formatCostMicros(data.clientCostMicrosThisYear ?? 0)}</p>
           <div className="flex items-center gap-3 text-[10px] text-[color:var(--text-muted)]">
             <span>Aujourd'hui : <span className="text-amber-400/80">{formatCostMicros(data.clientCostMicrosToday ?? 0)}</span></span>
             <span>·</span>
@@ -350,13 +350,13 @@ function AccountsTab() {
                       </span>
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      <span className={`text-xs font-bold tabular-nums ${totAnalysis > 0 ? 'text-amber-300' : 'text-[color:var(--text-muted)]'}`}>{formatCostMicros(totAnalysis)}</span>
+                      <span className={`text-xs font-bold tabular-nums ${totAnalysis > 0 ? 'text-[color:var(--text-warning)]' : 'text-[color:var(--text-muted)]'}`}>{formatCostMicros(totAnalysis)}</span>
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      <span className={`text-xs font-bold tabular-nums ${totSearch > 0 ? 'text-amber-300' : 'text-[color:var(--text-muted)]'}`}>{formatCostMicros(totSearch)}</span>
+                      <span className={`text-xs font-bold tabular-nums ${totSearch > 0 ? 'text-[color:var(--text-warning)]' : 'text-[color:var(--text-muted)]'}`}>{formatCostMicros(totSearch)}</span>
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      <span className={`text-xs font-bold tabular-nums ${totOther > 0 ? 'text-amber-300' : 'text-[color:var(--text-muted)]'}`}>{formatCostMicros(totOther)}</span>
+                      <span className={`text-xs font-bold tabular-nums ${totOther > 0 ? 'text-[color:var(--text-warning)]' : 'text-[color:var(--text-muted)]'}`}>{formatCostMicros(totOther)}</span>
                     </td>
                     <td className="px-4 py-2.5 text-right border-l border-[color:var(--border-subtle)]">
                       <span className={`text-xs font-bold tabular-nums ${totAll > 0 ? 'text-white' : 'text-[color:var(--text-muted)]'}`}>{formatCostMicros(totAll)}</span>
@@ -428,7 +428,7 @@ function AccountsTab() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-6 px-2 text-[10px] text-amber-400 hover:text-amber-300"
+                        className="h-6 px-2 text-[10px] text-amber-400 hover:text-[color:var(--text-warning)]"
                         onClick={() => setResetDialog({ open: true, accountId: a.accountId, accountName: a.accountName })}
                         title="Remettre à zéro"
                       >
@@ -517,12 +517,12 @@ function DocumentsTab() {
             </div>
             <div className={`rounded-xl border p-3 space-y-0.5 ${successRateMonth >= 90 ? 'border-emerald-500/30 bg-emerald-500/5' : successRateMonth >= 70 ? 'border-amber-500/30 bg-amber-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
               <p className="text-[10px] text-[color:var(--text-muted)] uppercase tracking-wider">Taux de succès</p>
-              <p className={`text-2xl font-bold ${successRateMonth >= 90 ? 'text-emerald-300' : successRateMonth >= 70 ? 'text-amber-300' : 'text-red-300'}`}>{successRateMonth}%</p>
+              <p className={`text-2xl font-bold ${successRateMonth >= 90 ? 'text-[color:var(--text-success)]' : successRateMonth >= 70 ? 'text-[color:var(--text-warning)]' : 'text-[color:var(--text-danger)]'}`}>{successRateMonth}%</p>
               <p className="text-[10px] text-[color:var(--text-muted)]">{successRateYear}% cette année · {sm?.errors ?? 0} erreurs ce mois</p>
             </div>
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 space-y-0.5">
               <p className="text-[10px] text-[color:var(--text-muted)] uppercase tracking-wider">Coût total ce mois</p>
-              <p className="text-2xl font-bold text-amber-300">{formatCostMicros(sm?.totalCost ?? 0)}</p>
+              <p className="text-2xl font-bold text-[color:var(--text-warning)]">{formatCostMicros(sm?.totalCost ?? 0)}</p>
               <p className="text-[10px] text-[color:var(--text-muted)]">Moy. {formatCostMicros(sm?.avgCost ?? 0)} / analyse · {formatCostMicros(sy?.totalCost ?? 0)} cette année</p>
             </div>
             <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-3 space-y-0.5">
@@ -539,9 +539,9 @@ function DocumentsTab() {
               <span className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mr-1">Ce mois</span>
               {Object.entries(sm.byResult).map(([result, cnt]: any) => (
                 <span key={result} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
-                  result === 'success' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' :
-                  result === 'success_with_warning' ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20' :
-                  result === 'error' ? 'bg-red-500/10 text-red-300 border-red-500/20' :
+                  result === 'success' ? 'bg-emerald-500/10 text-[color:var(--text-success)] border-emerald-500/20' :
+                  result === 'success_with_warning' ? 'bg-yellow-500/10 text-[color:var(--text-warning)] border-yellow-500/20' :
+                  result === 'error' ? 'bg-red-500/10 text-[color:var(--text-danger)] border-red-500/20' :
                   'bg-[color:var(--border-subtle)] text-[color:var(--text-muted)] border-transparent'
                 }`}>
                   {AI_BUSINESS_RESULT_LABELS[result as keyof typeof AI_BUSINESS_RESULT_LABELS] ?? result}

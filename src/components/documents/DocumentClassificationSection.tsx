@@ -133,8 +133,8 @@ export function DocumentClassificationSection({
             variant="outline"
             className={
               feedback.classificationState === 'CLASSIFIED'
-                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                ? 'bg-emerald-500/10 text-[color:var(--text-success)] border-emerald-500/30'
+                : 'bg-amber-500/10 text-[color:var(--text-warning)] border-amber-500/30'
             }
           >
             {feedback.classificationState === 'CLASSIFIED' ? 'Classé' : 'À classer'}
@@ -204,7 +204,7 @@ export function DocumentClassificationSection({
       )}
 
       {feedback && feedback.rejected.length > 0 && (
-        <ul className="text-xs text-amber-300 space-y-0.5">
+        <ul className="text-xs text-[color:var(--text-warning)] space-y-0.5">
           {feedback.rejected.map((reason, i) => (
             <li key={i} className="flex items-start gap-1.5">
               <Lock className="w-3 h-3 mt-0.5 shrink-0" aria-hidden />

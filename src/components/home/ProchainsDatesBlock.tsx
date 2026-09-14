@@ -32,12 +32,12 @@ interface BadgeConfig {
 const BADGE_CONFIG: Record<string, BadgeConfig> = {
   'Action attendue': {
     dot: 'bg-amber-400',
-    text: 'text-amber-300',
+    text: 'text-[color:var(--text-warning)]',
     container: 'bg-amber-500/15 border border-amber-500/25',
   },
   'À prévoir': {
     dot: 'bg-blue-400',
-    text: 'text-blue-300',
+    text: 'text-[color:var(--text-info)]',
     container: 'bg-blue-500/15 border border-blue-500/25',
   },
   'Information': {

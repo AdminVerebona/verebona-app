@@ -52,11 +52,11 @@ interface EventRow {
 }
 
 const STATUS_STYLES: Record<string, { label: string; className: string }> = {
-  received: { label: 'Reçue', className: 'bg-blue-500/15 text-blue-300 border-blue-500/30' },
-  manual_review: { label: 'À examiner', className: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
-  processing: { label: 'En traitement', className: 'bg-sky-500/15 text-sky-300 border-sky-500/30' },
-  completed: { label: 'Traitée', className: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' },
-  failed: { label: 'En échec', className: 'bg-red-500/15 text-red-300 border-red-500/30' },
+  received: { label: 'Reçue', className: 'bg-blue-500/15 text-[color:var(--text-info)] border-blue-500/30' },
+  manual_review: { label: 'À examiner', className: 'bg-amber-500/15 text-[color:var(--text-warning)] border-amber-500/30' },
+  processing: { label: 'En traitement', className: 'bg-sky-500/15 text-[color:var(--text-info)] border-sky-500/30' },
+  completed: { label: 'Traitée', className: 'bg-emerald-500/15 text-[color:var(--text-success)] border-emerald-500/30' },
+  failed: { label: 'En échec', className: 'bg-red-500/15 text-[color:var(--text-danger)] border-red-500/30' },
   rejected: { label: 'Non retenue', className: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30' },
 };
 
@@ -151,7 +151,7 @@ export default function AdminWithdrawalsPage() {
       </div>
 
       {attention > 0 && (
-        <div className="rounded-md bg-amber-500/10 text-amber-300 text-sm p-3 flex items-start gap-2">
+        <div className="rounded-md bg-amber-500/10 text-[color:var(--text-warning)] text-sm p-3 flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>
             {attention} demande{attention > 1 ? 's' : ''} appelle

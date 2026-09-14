@@ -16,7 +16,7 @@ export default function MonCompteError({
   return (
     <div className="p-8 space-y-4">
       <h2 className="text-xl font-bold text-red-500">Erreur sur Mon Compte</h2>
-      <pre className="text-xs bg-black/50 text-red-300 p-4 rounded overflow-auto max-h-64">
+      <pre className="text-xs bg-black/50 text-[color:var(--text-danger)] p-4 rounded overflow-auto max-h-64">
         {error.message}
         {'\n\n'}
         {error.stack}
