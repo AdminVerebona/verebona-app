@@ -12,7 +12,6 @@ import { DowngradeConfirmDialog } from '@/components/subscription/DowngradeConfi
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { getPlanTheme } from '@/lib/plan-theme';
-import { SubscriptionSummary } from '@/components/subscription/SubscriptionSummary';
 
 interface BillingInfo {
   plan_type: string;
@@ -374,7 +373,6 @@ export default function OffresPage() {
         )}
 
         {/* Etat de l'abonnement (CDC §9.1 / §9.4) */}
-        <SubscriptionSummary />
 
         {/* Choix de la periodicite (CDC §4.1) */}
         <div className="mb-5 flex flex-wrap items-center gap-3">
