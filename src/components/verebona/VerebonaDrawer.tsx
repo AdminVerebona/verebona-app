@@ -36,13 +36,18 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
   const [dimmed, setDimmed] = useState(false);
   const dimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const v = useVerebona(pageContext);
+  const [prefill, setPrefill] = useState<string | undefined>();
 
   // Ouverture programmée (bulle d'accueil, centre d'aide…), avec question optionnelle.
   useEffect(() => {
     const handler = (e: Event) => {
-      const q = (e as CustomEvent<{ question?: string }>).detail?.question;
+      const detail = (e as CustomEvent<{ question?: string; prefill?: string }>).detail;
       setOpen(true);
-      if (q) v.send(q);
+      // `question` envoie ; `prefill` se contente de remplir le champ. La
+      // barre de recherche emploie le second : à la première frappe, la
+      // question n'est pas encore écrite.
+      if (detail?.question) v.send(detail.question);
+      else if (detail?.prefill) setPrefill(detail.prefill);
     };
     window.addEventListener('verebona:open', handler);
     return () => window.removeEventListener('verebona:open', handler);
@@ -118,6 +123,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
         </div>
 
         <VerebonaComposer
+          initialText={prefill}
           isLoading={v.isLoading}
           onSend={v.send}
           onCancel={v.cancel}

@@ -368,11 +368,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
               >
                 <Menu className="w-5 h-5" />
               </button>
-              {!sidebarCollapsed && (
-                <Link href="/accueil" className="select-none">
-                  <Logo size={28} withText={true} withBaseline={false} />
-                </Link>
-              )}
+              {/* Logo déplacé dans `TopBar` : ici il disparaissait dès que le
+                  menu était replié. Le garder aux deux endroits afficherait
+                  deux logos côte à côte, menu ouvert. */}
             </div>
 
             {/* Navigation */}

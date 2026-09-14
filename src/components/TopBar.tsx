@@ -10,6 +10,7 @@
 import { useState } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { Logo } from './Logo'
 import { User, LogOut, Shield, Sun, Moon } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
@@ -52,24 +53,54 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin }: TopBar
   const [logoutConfirm, setLogoutConfirm] = useState(false)
 
   const displayName = user.username || `${user.firstName} ${user.lastName.charAt(0)}.`
+  const [question, setQuestion] = useState('')
   const initials = `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`.toUpperCase()
   const plan = (user.subscription.plan || 'STANDARD').toUpperCase()
 
   return (
     <header className="hidden md:flex items-center gap-3 h-14 px-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] flex-shrink-0 sticky top-0 z-30">
 
-      {/* Entrée assistant — remplace la recherche (maquette) */}
-      <button
-        type="button"
-        onClick={() => window.dispatchEvent(new CustomEvent('verebona:open', { detail: {} }))}
-        className="flex items-center gap-2.5 flex-1 max-w-sm h-9 pl-1.5 pr-4 rounded-full bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] text-sm text-[color:var(--text-muted)] hover:border-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all text-left"
-      >
-        <Image src="/mascot/welcome-wave.webp" alt="" width={26} height={26} className="select-none flex-shrink-0" />
-        <span className="flex-1 truncate">Demander à Verebona</span>
-      </button>
+      {/* ══════════════════════════════════════════════════════════════════
+          LOGO EN TÊTE, HORS DU MENU RÉTRACTABLE
 
-      {/* Spacer */}
-      <div className="flex-1" />
+          Il vivait dans la barre latérale, sous `{!sidebarCollapsed && …}` :
+          menu replié, il disparaissait. Un logo sert de repère et de retour à
+          l'accueil — deux rôles qui ne dépendent pas d'un panneau ouvert.
+          ══════════════════════════════════════════════════════════════════ */}
+      <Link href="/accueil" className="select-none flex-shrink-0">
+        <Logo size={26} withText={true} withBaseline={false} />
+      </Link>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          UN VRAI CHAMP, CENTRÉ
+
+          C'était un `<button>` : cliquer ouvrait le tiroir, il fallait ensuite
+          saisir dedans — deux gestes pour une question.
+
+          Désormais la frappe ouvre le tiroir avec le texte déjà là. Le champ
+          local se vide aussitôt : le conserver afficherait la même question à
+          deux endroits, sans qu'on sache lequel fait foi.
+          ══════════════════════════════════════════════════════════════════ */}
+      <div className="flex-1 flex justify-center">
+        <div className="relative flex items-center gap-2.5 w-full max-w-sm h-9 pl-1.5 pr-4 rounded-full bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] focus-within:border-[color:var(--text-muted)] transition-all">
+          <Image src="/mascot/welcome-wave.webp" alt="" width={26} height={26} className="select-none flex-shrink-0" />
+          <input
+            type="text"
+            value={question}
+            placeholder="Demander à Verebona"
+            aria-label="Demander à Verebona"
+            onChange={(e) => {
+              const texte = e.target.value;
+              if (!texte) { setQuestion(''); return; }
+              window.dispatchEvent(
+                new CustomEvent('verebona:open', { detail: { prefill: texte } }),
+              );
+              setQuestion('');
+            }}
+            className="flex-1 min-w-0 bg-transparent text-sm text-[color:var(--text-primary)] placeholder:text-[color:var(--text-muted)] outline-none"
+          />
+        </div>
+      </div>
 
       {/* Bandeau analyse en cours */}
       <AnalysisBanner />
