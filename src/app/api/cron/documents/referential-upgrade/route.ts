@@ -31,7 +31,7 @@ import {
   upgradeCounts,
   upgradeReferential,
 } from '@/services/documents/referential-upgrade.service';
-import { runSourceAnalysis } from '@/services/ai/source-analysis';
+import { analyzeFileSources } from '@/services/ai/source-analysis';
 
 export const dynamic = 'force-dynamic';
 /** Une mise à niveau porte sur des milliers de documents. */
@@ -57,15 +57,21 @@ export async function GET(req: NextRequest) {
 
   const rapport = await upgradeReferential(
     async (candidate) => {
-      await runSourceAnalysis({
-        sourceType: 'file',
-        sourceIds: [candidate.fileId],
-        accountId: candidate.accountId,
-        // Réanalyse technique : elle ne doit consommer aucun crédit client.
-        // Une évolution de NOTRE référentiel ne se facture pas à l'utilisateur.
-        userId: 0,
-        billable: false,
-      });
+      // §10.4 : point d'entrée unique. `runSourceAnalysis` suppose la
+      // qualification et le contrôle d'accès déjà faits ; l'appeler
+      // directement contournerait les deux.
+      await analyzeFileSources(
+        [candidate.fileId],
+        candidate.accountId,
+        {
+          // Réanalyse technique : une évolution de NOTRE référentiel ne se
+          // facture pas à l'utilisateur.
+          billable: false,
+          origin: 'referential-upgrade',
+          // `userId` est omis volontairement : l'entrypoint le déduit du
+          // fichier. Le forcer à 0 ferait échouer la résolution.
+        },
+      );
     },
     { accountId, limit, dryRun },
   );
