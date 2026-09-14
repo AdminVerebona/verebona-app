@@ -139,8 +139,11 @@ export function ATfaireBlock({ items, total, onItemClick }: Props) {
           {total > 5 && (
             <>
               <div className="h-px bg-[color:var(--border-subtle)] mx-4" />
+              {/* `/a-traiter` n'existe pas : la page vit sous
+                  `/accueil/a-traiter`. La barre inférieure pointait déjà au bon
+                  endroit, ce lien non. */}
               <Link
-                href="/a-traiter"
+                href="/accueil/a-traiter"
                 className="flex items-center justify-between px-5 py-3 text-xs text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors group"
               >
                 <span>

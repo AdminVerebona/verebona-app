@@ -19,7 +19,9 @@ interface SidebarPlanCardProps {
 
 /**
  * Carte d'incitation en bas de sidebar (masquée quand la sidebar est repliée).
- * - Essai en cours : « Essai gratuit · J-x » + jauge ambre + « Choisir une offre » → /mon-compte.
+ * - Essai en cours : « Essai gratuit · J-x » + jauge ambre + « Choisir mon
+ *   abonnement » → /mon-compte/offres.
+ * - Essai terminé : « Essai gratuit terminé », sans jauge, même bouton.
  * - STANDARD : « Plan gratuit » + jauge Biens pleine + « Passer à Premium » → /mon-compte.
  * - PREMIUM / PREMIUM_DUO : rien.
  */

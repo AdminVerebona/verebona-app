@@ -558,24 +558,32 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                 <Logo size={24} withText={true} />
               </Link>
 
-            {/* Menu Button - Left side */}
-            <button
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="absolute left-4 p-2.5 rounded-xl hover:bg-[color:var(--accent-soft)] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] shadow-relief-md"
-            >
-              {isMobileMenuOpen ? <X className="w-5 h-5 text-[color:var(--text-primary)]" /> : <Menu className="w-5 h-5 text-[color:var(--text-primary)]" />}
-            </button>
+            {/* ══════════════════════════════════════════════════════════
+                RECHERCHE ET NOTIFICATIONS À GAUCHE, MENU À DROITE
 
-            {/* Actions - Right side */}
-            <div className="absolute right-4 flex items-center gap-2">
-              <NotificationBell />
+                L'inverse du bureau, où la recherche ouvre la barre supérieure
+                à gauche et le compte se trouve à droite. Deux dispositions
+                opposées pour la même application obligent à chercher ses
+                repères à chaque changement d'écran.
+                ══════════════════════════════════════════════════════════ */}
+            <div className="absolute left-4 flex items-center gap-2">
               <button
                 onClick={() => setMobileSearchOpen(true)}
+                aria-label="Rechercher"
                 className="p-2.5 rounded-xl hover:bg-[color:var(--accent-soft)] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] shadow-relief-md"
               >
                 <Search className="w-5 h-5 text-[color:var(--text-primary)]" />
               </button>
+              <NotificationBell />
             </div>
+
+            <button
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              aria-label={isMobileMenuOpen ? 'Fermer le menu' : 'Compte et réglages'}
+              className="absolute right-4 p-2.5 rounded-xl hover:bg-[color:var(--accent-soft)] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] shadow-relief-md"
+            >
+              {isMobileMenuOpen ? <X className="w-5 h-5 text-[color:var(--text-primary)]" /> : <Menu className="w-5 h-5 text-[color:var(--text-primary)]" />}
+            </button>
           </div>
         </header>
 
@@ -609,9 +617,12 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
               <div className="flex flex-col h-full">
 
                 <div className="flex items-center justify-between p-5 border-b border-[color:var(--border-subtle)]">
-                  <span className="text-sm font-semibold text-[color:var(--text-primary)]">
-                    Compte et réglages
-                  </span>
+                  {/* Le logo plutôt qu'un titre : « Compte et réglages »
+                      nommait le panneau à qui venait de l'ouvrir. Le logo
+                      situe l'application et ramène à l'accueil. */}
+                  <Link href="/accueil" onClick={() => setIsMobileMenuOpen(false)} className="select-none">
+                    <Logo size={26} withText={true} withBaseline={false} />
+                  </Link>
                   {/* Fermeture explicite : le panneau n'en offrait aucune,
                       hors le geste de toucher le fond. */}
                   <button
@@ -678,7 +689,11 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                     {theme === 'blue'
                       ? <Sun className="w-5 h-5 flex-shrink-0" />
                       : <Moon className="w-5 h-5 flex-shrink-0" />}
-                    <span className="text-sm">Apparence</span>
+                    {/* Le libellé annonce ce vers quoi on bascule : « Apparence »
+                        n'indiquait ni l'état courant ni la destination. */}
+                    <span className="text-sm">
+                      {theme === 'blue' ? 'Thème clair' : 'Thème sombre'}
+                    </span>
                   </button>
                 </nav>
 
