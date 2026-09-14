@@ -44,7 +44,7 @@ const offers = [
       "Jusqu'à 150 documents",
       '1 utilisateur',
       'Interrogez Verebona sur vos biens, documents et échéances',
-      'Gestion des équipements et des pièces',
+      'Gestion des pièces et équipements pour les biens immobiliers',
       'Synchronisation de vos échéances avec votre agenda personnel',
       "Dossiers prêts à l'emploi",
     ],

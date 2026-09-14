@@ -270,6 +270,9 @@ const EXPORT_TYPE_LABELS_OVERVIEW: Record<string, string> = {
 
 export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Props) {
   const [data, setData] = useState<OverviewData | null>(null);
+  /** Motif d'indisponibilité — distinct d'un échec technique. */
+  const [motifIndisponible, setMotifIndisponible] =
+    useState<'ARCHIVED' | 'LOCKED' | 'ERREUR' | null>(null);
   const [loading, setLoading] = useState(true);
   const [drawerItem, setDrawerItem] = useState<AgendaItemFull | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -287,8 +290,29 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
       ]);
       setData(res);
       setRecentExports(exportsRes.exports ?? []);
-    } catch {
-      // fail silently
+      setMotifIndisponible(null);
+    } catch (e) {
+      // ══════════════════════════════════════════════════════════════════
+      // « FAIL SILENTLY » TRANSFORMAIT UN REFUS EN PANNE
+      //
+      // La route rend un 403 `ASSET_UNAVAILABLE` quand le bien est archivé
+      // ou verrouillé par l'offre — un refus délibéré, avec son motif.
+      //
+      // Le `catch` vide le confondait avec une erreur technique, et l'écran
+      // affichait « Impossible de charger la vue d'ensemble » : l'utilisateur
+      // croyait à une panne alors qu'il s'agissait d'une limite d'offre, et
+      // n'avait aucun moyen de le savoir.
+      // ══════════════════════════════════════════════════════════════════
+      // `ApiClientError` porte `status`, `code` et `details` — la route
+      // renvoie `{ error: 'ASSET_UNAVAILABLE', reason }`, repris dans
+      // `details`.
+      const err = e as { status?: number; details?: { reason?: string } };
+      if (err?.status === 403) {
+        setMotifIndisponible(err.details?.reason === 'ARCHIVED' ? 'ARCHIVED' : 'LOCKED');
+      } else {
+        console.error('[overview] chargement impossible :', e);
+        setMotifIndisponible('ERREUR');
+      }
     } finally {
       setLoading(false);
     }
@@ -326,7 +350,28 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   }
 
   if (!data) {
-    return <p className="text-muted-foreground text-sm">Impossible de charger la vue d'ensemble.</p>;
+    // Trois situations, trois suites différentes : réactiver, choisir une
+    // offre, ou réessayer. Un message unique les envoyait toutes au même
+    // endroit — nulle part.
+    if (motifIndisponible === 'ARCHIVED') {
+      return (
+        <p className="text-muted-foreground text-sm">
+          Ce bien est archivé. Réactivez-le pour consulter sa vue d&apos;ensemble.
+        </p>
+      );
+    }
+    if (motifIndisponible === 'LOCKED') {
+      return (
+        <p className="text-muted-foreground text-sm">
+          Ce bien dépasse la limite de votre offre. Choisissez une offre pour y accéder de nouveau.
+        </p>
+      );
+    }
+    return (
+      <p className="text-muted-foreground text-sm">
+        Impossible de charger la vue d&apos;ensemble. Réessayez dans un instant.
+      </p>
+    );
   }
 
   const td = today();
