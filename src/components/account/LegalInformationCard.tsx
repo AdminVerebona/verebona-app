@@ -21,7 +21,8 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Scale, ExternalLink, Download, Loader2 } from 'lucide-react';
+import { Scale, ExternalLink, Loader2 } from 'lucide-react';
+import { publicSiteUrl } from '@/lib/external-urls';
 
 interface AcceptanceItem {
   acceptanceId: string;
@@ -130,14 +131,18 @@ export function LegalInformationCard() {
                         Consulter
                       </a>
                     </Button>
-                    <Button variant="outline" size="sm" asChild>
-                      {/* `download` laisse le navigateur nommer le fichier
-                          d'après l'en-tête Content-Disposition du serveur. */}
-                      <a href={latest.downloadUrl} download>
-                        <Download className="w-4 h-4 mr-1.5" />
-                        Télécharger en HTML
-                      </a>
-                    </Button>
+                    {/* ══════════════════════════════════════════════════
+                        BOUTON DE TÉLÉCHARGEMENT RETIRÉ
+
+                        Décision produit. À noter : le §10 du CDC 7 prévoit
+                        que l'utilisateur puisse conserver une preuve de la
+                        version acceptée. « Consulter » ouvre le permalien,
+                        qui reste figé sur cette version — mais l'utilisateur
+                        n'a plus de copie locale.
+
+                        La route `downloadUrl` existe toujours côté serveur :
+                        rétablir le bouton est une affaire de six lignes.
+                        ══════════════════════════════════════════════════ */}
                   </div>
                 </div>
               ) : (
@@ -179,13 +184,17 @@ export function LegalInformationCard() {
               <h3 className="text-sm font-medium">Conditions actuellement en vigueur</h3>
               {current ? (
                 <p className="text-sm text-muted-foreground">
+                  {/* Le numéro de version disparaît ici : il n'apprend rien à
+                      qui veut simplement lire les conditions en cours. Il
+                      reste dans « Conditions que vous avez acceptées », où il
+                      identifie ce qui a été signé. */}
                   <a
                     href={current.permalink}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary hover:underline font-mono"
+                    className="text-primary hover:underline"
                   >
-                    {current.versionCode}
+                    Lire les conditions générales
                   </a>
                   {latest && latest.versionCode !== current.versionCode && (
                     <span className="block mt-1">
@@ -199,10 +208,13 @@ export function LegalInformationCard() {
               )}
             </section>
 
-            {/* ── Autres documents (§11) ───────────────────────────────── */}
+            {/* ── Autres documents (§11) ─────────────────────────────────
+                Ces deux liens étaient RELATIFS : ils ouvraient
+                `app.preprod.verebona.fr/mentions-legales`, qui n'existe pas —
+                d'où les 404. Les pages vivent sur la vitrine. */}
             <section className="flex flex-wrap gap-3 text-sm">
               <a
-                href="/mentions-legales"
+                href={publicSiteUrl('/mentions-legales')}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary hover:underline"
@@ -210,7 +222,7 @@ export function LegalInformationCard() {
                 Mentions légales
               </a>
               <a
-                href="/confidentialite"
+                href={publicSiteUrl('/confidentialite')}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary hover:underline"

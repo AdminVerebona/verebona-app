@@ -33,6 +33,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { LogoWithBaseline } from '@/components/Logo';
 import { ForceTheme } from '@/components/ForceTheme';
 import { AlertTriangle, CheckCircle, Loader2, MailCheck, ShieldAlert } from 'lucide-react';
+import { publicSiteUrl } from '@/lib/external-urls';
 
 interface Summary {
   firstName: string;
@@ -285,14 +286,17 @@ function WithdrawalContent() {
               remboursement portera sur les paiements effectivement perçus.
             </p>
 
+            {/* Ces liens étaient relatifs : ils ouvraient
+                `app.preprod.verebona.fr/cgvu`, qui n'existe pas. Les pages
+                légales vivent sur la vitrine. */}
             <p className="text-xs text-muted-foreground">
-              <Link href="/cgvu" target="_blank" className="text-primary hover:underline">
+              <a href={publicSiteUrl('/cgu')} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                 Conditions générales
-              </Link>
+              </a>
               {' · '}
-              <Link href="/confidentialite" target="_blank" className="text-primary hover:underline">
+              <a href={publicSiteUrl('/confidentialite')} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                 Politique de confidentialité
-              </Link>
+              </a>
             </p>
 
             {error && <ErrorBox message={error} />}
