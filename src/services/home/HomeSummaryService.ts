@@ -135,6 +135,14 @@ export interface HomeSummaryPayload {
     autoEnrichment: { events: AutoEnrichmentEvent[] };
   };
   assets: { items: HomeAsset[]; total: number };
+  /**
+   * Total des documents du compte — bloc « En un coup d'œil ».
+   *
+   * Il n'existait pas : la page lisait `summary.documents.total` derrière un
+   * `as any`, qui retombait donc systématiquement sur 0. Le `as any` masquait
+   * l'absence du champ au compilateur.
+   */
+  documents: { total: number };
   plan: string;
 }
 
@@ -188,6 +196,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     agendaRows,
     assetRows,
     totalAssetsRow,
+    totalDocumentsRow,
     docTypesRows,
     recentExports,
     recentAgenda,
@@ -266,6 +275,22 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         eq(assets.accountId, accountId),
         isNull(assets.deletedAt),
         notInArray(assets.status, ['ARCHIVED', 'TRANSMIS']),
+      )),
+
+    // Total documents — « En un coup d'œil ».
+    //
+    // Les liens web SONT comptés, contrairement à la liste d'activité récente
+    // qui les écarte : un lien enregistré est un document du compte, et
+    // l'exclure ferait mentir le compteur affiché à côté de « Mes biens ».
+    //
+    // Sont écartés : les supprimés, et les téléversements inachevés — un
+    // fichier dont l'envoi a échoué n'est pas un document.
+    db.select({ count: sql<number>`count(*)` })
+      .from(assetFiles)
+      .where(and(
+        eq(assetFiles.accountId, accountId),
+        isNull(assetFiles.deletedAt),
+        or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
       )),
 
     // Types de documents
@@ -792,6 +817,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       items: enrichedAssets,
       total: Number(totalAssetsRow[0]?.count ?? 0),
     },
+    documents: { total: Number(totalDocumentsRow[0]?.count ?? 0) },
     plan: planType,
   };
 }

@@ -282,11 +282,24 @@ export default function DashboardPage() {
   const totalAssets = summary?.assets.total ?? 0;
   const isEmpty = summary?.situation.status === 'empty';
 
-  // Compteurs « En un coup d'œil » — utiliser les totaux du summary quand disponibles.
-  const s: any = summary ?? {};
-  const statDocuments = s.documents?.total ?? s.blocks?.documents?.total ?? 0; // TODO: exposer le total documents dans HomeSummaryPayload si absent
-  const statEvenements = s.agenda?.total ?? s.blocks?.upcoming?.total ?? 0;
-  const statATraiter = s.blocks?.todo?.total ?? 0;
+  // ══════════════════════════════════════════════════════════════════════
+  // COMPTEURS « EN UN COUP D'ŒIL »
+  //
+  // `statDocuments` lisait `s.documents?.total ?? s.blocks?.documents?.total`.
+  // Aucun de ces deux chemins n'existait dans `HomeSummaryPayload` : les deux
+  // `??` retombaient sur 0, et le compteur restait à zéro quel que soit le
+  // nombre de documents.
+  //
+  // Le `as any` masquait le défaut : sans lui, le compilateur aurait refusé
+  // `s.documents`. Il est retiré — le contrat typé rend désormais impossible
+  // de lire un champ absent.
+  //
+  // `statEvenements` compte volontairement les événements À VENIR seulement ;
+  // les passés n'ont pas leur place dans un aperçu.
+  // ══════════════════════════════════════════════════════════════════════
+  const statDocuments = summary?.documents.total ?? 0;
+  const statEvenements = summary?.blocks.upcoming.total ?? 0;
+  const statATraiter = summary?.blocks.todo.total ?? 0;
 
   return (
     <>
