@@ -130,7 +130,7 @@ export async function seedSystemEmailTemplates() {
         {
             type: 'PASSWORD_RESET',
             subject: 'Réinitialisation de votre mot de passe - Verebona',
-            body: 'Bonjour {{firstName}},\n\nVous avez demandé la réinitialisation de votre mot de passe Verebona.\n\nPour définir un nouveau mot de passe, cliquez sur le lien ci-dessous :\n{{resetUrl}}\n\nCe lien expirera dans {{expiresAt}}.\n\nSi vous n\'avez pas demandé cette réinitialisation, vous pouvez ignorer cet email.\n\nCordialement,\nL\'équipe Verebona',
+            body: 'Bonjour {{firstName}},\n\nVous avez demandé la réinitialisation de votre mot de passe Verebona.\n\nPour définir un nouveau mot de passe, cliquez sur le lien ci-dessous :\n{{resetUrl}}\n\nCe lien expirera dans {{expiresAt}}.\n\nSi vous n\'êtes pas à l\'origine de cette demande, ne cliquez pas sur le lien de réinitialisation. Si vous avez un doute concernant la sécurité de votre compte, modifiez votre mot de passe directement depuis Verebona.\n\nCordialement,\nL\'équipe Verebona',
             placeholders: JSON.stringify(['firstName', 'resetUrl', 'expiresAt']),
             triggerConfig: null,
             sender: null,

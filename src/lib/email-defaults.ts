@@ -97,7 +97,7 @@ Cliquez sur le lien ci-dessous pour définir un nouveau mot de passe :
 
 Ce lien est valable pendant 1 heure.
 
-Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email. Votre mot de passe actuel reste inchangé.
+Si vous n'êtes pas à l'origine de cette demande, ne cliquez pas sur le lien de réinitialisation. Si vous avez un doute concernant la sécurité de votre compte, modifiez votre mot de passe directement depuis Verebona.
 
 Cordialement,
 L'équipe Verebona`,
@@ -124,7 +124,7 @@ L'équipe Verebona`,
             <p style="text-align:center;margin:32px 0;">
               <a href="{{inviteUrl}}" style="background-color:#3B82F6;padding:12px 24px;border-radius:6px;color:#FFFFFF;font-size:16px;font-weight:600;text-decoration:none;display:inline-block;">Accepter l'invitation</a>
             </p>
-            <p style="margin:24px 0 0;font-size:13px;color:#6B7280;">Ce lien est valable {{expiresIn}}. Si vous n'êtes pas concerné(e), ignorez simplement cet email.</p>
+            <p style="margin:24px 0 0;font-size:13px;color:#6B7280;">Ce lien est valable {{expiresIn}}. Si vous n'êtes pas à l'origine de cette demande, ne cliquez pas sur le lien. En cas de doute sur la sécurité de votre compte, modifiez votre mot de passe depuis Verebona.</p>
           </td></tr>
           <!-- FOOTER -->
           <tr><td style="padding:20px 24px;text-align:center;color:#6B7280;font-size:12px;border-top:1px solid #E5E7EB;">

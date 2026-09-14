@@ -154,9 +154,18 @@ function getNotificationText(type: string, payload: NotificationPayload | null):
       // ⚠️ Repli conservé, mais il ne doit plus jamais s'afficher : un type
       // émis sans libellé est un défaut, pas un cas normal. Le signaler en
       // console permet de le voir en recette plutôt qu'en production.
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn(`[notifications] type sans libellé : ${type}`);
-      }
+      // ══════════════════════════════════════════════════════════════════
+      // L'AVERTISSEMENT NE DOIT PAS DÉPENDRE DE `NODE_ENV`
+      //
+      // Il était conditionné à `!== 'production'`. Or Scalingo pose
+      // `NODE_ENV=production` sur la préproduction : le seul endroit où ce
+      // défaut se constate est précisément celui où le diagnostic se taisait.
+      //
+      // Un `console.warn` en production ne coûte rien et ne se voit que dans
+      // la console — contrairement au « Nouvelle notification » que
+      // l'utilisateur, lui, voit sans comprendre.
+      // ══════════════════════════════════════════════════════════════════
+      console.warn(`[notifications] type sans libellé : ${type}`, p);
       return 'Nouvelle notification';
   }
 }
