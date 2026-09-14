@@ -36,18 +36,18 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
   const [dimmed, setDimmed] = useState(false);
   const dimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const v = useVerebona(pageContext);
-  const [prefill, setPrefill] = useState<string | undefined>();
 
   // Ouverture programmée (bulle d'accueil, centre d'aide…), avec question optionnelle.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ question?: string; prefill?: string }>).detail;
+      const detail = (e as CustomEvent<{ question?: string }>).detail;
       setOpen(true);
-      // `question` envoie ; `prefill` se contente de remplir le champ. La
-      // barre de recherche emploie le second : à la première frappe, la
-      // question n'est pas encore écrite.
+      // La barre de recherche n'ouvre le tiroir qu'à « Entrée », avec une
+      // question complète : elle part donc directement au modèle.
+      //
+      // Un mécanisme de pré-remplissage existait ici — retiré avec l'ouverture
+      // à la frappe qui le justifiait.
       if (detail?.question) v.send(detail.question);
-      else if (detail?.prefill) setPrefill(detail.prefill);
     };
     window.addEventListener('verebona:open', handler);
     return () => window.removeEventListener('verebona:open', handler);
@@ -123,7 +123,6 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
         </div>
 
         <VerebonaComposer
-          initialText={prefill}
           isLoading={v.isLoading}
           onSend={v.send}
           onCancel={v.cancel}

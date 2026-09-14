@@ -1,29 +1,15 @@
 'use client';
 /** Champ de saisie — CDC §7.5 (≤ 2 000 caractères) / §7.8 (annulation). */
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 export interface VerebonaComposerProps {
-  /**
-   * Texte déjà saisi ailleurs — la barre de recherche de l'en-tête.
-   *
-   * Pré-remplit sans envoyer : la personne a tapé un début de question, pas
-   * une question finie. L'envoyer à la première frappe interrogerait le
-   * modèle sur une lettre.
-   */
-  initialText?: string;
   isLoading: boolean;
   onSend: (text: string) => void;
   onCancel: () => void;
 }
 
-export function VerebonaComposer({ isLoading, onSend, onCancel, initialText }: VerebonaComposerProps) {
-  const [text, setText] = useState(initialText ?? '');
-
-  // Reprise à chaque nouvelle ouverture : le composeur n'est pas démonté
-  // entre deux, donc l'état initial ne suffirait pas.
-  useEffect(() => {
-    if (initialText) setText(initialText);
-  }, [initialText]);
+export function VerebonaComposer({ isLoading, onSend, onCancel }: VerebonaComposerProps) {
+  const [text, setText] = useState('');
   const submit = () => {
     if (!text.trim() || isLoading) return;
     onSend(text);

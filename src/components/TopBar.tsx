@@ -72,14 +72,18 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin }: TopBar
       </Link>
 
       {/* ══════════════════════════════════════════════════════════════════
-          UN VRAI CHAMP, CENTRÉ
+          LE TIROIR S'OUVRE À « ENTRÉE », PAS AVANT
 
           C'était un `<button>` : cliquer ouvrait le tiroir, il fallait ensuite
           saisir dedans — deux gestes pour une question.
 
-          Désormais la frappe ouvre le tiroir avec le texte déjà là. Le champ
-          local se vide aussitôt : le conserver afficherait la même question à
-          deux endroits, sans qu'on sache lequel fait foi.
+          Ma première correction ouvrait le tiroir dès la PREMIÈRE FRAPPE, en
+          vidant le champ local à chaque caractère. La lettre suivante partait
+          donc seule, et remplaçait la précédente — c'est le défaut constaté.
+
+          Le champ garde maintenant son texte. Le tiroir ne s'ouvre qu'à
+          « Entrée », avec la question complète, qui part directement au
+          modèle. Cliquer dans le champ n'ouvre plus rien.
           ══════════════════════════════════════════════════════════════════ */}
       <div className="flex-1 flex justify-center">
         <div className="relative flex items-center gap-2.5 w-full max-w-sm h-9 pl-1.5 pr-4 rounded-full bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] focus-within:border-[color:var(--text-muted)] transition-all">
@@ -89,11 +93,13 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin }: TopBar
             value={question}
             placeholder="Demander à Verebona"
             aria-label="Demander à Verebona"
-            onChange={(e) => {
-              const texte = e.target.value;
-              if (!texte) { setQuestion(''); return; }
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' || !question.trim()) return;
+              // `question` et non `prefill` : la saisie est terminée, elle
+              // part directement au modèle.
               window.dispatchEvent(
-                new CustomEvent('verebona:open', { detail: { prefill: texte } }),
+                new CustomEvent('verebona:open', { detail: { question: question.trim() } }),
               );
               setQuestion('');
             }}
