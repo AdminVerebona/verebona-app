@@ -42,6 +42,7 @@ import { s3Client } from '@/lib/s3-client';
 import { applyAiSuggestionsToAsset } from '@/services/document-ai/apply-ai-suggestions';
 import { canConsumeAnalysis, consumeAnalysisCredits } from '@/services/commercial-model.service';
 import { AiUsageTracker } from '@/services/document-ai/ai-usage-tracker';
+import { refuserSiPasDIA } from '@/lib/write-access-guard';
 
 function sseEvent(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -87,8 +88,23 @@ export async function POST(
       const { id: rawId } = await params;
       const accountId = session.currentAccountId;
 
+
       if (!accountId) {
         await writer.write(sseEvent({ type: 'error', code: 'NO_ACCOUNT' }));
+        return;
+      }
+
+      // ══════════════════════════════════════════════════════════════════
+      // REFUS TRANSMIS PAR LE FLUX, NON PAR LE STATUT HTTP
+      //
+      // Cette route rend un flux SSE : les en-têtes sont déjà partis quand
+      // ce contrôle s'exécute. Renvoyer un 403 ici n'atteindrait personne.
+      // Le client lit `type: 'error'` et son `code`.
+      // ══════════════════════════════════════════════════════════════════
+      const refus = await refuserSiPasDIA(accountId);
+      if (refus) {
+        const { code, message } = await refus.json();
+        await writer.write(sseEvent({ type: 'error', code, message }));
         return;
       }
 

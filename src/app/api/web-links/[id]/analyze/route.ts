@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { analyzeWebLinkSource } from '@/services/ai/source-analysis';
+import { refuserSiPasDIA } from '@/lib/write-access-guard';
 
 export async function POST(
   req: NextRequest,
@@ -31,9 +32,16 @@ export async function POST(
   }
 
   const accountId = session.currentAccountId;
+
   if (!accountId) {
     return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   }
+
+  // Refusé si l'essai est terminé (§9.2). Le contrôle est ici et non dans
+  // l'interface : une règle appliquée par le seul navigateur n'est pas
+  // appliquée.
+  const refus = await refuserSiPasDIA(accountId);
+  if (refus) return refus;
 
   const { id } = await params;
   const sourceId = Number(id);

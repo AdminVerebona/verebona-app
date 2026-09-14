@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { intelligentSearch } from '@/lib/intelligent-search';
 import { ensureMigrations } from '@/db';
+import { refuserSiPasDIA } from '@/lib/write-access-guard';
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,9 +21,16 @@ export async function POST(req: NextRequest) {
     }
 
     const accountId = session.currentAccountId;
+
     if (!accountId) {
       return NextResponse.json({ error: 'No account selected' }, { status: 400 });
     }
+
+    // Refusé si l'essai est terminé (§9.2). Le contrôle est ici et non dans
+    // l'interface : une règle appliquée par le seul navigateur n'est pas
+    // appliquée.
+    const refus = await refuserSiPasDIA(accountId);
+    if (refus) return refus;
 
     await ensureMigrations();
 

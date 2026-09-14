@@ -7,12 +7,19 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiPasDIA } from '@/lib/write-access-guard';
 
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession(request);
     const accountId = session.currentAccountId;
+
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
+    // Analyse IA en lot : refusé essai terminé (§9.2). Le contrôle est ici et non
+    // dans l'interface — une règle appliquée par le seul navigateur
+    // n'est pas appliquée.
+    const refus = await refuserSiPasDIA(accountId);
+    if (refus) return refus;
 
     const body = await request.json();
     const fileIds: number[] = Array.isArray(body.fileIds) ? body.fileIds.map(Number) : [];
