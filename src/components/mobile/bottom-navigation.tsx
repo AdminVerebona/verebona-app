@@ -8,13 +8,28 @@ import { MobileActionsSheet } from './mobile-actions-sheet';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LIBELLÉS SANS POSSESSIF
+ *
+ * Cinq entrées sur un écran de 390 px laissent environ 78 px chacune.
+ * « Mes documents » en demande 90 : il passait à la ligne, et la barre
+ * gagnait une deuxième ligne pour un seul mot.
+ *
+ * Le possessif n'apprend rien — tout ce que l'application montre appartient
+ * à qui la consulte. Le retirer tient sur une ligne et se lit d'un coup.
+ *
+ * Les mêmes libellés sont employés dans le menu latéral : deux vocabulaires
+ * pour les mêmes destinations font douter qu'elles soient les mêmes.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 const LEFT_ITEMS = [
-  { id: 'biens', name: 'Mes biens', href: '/assets', icon: Package },
-  { id: 'agenda', name: 'Mon agenda', href: '/agenda', icon: CalendarDays },
+  { id: 'biens', name: 'Biens', href: '/assets', icon: Package },
+  { id: 'agenda', name: 'Agenda', href: '/agenda', icon: CalendarDays },
 ];
 
 const RIGHT_ITEMS = [
-  { id: 'documents', name: 'Mes documents', href: '/documents', icon: FileText },
+  { id: 'documents', name: 'Documents', href: '/documents', icon: FileText },
   { id: 'a-traiter', name: 'À traiter', href: '/accueil/a-traiter', icon: AlertCircle },
 ];
 
@@ -65,7 +80,7 @@ export function BottomNavigation() {
                   }`}
                 >
                   <item.icon className="w-5 h-5" />
-                  <span className="text-[10px] font-medium">{item.name}</span>
+                  <span className="text-[10px] font-medium whitespace-nowrap">{item.name}</span>
                 </Link>
               );
             })}
@@ -83,7 +98,7 @@ export function BottomNavigation() {
                 className={`w-8 h-8 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90 ${showActionsSheet ? 'rotate-90' : ''}`}
               />
             </Button>
-            <span className="text-[10px] font-medium text-[color:var(--accent)]">Ajouter</span>
+            <span className="text-[10px] font-medium whitespace-nowrap text-[color:var(--accent)]">Ajouter</span>
           </div>
 
           {/* Right items */}
@@ -107,7 +122,7 @@ export function BottomNavigation() {
                       </span>
                     )}
                   </div>
-                  <span className="text-[10px] font-medium">{item.name}</span>
+                  <span className="text-[10px] font-medium whitespace-nowrap">{item.name}</span>
                 </Link>
               );
             })}

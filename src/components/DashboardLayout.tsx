@@ -68,9 +68,9 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 const navigation = [
   { name: 'Accueil', href: '/accueil', icon: House, dataGuide: undefined },
-  { name: 'Mes biens', href: '/assets', icon: Package, dataGuide: undefined },
-  { name: 'Mon agenda', href: '/agenda', icon: CalendarDays, dataGuide: undefined },
-  { name: 'Mes documents', href: '/documents', icon: FileText, dataGuide: undefined },
+  { name: 'Biens', href: '/assets', icon: Package, dataGuide: undefined },
+  { name: 'Agenda', href: '/agenda', icon: CalendarDays, dataGuide: undefined },
+  { name: 'Documents', href: '/documents', icon: FileText, dataGuide: undefined },
   { name: 'À traiter', href: '/accueil/a-traiter', icon: CircleAlert, dataGuide: 'treat-incomplete' },
 ];
 
