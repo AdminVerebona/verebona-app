@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { ChevronRight, Package, FileText, CalendarDays, ShieldCheck, Search, FolderOutput, Users } from 'lucide-react';
+import { ChevronRight, Package, FileText, CalendarDays, ShieldCheck, Search, FolderOutput, Users, Plus } from 'lucide-react';
 import type { PlanType } from '@/types/domain';
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -37,8 +37,18 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
     title: 'Ajoutez votre premier bien',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
-        Un bien, c\'est tout ce que vous possédez et souhaitez gérer&nbsp;: appartement, maison, voiture, équipement…
-        Cliquez sur le bouton <strong className="text-[color:var(--text-primary)]">Ajouter</strong> dans la barre latérale pour commencer.
+        Un bien, c’est tout ce que vous possédez et souhaitez gérer&nbsp;: appartement, maison, voiture, équipement…
+        Cliquez sur le bouton{' '}
+        <strong className="text-[color:var(--text-primary)]">Ajouter</strong>{' '}
+        {/* L'icône reproduit le bouton réel de la barre latérale : « Ajouter »
+            seul se cherche, un rond bleu au « + » se reconnaît. */}
+        <span
+          aria-hidden
+          className="inline-flex items-center justify-center align-middle w-5 h-5 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8]"
+        >
+          <Plus className="w-3 h-3 text-white" />
+        </span>{' '}
+        dans la barre latérale pour commencer.
       </p>
     ),
   };
@@ -49,7 +59,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
         Ajoutez vos factures, contrats, diagnostics, garanties ou justificatifs.<br />
-        Verebona analyse vos documents, en extrait les informations utiles et les associe au bon bien lorsque c\'est possible.
+        Verebona analyse vos documents, en extrait les informations utiles et les associe au bon bien lorsque c’est possible.
       </p>
     ),
   };
@@ -69,7 +79,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
     title: 'Retrouvez l\'information sans fouiller.',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
-        Besoin d\'une date, d\'un document, d\'une garantie ou d\'une information sur un bien&nbsp;?<br />
+        Besoin d’une date, d’un document, d’une garantie ou d’une information sur un bien&nbsp;?<br />
         Verebona vous aide à retrouver rapidement ce qui a été organisé dans votre espace.
       </p>
     ),
