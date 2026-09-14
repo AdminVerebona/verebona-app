@@ -14,6 +14,22 @@ import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 
 // Constants
 const MAX_FILE_SIZE_VIDEO = 500_000_000; // 500 MB for videos
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * TAILLE MAXIMALE D'UN DOCUMENT ANALYSÉ
+ *
+ * Contrainte du fournisseur, pas la nôtre : Gemini plafonne autour de 20 Mo
+ * pour un PDF. Sans ce contrôle, un fichier de 80 Mo est accepté, téléversé,
+ * puis ÉCHOUE à l'analyse — l'utilisateur a attendu pour rien.
+ *
+ * Refuser avant le téléversement, avec un motif clair, coûte moins cher que
+ * de le décevoir après.
+ *
+ * Les vidéos gardent leur plafond de 500 Mo : elles ne sont pas analysées.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+const MAX_FILE_SIZE_DOCUMENT = 25_000_000; // 25 Mo
 const MAX_FILES_PER_USER = 1000;
 const MAX_FILES_PER_ASSET = 100;
 const PRESIGNED_URL_EXPIRATION = 3600; // 1 hour
@@ -110,8 +126,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate file size — only videos have a cap (500 MB); other documents are unlimited
     const isVideo = typeof mimeType === 'string' && mimeType.startsWith('video/');
+
+    if (!isVideo && sizeInt > MAX_FILE_SIZE_DOCUMENT) {
+      return NextResponse.json(
+        {
+          error: 'FILE_TOO_LARGE',
+          message:
+            `Document trop volumineux (max ${MAX_FILE_SIZE_DOCUMENT / 1_000_000} Mo). ` +
+            'Au-delà, l\'analyse automatique échouerait.',
+          maxSize: MAX_FILE_SIZE_DOCUMENT,
+          providedSize: sizeInt,
+        },
+        { status: 400 },
+      );
+    }
+
     if (isVideo && sizeInt > MAX_FILE_SIZE_VIDEO) {
       return NextResponse.json(
         {

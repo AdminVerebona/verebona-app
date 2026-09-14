@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+
+/** Documents par dépôt — au-delà, la mémoire du conteneur souffre. */
+const MAX_DOCUMENTS_PAR_DEPOT = 10;
+/** Taille cumulée d'un dépôt. 100 Mo : aucun usage normal ne l'atteint. */
+const MAX_TAILLE_LOT = 100_000_000;
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 
@@ -132,6 +137,53 @@ export async function POST(request: NextRequest) {
       const allFileIds: number[] = Array.isArray(batchFileIds) && batchFileIds.length > 0
         ? batchFileIds.map(Number)
         : [fileIdInt];
+
+      // ══════════════════════════════════════════════════════════════════
+      // LIMITES DE DÉPÔT
+      //
+      // Dix analyses lancées ensemble, ce sont dix appels modèles sur un
+      // conteneur qui est déjà tombé pour dépassement mémoire. Le plafond
+      // protège la machine autant que le quota du compte.
+      //
+      // Le contrôle est ICI et non seulement dans l'interface : un appel
+      // direct à l'API contournerait une validation côté navigateur.
+      // ══════════════════════════════════════════════════════════════════
+      if (allFileIds.length > MAX_DOCUMENTS_PAR_DEPOT) {
+        return NextResponse.json(
+          {
+            error: 'TOO_MANY_FILES',
+            message:
+              `Vous pouvez déposer ${MAX_DOCUMENTS_PAR_DEPOT} documents à la fois. ` +
+              `Ce dépôt en contient ${allFileIds.length}.`,
+            max: MAX_DOCUMENTS_PAR_DEPOT,
+            provided: allFileIds.length,
+          },
+          { status: 400 },
+        );
+      }
+
+      // Taille cumulée : dix fichiers de 25 Mo feraient 250 Mo, que le
+      // navigateur met plusieurs minutes à envoyer et que la confirmation
+      // charge en mémoire.
+      const [tailleLot] = await db
+        .select({ total: sql<number>`coalesce(sum(${assetFiles.size}), 0)::bigint` })
+        .from(assetFiles)
+        .where(inArray(assetFiles.id, allFileIds));
+
+      const cumul = Number(tailleLot?.total ?? 0);
+      if (cumul > MAX_TAILLE_LOT) {
+        return NextResponse.json(
+          {
+            error: 'BATCH_TOO_LARGE',
+            message:
+              `Ce dépôt pèse ${Math.round(cumul / 1_000_000)} Mo. ` +
+              `Le maximum est de ${MAX_TAILLE_LOT / 1_000_000} Mo par dépôt.`,
+            max: MAX_TAILLE_LOT,
+            provided: cumul,
+          },
+          { status: 400 },
+        );
+      }
       // Aiguillage unique (CDC §10.1) : le moteur est choisi dans
       // `source-analysis/entrypoint`, jamais ici. Voir l'en-tête de ce module
       // pour la raison — huit appelants, un seul test de drapeau.

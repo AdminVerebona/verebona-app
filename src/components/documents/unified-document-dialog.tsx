@@ -97,6 +97,14 @@ const EVENT_CATEGORIES = [
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
+/**
+ * Limites de dépôt — alignées sur `api/files/presign` et `api/files/confirm`.
+ * Le serveur fait autorité ; ces valeurs évitent un aller-retour inutile.
+ */
+const MAX_DOCUMENTS_PAR_DEPOT = 10;
+const MAX_TAILLE_FICHIER = 25_000_000;
+const MAX_TAILLE_LOT = 100_000_000;
+
 export function UnifiedDocumentDialog({
   open,
   onOpenChange,
@@ -366,11 +374,53 @@ export function UnifiedDocumentDialog({
 
 
   const addFiles = (newFiles: File[]) => {
-    // Just add to list — user chooses next action via footer buttons
-    setFiles(prev => [...prev, ...newFiles.map(file => ({
-      file,
-      preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-    }))]);
+    // ══════════════════════════════════════════════════════════════════════
+    // REFUSER AVANT L'ENVOI, PAS APRÈS
+    //
+    // Le serveur applique les mêmes limites — il fait seul autorité. Mais les
+    // annoncer ici évite d'attendre un téléversement de 200 Mo pour apprendre
+    // qu'il est refusé.
+    //
+    // Les vidéos sont exemptées de la limite par fichier : elles ne sont pas
+    // analysées, et le serveur leur accorde 500 Mo.
+    // ══════════════════════════════════════════════════════════════════════
+    const tropGros = newFiles.filter(
+      (f) => !f.type.startsWith('video/') && f.size > MAX_TAILLE_FICHIER,
+    );
+    if (tropGros.length > 0) {
+      toast.error(
+        `${tropGros.length === 1 ? 'Ce document dépasse' : 'Ces documents dépassent'} ` +
+        `${MAX_TAILLE_FICHIER / 1_000_000} Mo : ${tropGros.map((f) => f.name).join(', ')}. ` +
+        'Au-delà, l\'analyse automatique échouerait.',
+      );
+    }
+
+    const retenus = newFiles.filter((f) => !tropGros.includes(f));
+
+    setFiles(prev => {
+      const place = MAX_DOCUMENTS_PAR_DEPOT - prev.length;
+      if (retenus.length > place) {
+        toast.error(
+          `Vous pouvez déposer ${MAX_DOCUMENTS_PAR_DEPOT} documents à la fois. ` +
+          `${retenus.length - place} ${retenus.length - place === 1 ? 'a été écarté' : 'ont été écartés'}.`,
+        );
+      }
+      const ajoutes = retenus.slice(0, Math.max(0, place));
+
+      const cumul = [...prev, ...ajoutes.map((f) => ({ file: f }))]
+        .reduce((t, x) => t + x.file.size, 0);
+      if (cumul > MAX_TAILLE_LOT) {
+        toast.error(
+          `Ce dépôt pèse ${Math.round(cumul / 1_000_000)} Mo. ` +
+          `Le maximum est de ${MAX_TAILLE_LOT / 1_000_000} Mo.`,
+        );
+      }
+
+      return [...prev, ...ajoutes.map(file => ({
+        file,
+        preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+      }))];
+    });
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
