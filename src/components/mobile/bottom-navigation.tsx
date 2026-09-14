@@ -14,7 +14,7 @@ const LEFT_ITEMS = [
 ];
 
 const RIGHT_ITEMS = [
-  { id: 'documents', name: 'Mes docs', href: '/documents', icon: FileText },
+  { id: 'documents', name: 'Mes documents', href: '/documents', icon: FileText },
   { id: 'a-traiter', name: 'À traiter', href: '/accueil/a-traiter', icon: AlertCircle },
 ];
 

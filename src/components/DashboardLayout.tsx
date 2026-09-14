@@ -33,7 +33,6 @@ import {
     LogOut,
     Menu,
     X,
-    Shield,
     Plus,
     Search,
   } from 'lucide-react';
@@ -45,10 +44,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useSession, User as SessionUser } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
@@ -63,7 +60,6 @@ const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboard
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
-import { getPlanLabel } from '@/lib/plan-label';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
@@ -282,6 +278,31 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // ce n'est pas une autorisation.
   // ══════════════════════════════════════════════════════════════════════════
   const { entitlements, isRestricted } = useEntitlements();
+
+  /**
+   * Statut d'abonnement, toujours affiché.
+   *
+   * `entitlements` connaît l'état réel — essai en cours, essai terminé,
+   * résiliation — là où `user.subscription.plan` ne porte que le type
+   * d'offre et affichait « Standard » à quelqu'un en essai.
+   */
+  const statutAbonnement = useMemo(() => {
+    if (entitlements?.trial.status === 'active') return 'Essai en cours';
+    if (entitlements?.trial.status === 'expired') return 'Essai terminé';
+    const libelles: Record<string, string> = {
+      trial: 'Essai en cours',
+      standard: 'Standard',
+      premium: 'Premium',
+      premium_duo: 'Premium Duo',
+      none: 'Aucune offre',
+    };
+    return libelles[entitlements?.plan ?? 'none'] ?? 'Aucune offre';
+  }, [entitlements]);
+
+  /** Le nom de l'espace ne distingue quelque chose que s'il y en a plusieurs. */
+  const plusieursEspaces = (user as { accountsCount?: number } | null)?.accountsCount
+    ? ((user as { accountsCount?: number }).accountsCount ?? 1) > 1
+    : false;
 
   /**
    * Garde déportée dans `WriteGuardContext`.
@@ -563,165 +584,118 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         <MobileAnalysisBanner />
 
         {/* Mobile Sidebar */}
+        {/* ══════════════════════════════════════════════════════════════
+            PANNEAU DE COMPTE — PLUS UNE SECONDE NAVIGATION
+
+            Il reprenait « Mes biens », « Mon agenda », « Mes documents »,
+            « À traiter » et « Ajouter » — les cinq rubriques de la barre
+            inférieure. Deux systèmes de navigation coexistaient, utilisables
+            en même temps puisque la barre restait au-dessus en z-50.
+
+            Il ne contient plus que ce qui relève du compte. La barre
+            inférieure est masquée pendant l'ouverture : laisser deux
+            navigations actives était le défaut lui-même.
+            ══════════════════════════════════════════════════════════════ */}
         {isMobileMenuOpen && (
-          <div className="fixed inset-0 z-50 md:hidden">
+          <div className="fixed inset-0 z-[60] md:hidden">
             <div
               className="fixed inset-0 bg-black/50 backdrop-blur-sm"
               onClick={() => setIsMobileMenuOpen(false)}
             />
-            <aside className="fixed inset-y-0 left-0 w-64 bg-[color:var(--sidebar)] border-r border-[color:var(--border-subtle)] shadow-relief-2xl overflow-y-auto">
+            {/* Largeur relative plafonnée : `w-64` fixe tronquait les noms
+                longs sur les petits écrans. */}
+            <aside className="fixed inset-y-0 left-0 w-[85%] max-w-sm bg-[color:var(--sidebar)] border-r border-[color:var(--border-subtle)] shadow-relief-2xl overflow-y-auto">
               <div className="flex flex-col h-full">
-                {/* Logo en haut */}
-                <div className="p-6 border-b border-[color:var(--border-subtle)]">
-                  <Link href="/accueil" className="hover-lift block" onClick={() => setIsMobileMenuOpen(false)}>
-                    <Logo size={40} withText={true} />
+
+                <div className="flex items-center justify-between p-5 border-b border-[color:var(--border-subtle)]">
+                  <span className="text-sm font-semibold text-[color:var(--text-primary)]">
+                    Compte et réglages
+                  </span>
+                  {/* Fermeture explicite : le panneau n'en offrait aucune,
+                      hors le geste de toucher le fond. */}
+                  <button
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    aria-label="Fermer"
+                    className="p-2 rounded-lg hover:bg-[color:var(--accent-soft)] text-[color:var(--text-muted)]"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="p-5 border-b border-[color:var(--border-subtle)]">
+                  <div className="flex items-center gap-3">
+                    <Avatar className="w-11 h-11 flex-shrink-0">
+                      <AvatarFallback className="bg-[#3b82f6] text-white text-sm font-semibold">
+                        {getUserInitials}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      {/* Le nom de la personne, non celui du compte. Celui-ci
+                          vaut « Compte de Prénom Nom » — un identifiant
+                          technique, pas un libellé d'interface. */}
+                      <p className="text-sm font-semibold text-[color:var(--text-primary)] truncate">
+                        {user ? `${user.firstName} ${user.lastName.charAt(0)}.` : ''}
+                      </p>
+                      <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-[color:var(--accent-soft)] text-[color:var(--accent)]">
+                        {statutAbonnement}
+                      </span>
+                      {/* Le nom de l'espace ne s'affiche qu'avec plusieurs
+                          espaces : seul, il n'a rien à distinguer. */}
+                      {plusieursEspaces && user?.accountName && (
+                        <p className="text-xs text-[color:var(--text-muted)] truncate mt-1">
+                          {user.accountName}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <nav className="flex-1 p-3 space-y-1">
+                  {/* Accès direct aux réglages : la fiche ouvrait jusqu'ici
+                      un sous-menu, soit deux gestes pour une destination. */}
+                  <Link
+                    href="/mon-compte"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-primary)] hover:bg-[color:var(--accent-soft)] transition-colors"
+                  >
+                    <User className="w-5 h-5 flex-shrink-0" />
+                    <span className="text-sm">Mon compte</span>
                   </Link>
+
+                  <button
+                    onClick={() => { setIsMobileMenuOpen(false); setHelpModalOpen(true); }}
+                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-primary)] hover:bg-[color:var(--accent-soft)] transition-colors"
+                  >
+                    <HelpCircle className="w-5 h-5 flex-shrink-0" />
+                    <span className="text-sm">Besoin d&apos;aide ?</span>
+                  </button>
+
+                  <button
+                    onClick={toggleTheme}
+                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-primary)] hover:bg-[color:var(--accent-soft)] transition-colors"
+                  >
+                    {theme === 'blue'
+                      ? <Sun className="w-5 h-5 flex-shrink-0" />
+                      : <Moon className="w-5 h-5 flex-shrink-0" />}
+                    <span className="text-sm">Apparence</span>
+                  </button>
+                </nav>
+
+                {/* Isolé en bas : une déconnexion mêlée aux réglages
+                    s'atteint par mégarde. */}
+                <div className="p-3 border-t border-[color:var(--border-subtle)]">
+                  <button
+                    onClick={() => { setIsMobileMenuOpen(false); handleLogout(); }}
+                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] transition-colors"
+                  >
+                    <LogOut className="w-5 h-5 flex-shrink-0" />
+                    <span className="text-sm">Se déconnecter</span>
+                  </button>
                 </div>
-
-                  {/* User menu & theme toggle en haut */}
-                  <div className="p-4 space-y-2">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                      <button className="w-full flex items-center gap-3 hover:bg-[color:var(--accent-soft)] hover:shadow-relief-md rounded-xl px-3 py-2 transition-all shadow-relief-sm border border-transparent hover:border-[color:var(--border-subtle)]">
-                            <Avatar className="w-8 h-8 shadow-relief-sm">
-                              <AvatarFallback className="bg-[color:var(--accent)] text-white text-sm font-medium">
-                                {getUserInitials}
-                              </AvatarFallback>
-                            </Avatar>
-                            <div className="flex-1 text-left">
-                              <div className="text-sm font-medium text-[color:var(--text-primary)] truncate">
-                                {getUserDisplayName}
-                              </div>
-                              <div className="text-xs text-[color:var(--accent)] font-medium">
-                                {getPlanLabel({
-                                  plan: user.subscription.plan,
-                                  duoRole: user.duoRole,
-                                  trialStatus: user.subscription.trialStatus,
-                                  trialDaysLeft: user.subscription.trialDaysLeft,
-                                })}
-                              </div>
-                            </div>
-                          </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-56 shadow-relief-lg">
-                        <div className="px-2 py-1.5 text-sm">
-                          <div className="font-medium">{getUserDisplayName}</div>
-                          <div className="text-xs text-[color:var(--text-muted)]">{user.email}</div>
-                          <div className="text-xs text-[color:var(--text-muted)] mt-1">
-                            Plan: <span className="font-medium">{getPlanLabel({
-                                  plan: user.subscription.plan,
-                                  duoRole: user.duoRole,
-                                  trialStatus: user.subscription.trialStatus,
-                                  trialDaysLeft: user.subscription.trialDaysLeft,
-                                })}</span>
-                          </div>
-                        </div>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem asChild>
-                          <Link href="/mon-compte" className="cursor-pointer flex items-center" onClick={() => setIsMobileMenuOpen(false)}>
-                            <User className="mr-2 h-4 w-4" />
-                            <span>Compte</span>
-                          </Link>
-                        </DropdownMenuItem>
-                        {isAdmin && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem asChild>
-                              <Link href="/admin" className="cursor-pointer flex items-center" onClick={() => setIsMobileMenuOpen(false)}>
-                                <Shield className="mr-2 h-4 w-4" />
-                                <span>Administration</span>
-                              </Link>
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={toggleTheme} className="cursor-pointer">
-                            {theme === 'blue' ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}
-                            <span>Thème {theme === 'blue' ? 'clair' : 'sombre'}</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={handleLogout}
-                            className="cursor-pointer"
-                          >
-                            <LogOut className="mr-2 h-4 w-4" />
-                            <span>Se déconnecter</span>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-
-
-                </div>
-
-                  {/* Séparateur */}
-                  <div className="mx-4 border-t border-[color:var(--border-subtle)]" />
-
-                  {/* Navigation Mobile */}
-                  <nav className="flex-1 space-y-1 p-4 overflow-y-auto">
-                    <div className="flex justify-center mb-6 px-3">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            size="lg"
-                            className="w-full h-12 rounded-xl shadow-relief-lg hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] hover:scale-[1.02] transition-all group flex items-center justify-center gap-2"
-                          >
-                            <Plus className="w-5 h-5 text-white transition-transform group-hover:rotate-90" />
-                            <span className="font-semibold text-white">Ajouter</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="center" className="w-56 shadow-relief-lg">
-                          <DropdownMenuItem onClick={() => { setIsMobileMenuOpen(false); ouvrirAjoutBien(); }} className="cursor-pointer py-2.5">
-                            <Package className="mr-2 h-4 w-4" />
-                            <span>Ajouter un bien</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => { setIsMobileMenuOpen(false); ouvrirAjoutDocument(); }} className="cursor-pointer py-2.5">
-                            <FileText className="mr-2 h-4 w-4" />
-                            <span>Ajouter un document</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => { setShowAgendaDrawer(true); setIsMobileMenuOpen(false); }} className="cursor-pointer py-2.5">
-                            <CalendarDays className="mr-2 h-4 w-4" />
-                            <span>Ajouter à l'agenda</span>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                    {navigation.map((item) => {
-                      const isActive = pathname === item.href;
-                      return (
-                        <Link
-                          key={item.name}
-                          href={item.href}
-                          onClick={() => setIsMobileMenuOpen(false)}
-                          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                            isActive
-                              ? 'bg-[color:var(--accent-soft)] text-[color:var(--accent)] shadow-relief-sm border-l-2 border-[color:var(--accent)]'
-                              : 'text-[color:var(--text-primary)] hover:bg-[color:var(--bg-card)] hover:shadow-relief-sm'
-                          }`}
-                        >
-                          <item.icon className="w-5 h-5 flex-shrink-0" />
-                          {item.href === '/accueil/a-traiter' && aTraiterCount !== null && aTraiterCount > 0
-                            ? <span>{item.name} <span className="text-white">({aTraiterCount})</span></span>
-                            : item.name
-                          }
-                        </Link>
-                      );
-                    })}
-
-                    {/* Help */}
-                    <div className="border-t border-[color:var(--border-subtle)] pt-2 mt-2 space-y-1">
-                      <button
-                        onClick={() => { setHelpModalOpen(true); setIsMobileMenuOpen(false); }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--bg-card)] hover:shadow-relief-sm transition-all"
-                      >
-                        <HelpCircle className="w-5 h-5 flex-shrink-0" />
-                        <span>Besoin d'aide ?</span>
-                      </button>
-                    </div>
-                  </nav>
-                </div>
-              </aside>
-            </div>
-          )}
+              </div>
+            </aside>
+          </div>
+        )}
 
           {/* Main Content */}
           <div id="main-scroll-container" className="flex-1 flex flex-col min-w-0 overflow-x-hidden pt-16 md:pt-0 overflow-y-auto relative scroll-smooth">
@@ -751,7 +725,11 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       </div>
 
           {/* Mobile Action Button - Bottom Navigation */}
-          <BottomNavigation />
+          {/* Masquée pendant l'ouverture du panneau : elle est en z-50 et
+              restait au-dessus, laissant deux navigations utilisables en même
+              temps. Surenchérir sur le plan du panneau n'aurait pas réglé le
+              fond — c'est la simultanéité qui est le défaut. */}
+          {!isMobileMenuOpen && <BottomNavigation />}
 
           {/* Mobile Search Overlay */}
           <MobileSearchOverlay

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
 import { verifyAccessToken } from '@/lib/jwt';
 import { SessionService } from '@/lib/session-service';
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import { users, accounts, accountMemberships, duoAccounts, duoMemberships } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
@@ -178,6 +178,15 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Un seul espace : le nom n'a rien à distinguer. Plusieurs : il devient
+    // utile de savoir dans lequel on se trouve.
+    const [espaces] = await pgClient<{ total: number }[]>`
+      SELECT count(DISTINCT account_id)::int AS total
+      FROM account_memberships
+      WHERE user_id = ${userData.id} AND status = 'active'
+    `;
+    const nombreEspaces = espaces?.total ?? 1;
+
     const corps = {
       id: userData.id,
       email: userData.email,
@@ -186,6 +195,15 @@ export async function GET(request: NextRequest) {
       username: userData.username ?? null,
       company: userData.company ?? null,
       accountName: userData.accountName,
+      /**
+       * Nombre d'espaces auxquels l'utilisateur a accès.
+       *
+       * Le panneau de compte n'affiche le nom de l'espace partagé que s'il y
+       * en a plusieurs à distinguer. Sans ce décompte, la condition ne peut
+       * pas être évaluée côté client — et afficher « Compte de Geoffroy
+       * Maupilier » à quelqu'un qui n'a qu'un espace n'apprend rien.
+       */
+      accountsCount: nombreEspaces,
       role: userData.role,
       hasSeenUploadNotice: userData.hasSeenUploadNotice ?? false,
       subscription: {
