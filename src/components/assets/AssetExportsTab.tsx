@@ -86,7 +86,7 @@ const EXPORT_USAGES: ExportUsageDef[] = [
   {
     type: 'TRANSMISSION',
     label: 'Transmission du bien',
-    description: 'Partager l\'ensemble du dossier avec un tiers (notaire, acheteur…)',
+    description: 'Transmettre votre bien sur un autre compte Verebona.',
     icon: Send, section: 'transfert', premiumOnly: false,
     allowedCategories: 'ALL',
   },
