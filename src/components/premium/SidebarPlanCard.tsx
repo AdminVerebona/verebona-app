@@ -8,6 +8,8 @@ interface SidebarPlanCardProps {
   plan: string;
   /** Jours d'essai restants (null/undefined si pas en essai). */
   trialDaysLeft?: number | null;
+  /** Essai consommé sans souscription — état distinct de « pas d'essai ». */
+  trialExpired?: boolean;
   /** Quotas biens (utilisé / max) pour la carte STANDARD, servis par le
    *  serveur. Omis tant qu'ils ne sont pas connus : le compteur disparaît
    *  alors, au lieu d'afficher une valeur inventée. */
@@ -35,9 +37,21 @@ interface SidebarPlanCardProps {
  * pas arrivée, on ne montre pas de compteur plutôt qu'un compteur faux.
  * ══════════════════════════════════════════════════════════════════════════
  */
-export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed, assetsMax }: SidebarPlanCardProps) {
+export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed, assetsMax, trialExpired }: SidebarPlanCardProps) {
   const isTrial = typeof trialDaysLeft === 'number' && trialDaysLeft >= 0;
-  if (!isTrial && plan !== 'STANDARD') return null;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // TROIS ÉTATS, ET NON DEUX
+  //
+  // La carte ne connaissait que « essai en cours » et « plan gratuit ». Un
+  // essai TERMINÉ retombait donc sur « Plan gratuit — Passer à Premium »,
+  // qui suppose une offre en cours à faire évoluer.
+  //
+  // Le décompte reste utile pendant l'essai — il annonce une échéance. Une
+  // fois passée, il n'y a plus rien à décompter : une jauge pleine et un
+  // « J-0 » n'apprennent rien de plus que « terminé ».
+  // ══════════════════════════════════════════════════════════════════════
+  if (!isTrial && !trialExpired && plan !== 'STANDARD') return null;
 
   // Compteur affichable seulement si les deux valeurs sont connues et la
   // limite non nulle — un quota à zéro (compte restreint) donnerait une
@@ -64,6 +78,15 @@ export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed, assetsMax }: 
             />
           </div>
         </>
+      ) : trialExpired ? (
+        /* Essai terminé : le titre suffit. Ni jauge ni compteur — il n'y a
+           plus de quota à suivre, seulement une offre à choisir. */
+        <div className="flex items-center gap-1.5 mb-2.5">
+          <Clock className="w-3.5 h-3.5 text-[color:var(--text-warning)]" />
+          <span className="text-xs font-semibold text-[color:var(--text-primary)]">
+            Essai gratuit terminé
+          </span>
+        </div>
       ) : (
         <>
           <div className="flex items-center gap-1.5 mb-1.5">
@@ -86,11 +109,14 @@ export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed, assetsMax }: 
           )}
         </>
       )}
+      {/* Même libellé et même destination que le bandeau d'accueil :
+          « Choisir mon abonnement » vers la page des offres. Deux
+          formulations pour la même action font douter qu'elle soit la même. */}
       <Link
-        href="/mon-compte"
+        href={isTrial || trialExpired ? '/mon-compte/offres' : '/mon-compte'}
         className="block w-full h-8 leading-8 text-center rounded-full bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-[11.5px] font-semibold hover:-translate-y-px hover:shadow-relief-glow transition-all"
       >
-        {isTrial ? 'Choisir une offre' : 'Passer à Premium'}
+        {isTrial || trialExpired ? 'Choisir mon abonnement' : 'Passer à Premium'}
       </Link>
     </div>
   );

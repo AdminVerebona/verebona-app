@@ -519,6 +519,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
                 trialDaysLeft={user.subscription?.trialDaysLeft ?? null}
                 assetsUsed={entitlements?.quotas?.assets?.used}
                 assetsMax={entitlements?.quotas?.assets?.limit}
+                trialExpired={entitlements?.trial.status === 'expired'}
               />
             )}
 
