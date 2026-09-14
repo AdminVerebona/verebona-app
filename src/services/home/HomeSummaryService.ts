@@ -750,25 +750,33 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     } else if (totalTodo === 2 && firstTodo) {
       situationRichMessage = `**${totalTodo} éléments** demandent votre attention, dont **${firstTodo.title}**.`;
     } else if (firstTodo) {
-      situationRichMessage = `**${totalTodo} éléments** demandent votre attention.`;
+      // Nommer le plus urgent plutôt que d'annoncer un décompte : « 5
+      // éléments » n'indique pas par où commencer.
+      const ctx = firstTodo.context ? ` — **${firstTodo.context}**` : '';
+      situationRichMessage =
+        `**${totalTodo} éléments** demandent votre attention. Le plus urgent : ` +
+        `**${firstTodo.title}**${ctx}.`;
     } else {
       situationRichMessage = situationMessage;
     }
   } else if (totalUpcoming > 0) {
     situationStatus = 'all_clear';
     if (nextUpcoming?.date) {
-      situationMessage = `Tout est à jour. Votre prochaine date importante est le ${formatDateFR(nextUpcoming.date)}.`;
+      situationMessage = `Bravo, tout est à jour. Votre prochaine date importante est le ${formatDateFR(nextUpcoming.date)}.`;
       const titlePart = nextUpcoming.title ? ` pour **${nextUpcoming.title}**` : '';
       const ctxPart = nextUpcoming.context ? ` — ${nextUpcoming.context}` : '';
-      situationRichMessage = `Tout est à jour. Votre prochaine date importante est le **${formatDateFR(nextUpcoming.date)}**${titlePart}${ctxPart}.`;
+      situationRichMessage = `**Bravo**, tout est à jour. Votre prochaine date importante est le **${formatDateFR(nextUpcoming.date)}**${titlePart}${ctxPart}.`;
     } else {
-      situationMessage = 'Tout est à jour. Vous avez des éléments à venir.';
+      situationMessage = 'Bravo, tout est à jour. Vous avez des éléments à venir.';
       situationRichMessage = situationMessage;
     }
   } else {
+    // Rien à faire : la mascotte félicite au lieu de constater. Un simple
+    // « tout est à jour » se lit comme un écran vide ; « bravo » marque que
+    // l'état est le bon, et non que rien n'a été chargé.
     situationStatus = 'all_clear';
-    situationMessage = 'Tout est à jour pour le moment.';
-    situationRichMessage = situationMessage;
+    situationMessage = 'Bravo, tout est à jour pour le moment.';
+    situationRichMessage = '**Bravo**, tout est à jour pour le moment.';
   }
 
   // ── Assets enrichis avec micro-signaux ───────────────────────────────────

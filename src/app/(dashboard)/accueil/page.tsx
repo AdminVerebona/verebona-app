@@ -313,14 +313,30 @@ export default function DashboardPage() {
           />
         )}
 
-        {/* À faire + En un coup d'œil — 2 colonnes alignées */}
+        {/* ══════════════════════════════════════════════════════════════
+            LE BLOC « À FAIRE » DISPARAÎT QUAND IL EST VIDE
+
+            Il occupait la colonne large pour afficher « Aucune action
+            requise » — une carte pleine hauteur pour dire qu'il n'y a rien.
+            La mascotte le dit déjà, et mieux.
+
+            Quand il s'efface, « En un coup d'œil » prend toute la largeur au
+            lieu de laisser une colonne vide à sa gauche : d'où la grille
+            conditionnelle plutôt qu'un simple masquage.
+            ══════════════════════════════════════════════════════════════ */}
         {summary && !isEmpty && (
-          <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 items-stretch">
-            <ATfaireBlock
-              items={summary.blocks.todo.items}
-              total={summary.blocks.todo.total}
-              onItemClick={handleItemClick}
-            />
+          <div className={
+            statATraiter > 0
+              ? 'grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 items-stretch'
+              : 'grid grid-cols-1 gap-4'
+          }>
+            {statATraiter > 0 && (
+              <ATfaireBlock
+                items={summary.blocks.todo.items}
+                total={summary.blocks.todo.total}
+                onItemClick={handleItemClick}
+              />
+            )}
             <HomeStatsGrid
               biens={totalAssets}
               evenements={statEvenements}
@@ -350,7 +366,14 @@ export default function DashboardPage() {
                     </Link>
                   )}
                 </div>
-                <div className="grid grid-cols-2 xl:grid-cols-3 gap-4 w-full">
+                {/* Le nombre de colonnes suit le nombre de biens affichés :
+                    une grille à trois colonnes pour deux biens laisse un
+                    emplacement vide, que l'œil lit comme une carte manquante. */}
+                <div className={`grid gap-4 w-full ${
+                  assets.length === 1 ? 'grid-cols-1'
+                  : assets.length === 2 ? 'grid-cols-2'
+                  : 'grid-cols-2 xl:grid-cols-3'
+                }`}>
                   {assets.slice(0, 3).map((asset, idx) => (
                     <AssetCard
                       key={asset.id}

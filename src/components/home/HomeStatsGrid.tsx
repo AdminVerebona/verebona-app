@@ -24,7 +24,11 @@ export function HomeStatsGrid(props: HomeStatsGridProps) {
       <span className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2.5">
         En un coup d'œil
       </span>
-      <div className="grid grid-cols-2 auto-rows-fr gap-3 flex-1">
+      {/* Deux colonnes en colonne étroite, quatre dès que la largeur le
+          permet : sans cela, les quatre cartes restent empilées par deux et
+          laissent la moitié de la ligne vide quand le bloc « À faire » est
+          masqué. */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 auto-rows-fr gap-3 flex-1">
         {TILE.map((t) => (
           <Link
             key={t.key}
