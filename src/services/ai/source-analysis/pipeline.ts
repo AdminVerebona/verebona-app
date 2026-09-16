@@ -29,9 +29,7 @@ import { getSourceAdapter } from './adapters';
 import { groupSources } from './steps/group-sources.step';
 import { extractSource } from './steps/extract-source.step';
 import { classifyDocument } from './steps/classify-document.step';
-import { classifyCategory } from './steps/classify-category.step';
 import { classifyRubric, loadAssetFamilies } from './steps/classify-rubric.step';
-import { updateClassification } from '@/services/documents/classification.service';
 import { applyV2Classification } from '@/services/documents/apply-v2-classification.service';
 
 /**
@@ -151,44 +149,6 @@ export async function runSourceAnalysis(
       const persisted = await persistAnalysisResult({
         input, leadSourceId, groupSourceIds, lotId, result,
       });
-
-      // ══════════════════════════════════════════════════════════════════
-      // ÉTAPE 12 bis — ÉCRITURE DU CLASSEMENT (CDC 5 §5.2, §8.4)
-      //
-      // Passe par `updateClassification`, jamais par une écriture directe.
-      // Ce service applique les règles du §4.3 — compatibilité, attribution
-      // automatique, recalcul de l'état — et surtout LES VERROUILLAGES :
-      // une catégorie posée par l'utilisateur n'est pas écrasée par le modèle.
-      //
-      // Écrire directement dans `asset_files` contournerait ces règles, et
-      // l'utilisateur verrait son classement manuel défait à la prochaine
-      // réanalyse — sans rien pour l'expliquer.
-      //
-      // Ne lève jamais : l'analyse a réussi et les résultats sont écrits. Un
-      // classement manqué se rattrape, une analyse perdue non.
-      // ══════════════════════════════════════════════════════════════════
-      if (result.document.category?.value || result.document.type?.value) {
-        await updateClassification({
-          // Les sources SONT les fichiers : `filterOwnedSources` les lit dans
-          // `asset_files`. Le document de tête porte donc le classement du
-          // groupe — c'est lui qui reste visible, les secondaires étant
-          // marqués supprimés au regroupement.
-          fileId: leadSourceId,
-          accountId: input.accountId,
-          categoryCode: result.document.category?.value,
-          documentTypeCode: result.document.type?.value,
-          source: 'AI',
-          // §8.2 : enregistrées, jamais exposées au front.
-          categoryConfidence: confidenceToScore(result.document.category?.confidence),
-          typeConfidence: confidenceToScore(result.document.type?.confidence),
-          pipelineVersion: PIPELINE_VERSION,
-        }).catch((e) => {
-          console.error(
-            `[source-analysis] classement du fichier ${leadSourceId} impossible :`,
-            (e as Error).message,
-          );
-        });
-      }
 
       // ══════════════════════════════════════════════════════════════════
       // ÉTAPE 12 ter — CLASSEMENT V2 ET FILE « À TRAITER » (CDC V2 §10.2, §11.3)
@@ -394,16 +354,7 @@ async function analyseGroup(
   // dès qu'un Type est déterminé, et la majorité des documents ne déclenche
   // donc aucun appel modèle supplémentaire.
   // ══════════════════════════════════════════════════════════════════════
-  const [categorie, rubrique] = await Promise.all([
-    classifyCategory(input, groupIndices, {
-      documentType: (classified.type ?? extracted.document.type)?.value,
-      assetIds: entities.assetCandidates
-        .map((c) => c.entityId)
-        .filter((id): id is number => typeof id === 'number'),
-      title: hints.title,
-      extractedText: hints.extractedText,
-    }),
-    classifyRubric(input, groupIndices, {
+  const  rubrique = await classifyRubric(input, groupIndices, {
       documentType: (classified.type ?? extracted.document.type)?.value,
       assetIds: entities.assetCandidates
         .map((c) => c.entityId)
@@ -415,8 +366,7 @@ async function analyseGroup(
       // compromettre une analyse par ailleurs réussie.
       console.error('[source-analysis] classement V2 indisponible :', (e as Error).message);
       return null;
-    }),
-  ]);
+    });
 
   // Étape 11 — candidats agenda, déterministes.
   const agendaCandidates = buildAgendaCandidates(extracted.extractedFields, hints.title);
@@ -429,7 +379,6 @@ async function analyseGroup(
     document: {
       ...extracted.document,
       type: classified.type ?? extracted.document.type,
-      category: categorie.category,
       rubric: rubrique?.proposal
         ? {
             rubricCode: rubrique.proposal.rubricCode,
@@ -449,7 +398,7 @@ async function analyseGroup(
     agendaCandidates,
     warnings,
     operationTrace: combineTraces(
-      groupTrace, extracted.trace, classified.trace, entities.trace, categorie.trace,
+      groupTrace, extracted.trace, classified.trace, entities.trace,
       ...(rubrique ? [rubrique.trace] : []),
     ),
   };

@@ -27,7 +27,6 @@
 
 import { useEffect, useState } from 'react';
 import { DocumentsView } from '@/components/documents/DocumentsView';
-import { DocumentClassificationSection } from '@/components/documents/DocumentClassificationSection';
 import type { DocumentCardData } from '@/components/documents/DocumentCard';
 import type { TypeOption } from '@/components/documents/SortFilterDrawer';
 import { Button } from '@/components/ui/button';
@@ -95,13 +94,6 @@ export function AssetDocumentsByCategory({ assetId }: { assetId: number }) {
                   .join(', ')}
               </div>
             )}
-
-            <DocumentClassificationSection
-              documentId={ouvert.id}
-              initialCategoryCode={ouvert.classification.categoryCode}
-              initialTypeCode={ouvert.documentTypeCode}
-              onSaved={() => { /* La vue se rafraîchit à la fermeture. */ }}
-            />
 
             {ouvert.previewable && (
               <a href={`/api/files/${ouvert.id}/proxy`} target="_blank" rel="noreferrer"

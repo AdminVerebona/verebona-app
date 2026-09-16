@@ -96,13 +96,7 @@ const AMORCAGES: Amorcage[] = [
     description: 'Accusé de réception de rétractation',
     executer: async () =>
       (await import('@/db/seeds/withdrawal/email_template_withdrawal')).seedWithdrawalEmailTemplate(),
-  },
-  {
-    nom: 'doc-categories',
-    description: 'Référentiel documentaire : catégories, types, associations',
-    executer: async () =>
-      (await import('@/db/seeds/documents/seed-document-categories')).seedDocumentCategories(),
-  },
+  }
 ];
 
 export const dynamic = 'force-dynamic';
