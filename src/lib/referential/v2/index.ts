@@ -37,7 +37,22 @@ export { DOCUMENT_TYPES } from './document-types';
  * Version du référentiel. À incrémenter à CHAQUE modification de la
  * taxonomie ou des règles d'applicabilité (§11.6, §13.2).
  */
-export const REFERENTIAL_VERSION = '2.0.0';
+export const REFERENTIAL_VERSION = '2.1.0';
+
+/**
+ * ── HISTORIQUE ────────────────────────────────────────────────────────────
+ *
+ * 2.1.0 — Ajout de `SUBSCRIPTION_INVOICE` dans « Contrats, garanties et
+ *   notices ». Relevé en préproduction : deux factures d'énergie recevaient le
+ *   Type « Contrat d'abonnement », faute de mieux. La Rubrique était juste — la
+ *   finalité est bien le service — mais aucun Type ne couvrait la FACTURE qui
+ *   découle d'un abonnement, seulement le contrat lui-même. Le modèle prenait
+ *   donc le moins éloigné, ce que le §3.4 lui interdit précisément de faire.
+ *
+ *   Le trou venait du référentiel, pas du prompt.
+ *
+ * 2.0.0 — Référentiel initial du CDC V2.
+ */
 
 /** Seuil de confiance unique, non configurable dans l'application (§11.2). */
 export const AI_CONFIDENCE_THRESHOLD = 0.9;

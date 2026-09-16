@@ -254,6 +254,15 @@ export const DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
     purpose: 'Extension ou prolongation de garantie.',
   },
   {
+    code: 'SUBSCRIPTION_INVOICE',
+    label: "Facture d'abonnement ou de service",
+    rubric: 'CONTRACTS_WARRANTIES_DOCS',
+    applicability: 'ALL',
+    purpose:
+      "Facture récurrente d'un service ou d'un abonnement lié au bien — énergie, " +
+      'eau, télécommunications, maintenance sous contrat.',
+  },
+  {
     code: 'USER_MANUAL',
     label: 'Notice / manuel',
     rubric: 'CONTRACTS_WARRANTIES_DOCS',
