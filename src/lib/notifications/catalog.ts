@@ -203,12 +203,25 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     mandatoryBell: false, mandatoryEmail: false, neverBell: true,
     defaults: { push: false, email: false }, retentionDays: 30,
     render: (p) => content(
-      'Un élément est à traiter',
-      `Un élément est ${familyLabel(p.family)} dans Verebona.`,
+      'Une action vous attend',
+      // CDC V2 §14 : deux natures au lieu des quatre familles. `family` sert
+      // de repli pour les notifications déjà en file au moment du déploiement.
+      p.actionKind === 'ARBITRATE'
+        ? 'Une information est à arbitrer dans Verebona.'
+        : p.actionKind === 'COMPLETE'
+          ? 'Une information est à compléter dans Verebona.'
+          : p.family
+            ? `Un élément est ${familyLabel(p.family)} dans Verebona.`
+            : 'Une action vous attend dans Verebona.',
       undefined, 'notif_to_process_immediate',
     ),
     deepLink: () => '/accueil/a-traiter',
-    payloadSchema: z.object({ family: z.enum(['arbitrate', 'attach', 'confirm', 'complete']), itemKey: z.string() }),
+    payloadSchema: z.object({
+      itemKey: z.string(),
+      actionKind: z.enum(['ARBITRATE', 'COMPLETE']).optional(),
+      priority: z.enum(['DO_FIRST', 'DO_NEXT', 'CAN_WAIT']).optional(),
+      family: z.enum(['arbitrate', 'attach', 'confirm', 'complete']).optional(),
+    }),
   },
   [T.TO_PROCESS_DAILY_DIGEST]: {
     type: T.TO_PROCESS_DAILY_DIGEST,

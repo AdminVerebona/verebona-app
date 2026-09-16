@@ -1,6 +1,11 @@
 /**
  * Bascule V1 → V2 — CDC V2.0 §15.
  *
+ * NOTE : « À traiter » ne figure plus ici. Sa bascule est FAITE — la page sert
+ * directement la file V2 et le code V1 a été retiré. Un drapeau qui ne peut
+ * plus être rebasculé n'est pas un filet de sécurité, seulement une option
+ * morte que quelqu'un finira par activer en croyant revenir en arrière.
+ *
  * ══════════════════════════════════════════════════════════════════════════
  * UN DRAPEAU, PARCE QUE LA BASCULE EST LA SEULE ÉTAPE NON RÉVERSIBLE
  *
@@ -24,11 +29,6 @@
  * n'ouvre aucun accès.
  * ══════════════════════════════════════════════════════════════════════════
  */
-
-/** Écran « À traiter » : file unique V2 au lieu des quatre onglets V1. */
-export function isToProcessV2Enabled(): boolean {
-  return process.env.NEXT_PUBLIC_VEREBONA_V2_TO_PROCESS === 'on';
-}
 
 /**
  * Pages documentaires : regroupement par Rubrique.

@@ -181,6 +181,9 @@ export function ToProcessQueue() {
           {toProcessHeadline(count, orderMode)}
         </p>
 
+        {/* Rien à trier ni à présenter quand la file est vide : les bascules
+            n'offraient que deux choix menant au même écran vide. */}
+        {count > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex rounded-md border p-0.5" role="group" aria-label="Organisation">
             <Button
@@ -224,6 +227,7 @@ export function ToProcessQueue() {
             </Button>
           </div>
         </div>
+        )}
       </header>
 
       {loading && !page ? (
@@ -232,9 +236,12 @@ export function ToProcessQueue() {
           Chargement des actions…
         </div>
       ) : count === 0 ? (
-        <p className="py-8 text-sm text-muted-foreground">
-          {page && page.total > 0 ? TO_PROCESS_NO_FILTER_RESULT : toProcessHeadline(0, orderMode)}
-        </p>
+        // L'en-tête porte déjà « Rien à traiter pour le moment » (§17.2) : le
+        // répéter ici affichait deux fois la même phrase sur un écran vide.
+        // Seul le cas « filtres sans résultat » mérite un message propre (§8.8).
+        page && page.total > 0 ? (
+          <p className="py-8 text-sm text-muted-foreground">{TO_PROCESS_NO_FILTER_RESULT}</p>
+        ) : null
       ) : (
         // Liste continue, sans section ni onglet (§8.3, ATP-01).
         <div className={presentation === 'CARDS' ? 'space-y-3' : 'rounded-lg border px-4'}>

@@ -88,7 +88,17 @@ export interface NotificationPayloadMap {
   DOCUMENT_BATCH_FAILED: { lotId: number; analysedCount: number; failedCount: number };
   ANALYSIS_FAILED_PERSISTENT: { assetFileId: number; documentTitle?: string; errorReason?: string };
 
-  TO_PROCESS_ITEM_CREATED: { family: 'arbitrate' | 'attach' | 'confirm' | 'complete'; itemKey: string };
+  /**
+   * CDC V2 §14 — deux natures au lieu des quatre familles. `family` reste
+   * accepté le temps que les notifications déjà en file soient envoyées : les
+   * relire avec un schéma qui ignore leur charge utile les ferait échouer.
+   */
+  TO_PROCESS_ITEM_CREATED: {
+    itemKey: string;
+    actionKind?: 'ARBITRATE' | 'COMPLETE';
+    priority?: 'DO_FIRST' | 'DO_NEXT' | 'CAN_WAIT';
+    family?: 'arbitrate' | 'attach' | 'confirm' | 'complete';
+  };
   /**
    * CDC V2 §14 — deux natures au lieu des quatre familles historiques, plus
    * un décompte par priorité. `byFamily` est conservé pour les notifications

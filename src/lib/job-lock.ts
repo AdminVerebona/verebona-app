@@ -42,6 +42,19 @@ export async function acquireJobLock(
   name: string,
   ttlMs: number,
 ): Promise<JobLockHandle | null> {
+  // ══════════════════════════════════════════════════════════════════════
+  // SÉRIALISÉ EN ISO, PAS EN `Date`
+  //
+  // Le driver refuse un objet `Date` en paramètre :
+  //   TypeError: The "string" argument must be of type string… Received an
+  //   instance of Date
+  //
+  // L'acquisition échouait donc TOUJOURS, et `acquireJobLock` rendait `null`
+  // — indistinguable d'un verrou réellement détenu. Résultat : aucune tâche
+  // planifiée n'a jamais tourné, chacune se croyant doublée par une autre
+  // instance. Le défaut est resté invisible parce que le mode dégradé est
+  // silencieux par conception.
+  // ══════════════════════════════════════════════════════════════════════
   const until = new Date(Date.now() + ttlMs).toISOString();
   try {
     const rows = await db.execute(sql`

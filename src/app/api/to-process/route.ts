@@ -1,65 +1,49 @@
 /**
- * GET /api/to-process — compteur des éléments à traiter.
+ * GET /api/to-process — compteur de la pastille de navigation.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * CETTE ROUTE N'EXISTAIT PAS
+ * LE COMPTEUR ET LA PAGE COMPTENT LA MÊME CHOSE
  *
- * `DashboardLayout` et la navigation mobile l'appellent à chaque chargement
- * pour afficher la pastille « à traiter ». Elle répondait 404.
+ * Cette route servait le modèle V1 : elle additionnait des OBJETS — documents
+ * en attente, échéances à vérifier, équipements sans bien. La page, elle,
+ * affiche désormais des ACTIONS (§7.1), et un même document peut en porter
+ * trois.
  *
- * Deux sous-chemins existaient pourtant — `/api/to-process/suppliers` et
- * `/api/to-process/conficts`, ce dernier portant d'ailleurs une faute de
- * frappe — mais rien à la racine.
+ * Laisser les deux calculs en place aurait produit le défaut le plus sûr pour
+ * faire cesser de consulter la page : un menu annonçant « 7 » au-dessus d'un
+ * écran qui montre 3 cartes. Un compteur en désaccord avec ce qu'il annonce
+ * est pire qu'une absence de compteur.
  *
- * Le client s'en accommodait par un repli silencieux vers
- * `/api/dashboard/a-traiter`. Le compteur finissait par s'afficher, au prix
- * de deux requêtes en échec à chaque ouverture de l'application.
- *
- * ── ELLE NE DUPLIQUE PAS LE CALCUL ────────────────────────────────────────
- *
- * `/api/dashboard/a-traiter` sait déjà quoi compter — documents en attente,
- * échéances à vérifier, équipements sans bien. Refaire ce calcul ici
- * garantirait qu'un jour les deux divergent, et que la pastille annonce un
- * nombre que l'écran ne montre pas.
- *
- * Cette route appelle donc la même logique et n'en rend que le total.
+ * `countActiveActions` est exactement la requête que la page utilise pour son
+ * total : mêmes actions actives, même compte, même filtre `resolved_at IS
+ * NULL`.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import { GET as getATraiter } from '../dashboard/a-traiter/route';
+import { countActiveActions } from '@/services/to-process/to-process-action.service';
 
 export const dynamic = 'force-dynamic';
 
-interface Detail {
-  documents?: unknown[];
-  agendaItems?: unknown[];
-  equipements?: unknown[];
-}
-
 export async function GET(req: NextRequest) {
+  let session;
   try {
-    await SessionService.getSession(req);
+    session = await SessionService.getSession(req);
   } catch (e) {
     return SessionService.handleSessionError(e);
   }
 
-  const reponse = await getATraiter(req);
+  const accountId = session.currentAccountId;
+  // Aucun compte sélectionné : la pastille n'a rien à afficher, et une erreur
+  // ici ferait échouer le rendu de toute la navigation.
+  if (!accountId) return NextResponse.json({ total: 0 });
 
-  // Une erreur en amont est transmise telle quelle : la masquer par un
-  // compteur à zéro ferait croire qu'il n'y a rien à traiter.
-  if (!reponse.ok) return reponse;
-
-  const detail = (await reponse.json()) as Detail;
-  const total =
-    (detail.documents?.length ?? 0) +
-    (detail.agendaItems?.length ?? 0) +
-    (detail.equipements?.length ?? 0);
+  const total = await countActiveActions(accountId);
 
   return NextResponse.json(
     { total },
-    // Même durée que la route détaillée : deux caches de durées différentes
-    // afficheraient un compteur en désaccord avec l'écran.
+    // Même durée que /api/v2/to-process : deux caches de durées différentes
+    // afficheraient un compteur en retard sur l'écran.
     { headers: { 'Cache-Control': 'private, max-age=15, stale-while-revalidate=60' } },
   );
 }

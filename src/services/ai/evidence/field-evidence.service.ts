@@ -31,7 +31,7 @@ export async function recordEvidence(input: FieldEvidenceInput): Promise<number>
        source_type, source_id, source_version, source_location, evidence_excerpt,
        document_type, document_date, provider, model, prompt_version,
        confidence, authority_score, status, operation_trace_id, fingerprint
-     ) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,'active',$18,$19)
+     ) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::timestamptz,$13,$14,$15,$16,$17,'active',$18,$19)
      ON CONFLICT (fingerprint) DO UPDATE SET extracted_at = field_evidence.extracted_at
      RETURNING id`,
     [
@@ -39,7 +39,12 @@ export async function recordEvidence(input: FieldEvidenceInput): Promise<number>
       JSON.stringify(input.value), input.normalizedValue ?? null,
       input.sourceType, input.sourceId, input.sourceVersion ?? null,
       JSON.stringify(input.location), input.excerpt,
-      input.documentType ?? null, input.documentDate ?? null,
+            input.documentType ?? null,
+      // Même défaut que dans `job-lock` : le driver refuse un objet `Date` en
+      // paramètre et lève ERR_INVALID_ARG_TYPE. L'erreur était rattrapée plus
+      // haut et journalisée par champ — aucune preuve n'était enregistrée,
+      // sans que rien n'échoue visiblement.
+      input.documentDate ? new Date(input.documentDate).toISOString() : null,
       input.provider ?? null, input.model ?? null, input.promptVersion ?? null,
       input.confidence, input.authorityScore,
       input.operationTraceId ?? null, fingerprint,

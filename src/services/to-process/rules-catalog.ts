@@ -180,6 +180,35 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 15,
   },
 
+  // ── §10.3 Rattachement d'un équipement à un bien ────────────────────────
+  {
+    code: 'LINK-EQUIP-ASSET',
+    targetType: 'EQUIPMENT',
+    relationKey: 'assetId',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: 'DO_NEXT',
+    // Même raison qu'un document : un équipement rattaché à rien est
+    // introuvable dans le parc, et l'absence n'est jamais un état normal.
+    allowNotApplicable: false,
+    question: 'À quel bien cet équipement appartient-il ?',
+    businessImpact: 70,
+  },
+
+  // ── §10.5 Identité d'un fournisseur ─────────────────────────────────────
+  {
+    code: 'SUPPLIER-IDENTITY',
+    targetType: 'SUPPLIER',
+    fieldKey: 'identity',
+    arbitratePriority: 'DO_NEXT',
+    // Un fournisseur détecté sans candidat connu n'appelle pas de saisie :
+    // la fiche se créera à la confirmation. Sans règle de complétion, aucune
+    // carte ne réclame un champ que personne ne remplirait (P-06).
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'S’agit-il du même fournisseur ?',
+    businessImpact: 45,
+  },
+
   // ── §6.1 Attribut immobilier « Bien mis en location » ───────────────────
   {
     code: 'ASSET-RENTED',

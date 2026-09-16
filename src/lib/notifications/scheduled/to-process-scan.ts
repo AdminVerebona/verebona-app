@@ -1,93 +1,114 @@
 /**
- * Scan « À traiter » (CDC §7.3.1 / §7.3 détection).
+ * Scan « À traiter » — notification à l'apparition d'une action.
+ * CDC Notifications §7.3.1, adapté par le CDC V2.0 §14.
  *
- * Compare la vue calculée à l'état persistant `to_process_item_state` pour
- * notifier UNE fois lorsqu'un élément devient réellement actif — et à nouveau
- * s'il a été résolu puis réapparaît (nouveau cycle). Ne notifie pas :
- *  - un simple recalcul de la page ;
- *  - un élément déjà actif ;
- *  - un élément mis de côté (snoozed) ou résolu.
- * La clé de déduplication inclut le cycle.
+ * ══════════════════════════════════════════════════════════════════════════
+ * LA TABLE D'ÉTAT N'A PLUS LIEU D'ÊTRE
+ *
+ * La V1 comparait une vue RECALCULÉE à chaque passage avec une table
+ * `to_process_item_state`, seule à savoir ce qui avait déjà été notifié. Il
+ * fallait cette table parce que les éléments n'existaient nulle part : ils
+ * étaient dérivés à la volée, et disparaissaient entre deux exécutions.
+ *
+ * En V2, les actions sont PERSISTANTES (§13.3) et portent déjà tout ce qu'il
+ * faut : `active_since` dit quand le problème est apparu, `cycle_number` le
+ * distingue d'une réapparition (§7.3), `public_id` l'identifie de façon
+ * stable. La table d'état dupliquerait ces trois informations — et finirait
+ * par en diverger.
+ *
+ * ── LE CRITÈRE DEVIENT « APPARUE DEPUIS LE DERNIER PASSAGE » ──────────────
+ *
+ * Plutôt qu'une comparaison d'ensembles, une fenêtre temporelle : les actions
+ * dont `active_since` tombe après le passage précédent. La déduplication par
+ * `public_id` + cycle empêche toute double notification si deux passages se
+ * chevauchent.
+ *
+ * ── PLUS D'ÉTAT « MIS DE CÔTÉ » ───────────────────────────────────────────
+ *
+ * §14 : « Supprimer toute logique liée à mis de côté / snoozed. » Une action
+ * est active ou résolue, il n'y a plus de troisième cas à filtrer.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { and, eq, gt, isNull } from 'drizzle-orm';
 import { db } from '@/db';
-import { accounts, toProcessItemState } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { accounts, toProcessActions } from '@/db/schema';
 import { emit } from '@/lib/notifications';
-import { getToProcessItems } from '@/services/to-process.service';
-import type { ToProcessItem } from '@/types/to-process';
 
-export interface ScanRunResult { accountsProcessed: number; created: number; resolved: number; capped: boolean }
-
-async function emitCreated(accountId: number, item: ToProcessItem, cycle: number, now: Date): Promise<void> {
-  await emit({
-    type: 'TO_PROCESS_ITEM_CREATED',
-    accountId,
-    entityType: 'to_process_item',
-    entityId: item.id,
-    payload: { family: item.family, itemKey: item.id },
-    // Le cycle permet de re-notifier un problème résolu puis réapparu (§7.3).
-    dedupeKey: `to-process:item-created:${item.id}:c${cycle}`,
-    scheduledFor: now,
-  });
+export interface ScanRunResult {
+  accountsProcessed: number;
+  created: number;
+  resolved: number;
+  capped: boolean;
 }
 
-export async function runToProcessScan(now: Date = new Date(), limit = 1000): Promise<ScanRunResult> {
+/**
+ * Fenêtre de rattrapage par défaut.
+ *
+ * Généreuse à dessein : mieux vaut réexaminer des actions déjà notifiées — la
+ * déduplication les écarte — que d'en manquer parce qu'un passage a sauté.
+ */
+const DEFAULT_WINDOW_MS = 2 * 60 * 60_000;
+
+export async function runToProcessScan(
+  now: Date = new Date(),
+  limit = 1000,
+  windowMs = DEFAULT_WINDOW_MS,
+): Promise<ScanRunResult> {
+  const depuis = new Date(now.getTime() - windowMs);
+
   const accountList = await db.select({ id: accounts.id }).from(accounts).limit(limit + 1);
   const capped = accountList.length > limit;
   const toScan = capped ? accountList.slice(0, limit) : accountList;
 
   let created = 0;
-  let resolved = 0;
 
   for (const acc of toScan) {
     try {
-      const view = await getToProcessItems(acc.id);
-      const active = view.items.filter((i) => i.status === 'active');
-      const activeKeys = new Set(active.map((i) => i.id));
+      const nouvelles = await db
+        .select({
+          publicId: toProcessActions.publicId,
+          actionKind: toProcessActions.actionKind,
+          priority: toProcessActions.priority,
+          cycleNumber: toProcessActions.cycleNumber,
+          question: toProcessActions.question,
+        })
+        .from(toProcessActions)
+        .where(
+          and(
+            eq(toProcessActions.accountId, acc.id),
+            isNull(toProcessActions.resolvedAt),
+            gt(toProcessActions.activeSince, depuis),
+          ),
+        );
 
-      const states = await db.select().from(toProcessItemState)
-        .where(eq(toProcessItemState.accountId, acc.id));
-      const stateByKey = new Map(states.map((s) => [s.itemKey, s]));
-
-      // Entrées : nouvel élément actif, ou réapparition après résolution.
-      for (const item of active) {
-        const st = stateByKey.get(item.id);
-        if (!st) {
-          await db.insert(toProcessItemState).values({
-            accountId: acc.id, itemKey: item.id, problemKey: item.family,
-            activeSince: now, lastSeenAt: now, isActive: true, cycleNumber: 1,
-          }).onConflictDoNothing({ target: [toProcessItemState.accountId, toProcessItemState.itemKey] });
-          await emitCreated(acc.id, item, 1, now);
-          created++;
-        } else if (!st.isActive) {
-          const nextCycle = st.cycleNumber + 1;
-          await db.update(toProcessItemState).set({
-            isActive: true, activeSince: now, resolvedAt: null, lastSeenAt: now,
-            cycleNumber: nextCycle, problemKey: item.family, updatedAt: now,
-          }).where(eq(toProcessItemState.id, st.id));
-          await emitCreated(acc.id, item, nextCycle, now);
-          created++;
-        } else {
-          await db.update(toProcessItemState)
-            .set({ lastSeenAt: now, updatedAt: now })
-            .where(eq(toProcessItemState.id, st.id));
-        }
-      }
-
-      // Sorties : un élément actif absent de la vue est considéré résolu.
-      for (const st of states) {
-        if (st.isActive && !activeKeys.has(st.itemKey)) {
-          await db.update(toProcessItemState)
-            .set({ isActive: false, resolvedAt: now, updatedAt: now })
-            .where(eq(toProcessItemState.id, st.id));
-          resolved++;
-        }
+      for (const action of nouvelles) {
+        await emit({
+          type: 'TO_PROCESS_ITEM_CREATED',
+          accountId: acc.id,
+          entityType: 'to_process_action',
+          entityId: action.publicId,
+          payload: {
+            // Colonnes en `text` côté base, énumérations côté contrat : la
+            // contrainte CHECK de la table garantit déjà les valeurs.
+            actionKind: action.actionKind as 'ARBITRATE' | 'COMPLETE',
+            priority: action.priority as 'DO_FIRST' | 'DO_NEXT' | 'CAN_WAIT',
+            itemKey: action.publicId,
+          },
+          // Le cycle permet de re-notifier un problème résolu puis réapparu
+          // (§7.3) : la même action, deux cycles, deux notifications.
+          dedupeKey: `to-process:action-created:${action.publicId}:c${action.cycleNumber}`,
+          scheduledFor: now,
+        });
+        created++;
       }
     } catch (err) {
       console.error('[to-process-scan] compte', acc.id, err);
     }
   }
 
-  return { accountsProcessed: toScan.length, created, resolved, capped };
+  // `resolved` est conservé pour ne pas casser les appelants, mais n'a plus de
+  // sens : la résolution est portée par `resolved_at` sur l'action elle-même,
+  // au moment où elle survient. Il n'y a plus de sorties à détecter après coup.
+  return { accountsProcessed: toScan.length, created, resolved: 0, capped };
 }
