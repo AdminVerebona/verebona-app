@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { accounts, users, accountMemberships, assets, accountAuditLog, duoAccounts, duoMemberships, assetTransmissions, suppliers, supplierReviewItems, documentSuppliers, equipmentSuppliers, assetSuppliers } from '@/db/schema';
+import { accounts, accountSubscriptions, users, accountMemberships, assets, accountAuditLog, duoAccounts, duoMemberships, assetTransmissions, suppliers, supplierReviewItems, documentSuppliers, equipmentSuppliers, assetSuppliers } from '@/db/schema';
 import { eq, sql, desc, inArray } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 import { SessionService } from '@/lib/session-service';
@@ -32,6 +32,8 @@ export async function GET(
         stripeSubscriptionId: accounts.stripeSubscriptionId,
         premiumUntil: accounts.premiumUntil,
         proUntil: accounts.proUntil,
+        subscriptionStartedAt: accounts.subscriptionStartedAt,
+        planRenewalDate: accounts.planRenewalDate,
         maxMembers: accounts.maxMembers,
         isActive: accounts.isActive,
         createdAt: accounts.createdAt,
@@ -46,6 +48,24 @@ export async function GET(
     if (!account) {
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });
     }
+
+    // Abonnement tel que le lisent les droits (entitlements) : offre,
+    // périodicité, dates de période et de conclusion du contrat.
+    const [subscription] = await db
+      .select({
+        planCode: accountSubscriptions.planCode,
+        status: accountSubscriptions.status,
+        billingPeriod: accountSubscriptions.billingPeriod,
+        currentPeriodStartAt: accountSubscriptions.currentPeriodStartAt,
+        currentPeriodEndAt: accountSubscriptions.currentPeriodEndAt,
+        contractConcludedAt: accountSubscriptions.contractConcludedAt,
+        firstBilledAt: accountSubscriptions.firstBilledAt,
+        cancelAtPeriodEnd: accountSubscriptions.cancelAtPeriodEnd,
+        trialEndsAt: accountSubscriptions.trialEndsAt,
+      })
+      .from(accountSubscriptions)
+      .where(eq(accountSubscriptions.accountId, accountId))
+      .limit(1);
 
     // Fetch members
     const members = await db
@@ -118,6 +138,7 @@ export async function GET(
 
     return NextResponse.json({
       account,
+      subscription: subscription ?? null,
       members,
       assets: accountAssets,
       auditLogs,
@@ -155,6 +176,7 @@ export async function PATCH(
       subscriptionStatus,
       premiumUntil,
       maxMembers,
+      billingPeriod,
     } = body as {
       planType?: string;
       duoAction?: 'activate' | 'deactivate';
@@ -163,6 +185,7 @@ export async function PATCH(
       subscriptionStatus?: string;
       premiumUntil?: number | null;
       maxMembers?: number;
+      billingPeriod?: 'monthly' | 'yearly' | null;
     };
 
     // Fetch the account
@@ -210,6 +233,17 @@ export async function PATCH(
     if (stripeSubscriptionId !== undefined) { stripeUpdate.stripeSubscriptionId = stripeSubscriptionId || null; hasStripeUpdate = true; }
     if (hasStripeUpdate) {
       await db.update(accounts).set(stripeUpdate).where(eq(accounts.id, accountId));
+    }
+
+    // ── Périodicité (monthly / yearly), portée par account_subscriptions ──
+    if (billingPeriod !== undefined) {
+      if (billingPeriod !== null && billingPeriod !== 'monthly' && billingPeriod !== 'yearly') {
+        return NextResponse.json({ error: 'Invalid billing period' }, { status: 400 });
+      }
+      await db
+        .update(accountSubscriptions)
+        .set({ billingPeriod, updatedAt: new Date() })
+        .where(eq(accountSubscriptions.accountId, accountId));
     }
 
     // ── Toggle account active status ──

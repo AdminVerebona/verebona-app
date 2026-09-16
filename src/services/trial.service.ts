@@ -136,6 +136,7 @@ export async function getTrialState(accountId: number, now: Date = new Date()): 
       startedAt: accountSubscriptions.trialStartedAt,
       endsAt: accountSubscriptions.trialEndsAt,
       firstBilledAt: accountSubscriptions.firstBilledAt,
+      stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
     })
     .from(accountSubscriptions)
     .where(eq(accountSubscriptions.accountId, accountId))
@@ -144,7 +145,14 @@ export async function getTrialState(accountId: number, now: Date = new Date()): 
   const row = rows[0];
   if (!row?.startedAt || !row?.endsAt) return { status: 'none' };
 
-  if (row.firstBilledAt) {
+  // Une offre payée en place met fin à l'essai, même si l'encaissement n'a
+  // pas encore été constaté (`first_billed_at` n'est posé qu'à réception de
+  // la facture payée) : sinon le bandeau « Essai gratuit — J-x » restait
+  // affiché à un client abonné.
+  const hasPaidSubscription =
+    Boolean(row.stripeSubscriptionId) && ['active', 'past_due'].includes(row.status);
+
+  if (row.firstBilledAt || hasPaidSubscription) {
     return { status: 'converted', startedAt: row.startedAt, endsAt: row.endsAt };
   }
   if (row.endsAt.getTime() <= now.getTime()) {

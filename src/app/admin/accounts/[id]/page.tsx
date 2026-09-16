@@ -75,6 +75,8 @@ interface AccountDetail {
     stripeSubscriptionId: string | null;
     premiumUntil: number | null;
     proUntil: number | null;
+    subscriptionStartedAt: string | null;
+    planRenewalDate: string | null;
     maxMembers: number;
     isActive: boolean;
     createdAt: number | string;
@@ -82,6 +84,18 @@ interface AccountDetail {
     ownerEmail: string;
     ownerName: string;
   };
+  /** Ligne account_subscriptions : source des droits effectifs. */
+  subscription: {
+    planCode: string;
+    status: string;
+    billingPeriod: 'monthly' | 'yearly' | null;
+    currentPeriodStartAt: string | null;
+    currentPeriodEndAt: string | null;
+    contractConcludedAt: string | null;
+    firstBilledAt: string | null;
+    cancelAtPeriodEnd: boolean;
+    trialEndsAt: string | null;
+  } | null;
   members: AccountMember[];
   assets: Array<{
     id: number;
@@ -170,6 +184,8 @@ export default function AccountDetailPage() {
   const [editSubStatus, setEditSubStatus] = useState('NONE');
   const [editPremiumUntil, setEditPremiumUntil] = useState('');
   const [editMaxMembers, setEditMaxMembers] = useState('1');
+  const [editBillingPeriod, setEditBillingPeriod] = useState<'monthly' | 'yearly' | 'none'>('none');
+  const [syncingStripe, setSyncingStripe] = useState(false);
   const [saving, setSaving] = useState(false);
   const [suspending, setSuspending] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -186,6 +202,7 @@ export default function AccountDetailPage() {
       setEditPlan(plan);
       setEditStripeCustomer(d.account.stripeCustomerId ?? '');
       setEditStripeSubscription(d.account.stripeSubscriptionId ?? '');
+      setEditBillingPeriod(d.subscription?.billingPeriod ?? 'none');
       // For STANDARD, always show clean defaults regardless of stale DB values
       if (plan === 'STANDARD') {
         setEditSubStatus('NONE');
@@ -215,6 +232,9 @@ export default function AccountDetailPage() {
         subscriptionStatus: editSubStatus || 'NONE',
         premiumUntil: editPremiumUntil ? Math.floor(new Date(editPremiumUntil).getTime() / 1000) : null,
         maxMembers: parseInt(editMaxMembers) || 1,
+        ...(data?.subscription
+          ? { billingPeriod: editBillingPeriod === 'none' ? null : editBillingPeriod }
+          : {}),
       });
       toast.success('Plan mis à jour');
       load();
@@ -222,6 +242,28 @@ export default function AccountDetailPage() {
       toast.error((e as Error).message || 'Erreur');
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Relit l'abonnement chez Stripe et réécrit l'état complet du compte. */
+  const handleSyncStripe = async () => {
+    if (!data) return;
+    setSyncingStripe(true);
+    try {
+      const res = await apiClient.post<{ changes: { tierChanged: boolean; oldTier: string; newTier: string } }>(
+        `/api/admin/users/${data.account.ownerUserId}/sync-stripe`,
+        {},
+      );
+      toast.success(
+        res.changes.tierChanged
+          ? `Synchronisé : ${res.changes.oldTier} → ${res.changes.newTier}`
+          : 'Déjà à jour avec Stripe',
+      );
+      load();
+    } catch (e) {
+      toast.error((e as Error).message || 'Synchronisation impossible');
+    } finally {
+      setSyncingStripe(false);
     }
   };
 
@@ -285,7 +327,12 @@ export default function AccountDetailPage() {
     );
   }
 
-  const { account, assets, auditLogs, duoAccount } = data;
+  const { account, assets, auditLogs, duoAccount, subscription } = data;
+  const periodLabel =
+    subscription?.billingPeriod === 'monthly' ? 'Mensuel'
+    : subscription?.billingPeriod === 'yearly' ? 'Annuel'
+    : '—';
+  const renewalValue = subscription?.currentPeriodEndAt ?? account.planRenewalDate ?? account.premiumUntil;
   const duoIsActive = duoAccount && ['ACTIVE', 'PAST_DUE_GRACE'].includes(duoAccount.subscriptionStatus);
   const activeMembers = data.members.filter(m => m.status === 'active');
   const pendingMembers = data.members.filter(m => m.status === 'pending');
@@ -419,12 +466,25 @@ export default function AccountDetailPage() {
 
           {/* ── Abonnement & Plan ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
-            <div className="px-5 py-4 border-b">
-              <h2 className="font-semibold flex items-center gap-2">
-                <Crown className="h-4 w-4 text-amber-400" />
-                Abonnement & Plan
-              </h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Informations Stripe et gestion manuelle</p>
+            <div className="px-5 py-4 border-b flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold flex items-center gap-2">
+                  <Crown className="h-4 w-4 text-amber-400" />
+                  Abonnement & Plan
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">Informations Stripe et gestion manuelle</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 shrink-0"
+                onClick={handleSyncStripe}
+                disabled={syncingStripe || !account.stripeCustomerId}
+                title={account.stripeCustomerId ? 'Relire l\'abonnement chez Stripe' : 'Aucun client Stripe'}
+              >
+                {syncingStripe ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                Resynchroniser Stripe
+              </Button>
             </div>
 
             <div className="px-5 py-5 space-y-6">
@@ -438,7 +498,16 @@ export default function AccountDetailPage() {
                     { label: 'Customer ID', value: account.stripeCustomerId },
                     { label: 'Subscription ID', value: account.stripeSubscriptionId },
                     { label: 'Statut', value: account.subscriptionStatus || 'NONE' },
-                    { label: 'Premium jusqu\'au', value: account.premiumUntil ? fmtDate(account.premiumUntil, 'dd/MM/yyyy') : '—' },
+                    {
+                      label: 'Offre (droits)',
+                      value: subscription
+                        ? `${subscription.planCode} · ${subscription.status}${subscription.cancelAtPeriodEnd ? ' · résiliée' : ''}`
+                        : '—',
+                    },
+                    { label: 'Périodicité', value: periodLabel },
+                    { label: 'Date de souscription', value: fmtDate(account.subscriptionStartedAt ?? subscription?.contractConcludedAt, 'dd/MM/yyyy') },
+                    { label: 'Prochain renouvellement', value: fmtDate(renewalValue, 'dd/MM/yyyy') },
+                    { label: 'Premier paiement', value: fmtDate(subscription?.firstBilledAt, 'dd/MM/yyyy') },
                   ].map(({ label, value }) => (
                     <div key={label} className="rounded-lg border bg-muted/30 px-3 py-2.5">
                       <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-0.5">{label}</p>
@@ -506,6 +575,21 @@ export default function AccountDetailPage() {
                   <div className="space-y-1.5">
                     <Label>Premium valide jusqu'au</Label>
                     <Input type="date" value={editPremiumUntil} onChange={e => setEditPremiumUntil(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Périodicité</Label>
+                    <Select
+                      value={editBillingPeriod}
+                      onValueChange={(v) => setEditBillingPeriod(v as 'monthly' | 'yearly' | 'none')}
+                      disabled={!subscription}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">—</SelectItem>
+                        <SelectItem value="monthly">Mensuel</SelectItem>
+                        <SelectItem value="yearly">Annuel</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="space-y-1.5">
                     <Label>Membres max</Label>

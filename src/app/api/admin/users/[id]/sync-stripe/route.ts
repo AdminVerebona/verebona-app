@@ -3,11 +3,19 @@ import { db } from '@/db';
 import { users, accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
-import { getStripeServer } from '@/lib/stripe';
+import { StripeConfigError } from '@/lib/stripe';
+import { syncAccountFromStripeCustomer } from '@/services/billing/subscription-sync.service';
+import { isStripeResourceMissing } from '@/lib/stripe-customer';
 
 /**
  * POST /api/admin/users/[id]/sync-stripe
- * Synchronise les données d'abonnement depuis Stripe pour le compte de l'utilisateur
+ * Resynchronise le compte de l'utilisateur depuis Stripe.
+ *
+ * ⚠️ L'ancienne version ne reconnaissait que STRIPE_PRICE_PREMIUM (tout le
+ * reste devenait STANDARD), stockait le statut Stripe en minuscules — refusé
+ * par la contrainte `accounts_subscription_status_check` — et ne touchait pas
+ * `account_subscriptions`, source des droits. Elle passe désormais par le
+ * service de synchronisation commun au webhook et au retour de paiement.
  */
 export async function POST(
   request: NextRequest,
@@ -16,126 +24,90 @@ export async function POST(
   try {
     await requireAdmin(request);
 
-    const resolvedParams = await params;
-    const userId = parseInt(resolvedParams.id);
-
+    const { id } = await params;
+    const userId = parseInt(id);
     if (isNaN(userId)) {
-      return NextResponse.json(
-        { error: 'Invalid user ID' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Invalid user ID' }, { status: 400 });
     }
 
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-
+    const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
     if (!user) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
     const [account] = await db
-      .select()
+      .select({
+        id: accounts.id,
+        planType: accounts.planType,
+        stripeCustomerId: accounts.stripeCustomerId,
+      })
       .from(accounts)
       .where(eq(accounts.ownerUserId, userId))
       .limit(1);
 
     if (!account) {
-      return NextResponse.json(
-        { error: 'User has no account' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'User has no account' }, { status: 404 });
     }
-
     if (!account.stripeCustomerId) {
-      return NextResponse.json(
-        { error: 'Account has no Stripe customer ID' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Aucun client Stripe rattaché à ce compte' }, { status: 400 });
     }
 
-    const stripe = getStripeServer();
-
-    const customer = await stripe.customers.retrieve(account.stripeCustomerId);
-
-    if (customer.deleted) {
-      return NextResponse.json(
-        { error: 'Stripe customer has been deleted' },
-        { status: 400 }
-      );
-    }
-
-    const subscriptions = await stripe.subscriptions.list({
-      customer: account.stripeCustomerId,
-      status: 'all',
-      limit: 10,
+    const { result, subscriptionCount } = await syncAccountFromStripeCustomer({
+      accountId: account.id,
+      customerId: account.stripeCustomerId,
     });
 
-    const activeSubscription = subscriptions.data.find(
-      sub => sub.status === 'active' || sub.status === 'trialing'
-    ) || subscriptions.data[0];
-
-    let newPlanType: 'STANDARD' | 'PREMIUM' = 'STANDARD';
-    let newPremiumUntil: number | null = null;
-    let newSubscriptionId: string | null = null;
-    let newStatus: string | undefined = undefined;
-
-    if (activeSubscription && (activeSubscription.status === 'active' || activeSubscription.status === 'trialing')) {
-      const priceId = activeSubscription.items.data[0]?.price.id;
-      const currentPeriodEnd = (activeSubscription as any).current_period_end * 1000;
-
-      newSubscriptionId = activeSubscription.id;
-      newStatus = activeSubscription.status;
-
-      if (priceId === process.env.STRIPE_PRICE_PREMIUM) {
-        newPlanType = 'PREMIUM';
-        newPremiumUntil = currentPeriodEnd;
-      }
+    if (!result) {
+      return NextResponse.json(
+        {
+          error: subscriptionCount === 0
+            ? 'Aucun abonnement Stripe pour ce client'
+            : 'Abonnement Stripe non synchronisable (prix inconnu ou compte introuvable)',
+        },
+        { status: 409 },
+      );
     }
 
-    const oldPlanType = account.planType;
-    const oldPremiumUntil = account.premiumUntil;
-
-    await db
-      .update(accounts)
-      .set({
-        planType: newPlanType,
-        stripeSubscriptionId: newSubscriptionId,
-        premiumUntil: newPremiumUntil,
-        subscriptionStatus: newStatus,
-        updatedAt: new Date(),
-      })
-      .where(eq(accounts.id, account.id));
+    const changed = result.oldPlanType !== result.newPlanType || result.oldStatus !== result.newStatus;
 
     return NextResponse.json({
       success: true,
+      skipped: result.skipped ?? null,
       changes: {
-        planTypeChanged: oldPlanType !== newPlanType,
-        oldPlanType,
-        newPlanType,
-        premiumUntil: newPremiumUntil,
+        // Deux jeux de clés : la page utilisateur lit tier*, l'ancienne réponse planType*.
+        tierChanged: changed,
+        oldTier: `${result.oldPlanType} / ${result.oldStatus}`,
+        newTier: `${result.newPlanType} / ${result.newStatus}`,
+        planTypeChanged: result.oldPlanType !== result.newPlanType,
+        oldPlanType: result.oldPlanType,
+        newPlanType: result.newPlanType,
+        billingPeriod: result.billingPeriod,
       },
       stripeData: {
         customerId: account.stripeCustomerId,
-        subscriptionId: newSubscriptionId,
-        status: activeSubscription?.status || 'none',
+        subscriptionId: result.subscriptionId,
+        status: result.stripeStatus,
       },
     });
   } catch (error) {
     if (error instanceof Response) {
       return error;
     }
-
     console.error('[Sync Stripe] Error:', error);
+
+    if (error instanceof StripeConfigError) {
+      return NextResponse.json({ error: `Configuration Stripe : ${error.message}` }, { status: 503 });
+    }
+    if (isStripeResourceMissing(error)) {
+      return NextResponse.json(
+        { error: 'Client Stripe introuvable dans le mode courant (test/live)' },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
-      { 
+      {
         error: 'Failed to sync with Stripe',
-        details: error instanceof Error ? error.message : 'Unknown error'
+        details: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 }
     );

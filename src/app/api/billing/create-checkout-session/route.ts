@@ -8,10 +8,11 @@ import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { users, accounts, accountMemberships, referralEvents, accountSubscriptions } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { getStripeServer, STRIPE_PRODUCTS } from '@/lib/stripe';
+import { getStripeServer, STRIPE_PRODUCTS, StripeConfigError } from '@/lib/stripe';
+import { ensureStripeCustomer, isStripeResourceMissing } from '@/lib/stripe-customer';
 import { resolvePriceId, isBillingPeriod, type BillingPeriod } from '@/lib/stripe-prices';
 import Stripe from 'stripe';
-import { mapLegacyPlanTypeToCommercialCode } from '@/services/commercial-model.service';
+import { getAppBaseUrl } from '@/lib/app-url';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 
 /**
@@ -23,7 +24,9 @@ import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 export async function POST(request: NextRequest) {
     try {
         const session = await SessionService.getSession(request);
-        const origin = new URL(request.url).origin;
+        // URL publique de l'app : derrière le proxy, `request.url` pointe sur
+        // le port interne du conteneur (localhost:xxxxx).
+        const appUrl = getAppBaseUrl(request);
     
         // Récupérer l'utilisateur
         const [user] = await db
@@ -115,7 +118,7 @@ export async function POST(request: NextRequest) {
         } catch (priceError) {
             console.error('[checkout] resolution du prix impossible:', priceError);
             return NextResponse.json(
-                { error: 'Offre indisponible', code: 'PRICE_NOT_CONFIGURED' },
+                { error: 'Offre indisponible', code: 'PRICE_NOT_CONFIGURED', message: 'Cette offre est momentanément indisponible.' },
                 { status: 400 },
             );
         }
@@ -188,20 +191,39 @@ export async function POST(request: NextRequest) {
 
         const stripe = getStripeServer();
 
+        // Client Stripe valide dans le mode courant — recréé si l'identifiant
+        // stocké est orphelin (client live en preprod, base restaurée, etc.).
+        const ensured = await ensureStripeCustomer({
+            stripe,
+            accountId: account.id,
+            userId: user.id,
+            email: user.email,
+            name: `${user.firstName} ${user.lastName}`.trim(),
+            storedCustomerId: account.stripeCustomerId,
+        });
+        const customerId = ensured.customerId;
+        // Si le client a été remplacé, l'abonnement et la session stockés
+        // appartiennent à l'ancien mode : on ne doit plus s'y référer.
+        const customerReplaced = ensured.replacedCustomerId !== null;
+        const currentSubscriptionId = customerReplaced ? null : account.stripeSubscriptionId;
+        const currentCheckoutSessionId = customerReplaced ? null : account.checkoutSessionId;
+
         // Vérification de session Stripe existante
-        if (account.checkoutSessionId && account.checkoutSessionCreatedAt) {
+        if (currentCheckoutSessionId && account.checkoutSessionCreatedAt) {
             const now = new Date();
             const sessionAgeMinutes = (now.getTime() - new Date(account.checkoutSessionCreatedAt).getTime()) / (1000 * 60);
 
             if (sessionAgeMinutes < 15) {
                 try {
-                    const existingStripeSession = await stripe.checkout.sessions.retrieve(account.checkoutSessionId);
+                    const existingStripeSession = await stripe.checkout.sessions.retrieve(currentCheckoutSessionId);
                     if (
                         existingStripeSession &&
                         existingStripeSession.status === 'open' &&
-                        existingStripeSession.customer === account.stripeCustomerId &&
+                        existingStripeSession.customer === customerId &&
                         existingStripeSession.metadata?.accountId === account.id.toString() &&
-                        existingStripeSession.metadata?.planTier === product.tier
+                        existingStripeSession.metadata?.planTier === product.tier &&
+                        // La session réutilisée doit porter la périodicité demandée
+                        existingStripeSession.metadata?.billing_period === billingPeriod
                     ) {
                         return NextResponse.json({
                             checkout_url: existingStripeSession.url,
@@ -210,68 +232,6 @@ export async function POST(request: NextRequest) {
                 } catch (e) {
                     console.warn('[Checkout] Failed to retrieve existing session:', e);
                 }
-            }
-        }
-
-        // ── Vérifier si ce compte est éligible au trial ──────────────────────
-        // Le trial de 2 mois (ou 3 avec parrainage) est accordé à l'inscription pour le premier
-        // abonnement payant, quel que soit le plan (standard/premium/premium_duo), tant qu'il n'y a
-        // jamais eu de souscription Stripe réelle ni de facturation effective (firstBilledAt).
-        const [existingSubscription] = await db
-            .select({ trialStartedAt: accountSubscriptions.trialStartedAt, firstBilledAt: accountSubscriptions.firstBilledAt })
-            .from(accountSubscriptions)
-            .where(eq(accountSubscriptions.accountId, account.id))
-            .limit(1);
-
-        // Créer ou récupérer le Customer Stripe (pour que le check Stripe utilise toujours l'ID effectif)
-        let customerId = account.stripeCustomerId;
-
-        if (!customerId) {
-            const customer = await stripe.customers.create({
-                email: user.email,
-                name: `${user.firstName} ${user.lastName}`,
-                metadata: {
-                    userId: user.id.toString(),
-                    accountId: account.id.toString(),
-                },
-            });
-
-            customerId = customer.id;
-
-            await db
-                .update(accounts)
-                .set({ stripeCustomerId: customerId })
-                .where(eq(accounts.id, account.id));
-        }
-
-        // Vérifier côté Stripe (customer effectif, incluant tentatives abandonnées sans sub) si déjà eu des subscriptions (toutes statuts)
-        let stripeHadSubscription = false;
-        if (customerId) {
-            const stripeSubs = await stripe.subscriptions.list({
-                customer: customerId,
-                status: 'all',
-                limit: 1,
-            });
-            stripeHadSubscription = stripeSubs.data.length > 0;
-        }
-
-        // Éligibilité au trial à l'inscription :
-        // - jamais eu de sub côté Stripe (même incomplete/canceled)
-        // - jamais eu de première facturation réelle (firstBilledAt)
-        // On ignore trialStartedAt s'il provient d'un simple "intent" de checkout abandonné (pas de sub réel).
-        // Cela garantit les 2 mois d'essai gratuits pour tout nouveau signup, quel que soit le plan choisi.
-        let isTrialEligible =
-            !stripeHadSubscription &&
-            !existingSubscription?.firstBilledAt;
-
-        // Renforcement explicite pour les premiers checkouts "inscription/onboarding" :
-        // même si un marqueur trialStartedAt existe localement (d'un précédent create sans complétion Stripe),
-        // tant qu'il n'y a aucune subscription Stripe historique et aucune facturation, on accorde le trial.
-        if (!isTrialEligible && existingSubscription?.trialStartedAt && !stripeHadSubscription && !existingSubscription?.firstBilledAt) {
-            const acctStatus = (account.subscriptionStatus || 'NONE').toUpperCase();
-            const neverHadRealSubOnAccount = !account.stripeSubscriptionId && (acctStatus === 'NONE' || acctStatus === 'PENDING');
-            if (neverHadRealSubOnAccount) {
-                isTrialEligible = true;
             }
         }
 
@@ -336,9 +296,9 @@ export async function POST(request: NextRequest) {
         if (
             normalizedRequestedPlan === 'PREMIUM_DUO' &&
             (account.planType?.toUpperCase() === 'PREMIUM' || account.planType?.toUpperCase() === 'STANDARD') &&
-            account.stripeSubscriptionId
+            currentSubscriptionId
         ) {
-            const existingSub = await stripe.subscriptions.retrieve(account.stripeSubscriptionId);
+            const existingSub = await stripe.subscriptions.retrieve(currentSubscriptionId);
             const existingItem = existingSub.items.data[0];
 
             if (!existingItem) {
@@ -362,13 +322,13 @@ export async function POST(request: NextRequest) {
                 await db.update(users).set({ planType: 'PREMIUM_DUO', updatedAt: new Date() }).where(eq(users.id, user.id));
                 const { duoAccounts: da } = await import('@/db/schema');
                 if (duoId) {
-                    await db.update(da).set({ stripeSubscriptionId: account.stripeSubscriptionId, subscriptionStatus: 'ACTIVE', updatedAt: new Date() }).where(eq(da.id, duoId));
+                    await db.update(da).set({ stripeSubscriptionId: currentSubscriptionId, subscriptionStatus: 'ACTIVE', updatedAt: new Date() }).where(eq(da.id, duoId));
                 }
-                return NextResponse.json({ checkout_url: `${origin}/accueil` });
+                return NextResponse.json({ checkout_url: `${appUrl}/accueil` });
             }
 
             // Mettre à jour la subscription avec le nouveau price DUO
-            await stripe.subscriptions.update(account.stripeSubscriptionId, {
+            await stripe.subscriptions.update(currentSubscriptionId, {
                 items: [{ id: existingItem.id, price: resolvedPriceId }],
                 proration_behavior: 'create_prorations',
                 metadata: {
@@ -382,7 +342,7 @@ export async function POST(request: NextRequest) {
 
             // Récupérer la facture draft de prorata
             const pendingInvoices = await stripe.invoices.list({
-                customer: customerId as string,
+                customer: customerId,
                 status: 'draft',
                 limit: 1,
             });
@@ -397,7 +357,7 @@ export async function POST(request: NextRequest) {
             }
 
             // Prorata nul → succès direct
-            return NextResponse.json({ checkout_url: `${origin}/accueil` });
+            return NextResponse.json({ checkout_url: `${appUrl}/accueil` });
         }
 
         // ── Nouvelle subscription ──
@@ -417,8 +377,8 @@ export async function POST(request: NextRequest) {
                     quantity: 1,
                 },
             ],
-            success_url: `${origin}/accueil?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${origin}/abonnement/cancel?plan=${normalizedRequestedPlan.toLowerCase()}`,
+            success_url: `${appUrl}/accueil?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${appUrl}/abonnement/cancel?plan=${normalizedRequestedPlan.toLowerCase()}`,
             metadata: {
                 userId: user.id.toString(),
                 accountId: account.id.toString(),
@@ -472,29 +432,23 @@ export async function POST(request: NextRequest) {
             })
             .where(eq(accounts.id, account.id));
 
-        const checkoutPlanCode = mapLegacyPlanTypeToCommercialCode(normalizedRequestedPlan);
-
-        // Note: on enregistre l'intention de checkout/trial ici (pour le suivi et les quotas optimistes),
-        // mais on n'écrit PAS trialStartedAt/trialEndsAt tant que la subscription Stripe n'est pas réellement créée (webhook).
-        // Cela évite de "consommer" le droit au trial sur simple clic si l'utilisateur abandonne le formulaire Stripe.
-        const subStatus = isTrialEligible ? 'trialing' : 'active';
-
-        await db.insert(accountSubscriptions).values({
-            accountId: account.id,
-            planCode: checkoutPlanCode,
-            status: subStatus,
-            stripeCustomerId: customerId || null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-        }).onConflictDoUpdate({
-            target: accountSubscriptions.accountId,
-            set: {
-                planCode: checkoutPlanCode,
-                status: subStatus,
-                stripeCustomerId: customerId || null,
-                updatedAt: new Date(),
-            },
-        });
+        // ══════════════════════════════════════════════════════════════════
+        // ⚠️ AUCUN ÉTAT D'ABONNEMENT N'EST ÉCRIT AVANT LE PAIEMENT
+        //
+        // Ce bloc passait `account_subscriptions` en `active` (ou `trialing`)
+        // avec l'offre choisie, dès le clic. `entitlements.service` lisant
+        // cette ligne, abandonner le formulaire Stripe suffisait à obtenir
+        // l'offre — et un client réellement abonné pouvait voir son état
+        // écrasé par un simple clic sur une autre carte.
+        //
+        // L'état est désormais écrit uniquement par la synchronisation
+        // Stripe (webhook ou retour de paiement). On ne rattache ici que le
+        // client Stripe, sur la ligne existante.
+        // ══════════════════════════════════════════════════════════════════
+        await db
+            .update(accountSubscriptions)
+            .set({ stripeCustomerId: customerId, updatedAt: new Date() })
+            .where(eq(accountSubscriptions.accountId, account.id));
 
         return NextResponse.json({
             checkout_url: checkoutSession.url,
@@ -507,13 +461,33 @@ export async function POST(request: NextRequest) {
             return SessionService.handleSessionError(error);
         }
 
-        const stripeError = error as Stripe.StripeRawError;
-        const message = stripeError?.message || (error instanceof Error ? error.message : 'Failed to create checkout session');
+        // Le message brut de Stripe (identifiants, mode test/live…) reste dans
+        // les logs : il n'a pas à s'afficher dans le toast de l'utilisateur.
+        if (error instanceof StripeConfigError) {
+            return NextResponse.json(
+                {
+                    code: 'PAYMENT_UNAVAILABLE',
+                    message: 'Le paiement est momentanément indisponible. Merci de réessayer plus tard.',
+                },
+                { status: 503 }
+            );
+        }
+
+        const stripeError = error as Stripe.errors.StripeError;
+        if (isStripeResourceMissing(stripeError) && stripeError.param?.includes('price')) {
+            return NextResponse.json(
+                {
+                    code: 'PRICE_UNAVAILABLE',
+                    message: 'Cette offre est momentanément indisponible. Merci de réessayer plus tard.',
+                },
+                { status: 503 }
+            );
+        }
 
         return NextResponse.json(
             {
                 code: 'CHECKOUT_SESSION_FAILED',
-                message,
+                message: 'Impossible de démarrer le paiement. Merci de réessayer dans quelques instants.',
             },
             { status: 500 }
         );

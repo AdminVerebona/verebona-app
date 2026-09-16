@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { accounts, accountMemberships } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getStripeServer } from '@/lib/stripe';
+import { getAppBaseUrl } from '@/lib/app-url';
 
 /**
  * POST /api/billing/create-customer-portal-session
@@ -73,7 +74,7 @@ export async function POST(request: NextRequest) {
     // Créer la session Customer Portal
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: account.stripeCustomerId,
-      return_url: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/mon-compte`,
+      return_url: `${getAppBaseUrl(request)}/mon-compte`,
       locale: 'fr',
     });
 

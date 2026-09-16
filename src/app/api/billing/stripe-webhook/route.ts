@@ -17,27 +17,23 @@ import {
   dunningEvents,
   accountSubscriptions,
 } from '@/db/schema';
-import { eq, and, sql, isNull } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
+import { sendDowngradeToStandardEmail } from '@/lib/email/billing-emails';
+import { getStripeServer } from '@/lib/stripe';
 import {
-  sendPremiumConfirmationEmail,
-  sendDowngradeToStandardEmail,
-  sendTrialConfirmationEmail,
-} from '@/lib/email/billing-emails';
-import { getTierFromPriceId, STRIPE_PRODUCTS } from '@/lib/stripe';
-import { resolvePlanFromPriceId } from '@/lib/stripe-prices';
+  getInvoiceSubscriptionId,
+  syncSubscriptionById,
+  syncSubscriptionFromStripe,
+} from '@/services/billing/subscription-sync.service';
 import { applyScheduledChange } from '@/services/plan-change.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { enforceStandardLimits } from '@/lib/plan-enforcement';
-import { grantReferralRewardForFirstBilling, mapLegacyPlanTypeToCommercialCode } from '@/services/commercial-model.service';
+import { grantReferralRewardForFirstBilling } from '@/services/commercial-model.service';
 import { emit } from '@/lib/notifications';
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
-const getStripe = () => {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) throw new Error('STRIPE_SECRET_KEY is not configured');
-  return new Stripe(key, { apiVersion: '2025-08-27.basil' });
-};
+const getStripe = () => getStripeServer();
 
 // ─── Webhook entry point ───────────────────────────────────────────────────────
 
@@ -65,14 +61,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing signature' }, { status: 400 });
     }
 
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.error('[Stripe Webhook] STRIPE_WEBHOOK_SECRET absent : aucun événement ne peut être traité.');
+      return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
+    }
+
     try {
-      event = stripe.webhooks.constructEvent(
-        body,
-        signature,
-        process.env.STRIPE_WEBHOOK_SECRET!
-      );
+      event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
     } catch (err) {
-      console.error('[Stripe Webhook] Signature verification failed:', err);
+      // Cause la plus fréquente : secret d'un autre endpoint ou d'un autre
+      // mode (test/live) que celui qui a émis l'événement.
+      console.error('[Stripe Webhook] Signature verification failed (vérifier STRIPE_WEBHOOK_SECRET et le mode de l\'endpoint):', err);
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
@@ -199,8 +199,8 @@ export async function POST(request: NextRequest) {
  * Pour PREMIUM_DUO : lie aussi accounts.planType = 'PREMIUM_DUO' et maxMembers = 2.
  */
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
-  const customerId = session.customer as string;
-  const subscriptionId = session.subscription as string;
+  const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+  const subscriptionId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
   const duoId = session.metadata?.duoId ? parseInt(session.metadata.duoId) : null;
 
   if (!customerId || !subscriptionId) {
@@ -208,34 +208,23 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
     return;
   }
 
-  if (duoId) {
-    // ── DUO checkout ──
-    await db
-      .update(duoAccounts)
-      .set({ stripeSubscriptionId: subscriptionId, updatedAt: new Date() })
-      .where(eq(duoAccounts.id, duoId));
+  // L'ordre des événements Stripe n'est pas garanti : on relit l'abonnement
+  // et on écrit l'état complet, sans attendre `customer.subscription.*`.
+  const accountIdHint = Number(session.metadata?.accountId) || null;
+  const result = await syncSubscriptionById(subscriptionId, {
+    source: 'webhook:checkout.session.completed',
+    accountIdHint,
+  });
 
-    // Synchronise le compte lié
+  if (!result) {
+    console.error(`[Webhook] checkout.session.completed: abonnement ${subscriptionId} non synchronisé`);
+    return;
+  }
+
+  if (duoId && result.planTier === 'premium_duo') {
+    // Rattache le titulaire au duo (membership slot 0) et aligne le compte.
     await activateDuoOnAccount(duoId);
-    return;
   }
-
-  // ── Premium checkout ──
-  const [account] = await db
-    .select()
-    .from(accounts)
-    .where(eq(accounts.stripeCustomerId, customerId))
-    .limit(1);
-
-  if (!account) {
-    console.error(`[Webhook] checkout.session.completed: no account for customer ${customerId}`);
-    return;
-  }
-
-  await db
-    .update(accounts)
-    .set({ stripeSubscriptionId: subscriptionId, updatedAt: new Date() })
-    .where(eq(accounts.id, account.id));
 
   // CDC CGVU §8.2 et §10.1 : la souscription est rattachée à la version
   // applicable, et l'email de confirmation porte son permalien.
@@ -245,7 +234,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   // Stripe, qui serait alors rejoué et pourrait dupliquer des effets de bord
   // sur l'abonnement lui-même.
   await recordPaidSubscriptionAcceptance({
-    accountId: account.id,
+    accountId: result.accountId,
     stripeSubscriptionId: subscriptionId,
   });
 
@@ -253,7 +242,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   // suppression si une nouvelle souscription est conclue ». Une souscription
   // réactive le compte ; laisser courir le compte à rebours détruirait les
   // données d'un client qui vient de repayer.
-  await cancelDeletion(account.id, 'Nouvelle souscription conclue').catch((e) => {
+  await cancelDeletion(result.accountId, 'Nouvelle souscription conclue').catch((e) => {
     console.error('[Webhook] annulation de suppression impossible :', (e as Error).message);
   });
 }
@@ -264,213 +253,25 @@ async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
   eventType: string
 ) {
-  const customerId = subscription.customer as string;
-  const subscriptionId = subscription.id;
-  const status = subscription.status; // Stripe status
-  // In Stripe API 2025-08-27.basil, current_period_end is on the item, not the subscription
-  const currentPeriodEnd = ((subscription.items.data[0] as any).current_period_end ?? (subscription as any).current_period_end) as number; // Unix seconds
-  const cancelAtPeriodEnd = subscription.cancel_at_period_end;
-  const priceId = subscription.items.data[0]?.price.id;
-  // Offre + periodicite deduites du Price ID reel (CDC : ne jamais se fier
-  // aux seules metadonnees pour accorder des droits).
-  const resolvedBilling = resolvePlanFromPriceId(priceId);
-  const tier = getTierFromPriceId(priceId);
-
-  if (!tier) {
-    console.warn(`[Webhook] subscription.updated: unknown price ${priceId}`);
-    return;
-  }
-
-  // ── DUO sub ──
-  const [duoAccount] = await db
-    .select()
-    .from(duoAccounts)
-    .where(eq(duoAccounts.stripeSubscriptionId, subscriptionId))
-    .limit(1);
-
-  if (duoAccount) {
-    let duoStatus: 'ACTIVE' | 'PAST_DUE_GRACE' | 'UNPAID_RECOVERY' | 'CANCELED' = 'ACTIVE';
-
-    if (['active', 'trialing'].includes(status)) {
-      duoStatus = cancelAtPeriodEnd ? 'ACTIVE' : 'ACTIVE'; // still active until period ends
-    } else if (status === 'past_due') {
-      duoStatus = duoAccount.subscriptionStatus === 'UNPAID_RECOVERY' ? 'UNPAID_RECOVERY' : 'PAST_DUE_GRACE';
-    } else if (['unpaid', 'canceled', 'incomplete_expired'].includes(status)) {
-      duoStatus = 'CANCELED';
-    }
-
-    await db
-      .update(duoAccounts)
-      .set({ subscriptionStatus: duoStatus, updatedAt: new Date() })
-      .where(eq(duoAccounts.id, duoAccount.id));
-
-    // Si DUO revient ACTIVE (ex: paiement en retard résolu), synchronise le compte
-    if (duoStatus === 'ACTIVE') {
-      await activateDuoOnAccount(duoAccount.id);
-    }
-
-    return;
-  }
-
-  // ── Premium sub ──
-  const [account] = await db
-    .select()
-    .from(accounts)
-    .where(eq(accounts.stripeCustomerId, customerId))
-    .limit(1);
-
-  if (!account) {
-    console.error(`[Webhook] subscription.updated: no account for customer ${customerId}`);
-    return;
-  }
-
-  const oldPlanType = account.planType;
-  let newPlanType = 'STANDARD';
-  let newSubStatus = 'NONE';
-  let newMaxMembers: number | undefined;
-
-  // Déterminer si la souscription porte un price PREMIUM_DUO
-  const isDuoPrice = priceId === STRIPE_PRODUCTS.PREMIUM_DUO.priceId;
-  const isStandardPrice = priceId === STRIPE_PRODUCTS.STANDARD.priceId;
-
-  if (['active', 'trialing'].includes(status)) {
-    if (isDuoPrice) {
-      newPlanType = 'PREMIUM_DUO';
-      newMaxMembers = 2;
-    } else if (isStandardPrice) {
-      newPlanType = 'STANDARD';
-    } else {
-      newPlanType = 'PREMIUM';
-    }
-    newSubStatus = cancelAtPeriodEnd ? 'CANCELED' : (status === 'trialing' ? 'TRIALING' : 'ACTIVE');
-  } else if (status === 'past_due') {
-    newPlanType = isDuoPrice ? 'PREMIUM_DUO' : isStandardPrice ? 'STANDARD' : 'PREMIUM';
-    newSubStatus = account.subscriptionStatus === 'PAST_DUE_GRACE' ? 'PAST_DUE_GRACE' : 'ACTIVE';
-  } else if (['unpaid', 'canceled', 'incomplete_expired'].includes(status)) {
-    newPlanType = 'STANDARD';
-    newSubStatus = 'EXPIRED';
-  }
-
-  const subscriptionTier = newPlanType === 'PREMIUM_DUO' ? 'pro' : (newPlanType === 'PREMIUM' || newPlanType === 'STANDARD') ? 'premium' : 'free';
-  const isPaidPlan = newPlanType === 'PREMIUM' || newPlanType === 'PREMIUM_DUO' || newPlanType === 'STANDARD';
-
-  // Dates de trial réelles depuis Stripe (trial_start / trial_end sur la subscription)
-  const trialStartUnix = (subscription as any).trial_start as number | null | undefined;
-  const trialEndUnix = (subscription as any).trial_end as number | null | undefined;
-  const trialEndsAtDate = trialEndUnix ? new Date(trialEndUnix * 1000) : (status === 'trialing' ? new Date(currentPeriodEnd * 1000) : null);
-
-  await db
-    .update(accounts)
-    .set({
-      planType: newPlanType,
-      subscriptionTier,
-      subscriptionStatus: newSubStatus,
-      stripeSubscriptionId: subscriptionId,
-      premiumUntil: isPaidPlan ? currentPeriodEnd : null,
-      trialEndsAt: status === 'trialing' ? trialEndsAtDate : null,
-      ...(newMaxMembers !== undefined ? { maxMembers: newMaxMembers } : {}),
-      updatedAt: new Date(),
-    })
-    .where(eq(accounts.id, account.id));
-
-  // Atomic update to ensure only one trial confirmation email is sent
-  if (status === 'trialing') {
-    const [updated] = await db
-      .update(accounts)
-      .set({ trialConfirmationEmailSentAt: new Date() })
-      .where(
-        and(
-          eq(accounts.id, account.id),
-          isNull(accounts.trialConfirmationEmailSentAt)
-        )
-      )
-      .returning({ id: accounts.id });
-
-    if (updated) {
-    if (trialEndsAtDate) {
-      await sendTrialConfirmationEmail(account.ownerUserId, trialEndsAtDate).catch(console.error);
-    }
-    }
-  }
-
-  await db.insert(accountSubscriptions).values({
-    accountId: account.id,
-    planCode: mapLegacyPlanTypeToCommercialCode(newPlanType),
-    status: status,
-    stripeCustomerId: customerId,
-    stripeSubscriptionId: subscriptionId,
-    currentPeriodEndAt: isPaidPlan ? new Date(currentPeriodEnd * 1000) : null,
-    // Periodicite deduite du Price ID reel (jamais des metadonnees seules)
-    ...(resolvedBilling ? { billingPeriod: resolvedBilling.period } : {}),
-    ...(trialStartUnix ? { trialStartedAt: new Date(trialStartUnix * 1000) } : {}),
-    ...(trialEndUnix ? { trialEndsAt: new Date(trialEndUnix * 1000) } : {}),
-    updatedAt: new Date(),
-    createdAt: new Date(),
-  }).onConflictDoUpdate({
-    target: accountSubscriptions.accountId,
-    set: {
-      planCode: mapLegacyPlanTypeToCommercialCode(newPlanType),
-      status: status,
-      stripeCustomerId: customerId,
-      stripeSubscriptionId: subscriptionId,
-      currentPeriodEndAt: isPaidPlan ? new Date(currentPeriodEnd * 1000) : null,
-      ...(trialStartUnix ? { trialStartedAt: new Date(trialStartUnix * 1000) } : {}),
-      ...(trialEndUnix ? { trialEndsAt: new Date(trialEndUnix * 1000) } : {}),
-      updatedAt: new Date(),
-    },
-  });
-
-  await db.insert(subscriptionHistory).values({
-    userId: account.ownerUserId,
-    accountId: account.id,
-    oldTier: oldPlanType,
-    newTier: newPlanType,
-    oldPremiumUntil: account.premiumUntil,
-    newPremiumUntil: isPaidPlan ? currentPeriodEnd : null,
+  // État complet (offre, statut, périodicité, dates, identifiants) et effets
+  // du changement d'offre (historique, emails, limites) : service commun.
+  const result = await syncSubscriptionFromStripe({
+    subscription,
     source: `webhook:${eventType}`,
-    createdAt: new Date(),
   });
 
-  // Always sync users.planType so the session badge matches the account plan
-  if (newPlanType !== oldPlanType) {
-    await db
-      .update(users)
-      .set({ planType: newPlanType, updatedAt: new Date() })
-      .where(eq(users.id, account.ownerUserId));
-  }
+  if (!result || result.skipped) return;
 
-  // For PREMIUM→PREMIUM_DUO upgrade via subscription item change: link the duoAccount subscription
-  if (newPlanType === 'PREMIUM_DUO' && oldPlanType !== 'PREMIUM_DUO') {
+  // Duo : rattachement du titulaire (membership slot 0).
+  if (result.newPlanType === 'PREMIUM_DUO' && result.oldPlanType !== 'PREMIUM_DUO') {
     const duoIdFromMeta = subscription.metadata?.duoId ? parseInt(subscription.metadata.duoId) : null;
-    if (duoIdFromMeta) {
-      await db
-        .update(duoAccounts)
-        .set({ stripeSubscriptionId: subscriptionId, subscriptionStatus: 'ACTIVE', updatedAt: new Date() })
-        .where(eq(duoAccounts.id, duoIdFromMeta));
-    } else if (account.duoAccountId) {
-      await db
-        .update(duoAccounts)
-        .set({ stripeSubscriptionId: subscriptionId, subscriptionStatus: 'ACTIVE', updatedAt: new Date() })
-        .where(eq(duoAccounts.id, account.duoAccountId));
-    }
-  }
-
-  // Email activation Premium
-  if (newPlanType === 'PREMIUM' && oldPlanType !== 'PREMIUM' && oldPlanType !== 'PREMIUM_DUO') {
-    sendPremiumConfirmationEmail(account.ownerUserId, new Date(currentPeriodEnd * 1000)).catch(console.error);
-
-    // V4 — Analyse rétroactive via service dédié (batch de 5, throttle 2s)
-    import('@/services/document-ai/retroactive-analysis.service').then(({ scheduleRetroactiveAnalysis }) => {
-      scheduleRetroactiveAnalysis(account.id).catch((err: Error) =>
-        console.error('[webhook] retroactive analysis error:', err)
-      );
-    });
-  }
-
-  // Downgrade actions
-  if (newPlanType === 'STANDARD' && (oldPlanType === 'PREMIUM' || oldPlanType === 'PREMIUM_DUO')) {
-    sendDowngradeToStandardEmail(account.ownerUserId).catch(console.error);
-    await enforceStandardLimits(account.id, account.ownerUserId);
+    const [account] = await db
+      .select({ duoAccountId: accounts.duoAccountId })
+      .from(accounts)
+      .where(eq(accounts.id, result.accountId))
+      .limit(1);
+    const duoId = duoIdFromMeta ?? account?.duoAccountId ?? null;
+    if (duoId) await activateDuoOnAccount(duoId);
   }
 }
 
@@ -573,78 +374,41 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
  * Déclenche la récompense de parrainage lors de la première facturation du filleul.
  */
 async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
-  const customerId = invoice.customer as string;
-  const subscriptionId = (invoice as any).subscription as string | null;
+  // API 2025-08-27.basil : l'abonnement est sous `parent.subscription_details`.
+  // L'ancien `invoice.subscription` étant absent, ce traitement sortait
+  // toujours ici, sans jamais constater le paiement.
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!subscriptionId) return; // paiement ponctuel, pas un abonnement
 
-  if (!subscriptionId) return; // one-time payment, not a sub
+  const paidAt = invoice.status_transitions?.paid_at
+    ? new Date(invoice.status_transitions.paid_at * 1000)
+    : new Date();
 
-  // ── DUO renewal ──
-  const [duoAccount] = await db
-    .select()
-    .from(duoAccounts)
-    .where(eq(duoAccounts.stripeSubscriptionId, subscriptionId))
-    .limit(1);
+  const result = await syncSubscriptionById(subscriptionId, {
+    source: 'webhook:invoice.paid',
+    paidAt,
+  });
+  if (!result || result.skipped) return;
 
-  if (duoAccount) {
-    // Clear grace state if it was in dunning
-    await db
-      .update(duoAccounts)
-      .set({
-        subscriptionStatus: 'ACTIVE',
-        firstPaymentFailedAt: null,
-        graceDeadlineAt: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(duoAccounts.id, duoAccount.id));
+  const accountId = result.accountId;
 
-    // Ensure account is marked DUO
-    await activateDuoOnAccount(duoAccount.id);
-    return;
-  }
-
-  // ── Premium / DUO (personal sub) renewal ──
-  const [account] = await db
-    .select()
-    .from(accounts)
-    .where(eq(accounts.stripeCustomerId, customerId))
-    .limit(1);
-
-  if (!account) return;
-
-  // Get the current period end from Stripe invoice line items
-  const periodEnd = (invoice as any).lines?.data?.[0]?.period?.end as number | undefined;
-  const newPremiumUntil = periodEnd ?? account.premiumUntil; // Unix seconds
-
-  // Detect if the invoice line corresponds to a PREMIUM_DUO price (upgrade proration invoice)
-  const invoicePriceId = (invoice as any).lines?.data?.[0]?.price?.id as string | undefined;
-  const isNowDuo = invoicePriceId === STRIPE_PRODUCTS.PREMIUM_DUO.priceId;
-  const isNowStandard = invoicePriceId === STRIPE_PRODUCTS.STANDARD.priceId;
-
-  const resolvedPlanType = isNowDuo ? 'PREMIUM_DUO' : isNowStandard ? 'STANDARD' : 'PREMIUM';
-  const resolvedTier = isNowDuo ? 'pro' : 'premium';
-
+  // Garantit la date de première facturation, même si l'état avait été
+  // synchronisé avant l'encaissement.
   await db
-    .update(accounts)
-    .set({
-      planType: resolvedPlanType,
-      subscriptionTier: resolvedTier,
-      subscriptionStatus: 'ACTIVE',
-      premiumUntil: newPremiumUntil,
-      ...(isNowDuo ? { maxMembers: 2 } : {}),
-      updatedAt: new Date(),
-    })
-    .where(eq(accounts.id, account.id));
+    .update(accountSubscriptions)
+    .set({ firstBilledAt: sql`COALESCE(${accountSubscriptions.firstBilledAt}, ${paidAt.toISOString()}::timestamptz)` })
+    .where(eq(accountSubscriptions.accountId, accountId));
 
   // Renouvellement (configurable). On ne notifie que les cycles de renouvellement
   // réels, pas le premier paiement (activation), pour ne pas sur-notifier.
-  if ((invoice as any).billing_reason === 'subscription_cycle') {
+  if (invoice.billing_reason === 'subscription_cycle') {
     try {
       await emit({
         type: 'SUBSCRIPTION_RENEWED',
-        accountId: account.id,
+        accountId,
         entityType: 'invoice',
         entityId: invoice.id,
-        payload: { planCode: resolvedPlanType },
+        payload: { planCode: result.newPlanType },
         dedupeKey: `account:subscription-renewed:${invoice.id}`,
       });
     } catch (err) {
@@ -652,32 +416,11 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
     }
   }
 
-  await db.insert(accountSubscriptions).values({
-    accountId: account.id,
-    planCode: mapLegacyPlanTypeToCommercialCode(resolvedPlanType),
-    status: 'active',
-    stripeCustomerId: customerId,
-    stripeSubscriptionId: subscriptionId,
-    currentPeriodEndAt: newPremiumUntil ? new Date(newPremiumUntil * 1000) : null,
-    firstBilledAt: new Date(),
-    updatedAt: new Date(),
-    createdAt: new Date(),
-  }).onConflictDoUpdate({
-    target: accountSubscriptions.accountId,
-    set: {
-      planCode: mapLegacyPlanTypeToCommercialCode(resolvedPlanType),
-      status: 'active',
-      stripeCustomerId: customerId,
-      stripeSubscriptionId: subscriptionId,
-      currentPeriodEndAt: newPremiumUntil ? new Date(newPremiumUntil * 1000) : null,
-      firstBilledAt: sql`COALESCE(${accountSubscriptions.firstBilledAt}, now())`,
-      updatedAt: new Date(),
-    },
-  });
-
-  await grantReferralRewardForFirstBilling(account.id, invoice.id).catch((err: Error) => {
-    console.error('[Webhook] referral reward grant failed:', err.message);
-  });
+  if (invoice.id) {
+    await grantReferralRewardForFirstBilling(accountId, invoice.id).catch((err: Error) => {
+      console.error('[Webhook] referral reward grant failed:', err.message);
+    });
+  }
 
   // CDC §17 : paiement abouti, et denouement de l'essai.
   void (async () => {
@@ -688,42 +431,36 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
         trialEndsAt: accountSubscriptions.trialEndsAt,
       })
       .from(accountSubscriptions)
-      .where(eq(accountSubscriptions.accountId, account.id))
+      .where(eq(accountSubscriptions.accountId, accountId))
       .limit(1);
 
     await trackFunnelEvent({
       event: 'payment_succeeded',
-      accountId: account.id,
+      accountId,
       planCode: subRow?.planCode ?? null,
       billingPeriod: subRow?.billingPeriod ?? null,
     });
 
-    const expired = subRow?.trialEndsAt ? subRow.trialEndsAt.getTime() < Date.now() : false;
-    await trackFunnelEvent({
-      event: expired ? 'converted_after_expiry' : 'converted_before_expiry',
-      accountId: account.id,
-      planCode: subRow?.planCode ?? null,
-      billingPeriod: subRow?.billingPeriod ?? null,
-    });
+    if (invoice.billing_reason === 'subscription_create') {
+      const expired = subRow?.trialEndsAt ? subRow.trialEndsAt.getTime() < Date.now() : false;
+      await trackFunnelEvent({
+        event: expired ? 'converted_after_expiry' : 'converted_before_expiry',
+        accountId,
+        planCode: subRow?.planCode ?? null,
+        billingPeriod: subRow?.billingPeriod ?? null,
+      });
+    }
   })().catch((err: Error) => console.error('[Webhook] suivi analytique:', err.message));
 
   // CDC §10 : un changement d'offre ou de periodicite programme prend effet
   // au renouvellement, sans prorata.
-  await applyScheduledChange(account.id).then((r) => {
+  await applyScheduledChange(accountId).then((r) => {
     if (r.applied) {
       console.info('[Webhook] changement programme applique:', r.planCode, r.billingPeriod);
     }
   }).catch((err: Error) => {
     console.error('[Webhook] application du changement programme echouee:', err.message);
   });
-
-  // Always sync users.planType so badge matches account plan
-  if (account.planType !== resolvedPlanType) {
-    await db
-      .update(users)
-      .set({ planType: resolvedPlanType, updatedAt: new Date() })
-      .where(eq(users.id, account.ownerUserId));
-  }
 }
 
 // ─── invoice.payment_failed ───────────────────────────────────────────────────
@@ -737,7 +474,7 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
  */
 async function handlePaymentFailed(invoice: Stripe.Invoice) {
   const customerId = invoice.customer as string;
-  const subscriptionId = (invoice as any).subscription as string | null;
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
 
   if (!customerId) return;
 
