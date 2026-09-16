@@ -42,11 +42,11 @@ export async function acquireJobLock(
   name: string,
   ttlMs: number,
 ): Promise<JobLockHandle | null> {
-  const until = new Date(Date.now() + ttlMs);
+  const until = new Date(Date.now() + ttlMs).toISOString();
   try {
     const rows = await db.execute(sql`
       INSERT INTO job_locks (name, locked_until, locked_by, updated_at)
-      VALUES (${name}, ${until}, ${OWNER}, NOW())
+      VALUES (${name}, ${until}::timestamptz, ${OWNER}, NOW())
       ON CONFLICT (name) DO UPDATE
         SET locked_until = EXCLUDED.locked_until,
             locked_by    = EXCLUDED.locked_by,

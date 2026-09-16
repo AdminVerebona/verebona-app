@@ -147,7 +147,16 @@ export async function upgradeReferential(
     return queued;
   });
 
-  if (result === null) return { ...base, skippedReason: 'locked' };
+    if (result === null) {
+    // `null` couvre deux cas : verrou réellement détenu, ou échec
+    // d'acquisition. Les confondre a rendu ce défaut indiagnostiquable
+    // pendant des heures.
+    console.warn(
+      '[referential-upgrade] Verrou non obtenu. Si aucun autre tour ne ' +
+        'tourne, chercher « [job-lock] acquisition impossible » dans les logs.',
+    );
+    return { ...base, skippedReason: 'locked' };
+  }
   return { ...base, queuedCount: result };
 }
 
