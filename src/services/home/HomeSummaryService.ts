@@ -8,7 +8,23 @@ import {
   accounts, exportGenerations, aiFieldUpdates,
 } from '@/db/schema';
 import { eq, and, or, isNull, isNotNull, gte, lte, sql, inArray, notInArray, desc, asc } from 'drizzle-orm';
-import { getToProcessItems } from '@/services/to-process.service';
+import { getToProcessPage } from '@/services/to-process/to-process-query.service';
+import type { TargetType } from '@/services/to-process/action-model';
+import { ACTION_KIND_LABELS } from '@/lib/referential/v2/microcopy';
+
+/**
+ * Correspondance des cibles V2 vers les types d'objet de l'accueil.
+ *
+ * `AGENDA_ITEM` devient `agenda` et non `system` : l'accueil sait déjà ouvrir
+ * un événement, et le ranger en « système » le rendrait non cliquable.
+ */
+const TARGET_TO_HOME_OBJECT: Record<TargetType, HomeItem['objectType']> = {
+  DOCUMENT: 'document',
+  ASSET: 'asset',
+  EQUIPMENT: 'equipment',
+  AGENDA_ITEM: 'agenda',
+  SUPPLIER: 'supplier',
+};
 
 // Champs visibles par l'utilisateur dans l'UI — les autres champs (techniques) sont filtrés
 // de l'affichage enrichissement automatique
@@ -436,42 +452,43 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     }
   });
 
-  // ── Bloc A FAIRE — from unified À traiter service ──────────────────
-  const toProcessResult = await getToProcessItems(accountId);
+  // ══════════════════════════════════════════════════════════════════════
+  // BLOC « À FAIRE » — file V2 (CDC V2 §7, §8.1)
+  //
+  // Lisait la vue V1, qui comptait des OBJETS. La page « À traiter » et la
+  // pastille de navigation comptent des ACTIONS depuis la bascule, et un même
+  // document peut en porter trois.
+  //
+  // Trois calculs pour la même chose, c'est trois nombres différents à
+  // l'écran : l'accueil annonçait « 4 », le menu « 7 », la page en montrait 7.
+  // Les trois passent désormais par la même table.
+  //
+  // L'ordre vient de `sortActions` en mode priorité, celui de la page par
+  // défaut : l'accueil montre le haut de la file, pas un autre extrait.
+  // ══════════════════════════════════════════════════════════════════════
+  const actionsV2 = await getToProcessPage(accountId, { orderMode: 'BY_PRIORITY' });
 
-  const actionLabels: Record<string, string> = {
-    choose_asset: 'Associer',
-    choose_date: 'Choisir',
-    confirm: 'Confirmer',
-    resolve: 'Résoudre',
-    add_date: 'Ajouter la date',
-    fill: 'Renseigner',
-    keep_separate: 'Ne pas fusionner',
-    merge: 'Fusionner',
-    choose_other: 'Choisir',
-  };
-
-  const todoItems: HomeItem[] = toProcessResult.items.map(tpItem => {
+  const todoItems: HomeItem[] = actionsV2.actions.map((action) => {
     const ctxParts: string[] = [];
-    if (tpItem.context.assetName) ctxParts.push(tpItem.context.assetName);
-    if (tpItem.context.documentFilename) ctxParts.push(tpItem.context.documentFilename);
+    if (action.target.assetName) ctxParts.push(action.target.assetName);
 
     return {
-      id: tpItem.id,
-      objectType: tpItem.objectType,
-      objectId: tpItem.objectId,
+      id: action.publicId,
+      objectType: TARGET_TO_HOME_OBJECT[action.targetType] ?? 'system',
+      objectId: action.targetId,
       homeIntent: 'action_required',
-      reason: tpItem.reason as ActionReason,
-      title: tpItem.objectTitle,
-      subLabel: tpItem.badge,
+      // La question EST le titre (§8.4) : c'est elle qui dit quoi faire, là où
+      // la V1 affichait le nom de l'objet et laissait deviner le problème.
+      title: action.question,
+      subLabel: action.target.label,
       context: ctxParts.length > 0 ? ctxParts.join(' · ') : null,
-      badge: tpItem.badge,
+      badge: ACTION_KIND_LABELS[action.actionKind],
       displayStatus: 'a_faire',
-      primaryAction: actionLabels[tpItem.primaryAction] ?? 'Voir',
+      primaryAction: action.actionKind === 'ARBITRATE' ? 'Choisir' : 'Compléter',
     };
   });
 
-  const totalTodo = toProcessResult.total;
+  const totalTodo = actionsV2.total;
   const visibleTodo = todoItems.slice(0, 5);
 
   // ── Bloc PROCHAINES DATES ─────────────────────────────────────────────────
