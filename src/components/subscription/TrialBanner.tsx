@@ -139,7 +139,7 @@ export function TrialBanner() {
           </span>
         </p>
         <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
-          Choisir mon abonnement
+          Choisir une offre
         </Button>
       </div>
     );
@@ -174,7 +174,7 @@ export function TrialBanner() {
           variant={urgent ? 'default' : 'outline'}
           onClick={() => router.push('/mon-compte/offres')}
         >
-          {urgent ? 'Choisir mon abonnement' : 'Voir les offres'}
+          {urgent ? 'Choisir une offre' : 'Voir les offres'}
         </Button>
       </div>
     );

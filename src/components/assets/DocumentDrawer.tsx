@@ -684,7 +684,18 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   // Les trois boutons « Modifier » du tiroir passent par ici. La garde
   // précède le chargement des données d'édition : inutile d'aller les
   // chercher pour une écriture que le serveur refusera.
-  const { garder } = useWriteGuard();
+  const { garder, estBloque } = useWriteGuard();
+
+  // Filet de sécurité : QUEL QUE SOIT le chemin qui passe le tiroir en
+  // édition (bouton « Modifier », « Appliquer » une proposition, mode
+  // d'ouverture), un compte sans droit d'écriture en ressort aussitôt et
+  // voit la fenêtre de fin d'essai.
+  useEffect(() => {
+    if (!isEditing || !estBloque()) return;
+    setIsEditing(false);
+    garder(() => {});
+  }, [isEditing, estBloque, garder]);
+
   const enterEditMode = useCallback(async () => {
     let autorise = false;
     garder(() => { autorise = true; });
@@ -1199,6 +1210,14 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 : [];
 
               const stateConfig: Record<string, { label: string; icon: React.ReactNode; color: string; bg: string }> = {
+                // Dépôt multiple : le document attend son tour dans la file
+                // d'analyse du serveur.
+                UPLOADED: {
+                  label: 'En file d\u2019attente',
+                  icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
+                  color: 'text-[#8b5cf6]',
+                  bg: 'bg-[#8b5cf6]/10 border-[#8b5cf6]/20',
+                },
                 ANALYZING: {
                   label: 'Analyse en cours…',
                   icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
@@ -1223,6 +1242,12 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   color: 'text-red-600 dark:text-red-400',
                   bg: 'bg-red-500/10 border-red-500/20',
                 },
+                FUSION_SUGGESTED: {
+                  label: 'Doublon possible',
+                  icon: <AlertCircle className="w-3.5 h-3.5" />,
+                  color: 'text-amber-600 dark:text-amber-400',
+                  bg: 'bg-amber-500/10 border-amber-500/20',
+                },
                 ANALYSIS_FAILED: {
                   label: 'Analyse impossible',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
@@ -1231,7 +1256,11 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 },
               };
 
-              const cfg = stateConfig[analysisState] ?? stateConfig['ANALYSIS_FAILED'];
+              // Un état inconnu n'est pas un échec : on n'affiche plus
+              // « Analyse impossible » par défaut. `UPLOADING` (envoi en
+              // cours) est rattaché à la file d'attente.
+              if (analysisState === 'UPLOADING') stateConfig.UPLOADING = stateConfig.UPLOADED;
+              const cfg = stateConfig[analysisState] ?? stateConfig['ANALYZED'];
 
               return (
                 <div className="px-5 py-3 border-t border-border/40">

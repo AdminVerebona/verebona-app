@@ -385,6 +385,10 @@ export function AssetDocumentsPanel({
 
   // ✅ NEW: Handle edit document
   const handleEdit = useCallback(async (doc: DocumentItem) => {
+    // Modifier est une écriture : même garde que l'ajout.
+    let autorise = false;
+    garder(() => { autorise = true; });
+    if (!autorise) return;
     try {
       // Trouver le code du type de document à partir du label
       const docType = documentTypes.find(dt => dt.label === doc.typeLabel);
@@ -405,7 +409,7 @@ export function AssetDocumentsPanel({
       console.error('Error preparing document for edit:', error);
       toast.error('Erreur lors du chargement du document');
     }
-  }, [assetId, assetName, documentTypes]);
+  }, [assetId, assetName, documentTypes, garder]);
 
   const handleEditComplete = useCallback(() => {
     setShowEditDialog(false);

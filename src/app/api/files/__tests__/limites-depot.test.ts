@@ -44,7 +44,7 @@ describe('les limites sont appliquées côté serveur', () => {
   it('le nombre et la taille du lot sont contrôlés', () => {
     expect(valeur(CONFIRM, 'MAX_DOCUMENTS_PAR_DEPOT')).toBe(10);
     expect(valeur(CONFIRM, 'MAX_TAILLE_LOT')).toBe(100_000_000);
-    expect(CONFIRM).toMatch(/allFileIds\.length > MAX_DOCUMENTS_PAR_DEPOT/);
+    expect(CONFIRM).toMatch(/idsDemandes\.length > MAX_DOCUMENTS_PAR_DEPOT/);
     expect(CONFIRM).toMatch(/cumul > MAX_TAILLE_LOT/);
   });
 });

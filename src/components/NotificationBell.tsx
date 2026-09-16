@@ -4,8 +4,22 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Bell, X, CheckCheck, Info, ArrowRightLeft, Trash2, UserPlus, Cpu, SendHorizonal, AlertTriangle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
+import { createPortal } from 'react-dom';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
+import { useIsMobile } from '@/hooks/use-mobile';
+
+/**
+ * Types retirés de l'affichage : les notifications « Analyse impossible ».
+ *
+ * Elles ne sont plus émises, mais des lignes existent déjà en base. Les
+ * masquer ici évite qu'elles réapparaissent dans la cloche ou en bandeau.
+ */
+const TYPES_MASQUES = new Set([
+  'DOCUMENT_BATCH_FAILED',
+  'DOCUMENT_BATCH_PARTIALLY_FAILED',
+  'ANALYSIS_FAILED_PERSISTENT',
+]);
 
 interface NotificationPayload {
   initiatorName?: string;
@@ -250,15 +264,24 @@ export function NotificationBell() {
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const isMobile = useIsMobile();
   const seenIdsRef = useRef<Set<number>>(new Set());
 
   const fetchNotifications = useCallback(async () => {
     try {
       const data = await apiClient.get<NotificationsResponse>('/api/notifications?limit=20');
-      setNotifications(data.notifications);
-      setUnreadCount(Number(data.unreadCount));
+      const visibles = data.notifications.filter(n => !TYPES_MASQUES.has(n.type));
+      const masquesNonLus = data.notifications.filter(n => TYPES_MASQUES.has(n.type) && !n.readAt).length;
+      setNotifications(visibles);
+      setUnreadCount(Math.max(0, Number(data.unreadCount) - masquesNonLus));
+      // Les anciennes notifications masquées non lues sont marquées lues :
+      // sinon le point rouge resterait allumé sans rien à montrer.
+      if (masquesNonLus > 0) {
+        const ids = data.notifications.filter(n => TYPES_MASQUES.has(n.type) && !n.readAt).map(n => n.id);
+        apiClient.patch('/api/notifications', { notificationIds: ids }).catch(() => {});
+      }
       // Process new notifications (not yet seen)
-      const newNotifs = data.notifications.filter(n => !seenIdsRef.current.has(n.id));
+      const newNotifs = visibles.filter(n => !seenIdsRef.current.has(n.id));
       newNotifs.forEach(n => {
         // Toast for mustDeliver (excluant DOCUMENT_ANALYZED)
         if (n.mustDeliver && !n.readAt && n.type !== 'DOCUMENT_ANALYZED') {
@@ -413,28 +436,9 @@ export function NotificationBell() {
     }
   }
 
-  return (
-    <div className="relative">
-      {/* Bell button */}
-      <button
-        ref={buttonRef}
-        onClick={() => setOpen(prev => !prev)}
-        className="relative p-2 rounded-xl hover:bg-[color:var(--accent-soft)] transition-all"
-        aria-label="Notifications"
-      >
-        <Bell className="w-5 h-5 text-[color:var(--text-primary)]" />
-        {unreadCount > 0 && (
-          <span className="absolute top-1.5 right-1.5 w-[7px] h-[7px] rounded-full bg-red-500 shadow" />
-        )}
-      </button>
+  const contenuPanneau = (
+    <>
 
-      {/* Dropdown panel */}
-      {open && (
-        <div
-          ref={panelRef}
-          className="absolute right-0 top-full mt-2 w-80 bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] rounded-2xl shadow-relief-lg z-50 flex flex-col overflow-hidden"
-          style={{ maxHeight: '420px' }}
-        >
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)]">
             <span className="text-sm font-semibold text-[color:var(--text-primary)]">
@@ -498,6 +502,60 @@ export function NotificationBell() {
               })
             )}
           </div>
+    </>
+  );
+
+  return (
+    <div className="relative">
+      {/* Bell button */}
+      <button
+        ref={buttonRef}
+        onClick={() => setOpen(prev => !prev)}
+        className="relative p-2 rounded-xl hover:bg-[color:var(--accent-soft)] transition-all"
+        aria-label="Notifications"
+      >
+        <Bell className="w-5 h-5 text-[color:var(--text-primary)]" />
+        {unreadCount > 0 && (
+          <span className="absolute top-1.5 right-1.5 w-[7px] h-[7px] rounded-full bg-red-500 shadow" />
+        )}
+      </button>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          PANNEAU LISIBLE SUR MOBILE
+          Aligné à droite du bouton (`right-0`, 320 px), il s'ouvrait vers la
+          GAUCHE alors que la cloche est elle-même à gauche de l'en-tête
+          mobile : les deux tiers du panneau sortaient de l'écran.
+
+          Sur mobile, il occupe désormais toute la largeur sous l'en-tête. Il
+          est rendu dans `body` : l'en-tête mobile a un `backdrop-filter`,
+          qui ferait de lui le repère d'un élément `fixed` et le rognerait.
+          ══════════════════════════════════════════════════════════════════ */}
+      {open && isMobile && typeof document !== 'undefined' && createPortal(
+        <>
+          <div className="fixed inset-0 z-[60] bg-black/40" aria-hidden="true" onClick={() => setOpen(false)} />
+          <div
+            ref={panelRef}
+            role="dialog"
+            aria-label="Notifications"
+            className="fixed left-3 right-3 z-[61] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] rounded-2xl shadow-relief-lg flex flex-col overflow-hidden"
+            style={{
+              top: 'calc(env(safe-area-inset-top, 0px) + 4.5rem)',
+              maxHeight: 'calc(100dvh - env(safe-area-inset-top, 0px) - 4.5rem - 6.5rem)',
+            }}
+          >
+            {contenuPanneau}
+          </div>
+        </>,
+        document.body,
+      )}
+
+      {open && !isMobile && (
+        <div
+          ref={panelRef}
+          className="absolute right-0 top-full mt-2 w-80 bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] rounded-2xl shadow-relief-lg z-50 flex flex-col overflow-hidden"
+          style={{ maxHeight: '420px' }}
+        >
+          {contenuPanneau}
         </div>
       )}
     </div>

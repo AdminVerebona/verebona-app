@@ -630,21 +630,10 @@ export async function runUnifiedAnalysisPipeline(
         const retryCount = await setAnalysisState(fid, 'ANALYSIS_FAILED', failReason);
         broadcast(fid, { type: 'error', analysisState: 'ANALYSIS_FAILED', message: failReason });
 
+        // Plus de notification « Analyse impossible » (ANALYSIS_FAILED_PERSISTENT) :
+        // l'échec reste visible sur le document et journalisé ici.
         if (retryCount >= 10) {
-          const [fileRow] = await db.select({ userId: assetFiles.userId, retainedTitle: assetFiles.retainedTitle, originalFilename: assetFiles.originalFilename, analysisState: assetFiles.analysisState })
-            .from(assetFiles).where(eq(assetFiles.id, fid)).limit(1);
-          if (fileRow?.userId && fileRow.analysisState === 'ANALYSIS_FAILED') {
-            const documentTitle = fileRow.retainedTitle || fileRow.originalFilename || undefined;
-            await emit({
-              type: 'ANALYSIS_FAILED_PERSISTENT',
-              recipientUserIds: [fileRow.userId],
-              accountId,
-              entityType: 'asset_file',
-              entityId: fid,
-              payload: { assetFileId: fid, documentTitle, errorReason: failReason },
-              dedupeKey: `document:analysis-failed-persistent:${fid}`,
-            });
-          }
+          console.error(`[unified-pipeline] fichier ${fid} en échec persistant (${retryCount} tentatives) : ${failReason}`);
         }
       }
     }
@@ -661,7 +650,6 @@ export async function runUnifiedAnalysisPipeline(
     .where(eq(documentLotItems.lotId, lotId));
 
   const failedCount = lotItemStatuses.filter(i => i.status === 'failed').length;
-  const completedCount = lotItemStatuses.filter(i => i.status === 'completed').length;
 
   const lotFinalStatus = failedCount > 0 ? 'partially_failed' : 'committed';
   await db.update(documentLots)
@@ -671,19 +659,20 @@ export async function runUnifiedAnalysisPipeline(
   // ── Notification unique par lot (cf. CDC §7.2) ─────────────────────────────
   // Émise via le service central : un seul enregistrement, quel que soit le
   // nombre de fichiers/groupes ; canaux et préférences appliqués par le moteur.
+  // Seule la réussite est annoncée — mêmes règles que le moteur unifié
+  // (`lot-notification.ts`) : plus de notification « Analyse impossible ».
+  if (analysedCount === 0) {
+    if (failedCount > 0) console.warn(`[unified-pipeline] lot ${lotId} : ${failedCount} échec(s), aucune notification émise.`);
+    return;
+  }
   try {
-    const batchType =
-      completedCount === 0 ? 'DOCUMENT_BATCH_FAILED'
-      : failedCount > 0 ? 'DOCUMENT_BATCH_PARTIALLY_FAILED'
-      : 'DOCUMENT_BATCH_COMPLETED';
-
     await emit({
-      type: batchType,
+      type: 'DOCUMENT_BATCH_COMPLETED',
       recipientUserIds: [userId],
       accountId,
       entityType: 'document_lot',
       entityId: lotId,
-      payload: { lotId, analysedCount: completedCount, failedCount },
+      payload: { lotId, analysedCount, failedCount: 0 },
       // Clé stable par lot (le moteur ajoute l'utilisateur).
       dedupeKey: `document:batch-complete:${lotId}`,
     });

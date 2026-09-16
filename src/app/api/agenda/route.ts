@@ -1,3 +1,4 @@
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaItems } from '@/services/agenda/AgendaQueryService';
@@ -45,6 +46,11 @@ export async function POST(req: NextRequest) {
     }
     const accountId = session.currentAccountId;
     if (!accountId) return NextResponse.json({ error: 'No account selected' }, { status: 400 });
+
+    // Essai terminé : création refusée, avec le code que le client affiche
+    // dans la fenêtre de fin d'essai.
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const body = await req.json();
     const { title, description, startDate, startTime, endDate, endTime, manualStatus, assetIds, fileIds, substructureIds, equipmentIds } = body;

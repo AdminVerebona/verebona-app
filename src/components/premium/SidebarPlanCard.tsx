@@ -112,13 +112,13 @@ export function SidebarPlanCard({ plan, trialDaysLeft, assetsUsed, assetsMax, tr
         </>
       )}
       {/* Même libellé et même destination que le bandeau d'accueil :
-          « Choisir mon abonnement » vers la page des offres. Deux
+          « Choisir une offre » vers la page des offres. Deux
           formulations pour la même action font douter qu'elle soit la même. */}
       <Link
         href={isTrial || trialExpired ? '/mon-compte/offres' : '/mon-compte'}
         className="block w-full h-8 leading-8 text-center rounded-full bg-gradient-to-br from-indigo-500 to-blue-600 text-white text-[11.5px] font-semibold hover:-translate-y-px hover:shadow-relief-glow transition-all"
       >
-        {isTrial || trialExpired ? 'Choisir mon abonnement' : 'Passer à Premium'}
+        {isTrial || trialExpired ? 'Choisir une offre' : 'Passer à Premium'}
       </Link>
     </div>
   );

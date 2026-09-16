@@ -21,18 +21,17 @@ describe('type de notification selon l’issue du lot', () => {
     expect(resolveLotNotificationType(5, 0)).toBe('DOCUMENT_BATCH_COMPLETED');
   });
 
-  it('annonce un échec partiel dès qu’un document échoue', () => {
-    // Un lot « réussi » à 4 documents sur 5 ne l'est pas : l'utilisateur doit
-    // savoir qu'il lui en manque un.
-    expect(resolveLotNotificationType(4, 1)).toBe('DOCUMENT_BATCH_PARTIALLY_FAILED');
+  it('annonce la réussite même si un document du lot a échoué', () => {
+    // L'échec n'est plus notifié (« Analyse impossible » retirée) : le
+    // document affiche son état et se relance depuis son tiroir.
+    expect(resolveLotNotificationType(4, 1)).toBe('DOCUMENT_BATCH_COMPLETED');
   });
 
-  it('annonce un échec complet quand rien n’a été analysé', () => {
-    expect(resolveLotNotificationType(0, 3)).toBe('DOCUMENT_BATCH_FAILED');
-  });
-
-  it('traite un lot sans échec ni succès comme un échec complet', () => {
-    expect(resolveLotNotificationType(0, 0)).toBe('DOCUMENT_BATCH_FAILED');
+  it('n’annonce rien quand rien n’a été analysé', () => {
+    // Cas typique : un doublon, qui n'est pas compté comme analysé et
+    // produisait à tort « Analyse impossible ».
+    expect(resolveLotNotificationType(0, 3)).toBeNull();
+    expect(resolveLotNotificationType(0, 0)).toBeNull();
   });
 });
 
@@ -81,10 +80,15 @@ describe('émission', () => {
     await expect(notifyLotCompleted(base)).resolves.toBeUndefined();
   });
 
-  it('transmet les compteurs à l’utilisateur', async () => {
+  it('transmet le nombre de documents analysés, jamais les échecs', async () => {
     await notifyLotCompleted({ ...base, analysedCount: 4, failedCount: 1 });
     expect(emit.mock.calls[0][0].payload).toEqual({
-      lotId: 42, analysedCount: 4, failedCount: 1,
+      lotId: 42, analysedCount: 4, failedCount: 0,
     });
+  });
+
+  it('n’émet jamais « Analyse impossible »', async () => {
+    await notifyLotCompleted({ ...base, analysedCount: 0, failedCount: 2 });
+    expect(emit).not.toHaveBeenCalled();
   });
 });

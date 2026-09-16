@@ -6,8 +6,10 @@ const MAX_DOCUMENTS_PAR_DEPOT = 10;
 const MAX_TAILLE_LOT = 100_000_000;
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
+import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 
 export async function POST(request: NextRequest) {
@@ -46,46 +48,107 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Fetch the file record
+    // ══════════════════════════════════════════════════════════════════════
+    // TOUS LES FICHIERS DU DÉPÔT SONT CONFIRMÉS, PAS SEULEMENT LE PREMIER
+    //
+    // L'ancienne version recevait `fileIds` mais ne passait en `COMPLETED`
+    // que `fileId`. Les autres fichiers restaient `PENDING` : invisibles dans
+    // « Mes documents », non comptés, puis éventuellement supprimés par le
+    // regroupement de l'analyse.
+    //
+    // Le client envoie désormais une confirmation par fichier. `fileIds` reste
+    // accepté pour les appelants plus anciens, et chaque fichier y est traité.
+    // ══════════════════════════════════════════════════════════════════════
+    const idsDemandes: number[] = Array.isArray(batchFileIds) && batchFileIds.length > 0
+      ? [...new Set([fileIdInt, ...batchFileIds.map((x: unknown) => Number(x))])]
+      : [fileIdInt];
+
+    if (idsDemandes.some((id) => !Number.isInteger(id))) {
+      return NextResponse.json(
+        { error: 'Invalid fileIds', code: 'INVALID_FILE_ID' },
+        { status: 400 }
+      );
+    }
+
+    // ── Limites de dépôt — AVANT toute écriture ─────────────────────────────
+    // Dix analyses ensemble, c'est dix appels modèle sur un conteneur déjà
+    // tombé pour dépassement mémoire. Le contrôle est ici et non seulement
+    // dans l'interface : un appel direct contournerait le navigateur.
+    if (idsDemandes.length > MAX_DOCUMENTS_PAR_DEPOT) {
+      return NextResponse.json(
+        {
+          error: 'TOO_MANY_FILES',
+          message:
+            `Vous pouvez déposer ${MAX_DOCUMENTS_PAR_DEPOT} documents à la fois. ` +
+            `Ce dépôt en contient ${idsDemandes.length}.`,
+          max: MAX_DOCUMENTS_PAR_DEPOT,
+          provided: idsDemandes.length,
+        },
+        { status: 400 },
+      );
+    }
+
     const fileRecords = await db
       .select()
       .from(assetFiles)
-      .where(eq(assetFiles.id, fileIdInt))
-      .limit(1);
+      .where(inArray(assetFiles.id, idsDemandes));
 
-    // Check if file exists
-    if (fileRecords.length === 0) {
+    if (fileRecords.length !== idsDemandes.length) {
       return NextResponse.json(
         { error: 'File not found', code: 'FILE_NOT_FOUND' },
         { status: 404 }
       );
     }
 
-    const fileRecord = fileRecords[0];
-
-    // Verify user owns the file
-    if (fileRecord.userId !== userId) {
+    // Verify user owns every file
+    if (fileRecords.some((f) => f.userId !== userId)) {
       return NextResponse.json(
         { error: 'You do not have permission to access this file', code: 'FORBIDDEN' },
         { status: 403 }
       );
     }
 
-    // Check file is in PENDING status
-    if (fileRecord.uploadStatus !== 'PENDING') {
+    // Check files are in PENDING status
+    const nonPending = fileRecords.find((f) => f.uploadStatus !== 'PENDING');
+    if (nonPending) {
       return NextResponse.json(
-        { 
-          error: `File is not in PENDING status. Current status: ${fileRecord.uploadStatus}`,
+        {
+          error: `File is not in PENDING status. Current status: ${nonPending.uploadStatus}`,
           code: 'INVALID_STATUS'
         },
         { status: 400 }
       );
     }
 
-    // Update the file record to COMPLETED
+    // Taille cumulée du dépôt.
+    const cumul = fileRecords.reduce((t, f) => t + Number(f.size ?? 0), 0);
+    if (cumul > MAX_TAILLE_LOT) {
+      return NextResponse.json(
+        {
+          error: 'BATCH_TOO_LARGE',
+          message:
+            `Ce dépôt pèse ${Math.round(cumul / 1_000_000)} Mo. ` +
+            `Le maximum est de ${MAX_TAILLE_LOT / 1_000_000} Mo par dépôt.`,
+          max: MAX_TAILLE_LOT,
+          provided: cumul,
+        },
+        { status: 400 },
+      );
+    }
+
+    // ── Droits du compte ────────────────────────────────────────────────────
+    // `presign` contrôle déjà les droits, mais un essai peut se terminer
+    // entre la préparation et la confirmation. Le refus porte le code que le
+    // client affiche dans la fenêtre de fin d'essai.
+    const accountForGuard = fileRecords[0].accountId ?? sessionAccountId;
+    if (accountForGuard) {
+      const refus = await refuserSiLectureSeule(accountForGuard);
+      if (refus) return refus;
+    }
+
+    // Update the file records to COMPLETED
     const updateData: any = {
       uploadStatus: 'COMPLETED',
-      sha256Hash: fileRecord.sha256Hash,
       uploadedAt: new Date(),
       updatedAt: new Date(),
     };
@@ -96,9 +159,12 @@ export async function POST(request: NextRequest) {
     }
     if (documentType) updateData.documentType = documentType;
     if (documentDate) updateData.documentDate = documentDate;
-    if (description) updateData.description = description;
-    if (supplier) updateData.supplier = supplier;
-    if (amountCents !== undefined && amountCents !== null) {
+    // Titre et fournisseur saisis s'appliquent à un dépôt d'UN fichier : sur
+    // plusieurs documents distincts, un titre commun serait faux pour tous
+    // sauf un. L'analyse les renseigne alors document par document.
+    if (description && idsDemandes.length === 1) updateData.description = description;
+    if (supplier && idsDemandes.length === 1) updateData.supplier = supplier;
+    if (amountCents !== undefined && amountCents !== null && idsDemandes.length === 1) {
       updateData.amountCents = parseInt(amountCents.toString());
     }
     if (substructureId !== undefined && substructureId !== null) {
@@ -113,8 +179,9 @@ export async function POST(request: NextRequest) {
       .set(updateData)
       .where(
         and(
-          eq(assetFiles.id, fileIdInt),
-          eq(assetFiles.userId, userId)
+          inArray(assetFiles.id, idsDemandes),
+          eq(assetFiles.userId, userId),
+          eq(assetFiles.uploadStatus, 'PENDING'),
         )
       )
       .returning();
@@ -126,115 +193,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const confirmedFile = updatedFiles[0];
-
-    // ── Pipeline d'analyse unifié (fire-and-forget) ─────────────────────────
-    // Déclenché pour tous les plans avec analyse IA.
-    // Accepte un batch (fileIds[]) ou un fichier unique (fileId).
+    const confirmedFile = updatedFiles.find((f) => f.id === fileIdInt) ?? updatedFiles[0];
     const accountId = confirmedFile.accountId ?? sessionAccountId;
+
+    // ── Analyse : un travail par fichier, via la file d'attente ──────────────
+    // Chaque document est analysé comme s'il avait été déposé seul. Le
+    // parallélisme est borné par la file. Aucune analyse n'est lancée si le
+    // compte n'a pas de crédit : les fichiers restent « non analysés » et
+    // `check-pending` les reprendra.
     if (accountId) {
-      // Construire la liste complète des fileIds du batch
-      const allFileIds: number[] = Array.isArray(batchFileIds) && batchFileIds.length > 0
-        ? batchFileIds.map(Number)
-        : [fileIdInt];
-
-      // ══════════════════════════════════════════════════════════════════
-      // LIMITES DE DÉPÔT
-      //
-      // Dix analyses lancées ensemble, ce sont dix appels modèles sur un
-      // conteneur qui est déjà tombé pour dépassement mémoire. Le plafond
-      // protège la machine autant que le quota du compte.
-      //
-      // Le contrôle est ICI et non seulement dans l'interface : un appel
-      // direct à l'API contournerait une validation côté navigateur.
-      // ══════════════════════════════════════════════════════════════════
-      if (allFileIds.length > MAX_DOCUMENTS_PAR_DEPOT) {
-        return NextResponse.json(
-          {
-            error: 'TOO_MANY_FILES',
-            message:
-              `Vous pouvez déposer ${MAX_DOCUMENTS_PAR_DEPOT} documents à la fois. ` +
-              `Ce dépôt en contient ${allFileIds.length}.`,
-            max: MAX_DOCUMENTS_PAR_DEPOT,
-            provided: allFileIds.length,
-          },
-          { status: 400 },
+      const confirmedIds = updatedFiles.map((f) => f.id);
+      try {
+        const gate = await canConsumeAnalysis(accountId, 1);
+        if (gate.allowed) {
+          const { enqueueFileAnalyses } = await import('@/services/ai/source-analysis/analysis-queue');
+          await enqueueFileAnalyses(confirmedIds, accountId, { userId, origin: 'files/confirm' });
+        }
+      } catch (e) {
+        console.error(
+          `[files/confirm] mise en file impossible pour ${confirmedIds.join(', ')} :`,
+          (e as Error).message,
         );
       }
 
-      // Taille cumulée : dix fichiers de 25 Mo feraient 250 Mo, que le
-      // navigateur met plusieurs minutes à envoyer et que la confirmation
-      // charge en mémoire.
-      const [tailleLot] = await db
-        .select({ total: sql<number>`coalesce(sum(${assetFiles.size}), 0)::bigint` })
-        .from(assetFiles)
-        .where(inArray(assetFiles.id, allFileIds));
-
-      const cumul = Number(tailleLot?.total ?? 0);
-      if (cumul > MAX_TAILLE_LOT) {
-        return NextResponse.json(
-          {
-            error: 'BATCH_TOO_LARGE',
-            message:
-              `Ce dépôt pèse ${Math.round(cumul / 1_000_000)} Mo. ` +
-              `Le maximum est de ${MAX_TAILLE_LOT / 1_000_000} Mo par dépôt.`,
-            max: MAX_TAILLE_LOT,
-            provided: cumul,
-          },
-          { status: 400 },
-        );
+      // ── Détection fusion (fire-and-forget), par fichier ───────────────────
+      for (const f of updatedFiles) {
+        if (!f.sha256Hash) continue;
+        void (async () => {
+          try {
+            const { detectFusionCandidates } = await import('@/services/document-ai/fusion-detector');
+            await detectFusionCandidates(f.id, accountId);
+          } catch { /* non-blocking */ }
+        })();
       }
-      // Aiguillage unique (CDC §10.1) : le moteur est choisi dans
-      // `source-analysis/entrypoint`, jamais ici. Voir l'en-tête de ce module
-      // pour la raison — huit appelants, un seul test de drapeau.
-      // ══════════════════════════════════════════════════════════════════
-      // UNE ERREUR AVALÉE LAISSE LE DOCUMENT « EN COURS » POUR TOUJOURS
-      //
-      // Le `.catch(() => {})` d'origine ne couvrait d'ailleurs que l'échec
-      // d'IMPORT du module. L'analyse elle-même partait en `void` : si elle
-      // rejetait, la promesse n'était rattrapée par personne.
-      //
-      // Résultat observé : le document reste en analyse indéfiniment, le
-      // navigateur sonde toutes les quatre secondes, et rien nulle part ne
-      // dit pourquoi.
-      //
-      // On ne peut pas attendre l'analyse — elle dure des dizaines de
-      // secondes et la requête d'import doit répondre tout de suite. Mais on
-      // peut consigner l'échec, et remettre le document dans un état où
-      // l'utilisateur comprend ce qui s'est passé.
-      // ══════════════════════════════════════════════════════════════════
-      import('@/services/ai/source-analysis/entrypoint')
-        .then(({ analyzeFileSources }) =>
-          analyzeFileSources(allFileIds, accountId, { userId, origin: 'files/confirm' }),
-        )
-        .catch(async (e) => {
-          const err = e as Error & { cause?: { message?: string } };
-          console.error(
-            `[files/confirm] analyse impossible pour ${allFileIds.join(', ')} :`,
-            err.message,
-            err.cause?.message ?? '',
-          );
-          // Sortir de « en cours » : un état d'échec est lisible, une attente
-          // sans fin ne l'est pas.
-          await db
-            .update(assetFiles)
-            // `asset_files` ne porte pas de colonne pour le motif : seul
-            // l'état est écrit, la cause reste au journal. C'est une limite
-            // connue — l'utilisateur voit que ça a échoué, pas pourquoi.
-            .set({ analysisState: 'ANALYSIS_FAILED', updatedAt: new Date() })
-            .where(inArray(assetFiles.id, allFileIds))
-            .catch(() => { /* la trace console suffit */ });
-        });
-    }
-
-    // ── Détection fusion (fire-and-forget) ──────────────────────────────────
-    if (accountId && confirmedFile.sha256Hash) {
-      (async () => {
-        try {
-          const { detectFusionCandidates } = await import('@/services/document-ai/fusion-detector');
-          await detectFusionCandidates(fileIdInt, accountId);
-        } catch { /* non-blocking */ }
-      })();
     }
 
     // CDC §17 : activation — premier document enregistre
@@ -244,6 +235,7 @@ export async function POST(request: NextRequest) {
       {
         success: true,
         file: confirmedFile,
+        files: updatedFiles,
       },
       { status: 200 }
     );

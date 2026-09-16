@@ -1,3 +1,4 @@
+import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
 /**
  * API Client — session par cookies HttpOnly (CDC authentification)
@@ -128,6 +129,11 @@ export const apiClient = {
           this.handleAuthFailure();
           throw new ApiClientError(response.status, 'UNAUTHORIZED', {}, undefined);
         } else {
+          // Refus de droits (essai terminé, quota…) : la fenêtre partagée
+          // s'ouvre, quel que soit l'écran qui a lancé l'appel. L'appelant
+          // reçoit toujours l'erreur, pour interrompre son traitement.
+          const refus = parseWriteBlocked(errorBody);
+          if (refus) notifyWriteBlocked(refus);
           throw new ApiClientError(
             response.status,
             errorBody.code ?? errorBody.error ?? 'FORBIDDEN',

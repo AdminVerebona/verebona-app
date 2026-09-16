@@ -27,13 +27,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'MISSING_FILE_IDS' }, { status: 400 });
     }
 
-    // Fire-and-forget
-    import('@/services/ai/source-analysis/entrypoint').then(({ analyzeFileSources }) => {
-      void analyzeFileSources(fileIds, accountId, {
+    // Un fichier par analyse, via la file : une sélection de documents
+    // distincts ne doit pas passer par le regroupement IA, qui supprimait
+    // les fichiers jugés « secondaires ».
+    import('@/services/ai/source-analysis/analysis-queue').then(({ enqueueFileAnalyses }) =>
+      enqueueFileAnalyses(fileIds.filter(Number.isInteger).slice(0, 50), accountId, {
         userId: session.userId,
         origin: 'documents/analyze-batch',
-      });
-    }).catch(() => {});
+      }),
+    ).catch(() => {});
 
     return NextResponse.json({ queued: true, count: fileIds.length });
   } catch (error) {

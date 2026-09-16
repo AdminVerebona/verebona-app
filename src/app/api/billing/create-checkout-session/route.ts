@@ -123,25 +123,20 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Si requestedPlan est présent et différent de account.planType, renvoyer PLAN_MISMATCH
-        // Utiliser la valeur déjà normalisée (body.plan peut contenir alias 'duo')
-        const normalizedBodyPlan = body.plan ? (body.plan.toUpperCase() === 'DUO' ? 'PREMIUM_DUO' : body.plan.toUpperCase()) : null;
-        const normalizedAccountPlanForCheck = (account.planType || '').toUpperCase();
-        if (normalizedBodyPlan && normalizedAccountPlanForCheck && normalizedBodyPlan !== normalizedAccountPlanForCheck) {
-            // Legitimate for first-time paid subscription: accounts start as STANDARD (non-paid),
-            // requesting PREMIUM / PREMIUM_DUO etc. is the normal upgrade flow from signup/offers.
-            const currentStatusUpper = (account.subscriptionStatus || 'NONE').toUpperCase();
-            const isInitialNonPaidState = normalizedAccountPlanForCheck === 'STANDARD' && ['NONE', 'PENDING'].includes(currentStatusUpper);
-            if (!isInitialNonPaidState) {
-                return NextResponse.json(
-                    {
-                        code: 'PLAN_MISMATCH',
-                        message: 'Le plan demandé ne correspond pas au plan configuré pour votre compte.',
-                    },
-                    { status: 400 }
-                );
-            }
-        }
+        // ══════════════════════════════════════════════════════════════════
+        // CONTRÔLE « PLAN_MISMATCH » RETIRÉ
+        //
+        // Il refusait toute offre différente de `accounts.planType`, sauf pour
+        // un compte STANDARD. Or `planType` est l'offre choisie À
+        // L'INSCRIPTION : un compte ouvert en essai Premium ne pouvait plus
+        // choisir Standard, ni un compte Standard en essai prendre Premium Duo
+        // — « Le plan demandé ne correspond pas au plan configuré pour votre
+        // compte ».
+        //
+        // Sans abonnement payant en cours, l'utilisateur choisit librement son
+        // offre. Avec un abonnement actif, le contrôle ci-dessous renvoie déjà
+        // vers la modification d'abonnement (`SUBSCRIPTION_CHANGE_REQUIRED`).
+        // ══════════════════════════════════════════════════════════════════
 
         // Renforcer la règle d'éligibilité : si subscriptionStatus est ACTIVE, TRIALING, ou PAST_DUE_GRACE, interdire la souscription.
         const normalizedAccountPlan = account.planType?.toUpperCase();

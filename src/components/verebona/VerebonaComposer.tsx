@@ -4,7 +4,11 @@ import { useState } from 'react';
 
 export interface VerebonaComposerProps {
   isLoading: boolean;
-  onSend: (text: string) => void;
+  /**
+   * Rend `false` si l'envoi est refusé (fin d'essai…) : le texte saisi est
+   * alors conservé dans le champ.
+   */
+  onSend: (text: string) => boolean | void;
   onCancel: () => void;
 }
 
@@ -12,7 +16,7 @@ export function VerebonaComposer({ isLoading, onSend, onCancel }: VerebonaCompos
   const [text, setText] = useState('');
   const submit = () => {
     if (!text.trim() || isLoading) return;
-    onSend(text);
+    if (onSend(text) === false) return;
     setText('');
   };
   return (

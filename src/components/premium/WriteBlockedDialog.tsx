@@ -152,10 +152,11 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
               className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
               style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
             >
-              {/* « Voir les offres » plutôt que « Passer à Premium » : sans
-                  offre en cours, il n'y a pas de montée en gamme. */}
+              {/* « Choisir une offre » plutôt que « Passer à Premium » : sans
+                  offre en cours, il n'y a pas de montée en gamme. Même
+                  libellé que le bandeau de fin d'essai. */}
               {finEssai ? (
-                <>Voir les offres</>
+                <>Choisir une offre</>
               ) : (
                 <>
                   <Crown className="w-4 h-4" />

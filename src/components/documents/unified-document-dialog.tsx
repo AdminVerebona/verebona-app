@@ -25,7 +25,8 @@ import { PICKER_DOCUMENT_TYPES } from '@/lib/document-type-constants';
 import { normalizeMimeType, computeFileSha256 } from '@/lib/file-validation';
 import { FusionSuggestionModal } from './FusionSuggestionModal';
 import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
-import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
+import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 /**
  * Echec de la demande d'URL signee.
@@ -37,16 +38,25 @@ import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
  * technique, sans indication ni moyen d'agir.
  */
 async function presignError(res: Response): Promise<Error> {
+  return reponseEnErreur(res, 'Échec de la préparation du téléchargement');
+}
+
+/**
+ * Traduit une réponse d'erreur en exception lisible.
+ *
+ * Un refus de droits ouvre la fenêtre de fin d'essai et lève une
+ * `WriteBlockedError`, que le `catch` englobant reconnaît pour ne pas ajouter
+ * « Erreur lors de l'ajout du document » par-dessus — c'est ce message
+ * générique qui s'affichait sur un compte dont l'essai était terminé.
+ */
+async function reponseEnErreur(res: Response, repli: string): Promise<Error> {
   const body = await res.json().catch(() => ({}));
   const refus = parseWriteBlocked(body);
   if (refus) {
     notifyWriteBlocked(refus);
-    return new Error(refus.message);
+    return new WriteBlockedError(refus);
   }
-  return new Error(
-    (body as { message?: string })?.message ||
-      'Échec de la préparation du téléchargement',
-  );
+  return new Error((body as { message?: string })?.message || repli);
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -191,6 +201,24 @@ export function UnifiedDocumentDialog({
     return assetSupportsStructuralFeatures(selectedAsset as any);
   }, [assetId, assets]);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // GARDE À L'OUVERTURE
+  //
+  // Six écrans ouvrent ce dialogue (accueil, « + », documents d'un bien,
+  // rubriques, événements liés, menu mobile). Plusieurs ne gardaient pas le
+  // clic : un compte dont l'essai était terminé choisissait son fichier,
+  // l'envoyait, et recevait « Erreur lors de l'ajout du document ».
+  // ══════════════════════════════════════════════════════════════════════
+  const { garder, estBloque } = useWriteGuard();
+  const bloque = open && estBloque('documents');
+  useEffect(() => {
+    if (!open) return;
+    let autorise = false;
+    garder(() => { autorise = true; }, 'documents');
+    if (!autorise) onOpenChange(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
 
@@ -298,80 +326,100 @@ export function UnifiedDocumentDialog({
 
   const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').trim();
 
-  // ── Core upload helper (presign → S3 PUT → confirm) ─────────────────────────
-  const doUpload = useCallback(async (file: File): Promise<number> => {
-    const targetAssetId = assetId && assetId !== '0' ? parseInt(assetId) : null;
+  // ── Envoi d'UN fichier : presign → PUT stockage → confirmation ─────────────
+  //
+  // ══════════════════════════════════════════════════════════════════════════
+  // UN DÉPÔT DE N FICHIERS = N DÉPÔTS D'UN FICHIER
+  //
+  // Les fichiers partaient en parallèle vers le stockage, puis UNE seule
+  // confirmation portait tout le lot. Le serveur ne confirmait que le premier
+  // et lançait une analyse groupée qui pouvait fusionner des documents
+  // distincts : seul le premier était « analysé et enregistré ».
+  //
+  // Chaque fichier suit maintenant le parcours complet d'un dépôt unitaire,
+  // l'un après l'autre. Le serveur met chaque analyse en file d'attente.
+  // ══════════════════════════════════════════════════════════════════════════
+  const envoyerUnFichier = useCallback(async (
+    file: File,
+    signal: AbortSignal,
+    meta: { targetAssetId: number | null; amountCents: number | null; seul: boolean },
+  ): Promise<number> => {
+    if (signal.aborted) throw new Error('Upload annulé');
     const sha256Hash = await calculateHash(file);
 
-    const presignRes = await fetch('/api/files/presign', {
+    const presignResponse = await fetch('/api/files/presign', {
       credentials: 'include',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json'},
-      body: JSON.stringify({ filename: file.name, mimeType: normalizeMimeType(file), size: file.size, sha256Hash, assetId: targetAssetId }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        mimeType: normalizeMimeType(file),
+        size: file.size,
+        sha256Hash,
+        assetId: meta.targetAssetId,
+      }),
+      signal,
     });
-    if (!presignRes.ok) throw await presignError(presignRes);
-    const { uploadUrl, fileId } = await presignRes.json();
+    if (!presignResponse.ok) throw await presignError(presignResponse);
+    const { uploadUrl, fileId } = await presignResponse.json();
 
-    const uploadController = new AbortController();
-    const uploadTimeout = setTimeout(() => uploadController.abort(), 120_000); // 2 min max
-    let uploadRes: Response;
+    // Délai propre à ce fichier : il ne doit pas annuler les suivants.
+    const delai = new AbortController();
+    const minuterie = setTimeout(() => delai.abort(), 120_000);
+    const annulerSiParent = () => delai.abort();
+    signal.addEventListener('abort', annulerSiParent);
+    let uploadResponse: Response;
     try {
-      uploadRes = await fetch(uploadUrl, {
+      uploadResponse = await fetch(uploadUrl, {
         method: 'PUT',
         body: file,
         headers: { 'Content-Type': normalizeMimeType(file) },
-        signal: uploadController.signal,
+        signal: delai.signal,
       });
     } catch (e) {
-      // ══════════════════════════════════════════════════════════════════
-      // UN `TypeError: Failed to fetch` SUR S3 SIGNIFIE PRESQUE TOUJOURS CORS
-      //
-      // Le navigateur envoie le fichier DIRECTEMENT au stockage objet, sur
-      // un autre domaine. Si le bucket n'autorise pas l'origine de
-      // l'application, le contrôle préalable échoue et `fetch` lève un
-      // TypeError nu — sans code, sans statut, sans en-tête.
-      //
-      // Le message générique « Échec du téléchargement » envoyait alors
-      // chercher un défaut applicatif là où c'est une autorisation de
-      // bucket qui manque. La distinction fait gagner des heures.
-      // ══════════════════════════════════════════════════════════════════
+      if (signal.aborted) throw new Error('Upload annulé');
       if ((e as Error).name === 'AbortError') {
-        throw new Error("Le téléchargement a dépassé deux minutes. Réessayez avec un fichier plus léger.");
+        throw new Error(`${file.name} : le téléversement a dépassé deux minutes.`);
       }
-      throw new Error(
-        "Le stockage a refusé le fichier. L'origine de l'application n'est " +
-        'probablement pas autorisée sur le bucket (CORS). ' +
-        'Consultez la console du navigateur pour le détail.',
-      );
+      // Un TypeError nu sur le stockage signale presque toujours une origine
+      // non autorisée sur le bucket (CORS).
+      throw new Error(`${file.name} : le stockage a refusé le fichier (réseau ou CORS).`);
     } finally {
-      clearTimeout(uploadTimeout);
+      clearTimeout(minuterie);
+      signal.removeEventListener('abort', annulerSiParent);
     }
-    if (!uploadRes.ok) {
+    if (!uploadResponse.ok) {
       throw new Error(
-        `Le stockage a refusé le fichier (${uploadRes.status}). ` +
-        (uploadRes.status === 403
-          ? "L'URL signée est peut-être expirée : réessayez."
-          : 'Réessayez, ou signalez ce code.'),
+        `${file.name} : le stockage a refusé le fichier (${uploadResponse.status}).` +
+        (uploadResponse.status === 403 ? ' Réessayez.' : ''),
       );
     }
 
-    const confirmRes = await fetch('/api/files/confirm', {
+    const confirmResponse = await fetch('/api/files/confirm', {
       credentials: 'include',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json'},
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        fileId, assetId: targetAssetId,
+        fileId,
+        assetId: meta.targetAssetId,
         substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
         equipmentId: selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
-        documentType, documentDate: documentDate || null,
-        description: title || null, supplier: supplier || null, amountCents: null,
+        documentType,
+        documentDate: documentDate || null,
+        // Titre, fournisseur et montant saisis ne valent que pour un dépôt
+        // d'un seul fichier : sur plusieurs documents, ils seraient faux
+        // pour tous sauf un. L'analyse les renseigne document par document.
+        description: meta.seul ? (title || null) : null,
+        supplier: meta.seul ? (supplier || null) : null,
+        amountCents: meta.seul ? meta.amountCents : null,
       }),
+      signal,
     });
-    if (!confirmRes.ok) throw new Error('Échec de la confirmation du téléchargement');
+    if (!confirmResponse.ok) {
+      throw await reponseEnErreur(confirmResponse, `${file.name} : échec de l'enregistrement.`);
+    }
     return fileId as number;
-   
-  }, [assetId, selectedSubstructureId, selectedEquipmentId, documentType, documentDate, title, supplier]);
-
+  }, [selectedSubstructureId, selectedEquipmentId, documentType, documentDate, title, supplier]);
 
   const addFiles = (newFiles: File[]) => {
     // ══════════════════════════════════════════════════════════════════════
@@ -397,30 +445,44 @@ export function UnifiedDocumentDialog({
 
     const retenus = newFiles.filter((f) => !tropGros.includes(f));
 
-    setFiles(prev => {
-      const place = MAX_DOCUMENTS_PAR_DEPOT - prev.length;
-      if (retenus.length > place) {
-        toast.error(
-          `Vous pouvez déposer ${MAX_DOCUMENTS_PAR_DEPOT} documents à la fois. ` +
-          `${retenus.length - place} ${retenus.length - place === 1 ? 'a été écarté' : 'ont été écartés'}.`,
-        );
-      }
-      const ajoutes = retenus.slice(0, Math.max(0, place));
+    // Calcul hors de `setFiles` : un effet de bord (bandeau) dans la fonction
+    // de mise à jour est rejoué en mode strict et s'affichait deux fois.
+    const place = MAX_DOCUMENTS_PAR_DEPOT - files.length;
+    if (retenus.length > place) {
+      const ecartes = retenus.length - Math.max(0, place);
+      toast.error(
+        `Vous pouvez déposer ${MAX_DOCUMENTS_PAR_DEPOT} documents à la fois. ` +
+        `${ecartes} ${ecartes === 1 ? 'a été écarté' : 'ont été écartés'}.`,
+      );
+    }
+    const candidats = retenus.slice(0, Math.max(0, place));
 
-      const cumul = [...prev, ...ajoutes.map((f) => ({ file: f }))]
-        .reduce((t, x) => t + x.file.size, 0);
-      if (cumul > MAX_TAILLE_LOT) {
-        toast.error(
-          `Ce dépôt pèse ${Math.round(cumul / 1_000_000)} Mo. ` +
-          `Le maximum est de ${MAX_TAILLE_LOT / 1_000_000} Mo.`,
-        );
+    // La taille cumulée est désormais BLOQUANTE : le serveur refuserait le
+    // dépôt. On retient les fichiers dans l'ordre tant que le total reste
+    // sous le plafond, et on annonce ceux qui sont écartés.
+    let cumul = files.reduce((t, x) => t + x.file.size, 0);
+    const ajoutes: File[] = [];
+    const tropLourds: string[] = [];
+    for (const f of candidats) {
+      if (cumul + f.size > MAX_TAILLE_LOT) {
+        tropLourds.push(f.name);
+        continue;
       }
+      cumul += f.size;
+      ajoutes.push(f);
+    }
+    if (tropLourds.length > 0) {
+      toast.error(
+        `Un dépôt ne peut pas dépasser ${MAX_TAILLE_LOT / 1_000_000} Mo. ` +
+        `${tropLourds.length === 1 ? 'Ce fichier a été écarté' : 'Ces fichiers ont été écartés'} : ${tropLourds.join(', ')}.`,
+      );
+    }
+    if (ajoutes.length === 0) return;
 
-      return [...prev, ...ajoutes.map(file => ({
-        file,
-        preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-      }))];
-    });
+    setFiles(prev => [...prev, ...ajoutes.map(file => ({
+      file,
+      preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+    }))]);
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -521,10 +583,7 @@ export function UnifiedDocumentDialog({
           }),
         });
         if (!wlRes.ok) {
-          const err = await wlRes.json().catch(() => ({}));
-          toast.error(err.message || `Erreur ${wlRes.status}`);
-          setIsUploading(false);
-          return;
+          throw await reponseEnErreur(wlRes, `Erreur ${wlRes.status}`);
         }
         const { webLink } = await wlRes.json();
         uploadedFileIds.push(webLink.id);
@@ -532,73 +591,38 @@ export function UnifiedDocumentDialog({
       } else {
         uploadAbortRef.current = new AbortController();
         const abortSignal = uploadAbortRef.current.signal;
-        let completedCount = 0;
-        setUploadProgress({ current: 0, total: files.length });
+        const total = files.length;
+        setUploadProgress({ current: 0, total });
 
-        // Étape 1 : presign + S3 PUT pour chaque fichier en parallèle
-        const uploadOne = async (file: File): Promise<number> => {
-          if (abortSignal.aborted) throw new Error('Upload annulé');
-          const sha256Hash = await calculateHash(file);
-
-          const presignResponse = await fetch('/api/files/presign', {
-      credentials: 'include',
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              filename: file.name,
-              mimeType: normalizeMimeType(file),
-              size: file.size,
-              sha256Hash,
-              assetId: targetAssetId,
-            }),
-            signal: abortSignal,
-          });
-          if (!presignResponse.ok) throw await presignError(presignResponse);
-          const { uploadUrl, fileId } = await presignResponse.json();
-
-          const uploadTmo = setTimeout(() => uploadAbortRef.current?.abort(), 120_000);
-          let uploadResponse: Response;
+        // File d'attente côté client : un fichier après l'autre. Un échec
+        // n'arrête pas les suivants, sauf un refus de droits (tous seraient
+        // refusés) ou une annulation.
+        const echecs: string[] = [];
+        for (let i = 0; i < total; i++) {
           try {
-            uploadResponse = await fetch(uploadUrl, {
-              method: 'PUT',
-              body: file,
-              headers: { 'Content-Type': normalizeMimeType(file) },
-              signal: abortSignal,
+            const id = await envoyerUnFichier(files[i].file, abortSignal, {
+              targetAssetId,
+              amountCents,
+              seul: total === 1,
             });
-          } finally {
-            clearTimeout(uploadTmo);
+            uploadedFileIds.push(id);
+          } catch (e) {
+            if (isWriteBlockedError(e) || abortSignal.aborted) throw e;
+            console.error('Upload error:', e);
+            echecs.push((e as Error).message);
           }
-          if (!uploadResponse.ok) throw new Error('Échec du téléchargement du fichier');
+          setUploadProgress({ current: i + 1, total });
+        }
 
-          completedCount++;
-          setUploadProgress({ current: completedCount, total: files.length });
-          return fileId as number;
-        };
-
-        // Upload tous les fichiers en parallèle vers S3
-        const allFileIds = await Promise.all(files.map(f => uploadOne(f.file)));
-
-        // Étape 2 : un seul confirm avec tous les fileIds du batch
-        // Le pipeline unifié côté serveur gère le regroupement et l'analyse en une seule passe
-        const confirmResponse = await fetch('/api/files/confirm', {
-      credentials: 'include',
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            fileId: allFileIds[0],
-            fileIds: allFileIds,
-            assetId: targetAssetId,
-            substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
-            equipmentId: selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
-            documentType, documentDate: documentDate || null,
-            description: title || null,
-            supplier: supplier || null,
-            amountCents,
-          }),
-        });
-        if (!confirmResponse.ok) throw new Error('Échec de la confirmation du téléchargement');
-
-        uploadedFileIds = allFileIds;
+        if (uploadedFileIds.length === 0) {
+          throw new Error(echecs[0] ?? "Erreur lors de l'ajout du document");
+        }
+        if (echecs.length > 0) {
+          toast.error(
+            `${echecs.length} document${echecs.length > 1 ? 's' : ''} non ajouté${echecs.length > 1 ? 's' : ''} : ${echecs.join(' · ')}`,
+            { duration: 10000 },
+          );
+        }
       }
 
       // Associate with events
@@ -657,10 +681,12 @@ export function UnifiedDocumentDialog({
         window.dispatchEvent(new CustomEvent('document-added'));
         // Signal une seule fois pour l'ensemble du batch (bannière d'analyse)
         // On passe le premier fileId pour permettre l'ouverture du drawer via "Voir →"
-        const firstUploadedId = uploadedFileIds[0] ?? null;
-        window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId: firstUploadedId } }));
+        // Un signal par document : chacun a sa propre analyse, et la
+        // bannière affiche « N analyses en cours ».
+        for (const fileId of uploadedFileIds) {
+          window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId } }));
+        }
         window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
-        onFilesUploaded?.(uploadedFileIds);
         onSuccess?.();
         resetForm();
         onOpenChange(false);
@@ -668,7 +694,8 @@ export function UnifiedDocumentDialog({
         // Standard — pas d'analyse IA
         const isWl = mode === 'weblink';
         const singleFileId = uploadedFileIds[0];
-        toast.success(isWl ? 'Lien web ajouté' : '1 document ajouté');
+        const nb = uploadedFileIds.length;
+        toast.success(isWl ? 'Lien web ajouté' : nb > 1 ? `${nb} documents ajoutés` : '1 document ajouté');
         resetForm();
         window.dispatchEvent(new CustomEvent('document-added', { detail: { file: {
           id: singleFileId,
@@ -690,9 +717,14 @@ export function UnifiedDocumentDialog({
       }
     } catch (error) {
       const isAbort = (error as Error)?.name === 'AbortError' || (error as Error)?.message === 'Upload annulé';
-      if (!isAbort) {
+      if (isWriteBlockedError(error)) {
+        // La fenêtre de fin d'essai est ouverte : on ferme le dépôt pour la
+        // laisser lisible, sans message d'erreur par-dessus.
+        resetForm();
+        onOpenChange(false);
+      } else if (!isAbort) {
         console.error('Upload error:', error);
-        toast.error('Erreur lors de l\'ajout du document');
+        toast.error((error as Error)?.message || 'Erreur lors de l\'ajout du document');
       }
     } finally {
       uploadAbortRef.current = null;
@@ -958,7 +990,7 @@ export function UnifiedDocumentDialog({
 
   return (
     <>
-      <Sheet open={open} onOpenChange={handleClose}>
+      <Sheet open={open && !bloque} onOpenChange={handleClose}>
         <SheetContent
           className="p-0 flex flex-col"
           style={{ maxWidth: isMobile ? undefined : 580, width: isMobile ? undefined : '580px', height: isMobile ? '95dvh' : '100dvh' }}

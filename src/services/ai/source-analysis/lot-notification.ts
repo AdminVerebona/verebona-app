@@ -34,16 +34,27 @@ export interface LotNotificationInput {
 /**
  * Type de notification correspondant à l'issue du lot.
  *
- * Pure et exportée : c'est la seule règle de ce module, et elle décide de ce
- * que l'utilisateur lit.
+ * ══════════════════════════════════════════════════════════════════════════
+ * PLUS DE NOTIFICATION « ANALYSE IMPOSSIBLE »
+ *
+ * Elle était émise à tort dans deux cas fréquents :
+ *   · un doublon détecté — il n'est pas compté comme analysé, et le lot
+ *     passait pour un échec ;
+ *   · un regroupement de fichiers — les fichiers secondaires manquaient au
+ *     décompte et comptaient comme échecs.
+ *
+ * Et quand l'échec était réel, elle n'apportait rien d'actionnable : le
+ * document affiche son état et peut être relancé depuis son tiroir. L'échec
+ * reste journalisé côté serveur.
+ *
+ * Seule la réussite est donc annoncée. `null` : rien à émettre.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 export function resolveLotNotificationType(
   analysedCount: number,
-  failedCount: number,
-): 'DOCUMENT_BATCH_COMPLETED' | 'DOCUMENT_BATCH_PARTIALLY_FAILED' | 'DOCUMENT_BATCH_FAILED' {
-  if (analysedCount === 0) return 'DOCUMENT_BATCH_FAILED';
-  if (failedCount > 0) return 'DOCUMENT_BATCH_PARTIALLY_FAILED';
-  return 'DOCUMENT_BATCH_COMPLETED';
+  _failedCount: number,
+): 'DOCUMENT_BATCH_COMPLETED' | null {
+  return analysedCount > 0 ? 'DOCUMENT_BATCH_COMPLETED' : null;
 }
 
 /**
@@ -58,12 +69,19 @@ export async function notifyLotCompleted(input: LotNotificationInput): Promise<v
   // déclenchée par une tâche planifiée.
   if (!input.userId) return;
 
-  // Un lot vide n'a rien produit à annoncer.
-  if (input.analysedCount === 0 && input.failedCount === 0) return;
+  const type = resolveLotNotificationType(input.analysedCount, input.failedCount);
+  if (!type) {
+    if (input.failedCount > 0) {
+      console.warn(
+        `[source-analysis] lot ${input.lotId} : ${input.failedCount} échec(s), aucune notification émise.`,
+      );
+    }
+    return;
+  }
 
   try {
     await emit({
-      type: resolveLotNotificationType(input.analysedCount, input.failedCount),
+      type,
       recipientUserIds: [input.userId],
       accountId: input.accountId,
       entityType: 'document_lot',
@@ -71,7 +89,8 @@ export async function notifyLotCompleted(input: LotNotificationInput): Promise<v
       payload: {
         lotId: input.lotId,
         analysedCount: input.analysedCount,
-        failedCount: input.failedCount,
+        // Les échecs ne sont plus annoncés à l'utilisateur.
+        failedCount: 0,
       },
       // Stable : un rejeu du même lot ne produit pas une seconde
       // notification (§7.2, et défaut de la route supprimée au lot 0).

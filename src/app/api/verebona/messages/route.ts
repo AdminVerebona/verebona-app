@@ -13,6 +13,7 @@ import { SessionService } from '@/lib/session-service';
 import { rateLimiter, getClientIp } from '@/lib/rate-limiter';
 import { ensureMigrations } from '@/db';
 import { getEntitlements } from '@/services/entitlements.service';
+import { refuserSiPasDIA } from '@/lib/write-access-guard';
 import {
   runAssistant,
   getAssistantConfig,
@@ -61,6 +62,14 @@ export async function POST(req: NextRequest) {
 
   // 4. Éligibilité IA via l'existant (source de vérité serveur — §15.1).
   const entitlements = await getEntitlements(accountId);
+
+  // Essai terminé ou abonnement absent : l'assistant appelle un modèle, il
+  // est refusé comme les autres traitements IA. Même réponse que les routes
+  // d'écriture — le client l'affiche dans la fenêtre de fin d'essai.
+  if (!entitlements.canWrite) {
+    const refus = await refuserSiPasDIA(accountId);
+    if (refus) return refus;
+  }
 
   const input: AssistantRequestInput = {
     accountId,

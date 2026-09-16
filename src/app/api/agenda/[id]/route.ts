@@ -1,3 +1,4 @@
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaItemById } from '@/services/agenda/AgendaQueryService';
@@ -54,6 +55,9 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     const { id: rawId } = await context.params;
     const id = parseInt(rawId, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
+
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const body = await req.json();
     const item = await updateAgendaItem(id, body, accountId);

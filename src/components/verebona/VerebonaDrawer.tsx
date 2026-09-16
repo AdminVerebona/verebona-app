@@ -31,16 +31,47 @@ export interface VerebonaDrawerProps {
 
 export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawerProps) {
   const [open, setOpen] = useState(false);
-  const { garder } = useWriteGuard();
+  const { garder, signalerRefus } = useWriteGuard();
 
   const [dimmed, setDimmed] = useState(false);
   const dimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const v = useVerebona(pageContext);
+  const v = useVerebona(pageContext, {
+    // Refus serveur malgré la garde (droits pas encore connus du client) :
+    // on ferme le tiroir pour laisser la fenêtre de fin d'essai lisible.
+    onWriteBlocked: (info) => {
+      setOpen(false);
+      signalerRefus(info);
+    },
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // TOUTE QUESTION PASSE PAR LA GARDE
+  //
+  // Seul le bouton flottant était gardé. Les autres entrées — barre de
+  // recherche, suggestions de l'accueil, centre d'aide, bouton « Envoyer »,
+  // choix de clarification — envoyaient la question sans contrôle.
+  //
+  // `envoyer` rend `false` quand la question est refusée : le champ de
+  // saisie garde alors son texte, qui n'est pas perdu.
+  // ══════════════════════════════════════════════════════════════════════
+  const envoyer = (texte: string): boolean => {
+    let autorise = false;
+    garder(() => { autorise = true; });
+    if (!autorise) {
+      setOpen(false);
+      return false;
+    }
+    void v.send(texte);
+    return true;
+  };
 
   // Ouverture programmée (bulle d'accueil, centre d'aide…), avec question optionnelle.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ question?: string }>).detail;
+      let autorise = false;
+      garder(() => { autorise = true; });
+      if (!autorise) return;
       setOpen(true);
       // La barre de recherche n'ouvre le tiroir qu'à « Entrée », avec une
       // question complète : elle part donc directement au modèle.
@@ -52,7 +83,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
     window.addEventListener('verebona:open', handler);
     return () => window.removeEventListener('verebona:open', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v.send]);
+  }, [v.send, garder]);
 
   // Fondu du déclencheur pendant le scroll du contenu principal.
   useEffect(() => {
@@ -111,20 +142,20 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
 
         <div className="flex-1 overflow-hidden" aria-live="polite">
           {v.messages.length === 0 ? (
-            <VerebonaSuggestions suggestions={suggestions} onPick={(label) => v.send(label)} />
+            <VerebonaSuggestions suggestions={suggestions} onPick={(label) => { envoyer(label); }} />
           ) : (
             <VerebonaConversation
               messages={v.messages}
               isLoading={v.isLoading}
               onFeedback={v.sendFeedback}
-              onClarify={(label) => v.send(label)}
+              onClarify={(label) => { envoyer(label); }}
             />
           )}
         </div>
 
         <VerebonaComposer
           isLoading={v.isLoading}
-          onSend={v.send}
+          onSend={envoyer}
           onCancel={v.cancel}
         />
       </DrawerContent>

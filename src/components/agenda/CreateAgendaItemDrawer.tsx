@@ -29,6 +29,8 @@ import { TimePicker } from "@/components/ui/time-picker";
 import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
+import { useWriteGuard } from "@/contexts/WriteGuardContext";
+import { isWriteBlockedCode } from "@/lib/write-blocked";
 
 interface Asset {
   id: number;
@@ -69,6 +71,24 @@ export function CreateAgendaItemDrawer({
   prefilledTitle,
   prefilledStartDate,
 }: Props) {
+  // ══════════════════════════════════════════════════════════════════════
+  // GARDE À L'OUVERTURE, DANS LE TIROIR LUI-MÊME
+  //
+  // Six écrans ouvrent ce tiroir : le « + » (bureau et mobile), la page
+  // Agenda, l'onglet Agenda d'un bien, l'accueil, les événements liés d'un
+  // document. Seuls deux d'entre eux gardaient le clic. Placer la garde ici
+  // couvre tous les appelants, présents et futurs.
+  // ══════════════════════════════════════════════════════════════════════
+  const { garder, estBloque } = useWriteGuard();
+  const bloque = open && estBloque();
+  useEffect(() => {
+    if (!open) return;
+    let autorise = false;
+    garder(() => { autorise = true; });
+    if (!autorise) onClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   const [title, setTitle] = useState(prefilledTitle ?? "");
   const [description, setDescription] = useState("");
   const [startDate, setStartDate] = useState(prefilledStartDate ?? "");
@@ -237,6 +257,12 @@ export function CreateAgendaItemDrawer({
       onMutated();
       onClose();
     } catch (err: any) {
+      // Refus de droits : la fenêtre partagée est déjà ouverte par
+      // `api-client`. Le tiroir se ferme pour la laisser lisible.
+      if (err?.status === 403 && isWriteBlockedCode(err?.code)) {
+        handleClose();
+        return;
+      }
       setError(err?.message || "Erreur lors de la création");
     } finally {
       setSaving(false);
@@ -244,7 +270,7 @@ export function CreateAgendaItemDrawer({
   };
 
   return (
-    <Sheet open={open} onOpenChange={handleClose}>
+    <Sheet open={open && !bloque} onOpenChange={handleClose}>
       <SheetContent className="w-full sm:max-w-[480px] overflow-y-auto">
         <div className="px-6">
           <SheetHeader>

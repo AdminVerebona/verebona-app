@@ -41,6 +41,12 @@ export async function GET(
     const sql = db.$client;
 
     // All queries in parallel
+    //
+    // ⚠️ `document_date` est de type DATE. Le mêler à du texte dans COALESCE
+    // faisait échouer la requête des documents (« COALESCE types date and
+    // text cannot be matched ») — et avec elle toute la vue d'ensemble :
+    // « Impossible de charger la vue d'ensemble ». Les deux côtés sont
+    // désormais convertis en texte (AAAA-MM-JJ… : l'ordre est conservé).
     const [agendaRows, docs, countersRow] = await Promise.all([
       // Agenda items linked to this asset via agenda_asset_links (excludes cancelled)
       sql<{ id: number; title: string; start_date: string | null; end_date: string | null; manual_status: string | null }[]>`
@@ -56,7 +62,7 @@ export async function GET(
         SELECT id, original_filename, retained_title, document_type, document_date
         FROM asset_files
         WHERE asset_id = ${assetId} AND deleted_at IS NULL AND upload_status = 'COMPLETED'
-        ORDER BY COALESCE(document_date, uploaded_at::text) DESC NULLS LAST
+        ORDER BY COALESCE(document_date::text, uploaded_at::text) DESC NULLS LAST
         LIMIT 3
       `,
       // All counts in a single query

@@ -179,13 +179,13 @@ function restrictedDecision(status: string): Decision {
       allowed: false,
       reason: 'TRIAL_EXPIRED',
       message:
-        "Votre essai gratuit est termine. Vos donnees sont conservees : choisissez une offre pour reprendre l'ajout et la modification.",
+        "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
     };
   }
   return {
     allowed: false,
     reason: 'SUBSCRIPTION_REQUIRED',
-    message: 'Un abonnement actif est necessaire pour effectuer cette action.',
+    message: 'Un abonnement actif est nécessaire pour effectuer cette action.',
   };
 }
 
@@ -235,8 +235,8 @@ export async function canModifyAssets(accountId: number, currentCount: number): 
       limit: ent.quotas.maxAssets,
       message:
         `Votre compte contient ${currentCount} biens alors que ${planLabel(ent.plan)} en autorise ` +
-        `${ent.quotas.maxAssets}. Vos biens restent consultables et exportables. Pour les modifier a ` +
-        `nouveau, supprimez-en ou choisissez une offre superieure.`,
+        `${ent.quotas.maxAssets}. Vos biens restent consultables et exportables. Pour les modifier à ` +
+        `nouveau, supprimez-en ou choisissez une offre supérieure.`,
     };
   }
   return { allowed: true };

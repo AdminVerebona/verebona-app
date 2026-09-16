@@ -28,7 +28,8 @@ const CONTEXTE = read('src/contexts/WriteGuardContext.tsx');
 describe('deux discours selon la situation', () => {
   it('un essai terminé invite à choisir, pas à monter en gamme', () => {
     expect(DIALOGUE).toContain("Choisissez l&apos;offre qui vous convient");
-    expect(DIALOGUE).toContain('Voir les offres');
+    // Même libellé que le bandeau de fin d'essai.
+    expect(DIALOGUE).toContain('Choisir une offre');
   });
 
   it('un quota atteint garde l’argumentaire Premium', () => {

@@ -95,7 +95,7 @@ const templates = [
       `<p style="margin:0 0 20px; font-size:15px; line-height:1.6; color:#4B5563;">
          Pour continuer sans interruption, choisissez votre offre en quelques instants.
        </p>`,
-      'Choisir mon abonnement',
+      'Choisir une offre',
     ),
     placeholders: JSON.stringify(['firstName', 'trialEndsAt', 'offersUrl']),
   },

@@ -37,6 +37,10 @@ export const WRITE_BLOCKED_CODES = [
   'ASSET_LIMIT_REACHED',
 ] as const;
 
+/** Message de fin d'essai — le meme partout, client et serveur. */
+export const TRIAL_EXPIRED_MESSAGE =
+  "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.";
+
 export type WriteBlockedCode = (typeof WRITE_BLOCKED_CODES)[number];
 
 export interface WriteBlockedInfo {
@@ -74,7 +78,7 @@ export function parseWriteBlocked(body: unknown): WriteBlockedInfo | null {
 function defaultMessage(code: WriteBlockedCode): string {
   switch (code) {
     case 'TRIAL_EXPIRED':
-      return "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.";
+      return TRIAL_EXPIRED_MESSAGE;
     case 'SUBSCRIPTION_REQUIRED':
       return 'Un abonnement actif est nécessaire pour effectuer cette action.';
     case 'PREMIUM_REQUIRED':
@@ -103,13 +107,40 @@ export function writeBlockedTitle(code: string): string {
 }
 
 /**
+ * Evenement global : un refus de droits vient d'etre constate.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * UNE SEULE FENETRE, QUEL QUE SOIT L'APPELANT
+ *
+ * Le refus etait annonce par un bandeau (`toast`) chez certains appelants,
+ * par la fenetre de `WriteGuardContext` chez d'autres, et pas du tout
+ * ailleurs — un 403 finissait en « Erreur lors de l'ajout du document ».
+ *
+ * L'evenement permet a n'importe quel module — y compris `api-client`, qui
+ * n'est pas un composant React — de demander la fenetre. `WriteGuardProvider`
+ * l'ecoute et l'ouvre.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export const WRITE_BLOCKED_EVENT = 'write-blocked';
+
+/** Vrai quand `WriteGuardProvider` est monte et ecoute l'evenement. */
+let fenetreDisponible = false;
+export function setWriteBlockedListenerMounted(monte: boolean): void {
+  fenetreDisponible = monte;
+}
+
+/**
  * Affiche le refus avec son action de deblocage.
  *
- * Utilise lorsque l'appelant n'a pas de fenetre dediee a proposer — le
- * message reste visible et actionnable, ce qui vaut toujours mieux qu'un
- * echec muet.
+ * Ouvre la fenetre partagee quand elle est montee ; sinon, repli sur un
+ * bandeau — le message reste visible et actionnable, ce qui vaut toujours
+ * mieux qu'un echec muet.
  */
 export function notifyWriteBlocked(info: WriteBlockedInfo): void {
+  if (typeof window !== 'undefined' && fenetreDisponible) {
+    window.dispatchEvent(new CustomEvent<WriteBlockedInfo>(WRITE_BLOCKED_EVENT, { detail: info }));
+    return;
+  }
   toast.error(info.message, {
     duration: 8000,
     action: {
@@ -119,4 +150,23 @@ export function notifyWriteBlocked(info: WriteBlockedInfo): void {
       },
     },
   });
+}
+
+/**
+ * Erreur levee par un appelant qui a deja annonce le refus.
+ *
+ * Permet au `catch` englobant de ne pas ajouter un second message generique
+ * (« Erreur lors de l'ajout du document ») par-dessus la fenetre.
+ */
+export class WriteBlockedError extends Error {
+  readonly info: WriteBlockedInfo;
+  constructor(info: WriteBlockedInfo) {
+    super(info.message);
+    this.name = 'WriteBlockedError';
+    this.info = info;
+  }
+}
+
+export function isWriteBlockedError(e: unknown): e is WriteBlockedError {
+  return e instanceof Error && e.name === 'WriteBlockedError';
 }

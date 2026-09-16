@@ -29,10 +29,15 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
-import type { WriteBlockedInfo } from '@/lib/write-blocked';
+import {
+  TRIAL_EXPIRED_MESSAGE,
+  WRITE_BLOCKED_EVENT,
+  setWriteBlockedListenerMounted,
+  type WriteBlockedInfo,
+} from '@/lib/write-blocked';
 
 type Quota = 'assets' | 'documents';
 
@@ -56,9 +61,29 @@ interface WriteGuardValue {
 const Contexte = createContext<WriteGuardValue | null>(null);
 
 export function WriteGuardProvider({ children }: { children: React.ReactNode }) {
-  const { entitlements, isLoading, isRestricted } = useEntitlements();
+  const { entitlements, isLoading, isRestricted, refresh } = useEntitlements();
   const [info, setInfo] = useState<WriteBlockedInfo | null>(null);
   const [open, setOpen] = useState(false);
+
+  // ── Refus constatés hors d'un composant (api-client, dépôt de fichier…) ──
+  // Tout 403 de droits arrive ici et ouvre la même fenêtre qu'un clic gardé.
+  useEffect(() => {
+    const onBlocked = (e: Event) => {
+      const recu = (e as CustomEvent<WriteBlockedInfo>).detail;
+      if (!recu) return;
+      setInfo(recu);
+      setOpen(true);
+      // Le serveur vient de dire que les droits ont changé : on les relit
+      // pour que les prochains clics soient gardés sans aller-retour.
+      void refresh();
+    };
+    window.addEventListener(WRITE_BLOCKED_EVENT, onBlocked);
+    setWriteBlockedListenerMounted(true);
+    return () => {
+      window.removeEventListener(WRITE_BLOCKED_EVENT, onBlocked);
+      setWriteBlockedListenerMounted(false);
+    };
+  }, [refresh]);
 
   const essaiExpire = entitlements?.trial.status === 'expired';
 
@@ -70,11 +95,19 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       // chargement — et le serveur tranchera de toute façon.
       if (isLoading) return null;
 
+      // Droits jamais obtenus (session ouverte après le montage, réseau…) :
+      // on laisse passer — le serveur refusera et la fenêtre s'ouvrira via
+      // `WRITE_BLOCKED_EVENT` — mais on relance la lecture pour la suite.
+      if (!entitlements) {
+        setTimeout(() => { void refresh(); }, 0);
+        return null;
+      }
+
       if (isRestricted || entitlements?.canWrite === false) {
         return {
           code: essaiExpire ? 'TRIAL_EXPIRED' : 'SUBSCRIPTION_REQUIRED',
           message: essaiExpire
-            ? "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification."
+            ? TRIAL_EXPIRED_MESSAGE
             : 'Un abonnement actif est nécessaire pour effectuer cette action.',
         };
       }
@@ -94,7 +127,7 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       }
       return null;
     },
-    [entitlements, essaiExpire, isLoading, isRestricted],
+    [entitlements, essaiExpire, isLoading, isRestricted, refresh],
   );
 
   const valeur = useMemo<WriteGuardValue>(

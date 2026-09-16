@@ -8,6 +8,7 @@
  * par le serveur (§27.1).
  */
 import { useCallback, useRef, useState } from 'react';
+import { parseWriteBlocked, type WriteBlockedInfo } from '@/lib/write-blocked';
 
 export interface VerebonaAction {
   actionId: string;
@@ -46,7 +47,14 @@ function newId(): string {
     : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-export function useVerebona(pageContext?: Record<string, string>) {
+export interface UseVerebonaOptions {
+  /** Appelé quand le serveur refuse la question pour une raison de droits. */
+  onWriteBlocked?: (info: WriteBlockedInfo) => void;
+}
+
+export function useVerebona(pageContext?: Record<string, string>, options: UseVerebonaOptions = {}) {
+  const onWriteBlockedRef = useRef(options.onWriteBlocked);
+  onWriteBlockedRef.current = options.onWriteBlocked;
   const [state, setState] = useState<UseVerebonaState>({ messages: [], isLoading: false, error: null });
   const abortRef = useRef<AbortController | null>(null);
 
@@ -71,6 +79,19 @@ export function useVerebona(pageContext?: Record<string, string>) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        // Refus de droits (essai terminé) : la question n'a pas été posée.
+        // On la retire du fil plutôt que d'afficher une erreur technique.
+        const refus = res.status === 403 ? parseWriteBlocked(err) : null;
+        if (refus) {
+          setState((s) => ({
+            ...s,
+            messages: s.messages.filter((m) => m.id !== userMsg.id),
+            isLoading: false,
+            error: null,
+          }));
+          onWriteBlockedRef.current?.(refus);
+          return;
+        }
         setState((s) => ({ ...s, isLoading: false, error: err?.error?.message ?? 'Erreur' }));
         return;
       }

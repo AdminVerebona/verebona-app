@@ -10,6 +10,7 @@ import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -55,6 +56,10 @@ export function AssetAgendaTab({ assetId }: Props) {
   const [includeCancelled, setIncludeCancelled] = useState(false);
   const [selectedItem, setSelectedItem] = useState<AgendaItemFull | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // Garde au clic (en plus de celle du tiroir) : le chargement dynamique du
+  // tiroir ne doit pas précéder la fenêtre de fin d'essai.
+  const { garder } = useWriteGuard();
+  const ouvrirCreation = () => garder(() => setShowCreate(true));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -110,7 +115,7 @@ export function AssetAgendaTab({ assetId }: Props) {
           </button>
         </div>
         {items.length > 0 && (
-          <Button variant="secondary" size="sm" onClick={() => setShowCreate(true)} className="btn-add">
+          <Button variant="secondary" size="sm" onClick={ouvrirCreation} className="btn-add">
             <Plus className="h-4 w-4 btn-add-plus-icon" /> Ajouter
           </Button>
         )}
@@ -131,7 +136,7 @@ export function AssetAgendaTab({ assetId }: Props) {
               <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun élément pour le moment</p>
               <p className="text-xs text-[color:var(--text-muted)] mt-0.5">Créez votre premier élément d'agenda</p>
             </div>
-            <Button onClick={() => setShowCreate(true)} className="btn-add px-4 flex-shrink-0">
+            <Button onClick={ouvrirCreation} className="btn-add px-4 flex-shrink-0">
               <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
               Ajouter un élément
             </Button>
