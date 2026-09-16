@@ -34,8 +34,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
-import { Loader2 } from 'lucide-react';
+import { LayoutGrid, List, Loader2 } from 'lucide-react';
+import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import {
   TO_PROCESS_NO_FILTER_RESULT,
@@ -56,6 +56,7 @@ interface PageResponse {
 
 export function ToProcessQueue() {
   const router = useRouter();
+  const { setBreadcrumbs } = useBreadcrumb();
   // §8.2 / ATP-02 : la vue par défaut est « Par priorité » à chaque visite.
   const [orderMode, setOrderMode] = useState<OrderMode>('BY_PRIORITY');
   const [presentation, setPresentation] = useState<Presentation>('CARDS');
@@ -96,6 +97,10 @@ export function ToProcessQueue() {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    setBreadcrumbs([{ label: 'À traiter' }]);
+  }, [setBreadcrumbs]);
 
   useEffect(() => {
     void load(orderMode);
@@ -172,63 +177,67 @@ export function ToProcessQueue() {
   const count = page?.shown ?? 0;
 
   return (
-    <div className="space-y-4">
-      <header className="space-y-3">
-        <h1 className="text-xl font-semibold">À traiter</h1>
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      {/* En-tête au format des autres pages : titre, décompte, commandes à
+          droite (cf. « Mon agenda », « Mes biens »). */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="min-w-0">
+          <h1 className="text-xl md:text-3xl font-bold whitespace-nowrap">À traiter</h1>
+          <p className="text-muted-foreground mt-1">
+            {loading && !page
+              ? '\u00a0'
+              : count === 0
+                ? 'Rien à traiter pour le moment'
+                : `${count} ${count > 1 ? 'actions' : 'action'}`}
+          </p>
+        </div>
+      </div>
 
-        {/* §17.1 : un message global en haut d'écran, aucun dans les cartes. */}
-        <p className="text-sm text-muted-foreground">
+      {/* §17.1 : un message global en haut d'écran, aucun dans les cartes. */}
+      {count > 0 && (
+        <p className="text-sm text-muted-foreground -mt-2">
           {toProcessHeadline(count, orderMode)}
         </p>
+      )}
 
-        {/* Rien à trier ni à présenter quand la file est vide : les bascules
-            n'offraient que deux choix menant au même écran vide. */}
-        {count > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex rounded-md border p-0.5" role="group" aria-label="Organisation">
-            <Button
-              size="sm"
-              variant={orderMode === 'BY_PRIORITY' ? 'secondary' : 'ghost'}
-              className="h-8"
+      {/* Bascules : même composant visuel que les vues de l'agenda. */}
+      {count > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex rounded-md border overflow-hidden" role="group" aria-label="Organisation">
+            <button
+              className={`px-3 py-1.5 text-sm ${orderMode === 'BY_PRIORITY' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
               aria-pressed={orderMode === 'BY_PRIORITY'}
               onClick={() => setOrderMode('BY_PRIORITY')}
             >
               Par priorité
-            </Button>
-            <Button
-              size="sm"
-              variant={orderMode === 'BY_ACTION' ? 'secondary' : 'ghost'}
-              className="h-8"
+            </button>
+            <button
+              className={`px-3 py-1.5 text-sm ${orderMode === 'BY_ACTION' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
               aria-pressed={orderMode === 'BY_ACTION'}
               onClick={() => setOrderMode('BY_ACTION')}
             >
               Par action
-            </Button>
+            </button>
           </div>
 
-          <div className="flex rounded-md border p-0.5" role="group" aria-label="Présentation">
-            <Button
-              size="sm"
-              variant={presentation === 'CARDS' ? 'secondary' : 'ghost'}
-              className="h-8"
+          <div className="flex rounded-md border overflow-hidden" role="group" aria-label="Présentation">
+            <button
+              className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${presentation === 'CARDS' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
               aria-pressed={presentation === 'CARDS'}
               onClick={() => choosePresentation('CARDS')}
             >
-              Cartes
-            </Button>
-            <Button
-              size="sm"
-              variant={presentation === 'LIST' ? 'secondary' : 'ghost'}
-              className="h-8"
+              <LayoutGrid className="h-3.5 w-3.5" aria-hidden /> Cartes
+            </button>
+            <button
+              className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${presentation === 'LIST' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
               aria-pressed={presentation === 'LIST'}
               onClick={() => choosePresentation('LIST')}
             >
-              Liste
-            </Button>
+              <List className="h-3.5 w-3.5" aria-hidden /> Liste
+            </button>
           </div>
         </div>
-        )}
-      </header>
+      )}
 
       {loading && !page ? (
         <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">

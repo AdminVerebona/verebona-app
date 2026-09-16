@@ -31,7 +31,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
 import {
   Drawer,
   DrawerContent,
@@ -102,13 +101,21 @@ export function DocumentsFilterDrawer({
 
   return (
     <>
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="h-9">
-        <SlidersHorizontal className="mr-1.5 h-4 w-4" aria-hidden />
-        Tri &amp; filtres
+      {/* Même bouton que « Filtres » de l'agenda et des biens : variante
+          outline, pastille bleue en absolu. La cohérence visuelle compte plus
+          que la nuance de libellé — d'où « Filtres » et non « Tri & filtres ». */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+        className="btn-filter relative"
+      >
+        <SlidersHorizontal className="btn-filter-sliders-icon h-4 w-4" aria-hidden />
+        Filtres
         {count > 0 && (
-          <Badge variant="secondary" className="ml-1.5">
+          <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[#3b82f6] text-white text-[9px] font-bold flex items-center justify-center">
             {count}
-          </Badge>
+          </span>
         )}
       </Button>
 

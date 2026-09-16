@@ -27,9 +27,8 @@ export const metadata = {
 };
 
 export default function ATraiterPage() {
-  return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-6">
-      <ToProcessQueue />
-    </main>
-  );
+  // Pas de conteneur propre : `DashboardLayout` fournit déjà largeur, marges
+  // et fil d'Ariane. En ajouter un ici décalait ces deux pages par rapport à
+  // toutes les autres.
+  return <ToProcessQueue />;
 }

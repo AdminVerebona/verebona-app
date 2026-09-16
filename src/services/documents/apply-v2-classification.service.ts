@@ -220,28 +220,44 @@ export async function applyV2Classification(
   }
 
   // ── Persistance, une seule écriture ─────────────────────────────────────
+  //
+  // ══════════════════════════════════════════════════════════════════════
+  // LA VERSION S'ÉCRIT MÊME QUAND RIEN NE CHANGE
+  //
+  // Première version de ce service : l'écriture était conditionnée à un
+  // changement de Rubrique ou de Type. Un document reclassé À L'IDENTIQUE ne
+  // voyait donc pas sa `classification_referential_version` mise à jour — et
+  // ressortait « à retraiter » au passage suivant, indéfiniment.
+  //
+  // Relevé en préproduction : cinq documents passaient à 2.1.0, trois
+  // restaient bloqués à 2.0.0 en consommant une analyse à chaque tour, sans
+  // qu'aucune erreur ne soit levée.
+  //
+  // La version ne dit pas « la valeur a changé », elle dit « ce document a été
+  // examiné sous ce référentiel » (§11.6). Une confirmation est un examen.
+  // ══════════════════════════════════════════════════════════════════════
   const changed =
     next.rubricCode !== current.rubricCode ||
     next.documentTypeCode !== current.documentTypeCode;
 
-  if (changed) {
-    await db
-      .update(assetFiles)
-      .set({
-        rubricCode: next.rubricCode,
-        documentTypeCode: next.documentTypeCode,
-        rubricOrigin: next.rubricOrigin,
-        typeOrigin: next.typeOrigin,
-        rubricUserValidated: next.rubricUserValidated,
-        typeUserValidated: next.typeUserValidated,
-        rubricConfidence: proposal ? String(proposal.confidence) : null,
-        typeConfidenceV2: proposal ? String(proposal.confidence) : null,
-        classificationReferentialVersion: REFERENTIAL_VERSION,
-        classificationUpdatedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(assetFiles.id, input.fileId));
-  }
+  await db
+    .update(assetFiles)
+    .set({
+      rubricCode: next.rubricCode,
+      documentTypeCode: next.documentTypeCode,
+      rubricOrigin: next.rubricOrigin,
+      typeOrigin: next.typeOrigin,
+      rubricUserValidated: next.rubricUserValidated,
+      typeUserValidated: next.typeUserValidated,
+      rubricConfidence: proposal ? String(proposal.confidence) : null,
+      typeConfidenceV2: proposal ? String(proposal.confidence) : null,
+      classificationReferentialVersion: REFERENTIAL_VERSION,
+      // L'horodatage ne bouge que sur un vrai changement : il sert à savoir
+      // quand le classement a été MODIFIÉ, pas quand il a été confirmé.
+      ...(changed ? { classificationUpdatedAt: new Date() } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(assetFiles.id, input.fileId));
 
   // ── Actions : créer, ou fermer ce qui n'a plus lieu d'être ──────────────
   await syncActionsForOutputs(input.accountId, input.fileId, outputs);

@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { ChevronDown, FileText, Image as ImageIcon, Loader2, Plus } from 'lucide-react';
+import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
@@ -52,7 +53,11 @@ const UnifiedDocumentDialog = dynamic(
   ),
   { ssr: false },
 );
-import { MICROCOPY, myDocumentsHeadline, ASSET_DOCUMENTS_HEADLINE, NO_DOCUMENTS_HEADLINE } from '@/lib/referential/v2/microcopy';
+import {
+  ASSET_DOCUMENTS_HEADLINE,
+  MICROCOPY,
+  myDocumentsHeadline,
+} from '@/lib/referential/v2/microcopy';
 import {
   RubricClassificationDrawer,
   type DocumentClassificationDraft,
@@ -201,6 +206,7 @@ function RubricSection({
 }
 
 export function DocumentsByRubric({ assetId }: { assetId?: number }) {
+  const { setBreadcrumbs } = useBreadcrumb();
   const [page, setPage] = useState<PageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingGroup, setLoadingGroup] = useState<string | null>(null);
@@ -235,6 +241,11 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
       setLoadingGroup(null);
     }
   }, [query]);
+
+  useEffect(() => {
+    // Dans l'onglet d'un bien, le fil d'Ariane est posé par la page du bien.
+    if (!assetId) setBreadcrumbs([{ label: 'Mes documents' }]);
+  }, [assetId, setBreadcrumbs]);
 
   useEffect(() => {
     void load();
@@ -293,39 +304,72 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
     setDrawerOpen(true);
   };
 
-  if (loading && !page) {
-    return (
-      <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-        Chargement des documents…
-      </div>
-    );
-  }
+  const total = page?.total ?? 0;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <DocumentsFilterDrawer
-          filters={filters}
-          onApply={applyFilters}
-          assetOptions={assetOptions}
-          typeOptions={page?.typeOptions ?? []}
-          hideAssetFilter={!!assetId}
-        />
-        <Button size="sm" className="h-9" onClick={() => setUploadOpen(true)}>
-          <Plus className="mr-1.5 h-4 w-4" aria-hidden />
-          Ajouter
-        </Button>
-      </div>
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      {/* En-tête au format des autres pages : titre, décompte, commandes à
+          droite. Masqué dans l'onglet d'un bien, où la page porte déjà son
+          propre titre (§4.1 : mêmes composants, seul le contexte change). */}
+      {!assetId && (
+        <div className="flex items-center justify-between mb-6">
+          <div className="min-w-0">
+            <h1 className="text-xl md:text-3xl font-bold whitespace-nowrap">Mes documents</h1>
+            <p className="text-muted-foreground mt-1">
+              {loading && !page
+                ? '\u00a0'
+                : total === 0
+                  ? 'Aucun document pour le moment'
+                  : `${total} ${total > 1 ? 'documents' : 'document'}`}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <DocumentsFilterDrawer
+              filters={filters}
+              onApply={applyFilters}
+              assetOptions={assetOptions}
+              typeOptions={page?.typeOptions ?? []}
+              hideAssetFilter={false}
+            />
+            <Button variant="outline" size="sm" onClick={() => setUploadOpen(true)} className="btn-add">
+              <Plus className="btn-add-plus-icon h-4 w-4" aria-hidden />
+              <span className="hidden sm:inline">Ajouter</span>
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Onglet d'un bien : les commandes seules, sans titre ni décompte. */}
+      {assetId && (
+        <div className="flex items-center justify-end gap-2">
+          <DocumentsFilterDrawer
+            filters={filters}
+            onApply={applyFilters}
+            assetOptions={assetOptions}
+            typeOptions={page?.typeOptions ?? []}
+            hideAssetFilter
+          />
+          <Button variant="outline" size="sm" onClick={() => setUploadOpen(true)} className="btn-add">
+            <Plus className="btn-add-plus-icon h-4 w-4" aria-hidden />
+            <span className="hidden sm:inline">Ajouter</span>
+          </Button>
+        </div>
+      )}
 
       {/* §17.3 — un message global, adapté au contexte et au nombre. */}
-      <p className="text-sm text-muted-foreground">
-        {page && page.total === 0
-          ? NO_DOCUMENTS_HEADLINE
-          : assetId
-            ? ASSET_DOCUMENTS_HEADLINE
-            : myDocumentsHeadline(page?.unfiledCount ?? 0)}
-      </p>
+      {total > 0 && (
+        <p className="text-sm text-muted-foreground -mt-2">
+          {assetId ? ASSET_DOCUMENTS_HEADLINE : myDocumentsHeadline(page?.unfiledCount ?? 0)}
+        </p>
+      )}
+
+      {loading && !page && (
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          Chargement des documents…
+        </div>
+      )}
 
       <div className="space-y-3">
         {page?.groups.map((group) => (

@@ -33,10 +33,8 @@ export const metadata = {
 };
 
 export default function DocumentsPage() {
-  return (
-    <main className="mx-auto w-full max-w-3xl px-4 py-6">
-      <h1 className="mb-4 text-xl font-semibold">Mes documents</h1>
-      <DocumentsByRubric />
-    </main>
-  );
+  // Pas de conteneur ni de titre ici : `DashboardLayout` fournit le cadre, et
+  // l'en-tête (titre, décompte, commandes) appartient au composant, qui est
+  // partagé avec l'onglet « Documents » d'un bien (§4.1).
+  return <DocumentsByRubric />;
 }
