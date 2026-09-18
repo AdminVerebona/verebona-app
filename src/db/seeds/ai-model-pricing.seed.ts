@@ -26,6 +26,12 @@
  *   npm run db:seed:pricing -- --dry-run
  * ══════════════════════════════════════════════════════════════════════════
  */
+// ⚠️ EN PREMIER : `@/db` lit `process.env.DATABASE_URL` au chargement du
+// module, et les imports ES sont évalués dans l'ordre de déclaration. Placé
+// après, ce chargement arriverait trop tard — le pilote se rabattrait sur ses
+// valeurs par défaut et échouerait sous le compte système courant, avec un
+// message qui n'évoque en rien une variable manquante.
+import '@/lib/load-env';
 import { pgClient } from '@/db';
 
 /** Micro-dollars par jeton = prix par million ÷ 1 000 000 × 1 000 000. */

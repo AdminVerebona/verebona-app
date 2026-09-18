@@ -26,6 +26,12 @@
  *   npm run db:seed:prompts
  *   npm run db:seed:prompts -- --dry-run   (n'écrit rien, affiche le plan)
  */
+// ⚠️ EN PREMIER : `@/db` lit `process.env.DATABASE_URL` au chargement du
+// module, et les imports ES sont évalués dans l'ordre de déclaration. Placé
+// après, ce chargement arriverait trop tard — le pilote se rabattrait sur ses
+// valeurs par défaut et échouerait sous le compte système courant, avec un
+// message qui n'évoque en rien une variable manquante.
+import '@/lib/load-env';
 import { createHash } from 'crypto';
 import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
