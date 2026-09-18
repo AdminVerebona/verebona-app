@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Bell, X, CheckCheck, Info, ArrowRightLeft, Trash2, UserPlus, Cpu, SendHorizonal, AlertTriangle } from 'lucide-react';
+import { Bell, X, CheckCheck, Info, ArrowRightLeft, Trash2, UserPlus, Cpu, SendHorizonal, AlertTriangle, CreditCard } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { createPortal } from 'react-dom';
@@ -226,7 +226,10 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
     return `/documents/${p.assetFileId}`;
   }
   // Quota / abonnement / parrainage → offres (cf. CDC §17).
-  if (type === 'ANALYSIS_QUOTA_90' || type === 'ANALYSIS_QUOTA_100' || type === 'REFERRAL_REWARD_GRANTED') {
+  if (
+    type === 'ANALYSIS_QUOTA_90' || type === 'ANALYSIS_QUOTA_100' || type === 'REFERRAL_REWARD_GRANTED'
+    || type === 'SUBSCRIPTION_ACTIVATED' || type === 'SUBSCRIPTION_CHANGED' || type === 'SUBSCRIPTION_RENEWED'
+  ) {
     return '/mon-compte/offres';
   }
   return null;
@@ -252,6 +255,10 @@ function getNotificationIcon(type: string) {
     case 'TRANSMISSION_ACCEPTED':
     case 'TRANSMISSION_REFUSED':
       return <SendHorizonal className="w-4 h-4 flex-shrink-0" />;
+    case 'SUBSCRIPTION_ACTIVATED':
+    case 'SUBSCRIPTION_CHANGED':
+    case 'SUBSCRIPTION_RENEWED':
+      return <CreditCard className="w-4 h-4 flex-shrink-0" />;
     default:
       return <Info className="w-4 h-4 flex-shrink-0" />;
   }

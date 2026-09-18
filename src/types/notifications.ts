@@ -47,6 +47,7 @@ export const NOTIFICATION_TYPES = {
   TRIAL_ENDING: 'TRIAL_ENDING',
   TRIAL_ENDED: 'TRIAL_ENDED',
   SUBSCRIPTION_RENEWED: 'SUBSCRIPTION_RENEWED',
+  SUBSCRIPTION_ACTIVATED: 'SUBSCRIPTION_ACTIVATED',
   SUBSCRIPTION_CHANGED: 'SUBSCRIPTION_CHANGED',
   SUBSCRIPTION_CANCELLATION_SCHEDULED: 'SUBSCRIPTION_CANCELLATION_SCHEDULED',
   SUBSCRIPTION_CANCELLED: 'SUBSCRIPTION_CANCELLED',
@@ -129,7 +130,20 @@ export interface NotificationPayloadMap {
   TRIAL_ENDING: { daysLeft?: number; endsAt?: string };
   TRIAL_ENDED: Record<string, never>;
   SUBSCRIPTION_RENEWED: { planCode?: string };
-  SUBSCRIPTION_CHANGED: { planCode?: string };
+  /** Première activation d'une offre payante (fin d'essai, réabonnement). */
+  SUBSCRIPTION_ACTIVATED: {
+    planCode: string;
+    planLabel: string;
+    billingPeriod?: 'monthly' | 'yearly' | null;
+  };
+  /** Changement d'offre d'un compte déjà abonné. */
+  SUBSCRIPTION_CHANGED: {
+    planCode: string;
+    planLabel: string;
+    previousPlanCode?: string;
+    previousPlanLabel?: string;
+    direction: 'upgrade' | 'downgrade' | 'lateral';
+  };
   SUBSCRIPTION_CANCELLATION_SCHEDULED: { effectiveAt?: string };
   SUBSCRIPTION_CANCELLED: Record<string, never>;
   ANALYSIS_QUOTA_90: { accountId: number; threshold: 90; includedConsumed: number; includedQuota: number; cta?: string; planCode?: string };

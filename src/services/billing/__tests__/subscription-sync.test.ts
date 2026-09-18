@@ -52,6 +52,9 @@ vi.mock('@/db', async () => {
   return { db };
 });
 
+const emit = vi.fn(async (_input?: Record<string, any>) => undefined);
+vi.mock('@/lib/notifications', () => ({ emit: (...a: unknown[]) => emit(...(a as [])) }));
+
 const markTrialConverted = vi.fn(async () => undefined);
 vi.mock('@/services/trial.service', () => ({ markTrialConverted: (...a: unknown[]) => markTrialConverted(...(a as [])) }));
 
@@ -116,6 +119,7 @@ beforeEach(() => {
   process.env.STRIPE_PRICE_PREMIUM_YEARLY = 'price_prem_y';
   process.env.STRIPE_PRICE_STANDARD_MONTHLY = 'price_std_m';
   process.env.STRIPE_PRICE_PREMIUM_DUO_MONTHLY = 'price_duo_m';
+  emit.mockClear();
   state.writes = [];
   state.subRow = { stripeSubscriptionId: null, firstBilledAt: null, contractConcludedAt: null };
   state.account = {
@@ -394,5 +398,49 @@ describe('syncPendingCheckoutForAccount — paiement jamais appliqué', () => {
     fakeStripe.checkout.sessions.retrieve.mockClear();
     expect(await syncPendingCheckoutForAccount(10)).toBe(false);
     expect(fakeStripe.checkout.sessions.retrieve).not.toHaveBeenCalled();
+  });
+});
+
+describe('notification de changement de statut du compte', () => {
+  const emissions = (): Array<Record<string, any>> =>
+    emit.mock.calls.map((c) => (c[0] ?? {}) as Record<string, any>);
+
+  it('annonce l’activation quand le compte n’avait aucune offre', async () => {
+    // Sortie d'essai : le compte était en statut NONE.
+    await syncSubscriptionFromStripe({ subscription: sub(), source: 'test' });
+    const e = emissions().find((x) => x.type === 'SUBSCRIPTION_ACTIVATED');
+    expect(e).toBeTruthy();
+    expect(e!.payload).toMatchObject({ planCode: 'PREMIUM', planLabel: 'Premium', billingPeriod: 'yearly' });
+    expect(e!.accountId).toBe(7);
+    expect(emissions().some((x) => x.type === 'SUBSCRIPTION_CHANGED')).toBe(false);
+  });
+
+  it('annonce une montée en gamme quand le compte était déjà abonné', async () => {
+    state.account = { ...state.account, planType: 'STANDARD', subscriptionStatus: 'ACTIVE', stripeSubscriptionId: 'sub_old' };
+    await syncSubscriptionFromStripe({ subscription: sub(), source: 'test' });
+    const e = emissions().find((x) => x.type === 'SUBSCRIPTION_CHANGED');
+    expect(e!.payload).toMatchObject({
+      planCode: 'PREMIUM', previousPlanCode: 'STANDARD', direction: 'upgrade',
+    });
+  });
+
+  it('n’annonce rien quand l’offre est inchangée', async () => {
+    state.account = { ...state.account, planType: 'PREMIUM', subscriptionStatus: 'ACTIVE', stripeSubscriptionId: 'sub_new' };
+    await syncSubscriptionFromStripe({ subscription: sub(), source: 'test' });
+    expect(emissions().filter((x) => String(x.type).startsWith('SUBSCRIPTION_'))).toHaveLength(0);
+  });
+
+  it('n’annonce rien à la fin d’un abonnement (autres notifications dédiées)', async () => {
+    state.account = { ...state.account, planType: 'PREMIUM', subscriptionStatus: 'ACTIVE', stripeSubscriptionId: 'sub_new' };
+    await syncSubscriptionFromStripe({ subscription: sub({ status: 'canceled' }), source: 'test' });
+    expect(emissions().filter((x) => String(x.type).startsWith('SUBSCRIPTION_'))).toHaveLength(0);
+  });
+
+  it('une notification ratée ne fait pas échouer la synchronisation', async () => {
+    emit.mockRejectedValueOnce(new Error('outbox indisponible'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const r = await syncSubscriptionFromStripe({ subscription: sub(), source: 'test' });
+    expect(r?.newPlanType).toBe('PREMIUM');
+    expect(writesTo(accounts)[0].values).toMatchObject({ subscriptionStatus: 'ACTIVE' });
   });
 });

@@ -426,6 +426,8 @@ async function applyTransitionEffects(
     console.error('[subscription-sync] historique non enregistré :', (e as Error).message);
   }
 
+  await notifierChangementDeStatut(result);
+
   const becomesPremium = PREMIUM_PLANS.includes(newPlanType) && !PREMIUM_PLANS.includes(oldPlanType);
   if (becomesPremium) {
     if (opts.notify && opts.premiumUntil) {
@@ -446,6 +448,99 @@ async function applyTransitionEffects(
     await enforceStandardLimits(accountId, ownerUserId).catch((e: Error) =>
       console.error('[subscription-sync] limites Standard non appliquées :', e.message),
     );
+  }
+}
+
+/** Libellé d'offre affiché au client. */
+const LIBELLE_OFFRE: Record<string, string> = {
+  STANDARD: 'Standard',
+  PREMIUM: 'Premium',
+  PREMIUM_DUO: 'Premium Duo',
+  PREMIUM_PRO: 'Premium Pro',
+};
+
+/** Rang des offres, pour distinguer une montée d'une baisse de gamme. */
+const RANG_OFFRE: Record<string, number> = {
+  STANDARD: 1,
+  PREMIUM: 2,
+  PREMIUM_DUO: 3,
+  PREMIUM_PRO: 4,
+};
+
+/** Statuts de compte qui signifient « une offre payante était en place ». */
+const STATUTS_AVEC_OFFRE = ['ACTIVE', 'PAST_DUE_GRACE', 'CANCELED'];
+
+/**
+ * Prévient le client que le statut de son compte a changé.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * DEUX MOMENTS DISTINCTS, DEUX MESSAGES
+ *
+ *   · activation — le compte n'avait aucune offre (essai terminé, compte
+ *     restreint, réabonnement) : « Votre compte a été activé avec une offre
+ *     Standard. » ;
+ *   · changement — le compte était déjà abonné et change d'offre :
+ *     « Votre compte a été upgradé vers une offre Premium. »
+ *
+ * Émis ici, et nulle part ailleurs : c'est le seul endroit qui connaisse à
+ * la fois l'état précédent et le nouvel état, quel que soit le chemin
+ * emprunté (webhook, retour de paiement, resynchronisation admin).
+ *
+ * La fin d'une offre a déjà ses propres notifications (résiliation,
+ * suspension, compte en lecture seule) : elle n'est pas traitée ici.
+ *
+ * Une notification ne doit jamais faire échouer une synchronisation
+ * d'abonnement : toute erreur est journalisée et ignorée.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+async function notifierChangementDeStatut(result: SubscriptionSyncResult): Promise<void> {
+  if (!result.isPaid) return;
+
+  const { accountId, oldPlanType, newPlanType, oldStatus, subscriptionId } = result;
+  const avaitUneOffre = STATUTS_AVEC_OFFRE.includes((oldStatus ?? '').toUpperCase());
+  const libelle = LIBELLE_OFFRE[newPlanType] ?? newPlanType;
+
+  try {
+    const { emit } = await import('@/lib/notifications');
+
+    if (!avaitUneOffre) {
+      await emit({
+        type: 'SUBSCRIPTION_ACTIVATED',
+        payload: {
+          planCode: newPlanType,
+          planLabel: libelle,
+          billingPeriod: result.billingPeriod,
+        },
+        accountId,
+        entityType: 'subscription',
+        entityId: subscriptionId,
+        // Une seule notification par abonnement et par offre activée, même
+        // si plusieurs chemins synchronisent le même paiement.
+        dedupeKey: `subscription:${subscriptionId}:activated:${newPlanType}`,
+      });
+      return;
+    }
+
+    if (oldPlanType === newPlanType) return;
+
+    const avant = RANG_OFFRE[oldPlanType] ?? 0;
+    const apres = RANG_OFFRE[newPlanType] ?? 0;
+    await emit({
+      type: 'SUBSCRIPTION_CHANGED',
+      payload: {
+        planCode: newPlanType,
+        planLabel: libelle,
+        previousPlanCode: oldPlanType,
+        previousPlanLabel: LIBELLE_OFFRE[oldPlanType] ?? oldPlanType,
+        direction: apres > avant ? 'upgrade' : apres < avant ? 'downgrade' : 'lateral',
+      },
+      accountId,
+      entityType: 'subscription',
+      entityId: subscriptionId,
+      dedupeKey: `subscription:${subscriptionId}:changed:${oldPlanType}:${newPlanType}`,
+    });
+  } catch (e) {
+    console.error('[subscription-sync] notification de changement de statut :', (e as Error).message);
   }
 }
 
