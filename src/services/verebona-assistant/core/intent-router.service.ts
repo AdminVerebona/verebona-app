@@ -37,6 +37,13 @@ const EXPORT = /\b(export|exporter|dossier|pdf|transmettre)\b/i;
 const SUPPLIER = /\b(fournisseur|prestataire|artisan|réparateur)\b/i;
 const AGENDA = /\b(agenda|rendez[- ]vous|planning|calendrier)\b/i;
 const DOC = /\b(document|facture|garantie|contrat|manuel|notice|certificat)\b/i;
+/**
+ * Motifs « bien » — ils manquaient, et `ACCOUNT_SEARCH_ASSET` n'apparaissait
+ * nulle part dans ce routeur : l'intention la plus centrale du produit n'était
+ * atteignable que par classification IA. Le §9.4 veut le déterministe d'abord,
+ * et un appel modèle pour reconnaître le mot « bien » est un appel de trop.
+ */
+const ASSET = /\b(bien|biens|propriété|propriétés|patrimoine|maison|maisons|appartement|appartements|logement|logements|immeuble|immeubles|terrain|terrains|résidence|résidences|véhicule|véhicules|voiture|voitures|moto|motos|bateau|bateaux|vélo|vélos|caravane)\b/i;
 const SUMMARY = /\b(résume|résumé|synthèse|fais le point|bilan|panorama)\b/i;
 const COMPARE = /\b(compare|comparer|différence|versus|par rapport)\b/i;
 const TIMELINE = /\b(historique|chronologie|timeline|au fil du temps|évolution)\b/i;
@@ -108,6 +115,9 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
   if (SUPPLIER.test(msg)) return R('ACCOUNT_SEARCH_SUPPLIER', 'probable', 'recherche fournisseur', true);
   if (AGENDA.test(msg) || DEADLINE.test(msg)) return R('ACCOUNT_SEARCH_AGENDA', 'probable', 'recherche agenda', true);
   if (DOC.test(msg)) return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'recherche document', true);
+  // En dernier des motifs par type : un message qui cite un document ET un bien
+  // porte le plus souvent sur le document (« la facture de la maison »).
+  if (ASSET.test(msg)) return R('ACCOUNT_SEARCH_ASSET', 'probable', 'recherche bien', true);
 
   // Étape 9 — Escalade classification IA (dernier recours — §9.4.9)
   return { kind: 'needs_classification', normalized: msg };

@@ -64,7 +64,27 @@ const DOC_FALLBACKS = ['gemini-3.5-flash', 'gemini-2.5-pro'];
  * Famille 2 — assistant. CDC Assistant §15.11 : alias `assistant-default` et
  * `assistant-escalation`. §31.2 : « aucune utilisation d'un modèle Pro ».
  */
-const ASSISTANT_PRIMARY = 'gemini-2.5-flash-lite';   // alias assistant-default
+/**
+ * ⚠️ MODÈLE CHANGÉ APRÈS CONSTAT EN PRÉPRODUCTION — 18/09/2026.
+ *
+ * `gemini-2.5-flash-lite`, valeur retenue par le CDC Assistant du 16/07/2026,
+ * renvoie désormais :
+ *
+ *   404 — This model models/gemini-2.5-flash-lite is no longer available to
+ *   new users. Please update your code to use models/gemini-3.5-flash-lite.
+ *
+ * Le CDC ne fige pas ce nom : il demande « le modèle stable le moins coûteux
+ * compatible avec le besoin », et note la valeur du jour en bas de page. La
+ * remplacer est donc conforme, et ne pas la remplacer rendrait l'assistant
+ * inutilisable pour tout compte récent.
+ *
+ * `gemini-3.5-flash-lite` figure au catalogue public tarifaire : le contrôle de
+ * démarrage passera après un `/api/cron/ai/refresh-model-pricing`.
+ *
+ * L'escalade reste `gemini-3.1-flash-lite`, qui répond toujours — et aucun
+ * modèle Pro n'entre ici, conformément au §31.2.
+ */
+const ASSISTANT_PRIMARY = 'gemini-3.5-flash-lite';   // alias assistant-default
 const ASSISTANT_FALLBACKS = ['gemini-3.1-flash-lite']; // alias assistant-escalation
 
 /** Famille 3 — gouvernance : raisonnement sur des prompts, hors chemin utilisateur. */

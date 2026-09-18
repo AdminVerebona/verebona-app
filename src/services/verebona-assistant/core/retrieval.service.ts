@@ -17,6 +17,7 @@ import type { RetrievedSource } from '../types/sources';
 import { getAssistantConfig } from '../config/assistant-config';
 import { getEnabledAdapters } from '../registries/retrieval-adapter-registry';
 import { resolveEntities } from './entity-resolution.service';
+import { isInventoryQuery } from './query-terms';
 import type { ConversationRefs } from '../types/machine';
 
 export async function retrieve(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]> {
@@ -60,6 +61,29 @@ export async function retrieve(route: IntentRoute, input: AssistantRequestInput)
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // 2 bis. QUESTION D'INVENTAIRE — §13.4
+  //
+  // « j'ai quoi comme biens ? » ne nomme aucune entité. Les adaptateurs
+  // cherchant par correspondance de mots, ils passaient la phrase entière dans
+  // un `ILIKE` et ne ramenaient rien : l'assistant répondait « je n'ai pas
+  // assez d'éléments » à la question la plus naturelle qu'on puisse lui poser.
+  //
+  // Le cas se tranche sans modèle : une question qui ne laisse aucun terme
+  // discriminant mais porte sur une catégorie d'objets demande la LISTE. On la
+  // sert par une requête bornée au compte, plutôt que de chercher une
+  // correspondance qui n'existe pas.
+  //
+  // Placé avant les adaptateurs, et exclusif : les interroger en plus ne
+  // pourrait que rapporter du bruit sur des mots outils.
+  // ══════════════════════════════════════════════════════════════════════
+  if (isInventoryQuery(input.message)) {
+    return (await listAccountAssets(accountId, cfg.maxSources)).map((s) => ({
+      ...s,
+      content: s.content.slice(0, cfg.maxExcerptChars),
+    }));
+  }
+
   // 3–5. Adapters (structuré, plein texte, [sémantique désactivé]).
   const adapters = getEnabledAdapters();
   const collected: RetrievedSource[] = [];
@@ -87,6 +111,34 @@ export async function retrieve(route: IntentRoute, input: AssistantRequestInput)
     ...s,
     content: s.content.slice(0, cfg.maxExcerptChars),
   }));
+}
+
+/**
+ * Liste les biens du compte, sans critère — réponse à une question d'inventaire.
+ *
+ * Bornée par `maxSources` comme toute réponse : le §26.2 interdit de sérialiser
+ * l'ensemble du compte, et un utilisateur qui possède cinquante biens n'attend
+ * pas cinquante lignes mais un aperçu et un lien vers la liste complète.
+ */
+async function listAccountAssets(accountId: number, limit: number): Promise<RetrievedSource[]> {
+  const rows = await pgClient.unsafe(
+    `SELECT id, name, category, city
+       FROM assets
+      WHERE account_id = $1 AND deleted_at IS NULL
+      ORDER BY name
+      LIMIT $2`,
+    [accountId, limit],
+  );
+  return (rows as unknown as Array<{ id: number; name: string; category: string | null; city: string | null }>)
+    .map((r) => ({
+      id: `asset_${r.id}`,
+      type: 'asset_field' as const,
+      title: r.name,
+      content: [r.category, r.city].filter(Boolean).join(' · '),
+      meta: { assetId: r.id },
+      // Tous à égalité : aucune pertinence à départager, l'ordre est alphabétique.
+      relevanceScore: 0.6,
+    }));
 }
 
 /** Recherche structurée de base sur les biens du compte (niveau 1 — §13.4). */
