@@ -39,6 +39,7 @@
     "test:coverage": "vitest --run --coverage",
     "ai:inventory": "tsx scripts/ai-inventory.ts",
     "ai:inventory:json": "tsx scripts/ai-inventory.ts --json",
+    "ai:inventory:observed": "tsx scripts/ai-inventory.ts --observed",
     "ai:check-legacy": "node scripts/check-legacy-ai.mjs",
     "ai:verify": "npm run typecheck && npm run lint && npm run test:run && npm run referential:check && npm run ai:inventory && npm run ai:check-legacy",
     "ai:baseline": "node scripts/check-legacy-ai.mjs --update-baseline",
