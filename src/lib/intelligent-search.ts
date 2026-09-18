@@ -215,11 +215,7 @@ async function buildSources(query: string, accountId: number): Promise<SearchSou
     `(CASE WHEN unaccent(lower(coalesce(af.retained_title, af.original_filename,''))) ILIKE unaccent(lower(${p})) OR unaccent(lower(coalesce(af.supplier,''))) ILIKE unaccent(lower(${p})) OR unaccent(lower(coalesce(af.document_type,''))) ILIKE unaccent(lower(${p})) THEN 1 ELSE 0 END)`
   ).join(' + ');
 
-  const supplierExprs = patterns.map(p =>
-    `(CASE WHEN unaccent(lower(s.name)) ILIKE unaccent(lower(${p})) THEN 1 ELSE 0 END)`
-  ).join(' + ');
-
-  const [assetRows, docRows, supplierRows] = await Promise.all([
+  const [assetRows, docRows] = await Promise.all([
     pgClient.unsafe(
       `SELECT id, name, category, subtype, city FROM assets a
        WHERE a.account_id = ${accountId} AND a.deleted_at IS NULL AND (${assetExprs}) >= ${minScore}
@@ -231,11 +227,6 @@ async function buildSources(query: string, accountId: number): Promise<SearchSou
        WHERE af.account_id = ${accountId} AND af.deleted_at IS NULL AND af.upload_status = 'COMPLETED' AND af.is_draft = false
        AND (${docExprs}) >= ${minScore}
        ORDER BY (${docExprs}) DESC LIMIT 4`
-    ),
-    pgClient.unsafe(
-      `SELECT id, name, city, email FROM suppliers s
-       WHERE s.account_id = ${accountId} AND s.status = 'active' AND (${supplierExprs}) >= ${minScore}
-       ORDER BY (${supplierExprs}) DESC LIMIT 2`
     ),
   ]);
 
@@ -256,14 +247,9 @@ async function buildSources(query: string, accountId: number): Promise<SearchSou
       docId: Number(r.id),
       mimeType: r.mime_type,
     })),
-    ...(supplierRows as any[]).map((r: any) => ({
-      id: `supplier-${r.id}`,
-      category: 'Fournisseur' as const,
-      label: r.name,
-      sublabel: [r.city, r.email].filter(Boolean).join(' · ') || undefined,
-      href: `/fournisseurs`,
-      supplierId: Number(r.id),
-    })),
+    // Fournisseurs volontairement absents : pas de page à ouvrir, donc pas de
+    // lien à produire. Même décision que dans `/api/search`. Ce moteur
+    // disparaît au lot 5 ; d'ici là il ne doit pas proposer de résultat mort.
   ];
 
   return sources;

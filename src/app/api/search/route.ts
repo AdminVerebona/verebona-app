@@ -101,27 +101,19 @@ export async function GET(req: NextRequest) {
        LIMIT 8`
     );
 
-    // ── Fournisseurs ─────────────────────────────────────────────────────────
-    const supplierTokenExprs = likePatterns.map(p =>
-      `(CASE WHEN unaccent(lower(s.name)) ILIKE unaccent(lower(${p}))
-               OR unaccent(lower(coalesce(s.email,''))) ILIKE unaccent(lower(${p}))
-               OR unaccent(lower(coalesce(s.city,''))) ILIKE unaccent(lower(${p}))
-               OR unaccent(lower(coalesce(s.siren,''))) ILIKE unaccent(lower(${p}))
-               OR unaccent(lower(coalesce(s.siret,''))) ILIKE unaccent(lower(${p}))
-               OR unaccent(lower(coalesce(s.vat_number,''))) ILIKE unaccent(lower(${p}))
-               THEN 1 ELSE 0 END)`
-    );
-    const supplierScore = supplierTokenExprs.join(' + ');
-
-    const supplierRows = await db.$client.unsafe(
-      `SELECT s.id, s.public_id, s.name, s.email, s.city, s.contact_status
-       FROM suppliers s
-       WHERE s.account_id = ${accountId}
-         AND s.status = 'active'
-         AND (${supplierScore}) >= ${minScore}
-       ORDER BY score DESC, s.name
-       LIMIT 5`.replace('score DESC', `(${supplierScore}) DESC`)
-    );
+    // ── Fournisseurs : volontairement absents des résultats ──────────────────
+    //
+    // Les fournisseurs n'ont pas de page dans l'application : ils se consultent
+    // depuis les documents et les équipements qui les référencent. Les proposer
+    // ici produisait un href `/fournisseurs` qui n'existe pas — un résultat sur
+    // lequel on ne peut que se tromper.
+    //
+    // Décision produit : ces résultats cessent d'être proposés plutôt que de
+    // créer une page pour justifier un lien. La requête SQL correspondante est
+    // retirée avec eux : elle interrogeait `suppliers` sur six colonnes à
+    // chaque frappe, pour un résultat inexploitable.
+    //
+    // Rétablir ces résultats suppose d'ouvrir la page d'abord.
 
     // ── Agenda ───────────────────────────────────────────────────────────────
     // Chaque token peut matcher titre, description, ou le nom d'un bien lié
@@ -158,14 +150,6 @@ export async function GET(req: NextRequest) {
         label: r.name,
         sublabel: [r.subtype, r.city].filter(Boolean).join(' · ') || r.category || undefined,
         href: `/assets/${r.id}`,
-      })),
-      ...supplierRows.map((r: any) => ({
-        id: `supplier-${r.id}`,
-        category: 'Fournisseur' as const,
-        label: r.name,
-        sublabel: [r.city, r.email].filter(Boolean).join(' · ') || undefined,
-        href: `/fournisseurs`,
-        supplierId: Number(r.id),
       })),
       ...docRows.map((r: any) => ({
         id: `doc-${r.id}`,

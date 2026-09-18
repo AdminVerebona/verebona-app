@@ -227,18 +227,10 @@ async function resolveMatches(
         });
       }
     } else if (match.type === 'supplier') {
-      const s = data.suppliers.find((x: any) => Number(x.id) === match.id);
-      if (s) {
-        results.push({
-          id: `supplier-${s.id}`,
-          category: 'Fournisseur',
-          label: s.name,
-          sublabel: [s.city, s.email].filter(Boolean).join(' · ') || undefined,
-          href: `/fournisseurs`,
-          supplierId: Number(s.id),
-          aiPowered: true,
-        });
-      }
+      // Volontairement ignoré : les fournisseurs n'ont pas de page, le lien
+      // `/fournisseurs` n'existe pas. Même décision que dans `/api/search`.
+      // Ce moteur disparaît au lot 5 ; d'ici là il ne doit pas produire de
+      // résultat sur lequel on ne peut que se tromper.
     } else if (match.type === 'agenda') {
       const ag = data.agenda.find((x: any) => Number(x.id) === match.id);
       if (ag) {

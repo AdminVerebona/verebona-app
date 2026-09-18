@@ -2,10 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { Search, X, Package, FileText, Calendar, LayoutDashboard, Sparkles, Building2 } from 'lucide-react'
+import { Search, X, Package, FileText, Calendar, LayoutDashboard, Sparkles } from 'lucide-react'
 import { apiClient } from '@/lib/api-client'
 
-type Category = 'Navigation' | 'Bien' | 'Document' | 'Agenda' | 'Fournisseur'
+// « Fournisseur » a été retirée : aucune source ne produit plus ce résultat,
+// l'application n'ayant pas de page fournisseur à ouvrir.
+type Category = 'Navigation' | 'Bien' | 'Document' | 'Agenda'
 
 interface SearchResult {
   id: string
@@ -28,7 +30,6 @@ const CATEGORY_ICON: Record<Category, React.ElementType> = {
   Bien:        Package,
   Document:    FileText,
   Agenda:      Calendar,
-  Fournisseur: Building2,
 }
 
 const ICON_COLOR: Record<Category, string> = {
@@ -36,7 +37,6 @@ const ICON_COLOR: Record<Category, string> = {
   Bien:        'text-blue-400 bg-blue-500/10',
   Document:    'text-emerald-400 bg-emerald-500/10',
   Agenda:      'text-amber-400 bg-amber-500/10',
-  Fournisseur: 'text-violet-400 bg-violet-500/10',
 }
 
 const CATEGORY_LABEL: Record<Category, string> = {
@@ -44,7 +44,6 @@ const CATEGORY_LABEL: Record<Category, string> = {
   Bien:        'Bien',
   Document:    'Document',
   Agenda:      'Agenda',
-  Fournisseur: 'Fournisseur',
 }
 
 const BADGE_COLOR: Record<Category, string> = {
@@ -52,7 +51,6 @@ const BADGE_COLOR: Record<Category, string> = {
   Bien:        'bg-blue-500/15 text-blue-400',
   Document:    'bg-emerald-500/15 text-emerald-400',
   Agenda:      'bg-amber-500/15 text-amber-400',
-  Fournisseur: 'bg-violet-500/15 text-violet-400',
 }
 
 interface MobileSearchOverlayProps {
