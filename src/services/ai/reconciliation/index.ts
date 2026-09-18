@@ -30,7 +30,9 @@ import { reconcileAsset } from './reconciliation-engine';
  * À appeler une fois au démarrage, depuis `instrumentation.ts`.
  */
 export function registerReconciliationHandlers(): void {
-  onSourceAnalyzed(async (e) => {
+  // Le drapeau est déclaré ici : l'émetteur n'exécute cet abonné que si
+  // `AI_RECONCILIATION_ENGINE` l'autorise, indépendamment des autres usages.
+  onSourceAnalyzed('AI_RECONCILIATION_ENGINE', async (e) => {
     if (!e.assetId) return;
     await reconcileAsset({
       accountId: e.accountId,

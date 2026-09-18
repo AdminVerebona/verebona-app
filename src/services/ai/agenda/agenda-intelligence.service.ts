@@ -137,19 +137,42 @@ async function classify(
   candidate: AgendaCandidate,
   input: AgendaIntelligenceInput,
 ): Promise<HomeCategory> {
-  const byRules = classifyByRules(toClassificationInput(candidate));
+  return classifyAgendaCategory(toClassificationInput(candidate), {
+    accountId: input.accountId,
+    userId: input.userId,
+    sourceFileId: input.sourceFileId,
+    excerpt: candidate.excerpt,
+  });
+}
+
+/**
+ * Classification d'un seul événement — point d'entrée du CHEMIN MANUEL.
+ *
+ * Extraite de `classify` pour que la création manuelle d'une échéance puisse
+ * passer par ce moteur au lieu de l'ancien `AgendaClassificationService`. Sans
+ * ce point d'entrée, `AI_AGENDA_ENGINE=enabled` laissait l'ancien classifieur
+ * seul maître du chemin manuel : le drapeau ne commandait rien.
+ *
+ * Critère d'acceptation n°17 : aucun appel modèle n'est émis sur un cas que les
+ * règles tranchent.
+ */
+export async function classifyAgendaCategory(
+  input: AgendaClassificationInput,
+  contexte: { accountId: number; userId?: number; sourceFileId?: number | null; excerpt?: string },
+): Promise<HomeCategory> {
+  const byRules = classifyByRules(input);
   if (byRules !== null) return byRules;
 
   try {
     const res = await AiGateway.execute({
       useCaseCode: 'AGENDA_INTELLIGENCE',
       operationCode: 'classify_event',
-      accountId: input.accountId,
-      userId: input.userId,
-      sourceIds: input.sourceFileId ? [input.sourceFileId] : undefined,
+      accountId: contexte.accountId,
+      userId: contexte.userId,
+      sourceIds: contexte.sourceFileId ? [contexte.sourceFileId] : undefined,
       promptVariables: {
-        TITLE: candidate.title,
-        EXCERPT: candidate.excerpt.slice(0, 500),
+        TITLE: input.title,
+        EXCERPT: (contexte.excerpt ?? input.description ?? '').slice(0, 500),
       },
       outputSchema: ClassifyEventOutput,
     });

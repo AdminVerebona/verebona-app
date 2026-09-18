@@ -11,6 +11,7 @@ import { eq, and, inArray, isNull } from 'drizzle-orm';
 import { validateTemporalConstraints, validateLinkCoherence, type ResolvedLink } from './AgendaDomainService';
 import { getAgendaItemById, type AgendaItemFull } from './AgendaQueryService';
 import { classifyAgendaItem } from './AgendaClassificationService';
+import { isEnabled } from '@/services/ai/flags/ai-feature-flags';
 import { emitAgendaItemCreated } from '@/services/coherence/impact-propagation.service';
 
 export interface CreateAgendaItemInput {
@@ -154,11 +155,39 @@ export async function createAgendaItem(
   }
 
   // 3. Classify for home page (async, non-blocking for the transaction)
-  const homeCategoryResult = input.homeCategory ?? await classifyAgendaItem(
-    input.title,
-    input.description,
-    input.originType ?? 'manual',
-    input.originFieldKey,
+  //
+  // ── AIGUILLAGE DE BASCULE (CDC §10.4) ────────────────────────────────────
+  // Ce chemin ignorait `AI_AGENDA_ENGINE` : quelle que soit sa valeur, c'est
+  // l'ancien `AgendaClassificationService` qui classait toute échéance créée à
+  // la main, y compris quand le nouveau moteur était censé l'avoir remplacé.
+  // Le drapeau ne commandait donc rien sur la moitié du trafic agenda.
+  //
+  // `isEnabled` et non `shouldRunNewEngine` : en mode observation, faire
+  // classer le même événement par les DEUX moteurs doublerait l'appel modèle
+  // pour une valeur dont une seule serait retenue. L'ancien reste seul tant
+  // que la bascule n'est pas franche.
+  const homeCategoryResult = input.homeCategory ?? (
+    isEnabled('AI_AGENDA_ENGINE')
+      // Import dynamique : le chemin historique ne doit pas charger l'usage 4
+      // tant qu'il n'est pas basculé, comme le pont inverse dans `events.ts`.
+      ? await (async () => {
+          const { classifyAgendaCategory } = await import('@/services/ai/agenda');
+          return classifyAgendaCategory(
+            {
+              title: input.title,
+              description: input.description,
+              originType: input.originType ?? 'manual',
+              originFieldKey: input.originFieldKey,
+            },
+            { accountId, userId: createdByUserId ?? undefined },
+          );
+        })()
+      : await classifyAgendaItem(
+          input.title,
+          input.description,
+          input.originType ?? 'manual',
+          input.originFieldKey,
+        )
   );
 
   // 4. Transaction: INSERT item + links

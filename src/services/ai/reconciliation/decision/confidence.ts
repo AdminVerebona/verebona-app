@@ -1,11 +1,12 @@
 /**
- * Seuils de confiance — CDC §14.4 (point à arbitrer).
- *
- * Valeurs de travail, isolées dans ce seul fichier pour être recalibrées au
- * lot 6 sur le corpus de référence, sans toucher au moteur.
+ * Seuils de confiance — CDC §14.4, arbitrage rendu.
  *
  * Le CDC ne fixe pas de valeurs numériques : il définit trois niveaux
- * qualitatifs. La conversion score → niveau est donc un réglage, pas une règle.
+ * qualitatifs. La conversion score → niveau est donc un réglage, pas une règle,
+ * et reste isolée dans ce seul fichier pour être recalibrée sur le corpus sans
+ * toucher au moteur. Toute modification change `CONFIDENCE_VERSION`, sans quoi
+ * deux décisions prises sous des seuils différents deviendraient
+ * indiscernables dans les preuves.
  */
 import type { EvidenceConfidence } from '../../evidence/evidence.types';
 

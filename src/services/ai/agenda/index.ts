@@ -1,7 +1,7 @@
 /**
  * Usage IA n°4 — Intelligence de l'agenda.
  */
-export { processAgendaCandidates } from './agenda-intelligence.service';
+export { processAgendaCandidates, classifyAgendaCategory } from './agenda-intelligence.service';
 export type { AgendaIntelligenceInput } from './agenda-intelligence.service';
 
 export { classifyByRules, getClassificationPatterns } from './rules/deterministic-classification';
@@ -14,6 +14,7 @@ export type {
 } from './types';
 
 import { onSourceAnalyzed } from '../source-analysis/events';
+import { shouldWrite } from '../flags/ai-feature-flags';
 import { processAgendaCandidates } from './agenda-intelligence.service';
 
 /**
@@ -24,7 +25,7 @@ export function registerAgendaHandlers(
   loadExisting: (accountId: number, assetId: number) => Promise<import('./types').ExistingAgendaItem[]>,
   persist: (decisions: import('./types').AgendaDecision[], accountId: number, assetId: number) => Promise<void>,
 ): void {
-  onSourceAnalyzed(async (e) => {
+  onSourceAnalyzed('AI_AGENDA_ENGINE', async (e) => {
     if (!e.assetId || e.result.agendaCandidates.length === 0) return;
 
     const existing = await loadExisting(e.accountId, e.assetId);
@@ -36,6 +37,18 @@ export function registerAgendaHandlers(
       existing,
       sourceFileId: e.leadSourceId,
     });
+
+    // Mode observation (§10.2) : les décisions sont produites et mesurables,
+    // mais rien n'est écrit. Cette garde manquait — l'abonné persistait quel
+    // que soit le mode, ce qui faisait coexister deux écrivains sur le même
+    // agenda.
+    if (!shouldWrite('AI_AGENDA_ENGINE')) {
+      console.info(
+        `[agenda][shadow] ${decisions.length} décision(s) produites sans écriture ` +
+        `(compte ${e.accountId}, bien ${e.assetId}).`,
+      );
+      return;
+    }
 
     await persist(decisions, e.accountId, e.assetId);
   });

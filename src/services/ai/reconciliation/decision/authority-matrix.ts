@@ -4,14 +4,19 @@
  * « Une matrice de priorité doit être définie par champ. La matrice doit être
  *   versionnée et testable. Elle ne doit pas être entièrement déléguée au LLM. »
  *
- * ⚠️ CE FICHIER EST EN ATTENTE DE VALIDATION MÉTIER (question 4 du document
- * `03-QUESTIONS-RESPONSABLE-METIER.md`). Les cinq ordres explicitement cités
+ * MATRICE VALIDÉE — arbitrage §14.3 rendu. Les cinq ordres explicitement cités
  * par le CDC sont implémentés ; les autres champs suivent l'autorité de base du
  * type de document. Ajuster ce fichier ne demande aucune modification du moteur.
+ *
+ * La version perd son suffixe `-draft` et s'aligne sur celle portée par
+ * `evidence/authority-score.ts`, qui valait déjà `v1-2026-07`. Les deux
+ * constantes homonymes divergeaient : une preuve et la décision qui s'appuyait
+ * dessus pouvaient être estampillées de deux versions différentes de la même
+ * matrice.
  */
 import { computeAuthorityScore } from '../../evidence/authority-score';
 
-export const AUTHORITY_MATRIX_VERSION = 'v1-2026-07-draft';
+export const AUTHORITY_MATRIX_VERSION = 'v1-2026-07';
 
 /**
  * Ordres de priorité explicites du §4.2.7, du plus autoritaire au moins.
