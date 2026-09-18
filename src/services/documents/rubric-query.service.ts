@@ -50,6 +50,12 @@ export interface RubricDocumentView {
   id: number;
   publicId: string;
   title: string;
+  /** Nom du fichier d'origine — en-tête du tiroir document. */
+  originalFilename: string | null;
+  /** Bien rattaché, `null` pour un document non rattaché. */
+  assetId: number | null;
+  /** Rubrique de classement, `null` pour « Sans rubrique ». */
+  rubricCode: string | null;
   documentTypeCode: string | null;
   /** `null` ⇒ la carte affiche « Type à compléter » (§4.3). */
   documentTypeLabel: string | null;
@@ -184,6 +190,7 @@ export async function getDocumentsByRubric(
         documentTypeCode: assetFiles.documentTypeCode,
         documentDate: assetFiles.documentDate,
         mimeType: assetFiles.mimeType,
+        assetId: assetFiles.assetId,
         assetName: assets.name,
       })
       .from(assetFiles)
@@ -217,6 +224,9 @@ export async function getDocumentsByRubric(
       // §4.3 : jamais le nom de fichier comme titre principal, mais un repli
       // vaut mieux qu'une carte anonyme.
       title: row.title ?? row.filename ?? row.fallback ?? 'Document',
+      originalFilename: row.filename ?? row.fallback ?? null,
+      assetId: row.assetId ?? null,
+      rubricCode: row.rubricCode ?? null,
       documentTypeCode: row.documentTypeCode,
       documentTypeLabel: type?.label ?? null,
       documentDate: row.documentDate ?? null,

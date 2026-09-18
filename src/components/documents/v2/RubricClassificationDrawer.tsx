@@ -97,7 +97,11 @@ export function RubricClassificationDrawer({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   useEffect(() => {
-    setRubricCode(document?.rubricCode ?? null);
+    // Repli : un appelant qui ne connaît pas la Rubrique mais connaît le Type
+    // n'ouvre pas le tiroir sur « Sans rubrique » et une liste de Types vide —
+    // la Rubrique se déduit du Type (§2.2), ici comme à l'enregistrement.
+    const deduite = document?.documentTypeCode ? rubricOfType(document.documentTypeCode) : null;
+    setRubricCode(document?.rubricCode ?? deduite ?? null);
     setTypeCode(document?.documentTypeCode ?? null);
     // Un « Confirmer » resté armé d'un document à l'autre supprimerait le
     // mauvais fichier au premier clic.

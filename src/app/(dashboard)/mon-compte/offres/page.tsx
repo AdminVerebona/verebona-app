@@ -260,7 +260,7 @@ export default function OffresPage() {
     setDowngradeDialog({ open: true, targetOffer: targetPlan, renewalDate });
   };
 
-  const getButtonState = (offerId: string): { label: string; action: (() => void) | null; variant: 'default' | 'outline' | 'ghost'; disabled: boolean } => {
+  const getButtonState = (offerId: string): { label: string; action: (() => void) | null; variant: 'default' | 'outline' | 'ghost'; disabled: boolean; hint?: string } => {
     if (offerId === 'PREMIUM_PRO') {
       return { label: 'Bientôt disponible', action: null, variant: 'outline', disabled: true };
     }
@@ -274,13 +274,26 @@ export default function OffresPage() {
     if (hasSubscription) {
       const theme = getPlanTheme(offerId as any);
       const sameOffer = offerId === currentPlan;
+      // ══════════════════════════════════════════════════════════════════
+      // « PASSER À », PAS « PROGRAMMER »
+      //
+      // Le bouton disait ce que le SYSTÈME fait (programmer un changement)
+      // et non ce que l'utilisateur veut (changer d'offre). « Programmer
+      // Premium » se lit mal et détonne à côté des autres boutons de
+      // l'application, tous formulés à l'infinitif d'action.
+      //
+      // La prise d'effet à l'échéance reste une information nécessaire :
+      // elle passe en mention sous le bouton, et le message de confirmation
+      // continue d'annoncer la date exacte.
+      // ══════════════════════════════════════════════════════════════════
       return {
         label: sameOffer
           ? `Passer en ${billingPeriod === 'monthly' ? 'mensuel' : 'annuel'}`
-          : `Programmer ${theme.label}`,
+          : `Passer à ${theme.label}`,
         action: () => handleScheduleChange(offerId),
         variant: sameOffer ? 'outline' : 'default',
         disabled: false,
+        hint: 'Prise d\'effet à votre prochaine échéance',
       };
     }
     if (isDuoMember) {
@@ -473,6 +486,10 @@ export default function OffresPage() {
                   ) : null}
                   {btn.label}
                 </Button>
+
+                {btn.hint && (
+                  <p className="mt-2 text-center text-xs text-[color:var(--text-muted)]">{btn.hint}</p>
+                )}
               </div>
             );
           })}

@@ -28,7 +28,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ChevronDown, FileText, Image as ImageIcon, Loader2, Plus } from 'lucide-react';
+import { ChevronDown, FileText, Grid3x3, Image as ImageIcon, List, Loader2, Plus, Tags } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -62,10 +62,21 @@ import {
   RubricClassificationDrawer,
   type DocumentClassificationDraft,
 } from './RubricClassificationDrawer';
+import { DocumentDrawer, type DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
+
+/** Mode d'affichage des documents, mémorisé d'une visite à l'autre. */
+type ViewMode = 'list' | 'grid';
+const VIEW_MODE_KEY = 'documentsViewMode';
 
 interface DocumentView {
   id: number;
   publicId: string;
+  /** Nom du fichier d'origine — l'en-tête du tiroir document s'en sert. */
+  originalFilename: string | null;
+  /** Bien rattaché, quand il y en a un. */
+  assetId: number | null;
+  /** Rubrique de classement, `null` pour « Sans rubrique ». */
+  rubricCode: string | null;
   title: string;
   documentTypeCode: string | null;
   documentTypeLabel: string | null;
@@ -100,47 +111,93 @@ interface PageResponse {
 function DocumentCardV2({
   document,
   showAssets,
+  viewMode,
   onOpen,
+  onClassify,
 }: {
   document: DocumentView;
   showAssets: boolean;
+  viewMode: ViewMode;
   onOpen: (doc: DocumentView) => void;
+  onClassify: (doc: DocumentView) => void;
 }) {
   const Icon = document.mimeType?.startsWith('image/') ? ImageIcon : FileText;
+  const sousTitre = (
+    <>
+      {/* §4.3 : Type affiché ; absent et Rubrique présente ⇒ « Type à compléter ». */}
+      {document.documentTypeLabel ?? MICROCOPY.missingType}
+      {document.documentDate && <> · {document.documentDate}</>}
+      {showAssets && document.assetNames.length > 0 && <> · {document.assetNames.join(', ')}</>}
+    </>
+  );
+
+  // Le bouton « Classer » est posé À CÔTÉ de la zone cliquable, jamais
+  // dedans : un bouton dans un bouton n'est pas du HTML valide, et le clic
+  // se propagerait aux deux.
+  const classer = (
+    <button
+      type="button"
+      onClick={() => onClassify(document)}
+      title="Classer dans une rubrique"
+      aria-label={`Classer ${document.title}`}
+      className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Tags className="h-4 w-4" aria-hidden />
+    </button>
+  );
+
+  if (viewMode === 'grid') {
+    return (
+      <div className="relative flex flex-col rounded-lg border bg-card transition-colors hover:bg-accent/40">
+        <div className="absolute right-1 top-1 z-10">{classer}</div>
+        <button
+          type="button"
+          onClick={() => onOpen(document)}
+          className="flex flex-1 flex-col items-center gap-2 rounded-lg p-4 text-center focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="flex h-16 w-full items-center justify-center rounded-md bg-muted/50">
+            <Icon className="h-7 w-7 text-muted-foreground" aria-hidden />
+          </span>
+          <span className="line-clamp-2 w-full text-sm font-medium">{document.title}</span>
+          <span className="line-clamp-2 w-full text-xs text-muted-foreground">{sousTitre}</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     // §4.7 : la carte entière est cliquable et ouvre le drawer.
-    <button
-      type="button"
-      onClick={() => onOpen(document)}
-      className="flex w-full items-start gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium">{document.title}</p>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {/* §4.3 : Type affiché ; absent et Rubrique présente ⇒ « Type à compléter ». */}
-          {document.documentTypeLabel ?? MICROCOPY.missingType}
-          {document.documentDate && <> · {document.documentDate}</>}
-          {showAssets && document.assetNames.length > 0 && (
-            <> · {document.assetNames.join(', ')}</>
-          )}
-        </p>
-      </div>
-    </button>
+    <div className="flex items-start gap-1 rounded-lg border bg-card transition-colors hover:bg-accent/40">
+      <button
+        type="button"
+        onClick={() => onOpen(document)}
+        className="flex min-w-0 flex-1 items-start gap-3 rounded-lg p-3 text-left focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{document.title}</p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{sousTitre}</p>
+        </div>
+      </button>
+      <span className="p-2">{classer}</span>
+    </div>
   );
 }
 
 function RubricSection({
   group,
   showAssets,
+  viewMode,
   onOpen,
+  onClassify,
   onLoadMore,
   loadingMore,
 }: {
   group: GroupView;
   showAssets: boolean;
+  viewMode: ViewMode;
   onOpen: (doc: DocumentView) => void;
+  onClassify: (doc: DocumentView) => void;
   onLoadMore: (code: string) => void;
   loadingMore: boolean;
 }) {
@@ -173,15 +230,25 @@ function RubricSection({
       </button>
 
       {open && !empty && (
-        <div className="space-y-2 px-4 pb-4">
-          {group.documents.map((doc) => (
-            <DocumentCardV2
-              key={doc.publicId}
-              document={doc}
-              showAssets={showAssets}
-              onOpen={onOpen}
-            />
-          ))}
+        <div className="px-4 pb-4">
+          <div
+            className={
+              viewMode === 'grid'
+                ? 'grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4'
+                : 'space-y-2'
+            }
+          >
+            {group.documents.map((doc) => (
+              <DocumentCardV2
+                key={doc.publicId}
+                document={doc}
+                showAssets={showAssets}
+                viewMode={viewMode}
+                onOpen={onOpen}
+                onClassify={onClassify}
+              />
+            ))}
+          </div>
           {group.hasMore && (
             // §16.3 : chargement progressif SANS perdre la structure des
             // Rubriques. Le bouton ajoute à la suite, il ne remplace pas la
@@ -192,7 +259,7 @@ function RubricSection({
               size="sm"
               disabled={loadingMore}
               onClick={() => onLoadMore(group.code)}
-              className="w-full"
+              className="mt-2 w-full"
             >
               {loadingMore
                 ? 'Chargement…'
@@ -212,6 +279,20 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
   const [loadingGroup, setLoadingGroup] = useState<string | null>(null);
   const [selected, setSelected] = useState<DocumentClassificationDraft | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [documentOuvert, setDocumentOuvert] = useState<DocumentDrawerItem | null>(null);
+  const [documentDrawerOpen, setDocumentDrawerOpen] = useState(false);
+  // Choix d'affichage conservé d'une visite à l'autre, comme dans l'onglet
+  // Documents d'un bien (même clé de lecture pour l'utilisateur, clé de
+  // stockage distincte : les deux écrans ne montrent pas le même périmètre).
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  useEffect(() => {
+    const enregistre = localStorage.getItem(VIEW_MODE_KEY);
+    if (enregistre === 'grid' || enregistre === 'list') setViewMode(enregistre);
+  }, []);
+  const changerAffichage = (mode: ViewMode) => {
+    setViewMode(mode);
+    try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch { /* navigation privée */ }
+  };
   const [uploadOpen, setUploadOpen] = useState(false);
   const [filters, setFilters] = useState<DocumentsV2Filters>(DEFAULT_V2_FILTERS);
   // Décalages par groupe : « Voir les N autres » n'affecte que sa Rubrique.
@@ -291,14 +372,40 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
     }
   };
 
+  // ══════════════════════════════════════════════════════════════════════
+  // LE CLIC OUVRE LE DOCUMENT, PAS SON CLASSEMENT
+  //
+  // La carte ouvrait le tiroir de classement (rubrique et type) : un panneau
+  // par le bas avec deux listes déroulantes, là où l'utilisateur attend son
+  // document — aperçu, informations, échéances liées, modification.
+  //
+  // Le clic ouvre donc le tiroir document, le même que partout ailleurs
+  // (accueil, agenda, onglet Documents d'un bien, fournisseur). Le classement
+  // reste accessible par l'icône dédiée de la carte.
+  // ══════════════════════════════════════════════════════════════════════
   const openDocument = (doc: DocumentView) => {
+    setDocumentOuvert({
+      id: doc.id,
+      originalFilename: doc.originalFilename ?? doc.title,
+      mimeType: doc.mimeType ?? '',
+      documentType: doc.documentTypeCode ?? 'AUTRE',
+      documentDate: doc.documentDate,
+      assetId: doc.assetId ?? 0,
+    });
+    setDocumentDrawerOpen(true);
+  };
+
+  const classifyDocument = (doc: DocumentView) => {
     setSelected({
       id: doc.id,
       publicId: doc.publicId,
       title: doc.title,
-      // La Rubrique courante n'est pas portée par la carte (§4.3) : elle est
-      // déduite du Type, ou laissée vide pour « Sans rubrique ».
-      rubricCode: null,
+      // ⚠️ La Rubrique COURANTE est transmise. Elle était forcée à `null` :
+      // le tiroir s'ouvrait sur « Sans rubrique » pour un document pourtant
+      // classé, et sa liste de Types — dérivée de la Rubrique — restait vide,
+      // masquant le Type déjà renseigné. La carte ne l'affiche pas (§4.3),
+      // mais ne pas l'afficher n'est pas une raison de l'ignorer.
+      rubricCode: doc.rubricCode,
       documentTypeCode: doc.documentTypeCode,
     });
     setDrawerOpen(true);
@@ -325,6 +432,31 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Choix d'affichage — liste ou vignettes. Il manquait ici, alors
+                qu'il existe dans l'onglet Documents d'un bien : une même
+                collection se consultait de deux façons selon la page. */}
+            <div className="flex items-center overflow-hidden rounded-md border border-border">
+              <button
+                type="button"
+                onClick={() => changerAffichage('grid')}
+                title="Vue vignettes"
+                aria-label="Vue vignettes"
+                aria-pressed={viewMode === 'grid'}
+                className={`p-1.5 transition-colors ${viewMode === 'grid' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                <Grid3x3 className="h-4 w-4" aria-hidden />
+              </button>
+              <button
+                type="button"
+                onClick={() => changerAffichage('list')}
+                title="Vue liste"
+                aria-label="Vue liste"
+                aria-pressed={viewMode === 'list'}
+                className={`p-1.5 transition-colors ${viewMode === 'list' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                <List className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
             <DocumentsFilterDrawer
               filters={filters}
               onApply={applyFilters}
@@ -343,6 +475,31 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
       {/* Onglet d'un bien : les commandes seules, sans titre ni décompte. */}
       {assetId && (
         <div className="flex items-center justify-end gap-2">
+            {/* Choix d'affichage — liste ou vignettes. Il manquait ici, alors
+              qu'il existe dans l'onglet Documents d'un bien : une même
+              collection se consultait de deux façons selon la page. */}
+          <div className="flex items-center overflow-hidden rounded-md border border-border">
+            <button
+              type="button"
+              onClick={() => changerAffichage('grid')}
+              title="Vue vignettes"
+              aria-label="Vue vignettes"
+              aria-pressed={viewMode === 'grid'}
+              className={`p-1.5 transition-colors ${viewMode === 'grid' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              <Grid3x3 className="h-4 w-4" aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={() => changerAffichage('list')}
+              title="Vue liste"
+              aria-label="Vue liste"
+              aria-pressed={viewMode === 'list'}
+              className={`p-1.5 transition-colors ${viewMode === 'list' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              <List className="h-4 w-4" aria-hidden />
+            </button>
+          </div>
           <DocumentsFilterDrawer
             filters={filters}
             onApply={applyFilters}
@@ -379,12 +536,26 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
             // §4.1 : le bien n'est affiché que sur « Mes documents » ; dans
             // l'onglet d'un bien, le contexte est déjà explicite.
             showAssets={!assetId}
+            viewMode={viewMode}
             onOpen={openDocument}
+            onClassify={classifyDocument}
             onLoadMore={loadMore}
             loadingMore={loadingGroup === group.code}
           />
         ))}
       </div>
+
+      {/* Tiroir document : le même composant que sur les autres écrans, avec
+          son aperçu, ses informations et ses échéances liées. */}
+      <DocumentDrawer
+        open={documentDrawerOpen}
+        onOpenChange={(ouvert) => {
+          setDocumentDrawerOpen(ouvert);
+          if (!ouvert) setDocumentOuvert(null);
+        }}
+        document={documentOuvert}
+        onRefresh={() => void load()}
+      />
 
       <RubricClassificationDrawer
         document={selected}
