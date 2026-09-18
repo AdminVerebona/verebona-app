@@ -25,6 +25,12 @@ import {
   FileDown,
   Activity,
   Gift,
+  SlidersHorizontal,
+  ListOrdered,
+  ScrollText,
+  Coins,
+  KeyRound,
+  Gauge,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -36,6 +42,18 @@ const navigation = [
   { name: 'Webhooks Stripe', href: '/admin/stripe-webhooks', icon: Webhook },
   { name: 'Biens', href: '/admin/assets', icon: Package },
   { name: 'Documents', href: '/admin/documents', icon: Files },
+  // Console de configuration IA (CDC BO IA). Placée avant les deux consoles
+  // historiques, qu'elle absorbera : le §18.1 prévoit la disparition de
+  // « Gestion IA » comme console parallèle et la répartition de « Suivi IA »
+  // entre Dashboard, Exécutions & logs et Coûts.
+  // Le Dashboard IA ouvre le bloc BO IA : le SCR-01 en fait le point d'entrée,
+  // avec liens vers chaque écran de détail.
+  { name: 'Tableau de bord IA', href: '/admin/ai-dashboard', icon: Gauge },
+  { name: 'Configuration IA', href: '/admin/ai-config', icon: SlidersHorizontal },
+  { name: 'File IA', href: '/admin/ai-queue', icon: ListOrdered },
+  { name: 'Exécutions IA', href: '/admin/ai-executions', icon: ScrollText },
+  { name: 'Coûts IA', href: '/admin/ai-costs', icon: Coins },
+  { name: 'Fournisseur IA', href: '/admin/ai-provider', icon: KeyRound },
   { name: 'Gestion IA', href: '/admin/document-ai', icon: Sparkles },
   { name: 'Suivi IA', href: '/admin/ai-usage', icon: Activity },
   { name: 'Types de biens', href: '/admin/asset-types', icon: Tags },

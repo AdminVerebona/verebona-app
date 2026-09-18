@@ -12,6 +12,7 @@
 import { db } from '@/db';
 import { aiPipelineStep, aiUsageEvent } from '@/db/schema';
 import type { AiUseCaseCode } from '../registry/use-cases';
+import { getExecutionContext, type ModelRank } from './execution-context';
 
 export interface CallTrace {
   traceId: string;
@@ -35,10 +36,22 @@ export interface CallTrace {
   billable: boolean;
   shadow: boolean;
   outputPreview?: string;
+  /**
+   * Rang du modèle réellement utilisé (§9.1). Plus précis qu'`usedFallback`,
+   * qui ne distingue pas les deux replis — or un traitement qui bascule
+   * toujours sur le second est un incident, pas un repli ordinaire.
+   */
+  modelRank?: ModelRank | null;
+  /** Travail de file à l'origine de l'appel, s'il y en a un. */
+  jobId?: number | null;
 }
 
 export async function recordCallTrace(t: CallTrace): Promise<void> {
   try {
+    // Version IA effective et commit déployé (§9.1, GEN-008). Lus ici plutôt
+    // que demandés à chaque appelant : une information de traçabilité qu'il
+    // faut penser à passer finit par manquer là où elle compte le plus.
+    const ctx = await getExecutionContext();
     if (t.parentOperationId) {
       await db.insert(aiPipelineStep).values({
         operationId: t.parentOperationId,
@@ -81,6 +94,10 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
       metadata: { traceId: t.traceId, promptVersion: t.promptVersion, shadow: t.shadow },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,
+      configVersionId: ctx.configVersionId,
+      appVersion: ctx.appVersion,
+      modelRank: t.modelRank ?? (t.usedFallback ? null : 'primary'),
+      jobId: t.jobId ?? null,
     } as never);
   } catch (e) {
     // La télémétrie ne doit jamais faire échouer un traitement métier.

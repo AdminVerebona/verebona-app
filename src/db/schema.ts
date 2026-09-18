@@ -1824,6 +1824,14 @@ export const aiUsageEvent = pgTable('ai_usage_event', {
   errorCode: text('error_code'),
   errorMessage: text('error_message'),
   metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  // Traçabilité version et code (migration 0133, CDC BO IA §9.1, GEN-008).
+  // Nullables : les traces antérieures n'ont pas ces informations, et leur en
+  // attribuer par défaut serait pire qu'une absence — ce serait cru.
+  configVersionId: integer('config_version_id'),
+  appVersion: text('app_version'),
+  /** `primary` | `fallback_1` | `fallback_2` — plus précis qu'`isFallback`. */
+  modelRank: text('model_rank'),
+  jobId: integer('job_id'),
   createdAt: tstz('created_at'),
 }, (table) => ({
   accountIdIdx: index('ai_usage_event_account_id_idx').on(table.accountId),

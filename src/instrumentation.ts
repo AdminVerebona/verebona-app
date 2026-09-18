@@ -37,6 +37,36 @@ export async function register(): Promise<void> {
   //    Contrôle purement statique — il ne lit que le code, jamais la base.
   assertAiRegistryStartup();
 
+  //    Correspondance T1-T5 (CDC BO IA §1.3). Contrôle statique : une bijection
+  //    rompue ferait appliquer une configuration au mauvais traitement.
+  const { assertTreatmentMapping } = await import('@/services/ai/config/treatments');
+  assertTreatmentMapping();
+
+  //    Environnement (GEN-003). Il doit être connu HORS requête : c'est au
+  //    démarrage qu'on détermine quelle version de configuration est effective.
+  //
+  //    ⚠️ SIGNALÉ BRUYAMMENT, MAIS N'INTERROMPT PAS LE DÉMARRAGE.
+  //
+  //    Une première version levait ici. C'était disproportionné : l'application
+  //    entière — documents, comptes, facturation — serait tombée parce qu'une
+  //    variable d'administration IA manquait. Un produit ne s'arrête pas pour
+  //    une console.
+  //
+  //    La garde reste là où est le danger : `getAiEnvironment()` lève toujours
+  //    chez ses appelants, et les opérations destructrices du snapshot la
+  //    vérifient avant d'écrire quoi que ce soit. Ce qui est perdu sans cette
+  //    variable, c'est le versioning de configuration — pas le produit.
+  try {
+    const { assertAiEnvironment } = await import('@/services/ai/config/environment');
+    assertAiEnvironment();
+  } catch (e) {
+    console.error(
+      `[startup] ⚠️ ${(e as Error).message} `
+      + 'Le Back-Office IA ne pourra pas déterminer la version de configuration effective. '
+      + 'Le reste de l\'application démarre normalement.',
+    );
+  }
+
   //    Modes de bascule : un drapeau ne doit pas porter un mode qu'il ne sait
   //    pas honorer. `AI_INTELLIGENT_ASSISTANT=shadow` ferait répondre deux
   //    moteurs aux mêmes questions (§10.4) — le démarrage échoue plutôt que de
@@ -103,6 +133,14 @@ export async function register(): Promise<void> {
     '@/services/document-ai/analysis-recovery-scheduler'
   );
   startAnalysisRecoveryScheduler();
+
+  //    Boucleur de la file IA (CDC BO IA GEN-004, NFR-003). Il ne porte aucun
+  //    état : tout est en base, donc un redéploiement ne perd aucun travail.
+  //    À terme il remplace `startAnalysisRecoveryScheduler`, qui repart de zéro
+  //    à chaque démarrage — la coexistence est temporaire, le temps que T1 y
+  //    enregistre son exécutant.
+  const { startQueueWorker } = await import('@/services/ai/queue/queue-worker');
+  startQueueWorker();
 
   // 7. Sauvegarde quotidienne de la base.
   //
