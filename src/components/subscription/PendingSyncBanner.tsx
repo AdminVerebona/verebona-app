@@ -25,9 +25,10 @@ export function PendingSyncBanner({ onSynced }: PendingSyncBannerProps) {
         const res = await fetch('/api/billing/me', { credentials: 'include' });
         if (res.ok) {
           const data = await res.json();
-          const plan = data.plan_type?.toUpperCase();
           const status = data.subscription_status?.toUpperCase();
-          const isSynced = (status === 'TRIALING' || status === 'ACTIVE') || (plan && plan !== 'STANDARD');
+          // Seul le statut fait foi : un compte en essai porte déjà l'offre
+          // choisie à l'inscription (`plan_type` PREMIUM sans avoir payé).
+          const isSynced = status === 'ACTIVE';
           if (isSynced) {
             stopped = true;
             clearInterval(interval);
@@ -50,9 +51,8 @@ export function PendingSyncBanner({ onSynced }: PendingSyncBannerProps) {
       });
       if (res.ok) {
         const data = await res.json();
-        const plan = data.plan_type?.toUpperCase();
         const status = data.subscription_status?.toUpperCase();
-        const isSynced = (status === 'TRIALING' || status === 'ACTIVE') || (plan && plan !== 'STANDARD');
+        const isSynced = status === 'ACTIVE';
         if (isSynced) {
           onSynced?.();
           return;

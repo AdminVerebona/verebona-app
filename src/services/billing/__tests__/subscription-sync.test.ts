@@ -83,6 +83,7 @@ import {
   getInvoicePriceId,
   getInvoiceSubscriptionId,
   syncFromCheckoutSession,
+  syncPendingCheckoutForAccount,
   syncSubscriptionFromStripe,
 } from '@/services/billing/subscription-sync.service';
 
@@ -257,6 +258,26 @@ describe('syncSubscriptionFromStripe — cas limites', () => {
     expect(r).toBeNull();
     expect(state.writes).toHaveLength(0);
   });
+
+  it('retient l’offre des métadonnées quand le montant payé concorde', async () => {
+    // Prix absent du catalogue de ce processus (variable d'environnement
+    // différente) : le paiement était encaissé et le compte restait en essai.
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const s = sub({ metadata: { accountId: '7', planTier: 'premium', billing_period: 'yearly' } }, 'price_hors_catalogue');
+    (s.items.data[0].price as unknown as Record<string, unknown>).unit_amount = 5900;
+    const r = await syncSubscriptionFromStripe({ subscription: s, source: 'test' });
+    expect(r?.planTier).toBe('premium');
+    expect(writesTo(accounts)[0].values).toMatchObject({ planType: 'PREMIUM', subscriptionStatus: 'ACTIVE' });
+  });
+
+  it('refuse les métadonnées si le montant ne correspond pas à l’offre', async () => {
+    // Des métadonnées seules ne suffisent jamais : un Standard payé ne
+    // devient pas Premium parce que la session l'affirme.
+    const s = sub({ metadata: { accountId: '7', planTier: 'premium', billing_period: 'yearly' } }, 'price_hors_catalogue');
+    (s.items.data[0].price as unknown as Record<string, unknown>).unit_amount = 2900;
+    expect(await syncSubscriptionFromStripe({ subscription: s, source: 'test' })).toBeNull();
+    expect(state.writes).toHaveLength(0);
+  });
 });
 
 describe('syncFromCheckoutSession', () => {
@@ -275,6 +296,32 @@ describe('syncFromCheckoutSession', () => {
     });
     expect(await syncFromCheckoutSession({ sessionId: 'cs_x', accountId: 7 }))
       .toEqual({ status: 'ignored', reason: 'NOT_COMPLETE' });
+  });
+
+  it('accepte une session ouverte par l’utilisateur pour un autre de ses comptes', async () => {
+    // Le compte relu au retour (LIMIT 1 sur les appartenances) pouvait
+    // différer de celui de la session : le paiement n'était jamais appliqué.
+    fakeStripe.checkout.sessions.retrieve.mockResolvedValue({
+      metadata: { accountId: '7', userId: '3' }, status: 'complete', subscription: sub(),
+    });
+    const r = await syncFromCheckoutSession({ sessionId: 'cs_x', accountId: 12, userId: 3 });
+    expect(r.status).toBe('synced');
+  });
+
+  it('accepte une session visant l’un des comptes de l’utilisateur', async () => {
+    fakeStripe.checkout.sessions.retrieve.mockResolvedValue({
+      metadata: { accountId: '7' }, status: 'complete', subscription: sub(),
+    });
+    const r = await syncFromCheckoutSession({ sessionId: 'cs_x', accountId: 12, accountIds: [12, 7] });
+    expect(r.status).toBe('synced');
+  });
+
+  it('refuse la session d’un tiers même avec un autre utilisateur', async () => {
+    fakeStripe.checkout.sessions.retrieve.mockResolvedValue({
+      metadata: { accountId: '99', userId: '42' }, status: 'complete', subscription: sub(),
+    });
+    const r = await syncFromCheckoutSession({ sessionId: 'cs_x', accountId: 7, userId: 3, accountIds: [7] });
+    expect(r).toEqual({ status: 'ignored', reason: 'NOT_OWNED' });
   });
 
   it('synchronise une session terminée du compte', async () => {
@@ -304,5 +351,48 @@ describe('lecture des factures (API basil)', () => {
     } as unknown as Stripe.Invoice;
     expect(getInvoicePriceId(invoice)).toBe('price_prem_y');
     expect(getInvoicePriceId({ lines: { data: [] } } as unknown as Stripe.Invoice)).toBeNull();
+  });
+});
+
+describe('syncPendingCheckoutForAccount — paiement jamais appliqué', () => {
+  it('applique une session récente restée en attente sur le compte', async () => {
+    state.account = {
+      ...state.account,
+      checkoutSessionId: 'cs_pending',
+      checkoutSessionCreatedAt: new Date(),
+      ownerUserId: 3,
+    };
+    fakeStripe.checkout.sessions.retrieve.mockResolvedValue({
+      metadata: { accountId: '7', userId: '3' }, status: 'complete', subscription: sub(),
+    });
+    expect(await syncPendingCheckoutForAccount(7)).toBe(true);
+    expect(writesTo(accounts).some((w) => w.values.subscriptionStatus === 'ACTIVE')).toBe(true);
+  });
+
+  it('n’interroge pas Stripe deux fois de suite pour le même compte', async () => {
+    state.account = { ...state.account, checkoutSessionId: 'cs_pending', checkoutSessionCreatedAt: new Date(), ownerUserId: 3 };
+    fakeStripe.checkout.sessions.retrieve.mockClear();
+    await syncPendingCheckoutForAccount(8);
+    await syncPendingCheckoutForAccount(8);
+    expect(fakeStripe.checkout.sessions.retrieve).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignore une session trop ancienne', async () => {
+    state.account = {
+      ...state.account,
+      checkoutSessionId: 'cs_vieux',
+      checkoutSessionCreatedAt: new Date(Date.now() - 3 * 86_400_000),
+      ownerUserId: 3,
+    };
+    fakeStripe.checkout.sessions.retrieve.mockClear();
+    expect(await syncPendingCheckoutForAccount(9)).toBe(false);
+    expect(fakeStripe.checkout.sessions.retrieve).not.toHaveBeenCalled();
+  });
+
+  it('ne fait rien sans session en attente', async () => {
+    state.account = { ...state.account, checkoutSessionId: null, checkoutSessionCreatedAt: null };
+    fakeStripe.checkout.sessions.retrieve.mockClear();
+    expect(await syncPendingCheckoutForAccount(10)).toBe(false);
+    expect(fakeStripe.checkout.sessions.retrieve).not.toHaveBeenCalled();
   });
 });

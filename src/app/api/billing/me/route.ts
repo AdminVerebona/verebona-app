@@ -51,10 +51,19 @@ export async function GET(request: NextRequest) {
     let checkoutSync: string | null = null;
     if (stripeSessionId) {
       try {
+        const memberships = await db
+          .select({ accountId: accountMemberships.accountId })
+          .from(accountMemberships)
+          .where(eq(accountMemberships.userId, session.userId));
         const outcome = await syncFromCheckoutSession({
           sessionId: stripeSessionId,
-          accountId: membership.accountId,
+          accountId: session.currentAccountId ?? membership.accountId,
+          userId: session.userId,
+          accountIds: memberships.map((m) => m.accountId),
         });
+        if (outcome.status !== 'synced') {
+          console.warn(`[me-api] retour de paiement ${stripeSessionId} non appliqué : ${outcome.reason}`);
+        }
         checkoutSync = outcome.status === 'synced' ? 'synced' : outcome.reason;
       } catch (err) {
         checkoutSync = 'ERROR';

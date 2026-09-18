@@ -29,7 +29,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
 import {
@@ -64,6 +64,9 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
   const { entitlements, isLoading, isRestricted, refresh } = useEntitlements();
   const [info, setInfo] = useState<WriteBlockedInfo | null>(null);
   const [open, setOpen] = useState(false);
+  // Lu par l'écouteur d'événement sans le réabonner à chaque rendu.
+  const entitlementsRef = useRef(entitlements);
+  entitlementsRef.current = entitlements;
 
   // ── Refus constatés hors d'un composant (api-client, dépôt de fichier…) ──
   // Tout 403 de droits arrive ici et ouvre la même fenêtre qu'un clic gardé.
@@ -71,7 +74,21 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
     const onBlocked = (e: Event) => {
       const recu = (e as CustomEvent<WriteBlockedInfo>).detail;
       if (!recu) return;
-      setInfo(recu);
+      // Un compte sans offre (essai terminé, abonnement absent) qui touche
+      // une fonction Premium n'a pas à lire « Passez à Premium » : son
+      // blocage, c'est l'absence d'offre. Même fenêtre que partout ailleurs.
+      const sansOffre = entitlementsRef.current?.isRestricted === true;
+      if (recu.code === 'PREMIUM_REQUIRED' && sansOffre) {
+        const essaiFini = entitlementsRef.current?.trial?.status === 'expired';
+        setInfo({
+          code: essaiFini ? 'TRIAL_EXPIRED' : 'SUBSCRIPTION_REQUIRED',
+          message: essaiFini
+            ? TRIAL_EXPIRED_MESSAGE
+            : 'Un abonnement actif est nécessaire pour effectuer cette action.',
+        });
+      } else {
+        setInfo(recu);
+      }
       setOpen(true);
       // Le serveur vient de dire que les droits ont changé : on les relit
       // pour que les prochains clics soient gardés sans aller-retour.

@@ -6,6 +6,7 @@ import { eq, and, or, isNull, count } from 'drizzle-orm';
 import { getTrialState, hasUsedTrial } from '@/services/trial.service';
 import { getEntitlements, quotaUsage } from '@/services/entitlements.service';
 import { getScheduledChange } from '@/services/plan-change.service';
+import { syncPendingCheckoutForAccount } from '@/services/billing/subscription-sync.service';
 
 /**
  * GET /api/billing/trial-status
@@ -31,7 +32,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'User has no account' }, { status: 404 });
     }
 
-    const accountId = membership.accountId;
+    // Compte de la session d'abord : c'est celui que les routes d'écriture
+    // contrôlent. `LIMIT 1` sans ordre pouvait désigner un autre compte de
+    // l'utilisateur (invitation, Duo) et afficher des droits qui ne sont
+    // pas ceux appliqués.
+    const accountId = session.currentAccountId ?? membership.accountId;
+
+    // Paiement effectué mais pas encore appliqué (webhook absent, retour
+    // de paiement non atteint) : on le constate ici, avant de lire les droits.
+    await syncPendingCheckoutForAccount(accountId);
 
     const [trial, entitlements, scheduled] = await Promise.all([
       getTrialState(accountId),

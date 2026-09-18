@@ -35,8 +35,14 @@ import {
   users,
 } from '@/db/schema';
 import { getStripeServer, getTierFromPriceId, type PlanTier } from '@/lib/stripe';
-import { resolvePlanFromPriceId, type BillingPeriod } from '@/lib/stripe-prices';
-import { serverCacheDelete } from '@/lib/server-cache';
+import {
+  expectedAmountCents,
+  isBillingPeriod,
+  isPlanCode,
+  resolvePlanFromPriceId,
+  type BillingPeriod,
+} from '@/lib/stripe-prices';
+import { serverCacheDelete, serverCacheGet, serverCacheSet } from '@/lib/server-cache';
 import { markTrialConverted } from '@/services/trial.service';
 import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/lib/email/billing-emails';
 import { enforceStandardLimits } from '@/lib/plan-enforcement';
@@ -83,6 +89,8 @@ const toDate = (unix: number | null | undefined): Date | null =>
   typeof unix === 'number' && unix > 0 ? new Date(unix * 1000) : null;
 
 function billingPeriodOf(price: Stripe.Price | undefined): BillingPeriod | null {
+  // Catalogue, puis intervalle Stripe : la périodicité est toujours connue
+  // d'un prix récurrent.
   if (!price) return null;
   const fromCatalog = resolvePlanFromPriceId(price.id);
   if (fromCatalog) return fromCatalog.period;
@@ -92,6 +100,33 @@ function billingPeriodOf(price: Stripe.Price | undefined): BillingPeriod | null 
 }
 
 // ─── Synchronisation ──────────────────────────────────────────────────────────
+
+/**
+ * Offre lue dans les métadonnées, MAIS seulement si le montant du prix
+ * correspond au tarif de cette offre et de cette périodicité.
+ *
+ * Le Price ID reste la source de vérité. Ce repli couvre le cas où la
+ * variable d'environnement du prix diffère entre le processus qui a créé la
+ * session et celui qui la synchronise (déploiement en cours, variable
+ * renommée) : le paiement était encaissé et le compte restait en essai.
+ * Des métadonnées seules ne suffisent jamais : le montant payé doit concorder.
+ */
+function tierFromVerifiedMetadata(
+  subscription: Stripe.Subscription,
+  price: Stripe.Price | undefined,
+): PlanTier | null {
+  const tier = subscription.metadata?.planTier;
+  const period = subscription.metadata?.billing_period;
+  if (!price || !isPlanCode(tier) || !isBillingPeriod(period)) return null;
+  const interval = period === 'monthly' ? 'month' : 'year';
+  if (price.recurring?.interval !== interval) return null;
+  if (price.unit_amount !== expectedAmountCents(tier, period)) return null;
+  console.warn(
+    `[subscription-sync] prix ${price.id} absent du catalogue : offre ${tier}/${period} ` +
+    'retenue d\'après les métadonnées, montant vérifié. Contrôler les variables STRIPE_PRICE_*.',
+  );
+  return tier;
+}
 
 export interface SubscriptionSyncInput {
   subscription: Stripe.Subscription;
@@ -165,7 +200,7 @@ export async function syncSubscriptionFromStripe(
   const customerId = idOf(subscription.customer);
   const item = subscription.items.data[0];
   const price = item?.price;
-  const planTier = getTierFromPriceId(price?.id);
+  const planTier = getTierFromPriceId(price?.id) ?? tierFromVerifiedMetadata(subscription, price);
 
   if (!customerId) {
     console.warn(`[subscription-sync] ${source} : abonnement ${subscription.id} sans client`);
@@ -434,12 +469,33 @@ export type CheckoutSyncOutcome =
 export async function syncFromCheckoutSession(params: {
   sessionId: string;
   accountId: number;
+  /** Utilisateur appelant : une session qu'il a lui-même ouverte lui appartient. */
+  userId?: number;
+  /** Tous les comptes de l'utilisateur (le compte « courant » peut différer). */
+  accountIds?: number[];
 }): Promise<CheckoutSyncOutcome> {
   const session = await getStripeServer().checkout.sessions.retrieve(params.sessionId, {
     expand: ['subscription'],
   });
 
-  if (session.metadata?.accountId !== String(params.accountId)) {
+  // ══════════════════════════════════════════════════════════════════
+  // PROPRIÉTÉ DE LA SESSION
+  //
+  // La comparaison portait sur UN compte, lu par `LIMIT 1` sans ordre sur
+  // les appartenances de l'utilisateur. Avec plusieurs appartenances
+  // (invitation, Duo), le compte relu au retour pouvait différer de celui
+  // de la session : NOT_OWNED, et le paiement n'était jamais appliqué.
+  //
+  // La session est acceptée si elle vise l'un des comptes de l'utilisateur,
+  // ou si c'est lui qui l'a ouverte. La synchronisation s'applique au
+  // compte de la session, pas au compte relu.
+  // ══════════════════════════════════════════════════════════════════
+  const compteSession = Number(session.metadata?.accountId) || null;
+  const comptesAutorises = new Set([params.accountId, ...(params.accountIds ?? [])]);
+  const ouverteParLui = params.userId != null && session.metadata?.userId === String(params.userId);
+  const possede = compteSession != null && (comptesAutorises.has(compteSession) || ouverteParLui);
+
+  if (!possede) {
     console.warn(
       `[subscription-sync] session ${params.sessionId} refusée pour le compte ${params.accountId}`,
     );
@@ -452,10 +508,72 @@ export async function syncFromCheckoutSession(params: {
 
   const result =
     typeof subscription === 'string'
-      ? await syncSubscriptionById(subscription, { source: 'checkout-return', accountIdHint: params.accountId })
-      : await syncSubscriptionFromStripe({ subscription, source: 'checkout-return', accountIdHint: params.accountId });
+      ? await syncSubscriptionById(subscription, { source: 'checkout-return', accountIdHint: compteSession })
+      : await syncSubscriptionFromStripe({ subscription, source: 'checkout-return', accountIdHint: compteSession });
 
   return result ? { status: 'synced', result } : { status: 'ignored', reason: 'NOT_SYNCED' };
+}
+
+/** Délai pendant lequel une session Checkout ouverte peut encore aboutir. */
+const CHECKOUT_PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Au plus une interrogation de Stripe par compte sur cette durée. */
+const CHECKOUT_PENDING_THROTTLE_MS = 20_000;
+
+/**
+ * Filet de sécurité : applique un paiement dont le retour n'a pas été traité.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * PAYÉ CHEZ STRIPE, TOUJOURS EN ESSAI DANS VEREBONA
+ *
+ * L'état payé n'était écrit que par deux chemins : le webhook et la page de
+ * retour. Si le webhook n'est pas configuré sur l'environnement (ou échoue)
+ * ET que la page de retour n'est pas atteinte (adresse de retour erronée,
+ * onglet fermé, application mobile), le compte restait en essai
+ * indéfiniment alors que le client avait payé.
+ *
+ * La création de session mémorise son identifiant sur le compte
+ * (`checkout_session_id`). Tant qu'il est présent et récent, la lecture des
+ * droits vérifie ici — au plus toutes les 20 s — si la session a abouti, et
+ * synchronise le compte le cas échéant. La synchronisation efface
+ * l'identifiant : la vérification cesse d'elle-même.
+ *
+ * Ne lève jamais : la lecture des droits ne doit pas échouer pour autant.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export async function syncPendingCheckoutForAccount(accountId: number): Promise<boolean> {
+  const cle = `checkout-pending:${accountId}`;
+  if (serverCacheGet<boolean>(cle)) return false;
+  serverCacheSet(cle, true, CHECKOUT_PENDING_THROTTLE_MS);
+
+  try {
+    const [account] = await db
+      .select({
+        checkoutSessionId: accounts.checkoutSessionId,
+        checkoutSessionCreatedAt: accounts.checkoutSessionCreatedAt,
+        ownerUserId: accounts.ownerUserId,
+      })
+      .from(accounts)
+      .where(eq(accounts.id, accountId))
+      .limit(1);
+
+    if (!account?.checkoutSessionId || !account.checkoutSessionCreatedAt) return false;
+    const age = Date.now() - new Date(account.checkoutSessionCreatedAt).getTime();
+    if (age > CHECKOUT_PENDING_MAX_AGE_MS) return false;
+
+    const outcome = await syncFromCheckoutSession({
+      sessionId: account.checkoutSessionId,
+      accountId,
+      userId: account.ownerUserId,
+    });
+    if (outcome.status === 'synced') {
+      console.info(`[subscription-sync] paiement en attente appliqué au compte ${accountId}`);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error(`[subscription-sync] vérification du paiement en attente (compte ${accountId}) :`, (e as Error).message);
+    return false;
+  }
 }
 
 /**

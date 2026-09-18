@@ -372,7 +372,9 @@ export async function POST(request: NextRequest) {
                     quantity: 1,
                 },
             ],
-            success_url: `${appUrl}/accueil?session_id={CHECKOUT_SESSION_ID}`,
+            // Page de retour dédiée : elle applique le paiement, affiche la
+            // confirmation puis recharge l'application avec les nouveaux droits.
+            success_url: `${appUrl}/abonnement/success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${appUrl}/abonnement/cancel?plan=${normalizedRequestedPlan.toLowerCase()}`,
             metadata: {
                 userId: user.id.toString(),

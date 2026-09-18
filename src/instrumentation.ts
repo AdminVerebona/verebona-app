@@ -97,6 +97,16 @@ export async function register(): Promise<void> {
   );
   startAnalysisRecoveryScheduler();
 
+  // 7. Sauvegarde quotidienne de la base.
+  //
+  // Le tableau de bord d'administration affichait l'âge de la « dernière
+  // sauvegarde », mais aucune tâche n'en produisait. Le planificateur la
+  // lance chaque nuit ; un bail en base évite les doublons entre instances.
+  const { startDatabaseBackupScheduler } = await import(
+    '@/services/backup/database-backup-scheduler'
+  );
+  startDatabaseBackupScheduler();
+
   const { listRunningUseCases } = await import('@/services/ai/flags/use-case-flags');
   const running = listRunningUseCases();
   console.info(

@@ -129,10 +129,15 @@ export const apiClient = {
           this.handleAuthFailure();
           throw new ApiClientError(response.status, 'UNAUTHORIZED', {}, undefined);
         } else {
-          // Refus de droits (essai terminé, quota…) : la fenêtre partagée
-          // s'ouvre, quel que soit l'écran qui a lancé l'appel. L'appelant
-          // reçoit toujours l'erreur, pour interrompre son traitement.
-          const refus = parseWriteBlocked(errorBody);
+          // Refus de droits (essai terminé, quota…) sur une ACTION de
+          // l'utilisateur : la fenêtre partagée s'ouvre, quel que soit l'écran.
+          //
+          // ⚠️ Jamais sur une lecture (GET). « Mon compte » lit le jeton
+          // d'agenda au chargement ; un compte sans Premium reçoit un 403
+          // `PREMIUM_REQUIRED`, et la fenêtre « Fonctionnalité Premium »
+          // s'ouvrait à la simple visite de la page, sans aucun clic.
+          // L'appelant reçoit toujours l'erreur, pour interrompre son traitement.
+          const refus = method === 'GET' ? null : parseWriteBlocked(errorBody);
           if (refus) notifyWriteBlocked(refus);
           throw new ApiClientError(
             response.status,

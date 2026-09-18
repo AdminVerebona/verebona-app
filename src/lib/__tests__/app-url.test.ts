@@ -44,4 +44,28 @@ describe('getAppBaseUrl', () => {
       env({ NEXT_PUBLIC_APP_URL: 'pas une url' }),
     )).toBe('https://app.verebona.fr');
   });
+
+  it('ignore une adresse configurée locale quand la requête arrive par un hôte public', () => {
+    // Cas constaté : NEXT_PUBLIC_APP_URL=http://localhost:3001 recopiée sur
+    // l'hébergement, Stripe renvoyait vers localhost après paiement.
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(getAppBaseUrl(
+      req('http://localhost:26057/x', { 'x-forwarded-host': 'app.preprod.verebona.fr', 'x-forwarded-proto': 'https' }),
+      env({ NEXT_PUBLIC_APP_URL: 'http://localhost:3001' }),
+    )).toBe('https://app.preprod.verebona.fr');
+  });
+
+  it('APP_URL, lue à l’exécution, passe avant NEXT_PUBLIC_APP_URL', () => {
+    expect(getAppBaseUrl(
+      req('http://localhost:26057/x'),
+      env({ APP_URL: 'https://app.verebona.fr', NEXT_PUBLIC_APP_URL: 'https://autre.exemple' }),
+    )).toBe('https://app.verebona.fr');
+  });
+
+  it('garde une adresse locale configurée en développement local', () => {
+    expect(getAppBaseUrl(
+      req('http://localhost:3001/x', { host: 'localhost:3001' }),
+      env({ NEXT_PUBLIC_APP_URL: 'http://localhost:3001' }),
+    )).toBe('http://localhost:3001');
+  });
 });
