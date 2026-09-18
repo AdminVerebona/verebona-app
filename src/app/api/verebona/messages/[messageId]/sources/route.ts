@@ -1,10 +1,17 @@
 /**
  * GET /api/verebona/messages/[messageId]/sources — CDC §19 / §27.6.
- * Renvoie les sources résolues d'un message (≤ 5 affichées), avec disponibilité.
+ * Renvoie les sources résolues d'un message (≤ 5 affichées), avec disponibilité
+ * et lien d'ouverture.
+ *
+ * Le href est construit ICI, côté serveur, à partir de l'identifiant de source
+ * conservé en base (§22.1 : le client ne reconstruit jamais une URL). Une
+ * source dont l'entité n'a pas de destination dans l'application reste
+ * affichée, sans lien : mieux vaut une source non cliquable qu'un lien mort.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
+import { hrefSource } from '@/services/verebona-assistant/core/entity-ref';
 
 export async function GET(
   req: NextRequest,
@@ -19,7 +26,7 @@ export async function GET(
   await ensureMigrations();
   const { messageId } = await params;
   // Propriété : le message doit appartenir au compte (§29.1).
-  const sources = await pgClient.unsafe(
+  const rows = await pgClient.unsafe(
     `SELECT s.source_type, s.source_id, s.title_snapshot, s.excerpt_snapshot, s.is_available, s.rank
        FROM verebona_message_sources s
        JOIN verebona_messages m ON m.id = s.message_id
@@ -28,5 +35,13 @@ export async function GET(
       LIMIT 5`,
     [messageId, accountId],
   );
+
+  const sources = (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
+    ...r,
+    // Une source marquée indisponible (§19.10) ne reçoit pas de lien : l'objet
+    // a été supprimé ou n'est plus accessible depuis la récupération.
+    href: r.is_available === false ? null : hrefSource(String(r.source_id ?? '')),
+  }));
+
   return NextResponse.json({ sources });
 }

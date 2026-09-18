@@ -1,47 +1,125 @@
 /**
- * Résolveur d'actions — CDC §22.6 / §22.7.
+ * Résolveur d'actions — CDC §22.6 / §22.7 / §22.9.
  *
- * À partir d'`ActionIntent` (type + id fourni), le SERVEUR :
+ * À partir d'`ActionIntent` (type + cible), le SERVEUR :
  *  - vérifie que le type est autorisé pour l'intention ;
- *  - applique le contrôle d'accès (objet du compte, route, jeton, aide publiée…) ;
+ *  - décode la cible, vérifie qu'elle est du BON type et qu'elle appartient
+ *    au compte ;
  *  - génère actionId, label lisible, href interne, expiration et code analytics.
  *
- * Le href N'EST JAMAIS fourni par le modèle (§22.1). Les URLs sont construites ici à
- * partir des routes réelles de l'app.
+ * Le href N'EST JAMAIS fourni par le modèle (§22.1). Les URLs sont construites
+ * ici à partir des routes réelles de l'app, centralisées dans `entity-ref.ts`.
+ *
+ * ── CE QUI A CHANGÉ, ET POURQUOI ─────────────────────────────────────────
+ * Le contrôle « account_object » interrogeait successivement les quatre
+ * vérificateurs et acceptait dès que l'un répondait vrai. Deux conséquences :
+ *  1. un identifiant de document pouvait autoriser un OPEN_ASSET, et produire
+ *     un lien vers une fiche de bien qui n'a rien à voir ;
+ *  2. le coût était de quatre requêtes là où le type de l'action désigne sans
+ *     ambiguïté la table à interroger.
+ *
+ * Le contrôle est désormais dirigé par le type : chaque action déclare la
+ * famille d'entité qu'elle cible, et une cible d'une autre famille est un refus,
+ * pas une occasion d'essayer ailleurs.
  */
 import { randomUUID } from 'crypto';
 import type { ActionIntent, VerebonaAction, VerebonaActionType } from '../types/actions';
 import type { VerebonaIntent } from '../types/intents';
 import { getActionDefinition, allowedActionsFor } from '../registries/action-registry';
+import {
+  parseEntityRef, hrefBien, ROUTES,
+  type EntityKind, type EntityRef, type OngletBien,
+} from './entity-ref';
 
-/** Vérifie qu'un objet appartient bien au compte (à implémenter avec le repo). */
+/**
+ * Vérificateurs d'appartenance au compte (§22.7).
+ *
+ * Les identifiants sont NUMÉRIQUES : le décodage du préfixe a lieu avant
+ * l'appel, pour qu'aucune chaîne venue du modèle n'atteigne une requête.
+ */
 export interface AccessChecker {
-  assetInAccount(accountId: number, assetId: string): Promise<boolean>;
-  documentInAccount(accountId: number, documentId: string): Promise<boolean>;
-  agendaItemInAccount(accountId: number, agendaItemId: string): Promise<boolean>;
-  supplierInAccount(accountId: number, supplierId: string): Promise<boolean>;
+  assetInAccount(accountId: number, assetId: number): Promise<boolean>;
+  documentInAccount(accountId: number, documentId: number): Promise<boolean>;
+  agendaItemInAccount(accountId: number, agendaItemId: number): Promise<boolean>;
   helpEntryPublished(slug: string): Promise<boolean>;
 }
 
-/** Construit les href internes à partir des routes réelles (§22.7). */
-function buildHref(type: VerebonaActionType, id?: string | number | null, params?: Record<string, unknown>): string | null {
+/**
+ * Famille d'entité attendue par chaque action à cible.
+ *
+ * Une action absente de cette table n'attend pas de cible : lui en fournir une
+ * est sans effet, ne pas lui en fournir n'est pas une erreur.
+ */
+export const CIBLE_ATTENDUE: Readonly<Partial<Record<VerebonaActionType, EntityKind>>> = {
+  OPEN_ASSET: 'asset',
+  OPEN_DOCUMENT: 'document',
+  OPEN_AGENDA_ITEM: 'agenda_item',
+  START_ADD_DOCUMENT: 'asset',
+  START_ADD_AGENDA_ITEM: 'asset',
+  OPEN_EXPORT_AREA: 'asset',
+};
+
+/** Vrai si l'action n'a de sens qu'avec une cible résolue. */
+export function exigeUneCible(type: VerebonaActionType): boolean {
+  return CIBLE_ATTENDUE[type] != null;
+}
+
+/** Onglet de la fiche bien ouvert par une action, quand elle en vise un. */
+const ONGLET_PAR_ACTION: Readonly<Partial<Record<VerebonaActionType, OngletBien>>> = {
+  START_ADD_DOCUMENT: 'documents',
+  START_ADD_AGENDA_ITEM: 'agenda',
+  OPEN_EXPORT_AREA: 'exports',
+};
+
+/**
+ * Construit les href internes à partir des routes réelles (§22.7).
+ *
+ * `ref` est déjà décodée et contrôlée : si elle est nulle pour une action qui
+ * exige une cible, il n'y a pas d'URL à produire.
+ */
+function buildHref(
+  type: VerebonaActionType,
+  ref: EntityRef | null,
+  params?: Record<string, unknown>,
+): string | null {
   switch (type) {
-    case 'OPEN_ASSET': return id != null ? `/assets/${id}` : null;
-    case 'OPEN_DOCUMENT': return id != null ? `/documents/${id}` : null;
-    case 'OPEN_DOCUMENTS_PAGE': return '/documents';
-    case 'OPEN_AGENDA': return '/agenda';
-    case 'OPEN_AGENDA_ITEM': return id != null ? `/agenda/${id}` : null;
-    case 'OPEN_TO_PROCESS': return '/a-traiter';
-    case 'OPEN_SUPPLIERS': return '/fournisseurs';
-    case 'OPEN_SUPPLIER': return id != null ? `/fournisseurs/${id}` : null;
-    case 'OPEN_ACCOUNT': return '/compte';
-    case 'OPEN_PRICING': return '/abonnement';
-    case 'OPEN_HELP': return id != null ? `/aide/${id}` : '/aide';
-    case 'START_ADD_ASSET': return '/assets/nouveau';
-    case 'START_ADD_DOCUMENT': return id != null ? `/assets/${id}?ajouter=document` : '/documents?ajouter=1';
-    case 'START_ADD_AGENDA_ITEM': return id != null ? `/agenda/nouveau?asset=${id}` : '/agenda/nouveau';
-    case 'OPEN_EXPORT_AREA': return id != null ? `/assets/${id}?onglet=export` : '/export';
-    case 'OPEN_SEARCH_RESULTS': return null; // via jeton signé (résolu par la route dédiée)
+    case 'OPEN_ASSET': {
+      if (!ref) return null;
+      // `tab` est posé par le serveur uniquement (équipement ou pièce ouverts
+      // sur l'onglet du bien parent) ; une valeur inconnue est ignorée.
+      const onglet = typeof params?.tab === 'string' ? (params.tab as OngletBien) : undefined;
+      return hrefBien(ref.id, onglet);
+    }
+    case 'OPEN_DOCUMENT':
+      return ref ? `${ROUTES.DOCUMENTS}/${ref.id}` : null;
+    case 'OPEN_DOCUMENTS_PAGE':
+      return ROUTES.DOCUMENTS;
+    // L'agenda n'a pas de page de détail : `/agenda/[id]` n'existe pas, le
+    // détail s'ouvre dans un tiroir. On amène l'utilisateur à l'agenda plutôt
+    // que sur un 404.
+    case 'OPEN_AGENDA':
+    case 'OPEN_AGENDA_ITEM':
+      return ROUTES.AGENDA;
+    case 'OPEN_TO_PROCESS':
+      return ROUTES.A_TRAITER;
+    case 'OPEN_ACCOUNT':
+      return ROUTES.COMPTE;
+    case 'OPEN_PRICING':
+      return ROUTES.OFFRES;
+    // La page d'aide n'expose pas d'article en lien profond : pas de
+    // `/aide/[slug]` ni de paramètre lu. On ouvre l'aide, sans ancrage.
+    case 'OPEN_HELP':
+      return ROUTES.AIDE;
+    // La création d'un bien se fait par une boîte de dialogue depuis la liste,
+    // il n'existe pas de page `/assets/nouveau`.
+    case 'START_ADD_ASSET':
+      return ROUTES.BIENS;
+    case 'START_ADD_DOCUMENT':
+    case 'START_ADD_AGENDA_ITEM':
+    case 'OPEN_EXPORT_AREA':
+      return ref ? hrefBien(ref.id, ONGLET_PAR_ACTION[type]) : null;
+    case 'OPEN_SEARCH_RESULTS':
+      return null; // via jeton signé (résolu par la route dédiée)
     case 'SHOW_SOURCES':
     case 'SHOW_EXPLANATION':
     case 'RETRY_REQUEST':
@@ -54,7 +132,7 @@ function buildHref(type: VerebonaActionType, id?: string | number | null, params
 const LABELS: Record<VerebonaActionType, string> = {
   OPEN_ASSET: 'Ouvrir le bien', OPEN_DOCUMENT: 'Ouvrir le document',
   OPEN_DOCUMENTS_PAGE: 'Voir les documents', OPEN_SEARCH_RESULTS: 'Voir les résultats',
-  OPEN_AGENDA: "Ouvrir l'agenda", OPEN_AGENDA_ITEM: "Voir l'échéance",
+  OPEN_AGENDA: "Ouvrir l'agenda", OPEN_AGENDA_ITEM: "Voir dans l'agenda",
   OPEN_TO_PROCESS: 'Voir « À traiter »', OPEN_SUPPLIERS: 'Voir les fournisseurs',
   OPEN_SUPPLIER: 'Ouvrir le fournisseur', OPEN_ACCOUNT: 'Ouvrir mon compte',
   OPEN_PRICING: 'Voir les offres', OPEN_HELP: "Consulter l'aide",
@@ -72,25 +150,44 @@ export interface ResolveActionsInput {
   access: AccessChecker;
 }
 
-/** Résout et filtre les actions proposées par le modèle (§22.6-22.7). */
+/**
+ * Résout et filtre les actions proposées (§22.6-22.7).
+ *
+ * L'ordre d'entrée fait foi : la première action métier retenue est la
+ * principale, les suivantes sont secondaires. La limite du §22.9 (1 principale
+ * + 2 secondaires) est appliquée sur les actions métier uniquement.
+ */
 export async function resolveActions(input: ResolveActionsInput): Promise<VerebonaAction[]> {
   const allowed = new Set(allowedActionsFor(input.intent));
   const out: VerebonaAction[] = [];
+  const vues = new Set<string>();
   let businessCount = 0;
 
   for (const ai of input.actionIntents) {
     if (!allowed.has(ai.type)) continue;
     const def = getActionDefinition(ai.type);
 
-    // Limite 1 principale + 2 secondaires : ici on borne les actions métier (§22.9).
+    // Un même bien remonté par plusieurs sources (le bien lui-même, une de ses
+    // pièces, un de ses équipements) ne doit pas produire trois fois le même
+    // bouton — et surtout pas consommer trois fois le quota du §22.9.
+    const cle = `${ai.type}:${ai.targetId ?? ''}:${ai.params?.tab ?? ''}`;
+    if (vues.has(cle)) continue;
+
     if (def.isBusinessAction && businessCount >= 3) continue;
 
-    // Contrôle d'accès (§22.7).
-    const id = ai.targetId != null ? String(ai.targetId) : undefined;
-    const authorized = await checkAccess(input.accountId, def.control, id, input.access);
+    // ── Décodage de la cible (§18.4) ────────────────────────────────────
+    // Le type de l'action impose la famille attendue. Une cible d'une autre
+    // famille — ou fabriquée — donne `null`, donc un refus.
+    const attendu = CIBLE_ATTENDUE[ai.type];
+    const ref = attendu ? parseEntityRef(ai.targetId, attendu) : null;
+    if (attendu && !ref) continue;
+
+    const slug = ai.targetId != null ? String(ai.targetId) : undefined;
+    const authorized = await checkAccess(input.accountId, def.control, ref, slug, input.access);
     if (!authorized) continue;
 
-    const href = buildHref(ai.type, ai.targetId ?? null, ai.params);
+    const href = buildHref(ai.type, ref, ai.params);
+
     out.push({
       actionId: randomUUID(),
       type: ai.type,
@@ -101,6 +198,7 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
       expiresAt: ai.type === 'OPEN_SEARCH_RESULTS' ? new Date(Date.now() + 30 * 60_000).toISOString() : null,
       analyticsCode: `verebona.action.${ai.type.toLowerCase()}`,
     });
+    vues.add(cle);
     if (def.isBusinessAction) businessCount++;
   }
 
@@ -110,22 +208,24 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
 async function checkAccess(
   accountId: number,
   control: ReturnType<typeof getActionDefinition>['control'],
-  id: string | undefined,
+  ref: EntityRef | null,
+  slug: string | undefined,
   access: AccessChecker,
 ): Promise<boolean> {
   switch (control) {
-    case 'account_object':
-      if (!id) return false;
-      // On ne connaît pas le type exact ici : l'appelant a filtré par intention,
-      // mais par sécurité on tente les vérificateurs plausibles.
-      return (
-        (await access.assetInAccount(accountId, id)) ||
-        (await access.documentInAccount(accountId, id)) ||
-        (await access.agendaItemInAccount(accountId, id)) ||
-        (await access.supplierInAccount(accountId, id))
-      );
+    case 'account_object': {
+      if (!ref) return false;
+      switch (ref.kind) {
+        case 'asset': return access.assetInAccount(accountId, ref.id);
+        case 'document': return access.documentInAccount(accountId, ref.id);
+        case 'agenda_item': return access.agendaItemInAccount(accountId, ref.id);
+        // Équipements et pièces n'ouvrent jamais directement : ils sont
+        // convertis en OPEN_ASSET sur le bien parent en amont.
+        default: return false;
+      }
+    }
     case 'published_help':
-      return id ? access.helpEntryPublished(id) : true;
+      return slug ? access.helpEntryPublished(slug) : true;
     case 'account_route':
     case 'known_offer':
     case 'signed_token':

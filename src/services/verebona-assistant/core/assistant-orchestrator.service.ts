@@ -30,7 +30,14 @@ export interface OrchestratorPorts {
   generateWithAI?(
     route: IntentRoute, sources: RetrievedSource[], input: AssistantRequestInput,
   ): Promise<{ answer: string; claims: Claim[]; actions: VerebonaAction[]; supportLevel: AssistantRunResult['supportLevel'] } | null>;
-  resolveActions(route: IntentRoute, input: AssistantRequestInput, entityIds: Set<string>): Promise<VerebonaAction[]>;
+  /**
+   * Les SOURCES sont transmises, pas seulement leurs identifiants : le type et
+   * les métadonnées (bien parent d'un équipement, par exemple) sont ce qui
+   * permet de choisir la bonne action et de contrôler la bonne table (§22.7).
+   */
+  resolveActions(
+    route: IntentRoute, input: AssistantRequestInput, sources: RetrievedSource[],
+  ): Promise<VerebonaAction[]>;
   persist(result: AssistantRunResult, input: AssistantRequestInput): Promise<void>;
   hasPendingClarification(accountId: number): Promise<boolean>;
 }
@@ -111,7 +118,7 @@ export async function runAssistant(
     // ── Réponse déterministe (§14) ──────────────────────────────────────────
     const det = tryDeterministic(route.intent);
     if (det.handled && det.answer) {
-      const actions = await ports.resolveActions(route, input, new Set());
+      const actions = await ports.resolveActions(route, input, []);
       return finalize(base, machine, 'deterministic', det.answer, [], [], actions, ports, input);
     }
 
@@ -126,13 +133,12 @@ export async function runAssistant(
       // Seuil d'insuffisance (§13.10) → réponse partielle honnête, sans IA inventée.
       if (sources.length === 0 && !route.aiEligible) {
         const answer = "Je n’ai rien trouvé de correspondant dans votre compte. Vous pouvez reformuler ou préciser votre recherche.";
-        const actions = await ports.resolveActions(route, input, new Set());
+        const actions = await ports.resolveActions(route, input, []);
         return finalize(base, machine, 'classic_search', answer, [], resolved, actions, ports, input);
       }
     }
 
     // ── Décision IA (§15.1) : offre éligible + intention éligible + sources ──
-    const entityIds = new Set(sources.map((s) => s.id));
     const canUseAI =
       cfg.aiEnabled &&
       route.aiEligible &&
@@ -149,7 +155,7 @@ export async function runAssistant(
         if (gen) {
           machine.transition('VALIDATING');
           // (La validation détaillée est faite dans generateWithAI via response-validator.)
-          const actions = gen.actions.length ? gen.actions : await ports.resolveActions(route, input, entityIds);
+          const actions = gen.actions.length ? gen.actions : await ports.resolveActions(route, input, sources);
           return finalize(base, machine, 'ai', gen.answer, gen.claims, resolved, actions, ports, input, gen.supportLevel);
         }
       }
@@ -161,7 +167,7 @@ export async function runAssistant(
     const answer = resolved.length
       ? "Voici ce que j’ai trouvé dans votre compte."
       : "Je n’ai pas assez d’éléments pour répondre précisément. Souhaitez-vous préciser votre demande ?";
-    const actions = await ports.resolveActions(route, input, entityIds);
+    const actions = await ports.resolveActions(route, input, sources);
     return finalize(base, machine, resolved.length ? 'classic_search' : 'fallback', answer, [], resolved, actions, ports, input);
   } catch (e) {
     machine.fail(true);

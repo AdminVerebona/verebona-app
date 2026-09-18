@@ -1,10 +1,13 @@
 'use client';
-/** Panneau sources repliable — CDC §19 (≤ 5 affichées, disponibilité). */
+/** Panneau sources repliable — CDC §19 (≤ 5 affichées, disponibilité, ouverture). */
 import { useState } from 'react';
+import Link from 'next/link';
 
 interface SourceRow {
   source_type: string; title_snapshot: string | null;
   excerpt_snapshot: string | null; is_available: boolean;
+  /** Construit par le serveur (§22.1) ; `null` si l'objet n'est pas ouvrable. */
+  href: string | null;
 }
 
 export function VerebonaSources({ messageId, count }: { messageId: string; count: number }) {
@@ -32,6 +35,13 @@ export function VerebonaSources({ messageId, count }: { messageId: string; count
               <span className="font-medium">{r.title_snapshot ?? 'Source'}</span>
               {!r.is_available && <span className="ml-1 text-muted-foreground">(indisponible)</span>}
               {r.excerpt_snapshot && <p className="text-muted-foreground">{r.excerpt_snapshot}</p>}
+              {/* Le lien n'apparaît que si le serveur en a fourni un : pas de
+                  destination devinée côté client (§22.1). */}
+              {r.href && (
+                <Link href={r.href} className="mt-1 inline-block text-primary underline">
+                  Ouvrir
+                </Link>
+              )}
             </li>
           ))}
         </ul>

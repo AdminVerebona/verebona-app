@@ -5,8 +5,11 @@
  * type lisible, titre, extrait ≤ 240 car., date utile, disponibilité, action d'ouverture.
  * Construit aussi le mapping claim↔source pour « Pourquoi ? » (§19.6-19.8).
  */
+import { randomUUID } from 'crypto';
 import type { RetrievedSource, ResolvedSource, SourceType, Claim } from '../types/sources';
+import type { VerebonaAction } from '../types/actions';
 import { getAssistantConfig } from '../config/assistant-config';
+import { parseEntityRef, hrefEntite } from './entity-ref';
 
 const TYPE_LABELS: Record<SourceType, string> = {
   asset_field: 'Bien', document: 'Document', document_extraction: 'Donnée extraite',
@@ -29,8 +32,42 @@ export function resolveSourcesForDisplay(sources: RetrievedSource[]): ResolvedSo
     // l'affichage (§19.10). Vérifier ici forcerait une requête par source
     // dans une boucle de rendu.
     isAvailable: true,
-    openAction: null,  // rempli par action-resolver si l'ouverture est autorisée
+    openAction: ouvertureDeSource(s),
   }));
+}
+
+/**
+ * Action d'ouverture attachée à une source — §19.9.
+ *
+ * Le champ était annoncé « rempli par action-resolver » et restait nul : une
+ * source affichée ne menait donc nulle part, ce qui vide le §19.9 de son objet.
+ *
+ * Aucun contrôle d'accès n'est refait ici, et c'est délibéré : les sources
+ * sortent du retrieval, qui est déjà cloisonné par compte et vérifié par
+ * `verifierPerimetre` (§29.1). Le refaire coûterait une requête par source dans
+ * une boucle d'affichage, pour la même réponse.
+ *
+ * Les sources sans destination (règle d'offre, article d'aide, élément
+ * « À traiter ») renvoient `null` plutôt qu'un lien approximatif.
+ */
+function ouvertureDeSource(source: RetrievedSource): VerebonaAction | null {
+  const ref = parseEntityRef(source.id);
+  if (!ref) return null;
+
+  const href = hrefEntite(ref, source.meta);
+  if (!href) return null;
+
+  const type = ref.kind === 'document' ? 'OPEN_DOCUMENT' : 'OPEN_ASSET';
+  return {
+    actionId: randomUUID(),
+    type: ref.kind === 'agenda_item' ? 'OPEN_AGENDA_ITEM' : type,
+    label: 'Ouvrir',
+    href,
+    token: null,
+    requiresConfirmation: false,
+    expiresAt: null,
+    analyticsCode: 'verebona.source.open',
+  };
 }
 
 /**
