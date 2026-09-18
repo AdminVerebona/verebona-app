@@ -8,10 +8,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { intelligentSearch } from '@/lib/intelligent-search';
+import { shouldRunLegacy } from '@/services/ai/flags/ai-feature-flags';
 import { ensureMigrations } from '@/db';
 import { refuserSiPasDIA } from '@/lib/write-access-guard';
 
 export async function POST(req: NextRequest) {
+  // ══════════════════════════════════════════════════════════════════════
+  // AIGUILLAGE DE BASCULE — CDC §10.4, critères n°15 et n°16
+  //
+  // Cette route exécute `intelligentSearch`, l'usage historique n°7. Dès que
+  // `AI_INTELLIGENT_ASSISTANT` est basculé, elle doit sortir du chemin
+  // d'exécution : laisser coexister deux moteurs de réponse sur les mêmes
+  // questions est exactement ce que le §10.4 interdit, et le critère n°16
+  // exige qu'aucune ancienne route de recherche IA ne soit plus appelée.
+  //
+  // 410 et non 404 : une interface déployée peut encore appeler cette URL, et
+  // un 404 laisserait croire à une panne. Le fichier disparaît au lot 5, où
+  // `check-legacy-ai.mjs` l'interdit déjà.
+  // ══════════════════════════════════════════════════════════════════════
+  if (!shouldRunLegacy('AI_INTELLIGENT_ASSISTANT')) {
+    return NextResponse.json(
+      {
+        error: 'ROUTE_REMOVED',
+        message: "La recherche intelligente est remplacée par l'assistant Verebona.",
+        replacement: '/api/verebona/messages',
+      },
+      { status: 410, headers: { Link: '</api/verebona/messages>; rel="successor-version"' } },
+    );
+  }
+
   try {
     let session;
     try {

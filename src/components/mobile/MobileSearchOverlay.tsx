@@ -72,11 +72,6 @@ export function MobileSearchOverlay({ open, onClose, isPaidPlan, planCode = '' }
   const [results,  setResults]  = useState<SearchResult[]>(NAV_PAGES.slice(0, 4))
   const [loading,  setLoading]  = useState(false)
   const [aiPowered, setAiPowered] = useState(false)
-  const [intelligentAnswer, setIntelligentAnswer] = useState<{
-    answerText: string; sources: SearchResult[]
-  } | null>(null)
-  const [intelligentLoading, setIntelligentLoading] = useState(false)
-  const intelligentDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /* Focus input when overlay opens */
   useEffect(() => {
@@ -84,7 +79,6 @@ export function MobileSearchOverlay({ open, onClose, isPaidPlan, planCode = '' }
       setQuery('')
       setResults(NAV_PAGES.slice(0, 4))
       setAiPowered(false)
-      setIntelligentAnswer(null)
       setTimeout(() => inputRef.current?.focus(), 80)
     }
   }, [open])
@@ -142,41 +136,28 @@ export function MobileSearchOverlay({ open, onClose, isPaidPlan, planCode = '' }
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [query, runSearch])
 
-  /* — Recherche intelligente mobile — */
-  const runIntelligentSearch = useCallback(async (q: string) => {
-    if (!q.trim() || q.length < 10 || !isIntelligentSearchPlan) {
-      setIntelligentAnswer(null)
-      setIntelligentLoading(false)
-      return
-    }
-    setIntelligentLoading(true)
-    try {
-      const data = await apiClient.post<any>('/api/search/intelligent', { query: q })
-      if (data.responseMode === 'answer' && data.answerText) {
-        const sources: SearchResult[] = (data.sources ?? []).map((s: any) => ({
-          id: s.id,
-          label: s.label,
-          sublabel: s.sublabel,
-          href: s.href,
-          category: s.category as Category,
-          docId: s.docId,
-        }))
-        setIntelligentAnswer({ answerText: data.answerText, sources })
-      } else {
-        setIntelligentAnswer(null)
-      }
-    } catch {
-      setIntelligentAnswer(null)
-    } finally {
-      setIntelligentLoading(false)
-    }
-  }, [isIntelligentSearchPlan])
-
-  useEffect(() => {
-    if (intelligentDebounceRef.current) clearTimeout(intelligentDebounceRef.current)
-    intelligentDebounceRef.current = setTimeout(() => runIntelligentSearch(query), 500)
-    return () => { if (intelligentDebounceRef.current) clearTimeout(intelligentDebounceRef.current) }
-  }, [query, runIntelligentSearch])
+  /* — Recherche intelligente : passage par l'assistant — */
+  //
+  // ══════════════════════════════════════════════════════════════════════
+  // CE BLOC APPELAIT `/api/search/intelligent` À CHAQUE FRAPPE
+  //
+  // Un `setTimeout` de 500 ms relançait l'appel dès que la saisie dépassait
+  // dix caractères. Une question tapée en trois temps produisait donc trois
+  // appels modèle, sur des questions incomplètes — à rebours du §5.6
+  // (« ne transmettre que les données nécessaires ») et de la règle qui
+  // plafonne une demande utilisateur à deux appels.
+  //
+  // La barre de recherche du bureau, elle, n'ouvre l'assistant qu'à
+  // « Entrée », avec une question complète, via l'événement global
+  // `verebona:open` que le tiroir écoute déjà. Le mobile s'aligne dessus :
+  // une action explicite, un appel, et la réponse arrive dans l'assistant
+  // avec ses sources, ses actions et son retour d'usage — trois choses que
+  // cet aperçu en ligne ne savait pas rendre.
+  // ══════════════════════════════════════════════════════════════════════
+  const demanderAVerebona = (q: string) => {
+    onClose()
+    window.dispatchEvent(new CustomEvent('verebona:open', { detail: { question: q.trim() } }))
+  }
 
   const handleSelect = (r: SearchResult) => {
     onClose()
@@ -236,40 +217,25 @@ export function MobileSearchOverlay({ open, onClose, isPaidPlan, planCode = '' }
       {/* Results */}
       <div className="flex-1 overflow-y-auto">
 
-        {/* ── Réponse intelligente IA (Premium) ── */}
-        {isIntelligentSearchPlan && query.trim().length >= 10 && (intelligentLoading || intelligentAnswer) && (
+        {/* ── Demander à l'assistant (offres éligibles) ── */}
+        {isIntelligentSearchPlan && query.trim().length >= 10 && (
           <div className="border-b border-[color:var(--border-subtle)] mx-4 mt-3 mb-1">
-            {intelligentLoading ? (
-              <div className="flex items-center gap-2 pb-3 text-xs text-violet-400">
-                <Sparkles className="w-3.5 h-3.5 animate-pulse" />
-                <span>Analyse en cours…</span>
-              </div>
-            ) : intelligentAnswer?.answerText ? (
-              <div className="pb-3 space-y-2">
-                <p className="text-sm text-[color:var(--text-primary)] leading-relaxed">
-                  {intelligentAnswer.answerText}
-                </p>
-                {intelligentAnswer.sources.length > 0 && (
-                  <div className="space-y-1 mt-1">
-                    {intelligentAnswer.sources.slice(0, 3).map(s => {
-                      const Icon = CATEGORY_ICON[s.category] ?? FileText
-                      return (
-                        <button key={s.id} onClick={() => handleSelect(s)}
-                          className="w-full flex items-center gap-2.5 py-1.5 active:bg-[color:var(--accent-soft)] transition-colors text-left">
-                          <span className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${ICON_COLOR[s.category]}`}>
-                            <Icon className="w-3.5 h-3.5" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <span className="text-sm font-medium text-[color:var(--text-primary)] truncate block">{s.label}</span>
-                            {s.sublabel && <span className="text-xs text-[color:var(--text-muted)] truncate block">{s.sublabel}</span>}
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            ) : null}
+            <button
+              onClick={() => demanderAVerebona(query)}
+              className="w-full flex items-center gap-2.5 pb-3 text-left active:opacity-70 transition-opacity"
+            >
+              <span className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-violet-500/15 text-violet-400">
+                <Sparkles className="w-3.5 h-3.5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="text-sm font-medium text-[color:var(--text-primary)] block">
+                  Demander à Verebona
+                </span>
+                <span className="text-xs text-[color:var(--text-muted)] truncate block">
+                  «&nbsp;{query.trim()}&nbsp;»
+                </span>
+              </span>
+            </button>
           </div>
         )}
 
@@ -278,11 +244,9 @@ export function MobileSearchOverlay({ open, onClose, isPaidPlan, planCode = '' }
             <span>Recherche en cours…</span>
           </div>
         ) : results.length === 0 && query.trim() ? (
-          !intelligentAnswer?.answerText && (
           <div className="py-12 text-center text-sm text-[color:var(--text-muted)]">
             Aucun résultat pour «&nbsp;{query}&nbsp;»
           </div>
-          )
         ) : (
           <div className="py-2">
             {/* AI header */}

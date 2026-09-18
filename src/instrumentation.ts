@@ -37,6 +37,13 @@ export async function register(): Promise<void> {
   //    Contrôle purement statique — il ne lit que le code, jamais la base.
   assertAiRegistryStartup();
 
+  //    Modes de bascule : un drapeau ne doit pas porter un mode qu'il ne sait
+  //    pas honorer. `AI_INTELLIGENT_ASSISTANT=shadow` ferait répondre deux
+  //    moteurs aux mêmes questions (§10.4) — le démarrage échoue plutôt que de
+  //    laisser croire à une mesure.
+  const { assertFlagModesSupported } = await import('@/services/ai/flags/ai-feature-flags');
+  assertFlagModesSupported();
+
   // 3. Tarifs : en production, un modèle sans tarif bloque le démarrage —
   //    mais uniquement si l'usage qui l'emploie est réellement basculé
   //    (cf. `cost-catalog.ts`). Corrige le défaut n°10 sans rendre le socle

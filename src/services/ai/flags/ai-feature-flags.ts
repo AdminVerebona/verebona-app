@@ -61,6 +61,43 @@ export function shouldRunLegacy(flag: AiFlag): boolean {
   return readMode(flag) !== 'enabled';
 }
 
+/**
+ * Drapeaux pour lesquels le mode observation n'a pas de sens — CDC §10.2.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI L'ASSISTANT N'A PAS DE MODE OBSERVATION
+ *
+ * Le §10.2 définit l'observation comme « le nouveau moteur produit ses
+ * décisions, les décisions ne sont pas appliquées ». Cela suppose une décision
+ * qu'on peut retenir : une valeur de champ, une échéance. Une réponse
+ * d'assistant, elle, n'a pas d'autre destination que l'écran — la produire sans
+ * l'afficher ne mesure rien, et l'afficher EST l'appliquer.
+ *
+ * Or les deux sémantiques se combinent mal ici : `shouldRunLegacy` laisse
+ * l'ancien moteur en service tant que le mode n'est pas `enabled`, tandis que
+ * `isUseCaseRunning` démarre le nouveau dès `shadow`. `AI_INTELLIGENT_ASSISTANT=shadow`
+ * ferait donc répondre l'assistant ET la recherche sémantique historique aux
+ * mêmes questions : exactement le double fonctionnement interdit par le §10.4.
+ *
+ * Le mode est refusé au démarrage plutôt que corrigé en silence : un
+ * exploitant qui écrit `shadow` croit mesurer quelque chose, et doit apprendre
+ * qu'il n'y a rien à mesurer.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+const SANS_MODE_OBSERVATION: readonly AiFlag[] = ['AI_INTELLIGENT_ASSISTANT'];
+
+/** Lève si un drapeau porte un mode qu'il ne sait pas honorer. */
+export function assertFlagModesSupported(): void {
+  const fautifs = SANS_MODE_OBSERVATION.filter((f) => readMode(f) === 'shadow');
+  if (fautifs.length === 0) return;
+
+  throw new Error(
+    `[ai-flags] Mode « shadow » non supporté pour : ${fautifs.join(', ')}. ` +
+    "Une réponse d'assistant n'a pas d'existence séparée de son affichage : il n'y a " +
+    'rien à observer sans appliquer. Utilisez `legacy` ou `enabled`.',
+  );
+}
+
 /** Instantané pour l'administration et l'inventaire d'exécution. */
 export function snapshotFlags(): Record<AiFlag, FlagMode> {
   return Object.fromEntries(AI_FLAGS.map((f) => [f, readMode(f)])) as Record<AiFlag, FlagMode>;

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db, ensureMigrations, ensureUnaccent } from '@/db';
 import { geminiSearch } from '@/lib/gemini-search';
+import { shouldRunLegacy } from '@/services/ai/flags/ai-feature-flags';
 
 const PREMIUM_PLANS = new Set(['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO']);
 
@@ -196,7 +197,12 @@ export async function GET(req: NextRequest) {
     }
 
     // Aucun résultat SQL → tenter Gemini pour les comptes Premium (sémantique)
-    if (PREMIUM_PLANS.has(session.planType)) {
+    //
+    // `shouldRunLegacy` : ce repli est l'usage historique n°6. La recherche
+    // classique reste ouverte à tous — l'offre Standard en dépend — mais son
+    // repli sémantique sort du chemin dès que l'assistant est basculé, sans
+    // quoi deux moteurs répondraient à la même requête (§10.4, critère n°15).
+    if (shouldRunLegacy('AI_INTELLIGENT_ASSISTANT') && PREMIUM_PLANS.has(session.planType)) {
       try {
         const aiResults = await geminiSearch(q, accountId);
         if (aiResults.length > 0) {
