@@ -4,11 +4,10 @@
     "Ce fichier ne doit JAMAIS grossir. Chaque entrée retirée devient définitivement interdite.",
     "Régénération après résorption : npm run ai:baseline"
   ],
-  "generatedAt": "2026-07-31T12:25:49.152Z",
+  "generatedAt": "2026-09-18T08:13:24.794Z",
   "phase": 1,
-  "count": 8,
+  "count": 7,
   "allowed": [
-    "sdk:src/app/api/admin/ai-instructions/apply/route.ts",
     "sdk:src/app/api/assets/[id]/ai-suggestions/route.ts",
     "sdk:src/lib/gemini-search.ts",
     "sdk:src/lib/intelligent-search.ts",

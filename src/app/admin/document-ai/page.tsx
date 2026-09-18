@@ -377,25 +377,42 @@ export default function DocumentAIAdminPage() {
   const [submitting, setSubmitting] = useState(false);
 
   // Inline preview state after Gemini analysis
-  interface GeminiPreview {
-    instructionId: number;
+  /**
+   * Proposition de modification — CDC §4.5.3.
+   *
+   * Remplace l'ancien aperçu, qui affichait des patches DÉJÀ appliqués aux
+   * fichiers. Rien n'est appliqué ici : la demande part à l'état PROPOSED
+   * et attend le diff, les tests et deux validations humaines distinctes.
+   */
+  interface PromptProposal {
+    changeRequestId: number;
+    promptCode: string;
     instructionText: string;
-    analysis: string;
-    patchResults: Array<{ file: string; applied: boolean; reason: string; error?: string }>;
-    patchedFiles: string[];
+    status: string;
+    impactAnalysis: string;
+    risks: string[];
+    rejected?: string;
+    nextSteps?: string[];
   }
-  const [geminiPreview, setGeminiPreview] = useState<GeminiPreview | null>(null);
+
+  const [proposal, setProposal] = useState<PromptProposal | null>(null);
+  const [promptCode, setPromptCode] = useState('');
+  const [governablePrompts, setGovernablePrompts] = useState<Array<{ promptCode: string; useCaseCode: string }>>([]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [fMappings, dMappings, proposals] = await Promise.all([
+      const [fMappings, dMappings, proposals, gouvernance] = await Promise.all([
         apiClient.get<{ mappings: TaxonomyMapping[] }>('/api/admin/document-ai/mappings?type=function_code'),
         apiClient.get<{ mappings: TaxonomyMapping[] }>('/api/admin/document-ai/mappings?type=date_label'),
         apiClient.get<{ proposals: ProposalAggregate[] }>('/api/admin/document-ai/proposals'),
+        // Le catalogue vient du référentiel serveur : le dupliquer ici le ferait
+        // diverger au premier ajout d'opération.
+        apiClient.get<{ governablePrompts: Array<{ promptCode: string; useCaseCode: string }> }>('/api/admin/ai/prompt-changes'),
       ]);
       setFunctionMappings(fMappings.mappings);
       setDateMappings(dMappings.mappings);
+      setGovernablePrompts(gouvernance.governablePrompts ?? []);
       setFunctionProposals(proposals.proposals.filter(p => p.targetKey === 'retainedFunctionCode'));
       setDateProposals(proposals.proposals.filter(p => p.targetKey === 'documentDate'));
     } catch {
@@ -406,48 +423,43 @@ export default function DocumentAIAdminPage() {
   }, []);
 
 
-  const PROMPT_LABELS: Record<string, string> = {
-    'extract_v1.txt': 'Analyse IA documentaire',
-    'extract_meta_v1.txt': 'Analyse IA documentaire',
-    'extract_detail_v1.txt': 'Analyse IA documentaire',
-    'extract_agenda_v1.txt': 'Analyse IA documentaire',
-    'agenda_detect_v1.txt': 'Analyse IA documentaire',
-    'asset_suggest_v1.txt': 'Suggestions de champs',
-    'search_v1.txt': 'Champ recherche',
-  };
-
-  const getPromptCategory = (files: string[]): string => {
-    const cats = [...new Set(files.map(f => PROMPT_LABELS[f] ?? f))];
-    return cats.join(' + ');
-  };
-
+  /**
+   * Crée une demande de modification — CDC §4.5.3.
+   *
+   * L'ancien parcours appelait `/api/admin/ai-instructions/apply`, qui écrivait
+   * directement dans les prompts. Cette route est retirée (410) : le circuit
+   * passe désormais par une demande analysée, puis diff, tests et double
+   * validation. Aucune modification n'est appliquée par ce bouton.
+   */
   const handleSubmitInstruction = async () => {
-    if (!newInstruction.trim()) return;
+    if (!newInstruction.trim() || !promptCode) return;
     setSubmitting(true);
-    setGeminiPreview(null);
+    setProposal(null);
     try {
-      // Save instruction
-      const saved = await apiClient.post<{ instruction: AiInstruction }>('/api/admin/ai-instructions', { instruction: newInstruction.trim() });
-      const instructionId = saved.instruction.id;
+      // La consigne reste consignée telle quelle : c'est la trace de la demande
+      // métier, indépendante de ce que le modèle en fera.
+      await apiClient.post<{ instruction: AiInstruction }>('/api/admin/ai-instructions', { instruction: newInstruction.trim() });
       const instructionText = newInstruction.trim();
+
+      const data = await apiClient.post<{
+        changeRequestId: number; status: string; impactAnalysis: string;
+        risks?: string[]; reason?: string; nextSteps?: string[];
+      }>('/api/admin/ai/prompt-changes', { promptCode, instruction: instructionText });
+
       setNewInstruction('');
-
-      // Immediately trigger Gemini analysis
-      const data = await apiClient.post<{ analysis: string; patchResults: Array<{ file: string; applied: boolean; reason: string; error?: string }>; patchedFiles: string[] }>(
-        '/api/admin/ai-instructions/apply',
-        { instructionId }
-      );
-
-      // Show inline preview
-      setGeminiPreview({
-        instructionId,
+      setProposal({
+        changeRequestId: data.changeRequestId,
+        promptCode,
         instructionText,
-        analysis: data.analysis,
-        patchResults: data.patchResults,
-        patchedFiles: data.patchedFiles,
+        status: data.status,
+        impactAnalysis: data.impactAnalysis,
+        risks: data.risks ?? [],
+        rejected: data.reason,
+        nextSteps: data.nextSteps,
       });
+      await loadData();
     } catch {
-      toast.error("Erreur lors de l'analyse par Gemini");
+      toast.error("Erreur lors de la création de la demande de modification");
     } finally {
       setSubmitting(false);
     }
@@ -561,73 +573,88 @@ export default function DocumentAIAdminPage() {
               className="min-h-[100px] resize-none text-sm bg-[color:var(--bg-input)] border-[color:var(--border-subtle)] focus:border-[#a78bfa]/50"
               onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmitInstruction(); }}
             />
+            {/* Une demande porte sur UN prompt versionné : c'est l'unité que la
+                gouvernance sait comparer, tester, activer et restaurer. */}
+            <select
+              value={promptCode}
+              onChange={e => setPromptCode(e.target.value)}
+              className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]"
+            >
+              <option value="">Choisir le prompt à modifier…</option>
+              {governablePrompts.map(p => (
+                <option key={p.promptCode} value={p.promptCode}>
+                  {p.promptCode} — {p.useCaseCode}
+                </option>
+              ))}
+            </select>
             <div className="flex items-center justify-between">
               <span className="text-xs text-[color:var(--text-muted)]">Ctrl+Entrée pour envoyer</span>
               <Button
                 size="sm"
                 onClick={handleSubmitInstruction}
-                disabled={submitting || !newInstruction.trim()}
+                disabled={submitting || !newInstruction.trim() || !promptCode}
                 className="bg-[#a78bfa] hover:bg-[#8b5cf6] text-white"
               >
                 {submitting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5 mr-1.5" />}
-                {submitting ? 'Analyse en cours…' : 'Analyser avec Gemini'}
+                {submitting ? 'Analyse en cours…' : 'Proposer une modification'}
               </Button>
             </div>
           </div>
 
-          {/* Gemini preview result */}
-          {geminiPreview && (
+          {/* Proposition de modification — CDC §4.5.3 */}
+          {proposal && (
             <div className="rounded-xl border border-[#a78bfa]/30 bg-[#a78bfa]/5 p-4 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-[#a78bfa]" />
-                  Résultat de l'analyse Gemini
+                  Demande n°{proposal.changeRequestId} — {proposal.status}
                 </h3>
-                <button onClick={() => setGeminiPreview(null)} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors text-lg leading-none">×</button>
+                <button onClick={() => setProposal(null)} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors text-lg leading-none">×</button>
               </div>
 
-              {/* Instruction recap */}
               <div className="bg-[color:var(--bg-card)] rounded-lg px-3 py-2 border border-[color:var(--border-subtle)]">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">Instruction analysée</p>
-                <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed">{geminiPreview.instructionText}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-1">
+                  Instruction — prompt <span className="font-mono">{proposal.promptCode}</span>
+                </p>
+                <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed">{proposal.instructionText}</p>
               </div>
 
-              {/* Analysis */}
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-1.5">Interprétation</p>
-                <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed whitespace-pre-wrap">{geminiPreview.analysis}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-1.5">Analyse d&apos;impact</p>
+                <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed whitespace-pre-wrap">{proposal.impactAnalysis}</p>
               </div>
 
-              {/* Prompts affected */}
-              {geminiPreview.patchedFiles.length > 0 ? (
+              {proposal.risks.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-2">Prompts modifiés</p>
-                  <div className="space-y-1.5">
-                    {geminiPreview.patchResults.filter(r => r.applied).map((r, i) => (
-                      <div key={i} className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <span className="text-xs font-semibold text-green-500">{getPromptCategory([r.file])}</span>
-                          <span className="text-[10px] text-[color:var(--text-muted)] ml-2 font-mono">{r.file}</span>
-                        </div>
-                        <span className="text-[10px] text-[color:var(--text-muted)] truncate max-w-[160px]">{r.reason}</span>
-                      </div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)] mb-1.5">Risques identifiés</p>
+                  <ul className="space-y-1">
+                    {proposal.risks.map((r, i) => (
+                      <li key={i} className="flex items-start gap-2 text-sm text-[color:var(--text-secondary)]">
+                        <XCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                        <span>{r}</span>
+                      </li>
                     ))}
-                    {geminiPreview.patchResults.filter(r => !r.applied).map((r, i) => (
-                      <div key={i} className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-[color:var(--bg-page)] border border-[color:var(--border-subtle)] opacity-60">
-                        <XCircle className="w-3.5 h-3.5 text-[color:var(--text-muted)] shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <span className="text-xs text-[color:var(--text-muted)]">{r.file}</span>
-                        </div>
-                        <span className="text-[10px] text-[color:var(--text-muted)] truncate max-w-[160px]">{r.error ?? 'Non appliqué'}</span>
-                      </div>
-                    ))}
-                  </div>
+                  </ul>
                 </div>
-              ) : (
+              )}
+
+              {proposal.rejected ? (
                 <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-[color:var(--bg-page)] border border-[color:var(--border-subtle)]">
                   <CheckCircle2 className="w-4 h-4 text-[color:var(--text-muted)] shrink-0" />
-                  <p className="text-sm text-[color:var(--text-muted)]">Les prompts existants satisfont déjà cette instruction — aucune modification nécessaire.</p>
+                  <p className="text-sm text-[color:var(--text-muted)]">{proposal.rejected}</p>
+                </div>
+              ) : (
+                <div className="rounded-lg bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] px-3 py-2.5 space-y-1.5">
+                  {/* Dire explicitement que rien n'est appliqué : l'ancien parcours
+                      appliquait, et l'habitude est plus tenace que l'interface. */}
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--text-muted)]">
+                    Aucune modification n&apos;est active à ce stade
+                  </p>
+                  <ol className="space-y-1 list-decimal list-inside">
+                    {(proposal.nextSteps ?? []).map((e, i) => (
+                      <li key={i} className="text-sm text-[color:var(--text-secondary)]">{e}</li>
+                    ))}
+                  </ol>
                 </div>
               )}
             </div>
