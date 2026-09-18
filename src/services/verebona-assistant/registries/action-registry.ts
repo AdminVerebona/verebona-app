@@ -16,6 +16,12 @@ const A = (
   isBusinessAction = true,
 ): ActionDefinition => ({ type, target, paramKeys, control, isBusinessAction });
 
+/**
+ * ⚠️ `OPEN_SUPPLIER` et `OPEN_SUPPLIERS` restent au catalogue (le type est une
+ * union fermée, §22.11) mais ne sont plus proposés par aucune intention :
+ * l'application n'expose pas de route `/fournisseurs`. Les rétablir suppose
+ * d'ouvrir la page correspondante d'abord.
+ */
 export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = {
   OPEN_ASSET: A('OPEN_ASSET', "Fiche d'un bien", ['assetId'], 'account_object'),
   OPEN_DOCUMENT: A('OPEN_DOCUMENT', 'Document', ['documentId'], 'account_object'),
@@ -32,7 +38,10 @@ export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = 
   START_ADD_ASSET: A('START_ADD_ASSET', 'Création bien', ['assetType'], 'supported_type'),
   START_ADD_DOCUMENT: A('START_ADD_DOCUMENT', 'Ajout document', ['assetId'], 'account_object'),
   START_ADD_AGENDA_ITEM: A('START_ADD_AGENDA_ITEM', 'Création échéance', ['assetId'], 'account_object'),
-  OPEN_EXPORT_AREA: A('OPEN_EXPORT_AREA', 'Zone exports', ['assetId', 'exportType'], 'account_route'),
+  // Corrigé : l'espace d'export n'existe que DANS une fiche bien
+  // (`/assets/[id]?tab=exports`). Sans bien cible il n'y a pas de page, le
+  // contrôle est donc celui d'un objet du compte, pas d'une route libre.
+  OPEN_EXPORT_AREA: A('OPEN_EXPORT_AREA', 'Zone exports', ['assetId', 'exportType'], 'account_object'),
   // Actions non-métier (ne comptent pas dans la limite 1+2 — §22.9)
   SHOW_SOURCES: A('SHOW_SOURCES', 'Sources de la réponse', ['messageId'], 'message_owner', false),
   SHOW_EXPLANATION: A('SHOW_EXPLANATION', 'Explication', ['messageId'], 'message_owner', false),
@@ -41,7 +50,7 @@ export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = 
 
 /** Types d'actions autorisés par intention (§22.1). */
 export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActionType[]>> = {
-  NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_SUPPLIERS', 'OPEN_SUPPLIER', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE'],
+  NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE'],
   NAVIGATION_FIND: ['OPEN_HELP', 'OPEN_DOCUMENTS_PAGE', 'OPEN_AGENDA', 'OPEN_TO_PROCESS'],
   PRODUCT_HELP_HOW_TO: ['OPEN_HELP', 'START_ADD_DOCUMENT', 'START_ADD_ASSET', 'START_ADD_AGENDA_ITEM'],
   PRODUCT_HELP_EXPLAIN: ['OPEN_HELP'],
@@ -50,7 +59,10 @@ export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActi
   ACCOUNT_SEARCH_ASSET: ['OPEN_ASSET', 'OPEN_SEARCH_RESULTS'],
   ACCOUNT_SEARCH_DOCUMENT: ['OPEN_DOCUMENT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_SEARCH_RESULTS'],
   ACCOUNT_SEARCH_AGENDA: ['OPEN_AGENDA_ITEM', 'OPEN_AGENDA'],
-  ACCOUNT_SEARCH_SUPPLIER: ['OPEN_SUPPLIER', 'OPEN_SUPPLIERS'],
+  // Les fournisseurs n'ont pas de page dédiée : ils se consultent depuis les
+  // documents et les équipements qui les référencent. On oriente donc vers
+  // les documents plutôt que vers une route inexistante.
+  ACCOUNT_SEARCH_SUPPLIER: ['OPEN_DOCUMENTS_PAGE', 'OPEN_DOCUMENT'],
   ACCOUNT_FACT_ASSET: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'SHOW_SOURCES'],
   ACCOUNT_FACT_DOCUMENT: ['OPEN_DOCUMENT', 'SHOW_SOURCES'],
   ACCOUNT_FACT_AGENDA: ['OPEN_AGENDA_ITEM', 'SHOW_SOURCES'],
