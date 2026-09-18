@@ -141,13 +141,34 @@ export function getPricingReadiness(): PricingReadiness {
  *
  * Hors production, jamais de blocage : les tests et le développement local n'ont
  * pas à dépendre de la disponibilité de l'API de facturation.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠️ SECOND DÉFAUT BLOQUANT, CONSTATÉ EN RECETTE LE 18/09/2026
+ *
+ * Changer le modèle par défaut de l'assistant a rendu la préproduction
+ * indémarrable : `gemini-3.5-flash-lite` n'avait pas de tarif en base, donc ce
+ * contrôle levait, donc l'application ne démarrait pas — donc la route qui
+ * renseigne les tarifs, `/api/cron/ai/refresh-model-pricing`, était
+ * inaccessible. Un verrou qui s'enferme lui-même : le seul remède demandait que
+ * l'application tourne, ce que le verrou empêchait.
+ *
+ * La cause profonde n'était pas le modèle. C'était de refuser le démarrage pour
+ * un tarif que le code CONNAÎT : le catalogue public, versionné dans le dépôt,
+ * porte ce modèle depuis le 30/07/2026.
+ *
+ * Le contrôle essaie donc d'abord de combler les manques depuis ce catalogue,
+ * puis relit. Ce qui reste manquant après cela est un modèle que personne ne
+ * sait tarifer — et là, le blocage garde tout son sens.
  */
 export async function assertPricingReady(): Promise<void> {
   // `loadedAt` et non `size` : un catalogue vide mais chargé est un état connu,
   // pas une raison de réinterroger la base à chaque appel.
   if (getCacheState().loadedAt === null) await loadPricingCache();
 
-  const state = getPricingReadiness();
+  let state = getPricingReadiness();
+
+  // Auto-amorçage depuis le catalogue public avant de bloquer.
+  if (state.blocking) state = await seedFromPublicCatalog(state);
 
   if (state.runningUseCases.length === 0) {
     console.info(
@@ -169,6 +190,51 @@ export async function assertPricingReady(): Promise<void> {
   if (state.unverified.length > 0) {
     console.warn(`[ai-cost] ⚠️ Tarifs saisis manuellement non confirmés : ${state.unverified.join(', ')}`);
   }
+}
+
+/**
+ * Comble les tarifs manquants depuis le catalogue public embarqué.
+ *
+ * Les prix écrits portent `source: 'public_catalog'` et `verified: false` : ce
+ * sont les tarifs affichés par le fournisseur, justes mais sans les remises
+ * éventuelles du compte. L'écran Fournisseur IA les distingue déjà d'une grille
+ * confirmée, et `/api/cron/ai/refresh-model-pricing` les remplacera dès qu'il
+ * pourra être appelé.
+ *
+ * Écrire au démarrage se justifie ici, et seulement ici : sans cela le démarrage
+ * échoue, et aucune route ne peut plus rien corriger.
+ */
+async function seedFromPublicCatalog(state: PricingReadiness): Promise<PricingReadiness> {
+  // `toModelPrice` porte la conversion officielle. La refaire ici arrondirait
+  // 0,3 $/million à zéro : les tarifs sont des décimales, pas des entiers.
+  const { findCatalogEntry, toModelPrice } = await import('./pricing/gemini-public-catalog');
+  const { upsertPrice } = await import('./pricing/pricing.repository');
+
+  let comblés = 0;
+  for (const manquant of state.missingForRunning) {
+    // `missingForRunning` rend « provider/model ».
+    const [provider, ...reste] = manquant.split('/');
+    const model = reste.join('/');
+    if (provider !== 'gemini') continue;
+    const entry = findCatalogEntry(model);
+    if (!entry) continue;
+
+    try {
+      await upsertPrice(toModelPrice(entry), 'public_catalog', false);
+      comblés++;
+    } catch (e) {
+      console.error(`[ai-cost] Amorçage tarifaire impossible pour ${manquant} :`, (e as Error).message);
+    }
+  }
+
+  if (comblés === 0) return state;
+
+  console.warn(
+    `[ai-cost] ${comblés} tarif(s) amorcé(s) depuis le catalogue public embarqué. ` +
+    'Lancez /api/cron/ai/refresh-model-pricing pour obtenir la grille du compte.',
+  );
+  await loadPricingCache();
+  return getPricingReadiness();
 }
 
 export { loadPricingCache, getCachedPrice } from './pricing/pricing.repository';
