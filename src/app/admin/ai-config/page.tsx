@@ -193,7 +193,9 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
  * La raison est affichée avec l'indicateur : elle dit ce qu'il faudrait
  * instrumenter, et évite qu'on redécouvre chaque fois pourquoi la case est vide.
  */
-function Supervision({ metrics, windowDays }: { metrics: Metric[]; windowDays: number }) {
+function Supervision({
+  metrics, windowDays, onWindowChange,
+}: { metrics: Metric[]; windowDays: number; onWindowChange: (d: number) => void }) {
   const format = (m: Metric): string => {
     if (m.value === null) return '—';
     if (m.unit === 'percent') return `${m.value} %`;
@@ -203,11 +205,32 @@ function Supervision({ metrics, windowDays }: { metrics: Metric[]; windowDays: n
 
   return (
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
-      <div className="flex items-baseline justify-between gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Supervision</h3>
-        <span className="text-xs text-[color:var(--text-muted)]">
-          {windowDays} derniers jours
-        </span>
+        {/*
+          Fenêtre réglable plutôt que compteurs remis à zéro. Ces indicateurs
+          comptent des traces réelles : les effacer pour assainir l'écran
+          reviendrait à supprimer la preuve de ce qui s'est passé. Regarder de
+          plus près suffit, et n'altère rien.
+        */}
+        <div className="flex gap-1">
+          {[
+            { d: 1, label: '24 h' },
+            { d: 7, label: '7 j' },
+            { d: 30, label: '30 j' },
+          ].map((f) => (
+            <button
+              key={f.d}
+              onClick={() => onWindowChange(f.d)}
+              className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                windowDays === f.d
+                  ? 'border-[color:var(--accent)] text-[color:var(--accent)] bg-[color:var(--accent-soft)]'
+                  : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'}`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -655,6 +678,9 @@ export default function AiConfigPage() {
   const [confirm, setConfirm] = useState<null | { kind: 'rollback' | 'validate' | 'activate'; onOk: () => void }>(null);
   const [leaving, setLeaving] = useState<null | (() => void)>(null);
   const [metrics, setMetrics] = useState<Record<string, { metrics: Metric[]; windowDays: number }>>({});
+  // Fenêtre choisie par traitement : on observe rarement T1 et T2 à la même
+  // échelle, et imposer une fenêtre commune obligerait à la régler deux fois.
+  const [fenetres, setFenetres] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -685,17 +711,21 @@ export default function AiConfigPage() {
   // Chargés à l'ouverture de l'onglet, et non tous d'un coup : cinq requêtes
   // d'agrégation à chaque affichage de l'écran seraient payées même par qui
   // vient seulement corriger un prompt.
+  const fenetre = fenetres[tab] ?? 30;
+
   useEffect(() => {
-    if (metrics[tab]) return;
+    if (metrics[tab]?.windowDays === fenetre) return;
     let annule = false;
     apiClient
-      .get<{ metrics: Metric[]; windowDays: number }>(`/api/admin/ai/treatments/${tab}/metrics`)
+      .get<{ metrics: Metric[]; windowDays: number }>(
+        `/api/admin/ai/treatments/${tab}/metrics?days=${fenetre}`,
+      )
       .then((r) => { if (!annule) setMetrics((m) => ({ ...m, [tab]: r })); })
       // Silencieux : la supervision est un complément, son absence ne doit pas
       // empêcher de configurer.
       .catch(() => {});
     return () => { annule = true; };
-  }, [tab, metrics]);
+  }, [tab, fenetre, metrics]);
 
   const openVersion = useCallback(async (id: number) => {
     try {
@@ -947,6 +977,7 @@ export default function AiConfigPage() {
                   <Supervision
                     metrics={metrics[t.code].metrics}
                     windowDays={metrics[t.code].windowDays}
+                    onWindowChange={(d) => setFenetres((f) => ({ ...f, [t.code]: d }))}
                   />
                 )}
               </TabsContent>
