@@ -273,9 +273,13 @@ function Supervision({
  * que l'administrateur ait vu ce qui va changer.
  */
 function PromptControl({
-  versionId, readOnly, onApplied,
-}: { versionId: number; readOnly: boolean; onApplied: () => void }) {
-  const [cible, setCible] = useState<Treatment>('T1');
+  versionId, readOnly, onApplied, treatment,
+}: {
+  versionId: number; readOnly: boolean; onApplied: () => void;
+  /** Traitement de l'onglet. Absent = T5 choisit sa cible. */
+  treatment?: Treatment;
+}) {
+  const [cible, setCible] = useState<Treatment>(treatment ?? 'T1');
   const [instruction, setInstruction] = useState('');
   const [analyse, setAnalyse] = useState<T5Analysis | null>(null);
   const [encours, setEncours] = useState(false);
@@ -323,22 +327,29 @@ function PromptControl({
           Demander une modification
         </h3>
         <p className="text-xs text-[color:var(--text-muted)]">
-          Décrivez ce qui ne va pas. Prompt Control dira d&apos;abord si le prompt est
-          bien en cause — et proposera une modification seulement dans ce cas.
+          Décrivez ce qui ne va pas, en français. Prompt Control dira d&apos;abord si le
+          prompt est bien en cause — et proposera une modification seulement dans ce cas.
         </p>
       </div>
 
-      <div className="flex gap-2">
-        <select className={`${selectClass} max-w-[220px]`} value={cible} disabled={readOnly || encours}
-          onChange={(e) => { setCible(e.target.value as Treatment); setAnalyse(null); }}>
-          {(['T1', 'T2', 'T3', 'T4'] as const).map((t) => (
-            <option key={t} value={t}>Prompt {t}</option>
-          ))}
-        </select>
-        <span className="text-xs text-[color:var(--text-muted)] self-center">
-          Prompt Control ne modifie pas son propre prompt.
-        </span>
-      </div>
+      {/*
+        Le sélecteur ne s'affiche que depuis l'onglet T5, où la cible est
+        réellement un choix. Depuis l'onglet d'un traitement, la cible est ce
+        traitement : la redemander obligerait à désigner ce qu'on regarde déjà.
+      */}
+      {!treatment && (
+        <div className="flex gap-2">
+          <select className={`${selectClass} max-w-[220px]`} value={cible} disabled={readOnly || encours}
+            onChange={(e) => { setCible(e.target.value as Treatment); setAnalyse(null); }}>
+            {(['T1', 'T2', 'T3', 'T4'] as const).map((t) => (
+              <option key={t} value={t}>Prompt {t}</option>
+            ))}
+          </select>
+          <span className="text-xs text-[color:var(--text-muted)] self-center">
+            Prompt Control ne modifie pas son propre prompt.
+          </span>
+        </div>
+      )}
 
       <Textarea
         value={instruction}
@@ -481,17 +492,42 @@ function TreatmentEditor({
 
   return (
     <div className="space-y-6">
-      <Field
-        label="Prompt"
-        hint="Prompt unique du traitement, versionné avec la configuration."
-      >
-        <Textarea
-          value={entry.prompt}
-          disabled={readOnly}
-          onChange={(e) => set('prompt', e.target.value)}
-          className="min-h-[220px] font-mono text-xs bg-[color:var(--bg-input)]"
-        />
-      </Field>
+      {/*
+        ══════════════════════════════════════════════════════════════════
+        L'ÉDITEUR DIRECT EST REPLIÉ, ET C'EST DÉLIBÉRÉ
+        ══════════════════════════════════════════════════════════════════
+        Le geste normal est de décrire ce qu'on veut en français, au-dessus :
+        c'est le besoin principal du SCR-06, et l'administrateur n'a pas à
+        rédiger un prompt pour obtenir un changement de comportement.
+
+        ⚠️ Mais l'éditeur RESTE ACCESSIBLE, et il ne doit pas disparaître.
+        Prompt Control dépend d'un modèle. Si le fournisseur est en panne, ou si
+        le prompt de T5 est lui-même désaccordé de son schéma — ce qui est
+        arrivé le 18/09/2026 sur `understand_request` —, un administrateur privé
+        d'édition directe n'aurait plus aucun moyen de réparer l'outil censé
+        réparer les autres.
+
+        Le SCR-02 le prévoit d'ailleurs explicitement : « Éditeur du prompt T1
+        unique, versionné, sans limite artificielle imposée par le BO ».
+      */}
+      <details className="rounded-lg border border-[color:var(--border-subtle)] p-3">
+        <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
+          Modifier le prompt directement
+        </summary>
+        <div className="pt-3 space-y-2">
+          <p className="text-xs text-[color:var(--text-muted)]">
+            Édition manuelle du prompt, versionnée avec le reste de la configuration.
+            À réserver aux cas où Prompt Control ne peut pas aider — panne du
+            fournisseur, correction urgente.
+          </p>
+          <Textarea
+            value={entry.prompt}
+            disabled={readOnly}
+            onChange={(e) => set('prompt', e.target.value)}
+            className="min-h-[220px] font-mono text-xs bg-[color:var(--bg-input)]"
+          />
+        </div>
+      </details>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Modèle principal">
@@ -944,6 +980,42 @@ export default function AiConfigPage() {
                   </div>
                 )}
 
+                {/*
+                  Zone en langage naturel EN TÊTE de chaque onglet T1–T4, déjà
+                  pointée sur le traitement affiché. C'est le besoin principal du
+                  SCR-06 : décrire ce qu'on veut, plutôt que rédiger un prompt.
+
+                  Absente de T5, qui ne modifie pas son propre prompt (T5-002).
+                */}
+                {current && t.code !== 'T5' && (
+                  <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
+                    <PromptControl
+                      versionId={current.id}
+                      readOnly={readOnly}
+                      treatment={t.code}
+                      onApplied={() => openVersion(current.id)}
+                    />
+                  </div>
+                )}
+
+                {/*
+                  Le SCR-06 place la « Conversation T5 » dans cet onglet. Elle
+                  vit désormais dans chaque onglet de traitement, déjà pointée
+                  sur la bonne cible : demander une modification de T1 depuis
+                  l'onglet T5 obligeait à re-désigner T1, alors qu'on venait de
+                  le quitter.
+
+                  Un renvoi plutôt qu'une seconde zone : deux chemins pour le
+                  même geste font douter de leur équivalence.
+                */}
+                {t.code === 'T5' && (
+                  <p className="text-sm text-[color:var(--text-muted)]">
+                    Pour demander une modification de prompt, ouvrez l&apos;onglet du
+                    traitement concerné : la zone de demande s&apos;y trouve, déjà pointée
+                    sur lui. Prompt Control ne modifie pas son propre prompt.
+                  </p>
+                )}
+
                 {drafts[t.code] && (
                   <TreatmentEditor
                     entry={drafts[t.code]}
@@ -963,14 +1035,6 @@ export default function AiConfigPage() {
                       <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer {t.code}
                     </Button>
                   </div>
-                )}
-
-                {t.code === 'T5' && current && (
-                  <PromptControl
-                    versionId={current.id}
-                    readOnly={readOnly}
-                    onApplied={() => openVersion(current.id)}
-                  />
                 )}
 
                 {metrics[t.code] && (
