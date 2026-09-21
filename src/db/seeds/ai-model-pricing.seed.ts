@@ -52,8 +52,29 @@ interface PublicPrice {
  * Un modèle absent de `registry/operations.ts` n'a pas à figurer ici : le
  * catalogue tarifaire décrit ce que l'application appelle, pas le catalogue du
  * fournisseur.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠️ CETTE LISTE EST LA SECONDE GRILLE TARIFAIRE DU DÉPÔT, ET ELLE A DÉRIVÉ
+ *
+ * `gateway/pricing/gemini-public-catalog.ts` en porte une autre. Le 18/09/2026,
+ * le modèle par défaut de l'assistant est passé à `gemini-3.5-flash-lite` :
+ * présent dans le catalogue de la passerelle, absent d'ici. Le contrôle
+ * tarifaire a refusé le démarrage, et le seed censé le réparer ne contenait pas
+ * le modèle manquant.
+ *
+ * Le §18.2 du CDC BO IA demande précisément qu'« aucune grille tarifaire codée
+ * en dur concurrente » ne subsiste. Cette liste doit disparaître au profit du
+ * catalogue de la passerelle ; en attendant, TOUT AJOUT DE MODÈLE DOIT ÊTRE
+ * FAIT AUX DEUX ENDROITS. Un test le vérifie désormais.
  */
 export const PUBLIC_PRICES: PublicPrice[] = [
+  {
+    // Ajouté le 18/09/2026 — modèle principal de l'assistant depuis le retrait
+    // de `gemini-2.5-flash-lite` par le fournisseur.
+    provider: 'gemini', model: 'gemini-3.5-flash-lite',
+    inputPerMillion: 0.30, outputPerMillion: 2.50,
+    note: 'modèle principal assistant',
+  },
   {
     provider: 'gemini', model: 'gemini-3.1-flash-lite',
     inputPerMillion: 0.25, outputPerMillion: 1.50,
@@ -66,7 +87,16 @@ export const PUBLIC_PRICES: PublicPrice[] = [
   },
   {
     provider: 'gemini', model: 'gemini-2.5-pro',
-    inputPerMillion: 2.00, outputPerMillion: 12.00,
+    // ⚠️ Corrigé le 18/09/2026 : cette liste annonçait 2,00 / 12,00, soit 60 %
+    // de plus en entrée que le catalogue de la passerelle. Les deux grilles se
+    // contredisaient sur un modèle réellement employé — le coût d'un même appel
+    // dépendait donc de celle qui avait écrit la ligne en base.
+    //
+    // La valeur retenue est celle de la passerelle, qui correspond au palier de
+    // base publié par le fournisseur. Au-delà de 200 000 tokens le tarif passe
+    // à 2,50 / 15,00 ; ce palier n'est modélisé nulle part, et c'est peut-être
+    // ce qui a inspiré le chiffre intermédiaire d'origine.
+    inputPerMillion: 1.25, outputPerMillion: 10.00,
     retiresOn: '2026-10-16',
     note: 'second repli documentaire ET modèle principal de gouvernance — RETRAIT ANNONCÉ',
   },
