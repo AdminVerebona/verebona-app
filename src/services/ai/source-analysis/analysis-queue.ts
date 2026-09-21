@@ -42,6 +42,30 @@ export interface QueuedAnalysis {
 
 const CONCURRENCE = Math.max(1, Number(process.env.ANALYSIS_QUEUE_CONCURRENCY) || 2);
 
+/**
+ * Marque les fichiers « en file d'attente ».
+ *
+ * Commun aux deux files : c'est cet état que `analysis/check-pending` recherche,
+ * et le perdre priverait la file durable du rattrapage qui protège la file en
+ * mémoire. Une ceinture de plus ne coûte rien.
+ */
+async function marquerEnFile(fileIds: number[], accountId: number): Promise<void> {
+  const ids = [...new Set(fileIds)].filter((id) => Number.isInteger(id));
+  if (ids.length === 0 || !accountId) return;
+  try {
+    await db
+      .update(assetFiles)
+      .set({ analysisState: 'UPLOADED', updatedAt: new Date() })
+      .where(and(
+        inArray(assetFiles.id, ids),
+        eq(assetFiles.accountId, accountId),
+        or(isNull(assetFiles.analysisState), eq(assetFiles.analysisState, 'UPLOADED'), eq(assetFiles.analysisState, 'ANALYSIS_FAILED')),
+      ));
+  } catch (e) {
+    console.error('[analysis-queue] marquage « en file » impossible :', (e as Error).message);
+  }
+}
+
 const file: QueuedAnalysis[] = [];
 /** Fichiers en attente ou en cours — évite qu'un même fichier passe deux fois. */
 const connus = new Set<number>();
@@ -66,21 +90,28 @@ export async function enqueueFileAnalyses(
   accountId: number,
   options: { userId?: number; origin: string },
 ): Promise<number[]> {
+  // ══════════════════════════════════════════════════════════════════════
+  // AIGUILLAGE VERS LA FILE DURABLE (CDC BO IA GEN-004, NFR-003)
+  //
+  // Un seul point de bascule, ici, plutôt qu'un test de drapeau chez chacun
+  // des trois appelants — même raisonnement que `source-analysis/entrypoint`,
+  // où l'audit avait manqué cinq appelants sur huit.
+  //
+  // Les deux files ne tournent jamais ensemble : le mode `shadow` est refusé
+  // au démarrage, car deux files analyseraient le même document deux fois.
+  // ══════════════════════════════════════════════════════════════════════
+  const { isDurableQueueEnabled, enqueueDurableFileAnalyses } =
+    await import('./queue/t1-handler');
+
+  if (isDurableQueueEnabled()) {
+    await marquerEnFile(fileIds, accountId);
+    return enqueueDurableFileAnalyses(fileIds, accountId, options);
+  }
+
   const nouveaux = [...new Set(fileIds)].filter((id) => Number.isInteger(id) && !connus.has(id));
   if (nouveaux.length === 0 || !accountId) return [];
 
-  try {
-    await db
-      .update(assetFiles)
-      .set({ analysisState: 'UPLOADED', updatedAt: new Date() })
-      .where(and(
-        inArray(assetFiles.id, nouveaux),
-        eq(assetFiles.accountId, accountId),
-        or(isNull(assetFiles.analysisState), eq(assetFiles.analysisState, 'UPLOADED'), eq(assetFiles.analysisState, 'ANALYSIS_FAILED')),
-      ));
-  } catch (e) {
-    console.error('[analysis-queue] marquage « en file » impossible :', (e as Error).message);
-  }
+  await marquerEnFile(nouveaux, accountId);
 
   for (const fileId of nouveaux) {
     connus.add(fileId);

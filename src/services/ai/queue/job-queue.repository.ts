@@ -44,6 +44,8 @@ export interface QueuedJob {
   createdAt: Date;
   startedAt: Date | null;
   finishedAt: Date | null;
+  /** Contexte de reprise : identifiants et libellés, jamais de données métier. */
+  payload: Record<string, unknown> | null;
 }
 
 function toJob(r: Row): QueuedJob {
@@ -64,12 +66,14 @@ function toJob(r: Row): QueuedJob {
     createdAt: new Date(String(r.created_at)),
     startedAt: r.started_at ? new Date(String(r.started_at)) : null,
     finishedAt: r.finished_at ? new Date(String(r.finished_at)) : null,
+    payload: (r.payload ?? null) as Record<string, unknown> | null,
   };
 }
 
 const COLS = `id, treatment, account_id, target_type, target_id, status, origin,
               trigger_code, attempts, last_error, available_at,
-              coalesce_requested, head_priority, created_at, started_at, finished_at`;
+              coalesce_requested, head_priority, created_at, started_at, finished_at,
+              payload`;
 
 // ── Mise en file ────────────────────────────────────────────────────────────
 
@@ -78,6 +82,7 @@ export interface EnqueueInput {
   scope?: JobScope;
   origin?: JobOrigin;
   triggerCode?: string | null;
+  payload?: Record<string, unknown> | null;
 }
 
 export interface EnqueueResult {
@@ -136,6 +141,7 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
       scope.targetType ?? null,
       scope.targetId == null ? null : String(scope.targetId),
       key, origin, input.triggerCode ?? null,
+      input.payload ? JSON.stringify(input.payload) : null,
     ] as never[],
   );
 
@@ -202,6 +208,9 @@ export async function completeJob(jobId: number): Promise<{ requeued: boolean }>
     scope: { accountId: job.accountId, targetType: job.targetType, targetId: job.targetId },
     origin: 'automatic',
     triggerCode: 'coalesced',
+    // Le passage consolidé reprend le contexte du travail d'origine : sans lui,
+    // il s'exécuterait sans utilisateur ni origine connus.
+    payload: job.payload,
   });
   return { requeued: true };
 }

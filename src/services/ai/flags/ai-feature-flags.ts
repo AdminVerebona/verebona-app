@@ -16,6 +16,16 @@ export const AI_FLAGS = [
   'AI_PROMPT_GOVERNANCE',
 ] as const;
 
+// ⚠️ N'AJOUTEZ PAS DE DRAPEAU ICI QUI NE SOIT PAS UN USAGE IA.
+//
+// `AI_FLAGS` signifie « un drapeau par usage du référentiel », et deux tests en
+// dépendent : la bijection usage ⇄ drapeau, et l'interprétation du rapport
+// d'inventaire. Une bascule technique — la file durable, par exemple — se pilote
+// par sa propre variable, lue là où elle sert.
+//
+// Essai du 18/09/2026 : y ajouter `AI_DURABLE_QUEUE` a fait tomber les deux
+// tests, à juste titre.
+
 export type AiFlag = (typeof AI_FLAGS)[number];
 
 export type FlagMode =

@@ -139,6 +139,12 @@ export async function register(): Promise<void> {
   //    À terme il remplace `startAnalysisRecoveryScheduler`, qui repart de zéro
   //    à chaque démarrage — la coexistence est temporaire, le temps que T1 y
   //    enregistre son exécutant.
+  //    L'exécutant T1 s'enregistre AVANT le boucleur : un premier tour lancé
+  //    sans lui laisserait les travaux en file jusqu'au tour suivant.
+  const { registerSourceAnalysisHandler } =
+    await import('@/services/ai/source-analysis/queue/t1-handler');
+  registerSourceAnalysisHandler();
+
   const { startQueueWorker } = await import('@/services/ai/queue/queue-worker');
   startQueueWorker();
 
