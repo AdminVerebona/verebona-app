@@ -466,11 +466,50 @@ async function excludeInProgress(ids: number[]): Promise<number[]> {
   return rows.filter((r) => r.state !== 'ANALYZING').map((r) => r.id);
 }
 
+/**
+ * États où l'analyse a ABOUTI. Eux seuls remettent le compteur d'échecs à zéro.
+ *
+ * `ANALYZING` n'en fait pas partie, et c'est tout l'objet du correctif
+ * ci-dessous. La liste est la même que celle du moteur historique
+ * (`unified-analysis-pipeline`), qui avait vu juste.
+ */
+const ETATS_ABOUTIS = ['ANALYZED', 'VALIDATION_REQUIRED', 'CONFLICT_DETECTED', 'FUSION_SUGGESTED'];
+
+/**
+ * Écrit l'état d'analyse d'un ensemble de sources.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠️ CORRECTION D'UNE BOUCLE D'ÉCHEC INFINIE — constatée en recette le 21/09/2026
+ *
+ * Cette fonction remettait `analysisRetryCount` à zéro À CHAQUE APPEL, y compris
+ * pour `ANALYZING`. Or `ANALYZING` est écrit au DÉBUT de chaque analyse.
+ *
+ * Le cycle était donc :
+ *   1. la reprise trouve un document en échec (compteur à 1, sous la limite) ;
+ *   2. elle le relance ; le pipeline écrit `ANALYZING` → compteur remis à ZÉRO ;
+ *   3. l'analyse échoue → compteur à 1 ;
+ *   4. cinq minutes plus tard, retour à l'étape 1.
+ *
+ * Le compteur ne dépassait jamais 1. La limite de dix tentatives de
+ * `analysis-recovery.service` était donc inatteignable, et un document qui
+ * échoue toujours — fichier illisible, contenu vide — était relancé
+ * indéfiniment, avec un appel modèle FACTURÉ à chaque tour.
+ *
+ * Les journaux de préproduction montraient les lots 417 à 435 se succéder de
+ * cinq en cinq minutes sur le même document, sans fin.
+ *
+ * Le moteur historique, lui, ne remettait à zéro que sur les états aboutis.
+ * C'est une régression du nouveau moteur, pas un défaut d'origine.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 async function setState(ids: number[], state: string): Promise<void> {
   if (ids.length === 0) return;
-  await db.update(assetFiles)
-    .set({ analysisState: state, updatedAt: new Date(), analysisRetryCount: 0 })
-    .where(inArray(assetFiles.id, ids));
+
+  const patch: Record<string, unknown> = { analysisState: state, updatedAt: new Date() };
+  // Seul un aboutissement efface l'ardoise. Un début d'analyse ne prouve rien.
+  if (ETATS_ABOUTIS.includes(state)) patch.analysisRetryCount = 0;
+
+  await db.update(assetFiles).set(patch).where(inArray(assetFiles.id, ids));
   for (const id of ids) broadcast(id, { type: 'state_update', analysisState: state });
 }
 
