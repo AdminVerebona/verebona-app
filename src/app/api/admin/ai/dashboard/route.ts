@@ -47,18 +47,68 @@ export async function GET(req: NextRequest) {
   try {
     const environment = getAiEnvironment();
 
-    const [versions, active, effective, packages, queue, states, stop, errors, costs] =
-      await Promise.all([
-        listVersions(environment, 20),
-        getActiveVersion(environment),
-        getEffectiveVersion(environment),
-        listPackages(10),
-        getQueueSummary(),
-        getTreatmentStates(),
-        getEmergencyStop(),
-        getErrorBreakdown(7),
-        getCostReport({ since: new Date(Date.now() - 7 * 86_400_000) }),
-      ]);
+    // ══════════════════════════════════════════════════════════════════════
+    // ⚠️ NEUF SOURCES, ET AUCUNE NE DOIT POUVOIR BLANCHIR L'ÉCRAN
+    //
+    // `Promise.all` rejetait l'ensemble dès qu'une seule requête échouait :
+    // l'écran restait vide, sans dire laquelle ni pourquoi. C'est ce qui s'est
+    // produit en recette le 21/09/2026.
+    //
+    // Le tableau de bord est le premier écran qu'on ouvre quand quelque chose
+    // ne va pas. Qu'il disparaisse à la première anomalie est le pire moment
+    // pour le perdre — et il devient impossible de diagnostiquer ce qui cloche
+    // depuis l'outil fait pour ça.
+    //
+    // Chaque source est donc isolée. Celles qui répondent s'affichent, celles
+    // qui échouent sont NOMMÉES dans `degraded`, et l'écran le montre.
+    // ══════════════════════════════════════════════════════════════════════
+    const resultats = await Promise.allSettled([
+      listVersions(environment, 20),
+      getActiveVersion(environment),
+      getEffectiveVersion(environment),
+      listPackages(10),
+      getQueueSummary(),
+      getTreatmentStates(),
+      getEmergencyStop(),
+      getErrorBreakdown(7),
+      getCostReport({ since: new Date(Date.now() - 7 * 86_400_000) }),
+    ]);
+
+    const NOMS = [
+      'versions', 'version active', 'version effective', 'packages',
+      'file d’attente', 'états des traitements', 'arrêt d’urgence',
+      'erreurs récentes', 'coûts',
+    ];
+
+    const degraded: Array<{ source: string; message: string }> = [];
+    resultats.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        const message = (r.reason as Error)?.message ?? 'erreur inconnue';
+        console.error(`[dashboard] source « ${NOMS[i]} » indisponible :`, message);
+        degraded.push({ source: NOMS[i], message: message.slice(0, 300) });
+      }
+    });
+
+    const valeur = <T,>(i: number, defaut: T): T =>
+      resultats[i].status === 'fulfilled'
+        ? ((resultats[i] as PromiseFulfilledResult<T>).value ?? defaut)
+        : defaut;
+
+    const versions = valeur(0, [] as Awaited<ReturnType<typeof listVersions>>);
+    const active = valeur(1, null as Awaited<ReturnType<typeof getActiveVersion>>);
+    const effective = valeur(2, null as Awaited<ReturnType<typeof getEffectiveVersion>>);
+    const packages = valeur(3, [] as Awaited<ReturnType<typeof listPackages>>);
+    const queue = valeur(4, [] as Awaited<ReturnType<typeof getQueueSummary>>);
+    const states = valeur(5, [] as Awaited<ReturnType<typeof getTreatmentStates>>);
+    const stop = valeur(6, { active: false, reason: null, engagedAt: null });
+    const errors = valeur(7, [] as Awaited<ReturnType<typeof getErrorBreakdown>>);
+    const costs = valeur(8, {
+      totals: {
+        functionalMicros: 0, technicalMicros: 0, calls: 0,
+        failedCalls: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0,
+      },
+      incomplete: false,
+    } as Awaited<ReturnType<typeof getCostReport>>);
 
     const alerts: DashboardAlert[] = [];
 
@@ -186,6 +236,9 @@ export async function GET(req: NextRequest) {
       versions,
       packages,
       alerts,
+      // Nommées plutôt que tues : un tableau de bord partiel qui ne le dit pas
+      // ferait lire des zéros comme des mesures.
+      degraded,
       costs7d: {
         functionalMicros: costs.totals.functionalMicros,
         technicalMicros: costs.totals.technicalMicros,

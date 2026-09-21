@@ -37,6 +37,7 @@ import {
   Loader2, RefreshCw, OctagonX, AlertTriangle, Info, ArrowRight, Plus,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5';
@@ -60,6 +61,8 @@ interface Package {
   sourceEnvironment: string; importedAt: string | null;
 }
 
+interface Degraded { source: string; message: string }
+
 interface Dashboard {
   environment: string;
   isProduction: boolean;
@@ -70,6 +73,8 @@ interface Dashboard {
   versions: Version[];
   packages: Package[];
   alerts: Alert[];
+  /** Sources qui n'ont pas répondu : l'écran s'affiche sans elles, en le disant. */
+  degraded?: Degraded[];
   costs7d: { functionalMicros: number; technicalMicros: number; calls: number; failedCalls: number };
 }
 
@@ -96,13 +101,20 @@ function usd(micros: number): string {
 export default function AiDashboardPage() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setData(await apiClient.get<Dashboard>('/api/admin/ai/dashboard'));
-    } catch {
-      toast.error('Chargement impossible. Réessayez dans un instant.');
+    } catch (e) {
+      // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
+      // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
+      // le message seul obligerait à ouvrir les outils de développement.
+      const err = e as { message?: string; code?: string; status?: number };
+      setErreur([err.message, err.code && `(${err.code}${err.status ? ` — ${err.status}` : ''})`]
+        .filter(Boolean).join(' ') || null);
+      toast.error('Chargement impossible.');
     } finally {
       setLoading(false);
     }
@@ -131,6 +143,10 @@ export default function AiDashboardPage() {
       toast.error('Le relâchement n’a pas abouti.');
     } finally { setBusy(false); }
   };
+
+  if (erreur) {
+    return <EcranEnErreur titre="Tableau de bord indisponible" message={erreur} onRetry={load} />;
+  }
 
   if (loading || !data) {
     return (
@@ -189,6 +205,24 @@ export default function AiDashboardPage() {
           </p>
         )}
       </div>
+
+      {/* Sources indisponibles — nommées, pas tues : sans cela, des zéros se
+          liraient comme des mesures. */}
+      {(data.degraded?.length ?? 0) > 0 && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
+          <p className="text-sm font-medium text-amber-500">
+            Tableau de bord partiel
+          </p>
+          {data.degraded!.map((d, i) => (
+            <p key={i} className="text-xs text-[color:var(--text-secondary)]">
+              {d.source} : {d.message}
+            </p>
+          ))}
+          <p className="text-xs text-[color:var(--text-muted)]">
+            Les chiffres de ces sections sont absents, pas nuls.
+          </p>
+        </div>
+      )}
 
       {/* Alertes — chacune mène à sa vue */}
       {data.alerts.length > 0 && (

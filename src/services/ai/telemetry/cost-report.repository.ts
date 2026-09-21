@@ -84,9 +84,25 @@ function whereClause(): string {
         AND ($5::int  IS NULL OR e.config_version_id = $5)`;
 }
 
+/**
+ * ⚠️ LES DATES PARTENT EN CHAÎNE ISO, JAMAIS EN OBJET `Date`.
+ *
+ * `pgClient.unsafe()` ne sérialise pas les `Date` — contrairement aux requêtes
+ * en gabarit balisé, qui le font. Leur passer un objet lève :
+ *
+ *   TypeError: The "string" argument must be of type string or an instance of
+ *   Buffer or ArrayBuffer. Received an instance of Date
+ *
+ * C'est ce qui a mis le tableau de bord et l'écran Coûts hors service le
+ * 21/09/2026, sans que rien ne le laisse voir : l'erreur survient dans le
+ * pilote, pas dans la requête, et ne cite donc aucune colonne.
+ *
+ * Les comparaisons SQL portent déjà un `::timestamptz` : une chaîne ISO y est
+ * convertie sans ambiguïté, fuseau compris.
+ */
 function params(f: CostFilters, since: Date, until: Date): unknown[] {
   return [
-    since, until,
+    since.toISOString(), until.toISOString(),
     f.treatment ? TREATMENT_DEFINITIONS[f.treatment].useCaseCode : null,
     f.accountId ?? null,
     f.configVersionId ?? null,

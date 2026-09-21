@@ -41,6 +41,7 @@ import {
   Archive, Play, Save, Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
@@ -648,6 +649,7 @@ export default function AiConfigPage() {
   const [drafts, setDrafts] = useState<Record<string, Entry>>({});
   const [dirty, setDirty] = useState<Set<Treatment>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [confirm, setConfirm] = useState<null | { kind: 'rollback' | 'validate' | 'activate'; onOk: () => void }>(null);
@@ -656,6 +658,7 @@ export default function AiConfigPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setErreur(null);
     try {
       const [cat, list] = await Promise.all([
         apiClient.get<Catalogs>('/api/admin/ai/config-catalogs'),
@@ -664,8 +667,14 @@ export default function AiConfigPage() {
       setCatalogs(cat);
       setEnvironment(list.environment);
       setVersions(list.versions);
-    } catch {
-      toast.error('Chargement impossible. Rechargez la page.');
+    } catch (e) {
+      // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
+      // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
+      // le message seul obligerait à ouvrir les outils de développement.
+      const err = e as { message?: string; code?: string; status?: number };
+      setErreur([err.message, err.code && `(${err.code}${err.status ? ` — ${err.status}` : ''})`]
+        .filter(Boolean).join(' ') || null);
+      toast.error('Chargement impossible.');
     } finally {
       setLoading(false);
     }
@@ -771,6 +780,10 @@ export default function AiConfigPage() {
       toast.error("L'opération n'a pas abouti.");
     } finally { setBusy(false); }
   };
+
+  if (erreur) {
+    return <EcranEnErreur titre="Configuration indisponible" message={erreur} onRetry={load} />;
+  }
 
   if (loading) {
     return (

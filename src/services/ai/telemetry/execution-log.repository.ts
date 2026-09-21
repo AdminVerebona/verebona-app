@@ -144,8 +144,11 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
     f.configVersionId ?? null,      // $5
     f.operationCode ?? null,        // $6
     f.errorsOnly ? true : null,     // $7
-    f.since ?? null,                // $8
-    f.until ?? null,                // $9
+    // Chaîne ISO, jamais un objet `Date` : `pgClient.unsafe()` ne les sérialise
+    // pas, et lève dans le pilote sans citer de colonne. Même défaut que sur
+    // l'écran Coûts, trouvé en même temps.
+    f.since?.toISOString() ?? null, // $8
+    f.until?.toISOString() ?? null, // $9
     f.minDurationMs ?? null,        // $10
   ];
 

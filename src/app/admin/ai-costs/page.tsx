@@ -34,6 +34,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Loader2, RefreshCw, AlertTriangle, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 
 interface Breakdown {
@@ -111,19 +112,31 @@ export default function AiCostsPage() {
   const [report, setReport] = useState<Report | null>(null);
   const [period, setPeriod] = useState('30d');
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setErreur(null);
     try {
       setReport(await apiClient.get<Report>(`/api/admin/ai/costs?period=${period}`));
-    } catch {
-      toast.error('Chargement impossible. Réessayez dans un instant.');
+    } catch (e) {
+      // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
+      // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
+      // le message seul obligerait à ouvrir les outils de développement.
+      const err = e as { message?: string; code?: string; status?: number };
+      setErreur([err.message, err.code && `(${err.code}${err.status ? ` — ${err.status}` : ''})`]
+        .filter(Boolean).join(' ') || null);
+      toast.error('Chargement impossible.');
     } finally {
       setLoading(false);
     }
   }, [period]);
 
   useEffect(() => { load(); }, [load]);
+
+  if (erreur) {
+    return <EcranEnErreur titre="Coûts indisponibles" message={erreur} onRetry={load} />;
+  }
 
   if (loading || !report) {
     return (

@@ -37,6 +37,7 @@ import {
   Loader2, RefreshCw, OctagonX, Play, Pause, ArrowUp, XCircle, Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5';
@@ -135,6 +136,7 @@ export default function AiQueuePage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [filterTreatment, setFilterTreatment] = useState('');
   const [filterStatus, setFilterStatus] = useState('PENDING');
@@ -156,8 +158,14 @@ export default function AiQueuePage() {
       ]);
       setOverview(o);
       setJobs(j.jobs);
-    } catch {
-      toast.error('Chargement impossible. Réessayez dans un instant.');
+    } catch (e) {
+      // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
+      // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
+      // le message seul obligerait à ouvrir les outils de développement.
+      const err = e as { message?: string; code?: string; status?: number };
+      setErreur([err.message, err.code && `(${err.code}${err.status ? ` — ${err.status}` : ''})`]
+        .filter(Boolean).join(' ') || null);
+      toast.error('Chargement impossible.');
     } finally {
       setLoading(false);
     }
@@ -204,6 +212,10 @@ export default function AiQueuePage() {
       await load();
     } finally { setBusy(false); }
   };
+
+  if (erreur) {
+    return <EcranEnErreur titre="File d'attente indisponible" message={erreur} onRetry={load} />;
+  }
 
   if (loading) {
     return (

@@ -34,6 +34,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 
 interface Execution {
@@ -83,6 +84,7 @@ export default function AiExecutionsPage() {
   const [page, setPage] = useState<Page | null>(null);
   const [errors, setErrors] = useState<ErrorRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState<string | null>(null);
   const [treatment, setTreatment] = useState('');
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [account, setAccount] = useState('');
@@ -90,6 +92,7 @@ export default function AiExecutionsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setErreur(null);
     try {
       const params = new URLSearchParams({ offset: String(offset), limit: '50' });
       if (treatment) params.set('treatment', treatment);
@@ -102,8 +105,14 @@ export default function AiExecutionsPage() {
       ]);
       setPage(p);
       setErrors(e.breakdown);
-    } catch {
-      toast.error('Chargement impossible. Réessayez dans un instant.');
+    } catch (e) {
+      // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
+      // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
+      // le message seul obligerait à ouvrir les outils de développement.
+      const err = e as { message?: string; code?: string; status?: number };
+      setErreur([err.message, err.code && `(${err.code}${err.status ? ` — ${err.status}` : ''})`]
+        .filter(Boolean).join(' ') || null);
+      toast.error('Chargement impossible.');
     } finally {
       setLoading(false);
     }
@@ -172,7 +181,11 @@ export default function AiExecutionsPage() {
         )}
       </div>
 
-      {loading ? (
+      {erreur ? (
+        // Les filtres restent au-dessus : l'erreur vient parfois d'un filtre
+        // trop large, et masquer l'écran entier empêcherait de le corriger.
+        <EcranEnErreur titre="Exécutions indisponibles" message={erreur} onRetry={load} />
+      ) : loading ? (
         <div className="flex items-center justify-center py-16 text-[color:var(--text-muted)]">
           <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…
         </div>

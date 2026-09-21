@@ -36,6 +36,7 @@ import {
   Loader2, RefreshCw, KeyRound, Eye, CheckCircle2, XCircle, ShieldCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 
 interface Credential {
@@ -102,16 +103,24 @@ function TestReport({ c }: { c: Credential }) {
 export default function AiProviderPage() {
   const [data, setData] = useState<ProviderData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newKey, setNewKey] = useState('');
   const [revealed, setRevealed] = useState<Record<number, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
+    setErreur(null);
     try {
       setData(await apiClient.get<ProviderData>('/api/admin/ai/provider'));
-    } catch {
-      toast.error('Chargement impossible. Réessayez dans un instant.');
+    } catch (e) {
+      // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
+      // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
+      // le message seul obligerait à ouvrir les outils de développement.
+      const err = e as { message?: string; code?: string; status?: number };
+      setErreur([err.message, err.code && `(${err.code}${err.status ? ` — ${err.status}` : ''})`]
+        .filter(Boolean).join(' ') || null);
+      toast.error('Chargement impossible.');
     } finally {
       setLoading(false);
     }
@@ -166,6 +175,10 @@ export default function AiProviderPage() {
       toast.error('La clé n’a pas pu être affichée.');
     }
   };
+
+  if (erreur) {
+    return <EcranEnErreur titre="Fournisseur indisponible" message={erreur} onRetry={load} />;
+  }
 
   if (loading || !data) {
     return (
