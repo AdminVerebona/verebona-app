@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const getVersion = vi.fn();
-const saveEntry = vi.fn(async () => {});
+const saveEntry = vi.fn(async (_v: unknown, _e: unknown, _u: unknown) => {});
 
 vi.mock('../../config/config-version.repository', () => ({
   getVersion: (id: unknown) => getVersion(id),
@@ -106,9 +106,9 @@ describe('écriture', () => {
 
     await applyProposal(1, 'T2', 'n'.repeat(60), 7);
 
-    const [, entry] = saveEntry.mock.calls[0];
-    expect((entry as Record<string, unknown>).primaryModel).toBe('m1');
-    expect((entry as Record<string, unknown>).guardrails).toEqual(['g']);
-    expect((entry as Record<string, unknown>).prompt).toBe('n'.repeat(60));
+    const entry = saveEntry.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(entry.primaryModel).toBe('m1');
+    expect(entry.guardrails).toEqual(['g']);
+    expect(entry.prompt).toBe('n'.repeat(60));
   });
 });

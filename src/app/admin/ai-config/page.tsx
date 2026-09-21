@@ -103,6 +103,18 @@ interface VersionDetail extends Version {
   unavailableModels: Array<{ treatment: string; model: string; rank: string }>;
 }
 
+interface DiffLine { kind: 'added' | 'removed' | 'unchanged'; text: string }
+
+interface T5Analysis {
+  verdict: 'prompt' | 'code' | 'donnees' | 'configuration';
+  analysis: string;
+  proposedContent: string | null;
+  risks: string[];
+  recommendations: string[];
+  diff: { lines: DiffLine[]; added: number; removed: number; identical: boolean } | null;
+  rejected?: string;
+}
+
 interface Metric {
   key: string;
   label: string;
@@ -216,6 +228,175 @@ function Supervision({ metrics, windowDays }: { metrics: Metric[]; windowDays: n
         className="inline-block text-xs text-[color:var(--accent)] hover:underline">
         Voir les appels correspondants
       </a>
+    </div>
+  );
+}
+
+/**
+ * Zone Prompt Control — CDC BO IA SCR-06.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LE VERDICT VIENT AVANT LA PROPOSITION, ET PARFOIS SEUL
+ *
+ * Le T5-009 veut que T5 puisse conclure que le problème est dans le code, les
+ * données ou la configuration. L'écran doit donc rendre ces réponses aussi
+ * lisibles qu'une proposition de prompt — sinon l'administrateur les lira
+ * comme un échec, et reformulera jusqu'à obtenir une modification qui ne
+ * réglera rien.
+ *
+ * Le bouton « Appliquer » n'apparaît que sur le verdict « prompt », et
+ * seulement après affichage du diff : le SCR-06 veut que rien ne bouge avant
+ * que l'administrateur ait vu ce qui va changer.
+ */
+function PromptControl({
+  versionId, readOnly, onApplied,
+}: { versionId: number; readOnly: boolean; onApplied: () => void }) {
+  const [cible, setCible] = useState<Treatment>('T1');
+  const [instruction, setInstruction] = useState('');
+  const [analyse, setAnalyse] = useState<T5Analysis | null>(null);
+  const [encours, setEncours] = useState(false);
+
+  const VERDICT_LABEL: Record<T5Analysis['verdict'], string> = {
+    prompt: 'Le prompt est en cause',
+    code: 'Le comportement vient du code',
+    donnees: 'Les données du compte sont en cause',
+    configuration: 'Un réglage est en cause',
+  };
+
+  const lancer = async () => {
+    setEncours(true);
+    setAnalyse(null);
+    try {
+      setAnalyse(await apiClient.post<T5Analysis>('/api/admin/ai/prompt-control', {
+        action: 'analyze', versionId, treatment: cible, instruction: instruction.trim(),
+      }));
+    } catch {
+      toast.error("L'analyse n'a pas abouti.");
+    } finally { setEncours(false); }
+  };
+
+  const appliquer = async () => {
+    if (!analyse?.proposedContent) return;
+    setEncours(true);
+    try {
+      await apiClient.post('/api/admin/ai/prompt-control', {
+        action: 'apply', versionId, treatment: cible,
+        proposedContent: analyse.proposedContent,
+      });
+      toast.success(`Prompt ${cible} modifié dans le brouillon`);
+      setAnalyse(null);
+      setInstruction('');
+      onApplied();
+    } catch {
+      toast.error("La modification n'a pas pu être enregistrée.");
+    } finally { setEncours(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">
+          Demander une modification
+        </h3>
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Décrivez ce qui ne va pas. Prompt Control dira d&apos;abord si le prompt est
+          bien en cause — et proposera une modification seulement dans ce cas.
+        </p>
+      </div>
+
+      <div className="flex gap-2">
+        <select className={`${selectClass} max-w-[220px]`} value={cible} disabled={readOnly || encours}
+          onChange={(e) => { setCible(e.target.value as Treatment); setAnalyse(null); }}>
+          {(['T1', 'T2', 'T3', 'T4'] as const).map((t) => (
+            <option key={t} value={t}>Prompt {t}</option>
+          ))}
+        </select>
+        <span className="text-xs text-[color:var(--text-muted)] self-center">
+          Prompt Control ne modifie pas son propre prompt.
+        </span>
+      </div>
+
+      <Textarea
+        value={instruction}
+        disabled={readOnly || encours}
+        onChange={(e) => setInstruction(e.target.value)}
+        placeholder="Les numéros de série en pied de facture ne sont pas extraits."
+        className="min-h-[90px] bg-[color:var(--bg-input)]"
+      />
+
+      <div className="flex items-center gap-3">
+        <Button size="sm" onClick={lancer}
+          disabled={readOnly || encours || instruction.trim().length < 5}>
+          {encours ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+          Analyser
+        </Button>
+        {readOnly && (
+          <span className="text-xs text-[color:var(--text-muted)]">
+            Cette version est en lecture seule : créez un brouillon pour l&apos;utiliser.
+          </span>
+        )}
+      </div>
+
+      {analyse && (
+        <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-3">
+          <p className={`text-sm font-medium ${analyse.verdict === 'prompt'
+            ? 'text-[color:var(--text-primary)]' : 'text-amber-500'}`}>
+            {VERDICT_LABEL[analyse.verdict]}
+          </p>
+
+          <p className="text-sm text-[color:var(--text-secondary)] whitespace-pre-wrap">
+            {analyse.analysis}
+          </p>
+
+          {analyse.rejected && (
+            <p className="text-sm text-amber-500">{analyse.rejected}</p>
+          )}
+
+          {analyse.risks.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-[color:var(--text-primary)]">Risques signalés</p>
+              <ul className="text-xs text-[color:var(--text-muted)] list-disc pl-4">
+                {analyse.risks.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {analyse.recommendations.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-[color:var(--text-primary)]">
+                Recommandations — non appliquées
+              </p>
+              <ul className="text-xs text-[color:var(--text-muted)] list-disc pl-4">
+                {analyse.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {analyse.diff && !analyse.diff.identical && (
+            <div className="space-y-1">
+              <p className="text-xs text-[color:var(--text-muted)]">
+                {analyse.diff.added} ligne(s) ajoutée(s), {analyse.diff.removed} retirée(s)
+              </p>
+              <pre className="text-xs font-mono max-h-64 overflow-auto rounded bg-[color:var(--bg-page)] p-2">
+                {analyse.diff.lines.map((l, i) => (
+                  <div key={i} className={
+                    l.kind === 'added' ? 'text-emerald-500'
+                      : l.kind === 'removed' ? 'text-red-400'
+                        : 'text-[color:var(--text-muted)]'}>
+                    {l.kind === 'added' ? '+' : l.kind === 'removed' ? '-' : ' '} {l.text}
+                  </div>
+                ))}
+              </pre>
+            </div>
+          )}
+
+          {analyse.verdict === 'prompt' && analyse.proposedContent && !analyse.rejected && (
+            <Button size="sm" onClick={appliquer} disabled={readOnly || encours}>
+              Écrire dans le brouillon
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -739,6 +920,14 @@ export default function AiConfigPage() {
                       <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer {t.code}
                     </Button>
                   </div>
+                )}
+
+                {t.code === 'T5' && current && (
+                  <PromptControl
+                    versionId={current.id}
+                    readOnly={readOnly}
+                    onApplied={() => openVersion(current.id)}
+                  />
                 )}
 
                 {metrics[t.code] && (
