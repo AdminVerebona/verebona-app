@@ -103,6 +103,14 @@ interface VersionDetail extends Version {
   unavailableModels: Array<{ treatment: string; model: string; rank: string }>;
 }
 
+interface Metric {
+  key: string;
+  label: string;
+  value: number | null;
+  unit?: 'count' | 'percent' | 'ms';
+  missingReason?: string;
+}
+
 interface Issue {
   treatment: Treatment;
   field: string;
@@ -159,6 +167,56 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint && <span className="block text-xs text-[color:var(--text-muted)]">{hint}</span>}
     </label>
+  );
+}
+
+/**
+ * Zone de supervision d'un traitement — CDC BO IA SCR-02 à SCR-06.
+ *
+ * ⚠️ Un indicateur non mesuré affiche « pas encore mesuré », jamais zéro. Un
+ * zéro serait lu comme une absence de problème, ce qui est exactement le
+ * contraire de ce qu'on sait — c'est la même règle que sur l'écran Coûts.
+ *
+ * La raison est affichée avec l'indicateur : elle dit ce qu'il faudrait
+ * instrumenter, et évite qu'on redécouvre chaque fois pourquoi la case est vide.
+ */
+function Supervision({ metrics, windowDays }: { metrics: Metric[]; windowDays: number }) {
+  const format = (m: Metric): string => {
+    if (m.value === null) return '—';
+    if (m.unit === 'percent') return `${m.value} %`;
+    if (m.unit === 'ms') return m.value >= 1000 ? `${(m.value / 1000).toFixed(1)} s` : `${m.value} ms`;
+    return m.value.toLocaleString('fr-FR');
+  };
+
+  return (
+    <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Supervision</h3>
+        <span className="text-xs text-[color:var(--text-muted)]">
+          {windowDays} derniers jours
+        </span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {metrics.map((m) => (
+          <div key={m.key} className="space-y-0.5">
+            <p className="text-xs text-[color:var(--text-muted)]">{m.label}</p>
+            <p className={`text-lg font-semibold ${m.value === null
+              ? 'text-[color:var(--text-muted)]' : 'text-[color:var(--text-primary)]'}`}>
+              {format(m)}
+            </p>
+            {m.value === null && m.missingReason && (
+              <p className="text-xs text-amber-500 leading-snug">{m.missingReason}</p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <a href="/admin/ai-executions"
+        className="inline-block text-xs text-[color:var(--accent)] hover:underline">
+        Voir les appels correspondants
+      </a>
+    </div>
   );
 }
 
@@ -413,6 +471,7 @@ export default function AiConfigPage() {
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [confirm, setConfirm] = useState<null | { kind: 'rollback' | 'validate' | 'activate'; onOk: () => void }>(null);
   const [leaving, setLeaving] = useState<null | (() => void)>(null);
+  const [metrics, setMetrics] = useState<Record<string, { metrics: Metric[]; windowDays: number }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -432,6 +491,21 @@ export default function AiConfigPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Chargés à l'ouverture de l'onglet, et non tous d'un coup : cinq requêtes
+  // d'agrégation à chaque affichage de l'écran seraient payées même par qui
+  // vient seulement corriger un prompt.
+  useEffect(() => {
+    if (metrics[tab]) return;
+    let annule = false;
+    apiClient
+      .get<{ metrics: Metric[]; windowDays: number }>(`/api/admin/ai/treatments/${tab}/metrics`)
+      .then((r) => { if (!annule) setMetrics((m) => ({ ...m, [tab]: r })); })
+      // Silencieux : la supervision est un complément, son absence ne doit pas
+      // empêcher de configurer.
+      .catch(() => {});
+    return () => { annule = true; };
+  }, [tab, metrics]);
 
   const openVersion = useCallback(async (id: number) => {
     try {
@@ -665,6 +739,13 @@ export default function AiConfigPage() {
                       <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer {t.code}
                     </Button>
                   </div>
+                )}
+
+                {metrics[t.code] && (
+                  <Supervision
+                    metrics={metrics[t.code].metrics}
+                    windowDays={metrics[t.code].windowDays}
+                  />
                 )}
               </TabsContent>
             ))}
