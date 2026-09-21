@@ -8,6 +8,35 @@
  *   - Fallback invisible utilisateur, traçable en backoffice
  *
  * PRINCIPE : Les jobs déjà démarrés vont à leur terme même en cas de quota dépassé.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠️ NE PAS SUPPRIMER CE FICHIER AVANT D'AVOIR ÉTEINT LES MOTEURS HISTORIQUES
+ *
+ * Le GEN-007 du CDC BO IA demande un point de mesure unique, et ce service doit
+ * effectivement disparaître. Mais PAS EN PREMIER.
+ *
+ * Ce tracker écrit des `operation_type` en texte libre — `operation_complete`,
+ * `document_analysis` — là où la passerelle écrit des codes pris au référentiel.
+ * C'est cette différence, et elle seule, qui permet à l'inventaire d'exécution
+ * (`registry/execution-inventory.ts`) de prouver qu'un moteur historique a
+ * tourné : une valeur hors catalogue suffit.
+ *
+ * Le supprimer avant l'extinction produirait donc un inventaire « conforme »
+ * non pas parce que les moteurs historiques se sont tus, mais parce que plus
+ * personne ne les écoute. C'est le « regroupement artificiel » que le critère
+ * n°24 interdit, obtenu par un autre chemin — et il n'existerait plus aucun
+ * moyen de s'en apercevoir.
+ *
+ * ORDRE À RESPECTER :
+ *   1. basculer les cinq usages ;
+ *   2. éteindre les sept moteurs listés dans `scripts/ai-legacy-baseline.json` ;
+ *   3. vérifier que l'inventaire observé ne rend plus aucune opération
+ *      étrangère sur trente jours ;
+ *   4. alors seulement, retirer ce fichier et ses appelants.
+ *
+ * Un test (`registry/__tests__/execution-inventory.test.ts`) rappelle cette
+ * dépendance et échouera si ce fichier disparaît trop tôt.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { db } from '@/db';

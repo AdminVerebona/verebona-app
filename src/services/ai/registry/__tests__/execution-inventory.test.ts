@@ -13,6 +13,7 @@ import {
   concludeExecutionInventory, knownOperationCodes,
   type ObservedOperation,
 } from '../execution-inventory';
+import { AI_OPERATIONS } from '../operations';
 
 const DERNIER = '2026-09-01T10:00:00.000Z';
 
@@ -96,6 +97,43 @@ describe('restitution', () => {
   it('énonce toujours un motif exploitable en recette', () => {
     for (const rows of [[], [ligne('legacy_op', null, 5)], [ligne(OP_CONNUE, 'SOURCE_ANALYSIS', 5)]]) {
       expect(concludeExecutionInventory(rows).reason.length).toBeGreaterThan(20);
+    }
+  });
+});
+
+describe('⚠️ dépendance à retirer dans le bon ordre (GEN-007, critère n°24)', () => {
+  it("le tracker historique existe encore, et c'est nécessaire", async () => {
+    // Ce test n'existe pas pour protéger du code ancien : il protège le seul
+    // DÉTECTEUR dont nous disposons.
+    //
+    // L'inventaire conclut à la non-conformité en repérant des `operation_type`
+    // hors référentiel. Ces valeurs viennent du tracker historique. Le
+    // supprimer avant d'avoir éteint les moteurs rendrait l'inventaire
+    // « conforme » parce que plus personne n'écoute — pas parce que les moteurs
+    // se sont tus.
+    //
+    // Quand l'extinction sera faite et l'inventaire observé propre sur trente
+    // jours, supprimez ce test EN MÊME TEMPS que le tracker. Son échec est le
+    // rappel, pas l'obstacle.
+    const { existsSync } = await import('fs');
+    const { join } = await import('path');
+    const chemin = join(process.cwd(), 'src/services/document-ai/ai-usage-tracker.ts');
+
+    expect(
+      existsSync(chemin),
+      'Le tracker historique a été supprimé. Vérifiez que les sept moteurs sont '
+      + "éteints et que l'inventaire observé ne rend plus d'opération étrangère, "
+      + 'puis supprimez ce test.',
+    ).toBe(true);
+  });
+
+  it('les opérations du référentiel ne sont jamais des libellés libres', () => {
+    // C'est l'autre moitié du détecteur : si la passerelle se mettait à écrire
+    // des libellés libres, l'inventaire ne saurait plus distinguer les deux
+    // chemins.
+    for (const code of Object.keys(AI_OPERATIONS)) {
+      expect(code, code).toMatch(/^[a-z][a-z0-9_]*$/);
+      expect(code, code).not.toMatch(/^(operation_complete|document_analysis)$/);
     }
   });
 });
