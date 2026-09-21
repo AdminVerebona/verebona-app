@@ -147,6 +147,24 @@ export interface PromotionResult {
  * Le diff et les contrôles sont rendus même en cas de refus : l'écran doit
  * pouvoir les afficher sans rappeler le serveur.
  */
+/**
+ * Vide les caches de configuration après une bascule.
+ *
+ * Sans cela, une activation mettrait jusqu'à trente secondes à s'appliquer :
+ * l'administrateur verrait la version active changer à l'écran, tandis que les
+ * appels continueraient d'utiliser l'ancienne. Un délai bref est acceptable
+ * pour une lecture opportuniste ; il ne l'est pas juste après un geste
+ * délibéré, et encore moins après un rollback fait pendant un incident.
+ */
+async function invalidateCaches(): Promise<void> {
+  const [{ invalidateConfigCache }, { invalidateConfigVersionCache }] = await Promise.all([
+    import('./config-resolver'),
+    import('../telemetry/execution-context'),
+  ]);
+  invalidateConfigCache();
+  invalidateConfigVersionCache();
+}
+
 export async function promote(versionId: number): Promise<PromotionResult> {
   const environment = getAiEnvironment();
   if (!allowsTestVersions(environment)) {
@@ -201,6 +219,7 @@ export async function validate(
     );
   }
   const { visibleNumber } = await commitValidation(versionId, userId);
+  await invalidateCaches();
   return { visibleNumber };
 }
 
@@ -217,6 +236,7 @@ export interface SwitchResult {
 /** WF-05 — activation normale : n'interrompt aucune exécution en cours. */
 export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
   const r = await switchActive(versionId, userId, 'activate');
+  await invalidateCaches();
   // WF-05 : « aucune interruption des exécutions en cours ». Elles se terminent
   // avec leur configuration ; seuls les démarrages suivants utilisent celle-ci.
   return { previousId: r.previousId, interrupts: false, requeuedJobs: 0 };
@@ -244,6 +264,7 @@ export async function rollback(versionId: number, userId: number): Promise<Switc
   }
 
   const r = await switchActive(versionId, userId, 'rollback');
+  await invalidateCaches();
 
   const { requeueRunning } = await import('../queue/job-queue.repository');
   const { listBatchTreatments } = await import('./treatments');

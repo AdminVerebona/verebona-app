@@ -19,6 +19,7 @@ import { validateOutput } from './output-validator';
 import { redactVariables, previewForLog } from './redaction';
 import { getAiProvider } from './providers';
 import { resolvePrompt } from '../prompts/prompt-loader';
+import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
 
@@ -75,11 +76,33 @@ export class AiGateway {
       throw new AiGatewayError('OPERATION_UNKNOWN', operationCode,
         `L'opération « ${operationCode} » attend un prompt fourni à l'appel (promptOverride).`);
     }
-    const { text: prompt, version: promptVersion } = op.dynamicPrompt
+    const { text: promptTechnique, version: promptVersion } = op.dynamicPrompt
       ? { text: substituteOverride(req.promptOverride!, safeVariables), version: 'candidate' }
       : await resolvePrompt(op.promptCode, safeVariables, op.useCaseCode);
 
-    const models = [op.primaryModel, ...op.fallbackModels];
+    // ══════════════════════════════════════════════════════════════════════
+    // CONFIGURATION ADMINISTRABLE (CDC BO IA GEN-001, §2.1)
+    //
+    // Modèles et préambule viennent de la version IA effective quand il y en a
+    // une, du référentiel sinon. `resolveOperationConfig` ne lève jamais : une
+    // console d'administration ne doit pas pouvoir casser le produit qu'elle
+    // administre.
+    //
+    // Le préambule est placé DEVANT le prompt technique, jamais à la place : le
+    // BO règle le comportement, le code garde le contrat de sortie. C'est ce qui
+    // permet de vérifier leur accord automatiquement — la panne du 18/09/2026
+    // venait précisément d'un prompt et d'un schéma désaccordés.
+    //
+    // Une évaluation de version candidate (`dynamicPrompt`) n'est pas préfixée :
+    // elle teste un texte précis, et lui ajouter un préambule ferait évaluer
+    // autre chose que ce qui est soumis.
+    // ══════════════════════════════════════════════════════════════════════
+    const configuration = await resolveOperationConfig(operationCode);
+    const prompt = op.dynamicPrompt
+      ? promptTechnique
+      : composePrompt(configuration.promptPreamble, promptTechnique);
+
+    const models = [configuration.primaryModel, ...configuration.fallbackModels];
     const failures: string[] = [];
 
     for (let i = 0; i < models.length; i++) {
@@ -92,6 +115,11 @@ export class AiGateway {
           prompt,
           attachments: req.attachments ?? [],
           timeoutMs: op.timeoutMs,
+          // §2.1 : le plafond ne vaut que pour le modèle principal ; les replis
+          // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
+          // c'est aussi le comportement le plus sûr — un repli sollicité parce
+          // que le principal a échoué ne doit pas en plus changer de format.
+          maxOutputTokens: configuration.maxOutputTokens ?? undefined,
         });
 
         // Aucune persistance d'une sortie brute invalide (CDC §5.3).

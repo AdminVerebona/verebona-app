@@ -12,6 +12,15 @@ export interface ProviderCallInput {
   prompt: string;
   attachments: AiAttachment[];
   timeoutMs: number;
+  /**
+   * Plafond de jetons de sortie (CDC BO IA §2.1), administrable par version.
+   *
+   * `undefined` laisse le fournisseur appliquer son propre défaut. Ne jamais
+   * traduire une absence par un plafond arbitraire : une réponse tronquée est
+   * invalide, et le §5.3 interdit de persister une sortie qui ne respecte pas
+   * son schéma — une troncature transformerait donc un réglage en panne.
+   */
+  maxOutputTokens?: number;
 }
 
 export interface ProviderCallOutput {

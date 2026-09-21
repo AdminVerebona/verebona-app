@@ -25,7 +25,14 @@ export class GeminiProvider implements AiProvider {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: input.model });
+    const model = genAI.getGenerativeModel({
+      model: input.model,
+      // Absent = défaut du fournisseur. Le §2.1 rend ce plafond administrable ;
+      // l'appliquer ici est ce qui empêche le champ d'être décoratif.
+      ...(input.maxOutputTokens
+        ? { generationConfig: { maxOutputTokens: input.maxOutputTokens } }
+        : {}),
+    });
 
     // PDF et vidéo via Files API, images en inline, bureautique extraite côté serveur.
     const { parts, temporaryFileUris } = await prepareAttachmentParts(input.attachments, apiKey);
