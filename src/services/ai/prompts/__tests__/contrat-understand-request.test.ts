@@ -84,3 +84,29 @@ describe("les modèles de l'assistant sont tarifables", () => {
     }
   });
 });
+
+describe('analyze_instruction — le prompt offre bien une issue autre que « modifier »', () => {
+  const prompt = lirePrompt('analyze_instruction_v1', 'governance');
+
+  it('demande un verdict parmi les quatre causes (T5-009)', () => {
+    // Sans cette issue, un modèle à qui l'on demande une modification de prompt
+    // en produira une — même quand le problème est dans le code ou les données.
+    for (const v of ['"prompt"', '"code"', '"donnees"', '"configuration"']) {
+      expect(prompt, v).toContain(v);
+    }
+  });
+
+  it('montre explicitement une réponse sans proposition', () => {
+    expect(prompt).toContain('"proposedContent": null');
+  });
+
+  it('demande les champs que le validateur exige', () => {
+    for (const champ of ['"verdict"', '"analysis"', '"proposedContent"', '"risks"', '"recommendations"']) {
+      expect(prompt, champ).toContain(champ);
+    }
+  });
+
+  it("ne demande plus l'ancien champ, qui n'est plus lu", () => {
+    expect(prompt).not.toContain('"impactAnalysis"');
+  });
+});
