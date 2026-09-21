@@ -33,84 +33,92 @@
 // message qui n'évoque en rien une variable manquante.
 import '@/lib/load-env';
 import { pgClient } from '@/db';
+import { findCatalogEntry } from '@/services/ai/gateway/pricing/gemini-public-catalog';
+import { AI_OPERATIONS } from '@/services/ai/registry/operations';
 
-/** Micro-dollars par jeton = prix par million ÷ 1 000 000 × 1 000 000. */
+/**
+ * Tarif à insérer, dérivé du catalogue de la passerelle.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * IL N'Y A PLUS QU'UNE SEULE GRILLE, ET C'EST LE BUT
+ *
+ * Ce fichier portait sa propre liste de modèles et de prix. Le §18.2 du CDC
+ * BO IA demandait qu'elle disparaisse — « aucune grille tarifaire codée en dur
+ * concurrente » — et le 18/09/2026 a montré pourquoi, deux fois :
+ *
+ *   · le modèle par défaut de l'assistant est passé à `gemini-3.5-flash-lite`,
+ *     présent dans le catalogue de la passerelle et absent d'ici. Le contrôle
+ *     tarifaire a refusé le démarrage, et le seed censé le réparer ne
+ *     contenait pas le modèle manquant ;
+ *   · les deux listes se contredisaient sur `gemini-2.5-pro` : 2,00 contre
+ *     1,25 $/M en entrée, sur un modèle réellement employé. Le coût d'un même
+ *     appel dépendait de celle qui avait écrit la ligne en base.
+ *
+ * Deux listes cohérentes chacune avec elle-même, et incohérentes entre elles.
+ * Le même défaut, exactement, que le prompt et le schéma désaccordés du matin.
+ */
 interface PublicPrice {
   provider: string;
   model: string;
-  /** Prix par million de jetons d'entrée, en dollars. */
   inputPerMillion: number;
   outputPerMillion: number;
-  /** Date de retrait annoncée par le fournisseur, si connue. */
   retiresOn?: string;
   note?: string;
 }
 
 /**
- * Modèles du référentiel, et eux seuls.
+ * Rôle d'un modèle, dérivé du référentiel.
  *
- * Un modèle absent de `registry/operations.ts` n'a pas à figurer ici : le
- * catalogue tarifaire décrit ce que l'application appelle, pas le catalogue du
- * fournisseur.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * ⚠️ CETTE LISTE EST LA SECONDE GRILLE TARIFAIRE DU DÉPÔT, ET ELLE A DÉRIVÉ
- *
- * `gateway/pricing/gemini-public-catalog.ts` en porte une autre. Le 18/09/2026,
- * le modèle par défaut de l'assistant est passé à `gemini-3.5-flash-lite` :
- * présent dans le catalogue de la passerelle, absent d'ici. Le contrôle
- * tarifaire a refusé le démarrage, et le seed censé le réparer ne contenait pas
- * le modèle manquant.
- *
- * Le §18.2 du CDC BO IA demande précisément qu'« aucune grille tarifaire codée
- * en dur concurrente » ne subsiste. Cette liste doit disparaître au profit du
- * catalogue de la passerelle ; en attendant, TOUT AJOUT DE MODÈLE DOIT ÊTRE
- * FAIT AUX DEUX ENDROITS. Un test le vérifie désormais.
+ * Écrit à la main, ce libellé se périmait au premier changement de modèle — et
+ * la note « modèle principal documentaire » a effectivement survécu à deux
+ * bascules. Le déduire coûte trois lignes et ne ment jamais.
  */
-export const PUBLIC_PRICES: PublicPrice[] = [
-  {
-    // Ajouté le 18/09/2026 — modèle principal de l'assistant depuis le retrait
-    // de `gemini-2.5-flash-lite` par le fournisseur.
-    provider: 'gemini', model: 'gemini-3.5-flash-lite',
-    inputPerMillion: 0.30, outputPerMillion: 2.50,
-    note: 'modèle principal assistant',
-  },
-  {
-    provider: 'gemini', model: 'gemini-3.1-flash-lite',
-    inputPerMillion: 0.25, outputPerMillion: 1.50,
-    note: 'modèle principal documentaire',
-  },
-  {
-    provider: 'gemini', model: 'gemini-3.5-flash',
-    inputPerMillion: 1.50, outputPerMillion: 9.00,
-    note: 'premier repli documentaire',
-  },
-  {
-    provider: 'gemini', model: 'gemini-2.5-pro',
-    // ⚠️ Corrigé le 18/09/2026 : cette liste annonçait 2,00 / 12,00, soit 60 %
-    // de plus en entrée que le catalogue de la passerelle. Les deux grilles se
-    // contredisaient sur un modèle réellement employé — le coût d'un même appel
-    // dépendait donc de celle qui avait écrit la ligne en base.
-    //
-    // La valeur retenue est celle de la passerelle, qui correspond au palier de
-    // base publié par le fournisseur. Au-delà de 200 000 tokens le tarif passe
-    // à 2,50 / 15,00 ; ce palier n'est modélisé nulle part, et c'est peut-être
-    // ce qui a inspiré le chiffre intermédiaire d'origine.
-    inputPerMillion: 1.25, outputPerMillion: 10.00,
-    retiresOn: '2026-10-16',
-    note: 'second repli documentaire ET modèle principal de gouvernance — RETRAIT ANNONCÉ',
-  },
-  {
-    provider: 'gemini', model: 'gemini-2.5-flash-lite',
-    inputPerMillion: 0.10, outputPerMillion: 0.40,
-    retiresOn: '2026-10-16',
-    note: 'modèle principal assistant — RETRAIT ANNONCÉ',
-  },
-];
+function roleOf(model: string): string | undefined {
+  const roles: string[] = [];
+  for (const op of Object.values(AI_OPERATIONS)) {
+    if (op.provider === 'none') continue;
+    if (op.primaryModel === model) roles.push(`principal ${op.operationCode}`);
+    const rang = op.fallbackModels.indexOf(model);
+    if (rang >= 0) roles.push(`repli ${rang + 1} ${op.operationCode}`);
+  }
+  return roles.length > 0 ? roles.join(', ') : undefined;
+}
 
-/** Conversion en micro-dollars par jeton, unité de `ai_model_pricing`. */
+/**
+ * Modèles du référentiel, et eux seuls — la règle d'origine de ce fichier,
+ * désormais appliquée par le code plutôt que tenue à la main.
+ *
+ * Un modèle du référentiel absent du catalogue n'est PAS inventé : il
+ * n'apparaît simplement pas, et le test de cohérence le signale. Fabriquer un
+ * tarif reviendrait à afficher des coûts faux.
+ */
+export const PUBLIC_PRICES: PublicPrice[] = ((): PublicPrice[] => {
+  const modeles = new Set<string>();
+  for (const op of Object.values(AI_OPERATIONS)) {
+    if (op.provider === 'none') continue;
+    modeles.add(op.primaryModel);
+    for (const f of op.fallbackModels) modeles.add(f);
+  }
+
+  return [...modeles]
+    .sort()
+    .map((model): PublicPrice | null => {
+      const entry = findCatalogEntry(model);
+      if (!entry) return null;
+      return {
+        provider: 'gemini',
+        model,
+        inputPerMillion: entry.inputPerMillion,
+        outputPerMillion: entry.outputPerMillion,
+        retiresOn: entry.retiresOn,
+        note: roleOf(model),
+      };
+    })
+    .filter((p): p is PublicPrice => p !== null);
+})();
+
+/** 1 $ par million de jetons = 1 micro-dollar par jeton : la conversion est l'identité. */
 export function toMicrosPerToken(pricePerMillion: number): number {
-  // 1 $ par million de jetons = 1 micro-dollar par jeton.
   return Math.round(pricePerMillion * 1_000_000) / 1_000_000;
 }
 

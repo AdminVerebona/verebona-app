@@ -148,7 +148,15 @@ async function insertProposals(runId: number, p: PersistResultInput): Promise<nu
       assetFileId: p.leadSourceId,
       proposalType: 'agenda_suggestion',
       targetKey: a.originFieldKey ?? a.title,
-      proposedValueJson: JSON.stringify({ title: a.title, date: a.date, excerpt: a.excerpt }),
+      // `suggestedCategory` ajouté le 18/09/2026 : sans lui, un T4 exécuté en
+      // différé — depuis la file plutôt que dans la foulée de l'analyse —
+      // devrait recalculer une classification que T1 avait déjà établie.
+      proposedValueJson: JSON.stringify({
+        title: a.title,
+        date: a.date,
+        excerpt: a.excerpt,
+        suggestedCategory: a.suggestedCategory ?? null,
+      }),
       confidence: a.confidence,
       accountId: p.input.accountId,
     });

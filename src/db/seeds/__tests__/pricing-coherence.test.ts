@@ -15,7 +15,10 @@
  * entre elles — exactement le défaut que nous avions déjà rencontré le matin
  * même entre un prompt et son schéma.
  *
- * Tant que la seconde liste existe, ce test garde les deux d'accord.
+ * La seconde liste a été supprimée le 18/09/2026 : le seed dérive désormais du
+ * catalogue de la passerelle. Ces tests vérifient donc autre chose — que la
+ * dérivation couvre bien tout ce que l'application appelle, et qu'elle
+ * n'invente rien.
  */
 import { describe, it, expect } from 'vitest';
 import { PUBLIC_PRICES } from '../ai-model-pricing.seed';
@@ -51,13 +54,30 @@ describe('les deux grilles tarifaires restent d’accord', () => {
   });
 
   it('annonce les mêmes prix des deux côtés', () => {
-    // Deux prix divergents produiraient deux coûts différents selon le chemin
-    // d'écriture — et personne ne saurait lequel croire.
+    // Trivialement vrai depuis la dérivation, et conservé pour cela : si
+    // quelqu'un réintroduit une liste écrite à la main, ce test retombera.
     for (const p of PUBLIC_PRICES) {
       const entry = GEMINI_PUBLIC_CATALOG.find((e) => e.model === p.model);
       if (!entry) continue;
       expect(p.inputPerMillion, `${p.model} entrée`).toBe(entry.inputPerMillion);
       expect(p.outputPerMillion, `${p.model} sortie`).toBe(entry.outputPerMillion);
+    }
+  });
+
+  it("n'invente aucun tarif pour un modèle absent du catalogue", () => {
+    // Un modèle du référentiel introuvable au catalogue n'est pas fabriqué : il
+    // n'apparaît pas, et le test précédent le signale. Fabriquer un prix
+    // afficherait des coûts faux sans que rien ne les distingue des vrais.
+    const catalogue = new Set(GEMINI_PUBLIC_CATALOG.map((e) => e.model));
+    for (const p of PUBLIC_PRICES) {
+      expect(catalogue.has(p.model), `${p.model} hors catalogue`).toBe(true);
+    }
+  });
+
+  it('décrit le rôle de chaque modèle depuis le référentiel', () => {
+    // Écrit à la main, ce libellé se périmait au premier changement de modèle.
+    for (const p of PUBLIC_PRICES) {
+      expect(p.note, p.model).toBeTruthy();
     }
   });
 });

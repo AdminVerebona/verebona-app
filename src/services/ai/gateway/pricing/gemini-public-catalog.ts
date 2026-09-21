@@ -48,6 +48,13 @@ export interface CatalogEntry {
   outputPerMillion: number;
   /** Renseigné lorsque le modèle est remplacé par un plus récent. */
   supersededBy?: string;
+  /**
+   * Date de retrait annoncée par le fournisseur, au format ISO.
+   *
+   * Remontée ici depuis le seed le 18/09/2026 : elle y vivait dans une seconde
+   * liste de modèles, qui a fini par diverger de celle-ci sur les prix.
+   */
+  retiresOn?: string;
   note?: string;
 }
 
@@ -86,6 +93,7 @@ export const GEMINI_PUBLIC_CATALOG: readonly CatalogEntry[] = [
     model: 'gemini-2.5-pro',
     inputPerMillion: 1.25,
     outputPerMillion: 10.0,
+    retiresOn: '2026-10-16',
     note: 'Au-delà de 200 000 tokens : 2,50 $ / 15,00 $. Non modélisé.',
   },
   { model: 'gemini-2.5-flash', inputPerMillion: 0.3, outputPerMillion: 2.5 },
@@ -93,9 +101,13 @@ export const GEMINI_PUBLIC_CATALOG: readonly CatalogEntry[] = [
     model: 'gemini-2.5-flash-lite',
     inputPerMillion: 0.1,
     outputPerMillion: 0.4,
-    note: "Tarif d'entrée le plus bas du catalogue. Des sources secondaires " +
-      "annoncent un retrait en octobre 2026 : à confronter à la page des " +
-      'dépréciations avant de bâtir dessus.',
+    retiresOn: '2026-10-16',
+    // ⚠️ Retrait CONSTATÉ le 18/09/2026, plus tôt que prévu : le fournisseur
+    // répond désormais « no longer available to new users » sur ce modèle, et
+    // l'assistant a dû basculer sur `gemini-3.5-flash-lite`. La date ci-dessus
+    // reste indicative — pour les comptes récents, c'est déjà fini.
+    note: "Tarif d'entrée le plus bas du catalogue, mais INDISPONIBLE aux " +
+      'comptes récents depuis septembre 2026. Ne pas bâtir dessus.',
   },
 ] as const;
 
