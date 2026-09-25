@@ -24,7 +24,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db } from '@/db';
 import {
   accounts,
@@ -33,6 +33,7 @@ import {
   duoAccounts,
   subscriptionHistory,
   users,
+  withdrawalRequests,
 } from '@/db/schema';
 import { getStripeServer, getTierFromPriceId, type PlanTier } from '@/lib/stripe';
 import {
@@ -71,8 +72,8 @@ export function getInvoicePriceId(invoice: Stripe.Invoice): string | null {
 
 // ─── Correspondances d'état ───────────────────────────────────────────────────
 
-type AccountStatus = 'ACTIVE' | 'CANCELED' | 'EXPIRED' | 'PAST_DUE_GRACE';
-type SubscriptionRowStatus = 'active' | 'past_due' | 'canceled';
+type AccountStatus = 'ACTIVE' | 'CANCELED' | 'EXPIRED' | 'PAST_DUE_GRACE' | 'WITHDRAWN';
+type SubscriptionRowStatus = 'active' | 'past_due' | 'canceled' | 'readonly';
 
 const PLAN_TYPE: Record<PlanTier, 'STANDARD' | 'PREMIUM' | 'PREMIUM_DUO'> = {
   standard: 'STANDARD',
@@ -285,6 +286,21 @@ export async function syncSubscriptionFromStripe(
     newStatus = 'EXPIRED';
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // RÉTRACTATION EXERCÉE SUR CET ABONNEMENT : AUCUN DROIT RENDU
+  //
+  // Les droits sont suspendus localement dès la confirmation, avant toute
+  // action Stripe. Tant que l'annulation Stripe n'a pas abouti (Stripe
+  // indisponible, reprise), un webhook de cet abonnement le voit encore
+  // « actif » : sans ce garde-fou, il rétablirait l'écriture sur un compte
+  // rétracté. Une NOUVELLE souscription (autre abonnement) n'est pas visée.
+  // ══════════════════════════════════════════════════════════════════════
+  const withdrawn = await isWithdrawnSubscription(account.id, subscription.id);
+  if (withdrawn) {
+    newStatus = 'WITHDRAWN';
+    rowStatus = 'readonly';
+  }
+
   const duoIdFromMetadata = Number(subscription.metadata?.duoId) || null;
   const duoAccountId = planTier === 'premium_duo' ? (duoIdFromMetadata ?? account.duoAccountId) : account.duoAccountId;
 
@@ -426,11 +442,16 @@ async function applyTransitionEffects(
     console.error('[subscription-sync] historique non enregistré :', (e as Error).message);
   }
 
-  await notifierChangementDeStatut(result);
-
   const becomesPremium = PREMIUM_PLANS.includes(newPlanType) && !PREMIUM_PLANS.includes(oldPlanType);
+  // Un seul email par souscription : quand l'email de confirmation part, la
+  // notification « Offre activée / modifiée » reste dans la cloche (et en
+  // push) mais n'envoie pas son propre email « Votre abonnement Verebona ».
+  const confirmationEmail = becomesPremium && opts.notify && !!opts.premiumUntil;
+
+  await notifierChangementDeStatut(result, { confirmationEmailSent: confirmationEmail });
+
   if (becomesPremium) {
-    if (opts.notify && opts.premiumUntil) {
+    if (confirmationEmail && opts.premiumUntil) {
       sendPremiumConfirmationEmail(ownerUserId, new Date(opts.premiumUntil * 1000)).catch(console.error);
     }
     // V4 — Analyse rétroactive via service dédié (batch de 5, throttle 2s)
@@ -493,7 +514,10 @@ const STATUTS_AVEC_OFFRE = ['ACTIVE', 'PAST_DUE_GRACE', 'CANCELED'];
  * d'abonnement : toute erreur est journalisée et ignorée.
  * ══════════════════════════════════════════════════════════════════════════
  */
-async function notifierChangementDeStatut(result: SubscriptionSyncResult): Promise<void> {
+async function notifierChangementDeStatut(
+  result: SubscriptionSyncResult,
+  opts: { confirmationEmailSent: boolean } = { confirmationEmailSent: false },
+): Promise<void> {
   if (!result.isPaid) return;
 
   const { accountId, oldPlanType, newPlanType, oldStatus, subscriptionId } = result;
@@ -510,6 +534,7 @@ async function notifierChangementDeStatut(result: SubscriptionSyncResult): Promi
           planCode: newPlanType,
           planLabel: libelle,
           billingPeriod: result.billingPeriod,
+          confirmationEmailSent: opts.confirmationEmailSent,
         },
         accountId,
         entityType: 'subscription',
@@ -530,9 +555,11 @@ async function notifierChangementDeStatut(result: SubscriptionSyncResult): Promi
       payload: {
         planCode: newPlanType,
         planLabel: libelle,
+        billingPeriod: result.billingPeriod,
         previousPlanCode: oldPlanType,
         previousPlanLabel: LIBELLE_OFFRE[oldPlanType] ?? oldPlanType,
         direction: apres > avant ? 'upgrade' : apres < avant ? 'downgrade' : 'lateral',
+        confirmationEmailSent: opts.confirmationEmailSent,
       },
       accountId,
       entityType: 'subscription',
@@ -695,4 +722,19 @@ export async function syncAccountFromStripeCustomer(params: {
     notify: false,
   });
   return { result, subscriptionCount: list.data.length };
+}
+
+/** Une rétractation (non rejetée) a-t-elle été exercée sur cet abonnement ? */
+async function isWithdrawnSubscription(accountId: number, stripeSubscriptionId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: withdrawalRequests.id })
+    .from(withdrawalRequests)
+    .where(and(
+      eq(withdrawalRequests.accountId, accountId),
+      eq(withdrawalRequests.stripeSubscriptionId, stripeSubscriptionId),
+      ne(withdrawalRequests.status, 'rejected'),
+    ))
+    .limit(1)
+    .catch(() => []);
+  return rows.length > 0;
 }

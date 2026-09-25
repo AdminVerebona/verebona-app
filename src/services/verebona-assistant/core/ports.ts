@@ -28,10 +28,16 @@ import { retrieve } from './retrieval.service';
 import { resolveSourcesForDisplay } from './source-resolver.service';
 import { resolveActions, exigeUneCible, type AccessChecker } from './action-resolver.service';
 import { parseEntityRef } from './entity-ref';
-import { persistResult } from './conversation.service';
+import { persistResult, loadThreadContext } from './conversation.service';
+import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
+import { isPlanAiEligible } from '../registries/capability-registry';
+import { saveClarification } from './clarification.service';
 import { pgClient } from '@/db';
 import { buildGenerationPort } from './generation.adapter';
 import { buildClassificationPort } from './classification.adapter';
+import { answerFromData } from './data-answer.service';
+import { accountDataRepository } from './account-data.repository';
+import { loadCascadeThresholds } from './cascade-thresholds';
 
 /** Vérificateurs d'accès câblés sur les tables réelles du repo (§22.7). */
 function buildAccessChecker(): AccessChecker {
@@ -141,6 +147,22 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     classifyWithAI: buildClassificationPort(),
     generateWithAI: buildGenerationPort(),
 
+    // ── Cascade de non-escalade : niveaux 1 et 2, sans modèle ────────────
+    answerFromData: (route, input, thresholds) =>
+      answerFromData({
+        port: accountDataRepository,
+        accountId: input.accountId,
+        message: input.message,
+        pageAssetId: Number(input.pageContext?.assetId) || null,
+        // Bien fixé par une clarification : il fait foi pour la reprise.
+        // …ou par une référence du fil (« cette maison »).
+        resolvedAssetId: input.resume?.assetId
+          ?? (input.reference?.type === 'asset' ? input.reference.id : null),
+        thresholds,
+        intent: route.intent,
+      }),
+    loadThresholds: () => loadCascadeThresholds(),
+
     resolveActions: (route, input, sources) =>
       resolveActions({
         accountId: input.accountId,
@@ -151,12 +173,71 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
 
     persist: (result, input) => persistResult(result, input),
 
-    hasPendingClarification: async (accountId: number) => {
+    saveClarification: (state) => saveClarification(state),
+
+    // Revalidation ciblée des faits T1 insuffisants, coût imputé à T2.
+    revalidateFacts: async (input, req) => {
+      const { revalidateFact, loadFactToCheck, factValue } = await import('./revalidation.service');
+      const results: Array<{ factId: number; trigger: string; mode: string; status: string; reused: boolean; reinjectedFactId: number | null; aiCalls: number; model: string | null }> = [];
+      let established = false;
+      let premier: { titre: string; valeur: string } | null = null;
+      for (const factId of req.factIds) {
+        const f = await loadFactToCheck(input.accountId, factId);
+        if (f && !premier) premier = { titre: f.label ?? f.attribute ?? f.factKey, valeur: `${factValue(f) ?? ''}${f.valueUnit ? ` ${f.valueUnit}` : ''}` };
+        const r = await revalidateFact({
+          accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+          factId, question: input.message, trigger: req.trigger,
+          // Mêmes conditions qu'une génération : usage basculé, offre éligible.
+          allowModel: isUseCaseRunning('INTELLIGENT_ASSISTANT') && isPlanAiEligible(input.planType),
+        });
+        if (!r) continue;
+        results.push({ factId, trigger: req.trigger, mode: r.mode, status: r.status, reused: r.reused, reinjectedFactId: r.reinjectedFactId, aiCalls: r.aiCalls, model: r.model });
+        if (r.reinjectedFactId || (r.reused && (r.status === 'CONFIRMED' || r.status === 'CORRECTED'))) established = true;
+      }
+      const prudentAnswer = !established && premier
+        ? `Un document indique ${premier.titre} : ${premier.valeur}, mais je n’ai pas pu confirmer cette information avec suffisamment de certitude dans le document disponible.`
+        : undefined;
+      return { results, established, prudentAnswer };
+    },
+
+    // Commandes métier : préparées et figées, exécutées après confirmation.
+    prepareCommand: async (input) => {
+      const { prepareCommand } = await import('../commands/plan.service');
+      const r = await prepareCommand(input);
+      if (!r) return null;
+      return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview } : r;
+    },
+
+    // Mémoire du fil : bornée au fil, à l'utilisateur et au compte.
+    loadThreadContext: (input) =>
+      input.conversationId ? loadThreadContext(input.accountId, input.userId, input.conversationId) : Promise.resolve(null),
+
+    describeEntity: async (accountId, e) => {
+      const sql = e.type === 'asset'
+        ? `SELECT name AS label, NULL::text AS date FROM assets
+            WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL
+              AND coalesce(status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS')`
+        : e.type === 'document'
+          ? `SELECT coalesce(retained_title, original_filename, 'Document') AS label,
+                    to_char(document_date, 'YYYY-MM-DD') AS date
+               FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`
+          : `SELECT title AS label, to_char(start_date, 'YYYY-MM-DD') AS date
+               FROM agenda_items WHERE id = $1 AND account_id = $2`;
+      const rows = (await pgClient.unsafe(sql, [e.id, accountId] as never[])) as unknown as Array<{ label: string; date: string | null }>;
+      return rows[0] ?? null;
+    },
+
+    // Bornée à l'utilisateur : une clarification posée à A ne détourne pas
+    // la question suivante de B.
+    // …et au fil : une question en attente dans un autre fil n'interprète
+    // pas la question posée ici.
+    hasPendingClarification: async (accountId: number, userId: number, conversationId?: number) => {
+      if (!conversationId) return false;
       const rows = await pgClient.unsafe(
         `SELECT 1 FROM verebona_conversations
-          WHERE account_id = $1 AND status = 'active'
+          WHERE id = $3 AND account_id = $1 AND user_id = $2 AND status = 'active'
             AND clarification_state_json IS NOT NULL LIMIT 1`,
-        [accountId],
+        [accountId, userId, conversationId],
       );
       return (rows as unknown[]).length > 0;
     },

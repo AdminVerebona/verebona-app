@@ -6,12 +6,17 @@ import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
 import { SessionService } from '@/lib/session-service';
 import { emit } from '@/lib/notifications';
+import { revokeAllUserSessions, revokeToken, hashToken } from '@/db';
+import { serverCacheDelete } from '@/lib/server-cache';
+import { clearSessionCookies, issueSessionTokens, setSessionCookies, sessionCutoffCacheKey } from '@/lib/auth/session-tokens';
 
 export async function POST(request: NextRequest) {
   try {
     const       session = await SessionService.getSession(request);
     const body = await request.json();
     const { currentPassword, newPassword } = body;
+    // Conserver la session de cet appareil : uniquement sur choix explicite.
+    const keepCurrentSession = body?.keepCurrentSession === true;
 
     if (!currentPassword || !newPassword) {
       return NextResponse.json(
@@ -60,6 +65,24 @@ export async function POST(request: NextRequest) {
       })
       .where(eq(users.id, session.userId));
 
+    // ══════════════════════════════════════════════════════════════════════
+    // RÉVOCATION DE TOUTES LES SESSIONS
+    //
+    // Les jetons de renouvellement déjà émis restaient utilisables : un autre
+    // navigateur pouvait continuer à renouveler sa session avec un ancien
+    // jeton. Tout jeton émis avant ce changement est désormais refusé par
+    // `/api/auth/refresh` (même système de révocation) et par la vérification
+    // de session. Le jeton de renouvellement présenté ici est aussi révoqué :
+    // sa réutilisation sera détectée comme telle.
+    // ══════════════════════════════════════════════════════════════════════
+    const cutoff = await revokeAllUserSessions(session.userId, 'PASSWORD_CHANGED');
+    serverCacheDelete(sessionCutoffCacheKey(session.userId));
+    const presented = request.cookies.get('refresh_token')?.value;
+    if (presented) {
+      await revokeToken(await hashToken(presented), session.userId, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))
+        .catch((e) => console.error('[change-password] révocation du jeton courant :', e));
+    }
+
     // Événement de sécurité obligatoire (cloche + email, CDC §7.7).
     try {
       await emit({
@@ -74,7 +97,22 @@ export async function POST(request: NextRequest) {
       console.error('[change-password] emit PASSWORD_CHANGED échoué:', err);
     }
 
-    return NextResponse.json({ message: 'Mot de passe mis à jour avec succès' });
+    // Par défaut, reconnexion partout, cet appareil compris. Sur choix
+    // explicite, cet appareil reçoit une session neuve (émise après la
+    // révocation, donc valide) ; les autres restent déconnectés.
+    const response = NextResponse.json({
+      message: 'Mot de passe mis à jour avec succès',
+      sessionsRevoked: true,
+      reauthRequired: !keepCurrentSession,
+    });
+    if (keepCurrentSession) {
+      // La session neuve doit être émise strictement APRÈS la borne.
+      while (Date.now() <= cutoff.getTime()) await new Promise((r) => setTimeout(r, 1));
+      setSessionCookies(response, await issueSessionTokens(user));
+    } else {
+      clearSessionCookies(response);
+    }
+    return response;
   } catch (error) {
     console.error('[CHANGE_PASSWORD_ERROR]', error);
     return SessionService.handleSessionError(error);

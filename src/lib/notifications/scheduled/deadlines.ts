@@ -20,7 +20,7 @@ export async function runDeadlineReminders(now: Date = new Date()): Promise<Dead
   const targetDate = addDaysToDateStr(todayParisDateStr(now), 7);
 
   const rows = await db
-    .select({ id: agendaItems.id, accountId: agendaItems.accountId })
+    .select({ id: agendaItems.id, accountId: agendaItems.accountId, nature: agendaItems.occurrenceNature })
     .from(agendaItems)
     .where(and(
       eq(agendaItems.startDate, targetDate),
@@ -29,10 +29,14 @@ export async function runDeadlineReminders(now: Date = new Date()): Promise<Dead
     ));
 
   const byAccount = new Map<number, number[]>();
+  // Occurrences prévisionnelles : le rappel le dit — une prévision n'est
+  // jamais présentée comme une date certaine.
+  const forecasts = new Map<number, number>();
   for (const r of rows) {
     const list = byAccount.get(r.accountId) ?? [];
     list.push(r.id);
     byAccount.set(r.accountId, list);
+    if (r.nature === 'FORECAST') forecasts.set(r.accountId, (forecasts.get(r.accountId) ?? 0) + 1);
   }
 
   let emitted = 0;
@@ -42,7 +46,7 @@ export async function runDeadlineReminders(now: Date = new Date()): Promise<Dead
       accountId, // → tous les membres actifs, chacun selon ses préférences
       entityType: 'agenda_date',
       entityId: targetDate,
-      payload: { count: ids.length, date: targetDate, agendaItemIds: ids },
+      payload: { count: ids.length, date: targetDate, agendaItemIds: ids, forecastCount: forecasts.get(accountId) ?? 0 },
       // Clé stable par date locale (le moteur ajoute l'utilisateur).
       dedupeKey: `deadline:j7:${targetDate}`,
       scheduledFor: now, // livraison assurée par le dispatcher (pas de traitement immédiat en masse)

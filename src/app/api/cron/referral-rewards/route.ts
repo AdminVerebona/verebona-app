@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/db';
-import { referralEvents, accountSubscriptions } from '@/db/schema';
-import { and, eq, isNull, isNotNull, lte } from 'drizzle-orm';
+import { referralEvents } from '@/db/schema';
+import { and, eq, isNull, isNotNull, lte, ne } from 'drizzle-orm';
 import {
-  postponeNextBillingByOneMonth,
+  applyReferralRewardOnce,
   WITHDRAWAL_PERIOD_DAYS,
 } from '@/services/referral-reward.service';
+import { checkReferralEligibility } from '@/services/referral/referral-eligibility.service';
+import { getStripeServer } from '@/lib/stripe';
 
 /**
  * GET /api/cron/referral-rewards
@@ -31,7 +33,7 @@ export async function GET(request: Request) {
 
   const now = new Date();
   const cutoff = new Date(now.getTime() - WITHDRAWAL_PERIOD_DAYS * 24 * 60 * 60 * 1000);
-  const result = { examined: 0, granted: 0, skipped: 0, errors: 0 };
+  const result = { examined: 0, granted: 0, skipped: 0, ineligible: 0, errors: 0 };
 
   try {
     // Evenements factures, delai de retractation ecoule, avantage non encore accorde.
@@ -41,6 +43,9 @@ export async function GET(request: Request) {
         referrerAccountId: referralEvents.referrerAccountId,
         referredAccountId: referralEvents.referredAccountId,
         firstBilledAt: referralEvents.firstBilledAt,
+        stripeInvoiceId: referralEvents.stripeInvoiceId,
+        stripeSubscriptionId: referralEvents.stripeSubscriptionId,
+        metadataJson: referralEvents.metadataJson,
       })
       .from(referralEvents)
       .where(
@@ -48,6 +53,8 @@ export async function GET(request: Request) {
           isNotNull(referralEvents.firstBilledAt),
           lte(referralEvents.firstBilledAt, cutoff),
           isNull(referralEvents.rewardedAt),
+          // Événements définitivement inéligibles (remboursement, rétractation…) exclus.
+          ne(referralEvents.status, 'canceled'),
         ),
       );
 
@@ -55,15 +62,41 @@ export async function GET(request: Request) {
 
     for (const event of pending) {
       try {
-        // Condition CDC : le filleul doit avoir souscrit une offre ANNUELLE.
-        const [referredSub] = await db
-          .select({ billingPeriod: accountSubscriptions.billingPeriod })
-          .from(accountSubscriptions)
-          .where(eq(accountSubscriptions.accountId, event.referredAccountId))
-          .limit(1);
-
-        if (referredSub?.billingPeriod !== 'yearly') {
-          result.skipped++;
+        // ══════════════════════════════════════════════════════════════
+        // ÉLIGIBILITÉ CONTRÔLÉE À L'INSTANT DE L'ATTRIBUTION
+        //
+        // Annuel toujours valide (base + Stripe), aucune rétractation,
+        // paiement du filleul encaissé, non remboursé, non contesté.
+        // Inéligibilité définitive → événement clos (« canceled », motif
+        // conservé) ; incertitude (Stripe injoignable, contestation en
+        // cours) → simple report au passage suivant.
+        // ══════════════════════════════════════════════════════════════
+        const eligibility = await checkReferralEligibility(getStripeServer(), {
+          referredAccountId: event.referredAccountId,
+          stripeInvoiceId: event.stripeInvoiceId,
+          stripeSubscriptionId: event.stripeSubscriptionId,
+        });
+        if (!eligibility.eligible) {
+          if (eligibility.final) {
+            await db
+              .update(referralEvents)
+              .set({
+                status: 'canceled',
+                metadataJson: {
+                  ...(event.metadataJson ?? {}),
+                  rewardIneligibility: { reason: eligibility.reason, detail: eligibility.detail ?? null, at: now.toISOString() },
+                },
+                updatedAt: now,
+              })
+              .where(eq(referralEvents.id, event.id));
+            result.ineligible++;
+          } else {
+            result.skipped++;
+          }
+          console.info(
+            `[cron/referral-rewards] événement ${event.id} non attribué : ${eligibility.reason}` +
+            `${eligibility.final ? ' (définitif)' : ' (report)'}`,
+          );
           continue;
         }
 
@@ -82,8 +115,10 @@ export async function GET(request: Request) {
         // — n'y gagnant plus rien, il a moins de raisons de choisir
         // l'annuel, donc moins de parrains seront récompensés.
         // ══════════════════════════════════════════════════════════════
-        const referrer = await postponeNextBillingByOneMonth(
-          event.referrerAccountId,
+        // Une seule attribution par événement : prise atomique, reconnaissance
+        // côté Stripe, finalisation conditionnée (applyReferralRewardOnce).
+        const referrer = await applyReferralRewardOnce(
+          { id: event.id, referrerAccountId: event.referrerAccountId },
           now,
         );
 
@@ -91,11 +126,6 @@ export async function GET(request: Request) {
           result.skipped++;
           continue;
         }
-
-        await db
-          .update(referralEvents)
-          .set({ status: 'reward_granted', rewardedAt: now, updatedAt: now })
-          .where(eq(referralEvents.id, event.id));
 
         result.granted++;
         console.info(

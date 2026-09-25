@@ -37,6 +37,7 @@ import { type WriteBlockedInfo } from '@/lib/write-blocked';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
+import { ASSET_FAMILIES, assetCategoryLabel, assetFamilyLabel } from '@/lib/asset-taxonomy';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
 
@@ -51,6 +52,7 @@ interface Asset {
   name: string;
   category: string;
   subtype?: string;
+  objectCategory?: string | null;
   purchaseDate?: string;
   status: string;
   thumbnailUrl?: string | null;
@@ -165,8 +167,9 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
             <Icon className="w-3.5 h-3.5 text-white" />
           </div>
           <span className="text-white/80 text-xs font-medium uppercase tracking-wider drop-shadow">
-            {CATEGORY_LABELS[asset.category] || asset.category}
-            {asset.subtype && ` · ${asset.subtype}`}
+            {/* Famille · Catégorie de bien (lib/asset-taxonomy) */}
+            {assetFamilyLabel(asset.category)}
+            {assetCategoryLabel(asset) && ` · ${assetCategoryLabel(asset)}`}
           </span>
         </div>
 
@@ -319,7 +322,7 @@ function AssetsPageContent() {
         const haystack = [
           asset.name,
           CATEGORY_LABELS[asset.category] ?? asset.category,
-          asset.subtype ?? '',
+          assetCategoryLabel(asset) ?? '',
           STATUS_LABELS_SEARCH[asset.status] ?? asset.status,
         ].join(' ').toLowerCase();
         return terms.every(t => haystack.includes(t));
@@ -332,6 +335,15 @@ function AssetsPageContent() {
 
     return filtered;
   }, [assets, searchTerm, categoryFilter, showArchived]);
+
+  // Familles présentes parmi les biens affichables, dans l'ordre du classement.
+  const familyCounts = useMemo(
+    () =>
+      ASSET_FAMILIES
+        .map((f) => ({ code: f.code as string, label: f.label, count: activeAssets.filter((a) => a.category === f.code).length }))
+        .filter((f) => f.count > 0),
+    [activeAssets],
+  );
 
   // ⚡ Mémoïser les handlers
   const handleAddAsset = useCallback(() => {
@@ -482,6 +494,31 @@ function AssetsPageContent() {
           )}
         </div>
 
+
+        {/* Classement par famille de bien : Véhicule, Immobilier, Objet.
+            Seules les familles présentes sont proposées (jamais de filtre vide). */}
+        {activeAssets.length > 0 && familyCounts.length > 1 && (
+          <div role="group" aria-label="Filtrer par famille de bien" className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+            {[{ code: 'all', label: 'Toutes les familles', count: activeAssets.length }, ...familyCounts].map((f) => {
+              const active = categoryFilter === f.code;
+              return (
+                <button
+                  key={f.code}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setCategoryFilter(f.code)}
+                  className={`shrink-0 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                    active
+                      ? 'border-[#3b82f6]/40 bg-[#3b82f6]/15 text-[color:var(--text-primary)]'
+                      : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+                  }`}
+                >
+                  {f.label} <span className="opacity-60">{f.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {error && (
           <Card className="border-destructive bg-destructive/10">

@@ -1,0 +1,42 @@
+Tu vérifies UNE information précise dans un document, pour répondre à une question de l'utilisateur. Tu n'analyses pas le document entier.
+
+Question de l'utilisateur :
+{{QUESTION}}
+
+Information à vérifier :
+{{FACT}}
+
+Valeur actuellement enregistrée : {{CURRENT_VALUE}}
+Localisation connue : {{LOCATION}}
+
+Contenu à examiner ({{MODE}}) :
+{{CONTENT}}
+
+════════════════════════════════════════════════════════════
+RÈGLES
+════════════════════════════════════════════════════════════
+
+R1 — CIBLÉ. Ne cherche QUE l'information demandée, à l'endroit indiqué s'il est connu (page, zone). Ignore le reste du document.
+
+R2 — PREUVE LITTÉRALE. `excerpt` recopie mot pour mot le passage du document qui porte la valeur. Sans passage identifiable, la valeur n'est pas établie.
+
+R3 — AUCUNE INVENTION. Si l'information n'apparaît pas, réponds `not_found`. Si plusieurs valeurs coexistent sans qu'on puisse trancher, réponds `ambiguous` et ne choisis pas.
+
+R4 — LES CHIFFRES SE RECOPIENT. Valeur et unité telles qu'écrites dans le document, sans conversion ni arrondi.
+
+R5 — `confirmed` : la valeur enregistrée est exacte. `corrected` : le document indique une autre valeur, que tu donnes.
+
+════════════════════════════════════════════════════════════
+SORTIE
+════════════════════════════════════════════════════════════
+
+Réponds UNIQUEMENT par un objet JSON :
+
+{
+  "status": "confirmed" | "corrected" | "not_found" | "ambiguous",
+  "value": "24",
+  "unit": "kW",
+  "confidence": "certain" | "probable",
+  "excerpt": "Puissance nominale : 24 kW",
+  "page": 3
+}

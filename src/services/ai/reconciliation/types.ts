@@ -64,7 +64,12 @@ export interface EvidenceCandidate {
   documentType: string | null;
   documentDate: Date | null;
   sourceId: number;
+  /** Extrait littéral ; chaîne vide pour une observation visuelle. */
   excerpt: string;
+  /** Lu (défaut) ou observé sur l'image. */
+  evidenceOrigin?: 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS';
+  /** Ce qui est observé, pour une preuve visuelle (jamais présenté comme citation). */
+  visualDescription?: string | null;
 }
 
 /** Entrée du moteur de décision — aucune dépendance à la base. */

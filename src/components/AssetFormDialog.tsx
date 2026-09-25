@@ -17,7 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Lock, Package, X, Check, Loader2, Info } from 'lucide-react';
+import { Package, X, Check, Loader2, Info } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   parseWriteBlocked,
@@ -28,24 +28,7 @@ import { ThumbnailUpload } from '@/components/thumbnail-upload';
 import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
 import { useRouter } from 'next/navigation';
-import {
-  OBJECT_CATEGORY_LABELS,
-} from '@/types/domain';
-
-const IMMOBILIER_SUBTYPES = [
-  'Maison',
-  'Appartement',
-  'Terrain',
-  'Local commercial',
-  'Garage',
-];
-
-const VEHICULE_SUBTYPES = [
-  'Vélo',
-  'Voiture',
-  'Camion',
-  'Moto',
-];
+import { ASSET_FAMILIES, getAssetCategories } from '@/lib/asset-taxonomy';
 
 interface AssetFormDialogProps {
   open: boolean;
@@ -96,22 +79,6 @@ export function AssetFormDialog({
       setDetailsOpen(false);
     }
   }, [open]);
-
-  const getSubtypes = () => {
-    switch (formData.category) {
-      case 'IMMOBILIER': return IMMOBILIER_SUBTYPES;
-      case 'VEHICULE': return VEHICULE_SUBTYPES;
-      default: return [];
-    }
-  };
-
-  const getSubtypeLabel = () => {
-    const categoryLabels: Record<string, string> = {
-      IMMOBILIER: 'Immobilier',
-      VEHICULE: 'Véhicule',
-    };
-    return categoryLabels[formData.category] || '';
-  };
 
   const updateObjectDetails = (key: string, value: any) => {
     setFormData({ ...formData, objectDetails: { ...formData.objectDetails, [key]: value } });
@@ -201,31 +168,6 @@ export function AssetFormDialog({
     }
   };
 
-  // Selector shown directly below the category picker — always visible when OBJECT is selected
-  const renderObjectCategorySelect = () => {
-    if (formData.category !== 'OBJECT') return null;
-    return (
-      <div className="form-field">
-        <Label htmlFor="objectCategory">
-          Catégorie d'objet <span className="required-star">*</span>
-        </Label>
-        <Select
-          value={formData.objectCategory}
-          onValueChange={(value) => setFormData({ ...formData, objectCategory: value, objectDetails: {} })}
-        >
-          <SelectTrigger id="objectCategory">
-            <SelectValue placeholder="Sélectionnez une catégorie" />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.entries(OBJECT_CATEGORY_LABELS).map(([key, label]) => (
-              <SelectItem key={key} value={key}>{label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    );
-  };
-
   // Detailed object fields - removed to simplify form
   const renderObjectFields = () => {
     return null;
@@ -257,9 +199,10 @@ export function AssetFormDialog({
               />
             </div>
 
+            {/* Famille de bien → Catégorie de bien (lib/asset-taxonomy.ts) */}
             <div className="form-field">
               <Label htmlFor="category">
-                Catégorie <span className="required-star">*</span>
+                Famille de bien <span className="required-star">*</span>
               </Label>
               <Select
                 value={formData.category}
@@ -267,37 +210,39 @@ export function AssetFormDialog({
                 required
               >
                 <SelectTrigger id="category">
-                  <SelectValue placeholder="Sélectionnez une catégorie" />
+                  <SelectValue placeholder="Sélectionnez une famille" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="IMMOBILIER">Immobilier</SelectItem>
-                  <SelectItem value="VEHICULE">Véhicule</SelectItem>
-                  <SelectItem value="OBJECT">Objet</SelectItem>
-                  <SelectItem value="MATERIEL_PRO" disabled>
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Lock className="w-4 h-4" />
-                      <span>Matériel pro</span>
-                      <span className="text-xs">(Premium Pro requis)</span>
-                    </div>
-                  </SelectItem>
+                  {ASSET_FAMILIES.map((family) => (
+                    <SelectItem key={family.code} value={family.code}>{family.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
 
-            {/* Object sub-category — shown immediately when category = OBJECT */}
-            {renderObjectCategorySelect()}
-
-            {/* Sous-catégorie - conditionné par catégorie */}
-            {formData.category && formData.category !== 'OBJECT' && getSubtypes().length > 0 && (
+            {formData.category && getAssetCategories(formData.category).length > 0 && (
               <div className="form-field">
-                <Label htmlFor="subtype">Catégorie de {getSubtypeLabel()}</Label>
-                <Select value={formData.subtype} onValueChange={(value) => setFormData({ ...formData, subtype: value })} disabled={false}>
-                  <SelectTrigger id="subtype">
-                    <SelectValue placeholder="Sélectionnez un type" />
+                <Label htmlFor="assetCategory">
+                  Catégorie de bien
+                  {/* Objet : la catégorie oriente les champs du bien, elle reste obligatoire. */}
+                  {formData.category === 'OBJECT' && <> <span className="required-star">*</span></>}
+                </Label>
+                <Select
+                  value={formData.category === 'OBJECT' ? formData.objectCategory : formData.subtype}
+                  onValueChange={(value) =>
+                    setFormData(
+                      formData.category === 'OBJECT'
+                        ? { ...formData, objectCategory: value, objectDetails: {} }
+                        : { ...formData, subtype: value },
+                    )
+                  }
+                >
+                  <SelectTrigger id="assetCategory">
+                    <SelectValue placeholder="Sélectionnez une catégorie" />
                   </SelectTrigger>
                   <SelectContent>
-                    {getSubtypes().map((subtype) => (
-                      <SelectItem key={subtype} value={subtype}>{subtype}</SelectItem>
+                    {getAssetCategories(formData.category).map((c) => (
+                      <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

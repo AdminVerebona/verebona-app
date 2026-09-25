@@ -37,6 +37,9 @@ const EXPORT = /\b(export|exporter|dossier|pdf|transmettre)\b/i;
 const SUPPLIER = /\b(fournisseur|prestataire|artisan|réparateur)\b/i;
 const AGENDA = /\b(agenda|rendez[- ]vous|planning|calendrier)\b/i;
 const DOC = /\b(document|facture|garantie|contrat|manuel|notice|certificat)\b/i;
+const DOC_LIST = /\b(documents|factures|fichiers|pièces)\b/i;
+/** « …de ma Clio », « …du chalet » : les documents DE quelque chose. */
+const OF_SOMETHING = /\b(de|du|des)\s+(ma|mon|mes|la|le|l'|l’|notre|nos)\b|\bdu\s+\w{3,}/i;
 /**
  * Motifs « bien » — ils manquaient, et `ACCOUNT_SEARCH_ASSET` n'apparaissait
  * nulle part dans ce routeur : l'intention la plus centrale du produit n'était
@@ -48,6 +51,25 @@ const SUMMARY = /\b(résume|résumé|synthèse|fais le point|bilan|panorama)\b/i
 const COMPARE = /\b(compare|comparer|différence|versus|par rapport)\b/i;
 const TIMELINE = /\b(historique|chronologie|timeline|au fil du temps|évolution)\b/i;
 const UNSAFE = /\b(ignore (les|tes) instructions|system prompt|jailbreak|drop table|<script)/i;
+
+// ══════════════════════════════════════════════════════════════════════════
+// LES MOTIFS ACCENTUÉS NE SE DÉCLENCHAIENT PAS EN DÉBUT DE MOT
+//
+// En JavaScript, `\b` ne considère pas « é » comme une lettre : `\bévolution`
+// ne reconnaît jamais « évolution », ni `\brésumé` « résumé ». Une demande de
+// synthèse (« explique-moi l'évolution des dépenses de la maison ») tombait
+// donc sur la recherche de bien — intention non éligible au modèle.
+//
+// Les intentions de synthèse sont aussi testées sur le message SANS accents,
+// avec des motifs ASCII. Les motifs d'origine sont conservés.
+// ══════════════════════════════════════════════════════════════════════════
+const SUMMARY_A = /\b(resume|synthese|fais le point|bilan|panorama|explique|expliquer|analyse|analyser|pourquoi|tendance)\b/;
+const COMPARE_A = /\b(compare|comparer|difference|versus|par rapport)\b/;
+const TIMELINE_A = /\b(historique|chronologie|timeline|au fil du temps|evolution)\b/;
+
+function ascii(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
 
 function normalize(s: string): string {
   return s.trim().replace(/\s+/g, ' ').slice(0, 2000);
@@ -72,6 +94,14 @@ function buildRoute(
     allowedActionTypes: allowedActionsFor(intent),
     routeReason: reason,
   };
+}
+
+/**
+ * Route d'une intention déjà connue — reprise après clarification : la
+ * demande initiale garde SON intention, sans être re-routée.
+ */
+export function routeForIntent(intent: VerebonaIntent, planType: string, reason: string): IntentRoute {
+  return buildRoute(intent, 'exact', planType, reason);
 }
 
 /**
@@ -100,6 +130,13 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
   if (HELP_HOWTO.test(msg) && !DOC.test(msg)) return R('PRODUCT_HELP_HOW_TO', 'probable', 'how-to produit');
 
   // Étape 5 — Navigation explicite (§9.4.5)
+  //
+  // « Montre-moi les documents de ma maison » n'est pas une navigation : c'est
+  // une question sur les données d'un bien (liste de ses documents), qui peut
+  // appeler une clarification si plusieurs biens correspondent.
+  if (OPEN_VERB.test(msg) && DOC_LIST.test(msg) && (ASSET.test(msg) || OF_SOMETHING.test(msg))) {
+    return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'documents d’un bien', true);
+  }
   if (OPEN_VERB.test(msg)) return R('NAVIGATION_OPEN', 'probable', 'verbe douverture');
 
   // Étape 6 — Intentions « données » déterministes (§9.4.6)
@@ -107,9 +144,11 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
   if (EXPORT.test(msg)) return R('EXPORT_HELP', 'probable', 'aide export');
 
   // Étape 7 — Synthèse / comparaison / chronologie (candidats IA — §9.4.7)
-  if (SUMMARY.test(msg)) return R('ACCOUNT_SUMMARY', 'probable', 'synthèse', true);
-  if (COMPARE.test(msg)) return R('ACCOUNT_COMPARISON', 'probable', 'comparaison', true);
-  if (TIMELINE.test(msg)) return R('ACCOUNT_TIMELINE', 'probable', 'chronologie', true);
+  const sansAccents = ascii(msg);
+  // Ordre d'origine conservé : synthèse, comparaison, chronologie.
+  if (SUMMARY.test(msg) || SUMMARY_A.test(sansAccents)) return R('ACCOUNT_SUMMARY', 'probable', 'synthèse', true);
+  if (COMPARE.test(msg) || COMPARE_A.test(sansAccents)) return R('ACCOUNT_COMPARISON', 'probable', 'comparaison', true);
+  if (TIMELINE.test(msg) || TIMELINE_A.test(sansAccents)) return R('ACCOUNT_TIMELINE', 'probable', 'chronologie', true);
 
   // Étape 8 — Recherche compte par type d'objet (§9.4.8)
   if (SUPPLIER.test(msg)) return R('ACCOUNT_SEARCH_SUPPLIER', 'probable', 'recherche fournisseur', true);

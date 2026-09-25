@@ -23,9 +23,10 @@
  * laisserait neuf plus une action perdue.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import { db } from '@/db';
-import { toProcessActions } from '@/db/schema';
+import { toProcessActionEvents, toProcessActions } from '@/db/schema';
 import type {
   ActionKind,
   ActionPriority,
@@ -50,15 +51,62 @@ export interface UpsertActionInput {
   dueDate?: Date | null;
   /** Question personnalisée ; à défaut, celle de la règle. */
   question?: string;
+  /**
+   * Éléments déclencheurs propres au producteur (identifiant / version de la
+   * preuve source, date de la donnée métier…). Entre dans l'empreinte qui
+   * décide si une action « Non applicable » peut revenir (§7.4).
+   */
+  triggerContext?: Record<string, unknown> | null;
 }
 
 export interface UpsertActionResult {
   status: 'CREATED' | 'UPDATED' | 'SKIPPED';
+  /** Motif machine d'un SKIPPED, quand il y en a un. */
+  code?: 'NOT_APPLICABLE_UNCHANGED';
   actionId?: number;
   priority?: ActionPriority;
   /** Action rétrogradée pour faire place à l'entrante (§9.3). */
   demotedActionId?: number;
+  /** Action d'une autre nature fermée (OBSOLETE) : le problème a changé de forme. */
+  replacedActionId?: number;
   reason: string;
+}
+
+/** Sérialisation canonique : clés triées, pour une empreinte stable. */
+function canonical(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(canonical);
+  if (v && typeof v === 'object' && !(v instanceof Date)) {
+    return Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canonical((v as Record<string, unknown>)[k])]));
+  }
+  return v instanceof Date ? v.toISOString().slice(0, 10) : v;
+}
+
+/**
+ * Empreinte des éléments déclencheurs d'une action (§7.4).
+ *
+ * Ce qui compte : la règle, la nature, les VALEURS proposées et leurs
+ * PREUVES, l'échéance (au jour), et le contexte fourni par le producteur.
+ * Libellés et confiance en sont exclus : ils varient d'un passage à l'autre
+ * sans que la situation change, et rouvriraient une action refusée pour rien.
+ */
+export function computeTriggerContextHash(p: {
+  ruleCode: string;
+  actionKind: ActionKind;
+  proposals: Array<Pick<ActionProposal, 'value' | 'evidenceIds'>>;
+  dueDate?: Date | null;
+  triggerContext?: Record<string, unknown> | null;
+}): string {
+  const proposals = p.proposals
+    .map((x) => ({ value: x.value ?? null, evidence: [...(x.evidenceIds ?? [])].sort() }))
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const payload = canonical({
+    rule: p.ruleCode,
+    kind: p.actionKind,
+    proposals,
+    due: p.dueDate ?? null,
+    ctx: p.triggerContext ?? null,
+  });
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
 /**
@@ -96,8 +144,25 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
   const dataKey = fieldKey ?? relationKey!;
   const now = new Date();
   const displayed = selectDisplayedProposals(proposals);
+  const contextHash = computeTriggerContextHash({
+    ruleCode: input.ruleCode,
+    actionKind: input.actionKind,
+    proposals: displayed,
+    dueDate: input.dueDate ?? null,
+    triggerContext: input.triggerContext ?? null,
+  });
 
-  const [existing] = await db
+  // ══════════════════════════════════════════════════════════════════════
+  // UNE SEULE ACTION ACTIVE PAR PROBLÈME MÉTIER, QUELLE QUE SOIT SA NATURE
+  //
+  // La recherche portait sur problème + nature : une action COMPLETE ouverte
+  // n'était pas retrouvée quand une analyse produisait un ARBITRATE sur la
+  // même donnée, et les deux restaient actives (compteur à 2 pour une seule
+  // réponse attendue). La recherche porte désormais sur compte + objet +
+  // champ / relation ; une nature différente est fermée (OBSOLETE) dans la
+  // même transaction que la création de la nouvelle.
+  // ══════════════════════════════════════════════════════════════════════
+  const actives = await db
     .select()
     .from(toProcessActions)
     .where(
@@ -106,19 +171,29 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
         eq(toProcessActions.targetType, input.targetType),
         eq(toProcessActions.targetId, input.targetId),
         sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`,
-        eq(toProcessActions.actionKind, input.actionKind),
         isNull(toProcessActions.resolvedAt),
       ),
-    )
-    .limit(1);
+    );
+  const existing = actives.find((a) => a.actionKind === input.actionKind);
+  const otherKind = actives.filter((a) => a.actionKind !== input.actionKind);
 
   // ── Problème déjà connu : mise à jour, jamais duplication (§7.3, AI-04) ──
   if (existing) {
+    // Doublon historique d'une autre nature (antérieur à cette règle) :
+    // fermé au passage.
+    for (const old of otherKind) {
+      await db
+        .update(toProcessActions)
+        .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
+        .where(and(eq(toProcessActions.id, old.id), isNull(toProcessActions.resolvedAt)));
+    }
     await db
       .update(toProcessActions)
       .set({
         proposalsJson: displayed,
         dueDate: input.dueDate ?? existing.dueDate,
+        triggerContextHash: contextHash,
+        triggerContext: (input.triggerContext ?? null) as never,
         lastSeenAt: now,
         updatedAt: now,
       })
@@ -130,6 +205,50 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
       priority: existing.priority as ActionPriority,
       reason: 'Action active existante mise à jour avec les nouvelles propositions.',
     };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // « NON APPLICABLE » : PAS DE NOUVEAU CYCLE SANS ÉLÉMENT NOUVEAU (§7.4)
+  //
+  // La dernière action RÉSOLUE du même problème est relue. Si l'utilisateur
+  // l'a déclarée « Non applicable » et que les éléments déclencheurs n'ont
+  // pas changé (même empreinte), rien n'est recréé : NOT_APPLICABLE_UNCHANGED.
+  // Une nouvelle preuve, une nouvelle valeur, une nouvelle échéance ou un
+  // nouveau contexte producteur changent l'empreinte et ouvrent un nouveau
+  // cycle ; la décision précédente reste conservée pour l'audit.
+  // ══════════════════════════════════════════════════════════════════════
+  const [lastResolved] = await db
+    .select()
+    .from(toProcessActions)
+    .where(
+      and(
+        eq(toProcessActions.accountId, input.accountId),
+        eq(toProcessActions.targetType, input.targetType),
+        eq(toProcessActions.targetId, input.targetId),
+        sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`,
+        isNotNull(toProcessActions.resolvedAt),
+      ),
+    )
+    .orderBy(desc(toProcessActions.resolvedAt))
+    .limit(1);
+
+  if (lastResolved?.resolutionReason === 'NOT_APPLICABLE') {
+    // Ligne antérieure à l'empreinte : recalculée depuis ce qu'elle a conservé.
+    const previousHash = lastResolved.triggerContextHash ?? computeTriggerContextHash({
+      ruleCode: lastResolved.ruleCode,
+      actionKind: lastResolved.actionKind as ActionKind,
+      proposals: (lastResolved.proposalsJson as ActionProposal[] | null) ?? [],
+      dueDate: lastResolved.dueDate ?? null,
+      triggerContext: (lastResolved.triggerContext as Record<string, unknown> | null) ?? null,
+    });
+    if (previousHash === contextHash) {
+      return {
+        status: 'SKIPPED',
+        code: 'NOT_APPLICABLE_UNCHANGED',
+        actionId: lastResolved.id,
+        reason: 'Déclarée « Non applicable » par l’utilisateur, sans élément nouveau depuis : pas de nouvelle action (§7.4).',
+      };
+    }
   }
 
   // ── Nouvelle action : priorité, puis plafond (§9.2, §9.3) ───────────────
@@ -145,7 +264,9 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
   let demotedActionId: number | undefined;
 
   if (wantedPriority === 'DO_FIRST') {
-    const currentDoFirst = await loadDoFirstCandidates(input.accountId);
+    // L'action remplacée libère sa place : elle ne compte pas dans le plafond.
+    const replacedIds = new Set(otherKind.map((a) => a.id));
+    const currentDoFirst = (await loadDoFirstCandidates(input.accountId)).filter((c) => !replacedIds.has(c.id ?? -1));
     const admission = admitToDoFirst(
       { ruleCode: input.ruleCode, priority: 'DO_FIRST', activeSince: now, dueDate: input.dueDate },
       currentDoFirst,
@@ -173,6 +294,25 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
     );
 
   const inserted = await db.transaction(async (tx) => {
+    // Changement de nature : l'ancienne action est fermée, historisée, dans
+    // la même transaction — jamais deux cartes actives sur la même donnée.
+    for (const old of otherKind) {
+      await tx
+        .update(toProcessActions)
+        .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
+        .where(and(eq(toProcessActions.id, old.id), isNull(toProcessActions.resolvedAt)));
+      await tx.insert(toProcessActionEvents).values({
+        actionId: old.id,
+        accountId: input.accountId,
+        event: 'OBSOLETE',
+        targetType: old.targetType,
+        targetId: old.targetId,
+        fieldKey: old.fieldKey ?? old.relationKey,
+        details: { reason: 'NATURE_CHANGED', from: old.actionKind, to: input.actionKind, ruleCode: input.ruleCode },
+        createdAt: now,
+      });
+    }
+
     if (demotedActionId) {
       await tx
         .update(toProcessActions)
@@ -197,6 +337,8 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
         activeSince: now,
         lastSeenAt: now,
         cycleNumber: Number(maxCycle) + 1,
+        triggerContextHash: contextHash,
+        triggerContext: (input.triggerContext ?? null) as never,
         createdAt: now,
         updatedAt: now,
       })
@@ -210,6 +352,7 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
     actionId: inserted.id,
     priority: finalPriority,
     demotedActionId,
+    replacedActionId: otherKind[0]?.id,
     reason:
       finalPriority === wantedPriority
         ? 'Action créée.'

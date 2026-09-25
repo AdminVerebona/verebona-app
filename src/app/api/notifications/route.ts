@@ -51,6 +51,11 @@ export async function GET(request: NextRequest) {
         id: n.id,
         type: n.type,
         payload: n.payloadJson ? JSON.parse(n.payloadJson) : null,
+        // Contenu rendu par le catalogue à l'émission : filet de sécurité de
+        // la cloche pour un type qu'elle ne sait pas libeller (au lieu de
+        // « Nouvelle notification »).
+        title: n.title ?? null,
+        body: n.body ?? null,
         createdAt: n.createdAt,
         readAt: n.readAt,
         mustDeliver: n.mustDeliver ?? false,

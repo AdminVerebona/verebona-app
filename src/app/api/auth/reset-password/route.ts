@@ -5,6 +5,9 @@ import { eq } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
 import { emit } from '@/lib/notifications';
+import { revokeAllUserSessions } from '@/db';
+import { serverCacheDelete } from '@/lib/server-cache';
+import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 
 /**
  * Route pour réinitialiser le mot de passe avec un token
@@ -86,6 +89,11 @@ export async function POST(request: NextRequest) {
       })
       .where(eq(users.id, user.id));
     
+    // Réinitialisation = même risque qu'un changement : toutes les sessions
+    // existantes (y compris celle d'un éventuel intrus) sont révoquées.
+    await revokeAllUserSessions(user.id, 'PASSWORD_RESET');
+    serverCacheDelete(sessionCutoffCacheKey(user.id));
+
     // Événement de sécurité obligatoire (cloche + email, CDC §7.7).
     try {
       await emit({

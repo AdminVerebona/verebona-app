@@ -27,7 +27,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextResponse } from 'next/server';
-import { getEntitlements } from '@/services/entitlements.service';
+import { getEntitlements, restrictedRefusal } from '@/services/entitlements.service';
 
 /** Format déjà compris par le client, via `parseWriteBlocked`. */
 export interface RefusEcriture {
@@ -35,27 +35,12 @@ export interface RefusEcriture {
   message: string;
 }
 
-function message(statut: string): RefusEcriture {
-  // Les statuts sont ceux que rend `getEntitlements`, vérifiés dans le
-  // service : `readonly` pour un essai échu, `canceled` pour un abonnement
-  // résilié, `none` pour un compte sans abonnement.
-  //
-  // « Essai terminé » et « pas d'abonnement » appellent des suites
-  // différentes — choisir une offre, ou en reprendre une. Les confondre
-  // enverrait la moitié des gens au mauvais endroit.
-  if (statut === 'readonly') {
-    return {
-      code: 'TRIAL_EXPIRED',
-      message:
-        "Votre essai gratuit est terminé. Vos données sont conservées : " +
-        "choisissez une offre pour reprendre l'ajout et la modification.",
-    };
-  }
-  return {
-    code: 'SUBSCRIPTION_REQUIRED',
-    message: 'Un abonnement actif est nécessaire pour effectuer cette action.',
-  };
-}
+// Les statuts sont ceux que rend `getEntitlements` : `readonly` pour un
+// essai échu, `canceled` pour un abonnement résilié, `none` pour un compte
+// sans abonnement. « Essai terminé » et « pas d'abonnement » appellent des
+// suites différentes — choisir une offre, ou en reprendre une. Un compte
+// recréé avec une adresse dont l'essai est consommé relève du premier cas
+// (cf. `restrictedRefusal`).
 
 /**
  * Refuse l'écriture si le compte ne peut plus écrire.
@@ -79,7 +64,8 @@ export async function refuserSiLectureSeule(
   const droits = await getEntitlements(accountId);
   if (droits.canWrite) return null;
 
-  return NextResponse.json(message(droits.status), { status: 403 });
+  const refus: RefusEcriture = await restrictedRefusal(accountId, droits.status);
+  return NextResponse.json(refus, { status: 403 });
 }
 
 /**

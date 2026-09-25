@@ -196,14 +196,16 @@ describe('sujets réservés — le contrôle est réellement appelé (§13)', ()
     'utf-8',
   );
 
-  it('l’orchestrateur appelle checkBlockedTopic', () => {
-    expect(ORCHESTRATEUR).toContain('checkBlockedTopic');
+  it('l’orchestrateur applique le contrôle (par sous-demande, analyzeScope → checkBlockedTopic)', () => {
+    expect(ORCHESTRATEUR).toContain('analyzeScope(input.message');
+    const B = readFileSync(join(process.cwd(), 'src/services/verebona-assistant/core/blocked-topics.ts'), 'utf-8');
+    expect(B).toMatch(/const c = checkBlockedTopic\(t\)/);
   });
 
   it('le contrôle précède le routage et la récupération', () => {
     // Placé plus loin, il laisserait une question interdite atteindre les
     // documents du compte et consommer un appel facturé.
-    const posControle = ORCHESTRATEUR.indexOf('checkBlockedTopic(input.message');
+    const posControle = ORCHESTRATEUR.indexOf('analyzeScope(input.message');
     const posRoutage = ORCHESTRATEUR.indexOf('routeDeterministic({');
     expect(posControle).toBeGreaterThan(-1);
     expect(posControle).toBeLessThan(posRoutage);

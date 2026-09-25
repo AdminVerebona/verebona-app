@@ -15,6 +15,11 @@
  *   · feedback .........................  13 mois
  */
 import { pgClient } from '@/db';
+import {
+  purgeConversationData,
+  purgeMessagesWhere,
+  type SqlRunner,
+} from '@/services/verebona-assistant/core/conversation.service';
 
 export const RETENTION = {
   conversationDays: Number(process.env.VEREBONA_ASSISTANT_HISTORY_DAYS ?? 7),
@@ -36,18 +41,22 @@ export interface PurgeReport {
 export async function purgeAssistantData(now = new Date()): Promise<PurgeReport> {
   const startedAt = Date.now();
 
-  // 1. Messages au-delà de la durée de conservation.
-  const messages = await deleteWhere(
-    'verebona_messages',
-    `created_at < NOW() - INTERVAL '${RETENTION.conversationDays} days'`,
-  );
+  // 1. Conversations expirées : purge complète (messages, citations,
+  //    sources, actions, avis, réponses modèle en cache), sans compter sur
+  //    des cascades qui peuvent manquer (tables créées par drizzle push).
+  const expired = (await pgClient.unsafe(
+    `SELECT id FROM verebona_conversations
+      WHERE (expires_at IS NOT NULL AND expires_at < NOW())
+         OR updated_at < NOW() - INTERVAL '${RETENTION.conversationDays} days'`,
+  )) as unknown as Array<{ id: number }>;
+  const purge = await purgeConversationData(pgClient as unknown as SqlRunner, expired.map((r) => r.id));
+  const conversations = purge.conversations;
 
-  // 2. Conversations vides ou expirées. Après le nettoyage des messages, pour
-  //    ne pas laisser de messages orphelins en cas d'interruption.
-  const conversations = await deleteWhere(
-    'verebona_conversations',
-    `(expires_at IS NOT NULL AND expires_at < NOW())
-      OR updated_at < NOW() - INTERVAL '${RETENTION.conversationDays} days'`,
+  // 2. Messages au-delà de la durée de conservation dans un fil encore
+  //    actif : supprimés avec leurs dépendances.
+  const messages = purge.messages + await purgeMessagesWhere(
+    pgClient as unknown as SqlRunner,
+    `created_at < NOW() - INTERVAL '${RETENTION.conversationDays} days'`,
   );
 
   // 3. Traces détaillées : le CONTENU est expurgé, la ligne technique reste.

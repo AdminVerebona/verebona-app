@@ -28,6 +28,7 @@ const DocumentDrawer = dynamic(
 );
 
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
+import { OCCUPANCY_USAGE_LABELS } from '@/lib/assets/occupancy';
 
 interface TimelineItem {
   itemType: 'event' | 'reminder' | 'agenda';
@@ -113,12 +114,7 @@ const formatCents = (cents: number | null | undefined) => {
 type AssetFields = OverviewData['asset'];
 
 const CONDITION_LABELS: Record<string, string> = { NEUF: 'Neuf', BON: 'Bon', MOYEN: 'Moyen', MAUVAIS: 'Mauvais' };
-const OCCUPANCY_LABELS: Record<string, string> = {
-  RESIDENCE_PRINCIPALE: 'Résidence principale',
-  RESIDENCE_SECONDAIRE: 'Résidence secondaire',
-  LOCATIF: 'Locatif',
-  VACANT: 'Vacant',
-};
+const OCCUPANCY_LABELS = OCCUPANCY_USAGE_LABELS;
 const FUEL_LABELS: Record<string, string> = {
   ESSENCE: 'Essence', DIESEL: 'Diesel', ELECTRIQUE: 'Électrique',
   HYBRIDE: 'Hybride', GPL: 'GPL', AUTRE: 'Autre',

@@ -22,7 +22,7 @@ import { canRequestAiReview } from './decision/ai-exclusion';
 import { resolveAmbiguity } from './ambiguity-resolver';
 import { applyDecision } from './apply-decision';
 import { writeConflict, resolveObsoleteConflict } from './conflict-writer';
-import { openRun, closeRun, recordDecisions } from './reconciliation-run.repository';
+import { openRun, closeRun, recordDecisions, failRun } from './reconciliation-run.repository';
 import { shouldWrite } from '../flags/ai-feature-flags';
 import { syncReconciliationToProcess } from '@/services/to-process/reconciliation-bridge';
 import type { ReconciliationDecision, ReconciliationRun } from './types';
@@ -32,10 +32,12 @@ export interface ReconcileInput {
   assetId: number;
   userId?: number;
   /** Origine du déclenchement, tracée dans l'exécution. */
-  triggeredBy: 'document_analyzed' | 'manual' | 'scheduled' | 'field_changed';
+  triggeredBy: 'document_analyzed' | 'document_linked' | 'manual' | 'scheduled' | 'field_changed';
   sourceFileId?: number | null;
   /** Force le mode observation, indépendamment du flag. */
   forceShadow?: boolean;
+  /** Exécution T3 (compte) à laquelle ce run local appartient. */
+  accountRunId?: number | null;
 }
 
 export async function reconcileAsset(input: ReconcileInput): Promise<ReconciliationRun> {
@@ -46,8 +48,19 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
 
   const runId = await openRun({
     accountId: input.accountId, assetId: input.assetId,
-    triggeredBy: input.triggeredBy, shadow, traceId,
+    triggeredBy: input.triggeredBy, shadow, traceId, accountRunId: input.accountRunId ?? null,
   });
+  try {
+    return await runEngine(input, runId, traceId, shadow);
+  } catch (e) {
+    // Un run local en échec est clos comme tel : il n'apparaît plus « en
+    // cours », et l'exécution T3 qui l'a lancé peut continuer avec les autres.
+    await failRun(runId).catch(() => {});
+    throw e;
+  }
+}
+
+async function runEngine(input: ReconcileInput, runId: number, traceId: string, shadow: boolean): Promise<ReconciliationRun> {
 
   const collected = await collectFields(input.accountId, input.assetId);
   const decisions: ReconciliationDecision[] = [];

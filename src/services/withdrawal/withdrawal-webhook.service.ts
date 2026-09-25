@@ -22,7 +22,8 @@ import type Stripe from 'stripe';
 import { db } from '@/db';
 import { withdrawalRequests } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { aggregateStatus, classifyRefundStatus } from './refund-calculator';
+import { decideWithdrawalStatus, legacyLists, parseEntries, upsertRefund, type RefundEntry } from './refund-tracker';
+import { getStripeServer } from '@/lib/stripe';
 import { recordWithdrawalEvent } from './withdrawal-journal.service';
 
 /** Événements Stripe pertinents pour une rétractation (§9.6). */
@@ -69,49 +70,58 @@ export async function handleRefundEvent(event: Stripe.Event): Promise<WebhookOut
       return { handled: false, publicReference: reference, detail: 'REQUEST_NOT_FOUND' };
     }
 
-    const refundIds: string[] = JSON.parse(request.stripeRefundIds ?? '[]');
-    const refundStatuses: string[] = JSON.parse(request.stripeRefundStatuses ?? '[]');
-
-    // Le remboursement est-il déjà connu ? Un webhook peut précéder l'écriture
-    // faite à la création, ou la suivre.
-    const index = refundIds.indexOf(refund.id);
-    if (index === -1) {
-      refundIds.push(refund.id);
-      refundStatuses.push(refund.status ?? 'pending');
-    } else {
-      refundStatuses[index] = refund.status ?? refundStatuses[index];
+    // ══════════════════════════════════════════════════════════════════
+    // SUIVI INDIVIDUEL, TOTAL RECALCULÉ (CDC §9.5)
+    //
+    // Chaque remboursement est une entrée (identifiant, montant, statut).
+    // L'événement met à jour SON entrée — ignoré s'il est plus ancien que
+    // celui déjà appliqué (ordre de livraison non garanti) —, puis le total
+    // remboursé est RECALCULÉ depuis toutes les entrées réussies : un
+    // webhook rejoué ne peut jamais l'augmenter une seconde fois.
+    // ══════════════════════════════════════════════════════════════════
+    let entries: RefundEntry[] = parseEntries(request.stripeRefundsJson);
+    if (entries.length === 0 && request.stripeRefundIds) {
+      // Demande antérieure au suivi individuel : reprise des listes.
+      const ids: string[] = JSON.parse(request.stripeRefundIds || '[]');
+      const sts: string[] = JSON.parse(request.stripeRefundStatuses || '[]');
+      entries = ids.map((id, i) => ({ refundId: id, paymentId: null, amount: null, status: sts[i] ?? 'pending', eventCreated: null, updatedAt: null }));
     }
-
-    // Le montant réglé est RECALCULÉ depuis les statuts, jamais incrémenté :
-    // un webhook rejoué ajouterait sinon deux fois le même montant.
-    const settledAmount = refundStatuses.reduce((sum, status, i) => {
-      if (classifyRefundStatus(status) !== 'settled') return sum;
-      // Le montant du remboursement courant est connu ; pour les autres, on
-      // s'appuie sur la répartition déjà enregistrée.
-      if (refundIds[i] === refund.id) return sum + (refund.amount ?? 0);
-      return sum;
-    }, 0);
-
-    const status = aggregateStatus(
-      request.cancellationStatus,
-      refundStatuses,
-      refundIds.length,
+    const paymentId = typeof refund.payment_intent === 'string'
+      ? refund.payment_intent
+      : refund.payment_intent?.id ?? (typeof refund.charge === 'string' ? refund.charge : refund.charge?.id ?? null);
+    entries = upsertRefund(
+      entries,
+      { refundId: refund.id, paymentId, amount: refund.amount ?? null, status: refund.status ?? 'pending' },
+      typeof event.created === 'number' ? event.created : null,
     );
+    entries = await reconstructMissingAmounts(entries);
+
+    const decision = decideWithdrawalStatus({
+      cancellationStatus: request.cancellationStatus,
+      entries,
+      amountExpected: request.amountExpected ?? null,
+    });
+    const status = decision.status;
+    const lists = legacyLists(entries);
 
     await db
       .update(withdrawalRequests)
       .set({
-        stripeRefundIds: JSON.stringify(refundIds),
-        stripeRefundStatuses: JSON.stringify(refundStatuses),
-        // On ne diminue jamais un montant déjà réglé : un webhook tardif sur
-        // un remboursement antérieur ne doit pas effacer les autres.
-        amountRefunded: Math.max(request.amountRefunded, settledAmount),
+        stripeRefundsJson: entries as never,
+        stripeRefundIds: lists.ids,
+        stripeRefundStatuses: lists.statuses,
+        // Total EXACT des remboursements réussis, recalculé.
+        amountRefunded: decision.amountRefunded,
         status,
         ...(status === 'failed'
           ? {
-              failureCode: `REFUND_${(refund.status ?? 'unknown').toUpperCase()}`,
+              failureCode: decision.reason === 'AMOUNT_EXCEEDS_EXPECTED'
+                ? 'REFUND_AMOUNT_INCONSISTENT'
+                : `REFUND_${(refund.status ?? 'unknown').toUpperCase()}`,
               failureDetails:
-                refund.failure_reason ?? `Remboursement ${refund.id} en statut ${refund.status}.`,
+                decision.reason === 'AMOUNT_EXCEEDS_EXPECTED'
+                  ? `Remboursé ${decision.amountRefunded} > attendu ${request.amountExpected}.`
+                  : refund.failure_reason ?? `Remboursement ${refund.id} en statut ${refund.status}.`,
             }
           : { failureCode: null, failureDetails: null }),
       })
@@ -130,6 +140,8 @@ export async function handleRefundEvent(event: Stripe.Event): Promise<WebhookOut
         eventType: event.type,
         eventId: event.id,
         failureReason: refund.failure_reason ?? null,
+        amountRefunded: decision.amountRefunded,
+        amountExpected: request.amountExpected ?? null,
       },
     });
 
@@ -171,12 +183,16 @@ export async function handleSubscriptionCancelled(
       return { handled: false };
     }
 
-    const refundStatuses: string[] = JSON.parse(request.stripeRefundStatuses ?? '[]');
-    const status = aggregateStatus('cancelled', refundStatuses, refundStatuses.length);
+    const decision = decideWithdrawalStatus({
+      cancellationStatus: 'cancelled',
+      entries: parseEntries(request.stripeRefundsJson),
+      amountExpected: request.amountExpected ?? null,
+    });
+    const status = decision.status;
 
     await db
       .update(withdrawalRequests)
-      .set({ cancellationStatus: 'cancelled', status })
+      .set({ cancellationStatus: 'cancelled', status, amountRefunded: decision.amountRefunded })
       .where(eq(withdrawalRequests.publicReference, request.publicReference));
 
     return { handled: true, publicReference: request.publicReference, status };
@@ -184,4 +200,26 @@ export async function handleSubscriptionCancelled(
     console.error('[withdrawal] annulation non enregistrée :', (e as Error).message);
     return { handled: false, detail: (e as Error).message };
   }
+}
+
+/**
+ * Complète les montants inconnus (demandes antérieures au suivi individuel)
+ * auprès de Stripe. Sans accès Stripe, l'entrée reste inconnue et la demande
+ * ne peut pas être close — jamais de clôture sur un total supposé.
+ */
+async function reconstructMissingAmounts(entries: RefundEntry[]): Promise<RefundEntry[]> {
+  if (!entries.some((e) => e.amount === null)) return entries;
+  let stripe;
+  try { stripe = getStripeServer(); } catch { return entries; }
+  const out: RefundEntry[] = [];
+  for (const e of entries) {
+    if (e.amount !== null) { out.push(e); continue; }
+    try {
+      const r = await stripe.refunds.retrieve(e.refundId);
+      out.push({ ...e, amount: r.amount ?? null });
+    } catch {
+      out.push(e);
+    }
+  }
+  return out;
 }

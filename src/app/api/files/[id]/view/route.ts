@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import { FileLogger } from '@/lib/file-logger';
 import { SessionService } from '@/lib/session-service';
+import { viewableFileCondition } from '@/services/documents/grouped-sources';
 
 const s3Client = new S3Client({
   region: process.env.OVH_S3_REGION || 'gra',
@@ -56,7 +57,9 @@ export async function GET(
       .where(
         and(
           eq(assetFiles.id, fileIdInt),
-          isNull(assetFiles.deletedAt)
+          // Supprimé = introuvable, SAUF source secondaire d'un document
+          // existant : elle reste consultable depuis ses preuves (0143).
+          viewableFileCondition,
         )
       )
       .limit(1);

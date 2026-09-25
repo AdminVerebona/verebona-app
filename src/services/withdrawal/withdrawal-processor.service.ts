@@ -15,14 +15,15 @@
  *
  * ── L'ORDRE EST IMPOSÉ ────────────────────────────────────────────────────
  *
- *   1. ANNULER L'ABONNEMENT. Le §3.3 exige un effet immédiat et le §9.2
- *      interdit `cancel_at_period_end` : un renouvellement facturé après une
- *      rétractation serait une faute lourde.
- *   2. SUSPENDRE LES DROITS. Le compte passe en `withdrawal_recovery` (§13).
- *   3. PLANIFIER LA SUPPRESSION à trente jours (§13.3).
+ *   1. SUSPENDRE LES DROITS, localement, AVANT tout appel Stripe : le compte
+ *      passe en `withdrawal_recovery` (§13) dès la confirmation, même si
+ *      Stripe est indisponible.
+ *   2. PLANIFIER LA SUPPRESSION à trente jours (§13.3), localement aussi.
+ *   3. ANNULER L'ABONNEMENT chez Stripe. Le §3.3 exige un effet immédiat et
+ *      le §9.2 interdit `cancel_at_period_end`. En échec : reprise ultérieure,
+ *      droits toujours suspendus.
  *   4. REMBOURSER. En dernier, parce que c'est l'étape la plus susceptible
- *      d'échouer ou de rester en attente — et qu'elle ne doit pas retarder
- *      l'arrêt des prélèvements.
+ *      d'échouer ou de rester en attente.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
@@ -32,11 +33,12 @@ import { eq } from 'drizzle-orm';
 import { getStripeServer } from '@/lib/stripe';
 import {
   buildRefundPlan,
-  aggregateStatus,
   type PaymentRecord,
   type RefundPlan,
 } from './refund-calculator';
+import { decideWithdrawalStatus, legacyLists, parseEntries, upsertRefund, type RefundEntry } from './refund-tracker';
 import { scheduleDeletion } from '@/services/account/scheduled-deletion.service';
+import { listInvoicePaidCharges, PaymentLookupError } from '@/services/billing/stripe-payments';
 import { recordWithdrawalEvent } from './withdrawal-journal.service';
 
 export interface ProcessResult {
@@ -56,7 +58,7 @@ export interface ProcessResult {
  */
 export async function processWithdrawal(
   publicReference: string,
-  options: { now?: Date } = {},
+  options: { now?: Date; stripe?: Stripe } = {},
 ): Promise<ProcessResult> {
   const now = options.now ?? new Date();
 
@@ -71,14 +73,57 @@ export async function processWithdrawal(
     return { status: 'skipped', detail: `STATUS_${request.status}` };
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // 1. SUSPENSION LOCALE DES DROITS — AVANT TOUT APPEL STRIPE (§3.4, §13)
+  //
+  // Elle intervenait après l'annulation Stripe : Stripe indisponible, ou
+  // annulation refusée, et le traitement s'arrêtait AVANT enterRecoveryMode —
+  // le compte gardait ses droits d'écriture alors que la rétractation était
+  // confirmée. L'indisponibilité de Stripe doit empêcher l'exécution
+  // externe, pas retarder la protection locale du compte.
+  //
+  // Idempotente : rejouée à chaque reprise, elle ne rend jamais de droits.
+  // ══════════════════════════════════════════════════════════════════════
+  if (request.accountId && (await enterRecoveryMode(request.accountId))) {
+    // §18, élément 17 : date de passage en export uniquement (première fois).
+    await recordWithdrawalEvent({
+      publicReference,
+      eventType: 'EXPORT_ONLY_ENTERED',
+      summary: 'Compte basculé en lecture et export seuls.',
+    });
+  }
+
+  // ── 2. Suppression planifiée à trente jours (§13.3) — locale, elle aussi ─
+  if (request.accountId && request.userId) {
+    await scheduleDeletion({
+      accountId: request.accountId,
+      userId: request.userId,
+      reason: 'WITHDRAWAL',
+      confirmedAt: request.confirmedAt ?? request.requestedAt,
+    }).then((schedule) => recordWithdrawalEvent({
+      publicReference,
+      eventType: 'DELETION_SCHEDULED',
+      summary: `Suppression des données planifiée au ${schedule.scheduledAt.toISOString()}.`,
+      payload: { scheduledAt: schedule.scheduledAt.toISOString() },
+    })).catch((e) => {
+      // Une suppression non planifiée est un incident de conformité, pas une
+      // raison d'interrompre le remboursement.
+      console.error(
+        `[withdrawal] ${publicReference} : suppression non planifiée — ${(e as Error).message}`,
+      );
+    });
+  }
+
   let stripe: Stripe;
   try {
-    stripe = getStripeServer();
+    stripe = options.stripe ?? getStripeServer();
   } catch (e) {
     return await recordFailure(publicReference, 'STRIPE_UNAVAILABLE', (e as Error).message, now);
   }
 
-  // ── 1. Annulation immédiate (§9.2) ──────────────────────────────────────
+  // ── 3. Annulation immédiate chez Stripe (§9.2) ──────────────────────────
+  // Stripe indisponible ou annulation refusée : échec consigné, reprise par
+  // le balayage — les droits restent suspendus.
   let cancellationStatus = request.cancellationStatus;
 
   if (cancellationStatus === 'pending' && request.stripeSubscriptionId) {
@@ -129,38 +174,6 @@ export async function processWithdrawal(
     .set({ cancellationStatus, status: 'processing' })
     .where(eq(withdrawalRequests.publicReference, publicReference));
 
-  // ── 2. Suspension des droits (§3.4, §13) ────────────────────────────────
-  if (request.accountId) {
-    await enterRecoveryMode(request.accountId);
-    // §18, élément 17 : date de passage en export uniquement.
-    await recordWithdrawalEvent({
-      publicReference,
-      eventType: 'EXPORT_ONLY_ENTERED',
-      summary: 'Compte basculé en lecture et export seuls.',
-    });
-  }
-
-  // ── 3. Suppression planifiée à trente jours (§13.3) ─────────────────────
-  if (request.accountId && request.userId) {
-    await scheduleDeletion({
-      accountId: request.accountId,
-      userId: request.userId,
-      reason: 'WITHDRAWAL',
-      confirmedAt: request.confirmedAt ?? request.requestedAt,
-    }).then((schedule) => recordWithdrawalEvent({
-      publicReference,
-      eventType: 'DELETION_SCHEDULED',
-      summary: `Suppression des données planifiée au ${schedule.scheduledAt.toISOString()}.`,
-      payload: { scheduledAt: schedule.scheduledAt.toISOString() },
-    })).catch((e) => {
-      // Une suppression non planifiée est un incident de conformité, pas une
-      // raison d'interrompre le remboursement.
-      console.error(
-        `[withdrawal] ${publicReference} : suppression non planifiée — ${(e as Error).message}`,
-      );
-    });
-  }
-
   // ── 4. Remboursement (§9.3, §9.4) ───────────────────────────────────────
   let plan: RefundPlan;
   try {
@@ -168,6 +181,7 @@ export async function processWithdrawal(
       stripe,
       request.stripeSubscriptionId,
       request.contractConcludedAt ?? request.requestedAt,
+      publicReference,
     );
     plan = buildRefundPlan(
       payments,
@@ -196,15 +210,22 @@ export async function processWithdrawal(
     );
   }
 
-  const refundIds: string[] = JSON.parse(request.stripeRefundIds ?? '[]');
-  const refundStatuses: string[] = JSON.parse(request.stripeRefundStatuses ?? '[]');
-  let refundedAmount = request.amountRefunded;
+  // Suivi individuel : entrées existantes, complétées par les remboursements
+  // de CETTE demande retrouvés chez Stripe (reprise après interruption).
+  let entries: RefundEntry[] = parseEntries(request.stripeRefundsJson);
+  for (const p of plan.paymentsSeen ?? []) {
+    for (const r of p.ownRefunds ?? []) {
+      entries = upsertRefund(entries, { refundId: r.id, paymentId: p.id, amount: r.amount, status: r.status }, null, now);
+    }
+  }
 
   for (const instruction of plan.instructions) {
     try {
       const refund = await stripe.refunds.create(
         {
-          payment_intent: instruction.paymentId,
+          ...(instruction.refundTarget === 'charge'
+            ? { charge: instruction.paymentId }
+            : { payment_intent: instruction.paymentId }),
           amount: instruction.amount,
           // §3.2 : remboursement intégral. `reason` documente l'opération
           // côté Stripe sans influer sur le montant.
@@ -216,9 +237,12 @@ export async function processWithdrawal(
         { idempotencyKey: instruction.idempotencyKey },
       );
 
-      refundIds.push(refund.id);
-      refundStatuses.push(refund.status ?? 'pending');
-      if (refund.status === 'succeeded') refundedAmount += instruction.amount;
+      entries = upsertRefund(
+        entries,
+        { refundId: refund.id, paymentId: instruction.paymentId, amount: refund.amount ?? instruction.amount, status: refund.status ?? 'pending' },
+        null,
+        now,
+      );
 
       await recordWithdrawalEvent({
         publicReference,
@@ -240,6 +264,12 @@ export async function processWithdrawal(
         summary: `Remboursement refusé sur ${instruction.paymentId} : ${err.message ?? 'motif inconnu'}.`,
         payload: { paymentId: instruction.paymentId, code: err.code ?? null },
       });
+      // Les remboursements déjà émis sont conservés avant de consigner l'échec.
+      const lists = legacyLists(entries);
+      await db
+        .update(withdrawalRequests)
+        .set({ stripeRefundsJson: entries as never, stripeRefundIds: lists.ids, stripeRefundStatuses: lists.statuses, amountExpected: plan.totalAmount })
+        .where(eq(withdrawalRequests.publicReference, publicReference));
       await recordFailure(
         publicReference,
         `REFUND_FAILED_${err.code ?? 'UNKNOWN'}`,
@@ -250,25 +280,30 @@ export async function processWithdrawal(
     }
   }
 
-  const finalStatus = aggregateStatus(
-    cancellationStatus,
-    refundStatuses,
-    refundIds.length,
-  );
+  // Clôture sur les MONTANTS : total réussi === attendu (refund-tracker).
+  const decision = decideWithdrawalStatus({ cancellationStatus, entries, amountExpected: plan.totalAmount });
+  const finalStatus = decision.status;
+  const refundedAmount = decision.amountRefunded;
+  const lists = legacyLists(entries);
+  const refundIds = entries.map((e) => e.refundId);
 
   await db
     .update(withdrawalRequests)
     .set({
       status: finalStatus,
       cancellationStatus,
-      amountExpected: plan.totalAmount > 0 ? plan.totalAmount : request.amountExpected,
+      // Montant attendu : tout l'encaissé du contrat, net des remboursements
+      // étrangers à la demande. Stable d'un passage à l'autre (les
+      // remboursements de la demande n'en sont pas déduits).
+      amountExpected: plan.totalAmount,
       amountRefunded: refundedAmount,
       currency: plan.currency,
-      stripeRefundIds: JSON.stringify(refundIds),
-      stripeRefundStatuses: JSON.stringify(refundStatuses),
+      stripeRefundsJson: entries as never,
+      stripeRefundIds: lists.ids,
+      stripeRefundStatuses: lists.statuses,
       effectiveAt: request.effectiveAt ?? now,
-      failureCode: null,
-      failureDetails: null,
+      failureCode: finalStatus === 'failed' ? `WITHDRAWAL_${decision.reason ?? 'FAILED'}` : null,
+      failureDetails: finalStatus === 'failed' ? `Remboursé ${refundedAmount} / attendu ${plan.totalAmount}.` : null,
     })
     .where(eq(withdrawalRequests.publicReference, publicReference));
 
@@ -291,45 +326,71 @@ export async function processWithdrawal(
  * paiements du client : un compte peut porter d'autres achats — packs
  * d'analyses, par exemple — qui ne relèvent pas du contrat rétracté et ne
  * doivent surtout pas être remboursés.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * FORMAT STRIPE BASIL, TOUTES LES FACTURES
+ *
+ * L'ancienne version lisait `invoice.payment_intent`, absent des factures au
+ * format 2025-08-27.basil : chaque facture était ignorée, et la demande
+ * concluait qu'il n'y avait RIEN à rembourser. Elle ne lisait en outre que
+ * les 100 premières factures.
+ *
+ * Désormais :
+ *   - toutes les factures de l'abonnement (pagination automatique) ;
+ *   - pour chacune, ses règlements encaissés (`invoicePayments`) et la
+ *     charge correspondante ;
+ *   - les remboursements déjà présents sur chaque charge, séparés entre
+ *     ceux de CETTE demande (reprise) et les autres (déduits) ;
+ *   - une facture payée dont aucun règlement n'est identifiable, ou dont les
+ *     règlements n'expliquent pas le montant payé, lève : la demande passe
+ *     en échec / reprise, jamais en « rien à rembourser ».
+ * ══════════════════════════════════════════════════════════════════════════
  */
-async function listContractPayments(
+export async function listContractPayments(
   stripe: Stripe,
   stripeSubscriptionId: string | null,
   since: Date,
+  publicReference: string,
 ): Promise<PaymentRecord[]> {
   if (!stripeSubscriptionId) return [];
 
-  const invoices = await stripe.invoices.list({
-    subscription: stripeSubscriptionId,
-    limit: 100,
-  });
-
   const payments: PaymentRecord[] = [];
 
-  for (const invoice of invoices.data) {
-    // `payment_intent` a quitté le type public d'Invoice dans les versions
-    // récentes du SDK, tout en restant présent dans la charge utile. On y
-    // accède donc par un accès non typé, plutôt que par un `as` que le
-    // compilateur refuse à juste titre.
-    const raw = invoice as unknown as Record<string, unknown>;
-    const paymentIntentId = typeof raw.payment_intent === 'string' ? raw.payment_intent : null;
-    if (!paymentIntentId) continue;
+  for await (const invoice of stripe.invoices.list({ subscription: stripeSubscriptionId, limit: 100 })) {
+    // Seules les factures qui ont encaissé quelque chose comptent. Une
+    // facture antérieure au contrat est écartée plus loin, paiement par
+    // paiement (isRefundable), avec son motif.
+    if (!invoice.id || (invoice.amount_paid ?? 0) <= 0) continue;
 
-    const intent = await stripe.paymentIntents.retrieve(paymentIntentId, {
-      expand: ['latest_charge'],
-    });
+    const charges = await listInvoicePaidCharges(stripe, invoice.id);
+    const encaisse = charges.reduce((sum, c) => sum + c.amount, 0);
+    if (charges.length === 0 || encaisse < (invoice.amount_paid ?? 0)) {
+      throw new PaymentLookupError(
+        'INVOICE_PAYMENT_UNRESOLVED',
+        `Facture ${invoice.id} : ${invoice.amount_paid} centimes payés, ${encaisse} identifiés.`,
+      );
+    }
 
-    const charge = intent.latest_charge as Stripe.Charge | null;
-
-    payments.push({
-      id: intent.id,
-      amount: intent.amount_received || intent.amount,
-      amountRefunded: charge?.amount_refunded ?? 0,
-      currency: intent.currency,
-      captured: charge ? charge.captured : intent.status === 'succeeded',
-      status: intent.status,
-      createdAt: new Date(intent.created * 1000),
-    });
+    for (const c of charges) {
+      const refunds: Stripe.Refund[] = [];
+      for await (const r of stripe.refunds.list({ charge: c.chargeId, limit: 100 })) refunds.push(r);
+      const own = refunds.filter((r) => r.metadata?.withdrawal_reference === publicReference);
+      const others = refunds.filter(
+        (r) => r.metadata?.withdrawal_reference !== publicReference && ['succeeded', 'pending'].includes(r.status ?? ''),
+      );
+      payments.push({
+        id: c.paymentIntentId ?? c.chargeId,
+        refundTarget: c.paymentIntentId ? 'payment_intent' : 'charge',
+        invoiceId: invoice.id,
+        amount: c.amount,
+        amountRefunded: others.reduce((sum, r) => sum + r.amount, 0),
+        currency: c.currency,
+        captured: true,
+        status: 'succeeded',
+        createdAt: c.created,
+        ownRefunds: own.map((r) => ({ id: r.id, amount: r.amount, status: r.status ?? 'pending' })),
+      });
+    }
   }
 
   // Sécurité : ne jamais considérer un paiement antérieur au contrat.
@@ -345,7 +406,13 @@ async function listContractPayments(
  * imposerait de le traiter dans chaque contrôle d'accès existant, avec le
  * risque d'en oublier un et d'y laisser passer une écriture.
  */
-async function enterRecoveryMode(accountId: number): Promise<void> {
+export async function enterRecoveryMode(accountId: number): Promise<boolean> {
+  const [before] = await db
+    .select({ s: accounts.subscriptionStatus })
+    .from(accounts)
+    .where(eq(accounts.id, accountId))
+    .limit(1);
+
   await db
     .update(accountSubscriptions)
     .set({ status: 'readonly', cancelAtPeriodEnd: false, updatedAt: new Date() })
@@ -355,6 +422,13 @@ async function enterRecoveryMode(accountId: number): Promise<void> {
     .update(accounts)
     .set({ subscriptionStatus: 'WITHDRAWN', updatedAt: new Date() })
     .where(eq(accounts.id, accountId));
+
+  // Droits en cache (60 s) : invalidés pour que le refus soit immédiat.
+  const { serverCacheDeleteByPrefix } = await import('@/lib/server-cache');
+  serverCacheDeleteByPrefix(`verebona:entitlements:${accountId}`);
+  serverCacheDeleteByPrefix(`grace:${accountId}`);
+
+  return before?.s !== 'WITHDRAWN';
 }
 
 async function recordFailure(

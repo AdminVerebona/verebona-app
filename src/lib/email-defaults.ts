@@ -173,9 +173,7 @@ L'équipe Verebona`,
                     <p style="margin:0; font-size:14px; color:#4B5563;"><strong>Prochaine échéance :</strong> {{nextBillingDate}}</p>
                   </td></tr>
                 </table>
-                <p style="text-align:center; margin:32px 0;">
-                  <a href="{{manageSubscriptionUrl}}" style="background-color:#3B82F6; padding:12px 24px; border-radius:6px; color:#FFFFFF; font-size:16px; font-weight:600; text-decoration:none; display:inline-block;">Gérer mon abonnement</a>
-                </p>
+                <p style="margin:24px 0 16px 0;">Vous pouvez gérer ou résilier votre abonnement à tout moment depuis votre compte.</p>
                 <p style="margin:24px 0 0; font-size:14px; color:#6B7280;">Merci de votre confiance et bienvenue dans l'univers Premium de Verebona !</p>
               </td>
             </tr>
@@ -192,7 +190,7 @@ L'équipe Verebona`,
     </table>
   </body>
 </html>`,
-    placeholders: JSON.stringify(['firstName', 'logoUrl', 'nextBillingDate', 'manageSubscriptionUrl', 'year'])
+    placeholders: JSON.stringify(['firstName', 'logoUrl', 'nextBillingDate', 'year'])
   },
 
   SUBSCRIPTION_EXPIRING: {

@@ -7,14 +7,16 @@ export interface VerebonaConversationProps {
   messages: VerebonaMessage[];
   isLoading: boolean;
   onFeedback: (messageId: string, v: 'helpful' | 'not_helpful', reason?: string) => void;
-  onClarify: (label: string) => void;
+  onClarify: (clarificationId: string, choice: { choiceId: string; label: string; secondaryLabel?: string }) => void;
+  onConfirmPlan?: (planId: string) => void;
+  onCancelPlan?: (planId: string) => void;
 }
 
-export function VerebonaConversation({ messages, isLoading, onFeedback, onClarify }: VerebonaConversationProps) {
+export function VerebonaConversation({ messages, isLoading, onFeedback, onClarify, onConfirmPlan, onCancelPlan }: VerebonaConversationProps) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-4">
       {messages.map((m) => (
-        <VerebonaMessageItem key={m.id} message={m} onFeedback={onFeedback} onClarify={onClarify} />
+        <VerebonaMessageItem key={m.id} message={m} onFeedback={onFeedback} onClarify={onClarify} onConfirmPlan={onConfirmPlan} onCancelPlan={onCancelPlan} />
       ))}
       {isLoading && (
         <div className="text-sm text-muted-foreground" role="status">Verebona réfléchit…</div>

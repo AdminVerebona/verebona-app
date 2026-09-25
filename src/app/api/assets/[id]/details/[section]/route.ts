@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -114,7 +115,7 @@ export async function PATCH(
       if (key === 'name') {
         nameUpdate = String(value).trim();
       } else if (key === 'subCategory') {
-        subCategoryUpdate = value === '' || value === null ? null : String(value);
+        subCategoryUpdate = value === '' || value === null ? null : normalizeAssetCategory(String(value));
       } else if (key === 'status') {
         if (typeof value === 'string' && VALID_STATUSES.includes(value)) {
           statusUpdate = value;
@@ -181,6 +182,11 @@ export async function PATCH(
     await db.update(assets)
       .set(updatePayload as any)
       .where(eq(assets.id, assetId));
+
+    // Modification d'un bien : la cohérence globale du compte est recontrôlée
+    // (T3), en différé et fusionnée avec les autres événements rapprochés.
+    const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
+    notifyCoherenceEvent(session.currentAccountId!, { event: 'asset_updated', objectType: 'asset', objectId: assetId });
 
     return NextResponse.json({ updated: true, section });
   } catch (error) {

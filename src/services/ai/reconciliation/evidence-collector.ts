@@ -46,7 +46,20 @@ export async function collectFields(
       evidenceId: e.id,
       value: e.value,
       normalized: normalize(fieldKey, e.value),
-      confidence: e.confidence,
+      // ══════════════════════════════════════════════════════════════════
+      // UNE OBSERVATION VISUELLE NE S'APPLIQUE JAMAIS SEULE
+      //
+      // Elle suit les mêmes règles d'arbitrage que les autres preuves, mais
+      // plafonnée à « probable » : ce que le modèle croit voir sur une photo
+      // est proposé ou arbitré, pas écrit d'office dans la fiche. Elle ne
+      // franchit pas non plus la barrière des champs critiques, qui exige un
+      // extrait littéral.
+      // ══════════════════════════════════════════════════════════════════
+      confidence: e.evidenceOrigin === 'VISUAL_ANALYSIS' && e.confidence === 'certain' ? 'probable' : e.confidence,
+      evidenceOrigin: e.evidenceOrigin ?? 'TEXT_EXTRACTION',
+      visualDescription: e.evidenceOrigin === 'VISUAL_ANALYSIS'
+        ? String((e.visualEvidence as { description?: unknown } | null)?.description ?? '') || null
+        : null,
       // L'autorité est recalculée à chaque exécution : une évolution de la
       // matrice doit se refléter immédiatement, sans réanalyser les documents.
       authorityScore: resolveAuthority({
@@ -57,7 +70,7 @@ export async function collectFields(
       documentType: e.documentType ?? null,
       documentDate: e.documentDate ?? null,
       sourceId: e.sourceId,
-      excerpt: e.excerpt,
+      excerpt: e.excerpt ?? '',
     }));
 
     collected.push({

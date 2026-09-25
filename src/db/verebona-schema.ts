@@ -16,6 +16,11 @@ import {
 export const verebonaConversations = pgTable('verebona_conversations', {
   id: serial('id').primaryKey(),
   accountId: integer('account_id').notNull(),
+  /** Propriétaire : une conversation est privée à un utilisateur (migration 0151). */
+  userId: integer('user_id').notNull(),
+  /** Libellé du fil (début de la première question) — migration 0152. */
+  title: text('title'),
+  lastMessageAt: pgTimestamp('last_message_at', { withTimezone: true }),
   status: text('status').notNull().default('active'),
   machineState: text('machine_state').notNull().default('IDLE'),
   contextJson: jsonb('context_json').notNull().default({}),
@@ -37,9 +42,12 @@ export const verebonaConversations = pgTable('verebona_conversations', {
   //
   // La migration 0100 posait le bon index, mais `push` s'exécute avant elle
   // et son `IF NOT EXISTS` ne corrige pas un index déjà présent.
-  activeAccount: uniqueIndex('verebona_conversations_active_account_uidx')
-    .on(t.accountId)
-    .where(sql`status = 'active'`),
+  //
+  // 0151 : unicité par (compte, UTILISATEUR). 0152 : plus d'unicité du tout —
+  // un utilisateur tient plusieurs fils ; la clé fonctionnelle est
+  // compte + utilisateur + conversation.
+  threadsIdx: index('verebona_conversations_threads_idx').on(t.accountId, t.userId, t.status, t.lastMessageAt),
+  ownerIdx: index('verebona_conversations_owner_idx').on(t.accountId, t.userId, t.updatedAt),
   expiresIdx: index('verebona_conversations_expires_idx').on(t.expiresAt),
 }));
 
@@ -65,6 +73,11 @@ export const verebonaMessages = pgTable('verebona_messages', {
   expiresAt: pgTimestamp('expires_at', { withTimezone: true }).notNull(),
 }, (t) => ({
   convCreated: index('verebona_messages_conversation_created_idx').on(t.conversationId, t.createdAt),
+  // Idempotence par auteur (0151) : un clientRequestId de A n'est jamais
+  // retrouvé par B.
+  userIdempotency: uniqueIndex('verebona_messages_user_idempotency_uidx')
+    .on(t.accountId, t.authorUserId, t.clientRequestId)
+    .where(sql`client_request_id IS NOT NULL`),
   statusIdx: index('verebona_messages_status_idx').on(t.status),
   expiresIdx: index('verebona_messages_expires_idx').on(t.expiresAt),
 }));
@@ -202,4 +215,33 @@ export const verebonaHelpEntries = pgTable('verebona_help_entries', {
 }, (t) => ({
   slugLocale: uniqueIndex('verebona_help_entries_slug_locale_uidx').on(t.slug, t.locale),
   statusIdx: index('verebona_help_entries_status_idx').on(t.status, t.locale),
+}));
+
+/** Traçabilité du parcours de clarification (migration 0153). */
+export const verebonaClarificationEvents = pgTable('verebona_clarification_events', {
+  id: serial('id').primaryKey(),
+  clarificationId: text('clarification_id').notNull(),
+  conversationId: integer('conversation_id'),
+  accountId: integer('account_id').notNull(),
+  userId: integer('user_id'),
+  eventType: text('event_type').notNull(),
+  detailJson: jsonb('detail_json').notNull().default({}),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  clarIdx: index('verebona_clarification_events_clar_idx').on(t.clarificationId, t.createdAt),
+  convIdx: index('verebona_clarification_events_conv_idx').on(t.conversationId),
+}));
+
+/** Entités présentées dans un fil, dans l'ordre d'affichage (migration 0154). */
+export const verebonaPresentedEntities = pgTable('verebona_presented_entities', {
+  id: serial('id').primaryKey(),
+  conversationId: integer('conversation_id').notNull(),
+  messageId: integer('message_id').notNull(),
+  position: integer('position').notNull(),
+  entityType: text('entity_type').notNull(),
+  entityId: integer('entity_id').notNull(),
+  label: text('label'),
+  presentedAt: pgTimestamp('presented_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  convIdx: index('verebona_presented_entities_conv_idx').on(t.conversationId, t.messageId, t.position),
 }));

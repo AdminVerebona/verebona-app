@@ -5,10 +5,16 @@ import { Drawer as DrawerPrimitive } from "vaul"
 
 import { cn } from "../../lib/utils"
 
+/**
+ * Règle d'interface Verebona : les tiroirs s'ouvrent À DROITE, jamais par le
+ * bas. vaul ouvre par défaut depuis le bas : la direction par défaut est
+ * donc fixée ici, pour qu'un nouveau tiroir respecte la règle sans y penser.
+ */
 function Drawer({
+  direction = "right",
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Root>) {
-  return <DrawerPrimitive.Root data-slot="drawer" {...props} />
+  return <DrawerPrimitive.Root data-slot="drawer" direction={direction} {...props} />
 }
 
 function DrawerTrigger({

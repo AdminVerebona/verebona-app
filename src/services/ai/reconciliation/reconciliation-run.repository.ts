@@ -14,13 +14,15 @@ export interface OpenRunInput {
   triggeredBy: string;
   shadow: boolean;
   traceId: string;
+  /** Exécution T3 parente (réconciliation globale du compte). */
+  accountRunId?: number | null;
 }
 
 export async function openRun(input: OpenRunInput): Promise<number> {
   const rows = await pgClient.unsafe(
-    `INSERT INTO reconciliation_runs (account_id, asset_id, triggered_by, shadow, trace_id, status)
-     VALUES ($1,$2,$3,$4,$5,'running') RETURNING id`,
-    [input.accountId, input.assetId, input.triggeredBy, input.shadow, input.traceId] as never[],
+    `INSERT INTO reconciliation_runs (account_id, asset_id, triggered_by, shadow, trace_id, status, account_run_id)
+     VALUES ($1,$2,$3,$4,$5,'running',$6) RETURNING id`,
+    [input.accountId, input.assetId, input.triggeredBy, input.shadow, input.traceId, input.accountRunId ?? null] as never[],
   );
   return (rows as unknown as Array<{ id: number }>)[0].id;
 }
@@ -61,5 +63,13 @@ export async function closeRun(runId: number, summary: ReconciliationRun): Promi
       WHERE id = $1`,
     [runId, summary.decisions.length, summary.appliedCount,
      summary.conflictCount, summary.aiReviewCount] as never[],
+  );
+}
+
+/** Clôt un run local interrompu par une erreur. */
+export async function failRun(runId: number): Promise<void> {
+  await pgClient.unsafe(
+    `UPDATE reconciliation_runs SET status = 'failed', finished_at = NOW() WHERE id = $1 AND status = 'running'`,
+    [runId] as never[],
   );
 }

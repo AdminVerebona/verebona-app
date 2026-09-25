@@ -38,6 +38,12 @@ const ADVICE_PATTERNS: RegExp[] = [
   /\bvaut-il mieux\b/i, /\best-il préférable\b/i,
   /\bquelle? .{0,20}(choisir|prendre|souscrire)\b/i,
   /\bchanger d'assurance\b/i,
+  // Appréciations : « est-ce une bonne franchise ? », « ce préavis est-il
+  // légal ? » — le critère reste la demande de jugement, pas le thème.
+  /\best-ce (une |un )?(bon|bonne|bien|normal|correct|cher|raisonnable|suffisant|adapté|legal|légal|abusif|conforme)/i,
+  /\best-ce que (ce|cette|cet|mon|ma|mes)\b.{0,40}\b(légal|legal|légale|legale|abusi[fv]e?|conforme|normal|normale|adapté|adaptée|suffisant|suffisante|valable)\b/i,
+  /\b(est|sont)-(il|elle|ils|elles) (légal|legal|légale|legale|abusi[fv]e?|conforme|normal|normale|adapté|adaptée|suffisant|suffisante|valable)/i,
+  /\bchanger d'assureur\b/i,
 ];
 
 /**
@@ -63,7 +69,9 @@ export interface TopicCheck {
   message?: string;
 }
 
-export function checkBlockedTopic(question: string): TopicCheck {
+export function checkBlockedTopic(input: string): TopicCheck {
+  // Apostrophe typographique (« d’assurance ») : les motifs utilisent l'ASCII.
+  const question = input.replace(/[’‘]/g, "'");
   const asksForAdvice = ADVICE_PATTERNS.some((p) => p.test(question));
   if (!asksForAdvice) return { blocked: false, reason: null };
 
@@ -90,3 +98,122 @@ const MESSAGES: Record<NonNullable<BlockReason>, string> = {
     "Je peux vous indiquer ce que disent vos contrats — garanties, montants, échéances — mais pas " +
     "juger si votre couverture est adaptée. Votre assureur ou un courtier pourra le faire.",
 };
+
+// ══════════════════════════════════════════════════════════════════════════
+// REQUÊTES MIXTES — répondre à ce qui est autorisé, refuser le reste
+//
+// « Quelle est la date d'échéance de mon contrat et est-ce que je devrais
+// changer d'assureur ? » : le contrôle global refusait TOUT le message, et la
+// date — une donnée du compte, parfaitement légitime — n'était jamais
+// cherchée. Le message est désormais découpé en sous-demandes, chacune
+// classée par le même critère (demande de conseil dans un domaine réservé).
+// La provenance compte avant le sujet : restituer une donnée du compte sur
+// un thème sensible reste autorisé.
+// ══════════════════════════════════════════════════════════════════════════
+
+export type ScopeKind = 'FULLY_ALLOWED' | 'PARTIALLY_ALLOWED' | 'FULLY_BLOCKED' | 'AMBIGUOUS';
+
+export interface SubRequest {
+  text: string;
+  allowed: boolean;
+  reason: BlockReason;
+}
+
+export interface ScopeAnalysis {
+  kind: ScopeKind;
+  parts: SubRequest[];
+  /** Texte des seules sous-demandes autorisées — c'est lui qui suit le flux T2. */
+  allowedText: string;
+  /** Refus ciblé(s), à ajouter à la réponse de la partie autorisée. */
+  refusal: string | null;
+  /** Question de clarification quand la séparation n'est pas fiable. */
+  clarification: string | null;
+  reasons: NonNullable<BlockReason>[];
+}
+
+/** Début d'une nouvelle sous-demande après « et », « mais », « aussi »… */
+const SPLIT = /\s*(?:[?;!]|\.(?=\s|$))\s*|\s+(?:et|mais|puis|aussi|et aussi|ensuite)\s+(?=(?:est-ce|dois-je|devrais-je|faut-il|puis-je|pourrais-je|vaut-il|comment|que |qu'|quel|quelle|quels|quelles|quand|combien|où|ou est|me conseill|ai-je|suis-je|est-il|est-elle|y a-t-il|sais-tu|peux-tu|pouvez-vous|donne|dis-moi|indique)\b)/i;
+
+/** Appréciation dont on ne peut séparer ni la donnée ni le conseil de façon fiable. */
+const AMBIGU = /\b(que penser|qu'en penser|qu'en penses?-tu|qu'en pensez-vous|ton avis sur|votre avis sur|que vaut|que valent)\b/i;
+
+/** Refus ciblés, à accoler à la réponse factuelle. */
+const PARTIAL_MESSAGES: Record<NonNullable<BlockReason>, string> = {
+  insurance_advice: "En revanche, je peux vous indiquer ce que contiennent vos contrats, mais pas vous conseiller sur le choix ou le changement de votre assurance.",
+  legal: "En revanche, je ne peux pas déterminer si cela est juridiquement applicable à votre situation : un professionnel du droit pourra vous répondre.",
+  tax: "En revanche, je ne peux pas vous conseiller en matière fiscale : un conseiller fiscal ou votre centre des impôts sera plus utile.",
+  medical: "En revanche, je ne peux pas répondre à la question de santé : adressez-vous à un professionnel de santé.",
+};
+
+const CLARIFY: Record<NonNullable<BlockReason>, string> = {
+  insurance_advice: "Je peux vous indiquer ce que prévoient vos contrats (montants, franchises, garanties, échéances), mais pas juger s’ils sont adaptés. Voulez-vous que je retrouve cette information dans vos documents ?",
+  legal: "Je peux vous indiquer ce que disent vos documents, mais pas apprécier leur portée juridique. Voulez-vous que je retrouve cette information ?",
+  tax: "Je peux retrouver les montants et dates de vos documents, mais pas les apprécier sur le plan fiscal. Voulez-vous que je retrouve cette information ?",
+  medical: "Je ne peux pas apprécier une question de santé, mais je peux retrouver les informations de vos documents. Voulez-vous que je les recherche ?",
+};
+
+export function splitSubRequests(message: string): string[] {
+  return message.split(SPLIT).map((x) => x?.trim()).filter((x): x is string => !!x && x.length >= 3);
+}
+
+/**
+ * Analyse du périmètre, sous-demande par sous-demande.
+ *
+ *   · FULLY_ALLOWED     : parcours classique, inchangé ;
+ *   · PARTIALLY_ALLOWED : seules les parties autorisées suivent le flux T2
+ *                         (routage, retrieval, éventuelle IA) ; la partie
+ *                         interdite ne déclenche ni retrieval ni appel modèle ;
+ *   · FULLY_BLOCKED     : refus, comme avant ;
+ *   · AMBIGUOUS         : appréciation mêlée à une donnée (« que penser de ma
+ *                         franchise ? ») — on propose de restituer la donnée
+ *                         plutôt que de refuser en bloc.
+ */
+export function analyzeScope(message: string): ScopeAnalysis {
+  const texte = message.replace(/[’‘]/g, "'");
+  const parts = splitSubRequests(texte);
+  const list = parts.length ? parts : [texte];
+  // Le texte rendu est celui de l'utilisateur (apostrophes d'origine) : la
+  // normalisation ne change pas les longueurs, les positions se retrouvent.
+  let curseur = 0;
+  const original = (t: string) => {
+    const i = texte.indexOf(t, curseur);
+    if (i < 0) return t;
+    curseur = i + t.length;
+    return message.slice(i, i + t.length);
+  };
+  const sub: SubRequest[] = list.map((t) => {
+    const c = checkBlockedTopic(t);
+    return { text: original(t), allowed: !c.blocked, reason: c.reason };
+  });
+
+  // Appréciation sur un domaine réservé, sans demande factuelle séparable.
+  if (sub.length === 1 && sub[0].allowed && AMBIGU.test(texte)) {
+    const domaine = DOMAIN_PATTERNS.find((d) => d.pattern.test(texte));
+    if (domaine) {
+      return {
+        kind: 'AMBIGUOUS', parts: [{ text: message, allowed: false, reason: domaine.reason }], allowedText: '',
+        refusal: null, clarification: CLARIFY[domaine.reason], reasons: [domaine.reason],
+      };
+    }
+  }
+
+  const reasons = [...new Set(sub.filter((x) => !x.allowed).map((x) => x.reason!).filter(Boolean))];
+  const allowed = sub.filter((x) => x.allowed);
+  if (reasons.length === 0) {
+    return { kind: 'FULLY_ALLOWED', parts: sub, allowedText: message, refusal: null, clarification: null, reasons: [] };
+  }
+  if (allowed.length === 0) {
+    return {
+      kind: 'FULLY_BLOCKED', parts: sub, allowedText: '',
+      refusal: reasons.map((r) => MESSAGES[r]).join(' '), clarification: null, reasons,
+    };
+  }
+  return {
+    kind: 'PARTIALLY_ALLOWED',
+    parts: sub,
+    allowedText: allowed.map((x) => (/[?.!]$/.test(x.text) ? x.text : `${x.text} ?`)).join(' '),
+    refusal: reasons.map((r) => PARTIAL_MESSAGES[r]).join(' '),
+    clarification: null,
+    reasons,
+  };
+}

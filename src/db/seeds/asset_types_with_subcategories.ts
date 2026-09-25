@@ -42,19 +42,24 @@ async function main() {
 
     // Subcategories data structure
     const subcategoriesData = {
+        // Aligné sur lib/asset-taxonomy.ts (familles et catégories de biens).
         IMMOBILIER: [
             { code: 'MAISON', label: 'Maison', icon: 'Home', displayOrder: 1 },
             { code: 'APPARTEMENT', label: 'Appartement', icon: 'Building', displayOrder: 2 },
             { code: 'STUDIO', label: 'Studio et Appartement', icon: 'Building2', displayOrder: 3 },
             { code: 'TERRAIN', label: 'Terrain', icon: 'Trees', displayOrder: 4 },
-            { code: 'LOCAL_COMMERCIAL', label: 'Local commercial', icon: 'Store', displayOrder: 5 },
-            { code: 'GARAGE', label: 'Garage', icon: 'ParkingSquare', displayOrder: 6 },
+            { code: 'LOCAL_COMMERCIAL', label: 'Local professionnel/commercial', icon: 'Store', displayOrder: 5 },
+            { code: 'GARAGE', label: 'Garage/box', icon: 'ParkingSquare', displayOrder: 6 },
+            { code: 'IMMEUBLE', label: 'Immeuble', icon: 'Hotel', displayOrder: 7 },
+            { code: 'MOBIL_HOME', label: 'Mobil-home', icon: 'Caravan', displayOrder: 8 },
         ],
         VEHICULE: [
-            { code: 'VELO', label: 'Vélo', icon: 'Bike', displayOrder: 1 },
-            { code: 'VOITURE', label: 'Voiture', icon: 'Car', displayOrder: 2 },
-            { code: 'CAMION', label: 'Camion', icon: 'Truck', displayOrder: 3 },
-            { code: 'MOTO', label: 'Moto', icon: 'Bike', displayOrder: 4 },
+            { code: 'VOITURE', label: 'Voiture', icon: 'Car', displayOrder: 1 },
+            { code: 'MOTO', label: 'Moto', icon: 'Bike', displayOrder: 2 },
+            { code: 'VELO', label: 'Vélo', icon: 'Bike', displayOrder: 3 },
+            { code: 'CAMPING_CAR', label: 'Camping-car', icon: 'Caravan', displayOrder: 4 },
+            { code: 'BATEAU', label: 'Bateau', icon: 'Sailboat', displayOrder: 5 },
+            { code: 'CAMION', label: 'Camion', icon: 'Truck', displayOrder: 6 },
         ],
         MATERIEL_PRO: [
             { code: 'ORDINATEUR', label: 'Ordinateur portable', icon: 'Laptop', displayOrder: 1 },

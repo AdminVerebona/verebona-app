@@ -438,11 +438,16 @@ export async function commitLot(
   // Flatten: lead item per group (lowest position) + ungrouped
   const leadItems: typeof items = [];
   const secondaryFileIds: number[] = [];
+  // Principale de chaque secondaire, pour le regroupement (migration 0143).
+  const secondaryGroups: Array<{ leadFileId: number; ids: number[] }> = [];
 
   for (const group of runIdToItems.values()) {
     const sorted = [...group].sort((a, b) => a.position - b.position);
     leadItems.push(sorted[0]);
     sorted.slice(1).forEach(item => secondaryFileIds.push(item.assetFileId));
+    if (sorted.length > 1) {
+      secondaryGroups.push({ leadFileId: sorted[0].assetFileId, ids: sorted.slice(1).map((i) => i.assetFileId) });
+    }
   }
   leadItems.push(...ungrouped);
 
@@ -491,9 +496,9 @@ export async function commitLot(
 
   // Soft-delete secondary (non-lead) files that were merged into their group lead
   if (secondaryFileIds.length > 0) {
-    await db.update(assetFiles)
-      .set({ deletedAt: new Date() })
-      .where(inArray(assetFiles.id, secondaryFileIds));
+    // Regroupées, pas supprimées : conservées comme preuves du document (0143).
+    const { markSourcesGrouped } = await import('@/services/documents/grouped-sources');
+    for (const g of secondaryGroups) await markSourcesGrouped(g.leadFileId, g.ids);
     // Mark their lot items as committed too
     await db.update(documentLotItems)
       .set({ commitStatus: 'committed' })

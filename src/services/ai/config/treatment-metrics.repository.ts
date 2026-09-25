@@ -136,9 +136,12 @@ async function metricsT2(days: number): Promise<Metric[]> {
   // La cascade : part des demandes ayant atteint chaque niveau. Lue dans
   // `retrieval_methods_json`, que le pipeline remplit à chaque exécution.
   const cascade = await one(
-    `SELECT COUNT(*) FILTER (WHERE retrieval_methods_json::text ILIKE '%structured%')::int AS bdd,
-            COUNT(*) FILTER (WHERE retrieval_methods_json::text ILIKE '%fulltext%')::int   AS texte,
-            COUNT(*) FILTER (WHERE retrieval_methods_json::text ILIKE '%semantic%')::int   AS semantique
+    // Lecture ciblée de `levelsReached` (tableau JSON) : un ILIKE sur le
+    // JSON entier comptait aussi les noms de stratégie (« structured.… »)
+    // et les tentatives non applicables.
+    `SELECT COUNT(*) FILTER (WHERE jsonb_exists(retrieval_methods_json->'levelsReached', 'structured'))::int AS bdd,
+            COUNT(*) FILTER (WHERE jsonb_exists(retrieval_methods_json->'levelsReached', 'fulltext'))::int   AS texte,
+            COUNT(*) FILTER (WHERE jsonb_exists(retrieval_methods_json->'levelsReached', 'llm'))::int        AS modele
        FROM verebona_request_runs WHERE ${fenetre}`,
   );
 
@@ -159,7 +162,7 @@ async function metricsT2(days: number): Promise<Metric[]> {
     M('deterministic_share', 'Part tranchée sans IA', pct(runs.deterministe), 'percent'),
     M('cascade_db', 'Niveau base structurée', pct(cascade.bdd), 'percent'),
     M('cascade_text', 'Niveau recherche textuelle', pct(cascade.texte), 'percent'),
-    M('cascade_semantic', 'Niveau sémantique', pct(cascade.semantique), 'percent'),
+    M('cascade_llm', 'Niveau modèle (LLM)', pct(cascade.modele), 'percent'),
     M('latency', 'Latence moyenne', runs.latence == null ? null : Number(runs.latence), 'ms'),
     M('errors', 'Demandes en échec', Number(runs.erreurs ?? 0)),
     M('conversations', 'Conversations ouvertes',

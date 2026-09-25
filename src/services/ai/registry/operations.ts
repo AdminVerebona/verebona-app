@@ -9,6 +9,7 @@
  * aux jointures SQL avec les tables de suivi.
  */
 import type { AiUseCaseCode } from './use-cases';
+import { EXTRACT_SOURCE_PROMPT_VERSION } from '../source-analysis/prompt-version';
 
 export interface AiOperationDefinition {
   operationCode: string;
@@ -104,7 +105,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     operationCode: 'extract_source', useCaseCode: 'SOURCE_ANALYSIS',
     label: 'Extraction structurée du contenu avec preuves',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'extract_source_v2', timeoutMs: 90_000,
+    promptCode: EXTRACT_SOURCE_PROMPT_VERSION, timeoutMs: 90_000,
     outputSchema: 'ExtractSourceOutput', active: true, billable: true,
   },
   classify_document: {
@@ -196,11 +197,21 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     provider: 'none', primaryModel: 'none', fallbackModels: [],
     timeoutMs: 8_000, outputSchema: 'none', active: true, billable: false,
   },
+  // Revalidation ciblée d'un fait (T2) : relit le contenu persisté ou la
+  // page utile de la source pour UNE question — jamais une analyse T1
+  // complète. Coût imputé à l'assistant, qui l'a déclenchée.
+  revalidate_fact: {
+    operationCode: 'revalidate_fact', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    label: 'Revalidation ciblée d’un fait documentaire',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: 'revalidate_fact_v1', timeoutMs: 20_000,
+    outputSchema: 'RevalidationOutput', active: true, billable: true,
+  },
   generate_answer: {
     operationCode: 'generate_answer', useCaseCode: 'INTELLIGENT_ASSISTANT',
     label: 'Génération de la réponse sourcée',
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'generate_answer_v1', timeoutMs: 12_000,
+    promptCode: 'generate_answer_v2', timeoutMs: 12_000,
     outputSchema: 'AssistantAnswerOutput', active: true, billable: true,
   },
 

@@ -18,6 +18,9 @@ function evidenceFingerprint(i: FieldEvidenceInput): string {
     a: i.accountId, as: i.assetId, f: i.fieldKey,
     st: i.sourceType, si: i.sourceId, sv: i.sourceVersion ?? null,
     loc: i.location, nv: i.normalizedValue ?? String(i.value),
+    // Une observation visuelle et une lecture de la même valeur restent deux
+    // preuves distinctes ; les empreintes des preuves lues sont inchangées.
+    ...(i.evidenceOrigin === 'VISUAL_ANALYSIS' ? { o: 'VISUAL_ANALYSIS' } : {}),
   })).digest('hex');
 }
 
@@ -30,8 +33,9 @@ export async function recordEvidence(input: FieldEvidenceInput): Promise<number>
        account_id, asset_id, field_key, value_json, normalized_value,
        source_type, source_id, source_version, source_location, evidence_excerpt,
        document_type, document_date, provider, model, prompt_version,
-       confidence, authority_score, status, operation_trace_id, fingerprint
-     ) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::timestamptz,$13,$14,$15,$16,$17,'active',$18,$19)
+       confidence, authority_score, status, operation_trace_id, fingerprint,
+       evidence_origin, visual_evidence
+     ) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::timestamptz,$13,$14,$15,$16,$17,'active',$18,$19,$20,$21::jsonb)
      ON CONFLICT (fingerprint) DO UPDATE SET extracted_at = field_evidence.extracted_at
      RETURNING id`,
     [
@@ -48,6 +52,8 @@ export async function recordEvidence(input: FieldEvidenceInput): Promise<number>
       input.provider ?? null, input.model ?? null, input.promptVersion ?? null,
       input.confidence, input.authorityScore,
       input.operationTraceId ?? null, fingerprint,
+      input.evidenceOrigin ?? 'TEXT_EXTRACTION',
+      input.visualEvidence ? JSON.stringify(input.visualEvidence) : null,
     ] as never[],
   );
 
@@ -65,7 +71,36 @@ export async function getActiveEvidence(
     eq(fieldEvidence.status, 'active'),
   )).orderBy(desc(fieldEvidence.authorityScore), desc(fieldEvidence.documentDate));
 
-  return rows as unknown as FieldEvidence[];
+  // ⚠️ Correction : les lignes Drizzle étaient renvoyées telles quelles sous
+  // le type `FieldEvidence`. Or les colonnes s'y nomment `valueJson`,
+  // `evidenceExcerpt`, `sourceLocation` : `value`, `excerpt` et `location`
+  // valaient `undefined`, et la réconciliation raisonnait sur des preuves
+  // vides. La correspondance est désormais explicite.
+  return rows.map((r) => ({
+    id: r.id,
+    accountId: r.accountId,
+    assetId: r.assetId,
+    fieldKey: r.fieldKey,
+    value: r.valueJson,
+    normalizedValue: r.normalizedValue ?? undefined,
+    sourceType: r.sourceType as FieldEvidence['sourceType'],
+    sourceId: r.sourceId,
+    sourceVersion: r.sourceVersion ?? undefined,
+    location: (r.sourceLocation ?? {}) as FieldEvidence['location'],
+    excerpt: r.evidenceExcerpt ?? null,
+    evidenceOrigin: (r.evidenceOrigin ?? 'TEXT_EXTRACTION') as FieldEvidence['evidenceOrigin'],
+    visualEvidence: (r.visualEvidence ?? null) as FieldEvidence['visualEvidence'],
+    documentType: r.documentType ?? undefined,
+    documentDate: r.documentDate ?? null,
+    provider: r.provider ?? undefined,
+    model: r.model ?? undefined,
+    promptVersion: r.promptVersion ?? undefined,
+    confidence: r.confidence as FieldEvidence['confidence'],
+    authorityScore: r.authorityScore,
+    operationTraceId: r.operationTraceId ?? undefined,
+    status: r.status as FieldEvidence['status'],
+    extractedAt: r.extractedAt,
+  }));
 }
 
 /** Marque des preuves comme dépassées lorsqu'une meilleure preuve est appliquée. */

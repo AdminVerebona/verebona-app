@@ -2,10 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { CreditCard, FileText, AlertTriangle, Clock } from 'lucide-react';
+import { CreditCard, AlertTriangle, Clock, Crown, Lock, ShieldAlert, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
+import { useSession } from '@/hooks/useSession';
+import { ReferralBlock } from '@/components/account/ReferralBlock';
+import { DuoInvitationPanel } from './DuoInvitationPanel';
 import { libelleEssai } from './trial-label';
 
 /**
@@ -17,6 +20,21 @@ import { libelleEssai } from './trial-label';
  *
  * Aucune donnee n'est deduite cote client : tout provient de
  * /api/billing/trial-status.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * BLOC UNIQUE D'ABONNEMENT
+ *
+ * « Mon compte » affichait deux blocs redondants : celui-ci et « Abonnement »
+ * (InformationsTab). « Abonnement » est supprimé ; ce qu'il avait en propre
+ * est repris ici :
+ *   - « Changer d'offre » → /mon-compte/offres ;
+ *   - 2e utilisateur — Offre Duo (panneau d'invitation, ou incitation) ;
+ *   - Parrainage.
+ * Les trois boutons « Mes factures », « Moyen de paiement » et « Résilier »
+ * — qui ouvraient tous le même portail Stripe, ou une ancre inexistante
+ * (`#resiliation`) — deviennent un seul bouton « Factures et moyens de
+ * paiement ». La résiliation reste accessible dans ce portail.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
 interface QuotaUsage {
@@ -101,6 +119,8 @@ function QuotaBar({ label, quota }: { label: string; quota: QuotaUsage }) {
 
 export function SubscriptionSummary() {
   const router = useRouter();
+  const { user } = useSession();
+  const isDuoMember = user?.duoRole === 'MEMBER';
   const [data, setData] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [portalLoading, setPortalLoading] = useState(false);
@@ -163,7 +183,44 @@ export function SubscriptionSummary() {
     }
   };
 
-  if (loading || !data) return null;
+  if (loading) return null;
+
+  // Actions : toujours proposées, y compris quand l'état de l'abonnement n'a
+  // pas pu être chargé — ce bloc est désormais le SEUL accès à la gestion de
+  // l'offre et des factures (l'ancien bloc « Abonnement » a été retiré).
+  const actions = isDuoMember ? (
+    <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2.5 text-sm text-[color:var(--text-warning-soft)]">
+      <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
+      <p>Seul le titulaire de l&apos;abonnement peut modifier l&apos;offre et gérer le paiement.</p>
+    </div>
+  ) : (
+    <div className="flex flex-wrap gap-2">
+      <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
+        <Crown className="mr-1.5 h-4 w-4" />
+        Changer d&apos;offre
+      </Button>
+      {/* Données absentes : on ne sait pas s'il existe un abonnement Stripe,
+          le portail répondra lui-même (message d'erreur explicite sinon). */}
+      {(!data || data.subscription.hasStripeSubscription) && (
+        <Button variant="outline" size="sm" onClick={openPortal} disabled={portalLoading}>
+          <CreditCard className="mr-1.5 h-4 w-4" />
+          Factures et moyens de paiement
+        </Button>
+      )}
+    </div>
+  );
+
+  if (!data) {
+    return (
+      <div className="mb-6 rounded-xl border border-[color:var(--border)] bg-[color:var(--bg-subtle)] p-5">
+        <h2 className="mb-2 text-base font-semibold text-[color:var(--text-primary)]">Mon abonnement</h2>
+        <p className="mb-4 text-sm text-[color:var(--text-muted)]">
+          Le détail de votre abonnement est momentanément indisponible.
+        </p>
+        {actions}
+      </div>
+    );
+  }
 
   const { trial, subscription, quotas } = data;
   const planLabel = PLAN_LABELS[data.plan] ?? data.plan;
@@ -275,26 +332,44 @@ export function SubscriptionSummary() {
       )}
 
       {/* Actions */}
-      {subscription.hasStripeSubscription && (
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={openPortal} disabled={portalLoading}>
-            <FileText className="mr-1.5 h-4 w-4" />
-            Mes factures
-          </Button>
-          <Button variant="outline" size="sm" onClick={openPortal} disabled={portalLoading}>
-            <CreditCard className="mr-1.5 h-4 w-4" />
-            Moyen de paiement
-          </Button>
-          {!subscription.cancelAtPeriodEnd && (
+      {actions}
+
+      {/* 2e utilisateur — Offre Duo (repris de l'ancien bloc « Abonnement ») */}
+      {!isDuoMember && data.plan === 'premium_duo' && user?.duoRole === 'BILLING_OWNER' && (
+        <div className="mt-5 border-t border-[color:var(--border)] pt-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Users className="h-4 w-4 text-emerald-400" />
+            <span className="text-sm font-medium text-[color:var(--text-primary)]">2e utilisateur Duo</span>
+          </div>
+          <DuoInvitationPanel />
+        </div>
+      )}
+      {!isDuoMember && data.plan !== 'premium_duo' && (
+        <div className="mt-5 border-t border-[color:var(--border)] pt-4">
+          <div className="flex flex-col gap-3 rounded-lg border border-dashed border-emerald-500/30 bg-emerald-500/5 px-3 py-3 sm:flex-row sm:items-start">
+            <div className="flex min-w-0 flex-1 items-start gap-3">
+              <Lock className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-400/60" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-[color:var(--text-primary)]">2e utilisateur — Offre Duo</p>
+                <p className="mt-0.5 text-xs text-[color:var(--text-muted)]">Partagez votre espace avec une 2e personne.</p>
+              </div>
+            </div>
             <Button
-              variant="ghost"
               size="sm"
-              className="text-[color:var(--text-muted)]"
-              onClick={() => router.push('/mon-compte/offres#resiliation')}
+              variant="outline"
+              className="w-full gap-1 rounded-full border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 sm:w-auto sm:shrink-0"
+              onClick={() => router.push('/mon-compte/offres')}
             >
-              Résilier
+              <Users className="h-3.5 w-3.5" />Passer au Duo
             </Button>
-          )}
+          </div>
+        </div>
+      )}
+
+      {/* Parrainage (repris de l'ancien bloc « Abonnement ») */}
+      {!isDuoMember && (
+        <div className="mt-5 border-t border-[color:var(--border)] pt-4">
+          <ReferralBlock />
         </div>
       )}
     </div>

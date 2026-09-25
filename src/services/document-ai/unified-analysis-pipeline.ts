@@ -497,6 +497,14 @@ export async function runUnifiedAnalysisPipeline(
         AiUsageTracker.completeStep({ stepId: currentStepId, status: 'done' }).catch(() => {});
       }
 
+      // Base de connaissance documentaire (T1) : contenu source repris du
+      // moteur historique, pour que T2 et les traitements suivants n'aient pas
+      // à relire le fichier. Non bloquant.
+      void import('@/services/ai/knowledge/document-knowledge.service')
+        .then(({ persistKnowledgeFromLegacyRun }) =>
+          persistKnowledgeFromLegacyRun({ accountId, fileId: leadFile.id, runId: result.runId }))
+        .catch((e: Error) => console.error('[unified-pipeline] base de connaissance non écrite :', e.message));
+
       // Mettre à jour les lot items
       await db.update(documentLotItems)
         .set({ analysisStatus: 'completed', currentAnalysisRunId: result.runId })
@@ -573,9 +581,9 @@ export async function runUnifiedAnalysisPipeline(
       // Soft-delete des fichiers secondaires si commit réussi
       if (finalState === 'ANALYZED' && allFileIds.length > 1) {
         const secondaryIds = allFileIds.slice(1);
-        await db.update(assetFiles)
-          .set({ deletedAt: new Date() })
-          .where(inArray(assetFiles.id, secondaryIds));
+        // Regroupées, pas supprimées : conservées comme preuves (0143).
+        const { markSourcesGrouped } = await import('@/services/documents/grouped-sources');
+        await markSourcesGrouped(leadFile.id, secondaryIds);
         await db.update(documentLotItems)
           .set({ commitStatus: 'committed' })
           .where(and(

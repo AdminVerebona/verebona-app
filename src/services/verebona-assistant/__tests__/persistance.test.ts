@@ -118,18 +118,19 @@ describe('§19.7 — « Pourquoi ? » montre des titres', () => {
   });
 });
 
-describe('§28.1 — une conversation ACTIVE par compte', () => {
-  it('l’index porte enfin son prédicat', () => {
-    // `.where(undefined as never)` ne produisait aucun prédicat : `push`
-    // créait un index unique sur account_id seul, et un compte ne pouvait
-    // avoir qu'UNE conversation — jamais une conversation active.
-    expect(SCHEMA).toMatch(/\.where\(sql`status = 'active'`\)/);
+describe('§28.1 — fils de conversation (migration 0152)', () => {
+  it('plus d’unicité « une conversation par compte » ni par utilisateur', () => {
+    // Un utilisateur tient plusieurs fils ; l'ancien index unique empêchait
+    // d'en ouvrir un second.
+    expect(SCHEMA).not.toMatch(/verebona_conversations_active_account_uidx/);
+    expect(SCHEMA).not.toMatch(/verebona_conversations_active_user_uidx/);
     expect(SCHEMA).not.toMatch(/\.where\(\s*undefined as never\s*\)/);
   });
 
-  it('la reprise réaffirme le statut actif (§24.5)', () => {
+  it('la reprise ne vise qu’un fil actif et non expiré (§24.5)', () => {
     // Après un effacement d'historique, l'assistant écrivait dans une
     // conversation marquée supprimée.
-    expect(SERVICE).toMatch(/DO UPDATE SET updated_at = now\(\), status = 'active'/);
+    const bloc = SERVICE.slice(SERVICE.indexOf('export async function getOrCreateActiveConversation'));
+    expect(bloc).toMatch(/status = 'active' AND expires_at > now\(\)/);
   });
 });

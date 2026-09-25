@@ -37,6 +37,8 @@ R7bis — VOCABULAIRE DES CHAMPS.
 {{EXPECTED_FIELDS}}
 Lorsqu'une liste de clés t'est fournie ci-dessus, emploie EXACTEMENT ces noms dans `fieldKey` pour les informations correspondantes. Cette liste ne restreint pas ce que tu extrais : une information présente dans la source mais absente de la liste doit tout de même être rendue, sous une clé de ton choix. Si aucune liste n'est fournie, nomme librement.
 
+R8 — FAITS GÉNÉRIQUES. Chaque élément de `fields` est un fait réutilisable sans relire la source. Décris-le, quand c'est pertinent, avec : `subject` (l'objet concerné, ex. « Chaudière »), `attribute` (la caractéristique, ex. « puissance »), `label` (libellé lisible), `unit` (unité SÉPARÉE de la valeur : `value` 24 et `unit` « kW », jamais « 24 kW » dans `value`), `periodStart` / `periodEnd` (dates ISO d'une période couverte : contrat, garantie, relevé), et `section` (zone de la source : tableau, rubrique…). Rends aussi les informations que ne prévoit aucun modèle métier (numéro de série, référence client, caractéristique technique…).
+
 R7 — ABSENCE DE CONTENU. Si la source ne contient aucune information exploitable (photo floue, page d'erreur, document vierge), renseigne `hasExploitableContent: false` et n'invente aucun champ.
 
 ════════════════════════════════════════════════════════════
@@ -52,7 +54,8 @@ Réponds UNIQUEMENT par un objet JSON valide, sans texte avant ni après, confor
   "amountCents":  { "value": 12900, "confidence": "certain", "excerpt": "..." },
   "transcription": "texte intégral lisible de la source",
   "fields": [
-    { "fieldKey": "registrationNumber", "value": "AB-123-CD", "confidence": "certain", "excerpt": "...", "page": 1 }
+    { "fieldKey": "registrationNumber", "value": "AB-123-CD", "confidence": "certain", "excerpt": "...", "page": 1 },
+    { "fieldKey": "boilerPower", "subject": "Chaudière", "attribute": "puissance", "value": 24, "unit": "kW", "confidence": "certain", "excerpt": "Puissance nominale : 24 kW", "page": 1, "section": "Caractéristiques" }
   ],
   "hasExploitableContent": true
 }

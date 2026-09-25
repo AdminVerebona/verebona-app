@@ -28,10 +28,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ChevronDown, FileText, Grid3x3, Image as ImageIcon, List, Loader2, Plus, Tags } from 'lucide-react';
+import { ChevronDown, FileText, Grid3x3, Image as ImageIcon, List, Loader2, Plus } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
-import { toast } from 'sonner';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { Button } from '@/components/ui/button';
+import { PdfThumbnail } from '@/components/ui/pdf-thumbnail';
 import { apiClient } from '@/lib/api-client';
 import {
   DEFAULT_V2_FILTERS,
@@ -58,15 +59,13 @@ import {
   MICROCOPY,
   myDocumentsHeadline,
 } from '@/lib/referential/v2/microcopy';
-import {
-  RubricClassificationDrawer,
-  type DocumentClassificationDraft,
-} from './RubricClassificationDrawer';
 import { DocumentDrawer, type DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 
 /** Mode d'affichage des documents, mémorisé d'une visite à l'autre. */
 type ViewMode = 'list' | 'grid';
 const VIEW_MODE_KEY = 'documentsViewMode';
+/** Onglet d'un bien : clé historique de l'ancien onglet, pour garder le choix de l'utilisateur. */
+const ASSET_VIEW_MODE_KEY = 'assetDocumentsViewMode';
 
 interface DocumentView {
   id: number;
@@ -101,6 +100,89 @@ interface PageResponse {
 }
 
 /**
+ * Vignette document — aperçu du document en fond, texte par-dessus.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * UNE VIGNETTE MONTRE LE DOCUMENT
+ *
+ * La vue « vignettes » affichait une icône générique (PDF ou image) : rien
+ * ne distinguait une facture d'un contrat avant de lire le titre. Le fond
+ * est désormais un aperçu réel :
+ *   - image : le fichier lui-même (`/api/files/:id/proxy`, chargé à la
+ *     demande par le navigateur) ;
+ *   - PDF : la première page (`PdfThumbnail`, rendue à l'approche de
+ *     l'écran puis gardée en mémoire) ;
+ *   - autre (lien web, bureautique…) : fond neutre et icône.
+ * Titre et sous-titre sont posés sur un dégradé sombre, lisibles quel que
+ * soit l'aperçu. Même langage visuel que l'onglet Documents d'un bien.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+function DocumentTile({
+  document,
+  sousTitre,
+  onOpen,
+}: {
+  document: DocumentView;
+  sousTitre: React.ReactNode;
+  onOpen: (doc: DocumentView) => void;
+}) {
+  const mime = document.mimeType ?? '';
+  const isImage = mime.startsWith('image/');
+  // Type parfois imprécis à l'import (« application/x-pdf », octet-stream) :
+  // l'extension compte aussi, sinon la vignette retombe sur l'icône.
+  const isPdf = /pdf/i.test(mime) || /\.pdf$/i.test(document.originalFilename ?? '');
+  const [imageKo, setImageKo] = useState(false);
+  const extension = (document.originalFilename?.split('.').pop() ?? '').slice(0, 5).toUpperCase();
+  const Icon = isImage ? ImageIcon : FileText;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(document)}
+      className="group relative h-44 w-full overflow-hidden rounded-2xl border border-border text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {/* Aperçu */}
+      {isImage && !imageKo ? (
+        // eslint-disable-next-line @next/next/no-img-element -- flux authentifié, pas d'optimisation Next
+        <img
+          src={`/api/files/${document.id}/proxy`}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setImageKo(true)}
+          className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+        />
+      ) : isPdf ? (
+        <PdfThumbnail
+          fileId={String(document.id)}
+          className="absolute inset-0 h-full w-full transition-transform duration-300 group-hover:scale-105"
+        />
+      ) : (
+        <span className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-700 to-slate-900">
+          <Icon className="h-10 w-10 text-white/40" aria-hidden />
+        </span>
+      )}
+
+      {/* Dégradé de lisibilité */}
+      <span className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent" aria-hidden />
+
+      {/* Texte par-dessus */}
+      {extension && (
+        <span className="absolute left-2.5 top-2.5 rounded-md border border-white/20 bg-black/30 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/85 backdrop-blur-sm">
+          {extension}
+        </span>
+      )}
+      <span className="absolute inset-x-0 bottom-0 flex flex-col gap-0.5 p-3">
+        <span className="line-clamp-2 text-sm font-semibold leading-snug text-white drop-shadow">
+          {document.title}
+        </span>
+        <span className="line-clamp-1 text-[11px] text-white/75">{sousTitre}</span>
+      </span>
+    </button>
+  );
+}
+
+/**
  * Carte document — §4.3.
  *
  * Le tableau du §4.3 énumère ce qui s'affiche ET ce qui ne s'affiche pas. Les
@@ -113,13 +195,11 @@ function DocumentCardV2({
   showAssets,
   viewMode,
   onOpen,
-  onClassify,
 }: {
   document: DocumentView;
   showAssets: boolean;
   viewMode: ViewMode;
   onOpen: (doc: DocumentView) => void;
-  onClassify: (doc: DocumentView) => void;
 }) {
   const Icon = document.mimeType?.startsWith('image/') ? ImageIcon : FileText;
   const sousTitre = (
@@ -131,38 +211,16 @@ function DocumentCardV2({
     </>
   );
 
-  // Le bouton « Classer » est posé À CÔTÉ de la zone cliquable, jamais
-  // dedans : un bouton dans un bouton n'est pas du HTML valide, et le clic
-  // se propagerait aux deux.
-  const classer = (
-    <button
-      type="button"
-      onClick={() => onClassify(document)}
-      title="Classer dans une rubrique"
-      aria-label={`Classer ${document.title}`}
-      className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <Tags className="h-4 w-4" aria-hidden />
-    </button>
-  );
+  // ══════════════════════════════════════════════════════════════════════
+  // PLUS DE BOUTON « CLASSER » SUR LA CARTE
+  //
+  // Il ouvrait un tiroir par le bas, dédié à la Rubrique et au Type. Ces deux
+  // champs sont désormais dans le tiroir document (à droite), ouvert par un
+  // clic sur la carte : un seul endroit pour modifier un document.
+  // ══════════════════════════════════════════════════════════════════════
 
   if (viewMode === 'grid') {
-    return (
-      <div className="relative flex flex-col rounded-lg border bg-card transition-colors hover:bg-accent/40">
-        <div className="absolute right-1 top-1 z-10">{classer}</div>
-        <button
-          type="button"
-          onClick={() => onOpen(document)}
-          className="flex flex-1 flex-col items-center gap-2 rounded-lg p-4 text-center focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="flex h-16 w-full items-center justify-center rounded-md bg-muted/50">
-            <Icon className="h-7 w-7 text-muted-foreground" aria-hidden />
-          </span>
-          <span className="line-clamp-2 w-full text-sm font-medium">{document.title}</span>
-          <span className="line-clamp-2 w-full text-xs text-muted-foreground">{sousTitre}</span>
-        </button>
-      </div>
-    );
+    return <DocumentTile document={document} sousTitre={sousTitre} onOpen={onOpen} />;
   }
 
   return (
@@ -179,7 +237,6 @@ function DocumentCardV2({
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{sousTitre}</p>
         </div>
       </button>
-      <span className="p-2">{classer}</span>
     </div>
   );
 }
@@ -189,7 +246,6 @@ function RubricSection({
   showAssets,
   viewMode,
   onOpen,
-  onClassify,
   onLoadMore,
   loadingMore,
 }: {
@@ -197,7 +253,6 @@ function RubricSection({
   showAssets: boolean;
   viewMode: ViewMode;
   onOpen: (doc: DocumentView) => void;
-  onClassify: (doc: DocumentView) => void;
   onLoadMore: (code: string) => void;
   loadingMore: boolean;
 }) {
@@ -245,7 +300,6 @@ function RubricSection({
                 showAssets={showAssets}
                 viewMode={viewMode}
                 onOpen={onOpen}
-                onClassify={onClassify}
               />
             ))}
           </div>
@@ -272,26 +326,50 @@ function RubricSection({
   );
 }
 
-export function DocumentsByRubric({ assetId }: { assetId?: number }) {
+/** Pastille de filtre rapide (bien). */
+function AssetChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={label}
+      className={`max-w-[14rem] shrink-0 truncate rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+        active
+          ? 'border-[#3b82f6]/40 bg-[#3b82f6]/15 text-[color:var(--text-primary)]'
+          : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+export function DocumentsByRubric({ assetId, assetName }: { assetId?: number; assetName?: string }) {
   const { setBreadcrumbs } = useBreadcrumb();
+  // Lecture seule / offre : l'ajout est gardé ici, pour les deux écrans.
+  const { garder } = useWriteGuard();
+  const ajouter = () => garder(() => setUploadOpen(true), 'documents');
+  const viewModeKey = assetId ? ASSET_VIEW_MODE_KEY : VIEW_MODE_KEY;
   const [page, setPage] = useState<PageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingGroup, setLoadingGroup] = useState<string | null>(null);
-  const [selected, setSelected] = useState<DocumentClassificationDraft | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [documentOuvert, setDocumentOuvert] = useState<DocumentDrawerItem | null>(null);
   const [documentDrawerOpen, setDocumentDrawerOpen] = useState(false);
   // Choix d'affichage conservé d'une visite à l'autre, comme dans l'onglet
   // Documents d'un bien (même clé de lecture pour l'utilisateur, clé de
   // stockage distincte : les deux écrans ne montrent pas le même périmètre).
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  // Onglet d'un bien : vignettes par défaut, comme l'ancien onglet.
+  const [viewMode, setViewMode] = useState<ViewMode>(assetId ? 'grid' : 'list');
   useEffect(() => {
-    const enregistre = localStorage.getItem(VIEW_MODE_KEY);
-    if (enregistre === 'grid' || enregistre === 'list') setViewMode(enregistre);
-  }, []);
+    try {
+      const enregistre = localStorage.getItem(viewModeKey);
+      if (enregistre === 'grid' || enregistre === 'list') setViewMode(enregistre);
+    } catch { /* navigation privée */ }
+  }, [viewModeKey]);
   const changerAffichage = (mode: ViewMode) => {
     setViewMode(mode);
-    try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch { /* navigation privée */ }
+    try { localStorage.setItem(viewModeKey, mode); } catch { /* navigation privée */ }
   };
   const [uploadOpen, setUploadOpen] = useState(false);
   const [filters, setFilters] = useState<DocumentsV2Filters>(DEFAULT_V2_FILTERS);
@@ -332,6 +410,13 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
     void load();
   }, [load]);
 
+  // Un document ajouté ailleurs (barre d'actions, assistant) apparaît ici aussi.
+  useEffect(() => {
+    const recharger = () => { void load(); };
+    window.addEventListener('document-added', recharger);
+    return () => window.removeEventListener('document-added', recharger);
+  }, [load]);
+
   // Liste des biens pour le filtre : inutile dans l'onglet d'un bien, où le
   // périmètre est déjà fixé.
   useEffect(() => {
@@ -360,18 +445,6 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
     setOffsets({});
   };
 
-  const deleteDocument = async (document: DocumentClassificationDraft & { id?: number }) => {
-    if (!document.id) return;
-    try {
-      await apiClient.post('/api/documents/bulk-delete', { documentIds: [document.id] });
-      toast.success('Document supprimé.');
-      setDrawerOpen(false);
-      await load();
-    } catch {
-      toast.error('Le document n’a pas pu être supprimé.');
-    }
-  };
-
   // ══════════════════════════════════════════════════════════════════════
   // LE CLIC OUVRE LE DOCUMENT, PAS SON CLASSEMENT
   //
@@ -380,8 +453,8 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
   // document — aperçu, informations, échéances liées, modification.
   //
   // Le clic ouvre donc le tiroir document, le même que partout ailleurs
-  // (accueil, agenda, onglet Documents d'un bien, fournisseur). Le classement
-  // reste accessible par l'icône dédiée de la carte.
+  // (accueil, agenda, onglet Documents d'un bien, fournisseur). La Rubrique
+  // et le Type s'y modifient avec les autres informations.
   // ══════════════════════════════════════════════════════════════════════
   const openDocument = (doc: DocumentView) => {
     setDocumentOuvert({
@@ -393,22 +466,6 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
       assetId: doc.assetId ?? 0,
     });
     setDocumentDrawerOpen(true);
-  };
-
-  const classifyDocument = (doc: DocumentView) => {
-    setSelected({
-      id: doc.id,
-      publicId: doc.publicId,
-      title: doc.title,
-      // ⚠️ La Rubrique COURANTE est transmise. Elle était forcée à `null` :
-      // le tiroir s'ouvrait sur « Sans rubrique » pour un document pourtant
-      // classé, et sa liste de Types — dérivée de la Rubrique — restait vide,
-      // masquant le Type déjà renseigné. La carte ne l'affiche pas (§4.3),
-      // mais ne pas l'afficher n'est pas une raison de l'ignorer.
-      rubricCode: doc.rubricCode,
-      documentTypeCode: doc.documentTypeCode,
-    });
-    setDrawerOpen(true);
   };
 
   const total = page?.total ?? 0;
@@ -464,7 +521,7 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
               typeOptions={page?.typeOptions ?? []}
               hideAssetFilter={false}
             />
-            <Button variant="outline" size="sm" onClick={() => setUploadOpen(true)} className="btn-add">
+            <Button variant="outline" size="sm" onClick={ajouter} className="btn-add">
               <Plus className="btn-add-plus-icon h-4 w-4" aria-hidden />
               <span className="hidden sm:inline">Ajouter</span>
             </Button>
@@ -507,10 +564,49 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
             typeOptions={page?.typeOptions ?? []}
             hideAssetFilter
           />
-          <Button variant="outline" size="sm" onClick={() => setUploadOpen(true)} className="btn-add">
+          <Button variant="outline" size="sm" onClick={ajouter} className="btn-add">
             <Plus className="btn-add-plus-icon h-4 w-4" aria-hidden />
             <span className="hidden sm:inline">Ajouter</span>
           </Button>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════
+          FILTRES RAPIDES PAR BIEN — « Mes documents » uniquement
+          Le filtre par bien n'existait que dans le tiroir « Tri & filtres ».
+          Les pastilles le rendent accessible en un clic, directement sur la
+          page ; elles pilotent le même état (`filters.assetIds`) que le
+          tiroir, qui reste disponible pour les filtres combinés.
+          ══════════════════════════════════════════════════════════════════ */}
+      {!assetId && assetOptions.length > 0 && (
+        <div
+          role="group"
+          aria-label="Filtrer par bien"
+          className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
+        >
+          <AssetChip
+            label="Tous les biens"
+            active={filters.assetIds.length === 0}
+            onClick={() => applyFilters({ ...filters, assetIds: [] })}
+          />
+          {assetOptions.map((asset) => {
+            const active = filters.assetIds.includes(asset.id);
+            return (
+              <AssetChip
+                key={asset.id}
+                label={asset.name}
+                active={active}
+                onClick={() =>
+                  applyFilters({
+                    ...filters,
+                    assetIds: active
+                      ? filters.assetIds.filter((id) => id !== asset.id)
+                      : [...filters.assetIds, asset.id],
+                  })
+                }
+              />
+            );
+          })}
         </div>
       )}
 
@@ -538,7 +634,6 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
             showAssets={!assetId}
             viewMode={viewMode}
             onOpen={openDocument}
-            onClassify={classifyDocument}
             onLoadMore={loadMore}
             loadingMore={loadingGroup === group.code}
           />
@@ -557,24 +652,26 @@ export function DocumentsByRubric({ assetId }: { assetId?: number }) {
         onRefresh={() => void load()}
       />
 
-      <RubricClassificationDrawer
-        document={selected}
-        open={drawerOpen}
-        onOpenChange={setDrawerOpen}
-        // §4.7 : la page se met à jour en arrière-plan, le drawer reste ouvert
-        // le temps que l'utilisateur constate le déplacement.
-        onSaved={() => void load()}
-        onDelete={selected ? () => void deleteDocument(selected) : undefined}
-      />
-
-      {uploadOpen && (
+      {uploadOpen && (assetId ? (
+        // Onglet d'un bien : le document est rattaché à CE bien.
+        <UnifiedDocumentDialog
+          open={uploadOpen}
+          onOpenChange={setUploadOpen}
+          preselectedAssetId={assetId}
+          availableAssets={[{ id: assetId, name: assetName ?? '' }] as never}
+          allowAssetSelection={false}
+          allowEventCreation
+          allowEventAssociation={false}
+          onSuccess={() => { setUploadOpen(false); void load(); }}
+        />
+      ) : (
         <UnifiedDocumentDialog
           open={uploadOpen}
           onOpenChange={setUploadOpen}
           availableAssets={assetOptions as never}
           onSuccess={() => void load()}
         />
-      )}
+      ))}
     </div>
   );
 }

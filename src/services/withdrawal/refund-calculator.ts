@@ -45,10 +45,25 @@ export interface PaymentRecord {
   status: string;
   /** Horodatage, pour ne retenir que les paiements postérieurs au contrat. */
   createdAt: Date;
+  /**
+   * Cible Stripe du remboursement. `payment_intent` par défaut (identifiant
+   * `id`) ; `charge` pour un règlement sans PaymentIntent.
+   */
+  refundTarget?: 'payment_intent' | 'charge';
+  /** Facture dont relève le paiement (traçabilité). */
+  invoiceId?: string;
+  /**
+   * Remboursements déjà émis PAR CETTE DEMANDE sur ce paiement (reprise
+   * d'un traitement interrompu). `amountRefunded` ne compte, lui, que les
+   * remboursements antérieurs ou étrangers à la demande.
+   */
+  ownRefunds?: Array<{ id: string; amount: number; status: string }>;
 }
 
 export interface RefundInstruction {
   paymentId: string;
+  /** Paramètre Stripe du remboursement (`payment_intent` ou `charge`). */
+  refundTarget: 'payment_intent' | 'charge';
   /** Montant à rembourser sur ce paiement, en centimes. */
   amount: number;
   currency: string;
@@ -63,6 +78,8 @@ export interface RefundPlan {
   currency: string;
   /** Paiements écartés, avec leur motif — journalisé, jamais deviné. */
   excluded: Array<{ paymentId: string; reason: string }>;
+  /** Paiements examinés (avec les remboursements de la demande), pour le suivi. */
+  paymentsSeen?: PaymentRecord[];
 }
 
 /** Statuts Stripe correspondant à un encaissement réel. */
@@ -88,7 +105,7 @@ export function isRefundable(
     return { refundable: false, reason: 'montant nul' };
   }
   if (payment.amountRefunded >= payment.amount) {
-    return { refundable: false, reason: 'déjà intégralement remboursé' };
+    return { refundable: false, reason: 'déjà intégralement remboursé (hors rétractation)' };
   }
   // §9.3 : « tous les paiements réussis liés au contrat DEPUIS
   // contract_concluded_at ». Un paiement antérieur relève d'un contrat
@@ -128,20 +145,34 @@ export function buildRefundPlan(
       continue;
     }
 
-    // Complément : ce qui reste dû après un remboursement partiel antérieur.
-    const amount = payment.amount - payment.amountRefunded;
+    // Dû au titre de la rétractation : l'encaissé, net des remboursements
+    // antérieurs ou étrangers à cette demande.
+    const due = payment.amount - payment.amountRefunded;
     currency = payment.currency;
+    totalAmount += due;
 
+    // Reprise : ce que cette demande a DÉJÀ demandé (réglé ou en cours) n'est
+    // pas redemandé ; seul un remboursement échoué laisse un reste à émettre.
+    const own = payment.ownRefunds ?? [];
+    const alreadyRequested = own
+      .filter((r) => classifyRefundStatus(r.status) !== 'needs_attention')
+      .reduce((sum, r) => sum + r.amount, 0);
+    const amount = due - alreadyRequested;
+    if (amount <= 0) continue;
+
+    // Clé propre à la demande ET au paiement ; suffixée après un échec pour
+    // qu'un nouveau remboursement puisse être émis.
+    const attempts = own.length;
     instructions.push({
       paymentId: payment.id,
+      refundTarget: payment.refundTarget ?? 'payment_intent',
       amount,
       currency: payment.currency,
-      idempotencyKey: `withdrawal_${requestReference}_${payment.id}`,
+      idempotencyKey: `withdrawal_${requestReference}_${payment.id}${attempts > 0 ? `_r${attempts}` : ''}`,
     });
-    totalAmount += amount;
   }
 
-  return { instructions, totalAmount, currency, excluded };
+  return { instructions, totalAmount, currency, excluded, paymentsSeen: payments };
 }
 
 /**

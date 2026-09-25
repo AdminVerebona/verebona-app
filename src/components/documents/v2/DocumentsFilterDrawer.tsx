@@ -119,13 +119,14 @@ export function DocumentsFilterDrawer({
         )}
       </Button>
 
-      <Drawer open={open} onOpenChange={setOpen}>
-        <DrawerContent>
+      {/* À droite, comme tous les tiroirs de l'application (jamais par le bas). */}
+      <Drawer open={open} onOpenChange={setOpen} direction="right">
+        <DrawerContent className="w-[90vw] sm:max-w-sm">
           <DrawerHeader>
             <DrawerTitle>Tri &amp; filtres</DrawerTitle>
           </DrawerHeader>
 
-          <div className="max-h-[60vh] space-y-6 overflow-y-auto px-4 pb-2">
+          <div className="flex-1 space-y-6 overflow-y-auto px-4 pb-2">
             <div className="space-y-2">
               <Label>Trier par</Label>
               <div className="flex flex-wrap gap-2">

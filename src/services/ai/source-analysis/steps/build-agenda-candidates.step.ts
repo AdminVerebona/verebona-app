@@ -10,6 +10,7 @@
  * `extract_agenda_v1` puis `agenda_detect_v1` traitaient la même information.
  */
 import type { ExtractedField, AgendaCandidate } from '../types';
+import { parseRecurrenceFr, type RecurrenceSpec } from '../../agenda/rules/recurrence';
 
 /** Champs de date porteurs d'échéance, avec le libellé d'événement associé. */
 const DEADLINE_FIELDS: Record<string, string> = {
@@ -34,6 +35,8 @@ export function buildAgendaCandidates(
   for (const field of fields) {
     const label = DEADLINE_FIELDS[field.fieldKey];
     if (!label) continue;
+    // Une échéance se LIT : une date « observée » sans texte n'en crée aucune.
+    if (field.provenance === 'VISUAL_ANALYSIS' || !field.excerpt) continue;
 
     const value = typeof field.value === 'string' ? field.value : null;
     if (!value || !ISO_DATE.test(value)) continue;
@@ -45,10 +48,28 @@ export function buildAgendaCandidates(
       excerpt: field.excerpt,
       originFieldKey: field.fieldKey,
       // Aucune catégorie suggérée : c'est la responsabilité de l'usage 4.
+      recurrence: recurrenceOf(field),
     });
   }
 
   return dedupeByDateAndField(candidates);
+}
+
+/**
+ * Récurrence EXPLICITE : fournie par l'extraction, ou lue dans l'extrait de
+ * preuve (« renouvellement annuel », « tous les 12 mois »). Jamais supposée
+ * d'après le type d'échéance.
+ */
+export function recurrenceOf(field: ExtractedField): RecurrenceSpec | undefined {
+  const r = field.recurrence;
+  if (r) {
+    return {
+      mode: 'EXPLICIT_SOURCE', frequency: r.frequency, interval: r.interval ?? 1,
+      startDate: r.startDate ?? null, endDate: r.endDate ?? null, occurrenceCount: r.occurrenceCount ?? null,
+      dates: r.dates ?? null, excerpt: r.excerpt ?? field.excerpt,
+    };
+  }
+  return parseRecurrenceFr(field.excerpt ?? '') ?? undefined;
 }
 
 /** Deux champs différents portant la même date ne créent qu'un candidat. */

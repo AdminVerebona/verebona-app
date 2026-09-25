@@ -8,6 +8,7 @@ import { Plus, Settings, MapPin } from 'lucide-react';
 import { EquipmentDrawer, EquipmentDrawerItem, EquipmentDrawerSubstructure } from './EquipmentDrawer';
 import { Badge } from '@/components/ui/badge';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { useEntitlements } from '@/hooks/useEntitlements';
 
 interface AssetEquipmentsPanelProps {
   assetId: number;
@@ -43,13 +44,25 @@ export function AssetEquipmentsPanel({
 
   // Même garde que les pièces : les deux boutons « Ajouter » de ce panneau
   // passent par ici.
-  const { garder } = useWriteGuard();
+  // Ajout d'un équipement : Premium et Premium Duo (essai compris). Un
+  // compte Standard obtient la fenêtre « Passer à Premium ou Premium Duo »
+  // au lieu du formulaire ; le serveur applique la même règle.
+  const { garder, signalerRefus } = useWriteGuard();
+  const { entitlements } = useEntitlements();
+  const premiumRefuse = entitlements != null && !entitlements.premiumFeatures;
   const handleAdd = useCallback(() => {
     garder(() => {
+      if (premiumRefuse) {
+        signalerRefus({
+          code: 'PREMIUM_REQUIRED',
+          message: 'L\u2019ajout d\u2019équipements est disponible avec les offres Premium et Premium Duo.',
+        });
+        return;
+      }
       setSelectedEq(null);
       setIsDrawerOpen(true);
     });
-  }, [garder]);
+  }, [garder, signalerRefus, premiumRefuse]);
 
   const handleRowClick = useCallback((eq: Equipment) => {
     setSelectedEq({

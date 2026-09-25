@@ -94,7 +94,7 @@ ALTER TABLE accounts ADD CONSTRAINT accounts_plan_type_check
   ADD CONSTRAINT accounts_subscription_status_check
     CHECK (subscription_status IN (
       'NONE','ACTIVE','CANCELED','EXPIRED',
-      'PAST_DUE','PAST_DUE_GRACE','UNPAID_RECOVERY','TRIALING'
+      'PAST_DUE','PAST_DUE_GRACE','UNPAID_RECOVERY','TRIALING','WITHDRAWN'
     ));
 
 -- ─── 13. account_memberships: business CHECK constraints ─────────────────────

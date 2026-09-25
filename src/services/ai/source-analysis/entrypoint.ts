@@ -32,6 +32,7 @@ import { eq } from 'drizzle-orm';
 import type { SourceType } from './types';
 import { getFlagMode } from '../flags/ai-feature-flags';
 import type { RunSourceAnalysisOutput } from './pipeline';
+import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
 
 export interface AnalyzeFileSourcesOptions {
   /** Déduit du premier fichier si absent — l'ancienne signature ne le portait pas. */
@@ -63,6 +64,11 @@ export interface AnalyzeFileSourcesOptions {
    * ══════════════════════════════════════════════════════════════════════
    */
   sourceType?: SourceType;
+  /**
+   * Garde d'exécution de la file durable (annulation par rollback, arrêt
+   * d'urgence, désactivation). Absente hors file.
+   */
+  guard?: ExecutionGuard;
 }
 
 let shadowWarned = false;
@@ -97,6 +103,9 @@ export async function analyzeFileSources(
   }
 
   if (mode !== 'enabled') {
+    // Le moteur historique ne connaît pas la garde : elle n'est contrôlée
+    // qu'à son lancement.
+    await options.guard?.assertActive('moteur historique');
     await runLegacy(fileIds, accountId, options);
     return null;
   }
@@ -124,6 +133,7 @@ async function runUnified(
       userId,
       linkedAssetId: options.linkedAssetId ?? null,
       billable: options.billable,
+      guard: options.guard,
     });
 
     if (outcome.skippedReason) {
@@ -134,6 +144,9 @@ async function runUnified(
     }
     return outcome;
   } catch (e) {
+    // Une interruption n'est pas un échec : elle remonte à la file, qui ne
+    // clôt pas le job (déjà remis en attente pour une reprise propre).
+    if (isExecutionCancelled(e)) throw e;
     console.error(
       `[source-analysis] Échec du pipeline unifié (origine : ${options.origin ?? 'inconnue'}) :`,
       (e as Error).message,

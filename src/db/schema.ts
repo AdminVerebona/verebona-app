@@ -72,18 +72,10 @@ export const assets = pgTable('assets', {
   objectDetails: text('object_details'),
   archivedReason: text('archived_reason'), // NULL | 'user' | 'transmitted'
 
-  // ── « Bien mis en location » (CDC V2 §6.1, migration 0128) ───────────────
-  /**
-   * Immobilier uniquement. Défaut `false`, qui est une VALEUR SYSTÈME et non
-   * une validation utilisateur : `isRentedUserValidated` fait la différence.
-   * Sans cette distinction, un bien jamais renseigné serait protégé comme
-   * s'il avait été explicitement déclaré non loué, et l'IA ne pourrait plus
-   * jamais le corriger (§6.1, alinéas 4 et 6).
-   */
-  isRented: boolean('is_rented').notNull().default(false),
-  isRentedOrigin: text('is_rented_origin').notNull().default('SYSTEM_RULE'),
-  isRentedUserValidated: boolean('is_rented_user_validated').notNull().default(false),
-  isRentedUpdatedAt: tstzOptional('is_rented_updated_at'),
+  // « Bien mis en location » (is_rented*, 0128) : retiré en 0160 au profit de
+  // l'usage LOCATIF (« Mis en location ») de key_characteristics. Les colonnes
+  // subsistent en base, ni lues ni écrites, le temps de vérifier le report.
+
 
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
@@ -405,6 +397,16 @@ export const assetFiles = pgTable('asset_files', {
   fusionIgnoredWith: jsonb('fusion_ignored_with').$type<number[]>(),
   userEditedFields: jsonb('user_edited_fields').$type<Record<string, boolean>>(),
   uploadedAt: tstz('uploaded_at'),
+  // Suivi des suppressions physiques (migration 0142) : la référence est
+  // conservée tant que S3 n'a pas confirmé la suppression.
+  purgeAttempts: integer('purge_attempts').notNull().default(0),
+  purgeLastError: text('purge_last_error'),
+  purgeLastAttemptAt: tstzOptional('purge_last_attempt_at'),
+  // Source secondaire regroupée dans un document logique (migration 0143) :
+  // masquée des listes, conservée en stockage, jamais purgée tant que son
+  // document principal existe.
+  groupedIntoFileId: integer('grouped_into_file_id'),
+  groupedAt: tstzOptional('grouped_at'),
   deletedAt: tstzOptional('deleted_at'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
@@ -795,7 +797,7 @@ export const accounts = pgTable('accounts', {
   stripeCustomerIdIdx: index('accounts_stripe_customer_id_idx').on(table.stripeCustomerId),
   subscriptionStatusIdx: index('accounts_subscription_status_idx').on(table.subscriptionStatus),
   planTypeCheck: check('accounts_plan_type_check', sql`${table.planType} IN ('STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO')`),
-  subscriptionStatusCheck: check('accounts_subscription_status_check', sql`${table.subscriptionStatus} IN ('NONE','ACTIVE','CANCELED','EXPIRED','PAST_DUE','PAST_DUE_GRACE','UNPAID_RECOVERY','TRIALING')`),
+  subscriptionStatusCheck: check('accounts_subscription_status_check', sql`${table.subscriptionStatus} IN ('NONE','ACTIVE','CANCELED','EXPIRED','PAST_DUE','PAST_DUE_GRACE','UNPAID_RECOVERY','TRIALING','WITHDRAWN')`),
 }));
 
 export const accountMemberships = pgTable('account_memberships', {
@@ -1098,6 +1100,13 @@ export const referralEvents = pgTable('referral_events', {
   capturedAt: tstzOptional('captured_at'),
   confirmedAt: tstzOptional('confirmed_at'),
   rewardedAt: tstzOptional('rewarded_at'),
+  // Idempotence de la récompense (migration 0148).
+  rewardKey: text('reward_key'),
+  rewardStatus: text('reward_status'), // reward_processing | reward_applied
+  rewardClaimToken: uuid('reward_claim_token'),
+  rewardClaimedAt: tstzOptional('reward_claimed_at'),
+  rewardAppliedAt: tstzOptional('reward_applied_at'),
+  rewardPeriodEnd: tstzOptional('reward_period_end'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -1278,6 +1287,20 @@ export const agendaItems = pgTable('agenda_items', {
   originFieldKey: text('origin_field_key'),
   /** Classification pour la home : 'action' = prochaines dates / 'information' = à savoir */
   homeCategory: text('home_category'),
+  /** FORECAST (calculée d'une récurrence) | CONFIRMED — migration 0158. */
+  occurrenceNature: text('occurrence_nature').notNull().default('CONFIRMED'),
+  /** EXPLICIT_DATE | PREDICTED_FROM_RECURRENCE | USER. */
+  dateSource: text('date_source'),
+  /** Série de l'occurrence (même objet, même nature d'échéance). */
+  seriesKey: text('series_key'),
+  /** Règle de récurrence et provenance de la prévision. */
+  recurrenceJson: jsonb('recurrence_json'),
+  /** Date prévisionnelle d'origine, conservée après confirmation (0159). */
+  forecastInitialDate: pgDate('forecast_initial_date', { mode: 'string' }),
+  confirmedAt: pgTimestamp('confirmed_at', { withTimezone: true }),
+  /** SOURCE | USER | DATA. */
+  confirmationMode: text('confirmation_mode'),
+  confirmationSource: jsonb('confirmation_source'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -2386,7 +2409,8 @@ export const legalAuditLog = pgTable('legal_audit_log', {
 
 export const scheduledAccountDeletions = pgTable('scheduled_account_deletions', {
   id: serial('id').primaryKey(),
-  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  // Pas de clé étrangère (migration 0144) : la trace survit au compte supprimé.
+  accountId: integer('account_id').notNull(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
   /** WITHDRAWAL | VOLUNTARY | TRIAL_ABANDONED. */
   reason: text('reason').notNull(),
@@ -2445,6 +2469,8 @@ export const withdrawalRequests = pgTable('withdrawal_requests', {
   currency: text('currency').notNull().default('eur'),
   stripeRefundIds: text('stripe_refund_ids'),
   stripeRefundStatuses: text('stripe_refund_statuses'),
+  /** Suivi individuel des remboursements (migration 0149) — source de vérité. */
+  stripeRefundsJson: jsonb('stripe_refunds_json').notNull().default([]),
   cancellationStatus: text('cancellation_status').notNull().default('pending'),
   failureCode: text('failure_code'),
   failureDetails: text('failure_details'),
@@ -2667,6 +2693,13 @@ export const toProcessActions = pgTable('to_process_actions', {
   /** Permet la réapparition d'un problème réellement nouveau (§7.3). */
   cycleNumber: integer('cycle_number').notNull().default(1),
 
+  /**
+   * Empreinte des éléments déclencheurs (migration 0146) : une action
+   * « Non applicable » n'est pas recréée tant qu'elle ne change pas.
+   */
+  triggerContextHash: text('trigger_context_hash'),
+  triggerContext: jsonb('trigger_context'),
+
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -2692,4 +2725,38 @@ export const toProcessActions = pgTable('to_process_actions', {
   ),
   // L'unicité logique du §13.4 est un index PARTIEL sur les actions actives ;
   // Drizzle ne l'exprimant pas, il est posé par la migration 0128.
+}));
+
+/**
+ * Trace technique des décisions « À traiter » (migration 0145, CDC V2 §13.5) :
+ * écrite dans la même transaction que la résolution.
+ */
+export const toProcessActionEvents = pgTable('to_process_action_events', {
+  id: serial('id').primaryKey(),
+  actionId: integer('action_id').references(() => toProcessActions.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  event: text('event').notNull(),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  targetType: text('target_type'),
+  targetId: integer('target_id'),
+  fieldKey: text('field_key'),
+  previousValue: jsonb('previous_value'),
+  newValue: jsonb('new_value'),
+  details: jsonb('details').notNull().default({}),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  actionIdx: index('to_process_action_events_action_idx').on(table.actionId),
+}));
+
+/** Histoire d'une occurrence d'échéance (prévision, confirmation…) — migration 0159. */
+export const agendaOccurrenceEvents = pgTable('agenda_occurrence_events', {
+  id: serial('id').primaryKey(),
+  agendaItemId: integer('agenda_item_id').notNull().references(() => agendaItems.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').notNull(),
+  eventType: text('event_type').notNull(),
+  actorUserId: integer('actor_user_id'),
+  detailJson: jsonb('detail_json').notNull().default({}),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  itemIdx: index('agenda_occurrence_events_item_idx').on(t.agendaItemId, t.createdAt),
 }));

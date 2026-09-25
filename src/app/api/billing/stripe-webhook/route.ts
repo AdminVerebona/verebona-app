@@ -262,6 +262,15 @@ async function handleSubscriptionUpdated(
 
   if (!result || result.skipped) return;
 
+  // Bascule d'échéancier (changement de périodicité ou baisse de gamme) :
+  // Stripe émet `customer.subscription.updated` au passage de phase. Simple
+  // constat — l'abonnement Stripe n'est jamais modifié ici.
+  if (eventType === 'customer.subscription.updated') {
+    await applyScheduledChange(result.accountId).catch((err: Error) =>
+      console.error('[Webhook] synchronisation du changement programmé :', err.message),
+    );
+  }
+
   // Duo : rattachement du titulaire (membership slot 0).
   if (result.newPlanType === 'PREMIUM_DUO' && result.oldPlanType !== 'PREMIUM_DUO') {
     const duoIdFromMeta = subscription.metadata?.duoId ? parseInt(subscription.metadata.duoId) : null;
@@ -453,8 +462,10 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
   })().catch((err: Error) => console.error('[Webhook] suivi analytique:', err.message));
 
   // CDC §10 : un changement d'offre ou de periodicite programme prend effet
-  // au renouvellement, sans prorata.
-  await applyScheduledChange(accountId).then((r) => {
+  // au renouvellement, sans prorata. L'echeancier Stripe a deja porte le
+  // nouveau prix sur cette facture ; on ne fait que synchroniser, et
+  // uniquement sur une facture de renouvellement.
+  await applyScheduledChange(accountId, new Date(), { invoiceBillingReason: invoice.billing_reason ?? null }).then((r) => {
     if (r.applied) {
       console.info('[Webhook] changement programme applique:', r.planCode, r.billingPeriod);
     }

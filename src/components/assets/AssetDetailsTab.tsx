@@ -1,11 +1,12 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { categoryOptionsWithCurrent } from '@/lib/asset-taxonomy';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { AssetDetailSection, type AiSuggestion, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
-import { RentalStatusField } from './v2/RentalStatusField';
+import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
 import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
@@ -19,18 +20,20 @@ interface Props {
   highlightField?: string | null;
 }
 
-const IMMOBILIER_SUBTYPES = ['Maison', 'Appartement', 'Terrain', 'Local commercial', 'Garage'];
-const VEHICULE_SUBTYPES = ['Vélo', 'Voiture', 'Camion', 'Moto'];
-
-function getCommonFields(category: string): FieldDef[] {
-  const subtypes = category === 'IMMOBILIER' ? IMMOBILIER_SUBTYPES
-    : category === 'VEHICULE' ? VEHICULE_SUBTYPES
+/**
+ * Catégorie de bien (Immobilier / Véhicule) : liste de `lib/asset-taxonomy`,
+ * plus la valeur enregistrée si elle n'y figure pas (catégorie ancienne),
+ * pour ne jamais l'effacer à l'enregistrement.
+ */
+function getCommonFields(category: string, currentSubtype?: string | null): FieldDef[] {
+  const subtypes = category === 'IMMOBILIER' || category === 'VEHICULE'
+    ? categoryOptionsWithCurrent(category, currentSubtype)
     : null;
   return [
     { key: 'name', label: 'Nom' },
     subtypes
-      ? { key: 'subCategory', label: 'Sous-catégorie', type: 'select', options: subtypes.map(s => ({ value: s, label: s })) }
-      : { key: 'subCategory', label: 'Sous-catégorie', readonly: true },
+      ? { key: 'subCategory', label: 'Catégorie de bien', type: 'select', options: subtypes }
+      : { key: 'subCategory', label: 'Catégorie de bien', readonly: true },
     { key: 'description', label: 'Description', type: 'textarea' },
     { key: 'acquisitionDate', label: 'Date d\'achat', type: 'date',
       ...(category === 'VEHICULE' ? { notApplicableWhen: (d: Record<string, unknown>) => ['LLD', 'LOA', 'PRET_GRATUIT'].includes(String(d.vehicleOwnershipStatus ?? '')) } : {}) },
@@ -75,12 +78,9 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     ]},
   ],
   occupancy_usage: [
-    { key: 'occupancyUsage', label: 'Usage', type: 'select', options: [
-      { value: 'RESIDENCE_PRINCIPALE', label: 'Résidence principale' },
-      { value: 'RESIDENCE_SECONDAIRE', label: 'Résidence secondaire' },
-      { value: 'LOCATIF', label: 'Locatif' },
-      { value: 'VACANT', label: 'Vacant' },
-    ]},
+    // « Mis en location » : seule donnée qui dit qu'un bien est loué (l'ancien
+    // attribut séparé « Bien mis en location » a été retiré).
+    { key: 'occupancyUsage', label: 'Usage', type: 'select', options: OCCUPANCY_USAGE_OPTIONS },
     { key: 'occupancyStatus', label: 'Statut d\'occupation', type: 'select', options: [
       { value: 'PROPRIETAIRE',     label: 'Propriétaire' },
       { value: 'LOCATAIRE',        label: 'Locataire' },
@@ -497,20 +497,6 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
 
   return (
     <div className="space-y-3">
-      {/* ══════════════════════════════════════════════════════════════════
-          « Bien mis en location » — CDC V2 §6.1.
-
-          Placé en tête de l'onglet et non dans une section : il ne décrit pas
-          le bien, il conditionne la visibilité de la Rubrique « Gestion
-          locative » (§6.2). L'enfouir dans « Informations générales » le
-          rendrait introuvable au moment où l'utilisateur cherche pourquoi ses
-          documents de location n'ont nulle part où aller.
-
-          Le composant se retire de lui-même hors immobilier : l'API répond
-          NOT_APPLICABLE et rien n'est rendu.
-          ══════════════════════════════════════════════════════════════════ */}
-      <RentalStatusField assetId={asset.id} readOnly={readOnly} onChanged={onRefresh} />
-
       <ValuationHistoryDrawer
         open={valuationDrawerOpen}
         onClose={() => setValuationDrawerOpen(false)}
@@ -521,7 +507,7 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
 
       {/* ── Sections ──────────────────────────────────────────────────────────── */}
       {sectionEntries.map(([key, data]) => {
-        const fields = key === 'common' ? getCommonFields(asset.category) : (SECTION_FIELDS[key] ?? []);
+        const fields = key === 'common' ? getCommonFields(asset.category, asset.subtype) : (SECTION_FIELDS[key] ?? []);
         const sectionData = key === 'common' ? { ...data, status: asset.status } : data;
         const sectionAiDraft = (aiSuggestions?.sections[key] && !consumedSections.has(key))
           ? aiSuggestions.sections[key]

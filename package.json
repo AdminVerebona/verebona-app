@@ -6,7 +6,9 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "predev": "node scripts/sync-pdf-worker.mjs",
     "dev": "next dev --turbopack",
+    "prebuild": "node scripts/sync-pdf-worker.mjs",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -21,6 +23,7 @@
     "db:seed:pricing": "tsx src/db/seeds/ai-model-pricing.seed.ts",
     "db:seed:cgvu": "tsx src/db/seeds/legal/seed-cgvu.ts",
     "db:seed:cgvu-email": "tsx src/db/seeds/legal/email_template_cgvu.ts",
+    "db:seed:cgvu-draft": "tsx src/db/seeds/legal/seed-cgvu-draft.ts",
     "db:seed:withdrawal-email": "tsx src/db/seeds/withdrawal/email_template_withdrawal.ts",
     "db:seed:doc-categories": "tsx src/db/seeds/documents/seed-document-categories.ts",
     "db:reclassify": "tsx scripts/reclassify-documents.ts",

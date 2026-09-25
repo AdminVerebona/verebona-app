@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { hasProjectableKnowledge, projectDocumentKnowledgeToAsset } from '@/services/ai/knowledge/document-knowledge.service';
 import { db } from '@/db';
 import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -162,7 +163,40 @@ export async function PUT(
     const hasBeenAnalysed = oldDoc.analysisState != null && oldDoc.analysisState !== 'UPLOADING' && oldDoc.analysisState !== 'UPLOADED';
     const accountId = session.currentAccountId;
 
-    if (hasBeenAnalysed && accountId) {
+    // ══════════════════════════════════════════════════════════════════════
+    // RATTACHEMENT À UN BIEN : PROJECTION DEPUIS T1, SANS RELIRE LE FICHIER
+    //
+    // Quand seul le bien change et que T1 a déjà produit la représentation
+    // durable du document (texte, faits, preuves), les projections métier
+    // du bien sont produites depuis ces données persistées — plus de
+    // réanalyse complète du fichier, ni de consommation de quota.
+    // Les autres corrections manuelles conservent la réanalyse existante.
+    // ══════════════════════════════════════════════════════════════════════
+    const assetCible =
+      assetId === undefined ? undefined
+        : assetId === null || assetId === 0 ? null
+          : parseInt(assetId);
+    // « Seul le bien change » se vérifie sur TOUS les champs envoyés, pas
+    // seulement sur ceux que journalise l'audit : une description, un
+    // fournisseur ou un montant corrigé en même temps justifient une
+    // réanalyse (contexte nouveau pour l'IA).
+    const memeValeur = (a: unknown, b: unknown) => {
+      const norm = (v: unknown) => (v === undefined || v === '' ? null : v instanceof Date ? v.toISOString() : v);
+      const x = norm(a), y = norm(b);
+      if (x !== null && typeof x === 'object') return JSON.stringify(x) === JSON.stringify(y);
+      return x === y || String(x) === String(y);
+    };
+    const autresChampsModifies = Object.keys(updateData)
+      .filter((k) => k !== 'updatedAt' && k !== 'assetId')
+      .some((k) => !memeValeur(updateData[k], (oldDoc as Record<string, unknown>)[k]));
+    const seulLeBienChange =
+      assetCible !== undefined && assetCible !== oldDoc.assetId && !autresChampsModifies;
+    const projectionPossible =
+      hasBeenAnalysed && !!accountId && seulLeBienChange && !!assetCible
+      && await hasProjectableKnowledge(documentId).catch(() => false);
+
+    const reanalyser = () => {
+      if (!accountId) return;
       // Réanalyse consécutive à une correction manuelle : pas de crédit
       // consommé, l'utilisateur n'a pas déposé de nouveau document.
       analyzeFileSources([documentId], accountId, {
@@ -172,6 +206,20 @@ export async function PUT(
       }).catch(err => {
         console.error(`[documents/PUT] re-analyse après modification manuelle échouée (file ${documentId}):`, err);
       });
+    };
+
+    if (projectionPossible && accountId && assetCible) {
+      void projectDocumentKnowledgeToAsset({
+        accountId, userId: session.userId, fileId: documentId, assetId: assetCible,
+      }).then((preuves) => {
+        // Aucune preuve produite : repli sur la réanalyse.
+        if (preuves === 0) reanalyser();
+      }).catch(err => {
+        console.error(`[documents/PUT] projection T1 après rattachement échouée (file ${documentId}):`, err);
+        reanalyser();
+      });
+    } else if (hasBeenAnalysed && accountId) {
+      reanalyser();
     }
 
     // ══════════════════════════════════════════════════════════════════════

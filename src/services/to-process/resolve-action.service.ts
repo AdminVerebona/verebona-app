@@ -28,20 +28,30 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
-import { assetFiles, assets, toProcessActions } from '@/db/schema';
+import { agendaAssetLinks, agendaItems, assetFiles, assets, toProcessActionEvents, toProcessActions } from '@/db/schema';
 import { REFERENTIAL_VERSION, getDocumentType, getRubric } from '@/lib/referential/v2';
 import { applyClassificationChange } from '@/services/documents/rubric-classification';
 import type { ResolutionReason, TargetType } from './action-model';
 import { getRule } from './rules-catalog';
+
+/**
+ * Client de base : la transaction en cours, ou `db` hors transaction.
+ *
+ * ⚠️ Les écrivains N'UTILISENT JAMAIS `db` directement : appelés dans
+ * `db.transaction`, une écriture faite sur le client global partirait hors de
+ * la transaction et survivrait à son annulation — exactement l'état partiel
+ * que le §13.5 interdit.
+ */
+export type DbClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
 
 export interface FieldWriter {
   targetType: TargetType;
   fieldKey: string;
   /** Valeur refusée avant toute écriture — le modèle n'est pas seul à se tromper. */
   validate: (value: unknown) => boolean;
-  write: (targetId: number, accountId: number, value: unknown) => Promise<void>;
+  write: (client: DbClient, targetId: number, accountId: number, value: unknown) => Promise<void>;
   /** Valeur actuelle, relue pour permettre l'annulation (§8.5). */
-  read: (targetId: number, accountId: number) => Promise<unknown>;
+  read: (client: DbClient, targetId: number, accountId: number) => Promise<unknown>;
 }
 
 const FIELD_WRITERS: FieldWriter[] = [
@@ -49,16 +59,16 @@ const FIELD_WRITERS: FieldWriter[] = [
     targetType: 'DOCUMENT',
     fieldKey: 'rubricCode',
     validate: (v) => typeof v === 'string' && !!getRubric(v),
-    read: async (id, accountId) => {
-      const [row] = await db
+    read: async (client, id, accountId) => {
+      const [row] = await client
         .select({ v: assetFiles.rubricCode })
         .from(assetFiles)
         .where(and(eq(assetFiles.id, id), eq(assetFiles.accountId, accountId)))
         .limit(1);
       return row?.v ?? null;
     },
-    write: (id, accountId, value) =>
-      writeDocumentClassification(id, accountId, { nextRubric: value as string }),
+    write: (client, id, accountId, value) =>
+      writeDocumentClassification(client, id, accountId, { nextRubric: value as string }),
   },
   {
     targetType: 'DOCUMENT',
@@ -66,43 +76,16 @@ const FIELD_WRITERS: FieldWriter[] = [
     // Le Type « Autre » est accepté ICI : le §5.2 le réserve à l'utilisateur,
     // et c'est précisément lui qui agit.
     validate: (v) => typeof v === 'string' && !!getDocumentType(v),
-    read: async (id, accountId) => {
-      const [row] = await db
+    read: async (client, id, accountId) => {
+      const [row] = await client
         .select({ v: assetFiles.documentTypeCode })
         .from(assetFiles)
         .where(and(eq(assetFiles.id, id), eq(assetFiles.accountId, accountId)))
         .limit(1);
       return row?.v ?? null;
     },
-    write: (id, accountId, value) =>
-      writeDocumentClassification(id, accountId, { nextType: value as string }),
-  },
-  {
-    targetType: 'ASSET',
-    fieldKey: 'isRented',
-    validate: (v) => typeof v === 'boolean' || v === 'true' || v === 'false',
-    read: async (id, accountId) => {
-      const [row] = await db
-        .select({ v: assets.isRented })
-        .from(assets)
-        .where(and(eq(assets.id, id), eq(assets.accountId, accountId)))
-        .limit(1);
-      return row?.v ?? null;
-    },
-    write: async (id, accountId, value) => {
-      await db
-        .update(assets)
-        .set({
-          isRented: value === true || value === 'true',
-          // §6.1 : un choix explicite protège la valeur. Le défaut « Non »
-          // posé à la migration, lui, ne valait pas validation.
-          isRentedOrigin: 'USER',
-          isRentedUserValidated: true,
-          isRentedUpdatedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(assets.id, id), eq(assets.accountId, accountId)));
-    },
+    write: (client, id, accountId, value) =>
+      writeDocumentClassification(client, id, accountId, { nextType: value as string }),
   },
 ];
 
@@ -125,11 +108,12 @@ export function isResolvableFromCard(
 }
 
 async function writeDocumentClassification(
+  client: DbClient,
   fileId: number,
   accountId: number,
   change: { nextRubric?: string; nextType?: string },
 ): Promise<void> {
-  const [row] = await db
+  const [row] = await client
     .select({
       rubricCode: assetFiles.rubricCode,
       documentTypeCode: assetFiles.documentTypeCode,
@@ -161,7 +145,7 @@ async function writeDocumentClassification(
     origin: 'USER',
   });
 
-  await db
+  await client
     .update(assetFiles)
     .set({
       rubricCode: outcome.result.rubricCode,
@@ -174,7 +158,7 @@ async function writeDocumentClassification(
       classificationUpdatedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(assetFiles.id, fileId));
+    .where(and(eq(assetFiles.id, fileId), eq(assetFiles.accountId, accountId)));
 }
 
 export interface ResolveResult {
@@ -184,53 +168,108 @@ export interface ResolveResult {
   error?: 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'FIELD_NOT_RESOLVABLE' | 'INVALID_VALUE';
 }
 
+export interface ResolveOptions {
+  /** Utilisateur qui arbitre, pour la trace. */
+  userId?: number | null;
+  /**
+   * Point d'injection de diagnostic : appelé DANS la transaction, après
+   * l'écriture du champ et avant la résolution de l'action et la trace. Une
+   * exception levée ici doit tout annuler (critère de recette §13.5).
+   */
+  onAfterFieldWrite?: () => void | Promise<void>;
+}
+
 /**
  * Applique une proposition retenue depuis la carte.
  *
  * §8.5 : « Cliquer sur une proposition applique immédiatement la valeur et
- * résout l'action, sans écran de confirmation supplémentaire. » L'absence de
- * confirmation n'est tenable que parce que l'annulation existe — c'est elle
- * qui rend le clic réversible, et donc anodin.
+ * résout l'action, sans écran de confirmation supplémentaire. »
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * UNE SEULE TRANSACTION, POUR DE VRAI (§13.5)
+ *
+ * `db.transaction()` était bien ouverte, mais l'écrivain et la fermeture de
+ * l'action écrivaient sur le client global `db` : hors transaction. Une
+ * erreur entre deux écritures laissait la valeur modifiée et l'action
+ * ouverte, ou l'inverse.
+ *
+ * Désormais les quatre éléments passent par le même `tx` :
+ *   1. valeur appliquée (écrivain de la liste blanche) ;
+ *   2. validation utilisateur (portée par l'écrivain : origine USER) ;
+ *   3. action résolue — relue et verrouillée (`FOR UPDATE`) dans la
+ *      transaction : deux clics simultanés n'arbitrent pas deux fois ;
+ *   4. trace technique de succès (`to_process_action_events`).
+ * Une étape en échec annule tout.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 export async function resolveArbitration(
   accountId: number,
   publicId: string,
   value: unknown,
+  options: ResolveOptions = {},
 ): Promise<ResolveResult> {
-  const [action] = await db
-    .select()
-    .from(toProcessActions)
-    .where(
-      and(eq(toProcessActions.accountId, accountId), eq(toProcessActions.publicId, publicId)),
-    )
-    .limit(1);
+  return db.transaction(async (tx) => {
+    const [action] = await tx
+      .select()
+      .from(toProcessActions)
+      .where(
+        and(eq(toProcessActions.accountId, accountId), eq(toProcessActions.publicId, publicId)),
+      )
+      .for('update')
+      .limit(1);
 
-  if (!action) return { ok: false, previousValue: null, error: 'NOT_FOUND' };
-  if (action.resolvedAt) {
-    return { ok: false, previousValue: null, error: 'ALREADY_RESOLVED' };
-  }
+    if (!action) return { ok: false, previousValue: null, error: 'NOT_FOUND' as const };
+    if (action.resolvedAt) {
+      return { ok: false, previousValue: null, error: 'ALREADY_RESOLVED' as const };
+    }
 
-  const writer = findFieldWriter(action.targetType as TargetType, action.fieldKey);
-  if (!writer) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
-  if (!writer.validate(value)) {
-    return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
-  }
+    // Rapprochement d'échéances incertain (T4) : « même échéance » /
+    // « échéances différentes », appliqué ici et seulement ici.
+    if (action.ruleCode === 'AGENDA-DUPLICATE') {
+      return resolveAgendaDuplicate(tx, action, value, accountId, options);
+    }
 
-  const previousValue = await writer.read(action.targetId, accountId);
+    const writer = findFieldWriter(action.targetType as TargetType, action.fieldKey);
+    if (!writer) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' as const };
+    if (!writer.validate(value)) {
+      return { ok: false, previousValue: null, error: 'INVALID_VALUE' as const };
+    }
 
-  await db.transaction(async () => {
-    await writer.write(action.targetId, accountId, value);
-    await db
+    const previousValue = await writer.read(tx, action.targetId, accountId);
+    const now = new Date();
+
+    // 1 + 2. Valeur appliquée et validée par l'utilisateur.
+    await writer.write(tx, action.targetId, accountId, value);
+
+    await options.onAfterFieldWrite?.();
+
+    // 3. Action résolue.
+    await tx
       .update(toProcessActions)
       .set({
-        resolvedAt: new Date(),
+        resolvedAt: now,
         resolutionReason: 'USER_ARBITRATED' satisfies ResolutionReason,
-        updatedAt: new Date(),
+        updatedAt: now,
       })
       .where(eq(toProcessActions.id, action.id));
-  });
 
-  return { ok: true, previousValue };
+    // 4. Trace technique de succès.
+    await tx.insert(toProcessActionEvents).values({
+      actionId: action.id,
+      accountId,
+      event: 'RESOLVED_ARBITRATION',
+      actorUserId: options.userId ?? null,
+      targetType: action.targetType,
+      targetId: action.targetId,
+      fieldKey: action.fieldKey,
+      previousValue: (previousValue ?? null) as never,
+      newValue: (value ?? null) as never,
+      details: { ruleCode: action.ruleCode, cycleNumber: action.cycleNumber },
+      createdAt: now,
+    });
+
+    return { ok: true, previousValue };
+  });
 }
 
 /**
@@ -265,14 +304,15 @@ export async function undoArbitration(
   const writer = findFieldWriter(action.targetType as TargetType, action.fieldKey);
   if (!writer) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
 
-  await db.transaction(async () => {
+  // (Annulation hors périmètre produit ; même client transactionnel par cohérence.)
+  await db.transaction(async (tx) => {
     // Une valeur précédente nulle n'est pas restaurable par l'écrivain, qui
     // écrit des valeurs valides : seule l'action est rouverte, et la donnée
     // reste telle quelle. Le problème redevient visible, ce qui est l'essentiel.
     if (previousValue !== null && previousValue !== undefined && writer.validate(previousValue)) {
-      await writer.write(action.targetId, accountId, previousValue);
+      await writer.write(tx, action.targetId, accountId, previousValue);
     }
-    await db
+    await tx
       .update(toProcessActions)
       .set({
         resolvedAt: null,
@@ -296,6 +336,7 @@ export async function undoArbitration(
 export async function markNotApplicable(
   accountId: number,
   publicId: string,
+  options: { userId?: number | null } = {},
 ): Promise<ResolveResult> {
   const [action] = await db
     .select()
@@ -311,14 +352,147 @@ export async function markNotApplicable(
     return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
   }
 
-  await db
-    .update(toProcessActions)
-    .set({
-      resolvedAt: new Date(),
-      resolutionReason: 'NOT_APPLICABLE' satisfies ResolutionReason,
-      updatedAt: new Date(),
-    })
-    .where(eq(toProcessActions.id, action.id));
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    await tx
+      .update(toProcessActions)
+      .set({
+        resolvedAt: now,
+        resolutionReason: 'NOT_APPLICABLE' satisfies ResolutionReason,
+        updatedAt: now,
+      })
+      .where(eq(toProcessActions.id, action.id));
+    // Décision conservée avec son contexte, pour l'audit et pour ne pas
+    // reproposer la même chose sans élément nouveau.
+    await tx.insert(toProcessActionEvents).values({
+      actionId: action.id,
+      accountId,
+      event: 'NOT_APPLICABLE',
+      actorUserId: options.userId ?? null,
+      targetType: action.targetType,
+      targetId: action.targetId,
+      fieldKey: action.fieldKey ?? action.relationKey,
+      details: { ruleCode: action.ruleCode, cycleNumber: action.cycleNumber, proposals: action.proposalsJson ?? null },
+      createdAt: now,
+    });
+  });
+
+  return { ok: true, previousValue: null };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ARBITRAGE D'UN RAPPROCHEMENT D'ÉCHÉANCES INCERTAIN (T4)
+//
+// Rien n'a été appliqué avant ce choix : l'événement existant est intact et
+// la nouvelle échéance n'existe que dans l'action.
+//
+//   · SAME — même échéance : consolidation selon la règle commune de
+//     l'agenda. Un événement automatique jamais modifié prend la valeur
+//     documentaire (titre, date, catégorie, source — la source précédente est
+//     conservée dans la trace) ; un événement saisi ou modifié par
+//     l'utilisateur garde SES valeurs (protection), la source est seulement
+//     confirmée dans la trace.
+//   · DIFFERENT — échéances différentes : l'existant reste tel quel, la
+//     nouvelle échéance est créée séparément, rattachée au bien.
+// Dans les deux cas l'action est close (USER_ARBITRATED) : le couple n'est
+// plus reproposé tant que rien ne change.
+// ══════════════════════════════════════════════════════════════════════════
+type LockedAction = typeof toProcessActions.$inferSelect;
+interface DuplicateContext {
+  candidate: { title: string; date: string; category: 'action' | 'information' | null; confidence: string; sourceFileId: number | null; originFieldKey: string | null; sourceLabel?: string };
+  existing: { id: number; title: string | null; date: string | null; origin: 'manual' | 'automatic' };
+  assetId: number;
+  similarity: number | null;
+  dayGap: number | null;
+  reason: string;
+}
+
+async function resolveAgendaDuplicate(
+  tx: DbClient & { select: typeof db.select },
+  action: LockedAction,
+  value: unknown,
+  accountId: number,
+  options: ResolveOptions,
+): Promise<ResolveResult> {
+  if (value !== 'SAME' && value !== 'DIFFERENT') return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
+  const ctx = action.triggerContext as DuplicateContext | null;
+  if (!ctx?.candidate) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
+
+  const [existing] = await tx
+    .select()
+    .from(agendaItems)
+    .where(and(eq(agendaItems.id, action.targetId), eq(agendaItems.accountId, accountId)))
+    .for('update')
+    .limit(1);
+  if (!existing) return { ok: false, previousValue: null, error: 'NOT_FOUND' };
+
+  const now = new Date();
+  const c = ctx.candidate;
+  let consolidation: Record<string, unknown>;
+
+  if (value === 'SAME') {
+    const automatiqueIntact = existing.isAutomatic && !existing.isAutomaticModified;
+    if (automatiqueIntact) {
+      await tx.update(agendaItems).set({
+        title: c.title,
+        startDate: c.date,
+        homeCategory: c.category ?? existing.homeCategory,
+        originRefType: c.sourceFileId ? 'asset_file' : existing.originRefType,
+        originRefId: c.sourceFileId ?? existing.originRefId,
+        updatedAt: now,
+      }).where(eq(agendaItems.id, existing.id));
+      consolidation = {
+        applied: true,
+        previous: { title: existing.title, date: existing.startDate, category: existing.homeCategory, originRefType: existing.originRefType, originRefId: existing.originRefId },
+        next: { title: c.title, date: c.date, sourceFileId: c.sourceFileId },
+      };
+    } else {
+      consolidation = { applied: false, reason: 'USER_VALUES_PROTECTED', confirmedSourceFileId: c.sourceFileId };
+    }
+  } else {
+    // L'échéance est créée séparément, rattachée au bien s'il est toujours au compte.
+    const [created] = await tx.insert(agendaItems).values({
+      accountId,
+      title: c.title,
+      startDate: c.date,
+      homeCategory: c.category ?? 'information',
+      isAutomatic: true,
+      isAutomaticModified: false,
+      requiresQualification: c.confidence !== 'certain',
+      originType: c.originFieldKey ? 'asset_field' : 'qualified_document',
+      originFieldKey: c.originFieldKey,
+      originRefType: c.sourceFileId ? 'asset_file' : null,
+      originRefId: c.sourceFileId,
+    }).returning({ id: agendaItems.id });
+    const [bien] = await tx.select({ id: assets.id }).from(assets)
+      .where(and(eq(assets.id, ctx.assetId), eq(assets.accountId, accountId))).limit(1);
+    if (bien) await tx.insert(agendaAssetLinks).values({ agendaItemId: created.id, assetId: bien.id }).onConflictDoNothing();
+    consolidation = { createdItemId: created.id };
+  }
+
+  await tx.update(toProcessActions).set({
+    resolvedAt: now,
+    resolutionReason: 'USER_ARBITRATED' satisfies ResolutionReason,
+    updatedAt: now,
+  }).where(eq(toProcessActions.id, action.id));
+
+  await tx.insert(toProcessActionEvents).values({
+    actionId: action.id,
+    accountId,
+    event: 'RESOLVED_ARBITRATION',
+    actorUserId: options.userId ?? null,
+    targetType: action.targetType,
+    targetId: action.targetId,
+    fieldKey: action.relationKey,
+    previousValue: null as never,
+    newValue: value as never,
+    details: {
+      ruleCode: action.ruleCode, cycleNumber: action.cycleNumber, choice: value,
+      matchKind: 'probable', similarity: ctx.similarity, dayGap: ctx.dayGap, reason: ctx.reason,
+      candidate: c, existing: ctx.existing, consolidation,
+    },
+    createdAt: now,
+  });
 
   return { ok: true, previousValue: null };
 }

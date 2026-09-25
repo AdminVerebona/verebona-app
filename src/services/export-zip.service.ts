@@ -17,6 +17,7 @@ import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import type { ExportManifest } from './export-manifest.service';
 import type { AssetSnapshot, DocumentRef } from './export-snapshot.service';
+import { occupancyUsageLabel } from '@/lib/assets/occupancy';
 
 async function downloadFromS3(s3Key: string, bucket?: string | null): Promise<Buffer | null> {
   try {
@@ -106,7 +107,7 @@ function buildRecapTxt(snapshot: AssetSnapshot): string {
     if (perf?.networks?.length) lines.push(`  Réseaux : ${perf.networks.join(', ')}`);
     if (occ?.occupancyUsage)  lines.push('');
     if (occ?.occupancyUsage)  lines.push('OCCUPATION');
-    if (occ?.occupancyUsage)  lines.push(`  Usage : ${occ.occupancyUsage}`);
+    if (occ?.occupancyUsage)  lines.push(`  Usage : ${occupancyUsageLabel(occ.occupancyUsage)}`);
     if (occ?.occupancyStatus) lines.push(`  Statut : ${occ.occupancyStatus}`);
     if (occ?.monthlyRent)     lines.push(`  Loyer mensuel : ${occ.monthlyRent} €`);
     if (occ?.charges)         lines.push(`  Charges : ${occ.charges} €`);

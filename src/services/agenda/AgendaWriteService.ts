@@ -266,6 +266,12 @@ export async function updateAgendaItem(
      input.startDate !== undefined || input.startTime !== undefined ||
      input.endDate !== undefined || input.endTime !== undefined);
 
+  // Occurrence PRÉVISIONNELLE dont l'utilisateur fixe la date : sa valeur est
+  // protégée (isAutomaticModified) et l'occurrence devient confirmée par
+  // l'utilisateur — la date estimée d'origine reste traçable.
+  const confirmeParUtilisateur = existing.occurrenceNature === 'FORECAST'
+    && input.startDate !== undefined && input.startDate !== null;
+
   await db.transaction(async tx => {
     await tx.update(agendaItems).set({
       title: input.title ?? existing.title,
@@ -280,11 +286,26 @@ export async function updateAgendaItem(
         existing,
         input.title ?? existing.title
       ),
+      ...(confirmeParUtilisateur ? {
+        occurrenceNature: 'CONFIRMED',
+        dateSource: 'USER',
+        forecastInitialDate: existing.forecastInitialDate ?? existing.startDate,
+        confirmedAt: new Date(),
+        confirmationMode: 'USER',
+      } : {}),
       updatedAt: new Date(),
     }).where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
 
     await updateAgendaLinks(tx, id, assetIds, fileIds, substructureIds, equipmentIds);
   });
+
+  if (isAutomaticModified || confirmeParUtilisateur) {
+    const { recordOccurrenceEvent } = await import('./agenda-persistence');
+    await recordOccurrenceEvent(id, accountId, confirmeParUtilisateur ? 'USER_CONFIRMED' : 'USER_MODIFIED', {
+      before: { title: existing.title, date: existing.startDate, nature: existing.occurrenceNature },
+      after: { title: input.title ?? existing.title, date: input.startDate ?? existing.startDate },
+    }, null);
+  }
 
   const full = await getAgendaItemById(id, accountId);
   if (!full) throw new Error('Item not found after update');
@@ -318,6 +339,11 @@ export async function updateManualStatus(
 
   const full = await getAgendaItemById(id, accountId);
   if (!full) throw new Error('Item not found');
+
+  // Réalisée / annulée : l'état change, la NATURE (prévisionnelle ou
+  // confirmée) est conservée.
+  const { recordOccurrenceEvent } = await import('./agenda-persistence');
+  await recordOccurrenceEvent(id, accountId, 'STATUS_CHANGED', { manualStatus, nature: full.occurrenceNature });
 
   // Sync purchase_date when marked réalisé
   if (manualStatus === 'realise') {
@@ -429,4 +455,33 @@ export async function deleteAgendaItem(id: number, accountId: number): Promise<v
     await tx.delete(agendaItems)
       .where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
   });
+}
+
+/**
+ * L'utilisateur confirme explicitement une occurrence prévisionnelle, telle
+ * quelle : elle devient CONFIRMED (mode USER), sa date est protégée.
+ */
+export async function confirmForecastOccurrence(
+  id: number,
+  accountId: number,
+  userId: number | null,
+): Promise<AgendaItemFull> {
+  const existing = await getAgendaItemById(id, accountId);
+  if (!existing) throw new Error('Item not found');
+  if (existing.occurrenceNature !== 'FORECAST') return existing;
+  const now = new Date();
+  await db.update(agendaItems).set({
+    occurrenceNature: 'CONFIRMED',
+    dateSource: 'USER',
+    forecastInitialDate: existing.forecastInitialDate ?? existing.startDate,
+    confirmedAt: now,
+    confirmationMode: 'USER',
+    isAutomaticModified: existing.isAutomatic ? true : existing.isAutomaticModified,
+    updatedAt: now,
+  }).where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
+  const { recordOccurrenceEvent } = await import('./agenda-persistence');
+  await recordOccurrenceEvent(id, accountId, 'USER_CONFIRMED', { date: existing.startDate }, userId);
+  const full = await getAgendaItemById(id, accountId);
+  if (!full) throw new Error('Item not found after update');
+  return full;
 }

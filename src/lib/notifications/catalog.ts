@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications';
+import { subscriptionNotificationText } from './subscription-messages';
 
 export type NotificationCategory =
   | 'deadlines'
@@ -110,12 +111,17 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: true }, retentionDays: 90,
     render: (p) => content(
-      p.count > 1 ? `${p.count} échéances dans 7 jours` : 'Échéance dans 7 jours',
-      'Une action est à prévoir dans Verebona.',
+      // Une occurrence prévisionnelle est annoncée comme telle.
+      p.count > 1
+        ? `${p.count} échéances dans 7 jours${p.forecastCount ? ` (dont ${p.forecastCount} prévisionnelle${p.forecastCount > 1 ? 's' : ''})` : ''}`
+        : p.forecastCount ? 'Échéance prévisionnelle dans 7 jours' : 'Échéance dans 7 jours',
+      p.forecastCount && p.count === p.forecastCount
+        ? 'Date estimée à partir de la récurrence : à confirmer dans Verebona.'
+        : 'Une action est à prévoir dans Verebona.',
       undefined, 'notif_deadline_j7',
     ),
     deepLink: (p) => `/agenda${p.date ? `?date=${p.date}` : ''}`,
-    payloadSchema: z.object({ count: z.number(), date: z.string(), agendaItemIds: z.array(z.number()).optional() }),
+    payloadSchema: z.object({ count: z.number(), date: z.string(), agendaItemIds: z.array(z.number()).optional(), forecastCount: z.number().optional() }),
   },
 
   // ── Documents ───────────────────────────────────────────────────────────────
@@ -370,7 +376,13 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   // ── Compte et abonnement — configurables ───────────────────────────────────
   [T.TRIAL_ENDING]: accountConfigurable(T.TRIAL_ENDING, 'Votre essai se termine bientôt', 'Votre période d\'essai se termine bientôt.', 'notif_trial_ending'),
   [T.TRIAL_ENDED]: accountConfigurable(T.TRIAL_ENDED, 'Votre essai est terminé', 'Votre période d\'essai est terminée.', 'notif_trial_ended'),
-  [T.SUBSCRIPTION_RENEWED]: accountConfigurable(T.SUBSCRIPTION_RENEWED, 'Abonnement renouvelé', 'Votre abonnement a été renouvelé.', 'notif_subscription'),
+  [T.SUBSCRIPTION_RENEWED]: {
+    ...accountConfigurable(T.SUBSCRIPTION_RENEWED, 'Abonnement renouvelé', 'Votre abonnement a été renouvelé.', 'notif_subscription'),
+    render: (p: { planCode?: string }) => {
+      const corps = subscriptionNotificationText('SUBSCRIPTION_RENEWED', p) ?? 'Votre abonnement a été renouvelé.';
+      return content('Abonnement renouvelé', corps, { body: corps }, 'notif_subscription');
+    },
+  },
   // ══════════════════════════════════════════════════════════════════════════
   // CHANGEMENT DE STATUT DU COMPTE : UN LIBELLÉ QUI DIT CE QUI A CHANGÉ
   //
@@ -382,44 +394,51 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   // l'activation (le compte n'avait aucune offre — sortie d'essai,
   // réabonnement) et le changement d'offre d'un compte déjà abonné.
   // ══════════════════════════════════════════════════════════════════════════
+  // Libellés : `subscription-messages.ts`, partagé avec la cloche.
+  // « Votre offre a été modifiée. Nouvelle offre : Premium (formule annuelle) »
   [T.SUBSCRIPTION_ACTIVATED]: {
-    ...accountConfigurable(T.SUBSCRIPTION_ACTIVATED, 'Compte activé', 'Votre compte a été activé.', 'notif_subscription'),
-    render: (p: { planLabel?: string; billingPeriod?: string | null }) => {
-      const corps =
-        `Votre compte a été activé avec une offre ${p.planLabel ?? 'Verebona'}.` +
-        (p.billingPeriod === 'monthly' ? ' Formule mensuelle.'
-          : p.billingPeriod === 'yearly' ? ' Formule annuelle.' : '');
-      return content('Compte activé', corps, { body: corps }, 'notif_subscription');
+    ...accountConfigurable(T.SUBSCRIPTION_ACTIVATED, 'Offre activée', 'Votre offre a été activée.', 'notif_subscription'),
+    render: (p: { planCode?: string; planLabel?: string; billingPeriod?: string | null; confirmationEmailSent?: boolean }) => {
+      const corps = subscriptionNotificationText('SUBSCRIPTION_ACTIVATED', p) ?? 'Votre offre a été activée.';
+      // Email « Votre abonnement Verebona » non envoyé quand l'email de
+      // confirmation d'abonnement part déjà (un seul email par souscription).
+      return content('Offre activée', corps, { body: corps }, p.confirmationEmailSent ? undefined : 'notif_subscription');
     },
     payloadSchema: z.object({
       planCode: z.string(),
       planLabel: z.string(),
       billingPeriod: z.enum(['monthly', 'yearly']).nullish(),
+      confirmationEmailSent: z.boolean().optional(),
     }).passthrough(),
   },
   [T.SUBSCRIPTION_CHANGED]: {
     ...accountConfigurable(T.SUBSCRIPTION_CHANGED, 'Offre modifiée', 'Votre offre a été modifiée.', 'notif_subscription'),
-    render: (p: { planLabel?: string; previousPlanLabel?: string; direction?: string }) => {
-      const cible = p.planLabel ?? 'Verebona';
-      if (p.direction === 'upgrade') {
-        const corps = `Votre compte a été upgradé vers une offre ${cible}.`;
-        return content('Offre mise à niveau', corps, { body: corps }, 'notif_subscription');
-      }
-      if (p.direction === 'downgrade') {
-        const corps = p.previousPlanLabel
-          ? `Votre offre est passée de ${p.previousPlanLabel} à ${cible}.`
-          : `Votre compte est passé à l'offre ${cible}.`;
-        return content('Offre modifiée', corps, { body: corps }, 'notif_subscription');
-      }
-      const corps = `Votre compte est passé à l'offre ${cible}.`;
-      return content('Offre modifiée', corps, { body: corps }, 'notif_subscription');
+    render: (p: { planCode?: string; planLabel?: string; billingPeriod?: string | null; confirmationEmailSent?: boolean }) => {
+      const corps = subscriptionNotificationText('SUBSCRIPTION_CHANGED', p) ?? 'Votre offre a été modifiée.';
+      // Email « Votre abonnement Verebona » non envoyé quand l'email de
+      // confirmation d'abonnement part déjà (un seul email par souscription).
+      return content('Offre modifiée', corps, { body: corps }, p.confirmationEmailSent ? undefined : 'notif_subscription');
     },
     payloadSchema: z.object({
       planCode: z.string(),
       planLabel: z.string(),
+      billingPeriod: z.enum(['monthly', 'yearly']).nullish(),
       previousPlanCode: z.string().optional(),
       previousPlanLabel: z.string().optional(),
       direction: z.enum(['upgrade', 'downgrade', 'lateral']),
+      confirmationEmailSent: z.boolean().optional(),
+    }).passthrough(),
+  },
+  [T.SUBSCRIPTION_CHANGE_SCHEDULED]: {
+    ...accountConfigurable(T.SUBSCRIPTION_CHANGE_SCHEDULED, 'Changement d’offre programmé', 'Changement d’offre programmé.', 'notif_subscription'),
+    render: (p: { planCode?: string; billingPeriod?: string | null; effectiveAt?: string }) => {
+      const corps = subscriptionNotificationText('SUBSCRIPTION_CHANGE_SCHEDULED', p) ?? 'Changement d’offre programmé.';
+      return content('Changement d’offre programmé', corps, { body: corps }, 'notif_subscription');
+    },
+    payloadSchema: z.object({
+      planCode: z.string(),
+      billingPeriod: z.enum(['monthly', 'yearly']).nullish(),
+      effectiveAt: z.string().nullish(),
     }).passthrough(),
   },
   [T.SUBSCRIPTION_CANCELLATION_SCHEDULED]: accountConfigurable(T.SUBSCRIPTION_CANCELLATION_SCHEDULED, 'Résiliation programmée', 'La résiliation de votre abonnement est programmée.', 'notif_subscription'),

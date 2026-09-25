@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, isTokenRevoked, hashToken } from '@/db';
+import { db, isTokenRevoked, hashToken, getUserSessionCutoff, isIssuedBefore } from '@/db';
+import { clearSessionCookies } from '@/lib/auth/session-tokens';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { verifyToken, generateAccessToken, generateRefreshToken } from '@/lib/jwt';
 import { ApiErrors } from '@/lib/api-errors';
 import { AccountService } from '@/services/account-service';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
-import { revokeToken } from '@/db';
+import { revokeTokenOnce } from '@/db';
 import { logUserActivity } from '@/lib/audit-logger';
 
 /**
@@ -58,6 +59,17 @@ export async function POST(request: NextRequest) {
       return ApiErrors.invalidToken('Refresh token has been revoked');
     }
 
+    // Révocation globale (changement ou réinitialisation du mot de passe) :
+    // un jeton émis avant ne peut plus ouvrir de nouvelle session. Ce n'est
+    // pas une réutilisation — pas d'incident de sécurité — mais une
+    // reconnexion est exigée, et les cookies périmés sont effacés.
+    const cutoff = await getUserSessionCutoff(payload.userId);
+    if (isIssuedBefore(payload, cutoff)) {
+      const refus = ApiErrors.invalidToken('Session revoked, please log in again');
+      clearSessionCookies(refus);
+      return refus;
+    }
+
     // TODO: Implémenter reuse detection (voir spec v2.2)
     // 1. Vérifier si token existe en DB et n'est pas révoqué
     // 2. Si revokedAt !== null AND rotationCount > 0 → REUSE DETECTED
@@ -91,6 +103,39 @@ export async function POST(request: NextRequest) {
 
       const isSubscribedOrTrialing = !!defaultAccount && ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'].includes(defaultAccount.subscriptionStatus);
 
+    // ══════════════════════════════════════════════════════════════════════
+    // CDC §5.5 — ROTATION : L'ANCIEN JETON EST INVALIDÉ D'ABORD
+    //
+    // La révocation était tentée APRÈS l'émission, et son échec seulement
+    // journalisé : la route annonçait un renouvellement réussi alors que
+    // l'ancien jeton restait valide. Elle est désormais bloquante et
+    // atomique :
+    //   - échec technique → 503, aucun nouveau cookie (le client réessaie
+    //     sans se déconnecter) ;
+    //   - jeton déjà consommé par une requête concurrente → réutilisation,
+    //     aucune seconde session.
+    // ══════════════════════════════════════════════════════════════════════
+    let consomme: boolean;
+    try {
+      consomme = await revokeTokenOnce(tokenHash, payload.userId, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    } catch (revokeError) {
+      console.error('[refresh] revocation de l\'ancien jeton impossible — renouvellement refusé:', revokeError);
+      return NextResponse.json(
+        { error: 'Service temporairement indisponible', code: 'SERVICE_UNAVAILABLE' },
+        { status: 503 },
+      );
+    }
+    if (!consomme) {
+      void logUserActivity({
+        activityType: 'AUTH_TOKEN_REUSE_DETECTED',
+        userId: payload.userId,
+        userEmail: user.email,
+        details: { severity: 'security_incident', concurrent: true },
+        request,
+      });
+      return ApiErrors.invalidToken('Refresh token has been revoked');
+    }
+
       // Generate new tokens
       const newAccessToken = await generateAccessToken({
         id: user.id,
@@ -112,13 +157,10 @@ export async function POST(request: NextRequest) {
         hasActiveAccount: isSubscribedOrTrialing,
       });
 
-    // CDC §5.5 — rotation : l'ancien jeton de renouvellement est invalide
-    // immediatement. Toute presentation ulterieure sera detectee ci-dessus
-    // comme une reutilisation.
-    try {
-      await revokeToken(tokenHash, payload.userId, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
-    } catch (revokeError) {
-      console.error('[refresh] revocation de l\'ancien jeton impossible:', revokeError);
+    // Le nouveau jeton est forcément distinct de l'ancien (jti aléatoire) ;
+    // garde-fou si ce n'était pas le cas, plutôt que déposer un jeton révoqué.
+    if (newRefreshToken === refreshToken) {
+      return ApiErrors.internalError('REFRESH_ROTATION_ERROR');
     }
 
     void logUserActivity({

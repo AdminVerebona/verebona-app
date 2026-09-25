@@ -469,7 +469,6 @@ class EmailService {
       expiresIn: '7 jours',
       // Premium confirmation
       nextBillingDate: '7 avril 2027',
-      manageSubscriptionUrl: 'https://verebona.app/mon-compte/offres',
       planType: 'Premium',
       expiryDate: '7 avril 2027',
       renewUrl: 'https://verebona.app/abonnement',

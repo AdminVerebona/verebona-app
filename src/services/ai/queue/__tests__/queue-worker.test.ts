@@ -15,6 +15,10 @@ vi.mock('../job-queue.repository', () => ({
   claimNext: (t: unknown) => claimNext(t),
   completeJob: (id: unknown) => completeJob(id),
   failJob: (id: unknown, err: unknown) => failJob(id, err),
+  renewLease: async () => true,
+  recoverAbandonedJobs: async () => [],
+  isExecutionActive: async () => true,
+  LEASE_SECONDS: 300,
 }));
 
 const { runOne, runOnce, registerJobHandler, clearJobHandlers, hasHandler } =
@@ -51,7 +55,8 @@ describe('exécution nominale', () => {
     registerJobHandler('T1', handler);
 
     expect(await runOne('T1')).toBe(true);
-    expect(handler).toHaveBeenCalledWith(job(1));
+    // Second argument : la garde d'exécution (annulation, contrôle avant écriture).
+    expect(handler).toHaveBeenCalledWith(job(1), expect.objectContaining({ jobId: 1, assertActive: expect.any(Function) }));
     expect(completeJob).toHaveBeenCalledWith(1);
     expect(failJob).not.toHaveBeenCalled();
   });

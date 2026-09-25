@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { db } from '@/db';
 import { assets, accounts as accountsTable, assetTransmissions } from '@/db/schema';
 import { eq, like, and, lt, desc, count, isNull, notInArray } from 'drizzle-orm';
@@ -281,7 +282,8 @@ export async function POST(request: NextRequest) {
           updatedAt: now,
         };
 
-    if (subtype) insertData.subtype = subtype;
+    // Anciens libellés (« Garage », « Local commercial »…) → catégories actuelles.
+    if (subtype) insertData.subtype = normalizeAssetCategory(subtype);
     if (purchaseDate) insertData.purchaseDate = purchaseDate;
     if (purchasePriceCents !== undefined && purchasePriceCents !== null) {
       insertData.purchasePriceCents = parseInt(purchasePriceCents);
@@ -460,7 +462,7 @@ export async function PUT(request: NextRequest) {
     };
 
     if (category !== undefined) updateData.category = category;
-    if (subtype !== undefined) updateData.subtype = subtype;
+    if (subtype !== undefined) updateData.subtype = subtype ? normalizeAssetCategory(subtype) : subtype;
     if (name !== undefined) updateData.name = name.trim();
     if (purchaseDate !== undefined) updateData.purchaseDate = purchaseDate;
     if (purchasePriceCents !== undefined) {

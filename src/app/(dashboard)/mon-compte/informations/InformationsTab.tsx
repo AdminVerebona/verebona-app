@@ -9,13 +9,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { User, CreditCard, Key, ExternalLink, Loader2, ShieldAlert, Users, Calendar, Copy, RefreshCw, ChevronDown, Lock, Trash2, AlertTriangle, Save, Crown } from 'lucide-react';
+import { User, Key, ExternalLink, Loader2, Calendar, Copy, RefreshCw, ChevronDown, Lock, Trash2, AlertTriangle, Save, Crown } from 'lucide-react';
 import { AiHistoryBlock } from '@/components/account/AiHistoryBlock';
 import { Switch } from '@/components/ui/switch';
-import { DuoInvitationPanel } from '@/components/subscription/DuoInvitationPanel';
 import { apiClient } from '@/lib/api-client';
-import { format } from 'date-fns';
-import { fr } from 'date-fns/locale';
 import {
   Dialog,
   DialogContent,
@@ -28,9 +25,6 @@ import {
 import { PasswordInput } from '@/components/ui/password-input';
 import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { getPlanTheme } from '@/lib/plan-theme';
-import { getPlanLabel } from '@/lib/plan-label';
-import { AiUsageQuotaWidget } from '@/components/account/AiUsageQuotaWidget';
-import { ReferralBlock } from '@/components/account/ReferralBlock';
 
 
 interface UserProfile {
@@ -79,9 +73,9 @@ function CalendarTutorial() {
             <p className="font-semibold text-[color:var(--text-secondary)]">🍎 Apple Agenda (iPhone / Mac)</p>
             <ol className="list-decimal list-inside space-y-0.5 pl-1">
               <li>Copiez le lien ci-dessus</li>
-              <li>Ouvrez <strong>Agenda</strong> → menu <strong>Fichier</strong> → <strong>Nouvel abonnement à un calendrier</strong></li>
-              <li>Collez le lien et cliquez sur <strong>S'abonner</strong></li>
-              <li>Choisissez une fréquence de mise à jour (recommandé : toutes les heures)</li>
+              <li>Ouvrez <strong>Calendriers</strong> → <strong>Nouveau calendrier</strong> → <strong>Ajouter un calendrier avec abonnement</strong></li>
+              <li>Collez le lien et cliquez sur <strong>Rechercher</strong></li>
+              <li>Choisissez le nom que vous voulez donner à votre calendrier</li>
             </ol>
           </div>
           <div className="space-y-1">
@@ -131,7 +125,6 @@ export default function InformationsTab() {
   });
 
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
-  const [isPortalLoading, setIsPortalLoading] = useState(false);
 
   const [calToken, setCalToken] = useState<string | null>(null);
   const [calActive, setCalActive] = useState(false);
@@ -145,6 +138,9 @@ export default function InformationsTab() {
     confirmPassword: '',
   });
   const [changingPassword, setChangingPassword] = useState(false);
+  // Toutes les sessions sont révoquées au changement de mot de passe ; celle
+  // de cet appareil n'est conservée que si l'utilisateur le demande.
+  const [keepCurrentSession, setKeepCurrentSession] = useState(false);
 
   useEffect(() => {
     if (!sessionLoading && sessionUser) {
@@ -256,39 +252,25 @@ export default function InformationsTab() {
         body: JSON.stringify({
           currentPassword: passwordForm.currentPassword,
           newPassword: passwordForm.newPassword,
+          keepCurrentSession,
         }),
       });
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.message || data.error);
 
-      toast.success("Mot de passe modifié avec succès");
+      if (data.reauthRequired) {
+        toast.success('Mot de passe modifié. Reconnectez-vous avec votre nouveau mot de passe.');
+        router.push('/login?raison=mot-de-passe-modifie');
+        return;
+      }
+      toast.success('Mot de passe modifié. Vos autres appareils ont été déconnectés.');
       setIsPasswordDialogOpen(false);
       setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
     } catch (error: any) {
       toast.error(error.message || "Erreur lors du changement de mot de passe");
     } finally {
       setChangingPassword(false);
-    }
-  };
-
-  const handleOpenPortal = async () => {
-    // Ouvrir immédiatement pour éviter le blocage popup du navigateur
-    const win = window.open('', '_blank');
-    setIsPortalLoading(true);
-    try {
-      const data = await apiClient.post<any>('/api/billing/create-customer-portal-session', {});
-      if (data.portal_url && win) {
-        win.location.href = data.portal_url;
-      } else {
-        win?.close();
-        toast.error(data.message || 'Impossible d\'accéder à la gestion de facturation.');
-      }
-    } catch (error: any) {
-      win?.close();
-      toast.error(error.message || 'Une erreur est survenue.');
-    } finally {
-      setIsPortalLoading(false);
     }
   };
 
@@ -348,7 +330,7 @@ export default function InformationsTab() {
       {/* ══ Grille 2 colonnes ══ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
 
-        {/* ── Colonne gauche : Profil + Abonnement ── */}
+        {/* ── Colonne gauche : Profil ── */}
         <div className="flex flex-col gap-4">
 
           {/* Profil */}
@@ -393,105 +375,10 @@ export default function InformationsTab() {
             </CardContent>
           </Card>
 
-          {/* Abonnement */}
-          <Card className="flex flex-col flex-1">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <CreditCard className="h-4 w-4 text-[#3b82f6]" />
-                <CardTitle className="text-base">Abonnement</CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 flex-1">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground">Plan actuel</p>
-                  {/* Le libellé passe par `getPlanLabel` : `getPlanTheme` ne
-                      connaît que le code de plan, et affichait donc « Standard »
-                      à un compte en essai gratuit — `users.plan_type` vaut
-                      STANDARD pendant l'essai. La couleur, elle, reste tirée du
-                      thème du plan. */}
-                  <p className={`text-base font-bold ${getPlanTheme(subscription?.plan_type as any).colors.text}`}>
-                    {getPlanLabel({
-                      plan: subscription?.plan_type,
-                      duoRole: sessionUser?.duoRole,
-                      trialStatus: sessionUser?.subscription?.trialStatus,
-                      trialDaysLeft: sessionUser?.subscription?.trialDaysLeft,
-                    })}
-                  </p>
-                </div>
-                {subscription?.premium_until && (
-                  <div className="text-right">
-                    <p className="text-xs text-muted-foreground">Prochain renouvellement</p>
-                    <p className="text-sm font-medium">{format(new Date(Number(subscription.premium_until) * 1000), 'PPP', { locale: fr })}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Compteurs biens + documents analysés — CDC V2 */}
-              <AiUsageQuotaWidget isDuoMember={sessionUser?.duoRole === 'MEMBER'} />
-
-              {sessionUser?.duoRole === 'MEMBER' ? (
-                <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-500/30 rounded-lg px-3 py-2.5 text-sm text-[color:var(--text-warning-soft)]">
-                  <ShieldAlert className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
-                  <p>Seul le titulaire de l'abonnement peut modifier l'offre et gérer le paiement.</p>
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  <Button onClick={() => router.push('/mon-compte/offres')} className="gap-2 rounded-full h-auto py-2">
-                    <Crown className="w-4 h-4" />
-                    <span>Changer d'offre</span>
-                  </Button>
-                  {(subscription?.plan_type !== 'STANDARD' || subscription?.has_stripe_subscription) && (
-                    <Button variant="outline" onClick={handleOpenPortal} disabled={isPortalLoading} className="gap-2 rounded-full h-auto py-2 text-left items-start">
-                      {isPortalLoading ? <Loader2 className="w-4 h-4 animate-spin mt-0.5 shrink-0" /> : <CreditCard className="w-4 h-4 mt-0.5 shrink-0" />}
-                      <span className="flex flex-col">
-                        <span>Gérer mon abonnement avec Stripe</span>
-                        <span className="text-[10px] text-muted-foreground font-normal">Factures, moyens de paiement…</span>
-                      </span>
-                    </Button>
-                  )}
-                </div>
-              )}
-
-              {(() => {
-                const isDuoBillingOwner = subscription?.plan_type === 'PREMIUM_DUO' && sessionUser?.duoRole === 'BILLING_OWNER';
-                const showLockedCta = !isDuoBillingOwner && sessionUser?.duoRole !== 'MEMBER' && subscription?.plan_type !== 'PREMIUM_DUO';
-                if (isDuoBillingOwner) return (
-                  <div className="pt-3 border-t border-border">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Users className="w-4 h-4 text-emerald-400" />
-                      <span className="text-sm font-medium">2e utilisateur Duo</span>
-                    </div>
-                    <DuoInvitationPanel />
-                  </div>
-                );
-                if (showLockedCta) return (
-                  <div className="pt-3 border-t border-border">
-                    <div className="flex flex-col sm:flex-row sm:items-start gap-3 rounded-lg border border-dashed border-emerald-500/30 bg-emerald-500/5 px-3 py-3">
-                      <div className="flex items-start gap-3 flex-1 min-w-0">
-                        <Lock className="w-4 h-4 text-emerald-400/60 mt-0.5 flex-shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium">2e utilisateur — Offre Duo</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">Partagez votre espace avec une 2e personne.</p>
-                        </div>
-                      </div>
-                      <Button size="sm" variant="outline" className="w-full sm:w-auto sm:shrink-0 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 gap-1 rounded-full" onClick={() => router.push('/mon-compte/offres')}>
-                        <Users className="w-3.5 h-3.5" />Passer au Duo
-                      </Button>
-                    </div>
-                  </div>
-                );
-                return null;
-              })()}
-
-              {/* Parrainage — dans le bloc abonnement */}
-              {sessionUser?.duoRole !== 'MEMBER' && (
-                <div className="pt-3 border-t border-border">
-                  <ReferralBlock />
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Le bloc « Abonnement » faisait doublon avec « Mon abonnement »
+              (SubscriptionSummary, en tête de page) : il est supprimé. Son
+              bouton « Changer d'offre », le bloc Duo et le parrainage y
+              ont été déplacés. */}
 
         </div>{/* end left col */}
 
@@ -603,6 +490,20 @@ export default function InformationsTab() {
                       <div className="space-y-2">
                         <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
                         <PasswordInput id="confirmPassword" value={passwordForm.confirmPassword} onChange={e => setPasswordForm({...passwordForm, confirmPassword: e.target.value})} required />
+                      </div>
+                      <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] px-3 py-2.5">
+                        <p className="text-xs text-muted-foreground">
+                          Tous les appareils et navigateurs connectés à votre compte seront déconnectés.
+                        </p>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={keepCurrentSession}
+                            onChange={(e) => setKeepCurrentSession(e.target.checked)}
+                            className="h-4 w-4"
+                          />
+                          Rester connecté sur cet appareil
+                        </label>
                       </div>
                     </div>
                     <DialogFooter>

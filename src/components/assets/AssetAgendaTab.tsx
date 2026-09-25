@@ -158,7 +158,7 @@ export function AssetAgendaTab({ assetId }: Props) {
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-muted-foreground">{formatShortDate(item.startDate)}</span>
+                  <span className="text-xs text-muted-foreground">{item.occurrenceNature === 'FORECAST' ? `prévu le ${formatShortDate(item.startDate)}` : formatShortDate(item.startDate)}</span>
                   {item.attentionFlags.map(f => (
                     <span key={f} className="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs bg-orange-100 text-orange-800">
                       <AlertCircle className="h-2.5 w-2.5 mr-0.5" />

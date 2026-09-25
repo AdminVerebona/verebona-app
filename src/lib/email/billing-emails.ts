@@ -4,14 +4,22 @@ import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 
 /**
- * Envoie un email de confirmation d'abonnement Premium
+ * Envoie l'email de confirmation d'abonnement (gabarit PREMIUM_CONFIRMATION,
+ * objet « Confirmation de votre abonnement Verebona Premium »).
+ *
+ * ⚠️ Le gabarit affiche `{{nextBillingDate}}` ; la date était transmise sous
+ * le nom `premiumUntil`, que le gabarit ne connaît pas : « Prochaine
+ * échéance » partait vide. Les deux noms sont désormais transmis.
+ *
+ * C'est l'UNIQUE email de confirmation : la notification « Offre activée /
+ * modifiée » qui l'accompagne n'envoie plus son propre email (« Votre
+ * abonnement Verebona »), cf. `subscription-sync.service`.
  */
 export async function sendPremiumConfirmationEmail(
   userId: number,
-  premiumUntil: Date
+  nextBillingDate: Date
 ): Promise<void> {
   try {
-    // Récupérer l'utilisateur
     const [user] = await db
       .select()
       .from(users)
@@ -22,38 +30,15 @@ export async function sendPremiumConfirmationEmail(
       throw new Error('User not found or has no email');
     }
 
-    // Date lisible en français
-    const formattedDate = premiumUntil.toLocaleDateString('fr-FR', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-
-    const subject = 'Confirmation de votre abonnement Verebona Premium';
-    
-    const body = `Bonjour ${user.firstName},
-
-Nous vous confirmons que votre abonnement Verebona Premium est maintenant actif.
-
-📋 Détails de votre abonnement :
-• Offre : Verebona Premium
-• Montant : 59 € / an, TTC, TVA incluse
-• Périodicité : Abonnement annuel à reconduction tacite
-• Prochaine échéance : ${formattedDate}
-
-Vous pouvez gérer ou résilier votre abonnement à tout moment depuis votre compte, via le portail de gestion Stripe ("Gérer mon abonnement").
-
-À défaut de renouvellement, vous repasserez automatiquement à l'offre Standard gratuite.
-
-Merci de votre confiance !
-
-L'équipe Verebona`;
+    const formattedDate = formatBillingDate(nextBillingDate);
 
     await emailService.send({
       templateCode: 'PREMIUM_CONFIRMATION',
       to: user.email,
       variables: {
-        firstName: user.firstName,
+        firstName: user.firstName ?? '',
+        nextBillingDate: formattedDate,
+        // Ancien nom, conservé pour un gabarit personnalisé qui l'utiliserait.
         premiumUntil: formattedDate,
       },
       userId: user.id,
@@ -63,6 +48,16 @@ L'équipe Verebona`;
     console.error('Error sending premium confirmation email:', error);
     throw error;
   }
+}
+
+/** « 7 avril 2027 », fuseau de Paris (une échéance à 00:30 UTC reste le bon jour). */
+export function formatBillingDate(date: Date): string {
+  return date.toLocaleDateString('fr-FR', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'Europe/Paris',
+  });
 }
 
 /**

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { hasProjectableKnowledge, projectDocumentKnowledgeToAsset } from '@/services/ai/knowledge/document-knowledge.service';
 import { db } from '@/db';
 import { assetFiles, assets } from '@/db/schema';
 import { eq, and, inArray, isNull } from 'drizzle-orm';
@@ -87,13 +88,28 @@ export async function POST(request: NextRequest) {
         .filter(f => f.analysisState != null && f.analysisState !== 'UPLOADING' && f.analysisState !== 'UPLOADED')
         .map(f => f.id);
       for (const fileId of analysedIds) {
-        analyzeFileSources([fileId], accountId, {
+        // Données T1 déjà persistées : projection sur le nouveau bien, sans
+        // relire le fichier. Sinon, réanalyse comme auparavant.
+        const cible = updated.find(f => f.id === fileId);
+        const nouveauBien = cible?.assetId ?? cible?.linkedAssetId ?? null;
+        const connu = nouveauBien ? await hasProjectableKnowledge(fileId).catch(() => false) : false;
+        const reanalyser = () => analyzeFileSources([fileId], accountId, {
           userId,
           billable: false,
           origin: 'documents/bulk-move',
         }).catch(err => {
           console.error(`[bulk-move] re-analyse après déplacement échouée (file ${fileId}):`, err);
         });
+        if (connu && nouveauBien) {
+          void projectDocumentKnowledgeToAsset({ accountId, userId, fileId, assetId: nouveauBien })
+            .then((preuves) => { if (preuves === 0) void reanalyser(); })
+            .catch(err => {
+              console.error(`[bulk-move] projection T1 échouée (file ${fileId}):`, err);
+              void reanalyser();
+            });
+          continue;
+        }
+        void reanalyser();
       }
     }
 

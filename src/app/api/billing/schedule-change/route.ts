@@ -41,11 +41,34 @@ export async function POST(request: NextRequest) {
         NO_ACTIVE_PLAN: 'Un abonnement actif est necessaire pour programmer un changement.',
         INVALID_TARGET: "L'offre ou la periodicite demandee est invalide.",
         SAME_AS_CURRENT: 'Cette offre et cette periodicite sont deja actives.',
+        UPGRADE_IS_IMMEDIATE: 'Une montee en gamme prend effet immediatement : utilisez « Passer à » depuis les offres.',
+        STRIPE_SCHEDULE_FAILED: "Le changement n'a pas pu être programmé auprès de notre prestataire de paiement. Réessayez dans quelques instants.",
       };
       return NextResponse.json(
         { error: result.reason, message: messages[result.reason] },
-        { status: 400 },
+        { status: result.reason === 'STRIPE_SCHEDULE_FAILED' ? 502 : 400 },
       );
+    }
+
+    // Notification « Changement d'offre programmé. Nouvelle offre : … »
+    // Une notification ne doit jamais faire échouer la programmation.
+    try {
+      const { emit } = await import('@/lib/notifications');
+      const effectiveAt = result.effectiveAt?.toISOString() ?? null;
+      await emit({
+        type: 'SUBSCRIPTION_CHANGE_SCHEDULED',
+        payload: {
+          planCode: String(body.plan_code ?? '').toUpperCase(),
+          billingPeriod: body.billing_period === 'yearly' || body.billing_period === 'monthly' ? body.billing_period : null,
+          effectiveAt,
+        },
+        accountId,
+        entityType: 'subscription',
+        entityId: String(accountId),
+        dedupeKey: `subscription:${accountId}:scheduled:${body.plan_code}:${body.billing_period}:${effectiveAt ?? 'next'}`,
+      });
+    } catch (e) {
+      console.error('[schedule-change] notification non émise :', (e as Error).message);
     }
 
     return NextResponse.json({

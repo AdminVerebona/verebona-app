@@ -68,14 +68,21 @@ export async function POST(
     mode === 'undo'
       ? await undoArbitration(accountId, publicId, body.previousValue)
       : mode === 'not_applicable'
-        ? await markNotApplicable(accountId, publicId)
-        : await resolveArbitration(accountId, publicId, body.value);
+        ? await markNotApplicable(accountId, publicId, { userId: session.userId })
+        : await resolveArbitration(accountId, publicId, body.value, { userId: session.userId });
 
   if (!result.ok) {
     return NextResponse.json(
       { error: result.error },
       { status: STATUS[result.error ?? ''] ?? 400 },
     );
+  }
+
+  // Un arbitrage utilisateur peut rendre caduques d'autres décisions du
+  // compte : contrôle T3 différé (fusionné avec les événements rapprochés).
+  if (mode !== 'not_applicable') {
+    const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
+    notifyCoherenceEvent(accountId, { event: 'arbitration' });
   }
 
   return NextResponse.json({ ok: true, previousValue: result.previousValue });

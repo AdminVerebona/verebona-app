@@ -18,9 +18,9 @@
  * ses donnees (engagement produit + portabilite RGPD).
  */
 import { db } from '@/db';
-import { accountSubscriptions } from '@/db/schema';
+import { accountSubscriptions, accounts, users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { TRIAL_LIMITS } from './trial.service';
+import { TRIAL_LIMITS, hasUsedTrial } from './trial.service';
 
 export type EntitlementPlan = 'trial' | 'standard' | 'premium' | 'premium_duo' | 'none';
 
@@ -172,27 +172,79 @@ export async function getEntitlements(
   };
 }
 
-/** Decision commune aux comptes restreints. */
-function restrictedDecision(status: string): Decision {
+/**
+ * Le compte n'a aucun abonnement parce que l'adresse de son titulaire a déjà
+ * consommé l'essai (compte recréé, §3.4) ?
+ *
+ * Pour l'utilisateur, c'est une fin d'essai : il doit choisir son offre.
+ * Le présenter comme « abonnement nécessaire » (vocabulaire d'une offre
+ * résiliée) le mène vers « Passer à Premium » au lieu du choix d'une offre.
+ */
+export async function isTrialAlreadyUsedForAccount(accountId: number): Promise<boolean> {
+  const [owner] = await db
+    .select({ email: users.email })
+    .from(accounts)
+    .innerJoin(users, eq(users.id, accounts.ownerUserId))
+    .where(eq(accounts.id, accountId))
+    .limit(1);
+  if (!owner?.email) return false;
+  return hasUsedTrial(owner.email).catch(() => false);
+}
+
+export const TRIAL_ALREADY_USED_MESSAGE =
+  "L'essai gratuit a déjà été utilisé avec cette adresse. Vos données sont conservées : " +
+  "choisissez votre offre pour ajouter et modifier vos biens et documents.";
+
+export const WITHDRAWN_MESSAGE =
+  "Vous avez exercé votre droit de rétractation : vos biens et documents restent consultables et exportables, " +
+  "mais ne peuvent plus être modifiés.";
+
+async function isWithdrawnAccount(accountId: number): Promise<boolean> {
+  const [row] = await db
+    .select({ s: accounts.subscriptionStatus })
+    .from(accounts)
+    .where(eq(accounts.id, accountId))
+    .limit(1);
+  return row?.s === 'WITHDRAWN';
+}
+
+const TRIAL_EXPIRED_TEXT =
+  "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.";
+
+/**
+ * Motif de refus d'un compte restreint, commun à toutes les gardes.
+ *   - essai échu (`readonly`)                    → TRIAL_EXPIRED ;
+ *   - aucun abonnement, essai déjà consommé      → TRIAL_EXPIRED (compte recréé) ;
+ *   - sinon (résilié, attribution échouée…)      → SUBSCRIPTION_REQUIRED.
+ */
+export async function restrictedRefusal(
+  accountId: number,
+  status: string,
+): Promise<{ code: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED'; message: string }> {
   if (status === 'readonly') {
-    return {
-      allowed: false,
-      reason: 'TRIAL_EXPIRED',
-      message:
-        "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
-    };
+    // `readonly` sert aussi à la récupération après rétractation : ce n'est
+    // pas une fin d'essai, et le dire enverrait vers le mauvais écran.
+    if (await isWithdrawnAccount(accountId)) {
+      return { code: 'SUBSCRIPTION_REQUIRED', message: WITHDRAWN_MESSAGE };
+    }
+    return { code: 'TRIAL_EXPIRED', message: TRIAL_EXPIRED_TEXT };
   }
-  return {
-    allowed: false,
-    reason: 'SUBSCRIPTION_REQUIRED',
-    message: 'Un abonnement actif est nécessaire pour effectuer cette action.',
-  };
+  if (status === 'none' && (await isTrialAlreadyUsedForAccount(accountId))) {
+    return { code: 'TRIAL_EXPIRED', message: TRIAL_ALREADY_USED_MESSAGE };
+  }
+  return { code: 'SUBSCRIPTION_REQUIRED', message: 'Un abonnement actif est nécessaire pour effectuer cette action.' };
+}
+
+/** Decision commune aux comptes restreints. */
+async function restrictedDecision(accountId: number, status: string): Promise<Decision> {
+  const r = await restrictedRefusal(accountId, status);
+  return { allowed: false, reason: r.code, message: r.message };
 }
 
 /** Peut-on creer un bien supplementaire ? */
 export async function canCreateAsset(accountId: number, currentCount: number): Promise<Decision> {
   const ent = await getEntitlements(accountId);
-  if (!ent.canWrite) return restrictedDecision(ent.status);
+  if (!ent.canWrite) return restrictedDecision(accountId, ent.status);
 
   if (currentCount >= ent.quotas.maxAssets) {
     return {
@@ -226,7 +278,7 @@ export async function canCreateAsset(accountId: number, currentCount: number): P
  */
 export async function canModifyAssets(accountId: number, currentCount: number): Promise<Decision> {
   const ent = await getEntitlements(accountId);
-  if (!ent.canWrite) return restrictedDecision(ent.status);
+  if (!ent.canWrite) return restrictedDecision(accountId, ent.status);
 
   if (currentCount > ent.quotas.maxAssets) {
     return {
@@ -245,7 +297,7 @@ export async function canModifyAssets(accountId: number, currentCount: number): 
 /** Peut-on ajouter un document supplementaire ? */
 export async function canAddDocument(accountId: number, currentCount: number): Promise<Decision> {
   const ent = await getEntitlements(accountId);
-  if (!ent.canWrite) return restrictedDecision(ent.status);
+  if (!ent.canWrite) return restrictedDecision(accountId, ent.status);
 
   if (currentCount >= ent.quotas.maxDocuments) {
     return {
@@ -261,7 +313,7 @@ export async function canAddDocument(accountId: number, currentCount: number): P
 /** Peut-on inviter un utilisateur supplementaire ? (Duo uniquement) */
 export async function canInviteUser(accountId: number, currentCount: number): Promise<Decision> {
   const ent = await getEntitlements(accountId);
-  if (!ent.canWrite) return restrictedDecision(ent.status);
+  if (!ent.canWrite) return restrictedDecision(accountId, ent.status);
 
   if (currentCount >= ent.quotas.maxUsers) {
     return {
@@ -280,13 +332,13 @@ export async function canInviteUser(accountId: number, currentCount: number): Pr
 /** Peut-on utiliser une fonctionnalite Premium ? */
 export async function canUsePremiumFeature(accountId: number): Promise<Decision> {
   const ent = await getEntitlements(accountId);
-  if (!ent.canWrite) return restrictedDecision(ent.status);
+  if (!ent.canWrite) return restrictedDecision(accountId, ent.status);
 
   if (!ent.premiumFeatures) {
     return {
       allowed: false,
       reason: 'PREMIUM_REQUIRED',
-      message: 'Cette fonctionnalite est disponible avec Premium et Premium Duo.',
+      message: 'Cette fonctionnalité est disponible avec Premium et Premium Duo.',
     };
   }
   return { allowed: true };

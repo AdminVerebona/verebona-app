@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import type { EvidenceValue } from '../../evidence/evidence.types';
 import { emptyTrace, mergeTrace } from '../trace';
+import { normalizeTablesWithMap, cellAt } from '../../knowledge/document-tables';
 
 export interface ExtractSourceResult {
   document: SourceAnalysisResult['document'];
@@ -70,6 +71,17 @@ export async function extractSource(
 
   const out = res.data;
 
+  // Tableaux : grille explicite (lignes, colonnes, cellules vides, fusions).
+  const { tables, locate } = normalizeTablesWithMap(out.tables);
+  const uncertainTables = tables.filter((t) => t.uncertain);
+  if (uncertainTables.length > 0) {
+    warnings.push({
+      code: 'TABLE_STRUCTURE_UNCERTAIN',
+      message: `Structure incertaine : ${uncertainTables.map((t) => `« ${t.title ?? `tableau ${t.index + 1}`} » (${t.issues.slice(0, 2).join(' ; ') || 'signalée par l’analyse'})`).join(', ')}.`,
+    });
+  }
+
+
   if (!out.hasExploitableContent) {
     warnings.push({
       code: 'NO_EXPLOITABLE_CONTENT',
@@ -91,18 +103,52 @@ export async function extractSource(
         }
       : undefined,
     transcription: out.transcription,
+    tables: tables.length > 0 ? tables : undefined,
+    visual: out.visual && (out.visual.summary?.trim() || out.visual.observations.length > 0)
+      ? { summary: out.visual.summary?.trim() || undefined, observations: out.visual.observations }
+      : undefined,
   };
 
-  const extractedFields: ExtractedField[] = out.fields
+  const { kept, rejected } = splitByEvidence(out.fields
     // Une valeur nulle n'est pas une information : elle n'a pas à voyager.
-    .filter((f) => f.value !== null && f.value !== '')
+    .filter((f) => f.value !== null && f.value !== ''));
+  if (rejected.length > 0) {
+    warnings.push({
+      code: 'FIELD_WITHOUT_EVIDENCE',
+      message: `${rejected.length} information(s) écartée(s) faute de preuve adaptée (${rejected.slice(0, 5).join(', ')}).`,
+    });
+  }
+
+  /** Une référence de cellule invalide est ignorée plutôt que d'associer au hasard. */
+  const tableRef = (r?: { index: number; row: number; column: number }) => {
+    if (!r) return undefined;
+    const at = locate(r.index, r.row);
+    if (!at || !cellAt(tables[at.index], at.row, r.column)) return undefined;
+    return { index: at.index, row: at.row, column: r.column };
+  };
+
+  const extractedFields: ExtractedField[] = kept
     .map((f) => ({
       fieldKey: f.fieldKey,
       value: f.value,
       confidence: f.confidence,
-      excerpt: f.excerpt,
-      page: f.page,
+      provenance: f.provenance,
+      // Un extrait n'accompagne QUE ce qui a été lu (voir `splitByEvidence`).
+      excerpt: f.provenance === 'TEXT_EXTRACTION' ? f.excerpt : undefined,
+      visualEvidence: f.provenance === 'VISUAL_ANALYSIS' ? f.visualEvidence : undefined,
+      page: f.page ?? (f.provenance === 'VISUAL_ANALYSIS' ? f.visualEvidence?.page : undefined),
       selector: f.selector,
+      subject: f.subject,
+      attribute: f.attribute,
+      label: f.label,
+      unit: f.unit,
+      periodStart: f.periodStart,
+      periodEnd: f.periodEnd,
+      section: f.section ?? (f.table ? tables[locate(f.table.index, f.table.row)?.index ?? -1]?.title ?? undefined : undefined),
+      // Récurrence explicite de la source, calculée ensuite par T4.
+      recurrence: f.recurrence,
+      // Cellule d'origine, ramenée à la grille normalisée (fusion multi-pages).
+      table: tableRef(f.table),
     }));
 
   const lowConfidenceRatio = ratioOfLowConfidence(extractedFields);
@@ -119,6 +165,31 @@ export async function extractSource(
     warnings,
     trace: mergeTrace(emptyTrace(), res, 'extract_source'),
   };
+}
+
+type RawField = ExtractSourceOutput['fields'][number];
+
+/**
+ * Chaque information garde la preuve de SA provenance, ou n'est pas gardée :
+ *   · lue (TEXT_EXTRACTION) sans extrait littéral → écartée ;
+ *   · observée (VISUAL_ANALYSIS) sans preuve visuelle → écartée ;
+ *   · observée AVEC un extrait → l'extrait est retiré (il serait inventé :
+ *     le modèle n'a rien lu), l'observation est conservée.
+ */
+export function splitByEvidence(fields: RawField[]): { kept: RawField[]; rejected: string[] } {
+  const kept: RawField[] = [];
+  const rejected: string[] = [];
+  for (const f of fields) {
+    if (f.provenance === 'VISUAL_ANALYSIS') {
+      if (!f.visualEvidence?.description?.trim()) { rejected.push(f.fieldKey); continue; }
+      kept.push({ ...f, excerpt: undefined });
+    } else if (!f.excerpt?.trim()) {
+      rejected.push(f.fieldKey);
+    } else {
+      kept.push({ ...f, visualEvidence: undefined });
+    }
+  }
+  return { kept, rejected };
 }
 
 function toEvidence<T>(

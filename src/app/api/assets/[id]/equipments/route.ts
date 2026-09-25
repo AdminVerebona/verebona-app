@@ -4,6 +4,7 @@ import { equipments, assets, substructures } from '@/db/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { runEquipmentAutoLink } from '@/services/equipment/equipment-auto-link.service';
 import { isValidEquipmentStatus, assetSupportsStructuralFeatures } from '@/types/domain';
 
@@ -98,6 +99,17 @@ export async function POST(
     const supportsFeatures = assetSupportsStructuralFeatures(assetData);
     if (!supportsFeatures) {
       return apiError(400, 'FORBIDDEN', 'Ce type de bien ne supporte pas la gestion des équipements');
+    }
+
+    // Gestion des équipements : Premium et Premium Duo (essai compris). Le client
+    // ouvre la fenêtre d'offre avant la saisie ; ce contrôle en est la
+    // garantie, et son refus est lu par `parseWriteBlocked`.
+    const premium = await canUsePremiumFeature(session.currentAccountId);
+    if (!premium.allowed) {
+      return NextResponse.json(
+        { error: premium.reason, code: premium.reason, message: premium.message },
+        { status: 403 },
+      );
     }
 
     const body = await request.json();

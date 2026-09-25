@@ -96,6 +96,11 @@ export interface HomeItem {
   /** Clé du champ concerné (pour coherence_alert) */
   fieldKey?: string;
   date?: string | null;
+  /**
+   * Occurrence PRÉVISIONNELLE (date estimée d'une récurrence) : affichée
+   * « prévu le … », jamais comme une date confirmée.
+   */
+  forecast?: boolean;
   badge: string;
   displayStatus: DisplayStatusHome;
   primaryAction?: string;
@@ -252,12 +257,15 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       requiresQualification: agendaItems.requiresQualification,
       originType: agendaItems.originType,
       homeCategory: agendaItems.homeCategory,
+      occurrenceNature: agendaItems.occurrenceNature,
     })
       .from(agendaItems)
       .where(and(
         eq(agendaItems.accountId, accountId),
         or(isNull(agendaItems.manualStatus), sql`trim(${agendaItems.manualStatus}) = ''`),
-        eq(agendaItems.isAutomatic, false),
+        // Les occurrences prévisionnelles d'une récurrence démontrée sont
+        // automatiques mais utiles : elles s'affichent, marquées « prévu ».
+        or(eq(agendaItems.isAutomatic, false), eq(agendaItems.occurrenceNature, 'FORECAST')),
         // Horizon : 1 an en arrière, 2 ans en avant — pas besoin de scanner l'infini
         gte(agendaItems.startDate, dateMinus(365)),
         lte(agendaItems.startDate, dateIn(730)),
@@ -524,6 +532,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       objectId: item.id,
       homeIntent: isToday ? 'action_required' : 'action_upcoming',
       date: item.startDate,
+      forecast: item.occurrenceNature === 'FORECAST',
       title: item.title,
       context,
       badge: isToday ? 'Action attendue' : 'À prévoir',
@@ -779,10 +788,13 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   } else if (totalUpcoming > 0) {
     situationStatus = 'all_clear';
     if (nextUpcoming?.date) {
-      situationMessage = `Bravo, tout est à jour. Votre prochaine date importante est le ${formatDateFR(nextUpcoming.date)}.`;
+      // Une date prévisionnelle est annoncée comme telle, jamais comme certaine.
+      const quand = nextUpcoming.forecast ? 'est prévue autour du' : 'est le';
+      situationMessage = `Bravo, tout est à jour. Votre prochaine date importante ${quand} ${formatDateFR(nextUpcoming.date)}.`;
       const titlePart = nextUpcoming.title ? ` pour **${nextUpcoming.title}**` : '';
       const ctxPart = nextUpcoming.context ? ` — ${nextUpcoming.context}` : '';
-      situationRichMessage = `**Bravo**, tout est à jour. Votre prochaine date importante est le **${formatDateFR(nextUpcoming.date)}**${titlePart}${ctxPart}.`;
+      const estim = nextUpcoming.forecast ? ' (date estimée à partir de la récurrence)' : '';
+      situationRichMessage = `**Bravo**, tout est à jour. Votre prochaine date importante ${quand} **${formatDateFR(nextUpcoming.date)}**${titlePart}${ctxPart}${estim}.`;
     } else {
       situationMessage = 'Bravo, tout est à jour. Vous avez des éléments à venir.';
       situationRichMessage = situationMessage;

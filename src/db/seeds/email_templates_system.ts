@@ -231,25 +231,10 @@ export async function seedSystemEmailTemplates() {
                 <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#EFF6FF; border-left:4px solid #3B82F6; border-radius:4px; margin:24px 0;">
                   <tr>
                     <td style="padding:16px; font-size:14px; color:#1E3A8A;">
-                      Vous pouvez gérer ou résilier votre abonnement à tout moment depuis votre compte, 
-                      via le portail Stripe sécurisé accessible depuis la page "Mon abonnement".
+                      Vous pouvez gérer ou résilier votre abonnement à tout moment depuis votre compte.
                     </td>
                   </tr>
                 </table>
-
-                <p style="margin:24px 0 16px 0;">
-                  À défaut de renouvellement, votre compte sera automatiquement basculé vers l'offre Standard.
-                </p>
-
-                <!-- CTA BUTTON -->
-                <p style="text-align:center; margin:32px 0;">
-                  <a 
-                    href="{{manageSubscriptionUrl}}"
-                    style="background-color:#3B82F6; padding:12px 24px; border-radius:6px; color:#FFFFFF; font-size:16px; font-weight:600; text-decoration:none; display:inline-block;"
-                  >
-                    Gérer mon abonnement
-                  </a>
-                </p>
 
                 <p style="margin:24px 0 0; font-size:14px; color:#6B7280;">
                   Merci de votre confiance et bienvenue dans l'univers Premium de Verebona !
@@ -274,7 +259,7 @@ export async function seedSystemEmailTemplates() {
     </table>
   </body>
 </html>`,
-            placeholders: JSON.stringify(['firstName', 'logoUrl', 'nextBillingDate', 'manageSubscriptionUrl', 'year']),
+            placeholders: JSON.stringify(['firstName', 'logoUrl', 'nextBillingDate', 'year']),
             triggerConfig: null,
             sender: null,
             updatedAt: new Date(),

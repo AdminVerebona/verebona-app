@@ -25,6 +25,7 @@
 import { z } from 'zod';
 import { AiGateway } from '@/services/ai/gateway/ai-gateway';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
+import { assistantIdempotencyKey } from './assistant-cache-key';
 import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
 import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource, Claim, SupportLevel } from '../types/sources';
@@ -38,11 +39,21 @@ import type { RetrievedSource, Claim, SupportLevel } from '../types/sources';
  * cette promesse invérifiable.
  */
 const AssistantAnswerOutput = z.object({
-  answer: z.string().min(1).max(4000),
+  /**
+   * Texte rédigé par le modèle. Facultatif, et JAMAIS affiché tel quel : la
+   * réponse rendue est reconstruite à partir des seules affirmations validées
+   * (voir `toGeneratedAnswer`). Le prompt ne le demande d'ailleurs pas.
+   */
+  answer: z.string().max(4000).optional(),
   claims: z.array(z.object({
     text: z.string().min(1),
-    sourceIds: z.array(z.string()).min(1),
+    // Le prompt montre des identifiants entre crochets ; on accepte nombre ou
+    // chaîne, comparés ensuite aux identifiants réels des sources.
+    sourceIds: z.array(z.union([z.string(), z.number()]).transform(String)).default([]),
+    /** `false` : phrase de transition, sans information. Absent : factuelle. */
+    factual: z.boolean().optional(),
   })).default([]),
+  status: z.enum(['answered', 'insufficient_data']).optional(),
   actionIntents: z.array(z.object({
     type: z.string(),
     entityId: z.string().optional(),
@@ -59,6 +70,8 @@ export interface GeneratedAnswer {
   claims: Claim[];
   actions: [];
   supportLevel: SupportLevel;
+  /** Modèle effectivement appelé (trace T2). */
+  model?: string;
 }
 
 /**
@@ -78,22 +91,33 @@ export async function generateAssistantAnswer(
   if (sources.length === 0) return null;
 
   try {
+    const promptVariables = {
+      TODAY: new Date().toISOString().slice(0, 10),
+      QUESTION: input.message,
+      DATA: formatSourcesData(sources),
+      SOURCES: formatSourcesList(sources),
+      INTENT: route.intent,
+      // Contexte borné du fil courant (≤ 8 messages utiles, référence déjà
+      // résolue) — jamais l'historique brut du compte ni d'un autre fil.
+      CONVERSATION: input.threadContextText ?? '(nouvelle conversation, aucun échange précédent)',
+    };
     const res = await AiGateway.execute({
       useCaseCode: 'INTELLIGENT_ASSISTANT',
       operationCode: 'generate_answer',
       accountId: input.accountId,
       userId: input.userId,
-      promptVariables: {
-        TODAY: new Date().toISOString().slice(0, 10),
-        QUESTION: input.message,
-        DATA: formatSourcesData(sources),
-        SOURCES: formatSourcesList(sources),
-        INTENT: route.intent,
-      },
+      promptVariables,
       outputSchema: AssistantAnswerOutput,
+      // Réponse brute mise en cache rattachée au fil : purgée à l'effacement.
+      idempotencyKey: assistantIdempotencyKey(input, 'generate_answer', promptVariables),
     });
 
-    return toGeneratedAnswer(res.data, sources);
+    const out = toGeneratedAnswer(res.data, sources);
+    if (!out) {
+      console.warn('[assistant] Aucune affirmation étayée par les sources — repli déterministe.');
+      return null;
+    }
+    return { ...out, model: res.model };
   } catch (e) {
     const detail = isAiGatewayError(e) ? `${e.code} — ${e.message}` : (e as Error).message;
     console.warn(`[assistant] Génération indisponible (${detail}) — repli déterministe.`);
@@ -112,9 +136,42 @@ export async function generateAssistantAnswer(
 export function toGeneratedAnswer(
   data: AssistantAnswer,
   sources: RetrievedSource[],
-): GeneratedAnswer {
+): GeneratedAnswer | null {
+  // ══════════════════════════════════════════════════════════════════════
+  // LE TEXTE AFFICHÉ EST RECONSTRUIT, PAS REPRIS
+  //
+  // Le filtrage écartait les affirmations mal sourcées de la COLLECTION de
+  // citations, mais `answer` était rendu tel quel : un fait rejeté restait
+  // lisible dans la réponse. La réponse est désormais composée des seules
+  // phrases validées, dans l'ordre du modèle :
+  //   · phrase factuelle : conservée si elle cite au moins une source et que
+  //     TOUTES ses sources figurent parmi celles remontées ;
+  //   · phrase de transition (`factual: false`) : conservée seulement si
+  //     elle ne porte aucune donnée (chiffre, date, montant) et qu'au moins
+  //     un fait validé l'accompagne ;
+  //   · aucun fait validé → `null` : l'orchestrateur applique le repli
+  //     déterministe plutôt que d'afficher du texte non étayé.
+  // Exception : `status: insufficient_data` avec une explication sans
+  // donnée — dire ce qui manque est une réponse sûre.
+  // ══════════════════════════════════════════════════════════════════════
   const known = new Set(sources.map((s) => s.id));
-  const retained = data.claims.filter((c) => c.sourceIds.every((id) => known.has(id)));
+  const portesDonnee = (t: string) => /\d/.test(t);
+  const valide = (c: AssistantAnswer['claims'][number]) =>
+    c.sourceIds.length > 0 && c.sourceIds.every((id) => known.has(id));
+  const factuelles = data.claims.filter((c) => c.factual !== false || portesDonnee(c.text));
+  const retained = factuelles.filter(valide);
+
+  if (retained.length === 0) {
+    const explication = data.status === 'insufficient_data'
+      ? data.claims.find((c) => c.factual === false && !portesDonnee(c.text))
+      : undefined;
+    if (!explication) return null;
+    return { answer: explication.text, claims: [], actions: [], supportLevel: 'insufficient' };
+  }
+
+  const phrases = data.claims
+    .filter((c) => (c.factual === false && !portesDonnee(c.text)) || retained.includes(c))
+    .map((c) => c.text.trim());
 
   const claims: Claim[] = retained.map((c, i) => ({
     // Clé stable par réponse : elle sert au dédoublonnage à l'affichage.
@@ -129,10 +186,10 @@ export function toGeneratedAnswer(
   }));
 
   return {
-    answer: data.answer,
+    answer: phrases.join(' '),
     claims,
     actions: [],
-    supportLevel: computeSupportLevel(data.claims.length, claims.length),
+    supportLevel: computeSupportLevel(factuelles.length, claims.length),
   };
 }
 

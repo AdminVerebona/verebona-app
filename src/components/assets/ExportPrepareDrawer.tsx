@@ -1,5 +1,8 @@
 "use client"
 
+import NextLink from 'next/link';
+import { OFFERS_PATH } from '@/lib/write-blocked';
+
 import { useState, useEffect, useCallback } from 'react';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
@@ -1031,10 +1034,11 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
                   <p className={`text-xs text-blue-700 ${premiumTheme.colors.textDark}`}>
                     {usage === 'TRANSMISSION'
                       ? 'La transmission de biens est réservée aux abonnés Premium.'
-                      : 'La génération de dossiers documentaires est réservée aux abonnés Premium.'}
+                      : 'La génération de dossiers documentaires est réservée aux offres Premium et Premium Duo.'}
                   </p>
-                  <Button size="sm" className="w-full bg-blue-600 hover:bg-blue-700 text-white">
-                    Passer à Premium
+                  {/* Le bouton n'avait pas d'action : il mène désormais aux offres. */}
+                  <Button size="sm" className="w-full bg-blue-600 hover:bg-blue-700 text-white" asChild>
+                    <NextLink href={OFFERS_PATH}>Passer à Premium ou Premium Duo</NextLink>
                   </Button>
                 </div>
               );

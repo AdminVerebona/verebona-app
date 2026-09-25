@@ -11,6 +11,7 @@
 import { recordEvidence } from '../../evidence/field-evidence.service';
 import { computeAuthorityScore } from '../../evidence/authority-score';
 import type { ExtractedField, SourceInput, AiOperationTrace } from '../types';
+import { EXTRACT_SOURCE_PROMPT_VERSION } from '../prompt-version';
 
 export interface PersistEvidenceInput {
   input: SourceInput;
@@ -44,12 +45,17 @@ export async function persistEvidence(p: PersistEvidenceInput): Promise<Map<stri
         sourceId: p.leadSourceId,
         sourceVersion: p.input.sourceVersion,
         location: { page: field.page, selector: field.selector },
-        excerpt: field.excerpt,
+        // Observation visuelle : aucune citation, une preuve visuelle à la place.
+        excerpt: field.provenance === 'VISUAL_ANALYSIS' ? null : (field.excerpt ?? null),
+        evidenceOrigin: field.provenance ?? 'TEXT_EXTRACTION',
+        visualEvidence: field.provenance === 'VISUAL_ANALYSIS' && field.visualEvidence
+          ? { ...field.visualEvidence, fileId: p.leadSourceId }
+          : null,
         documentType: p.documentType,
         documentDate: p.documentDate ? new Date(p.documentDate) : null,
         provider: 'gemini',
         model: p.trace.models[0],
-        promptVersion: 'extract_source_v2',
+        promptVersion: EXTRACT_SOURCE_PROMPT_VERSION,
         confidence: field.confidence,
         authorityScore,
         operationTraceId: p.trace.traceIds[0],

@@ -49,7 +49,11 @@ export interface FieldEvidenceInput {
   sourceId: number;
   sourceVersion?: number;
   location: EvidenceLocation;
-  excerpt: string;
+  /** Extrait littéral ; `null` pour une observation visuelle (aucune citation). */
+  excerpt: string | null;
+  /** TEXT_EXTRACTION (lu) | VISUAL_ANALYSIS (observé) — migration 0161. */
+  evidenceOrigin?: 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS';
+  visualEvidence?: Record<string, unknown> | null;
   documentType?: string;
   documentDate?: Date | null;
   provider?: string;

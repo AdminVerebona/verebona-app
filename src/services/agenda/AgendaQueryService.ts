@@ -40,6 +40,17 @@ export interface AgendaItemFull {
   originRefType: string | null;
   originRefId: number | null;
   originFieldKey: string | null;
+  /**
+   * Nature de l'occurrence — FORECAST (date estimée d'une récurrence) ou
+   * CONFIRMED. Indépendante de l'état temporel (`effectiveStatus`).
+   */
+  occurrenceNature: 'FORECAST' | 'CONFIRMED';
+  /** Date prévisionnelle d'origine, conservée après confirmation. */
+  forecastInitialDate: string | null;
+  confirmedAt: Date | null;
+  confirmationMode: string | null;
+  /** Règle de récurrence ayant produit la prévision (libellé). */
+  recurrenceRule: string | null;
   createdAt: Date;
   updatedAt: Date;
   assetLinks: { id: number; assetId: number; assetName: string }[];
@@ -242,6 +253,11 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       originRefType: item.originRefType,
       originRefId: item.originRefId,
       originFieldKey: item.originFieldKey,
+      occurrenceNature: (item.occurrenceNature as 'FORECAST' | 'CONFIRMED' | null) ?? 'CONFIRMED',
+      forecastInitialDate: item.forecastInitialDate ?? null,
+      confirmedAt: item.confirmedAt ?? null,
+      confirmationMode: item.confirmationMode ?? null,
+      recurrenceRule: (item.recurrenceJson as { rule?: string } | null)?.rule ?? null,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       assetLinks: itemAssets.map(a => ({ id: a.id, assetId: a.assetId, assetName: a.assetName ?? '' })),

@@ -61,13 +61,112 @@ export const ClassifyRubricOutput = z.object({
 export type ClassifyRubricOutput = z.infer<typeof ClassifyRubricOutput>;
 
 // ── extract_source ───────────────────────────────────────────────────────────
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+// ══════════════════════════════════════════════════════════════════════════
+// CE QUI EST LU ≠ CE QUI EST VU (prompt v4)
+//
+// Jusqu'en v3, toute valeur devait porter un `excerpt` littéral : une
+// information purement visuelle (« chaudière murale » sur une photo) n'avait
+// que deux issues — disparaître, ou recevoir un faux extrait. La provenance
+// sépare désormais :
+//   · TEXT_EXTRACTION : lu dans la source (texte, OCR, plaque, tableau) →
+//     `excerpt` littéral OBLIGATOIRE ;
+//   · VISUAL_ANALYSIS : observé sur l'image → `visualEvidence` OBLIGATOIRE,
+//     jamais d'extrait (il serait inventé).
+// Le contrôle est fait champ par champ dans `extract-source.step.ts` : un
+// champ mal prouvé est écarté, sans rejeter toute l'analyse.
+// ══════════════════════════════════════════════════════════════════════════
+export const FACT_PROVENANCES = ['TEXT_EXTRACTION', 'VISUAL_ANALYSIS'] as const;
+const unit01 = z.number().min(0).max(1);
+/** Zone de la page, en coordonnées relatives (0 à 1), coin haut gauche → bas droit. */
+const region = z.object({ x1: unit01, y1: unit01, x2: unit01, y2: unit01 });
+export const visualEvidence = z.object({
+  page: z.number().int().positive().optional(),
+  /** Position de l'image dans les pièces transmises (0 = première). */
+  imageIndex: z.number().int().nonnegative().optional(),
+  region: region.optional(),
+  /** Description courte de l'élément observé (jamais présentée comme citation). */
+  description: z.string().min(1).max(500),
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TABLEAUX : LA STRUCTURE, PAS SEULEMENT LE TEXTE
+//
+// Une transcription peut contenir toutes les valeurs d'un tableau et en
+// perdre les relations (« Tesla, Clio, 42 000 km, 78 000 km… »). Chaque
+// cellule porte donc EXPLICITEMENT sa ligne et sa colonne : une cellule vide
+// reste une cellule (`value: null`) et ne décale jamais les suivantes. Les
+// en-têtes à plusieurs niveaux sont portés par colonne (`path`).
+// ══════════════════════════════════════════════════════════════════════════
+const tableCell = z.object({
+  /** Index de colonne (0 = première). */
+  column: z.number().int().nonnegative().max(199),
+  /** Valeur brute telle que lue ; `null` = cellule vide (jamais omise). */
+  value: z.union([z.string().max(1000), z.number(), z.null()]),
+  normalized: z.string().max(200).optional(),
+  valueType: z.enum(['text', 'number', 'amount', 'date', 'quantity', 'boolean']).optional(),
+  colspan: z.number().int().positive().max(200).optional(),
+  rowspan: z.number().int().positive().max(1000).optional(),
+  confidence: confidence.optional(),
+});
+export const tableOutput = z.object({
+  title: z.string().max(300).optional(),
+  pageStart: z.number().int().positive().optional(),
+  pageEnd: z.number().int().positive().optional(),
+  /** En-têtes de colonnes, dans l'ordre ; `path` pour les en-têtes à plusieurs niveaux. */
+  columns: z.array(z.object({
+    header: z.string().max(300),
+    path: z.array(z.string().max(200)).max(5).optional(),
+  })).min(1).max(200),
+  rows: z.array(z.object({
+    /** En-tête de ligne, s'il existe (« Clio », « Maison A »). */
+    header: z.string().max(300).optional(),
+    page: z.number().int().positive().optional(),
+    cells: z.array(tableCell).max(200),
+  })).max(1000),
+  confidence: confidence.default('certain'),
+  /** Structure douteuse (lecture difficile, association incertaine) : jamais reconstruite. */
+  uncertain: z.boolean().default(false),
+  uncertaintyNote: z.string().max(500).optional(),
+});
+
 const evidenceField = z.object({
   fieldKey: z.string().min(1).max(120),
   value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
   confidence,
-  excerpt,
+  /** Obligatoire pour TEXT_EXTRACTION, interdit pour VISUAL_ANALYSIS (contrôlé à l'étape). */
+  excerpt: excerpt.optional(),
+  provenance: z.enum(FACT_PROVENANCES).default('TEXT_EXTRACTION'),
+  visualEvidence: visualEvidence.optional(),
+  /** Fait lu dans une cellule de tableau : sa position, pour garder le contexte. */
+  table: z.object({
+    index: z.number().int().nonnegative(),
+    row: z.number().int().nonnegative(),
+    column: z.number().int().nonnegative(),
+  }).optional(),
   page: z.number().int().positive().optional(),
   selector: z.string().max(300).optional(),
+  // ── Fait générique (T1, représentation durable) — tous facultatifs ──
+  // « Chaudière / puissance / 24 / kW ». Facultatifs pour rester compatibles
+  // avec les réponses produites avant cette évolution du prompt.
+  subject: z.string().max(120).optional(),
+  attribute: z.string().max(120).optional(),
+  label: z.string().max(200).optional(),
+  unit: z.string().max(30).optional(),
+  periodStart: isoDate.optional(),
+  periodEnd: isoDate.optional(),
+  section: z.string().max(200).optional(),
+  // ── Récurrence explicite (T4) — seulement si la source l'énonce ──
+  recurrence: z.object({
+    frequency: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
+    interval: z.number().int().positive().max(120).optional(),
+    startDate: isoDate.optional(),
+    endDate: isoDate.optional(),
+    occurrenceCount: z.number().int().positive().max(240).optional(),
+    dates: z.array(isoDate).max(120).optional(),
+    excerpt: z.string().max(500).optional(),
+  }).optional(),
 });
 
 export const ExtractSourceOutput = z.object({
@@ -87,7 +186,26 @@ export const ExtractSourceOutput = z.object({
     value: z.number().int(),
     confidence, excerpt,
   }).optional(),
+  /** Texte RÉELLEMENT lisible (PDF, OCR, texte d'image, tableau, schéma) — rien d'interprété. */
   transcription: z.string().max(200_000).optional(),
+  /**
+   * Observations visuelles, distinctes de la transcription et de la
+   * description documentaire : objets visibles, disposition, état apparent,
+   * type d'équipement, schéma, relations spatiales.
+   */
+  visual: z.object({
+    summary: z.string().max(2000).optional(),
+    observations: z.array(z.object({
+      description: z.string().min(1).max(500),
+      subject: z.string().max(120).optional(),
+      confidence,
+      page: z.number().int().positive().optional(),
+      imageIndex: z.number().int().nonnegative().optional(),
+      region: region.optional(),
+    })).max(50).default([]),
+  }).optional(),
+  /** Tableaux utiles, structure ligne/colonne conservée (en plus de la transcription). */
+  tables: z.array(tableOutput).max(30).default([]),
   fields: z.array(evidenceField).max(200).default([]),
   /** Le modèle signale lui-même l'absence de contenu exploitable. */
   hasExploitableContent: z.boolean().default(true),

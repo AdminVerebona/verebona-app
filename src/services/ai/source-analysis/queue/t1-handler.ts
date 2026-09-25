@@ -101,7 +101,7 @@ export async function enqueueDurableFileAnalyses(
  * bloqué qu'un travail marqué traité alors que personne ne l'a pris.
  */
 export function registerSourceAnalysisHandler(): void {
-  registerJobHandler('T1', async (job) => {
+  registerJobHandler('T1', async (job, guard) => {
     const payload = (job.payload ?? {}) as { fileId?: number; userId?: number | null; origin?: string };
     const fileId = payload.fileId ?? (job.targetId ? Number(job.targetId) : NaN);
 
@@ -113,9 +113,13 @@ export function registerSourceAnalysisHandler(): void {
     }
 
     const { analyzeFileSources } = await import('../entrypoint');
+    // La garde suit l'exécution jusque dans le pipeline : après un rollback,
+    // un arrêt d'urgence ou une désactivation, aucun résultat de cette
+    // exécution n'est écrit (contrôle avant chaque écriture significative).
     await analyzeFileSources([fileId], job.accountId, {
       userId: payload.userId ?? undefined,
       origin: payload.origin ?? 'queue',
+      guard,
     });
   });
 

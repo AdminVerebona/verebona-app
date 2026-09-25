@@ -22,6 +22,7 @@ import { VerebonaConversation } from './VerebonaConversation';
 import { VerebonaComposer } from './VerebonaComposer';
 import { VerebonaSuggestions } from './VerebonaSuggestions';
 import { VerebonaMascot } from './VerebonaMascot';
+import { VerebonaThreads } from './VerebonaThreads';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
 export interface VerebonaDrawerProps {
@@ -140,6 +141,15 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
           <DrawerClose aria-label="Fermer l'assistant" className="rounded p-1 hover:bg-muted">✕</DrawerClose>
         </DrawerHeader>
 
+        <VerebonaThreads
+          threads={v.threads}
+          currentId={v.conversationId}
+          disabled={v.isLoading}
+          onSelect={(id) => { void v.selectConversation(id); }}
+          onNew={() => { void v.newConversation(); }}
+          onClear={() => { void v.clear(); }}
+        />
+
         <div className="flex-1 overflow-hidden" aria-live="polite">
           {v.messages.length === 0 ? (
             <VerebonaSuggestions suggestions={suggestions} onPick={(label) => { envoyer(label); }} />
@@ -148,7 +158,21 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
               messages={v.messages}
               isLoading={v.isLoading}
               onFeedback={v.sendFeedback}
-              onClarify={(label) => { envoyer(label); }}
+              onClarify={(clarificationId, choice) => {
+                // Même garde que l'envoi d'une question.
+                let autorise = false;
+                garder(() => { autorise = true; });
+                if (!autorise) { setOpen(false); return; }
+                void v.answerClarification(clarificationId, choice);
+              }}
+              onConfirmPlan={(planId) => {
+                // Une confirmation EST une écriture : même garde que l'UI.
+                let autorise = false;
+                garder(() => { autorise = true; });
+                if (!autorise) { setOpen(false); return; }
+                void v.confirmPlan(planId);
+              }}
+              onCancelPlan={(planId) => { void v.cancelPlan(planId); }}
             />
           )}
         </div>

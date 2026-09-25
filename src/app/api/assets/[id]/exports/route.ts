@@ -18,6 +18,7 @@ import { buildAssetSnapshot } from '@/services/export-snapshot.service';
 import { buildExportManifest } from '@/services/export-manifest.service';
 import type { ExportType, ExportOutput } from '@/services/export-manifest.service';
 import { isPremiumPlan } from '@/types/domain';
+import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { renderExportToPdf } from '@/services/pdf-renderer.service';
 import { buildExportZip } from '@/services/export-zip.service';
 import { uploadExportFile, buildExportS3Key } from '@/services/export-upload.service';
@@ -25,6 +26,15 @@ import { uploadExportFile, buildExportS3Key } from '@/services/export-upload.ser
 const VALID_EXPORT_TYPES: ExportType[] = [
   'CIL_REGLEMENTAIRE', 'DOSSIER_VENTE',
   'ASSURANCE_ESTIMATION', 'ASSURANCE_INDEMNISATION', 'EXPORT_BRUT',
+];
+
+/** Dossiers prêts à l'usage — réservés à Premium / Premium Duo (EXPORT_BRUT exclu). */
+const PREMIUM_EXPORT_TYPES: ExportType[] = [
+  'CIL_REGLEMENTAIRE',
+  'DOSSIER_VENTE',
+  'DOSSIER_COMPLET',
+  'ASSURANCE_ESTIMATION',
+  'ASSURANCE_INDEMNISATION',
 ];
 
 async function resolveAccountId(userId: number): Promise<number | null> {
@@ -162,6 +172,20 @@ export async function POST(
 
     const accountId = await resolveAccountId(session.userId);
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
+
+    // Dossiers prêts à l'usage : Premium et Premium Duo uniquement (essai
+    // Premium compris). L'export de données brutes reste ouvert à Standard.
+    // Le client affiche déjà la fenêtre d'offre ; ce contrôle en est la
+    // garantie, et son refus est lu par `parseWriteBlocked` côté client.
+    if (PREMIUM_EXPORT_TYPES.includes(exportType)) {
+      const decision = await canUsePremiumFeature(accountId);
+      if (!decision.allowed) {
+        return NextResponse.json(
+          { error: decision.reason, code: decision.reason, message: decision.message },
+          { status: 403 },
+        );
+      }
+    }
 
     const now = new Date();
 

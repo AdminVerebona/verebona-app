@@ -1,5 +1,6 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
+import { isDataMutation, markAccountDataMutated } from './data-freshness';
 /**
  * API Client — session par cookies HttpOnly (CDC authentification)
  */
@@ -164,6 +165,10 @@ export const apiClient = {
           errorData.message ?? errorData.error
         );
       }
+
+      // Écriture réussie : les écrans qui résument le compte (accueil)
+      // demanderont un état frais au prochain chargement.
+      if (isDataMutation(method, url)) markAccountDataMutated();
 
       const contentType = response.headers.get('content-type');
       if (contentType?.includes('application/json')) {

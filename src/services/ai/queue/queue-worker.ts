@@ -35,10 +35,31 @@
  */
 import type { Treatment } from '../config/treatments';
 import { listBatchTreatments } from '../config/treatments';
-import { claimNext, completeJob, failJob, type QueuedJob } from './job-queue.repository';
+import {
+  claimNext, completeJob, failJob, renewLease, recoverAbandonedJobs, isExecutionActive, LEASE_SECONDS,
+  type QueuedJob,
+} from './job-queue.repository';
+import {
+  createExecutionGuard, registerLocalExecution, unregisterLocalExecution,
+  isExecutionCancelled, ExecutionCancelledError, type ExecutionGuard,
+} from './execution-control';
+import { hostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
-/** Exécutant d'un traitement. Rend normalement, ou lève : l'issue est écrite ici. */
-export type JobHandler = (job: QueuedJob) => Promise<void>;
+/** Identité de ce processus, portée par les jobs qu'il prélève (supervision). */
+export const WORKER_ID = `${(() => { try { return hostname(); } catch { return 'local'; } })()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+
+/** Renouvellement du bail : trois fois par durée de bail. */
+const HEARTBEAT_MS = Math.max(1_000, Math.floor((LEASE_SECONDS * 1000) / 3));
+
+/**
+ * Exécutant d'un traitement. Rend normalement, ou lève : l'issue est écrite ici.
+ *
+ * `guard` : signal d'annulation et contrôle avant écriture. Un exécutant
+ * appelle `guard.assertActive()` avant chaque écriture significative ;
+ * interrompu (rollback, arrêt d'urgence, désactivation), il n'écrit plus rien.
+ */
+export type JobHandler = (job: QueuedJob, guard: ExecutionGuard) => Promise<void>;
 
 const handlers = new Map<Treatment, JobHandler>();
 
@@ -72,20 +93,54 @@ export async function runOne(treatment: Treatment): Promise<boolean> {
   const handler = handlers.get(treatment);
   if (!handler) return false;
 
-  const job = await claimNext(treatment);
+  const job = await claimNext(treatment, WORKER_ID);
   if (!job) return false;
 
+  // Annulation : signal local, bail, jeton en base (execution-control).
+  const controller = new AbortController();
+  registerLocalExecution(job.id, controller);
+  const guard = createExecutionGuard(job, controller, isExecutionActive);
+
+  // Bail renouvelé tant que l'exécutant travaille : un processus arrêté
+  // brutalement cesse de le renouveler, et le job est repris après expiration
+  // (`recoverAbandonedJobs`) — jamais pendant qu'il tourne encore ici. Un
+  // renouvellement refusé signifie que l'exécution a été dépossédée : elle
+  // est interrompue.
+  const heartbeat = job.executionId
+    ? setInterval(() => {
+        void renewLease(job.id, job.executionId!).then((ok) => {
+          if (!ok && !controller.signal.aborted) controller.abort(new ExecutionCancelledError('bail perdu'));
+        }).catch(() => { /* réseau : on réessaie au prochain battement */ });
+      }, HEARTBEAT_MS)
+    : null;
+  heartbeat?.unref?.();
+
   try {
-    await handler(job);
-    await completeJob(job.id);
+    await handler(job, guard);
+    // Dernier contrôle : une exécution interrompue ne clôt jamais le job
+    // (la clôture est de toute façon conditionnée au jeton).
+    await guard.assertActive('clôture');
+    const done = await completeJob(job.id, job.executionId);
+    if (done.stale) {
+      console.warn(`[queue] ${treatment} job ${job.id} : exécution dépossédée, clôture ignorée.`);
+    }
   } catch (e) {
-    // Une erreur d'exécutant n'interrompt jamais la boucle : le travail suivant
-    // n'a pas à payer l'échec du précédent.
-    const { permanent } = await failJob(job.id, (e as Error).message ?? 'erreur inconnue');
-    console.error(
-      `[queue] ${treatment} job ${job.id} en échec${permanent ? ' définitif' : ''} :`,
-      (e as Error).message,
-    );
+    if (isExecutionCancelled(e) || controller.signal.aborted) {
+      // Interrompu par l'administration ou dépossédé : le job a déjà été
+      // remis en file pour une reprise propre. Rien à écrire ici.
+      console.warn(`[queue] ${treatment} job ${job.id} interrompu — ${(e as Error).message}`);
+    } else {
+      // Une erreur d'exécutant n'interrompt jamais la boucle : le travail
+      // suivant n'a pas à payer l'échec du précédent.
+      const { permanent } = await failJob(job.id, (e as Error).message ?? 'erreur inconnue', job.executionId);
+      console.error(
+        `[queue] ${treatment} job ${job.id} en échec${permanent ? ' définitif' : ''} :`,
+        (e as Error).message,
+      );
+    }
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    unregisterLocalExecution(job.id, controller);
   }
   return true;
 }
@@ -129,6 +184,12 @@ export function startQueueWorker(): void {
     try {
       const { withJobLock } = await import('@/lib/job-lock');
       await withJobLock(LOCK_NAME, INTERVAL_MS * 2, async () => {
+        // Reprise des exécutions abandonnées (arrêt brutal d'un processus),
+        // avant de prélever : au redémarrage, elles repassent en tête.
+        const repris = await recoverAbandonedJobs();
+        if (repris.length > 0) {
+          console.warn(`[queue] ${repris.length} exécution(s) abandonnée(s) reprise(s) :`, repris.map((r) => `${r.id}→${r.status}`).join(', '));
+        }
         const n = await runOnce();
         if (n > 0) console.info(`[queue] ${n} travail(aux) traité(s).`);
       });

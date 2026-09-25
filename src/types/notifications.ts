@@ -49,6 +49,7 @@ export const NOTIFICATION_TYPES = {
   SUBSCRIPTION_RENEWED: 'SUBSCRIPTION_RENEWED',
   SUBSCRIPTION_ACTIVATED: 'SUBSCRIPTION_ACTIVATED',
   SUBSCRIPTION_CHANGED: 'SUBSCRIPTION_CHANGED',
+  SUBSCRIPTION_CHANGE_SCHEDULED: 'SUBSCRIPTION_CHANGE_SCHEDULED',
   SUBSCRIPTION_CANCELLATION_SCHEDULED: 'SUBSCRIPTION_CANCELLATION_SCHEDULED',
   SUBSCRIPTION_CANCELLED: 'SUBSCRIPTION_CANCELLED',
   ANALYSIS_QUOTA_90: 'ANALYSIS_QUOTA_90',
@@ -81,7 +82,7 @@ export type NotificationType = typeof NOTIFICATION_TYPES[keyof typeof NOTIFICATI
  * La validation Zod à l'exécution sera ajoutée au Lot 1.
  */
 export interface NotificationPayloadMap {
-  DEADLINE_DUE_IN_7_DAYS: { count: number; date: string; agendaItemIds?: number[] };
+  DEADLINE_DUE_IN_7_DAYS: { count: number; date: string; agendaItemIds?: number[]; forecastCount?: number };
 
   DOCUMENT_ANALYZED: { assetFileId: number; analysedCount: number; failedCount: number; documentTitle?: string };
   DOCUMENT_BATCH_COMPLETED: { lotId: number; analysedCount: number; failedCount: number };
@@ -135,14 +136,24 @@ export interface NotificationPayloadMap {
     planCode: string;
     planLabel: string;
     billingPeriod?: 'monthly' | 'yearly' | null;
+    /** L'email de confirmation d'abonnement part déjà : pas d'email de notification. */
+    confirmationEmailSent?: boolean;
   };
   /** Changement d'offre d'un compte déjà abonné. */
   SUBSCRIPTION_CHANGED: {
     planCode: string;
     planLabel: string;
+    billingPeriod?: 'monthly' | 'yearly' | null;
     previousPlanCode?: string;
     previousPlanLabel?: string;
     direction: 'upgrade' | 'downgrade' | 'lateral';
+    confirmationEmailSent?: boolean;
+  };
+  /** Baisse de gamme ou changement de périodicité programmé à l'échéance. */
+  SUBSCRIPTION_CHANGE_SCHEDULED: {
+    planCode: string;
+    billingPeriod?: 'monthly' | 'yearly' | null;
+    effectiveAt?: string | null;
   };
   SUBSCRIPTION_CANCELLATION_SCHEDULED: { effectiveAt?: string };
   SUBSCRIPTION_CANCELLED: Record<string, never>;

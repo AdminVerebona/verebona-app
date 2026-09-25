@@ -36,6 +36,7 @@
 import { z } from 'zod';
 import { AiGateway } from '@/services/ai/gateway/ai-gateway';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
+import { assistantIdempotencyKey } from './assistant-cache-key';
 import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
 import { VEREBONA_INTENTS, type VerebonaIntent } from '../types/intents';
 import { getIntentDefinition } from '../registries/intent-registry';
@@ -82,6 +83,8 @@ export async function classifyAssistantIntent(
         INTENTS: describeCatalog(),
       },
       outputSchema: ToolPlanOutput,
+      // Rattachée au fil : purgée à l'effacement de l'historique.
+      idempotencyKey: assistantIdempotencyKey(input, 'understand_request', { QUESTION: message, INTENTS: describeCatalog() }),
     });
 
     return toIntentRoute(res.data as ToolPlan, input.planType);

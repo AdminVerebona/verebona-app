@@ -1,18 +1,22 @@
 /**
  * POST /api/verebona/clarifications/[clarificationId]/answer — CDC §20.4, §20.5.
  *
- * Reprend la demande initiale avec le candidat choisi.
+ * Reprend la demande INITIALE avec le candidat choisi.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * LA ROUTE NE VÉRIFIAIT RIEN
+ * REPRISE STRUCTURÉE, PAS CONCATÉNATION
  *
- * Elle recevait un identifiant de clarification et le traitait, sans contrôler
- * à qui il appartenait. Un identifiant deviné aurait suffi à répondre à la
- * place d'un autre compte.
+ * La route reconstruisait un message « question de clarification + libellé
+ * choisi » et relançait tout le raisonnement. Rien ne garantissait de
+ * retrouver l'intention ni le contexte de la demande d'origine.
  *
- * Les quatre contrôles vivent dans `clarification.service`, où ils sont
- * testables sans base : une règle de sécurité éprouvée seulement de bout en
- * bout n'est éprouvée qu'aux endroits où quelqu'un y a pensé.
+ * Désormais : l'état complet enregistré à la création (demande, intention,
+ * contexte, candidats) est rechargé ; le choix est contrôlé (propriété,
+ * expiration, tentatives, appartenance aux candidats, existence en base) puis
+ * injecté comme paramètre (`resume.assetId`) dans la demande initiale, qui
+ * garde son intention.
+ *
+ * Les contrôles vivent dans `clarification.service`.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -20,13 +24,12 @@ import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { runAssistant } from '@/services/verebona-assistant/core/assistant-orchestrator.service';
 import { buildOrchestratorPorts } from '@/services/verebona-assistant/core/ports';
-import {
-  chargerClarification,
-  verifierClarification,
-  consommerClarification,
-  incrementerTentative,
-  messageEchec,
-} from '@/services/verebona-assistant/core/clarification.service';
+import { getAssistantConfig } from '@/services/verebona-assistant/config/assistant-config';
+import { getEntitlements } from '@/services/entitlements.service';
+import { refuserSiPasDIA } from '@/lib/write-access-guard';
+import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
+import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
+import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
 
 export async function POST(
   req: NextRequest,
@@ -45,52 +48,47 @@ export async function POST(
   const choiceId = typeof body.choiceId === 'string' ? body.choiceId : '';
   if (!choiceId) return NextResponse.json({ error: 'MISSING_CHOICE' }, { status: 400 });
 
-  // Le bornage au compte est dans la requête : un état appartenant à un autre
-  // compte n'est jamais chargé, donc jamais comparé.
-  const { etat, conversationId } = await chargerClarification(accountId);
-  const verdict = verifierClarification(etat, clarificationId, choiceId);
+  // La reprise relance le pipeline (éventuellement un appel modèle) : mêmes
+  // droits que l'envoi d'une question.
+  const entitlements = await getEntitlements(accountId);
+  if (!entitlements.canWrite) {
+    const refus = await refuserSiPasDIA(accountId);
+    if (refus) return refus;
+  }
 
-  if (!verdict.ok) {
-    // Un choix invalide laisse la clarification ouverte — l'utilisateur peut
-    // corriger. Une clarification expirée ou épuisée est effacée : la laisser
-    // ferait croire indéfiniment qu'une question attend une réponse.
-    if (conversationId && etat) {
-      if (verdict.motif === 'CHOIX_INVALIDE') await incrementerTentative(conversationId, etat);
-      else if (verdict.motif !== 'INTROUVABLE') await consommerClarification(conversationId);
-    }
+  // Bornage compte + utilisateur (+ fil) dans la requête de chargement : la
+  // clarification de l'autre membre d'un Duo, ou d'un autre fil, n'est
+  // jamais chargée.
+  const issue = await resoudreClarification({
+    accountId,
+    userId: session.userId,
+    clarificationId,
+    conversationId: Number(body.conversationId) || undefined,
+    choiceId,
+  });
+
+  const cfg = getAssistantConfig();
+  const out = await executerIssueClarification(issue, {
+    accountId,
+    userId: session.userId,
+    planType: entitlements.premiumFeatures ? session.planType : 'STANDARD',
+    locale: cfg.locale,
+  }, { runAssistant, ports: buildOrchestratorPorts() });
+
+  if (out.kind === 'rejected') {
     return NextResponse.json(
       {
         status: 'error',
-        error: {
-          code: 'CLARIFICATION_REJECTED',
-          message: messageEchec(verdict.motif),
-          recoverable: verdict.motif !== 'TROP_DE_TENTATIVES',
-        },
+        error: { code: out.code, message: out.message, recoverable: true },
       },
       // 409 et non 403 : distinguer « n'existe pas » de « ne vous appartient
       // pas » renseignerait sur l'existence de clarifications tierces.
       { status: 409 },
     );
   }
-
-  // La clarification est consommée AVANT la reprise : si l'analyse échoue,
-  // l'utilisateur reformule plutôt que de rejouer un choix déjà fait.
-  if (conversationId) await consommerClarification(conversationId);
-
-  const resultat = await runAssistant(
-    {
-      accountId,
-      userId: session.userId,
-      planType: session.planType ?? 'STANDARD',
-      // Le libellé du candidat, non son identifiant : c'est ce que
-      // l'utilisateur a désigné, et ce que le routage sait interpréter.
-      message: `${etat!.question} ${verdict.choix.label}`,
-      clientRequestId: `clarif:${clarificationId}:${verdict.choix.id}`,
-      // La session ne porte pas de langue : le français est la seule servie.
-      locale: 'fr-FR',
-    },
-    buildOrchestratorPorts(),
-  );
-
-  return NextResponse.json({ status: 'ok', clarificationId, result: resultat });
+  if (out.kind === 'abandoned') {
+    // Impossible pour un choix cliqué ; par prudence, rien n'est repris.
+    return NextResponse.json({ status: 'error', error: { code: 'CLARIFICATION_REJECTED', message: 'Reformulez votre demande.', recoverable: true } }, { status: 409 });
+  }
+  return NextResponse.json({ ...toApiPayload(out.result), clarificationId });
 }

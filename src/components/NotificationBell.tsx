@@ -8,6 +8,11 @@ import { createPortal } from 'react-dom';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
+import {
+  isSubscriptionNotification,
+  subscriptionNotificationText,
+  type SubscriptionNotificationPayload,
+} from '@/lib/notifications/subscription-messages';
 
 /**
  * Types retirés de l'affichage : les notifications « Analyse impossible ».
@@ -21,7 +26,7 @@ const TYPES_MASQUES = new Set([
   'ANALYSIS_FAILED_PERSISTENT',
 ]);
 
-interface NotificationPayload {
+interface NotificationPayload extends SubscriptionNotificationPayload {
   initiatorName?: string;
   assetLabel?: string;
   inviterName?: string;
@@ -60,6 +65,9 @@ interface Notification {
   createdAt: string;
   readAt: string | null;
   mustDeliver?: boolean;
+  /** Contenu rendu par le serveur à l'émission (catalogue). */
+  title?: string | null;
+  body?: string | null;
 }
 
 interface NotificationsResponse {
@@ -67,8 +75,16 @@ interface NotificationsResponse {
   unreadCount: number;
 }
 
-function getNotificationText(type: string, payload: NotificationPayload | null): string {
+function getNotificationText(
+  type: string,
+  payload: NotificationPayload | null,
+  stored?: { title?: string | null; body?: string | null },
+): string {
   const p = payload ?? {};
+  // Abonnement : « Votre offre a été modifiée. Nouvelle offre : Premium »…
+  // Recalculé depuis le payload, donc juste aussi pour les lignes anciennes.
+  const abonnement = subscriptionNotificationText(type, payload);
+  if (abonnement) return abonnement;
   switch (type) {
     case 'DUO_MOVE_REQUEST':
       return `${p.initiatorName ?? 'Quelqu\'un'} souhaite transférer ${p.assetLabel ?? 'un bien'} vers son compte`;
@@ -180,7 +196,8 @@ function getNotificationText(type: string, payload: NotificationPayload | null):
       // l'utilisateur, lui, voit sans comprendre.
       // ══════════════════════════════════════════════════════════════════
       console.warn(`[notifications] type sans libellé : ${type}`, p);
-      return 'Nouvelle notification';
+      // Contenu rendu par le catalogue serveur, s'il existe.
+      return stored?.body || stored?.title || 'Nouvelle notification';
   }
 }
 
@@ -225,11 +242,11 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
   if (type === 'ANALYSIS_FAILED_PERSISTENT' && p.assetFileId) {
     return `/documents/${p.assetFileId}`;
   }
-  // Quota / abonnement / parrainage → offres (cf. CDC §17).
-  if (
-    type === 'ANALYSIS_QUOTA_90' || type === 'ANALYSIS_QUOTA_100' || type === 'REFERRAL_REWARD_GRANTED'
-    || type === 'SUBSCRIPTION_ACTIVATED' || type === 'SUBSCRIPTION_CHANGED' || type === 'SUBSCRIPTION_RENEWED'
-  ) {
+  // Abonnement : information seule, non cliquable — le clic marque la
+  // notification comme lue, sans navigation.
+  if (isSubscriptionNotification(type)) return null;
+  // Quota / parrainage → offres (cf. CDC §17).
+  if (type === 'ANALYSIS_QUOTA_90' || type === 'ANALYSIS_QUOTA_100' || type === 'REFERRAL_REWARD_GRANTED') {
     return '/mon-compte/offres';
   }
   return null;
@@ -257,7 +274,10 @@ function getNotificationIcon(type: string) {
       return <SendHorizonal className="w-4 h-4 flex-shrink-0" />;
     case 'SUBSCRIPTION_ACTIVATED':
     case 'SUBSCRIPTION_CHANGED':
+    case 'SUBSCRIPTION_CHANGE_SCHEDULED':
     case 'SUBSCRIPTION_RENEWED':
+    case 'SUBSCRIPTION_CANCELLATION_SCHEDULED':
+    case 'SUBSCRIPTION_CANCELLED':
       return <CreditCard className="w-4 h-4 flex-shrink-0" />;
     default:
       return <Info className="w-4 h-4 flex-shrink-0" />;
@@ -292,7 +312,7 @@ export function NotificationBell() {
       newNotifs.forEach(n => {
         // Toast for mustDeliver (excluant DOCUMENT_ANALYZED)
         if (n.mustDeliver && !n.readAt && n.type !== 'DOCUMENT_ANALYZED') {
-          toast(getNotificationText(n.type, n.payload), { duration: 6000 });
+          toast(getNotificationText(n.type, n.payload, n), { duration: 6000 });
         }
         // Signal banner dismissal when analysis completes (analyze-silent path)
         if (n.type === 'DOCUMENT_ANALYZED') {
@@ -494,7 +514,7 @@ export function NotificationBell() {
                     </span>
                     <div className="flex-1 min-w-0">
                       <p className={`text-sm leading-snug ${isUnread ? 'font-medium text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}`}>
-                        {getNotificationText(notif.type, notif.payload)}
+                        {getNotificationText(notif.type, notif.payload, notif)}
                       </p>
                       <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">
                         {formatDistanceToNow(new Date(notif.createdAt), { addSuffix: true, locale: fr })}

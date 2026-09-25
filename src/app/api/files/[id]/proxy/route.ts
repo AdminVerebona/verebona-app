@@ -69,7 +69,15 @@ export async function GET(
     const rows = await db.$client`
       SELECT id, account_id, s3_bucket, s3_key, mime_type, deleted_at
       FROM asset_files
-      WHERE id = ${fileId} AND deleted_at IS NULL
+      WHERE id = ${fileId}
+        AND (
+          deleted_at IS NULL
+          -- Source secondaire regroupée : consultable tant que son document
+          -- principal existe (preuves, migration 0143).
+          OR (grouped_into_file_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM asset_files lead
+                 WHERE lead.id = asset_files.grouped_into_file_id AND lead.deleted_at IS NULL))
+        )
       LIMIT 1
     `;
 

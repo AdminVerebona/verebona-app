@@ -29,7 +29,7 @@ describe('deux discours selon la situation', () => {
   it('un essai terminé invite à choisir, pas à monter en gamme', () => {
     expect(DIALOGUE).toContain("Choisissez l&apos;offre qui vous convient");
     // Même libellé que le bandeau de fin d'essai.
-    expect(DIALOGUE).toContain('Choisir une offre');
+    expect(DIALOGUE).toContain('Choisir mon offre');
   });
 
   it('un quota atteint garde l’argumentaire Premium', () => {
@@ -94,7 +94,7 @@ describe('les points de déclenchement sont gardés', () => {
     'src/components/assets/asset-substructures-panel.tsx',
     'src/components/assets/asset-equipments-panel.tsx',
     'src/components/assets/AssetExportsTab.tsx',
-    'src/components/asset-documents-panel.tsx',
+    'src/components/documents/v2/DocumentsByRubric.tsx',
     'src/components/agenda/AgendaItemDrawer.tsx',
     'src/components/assets/AssetDetailSection.tsx',
     'src/components/assets/DocumentDrawer.tsx',

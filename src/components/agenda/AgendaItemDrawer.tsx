@@ -361,6 +361,19 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
     }
   };
 
+  // Occurrence prévisionnelle : l'utilisateur peut la confirmer telle quelle.
+  const handleConfirmForecast = async () => {
+    if (!item) return;
+    try {
+      await apiClient.post(`/api/agenda/${item.id}/confirm`, {});
+      toast.success("Date confirmée");
+      dispatchAgendaMutated();
+      onMutated();
+    } catch {
+      toast.error("La confirmation n’a pas abouti");
+    }
+  };
+
   const handleDelete = async () => {
     if (!item) return;
     setDeleting(true);
@@ -437,6 +450,14 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                 >
                   {STATUS_LABELS[item.effectiveStatus]}
                 </span>
+                {item.occurrenceNature === "FORECAST" && (
+                  <span
+                    className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[rgba(59,130,246,0.12)] text-[#93c5fd] border border-[rgba(59,130,246,0.25)]"
+                    title={item.recurrenceRule ? `Date estimée à partir de la récurrence (${item.recurrenceRule})` : "Date estimée à partir de la récurrence"}
+                  >
+                    Prévisionnelle
+                  </span>
+                )}
                 {item.isAutomatic && !item.isAutomaticModified && (
                   <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[rgba(139,92,246,0.15)] text-[#c4b5fd] border border-[rgba(139,92,246,0.25)]">
                     <Zap className="h-3 w-3 mr-1" /> Automatique
@@ -476,8 +497,21 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                       {heroDate.weekday}
                     </p>
                     <p className="text-xs text-[color:var(--text-muted)] mt-0.5">
-                      {formatDateRange(item)}
+                      {item.occurrenceNature === "FORECAST" ? `Prévu le ${formatDateRange(item)}` : formatDateRange(item)}
                     </p>
+                    {item.occurrenceNature === "FORECAST" && (
+                      <p className="text-xs text-[color:var(--text-muted)] mt-1">
+                        Date estimée à partir de la récurrence{item.recurrenceRule ? ` (${item.recurrenceRule})` : ""}.{" "}
+                        <button type="button" onClick={handleConfirmForecast} className="underline text-[#93c5fd]">
+                          Confirmer cette date
+                        </button>
+                      </p>
+                    )}
+                    {item.occurrenceNature === "CONFIRMED" && item.forecastInitialDate && item.forecastInitialDate !== item.startDate && (
+                      <p className="text-xs text-[color:var(--text-muted)] mt-1">
+                        Estimée au {new Date(item.forecastInitialDate + "T12:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}, puis confirmée.
+                      </p>
+                    )}
                   </div>
                 </div>
               ) : (

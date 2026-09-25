@@ -27,7 +27,6 @@ describe('liste blanche des champs écrivables (§8.5, §13.5)', () => {
   it('accepte les champs prévus par le catalogue', () => {
     expect(isResolvableFromCard('DOCUMENT', 'rubricCode')).toBe(true);
     expect(isResolvableFromCard('DOCUMENT', 'documentTypeCode')).toBe(true);
-    expect(isResolvableFromCard('ASSET', 'isRented')).toBe(true);
   });
 
   it('refuse tout autre champ, y compris sensible', () => {
@@ -35,6 +34,8 @@ describe('liste blanche des champs écrivables (§8.5, §13.5)', () => {
     // viser n'importe quelle colonne depuis une action forgée.
     expect(isResolvableFromCard('DOCUMENT', 'passwordHash')).toBe(false);
     expect(isResolvableFromCard('ASSET', 'accountId')).toBe(false);
+    // Attribut retiré (0160) : l'usage « Mis en location » de la fiche le remplace.
+    expect(isResolvableFromCard('ASSET', 'isRented')).toBe(false);
     expect(isResolvableFromCard('DOCUMENT', null)).toBe(false);
   });
 

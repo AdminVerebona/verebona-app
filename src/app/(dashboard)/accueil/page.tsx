@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AssetCard } from '@/components/dashboard/AssetCard';
-import { AssetLimitReachedDialog } from '@/components/premium/AssetLimitReachedDialog';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import type { WriteBlockedInfo } from '@/lib/write-blocked';
 import { PendingCheckoutModal } from '@/components/subscription/PendingCheckoutModal';
 import { MascotGreeting } from '@/components/home/MascotGreeting';
 import { HomeStatsGrid } from '@/components/home/HomeStatsGrid';
@@ -21,6 +22,7 @@ import { useSession } from '@/hooks/useSession';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
+import { FRESH_HEADER, markAccountDataMutated, mutatedSince } from '@/lib/data-freshness';
 import { useRouter } from 'next/navigation';
 import type { HomeSummaryPayload, HomeItem } from '@/services/home/HomeSummaryService';
 
@@ -63,6 +65,13 @@ interface DrawerDocState {
   assetId: number;
 }
 
+/**
+ * Instant du dernier chargement du résumé, conservé entre deux visites de
+ * l'accueil (navigation client) : une modification faite ailleurs depuis
+ * déclenche un résumé frais. Voir `lib/data-freshness.ts`.
+ */
+let lastHomeSummaryLoadAt = 0;
+
 export default function DashboardPage() {
   const router = useRouter();
   const { user, isLoading: isSessionLoading } = useSession({ required: true });
@@ -75,7 +84,8 @@ export default function DashboardPage() {
   // Dialogs
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [showAssetDialog, setShowAssetDialog] = useState(false);
-  const [showAssetLimitDialog, setShowAssetLimitDialog] = useState(false);
+  // Refus d'ajout d'un bien : même fenêtre que partout ailleurs (motif serveur).
+  const { signalerRefus } = useWriteGuard();
 
   // Drawers
   const [drawerDoc, setDrawerDoc] = useState<DrawerDocState | null>(null);
@@ -87,9 +97,17 @@ export default function DashboardPage() {
 
   // ── Chargement ────────────────────────────────────────────────────────────
 
+  // Plus de cache client sur le résumé : il masquait toute action faite sur
+  // une autre page (jusqu'à 5 min). Un résumé frais est demandé au serveur
+  // dès qu'une modification a eu lieu depuis le dernier chargement.
   const loadSummary = useCallback(async () => {
     try {
-      const data = await apiClient.get<HomeSummaryPayload>('/api/home/summary', { useCache: true });
+      const startedAt = Date.now();
+      const fresh = mutatedSince(lastHomeSummaryLoadAt);
+      const data = await apiClient.get<HomeSummaryPayload>('/api/home/summary', {
+        headers: fresh ? { [FRESH_HEADER]: '1' } : undefined,
+      });
+      lastHomeSummaryLoadAt = startedAt;
       setSummary(data);
     } catch (error) {
       console.error('Error loading home summary:', error);
@@ -109,12 +127,15 @@ export default function DashboardPage() {
     if (hasToken) loadSummary();
   }, [loadSummary]);
 
-  // Re-fetch sur événements — invalide le cache avant de recharger
+  /** Après une action : l'état a changé, on recharge un résumé frais. */
+  const refreshSummary = useCallback(() => {
+    markAccountDataMutated();
+    void loadSummary();
+  }, [loadSummary]);
+
+  // Re-fetch sur événements (la modification est notée par data-freshness)
   useEffect(() => {
-    const handler = () => {
-      apiClient.invalidateCache('/api/home/summary');
-      loadSummary();
-    };
+    const handler = () => refreshSummary();
     window.addEventListener('document-added', handler);
     window.addEventListener('document-deleted', handler);
     window.addEventListener('document-analysis-complete', handler);
@@ -129,7 +150,7 @@ export default function DashboardPage() {
       window.removeEventListener('notifications-refresh', handler);
       window.removeEventListener('refresh-a-traiter', handler);
     };
-  }, [loadSummary]);
+  }, [refreshSummary]);
 
   // Synchronisation Stripe à la volée si session_id est présent
   useEffect(() => {
@@ -243,10 +264,14 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const handleAssetLimitReached = useCallback(() => {
+  // ⚠️ L'ancienne fenêtre locale annonçait « limite de 3 biens du plan
+  // gratuit » et « Passer à Premium » quel que soit le motif — y compris pour
+  // un compte recréé dont l'essai était déjà consommé. Le refus serveur
+  // (fin d'essai, quota, abonnement) est désormais affiché tel quel.
+  const handleAssetLimitReached = useCallback((info: WriteBlockedInfo) => {
     setShowAssetDialog(false);
-    setShowAssetLimitDialog(true);
-  }, []);
+    signalerRefus(info);
+  }, [signalerRefus]);
 
   // ── Loading ───────────────────────────────────────────────────────────────
 
@@ -460,7 +485,7 @@ export default function DashboardPage() {
           open={showUploadDialog}
           onOpenChange={setShowUploadDialog}
           availableAssets={assets.map(a => ({ id: a.id, name: a.name }))}
-          onSuccess={loadSummary}
+          onSuccess={refreshSummary}
         />
       )}
 
@@ -468,16 +493,11 @@ export default function DashboardPage() {
         <AssetFormDialog
           open={showAssetDialog}
           onOpenChange={setShowAssetDialog}
-          onSuccess={loadSummary}
+          onSuccess={refreshSummary}
           onLimitReached={handleAssetLimitReached}
           userId={user.id}
         />
       )}
-
-      <AssetLimitReachedDialog
-        open={showAssetLimitDialog}
-        onOpenChange={setShowAssetLimitDialog}
-      />
 
       {pendingCheckoutPlan && (
         <PendingCheckoutModal
@@ -500,10 +520,7 @@ export default function DashboardPage() {
             }
           }}
           document={drawerDoc}
-          onRefresh={() => {
-            apiClient.invalidateCache('/api/home/summary');
-            loadSummary();
-          }}
+          onRefresh={refreshSummary}
         />
       )}
 
@@ -521,7 +538,7 @@ export default function DashboardPage() {
           onMutated={() => {
             setDrawerAgendaOpen(false);
             setDrawerAgendaItem(null);
-            loadSummary();
+            refreshSummary();
           }}
           onOpenDocument={(fileId) => {
             setDrawerAgendaOpen(false);
@@ -536,7 +553,7 @@ export default function DashboardPage() {
         onClose={() => setShowCreateAgenda(false)}
         onMutated={() => {
           setShowCreateAgenda(false);
-          loadSummary();
+          refreshSummary();
         }}
       />
     </>

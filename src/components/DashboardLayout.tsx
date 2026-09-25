@@ -512,15 +512,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
               })}
             </nav>
 
-            {/* Carte plan (essai / standard) — masquée sidebar repliée */}
+            {/* Carte d'essai — uniquement pendant la période d'essai, masquée sidebar repliée */}
             {!sidebarCollapsed && user && (
-              <SidebarPlanCard
-                plan={(user.subscription?.plan || 'STANDARD').toUpperCase()}
-                trialDaysLeft={user.subscription?.trialDaysLeft ?? null}
-                assetsUsed={entitlements?.quotas?.assets?.used}
-                assetsMax={entitlements?.quotas?.assets?.limit}
-                trialExpired={entitlements?.trial.status === 'expired'}
-              />
+              <SidebarPlanCard trialDaysLeft={user.subscription?.trialDaysLeft ?? null} />
             )}
 
             {/* Guide + Help — always visible at bottom */}

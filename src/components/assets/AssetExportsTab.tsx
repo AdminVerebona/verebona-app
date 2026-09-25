@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import { ExportPrepareDrawer } from './ExportPrepareDrawer';
 import { getPlanTheme } from '@/lib/plan-theme';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { useEntitlements } from '@/hooks/useEntitlements';
 
 export type ExportType =
   | 'CIL_REGLEMENTAIRE'
@@ -187,13 +188,39 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
    * Les fermer priverait l'utilisateur de ses propres données — ce que le
    * message « vos données sont conservées » promet précisément.
    */
-  const { garder } = useWriteGuard();
+  const { garder, signalerRefus } = useWriteGuard();
+
+  // ══════════════════════════════════════════════════════════════════════
+  // DOSSIERS PRÊTS À L'USAGE : RÉSERVÉS À PREMIUM ET PREMIUM DUO
+  //
+  // Le verrou comparait `planType` à 'STANDARD', alors que la page lui
+  // passe 'freemium' | 'premium' : il ne s'affichait jamais, et un compte
+  // Standard ouvrait le tiroir de préparation. Il suit désormais les droits
+  // effectifs (`premiumFeatures`, qui couvre aussi l'essai Premium).
+  //
+  // Un compte Standard qui clique sur un dossier obtient la fenêtre
+  // « Passer à Premium ou Premium Duo ». Transfert et récupération
+  // (`premiumOnly: false`) restent ouverts à tous.
+  // ══════════════════════════════════════════════════════════════════════
+  const { entitlements } = useEntitlements();
+  const premiumRefuse = entitlements != null && !entitlements.premiumFeatures;
+
   const ouvrirExport = useCallback(
     (type: ExportType | 'TRANSMISSION', premiumOnly: boolean) => {
       if (!premiumOnly) { setDrawerUsage(type); return; }
-      garder(() => setDrawerUsage(type));
+      // `garder` traite d'abord le compte restreint (essai terminé…).
+      garder(() => {
+        if (premiumRefuse) {
+          signalerRefus({
+            code: 'PREMIUM_REQUIRED',
+            message: 'Les dossiers prêts à l\u2019usage sont disponibles avec les offres Premium et Premium Duo.',
+          });
+          return;
+        }
+        setDrawerUsage(type);
+      });
     },
-    [garder],
+    [garder, signalerRefus, premiumRefuse],
   );
   const [retrying, setRetrying] = useState<number | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<ExportRecord | null>(null);
@@ -337,7 +364,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
   const dossierUsages = EXPORT_USAGES.filter(u => u.section === 'dossiers' && isAllowed(u));
   const transfertUsages = EXPORT_USAGES.filter(u => u.section === 'transfert' && isAllowed(u));
 
-  const isLocked = (usage: ExportUsageDef) => usage.premiumOnly && planType === 'STANDARD';
+  const isLocked = (usage: ExportUsageDef) => usage.premiumOnly && premiumRefuse;
 
   // CIL completeness derived values
   const cilPct = cilSummary?.completion?.percentage ?? 0;
@@ -622,7 +649,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
         <ExportPrepareDrawer
           assetId={assetId}
           usage={drawerUsage}
-          planType={planType}
+          planType={premiumRefuse ? 'STANDARD' : planType}
           assetCategory={assetCategory}
           thumbnailUrl={thumbnailUrl}
           onClose={() => setDrawerUsage(null)}

@@ -34,6 +34,7 @@
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles, assetTypes, assets } from '@/db/schema';
+import { isRentedFromCharacteristics } from '@/lib/assets/occupancy';
 import {
   ASSET_FAMILIES,
   getDocumentType,
@@ -294,7 +295,7 @@ async function loadVisibilityContext(
   if (assetIds.length > 0) scope.push(inArray(assets.id, assetIds));
 
   const rows = await db
-    .select({ code: assetTypes.code, isRented: assets.isRented })
+    .select({ code: assetTypes.code, keyCharacteristics: assets.keyCharacteristics })
     .from(assets)
     .leftJoin(assetTypes, eq(assets.assetTypeId, assetTypes.id))
     .where(and(...scope));
@@ -305,6 +306,7 @@ async function loadVisibilityContext(
 
   return {
     families: families.length > 0 ? [...new Set(families)] : [...ASSET_FAMILIES],
-    hasRentedAsset: rows.some((r) => r.isRented === true),
+    // « Mis en location » se lit sur l'usage du bien — seule donnée qui le dit.
+    hasRentedAsset: rows.some((r) => isRentedFromCharacteristics(r.keyCharacteristics)),
   };
 }

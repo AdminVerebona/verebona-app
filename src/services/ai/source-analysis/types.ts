@@ -47,14 +47,104 @@ export interface LinkCandidate {
 }
 
 /** Champ extrait, destiné au moteur de réconciliation (usage 2). */
+export type FactProvenance = 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS';
+
+/** Preuve d'une observation visuelle : où regarder, et ce qui y est vu. */
+export interface VisualEvidence {
+  page?: number;
+  imageIndex?: number;
+  /** Zone relative (0 à 1). */
+  region?: { x1: number; y1: number; x2: number; y2: number };
+  description: string;
+  /** Fichier observé (renseigné à la persistance). */
+  fileId?: number;
+}
+
+export interface VisualObservation {
+  description: string;
+  subject?: string;
+  confidence: EvidenceConfidence;
+  page?: number;
+  imageIndex?: number;
+  region?: { x1: number; y1: number; x2: number; y2: number };
+}
+
+export interface ExtractedTableCell {
+  row: number;
+  column: number;
+  rowHeader: string | null;
+  columnHeader: string | null;
+  columnPath: string[];
+  /** Valeur brute ; `null` pour une cellule vide. */
+  value: string | null;
+  normalized: string | null;
+  valueType: string | null;
+  colspan: number;
+  rowspan: number;
+  page: number | null;
+  confidence: EvidenceConfidence;
+}
+
+export interface ExtractedTable {
+  index: number;
+  title: string | null;
+  pageStart: number | null;
+  pageEnd: number | null;
+  columns: Array<{ header: string; path: string[] }>;
+  rowCount: number;
+  columnCount: number;
+  cells: ExtractedTableCell[];
+  confidence: EvidenceConfidence;
+  uncertain: boolean;
+  /** Incertitudes de structure (lecture, doublons, cellules hors grille). */
+  issues: string[];
+}
+
 export interface ExtractedField {
   fieldKey: string;
   value: unknown;
   normalizedValue?: string;
   confidence: EvidenceConfidence;
-  excerpt: string;
+  /**
+   * Extrait littéral de la source. Présent pour TEXT_EXTRACTION ; ABSENT pour
+   * VISUAL_ANALYSIS — une observation n'a pas de citation, et lui en fabriquer
+   * une ferait passer une interprétation pour un texte.
+   */
+  excerpt?: string;
+  /** Lu dans la source, ou observé sur l'image (défaut : lu). */
+  provenance?: FactProvenance;
+  visualEvidence?: VisualEvidence;
+  /** Cellule de tableau d'où provient la valeur (index dans `document.tables`). */
+  table?: { index: number; row: number; column: number };
   page?: number;
   selector?: string;
+  /** Fait générique : sujet (« Chaudière »), attribut (« puissance »), unité (« kW »). */
+  subject?: string;
+  attribute?: string;
+  label?: string;
+  unit?: string;
+  /** Période couverte (ISO), lorsque pertinent (contrat, relevé, garantie…). */
+  periodStart?: string;
+  periodEnd?: string;
+  /** Zone de la source (en-tête, tableau, rubrique…). */
+  section?: string;
+  /**
+   * Récurrence EXPLICITEMENT mentionnée par la source pour cette échéance
+   * (jamais déduite de connaissances générales).
+   */
+  recurrence?: ExtractedRecurrence;
+}
+
+/** Récurrence telle que la source l'énonce (T1) — le calcul des dates relève de T4. */
+export interface ExtractedRecurrence {
+  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  interval?: number;
+  startDate?: string;
+  endDate?: string;
+  occurrenceCount?: number;
+  /** Dates explicitement listées (échéancier). */
+  dates?: string[];
+  excerpt?: string;
 }
 
 /** Candidat d'événement, destiné au moteur agenda (usage 4). */
@@ -66,6 +156,8 @@ export interface AgendaCandidate {
   confidence: EvidenceConfidence;
   excerpt: string;
   originFieldKey?: string;
+  /** Récurrence démontrée par la source (EXPLICIT_SOURCE), le cas échéant. */
+  recurrence?: import('../agenda/rules/recurrence').RecurrenceSpec;
 }
 
 export type AnalysisWarningCode =
@@ -75,7 +167,11 @@ export type AnalysisWarningCode =
   | 'AMBIGUOUS_ASSET'
   | 'MULTI_ASSET_DOCUMENT'
   | 'LOW_CONFIDENCE_OVERALL'
-  | 'SOURCE_UNREACHABLE';
+  | 'SOURCE_UNREACHABLE'
+  /** Information écartée : lue sans extrait, ou observée sans preuve visuelle. */
+  | 'FIELD_WITHOUT_EVIDENCE'
+  /** Tableau dont la structure (associations ligne/colonne) est douteuse. */
+  | 'TABLE_STRUCTURE_UNCERTAIN';
 
 export interface AnalysisWarning {
   code: AnalysisWarningCode;
@@ -133,6 +229,10 @@ export interface SourceAnalysisResult {
     };
     description?: EvidenceValue<string>;
     transcription?: string;
+    /** Observations visuelles — jamais mêlées à la transcription. */
+    visual?: { summary?: string; observations: VisualObservation[] };
+    /** Tableaux structurés (ligne/colonne), validés par `normalizeTables`. */
+    tables?: ExtractedTable[];
     date?: EvidenceValue<string>;
     supplier?: EvidenceValue<SupplierCandidate>;
     amountCents?: EvidenceValue<number>;

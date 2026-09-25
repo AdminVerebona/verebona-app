@@ -147,6 +147,20 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 85,
   },
   {
+    // Rapprochement d'échéances incertain (T4) : « même échéance » ou
+    // « échéances différentes ». Relation propre à chaque couple événement
+    // existant + échéance détectée (relationKey `duplicate:…`).
+    code: 'AGENDA-DUPLICATE',
+    targetType: 'AGENDA_ITEM',
+    relationKey: 'duplicate',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'S’agit-il de la même échéance ?',
+    dueSoonDays: 14,
+    businessImpact: 75,
+  },
+  {
     code: 'DATA-REGISTRATION',
     targetType: 'ASSET',
     fieldKey: 'registrationNumber',
@@ -208,20 +222,8 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'S’agit-il du même fournisseur ?',
     businessImpact: 45,
   },
-
-  // ── §6.1 Attribut immobilier « Bien mis en location » ───────────────────
-  {
-    code: 'ASSET-RENTED',
-    targetType: 'ASSET',
-    fieldKey: 'isRented',
-    arbitratePriority: 'DO_NEXT',
-    // Le champ a une valeur système par défaut (Non) : il n'est jamais vide,
-    // donc jamais « à compléter ». Seule une divergence s'arbitre.
-    completePriority: null,
-    allowNotApplicable: false,
-    question: 'Ce bien est-il mis en location ?',
-    businessImpact: 50,
-  },
+  // L'ancienne règle ASSET-RENTED (« Bien mis en location ») est retirée avec
+  // l'attribut : l'usage « Mis en location » de la fiche porte seul l'information.
 ] as const;
 
 const RULE_BY_CODE = new Map<string, ProcessingRule>(

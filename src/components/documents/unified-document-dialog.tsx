@@ -993,8 +993,10 @@ export function UnifiedDocumentDialog({
       <Sheet open={open && !bloque} onOpenChange={handleClose}>
         <SheetContent
           className="p-0 flex flex-col"
-          style={{ maxWidth: isMobile ? undefined : 580, width: isMobile ? undefined : '580px', height: isMobile ? '95dvh' : '100dvh' }}
-          side={isMobile ? 'bottom' : 'right'}
+          // À droite sur tous les écrans (sur mobile : pleine largeur). Le
+          // panneau montait par le bas sur mobile ; règle : jamais par le bas.
+          style={{ maxWidth: isMobile ? '100vw' : 580, width: isMobile ? '100vw' : '580px', height: '100dvh' }}
+          side="right"
         >
           <>
             {/* Header — fixed */}

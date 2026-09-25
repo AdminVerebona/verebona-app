@@ -61,6 +61,19 @@ export function isPlanCode(value: unknown): value is PlanCode {
   return typeof value === 'string' && (PLAN_CODES as string[]).includes(value);
 }
 
+/** Rang des offres : une montee en gamme va vers un rang superieur. */
+export const PLAN_RANK: Record<PlanCode, number> = {
+  standard: 1,
+  premium: 2,
+  premium_duo: 3,
+};
+
+/** Vrai si `to` est une offre superieure a `from` (montee en gamme). */
+export function isUpgrade(from: string | null | undefined, to: string): boolean {
+  if (!from || !isPlanCode(from) || !isPlanCode(to)) return false;
+  return PLAN_RANK[to] > PLAN_RANK[from];
+}
+
 /** Garde de type : la periodicite recue est-elle valide ? */
 export function isBillingPeriod(value: unknown): value is BillingPeriod {
   return typeof value === 'string' && (BILLING_PERIODS as string[]).includes(value);

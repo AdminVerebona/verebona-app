@@ -23,11 +23,17 @@ import { db } from '@/db';
 import {
   accountMemberships,
   accounts,
+  assetFiles,
+  assetTransmissions,
   legalAcceptances,
+  pendingBlobDeletions,
   scheduledAccountDeletions,
+  supplierReviewItems,
+  suppliers,
   users,
+  withdrawalRequests,
 } from '@/db/schema';
-import { and, eq, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 
 /** Délai avant suppression effective, en jours (§13.3). */
 export const DELETION_DELAY_DAYS = 30;
@@ -285,19 +291,52 @@ export interface ExecutionResult {
   status: 'executed' | 'skipped' | 'failed';
   reason?: string;
   /** Preuves conservées, dénombrées après suppression. */
-  preserved?: { legalAcceptances: number };
+  preserved?: { legalAcceptances: number; withdrawalRequests: number };
+  /** Périmètre supprimé. */
+  deleted?: { users: number[]; accounts: number[]; files: number };
 }
+
+/** Tables de preuves qui survivent (pseudonymisées) — exclues du contrôle d'orphelins. */
+const SURVIVING_TABLES = new Set([
+  'legal_acceptances', 'withdrawal_requests', 'withdrawal_events', 'scheduled_account_deletions',
+  'pending_blob_deletions',
+]);
+const ACCOUNT_COLUMNS = ['account_id', 'owner_account_id'];
+const USER_COLUMNS = ['user_id', 'owner_user_id', 'billing_owner_user_id', 'initiator_user_id', 'recipient_user_id', 'created_by_user_id'];
 
 /**
  * Exécute une suppression arrivée à échéance.
  *
- * Trois refus explicites, et c'est volontaire :
+ * ══════════════════════════════════════════════════════════════════════════
+ * COMPTE DUO : TOUT LE PÉRIMÈTRE, LES DEUX UTILISATEURS
  *
- *   • compte partagé — supprimer le titulaire d'un compte Duo emporterait les
- *     données du second membre, qui n'a rien demandé. Le cas doit être traité
- *     par un transfert de propriété, pas par une cascade ;
- *   • compte à rebours annulé entre le balayage et l'exécution ;
- *   • disparition d'une preuve à conserver, détectée après coup.
+ * L'exécution refusait tout compte comptant un autre membre — donc tout
+ * compte Duo, qui ne pouvait jamais être supprimé. Dans le modèle Duo,
+ * l'utilisateur secondaire est invité sur le compte du titulaire et ne peut
+ * appartenir à aucun autre : à l'échéance, le compte, ses données, ses
+ * adhésions, le titulaire ET l'utilisateur invité sont supprimés. Pas de
+ * transfert de propriété, pas d'utilisateur conservé.
+ *
+ * Seule reste refusée une suppression COLLATÉRALE : si un des utilisateurs
+ * possède ou partage un autre compte avec des personnes hors du périmètre
+ * (incohérence du modèle), rien n'est supprimé et l'anomalie est tracée.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Ordre, dans une seule transaction :
+ *   1. périmètre : utilisateurs (titulaire + membres) et comptes qu'ils
+ *      possèdent ;
+ *   2. fichiers du stockage mis en file de purge (`pending_blob_deletions`,
+ *      cron purge-blobs) — sans quoi la cascade effacerait les références
+ *      et laisserait les objets S3 orphelins ;
+ *   3. preuves à conserver : acceptations des CGVU pseudonymisées ;
+ *      demandes de rétractation conservées telles quelles (déclaration
+ *      figée, §7.4), détachées par la cascade ;
+ *   4. lignes des tables sans cascade (fournisseurs, revues fournisseurs,
+ *      transmissions de biens) ;
+ *   5. suppression des utilisateurs : la cascade du schéma emporte comptes,
+ *      données métier, adhésions, compte Duo ;
+ *   6. contrôles : preuves toujours présentes, aucune donnée orpheline
+ *      rattachée aux comptes ou utilisateurs supprimés — sinon annulation.
  *
  * @param dryRun simule sans rien écrire. Le premier passage en production
  *   devrait toujours se faire ainsi.
@@ -335,24 +374,38 @@ export async function executeScheduledDeletion(
     return { status: 'executed', reason: 'ACCOUNT_ALREADY_GONE' };
   }
 
-  // Compte partagé : refus net plutôt qu'une suppression collatérale.
-  const otherMembers = await db
-    .select({ id: accountMemberships.id })
+  // 1. Périmètre : titulaire + tous les utilisateurs rattachés au compte.
+  const memberRows = await db
+    .select({ userId: accountMemberships.userId })
+    .from(accountMemberships)
+    .where(and(eq(accountMemberships.accountId, account.id), isNotNull(accountMemberships.userId)));
+  const userIds = [...new Set([account.ownerUserId, ...memberRows.map((m) => m.userId as number)])];
+
+  // Comptes que la cascade emportera (possédés par un utilisateur du périmètre).
+  const ownedAccounts = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(inArray(accounts.ownerUserId, userIds));
+  const accountIds = [...new Set([account.id, ...ownedAccounts.map((a) => a.id)])];
+
+  // Suppression collatérale ? Un compte du périmètre partagé avec quelqu'un
+  // hors périmètre, ou un utilisateur membre d'un compte hors périmètre.
+  const outsiders = await db
+    .select({ accountId: accountMemberships.accountId, userId: accountMemberships.userId })
     .from(accountMemberships)
     .where(
-      and(
-        eq(accountMemberships.accountId, account.id),
-        or(
-          isNull(accountMemberships.userId),
-          sql`${accountMemberships.userId} <> ${account.ownerUserId}`,
-        ),
+      or(
+        and(inArray(accountMemberships.accountId, accountIds), isNotNull(accountMemberships.userId),
+          sql`${accountMemberships.userId} NOT IN (${sql.join(userIds.map((u) => sql`${u}`), sql`, `)})`),
+        and(inArray(accountMemberships.userId, userIds),
+          sql`${accountMemberships.accountId} NOT IN (${sql.join(accountIds.map((a) => sql`${a}`), sql`, `)})`),
       ),
     );
 
-  if (otherMembers.length > 0) {
+  if (outsiders.length > 0) {
     const reason =
-      `Compte partagé (${otherMembers.length} autre(s) membre(s)) : suppression refusée. ` +
-      'Transférez la propriété ou retirez les membres avant de supprimer.';
+      `Suppression collatérale refusée : ${outsiders.length} rattachement(s) hors du périmètre du compte ` +
+      `(utilisateurs ${userIds.join(', ')}). Le modèle Duo interdit qu'un membre appartienne à un autre compte.`;
     if (!options.dryRun) {
       await db
         .update(scheduledAccountDeletions)
@@ -364,66 +417,116 @@ export async function executeScheduledDeletion(
   }
 
   if (options.dryRun) {
-    return { status: 'skipped', reason: 'DRY_RUN' };
+    return { status: 'skipped', reason: 'DRY_RUN', deleted: { users: userIds, accounts: accountIds, files: 0 } };
   }
 
   try {
-    const preserved = await db.transaction(async (tx) => {
-      // Preuves à conserver, dénombrées AVANT la cascade.
-      const before = await tx
-        .select({ n: sql<number>`count(*)::int` })
-        .from(legalAcceptances)
-        .where(eq(legalAcceptances.userId, account.ownerUserId));
-      const expectedAcceptances = before[0]?.n ?? 0;
-
-      // Pseudonymisation préalable (CDC CGVU §14.2) : la preuve survit, mais
-      // cesse d'être nominative. La faire AVANT la cascade évite de dépendre
-      // de l'ordre dans lequel PostgreSQL applique `SET NULL`.
-      await tx
-        .update(legalAcceptances)
-        .set({ userId: null, ipAddress: null, userAgent: null })
-        .where(eq(legalAcceptances.userId, account.ownerUserId));
-
-      // La cascade fait le reste : quarante tables suivent `accounts`, et
-      // `accounts` suit `users`. Le schéma est la seule liste qui vaille.
-      await tx.delete(users).where(eq(users.id, account.ownerUserId));
-
-      // Garde-fou : les preuves pseudonymisées doivent toujours être là.
-      const after = await tx
-        .select({ n: sql<number>`count(*)::int` })
-        .from(legalAcceptances)
-        .where(isNull(legalAcceptances.userId));
-
-      if ((after[0]?.n ?? 0) < expectedAcceptances) {
-        throw new DeletionError(
-          'PROOF_LOST',
-          `${expectedAcceptances} preuve(s) d'acceptation attendue(s), ` +
-          `${after[0]?.n ?? 0} trouvée(s) après suppression. Transaction annulée.`,
+    const outcome = await db.transaction(async (tx) => {
+      // 2. Objets du stockage : mis en file de purge AVANT que la cascade
+      //    n'efface leurs références.
+      const files = await tx
+        .select({ id: assetFiles.id, s3Key: assetFiles.s3Key })
+        .from(assetFiles)
+        .where(and(inArray(assetFiles.accountId, accountIds), isNotNull(assetFiles.s3Key)));
+      if (files.length > 0) {
+        await tx.insert(pendingBlobDeletions).values(
+          files.map((f) => ({ fileId: null, storagePath: f.s3Key as string, scheduledFor: now, createdAt: now })),
         );
       }
 
-      return { legalAcceptances: expectedAcceptances };
+      // 3. Preuves à conserver, dénombrées AVANT la cascade, puis
+      //    pseudonymisées (CDC CGVU §14.2) : elles survivent sans être
+      //    nominatives. Faites AVANT la cascade pour ne pas dépendre de
+      //    l'ordre d'application des `SET NULL`.
+      const [acc] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(legalAcceptances)
+        .where(inArray(legalAcceptances.userId, userIds));
+      const expectedAcceptances = acc?.n ?? 0;
+      await tx
+        .update(legalAcceptances)
+        .set({ userId: null, ipAddress: null, userAgent: null })
+        .where(inArray(legalAcceptances.userId, userIds));
+
+      // Demandes de rétractation : preuve d'un acte juridique, conservée
+      // telle quelle — la déclaration est figée en base (trigger
+      // withdrawal_requests_guard, CDC rétractation §7.4). Seuls ses liens
+      // vers l'utilisateur et le compte tombent à NULL par la cascade.
+      const withdrawals = await tx
+        .select({ id: withdrawalRequests.id })
+        .from(withdrawalRequests)
+        .where(or(inArray(withdrawalRequests.userId, userIds), inArray(withdrawalRequests.accountId, accountIds)));
+
+      // 4. Tables sans cascade vers les comptes / utilisateurs : sans ces
+      //    suppressions explicites, la cascade échouerait (clé étrangère).
+      await tx.delete(supplierReviewItems).where(inArray(supplierReviewItems.accountId, accountIds));
+      await tx.delete(suppliers).where(inArray(suppliers.accountId, accountIds));
+      await tx.delete(assetTransmissions).where(
+        or(inArray(assetTransmissions.initiatorUserId, userIds), inArray(assetTransmissions.recipientUserId, userIds)),
+      );
+
+      // 5. La cascade fait le reste : comptes, données métier, adhésions,
+      //    compte Duo, sessions… Le schéma est la seule liste qui vaille.
+      await tx.delete(users).where(inArray(users.id, userIds));
+
+      // 6a. Les preuves pseudonymisées doivent toujours être là.
+      const [after] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(legalAcceptances)
+        .where(isNull(legalAcceptances.userId));
+      if ((after?.n ?? 0) < expectedAcceptances) {
+        throw new DeletionError(
+          'PROOF_LOST',
+          `${expectedAcceptances} preuve(s) d'acceptation attendue(s), ` +
+          `${after?.n ?? 0} trouvée(s) après suppression. Transaction annulée.`,
+        );
+      }
+
+      // 6b. Aucune donnée orpheline : toute colonne « compte » ou
+      //     « utilisateur » du schéma qui pointe encore vers le périmètre
+      //     supprimé — tables sans clé étrangère (jetons révoqués, traces
+      //     techniques…) — est purgée, puis le contrôle doit revenir vide.
+      const residual = await findOrphans(tx, accountIds, userIds);
+      for (const o of residual) {
+        const ids = ACCOUNT_COLUMNS.includes(o.column) ? accountIds : userIds;
+        await tx.execute(sql`
+          DELETE FROM ${sql.identifier(o.table)}
+           WHERE ${sql.identifier(o.column)} IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})
+        `);
+      }
+      const orphans = await findOrphans(tx, accountIds, userIds);
+      if (orphans.length > 0) {
+        throw new DeletionError(
+          'ORPHANS_LEFT',
+          `Données orphelines après suppression : ${orphans.map((o) => `${o.table}.${o.column}=${o.count}`).join(', ')}. Transaction annulée.`,
+        );
+      }
+
+      return {
+        preserved: { legalAcceptances: expectedAcceptances, withdrawalRequests: withdrawals.length },
+        files: files.length,
+        residual: residual.map((o) => `${o.table}.${o.column}`),
+      };
     });
 
-    // Le compte à rebours a été emporté par la cascade : on le réécrit hors
-    // transaction, pour garder la trace exigée par le §17.
-    await db.insert(scheduledAccountDeletions).values({
-      accountId: schedule.accountId,
-      userId: null,
-      reason: schedule.reason,
-      confirmedAt: schedule.confirmedAt,
-      scheduledAt: schedule.scheduledAt,
-      status: 'EXECUTED',
-      executedAt: now,
-      createdAt: schedule.createdAt,
-      updatedAt: now,
-    }).onConflictDoNothing();
+    // Le compte à rebours survit à la cascade (plus de clé étrangère vers le
+    // compte, migration 0144) : il porte la trace exigée par le §17.
+    await db
+      .update(scheduledAccountDeletions)
+      .set({ status: 'EXECUTED', executedAt: now, userId: null, updatedAt: now })
+      .where(eq(scheduledAccountDeletions.id, scheduleId));
 
     console.info(
-      `[deletion] compte ${account.id} supprimé — ` +
-      `${preserved.legalAcceptances} preuve(s) d'acceptation conservée(s).`,
+      `[deletion] compte ${account.id} supprimé — utilisateurs ${userIds.join(', ')}, ` +
+      `comptes ${accountIds.join(', ')}, ${outcome.files} fichier(s) en purge, ` +
+      `${outcome.preserved.legalAcceptances} preuve(s) d'acceptation conservée(s)` +
+      (outcome.residual.length ? ` ; résidus sans cascade purgés : ${outcome.residual.join(', ')}.` : '.'),
     );
-    return { status: 'executed', preserved };
+    return {
+      status: 'executed',
+      preserved: outcome.preserved,
+      deleted: { users: userIds, accounts: accountIds, files: outcome.files },
+    };
   } catch (e) {
     const reason = (e as Error).message;
     await db
@@ -433,4 +536,39 @@ export async function executeScheduledDeletion(
     console.error(`[deletion] compte ${account.id} : échec — ${reason}`);
     return { status: 'failed', reason };
   }
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Lignes restantes rattachées aux comptes / utilisateurs supprimés, sur toutes
+ * les tables du schéma (hors tables de preuves pseudonymisées).
+ */
+async function findOrphans(
+  tx: Tx,
+  accountIds: number[],
+  userIds: number[],
+): Promise<Array<{ table: string; column: string; count: number }>> {
+  const cols = await tx.execute(sql`
+    SELECT table_name, column_name FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND column_name IN (${sql.join([...ACCOUNT_COLUMNS, ...USER_COLUMNS].map((c) => sql`${c}`), sql`, `)})
+       AND data_type IN ('integer', 'bigint')
+  `) as unknown as Array<{ table_name: string; column_name: string }>;
+  const rows = Array.isArray(cols) ? cols : ((cols as unknown as { rows?: typeof cols }).rows ?? []);
+
+  const found: Array<{ table: string; column: string; count: number }> = [];
+  for (const { table_name: table, column_name: column } of rows) {
+    if (SURVIVING_TABLES.has(table)) continue;
+    const ids = ACCOUNT_COLUMNS.includes(column) ? accountIds : userIds;
+    if (ids.length === 0) continue;
+    const res = await tx.execute(sql`
+      SELECT count(*)::int AS n FROM ${sql.identifier(table)}
+       WHERE ${sql.identifier(column)} IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})
+    `) as unknown as Array<{ n: number }>;
+    const r = Array.isArray(res) ? res : ((res as unknown as { rows?: typeof res }).rows ?? []);
+    const n = Number(r[0]?.n ?? 0);
+    if (n > 0) found.push({ table, column, count: n });
+  }
+  return found;
 }

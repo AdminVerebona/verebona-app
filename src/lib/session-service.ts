@@ -6,6 +6,8 @@ import { db } from '@/db';
 import { users, accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from './server-cache';
+import { getUserSessionCutoff, isIssuedBefore } from '@/db';
+import { sessionCutoffCacheKey } from './auth/session-cutoff';
 
 /**
  * Session payload extrait du JWT.
@@ -73,6 +75,28 @@ export class SessionService {
 
     if (payload.status === 'SUSPENDED' || payload.status === 'DELETED') {
       throw new Error('ACCOUNT_SUSPENDED');
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // SESSIONS RÉVOQUÉES (changement / réinitialisation de mot de passe)
+    //
+    // Un jeton d'accès émis avant la révocation globale de l'utilisateur est
+    // refusé : les autres appareils sont déconnectés de fait, sans attendre
+    // l'expiration du jeton. Borne mise en cache 60 s (0 = aucune) ; le cache
+    // local est vidé à la révocation, les autres instances le suivent au plus
+    // tard 60 s après.
+    // ══════════════════════════════════════════════════════════════════════
+    {
+      const key = sessionCutoffCacheKey(payload.userId);
+      let cutoffMs = serverCacheGet<number>(key);
+      if (cutoffMs == null) {
+        const cutoff = await getUserSessionCutoff(payload.userId).catch(() => null);
+        cutoffMs = cutoff ? cutoff.getTime() : 0;
+        serverCacheSet(key, cutoffMs, 60_000);
+      }
+      if (cutoffMs > 0 && isIssuedBefore(payload, new Date(cutoffMs))) {
+        throw new Error('INVALID_TOKEN');
+      }
     }
 
     // Contrôle de fin de grâce réactive — cache 60s pour éviter une query DB

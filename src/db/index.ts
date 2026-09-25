@@ -152,6 +152,17 @@ export async function ensureRevokedTokensTable(): Promise<void> {
     await client`
       CREATE INDEX IF NOT EXISTS revoked_tokens_expires_at_idx ON revoked_tokens (expires_at)
     `;
+    // Révocation globale par utilisateur (changement / réinitialisation de mot
+    // de passe) : tout jeton émis AVANT `revoked_before` est invalide, sans
+    // avoir à connaître chaque jeton émis.
+    await client`
+      CREATE TABLE IF NOT EXISTS user_session_revocations (
+        user_id        INTEGER     PRIMARY KEY,
+        revoked_before TIMESTAMPTZ NOT NULL,
+        reason         TEXT,
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `;
     _revokedTableReady = true;
   } catch (e) {
     console.warn('[db] ensureRevokedTokensTable warning:', (e as Error).message);
@@ -169,12 +180,81 @@ export async function revokeToken(tokenHash: string, userId: number, expiresAt: 
   await client`DELETE FROM revoked_tokens WHERE expires_at < now()`.catch(() => null);
 }
 
+/**
+ * Révoque un jeton de façon ATOMIQUE et dit si c'est cet appel qui l'a fait.
+ *
+ * `false` : le jeton était déjà révoqué — une autre requête l'a consommé
+ * entre-temps. Pour une rotation, c'est une réutilisation : elle ne doit pas
+ * produire une seconde session. Lève si la base ne répond pas (la rotation
+ * ne doit alors pas être annoncée comme réussie).
+ */
+export async function revokeTokenOnce(tokenHash: string, userId: number, expiresAt: Date): Promise<boolean> {
+  await ensureRevokedTokensTable();
+  const rows = await client<{ id: number }[]>`
+    INSERT INTO revoked_tokens (token_hash, user_id, expires_at)
+    VALUES (${tokenHash}, ${userId}, ${expiresAt.toISOString()})
+    ON CONFLICT (token_hash) DO NOTHING
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
 export async function isTokenRevoked(tokenHash: string): Promise<boolean> {
   await ensureRevokedTokensTable();
   const rows = await client<{ id: number }[]>`
     SELECT id FROM revoked_tokens WHERE token_hash = ${tokenHash} LIMIT 1
   `;
   return rows.length > 0;
+}
+
+/**
+ * Invalide TOUTES les sessions d'un utilisateur : tout jeton (accès ou
+ * renouvellement) émis avant maintenant est refusé — y compris par
+ * `/api/auth/refresh`, qui ne peut plus en tirer une nouvelle session.
+ *
+ * Même système que `revokeToken` (table `revoked_tokens`), étendu d'une
+ * borne par utilisateur : les jetons émis ne sont pas stockés, il n'y a donc
+ * pas de liste à parcourir.
+ *
+ * Rend la borne appliquée : un jeton émis APRÈS elle (session conservée
+ * volontairement) reste valide.
+ */
+export async function revokeAllUserSessions(userId: number, reason: string): Promise<Date> {
+  await ensureRevokedTokensTable();
+  // Horloge de l'APPLICATION, celle qui date les jetons (`iatMs`) : un écart
+  // d'horloge avec la base ne doit ni sauver un ancien jeton, ni invalider la
+  // session neuve émise juste après.
+  const at = new Date();
+  const rows = await client<{ revoked_before: Date }[]>`
+    INSERT INTO user_session_revocations (user_id, revoked_before, reason, updated_at)
+    VALUES (${userId}, ${at.toISOString()}, ${reason}, now())
+    ON CONFLICT (user_id) DO UPDATE
+      SET revoked_before = GREATEST(user_session_revocations.revoked_before, EXCLUDED.revoked_before),
+          reason = EXCLUDED.reason, updated_at = now()
+    RETURNING revoked_before
+  `;
+  return new Date(rows[0].revoked_before);
+}
+
+/** Borne de révocation globale de l'utilisateur, ou `null`. */
+export async function getUserSessionCutoff(userId: number): Promise<Date | null> {
+  await ensureRevokedTokensTable();
+  const rows = await client<{ revoked_before: Date }[]>`
+    SELECT revoked_before FROM user_session_revocations WHERE user_id = ${userId} LIMIT 1
+  `;
+  return rows[0] ? new Date(rows[0].revoked_before) : null;
+}
+
+/**
+ * Le jeton a-t-il été émis avant la révocation globale de son utilisateur ?
+ * `iatMs` (milliseconde d'émission) est préféré à `iat` (seconde) : un jeton
+ * émis dans la même seconde que la révocation — la session conservée — ne
+ * doit pas être confondu avec un ancien.
+ */
+export function isIssuedBefore(payload: { iat?: number; iatMs?: number }, cutoff: Date | null): boolean {
+  if (!cutoff) return false;
+  const issuedMs = typeof payload.iatMs === 'number' ? payload.iatMs : (payload.iat ?? 0) * 1000;
+  return issuedMs <= cutoff.getTime();
 }
 
 /** SHA-256 hex hash of a token string (crypto available in Node.js 15+) */

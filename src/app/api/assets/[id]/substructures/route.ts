@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { assetSupportsStructuralFeatures } from '@/types/domain';
 
 export async function GET(
@@ -95,6 +96,17 @@ export async function POST(
     // Vérifier si le bien supporte les fonctionnalités structurelles
     if (!assetSupportsStructuralFeatures(assetData)) {
       return apiError(400, 'FORBIDDEN', 'Ce type de bien ne supporte pas la gestion des pièces');
+    }
+
+    // Gestion des pièces : Premium et Premium Duo (essai compris). Le client
+    // ouvre la fenêtre d'offre avant la saisie ; ce contrôle en est la
+    // garantie, et son refus est lu par `parseWriteBlocked`.
+    const premium = await canUsePremiumFeature(session.currentAccountId);
+    if (!premium.allowed) {
+      return NextResponse.json(
+        { error: premium.reason, code: premium.reason, message: premium.message },
+        { status: 403 },
+      );
     }
 
     const body = await request.json();

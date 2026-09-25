@@ -21,9 +21,10 @@
 import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import {
-  dedupeKey, decideQueueing, afterFailure,
+  dedupeKey, decideQueueing, afterFailure, MAX_ATTEMPTS,
   type JobOrigin, type JobScope, type JobStatus, type QueueDecision,
 } from './queue-policy';
+import { abortLocalExecutions } from './execution-control';
 
 type Row = Record<string, unknown>;
 
@@ -46,6 +47,11 @@ export interface QueuedJob {
   finishedAt: Date | null;
   /** Contexte de reprise : identifiants et libellés, jamais de données métier. */
   payload: Record<string, unknown> | null;
+  /** Jeton de l'exécution en cours (tiré à chaque prélèvement). */
+  executionId: string | null;
+  workerId: string | null;
+  leaseExpiresAt: Date | null;
+  recoveredCount: number;
 }
 
 function toJob(r: Row): QueuedJob {
@@ -67,13 +73,17 @@ function toJob(r: Row): QueuedJob {
     startedAt: r.started_at ? new Date(String(r.started_at)) : null,
     finishedAt: r.finished_at ? new Date(String(r.finished_at)) : null,
     payload: (r.payload ?? null) as Record<string, unknown> | null,
+    executionId: r.execution_id == null ? null : String(r.execution_id),
+    workerId: r.worker_id == null ? null : String(r.worker_id),
+    leaseExpiresAt: r.lease_expires_at ? new Date(String(r.lease_expires_at)) : null,
+    recoveredCount: Number(r.recovered_count ?? 0),
   };
 }
 
 const COLS = `id, treatment, account_id, target_type, target_id, status, origin,
               trigger_code, attempts, last_error, available_at,
               coalesce_requested, head_priority, created_at, started_at, finished_at,
-              payload`;
+              payload, execution_id, worker_id, lease_expires_at, recovered_count`;
 
 // ── Mise en file ────────────────────────────────────────────────────────────
 
@@ -130,11 +140,22 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   }
 
   const scope = input.scope ?? {};
+  // ══════════════════════════════════════════════════════════════════════
+  // LE PAYLOAD FAIT PARTIE DE L'INSERTION
+  //
+  // L'instruction déclarait 7 colonnes / 7 paramètres alors que 8 valeurs
+  // étaient transmises (la 8e : le payload). Le contexte de reprise — compte,
+  // cible, origine, utilisateur à l'origine — n'était donc pas garanti en base,
+  // et un job repris après redémarrage perdait son utilisateur et son origine.
+  //
+  // `RETURNING payload` : la mise en file n'est acquittée qu'une fois le
+  // contexte relu tel qu'écrit (SCR-08).
+  // ══════════════════════════════════════════════════════════════════════
   const rows = await pgClient.unsafe(
     `INSERT INTO ai_job_queue
-       (treatment, account_id, target_type, target_id, dedupe_key, origin, trigger_code)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id`,
+       (treatment, account_id, target_type, target_id, dedupe_key, origin, trigger_code, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+     RETURNING id, payload`,
     [
       input.treatment,
       scope.accountId ?? null,
@@ -150,10 +171,22 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
     // SCR-08 : ne pas acquitter une mise en file qui n'a pas abouti.
     throw new Error('[queue] Mise en file non persistée : la demande n\'est pas acquittée.');
   }
+  if (input.payload && (row.payload == null || typeof row.payload !== 'object')) {
+    throw new Error(`[queue] Job ${row.id} persisté sans son contexte de reprise : la demande n'est pas acquittée.`);
+  }
   return { decision, jobId: Number(row.id) };
 }
 
 // ── Prélèvement et fin d'exécution ──────────────────────────────────────────
+
+/** Durée du bail d'exécution, renouvelé par l'exécutant tant qu'il travaille. */
+export const LEASE_SECONDS = Number(process.env.AI_QUEUE_LEASE_SECONDS ?? 300);
+
+/**
+ * Délai au-delà duquel un RUNNING SANS bail (ligne antérieure à la migration
+ * 0141) est considéré abandonné.
+ */
+const LEGACY_STALE_SECONDS = Number(process.env.AI_QUEUE_LEGACY_STALE_SECONDS ?? 3600);
 
 /**
  * Prélève le prochain job d'un traitement, ou `null`.
@@ -161,8 +194,16 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
  * Rend `null` — plutôt que de lever — quand le traitement est désactivé,
  * suspendu ou sous arrêt d'urgence : ce n'est pas une anomalie, c'est l'état
  * normal d'un traitement coupé, et le boucleur ne doit pas le traiter en erreur.
+ *
+ * Le prélèvement tire un jeton d'exécution et ouvre un bail : seule
+ * l'exécution qui détient le jeton peut clore le job, et un bail non
+ * renouvelé signale une exécution abandonnée (`recoverAbandonedJobs`).
  */
-export async function claimNext(treatment: Treatment): Promise<QueuedJob | null> {
+export async function claimNext(
+  treatment: Treatment,
+  workerId: string | null = null,
+  leaseSeconds: number = LEASE_SECONDS,
+): Promise<QueuedJob | null> {
   if (!(await canStart(treatment))) return null;
 
   const rows = await pgClient.unsafe(
@@ -175,14 +216,82 @@ export async function claimNext(treatment: Treatment): Promise<QueuedJob | null>
      )
      UPDATE ai_job_queue
         SET status = 'RUNNING', started_at = NOW(),
-            attempts = attempts + 1, head_priority = FALSE
+            attempts = attempts + 1, head_priority = FALSE,
+            execution_id = gen_random_uuid(), worker_id = $2,
+            lease_expires_at = NOW() + ($3 || ' seconds')::interval,
+            heartbeat_at = NOW()
       WHERE id IN (SELECT id FROM suivant)
       RETURNING ${COLS}`,
-    [treatment] as never[],
+    [treatment, workerId, String(leaseSeconds)] as never[],
   );
 
   const r = (rows as unknown as Row[])[0];
   return r ? toJob(r) : null;
+}
+
+/**
+ * Renouvelle le bail d'une exécution.
+ *
+ * Rend `false` si l'exécution n'est plus titulaire du job (reprise ailleurs,
+ * interrompue par l'administration) : elle doit alors s'arrêter sans écrire.
+ */
+export async function renewLease(
+  jobId: number,
+  executionId: string,
+  leaseSeconds: number = LEASE_SECONDS,
+): Promise<boolean> {
+  const rows = await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET lease_expires_at = NOW() + ($3 || ' seconds')::interval, heartbeat_at = NOW()
+      WHERE id = $1 AND execution_id = $2 AND status = 'RUNNING'
+      RETURNING id`,
+    [jobId, executionId, String(leaseSeconds)] as never[],
+  );
+  return (rows as unknown as Row[]).length > 0;
+}
+
+/**
+ * Reprend les exécutions abandonnées (processus arrêté brutalement).
+ *
+ * Seuls les RUNNING dont le bail a EXPIRÉ sont visés — un RUNNING vivant sur
+ * une autre instance renouvelle son bail et n'est jamais touché. Les lignes
+ * antérieures au bail (sans `lease_expires_at`) le sont après
+ * `LEGACY_STALE_SECONDS`.
+ *
+ * Une seule instruction, `FOR UPDATE SKIP LOCKED` : plusieurs instances qui
+ * démarrent ensemble ne reprennent jamais deux fois le même job.
+ *
+ * Tentatives : le prélèvement interrompu a consommé sa tentative (le
+ * compteur n'est pas réécrit). Un job qui a épuisé ses tentatives passe en
+ * FAILED au lieu de boucler sur un travail qui fait tomber le processus.
+ * Payload, compte et cible sont conservés ; le jeton est révoqué.
+ */
+export async function recoverAbandonedJobs(): Promise<Array<{ id: number; status: JobStatus }>> {
+  const rows = await pgClient.unsafe(
+    `WITH abandonnes AS (
+       SELECT id FROM ai_job_queue
+        WHERE status = 'RUNNING'
+          AND (
+            (lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
+            OR (lease_expires_at IS NULL AND started_at < NOW() - ($1 || ' seconds')::interval)
+          )
+        FOR UPDATE SKIP LOCKED
+     )
+     UPDATE ai_job_queue q
+        SET status = CASE WHEN q.attempts >= $2 THEN 'FAILED' ELSE 'PENDING' END,
+            finished_at = CASE WHEN q.attempts >= $2 THEN NOW() ELSE NULL END,
+            last_error = CASE WHEN q.attempts >= $2
+              THEN 'exécution abandonnée (processus arrêté) — tentatives épuisées'
+              ELSE 'exécution abandonnée (processus arrêté) — reprise automatique' END,
+            execution_id = NULL, worker_id = NULL, lease_expires_at = NULL,
+            started_at = NULL, head_priority = TRUE, available_at = NOW(),
+            recovered_count = q.recovered_count + 1
+       FROM abandonnes a
+      WHERE q.id = a.id
+      RETURNING q.id, q.status`,
+    [String(LEGACY_STALE_SECONDS), MAX_ATTEMPTS] as never[],
+  );
+  return (rows as unknown as Row[]).map((r) => ({ id: Number(r.id), status: String(r.status) as JobStatus }));
 }
 
 /**
@@ -192,15 +301,23 @@ export async function claimNext(treatment: Treatment): Promise<QueuedJob | null>
  * nouveau job est créé — et un seul, quel que soit le nombre d'événements
  * survenus entre-temps.
  */
-export async function completeJob(jobId: number): Promise<{ requeued: boolean }> {
+export async function completeJob(
+  jobId: number,
+  executionId: string | null = null,
+): Promise<{ requeued: boolean; stale?: boolean }> {
+  // Seule l'exécution titulaire peut clore : une exécution reprise ailleurs
+  // ou interrompue ne passe jamais le job en DONE.
   const rows = await pgClient.unsafe(
     `UPDATE ai_job_queue
-        SET status = 'DONE', finished_at = NOW()
-      WHERE id = $1
+        SET status = 'DONE', finished_at = NOW(), execution_id = NULL, lease_expires_at = NULL
+      WHERE id = $1 AND status = 'RUNNING'
+        AND ($2::uuid IS NULL OR execution_id = $2::uuid)
       RETURNING ${COLS}`,
-    [jobId] as never[],
+    [jobId, executionId] as never[],
   );
-  const job = toJob((rows as unknown as Row[])[0]);
+  const row = (rows as unknown as Row[])[0];
+  if (!row) return { requeued: false, stale: true };
+  const job = toJob(row);
   if (!job.coalesceRequested) return { requeued: false };
 
   await enqueue({
@@ -216,7 +333,11 @@ export async function completeJob(jobId: number): Promise<{ requeued: boolean }>
 }
 
 /** Échec d'une tentative : retour en file avec temporisation, ou échec définitif. */
-export async function failJob(jobId: number, error: string): Promise<{ permanent: boolean }> {
+export async function failJob(
+  jobId: number,
+  error: string,
+  executionId: string | null = null,
+): Promise<{ permanent: boolean; stale?: boolean }> {
   const rows0 = await pgClient.unsafe(
     `SELECT attempts FROM ai_job_queue WHERE id = $1 LIMIT 1`,
     [jobId] as never[],
@@ -224,23 +345,52 @@ export async function failJob(jobId: number, error: string): Promise<{ permanent
   const attempts = Number((rows0 as unknown as Row[])[0]?.attempts ?? 0);
   const outcome = afterFailure(attempts);
 
-  await pgClient.unsafe(
+  const upd = await pgClient.unsafe(
     `UPDATE ai_job_queue
         SET status = $2, last_error = $3,
             available_at = NOW() + ($4 || ' seconds')::interval,
-            finished_at = CASE WHEN $2 = 'FAILED' THEN NOW() ELSE NULL END
-      WHERE id = $1`,
-    [jobId, outcome.status, error.slice(0, 2000), String(outcome.retryInSeconds ?? 0)] as never[],
+            finished_at = CASE WHEN $2 = 'FAILED' THEN NOW() ELSE NULL END,
+            execution_id = NULL, lease_expires_at = NULL
+      WHERE id = $1 AND status = 'RUNNING'
+        AND ($5::uuid IS NULL OR execution_id = $5::uuid)
+      RETURNING id`,
+    [jobId, outcome.status, error.slice(0, 2000), String(outcome.retryInSeconds ?? 0), executionId] as never[],
   );
+  // Exécution dépossédée : l'échec ne la concerne plus, rien n'est écrit.
+  if ((upd as unknown as Row[]).length === 0) return { permanent: false, stale: true };
 
   return { permanent: outcome.status === 'FAILED' };
 }
 
 /**
- * Remet en tête les exécutions interrompues d'un traitement (SCR-08, WF-06).
+ * L'exécution `executionId` est-elle toujours titulaire du job ?
  *
- * Appelée lors d'une désactivation, d'un arrêt d'urgence ou d'un rollback. Les
- * tentatives sont décrémentées : une exécution coupée par une décision
+ * Contrôle d'écriture : appelé par la garde d'exécution avant chaque écriture
+ * significative et avant la clôture.
+ */
+export async function isExecutionActive(jobId: number, executionId: string): Promise<boolean> {
+  const rows = await pgClient.unsafe(
+    `SELECT 1 FROM ai_job_queue
+      WHERE id = $1 AND execution_id = $2::uuid AND status = 'RUNNING'
+      LIMIT 1`,
+    [jobId, executionId] as never[],
+  );
+  return (rows as unknown as Row[]).length > 0;
+}
+
+/**
+ * Interrompt les exécutions en cours d'un traitement et les remet en tête
+ * (SCR-08, WF-06) — désactivation, arrêt d'urgence, rollback.
+ *
+ * ⚠️ La remise en PENDING ne suffit pas : l'exécution continuerait en
+ * mémoire et écrirait ses résultats avec l'ancienne configuration. Le jeton
+ * d'exécution est donc RÉVOQUÉ (execution_id = NULL) : l'ancienne exécution
+ * ne peut plus écrire (garde), ni passer le job en DONE (clôture
+ * conditionnée au jeton). L'interruption est signalée tout de suite aux
+ * exécutions de ce processus ; les autres instances la constatent au
+ * prochain contrôle ou battement de bail.
+ *
+ * Les tentatives sont décrémentées : une exécution coupée par une décision
  * d'exploitation n'a pas échoué, et la compter épuiserait le quota de reprises
  * d'un job parfaitement sain.
  */
@@ -249,12 +399,15 @@ export async function requeueRunning(treatment: Treatment, reason: string): Prom
     `UPDATE ai_job_queue
         SET status = 'PENDING', head_priority = TRUE, started_at = NULL,
             attempts = GREATEST(attempts - 1, 0), available_at = NOW(),
-            last_error = $2
+            last_error = $2,
+            execution_id = NULL, worker_id = NULL, lease_expires_at = NULL
       WHERE treatment = $1 AND status = 'RUNNING'
       RETURNING id`,
     [treatment, `interrompu : ${reason}`] as never[],
   );
-  return (rows as unknown as Row[]).length;
+  const ids = (rows as unknown as Row[]).map((r) => Number(r.id));
+  abortLocalExecutions(ids, reason);
+  return ids.length;
 }
 
 /**

@@ -47,11 +47,17 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
-import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS, PICKER_DOCUMENT_TYPES, resolveDocumentTypeCode } from '@/lib/document-type-constants';
+import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS, resolveDocumentTypeCode } from '@/lib/document-type-constants';
 import type { RoomDrawerItem } from '@/components/assets/RoomDrawer';
 import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import {
+  RubricTypeFields,
+  effectiveRubric,
+  rubricTypeLabels,
+  type RubricTypeValue,
+} from '@/components/documents/v2/RubricTypeFields';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -66,6 +72,11 @@ export interface DocumentDrawerItem {
 
 interface FullFileData {
   id: number;
+  /** Identifiant public, attendu par l'API de classement V2. */
+  publicId: string | null;
+  /** Classement V2 (Rubrique / Type), CDC V2.0 §5.1. */
+  rubricCode: string | null;
+  documentTypeCode: string | null;
   originalFilename: string;
   mimeType: string;
   documentType: string;
@@ -272,6 +283,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [isSaving, setIsSaving] = useState(false);
   const [editFilename, setEditFilename] = useState('');
   const [editDocType, setEditDocType] = useState('');
+  // Rubrique / Type V2 — auparavant dans un tiroir séparé ouvert par le bas.
+  const [editClassement, setEditClassement] = useState<RubricTypeValue>({ rubricCode: null, documentTypeCode: null });
   const [editDocDate, setEditDocDate] = useState('');
   const [editSupplier, setEditSupplier] = useState('');
   const [editAmount, setEditAmount] = useState('');
@@ -462,6 +475,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           const f = fileData.value;
           const fd: FullFileData = {
             id: f.id,
+            publicId: f.publicId ?? f.public_id ?? null,
+            rubricCode: f.rubricCode ?? f.rubric_code ?? null,
+            documentTypeCode: f.documentTypeCode ?? f.document_type_code ?? null,
             originalFilename: f.originalFilename ?? f.original_filename,
             mimeType: f.mimeType ?? f.mime_type,
             documentType: f.documentType ?? f.document_type ?? 'AUTRE',
@@ -590,6 +606,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     // Pre-fill form with current DB values
     setEditFilename(fullData.originalFilename);
     setEditDocType(fullData.documentType ?? 'AUTRE');
+    setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
     setEditDocDate(fullData.documentDate ?? '');
     setEditSupplier(fullData.supplier ?? '');
     setEditAmount(fullData.amountCents != null ? String(fullData.amountCents / 100) : '');
@@ -708,6 +725,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     }
     setEditFilename(fullData.originalFilename);
     setEditDocType(fullData.documentType ?? 'AUTRE');
+    setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
     setEditDocDate(fullData.documentDate ?? '');
     setEditSupplier(fullData.supplier ?? '');
     setEditAmount(fullData.amountCents != null ? String(fullData.amountCents / 100) : '');
@@ -805,6 +823,19 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         throw new Error(err.message || 'Erreur lors de la sauvegarde');
       }
 
+      // Classement V2 : enregistré par sa route dédiée (validation du
+      // référentiel, origine USER, résolution des actions « À traiter »),
+      // seulement s'il a changé.
+      const classementChange =
+        effectiveRubric(editClassement) !== effectiveRubric({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode })
+        || editClassement.documentTypeCode !== fullData.documentTypeCode;
+      if (classementChange && fullData.publicId) {
+        await apiClient.patch(`/api/v2/documents/${fullData.publicId}/classification`, {
+          rubricCode: effectiveRubric(editClassement),
+          documentTypeCode: editClassement.documentTypeCode,
+        });
+      }
+
       // Sauvegarder = valider : commit les proposals en attente si l'état est VALIDATION_REQUIRED
       // ou s'il existe des proposals field non encore commitées
       const needsCommit = fieldProposals.length > 0 || analysisState === 'VALIDATION_REQUIRED';
@@ -828,6 +859,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         amountCents: isNaN(amountCents as number) ? null : amountCents,
         description: editDescription.trim() || null,
         notes: editNotes.trim() || null,
+        rubricCode: effectiveRubric(editClassement),
+        documentTypeCode: editClassement.documentTypeCode,
       } : prev);
       // Mettre à jour l'état d'analyse localement
       if (needsCommit) setAnalysisState('ANALYZED');
@@ -839,7 +872,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fullData, editFilename, editDocType, editDocDate, editSupplier, editAmount, editDescription, editNotes, editAssetId, editSubstructureId, editEquipmentId, fieldProposals, analysisState, onRefresh]);
+  }, [doc, fullData, editFilename, editDocType, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editAssetId, editSubstructureId, editEquipmentId, fieldProposals, analysisState, onRefresh]);
 
   const handleAnalyze = useCallback(async () => {
     if (!doc) return;
@@ -927,6 +960,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         const rf = refreshedFile;
         const fd: FullFileData = {
           id: rf.id,
+          publicId: rf.publicId ?? rf.public_id ?? null,
+          rubricCode: rf.rubricCode ?? rf.rubric_code ?? null,
+          documentTypeCode: rf.documentTypeCode ?? rf.document_type_code ?? null,
           originalFilename: rf.originalFilename ?? rf.original_filename,
           mimeType: rf.mimeType ?? rf.mime_type,
           documentType: rf.documentType ?? rf.document_type ?? 'AUTRE',
@@ -1513,17 +1549,11 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   <Label>Nom du fichier</Label>
                   <Input value={editFilename} onChange={e => setEditFilename(e.target.value)} />
                 </div>
-                <div className="space-y-1.5">
-                  <Label>Type de document</Label>
-                  <Select value={editDocType} onValueChange={setEditDocType}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {(docTypes.length > 0 ? docTypes : PICKER_DOCUMENT_TYPES).map(o => (
-                        <SelectItem key={o.code} value={o.code}>{o.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                {/* Rubrique et Type (classement V2) : intégrés ici, à la place de
+                    l'ancien « Type de document » V1 et du tiroir « Classer »
+                    qui s'ouvrait par le bas. Le type V1 est conservé tel quel
+                    à l'enregistrement. */}
+                <RubricTypeFields value={editClassement} onChange={setEditClassement} idPrefix={`doc-${doc.id}`} />
                 <div className="space-y-1.5">
                   <Label>Date du document</Label>
                   <DatePicker value={editDocDate} onChange={v => setEditDocDate(v)} placeholder="jj/mm/aaaa" />
@@ -1595,8 +1625,20 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         </div>
                       </div>
                     )}
-                    {/* Type / fonction */}
-                    {(fullData?.retainedFunctionCode || fullData?.documentType) && (
+                    {/* Rubrique (classement V2) */}
+                    {fullData && rubricTypeLabels(fullData).rubric && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Rubrique</span>
+                        <span className="font-medium text-xs">{rubricTypeLabels(fullData).rubric}</span>
+                      </div>
+                    )}
+                    {/* Type : V2 si le document est classé, sinon libellé V1 historique */}
+                    {fullData && rubricTypeLabels(fullData).rubric ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Type</span>
+                        <span className="font-medium text-xs">{rubricTypeLabels(fullData).type ?? 'Type à compléter'}</span>
+                      </div>
+                    ) : (fullData?.retainedFunctionCode || fullData?.documentType) && (
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">Type</span>
                         <div className="flex items-center gap-1">

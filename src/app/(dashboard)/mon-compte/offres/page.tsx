@@ -109,6 +109,8 @@ export default function OffresPage() {
    * ensuite divergé.
    */
   const [essaiTermine, setEssaiTermine] = useState(false);
+  // Incrémenté pour relire l'état après une montée en gamme (retour Stripe).
+  const [etatVersion, setEtatVersion] = useState(0);
 
   useEffect(() => {
     // CDC §17 : consultation des offres
@@ -147,7 +149,63 @@ export default function OffresPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [etatVersion]);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // RETOUR DE STRIPE APRÈS UNE MONTÉE EN GAMME
+  //
+  // Le portail redirige ici avec `?changement=confirme` une fois le prorata
+  // réglé. L'offre est synchronisée sans attendre le webhook, la session est
+  // rafraîchie (menus, droits), puis l'état de la page est relu.
+  // ══════════════════════════════════════════════════════════════════════
+  useEffect(() => {
+    if (searchParams?.get('changement') !== 'confirme') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sync = await fetch('/api/billing/sync-subscription', { method: 'POST', credentials: 'include' });
+        await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' }).catch(() => undefined);
+        if (cancelled) return;
+        // Un échec de synchronisation n'est pas annoncé comme un succès : le
+        // webhook Stripe mettra l'offre à jour, la page se relira alors.
+        if (sync.ok) toast.success('Votre offre a été mise à jour.');
+        else toast.info('Paiement confirmé. La mise à jour de votre offre peut prendre quelques instants.');
+      } catch {
+        // Le webhook Stripe mettra l'offre à jour de son côté.
+      } finally {
+        if (!cancelled) {
+          setEtatVersion((v) => v + 1);
+          router.replace('/mon-compte/offres');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [searchParams, router]);
+
+  /**
+   * Montée en gamme d'un compte abonné : prise d'effet immédiate.
+   * Stripe affiche et encaisse le prorata, la date d'échéance est conservée.
+   */
+  const handleImmediateUpgrade = async (planId: string) => {
+    setCheckoutLoading(planId);
+    try {
+      const res = await fetch('/api/billing/upgrade', {
+        credentials: 'include',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_code: planId.toLowerCase(), billing_period: billingPeriod }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.url) {
+        window.location.href = data.url;
+        return;
+      }
+      toast.error(data.message || 'Impossible d’ouvrir la page de paiement.');
+    } catch {
+      toast.error('Une erreur est survenue.');
+    }
+    setCheckoutLoading(null);
+  };
 
   /** Programme un changement d'offre ou de periodicite (CDC §10). */
   const handleScheduleChange = async (planId: string) => {
@@ -269,8 +327,22 @@ export default function OffresPage() {
       return { label: 'Offre actuelle', action: null, variant: 'outline', disabled: true };
     }
 
-    // CDC §10 : pour un compte deja abonne, tout changement — d'offre comme de
-    // periodicite — est programme pour la prochaine echeance, jamais immediat.
+    // Compte déjà abonné :
+    //   - montée en gamme (Standard → Premium / Premium Duo, Premium → Duo) :
+    //     immédiate, via Stripe (prorata). Aucune mention : l'effet immédiat
+    //     va de soi.
+    //   - baisse de gamme, ou changement de périodicité de la même offre :
+    //     programmé pour la prochaine échéance, et c'est écrit sous le bouton.
+    const planOrder = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
+    if (hasSubscription && planOrder.indexOf(offerId) > planOrder.indexOf(currentPlan) && currentPlan) {
+      const theme = getPlanTheme(offerId as any);
+      return {
+        label: `Passer à ${theme.label}`,
+        action: () => handleImmediateUpgrade(offerId),
+        variant: 'default',
+        disabled: false,
+      };
+    }
     if (hasSubscription) {
       const theme = getPlanTheme(offerId as any);
       const sameOffer = offerId === currentPlan;
@@ -300,7 +372,6 @@ export default function OffresPage() {
       return { label: 'Lecture seule', action: null, variant: 'ghost', disabled: true };
     }
 
-    const planOrder = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
     const currentIndex = planOrder.indexOf(currentPlan);
     const targetIndex = planOrder.indexOf(offerId);
 

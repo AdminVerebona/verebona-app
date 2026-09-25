@@ -54,7 +54,10 @@ export async function resolveAmbiguity(
         EVIDENCES: candidates.map((c) =>
           `[id:${c.evidenceId}] valeur="${String(c.value)}" ` +
           `type=${c.documentType ?? 'inconnu'} date=${c.documentDate?.toISOString().slice(0, 10) ?? 'inconnue'} ` +
-          `autorité=${c.authorityScore} extrait="${c.excerpt.slice(0, 300)}"`,
+          `autorité=${c.authorityScore} ` +
+          (c.evidenceOrigin === 'VISUAL_ANALYSIS'
+            ? `observation visuelle (aucun texte lu)="${(c.visualDescription ?? '').slice(0, 300)}"`
+            : `extrait="${c.excerpt.slice(0, 300)}"`),
         ).join('\n'),
       },
       outputSchema: ResolveAmbiguityOutput,

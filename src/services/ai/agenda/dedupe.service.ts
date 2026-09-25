@@ -21,6 +21,9 @@ export interface DuplicateMatch {
   kind: DuplicateKind;
   item: ExistingAgendaItem | null;
   reason: string;
+  /** Similarité des intitulés (0 → 1) et écart de date, pour un rapprochement probable. */
+  similarity?: number;
+  dayGap?: number;
 }
 
 export function findDuplicate(
@@ -34,6 +37,21 @@ export function findDuplicate(
     );
     if (sameOrigin) {
       return { kind: 'exact', item: sameOrigin, reason: 'même champ d\'origine et même date' };
+    }
+  }
+
+  // 1 bis. Confirmation d'une PRÉVISION : même champ d'origine (même nature
+  // d'échéance, même série) et date voisine — correspondance CERTAINE, la
+  // prévision est la même occurrence que la date désormais lue.
+  if (candidate.originFieldKey) {
+    const prevue = existing.find((e) =>
+      e.nature === 'FORECAST' && e.originFieldKey === candidate.originFieldKey
+      && Math.abs(daysBetween(e.date, candidate.date)) <= DATE_TOLERANCE_DAYS);
+    if (prevue) {
+      return {
+        kind: 'exact', item: prevue, reason: 'confirmation d’une occurrence prévisionnelle',
+        dayGap: Math.abs(daysBetween(prevue.date, candidate.date)),
+      };
     }
   }
 
@@ -51,12 +69,17 @@ export function findDuplicate(
     const dayGap = Math.abs(daysBetween(e.date, candidate.date));
     if (dayGap > DATE_TOLERANCE_DAYS) continue;
 
-    const similarity = titleSimilarity(normalizeTitle(e.title), normalizedCandidate);
+    const similarity = Math.max(
+      titleSimilarity(normalizeTitle(e.title), normalizedCandidate),
+      containmentSimilarity(normalizeTitle(e.title), normalizedCandidate),
+    );
     if (similarity >= TITLE_SIMILARITY_THRESHOLD) {
       return {
         kind: 'probable',
         item: e,
         reason: `intitulé proche (${Math.round(similarity * 100)} %) et date à ${dayGap} jour(s)`,
+        similarity,
+        dayGap,
       };
     }
   }
@@ -107,4 +130,21 @@ export function titleSimilarity(a: string, b: string): number {
 
   const total = (a.length - 1) + (b.length - 1);
   return (2 * intersection) / total;
+}
+
+/**
+ * « Contrôle technique » / « Contrôle technique véhicule » : un intitulé
+ * entièrement contenu dans l'autre (au moins deux mots, ou dix caractères)
+ * désigne vraisemblablement le même événement — le bigramme seul le
+ * manquait (0,79). Rapprochement PROBABLE seulement : il n'autorise aucune
+ * fusion, il ouvre un arbitrage.
+ */
+export function containmentSimilarity(a: string, b: string): number {
+  const wa = a.split(' ').filter((w) => w.length >= 2);
+  const wb = b.split(' ').filter((w) => w.length >= 2);
+  if (wa.length === 0 || wb.length === 0) return 0;
+  const [court, long] = wa.length <= wb.length ? [wa, new Set(wb)] : [wb, new Set(wa)];
+  const inclus = court.every((w) => long.has(w));
+  const significatif = court.length >= 2 || court.join(' ').length >= 10;
+  return inclus && significatif ? 0.85 : 0;
 }

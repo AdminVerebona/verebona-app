@@ -19,23 +19,27 @@ describe('le clic sur un document ouvre le document', () => {
     expect(VUE).toMatch(/const openDocument = \(doc: DocumentView\) => \{[\s\S]*?setDocumentDrawerOpen\(true\)/);
   });
 
-  it('n’ouvre plus le tiroir de classement au clic', () => {
-    const corps = VUE.slice(VUE.indexOf('const openDocument'), VUE.indexOf('const classifyDocument'));
-    expect(corps).not.toMatch(/setDrawerOpen\(true\)/);
+  it('plus de bouton « Classer » ni de tiroir de classement par le bas', () => {
+    expect(VUE).not.toMatch(/onClassify/);
+    expect(VUE).not.toMatch(/RubricClassificationDrawer/);
+    expect(() => read('src/components/documents/v2/RubricClassificationDrawer.tsx')).toThrow();
   });
 
-  it('garde le classement accessible par une action dédiée', () => {
-    expect(VUE).toMatch(/onClassify\(document\)/);
-    expect(VUE).toMatch(/const classifyDocument = \(doc: DocumentView\) => \{[\s\S]*?setDrawerOpen\(true\)/);
-  });
-
-  it('ouvre le classement sur la rubrique réelle du document', () => {
-    // `rubricCode: null` affichait « Sans rubrique » pour un document classé,
-    // et vidait la liste des Types, donc le Type déjà renseigné.
-    expect(VUE).toMatch(/rubricCode: doc\.rubricCode/);
+  it('Rubrique et Type se modifient dans le tiroir document (à droite)', () => {
+    const tiroir = read('src/components/assets/DocumentDrawer.tsx');
+    expect(tiroir).toMatch(/<RubricTypeFields value=\{editClassement\}/);
+    expect(tiroir).toMatch(/apiClient\.patch\(`\/api\/v2\/documents\/\$\{fullData\.publicId\}\/classification`/);
+    // Le classement est lu sur la rubrique réelle du document.
+    expect(tiroir).toMatch(/rubricCode: f\.rubricCode \?\? f\.rubric_code/);
     expect(read('src/services/documents/rubric-query.service.ts')).toMatch(/rubricCode: row\.rubricCode/);
-    expect(read('src/components/documents/v2/RubricClassificationDrawer.tsx'))
-      .toMatch(/document\?\.rubricCode \?\? deduite/);
+  });
+
+  it('les règles du référentiel sont conservées (§5.1, §2.2)', () => {
+    const champs = read('src/components/documents/v2/RubricTypeFields.tsx');
+    // Rubrique changée : Type incompatible vidé.
+    expect(champs).toMatch(/typeCompatible \? typeCode : null/);
+    // Type choisi : Rubrique déduite.
+    expect(champs).toMatch(/rubricOfType\(next\) \?\? rubricCode/);
   });
 
   it('transmet ce que l’en-tête du tiroir attend', () => {
@@ -54,8 +58,10 @@ describe('choix d’affichage', () => {
   });
 
   it('mémorise le choix d’une visite à l’autre', () => {
-    expect(VUE).toMatch(/localStorage\.setItem\(VIEW_MODE_KEY, mode\)/);
-    expect(VUE).toMatch(/localStorage\.getItem\(VIEW_MODE_KEY\)/);
+    // Clé propre à chaque écran (« Mes documents » / onglet d'un bien).
+    expect(VUE).toMatch(/const viewModeKey = assetId \? ASSET_VIEW_MODE_KEY : VIEW_MODE_KEY/);
+    expect(VUE).toMatch(/localStorage\.setItem\(viewModeKey, mode\)/);
+    expect(VUE).toMatch(/localStorage\.getItem\(viewModeKey\)/);
   });
 
   it('propose le choix dans les deux contextes de la vue', () => {
@@ -80,5 +86,23 @@ describe('offres : libellé des boutons', () => {
   it('indique la prise d’effet sous le bouton', () => {
     expect(OFFRES).toMatch(/Prise d\\?'effet à votre prochaine échéance/);
     expect(OFFRES).toMatch(/\{btn\.hint\}/);
+  });
+});
+
+describe('vignettes avec aperçu du document', () => {
+  it('le fond de la vignette est un aperçu réel (image ou 1re page PDF)', () => {
+    expect(VUE).toMatch(/src=\{`\/api\/files\/\$\{document\.id\}\/proxy`\}/);
+    expect(VUE).toMatch(/<PdfThumbnail\s+fileId=\{String\(document\.id\)\}/);
+  });
+
+  it('le texte est posé sur l’aperçu, avec un dégradé de lisibilité', () => {
+    expect(VUE).toMatch(/bg-gradient-to-t from-black\/85/);
+    expect(VUE).toMatch(/absolute inset-x-0 bottom-0/);
+  });
+
+  it('l’aperçu PDF est rendu à la demande et mémorisé', () => {
+    const pdf = read('src/components/ui/pdf-thumbnail.tsx');
+    expect(pdf).toContain('IntersectionObserver');
+    expect(pdf).toMatch(/rendus\.set\(fileId, dataUrl\)/);
   });
 });

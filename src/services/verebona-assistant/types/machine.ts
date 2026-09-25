@@ -49,16 +49,49 @@ export function canTransition(from: MachineState, to: MachineState): boolean {
   return ALLOWED_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-/** État conservé pour une clarification — CDC §9.8. */
+/** Candidat proposé : identifiant technique contrôlé par le serveur, jamais par le modèle. */
+export interface ClarificationCandidate {
+  /** Référence d'entité (« asset_42 »), c'est le `choiceId` présenté au client. */
+  id: string;
+  /** Identifiant en base de l'entité, re-vérifié avant toute reprise. */
+  entityId?: number;
+  label: string;
+  secondaryLabel?: string;
+}
+
+export type ClarificationStatus = 'PENDING' | 'RESOLVED' | 'EXPIRED' | 'EXHAUSTED' | 'ABANDONED';
+
+/**
+ * État conservé pour une clarification — CDC §9.8, §20.
+ *
+ * Contient TOUT ce qu'il faut pour reprendre la demande initiale sans la
+ * reconstruire par concaténation : message et intention d'origine, contexte
+ * déjà résolu, nature de l'ambiguïté, candidats et compteurs.
+ */
 export interface ClarificationState {
   clarificationId: string;
+  /** Fil, compte et utilisateur propriétaires — contrôlés à la reprise. */
+  conversationId?: number;
+  accountId?: number;
+  userId?: number;
   originalMessageId: string;
+  /** Demande utilisateur initiale, rejouée telle quelle à la reprise. */
+  originalMessage?: string;
   originalIntent: import('./intents').VerebonaIntent;
+  /** Paramètres déjà identifiés (bien de la page, année…). */
+  resolvedContext?: { pageAssetId?: number | null; assetId?: number | null };
+  /** Ce qui est ambigu : le champ que le choix viendra fixer. */
+  ambiguity?: { kind: 'asset'; field: 'assetId'; reason: string };
   candidateType: 'asset' | 'document' | 'agenda' | 'supplier';
-  candidates: Array<{ id: string; label: string; secondaryLabel?: string }>;
+  candidates: ClarificationCandidate[];
   question: string;
+  createdAt?: string;
   expiresAt: string; // ISO — 30 min (§20.4)
-  attemptCount: number; // ≤ 2 (§20.3)
+  /** Tentatives infructueuses (choix invalide, réponse non reconnue…) ; ≤ 2 (§20.3). */
+  attemptCount: number;
+  /** Rang de la clarification dans la même demande (ambiguïtés successives) ; ≤ 2. */
+  chainDepth?: number;
+  status?: ClarificationStatus;
 }
 
 /** Références conversationnelles internes — CDC §16.4. */

@@ -58,6 +58,9 @@ function estFinEssai(code: string | undefined): boolean {
 
 export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDialogProps) {
   const finEssai = estFinEssai(info?.code);
+  // Fonctionnalité réservée (dossiers prêts à l'usage…) : les deux offres
+  // qui la débloquent sont nommées, pas seulement Premium.
+  const premiumRequis = info?.code === 'PREMIUM_REQUIRED';
   const fermer = () => onOpenChange(false);
 
   return (
@@ -121,11 +124,19 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
             </>
           ) : (
             <>
-              <p className="text-sm text-muted-foreground text-center">
-                Passez à <strong className="text-foreground">Premium</strong> pour gérer
-                jusqu&apos;à 10 biens et 150 documents, et débloquer toutes les
-                fonctionnalités.
-              </p>
+              {premiumRequis ? (
+                <p className="text-sm text-muted-foreground text-center">
+                  Passez à <strong className="text-foreground">Premium</strong> ou{' '}
+                  <strong className="text-foreground">Premium Duo</strong> pour accéder à
+                  cette fonctionnalité et à toutes les fonctionnalités Premium.
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center">
+                  Passez à <strong className="text-foreground">Premium</strong> pour gérer
+                  jusqu&apos;à 10 biens et 150 documents, et débloquer toutes les
+                  fonctionnalités.
+                </p>
+              )}
 
               <div className="space-y-2.5">
                 {[
@@ -156,11 +167,11 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
                   offre en cours, il n'y a pas de montée en gamme. Même
                   libellé que le bandeau de fin d'essai. */}
               {finEssai ? (
-                <>Choisir une offre</>
+                <>Choisir mon offre</>
               ) : (
                 <>
                   <Crown className="w-4 h-4" />
-                  Passer à Premium
+                  {premiumRequis ? 'Passer à Premium ou Premium Duo' : 'Passer à Premium'}
                 </>
               )}
               <ArrowRight className="w-4 h-4" />

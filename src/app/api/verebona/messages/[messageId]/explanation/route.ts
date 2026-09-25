@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
+import { MESSAGE_OWNED_BY_USER } from '@/services/verebona-assistant/core/conversation.service';
 
 export async function GET(
   req: NextRequest,
@@ -26,8 +27,9 @@ export async function GET(
        LEFT JOIN verebona_claim_sources cs ON cs.claim_id = c.id
        LEFT JOIN verebona_message_sources s ON s.id = cs.message_source_id
       WHERE c.message_id = $1 AND m.account_id = $2
+        AND ${MESSAGE_OWNED_BY_USER('m', '$2', '$3')}
       GROUP BY c.id, c.claim_text, c.derivation`,
-    [messageId, accountId],
+    [messageId, accountId, session.userId],
   );
   return NextResponse.json({ explanation: rows });
 }

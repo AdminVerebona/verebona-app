@@ -14,6 +14,7 @@ import { db } from '@/db';
 import { documentAnalysisRuns, documentAnalysisProposals, assetFiles } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { SourceAnalysisResult, SourceInput } from '../types';
+import { EXTRACT_SOURCE_PROMPT_VERSION } from '../prompt-version';
 
 export interface PersistResultInput {
   input: SourceInput;
@@ -79,7 +80,7 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     assetFileId: p.leadSourceId,
     lotId: p.lotId ?? undefined,
     inputFileHash: inputHash,
-    promptVersion: 'extract_source_v2',
+    promptVersion: EXTRACT_SOURCE_PROMPT_VERSION,
     provider: 'gemini',
     model: p.result.operationTrace.models[0] ?? 'unknown',
     status: 'completed',
@@ -193,6 +194,6 @@ function computeInputHash(p: PersistResultInput): string {
     sources: [...p.groupSourceIds].sort((a, b) => a - b),
     type: p.input.sourceType,
     version: p.input.sourceVersion ?? null,
-    prompt: 'extract_source_v2',
+    prompt: EXTRACT_SOURCE_PROMPT_VERSION,
   })).digest('hex');
 }

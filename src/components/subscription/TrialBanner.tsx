@@ -90,12 +90,12 @@ export function TrialBanner() {
             L&apos;essai gratuit a déjà été utilisé avec cette adresse.
           </span>{' '}
           <span className="text-[color:var(--text-muted)]">
-            Il est réservé à une première inscription. Choisissez une offre pour
+            Il est réservé à une première inscription. Choisissez votre offre pour
             continuer.
           </span>
         </p>
         <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
-          Voir les offres
+          Choisir mon offre
         </Button>
       </div>
     );
@@ -139,7 +139,7 @@ export function TrialBanner() {
           </span>
         </p>
         <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
-          Choisir une offre
+          Choisir mon offre
         </Button>
       </div>
     );

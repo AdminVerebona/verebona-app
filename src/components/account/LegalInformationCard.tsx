@@ -13,13 +13,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { Scale, ExternalLink, Loader2 } from 'lucide-react';
 import { publicSiteUrl } from '@/lib/external-urls';
@@ -87,18 +81,13 @@ export function LegalInformationCard() {
   const latest = acceptances[0];
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Scale className="w-5 h-5" />
-          Informations légales
-        </CardTitle>
-        <CardDescription>
-          Consultez les conditions que vous avez acceptées et celles en vigueur.
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent className="space-y-6">
+    // Tiroir fermé par défaut : les documents restent à un clic.
+    <CollapsibleCard
+      icon={<Scale className="w-5 h-5" />}
+      title="Informations légales"
+      description="Consultez les conditions que vous avez acceptées et celles en vigueur."
+      contentClassName="space-y-6"
+    >
         {loading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="w-4 h-4 animate-spin" />
@@ -232,7 +221,6 @@ export function LegalInformationCard() {
             </section>
           </>
         )}
-      </CardContent>
-    </Card>
+    </CollapsibleCard>
   );
 }

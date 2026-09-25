@@ -238,8 +238,8 @@ export interface RubricVisibilityContext {
   /** Familles des biens du périmètre courant (compte ou bien affiché). */
   families: readonly AssetFamily[];
   /**
-   * Au moins un bien immobilier du périmètre porte « Bien mis en location »
-   * à Oui (§6.1).
+   * Au moins un bien immobilier du périmètre a l'usage « Mis en location »
+   * (occupancyUsage = LOCATIF — l'ancien attribut is_rented est retiré).
    */
   hasRentedAsset: boolean;
   /**

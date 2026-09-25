@@ -96,7 +96,9 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
       <div className="flex-1 min-w-0">
         {item.startDate && (
           <p className="text-[11px] text-muted-foreground mb-0.5">
+            {item.occurrenceNature === 'FORECAST' && <span className="italic">Prévu le </span>}
             {new Date(item.startDate + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+            {item.occurrenceNature === 'FORECAST' && <span className="italic"> · date estimée</span>}
           </p>
         )}
         <p className="text-sm font-semibold leading-snug truncate">{item.title}</p>

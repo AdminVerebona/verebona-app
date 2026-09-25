@@ -256,7 +256,7 @@ async function renderViaJsPdf(
       if (perf?.mainEnergy)       pairs.push(['Énergie principale', perf.mainEnergy]);
       if (perf?.dpeClass)         pairs.push(['Classe DPE', perf.dpeClass + (perf.gesClass ? ` / GES ${perf.gesClass}` : '')]);
       if (perf?.dpeDate)          pairs.push(['Date DPE', formatDate(perf.dpeDate)]);
-      if (occ?.occupancyUsage)    pairs.push(['Usage', occ.occupancyUsage]);
+      if (occ?.occupancyUsage)    pairs.push(['Usage', OCCUPANCY_LABELS[occ.occupancyUsage] ?? occ.occupancyUsage]);
       if (occ?.occupancyStatus)   pairs.push(['Occupation', occ.occupancyStatus]);
       if (occ?.monthlyRent)       pairs.push(['Loyer mensuel', formatNum(occ.monthlyRent, '€')]);
     } else if (ds.family === 'VEHICULE') {
@@ -397,7 +397,7 @@ const CONDITION_LABELS: Record<string, string> = {
 };
 const OCCUPANCY_LABELS: Record<string, string> = {
   RESIDENCE_PRINCIPALE: 'Résidence principale', RESIDENCE_SECONDAIRE: 'Résidence secondaire',
-  LOCATIF: 'Bien locatif', VACANT: 'Vacant', AUTRE: 'Autre usage',
+  LOCATIF: 'Mis en location', VACANT: 'Vacant', AUTRE: 'Autre usage',
 };
 const OCCUPANCY_STATUS_LABELS: Record<string, string> = {
   OCCUPE: 'Occupé par le propriétaire', LOUE: 'Loué', VACANT: 'Vacant',
@@ -1171,7 +1171,7 @@ async function renderDossierCompletPdf(manifest: ExportManifest, snapshot: Asset
       if (perf?.gesClass) drawField('GES', `Classe ${perf.gesClass}`);
       if (perf?.dpeDate) drawField('Date DPE', formatDate(perf.dpeDate));
       drawFieldRow([
-        ['Usage', occ?.occupancyUsage],
+        ['Usage', occ?.occupancyUsage ? (OCCUPANCY_LABELS[occ.occupancyUsage] ?? occ.occupancyUsage) : undefined],
         ['Occupation', occ?.occupancyStatus],
       ]);
       if (occ?.monthlyRent) drawField('Loyer mensuel', formatNum(occ.monthlyRent, '€'));

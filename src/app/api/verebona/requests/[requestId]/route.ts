@@ -21,8 +21,8 @@ export async function GET(
   const rows = await pgClient.unsafe(
     `SELECT request_id, status, mode, error_code, created_at
        FROM verebona_request_runs
-      WHERE request_id = $1 AND account_id = $2 LIMIT 1`,
-    [requestId, accountId],
+      WHERE request_id = $1 AND account_id = $2 AND user_id = $3 LIMIT 1`,
+    [requestId, accountId, session.userId],
   );
   const list = rows as unknown[];
   if (!list.length) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
@@ -60,6 +60,7 @@ export async function DELETE(
        SET status = 'cancelled'
      WHERE request_id = ${requestId}
        AND account_id = ${accountId}
+       AND user_id = ${session.userId}
        AND status NOT IN ('ok', 'error', 'cancelled')
     RETURNING id
   `;
@@ -69,6 +70,7 @@ export async function DELETE(
     const [existante] = await pgClient<{ status: string }[]>`
       SELECT status FROM verebona_request_runs
        WHERE request_id = ${requestId} AND account_id = ${accountId}
+         AND user_id = ${session.userId}
        LIMIT 1
     `;
     if (!existante) {
@@ -89,6 +91,8 @@ export async function DELETE(
        SET status = 'cancelled'
      WHERE request_id = ${requestId}
        AND account_id = ${accountId}
+       AND conversation_id IN (SELECT id FROM verebona_conversations
+                                WHERE account_id = ${accountId} AND user_id = ${session.userId})
        AND status = 'pending'
   `;
 

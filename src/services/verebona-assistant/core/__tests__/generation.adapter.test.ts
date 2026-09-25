@@ -38,17 +38,17 @@ describe('filtrage des affirmations', () => {
       { answer: 'R', claims: [{ text: 'A', sourceIds: ['doc_1'] }], actionIntents: [], derivations: [] },
       [src('doc_1')],
     );
-    expect(out.claims).toHaveLength(1);
-    expect(out.supportLevel).toBe('supported');
+    expect(out!.claims).toHaveLength(1);
+    expect(out!.supportLevel).toBe('supported');
   });
 
-  it('SUPPRIME celle qui cite une source inexistante', () => {
+  it('SUPPRIME celle qui cite une source inexistante — et sans fait validé, pas de texte généré', () => {
     const out = toGeneratedAnswer(
       { answer: 'R', claims: [{ text: 'A', sourceIds: ['doc_99'] }], actionIntents: [], derivations: [] },
       [src('doc_1')],
     );
-    expect(out.claims).toEqual([]);
-    expect(out.supportLevel).toBe('insufficient');
+    // `null` : l'orchestrateur applique le repli déterministe.
+    expect(out).toBeNull();
   });
 
   it('exige que TOUTES les sources d\'une affirmation soient connues', () => {
@@ -56,7 +56,7 @@ describe('filtrage des affirmations', () => {
       { answer: 'R', claims: [{ text: 'A', sourceIds: ['doc_1', 'doc_99'] }], actionIntents: [], derivations: [] },
       [src('doc_1')],
     );
-    expect(out.claims).toEqual([]);
+    expect(out).toBeNull();
   });
 
   it('signale une réponse amputée plutôt que de l\'annoncer entière', () => {
@@ -67,8 +67,8 @@ describe('filtrage des affirmations', () => {
       ], actionIntents: [], derivations: [] },
       [src('doc_1')],
     );
-    expect(out.claims).toHaveLength(1);
-    expect(out.supportLevel).toBe('partial');
+    expect(out!.claims).toHaveLength(1);
+    expect(out!.supportLevel).toBe('partial');
   });
 
   it('retombe sur `synthesized` quand la nature n\'est pas précisée', () => {
@@ -76,7 +76,7 @@ describe('filtrage des affirmations', () => {
       { answer: 'R', claims: [{ text: 'A', sourceIds: ['doc_1'] }], actionIntents: [], derivations: [] },
       [src('doc_1')],
     );
-    expect(out.claims[0].derivation).toBe('synthesized');
+    expect(out!.claims[0].derivation).toBe('synthesized');
   });
 
   it('respecte la nature déclarée', () => {
@@ -84,7 +84,7 @@ describe('filtrage des affirmations', () => {
       { answer: 'R', claims: [{ text: 'A', sourceIds: ['doc_1'] }], actionIntents: [], derivations: ['direct'] },
       [src('doc_1')],
     );
-    expect(out.claims[0].derivation).toBe('direct');
+    expect(out!.claims[0].derivation).toBe('direct');
   });
 });
 

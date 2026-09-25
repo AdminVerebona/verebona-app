@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Plus, Home, GripVertical } from 'lucide-react';
 import { RoomDrawer, RoomDrawerItem } from './RoomDrawer';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { useEntitlements } from '@/hooks/useEntitlements';
 
 interface Substructure {
   id: number;
@@ -29,13 +30,25 @@ export function AssetSubstructuresPanel({
 
   // Ajouter une pièce est une écriture : essai terminé, le serveur la
   // refuserait après que l'utilisateur a rempli le formulaire.
-  const { garder } = useWriteGuard();
+  // Ajout d'une pièce : Premium et Premium Duo (essai compris). Un compte
+  // Standard obtient la fenêtre « Passer à Premium ou Premium Duo » au lieu
+  // du formulaire ; le serveur applique la même règle.
+  const { garder, signalerRefus } = useWriteGuard();
+  const { entitlements } = useEntitlements();
+  const premiumRefuse = entitlements != null && !entitlements.premiumFeatures;
   const handleAdd = useCallback(() => {
     garder(() => {
+      if (premiumRefuse) {
+        signalerRefus({
+          code: 'PREMIUM_REQUIRED',
+          message: 'L\u2019ajout de pièces est disponible avec les offres Premium et Premium Duo.',
+        });
+        return;
+      }
       setDrawerRoom(null);
       setIsDrawerOpen(true);
     });
-  }, [garder]);
+  }, [garder, signalerRefus, premiumRefuse]);
 
   const handleRowClick = useCallback((sub: Substructure) => {
     setDrawerRoom({ id: sub.id, name: sub.name, orderIndex: sub.orderIndex });

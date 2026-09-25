@@ -36,11 +36,12 @@ const INVITATION = sansCommentaires(read('src/app/api/referral/send-email/route.
 
 describe('la règle : le parrain seul est récompensé', () => {
   it('l’avantage n’est accordé qu’au compte du parrain', () => {
-    expect(CRON).toMatch(/postponeNextBillingByOneMonth\(\s*event\.referrerAccountId/);
+    expect(CRON).toMatch(/applyReferralRewardOnce\(\s*\{ id: event\.id, referrerAccountId: event\.referrerAccountId \}/);
   });
 
   it('le compte du filleul ne reçoit rien', () => {
-    expect(CRON).not.toMatch(/postponeNextBillingByOneMonth\([^)]*referredAccountId/);
+    expect(CRON).not.toMatch(/applyReferralRewardOnce\([^)]*referredAccountId/);
+    expect(CRON).not.toMatch(/postponeNextBillingByOneMonth\(/);
   });
 
   it('l’échec pour le parrain suffit à écarter l’événement', () => {
@@ -49,7 +50,11 @@ describe('la règle : le parrain seul est récompensé', () => {
   });
 
   it('le déclencheur reste l’abonnement annuel du filleul', () => {
-    expect(CRON).toMatch(/billingPeriod !== 'yearly'/);
+    // Contrôlé par le service d'éligibilité, au moment de l'attribution.
+    expect(CRON).toContain('checkReferralEligibility(');
+    const ELIG = sansCommentaires(read('src/services/referral/referral-eligibility.service.ts'));
+    expect(ELIG).toMatch(/billingPeriod !== 'yearly'/);
+    expect(ELIG).toMatch(/interval !== 'year'/);
   });
 });
 

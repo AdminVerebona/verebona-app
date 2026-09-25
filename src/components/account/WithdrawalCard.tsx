@@ -18,12 +18,20 @@
  * Le §6.2 précise qu'« après expiration du délai, le bouton peut être masqué
  * dans l'espace personnel, mais le lien public reste disponible ». C'est ce
  * que fait ce composant : il masque le bouton et renvoie vers /retractation.
+ *
+ * TIROIR FERMÉ PAR DÉFAUT — LE LIEN RESTE VISIBLE
+ *
+ * Le bloc est replié par défaut (ticket « tiroirs »). Mais la fonction de
+ * rétractation doit rester visible et directement accessible pendant tout
+ * le délai (§6.1, et directive (UE) 2023/2673 sur le « bouton de
+ * rétractation ») : « Renoncer au contrat ici » est donc placé SOUS
+ * l'en-tête, hors du contenu repliable, et reste affiché tiroir fermé.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, FileMinus, Download, ExternalLink } from 'lucide-react';
@@ -106,28 +114,23 @@ export function WithdrawalCard() {
 
   if (loading) {
     return (
-      <Card>
-        <CardContent className="py-6 flex items-center gap-2 text-sm text-muted-foreground">
+      <CollapsibleCard icon={<FileMinus className="w-5 h-5" />} title="Droit de rétractation">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="w-4 h-4 animate-spin" /> Chargement…
-        </CardContent>
-      </Card>
+        </div>
+      </CollapsibleCard>
     );
   }
 
   // ── Suivi d'une demande enregistrée (§7.5) ────────────────────────────
   if (request) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FileMinus className="w-5 h-5" />
-            Rétractation enregistrée
-          </CardTitle>
-          <CardDescription>
-            Votre déclaration a bien été reçue. Voici son avancement.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <CollapsibleCard
+        icon={<FileMinus className="w-5 h-5" />}
+        title="Rétractation enregistrée"
+        description="Votre déclaration a bien été reçue. Voici son avancement."
+        contentClassName="space-y-4"
+      >
           <dl className="text-sm rounded-lg border border-[color:var(--border-subtle)] divide-y divide-[color:var(--border-subtle)]">
             <Row label="Référence" value={request.publicReference} mono />
             <Row label="Reçue le" value={parisDateTime(request.requestedAt)} />
@@ -157,72 +160,67 @@ export function WithdrawalCard() {
             Souscrire un nouvel abonnement avant cette date réactive votre compte et
             annule la suppression prévue.
           </p>
-        </CardContent>
-      </Card>
+      </CollapsibleCard>
     );
   }
 
   // ── Avant toute demande (§6.2) ────────────────────────────────────────
+  // Le lien de rétractation est rendu hors du tiroir : visible même fermé.
+  const lienRetractation = eligible ? (
+    <Button variant="outline" className="w-full" asChild>
+      {/* §6.1 : libellé imposé mot pour mot. */}
+      <Link href="/retractation">Renoncer au contrat ici</Link>
+    </Button>
+  ) : (
+    <div className="space-y-2">
+      <Badge variant="outline" className="text-muted-foreground">
+        Rétractation en ligne indisponible
+      </Badge>
+      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {/* §6.2 : le bouton peut être masqué, le lien public demeure. */}
+      <p className="text-xs">
+        <Link href="/retractation" className="text-primary hover:underline">
+          Renoncer au contrat ici
+        </Link>
+      </p>
+    </div>
+  );
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <FileMinus className="w-5 h-5" />
-          Droit de rétractation
-        </CardTitle>
-        <CardDescription>
-          Quatorze jours pour renoncer à un abonnement souscrit en ligne.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* §6.2 : « une explication distincte de la résiliation ». */}
-        <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 text-sm">
-          <p className="text-muted-foreground">
-            <strong className="text-[color:var(--text-primary)]">Ce n&apos;est pas une résiliation.</strong>{' '}
-            La rétractation annule le contrat et donne lieu à un remboursement
-            intégral. La résiliation met fin à l&apos;abonnement à son échéance,
-            sans remboursement.
-          </p>
-        </div>
+    <CollapsibleCard
+      icon={<FileMinus className="w-5 h-5" />}
+      title="Droit de rétractation"
+      description="Quatorze jours pour renoncer à un abonnement souscrit en ligne."
+      headerExtra={lienRetractation}
+      contentClassName="space-y-4"
+    >
+      {/* §6.2 : « une explication distincte de la résiliation ». */}
+      <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 text-sm">
+        <p className="text-muted-foreground">
+          <strong className="text-[color:var(--text-primary)]">Ce n&apos;est pas une résiliation.</strong>{' '}
+          La rétractation annule le contrat et donne lieu à un remboursement
+          intégral. La résiliation met fin à l&apos;abonnement à son échéance,
+          sans remboursement.
+        </p>
+      </div>
 
-        {contract && (
-          <dl className="text-sm rounded-lg border border-[color:var(--border-subtle)] divide-y divide-[color:var(--border-subtle)]">
-            <Row label="Offre" value={`${contract.offerLabel} — facturation ${contract.billingPeriodLabel}`} />
-            <Row label="Souscrit le" value={parisDate(contract.contractConcludedAt)} />
-            <Row
-              label="Délai jusqu’au"
-              value={
-                parisDate(contract.withdrawalDeadlineAt) +
-                (contract.deadlineDeferred && contract.deadlineDeferralReason
-                  ? ` (reporté : ${contract.deadlineDeferralReason})`
-                  : '')
-              }
-            />
-            <Row label="Remboursement estimé" value={contract.amountLabel} />
-          </dl>
-        )}
-
-        {eligible ? (
-          <Button variant="outline" className="w-full" asChild>
-            {/* §6.1 : libellé imposé mot pour mot. */}
-            <Link href="/retractation">Renoncer au contrat ici</Link>
-          </Button>
-        ) : (
-          <div className="space-y-2">
-            <Badge variant="outline" className="text-muted-foreground">
-              Rétractation en ligne indisponible
-            </Badge>
-            {message && <p className="text-sm text-muted-foreground">{message}</p>}
-            {/* §6.2 : le bouton peut être masqué, le lien public demeure. */}
-            <p className="text-xs">
-              <Link href="/retractation" className="text-primary hover:underline">
-                Renoncer au contrat ici
-              </Link>
-            </p>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      {contract ? (
+        <dl className="text-sm rounded-lg border border-[color:var(--border-subtle)] divide-y divide-[color:var(--border-subtle)]">
+          <Row label="Offre" value={`${contract.offerLabel} — facturation ${contract.billingPeriodLabel}`} />
+          <Row label="Souscrit le" value={parisDate(contract.contractConcludedAt)} />
+          <Row
+            label="Délai jusqu’au"
+            value={
+              parisDate(contract.withdrawalDeadlineAt) +
+              (contract.deadlineDeferred && contract.deadlineDeferralReason
+                ? ` (reporté : ${contract.deadlineDeferralReason})`
+                : '')
+            }
+          />
+          <Row label="Remboursement estimé" value={contract.amountLabel} />
+        </dl>
+      ) : null}
+    </CollapsibleCard>
   );
 }
 

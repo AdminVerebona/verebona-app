@@ -20,6 +20,8 @@
  *  3. Le résultat est identique pour un fichier et pour un lien web
  *     (critère d'acceptation n°6).
  */
+import { buildKnowledgeFromSourceAnalysis } from '../knowledge/document-knowledge';
+import { persistDocumentKnowledge } from '../knowledge/document-knowledge.service';
 import { db } from '@/db';
 import { assetFiles, assets, rooms, equipments, documentLots, documentLotItems } from '@/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -65,6 +67,8 @@ import { emitSourceAnalyzed } from './events';
 import type {
   SourceInput, SourceType, SourceAnalysisResult, AnalysisContext, AnalysisWarning,
 } from './types';
+import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
+import { markSourcesGrouped } from '@/services/documents/grouped-sources';
 
 export interface RunSourceAnalysisInput {
   sourceType: SourceType;
@@ -74,6 +78,13 @@ export interface RunSourceAnalysisInput {
   linkedAssetId?: number | null;
   /** Consommer un crédit d'analyse. false pour une réanalyse technique. */
   billable?: boolean;
+  /**
+   * Garde d'exécution (file durable). Contrôlée avant chaque écriture
+   * significative : une exécution interrompue par un rollback, un arrêt
+   * d'urgence ou une désactivation n'écrit plus aucun résultat — même si
+   * l'appel IA répond après l'interruption.
+   */
+  guard?: ExecutionGuard;
 }
 
 export interface RunSourceAnalysisOutput {
@@ -96,7 +107,11 @@ export async function runSourceAnalysis(
   }
 
   // Déduplication : ne pas relancer une analyse déjà en cours (§5.7).
-  const pendingIds = await excludeInProgress(ownedIds);
+  //
+  // Sous garde de file, l'exécution est titulaire exclusive du job (jeton) :
+  // un état ANALYZING laissé par une exécution interrompue ou abandonnée ne
+  // doit pas empêcher sa reprise propre.
+  const pendingIds = req.guard ? ownedIds : await excludeInProgress(ownedIds);
   if (pendingIds.length === 0) {
     return { results: [], analysedCount: 0, skippedReason: 'already_running' };
   }
@@ -107,6 +122,8 @@ export async function runSourceAnalysis(
     if (!gate.allowed) return { results: [], analysedCount: 0, skippedReason: 'quota' };
   }
 
+  const guard = req.guard;
+  await guard?.assertActive('ouverture du lot');
   const lotId = await openLot(req.accountId, pendingIds);
   await setState(pendingIds, 'ANALYZING');
 
@@ -143,11 +160,37 @@ export async function runSourceAnalysis(
     try {
       const result = await analyseGroup(input, groupIndices, ctx, groupTrace);
 
+      // ⚠️ Point de contrôle essentiel : l'appel IA a pu répondre APRÈS un
+      // rollback. Aucun de ses résultats n'est alors écrit.
+      await guard?.assertActive('persistance du résultat');
+
       broadcast(leadSourceId, { type: 'progress', stage: 'persistance' });
 
       // Étape 12 — persistance, idempotente.
       const persisted = await persistAnalysisResult({
         input, leadSourceId, groupSourceIds, lotId, result,
+      });
+
+      // ══════════════════════════════════════════════════════════════════
+      // ÉTAPE 12 bis — REPRÉSENTATION DURABLE DU DOCUMENT (base de connaissance)
+      //
+      // Texte, description, métadonnées, éléments structurants et faits
+      // génériques, avec preuves et provenance — que le document soit
+      // rattaché à un bien ou non, qu'une colonne métier existe ou non.
+      // T2, T3, T4 et les traitements futurs lisent ici avant de relire le
+      // fichier. Un échec est journalisé sans faire échouer l'analyse : le
+      // run et les propositions, eux, sont déjà écrits.
+      // ══════════════════════════════════════════════════════════════════
+      await guard?.assertActive('base de connaissance');
+      await persistDocumentKnowledge(buildKnowledgeFromSourceAnalysis(result, {
+        accountId: input.accountId,
+        fileId: leadSourceId,
+        analysisRunId: persisted.runId ?? null,
+        assetIdAtAnalysis: resolveAssetId(result, input),
+        sourceType: input.sourceType === 'web_link' ? 'web_link' : 'asset_file',
+        sourceVersion: input.sourceVersion ?? null,
+      })).catch((e: Error) => {
+        console.error(`[source-analysis] base de connaissance du fichier ${leadSourceId} non écrite :`, e.message);
       });
 
       // ══════════════════════════════════════════════════════════════════
@@ -166,6 +209,7 @@ export async function runSourceAnalysis(
         .map((c) => c.entityId)
         .filter((id): id is number => typeof id === 'number');
 
+      await guard?.assertActive('classement');
       await applyV2Classification({
         fileId: leadSourceId,
         accountId: input.accountId,
@@ -191,6 +235,7 @@ export async function runSourceAnalysis(
       // Étape 9 (suite) — preuves, uniquement si un bien est déterminé.
       const assetId = resolveAssetId(result, input);
       if (assetId) {
+        await guard?.assertActive('preuves');
         await persistEvidence({
           input,
           leadSourceId,
@@ -204,8 +249,9 @@ export async function runSourceAnalysis(
 
       // ⚠️ CORRECTION §4.1.7 — la suppression des fichiers secondaires
       // n'intervient qu'ici, après persistance ET preuves réussies.
+      await guard?.assertActive('finalisation');
       if (groupSourceIds.length > 1) {
-        await softDeleteSecondarySources(groupSourceIds.slice(1), lotId);
+        await softDeleteSecondarySources(leadSourceId, groupSourceIds.slice(1), lotId);
       }
 
       await markLotItems(lotId, groupSourceIds, 'completed', persisted.runId);
@@ -264,6 +310,7 @@ export async function runSourceAnalysis(
       // ── Étapes 13 et 14 : déclenchement des moteurs aval ────────────────
       // Émission d'événement, jamais d'import direct : le pipeline ne connaît
       // ni la réconciliation ni l'agenda, ce qui permet le mode shadow (§10.2).
+      await guard?.assertActive('moteurs aval');
       await emitSourceAnalyzed({
         accountId: req.accountId,
         userId: req.userId,
@@ -272,6 +319,9 @@ export async function runSourceAnalysis(
         result,
       });
     } catch (e) {
+      // Interruption : aucune écriture (pas même l'échec) — la nouvelle
+      // exécution reprendra ces sources avec la configuration restaurée.
+      if (isExecutionCancelled(e)) throw e;
       await failSources(groupSourceIds, (e as Error).message, lotId);
     }
   }
@@ -526,8 +576,13 @@ async function failSources(ids: number[], reason: string, lotId: number | null):
   await markLotItems(lotId, ids, 'failed');
 }
 
-async function softDeleteSecondarySources(ids: number[], lotId: number | null): Promise<void> {
-  await db.update(assetFiles).set({ deletedAt: new Date() }).where(inArray(assetFiles.id, ids));
+/**
+ * Sources secondaires d'un groupe : rattachées au document principal
+ * (masquées des listes, conservées en stockage et jamais purgées tant que le
+ * document existe — `grouped-sources`), et non plus simplement supprimées.
+ */
+async function softDeleteSecondarySources(leadId: number, ids: number[], lotId: number | null): Promise<void> {
+  await markSourcesGrouped(leadId, ids);
   if (lotId) {
     await db.update(documentLotItems).set({ commitStatus: 'committed' })
       .where(and(eq(documentLotItems.lotId, lotId), inArray(documentLotItems.assetFileId, ids)));

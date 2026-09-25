@@ -23,6 +23,9 @@ import {
   Microwave,
   Fan,
   ParkingSquare,
+  Caravan,
+  Hotel,
+  Sailboat,
 } from 'lucide-react';
 
 // Icônes spécifiques par sous-type de véhicule
@@ -31,6 +34,8 @@ const VEHICULE_ICONS: Record<string, LucideIcon> = {
   'voiture': Car,
   'camion': Truck,
   'moto': Bike,
+  'camping-car': Caravan,
+  'bateau': Sailboat,
   'citadine': Car,
   'berline': Car,
   'utilitaire': Truck,
@@ -44,6 +49,11 @@ const IMMOBILIER_ICONS: Record<string, LucideIcon> = {
   'appartement': Building2,
   'studio': Building2,
   'terrain': Landmark,
+  'immeuble': Hotel,
+  'mobil-home': Caravan,
+  'local professionnel/commercial': Store,
+  'garage/box': ParkingSquare,
+  // Anciens libellés, encore possibles avant la migration 0138
   'local commercial': Store,
   'garage': ParkingSquare,
 };
@@ -111,6 +121,12 @@ function detectVehicleType(name: string, subtype?: string | null): LucideIcon | 
   }
   if (searchText.includes('camion') || searchText.includes('utilitaire')) {
     return Truck;
+  }
+  if (searchText.includes('camping-car') || searchText.includes('camping car') || searchText.includes('van aménagé')) {
+    return Caravan;
+  }
+  if (searchText.includes('bateau') || searchText.includes('voilier') || searchText.includes('zodiac')) {
+    return Sailboat;
   }
   if (searchText.includes('voiture') || searchText.includes('auto')) {
     return Car;

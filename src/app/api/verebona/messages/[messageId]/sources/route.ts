@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
 import { hrefSource } from '@/services/verebona-assistant/core/entity-ref';
+import { MESSAGE_OWNED_BY_USER } from '@/services/verebona-assistant/core/conversation.service';
 
 export async function GET(
   req: NextRequest,
@@ -25,15 +26,18 @@ export async function GET(
 
   await ensureMigrations();
   const { messageId } = await params;
-  // Propriété : le message doit appartenir au compte (§29.1).
+  // Propriété : le message doit appartenir à une conversation active de
+  // L'UTILISATEUR dans le compte (§29.1) — en Duo, B ne lit pas les sources
+  // des réponses faites à A.
   const rows = await pgClient.unsafe(
     `SELECT s.source_type, s.source_id, s.title_snapshot, s.excerpt_snapshot, s.is_available, s.rank
        FROM verebona_message_sources s
        JOIN verebona_messages m ON m.id = s.message_id
       WHERE s.message_id = $1 AND m.account_id = $2
+        AND ${MESSAGE_OWNED_BY_USER('m', '$2', '$3')}
       ORDER BY s.rank ASC NULLS LAST
       LIMIT 5`,
-    [messageId, accountId],
+    [messageId, accountId, session.userId],
   );
 
   const sources = (rows as unknown as Array<Record<string, unknown>>).map((r) => ({

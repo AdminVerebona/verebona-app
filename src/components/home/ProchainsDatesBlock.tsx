@@ -117,6 +117,10 @@ function ItemCard({ item, onItemClick }: { item: HomeItem; onItemClick?: (item: 
     >
       {/* Date row */}
       <div className="flex items-center gap-2 mb-1.5">
+        {item.date && item.forecast && (
+          // Occurrence prévisionnelle : la date est une estimation.
+          <span className="text-[10px] italic text-[color:var(--text-muted)]" title="Date estimée à partir de la récurrence">prévu le</span>
+        )}
         {item.date ? (
           <span className={`text-sm font-bold ${colors.day} leading-none`}>
             {parseDateParts(item.date).day}

@@ -111,7 +111,8 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
 
   return (
     <>
-      {/* Bottom sheet overlay */}
+      {/* Panneau latéral droit (il montait par le bas : règle d'interface,
+          les tiroirs s'ouvrent à droite) */}
       <AnimatePresence>
         {open && (
           <>
@@ -129,21 +130,16 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
             {/* Sheet */}
             <motion.div
               key="sheet"
-              initial={{ y: '100%' }}
-              animate={{ y: 0 }}
-              exit={{ y: '100%' }}
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-              className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
+              className="fixed inset-y-0 right-0 z-50 w-[85vw] max-w-sm md:hidden"
             >
-              <div className="bg-[color:var(--bg-card)] border-t border-[color:var(--border-subtle)] rounded-t-3xl shadow-2xl pb-[env(safe-area-inset-bottom)]">
-
-                {/* Handle */}
-                <div className="flex justify-center pt-3 pb-1">
-                  <div className="w-10 h-1 rounded-full bg-[color:var(--border-subtle)]" />
-                </div>
+              <div className="h-full overflow-y-auto bg-[color:var(--bg-card)] border-l border-[color:var(--border-subtle)] shadow-2xl pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
 
                 {/* Header */}
-                <div className="flex items-center justify-between px-6 pt-3 pb-5">
+                <div className="flex items-center justify-between px-6 pt-6 pb-5">
                   <h2 className="text-lg font-semibold text-[color:var(--text-primary)]">
                     Ajouter
                   </h2>
@@ -160,8 +156,8 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
                   {ACTIONS.map((action, i) => (
                     <motion.button
                       key={action.id}
-                      initial={{ opacity: 0, y: 12 }}
-                      animate={{ opacity: 1, y: 0 }}
+                      initial={{ opacity: 0, x: 12 }}
+                      animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: i * 0.05, duration: 0.2 }}
                       onClick={() => handleActionSelect(action.id)}
                       className="w-full flex items-center gap-4 px-4 py-4 rounded-2xl bg-[color:var(--bg-page)] border border-[color:var(--border-subtle)] active:scale-[0.98] transition-all hover:border-[color:var(--accent)]/40 hover:bg-[color:var(--accent-soft)] group"

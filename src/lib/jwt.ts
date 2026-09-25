@@ -19,6 +19,10 @@ export interface JWTPayload {
   hasActiveAccount?: boolean;
   type: 'access' | 'refresh';
   iat?: number;
+  /** Milliseconde d'émission — comparée à la révocation globale des sessions. */
+  iatMs?: number;
+  /** Identifiant unique du jeton. */
+  jti?: string;
   exp?: number;
 }
 
@@ -48,8 +52,12 @@ async function importKey(usage: 'sign' | 'verify'): Promise<CryptoKey> {
 }
 
 async function createToken(claims: Record<string, unknown>, expiresInSeconds: number): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const payload = { ...claims, iat: now, exp: now + expiresInSeconds };
+  const nowMs = Date.now();
+  const now = Math.floor(nowMs / 1000);
+  // `jti` aléatoire : deux jetons émis dans la même seconde pour le même
+  // utilisateur étaient strictement identiques — même empreinte, donc une
+  // rotation pouvait « révoquer » le jeton qu'elle venait d'émettre.
+  const payload = { ...claims, jti: crypto.randomUUID(), iat: now, iatMs: nowMs, exp: now + expiresInSeconds };
   const enc = (v: unknown) => b64url(new TextEncoder().encode(JSON.stringify(v)));
   const header = enc({ alg: 'HS256', typ: 'JWT' });
   const body   = enc(payload);
