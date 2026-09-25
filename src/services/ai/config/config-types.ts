@@ -5,7 +5,7 @@
  * arrêtés dans « BO IA — champs administrables par traitement » ; tout ce qui
  * n'y figure pas reste dans le code, et le §2.1 dit pourquoi pour chacun.
  */
-import type { Treatment } from './treatments';
+import { isPromptAdministrable, type Treatment } from './treatments';
 import type { AiEnvironment } from './environment';
 import type { ConfigVersionStatus } from './version-state-machine';
 
@@ -71,7 +71,10 @@ export interface CascadeThresholds {
 /** Configuration d'un traitement au sein d'une version. */
 export interface TreatmentConfig {
   treatment: Treatment;
-  /** Prompt administrable unique (T1-013, T3-007, T4-010). */
+  /**
+   * Prompt administrable unique (T1-013, T3-007, T4-010).
+   * Toujours vide pour T5, dont le comportement est dans le code (T5-003).
+   */
   prompt: string;
   primaryModel: string | null;
   fallback1: string | null;
@@ -141,6 +144,17 @@ export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
 };
 
 /** Configuration vide d'un traitement — base d'un premier Brouillon. */
+/**
+ * Retire d'une configuration ce que le BO n'a pas le droit de porter.
+ *
+ * Aujourd'hui : le prompt de T5, qui n'est pas administrable (T5-003, E-02).
+ * Appliquée à toute écriture en base et à la préparation d'un package, pour
+ * qu'un prompt T5 hérité d'une ancienne version ne se propage pas.
+ */
+export function normalizeTreatmentConfig<C extends Pick<TreatmentConfig, 'treatment' | 'prompt'>>(c: C): C {
+  return isPromptAdministrable(c.treatment) ? c : { ...c, prompt: '' };
+}
+
 export function emptyTreatmentConfig(treatment: Treatment): TreatmentConfig {
   return {
     treatment,

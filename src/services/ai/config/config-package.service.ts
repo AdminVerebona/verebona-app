@@ -37,7 +37,7 @@ import { getAiEnvironment, type AiEnvironment } from './environment';
 import { ConfigOperationRefused } from './config-version.service';
 import { diffVersions, type ConfigDiff } from './config-diff.service';
 import { getVersion, getActiveVersion } from './config-version.repository';
-import type { TreatmentConfig } from './config-types';
+import { normalizeTreatmentConfig, type TreatmentConfig } from './config-types';
 
 type Row = Record<string, unknown>;
 
@@ -97,7 +97,9 @@ export function buildPayload(
     label,
     entries: entries.map((e) => ({
       treatment: e.treatment,
-      prompt: e.prompt,
+      // Vide pour T5 : un prompt T5 hérité d'une version antérieure ne voyage
+      // pas vers la production (T5-003, E-02).
+      prompt: normalizeTreatmentConfig(e).prompt,
       primaryModel: e.primaryModel,
       fallback1: e.fallback1,
       fallback2: e.fallback2,
@@ -262,7 +264,7 @@ export async function importPackage(
          max_output_tokens, guardrails, triggers, updated_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13)`,
       [
-        versionId, e.treatment, e.prompt, e.primaryModel, e.fallback1, e.fallback2,
+        versionId, e.treatment, normalizeTreatmentConfig(e).prompt, e.primaryModel, e.fallback1, e.fallback2,
         e.reasoningPrimary, e.reasoningFallback1, e.reasoningFallback2,
         e.maxOutputTokens, JSON.stringify(e.guardrails), JSON.stringify(e.triggers), userId,
       ] as never[],

@@ -109,4 +109,17 @@ describe('analyze_instruction — le prompt offre bien une issue autre que « mo
   it("ne demande plus l'ancien champ, qui n'est plus lu", () => {
     expect(prompt).not.toContain('"impactAnalysis"');
   });
+
+  it('reçoit le mode, et impose null en analyse (T5-006, SCR-06)', () => {
+    // Le service écarte de toute façon un texte rendu en analyse ; le dire au
+    // modèle évite de payer la réécriture d'un prompt qui ne sera pas lu.
+    expect(prompt).toContain('{{MODE}}');
+    expect(prompt).toMatch(/mode ANALYSE[^\n]*`proposedContent` vaut TOUJOURS `null`/);
+    expect(prompt).toContain('mode MODIFICATION');
+  });
+
+  it("ne prétend plus que rien n'est appliqué (E-01)", () => {
+    // Une demande de modification est désormais écrite dans le brouillon.
+    expect(prompt).not.toContain("TU N'APPLIQUES PAS");
+  });
 });

@@ -107,6 +107,8 @@ interface VersionDetail extends Version {
 interface DiffLine { kind: 'added' | 'removed' | 'unchanged'; text: string }
 
 interface T5Analysis {
+  mode: 'analyze' | 'modify';
+  treatment: Treatment;
   verdict: 'prompt' | 'code' | 'donnees' | 'configuration';
   analysis: string;
   proposedContent: string | null;
@@ -114,7 +116,13 @@ interface T5Analysis {
   recommendations: string[];
   diff: { lines: DiffLine[]; added: number; removed: number; identical: boolean } | null;
   rejected?: string;
+  applied: boolean;
+  draftId: number | null;
+  draftCreated: boolean;
+  traceId: string;
 }
+
+interface DraftChoice { id: number; label: string | null; isStale: boolean; createdAt: string }
 
 interface Metric {
   key: string;
@@ -157,6 +165,11 @@ const STATUS_STYLE: Record<Status, string> = {
   VALIDATED: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
   ARCHIVED: 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
 };
+
+/** Miroir de `isPromptAdministrable` (services/ai/config/treatments) : T5 n'a pas de prompt BO. */
+function isPromptAdministrable(t: Treatment): boolean {
+  return t !== 'T5';
+}
 
 function versionName(v: Version): string {
   if (v.visibleNumber) return `v${v.visibleNumber}${v.label ? ` — ${v.label}` : ''}`;
@@ -257,32 +270,49 @@ function Supervision({
 }
 
 /**
- * Zone Prompt Control — CDC BO IA SCR-06.
+ * Conversation Prompt Control (T5) — CDC BO IA SCR-06, WF-20, T5-UI-01 à T5-UI-09.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * LE VERDICT VIENT AVANT LA PROPOSITION, ET PARFOIS SEUL
+ * UN CHAMP EN LANGAGE NATUREL, PAS UN ÉDITEUR DE PROMPT
  *
- * Le T5-009 veut que T5 puisse conclure que le problème est dans le code, les
- * données ou la configuration. L'écran doit donc rendre ces réponses aussi
- * lisibles qu'une proposition de prompt — sinon l'administrateur les lira
- * comme un échec, et reformulera jusqu'à obtenir une modification qui ne
- * réglera rien.
+ * L'administrateur décrit un comportement attendu ou un problème. T5 analyse
+ * la demande et, sur « Modifier le prompt », réécrit lui-même le prompt du
+ * traitement ciblé (T1, socle T2, T3, T4). Personne ne tape de prompt ici.
  *
- * Le bouton « Appliquer » n'apparaît que sur le verdict « prompt », et
- * seulement après affichage du diff : le SCR-06 veut que rien ne bouge avant
- * que l'administrateur ait vu ce qui va changer.
+ * ══════════════════════════════════════════════════════════════════════════
+ * DEUX ACTIONS, UN GESTE CHACUNE — T5-UI-03, T5-UI-04, écart E-01
+ *
+ * · « Analyser » : diagnostic seul, sur toute version, rien n'est écrit.
+ * · « Modifier le prompt » : T5 écrit directement dans le Brouillon, puis
+ *   l'écran montre résumé et diff. Pas de bouton d'approbation en plus : le
+ *   filet est le cycle Brouillon → À tester → Active.
+ *
+ * Le verdict vient avant tout le reste, et il peut venir seul : si le problème
+ * est dans le code, les données ou un réglage (T5-011), l'écran doit le rendre
+ * aussi lisible qu'une modification — sinon l'administrateur reformule jusqu'à
+ * obtenir un changement de prompt qui ne réglera rien.
  */
 function PromptControl({
-  versionId, readOnly, onApplied, treatment,
+  versionId, readOnly, treatment, hasUnsaved, onModified, onOpenVersion,
 }: {
-  versionId: number; readOnly: boolean; onApplied: () => void;
-  /** Traitement de l'onglet. Absent = T5 choisit sa cible. */
+  versionId: number;
+  /** La version affichée n'est pas un Brouillon : T5 en créera ou en demandera un. */
+  readOnly: boolean;
+  /** Traitement de l'onglet (cible préremplie). Absent = onglet T5, cible à choisir. */
   treatment?: Treatment;
+  /** Des saisies non enregistrées existent-elles sur ce traitement ? */
+  hasUnsaved: (t: Treatment) => boolean;
+  /** Une modification a été écrite dans ce Brouillon. */
+  onModified: (draftId: number, t: Treatment) => void | Promise<void>;
+  /** Ouvrir une version (choix d'un Brouillon existant). */
+  onOpenVersion: (id: number) => void;
 }) {
   const [cible, setCible] = useState<Treatment>(treatment ?? 'T1');
   const [instruction, setInstruction] = useState('');
-  const [analyse, setAnalyse] = useState<T5Analysis | null>(null);
-  const [encours, setEncours] = useState(false);
+  const [resultat, setResultat] = useState<T5Analysis | null>(null);
+  const [encours, setEncours] = useState<null | 'analyze' | 'modify'>(null);
+  const [choixBrouillon, setChoixBrouillon] = useState<DraftChoice[] | null>(null);
+  const [refus, setRefus] = useState<string | null>(null);
 
   const VERDICT_LABEL: Record<T5Analysis['verdict'], string> = {
     prompt: 'Le prompt est en cause',
@@ -291,129 +321,187 @@ function PromptControl({
     configuration: 'Un réglage est en cause',
   };
 
-  const lancer = async () => {
-    setEncours(true);
-    setAnalyse(null);
-    try {
-      setAnalyse(await apiClient.post<T5Analysis>('/api/admin/ai/prompt-control', {
-        action: 'analyze', versionId, treatment: cible, instruction: instruction.trim(),
-      }));
-    } catch {
-      toast.error("L'analyse n'a pas abouti.");
-    } finally { setEncours(false); }
+  const TARGET_LABEL: Record<'T1' | 'T2' | 'T3' | 'T4', string> = {
+    T1: 'T1 · Sources — prompt maître',
+    T2: 'T2 · Assistant — socle commun',
+    T3: 'T3 · Rationalisation',
+    T4: 'T4 · Échéances',
   };
 
-  const appliquer = async () => {
-    if (!analyse?.proposedContent) return;
-    setEncours(true);
+  const unsaved = hasUnsaved(cible);
+  const demandeValide = instruction.trim().length >= 5;
+
+  const envoyer = async (action: 'analyze' | 'modify', createDraft = false) => {
+    setEncours(action);
+    setResultat(null);
+    setChoixBrouillon(null);
+    setRefus(null);
     try {
-      await apiClient.post('/api/admin/ai/prompt-control', {
-        action: 'apply', versionId, treatment: cible,
-        proposedContent: analyse.proposedContent,
+      const r = await apiClient.post<T5Analysis>('/api/admin/ai/prompt-control', {
+        action, versionId, treatment: cible, instruction: instruction.trim(),
+        ...(action === 'modify' && createDraft ? { createDraft: true } : {}),
       });
-      toast.success(`Prompt ${cible} modifié dans le brouillon`);
-      setAnalyse(null);
-      setInstruction('');
-      onApplied();
-    } catch {
-      toast.error("La modification n'a pas pu être enregistrée.");
-    } finally { setEncours(false); }
+      setResultat(r);
+      if (r.applied && r.draftId) {
+        toast.success(r.draftCreated
+          ? `Brouillon créé depuis l'Active, prompt ${r.treatment} modifié`
+          : `Prompt ${r.treatment} modifié dans le brouillon`);
+        await onModified(r.draftId, r.treatment);
+      }
+    } catch (e) {
+      const err = e as { code?: string; message?: string; details?: { drafts?: DraftChoice[] } };
+      if (err.code === 'DRAFT_SELECTION_REQUIRED' && err.details?.drafts) {
+        // T5-007 : jamais de choix arbitraire. L'administrateur désigne.
+        setChoixBrouillon(err.details.drafts);
+      } else {
+        setRefus(err.message ?? "La demande n'a pas abouti.");
+      }
+    } finally { setEncours(null); }
   };
 
   return (
     <div className="space-y-4">
       <div>
         <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">
-          Demander une modification
+          {treatment ? `Demander à Prompt Control de faire évoluer ${treatment}` : 'Conversation Prompt Control'}
         </h3>
         <p className="text-xs text-[color:var(--text-muted)]">
-          Décrivez ce qui ne va pas, en français. Prompt Control dira d&apos;abord si le
-          prompt est bien en cause — et proposera une modification seulement dans ce cas.
+          Décrivez en français le comportement attendu ou le problème constaté — pas le
+          prompt lui-même. Prompt Control dira d&apos;abord si le prompt est en cause, puis
+          le réécrira dans le brouillon si vous le demandez.
         </p>
       </div>
 
       {/*
-        Le sélecteur ne s'affiche que depuis l'onglet T5, où la cible est
-        réellement un choix. Depuis l'onglet d'un traitement, la cible est ce
-        traitement : la redemander obligerait à désigner ce qu'on regarde déjà.
+        T5-UI-02 : cible préremplie depuis l'onglet d'un traitement, à choisir
+        depuis l'onglet T5. T5 n'est jamais proposé (T5-002).
       */}
       {!treatment && (
-        <div className="flex gap-2">
-          <select className={`${selectClass} max-w-[220px]`} value={cible} disabled={readOnly || encours}
-            onChange={(e) => { setCible(e.target.value as Treatment); setAnalyse(null); }}>
+        <Field label="Prompt à faire évoluer">
+          <select className={`${selectClass} max-w-[320px]`} value={cible} disabled={encours !== null}
+            onChange={(e) => { setCible(e.target.value as Treatment); setResultat(null); setChoixBrouillon(null); }}>
             {(['T1', 'T2', 'T3', 'T4'] as const).map((t) => (
-              <option key={t} value={t}>Prompt {t}</option>
+              <option key={t} value={t}>{TARGET_LABEL[t]}</option>
             ))}
           </select>
-          <span className="text-xs text-[color:var(--text-muted)] self-center">
-            Prompt Control ne modifie pas son propre prompt.
-          </span>
+        </Field>
+      )}
+
+      <Field label="Votre demande">
+        <Textarea
+          value={instruction}
+          disabled={encours !== null}
+          onChange={(e) => setInstruction(e.target.value)}
+          placeholder={'Ex. : « Les numéros de série en pied de facture ne sont pas extraits. »\n'
+            + 'Ex. : « Pourquoi ce contrat d’assurance est-il classé en facture ? »'}
+          className="min-h-[110px] bg-[color:var(--bg-input)]"
+        />
+      </Field>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="outline" onClick={() => envoyer('analyze')}
+          disabled={encours !== null || !demandeValide}>
+          {encours === 'analyze' && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+          Analyser
+        </Button>
+        <Button size="sm" onClick={() => envoyer('modify')}
+          disabled={encours !== null || !demandeValide || unsaved}>
+          {encours === 'modify' && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+          Modifier le prompt
+        </Button>
+      </div>
+
+      <p className="text-xs text-[color:var(--text-muted)]">
+        « Analyser » ne modifie rien. « Modifier le prompt » écrit directement dans le
+        brouillon{readOnly ? ' — la version affichée étant en lecture seule, un brouillon sera créé depuis l’Active s’il n’en existe aucun' : ''}.
+        Modèles, replis et garde-fous ne sont jamais modifiés.
+      </p>
+
+      {unsaved && (
+        <p className="text-xs text-amber-500">
+          {cible} a des modifications non enregistrées : enregistrez-les ou annulez-les avant
+          de demander une modification, pour que Prompt Control parte du bon texte.
+        </p>
+      )}
+
+      {refus && <p className="text-sm text-amber-500">{refus}</p>}
+
+      {choixBrouillon && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
+          <p className="text-sm text-[color:var(--text-secondary)]">
+            La version affichée est en lecture seule et des brouillons existent déjà.
+            Choisissez celui dans lequel écrire — Prompt Control ne choisit pas à votre place.
+            Votre demande est conservée.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {choixBrouillon.map((d) => (
+              <Button key={d.id} size="sm" variant="outline"
+                onClick={() => { setChoixBrouillon(null); onOpenVersion(d.id); }}>
+                Ouvrir {d.label ?? `Brouillon ${d.id}`}
+                {d.isStale && <span className="ml-1 text-amber-500">(base dépassée)</span>}
+              </Button>
+            ))}
+            <Button size="sm" onClick={() => envoyer('modify', true)} disabled={encours !== null}>
+              <Plus className="w-3.5 h-3.5 mr-1.5" /> Nouveau brouillon depuis l&apos;Active
+            </Button>
+          </div>
         </div>
       )}
 
-      <Textarea
-        value={instruction}
-        disabled={readOnly || encours}
-        onChange={(e) => setInstruction(e.target.value)}
-        placeholder="Les numéros de série en pied de facture ne sont pas extraits."
-        className="min-h-[90px] bg-[color:var(--bg-input)]"
-      />
-
-      <div className="flex items-center gap-3">
-        <Button size="sm" onClick={lancer}
-          disabled={readOnly || encours || instruction.trim().length < 5}>
-          {encours ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
-          Analyser
-        </Button>
-        {readOnly && (
-          <span className="text-xs text-[color:var(--text-muted)]">
-            Cette version est en lecture seule : créez un brouillon pour l&apos;utiliser.
-          </span>
-        )}
-      </div>
-
-      {analyse && (
+      {resultat && (
         <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-3">
-          <p className={`text-sm font-medium ${analyse.verdict === 'prompt'
-            ? 'text-[color:var(--text-primary)]' : 'text-amber-500'}`}>
-            {VERDICT_LABEL[analyse.verdict]}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className={`text-sm font-medium ${resultat.verdict === 'prompt'
+              ? 'text-[color:var(--text-primary)]' : 'text-amber-500'}`}>
+              {VERDICT_LABEL[resultat.verdict]}
+            </p>
+            {resultat.applied ? (
+              <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
+                Écrit dans le brouillon{resultat.draftCreated ? ' (créé depuis l’Active)' : ''}
+              </span>
+            ) : (
+              <span className="text-xs px-2 py-0.5 rounded-full border border-[color:var(--border-subtle)] text-[color:var(--text-muted)]">
+                {resultat.mode === 'analyze' ? 'Analyse seule — rien n’a été modifié' : 'Aucune modification écrite'}
+              </span>
+            )}
+          </div>
 
           <p className="text-sm text-[color:var(--text-secondary)] whitespace-pre-wrap">
-            {analyse.analysis}
+            {resultat.analysis}
           </p>
 
-          {analyse.rejected && (
-            <p className="text-sm text-amber-500">{analyse.rejected}</p>
+          {resultat.rejected && (
+            <p className="text-sm text-amber-500">{resultat.rejected}</p>
           )}
 
-          {analyse.risks.length > 0 && (
+          {resultat.risks.length > 0 && (
             <div>
               <p className="text-xs font-medium text-[color:var(--text-primary)]">Risques signalés</p>
               <ul className="text-xs text-[color:var(--text-muted)] list-disc pl-4">
-                {analyse.risks.map((r, i) => <li key={i}>{r}</li>)}
+                {resultat.risks.map((r, i) => <li key={i}>{r}</li>)}
               </ul>
             </div>
           )}
 
-          {analyse.recommendations.length > 0 && (
+          {resultat.recommendations.length > 0 && (
             <div>
               <p className="text-xs font-medium text-[color:var(--text-primary)]">
-                Recommandations — non appliquées
+                Recommandations — non appliquées, à faire vous-même dans les réglages
               </p>
               <ul className="text-xs text-[color:var(--text-muted)] list-disc pl-4">
-                {analyse.recommendations.map((r, i) => <li key={i}>{r}</li>)}
+                {resultat.recommendations.map((r, i) => <li key={i}>{r}</li>)}
               </ul>
             </div>
           )}
 
-          {analyse.diff && !analyse.diff.identical && (
+          {resultat.applied && resultat.diff && !resultat.diff.identical && (
             <div className="space-y-1">
               <p className="text-xs text-[color:var(--text-muted)]">
-                {analyse.diff.added} ligne(s) ajoutée(s), {analyse.diff.removed} retirée(s)
+                Prompt {resultat.treatment} : {resultat.diff.added} ligne(s) ajoutée(s),{' '}
+                {resultat.diff.removed} retirée(s)
               </p>
               <pre className="text-xs font-mono max-h-64 overflow-auto rounded bg-[color:var(--bg-page)] p-2">
-                {analyse.diff.lines.map((l, i) => (
+                {resultat.diff.lines.map((l, i) => (
                   <div key={i} className={
                     l.kind === 'added' ? 'text-emerald-500'
                       : l.kind === 'removed' ? 'text-red-400'
@@ -423,12 +511,6 @@ function PromptControl({
                 ))}
               </pre>
             </div>
-          )}
-
-          {analyse.verdict === 'prompt' && analyse.proposedContent && !analyse.rejected && (
-            <Button size="sm" onClick={appliquer} disabled={readOnly || encours}>
-              Écrire dans le brouillon
-            </Button>
           )}
         </div>
       )}
@@ -496,38 +578,45 @@ function TreatmentEditor({
         ══════════════════════════════════════════════════════════════════
         L'ÉDITEUR DIRECT EST REPLIÉ, ET C'EST DÉLIBÉRÉ
         ══════════════════════════════════════════════════════════════════
-        Le geste normal est de décrire ce qu'on veut en français, au-dessus :
-        c'est le besoin principal du SCR-06, et l'administrateur n'a pas à
-        rédiger un prompt pour obtenir un changement de comportement.
+        Le geste normal est de décrire ce qu'on veut en français, dans la zone
+        Prompt Control : l'administrateur n'a pas à rédiger un prompt pour
+        obtenir un changement de comportement.
 
-        ⚠️ Mais l'éditeur RESTE ACCESSIBLE, et il ne doit pas disparaître.
-        Prompt Control dépend d'un modèle. Si le fournisseur est en panne, ou si
-        le prompt de T5 est lui-même désaccordé de son schéma — ce qui est
-        arrivé le 18/09/2026 sur `understand_request` —, un administrateur privé
-        d'édition directe n'aurait plus aucun moyen de réparer l'outil censé
-        réparer les autres.
-
-        Le SCR-02 le prévoit d'ailleurs explicitement : « Éditeur du prompt T1
+        ⚠️ Mais pour T1 à T4 l'éditeur RESTE ACCESSIBLE. Prompt Control dépend
+        d'un modèle : fournisseur en panne ou arrêt d'urgence, et un
+        administrateur privé d'édition directe n'aurait plus aucun moyen de
+        corriger un prompt. Le SCR-02 le prévoit : « Éditeur du prompt T1
         unique, versionné, sans limite artificielle imposée par le BO ».
+
+        Pour T5, aucun éditeur (T5-003, T5-UI-09, écart E-02) : son
+        comportement est dans le code. Le serveur vide de toute façon ce champ
+        à l'écriture et l'ignore à l'exécution.
       */}
-      <details className="rounded-lg border border-[color:var(--border-subtle)] p-3">
-        <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
-          Modifier le prompt directement
-        </summary>
-        <div className="pt-3 space-y-2">
-          <p className="text-xs text-[color:var(--text-muted)]">
-            Édition manuelle du prompt, versionnée avec le reste de la configuration.
-            À réserver aux cas où Prompt Control ne peut pas aider — panne du
-            fournisseur, correction urgente.
-          </p>
-          <Textarea
-            value={entry.prompt}
-            disabled={readOnly}
-            onChange={(e) => set('prompt', e.target.value)}
-            className="min-h-[220px] font-mono text-xs bg-[color:var(--bg-input)]"
-          />
-        </div>
-      </details>
+      {isPromptAdministrable(entry.treatment) ? (
+        <details className="rounded-lg border border-[color:var(--border-subtle)] p-3">
+          <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
+            Modifier le prompt directement
+          </summary>
+          <div className="pt-3 space-y-2">
+            <p className="text-xs text-[color:var(--text-muted)]">
+              Édition manuelle du prompt, versionnée avec le reste de la configuration.
+              À réserver aux cas où Prompt Control ne peut pas aider — panne du
+              fournisseur, correction urgente.
+            </p>
+            <Textarea
+              value={entry.prompt}
+              disabled={readOnly}
+              onChange={(e) => set('prompt', e.target.value)}
+              className="min-h-[220px] font-mono text-xs bg-[color:var(--bg-input)]"
+            />
+          </div>
+        </details>
+      ) : (
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Le comportement de Prompt Control est défini dans le code : il n&apos;a pas de
+          prompt modifiable. Seuls ses réglages de modèle se configurent ici.
+        </p>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Modèle principal">
@@ -775,6 +864,33 @@ export default function AiConfigPage() {
     }
   }, []);
 
+  /**
+   * Après une écriture de Prompt Control.
+   *
+   * Dans le Brouillon affiché : seul le traitement modifié est relu. Recharger
+   * toute la version effacerait les saisies non enregistrées des AUTRES onglets
+   * — celle du traitement ciblé est, elle, bloquée avant l'envoi.
+   *
+   * Dans un autre Brouillon (créé depuis l'Active) : on l'ouvre. La version
+   * quittée était en lecture seule, il n'y a rien à perdre.
+   */
+  const afterT5Modification = async (draftId: number, t: Treatment) => {
+    if (current?.id !== draftId) {
+      await load();
+      await openVersion(draftId);
+      return;
+    }
+    try {
+      const v = await apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${draftId}`);
+      const entry = v.entries.find((e) => e.treatment === t);
+      if (entry) setDrafts((d) => ({ ...d, [t]: entry }));
+      setCurrent((c) => (c && c.id === v.id ? { ...c, entries: v.entries } : c));
+      setDiff(null);
+    } catch {
+      toast.error('Le prompt a été modifié, mais l’écran n’a pas pu le relire : rechargez la version.');
+    }
+  };
+
   /** WF-01 — trois choix quand une saisie n'est pas enregistrée. */
   const guardUnsaved = (go: () => void) => {
     if (dirty.size === 0) { go(); return; }
@@ -981,39 +1097,32 @@ export default function AiConfigPage() {
                 )}
 
                 {/*
-                  Zone en langage naturel EN TÊTE de chaque onglet T1–T4, déjà
-                  pointée sur le traitement affiché. C'est le besoin principal du
-                  SCR-06 : décrire ce qu'on veut, plutôt que rédiger un prompt.
+                  Zone en langage naturel — SCR-06, T5-UI-01.
 
-                  Absente de T5, qui ne modifie pas son propre prompt (T5-002).
+                  · Onglet T5 : la « Conversation T5 », avec choix de la cible
+                    T1–T4. C'est l'emplacement que le SCR-06 lui donne, et le
+                    seul champ de saisie de l'onglet qui ne soit pas un réglage
+                    de modèle — il n'y a pas de prompt T5 à éditer.
+                  · Onglets T1–T4 : la même zone, cible préremplie sur le
+                    traitement affiché (T5-UI-02, « selon point d'entrée »).
                 */}
-                {current && t.code !== 'T5' && (
+                {current && (
                   <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
                     <PromptControl
                       versionId={current.id}
                       readOnly={readOnly}
-                      treatment={t.code}
-                      onApplied={() => openVersion(current.id)}
+                      treatment={t.code === 'T5' ? undefined : t.code}
+                      hasUnsaved={(x) => dirty.has(x)}
+                      onModified={afterT5Modification}
+                      onOpenVersion={(id) => guardUnsaved(() => openVersion(id))}
                     />
                   </div>
                 )}
 
-                {/*
-                  Le SCR-06 place la « Conversation T5 » dans cet onglet. Elle
-                  vit désormais dans chaque onglet de traitement, déjà pointée
-                  sur la bonne cible : demander une modification de T1 depuis
-                  l'onglet T5 obligeait à re-désigner T1, alors qu'on venait de
-                  le quitter.
-
-                  Un renvoi plutôt qu'une seconde zone : deux chemins pour le
-                  même geste font douter de leur équivalence.
-                */}
                 {t.code === 'T5' && (
-                  <p className="text-sm text-[color:var(--text-muted)]">
-                    Pour demander une modification de prompt, ouvrez l&apos;onglet du
-                    traitement concerné : la zone de demande s&apos;y trouve, déjà pointée
-                    sur lui. Prompt Control ne modifie pas son propre prompt.
-                  </p>
+                  <h3 className="text-sm font-semibold text-[color:var(--text-primary)] pt-2">
+                    Réglages du modèle de Prompt Control
+                  </h3>
                 )}
 
                 {drafts[t.code] && (

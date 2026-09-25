@@ -60,6 +60,34 @@ describe('champs obligatoires', () => {
   });
 });
 
+describe('T5 — pas de prompt administrable (T5-003, E-02)', () => {
+  it("n'exige pas de prompt pour T5", () => {
+    expect(bloquants(valide({ treatment: 'T5', prompt: '', triggers: [] }))).toEqual([]);
+  });
+
+  it('signale sans bloquer un prompt T5 hérité d’une ancienne version', () => {
+    const issues = validateTreatment(valide({ treatment: 'T5', prompt: 'ancien texte', triggers: [] }), catalogues());
+    const prompt = issues.find((i) => i.field === 'prompt');
+    expect(prompt?.blocking).toBe(false);
+    expect(prompt?.message).toMatch(/pas administrable/);
+  });
+
+  it('exige toujours le prompt de T1 à T4', () => {
+    for (const t of ['T1', 'T2', 'T3', 'T4'] as const) {
+      expect(bloquants(valide({ treatment: t, prompt: '', triggers: [] })).some((i) => i.field === 'prompt'), t).toBe(true);
+    }
+  });
+
+  it('accepte une version complète dont T5 n’a pas de prompt', () => {
+    const entries = TREATMENTS.map((t) => valide({
+      treatment: t,
+      prompt: t === 'T5' ? '' : 'un prompt',
+      triggers: t === 'T2' || t === 'T5' ? [] : valide().triggers,
+    }));
+    expect(validateVersion(entries, catalogues()).valid).toBe(true);
+  });
+});
+
 describe('modèles', () => {
   it('refuse un modèle absent du catalogue fournisseur', () => {
     // Le cas vécu : un modèle retiré du jour au lendemain par le fournisseur.

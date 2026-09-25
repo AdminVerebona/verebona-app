@@ -31,7 +31,7 @@
  * lendemain. Sans eux, une version peut être validée, packagée, importée — et
  * faire échouer le démarrage de la production.
  */
-import { TREATMENTS, getTreatment, type Treatment } from './treatments';
+import { TREATMENTS, getTreatment, isPromptAdministrable, type Treatment } from './treatments';
 import {
   REASONING_LEVELS, GUARDRAIL_REACTIONS, FIELD_LABELS,
   type TreatmentConfig, type ConfigFieldKey,
@@ -333,7 +333,19 @@ export function unavailableModels(
 
 export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssue[] {
   const out: ValidationIssue[] = [];
-  if (!c.prompt || c.prompt.trim() === '') {
+  if (!isPromptAdministrable(c.treatment)) {
+    // T5-003, E-02 : le comportement de T5 est dans le code. Un texte hérité
+    // d'une version antérieure est ignoré à l'exécution ; on le signale sans
+    // bloquer, puisque l'administrateur n'a plus de champ pour le vider — le
+    // prochain enregistrement de l'onglet T5 le fera.
+    if (c.prompt && c.prompt.trim() !== '') {
+      out.push(issue(
+        c.treatment, 'prompt',
+        "Le prompt de Prompt Control n'est pas administrable : ce texte hérité est ignoré.",
+        false,
+      ));
+    }
+  } else if (!c.prompt || c.prompt.trim() === '') {
     out.push(issue(c.treatment, 'prompt', 'Le prompt est obligatoire.'));
   }
   out.push(...validateModels(c, cat));

@@ -42,6 +42,31 @@ export const TREATMENT_DEFINITIONS: Readonly<Record<Treatment, TreatmentDefiniti
   T5: { code: 'T5', useCaseCode: 'AI_GOVERNANCE', label: 'Prompt Control', batch: false },
 };
 
+/**
+ * Le prompt du traitement est-il administrable depuis le BO ?
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * T5 N'A PAS DE PROMPT ADMINISTRABLE — CDC BO IA T5-003, T5-UI-09, écart E-02
+ *
+ * Le comportement de Prompt Control est défini dans le code, en totalité
+ * (§27 : « Non — comportement T5 en code »). Un prompt T5 éditable dans le BO
+ * permettait de modifier l'outil qui modifie les autres prompts ; c'est
+ * précisément ce que le T5-002 interdit à T5 lui-même, et rien ne justifie de
+ * le permettre par une autre porte.
+ *
+ * Cette règle est tenue à chaque point où un prompt T5 pourrait entrer ou
+ * servir : écriture d'une entrée, import d'un package, préparation d'un
+ * package, résolution à l'exécution. L'écran ne l'affiche plus, mais c'est le
+ * serveur qui la garantit.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export function isPromptAdministrable(code: Treatment): boolean {
+  return code !== 'T5';
+}
+
+/** Traitements dont T5 peut modifier le prompt (T5-001) : tous sauf lui-même. */
+export const T5_TARGETS: readonly Treatment[] = TREATMENTS.filter(isPromptAdministrable);
+
 export function getTreatment(code: Treatment): TreatmentDefinition {
   return TREATMENT_DEFINITIONS[code];
 }

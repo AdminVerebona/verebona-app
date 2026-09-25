@@ -67,4 +67,12 @@ describe('contenu transporté', () => {
     source[0].prompt = 'modifié après coup';
     expect(p.entries[0].prompt).toBe('prompt T1');
   });
+
+  it("ne transporte jamais de prompt T5 (T5-003, E-02)", () => {
+    // Une version validée avant la règle peut porter un prompt T5 : il ne doit
+    // pas voyager jusqu'en production.
+    const p = buildPayload('preprod', 1, null, entries());
+    expect(p.entries.find((e) => e.treatment === 'T5')?.prompt).toBe('');
+    expect(p.entries.find((e) => e.treatment === 'T1')?.prompt).toBe('prompt T1');
+  });
 });

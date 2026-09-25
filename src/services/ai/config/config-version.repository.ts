@@ -26,7 +26,7 @@ import { transition, type ConfigVersionEvent, type ConfigVersionStatus } from '.
 import { getAiEnvironment, type AiEnvironment } from './environment';
 import { TREATMENTS, type Treatment } from './treatments';
 import {
-  emptyTreatmentConfig,
+  emptyTreatmentConfig, normalizeTreatmentConfig,
   type ConfigVersion, type ConfigVersionWithEntries, type TreatmentConfig,
 } from './config-types';
 
@@ -204,7 +204,10 @@ export async function saveEntry(
   await upsertEntry(versionId, config, userId);
 }
 
-async function upsertEntry(versionId: number, c: TreatmentConfig, userId: number): Promise<void> {
+async function upsertEntry(versionId: number, config: TreatmentConfig, userId: number): Promise<void> {
+  // Point de passage unique de createDraft et saveEntry : un prompt T5 hérité
+  // de l'Active, ou envoyé par un client, n'entre jamais en base (E-02).
+  const c = normalizeTreatmentConfig(config);
   await pgClient.unsafe(
     `INSERT INTO ai_config_entries (
        version_id, treatment, prompt, primary_model, fallback_1, fallback_2,

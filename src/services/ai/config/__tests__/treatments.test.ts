@@ -10,7 +10,9 @@ import { describe, it, expect } from 'vitest';
 import {
   TREATMENTS, TREATMENT_DEFINITIONS, treatmentForUseCase,
   listBatchTreatments, assertTreatmentMapping, isTreatment,
+  isPromptAdministrable, T5_TARGETS,
 } from '../treatments';
+import { emptyTreatmentConfig, normalizeTreatmentConfig } from '../config-types';
 import { AI_USE_CASE_CODES } from '../../registry/use-cases';
 
 describe('la correspondance est bijective', () => {
@@ -52,5 +54,19 @@ describe('garde-fous', () => {
   it('lève plutôt que de deviner sur un usage inconnu', () => {
     // Renvoyer un défaut appliquerait la configuration d'un autre traitement.
     expect(() => treatmentForUseCase('INEXISTANT' as never)).toThrow();
+  });
+});
+
+describe('prompt administrable (T5-001, T5-003, écart E-02)', () => {
+  it('T1 à T4 ont un prompt administrable, T5 non', () => {
+    expect(TREATMENTS.filter(isPromptAdministrable)).toEqual(['T1', 'T2', 'T3', 'T4']);
+    expect(T5_TARGETS).toEqual(['T1', 'T2', 'T3', 'T4']);
+  });
+
+  it('la normalisation vide le prompt de T5 et laisse les autres intacts', () => {
+    const t5 = { ...emptyTreatmentConfig('T5'), prompt: 'texte hérité', primaryModel: 'm' };
+    expect(normalizeTreatmentConfig(t5)).toEqual({ ...t5, prompt: '' });
+    const t1 = { ...emptyTreatmentConfig('T1'), prompt: 'prompt T1' };
+    expect(normalizeTreatmentConfig(t1)).toBe(t1);
   });
 });

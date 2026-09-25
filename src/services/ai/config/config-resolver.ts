@@ -42,7 +42,7 @@
  * sans borne, elle attend la base sur le chemin d'appel.
  */
 import { getOperation, type AiOperationDefinition } from '../registry/operations';
-import { treatmentForUseCase } from './treatments';
+import { isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
 import type { TreatmentConfig } from './config-types';
 
 /** Configuration réellement appliquée à un appel. */
@@ -162,10 +162,23 @@ export async function resolveOperationConfig(
     fallbackModels: entry.primaryModel ? fallbacks : duCode.fallbackModels,
     maxOutputTokens: entry.maxOutputTokens,
     reasoningPrimary: entry.reasoningPrimary,
-    promptPreamble: entry.prompt.trim() === '' ? null : entry.prompt,
+    promptPreamble: preambleFor(entry.treatment, entry.prompt),
     configVersionId: effective.versionId,
     visibleNumber: effective.visibleNumber,
   };
+}
+
+/**
+ * Préambule administrable d'un traitement, ou `null`.
+ *
+ * T5 n'en a jamais (T5-003, écart E-02) : son comportement est entièrement dans
+ * le code. Une Active antérieure à cette règle peut encore porter un texte
+ * dans sa ligne T5 ; il est ignoré ici, sans attendre qu'une nouvelle version
+ * soit activée.
+ */
+export function preambleFor(treatment: Treatment, prompt: string): string | null {
+  if (!isPromptAdministrable(treatment)) return null;
+  return prompt.trim() === '' ? null : prompt;
 }
 
 /**
