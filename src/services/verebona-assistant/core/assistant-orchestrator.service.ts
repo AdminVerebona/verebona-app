@@ -42,6 +42,7 @@ import {
   type DataAnswerOutcome,
 } from './data-answer.service';
 import { DEFAULT_THRESHOLDS, type CascadeThresholdsLike } from './sufficiency';
+import { fallbackFromHelpSources, isHelpIntent } from './help-corpus.service';
 
 /** Ports injectés (implémentés par les autres services / le repo). */
 export interface OrchestratorPorts {
@@ -395,7 +396,10 @@ export async function runAssistant(
       const adapters = (await withDeadline(ports.retrieve(route, input), deadline)).slice(0, cfg.maxSources);
       // Les données T1 rassemblées au niveau 2 enrichissent le contexte : le
       // modèle, s'il est appelé, répond sur ce que T1 a déjà extrait.
-      sources = dedupeSources([...(data?.contextSources ?? []), ...adapters]).slice(0, cfg.maxSources);
+      // Question d'utilisation : les articles seuls, jamais le contexte du
+      // compte (CDC Centre d'aide §5, T2-06).
+      const contexte = isHelpIntent(route.intent) ? [] : (data?.contextSources ?? []);
+      sources = dedupeSources([...contexte, ...adapters]).slice(0, cfg.maxSources);
       resolved = await ports.resolveSources(sources, input.accountId);
 
       // Réponse exacte à partir des résultats (tryDeterministicFromRetrieval).
@@ -444,7 +448,9 @@ export async function runAssistant(
     }
 
     // ── Repli sans modèle : jamais une phrase vide de contenu ───────────────
-    const answer = fallbackFromSources(sources);
+    // Question d'utilisation : articles cités, ou aveu explicite et contact —
+    // jamais « ces éléments de votre compte » (CDC Centre d'aide §5, T2-03).
+    const answer = isHelpIntent(route.intent) ? fallbackFromHelpSources(sources) : fallbackFromSources(sources);
     const actions = await ports.resolveActions(route, input, sources);
     done('fallback', 'fallback.sources', 'INSUFFICIENT', sources.length);
     return finalize(base, machine, resolved.length ? 'classic_search' : 'fallback', answer, [], resolved, actions, ports, input);

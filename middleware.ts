@@ -193,7 +193,10 @@ export async function middleware(request: NextRequest) {
       // connecter doit pouvoir exercer son droit — subordonner la
       // rétractation à une session la rendrait inaccessible à ceux qui en ont
       // le plus besoin.
-      pathname.startsWith('/api/withdrawal/public/');
+      pathname.startsWith('/api/withdrawal/public/') ||
+      // CDC Centre d'aide FEEDBACK-01 : « Oui/Non fonctionne sans
+      // authentification ». Débit limité dans la route elle-même.
+      pathname.startsWith('/api/public/help-feedback');
 
     if (publicRoutes.includes(pathname) || isPublicPrefix || isCronRoute) {
       // Rate limiting sur les endpoints d'authentification (anti brute-force)

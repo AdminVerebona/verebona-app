@@ -2,6 +2,15 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** Origine du site public de l'environnement (Centre d'aide). */
+const PUBLIC_SITE_ORIGIN = (() => {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_PUBLIC_SITE_URL || "https://www.verebona.fr").origin;
+  } catch {
+    return "https://www.verebona.fr";
+  }
+})();
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const LOADER = path.resolve(
@@ -38,8 +47,10 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              "connect-src 'self' https://api.stripe.com",
-              "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+              // Site public : catalogue du Centre d'aide (« Besoin d'aide ») et
+              // Centre d'aide intégré dans /aide (CDC Centre d'aide §13, GAP-09).
+              `connect-src 'self' https://api.stripe.com ${PUBLIC_SITE_ORIGIN}`,
+              `frame-src 'self' https://js.stripe.com https://hooks.stripe.com ${PUBLIC_SITE_ORIGIN}`,
               // Anti-clickjacking : remplace X-Frame-Options et reste
               // compatible avec l'integration en iframe de meme origine.
               "frame-ancestors 'self'",

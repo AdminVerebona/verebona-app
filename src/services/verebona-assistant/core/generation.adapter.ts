@@ -29,6 +29,7 @@ import { assistantIdempotencyKey } from './assistant-cache-key';
 import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
 import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource, Claim, SupportLevel } from '../types/sources';
+import { isHelpIntent } from './help-corpus.service';
 
 /**
  * Schéma de la réponse attendue du modèle.
@@ -99,7 +100,15 @@ export async function generateAssistantAnswer(
       INTENT: route.intent,
       // Contexte borné du fil courant (≤ 8 messages utiles, référence déjà
       // résolue) — jamais l'historique brut du compte ni d'un autre fil.
-      CONVERSATION: input.threadContextText ?? '(nouvelle conversation, aucun échange précédent)',
+      //
+      // Question d'utilisation : aucun échange précédent, qui peut porter des
+      // données du compte — seuls les articles servent (CDC Centre d'aide §5,
+      // T2-06).
+      CONVERSATION: input.threadContextText && !isHelpIntent(route.intent)
+        ? input.threadContextText
+        : isHelpIntent(route.intent)
+          ? '(question d’utilisation de Verebona : réponds uniquement à partir des articles du Centre d’aide fournis)'
+          : '(nouvelle conversation, aucun échange précédent)',
     };
     const res = await AiGateway.execute({
       useCaseCode: 'INTELLIGENT_ASSISTANT',

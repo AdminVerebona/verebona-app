@@ -10,6 +10,7 @@ import type { RetrievedSource, ResolvedSource, SourceType, Claim } from '../type
 import type { VerebonaAction } from '../types/actions';
 import { getAssistantConfig } from '../config/assistant-config';
 import { parseEntityRef, hrefEntite } from './entity-ref';
+import { integratedHelpHref } from '@/lib/help-center/open';
 
 const TYPE_LABELS: Record<SourceType, string> = {
   asset_field: 'Bien', document: 'Document', document_extraction: 'Donnée extraite',
@@ -51,6 +52,21 @@ export function resolveSourcesForDisplay(sources: RetrievedSource[]): ResolvedSo
  * « À traiter ») renvoient `null` plutôt qu'un lien approximatif.
  */
 function ouvertureDeSource(source: RetrievedSource): VerebonaAction | null {
+  // Article du Centre d'aide : « sources cliquables » (CDC Centre d'aide §5).
+  // Ouvert dans le Centre d'aide intégré de l'application.
+  if (source.type === 'help_entry' && typeof source.meta?.path === 'string') {
+    const path = source.meta.path.split('#')[0];
+    return {
+      actionId: randomUUID(),
+      type: 'OPEN_HELP',
+      label: 'Lire l’article',
+      href: integratedHelpHref(path),
+      token: null,
+      requiresConfirmation: false,
+      expiresAt: null,
+      analyticsCode: 'verebona.source.open_help',
+    };
+  }
   const ref = parseEntityRef(source.id);
   if (!ref) return null;
 

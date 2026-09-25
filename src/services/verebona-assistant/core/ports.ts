@@ -25,6 +25,7 @@ import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource } from '../types/sources';
 import type { ActionIntent } from '../types/actions';
 import { retrieve } from './retrieval.service';
+import { helpArticlePublished } from './help-corpus.service';
 import { resolveSourcesForDisplay } from './source-resolver.service';
 import { resolveActions, exigeUneCible, type AccessChecker } from './action-resolver.service';
 import { parseEntityRef } from './entity-ref';
@@ -55,8 +56,9 @@ function buildAccessChecker(): AccessChecker {
       exists(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL LIMIT 1`, [id, a]),
     agendaItemInAccount: (a, id) =>
       exists(`SELECT 1 FROM agenda_items WHERE id = $1 AND account_id = $2 LIMIT 1`, [id, a]),
-    helpEntryPublished: (slug) =>
-      exists(`SELECT 1 FROM verebona_help_entries WHERE slug = $1 AND status = 'published' LIMIT 1`, [slug]),
+    // Article publié dans le corpus du Centre d'aide de l'environnement — la
+    // table `verebona_help_entries` n'est plus une source (CDC Centre d'aide §2).
+    helpEntryPublished: (id) => helpArticlePublished(id),
   };
 }
 

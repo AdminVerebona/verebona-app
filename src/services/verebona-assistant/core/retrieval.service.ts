@@ -19,10 +19,24 @@ import { getEnabledAdapters } from '../registries/retrieval-adapter-registry';
 import { resolveEntities } from './entity-resolution.service';
 import { isInventoryQuery } from './query-terms';
 import type { ConversationRefs } from '../types/machine';
+import { isHelpIntent, retrieveHelpSources } from './help-corpus.service';
 
 export async function retrieve(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]> {
   const cfg = getAssistantConfig();
   await ensureUnaccent();
+
+  // ══════════════════════════════════════════════════════════════════════
+  // 0. QUESTION D'UTILISATION — CDC Centre d'aide V1 §5
+  //
+  // « Pour l'aide à l'utilisation, seules les sources du Centre d'aide sont
+  // autorisées. » Aucun adaptateur du compte n'est interrogé : expliquer une
+  // fonction ne demande ni les documents ni les données de l'utilisateur
+  // (T2-06). Seule l'offre est transmise, pour signaler une fonction non
+  // incluse (T2-07).
+  // ══════════════════════════════════════════════════════════════════════
+  if (isHelpIntent(route.intent)) {
+    return retrieveHelpSources(input.message, input.planType, cfg.maxSources);
+  }
 
   // 1. Sécurité & périmètre (§13.2) — accountId vient du serveur, jamais du client.
   const accountId = input.accountId;

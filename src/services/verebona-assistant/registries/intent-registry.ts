@@ -16,18 +16,22 @@ const D = (
   expectedSourceTypes: string[],
 ): IntentDefinition => ({ intent, label, treatment, geminiEligible, requiresRetrieval, expectedSourceTypes });
 
+// Intentions d'aide à l'utilisation : `requiresRetrieval` à vrai, la
+// recherche portant sur le seul corpus du Centre d'aide (CDC Centre d'aide
+// §5 — voir core/help-corpus.service.ts). Elles ne déclenchaient aucune
+// recherche : l'assistant ne pouvait que renvoyer vers la page d'aide.
 export const INTENT_DEFINITIONS: Record<VerebonaIntent, IntentDefinition> = {
   GREETING: D('GREETING', 'Salutation', 'template', false, false, []),
   THANKS: D('THANKS', 'Remerciement', 'template', false, false, []),
   GOODBYE: D('GOODBYE', "Fin d'échange", 'template', false, false, []),
 
-  PRODUCT_HELP_HOW_TO: D('PRODUCT_HELP_HOW_TO', 'Comment réaliser une action', 'help+action', true, false, ['help_entry']),
-  PRODUCT_HELP_EXPLAIN: D('PRODUCT_HELP_EXPLAIN', 'À quoi sert une fonction', 'help', false, false, ['help_entry']),
-  PRODUCT_HELP_STATUS: D('PRODUCT_HELP_STATUS', "Signification d'un statut", 'help', false, false, ['help_entry', 'product_rule']),
+  PRODUCT_HELP_HOW_TO: D('PRODUCT_HELP_HOW_TO', 'Comment réaliser une action', 'help+action', true, true, ['help_entry']),
+  PRODUCT_HELP_EXPLAIN: D('PRODUCT_HELP_EXPLAIN', 'À quoi sert une fonction', 'help', false, true, ['help_entry']),
+  PRODUCT_HELP_STATUS: D('PRODUCT_HELP_STATUS', "Signification d'un statut", 'help', false, true, ['help_entry', 'product_rule']),
   PRODUCT_PLAN_LIMIT: D('PRODUCT_PLAN_LIMIT', "Limite d'offre / indisponibilité", 'plan_rule', false, false, ['product_rule']),
 
   NAVIGATION_OPEN: D('NAVIGATION_OPEN', 'Ouvrir un écran/objet', 'action_catalog', false, false, []),
-  NAVIGATION_FIND: D('NAVIGATION_FIND', 'Où trouver une fonction', 'help+action', false, false, ['help_entry']),
+  NAVIGATION_FIND: D('NAVIGATION_FIND', 'Où trouver une fonction', 'help+action', false, true, ['help_entry']),
 
   ACCOUNT_SEARCH_ASSET: D('ACCOUNT_SEARCH_ASSET', 'Retrouver un bien', 'sql', false, true, ['asset_field']),
   ACCOUNT_SEARCH_DOCUMENT: D('ACCOUNT_SEARCH_DOCUMENT', 'Retrouver un document', 'sql', false, true, ['document']),
@@ -44,7 +48,7 @@ export const INTENT_DEFINITIONS: Record<VerebonaIntent, IntentDefinition> = {
   ACCOUNT_COMPARISON: D('ACCOUNT_COMPARISON', 'Comparaison', 'retrieval+comparison', true, true, ['document', 'document_extraction']),
   ACCOUNT_TIMELINE: D('ACCOUNT_TIMELINE', 'Chronologie', 'retrieval+timeline', true, true, ['document', 'agenda_item', 'asset_field']),
 
-  EXPORT_HELP: D('EXPORT_HELP', 'Expliquer/ouvrir un export', 'help+action', false, false, ['help_entry']),
+  EXPORT_HELP: D('EXPORT_HELP', 'Expliquer/ouvrir un export', 'help+action', false, true, ['help_entry']),
 
   CLARIFICATION_ANSWER: D('CLARIFICATION_ANSWER', 'Réponse à une clarification', 'clarification', false, false, []),
 
