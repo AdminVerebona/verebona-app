@@ -15,7 +15,7 @@
  *
  * Un ID inconnu ou non publié ne produit jamais de lien cassé : le raccourci
  * est masqué (§13, exigence bloquante), et le contrôle CI le signale
- * (`scripts/check-help-shortcuts.ts`).
+ * (`src/scripts/check-help-shortcuts.ts`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { PUBLIC_SITE_URL } from '@/lib/external-urls';

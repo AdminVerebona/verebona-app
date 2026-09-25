@@ -48,7 +48,7 @@
     "ai:baseline": "node scripts/check-legacy-ai.mjs --update-baseline",
     "referential:check": "tsx scripts/check-referential.ts",
     "v2:drop-legacy": "tsx scripts/drop-v1-classification.ts",
-    "check:help": "tsx scripts/check-help-shortcuts.ts"
+    "check:help": "tsx src/scripts/check-help-shortcuts.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.934.0",

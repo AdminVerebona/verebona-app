@@ -9,7 +9,7 @@
  * vérifie chaque ID de `HELP_SHORTCUT_IDS`, puis que chaque article ouvre bien
  * une page (HTTP 200, sans redirection).
  *
- *   HELP_CATALOG_URL=https://preprod.verebona.fr/aide/catalogue.json npx tsx scripts/check-help-shortcuts.ts
+ *   HELP_CATALOG_URL=https://preprod.verebona.fr/aide/catalogue.json npx tsx src/scripts/check-help-shortcuts.ts
  *
  * Sans `HELP_CATALOG_URL`, l'URL est déduite de NEXT_PUBLIC_PUBLIC_SITE_URL.
  * Sans l'une ni l'autre : échec en CI (variable de dépôt à renseigner une
@@ -17,7 +17,7 @@
  */
 import {
   HELP_SHORTCUT_IDS, helpCatalogUrl, parseCatalog, resolveShortcuts, unresolvedShortcuts,
-} from '../src/lib/help-center/catalog';
+} from '@/lib/help-center/catalog';
 
 async function main(): Promise<number> {
   const explicit = process.env.HELP_CATALOG_URL;
