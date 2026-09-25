@@ -3,7 +3,7 @@ import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import {
   ALL_DETAIL_SECTIONS, AssetDetailsError, familySections, loadWritableAsset, updateAssetDetails,
-} from '@/services/assets/asset-details-write.service';
+} from '@/services/asset-details-write.service';
 
 /**
  * PATCH /api/assets/[id]/details/[section]

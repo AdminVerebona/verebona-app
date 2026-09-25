@@ -61,7 +61,7 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async UPDATE_ASSET_FIELD(action, ctx) {
     const p = action.params as Extract<CommandParams, { field: string }>;
     const { loadWritableAsset, updateAssetDetails, AssetDetailsError } =
-      await import('@/services/assets/asset-details-write.service');
+      await import('@/services/asset-details-write.service');
     const { sqlLookup } = await import('./plan.service');
     const label = action.effects.find((e) => e.startsWith('Champ : '))?.slice(8) ?? p.field;
     try {

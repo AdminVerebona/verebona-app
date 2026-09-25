@@ -54,7 +54,7 @@ describe('déclencheurs et concurrence', () => {
   it('événements métier branchés : modification de bien, arbitrage, rattachement de document', () => {
     // La route de la fiche et la commande de l'assistant écrivent par le même
     // service : c'est lui qui émet l'événement.
-    expect(read('src/services/assets/asset-details-write.service.ts')).toMatch(/event: 'asset_updated'/);
+    expect(read('src/services/asset-details-write.service.ts')).toMatch(/event: 'asset_updated'/);
     expect(read('src/app/api/assets/[id]/details/[section]/route.ts')).toMatch(/updateAssetDetails/);
     expect(read('src/app/api/v2/to-process/[publicId]/resolve/route.ts')).toMatch(/event: 'arbitration'/);
     expect(read('src/services/ai/knowledge/document-knowledge.service.ts')).toMatch(/event: 'document_linked'/);
