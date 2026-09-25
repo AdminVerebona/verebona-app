@@ -42,7 +42,10 @@ import {
   type DataAnswerOutcome,
 } from './data-answer.service';
 import { DEFAULT_THRESHOLDS, type CascadeThresholdsLike } from './sufficiency';
-import { fallbackFromHelpSources, isHelpIntent } from './help-corpus.service';
+import { fallbackFromHelpSources, isHelpIntent, type HelpCorpus } from './help-corpus.service';
+import { createAiCallBudget, type AiCallBudget } from './ai-call-budget';
+import { findNavigationTarget } from './navigation-targets';
+import { assistantErrorMessage } from '@/lib/verebona/error-messages';
 
 /** Ports injectés (implémentés par les autres services / le repo). */
 export interface OrchestratorPorts {
@@ -62,6 +65,12 @@ export interface OrchestratorPorts {
   ): Promise<DataAnswerOutcome>;
   /** Seuils de non-escalade (gouvernance IA). Absent : seuils par défaut. */
   loadThresholds?(): Promise<CascadeThresholdsLike & { source: string }>;
+  /**
+   * Corpus du Centre d'aide (§9.4, étape 7 « recherche dans la base
+   * d'aide »). Consulté seulement quand aucune règle n'a tranché, AVANT la
+   * classification par modèle. Absent : étape sautée.
+   */
+  loadHelpCorpus?(): Promise<HelpCorpus | null>;
   /**
    * Les SOURCES sont transmises, pas seulement leurs identifiants : le type et
    * les métadonnées (bien parent d'un équipement, par exemple) sont ce qui
@@ -117,6 +126,12 @@ export async function runAssistant(
   ports: OrchestratorPorts,
 ): Promise<AssistantRunResult> {
   const cfg = getAssistantConfig();
+  // ── Budget d'appels modèle du message (§15.5, CA-07) ──────────────────
+  // Un seul compteur pour classification, revalidation et génération,
+  // replis compris. Partagé par référence : les copies `{ ...input }`
+  // successives gardent le même objet.
+  const budget: AiCallBudget = input.aiBudget ?? createAiCallBudget(cfg.maxAiCallsPerRequest);
+  input = { ...input, aiBudget: budget };
   const requestId = randomUUID();
   const messageId = randomUUID();
   const machine = new ConversationMachine('IDLE');
@@ -202,6 +217,8 @@ export async function runAssistant(
     // Sous-demandes et leur classement, tracés avec la demande.
     trace.scope = scopeTrace;
     const done = (answeredBy: CascadeTrace['answeredBy'], strategy: string, sufficiency: string | null, sourceCount: number) => {
+      // Appels réellement consommés sur le budget du message (≤ plafond).
+      trace.aiCalls = budget.used;
       trace.answeredBy = answeredBy;
       trace.strategy = strategy;
       trace.sufficiency = sufficiency;
@@ -256,7 +273,7 @@ export async function runAssistant(
 
     // Reprise après clarification : la demande initiale garde son intention —
     // elle n'est ni re-routée ni re-classée par le modèle.
-    const outcome = input.resume
+    let outcome: ReturnType<typeof routeDeterministic> = input.resume
       ? { kind: 'route' as const, route: routeForIntent(input.resume.intent, input.planType, 'reprise après clarification') }
       : routeDeterministic({
           message: input.message,
@@ -265,12 +282,51 @@ export async function runAssistant(
           pageRoute: input.pageContext?.route,
         });
 
+    // ══════════════════════════════════════════════════════════════════════
+    // BASE D'AIDE — §9.4 étape 7, AVANT toute classification par modèle
+    //
+    // Aucune règle n'a tranché : une question d'usage formulée autrement
+    // (« je veux changer mon mot de passe ») est cherchée dans le Centre
+    // d'aide. Un article pertinent suffit à la router en aide produit, sans
+    // appel modèle. Le corpus n'est chargé qu'ici, pas à chaque message.
+    // ══════════════════════════════════════════════════════════════════════
+    if (outcome.kind === 'needs_classification' && ports.loadHelpCorpus) {
+      const corpus = await ports.loadHelpCorpus().catch(() => null);
+      if (corpus) {
+        const viaAide = routeDeterministic({
+          message: input.message,
+          planType: input.planType,
+          hasPendingClarification: false,
+          pageRoute: input.pageContext?.route,
+          helpCorpus: corpus,
+        });
+        if (viaAide.kind === 'route') outcome = viaAide;
+      }
+    }
+
     // La classification IA n'est plus sollicitée d'emblée : c'est un appel
     // modèle, et la cascade doit d'abord tenter les niveaux gratuits.
     let route: IntentRoute = outcome.kind === 'route' ? outcome.route : fallbackUnknownRoute(input.planType);
     const needsClassification = outcome.kind === 'needs_classification';
     base.route = route;
     trace.intent = route.intent;
+
+    // ══════════════════════════════════════════════════════════════════════
+    // NAVIGATION EXPLICITE — §22.9, §22.10, CA-14, 37.11
+    //
+    // « Ouvre mon agenda » répondait « Je n'ai pas trouvé d'élément
+    // suffisant… » avec trois boutons : NAVIGATION_OPEN n'avait ni gabarit ni
+    // action ciblée. Une destination connue du dictionnaire produit désormais
+    // une phrase courte et UN seul bouton ; rien ne s'ouvre sans clic (§22.10).
+    // ══════════════════════════════════════════════════════════════════════
+    if (route.intent === 'NAVIGATION_OPEN') {
+      const nav = findNavigationTarget(input.message);
+      if (nav) {
+        const actions = await ports.resolveActions(route, input, []);
+        done('template', `template.NAVIGATION_OPEN.${nav.key}`, 'SUFFICIENT_STRUCTURED', 0);
+        return finalize(base, machine, 'deterministic', nav.answer, [], [], actions, ports, input);
+      }
+    }
 
     // ── Réponse déterministe par gabarit (§14) ──────────────────────────────
     let det = tryDeterministic(route.intent);
@@ -300,10 +356,15 @@ export async function runAssistant(
       // connaissance mise à jour.
       // ══════════════════════════════════════════════════════════════════
       if (data?.revalidation && ports.revalidateFacts && !input.revalidationDone) {
+        const avantRv = budget.used;
         const rv = await ports.revalidateFacts(input, data.revalidation).catch(() => null);
         if (rv) {
           trace.revalidations = rv.results;
-          trace.aiCalls += rv.results.reduce((n, r) => n + r.aiCalls, 0);
+          // Un port qui n'a pas décompté ses appels sur le budget (double de
+          // test, implémentation tierce) est rattrapé ici : le plafond reste
+          // garanti au niveau de l'orchestrateur.
+          reconcilierBudget(budget, avantRv, rv.results.reduce((n, r) => n + r.aiCalls, 0));
+          trace.aiCalls = budget.used;
           trace.escalationReasons.push(`REVALIDATION:${data.revalidation.trigger}`);
           if (rv.established) {
             input = { ...input, revalidationDone: true };
@@ -369,10 +430,14 @@ export async function runAssistant(
     }
 
     // ── Classification IA, seulement maintenant (§9.4.9, §15.5) ────────────
-    if (needsClassification && ports.classifyWithAI && isPlanAiEligible(input.planType)) {
-      trace.aiCalls += 1;
+    if (needsClassification && ports.classifyWithAI && isPlanAiEligible(input.planType) && !budget.canCall()) {
+      trace.escalationReasons.push('ROUTING:AI_BUDGET_EXHAUSTED');
+    } else if (needsClassification && ports.classifyWithAI && isPlanAiEligible(input.planType)) {
       trace.escalationReasons.push('ROUTING:NO_DETERMINISTIC_RULE');
+      const avantCl = budget.used;
       const classified = await ports.classifyWithAI(outcome.kind === 'needs_classification' ? outcome.normalized : input.message, input);
+      reconcilierBudget(budget, avantCl, 1);
+      trace.aiCalls = budget.used;
       route = classified ?? fallbackUnknownRoute(input.planType);
       base.route = route;
       trace.intent = route.intent;
@@ -422,7 +487,13 @@ export async function runAssistant(
       cfg.aiEnabled &&
       route.aiEligible &&
       ports.generateWithAI != null &&
-      sources.length > 0;
+      sources.length > 0 &&
+      // Budget du message épuisé (classification + revalidation) : repli
+      // déterministe plutôt qu'un troisième appel (§15.5, CA-07).
+      budget.canCall();
+    if (!canUseAI && route.aiEligible && sources.length > 0 && ports.generateWithAI != null && !budget.canCall()) {
+      trace.escalationReasons.push('N3:AI_BUDGET_EXHAUSTED');
+    }
 
     if (canUseAI) {
       const okGuard = machine.transition('GENERATING', {
@@ -430,8 +501,10 @@ export async function runAssistant(
         clarificationCount: 0,
       });
       if (okGuard) {
-        trace.aiCalls += 1;
+        const avantGen = budget.used;
         const gen = await withDeadline(ports.generateWithAI!(route, sources, input), deadline).catch(() => null);
+        reconcilierBudget(budget, avantGen, 1);
+        trace.aiCalls = budget.used;
         if (gen) {
           machine.transition('VALIDATING');
           trace.model = gen.model ?? null;
@@ -456,11 +529,17 @@ export async function runAssistant(
     return finalize(base, machine, resolved.length ? 'classic_search' : 'fallback', answer, [], resolved, actions, ports, input);
   } catch (e) {
     machine.fail(true);
+    // §27.11 : le dépassement de l'échéance globale est un REQUEST_TIMEOUT,
+    // distinct d'une panne. Le message est un libellé Verebona, jamais le
+    // texte brut de l'exception (§4.2) — celui-ci reste dans les journaux.
+    const code = (e as Error)?.message === 'REQUEST_TIMEOUT' ? 'REQUEST_TIMEOUT' as const : 'ASSISTANT_UNAVAILABLE' as const;
+    console.error('[verebona] échec de la demande', code, (e as Error)?.message);
+    const libelle = assistantErrorMessage(code);
     const result: AssistantRunResult = {
       ...base,
       finalState: machine.state,
-      error: { code: 'ASSISTANT_UNAVAILABLE', message: (e as Error).message, recoverable: true },
-      answer: "Je rencontre un souci technique. Vous pouvez réessayer dans un instant.",
+      error: { code, message: libelle, recoverable: true },
+      answer: libelle,
     };
     await safePersist(ports, result, input);
     return result;
@@ -707,6 +786,16 @@ async function safePersist(ports: OrchestratorPorts, r: AssistantRunResult, inpu
       r.conversationId = ids.conversationId;
     }
   } catch (e) { console.error('[verebona] persist error', (e as Error).message); }
+}
+
+/**
+ * Rattrape sur le budget les appels qu'un port n'y aurait pas décomptés
+ * lui-même (`attendu` = appels déclarés ou supposés). Les adaptateurs réels
+ * décomptent déjà via `executeWithinBudget` : rien n'est alors ajouté.
+ */
+function reconcilierBudget(budget: AiCallBudget, avant: number, attendu: number): void {
+  const decompte = budget.used - avant;
+  if (decompte < attendu) budget.consume(attendu - decompte);
 }
 
 /** Applique une échéance globale à une promesse (§30.2). */

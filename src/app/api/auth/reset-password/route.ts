@@ -8,6 +8,7 @@ import { emit } from '@/lib/notifications';
 import { revokeAllUserSessions } from '@/db';
 import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
+import { verifyPasswordResetToken } from '@/services/auth/password-reset.service';
 
 /**
  * Route pour réinitialiser le mot de passe avec un token
@@ -34,47 +35,36 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Décoder le token
-    let email: string;
-    let timestamp: number;
-    
-    try {
-      const decoded = Buffer.from(token, 'base64').toString('utf-8');
-      const [emailPart, timestampPart] = decoded.split(':');
-      email = emailPart;
-      timestamp = parseInt(timestampPart, 10);
-      
-      // Vérifier que le token n'a pas expiré (1 heure)
-      const now = Date.now();
-      const expiryTime = 60 * 60 * 1000; // 1 heure
-      
-      if (now - timestamp > expiryTime) {
-        return NextResponse.json(
-          { error: 'Token expiré', code: 'TOKEN_EXPIRED' },
-          { status: 400 }
-        );
-      }
-    } catch {
+    // Jeton SIGNÉ et à usage unique (voir `services/auth/password-reset.service.ts`) :
+    // l'ancien format `base64(email:horodatage)` permettait à quiconque de
+    // fabriquer un lien valide pour n'importe quelle adresse.
+    if (typeof token !== 'string') {
+      return NextResponse.json({ error: 'Token invalide', code: 'INVALID_TOKEN' }, { status: 400 });
+    }
+    const check = await verifyPasswordResetToken(token);
+    if (!check.ok) {
       return NextResponse.json(
-        { error: 'Token invalide', code: 'INVALID_TOKEN' },
+        check.code === 'TOKEN_EXPIRED'
+          ? { error: 'Token expiré', code: 'TOKEN_EXPIRED' }
+          : { error: 'Token invalide', code: 'INVALID_TOKEN' },
         { status: 400 }
       );
     }
-    
+
     // Trouver l'utilisateur
     const userResult = await db
       .select()
       .from(users)
-      .where(eq(users.email, email))
+      .where(eq(users.id, check.userId))
       .limit(1);
-    
+
     if (userResult.length === 0) {
       return NextResponse.json(
         { error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' },
         { status: 404 }
       );
     }
-    
+
     const user = userResult[0];
     
     // Hasher le nouveau mot de passe

@@ -31,6 +31,7 @@ import { getCostReport } from '@/services/ai/telemetry/cost-report.repository';
 import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
 import { unavailableModels } from '@/services/ai/config/config-validation.service';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
+import { getModelAlerts } from '@/services/ai/queue/circuit-breaker.repository';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 export interface DashboardAlert {
@@ -72,12 +73,15 @@ export async function GET(req: NextRequest) {
       getEmergencyStop(),
       getErrorBreakdown(7),
       getCostReport({ since: new Date(Date.now() - 7 * 86_400_000) }),
+      // MOD-008 / OPS-019 : modèles à dix échecs consécutifs ou plus, par
+      // traitement (alertingModels). Dixième source, isolée comme les autres.
+      getModelAlerts(),
     ]);
 
     const NOMS = [
       'versions', 'version active', 'version effective', 'packages',
       'file d’attente', 'états des traitements', 'arrêt d’urgence',
-      'erreurs récentes', 'coûts',
+      'erreurs récentes', 'coûts', 'alertes modèles',
     ];
 
     const degraded: Array<{ source: string; message: string }> = [];
@@ -110,6 +114,8 @@ export async function GET(req: NextRequest) {
       incomplete: false,
     } as Awaited<ReturnType<typeof getCostReport>>);
 
+    const modelAlerts = valeur(9, [] as Awaited<ReturnType<typeof getModelAlerts>>);
+
     const alerts: DashboardAlert[] = [];
 
     if (stop.active) {
@@ -134,6 +140,17 @@ export async function GET(req: NextRequest) {
           href: '/admin/ai-queue',
         });
       }
+    }
+
+    // MOD-008 : alerte INFORMATIONNELLE — elle n'arrête rien (seul le
+    // disjoncteur, sur échecs complets, suspend). Elle se résout au premier
+    // succès de CE modèle (MOD-014, OPS-020), réactivation forcée comprise.
+    for (const m of modelAlerts) {
+      alerts.push({
+        severity: 'warning',
+        message: `${m.treatment} : le modèle « ${m.model} » a échoué ${m.consecutiveFailures} fois de suite.`,
+        href: `/admin/ai-executions?treatment=${m.treatment}&errorsOnly=1`,
+      });
     }
 
     // Les erreurs répétées comptent davantage qu'une erreur isolée : c'est la
@@ -212,6 +229,10 @@ export async function GET(req: NextRequest) {
         state: state?.state ?? 'ENABLED',
         suspendedReason: state?.suspendedReason ?? null,
         nextProbeAt: state?.nextProbeAt ?? null,
+        // Modèles en alerte (MOD-008), affichés sur la carte du traitement.
+        alertingModels: modelAlerts
+          .filter((m) => m.treatment === t)
+          .map((m) => ({ model: m.model, consecutiveFailures: m.consecutiveFailures })),
         primaryModel: entry?.primaryModel ?? null,
         pending: q?.pending ?? 0,
         running: q?.running ?? 0,
@@ -236,6 +257,7 @@ export async function GET(req: NextRequest) {
       versions,
       packages,
       alerts,
+      modelAlerts,
       // Nommées plutôt que tues : un tableau de bord partiel qui ne le dit pas
       // ferait lire des zéros comme des mesures.
       degraded,

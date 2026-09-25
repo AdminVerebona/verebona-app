@@ -120,11 +120,20 @@ export function buildPayload(
 // ── WF-04, première moitié : préparer ───────────────────────────────────────
 
 /**
- * Prépare un package depuis une version validée.
+ * Prépare un package depuis l'Active de préproduction (WF-04, VER-021).
  *
- * La version source doit porter un numéro visible : c'est le VER-006 qui
- * l'attribue à la validation, et un package sans numéro ne pourrait ni être
- * annoncé ni détecter une collision.
+ * Trois règles, dans cet ordre :
+ *   · jamais en production : la production REÇOIT des packages, elle n'en
+ *     produit pas (le numéro naît en préproduction — cf. `validateVersion`) ;
+ *   · idempotent : une version déjà empaquetée rend son package existant.
+ *     L'identifiant du package est celui de la version, protégé par l'index
+ *     unique `ai_config_packages_uid_uidx` — préparer deux fois levait une
+ *     violation d'unicité, rendue en 500. Le package existant est par
+ *     construction identique (une version numérotée n'est plus modifiable) ;
+ *   · sinon, la source doit être l'ACTIVE : le WF-04 a pour précondition
+ *     « la version source est l'Active Préproduction ». Empaqueter une
+ *     ancienne Validée ferait partir en production une configuration qui
+ *     n'est plus celle qu'on teste.
  */
 export async function preparePackage(
   versionId: number,
@@ -134,16 +143,29 @@ export async function preparePackage(
   if (!version) {
     throw new ConfigOperationRefused('VERSION_NOT_FOUND', `Version ${versionId} introuvable.`);
   }
+  if (getAiEnvironment() === 'production' || version.environment === 'production') {
+    throw new ConfigOperationRefused(
+      'PRODUCTION_ENVIRONMENT',
+      'Un package de MEP se prépare en préproduction, depuis son Active : la production importe (WF-04).',
+    );
+  }
+
+  const existant = await findPackageByUid(version.uid);
+  if (existant) return existant;
+
+  if (version.status !== 'ACTIVE') {
+    throw new ConfigOperationRefused(
+      'VERSION_NOT_ACTIVE',
+      "Seule l'Active de préproduction peut être préparée pour la MEP (WF-04).",
+      { status: version.status },
+    );
+  }
   if (version.visibleNumber === null) {
+    // Impossible pour une Active validée ; possible pour une Active amorcée
+    // à la main avant le cycle de validation.
     throw new ConfigOperationRefused(
       'VERSION_NOT_NUMBERED',
       "Cette version n'a pas de numéro : seule une version validée peut partir en production (VER-006).",
-    );
-  }
-  if (version.status === 'ARCHIVED') {
-    throw new ConfigOperationRefused(
-      'VERSION_ARCHIVED',
-      'Une version archivée ne peut plus être déployée (VER-008).',
     );
   }
 
@@ -151,10 +173,13 @@ export async function preparePackage(
     version.environment, version.visibleNumber, version.label, version.entries,
   );
 
+  // ON CONFLICT : deux préparations simultanées de la même version — la
+  // seconde reconnaît le package de la première au lieu d'échouer.
   const rows = await pgClient.unsafe(
     `INSERT INTO ai_config_packages
        (uid, source_environment, visible_number, label, payload, created_by)
      VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+     ON CONFLICT (uid) DO NOTHING
      RETURNING ${PKG_COLS}`,
     [
       // L'identifiant du package est celui de la VERSION : c'est lui qui rend
@@ -167,7 +192,20 @@ export async function preparePackage(
     ] as never[],
   );
 
-  return toPackage((rows as unknown as Row[])[0]);
+  const created = (rows as unknown as Row[])[0];
+  if (created) return toPackage(created);
+  const concurrent = await findPackageByUid(version.uid);
+  if (!concurrent) throw new Error(`[config] Package introuvable après préparation (${version.uid}).`);
+  return concurrent;
+}
+
+async function findPackageByUid(uid: string): Promise<ConfigPackage | null> {
+  const rows = await pgClient.unsafe(
+    `SELECT ${PKG_COLS} FROM ai_config_packages WHERE uid = $1 LIMIT 1`,
+    [uid] as never[],
+  );
+  const r = (rows as unknown as Row[])[0];
+  return r ? toPackage(r) : null;
 }
 
 export async function listPackages(limit = 50): Promise<ConfigPackage[]> {
@@ -215,76 +253,78 @@ export async function importPackage(
     );
   }
 
-  // 1. Déjà importé ? On reconnaît, on ne duplique pas.
-  const dejaRows = await pgClient.unsafe(
-    `SELECT id, visible_number FROM ai_config_versions WHERE uid = $1 LIMIT 1`,
-    [uid] as never[],
-  );
-  const deja = (dejaRows as unknown as Row[])[0];
-  if (deja) {
-    return {
-      outcome: 'recognized',
-      versionId: Number(deja.id),
-      visibleNumber: Number(deja.visible_number),
-      divergence: await divergenceAgainstActive(payload, environment),
-    };
-  }
+  // Transaction (VER-021, NFR-005) : la version et ses N lignes arrivent
+  // ensemble, ou pas du tout. Sans elle, un échec au milieu laissait une
+  // version Validée incomplète — reconnue ensuite comme « déjà importée » par
+  // l'idempotence, donc impossible à réimporter proprement.
+  type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+  const r = await pgClient.begin(async (tx) => {
+    const t = tx as unknown as Tx;
 
-  // 2. Collision : même numéro, autre identifiant. Blocage, sans renumérotation.
-  const collisionRows = await pgClient.unsafe(
-    `SELECT id, uid FROM ai_config_versions
-      WHERE environment = $1 AND visible_number = $2 LIMIT 1`,
-    [environment, payload.visibleNumber] as never[],
-  );
-  const collision = (collisionRows as unknown as Row[])[0];
-  if (collision) {
-    throw new ConfigOperationRefused(
-      'VERSION_NUMBER_COLLISION',
-      `La version v${payload.visibleNumber} existe déjà dans cet environnement sous un autre `
-      + "identifiant. Aucune renumérotation automatique n'est effectuée (VER-013).",
-      { existingVersionId: Number(collision.id), existingUid: String(collision.uid) },
+    // 1. Déjà importé ? On reconnaît, on ne duplique pas.
+    const deja = ((await t.unsafe(
+      `SELECT id, visible_number FROM ai_config_versions WHERE uid = $1 LIMIT 1`,
+      [uid] as never[],
+    )) as Row[])[0];
+    if (deja) {
+      return { outcome: 'recognized' as const, versionId: Number(deja.id), visibleNumber: Number(deja.visible_number) };
+    }
+
+    // 2. Collision : même numéro, autre identifiant. Blocage, sans renumérotation.
+    const collision = ((await t.unsafe(
+      `SELECT id, uid FROM ai_config_versions
+        WHERE environment = $1 AND visible_number = $2 LIMIT 1`,
+      [environment, payload.visibleNumber] as never[],
+    )) as Row[])[0];
+    if (collision) {
+      throw new ConfigOperationRefused(
+        'VERSION_NUMBER_COLLISION',
+        `La version v${payload.visibleNumber} existe déjà dans cet environnement sous un autre `
+        + "identifiant. Aucune renumérotation automatique n'est effectuée (VER-013).",
+        { existingVersionId: Number(collision.id), existingUid: String(collision.uid) },
+      );
+    }
+
+    // 3. Création au statut Validé (VER-012).
+    const created = (await t.unsafe(
+      `INSERT INTO ai_config_versions
+         (uid, environment, status, visible_number, label, created_by, validated_at)
+       VALUES ($1, $2, 'VALIDATED', $3, $4, $5, NOW())
+       RETURNING id`,
+      [uid, environment, payload.visibleNumber, payload.label, userId] as never[],
+    )) as Row[];
+    const versionId = Number(created[0].id);
+
+    for (const e of payload.entries) {
+      // `cascade` était omise : la cascade T2 (seuils BDD / texte / sémantique)
+      // était perdue à l'import, alors que `buildPayload` la transporte.
+      await t.unsafe(
+        `INSERT INTO ai_config_entries (
+           version_id, treatment, prompt, primary_model, fallback_1, fallback_2,
+           reasoning_primary, reasoning_fallback_1, reasoning_fallback_2,
+           max_output_tokens, guardrails, triggers, cascade, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14)`,
+        [
+          versionId, e.treatment, normalizeTreatmentConfig(e).prompt, e.primaryModel, e.fallback1, e.fallback2,
+          e.reasoningPrimary, e.reasoningFallback1, e.reasoningFallback2,
+          e.maxOutputTokens, JSON.stringify(e.guardrails), JSON.stringify(e.triggers),
+          e.cascade == null ? null : JSON.stringify(e.cascade), userId,
+        ] as never[],
+      );
+    }
+
+    // Trace d'import sur le package, s'il est présent dans cet environnement.
+    await t.unsafe(
+      `UPDATE ai_config_packages
+          SET imported_at = NOW(), imported_version_id = $2
+        WHERE uid = $1 AND imported_at IS NULL`,
+      [uid, versionId] as never[],
     );
-  }
+    return { outcome: 'created' as const, versionId, visibleNumber: payload.visibleNumber };
+  });
 
-  // 3. Création au statut Validé (VER-012).
-  const rows = await pgClient.unsafe(
-    `INSERT INTO ai_config_versions
-       (uid, environment, status, visible_number, label, created_by, validated_at)
-     VALUES ($1, $2, 'VALIDATED', $3, $4, $5, NOW())
-     RETURNING id`,
-    [uid, environment, payload.visibleNumber, payload.label, userId] as never[],
-  );
-  const versionId = Number((rows as unknown as Row[])[0].id);
-
-  for (const e of payload.entries) {
-    await pgClient.unsafe(
-      `INSERT INTO ai_config_entries (
-         version_id, treatment, prompt, primary_model, fallback_1, fallback_2,
-         reasoning_primary, reasoning_fallback_1, reasoning_fallback_2,
-         max_output_tokens, guardrails, triggers, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13)`,
-      [
-        versionId, e.treatment, normalizeTreatmentConfig(e).prompt, e.primaryModel, e.fallback1, e.fallback2,
-        e.reasoningPrimary, e.reasoningFallback1, e.reasoningFallback2,
-        e.maxOutputTokens, JSON.stringify(e.guardrails), JSON.stringify(e.triggers), userId,
-      ] as never[],
-    );
-  }
-
-  // Trace d'import sur le package, s'il est présent dans cet environnement.
-  await pgClient.unsafe(
-    `UPDATE ai_config_packages
-        SET imported_at = NOW(), imported_version_id = $2
-      WHERE uid = $1 AND imported_at IS NULL`,
-    [uid, versionId] as never[],
-  );
-
-  return {
-    outcome: 'created',
-    versionId,
-    visibleNumber: payload.visibleNumber,
-    divergence: await divergenceAgainstActive(payload, environment),
-  };
+  // Hors transaction : lecture seule, elle n'a pas à prolonger les verrous.
+  return { ...r, divergence: await divergenceAgainstActive(payload, environment) };
 }
 
 async function divergenceAgainstActive(

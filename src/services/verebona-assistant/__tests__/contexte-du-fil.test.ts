@@ -108,11 +108,12 @@ describe('contexte borné pour le modèle', () => {
     expect(t).toContain('« Facture 2025 »');
   });
 
-  it('le prompt v2 reçoit {{CONVERSATION}} et interdit d’en tirer des faits', () => {
-    const p = read('src/services/ai/prompts/assistant/generate_answer_v2.txt');
+  // v3 (§17.3–17.5, CA-16) remplace v2 et garde la règle R9.
+  it('le prompt v3 reçoit {{CONVERSATION}} et interdit d’en tirer des faits', () => {
+    const p = read('src/services/ai/prompts/assistant/generate_answer_v3.txt');
     expect(p).toContain('{{CONVERSATION}}');
     expect(p).toMatch(/R9 — LE CONTEXTE SERT À COMPRENDRE, PAS À AFFIRMER/);
-    expect(read('src/services/ai/registry/operations.ts')).toMatch(/promptCode: 'generate_answer_v2'/);
+    expect(read('src/services/ai/registry/operations.ts')).toMatch(/promptCode: 'generate_answer_v3'/);
     expect(read('src/services/verebona-assistant/core/generation.adapter.ts')).toMatch(/CONVERSATION: input\.threadContextText/);
   });
 });

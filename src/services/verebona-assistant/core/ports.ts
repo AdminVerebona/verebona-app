@@ -39,6 +39,8 @@ import { buildClassificationPort } from './classification.adapter';
 import { answerFromData } from './data-answer.service';
 import { accountDataRepository } from './account-data.repository';
 import { loadCascadeThresholds } from './cascade-thresholds';
+import { loadHelpCorpus } from './help-corpus.service';
+import { DEFAULT_ACTION_BY_INTENT, findNavigationTarget, helpPrimaryAction } from './navigation-targets';
 
 /** Vérificateurs d'accès câblés sur les tables réelles du repo (§22.7). */
 function buildAccessChecker(): AccessChecker {
@@ -65,24 +67,40 @@ function buildAccessChecker(): AccessChecker {
 /**
  * Construit les intentions d'action à soumettre au résolveur (§22.6).
  *
- * Trois apports, dans cet ordre de priorité :
+ * Navigation explicite (« Ouvre mon agenda ») : UNE action, celle de la
+ * destination nommée, et rien d'autre (§22.10, CA-14).
+ *
+ * Sinon, trois apports, dans cet ordre de priorité :
+ *   0. aide produit : l'action qui fait ce que la question demande
+ *      (« Comment ajouter un document ? » → Ajouter un document — §10.5) ;
  *   1. les entités effectivement trouvées — ce sont elles qui portent la valeur
  *      d'usage, et leur ordre est celui de la pertinence du retrieval ;
  *   2. le contexte de page (§27.1) — un bien déjà ouvert rend « ajouter un
  *      document » immédiatement utile ;
- *   3. les actions de repli sans cible (listes, aide) — toujours atteignables,
- *      donc placées en dernier.
+ *   3. UNE action de repli sans cible (liste, aide) propre à l'intention —
+ *      et non plus tous les types sans cible en bloc, qui produisaient trois
+ *      boutons sans rapport avec la question (§22.9).
+ *   Plus, hors quota métier (§22.9) : « Voir les sources » et « Pourquoi ? »
+ *   quand des sources existent et que l'intention les autorise.
  *
  * Rien n'est validé ici : le résolveur reste seul juge de l'appartenance au
  * compte et de la limite du §22.9. Cette fonction ne fait que proposer.
  */
-function construireActionIntents(
+export function construireActionIntents(
   route: IntentRoute,
   input: AssistantRequestInput,
   sources: RetrievedSource[],
 ): ActionIntent[] {
   const autorisees = new Set(route.allowedActionTypes);
   const intents: ActionIntent[] = [];
+
+  if (route.intent === 'NAVIGATION_OPEN' && sources.length === 0) {
+    const nav = findNavigationTarget(input.message);
+    if (nav && autorisees.has(nav.action)) return [{ type: nav.action }];
+  }
+
+  const aide = helpPrimaryAction(input.message, route.intent);
+  if (aide && autorisees.has(aide)) intents.push({ type: aide });
 
   for (const source of sources) {
     const ref = parseEntityRef(source.id);
@@ -123,9 +141,16 @@ function construireActionIntents(
     }
   }
 
-  for (const type of route.allowedActionTypes) {
-    if (!exigeUneCible(type)) intents.push({ type });
+  const repli = DEFAULT_ACTION_BY_INTENT[route.intent];
+  if (repli && autorisees.has(repli) && !exigeUneCible(repli)) intents.push({ type: repli });
+
+  // Actions d'interface (hors quota métier) : seulement s'il y a de quoi
+  // montrer — un « Voir les sources » sans source serait un bouton mort.
+  if (sources.length > 0) {
+    if (autorisees.has('SHOW_SOURCES')) intents.push({ type: 'SHOW_SOURCES' });
+    if (autorisees.has('SHOW_EXPLANATION')) intents.push({ type: 'SHOW_EXPLANATION' });
   }
+  if (autorisees.has('RETRY_REQUEST')) intents.push({ type: 'RETRY_REQUEST' });
 
   return intents;
 }
@@ -164,6 +189,8 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         intent: route.intent,
       }),
     loadThresholds: () => loadCascadeThresholds(),
+    // Étape « base d'aide » du routage (§9.4.7) — corpus en cache 5 min.
+    loadHelpCorpus: () => loadHelpCorpus(),
 
     resolveActions: (route, input, sources) =>
       resolveActions({
@@ -183,7 +210,10 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       const results: Array<{ factId: number; trigger: string; mode: string; status: string; reused: boolean; reinjectedFactId: number | null; aiCalls: number; model: string | null }> = [];
       let established = false;
       let premier: { titre: string; valeur: string } | null = null;
-      for (const factId of req.factIds) {
+      // Revalidation limitée à UN fait par message (§15.5, CA-07) : chaque
+      // fait pouvait coûter deux appels modèle, et N faits épuisaient le
+      // budget avant même la génération.
+      for (const factId of req.factIds.slice(0, 1)) {
         const f = await loadFactToCheck(input.accountId, factId);
         if (f && !premier) premier = { titre: f.label ?? f.attribute ?? f.factKey, valeur: `${factValue(f) ?? ''}${f.valueUnit ? ` ${f.valueUnit}` : ''}` };
         const r = await revalidateFact({
@@ -191,6 +221,9 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
           factId, question: input.message, trigger: req.trigger,
           // Mêmes conditions qu'une génération : usage basculé, offre éligible.
           allowModel: isUseCaseRunning('INTELLIGENT_ASSISTANT') && isPlanAiEligible(input.planType),
+          // Budget partagé du message : la revalidation y puise comme la
+          // classification et la génération.
+          budget: input.aiBudget,
         });
         if (!r) continue;
         results.push({ factId, trigger: req.trigger, mode: r.mode, status: r.status, reused: r.reused, reinjectedFactId: r.reinjectedFactId, aiCalls: r.aiCalls, model: r.model });

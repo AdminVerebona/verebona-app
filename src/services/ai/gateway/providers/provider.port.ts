@@ -31,7 +31,12 @@ export interface ProviderCallOutput {
 
 export interface AiProvider {
   readonly name: string;
-  /** true si les identifiants d'accès sont configurés. */
-  isConfigured(): boolean;
+  /**
+   * true si les identifiants d'accès sont configurés.
+   *
+   * Peut être asynchrone : la clé administrée depuis le BO est lue en base
+   * (PROV-UI-05, WF-21). Les appelants l'attendent (`await`).
+   */
+  isConfigured(): boolean | Promise<boolean>;
   call(input: ProviderCallInput): Promise<ProviderCallOutput>;
 }

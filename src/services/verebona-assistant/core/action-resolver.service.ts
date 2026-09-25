@@ -59,9 +59,23 @@ export const CIBLE_ATTENDUE: Readonly<Partial<Record<VerebonaActionType, EntityK
   OPEN_EXPORT_AREA: 'asset',
 };
 
+/**
+ * Actions dont la cible est FACULTATIVE (§22.9, CA-14, 37.15).
+ *
+ * « Comment ajouter un document ? » doit proposer « Ajouter un document »
+ * même sans bien désigné : l'action exigeait une cible bien et disparaissait,
+ * alors que « Ajouter un bien » apparaissait. Sans cible, elles mènent à la
+ * page où l'ajout se fait (documents, agenda) ; avec une cible, la cible est
+ * contrôlée comme avant (famille, appartenance au compte).
+ */
+export const CIBLE_FACULTATIVE: ReadonlySet<VerebonaActionType> = new Set<VerebonaActionType>([
+  'START_ADD_DOCUMENT',
+  'START_ADD_AGENDA_ITEM',
+]);
+
 /** Vrai si l'action n'a de sens qu'avec une cible résolue. */
 export function exigeUneCible(type: VerebonaActionType): boolean {
-  return CIBLE_ATTENDUE[type] != null;
+  return CIBLE_ATTENDUE[type] != null && !CIBLE_FACULTATIVE.has(type);
 }
 
 /** Onglet de la fiche bien ouvert par une action, quand elle en vise un. */
@@ -114,8 +128,12 @@ function buildHref(
     // il n'existe pas de page `/assets/nouveau`.
     case 'START_ADD_ASSET':
       return ROUTES.BIENS;
+    // Sans bien désigné : la page où l'ajout se fait (les pages n'exposent
+    // pas de paramètre d'ouverture directe du formulaire — pas d'URL devinée).
     case 'START_ADD_DOCUMENT':
+      return ref ? hrefBien(ref.id, ONGLET_PAR_ACTION[type]) : ROUTES.DOCUMENTS;
     case 'START_ADD_AGENDA_ITEM':
+      return ref ? hrefBien(ref.id, ONGLET_PAR_ACTION[type]) : ROUTES.AGENDA;
     case 'OPEN_EXPORT_AREA':
       return ref ? hrefBien(ref.id, ONGLET_PAR_ACTION[type]) : null;
     case 'OPEN_SEARCH_RESULTS':
@@ -133,7 +151,7 @@ const LABELS: Record<VerebonaActionType, string> = {
   OPEN_ASSET: 'Ouvrir le bien', OPEN_DOCUMENT: 'Ouvrir le document',
   OPEN_DOCUMENTS_PAGE: 'Voir les documents', OPEN_SEARCH_RESULTS: 'Voir les résultats',
   OPEN_AGENDA: "Ouvrir l'agenda", OPEN_AGENDA_ITEM: "Voir dans l'agenda",
-  OPEN_TO_PROCESS: 'Voir « À traiter »', OPEN_SUPPLIERS: 'Voir les fournisseurs',
+  OPEN_TO_PROCESS: 'Ouvrir « À traiter »', OPEN_SUPPLIERS: 'Voir les fournisseurs',
   OPEN_SUPPLIER: 'Ouvrir le fournisseur', OPEN_ACCOUNT: 'Ouvrir mon compte',
   OPEN_PRICING: 'Voir les offres', OPEN_HELP: "Consulter l'aide",
   START_ADD_ASSET: 'Ajouter un bien', START_ADD_DOCUMENT: 'Ajouter un document',
@@ -179,11 +197,15 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     // Le type de l'action impose la famille attendue. Une cible d'une autre
     // famille — ou fabriquée — donne `null`, donc un refus.
     const attendu = CIBLE_ATTENDUE[ai.type];
-    const ref = attendu ? parseEntityRef(ai.targetId, attendu) : null;
-    if (attendu && !ref) continue;
+    // Cible facultative ABSENTE : action sans cible, aucun contrôle d'objet.
+    // Cible fournie (même pour une action facultative) : contrôlée comme
+    // toujours — une cible fabriquée reste un refus.
+    const sansCible = CIBLE_FACULTATIVE.has(ai.type) && (ai.targetId == null || ai.targetId === '');
+    const ref = attendu && !sansCible ? parseEntityRef(ai.targetId, attendu) : null;
+    if (attendu && !sansCible && !ref) continue;
 
     const slug = ai.targetId != null ? String(ai.targetId) : undefined;
-    const authorized = await checkAccess(input.accountId, def.control, ref, slug, input.access);
+    const authorized = sansCible || await checkAccess(input.accountId, def.control, ref, slug, input.access);
     if (!authorized) continue;
 
     const href = buildHref(ai.type, ref, ai.params);

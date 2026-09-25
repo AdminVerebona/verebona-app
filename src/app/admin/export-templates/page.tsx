@@ -1,5 +1,12 @@
 "use client"
 
+/**
+ * Modèles d'export — CDC Back-Office V1 §11.1.
+ *
+ * EXP-007 / REC-MOD-06 : structure non éditable ; création, édition et
+ * suppression retirées (UI et API). EXP-003 / EXP-004 : seule l'activation
+ * globale reste, avec confirmation. EXP-002 : pas de numéro de version.
+ */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
@@ -7,12 +14,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { 
-  FileType, 
-  Plus, 
+import {
+  FileType,
   Search,
-  Edit,
-  Trash2,
+  Eye,
   AlertCircle,
   CheckCircle,
   XCircle,
@@ -24,17 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { toast } from 'sonner';
+import { ExportTemplateActiveToggle } from './_components/ExportTemplateActiveToggle';
 
 interface ExportTemplate {
   id: number;
@@ -56,39 +51,11 @@ interface ExportTemplate {
   } | null;
 }
 
-interface AssetType {
-  id: number;
-  code: string;
-  label: string;
-  icon: string | null;
-  isEnabled: boolean;
-}
-
-interface Subcategory {
-  id: number;
-  assetTypeId: number;
-  code: string;
-  label: string;
-  icon: string | null;
-  isEnabled: boolean;
-}
-
 const CATEGORIES = [
   { value: 'GENERAL', label: 'Général' },
   { value: 'IMMOBILIER', label: 'Immobilier' },
   { value: 'VEHICULE', label: 'Véhicule' },
   { value: 'MATERIEL_PRO', label: 'Matériel Pro' },
-];
-
-const EXPORT_TYPES = [
-  { value: 'DOSSIER_VENTE', label: 'Dossier de vente' },
-  { value: 'ASSURANCE_DEVIS', label: 'Assurance - Devis' },
-  { value: 'ASSURANCE_SINISTRE', label: 'Assurance - Sinistre' },
-  { value: 'CIL', label: 'CIL (Certificat d\'immatriculation)' },
-  { value: 'DOSSIER_COMPLET', label: 'Dossier complet' },
-  { value: 'REVENTE', label: 'Revente' },
-  { value: 'SAV_GARANTIE', label: 'SAV / Garantie' },
-  { value: 'AUTRE', label: 'Autre' },
 ];
 
 export default function ExportTemplatesPage() {
@@ -97,91 +64,14 @@ export default function ExportTemplatesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Asset Types & Subcategories
-  const [assetTypes, setAssetTypes] = useState<AssetType[]>([]);
-  const [subcategories, setSubcategories] = useState<Subcategory[]>([]);
-  const [filteredSubcategories, setFilteredSubcategories] = useState<Subcategory[]>([]);
-
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
-  // Create dialog
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [createForm, setCreateForm] = useState({
-    code: '',
-    label: '',
-    description: '',
-    pdfmonkeyTemplateId: '',
-    variables: '',
-    category: 'GENERAL' as const,
-    exportType: 'none',
-    assetTypeId: 'none',
-    subcategoryId: 'none',
-    isActive: true,
-  });
-  const [isCreating, setIsCreating] = useState(false);
-
-  // Delete dialog
-  const [deleteDialog, setDeleteDialog] = useState<{ show: boolean; template: ExportTemplate | null }>({
-    show: false,
-    template: null,
-  });
-  const [isDeleting, setIsDeleting] = useState(false);
-
-  // Preview dialog
-  const [previewDialog, setPreviewDialog] = useState<{ show: boolean; template: ExportTemplate | null }>({
-    show: false,
-    template: null,
-  });
-
   useEffect(() => {
     loadTemplates();
-    loadAssetTypes();
   }, [categoryFilter, statusFilter, searchQuery]);
-
-  // Update filtered subcategories when asset type changes
-  useEffect(() => {
-    if (createForm.assetTypeId && createForm.assetTypeId !== 'none') {
-      const filtered = subcategories.filter(
-        sub => sub.assetTypeId === parseInt(createForm.assetTypeId)
-      );
-      setFilteredSubcategories(filtered);
-      // Reset subcategory selection if not in new list
-      if (createForm.subcategoryId !== 'none' && !filtered.find(s => s.id === parseInt(createForm.subcategoryId))) {
-        setCreateForm(prev => ({ ...prev, subcategoryId: 'none' }));
-      }
-    } else {
-      setFilteredSubcategories([]);
-      setCreateForm(prev => ({ ...prev, subcategoryId: 'none' }));
-    }
-  }, [createForm.assetTypeId, subcategories]);
-
-  // Load asset types and subcategories
-  const loadAssetTypes = async () => {
-    try {
-      const response = await fetch('/api/admin/asset-types', {
-      credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setAssetTypes(data);
-        
-        // Extract all subcategories
-        const allSubcategories = data.flatMap((type: any) => 
-          type.subcategories || []
-        );
-        setSubcategories(allSubcategories);
-      }
-    } catch (err) {
-      console.error('Error loading asset types:', err);
-    }
-  };
 
   const loadTemplates = async () => {
     try {
@@ -217,112 +107,6 @@ export default function ExportTemplatesPage() {
       setError(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleCreateTemplate = async () => {
-    if (!createForm.code.trim() || !createForm.label.trim()) {
-      toast.error('Code et libellé sont obligatoires');
-      return;
-    }
-
-    if (!createForm.pdfmonkeyTemplateId.trim()) {
-      toast.error('L\'ID du template PDFMonkey est obligatoire');
-      return;
-    }
-
-    try {
-      setIsCreating(true);
-
-      // Parse variables if provided
-      let parsedVariables = null;
-      if (createForm.variables.trim()) {
-        try {
-          parsedVariables = JSON.parse(createForm.variables);
-        } catch {
-          toast.error('Format JSON invalide pour les variables');
-          return;
-        }
-      }
-
-      const response = await fetch('/api/admin/export-templates', {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          code: createForm.code.trim(),
-          label: createForm.label.trim(),
-          description: createForm.description.trim() || undefined,
-          pdfmonkeyTemplateId: createForm.pdfmonkeyTemplateId.trim(),
-          variables: parsedVariables ? JSON.stringify(parsedVariables) : undefined,
-          category: createForm.category,
-          exportType: createForm.exportType !== 'none' ? createForm.exportType : undefined,
-          assetTypeId: createForm.assetTypeId !== 'none' ? parseInt(createForm.assetTypeId) : undefined,
-          assetTypeSubcategoryId: createForm.subcategoryId !== 'none' ? parseInt(createForm.subcategoryId) : undefined,
-          isActive: createForm.isActive,
-        }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Erreur lors de la création');
-      }
-
-      toast.success('Modèle créé avec succès');
-      setShowCreateDialog(false);
-      setCreateForm({
-        code: '',
-        label: '',
-        description: '',
-        pdfmonkeyTemplateId: '',
-        variables: '',
-        category: 'GENERAL',
-        exportType: 'none',
-        assetTypeId: 'none',
-        subcategoryId: 'none',
-        isActive: true,
-      });
-      loadTemplates();
-    } catch (err) {
-      console.error('Error creating template:', err);
-      toast.error(err instanceof Error ? err.message : 'Erreur lors de la création');
-    } finally {
-      setIsCreating(false);
-    }
-  };
-
-  const handleDeleteTemplate = async () => {
-    if (!deleteDialog.template) return;
-
-    try {
-      setIsDeleting(true);
-
-      const response = await fetch(`/api/admin/export-templates/${deleteDialog.template.id}`, {
-      credentials: 'include',
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          confirmId: deleteDialog.template.id,
-        }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Erreur lors de la suppression');
-      }
-
-      toast.success('Modèle supprimé avec succès');
-      setDeleteDialog({ show: false, template: null });
-      loadTemplates();
-    } catch (err) {
-      console.error('Error deleting template:', err);
-      toast.error(err instanceof Error ? err.message : 'Erreur lors de la suppression');
-    } finally {
-      setIsDeleting(false);
     }
   };
 
@@ -379,13 +163,9 @@ export default function ExportTemplatesPage() {
             Modèles d'export
           </h1>
           <p className="text-muted-foreground mt-1">
-            Gérez les templates PDFMonkey pour la génération de documents PDF
+            Activation des modèles de génération des exports PDF (contenu non modifiable depuis le back-office)
           </p>
         </div>
-        <Button onClick={() => setShowCreateDialog(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          Nouveau modèle
-        </Button>
       </div>
 
       {/* Filters */}
@@ -436,13 +216,11 @@ export default function ExportTemplatesPage() {
               <div className="text-center py-12">
                 <FileType className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
                 <h3 className="text-lg font-medium mb-2">Aucun modèle trouvé</h3>
-                <p className="text-muted-foreground mb-4">
-                  Créez votre premier modèle d'export pour commencer
+                <p className="text-muted-foreground">
+                  {searchQuery || categoryFilter !== 'all' || statusFilter !== 'all'
+                    ? 'Aucun modèle ne correspond aux critères.'
+                    : 'Aucun modèle d\'export.'}
                 </p>
-                <Button onClick={() => setShowCreateDialog(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Créer un modèle
-                </Button>
               </div>
             </CardContent>
           </Card>
@@ -464,7 +242,6 @@ export default function ExportTemplatesPage() {
                       <Badge variant="outline">
                         {getCategoryLabel(template.category)}
                       </Badge>
-                      <Badge variant="outline">v{template.version}</Badge>
                     </div>
                     <p className="text-sm text-muted-foreground mb-3">
                       Code: <span className="font-mono font-semibold">{template.code}</span>
@@ -495,22 +272,20 @@ export default function ExportTemplatesPage() {
                       )}
                     </div>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col items-end gap-3">
+                    <ExportTemplateActiveToggle
+                      templateId={template.id}
+                      label={template.label}
+                      isActive={template.isActive}
+                      onChanged={loadTemplates}
+                    />
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => router.push(`/admin/export-templates/${template.id}`)}
                     >
-                      <Edit className="h-4 w-4 mr-1" />
-                      Éditer
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setDeleteDialog({ show: true, template })}
-                      className="text-destructive hover:bg-destructive/10"
-                    >
-                      <Trash2 className="h-4 w-4" />
+                      <Eye className="h-4 w-4 mr-1" />
+                      Consulter
                     </Button>
                   </div>
                 </div>
@@ -520,220 +295,6 @@ export default function ExportTemplatesPage() {
         )}
       </div>
 
-      {/* Create Dialog */}
-      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Créer un nouveau modèle d'export</DialogTitle>
-            <DialogDescription>
-              Configurez un nouveau template PDFMonkey pour la génération de documents
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="code">Code *</Label>
-                <Input
-                  id="code"
-                  placeholder="DOSSIER_VENTE_VELO"
-                  value={createForm.code}
-                  onChange={(e) => setCreateForm({ ...createForm, code: e.target.value.toUpperCase() })}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Identifiant unique en majuscules
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="label">Libellé *</Label>
-                <Input
-                  id="label"
-                  placeholder="Dossier de vente - Vélo"
-                  value={createForm.label}
-                  onChange={(e) => setCreateForm({ ...createForm, label: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2 p-4 border-2 border-primary/20 rounded-lg bg-primary/5">
-              <Label htmlFor="pdfmonkeyTemplateId" className="text-base font-semibold flex items-center gap-2">
-                <FileType className="h-4 w-4" />
-                ID Template PDFMonkey *
-              </Label>
-              <Input
-                id="pdfmonkeyTemplateId"
-                placeholder="671dcbc4a6ee3b001aaf35f7"
-                value={createForm.pdfmonkeyTemplateId}
-                onChange={(e) => setCreateForm({ ...createForm, pdfmonkeyTemplateId: e.target.value.trim() })}
-                className="font-mono"
-              />
-              <p className="text-xs text-muted-foreground">
-                📌 <strong>Obligatoire</strong> : Identifiant unique du template sur PDFMonkey. 
-                Trouvez-le dans l'URL du template PDFMonkey (ex: https://app.pdfmonkey.io/documents/templates/<strong>671dcbc4a6ee3b001aaf35f7</strong>)
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
-              <Textarea
-                id="description"
-                placeholder="Description du modèle..."
-                value={createForm.description}
-                onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
-                rows={2}
-              />
-            </div>
-            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="category">Catégorie</Label>
-                <Select
-                  value={createForm.category}
-                  onValueChange={(value: any) => setCreateForm({ ...createForm, category: value })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CATEGORIES.map((cat) => (
-                      <SelectItem key={cat.value} value={cat.value}>
-                        {cat.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              
-              <div className="space-y-2">
-                <Label htmlFor="exportType">Type d'export</Label>
-                <Select
-                  value={createForm.exportType}
-                  onValueChange={(value) => setCreateForm({ ...createForm, exportType: value })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Sélectionnez un type..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Aucun type spécifique</SelectItem>
-                    {EXPORT_TYPES.map((type) => (
-                      <SelectItem key={type.value} value={type.value}>
-                        {type.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="assetType">Type de bien</Label>
-                <Select
-                  value={createForm.assetTypeId}
-                  onValueChange={(value) => setCreateForm({ ...createForm, assetTypeId: value })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Sélectionnez un type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Aucun type spécifique</SelectItem>
-                    {assetTypes.filter(type => type.isEnabled).map((type) => (
-                      <SelectItem key={type.id} value={type.id.toString()}>
-                        {type.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {createForm.assetTypeId !== 'none' && filteredSubcategories.length > 0 && (
-                <div className="space-y-2">
-                  <Label htmlFor="subcategory">Sous-catégorie</Label>
-                  <Select
-                    value={createForm.subcategoryId}
-                    onValueChange={(value) => setCreateForm({ ...createForm, subcategoryId: value })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Sélectionnez une sous-catégorie" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Aucune sous-catégorie</SelectItem>
-                      {filteredSubcategories.filter(sub => sub.isEnabled).map((sub) => (
-                        <SelectItem key={sub.id} value={sub.id.toString()}>
-                          {sub.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </div>
-            
-            <div className="space-y-2">
-              <Label htmlFor="isActive">Statut</Label>
-              <Select
-                value={createForm.isActive ? 'true' : 'false'}
-                onValueChange={(value) => setCreateForm({ ...createForm, isActive: value === 'true' })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="true">Actif</SelectItem>
-                  <SelectItem value="false">Inactif</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="variables">Variables (JSON array)</Label>
-              <Textarea
-                id="variables"
-                placeholder='["assetName", "description", "purchaseDate"]'
-                value={createForm.variables}
-                onChange={(e) => setCreateForm({ ...createForm, variables: e.target.value })}
-                rows={3}
-                className="font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                Variables disponibles dans le template PDFMonkey (format : tableau JSON)
-              </p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateDialog(false)} disabled={isCreating}>
-              Annuler
-            </Button>
-            <Button onClick={handleCreateTemplate} disabled={isCreating}>
-              {isCreating ? 'Création...' : 'Créer le modèle'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Dialog */}
-      <Dialog open={deleteDialog.show} onOpenChange={(open) => setDeleteDialog({ show: open, template: null })}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Confirmer la suppression</DialogTitle>
-            <DialogDescription>
-              Êtes-vous sûr de vouloir supprimer le modèle "{deleteDialog.template?.label}" ?
-              Cette action est irréversible.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDeleteDialog({ show: false, template: null })}
-              disabled={isDeleting}
-            >
-              Annuler
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDeleteTemplate}
-              disabled={isDeleting}
-            >
-              {isDeleting ? 'Suppression...' : 'Supprimer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

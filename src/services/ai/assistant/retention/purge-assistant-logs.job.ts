@@ -22,7 +22,8 @@ import {
 } from '@/services/verebona-assistant/core/conversation.service';
 
 export const RETENTION = {
-  conversationDays: Number(process.env.VEREBONA_ASSISTANT_HISTORY_DAYS ?? 7),
+  // 3 mois : même valeur par défaut que l'assistant (assistant-config.ts, CDC Centre d'aide GAP-16).
+  conversationDays: Number(process.env.VEREBONA_ASSISTANT_HISTORY_DAYS ?? 90),
   detailedTraceDays: Number(process.env.AI_TRACE_DETAILED_RETENTION_DAYS ?? 30),
   technicalLogDays: Number(process.env.AI_TRACE_TECHNICAL_RETENTION_DAYS ?? 90),
   aggregateMonths: Number(process.env.AI_AGGREGATE_RETENTION_MONTHS ?? 13),

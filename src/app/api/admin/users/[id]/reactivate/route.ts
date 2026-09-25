@@ -1,115 +1,57 @@
+/**
+ * POST /api/admin/users/[id]/reactivate — CDC Back-Office V1 USR-A02, USR-A04,
+ * USR-A05, AUD-003.
+ *
+ * Réactive l'utilisateur : accès restauré avec les identifiants existants,
+ * sans changement de mot de passe forcé, sans e-mail. Identité de
+ * l'administrateur issue de la session serveur (`requireAdmin`), jamais d'un
+ * en-tête client.
+ */
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { users, adminAuditLog } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { logAdminAction } from '@/lib/admin-audit';
+import { reactivateUser, UserAdminError } from '@/services/admin/user-admin.service';
+import { parseUserId, invalidUserId, userAdminErrorResponse } from '../_shared';
 
-export async function POST(
-  request: NextRequest,
-  context: { params: Promise<{ id: string }> }
-) {
-  const params = await context.params;
+export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  let adminId: number;
   try {
-    // Get admin user ID from header (placeholder auth)
-    const adminUserId = request.headers.get('x-user-id');
-    if (!adminUserId || isNaN(parseInt(adminUserId))) {
-      return NextResponse.json(
-        { error: 'Authentication required', code: 'AUTHENTICATION_REQUIRED' },
-        { status: 401 }
-      );
-    }
-
-    // Fetch admin user to check role
-    const adminUserResult = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, parseInt(adminUserId)))
-      .limit(1);
-
-    if (adminUserResult.length === 0) {
-      return NextResponse.json(
-        { error: 'Admin user not found', code: 'ADMIN_NOT_FOUND' },
-        { status: 404 }
-      );
-    }
-
-    const currentUser = adminUserResult[0];
-
-    // Authorization check - only ADMIN can reactivate users
-    if (currentUser.role !== 'ADMIN') {
-      return NextResponse.json(
-        { error: 'Forbidden: ADMIN role required', code: 'FORBIDDEN' },
-        { status: 403 }
-      );
-    }
-
-    // Extract and validate ID from params
-    const userId = params.id;
-    if (!userId || isNaN(parseInt(userId))) {
-      return NextResponse.json(
-        { error: 'Valid user ID is required', code: 'INVALID_ID' },
-        { status: 400 }
-      );
-    }
-
-    const userIdInt = parseInt(userId);
-
-    // Check if user exists
-    const existingUser = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, userIdInt))
-      .limit(1);
-
-    if (existingUser.length === 0) {
-      return NextResponse.json(
-        { error: 'User not found', code: 'USER_NOT_FOUND' },
-        { status: 404 }
-      );
-    }
-
-    // Update user status to ACTIVE
-    const updatedUser = await db
-      .update(users)
-      .set({
-        status: 'ACTIVE',
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, userIdInt))
-      .returning();
-
-    if (updatedUser.length === 0) {
-      return NextResponse.json(
-        { error: 'Failed to reactivate user', code: 'UPDATE_FAILED' },
-        { status: 500 }
-      );
-    }
-
-    // Get admin user details for audit log
-    const adminEmail = currentUser.email;
-
-    // Create audit log entry
-    await db.insert(adminAuditLog).values({
-      timestamp: new Date(),
-      adminUserId: parseInt(adminUserId),
-      adminEmail: adminEmail,
-      actionType: 'USER_REACTIVATE',
-      targetType: 'USER',
-      targetId: userIdInt,
-      details: null,
-    });
-
-    // Remove passwordHash from response
-    const { passwordHash, ...userWithoutPassword } = updatedUser[0];
-
-    return NextResponse.json(userWithoutPassword, { status: 200 });
+    adminId = await requireAdmin(request);
   } catch (error) {
-    console.error('POST /api/admin/users/[id]/reactivate error:', error);
+    return sessionErrorResponse(error);
+  }
+  const userId = parseUserId((await context.params).id);
+  if (!userId) return invalidUserId();
+
+  try {
+    const change = await reactivateUser(userId);
+    await logAdminAction({
+      adminId,
+      action: 'USER_REACTIVATE',
+      targetType: 'USER',
+      targetId: userId,
+      result: 'SUCCESS',
+      before: change.before,
+      after: change.after,
+    });
+    return NextResponse.json({ success: true, status: change.after.status });
+  } catch (error) {
+    if (isSessionError(error)) return sessionErrorResponse(error);
+    const denied = error instanceof UserAdminError;
+    await logAdminAction({
+      adminId,
+      action: 'USER_REACTIVATE',
+      targetType: 'USER',
+      targetId: userId,
+      result: denied ? 'DENIED' : 'FAILURE',
+      after: { status: 'ACTIVE' },
+      details: { error: denied ? error.code : (error as Error).message },
+    });
+    if (denied) return userAdminErrorResponse(error);
+    console.error('[admin/users/reactivate] échec :', error);
     return NextResponse.json(
-      {
-        error: 'Internal server error: ' + (error instanceof Error ? error.message : 'Unknown error'),
-        code: 'INTERNAL_SERVER_ERROR',
-      },
-      { status: 500 }
+      { error: 'REACTIVATE_FAILED', code: 'REACTIVATE_FAILED', message: 'La réactivation a échoué.' },
+      { status: 500 },
     );
   }
 }

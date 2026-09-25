@@ -37,11 +37,13 @@ import {
 } from '@/components/ui/dialog';
 import {
   Loader2, Plus, GitCompare, CheckCircle2, AlertTriangle, RotateCcw,
-  Archive, Play, Save, Lock,
+  Archive, Play, Save, Lock, Undo2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
+import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
+import { MepPackages } from './_components/MepPackages';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
 
@@ -770,7 +772,13 @@ export default function AiConfigPage() {
   const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
-  const [confirm, setConfirm] = useState<null | { kind: 'rollback' | 'validate' | 'activate'; onOk: () => void }>(null);
+  const [confirm, setConfirm] = useState<null | { kind: 'rollback' | 'validate' | 'activate' | 'demote'; onOk: () => void }>(null);
+  // Confirmation renforcée en production (VER-026, WF-04) : saisir le nom de
+  // l'environnement avant d'activer ou de restaurer.
+  const [saisieEnv, setSaisieEnv] = useState('');
+  // État opérationnel runtime (non versionné) et arrêt d'urgence (WF-07, WF-08).
+  const [runtime, setRuntime] = useState<TreatmentRuntimeState[]>([]);
+  const [emergencyStop, setEmergencyStop] = useState(false);
   const [leaving, setLeaving] = useState<null | (() => void)>(null);
   const [metrics, setMetrics] = useState<Record<string, { metrics: Metric[]; windowDays: number }>>({});
   // Fenêtre choisie par traitement : on observe rarement T1 et T2 à la même
@@ -802,6 +810,15 @@ export default function AiConfigPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // État des traitements : lu une fois, puis mis à jour par chaque commande.
+  // Silencieux en cas d'échec : la configuration reste utilisable sans lui.
+  useEffect(() => {
+    apiClient
+      .get<{ states: TreatmentRuntimeState[]; emergencyStop: { active: boolean } }>('/api/admin/ai/queue')
+      .then((r) => { setRuntime(r.states); setEmergencyStop(Boolean(r.emergencyStop?.active)); })
+      .catch(() => {});
+  }, []);
 
   // Chargés à l'ouverture de l'onglet, et non tous d'un coup : cinq requêtes
   // d'agrégation à chaque affichage de l'écran seraient payées même par qui
@@ -968,6 +985,14 @@ export default function AiConfigPage() {
         </Button>
       </div>
 
+      {/* WF-04 — préparer (préproduction) ou importer (production) un package */}
+      <MepPackages
+        environment={environment}
+        active={versions.find((v) => v.status === 'ACTIVE') ?? null}
+        onImported={load}
+        onOpenVersion={(id) => guardUnsaved(() => openVersion(id))}
+      />
+
       {/* Versions */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">
         {versions.length === 0 && (
@@ -1023,6 +1048,13 @@ export default function AiConfigPage() {
               <Button size="sm" disabled={busy}
                 onClick={() => setConfirm({ kind: 'validate', onOk: () => act('validate', 'Version validée et activée') })}>
                 <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" /> Valider et activer
+              </Button>
+            )}
+            {/* VER-012 (§26) / TST-01 : la préproduction revient sur l'Active. */}
+            {current.status === 'TO_TEST' && (
+              <Button size="sm" variant="outline" disabled={busy}
+                onClick={() => setConfirm({ kind: 'demote', onOk: () => act('demote', 'Version revenue en brouillon') })}>
+                <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Revenir en brouillon
               </Button>
             )}
             {current.status === 'VALIDATED' && (
@@ -1081,6 +1113,14 @@ export default function AiConfigPage() {
                   {issuesFor(t.code).some((i) => i.blocking) && <span className="text-red-400 text-xs">• contrôle bloquant</span>}
                 </summary>
                 <div className="px-4 pb-4 space-y-4">
+                  <TreatmentStateControl
+                    treatment={t.code}
+                    batch={t.batch}
+                    state={runtime.find((s) => s.treatment === t.code)}
+                    emergencyStop={emergencyStop}
+                    onChanged={setRuntime}
+                  />
+
                   {issuesFor(t.code).length > 0 && (
                     <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
                       {issuesFor(t.code).map((i, k) => (
@@ -1168,19 +1208,22 @@ export default function AiConfigPage() {
       </Dialog>
 
       {/* Confirmations — elles nomment la conséquence, pas « êtes-vous sûr » */}
-      <Dialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
+      <Dialog open={confirm !== null} onOpenChange={(o) => { if (!o) { setConfirm(null); setSaisieEnv(''); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
               {confirm?.kind === 'rollback' ? 'Restaurer cette version'
                 : confirm?.kind === 'validate' ? 'Valider et activer'
-                  : 'Activer cette version'}
+                  : confirm?.kind === 'demote' ? 'Revenir en brouillon'
+                    : 'Activer cette version'}
             </DialogTitle>
             <DialogDescription>
               {confirm?.kind === 'rollback'
                 ? 'Les exécutions en cours seront interrompues et les traitements par lots repris depuis le début avec cette version.'
-                : 'Les exécutions en cours se termineront avec la configuration actuelle. Les suivantes utiliseront celle-ci.'}
-              {(current?.unavailableModels?.length ?? 0) > 0 && (
+                : confirm?.kind === 'demote'
+                  ? 'La version redevient un brouillon modifiable. La préproduction revient immédiatement sur la dernière Active pour les nouveaux appels.'
+                  : 'Les exécutions en cours se termineront avec la configuration actuelle. Les suivantes utiliseront celle-ci.'}
+              {confirm?.kind !== 'demote' && (current?.unavailableModels?.length ?? 0) > 0 && (
                 <span className="block mt-2 text-amber-500">
                   Attention : {current!.unavailableModels.map((m) =>
                     `${m.treatment} utilise « ${m.model} » (${m.rank})`).join(', ')} — le
@@ -1191,13 +1234,26 @@ export default function AiConfigPage() {
               )}
             </DialogDescription>
           </DialogHeader>
+          {environment === 'production' && (confirm?.kind === 'activate' || confirm?.kind === 'rollback') && (
+            <label className="block space-y-1.5">
+              <span className="text-sm text-red-400">
+                Environnement de PRODUCTION. Saisissez « production » pour confirmer.
+              </span>
+              <input value={saisieEnv} onChange={(e) => setSaisieEnv(e.target.value)} autoComplete="off"
+                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm" />
+            </label>
+          )}
           <DialogFooter className="gap-2">
-            <Button variant="ghost" onClick={() => setConfirm(null)}>Annuler</Button>
+            <Button variant="ghost" onClick={() => { setConfirm(null); setSaisieEnv(''); }}>Annuler</Button>
             <Button
               variant={confirm?.kind === 'rollback' ? 'destructive' : 'default'}
-              onClick={() => { const ok = confirm?.onOk; setConfirm(null); ok?.(); }}
+              disabled={environment === 'production'
+                && (confirm?.kind === 'activate' || confirm?.kind === 'rollback')
+                && saisieEnv.trim() !== 'production'}
+              onClick={() => { const ok = confirm?.onOk; setConfirm(null); setSaisieEnv(''); ok?.(); }}
             >
-              {confirm?.kind === 'rollback' ? 'Restaurer' : 'Activer'}
+              {confirm?.kind === 'rollback' ? 'Restaurer'
+                : confirm?.kind === 'demote' ? 'Revenir en brouillon' : 'Activer'}
             </Button>
           </DialogFooter>
         </DialogContent>

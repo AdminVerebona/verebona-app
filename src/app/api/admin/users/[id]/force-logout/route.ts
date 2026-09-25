@@ -1,80 +1,57 @@
+/**
+ * POST /api/admin/users/[id]/force-logout — CDC Back-Office V1 USR-A06, AUD-003.
+ *
+ * « Déconnecter toutes les sessions » : révocation globale réelle
+ * (`revokeAllUserSessions`) — tout jeton, d'accès comme de renouvellement,
+ * émis avant maintenant est refusé. La version précédente ne révoquait rien
+ * (« there's no session table ») et vérifiait un Bearer avec un secret de
+ * repli, alors que le BO s'authentifie par cookie.
+ *
+ * Le détail des sessions n'est ni listé ni renvoyé (USR-D03).
+ */
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { adminAuditLog } from '@/db/schema';
-import jwt from 'jsonwebtoken';
+import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { logAdminAction } from '@/lib/admin-audit';
+import { forceLogoutUser, UserAdminError } from '@/services/admin/user-admin.service';
+import { parseUserId, invalidUserId, userAdminErrorResponse } from '../_shared';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
-
-export async function POST(
-  request: NextRequest,
-  context: { params: Promise<{ id: string }> }
-) {
-  const params = await context.params;
+export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  let adminId: number;
   try {
-    const userId = parseInt(params.id);
-
-    if (isNaN(userId)) {
-      return NextResponse.json(
-        { error: 'ID utilisateur invalide' },
-        { status: 400 }
-      );
-    }
-
-    // Verify admin authentication
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json(
-        { error: 'Non authentifié' },
-        { status: 401 }
-      );
-    }
-
-    const token = authHeader.substring(7);
-    let adminUser;
-
-    try {
-      adminUser = jwt.verify(token, JWT_SECRET) as { userId: number; role: string; email: string };
-    } catch (err) {
-      return NextResponse.json(
-        { error: 'Token invalide' },
-        { status: 401 }
-      );
-    }
-
-    // Check if user is admin
-    if (adminUser.role !== 'ADMIN') {
-      return NextResponse.json(
-        { error: 'Accès non autorisé' },
-        { status: 403 }
-      );
-    }
-
-    // Note: Since there's no session table in the schema, we'll just clear tokens from localStorage
-    // In a real implementation, you would invalidate tokens server-side or use a token blacklist
-    
-    // Log the action
-    await db.insert(adminAuditLog).values({
-      timestamp: new Date(),
-      adminUserId: adminUser.userId,
-      adminEmail: adminUser.email || 'unknown',
-      actionType: 'USER_UPDATE',
-      targetType: 'user',
-      targetId: userId,
-      details: JSON.stringify({
-        action: 'FORCE_LOGOUT',
-        timestamp: new Date(),
-      }),
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: 'Utilisateur déconnecté avec succès',
-    });
+    adminId = await requireAdmin(request);
   } catch (error) {
-    console.error('Error forcing logout:', error);
+    return sessionErrorResponse(error);
+  }
+  const userId = parseUserId((await context.params).id);
+  if (!userId) return invalidUserId();
+
+  try {
+    const { revokedBefore } = await forceLogoutUser(userId);
+    await logAdminAction({
+      adminId,
+      action: 'USER_FORCE_LOGOUT',
+      targetType: 'USER',
+      targetId: userId,
+      result: 'SUCCESS',
+      details: { revokedBefore: revokedBefore.toISOString() },
+    });
+    return NextResponse.json({ success: true, revokedBefore: revokedBefore.toISOString() });
+  } catch (error) {
+    if (isSessionError(error)) return sessionErrorResponse(error);
+    const denied = error instanceof UserAdminError;
+    await logAdminAction({
+      adminId,
+      action: 'USER_FORCE_LOGOUT',
+      targetType: 'USER',
+      targetId: userId,
+      result: denied ? 'DENIED' : 'FAILURE',
+      details: { error: denied ? error.code : (error as Error).message },
+    });
+    if (denied) return userAdminErrorResponse(error);
+    console.error('[admin/users/force-logout] échec :', error);
     return NextResponse.json(
-      { error: 'Erreur lors de la déconnexion forcée' },
-      { status: 500 }
+      { error: 'FORCE_LOGOUT_FAILED', code: 'FORCE_LOGOUT_FAILED', message: 'La déconnexion des sessions a échoué.' },
+      { status: 500 },
     );
   }
 }

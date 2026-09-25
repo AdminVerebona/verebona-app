@@ -47,6 +47,8 @@ interface Health {
   treatment: Treatment; label: string; batch: boolean;
   state: State; suspendedReason: string | null; nextProbeAt: string | null;
   primaryModel: string | null; pending: number; running: number; failed: number;
+  /** MOD-008 : modèles à dix échecs consécutifs ou plus pour ce traitement. */
+  alertingModels?: Array<{ model: string; consecutiveFailures: number }>;
 }
 
 interface Alert { severity: 'critical' | 'warning' | 'info'; message: string; href: string }
@@ -266,6 +268,20 @@ export default function AiDashboardPage() {
             {h.suspendedReason && (
               <p className="text-xs text-amber-500 line-clamp-2">{h.suspendedReason}</p>
             )}
+            {/* WF-09 étape 53 : prochaine tentative de recovery (sonde). */}
+            {h.state === 'SUSPENDED' && h.nextProbeAt && (
+              <p className="text-xs text-[color:var(--text-muted)]">
+                Prochaine sonde : {new Date(h.nextProbeAt).toLocaleTimeString('fr-FR')}
+              </p>
+            )}
+            {/* MOD-008 / OPS-019 : alerte modèle informationnelle, sans arrêt. */}
+            {(h.alertingModels ?? []).map((m) => (
+              <p key={m.model} className="text-xs text-amber-500 flex items-center gap-1" title="Alerte modèle (MOD-008) : se résout au premier succès de ce modèle.">
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+                <span className="font-mono truncate">{m.model}</span>
+                <span className="shrink-0">· {m.consecutiveFailures} échecs</span>
+              </p>
+            ))}
           </div>
         ))}
       </div>

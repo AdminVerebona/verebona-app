@@ -32,5 +32,9 @@ export function toApiPayload(result: AssistantRunResult, conversationId?: number
         }
       : null,
     commandPlan: result.commandPlan ?? null,
+    // §27.11 : `error {code, message, recoverable}` accompagne `status:
+    // 'error'`, pour que le client affiche un message et « Réessayer » au
+    // lieu d'une impasse (§4.2).
+    ...(result.error ? { error: { ...result.error } } : {}),
   };
 }

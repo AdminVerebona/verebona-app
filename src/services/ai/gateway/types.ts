@@ -42,6 +42,14 @@ export interface AiGatewayRequest<T> {
   parentOperationId?: number;
   /** Mode observation : trace écrite, résultat non appliqué (CDC §10.2). */
   shadow?: boolean;
+  /**
+   * Nombre maximal de tentatives modèle (principal puis replis) pour CET
+   * appel. Absent : toute la chaîne configurée. Sert au budget par message
+   * de l'assistant (CDC Assistant §15.5, CA-07 : au plus 2 appels modèle par
+   * message utilisateur, toutes opérations confondues). Une valeur < 1
+   * n'autorise aucun appel.
+   */
+  maxModelAttempts?: number;
 }
 
 export interface AiGatewayResponse<T> {

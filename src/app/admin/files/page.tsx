@@ -1,5 +1,14 @@
 "use client"
 
+/**
+ * Fichiers (vue transverse) — métadonnées seulement.
+ *
+ * CDC Back-Office V1 SEC-001 / REC-ACC-07 : aucun téléchargement ni aperçu du
+ * contenu d'un document d'un autre compte ; SEC-003 : aucune suppression.
+ * Boutons et handlers retirés (la route `/api/admin/files/[id]/view` est
+ * supprimée).
+ */
+
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -13,18 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Search, ChevronLeft, ChevronRight, Download, FileIcon, Image, FileText, Trash2 } from 'lucide-react';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { toast } from 'sonner';
+import { Search, ChevronLeft, ChevronRight, FileIcon, Image, FileText } from 'lucide-react';
 import Link from 'next/link';
 
 interface AdminFile {
@@ -60,11 +58,6 @@ export default function AdminFilesPage() {
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [page, setPage] = useState(1);
   const limit = 50;
-
-  // Delete dialog
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [fileToDelete, setFileToDelete] = useState<AdminFile | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     loadFiles();
@@ -110,73 +103,6 @@ export default function AdminFilesPage() {
   const handleSearchChange = (value: string) => {
     setSearch(value);
     setPage(1);
-  };
-
-  const handleDownload = async (file: AdminFile) => {
-    try {
-      const response = await fetch(`/api/files/${file.id}/download`, {
-      credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la génération du lien de téléchargement');
-      }
-
-      const { downloadUrl } = await response.json();
-
-      const isInIframe = window.self !== window.top;
-      if (isInIframe) {
-        window.parent.postMessage({ 
-          type: 'OPEN_EXTERNAL_URL', 
-          data: { url: downloadUrl } 
-        }, '*');
-      } else {
-        window.open(downloadUrl, '_blank', 'noopener,noreferrer');
-      }
-
-      toast.success('Téléchargement démarré');
-    } catch (error) {
-      console.error('Download error:', error);
-      toast.error('Erreur lors du téléchargement');
-    }
-  };
-
-  const handleDeleteClick = (file: AdminFile) => {
-    setFileToDelete(file);
-    setDeleteDialogOpen(true);
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!fileToDelete) return;
-
-    try {
-      setIsDeleting(true);
-
-      const response = await fetch(`/api/files/${fileToDelete.id}`, {
-      credentials: 'include',
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la suppression');
-      }
-
-      toast.success('Fichier supprimé avec succès');
-      setDeleteDialogOpen(false);
-      setFileToDelete(null);
-      loadFiles();
-    } catch (error) {
-      console.error('Delete error:', error);
-      toast.error('Erreur lors de la suppression');
-    } finally {
-      setIsDeleting(false);
-    }
   };
 
   const formatDate = (dateStr: string) => {
@@ -375,26 +301,6 @@ export default function AdminFilesPage() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    {file.uploadStatus === 'COMPLETED' && !file.deletedAt && (
-                      <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleDownload(file)}
-                        >
-                          <Download className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleDeleteClick(file)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </>
-                    )}
-                  </div>
                 </div>
               ))}
             </div>
@@ -429,28 +335,6 @@ export default function AdminFilesPage() {
         </CardContent>
       </Card>
 
-      {/* Delete confirmation dialog */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Supprimer ce fichier ?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Le fichier "{fileToDelete?.originalFilename}" sera supprimé définitivement.
-              Cette action ne peut pas être annulée.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Annuler</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              disabled={isDeleting}
-              className="bg-destructive hover:bg-destructive/90"
-            >
-              {isDeleting ? 'Suppression...' : 'Supprimer'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

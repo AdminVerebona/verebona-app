@@ -1,12 +1,20 @@
 "use client"
 
+/**
+ * Documents (vue transverse) — métadonnées seulement.
+ *
+ * CDC Back-Office V1 SEC-001 / REC-ACC-07 : l'administrateur ne peut jamais
+ * ouvrir, prévisualiser ni télécharger le contenu d'un document d'un autre
+ * compte — l'action « Télécharger » est retirée. SEC-003 / GEN-001 : ni
+ * modification, ni changement de bien, ni suppression depuis le BO.
+ */
+
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
@@ -15,44 +23,23 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
-  Search, Download, FileIcon, Image, FileText, Trash2, MoveHorizontal,
-  AlertCircle, Clock, CheckCircle2, XCircle, Pencil, MoreHorizontal, Database, Brain, Calendar, Tag, Hash, FileType2, User,
+  Search, FileIcon, Image, FileText,
+  AlertCircle, Clock, CheckCircle2, XCircle, MoreHorizontal, Database, Brain, Calendar, Tag, Hash, FileType2, User,
   Sparkles, LinkIcon, Copy, Check,
 } from 'lucide-react';
-import { toast } from 'sonner';
 import Link from 'next/link';
-import { LinkedEventsSection } from '@/components/documents/linked-events-section';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -434,23 +421,6 @@ export default function AdminDocumentsPage() {
   const [detailDoc, setDetailDoc] = useState<AdminDocument | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
-  // Delete dialog
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [documentToDelete, setDocumentToDelete] = useState<AdminDocument | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-
-  // Move dialog
-  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
-  const [documentToMove, setDocumentToMove] = useState<AdminDocument | null>(null);
-  const [targetAssetId, setTargetAssetId] = useState<string>('');
-  const [isMoving, setIsMoving] = useState(false);
-
-  // Edit dialog
-  const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [documentToEdit, setDocumentToEdit] = useState<AdminDocument | null>(null);
-  const [editFormData, setEditFormData] = useState({ fileName: '', documentType: '', assetId: '' });
-  const [isEditing, setIsEditing] = useState(false);
-
   const getDocumentTypeLabel = (code: string): string => {
     const dt = documentTypes.find(d => d.code === code);
     return dt?.label || code;
@@ -549,94 +519,6 @@ export default function AdminDocumentsPage() {
       return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
     });
   };
-
-  const handleDownload = async (doc: AdminDocument) => {
-    try {
-      const res = await fetch(`/api/files/${doc.id}/download`, { credentials: 'include' });
-      if (!res.ok) throw new Error();
-      const { downloadUrl } = await res.json();
-      if (window.self !== window.top) {
-        window.parent.postMessage({ type: 'OPEN_EXTERNAL_URL', data: { url: downloadUrl } }, '*');
-      } else {
-        window.open(downloadUrl, '_blank', 'noopener,noreferrer');
-      }
-      toast.success('Téléchargement démarré');
-    } catch {
-      toast.error('Erreur lors du téléchargement');
-    }
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!documentToDelete) return;
-    try {
-      setIsDeleting(true);
-      const res = await fetch(`/api/files/${documentToDelete.id}`, {
-      credentials: 'include',
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error();
-      toast.success('Document supprimé avec succès');
-      setDeleteDialogOpen(false);
-      setDocumentToDelete(null);
-      loadDocuments();
-    } catch {
-      toast.error('Erreur lors de la suppression');
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const handleMoveConfirm = async () => {
-    if (!documentToMove || !targetAssetId) { toast.error('Veuillez sélectionner un bien'); return; }
-    try {
-      setIsMoving(true);
-      const res = await fetch('/api/documents/bulk-move', {
-      credentials: 'include',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentIds: [documentToMove.id], targetAssetId: parseInt(targetAssetId) }),
-      });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.message || ''); }
-      const targetAsset = assets.find(a => a.id === parseInt(targetAssetId));
-      toast.success(`Document déplacé vers ${targetAsset?.name || 'le bien'}`);
-      setMoveDialogOpen(false); setDocumentToMove(null); setTargetAssetId('');
-      loadDocuments();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur lors du changement de bien');
-    } finally {
-      setIsMoving(false);
-    }
-  };
-
-  const handleEditConfirm = async () => {
-    if (!documentToEdit) return;
-    if (!editFormData.fileName.trim()) { toast.error('Le nom du fichier est requis'); return; }
-    if (!editFormData.documentType) { toast.error('Le type de document est requis'); return; }
-    try {
-      setIsEditing(true);
-      const res = await fetch(`/api/documents/${documentToEdit.id}`, {
-      credentials: 'include',
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: editFormData.fileName.trim(),
-          documentType: editFormData.documentType,
-          assetId: editFormData.assetId === '0' ? null : parseInt(editFormData.assetId),
-        }),
-      });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.message || ''); }
-      toast.success('Document modifié avec succès');
-      setEditDialogOpen(false); setDocumentToEdit(null);
-      loadDocuments();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur lors de la modification');
-    } finally {
-      setIsEditing(false);
-    }
-  };
-
-  const getAssetsForUser = (userId: number | null) =>
-    userId ? assets.filter(a => a.userId === userId) : assets;
 
   const formatDate = (d: string) =>
     new Date(d).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -832,7 +714,7 @@ export default function AdminDocumentsPage() {
                     {doc.uploadStatus === 'FAILED' && (
                       <div className="flex items-center gap-1.5 text-destructive text-xs mt-1">
                         <AlertCircle className="h-3.5 w-3.5" />
-                        <span>Upload échoué — peut être supprimé</span>
+                        <span>Upload échoué</span>
                       </div>
                     )}
                     {doc.deletedAt && (
@@ -858,46 +740,6 @@ export default function AdminDocumentsPage() {
                           Voir les données DB
                         </DropdownMenuItem>
 
-                        {!doc.deletedAt && doc.uploadStatus === 'COMPLETED' && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem onClick={() => handleDownload(doc)} className="gap-2">
-                              <Download className="h-4 w-4" />
-                              Télécharger
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => {
-                                setDocumentToEdit(doc);
-                                setEditFormData({ fileName: doc.originalFilename, documentType: doc.documentType, assetId: doc.asset?.id.toString() || '0' });
-                                setEditDialogOpen(true);
-                              }}
-                              className="gap-2"
-                            >
-                              <Pencil className="h-4 w-4" />
-                              Modifier
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => { setDocumentToMove(doc); setTargetAssetId(''); setMoveDialogOpen(true); }}
-                              className="gap-2"
-                            >
-                              <MoveHorizontal className="h-4 w-4" />
-                              Changer de bien
-                            </DropdownMenuItem>
-                          </>
-                        )}
-
-                        {!doc.deletedAt && (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              onClick={() => { setDocumentToDelete(doc); setDeleteDialogOpen(true); }}
-                              className="gap-2 text-destructive focus:text-destructive"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              Supprimer
-                            </DropdownMenuItem>
-                          </>
-                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
@@ -916,125 +758,6 @@ export default function AdminDocumentsPage() {
         getDocumentTypeLabel={getDocumentTypeLabel}
       />
 
-      {/* ── Delete confirm ── */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Supprimer ce document ?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Le document "{documentToDelete?.originalFilename}" sera supprimé définitivement (soft delete + S3). Cette action ne peut pas être annulée.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Annuler</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteConfirm} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
-              {isDeleting ? 'Suppression...' : 'Supprimer'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* ── Move dialog ── */}
-      <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Changer le bien associé</DialogTitle>
-            <DialogDescription>
-              Sélectionnez le nouveau bien pour "{documentToMove?.originalFilename}".
-              {documentToMove?.user && <span className="block mt-1 text-sm">Seuls les biens de {documentToMove.user.firstName} {documentToMove.user.lastName} sont affichés.</span>}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-4">
-            {documentToMove?.asset && (
-              <div className="mb-4 p-3 bg-muted/50 rounded-lg">
-                <p className="text-sm text-muted-foreground mb-1">Bien actuel :</p>
-                <p className="font-medium">{documentToMove.asset.name}</p>
-              </div>
-            )}
-            <Select value={targetAssetId} onValueChange={setTargetAssetId}>
-              <SelectTrigger><SelectValue placeholder="Sélectionner un bien" /></SelectTrigger>
-              <SelectContent>
-                {getAssetsForUser(documentToMove?.user?.id ?? null).map(a => (
-                  <SelectItem key={a.id} value={a.id.toString()}>{a.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setMoveDialogOpen(false)}>Annuler</Button>
-            <Button onClick={handleMoveConfirm} disabled={isMoving || !targetAssetId}>
-              {isMoving ? 'Déplacement...' : 'Appliquer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ── Edit dialog ── */}
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Modifier le document</DialogTitle>
-            <DialogDescription>Modifiez les métadonnées et gérez les événements associés</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-6 py-4">
-            <div className="space-y-4">
-              <h3 className="text-sm font-medium">Informations du document</h3>
-              {documentToEdit && (
-                <div className="space-y-2">
-                  <Label>Date d'upload d'origine</Label>
-                  <Input value={formatDate(documentToEdit.uploadedAt)} disabled className="bg-muted" />
-                </div>
-              )}
-              <div className="space-y-2">
-                <Label htmlFor="edit-fileName">Nom du document *</Label>
-                <Input
-                  id="edit-fileName"
-                  value={editFormData.fileName}
-                  onChange={(e) => setEditFormData({ ...editFormData, fileName: e.target.value })}
-                  disabled={isEditing}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-documentType">Type de document *</Label>
-                <Select value={editFormData.documentType} onValueChange={(v) => setEditFormData({ ...editFormData, documentType: v })} disabled={isEditing}>
-                  <SelectTrigger id="edit-documentType"><SelectValue placeholder="Sélectionner un type" /></SelectTrigger>
-                  <SelectContent>
-                    {documentTypes.filter(dt => dt.isActive).map(dt => <SelectItem key={dt.code} value={dt.code}>{dt.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-assetId">Bien associé (facultatif)</Label>
-                <Select value={editFormData.assetId} onValueChange={(v) => setEditFormData({ ...editFormData, assetId: v })} disabled={isEditing}>
-                  <SelectTrigger id="edit-assetId"><SelectValue placeholder="Aucun bien" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">Aucun bien</SelectItem>
-                    {getAssetsForUser(documentToEdit?.user?.id ?? null).map(a => (
-                      <SelectItem key={a.id} value={a.id.toString()}>{a.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {documentToEdit?.user && (
-                  <p className="text-xs text-muted-foreground">Seuls les biens de {documentToEdit.user.firstName} {documentToEdit.user.lastName} sont affichés.</p>
-                )}
-              </div>
-            </div>
-            {documentToEdit && (
-              <LinkedEventsSection
-                documentId={documentToEdit.id}
-                assetId={editFormData.assetId === '0' ? null : parseInt(editFormData.assetId)}
-                onRefresh={loadDocuments}
-              />
-            )}
-          </div>
-          <DialogFooter className="flex justify-end gap-3 pt-4 border-t">
-            <Button variant="outline" onClick={() => setEditDialogOpen(false)} disabled={isEditing}>Annuler</Button>
-            <Button onClick={handleEditConfirm} disabled={isEditing || !editFormData.fileName.trim()} className="bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8]">
-              {isEditing ? 'Modification...' : 'Enregistrer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -50,10 +50,14 @@ export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = 
 
 /** Types d'actions autorisés par intention (§22.1). */
 export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActionType[]>> = {
-  NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE'],
+  // Dictionnaire de navigation (core/navigation-targets.ts) : agenda, À
+  // traiter, documents, compte, offres, aide — une seule action retenue.
+  NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_PRICING', 'OPEN_HELP'],
   NAVIGATION_FIND: ['OPEN_HELP', 'OPEN_DOCUMENTS_PAGE', 'OPEN_AGENDA', 'OPEN_TO_PROCESS'],
   PRODUCT_HELP_HOW_TO: ['OPEN_HELP', 'START_ADD_DOCUMENT', 'START_ADD_ASSET', 'START_ADD_AGENDA_ITEM'],
-  PRODUCT_HELP_EXPLAIN: ['OPEN_HELP'],
+  // « À quoi sert À traiter ? » → bouton « Ouvrir « À traiter » » (37.4,
+  // §10.5) : la page expliquée est la suite la plus utile.
+  PRODUCT_HELP_EXPLAIN: ['OPEN_HELP', 'OPEN_TO_PROCESS', 'OPEN_AGENDA', 'OPEN_DOCUMENTS_PAGE'],
   PRODUCT_HELP_STATUS: ['OPEN_HELP', 'OPEN_TO_PROCESS'],
   PRODUCT_PLAN_LIMIT: ['OPEN_PRICING'],
   ACCOUNT_SEARCH_ASSET: ['OPEN_ASSET', 'OPEN_SEARCH_RESULTS'],

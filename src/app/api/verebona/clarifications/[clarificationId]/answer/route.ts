@@ -30,6 +30,7 @@ import { refuserSiPasDIA } from '@/lib/write-access-guard';
 import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
+import { assistantPlanFromEntitlements } from '@/services/verebona-assistant/core/plan-eligibility';
 
 export async function POST(
   req: NextRequest,
@@ -71,7 +72,8 @@ export async function POST(
   const out = await executerIssueClarification(issue, {
     accountId,
     userId: session.userId,
-    planType: entitlements.premiumFeatures ? session.planType : 'STANDARD',
+    // Même dérivation que l'envoi d'un message : essai = Premium (§6.5).
+    planType: assistantPlanFromEntitlements(entitlements, session.planType),
     locale: cfg.locale,
   }, { runAssistant, ports: buildOrchestratorPorts() });
 

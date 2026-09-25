@@ -10,3 +10,4 @@ export { VerebonaResultCard } from './VerebonaResultCard';
 export { VerebonaSources } from './VerebonaSources';
 export { VerebonaActions } from './VerebonaActions';
 export { VerebonaFeedback } from './VerebonaFeedback';
+export { VerebonaExplanation } from './VerebonaExplanation';

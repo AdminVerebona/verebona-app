@@ -9,6 +9,7 @@ import { AccountService } from '@/services/account-service';
 import { checkAuthRateLimit, resetAuthRateLimit, getClientIp } from '@/lib/rate-limiter';
 import { userGuideProgress } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { isAccountSuspended, accountSuspendedResponse } from '@/lib/auth/account-suspension';
 
 export async function POST(request: NextRequest) {
   // ── Rate limiting : 5 tentatives / IP / 15 minutes (désactivé en dev) ───
@@ -142,6 +143,23 @@ export async function POST(request: NextRequest) {
       return ApiErrors.invalidCredentials();
     }
 
+    const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
+
+    // CDC BO ACC-A02 : un compte suspendu par l'administration n'ouvre plus de
+    // session. Contrôlé APRÈS le mot de passe, pour ne pas révéler l'état
+    // d'un compte à qui ne connaît que l'e-mail ; et AVANT toute écriture
+    // (dernière connexion, progression du guide).
+    if (isAccountSuspended(defaultAccount)) {
+      void logUserActivity({
+        activityType: 'LOGIN_FAILED',
+        userId: user.id,
+        userEmail: user.email,
+        details: { reason: 'account_suspended_by_admin', accountStatus: 'suspended', accountId: defaultAccount?.id },
+        request,
+      });
+      return accountSuspendedResponse();
+    }
+
     await db.$client`
       UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = ${user.id}
     `;
@@ -150,8 +168,6 @@ export async function POST(request: NextRequest) {
     await db
       .delete(userGuideProgress)
       .where(and(eq(userGuideProgress.userId, user.id), eq(userGuideProgress.status, 'skipped')));
-
-    const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
 
     void logUserActivity({
       activityType: 'LOGIN_SUCCESS',

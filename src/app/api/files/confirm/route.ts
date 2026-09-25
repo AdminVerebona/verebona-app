@@ -11,6 +11,7 @@ import { getSession } from '@/lib/auth-guards';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
+import { checkAccountStorageQuota, storageQuotaExceededResponse } from '@/lib/storage-quota';
 
 export async function POST(request: NextRequest) {
   try {
@@ -144,6 +145,15 @@ export async function POST(request: NextRequest) {
     if (accountForGuard) {
       const refus = await refuserSiLectureSeule(accountForGuard);
       if (refus) return refus;
+
+      // Plafond de stockage (CDC BO STO-003) : `presign` l'a vérifié fichier
+      // par fichier, mais plusieurs dépôts préparés en parallèle peuvent
+      // ensemble le dépasser. Le volume confirmé exclut les fichiers PENDING,
+      // d'où l'ajout du lot entier.
+      const storageDecision = await checkAccountStorageQuota(accountForGuard, cumul);
+      if (!storageDecision.allowed) {
+        return storageQuotaExceededResponse(storageDecision);
+      }
     }
 
     // Update the file records to COMPLETED

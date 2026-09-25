@@ -18,12 +18,14 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Habilitation (§20.3 condition 1) : garde admin serveur commune du BO
+ * (CDC BO GEN-002), qui relit le rôle en base si le jeton est antérieur à une
+ * promotion. La session est ensuite relue pour tracer l'e-mail de l'acteur.
+ */
 async function exigerAdmin(req: NextRequest) {
-  const session = await SessionService.getSession(req);
-  if (session.role !== 'ADMIN' && session.role !== 'SUPER_ADMIN') {
-    throw new ReemissionError('FORBIDDEN', 'Réservé aux administrateurs autorisés.');
-  }
-  return session;
+  await SessionService.requireAdmin(req);
+  return SessionService.getSession(req);
 }
 
 export async function GET(req: NextRequest) {

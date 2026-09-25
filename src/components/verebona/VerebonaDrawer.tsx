@@ -180,6 +180,13 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
                 void v.confirmPlan(planId);
               }}
               onCancelPlan={(planId) => { void v.cancelPlan(planId); }}
+              onRetry={(fromMessageId) => {
+                // « Réessayer » renvoie une question : même garde que l'envoi.
+                let autorise = false;
+                garder(() => { autorise = true; });
+                if (!autorise) { setOpen(false); return; }
+                void v.retry(fromMessageId);
+              }}
             />
           )}
         </div>

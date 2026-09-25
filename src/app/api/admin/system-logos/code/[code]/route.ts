@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { systemLogos } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
 ) {
   try {
+    // Route du BO : garde admin serveur (CDC BO GEN-002). Elle n'en avait
+    // aucune ; les logos servis aux e-mails ne passent pas par elle.
+    await requireAdmin(request);
     const { code } = await params;
 
     // Validate code parameter
@@ -56,6 +60,7 @@ export async function GET(
     return NextResponse.json(logo, { status: 200 });
 
   } catch (error) {
+    if (isSessionError(error)) return sessionErrorResponse(error);
     console.error('GET /api/admin/system-logos/code/[code] error:', error);
     return NextResponse.json(
       { 

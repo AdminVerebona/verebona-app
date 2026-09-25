@@ -15,17 +15,13 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  let session;
+  // §20.3 condition 1, appliquée dès la consultation : un écran de santé
+  // renseigne sur l'activité de tous les comptes. Garde admin serveur commune
+  // du BO (CDC BO GEN-002).
   try {
-    session = await SessionService.getSession(req);
+    await SessionService.requireAdmin(req);
   } catch (e) {
     return SessionService.handleSessionError(e);
-  }
-
-  // §20.3 condition 1, appliquée dès la consultation : un écran de santé
-  // renseigne sur l'activité de tous les comptes.
-  if (session.role !== 'ADMIN' && session.role !== 'SUPER_ADMIN') {
-    return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
   }
 
   await ensureMigrations();

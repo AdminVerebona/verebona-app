@@ -2,16 +2,18 @@
  * Persistance des versions de configuration IA — CDC BO IA §7, WF-01 à WF-06.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * LES BASCULES SE FONT EN UNE SEULE INSTRUCTION
+ * LES BASCULES SONT ATOMIQUES ET ORDONNÉES
  *
  * Valider, activer, restaurer : chacune fait passer une version à `ACTIVE` et
- * l'ancienne à `VALIDATED`. En deux instructions, l'index unique partiel
- * « une seule Active par environnement » rejetterait la seconde — ou, pire, un
- * incident entre les deux laisserait l'environnement sans configuration active.
+ * l'ancienne à `VALIDATED`. Dans le mauvais ordre, l'index unique partiel
+ * « une seule Active par environnement » rejette la promotion ; hors
+ * transaction, un incident entre les deux laisserait l'environnement sans
+ * configuration active.
  *
- * Chaque bascule est donc une CTE unique, sur le modèle d'`activateVersion` de
- * la gouvernance : l'ancienne est rétrogradée et la nouvelle promue dans le
- * même ordre d'exécution, ou rien n'est écrit.
+ * Chaque bascule est donc une transaction ORDONNÉE (WF-03, correctif) :
+ * l'ancienne est rétrogradée PUIS la nouvelle promue, ou rien n'est écrit.
+ * Une CTE unique ne convient pas : PostgreSQL ne garantit pas l'ordre des
+ * CTE modifiantes, et l'index unique non différable voit l'état intermédiaire.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * LE STATUT D'ARRIVÉE VIENT DE LA MACHINE À ÉTATS
@@ -276,6 +278,24 @@ export async function archiveVersion(versionId: number): Promise<ConfigVersionSt
 }
 
 /**
+ * Sérialise les bascules d'un environnement (validation, activation, rollback).
+ *
+ * Verrou transactionnel consultatif : relâché automatiquement au COMMIT ou au
+ * ROLLBACK. Deux bascules concurrentes du même environnement s'exécutent l'une
+ * après l'autre ; celle qui arrive en second relit un état cohérent au lieu
+ * de heurter l'index unique « une seule Active » (VER-001).
+ */
+async function lockEnvironment(tx: TxLike, environment: string): Promise<void> {
+  await tx.unsafe(
+    `SELECT pg_advisory_xact_lock(hashtext('ai_config_versions:' || $1))`,
+    [environment] as never[],
+  );
+}
+
+/** Sous-ensemble du client `postgres` utilisé dans une transaction. */
+type TxLike = { unsafe: (query: string, params?: never[]) => Promise<unknown> };
+
+/**
  * WF-03 — validation : la version « À tester » devient Active et reçoit son vN.
  *
  * ══════════════════════════════════════════════════════════════════════════
@@ -286,17 +306,30 @@ export async function archiveVersion(versionId: number): Promise<ConfigVersionSt
  * VER-012 réserve l'arrivée en production à un import au statut Validé. La
  * production ne valide donc jamais, et ne numérote jamais.
  *
- * C'est aussi ce qui rend le VER-013 lisible : une collision de numéro signale
- * forcément deux versions différentes portant le même numéro, jamais deux
- * numérotations légitimes qui se seraient croisées.
- *
  * La garantie est structurelle plutôt que vérifiée ici : `promote` refuse la
  * production, donc aucune version n'y atteint « À tester », donc aucune n'y est
  * validée.
  *
- * Le numéro est calculé dans la même instruction que la bascule. Le lire puis
- * l'écrire laisserait deux validations concurrentes réclamer le même numéro —
- * l'index unique en rejetterait une, mais après avoir rétrogradé l'Active.
+ * ══════════════════════════════════════════════════════════════════════════
+ * TRANSACTION ORDONNÉE, ET NON CTE UNIQUE (correctif WF-03)
+ *
+ * L'ancienne écriture était une CTE unique dont le SELECT final ne lisait que
+ * la branche `promue`. PostgreSQL exécute d'abord les CTE modifiantes lues
+ * par la requête principale, puis les autres « en fin de requête » : la
+ * promotion passait AVANT la rétrogradation, et l'index partiel unique
+ * `ai_config_versions_single_active_idx` (non différable) rejetait la ligne
+ * dès qu'une Active existait. Seule la toute première validation passait.
+ *
+ * L'ordre ne dépend plus désormais de l'optimiseur : une transaction, et dans
+ * cet ordre explicite —
+ *   1. verrou de l'environnement (bascules concurrentes sérialisées) ;
+ *   2. rétrogradation de l'ancienne Active en Validée ;
+ *   3. promotion de la version et calcul de son numéro, dans la même
+ *      instruction (le numéro ne peut pas être réclamé deux fois) ;
+ *   4. marquage des Brouillons dérivés de l'ancienne Active (attribut
+ *      `is_stale`, jamais statut — §4.1).
+ * Un échec à n'importe quelle étape annule le tout : l'environnement n'est
+ * jamais laissé sans Active.
  */
 export async function validateVersion(
   versionId: number,
@@ -309,36 +342,59 @@ export async function validateVersion(
   const r0 = (rows0 as unknown as Row[])[0];
   if (!r0) throw new Error(`[config] Version ${versionId} introuvable.`);
   const to = transition(r0.status as ConfigVersionStatus, 'validate');
+  const environment = String(r0.environment);
 
-  const rows = await pgClient.unsafe(
-    `WITH prochain AS (
-       SELECT COALESCE(MAX(visible_number), 0) + 1 AS n
-         FROM ai_config_versions WHERE environment = $3
-     ), ancienne AS (
-       UPDATE ai_config_versions
+  const n = await pgClient.begin(async (tx) => {
+    const t = tx as unknown as TxLike;
+    await lockEnvironment(t, environment);
+
+    // Revérification sous verrou : une autre session a pu valider ou
+    // rétrograder la version entre la lecture ci-dessus et le verrou.
+    const cur = (await t.unsafe(
+      `SELECT status FROM ai_config_versions WHERE id = $1 FOR UPDATE`,
+      [versionId] as never[],
+    )) as Row[];
+    if (!cur[0]) throw new Error(`[config] Version ${versionId} introuvable.`);
+    transition(cur[0].status as ConfigVersionStatus, 'validate');
+
+    // 2. D'abord libérer la place d'Active.
+    const anciennes = (await t.unsafe(
+      `UPDATE ai_config_versions
           SET status = 'VALIDATED', updated_at = NOW()
-        WHERE environment = $3 AND status = 'ACTIVE'
-        RETURNING id
-     ), promue AS (
-       UPDATE ai_config_versions
-          SET status = $2, visible_number = (SELECT n FROM prochain),
+        WHERE environment = $1 AND status = 'ACTIVE' AND id <> $2
+        RETURNING id`,
+      [environment, versionId] as never[],
+    )) as Row[];
+
+    // 3. Puis promouvoir et numéroter en une instruction.
+    const promue = (await t.unsafe(
+      `UPDATE ai_config_versions
+          SET status = $2,
+              visible_number = (
+                SELECT COALESCE(MAX(visible_number), 0) + 1
+                  FROM ai_config_versions WHERE environment = $3
+              ),
               validated_by = $4, validated_at = NOW(),
               activated_by = $4, activated_at = NOW(), updated_at = NOW()
         WHERE id = $1
-        RETURNING id, visible_number
-     ), perimes AS (
-       -- WF-03 : les Brouillons dérivés de l'ancienne Active deviennent
-       -- potentiellement obsolètes. Attribut, jamais statut (§4.1).
-       UPDATE ai_config_versions
-          SET is_stale = TRUE, updated_at = NOW()
-        WHERE status = 'DRAFT' AND base_version_id IN (SELECT id FROM ancienne)
-        RETURNING id
-     )
-     SELECT (SELECT visible_number FROM promue) AS visible_number`,
-    [versionId, to, r0.environment, userId] as never[],
-  );
+        RETURNING visible_number`,
+      [versionId, to, environment, userId] as never[],
+    )) as Row[];
 
-  const n = (rows as unknown as Row[])[0]?.visible_number;
+    // 4. WF-03 : les Brouillons dérivés de l'ancienne Active deviennent
+    // potentiellement obsolètes.
+    const idsAnciennes = anciennes.map((a) => Number(a.id));
+    if (idsAnciennes.length > 0) {
+      await t.unsafe(
+        `UPDATE ai_config_versions
+            SET is_stale = TRUE, updated_at = NOW()
+          WHERE status = 'DRAFT' AND base_version_id = ANY($1::int[])`,
+        [idsAnciennes] as never[],
+      );
+    }
+    return promue[0]?.visible_number;
+  });
+
   if (n == null) throw new Error(`[config] Validation impossible pour la version ${versionId}.`);
   return { status: to, visibleNumber: Number(n) };
 }
@@ -350,6 +406,11 @@ export async function validateVersion(
  * terminer les exécutions en cours (activation) ou les interrompre et remettre
  * les jobs en tête de file (rollback). Cette fonction ne fait que la bascule ;
  * elle rend l'événement pour que l'appelant ne puisse pas l'ignorer.
+ *
+ * Même structure que `validateVersion` (transaction ordonnée : rétrograder puis
+ * promouvoir). L'ancienne CTE fonctionnait parce que son SELECT lisait
+ * `ancienne` en premier — un ordre d'évaluation que PostgreSQL ne garantit
+ * pas contractuellement. On ne s'appuie plus dessus.
  */
 export async function switchActive(
   versionId: number,
@@ -363,32 +424,45 @@ export async function switchActive(
   const r0 = (rows0 as unknown as Row[])[0];
   if (!r0) throw new Error(`[config] Version ${versionId} introuvable.`);
   const to = transition(r0.status as ConfigVersionStatus, event);
+  const environment = String(r0.environment);
 
-  const rows = await pgClient.unsafe(
-    `WITH ancienne AS (
-       UPDATE ai_config_versions
+  const r = await pgClient.begin(async (tx) => {
+    const t = tx as unknown as TxLike;
+    await lockEnvironment(t, environment);
+
+    const cur = (await t.unsafe(
+      `SELECT status FROM ai_config_versions WHERE id = $1 FOR UPDATE`,
+      [versionId] as never[],
+    )) as Row[];
+    if (!cur[0]) throw new Error(`[config] Version ${versionId} introuvable.`);
+    transition(cur[0].status as ConfigVersionStatus, event);
+
+    const anciennes = (await t.unsafe(
+      `UPDATE ai_config_versions
           SET status = 'VALIDATED', updated_at = NOW()
-        WHERE environment = $3 AND status = 'ACTIVE' AND id <> $1
-        RETURNING id
-     ), promue AS (
-       UPDATE ai_config_versions
-          SET status = $2, activated_by = $4, activated_at = NOW(), updated_at = NOW()
-        WHERE id = $1
-        RETURNING id
-     )
-     SELECT (SELECT id FROM ancienne) AS previous_id,
-            (SELECT id FROM promue)   AS promoted_id`,
-    [versionId, to, r0.environment, userId] as never[],
-  );
+        WHERE environment = $1 AND status = 'ACTIVE' AND id <> $2
+        RETURNING id`,
+      [environment, versionId] as never[],
+    )) as Row[];
 
-  const r = (rows as unknown as Row[])[0];
-  if (r?.promoted_id == null) {
+    const promue = (await t.unsafe(
+      `UPDATE ai_config_versions
+          SET status = $2, activated_by = $3, activated_at = NOW(), updated_at = NOW()
+        WHERE id = $1
+        RETURNING id`,
+      [versionId, to, userId] as never[],
+    )) as Row[];
+
+    return { previousId: anciennes[0]?.id ?? null, promotedId: promue[0]?.id ?? null };
+  });
+
+  if (r.promotedId == null) {
     throw new Error(`[config] Bascule impossible pour la version ${versionId}.`);
   }
   return {
     status: to,
     event,
-    previousId: r.previous_id == null ? null : Number(r.previous_id),
+    previousId: r.previousId == null ? null : Number(r.previousId),
   };
 }
 

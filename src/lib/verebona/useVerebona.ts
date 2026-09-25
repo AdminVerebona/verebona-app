@@ -9,6 +9,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { parseWriteBlocked, type WriteBlockedInfo } from '@/lib/write-blocked';
+import { toAssistantUiError, type AssistantUiError } from './error-messages';
+import { errorActions, errorAssistantMessage, retryTarget } from './assistant-ui';
 
 export interface VerebonaAction {
   actionId: string;
@@ -44,6 +46,11 @@ export interface VerebonaMessage {
     choices: Array<{ choiceId: string; label: string; secondaryLabel?: string }>;
   } | null;
   commandPlan?: VerebonaCommandPlan | null;
+  /**
+   * Erreur affichée DANS le fil (§4.2, §27.11) : libellé Verebona, et les
+   * actions « Réessayer » / « Ouvrir l'aide » portées par `actions`.
+   */
+  error?: AssistantUiError | null;
 }
 
 export interface UseVerebonaState {
@@ -113,6 +120,10 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
   const [conversationId, setConversationIdState] = useState<number | null>(null);
   const conversationRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** Contexte structuré de chaque question envoyée, pour « Réessayer ». */
+  const contextByMessage = useRef(new Map<string, Record<string, string> | undefined>());
+  const messagesRef = useRef<VerebonaMessage[]>([]);
+  messagesRef.current = state.messages;
 
   const setConversationId = useCallback((id: number | null) => {
     conversationRef.current = id;
@@ -178,7 +189,19 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
     abortRef.current = controller;
 
     const userMsg: VerebonaMessage = { id: newId(), role: 'user', content: message };
+    contextByMessage.current.set(userMsg.id, extraContext);
     setState((s) => ({ ...s, messages: [...s.messages, userMsg], isLoading: true, error: null }));
+
+    // Jamais d'impasse (§4.2) : toute erreur devient un message de
+    // l'assistant, avec « Réessayer » et « Ouvrir l'aide ».
+    const afficherErreur = (e: AssistantUiError) => {
+      setState((s) => ({
+        ...s,
+        isLoading: false,
+        error: e.message,
+        messages: [...s.messages, errorAssistantMessage(e, newId())],
+      }));
+    };
 
     try {
       const res = await fetch('/api/verebona/messages', {
@@ -213,7 +236,7 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
           setConversationId(null);
           void refreshThreads();
         }
-        setState((s) => ({ ...s, isLoading: false, error: err?.error?.message ?? 'Erreur' }));
+        afficherErreur(toAssistantUiError(err, res.status));
         return;
       }
       const data = await res.json();
@@ -233,12 +256,38 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
         clarification: data.clarification ?? null,
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
       };
-      setState((s) => ({ ...s, messages: [...s.messages, assistantMsg], isLoading: false }));
+      // Réponse `status: 'error'` (§27.11) : le libellé et les suites
+      // viennent de `error-messages`, jamais d'un texte technique.
+      if (data.status === 'error') {
+        const e = toAssistantUiError(data, res.status);
+        assistantMsg.content = e.message;
+        assistantMsg.error = e;
+        if (!assistantMsg.actions?.length) assistantMsg.actions = errorActions(e, assistantMsg.id);
+      }
+      setState((s) => ({ ...s, messages: [...s.messages, assistantMsg], isLoading: false, error: assistantMsg.error?.message ?? null }));
     } catch (e) {
       if ((e as Error).name === 'AbortError') return; // annulation volontaire
-      setState((s) => ({ ...s, isLoading: false, error: 'Assistant indisponible' }));
+      afficherErreur(toAssistantUiError({ error: { code: 'NETWORK_ERROR' } }));
     }
   }, [pageContext, refreshThreads, setConversationId]);
+
+  /**
+   * « Réessayer » (RETRY_REQUEST, §27.11) : renvoie la dernière question
+   * précédant `fromMessageId` (le message d'erreur ou la réponse), avec un
+   * NOUVEL identifiant de requête — le même serait reconnu par l'idempotence
+   * et rendrait la réponse en erreur déjà enregistrée. Le message d'erreur et
+   * la question d'origine sont retirés du fil pour ne pas la dupliquer.
+   */
+  const retry = useCallback(async (fromMessageId?: string) => {
+    const cible = retryTarget(messagesRef.current, fromMessageId);
+    if (!cible) return;
+    const ctx = contextByMessage.current.get(cible.userMessageId);
+    setState((s) => ({
+      ...s,
+      messages: s.messages.filter((m) => m.id !== cible.userMessageId && !(fromMessageId && m.id === fromMessageId && m.error)),
+    }));
+    await send(cible.text, ctx);
+  }, [send]);
 
   /**
    * Choix d'un candidat de clarification : la demande initiale est reprise
@@ -291,7 +340,12 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
       void refreshThreads();
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;
-      setState((s) => ({ ...s, isLoading: false, error: 'Assistant indisponible' }));
+      const err = toAssistantUiError({ error: { code: 'NETWORK_ERROR' } });
+      // Un choix de clarification ne se rejoue pas : pas de « Réessayer ».
+      setState((s) => ({
+        ...s, isLoading: false, error: err.message,
+        messages: [...s.messages, errorAssistantMessage({ ...err, recoverable: false }, newId())],
+      }));
     }
   }, [refreshThreads]);
 
@@ -385,6 +439,7 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
     conversationId,
     threads,
     send,
+    retry,
     cancel,
     clear,
     clearAll,

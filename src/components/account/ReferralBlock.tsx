@@ -105,18 +105,21 @@ export function ReferralBlock() {
 
     try {
       setSendingEmail(true);
-      const result = await apiClient.post<{ success: boolean; message: string }>(
-        '/api/account/referral/invitations',
-        { email: email.trim() }
+      // La route réelle est /api/referral/send-email ({ emails: [] }) :
+      // l'ancien appel visait /api/account/referral/invitations, qui n'existe
+      // pas — l'envoi échouait à chaque fois.
+      const result = await apiClient.post<{ sent: number; total: number }>(
+        '/api/referral/send-email',
+        { emails: [email.trim()] }
       );
-      if (result.success) {
+      if (result.sent > 0) {
         toast.success('Invitation envoyée.');
         setEmail('');
       } else {
-        toast.error(result.message || 'L\'invitation n\'a pas pu être envoyée. Réessayez.');
+        toast.error('L\'invitation n\'a pas pu être envoyée. Réessayez.');
       }
-    } catch {
-      toast.error('L\'invitation n\'a pas pu être envoyée. Réessayez.');
+    } catch (e) {
+      toast.error((e as { message?: string }).message || 'L\'invitation n\'a pas pu être envoyée. Réessayez.');
     } finally {
       setSendingEmail(false);
     }
@@ -161,9 +164,12 @@ export function ReferralBlock() {
           <Gift className="w-4 h-4 text-primary" />
           Parrainage
         </h4>
+        {/* GAP-07 : le parrainage = 1 mois offert AU PARRAIN SEUL (voir
+            referral-reward.service.ts). L'avantage filleul « 3 mois d'essai au
+            lieu de 2 » n'existe plus côté serveur : il est retiré pour que
+            l'interface, l'aide (AID-BILL-010) et la vitrine disent la même chose. */}
         <p className="text-xs text-muted-foreground">
           Parrainez vos proches et gagnez <strong>1 mois d&apos;abonnement</strong> pour chaque filleul qui souscrit une offre annuelle.
-          Votre filleul bénéficie de <strong>3 mois d'essai</strong> au lieu de 2.
         </p>
         <Button onClick={handleCreateLink} disabled={creatingLink} size="sm">
           {creatingLink ? (
@@ -190,8 +196,11 @@ export function ReferralBlock() {
           <p className="text-xs text-muted-foreground mt-0.5">
             Invitez vos proches à découvrir Verebona.
           </p>
+          {/* GAP-07 : « devient client payant » laissait croire qu'un abonnement
+              mensuel suffit. Condition réelle (referral-eligibility.service.ts) :
+              abonnement annuel, premier paiement encaissé, rétractation expirée. */}
           <p className="text-xs text-muted-foreground">
-            Votre récompense est déclenchée lorsque votre filleul devient client payant.
+            Vous recevez 1 mois offert lorsque votre filleul souscrit un abonnement annuel, une fois son premier paiement réussi et le délai de rétractation expiré.
           </p>
         </div>
         {(stats?.validatedCount ?? 0) > 0 && (

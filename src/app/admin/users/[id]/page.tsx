@@ -1,5 +1,20 @@
 "use client"
 
+/**
+ * Fiche utilisateur — CDC Back-Office V1 §6.2 et §6.3.
+ *
+ * Identité et e-mail en LECTURE SEULE (SEC-004, USR-A10) : le formulaire
+ * « Modifier » (nom, prénom, société, offre, statut, langue) est supprimé.
+ * Suppression d'utilisateur et suppression de bien retirées (GEN-001,
+ * SEC-003) : la suppression passe par la fiche Compte (ACC-A14).
+ *
+ * Actions (matrice §20) : désactiver / réactiver (USR-A02..A05), déconnecter
+ * toutes les sessions (USR-A06), réinitialisation du mot de passe par le
+ * parcours « Mot de passe oublié » (USR-A07), statut administrateur
+ * (USR-A08). Le dernier administrateur actif ne peut être ni rétrogradé ni
+ * désactivé (USR-A09) : bouton désactivé avec son motif (UX-003), refus 409
+ * côté serveur.
+ */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -7,23 +22,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,12 +45,10 @@ import {
   Ban,
   CheckCircle,
   MailIcon,
-  Edit,
-  Trash2,
-  Save,
-  X,
   LogOut,
   ExternalLink,
+  Shield,
+  ShieldOff,
 } from 'lucide-react';
 
 interface UserDetailPageProps {
@@ -114,20 +110,32 @@ interface LinkedAccount {
 interface UserData {
   user: UserDetails;
   account: LinkedAccount | null;
+  /** USR-A08 / USR-A09 : statut admin et protection du dernier admin actif. */
+  adminStatus: { isAdmin: boolean; isLastActiveAdmin: boolean };
   assets: Asset[];
   stats: UserStats;
   subscriptionHistory: SubscriptionHistoryEntry[];
 }
 
-interface EditFormData {
-  firstName: string;
-  lastName: string;
-  username: string;
-  company: string;
-  planType: string;
-  role: string;
-  status: string;
-  locale: string;
+/** Motif affiché quand une action est impossible sur le dernier admin (UX-003). */
+const LAST_ADMIN_REASON = "Dernier administrateur actif : accordez d'abord le statut administrateur à un autre utilisateur.";
+
+/**
+ * Appel d'une action administrateur. Rend le message du serveur en cas
+ * d'échec (ex. 409 LAST_ADMIN) plutôt qu'un libellé générique.
+ */
+async function callAdminAction<T = Record<string, unknown>>(url: string, method: 'POST' | 'PUT', body?: unknown): Promise<T> {
+  const response = await fetch(url, {
+    credentials: 'include',
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message || payload.error || `Erreur ${response.status}`);
+  }
+  return payload as T;
 }
 
 export default function UserDetailPage({ params }: UserDetailPageProps) {
@@ -145,23 +153,8 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
   const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
   const [reactivateDialogOpen, setReactivateDialogOpen] = useState(false);
   const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
-  const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [deleteUserDialogOpen, setDeleteUserDialogOpen] = useState(false);
-  const [deleteAssetDialogOpen, setDeleteAssetDialogOpen] = useState(false);
   const [forceLogoutDialogOpen, setForceLogoutDialogOpen] = useState(false);
-  const [assetToDelete, setAssetToDelete] = useState<Asset | null>(null);
-
-  // Edit form state
-  const [editForm, setEditForm] = useState<EditFormData>({
-    firstName: '',
-    lastName: '',
-    username: '',
-    company: '',
-    planType: 'STANDARD',
-    role: 'USER',
-    status: 'ACTIVE',
-    locale: 'fr',
-  });
+  const [adminRoleDialogOpen, setAdminRoleDialogOpen] = useState(false);
 
   useEffect(() => {
     loadUserData();
@@ -186,20 +179,6 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
 
       const userData = await response.json();
       setData(userData);
-
-      // Initialize edit form with user data
-      if (userData.user) {
-        setEditForm({
-          firstName: userData.user.firstName || '',
-          lastName: userData.user.lastName || '',
-          username: userData.user.username || '',
-          company: userData.user.company || '',
-          planType: userData.user.planType || 'STANDARD',
-          role: userData.user.role || 'USER',
-          status: userData.user.status || 'ACTIVE',
-          locale: userData.user.locale || 'fr',
-        });
-      }
     } catch (err) {
       console.error('Error loading user:', err);
       setError(err instanceof Error ? err.message : 'Erreur inconnue');
@@ -208,78 +187,42 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     }
   };
 
+  /** USR-A02 / USR-A03 : désactivation sans motif ; sessions révoquées par le serveur. */
   const handleSuspend = async () => {
     try {
       setActionLoading(true);
-
-      const response = await fetch(`/api/admin/users/${userId}/suspend`, {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          reason: 'Suspension via interface admin',
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la suspension');
-      }
-
-      toast.success('Utilisateur suspendu avec succès');
+      await callAdminAction(`/api/admin/users/${userId}/suspend`, 'POST', {});
+      toast.success('Utilisateur désactivé — toutes ses sessions ont été révoquées');
       setSuspendDialogOpen(false);
-      loadUserData();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setActionLoading(false);
+      loadUserData();
     }
   };
 
+  /** USR-A04 : accès restauré avec les identifiants existants. */
   const handleReactivate = async () => {
     try {
       setActionLoading(true);
-
-      const response = await fetch(`/api/admin/users/${userId}/reactivate`, {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la réactivation');
-      }
-
-      toast.success('Utilisateur réactivé avec succès');
+      await callAdminAction(`/api/admin/users/${userId}/reactivate`, 'POST', {});
+      toast.success('Utilisateur réactivé');
       setReactivateDialogOpen(false);
-      loadUserData();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setActionLoading(false);
+      loadUserData();
     }
   };
 
+  /** USR-A07 : même parcours que « Mot de passe oublié ». */
   const handleSendPasswordReset = async () => {
     try {
       setActionLoading(true);
-
-      const response = await fetch(`/api/admin/users/${userId}/send-password-reset`, {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de l\'envoi du reset password');
-      }
-
-      toast.success('Email de réinitialisation envoyé (simulé en V1)');
+      await callAdminAction(`/api/admin/users/${userId}/send-password-reset`, 'POST', {});
+      toast.success("E-mail de réinitialisation envoyé à l'utilisateur");
       setResetPasswordDialogOpen(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
@@ -288,24 +231,12 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     }
   };
 
+  /** USR-A06 : révocation globale, sans détail des sessions. */
   const handleForceLogout = async () => {
     try {
       setActionLoading(true);
-
-      const response = await fetch(`/api/admin/users/${userId}/force-logout`, {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la déconnexion forcée');
-      }
-
-      const result = await response.json();
-      toast.success(`${result.sessionsDeleted} session(s) supprimée(s)`);
+      await callAdminAction(`/api/admin/users/${userId}/force-logout`, 'POST', {});
+      toast.success('Toutes les sessions de l’utilisateur ont été révoquées');
       setForceLogoutDialogOpen(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
@@ -314,102 +245,21 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     }
   };
 
-  const handleEditUser = async () => {
+  /** USR-A08 / USR-A09 : accorder ou retirer le statut administrateur. */
+  const handleToggleAdmin = async () => {
+    if (!data) return;
     try {
       setActionLoading(true);
-
-      const response = await fetch(`/api/admin/users/${userId}`, {
-      credentials: 'include',
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(editForm),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur lors de la modification');
-      }
-
-      toast.success('Utilisateur modifié avec succès');
-      setEditDialogOpen(false);
+      const makeAdmin = !data.adminStatus.isAdmin;
+      await callAdminAction(`/api/admin/users/${userId}`, 'PUT', { isAdmin: makeAdmin });
+      toast.success(makeAdmin ? 'Statut administrateur accordé' : 'Statut administrateur retiré');
+      setAdminRoleDialogOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
+    } finally {
+      setActionLoading(false);
       loadUserData();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setActionLoading(false);
     }
-  };
-
-  const handleDeleteUser = async () => {
-    try {
-      setActionLoading(true);
-
-
-      const response = await fetch(`/api/admin/users/${userId}`, {
-      credentials: 'include',
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          confirmId: parseInt(userId),
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur lors de la suppression');
-      }
-
-      toast.success('Compte supprimé définitivement');
-      setDeleteUserDialogOpen(false);
-      router.push('/admin/users');
-    } catch (err) {
-      console.error('Delete user error:', err);
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleDeleteAsset = async () => {
-    if (!assetToDelete) return;
-
-    try {
-      setActionLoading(true);
-
-      const response = await fetch(`/api/admin/assets/${assetToDelete.id}`, {
-      credentials: 'include',
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          confirmId: assetToDelete.id,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la suppression du bien');
-      }
-
-      const result = await response.json();
-      toast.success(`Bien supprimé avec ${result.cascadeDeleted.documents} documents associés`);
-      setDeleteAssetDialogOpen(false);
-      setAssetToDelete(null);
-      loadUserData();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const openDeleteAssetDialog = (asset: Asset) => {
-    setAssetToDelete(asset);
-    setDeleteAssetDialogOpen(true);
   };
 
   const handleSyncStripe = async () => {
@@ -485,7 +335,8 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
     );
   }
 
-  const { user, account: linkedAccount, assets, stats } = data;
+  const { user, account: linkedAccount, assets, stats, adminStatus } = data;
+  const lastAdmin = adminStatus?.isLastActiveAdmin ?? false;
 
   return (
     <div className="space-y-6">
@@ -509,8 +360,8 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
           ) : (
             <Badge variant="destructive">Suspendu</Badge>
           )}
-          {user.role === 'ADMIN' && (
-            <Badge variant="default">Admin</Badge>
+          {adminStatus?.isAdmin && (
+            <Badge variant="default">Administrateur</Badge>
           )}
         </div>
       </div>
@@ -587,58 +438,57 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
         <CardHeader>
           <CardTitle>Actions</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button
-            variant="default"
-            onClick={() => setEditDialogOpen(true)}
-          >
-            <Edit className="h-4 w-4 mr-2" />
-            Modifier
-          </Button>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {user.status === 'ACTIVE' ? (
+              <Button
+                variant="outline"
+                onClick={() => setSuspendDialogOpen(true)}
+                disabled={lastAdmin}
+                title={lastAdmin ? LAST_ADMIN_REASON : undefined}
+              >
+                <Ban className="h-4 w-4 mr-2" />
+                Désactiver
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={() => setReactivateDialogOpen(true)}
+              >
+                <CheckCircle className="h-4 w-4 mr-2" />
+                Réactiver
+              </Button>
+            )}
 
-          {user.status === 'ACTIVE' ? (
             <Button
               variant="outline"
-              onClick={() => setSuspendDialogOpen(true)}
-              disabled={user.role === 'ADMIN'}
+              onClick={() => setResetPasswordDialogOpen(true)}
             >
-              <Ban className="h-4 w-4 mr-2" />
-              Suspendre
+              <MailIcon className="h-4 w-4 mr-2" />
+              Réinitialiser le mot de passe
             </Button>
-          ) : (
+
             <Button
               variant="outline"
-              onClick={() => setReactivateDialogOpen(true)}
+              onClick={() => setForceLogoutDialogOpen(true)}
             >
-              <CheckCircle className="h-4 w-4 mr-2" />
-              Réactiver
+              <LogOut className="h-4 w-4 mr-2" />
+              Déconnecter toutes les sessions
             </Button>
+
+            <Button
+              variant="outline"
+              onClick={() => setAdminRoleDialogOpen(true)}
+              disabled={adminStatus?.isAdmin && lastAdmin}
+              title={adminStatus?.isAdmin && lastAdmin ? LAST_ADMIN_REASON : undefined}
+            >
+              {adminStatus?.isAdmin ? <ShieldOff className="h-4 w-4 mr-2" /> : <Shield className="h-4 w-4 mr-2" />}
+              {adminStatus?.isAdmin ? 'Retirer le statut administrateur' : 'Accorder le statut administrateur'}
+            </Button>
+          </div>
+          {lastAdmin && (
+            <p className="text-xs text-muted-foreground">{LAST_ADMIN_REASON}</p>
           )}
-
-          <Button
-            variant="outline"
-            onClick={() => setResetPasswordDialogOpen(true)}
-          >
-            <MailIcon className="h-4 w-4 mr-2" />
-            Reset password
-          </Button>
-
-          <Button
-            variant="outline"
-            onClick={() => setForceLogoutDialogOpen(true)}
-          >
-            <LogOut className="h-4 w-4 mr-2" />
-            Forcer la déconnexion
-          </Button>
-
-          <Button
-            variant="destructive"
-            onClick={() => setDeleteUserDialogOpen(true)}
-            disabled={user.role === 'ADMIN'}
-          >
-            <Trash2 className="h-4 w-4 mr-2" />
-            Supprimer l'utilisateur
-          </Button>
         </CardContent>
       </Card>
 
@@ -723,22 +573,6 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
                       {asset.category} • Créé le {formatDate(asset.createdAt)}
                     </div>
                   </Link>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => router.push(`/admin/assets/${asset.id}`)}
-                    >
-                      <Edit className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openDeleteAssetDialog(asset)}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
                 </div>
               ))}
             </div>
@@ -746,209 +580,15 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
         </CardContent>
       </Card>
 
-      {/* Edit User Dialog */}
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Modifier l'utilisateur</DialogTitle>
-            <DialogDescription>
-              Modifiez les informations de {user.firstName} {user.lastName}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="grid gap-4 py-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="firstName">Prénom</Label>
-                <Input
-                  id="firstName"
-                  value={editForm.firstName}
-                  onChange={(e) => setEditForm({ ...editForm, firstName: e.target.value })}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="lastName">Nom</Label>
-                <Input
-                  id="lastName"
-                  value={editForm.lastName}
-                  onChange={(e) => setEditForm({ ...editForm, lastName: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="username">Nom d'utilisateur</Label>
-              <Input
-                id="username"
-                value={editForm.username}
-                onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
-                placeholder="Optionnel"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="company">Entreprise</Label>
-              <Input
-                id="company"
-                value={editForm.company}
-                onChange={(e) => setEditForm({ ...editForm, company: e.target.value })}
-                placeholder="Optionnel"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="planType">Plan</Label>
-                <Select
-                  value={editForm.planType}
-                  onValueChange={(value) => setEditForm({ ...editForm, planType: value })}
-                >
-                  <SelectTrigger id="planType">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="STANDARD">Standard</SelectItem>
-                    <SelectItem value="PREMIUM">Premium</SelectItem>
-                    <SelectItem value="PREMIUM_DUO">Premium Duo</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="role">Rôle</Label>
-                <Select
-                  value={editForm.role}
-                  onValueChange={(value) => setEditForm({ ...editForm, role: value })}
-                >
-                  <SelectTrigger id="role">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="USER">Utilisateur</SelectItem>
-                    <SelectItem value="ADMIN">Super Admin</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="status">Statut</Label>
-                <Select
-                  value={editForm.status}
-                  onValueChange={(value) => setEditForm({ ...editForm, status: value })}
-                >
-                  <SelectTrigger id="status">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ACTIVE">Actif</SelectItem>
-                    <SelectItem value="SUSPENDED">Suspendu</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="locale">Langue</Label>
-                <Select
-                  value={editForm.locale}
-                  onValueChange={(value) => setEditForm({ ...editForm, locale: value })}
-                >
-                  <SelectTrigger id="locale">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="fr">Français</SelectItem>
-                    <SelectItem value="en">English</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setEditDialogOpen(false)}
-              disabled={actionLoading}
-            >
-              <X className="h-4 w-4 mr-2" />
-              Annuler
-            </Button>
-            <Button onClick={handleEditUser} disabled={actionLoading}>
-              <Save className="h-4 w-4 mr-2" />
-              {actionLoading ? 'Enregistrement...' : 'Enregistrer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete User Dialog */}
-      <AlertDialog open={deleteUserDialogOpen} onOpenChange={setDeleteUserDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Supprimer définitivement ce compte ?</AlertDialogTitle>
-            <AlertDialogDescription>
-              ⚠️ <strong>Cette action est irréversible.</strong><br /><br />
-              Le compte de <strong>{user.firstName} {user.lastName}</strong> sera définitivement supprimé, ainsi que :
-              <ul className="list-disc list-inside mt-2 space-y-1">
-                <li>{assets.length} bien(s)</li>
-                <li>{stats.documentsCount} document(s)</li>
-                <li>{stats.eventsCount} événement(s)</li>
-                <li>{stats.deadlinesCount} échéance(s)</li>
-              </ul>
-              <br />
-              Cette action sera enregistrée dans le journal d'audit.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={actionLoading}>Annuler</AlertDialogCancel>
-            <Button
-              onClick={(e) => {
-                e.preventDefault();
-                handleDeleteUser();
-              }}
-              disabled={actionLoading}
-              className="bg-destructive hover:bg-destructive/90"
-            >
-              {actionLoading ? 'Suppression...' : 'Supprimer définitivement'}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Delete Asset Dialog */}
-      <AlertDialog open={deleteAssetDialogOpen} onOpenChange={setDeleteAssetDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Supprimer ce bien ?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Le bien <strong>{assetToDelete?.name}</strong> sera définitivement supprimé avec tous ses documents, événements et échéances associés.
-              <br /><br />
-              Cette action est irréversible et sera enregistrée dans le journal d'audit.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={actionLoading}>Annuler</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteAsset}
-              disabled={actionLoading}
-              className="bg-destructive hover:bg-destructive/90"
-            >
-              {actionLoading ? 'Suppression...' : 'Supprimer'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       {/* Suspend Dialog */}
       <AlertDialog open={suspendDialogOpen} onOpenChange={setSuspendDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Suspendre cet utilisateur ?</AlertDialogTitle>
+            <AlertDialogTitle>Désactiver cet utilisateur ?</AlertDialogTitle>
             <AlertDialogDescription>
-              L'utilisateur {user.firstName} {user.lastName} sera suspendu et ne pourra plus
-              accéder à la plateforme. Cette action sera enregistrée dans le journal d'audit.
+              {user.firstName} {user.lastName} est déconnecté immédiatement de toutes ses sessions et ne
+              pourra plus se connecter. Son compte n'est ni supprimé ni transféré. Aucun e-mail n'est envoyé.
+              Action journalisée.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -958,7 +598,7 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
               disabled={actionLoading}
               className="bg-destructive hover:bg-destructive/90"
             >
-              {actionLoading ? 'Suspension...' : 'Suspendre'}
+              {actionLoading ? 'Désactivation...' : 'Désactiver'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -970,8 +610,8 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Réactiver cet utilisateur ?</AlertDialogTitle>
             <AlertDialogDescription>
-              L'utilisateur {user.firstName} {user.lastName} pourra à nouveau accéder
-              à la plateforme. Cette action sera enregistrée dans le journal d'audit.
+              {user.firstName} {user.lastName} pourra à nouveau se connecter avec ses identifiants
+              actuels. Aucun e-mail n'est envoyé. Action journalisée.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -992,8 +632,9 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Envoyer un email de réinitialisation ?</AlertDialogTitle>
             <AlertDialogDescription>
-              Un email sera envoyé à {user.email} avec un lien de réinitialisation
-              de mot de passe. (V1: email simulé, action enregistrée dans le journal)
+              {user.email} recevra le même e-mail que lors d'une demande « Mot de passe oublié »,
+              avec un lien valable une heure. Le back-office ne définit jamais de mot de passe.
+              Action journalisée.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1012,12 +653,11 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
       <AlertDialog open={forceLogoutDialogOpen} onOpenChange={setForceLogoutDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Forcer la déconnexion de cet utilisateur ?</AlertDialogTitle>
+            <AlertDialogTitle>Déconnecter toutes les sessions ?</AlertDialogTitle>
             <AlertDialogDescription>
-              Toutes les sessions actives de <strong>{user.firstName} {user.lastName}</strong> seront supprimées.
-              L'utilisateur devra se reconnecter pour accéder à nouveau à la plateforme.
-              <br /><br />
-              Cette action sera enregistrée dans le journal d'audit.
+              Toutes les sessions de <strong>{user.firstName} {user.lastName}</strong> sont révoquées
+              immédiatement, sur tous ses appareils. Il pourra se reconnecter avec ses identifiants.
+              Action journalisée.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1027,7 +667,30 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
               disabled={actionLoading}
               className="bg-orange-600 hover:bg-orange-700"
             >
-              {actionLoading ? 'Déconnexion...' : 'Forcer la déconnexion'}
+              {actionLoading ? 'Déconnexion...' : 'Déconnecter'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Admin Role Dialog (USR-A08) */}
+      <AlertDialog open={adminRoleDialogOpen} onOpenChange={setAdminRoleDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {adminStatus?.isAdmin ? 'Retirer le statut administrateur ?' : 'Accorder le statut administrateur ?'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {adminStatus?.isAdmin
+                ? `${user.firstName} ${user.lastName} perd l'accès au back-office ; ses sessions sont révoquées.`
+                : `${user.firstName} ${user.lastName} aura accès à l'ensemble du back-office.`}
+              {' '}Action journalisée.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={actionLoading}>Annuler</AlertDialogCancel>
+            <AlertDialogAction onClick={handleToggleAdmin} disabled={actionLoading}>
+              {actionLoading ? 'Enregistrement...' : 'Confirmer'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

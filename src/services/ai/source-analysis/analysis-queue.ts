@@ -121,7 +121,62 @@ export async function enqueueFileAnalyses(
   return nouveaux;
 }
 
+/**
+ * Délai avant de revérifier l'état de T1 quand il est bloqué. Court : la
+ * reprise après relâchement d'un arrêt d'urgence doit se voir vite ; la
+ * vérification ne coûte qu'une lecture.
+ */
+const RELANCE_SI_BLOQUE_MS = 30_000;
+let verificationEnCours = false;
+let relance: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * T1 peut-il démarrer une analyse ? (CDC BO IA OPS-008, OPS-011, WF-07, WF-08)
+ *
+ * La file durable le vérifie dans `claimNext` ; la file mémoire — mode par
+ * défaut — ne le faisait pas : désactiver T1 ou engager l'arrêt d'urgence
+ * n'empêchait aucun démarrage. Base illisible : on laisse passer (la garde de
+ * la gateway reste là en second rideau).
+ */
+async function t1PeutDemarrer(): Promise<boolean> {
+  try {
+    const { canStart } = await import('../queue/job-queue.repository');
+    return await canStart('T1');
+  } catch (e) {
+    console.warn('[analysis-queue] état T1 illisible, démarrage autorisé :', (e as Error).message);
+    return true;
+  }
+}
+
+/**
+ * Lance les travaux en attente dans la limite de la concurrence.
+ *
+ * Bloqué (T1 désactivé, suspendu ou arrêt d'urgence) : les travaux RESTENT en
+ * file, sans démarrer — WF-07 étapes 40-41 : « conserver les jobs, accepter les
+ * nouvelles demandes, aucun nouveau démarrage » — et l'état est revérifié
+ * périodiquement pour reprendre seul à la réactivation. Les fichiers gardent
+ * l'état `UPLOADED`, que `check-pending` sait aussi reprendre après un
+ * redémarrage du processus.
+ */
 function pomper(): void {
+  if (verificationEnCours || actifs >= CONCURRENCE || file.length === 0) return;
+  verificationEnCours = true;
+  const gen = generation;
+  void t1PeutDemarrer().then((ok) => {
+    if (gen !== generation) return;
+    verificationEnCours = false;
+    if (!ok) {
+      if (!relance) {
+        relance = setTimeout(() => { relance = null; pomper(); }, RELANCE_SI_BLOQUE_MS);
+        relance.unref?.();
+      }
+      return;
+    }
+    demarrer();
+  });
+}
+
+function demarrer(): void {
   while (actifs < CONCURRENCE && file.length > 0) {
     const travail = file.shift()!;
     const gen = generation;
@@ -172,5 +227,7 @@ export function __resetAnalysisQueueForTests(): void {
   file.length = 0;
   connus.clear();
   actifs = 0;
+  verificationEnCours = false;
+  if (relance) { clearTimeout(relance); relance = null; }
   generation++;
 }

@@ -1,39 +1,24 @@
 "use client"
 
+/**
+ * Types de documents — consultation seule.
+ *
+ * CDC Back-Office V1 REFD-006 (REC-MOD-06) : aucun CRUD des référentiels depuis
+ * le BO ; ils sont versionnés dans le code (seeds). Les formulaires d'ajout, de
+ * modification, de suppression et d'association ont été retirés avec leurs
+ * routes API.
+ */
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
-import { Checkbox } from '@/components/ui/checkbox';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { toast } from 'sonner';
-import { FileType, Edit, Check, X, Plus, ChevronDown, ChevronRight, Trash2, Package, Tag } from 'lucide-react';
+import { FileType, Check, X, ChevronDown, ChevronRight, Package, Tag } from 'lucide-react';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 
 interface AssetType {
   id: number;
@@ -86,40 +71,12 @@ const EXPORT_TYPES = [
 
 export default function AdminDocumentTypesPage() {
   const [documentTypes, setDocumentTypes] = useState<DocumentType[]>([]);
-  const [assetTypes, setAssetTypes] = useState<AssetType[]>([]);
-  const [allSubcategories, setAllSubcategories] = useState<(AssetTypeSubcategory & { assetTypeId: number })[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openTypes, setOpenTypes] = useState<Set<number>>(new Set());
-  
-  // Add/Edit dialogs state
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
-  const [addLoading, setAddLoading] = useState(false);
-  
-  const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [editingType, setEditingType] = useState<DocumentType | null>(null);
-  const [editLoading, setEditLoading] = useState(false);
-
-  const [deleteTypeId, setDeleteTypeId] = useState<number | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
-  
-  // Form states
-  const [formData, setFormData] = useState({
-    code: '',
-    label: '',
-    description: '',
-    examples: '',
-    isActive: true,
-    displayOrder: 0,
-  });
-
-  // Association states
-  const [selectedAssetTypes, setSelectedAssetTypes] = useState<Set<number>>(new Set());
-  const [selectedSubcategories, setSelectedSubcategories] = useState<Set<number>>(new Set());
-  const [selectedExportTypes, setSelectedExportTypes] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    Promise.all([loadDocumentTypes(), loadAssetTypes()]);
+    loadDocumentTypes();
   }, []);
 
   const loadDocumentTypes = async () => {
@@ -153,39 +110,6 @@ export default function AdminDocumentTypesPage() {
     }
   };
 
-  const loadAssetTypes = async () => {
-    try {
-      const response = await fetch('/api/admin/asset-types', {
-      credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors du chargement des types de biens');
-      }
-
-      const data = await response.json();
-      setAssetTypes(data);
-      
-      // Flatten all subcategories with their parent asset type
-      const subs: (AssetTypeSubcategory & { assetTypeId: number })[] = [];
-      if (data && Array.isArray(data)) {
-        data.forEach((assetType: any) => {
-          if (assetType.subcategories && Array.isArray(assetType.subcategories)) {
-            assetType.subcategories.forEach((sub: any) => {
-              subs.push({ ...sub, assetTypeId: assetType.id });
-            });
-          }
-        });
-      }
-      setAllSubcategories(subs);
-    } catch (err) {
-      console.error('Error loading asset types:', err);
-    }
-  };
-
   const toggleType = (typeId: number) => {
     setOpenTypes(prev => {
       const newSet = new Set(prev);
@@ -196,257 +120,6 @@ export default function AdminDocumentTypesPage() {
       }
       return newSet;
     });
-  };
-
-  const handleAdd = () => {
-    setFormData({
-      code: '',
-      label: '',
-      description: '',
-      examples: '',
-      isActive: true,
-      displayOrder: 0,
-    });
-    setSelectedAssetTypes(new Set());
-    setSelectedSubcategories(new Set());
-    setSelectedExportTypes(new Set());
-    setAddDialogOpen(true);
-  };
-
-  const handleSaveNew = async () => {
-    if (!formData.code || !formData.label) {
-      toast.error('Le code et le libellé sont requis');
-      return;
-    }
-
-    try {
-      setAddLoading(true);
-
-      // Build asset associations
-      const assetAssociations: any[] = [];
-      
-      // Add associations for selected asset types
-      selectedAssetTypes.forEach(assetTypeId => {
-        assetAssociations.push({
-          assetTypeId,
-          assetTypeSubcategoryId: null,
-          isRequired: false,
-        });
-      });
-      
-      // Add associations for selected subcategories
-      selectedSubcategories.forEach(subcategoryId => {
-        assetAssociations.push({
-          assetTypeId: null,
-          assetTypeSubcategoryId: subcategoryId,
-          isRequired: false,
-        });
-      });
-
-      // Build export associations
-      const exportAssociations: any[] = [];
-      selectedExportTypes.forEach(exportType => {
-        exportAssociations.push({
-          exportType,
-          includeByDefault: true,
-          displayOrder: 0,
-        });
-      });
-
-      const response = await fetch('/api/admin/document-types', {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ...formData,
-          assetAssociations,
-          exportAssociations,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur lors de la création');
-      }
-
-      toast.success('Type de document créé avec succès');
-      setAddDialogOpen(false);
-      loadDocumentTypes();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setAddLoading(false);
-    }
-  };
-
-  const handleEdit = (docType: DocumentType) => {
-    setEditingType(docType);
-    setFormData({
-      code: docType.code,
-      label: docType.label,
-      description: docType.description || '',
-      examples: docType.examples || '',
-      isActive: docType.isActive,
-      displayOrder: docType.displayOrder,
-    });
-
-    // Load current associations
-    const assetTypeIds = new Set(
-      docType.assetAssociations
-        .filter(a => a.assetType)
-        .map(a => a.assetType!.id)
-    );
-    const subcategoryIds = new Set(
-      docType.assetAssociations
-        .filter(a => a.assetTypeSubcategory)
-        .map(a => a.assetTypeSubcategory!.id)
-    );
-    const exportTypeSet = new Set(
-      docType.exportAssociations
-        .filter(a => a.exportType)
-        .map(a => a.exportType!)
-    );
-
-    setSelectedAssetTypes(assetTypeIds);
-    setSelectedSubcategories(subcategoryIds);
-    setSelectedExportTypes(exportTypeSet);
-    setEditDialogOpen(true);
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editingType) return;
-
-    try {
-      setEditLoading(true);
-
-      // Build asset associations
-      const assetAssociations: any[] = [];
-      
-      selectedAssetTypes.forEach(assetTypeId => {
-        assetAssociations.push({
-          assetTypeId,
-          assetTypeSubcategoryId: null,
-          isRequired: false,
-        });
-      });
-      
-      selectedSubcategories.forEach(subcategoryId => {
-        assetAssociations.push({
-          assetTypeId: null,
-          assetTypeSubcategoryId: subcategoryId,
-          isRequired: false,
-        });
-      });
-
-      // Build export associations
-      const exportAssociations: any[] = [];
-      selectedExportTypes.forEach(exportType => {
-        exportAssociations.push({
-          exportType,
-          includeByDefault: true,
-          displayOrder: 0,
-        });
-      });
-
-      const response = await fetch(`/api/admin/document-types/${editingType.id}`, {
-      credentials: 'include',
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          label: formData.label,
-          description: formData.description || null,
-          isActive: formData.isActive,
-          displayOrder: formData.displayOrder,
-          assetAssociations,
-          exportAssociations,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur lors de la mise à jour');
-      }
-
-      toast.success('Type de document mis à jour avec succès');
-      setEditDialogOpen(false);
-      loadDocumentTypes();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setEditLoading(false);
-    }
-  };
-
-  const handleDelete = async (id: number) => {
-    try {
-      setDeleteLoading(true);
-
-      const response = await fetch(`/api/admin/document-types/${id}`, {
-      credentials: 'include',
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ confirmId: id }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur lors de la suppression');
-      }
-
-      toast.success('Type de document supprimé avec succès');
-      setDeleteTypeId(null);
-      loadDocumentTypes();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setDeleteLoading(false);
-    }
-  };
-
-  const toggleAssetType = (assetTypeId: number) => {
-    setSelectedAssetTypes(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(assetTypeId)) {
-        newSet.delete(assetTypeId);
-      } else {
-        newSet.add(assetTypeId);
-      }
-      return newSet;
-    });
-  };
-
-  const toggleSubcategory = (subcategoryId: number) => {
-    setSelectedSubcategories(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(subcategoryId)) {
-        newSet.delete(subcategoryId);
-      } else {
-        newSet.add(subcategoryId);
-      }
-      return newSet;
-    });
-  };
-
-  const toggleExportType = (exportType: string) => {
-    setSelectedExportTypes(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(exportType)) {
-        newSet.delete(exportType);
-      } else {
-        newSet.add(exportType);
-      }
-      return newSet;
-    });
-  };
-
-  const getSubcategoriesForAssetType = (assetTypeId: number) => {
-    return allSubcategories.filter(sub => sub.assetTypeId === assetTypeId);
   };
 
   if (error) {
@@ -468,13 +141,9 @@ export default function AdminDocumentTypesPage() {
         <div>
           <h1 className="text-2xl md:text-3xl font-bold">Types de documents</h1>
           <p className="text-muted-foreground mt-1">
-            Gérez les types de documents disponibles, leurs associations aux biens et aux exports
+            Consultation des types de documents et de leurs associations aux biens et aux exports (référentiel versionné dans le code)
           </p>
         </div>
-        <Button onClick={handleAdd}>
-          <Plus className="h-4 w-4 mr-2" />
-          Ajouter un type de document
-        </Button>
       </div>
 
       {/* Document Types List */}
@@ -494,7 +163,7 @@ export default function AdminDocumentTypesPage() {
             </div>
           ) : documentTypes.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
-              Aucun type de document. Commencez par en ajouter un.
+              Aucun type de document.
             </div>
           ) : (
             <div className="space-y-3">
@@ -543,23 +212,6 @@ export default function AdminDocumentTypesPage() {
                             <p className="text-sm text-muted-foreground mt-1">{docType.description}</p>
                           )}
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleEdit(docType)}
-                        >
-                          <Edit className="h-4 w-4 mr-1" />
-                          Modifier
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setDeleteTypeId(docType.id)}
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
                       </div>
                     </div>
 
@@ -619,348 +271,6 @@ export default function AdminDocumentTypesPage() {
         </CardContent>
       </Card>
 
-      {/* Add Dialog */}
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Ajouter un type de document</DialogTitle>
-            <DialogDescription>
-              Créer un nouveau type de document et définir ses associations
-            </DialogDescription>
-          </DialogHeader>
-          
-          <div className="space-y-6">
-            {/* Basic Info */}
-            <div className="space-y-4">
-              <h3 className="font-medium">Informations générales</h3>
-              
-              <div>
-                <Label htmlFor="add-code">
-                  Code <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id="add-code"
-                  value={formData.code}
-                  onChange={(e) => setFormData({ ...formData, code: e.target.value.toUpperCase() })}
-                  placeholder="Ex: FACTURE_ACHAT"
-                />
-                <p className="text-xs text-muted-foreground mt-1">Code unique en majuscules</p>
-              </div>
-
-              <div>
-                <Label htmlFor="add-label">
-                  Libellé <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id="add-label"
-                  value={formData.label}
-                  onChange={(e) => setFormData({ ...formData, label: e.target.value })}
-                  placeholder="Ex: Facture d'achat"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="add-description">Description</Label>
-                <Input
-                  id="add-description"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Description optionnelle"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="add-examples">Exemples</Label>
-                <Input
-                  id="add-examples"
-                  value={formData.examples}
-                  onChange={(e) => setFormData({ ...formData, examples: e.target.value })}
-                  placeholder="Ex: Certificat de propriété, Attestation notariale, etc."
-                />
-                <p className="text-xs text-muted-foreground mt-1">Exemples de documents pour guider les utilisateurs</p>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <Label htmlFor="add-isActive">Activé</Label>
-                <Switch
-                  id="add-isActive"
-                  checked={formData.isActive}
-                  onCheckedChange={(checked) => setFormData({ ...formData, isActive: checked })}
-                />
-              </div>
-            </div>
-
-            {/* Asset Type Associations */}
-            <div className="space-y-4">
-              <h3 className="font-medium">Types de biens associés</h3>
-              <p className="text-sm text-muted-foreground">Sélectionnez les types de biens pour lesquels ce document est pertinent</p>
-              
-              <div className="space-y-3">
-                {assetTypes.map((assetType) => {
-                  const subcategories = getSubcategoriesForAssetType(assetType.id);
-                  return (
-                    <div key={assetType.id} className="space-y-2">
-                      <div className="flex items-center space-x-2">
-                        <Checkbox
-                          id={`asset-${assetType.id}`}
-                          checked={selectedAssetTypes.has(assetType.id)}
-                          onCheckedChange={() => toggleAssetType(assetType.id)}
-                        />
-                        <label
-                          htmlFor={`asset-${assetType.id}`}
-                          className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                        >
-                          {assetType.label}
-                        </label>
-                      </div>
-                      
-                      {subcategories.length > 0 && (
-                        <div className="ml-6 space-y-2">
-                          {subcategories.map((sub) => (
-                            <div key={sub.id} className="flex items-center space-x-2">
-                              <Checkbox
-                                id={`sub-${sub.id}`}
-                                checked={selectedSubcategories.has(sub.id)}
-                                onCheckedChange={() => toggleSubcategory(sub.id)}
-                              />
-                              <label
-                                htmlFor={`sub-${sub.id}`}
-                                className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                              >
-                                {sub.label}
-                              </label>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Export Type Associations */}
-            <div className="space-y-4">
-              <h3 className="font-medium">Types d'export associés</h3>
-              <p className="text-sm text-muted-foreground">Sélectionnez les types d'export pour lesquels ce document doit être inclus par défaut</p>
-              
-              <div className="space-y-2">
-                {EXPORT_TYPES.map((exportType) => (
-                  <div key={exportType.value} className="flex items-center space-x-2">
-                    <Checkbox
-                      id={`export-${exportType.value}`}
-                      checked={selectedExportTypes.has(exportType.value)}
-                      onCheckedChange={() => toggleExportType(exportType.value)}
-                    />
-                    <label
-                      htmlFor={`export-${exportType.value}`}
-                      className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                    >
-                      {exportType.label}
-                    </label>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setAddDialogOpen(false)}
-              disabled={addLoading}
-            >
-              Annuler
-            </Button>
-            <Button
-              onClick={handleSaveNew}
-              disabled={addLoading}
-            >
-              {addLoading ? 'Création...' : 'Créer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit Dialog */}
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Modifier le type de document</DialogTitle>
-            <DialogDescription>
-              {editingType && `Modification de: ${editingType.code}`}
-            </DialogDescription>
-          </DialogHeader>
-          
-          <div className="space-y-6">
-            {/* Basic Info */}
-            <div className="space-y-4">
-              <h3 className="font-medium">Informations générales</h3>
-              
-              <div>
-                <Label>Code</Label>
-                <Input
-                  value={formData.code}
-                  disabled
-                  className="bg-muted"
-                />
-                <p className="text-xs text-muted-foreground mt-1">Le code ne peut pas être modifié</p>
-              </div>
-
-              <div>
-                <Label htmlFor="edit-label">Libellé</Label>
-                <Input
-                  id="edit-label"
-                  value={formData.label}
-                  onChange={(e) => setFormData({ ...formData, label: e.target.value })}
-                  placeholder="Ex: Facture d'achat"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="edit-description">Description</Label>
-                <Input
-                  id="edit-description"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Description optionnelle"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="edit-examples">Exemples</Label>
-                <Input
-                  id="edit-examples"
-                  value={formData.examples}
-                  onChange={(e) => setFormData({ ...formData, examples: e.target.value })}
-                  placeholder="Ex: Certificat de propriété, Attestation notariale, etc."
-                />
-                <p className="text-xs text-muted-foreground mt-1">Exemples de documents pour guider les utilisateurs</p>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <Label htmlFor="edit-isActive">Activé</Label>
-                <Switch
-                  id="edit-isActive"
-                  checked={formData.isActive}
-                  onCheckedChange={(checked) => setFormData({ ...formData, isActive: checked })}
-                />
-              </div>
-            </div>
-
-            {/* Asset Type Associations */}
-            <div className="space-y-4">
-              <h3 className="font-medium">Types de biens associés</h3>
-              <p className="text-sm text-muted-foreground">Sélectionnez les types de biens pour lesquels ce document est pertinent</p>
-              
-              <div className="space-y-3">
-                {assetTypes.map((assetType) => {
-                  const subcategories = getSubcategoriesForAssetType(assetType.id);
-                  return (
-                    <div key={assetType.id} className="space-y-2">
-                      <div className="flex items-center space-x-2">
-                        <Checkbox
-                          id={`edit-asset-${assetType.id}`}
-                          checked={selectedAssetTypes.has(assetType.id)}
-                          onCheckedChange={() => toggleAssetType(assetType.id)}
-                        />
-                        <label
-                          htmlFor={`edit-asset-${assetType.id}`}
-                          className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                        >
-                          {assetType.label}
-                        </label>
-                      </div>
-                      
-                      {subcategories.length > 0 && (
-                        <div className="ml-6 space-y-2">
-                          {subcategories.map((sub) => (
-                            <div key={sub.id} className="flex items-center space-x-2">
-                              <Checkbox
-                                id={`edit-sub-${sub.id}`}
-                                checked={selectedSubcategories.has(sub.id)}
-                                onCheckedChange={() => toggleSubcategory(sub.id)}
-                              />
-                              <label
-                                htmlFor={`edit-sub-${sub.id}`}
-                                className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                              >
-                                {sub.label}
-                              </label>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Export Type Associations */}
-            <div className="space-y-4">
-              <h3 className="font-medium">Types d'export associés</h3>
-              <p className="text-sm text-muted-foreground">Sélectionnez les types d'export pour lesquels ce document doit être inclus par défaut</p>
-              
-              <div className="space-y-2">
-                {EXPORT_TYPES.map((exportType) => (
-                  <div key={exportType.value} className="flex items-center space-x-2">
-                    <Checkbox
-                      id={`edit-export-${exportType.value}`}
-                      checked={selectedExportTypes.has(exportType.value)}
-                      onCheckedChange={() => toggleExportType(exportType.value)}
-                    />
-                    <label
-                      htmlFor={`edit-export-${exportType.value}`}
-                      className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                    >
-                      {exportType.label}
-                    </label>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setEditDialogOpen(false)}
-              disabled={editLoading}
-            >
-              Annuler
-            </Button>
-            <Button
-              onClick={handleSaveEdit}
-              disabled={editLoading}
-            >
-              {editLoading ? 'Enregistrement...' : 'Enregistrer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Confirmation */}
-      <AlertDialog open={deleteTypeId !== null} onOpenChange={() => setDeleteTypeId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Confirmer la suppression</AlertDialogTitle>
-            <AlertDialogDescription>
-              Êtes-vous sûr de vouloir supprimer ce type de document ? Cette action supprimera également toutes les associations. Cette action est irréversible.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleteLoading}>Annuler</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteTypeId && handleDelete(deleteTypeId)}
-              disabled={deleteLoading}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleteLoading ? 'Suppression...' : 'Supprimer'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

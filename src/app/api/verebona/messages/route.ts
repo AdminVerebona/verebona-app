@@ -30,6 +30,7 @@ import type { VerebonaIntent } from '@/services/verebona-assistant/types/intents
 import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
+import { assistantPlanFromEntitlements } from '@/services/verebona-assistant/core/plan-eligibility';
 
 export async function POST(req: NextRequest) {
   // 1. Session serveur (accountId de confiance — §27.1).
@@ -126,7 +127,9 @@ export async function POST(req: NextRequest) {
   const input: AssistantRequestInput = {
     accountId,
     userId: session.userId,
-    planType: entitlements.premiumFeatures ? session.planType : 'STANDARD',
+    // Offre dérivée des DROITS du compte, pas du planType du JWT : l'essai
+    // 7 jours a le comportement Premium, IA comprise (§6.5).
+    planType: assistantPlanFromEntitlements(entitlements, session.planType),
     message,
     pageContext: body.pageContext ?? undefined,
     clientRequestId,

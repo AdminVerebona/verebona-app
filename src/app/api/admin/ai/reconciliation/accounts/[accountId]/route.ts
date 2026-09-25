@@ -29,6 +29,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const scope = body.scope === 'incremental' ? 'incremental' : 'full';
 
   const result = await reconcileAccount(accountId, { type: 'manual', requestedByUserId: adminId }, { scope });
+  if (result.status === 'skipped_blocked') {
+    // OPS-008 / OPS-011 : refus explicite plutôt qu'un « terminé » vide.
+    return NextResponse.json({ error: 'AI_BLOCKED', message: 'T3 est désactivé, suspendu, ou l’arrêt d’urgence est engagé.' }, { status: 409 });
+  }
   if (result.status === 'skipped_concurrent') {
     return NextResponse.json({ error: 'RUN_IN_PROGRESS', message: 'Une exécution T3 est déjà en cours sur ce compte.' }, { status: 409 });
   }

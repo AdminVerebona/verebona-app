@@ -1,5 +1,8 @@
 "use client"
 
+// CDC Back-Office V1 GEN-001 : consultation seule — la suppression d’export
+// (DELETE /api/admin/exports/[id]) a été retirée.
+
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,14 +17,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   Search,
   Trash2,
@@ -38,7 +33,6 @@ import {
   Building2,
   Ban,
 } from 'lucide-react';
-import { toast } from 'sonner';
 
 const EXPORT_TYPES: Record<string, string> = {
   CIL_REGLEMENTAIRE: 'CIL Réglementaire',
@@ -108,8 +102,6 @@ export default function AdminExportsPage() {
   const [endDate, setEndDate] = useState('');
   const [page, setPage] = useState(1);
 
-  const [deleteDialog, setDeleteDialog] = useState<{ show: boolean; row: ExportRow | null }>({ show: false, row: null });
-  const [isDeleting, setIsDeleting] = useState(false);
 
 
   const loadExports = useCallback(async (currentPage = 1) => {
@@ -158,28 +150,6 @@ export default function AdminExportsPage() {
   useEffect(() => {
     loadExports(page);
   }, [page]);
-
-  const handleDelete = async () => {
-    if (!deleteDialog.row) return;
-    try {
-      setIsDeleting(true);
-      const res = await fetch(`/api/admin/exports/${deleteDialog.row.id}`, {
-      credentials: 'include',
-        method: 'DELETE',
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Erreur lors de la suppression');
-      }
-      toast.success('Export marqué comme supprimé');
-      setDeleteDialog({ show: false, row: null });
-      loadExports(page);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur');
-    } finally {
-      setIsDeleting(false);
-    }
-  };
 
   const formatDate = (d: string | null) => {
     if (!d) return '—';
@@ -416,7 +386,6 @@ export default function AdminExportsPage() {
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground">Compte</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground">Statut</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground">Date</th>
-                    <th className="text-right px-4 py-3 font-medium text-muted-foreground">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -491,18 +460,6 @@ export default function AdminExportsPage() {
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        {row.status !== 'deleted' && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setDeleteDialog({ show: true, row })}
-                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -542,27 +499,6 @@ export default function AdminExportsPage() {
         </>
       )}
 
-      {/* Delete Dialog */}
-      <Dialog open={deleteDialog.show} onOpenChange={(open) => setDeleteDialog({ show: open, row: null })}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Confirmer la suppression</DialogTitle>
-            <DialogDescription>
-              Voulez-vous marquer cet export <strong>#{deleteDialog.row?.id}</strong> ({getTypeLabel(deleteDialog.row?.exportType ?? '')}) comme supprimé ?
-              <br />
-              Cette action est réversible uniquement en base de données.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialog({ show: false, row: null })} disabled={isDeleting}>
-              Annuler
-            </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
-              {isDeleting ? 'Suppression...' : 'Supprimer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

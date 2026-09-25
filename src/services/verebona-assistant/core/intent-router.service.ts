@@ -1,23 +1,51 @@
 /**
- * Routeur d'intentions — CDC §9.1 à §9.5.
+ * Routeur d'intentions — CDC §9.1 à §9.5, CA-21.
  *
  * Ordre STRICT (§9.4). Gemini (classification) n'est sollicité qu'en dernier recours,
  * si les étapes déterministes n'ont pas tranché. Produit un `IntentRoute` (§9.5).
  *
  * Ce service ne fait AUCUN appel réseau lui-même : l'étape de classification IA est
- * déléguée à l'orchestrateur (qui contrôle le budget et l'éligibilité).
+ * déléguée à l'orchestrateur (qui contrôle le budget et l'éligibilité). La base
+ * d'aide (§9.4 étape 7) est consultée si l'appelant fournit le corpus.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * 7 DES 10 EXEMPLES DU §9.3 ÉTAIENT MAL ROUTÉS
+ *
+ *   · les motifs utilisaient `\b`, aveugle aux lettres accentuées : « À quoi
+ *     sert À traiter ? » ne déclenchait jamais `à quoi sert` ;
+ *   · « Comment ajouter un document ? » partait en recherche de document
+ *     (l'aide était écartée dès qu'un mot « document » apparaissait) ;
+ *   · « Quand ai-je acheté ma Peugeot ? » tombait sur l'agenda (« quand ») ;
+ *   · « Quels éléments dois-je traiter ? », « Donne-moi les données des
+ *     autres utilisateurs » partaient en classification ;
+ *   · « Pourquoi ces deux documents… dates différentes ? » devenait une
+ *     synthèse (« pourquoi ») au lieu d'une comparaison.
+ *
+ * Désormais : texte normalisé (minuscules, sans accents) puis motifs ASCII à
+ * bornes Unicode (`routing-text.ts`), aide produit traitée AVANT la
+ * recherche de documents, règles « faits du compte », « À traiter » et
+ * UNSAFE ajoutées, comparaison avant synthèse. Chaque exemple du CDC (§9.3,
+ * §8.3, §37) est un test (`__tests__/intent-router.test.ts`).
+ * ══════════════════════════════════════════════════════════════════════════
  */
 import type { IntentRoute, Confidence } from '../types/contracts';
 import type { VerebonaIntent } from '../types/intents';
 import { isPlanAiEligible } from '../registries/capability-registry';
 import { getIntentDefinition } from '../registries/intent-registry';
 import { allowedActionsFor } from '../registries/action-registry';
+import { searchHelpCorpus, type HelpCorpus } from './help-corpus.service';
+import { normalizeForRouting, startsWith, word } from './routing-text';
 
 export interface RouteContext {
   message: string;
   planType: string;
   hasPendingClarification: boolean;
   pageRoute?: string;
+  /**
+   * Corpus du Centre d'aide (§9.4 étape 7). Fourni par l'orchestrateur quand
+   * aucune règle n'a tranché ; absent, l'étape est sautée.
+   */
+  helpCorpus?: HelpCorpus | null;
 }
 
 /** Résultat du routage déterministe : soit une route, soit « escalade classification ». */
@@ -25,55 +53,85 @@ export type RouteOutcome =
   | { kind: 'route'; route: IntentRoute }
   | { kind: 'needs_classification'; normalized: string };
 
-const GREETINGS = /^(bonjour|bonsoir|salut|coucou|hello|hey|yo)\b/i;
-const THANKS = /\b(merci|thanks|nickel|parfait|super)\b/i;
-const GOODBYE = /\b(au revoir|à bientôt|bye|à plus|adieu)\b/i;
-const OPEN_VERB = /\b(ouvre|ouvrir|montre|affiche|va sur|accède|accéder|emmène[- ]moi)\b/i;
-const HELP_HOWTO = /\b(comment|comment faire|comment je|how to)\b/i;
-const HELP_EXPLAIN = /\b(à quoi sert|c'est quoi|qu'est[- ]ce que|que veut dire|signifie)\b/i;
-const COUNT = /\b(combien|nombre de|count)\b/i;
-const DEADLINE = /\b(échéance|expire|expiration|à renouveler|renouvellement|quand)\b/i;
-const EXPORT = /\b(export|exporter|dossier|pdf|transmettre)\b/i;
-const SUPPLIER = /\b(fournisseur|prestataire|artisan|réparateur)\b/i;
-const AGENDA = /\b(agenda|rendez[- ]vous|planning|calendrier)\b/i;
-const DOC = /\b(document|facture|garantie|contrat|manuel|notice|certificat)\b/i;
-const DOC_LIST = /\b(documents|factures|fichiers|pièces)\b/i;
-/** « …de ma Clio », « …du chalet » : les documents DE quelque chose. */
-const OF_SOMETHING = /\b(de|du|des)\s+(ma|mon|mes|la|le|l'|l’|notre|nos)\b|\bdu\s+\w{3,}/i;
+// Tous les motifs s'appliquent au texte NORMALISÉ (ASCII, minuscules).
+
+// ── Sécurité (§9.4.1, §29.2, §9.3 « autres utilisateurs ») ─────────────────
+const UNSAFE_INJECTION = /ignore[rz]? (les |tes |vos |toutes les )?(regles|instructions|consignes)|system prompt|prompt systeme|jailbreak|drop table|<script/;
 /**
- * Motifs « bien » — ils manquaient, et `ACCOUNT_SEARCH_ASSET` n'apparaissait
- * nulle part dans ce routeur : l'intention la plus centrale du produit n'était
- * atteignable que par classification IA. Le §9.4 veut le déterministe d'abord,
- * et un appel modèle pour reconnaître le mot « bien » est un appel de trop.
+ * « mon autre compte » (changement de compte) n'est pas une tentative d'accès
+ * aux données d'autrui : le possessif est exclu.
  */
-const ASSET = /\b(bien|biens|propriété|propriétés|patrimoine|maison|maisons|appartement|appartements|logement|logements|immeuble|immeubles|terrain|terrains|résidence|résidences|véhicule|véhicules|voiture|voitures|moto|motos|bateau|bateaux|vélo|vélos|caravane)\b/i;
-const SUMMARY = /\b(résume|résumé|synthèse|fais le point|bilan|panorama)\b/i;
-const COMPARE = /\b(compare|comparer|différence|versus|par rapport)\b/i;
-const TIMELINE = /\b(historique|chronologie|timeline|au fil du temps|évolution)\b/i;
-const UNSAFE = /\b(ignore (les|tes) instructions|system prompt|jailbreak|drop table|<script)/i;
+const UNSAFE_OTHER_ACCOUNTS = new RegExp(
+  "(?<![\\p{L}])(?<!mon |mes |ma )(?:autres? utilisateurs?|autres? comptes?|autres? clients?|tous les (?:comptes|utilisateurs|clients)"
+  + "|compte d'un autre|comptes? des autres|donnees de (?:tout le monde|tous)|other users?|other accounts?)(?![\\p{L}])",
+  'u',
+);
 
-// ══════════════════════════════════════════════════════════════════════════
-// LES MOTIFS ACCENTUÉS NE SE DÉCLENCHAIENT PAS EN DÉBUT DE MOT
-//
-// En JavaScript, `\b` ne considère pas « é » comme une lettre : `\bévolution`
-// ne reconnaît jamais « évolution », ni `\brésumé` « résumé ». Une demande de
-// synthèse (« explique-moi l'évolution des dépenses de la maison ») tombait
-// donc sur la recherche de bien — intention non éligible au modèle.
-//
-// Les intentions de synthèse sont aussi testées sur le message SANS accents,
-// avec des motifs ASCII. Les motifs d'origine sont conservés.
-// ══════════════════════════════════════════════════════════════════════════
-const SUMMARY_A = /\b(resume|synthese|fais le point|bilan|panorama|explique|expliquer|analyse|analyser|pourquoi|tendance)\b/;
-const COMPARE_A = /\b(compare|comparer|difference|versus|par rapport)\b/;
-const TIMELINE_A = /\b(historique|chronologie|timeline|au fil du temps|evolution)\b/;
+// ── Politesses (§9.4.3) ─────────────────────────────────────────────────────
+const GREETINGS = startsWith('bonjour|bonsoir|salut|coucou|hello|hey|yo|hi');
+const THANKS = word('merci|thanks|thank you|nickel|parfait|super');
+const GOODBYE = word('au revoir|a bientot|bye|a plus|adieu');
 
-function ascii(s: string): string {
-  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-}
+// ── Demandes réservées (§9.4.4, §5.2, 37.19) ────────────────────────────────
+const SENSITIVE_TOPIC = word('indemnisation|indemnites?|dedommagement|fiscale?s?|fiscalite|impots?|declaration fiscale|declaration d\'impots|juridiques?|avocat|proces|litige|medicale?s?|diagnostic medical|placement financier');
+const ADVICE = word('dois-je|devrais-je|faut-il|dois je|devrais je|exiger|reclamer|conseille[rsz]?|recommande[rsz]?|que me conseilles');
+const ACTION_START = startsWith('fais|faites|fait|remplis|remplir|redige|rediger|declare|declarer');
 
-function normalize(s: string): string {
-  return s.trim().replace(/\s+/g, ' ').slice(0, 2000);
-}
+// ── Aide produit (§9.4 « expressions connues », §8.3, 37.4, 37.15) ─────────
+const HELP_STATUS = /pourquoi .*(en (cours d'|attente d')?analyse|en attente|en erreur|bloque|pas analyse)|que (signifie|veut dire) (le |ce )?statut|statut .*(signifie|veut dire)/;
+const HELP_EXPLAIN = word("a quoi sert|a quoi servent|que veut dire|que signifie|signifie|qu'est-ce que c'est|qu'est ce que c'est|what is|what does");
+/**
+ * « C'est quoi… », « Qu'est-ce que la… » : explication d'une fonction, sauf
+ * quand la question porte sur un objet du compte (« c'est quoi MA prochaine
+ * échéance ? », « qu'est-ce que je dois traiter ? »).
+ */
+const HELP_EXPLAIN_WEAK = word("c'est quoi|qu'est-ce que (?:le|la|les|l'|un|une)|qu'est ce que (?:le|la|les|l'|un|une)");
+const POSSESSIVE = word("ma|mon|mes|notre|nos|je|j'ai");
+const HOWTO_VERB = 'ajouter|deposer|creer|importer|televerser|telecharger|charger|scanner|modifier|supprimer|completer|renseigner|partager|inviter|exporter|synchroniser|utiliser|changer|archiver|envoyer|lier|rattacher|classer|activer|desactiver|annuler|resilier|faire|configurer|connecter|imprimer|transmettre|renommer|deplacer|fusionner|ajoute|cree|upload|add|create';
+const HOWTO = new RegExp(
+  `(?<![\\p{L}])comment (?:(?:est-ce qu'on|est-ce que je|puis-je|peut-on|je peux|on peut|dois-je|faut-il|faire pour|je|on) )?(?:${HOWTO_VERB})(?![\\p{L}])`
+  + `|(?<![\\p{L}])(?:how (?:to|do i|can i)|where can i)(?![\\p{L}])`
+  + `|(?<![\\p{L}])(?:est-il possible de|puis-je|peut-on) (?:${HOWTO_VERB})(?![\\p{L}])`,
+  'u',
+);
+const HOWTO_GENERIC = startsWith('comment');
+const WHERE_FIND = word("ou (trouver|trouve-t-on|est|sont|se trouve|se trouvent|puis-je trouver)|where is|where are");
+/** Un objet précis du compte (« ma facture ») se cherche, il ne se navigue pas. */
+const SPECIFIC_OBJECT = word("(ma|mon|la|le|l'|cette|ce|cet) ?(facture|garantie|contrat|manuel|notice|certificat|devis|justificatif|document|fichier|bien|maison|voiture|velo)");
+
+// ── Navigation (§9.4.5) ─────────────────────────────────────────────────────
+const OPEN_VERB = word('ouvre|ouvrir|montre|montre-moi|affiche|affiche-moi|va sur|aller sur|acceder|accede|emmene-moi|open|go to|show me');
+
+// ── Objets et données du compte (§9.4.6) ────────────────────────────────────
+const DOC = word('documents?|factures?|garanties?|contrats?|manuels?|notices?|certificats?|devis|justificatifs?|fichiers?|pieces?');
+const DOC_LIST = word('documents|factures|fichiers|pieces');
+/** « …de ma Clio », « …du chalet » : les documents DE quelque chose. */
+const OF_SOMETHING = word("(de|du|des) (ma|mon|mes|la|le|l'|notre|nos)|du [a-z]{3,}");
+const ASSET = word('biens?|proprietes?|patrimoine|maisons?|appartements?|logements?|immeubles?|terrains?|residences?|vehicules?|voitures?|motos?|bateaux?|velos?|caravanes?|chalets?');
+const TO_PROCESS = word("a traiter|dois-je traiter|dois je traiter|je dois traiter|reste a traiter|faut-il traiter|en priorite|prioritaires?");
+/**
+ * Faits du compte (37.2) : date d'achat, date d'un document, montant. Lus
+ * dans les données structurées, sans modèle (§14).
+ */
+const FACT = new RegExp(
+  "(?<![\\p{L}])(?:quand (?:ai-je|j'ai|avons-nous|a-t-on|ai je) (?:achete|acquis|paye|installe|commande|recu|signe|mis en service|fait)"
+  + "|(?:quelle est la |la )?date (?:d'|de |du |des )(?:achat|acquisition|mise en service|installation|signature|la facture|facture|livraison|fin|debut|document|contrat|souscription|l'achat)"
+  + "|quelle est la date|date (?:indiquee|inscrite|figurant)"
+  + "|(?:quel est le |le )?montant|combien (?:ai-je|j'ai) (?:paye|depense|achete)|combien (?:a )?coute|quel (?:est le )?prix)(?![\\p{L}])",
+  'u',
+);
+const DEADLINE = word('echeances?|expire|expirent|expiration|a renouveler|renouvellement|quand|bientot');
+const AGENDA = word('agenda|rendez-vous|planning|calendrier|rappels?');
+const EXPORT = word('export|exporter|dossier|pdf|transmettre');
+const SUPPLIER = word('fournisseurs?|prestataires?|artisans?|reparateurs?');
+
+// ── Synthèse, comparaison, chronologie (candidats IA — §9.4.7) ─────────────
+const COMPARE = word('compare|comparer|comparaison|difference|differences|different|differents|differente|differentes|divergent|divergentes?|contradictoires?|versus|par rapport|ne concordent pas');
+const SUMMARY = word('resume|resumer|synthese|fais le point|bilan|panorama|explique|expliquer|analyse|analyser|pourquoi|tendance');
+const TIMELINE = word('historique|chronologie|timeline|au fil du temps|evolution');
+
+/** Seuil de pertinence d'un article pour router en aide sans modèle (§9.4.7). */
+export const HELP_CORPUS_ROUTE_THRESHOLD = 0.4;
 
 function buildRoute(
   intent: VerebonaIntent,
@@ -108,56 +166,98 @@ export function routeForIntent(intent: VerebonaIntent, planType: string, reason:
  * Routage déterministe. Retourne une route directe ou signale une classification IA.
  */
 export function routeDeterministic(ctx: RouteContext): RouteOutcome {
-  const msg = normalize(ctx.message);
+  const t = normalizeForRouting(ctx.message);
   const R = (i: VerebonaIntent, c: Confidence, reason: string, rr?: boolean): RouteOutcome => ({
     kind: 'route',
     route: buildRoute(i, c, ctx.planType, reason, rr),
   });
 
-  // Étape 1 — Sécurité / anti-injection (§9.4.1, §29.2)
-  if (UNSAFE.test(msg)) return R('UNSAFE_OR_MALICIOUS', 'exact', 'motif malveillant détecté');
+  // Étape 1 — Sécurité / anti-injection / données d'autrui (§9.4.1, §29.2)
+  if (UNSAFE_INJECTION.test(t)) return R('UNSAFE_OR_MALICIOUS', 'exact', 'motif malveillant détecté');
+  if (UNSAFE_OTHER_ACCOUNTS.test(t)) return R('UNSAFE_OR_MALICIOUS', 'exact', 'données d’autres comptes demandées');
 
   // Étape 2 — Réponse à une clarification en attente (§9.4.2)
   if (ctx.hasPendingClarification) return R('CLARIFICATION_ANSWER', 'exact', 'clarification en attente');
 
-  // Étape 3 — Politesses (§9.4.3)
-  if (GREETINGS.test(msg)) return R('GREETING', 'exact', 'salutation');
-  if (GOODBYE.test(msg)) return R('GOODBYE', 'exact', 'fin déchange');
-  if (THANKS.test(msg) && msg.length < 40) return R('THANKS', 'exact', 'remerciement');
+  // Étape 3 — Politesses (§9.4.3). Une salutation suivie d'une vraie
+  // question (« Bonjour, retrouve ma facture ») n'est pas une politesse.
+  if (GREETINGS.test(t)) {
+    const reste = t.replace(GREETINGS, '').replace(/^[\s,!.;:-]*(verebona)?[\s,!.;:-]*/, '');
+    if (reste.split(' ').filter(Boolean).length < 3) return R('GREETING', 'exact', 'salutation');
+  }
+  if (GOODBYE.test(t) && t.length < 60) return R('GOODBYE', 'exact', 'fin d’échange');
+  if (THANKS.test(t) && t.length < 40) return R('THANKS', 'exact', 'remerciement');
 
-  // Étape 4 — Aide produit (§9.4.4)
-  if (HELP_EXPLAIN.test(msg)) return R('PRODUCT_HELP_EXPLAIN', 'probable', 'explication fonction');
-  if (HELP_HOWTO.test(msg) && !DOC.test(msg)) return R('PRODUCT_HELP_HOW_TO', 'probable', 'how-to produit');
+  // Étape 4 — Demandes réservées (§9.4.4, §9.3 « Fais ma déclaration
+  // fiscale », 37.19). Le thème seul ne suffit pas : « le montant de mon
+  // impôt foncier » interroge les DONNÉES ; il faut une demande de conseil
+  // ou d'exécution.
+  if (SENSITIVE_TOPIC.test(t) && (ADVICE.test(t) || ACTION_START.test(t))) {
+    return R('SENSITIVE_ADVICE', 'probable', 'conseil ou démarche réservés');
+  }
 
-  // Étape 5 — Navigation explicite (§9.4.5)
+  // Étape 5 — Aide produit, AVANT navigation et recherche (§9.4, §8.3) :
+  // « Comment ajouter un document ? » est une question d'usage, pas une
+  // recherche de document.
+  if (HELP_STATUS.test(t)) return R('PRODUCT_HELP_STATUS', 'probable', 'signification d’un statut');
+  if (HELP_EXPLAIN.test(t)) return R('PRODUCT_HELP_EXPLAIN', 'probable', 'explication fonction');
+  if (HELP_EXPLAIN_WEAK.test(t) && !POSSESSIVE.test(t)) return R('PRODUCT_HELP_EXPLAIN', 'probable', 'explication fonction');
+  if (HOWTO.test(t)) return R('PRODUCT_HELP_HOW_TO', 'probable', 'how-to produit');
+  if (HOWTO_GENERIC.test(t) && !DOC.test(t) && !OF_SOMETHING.test(t)) {
+    return R('PRODUCT_HELP_HOW_TO', 'probable', 'how-to produit');
+  }
+  // « Où trouver mes documents ? » : une fonction de l'application.
+  // « Où est la facture de mon vélo ? » : un objet du compte → plus bas.
+  if (WHERE_FIND.test(t) && !SPECIFIC_OBJECT.test(t) && !OF_SOMETHING.test(t)) {
+    return R('NAVIGATION_FIND', 'probable', 'où trouver une fonction');
+  }
+
+  // Étape 6 — Navigation explicite (§9.4.5)
   //
   // « Montre-moi les documents de ma maison » n'est pas une navigation : c'est
   // une question sur les données d'un bien (liste de ses documents), qui peut
   // appeler une clarification si plusieurs biens correspondent.
-  if (OPEN_VERB.test(msg) && DOC_LIST.test(msg) && (ASSET.test(msg) || OF_SOMETHING.test(msg))) {
+  if (OPEN_VERB.test(t) && DOC_LIST.test(t) && (ASSET.test(t) || OF_SOMETHING.test(t))) {
     return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'documents d’un bien', true);
   }
-  if (OPEN_VERB.test(msg)) return R('NAVIGATION_OPEN', 'probable', 'verbe douverture');
+  if (OPEN_VERB.test(t)) return R('NAVIGATION_OPEN', 'probable', 'verbe d’ouverture');
 
-  // Étape 6 — Intentions « données » déterministes (§9.4.6)
-  if (COUNT.test(msg)) return R('ACCOUNT_TO_PROCESS', 'probable', 'comptage', true);
-  if (EXPORT.test(msg)) return R('EXPORT_HELP', 'probable', 'aide export');
+  // Étape 7 — Règles « données » déterministes (§9.4.6)
+  if (TO_PROCESS.test(t)) return R('ACCOUNT_TO_PROCESS', 'probable', 'éléments à traiter', true);
+  if (EXPORT.test(t)) return R('EXPORT_HELP', 'probable', 'aide export');
 
-  // Étape 7 — Synthèse / comparaison / chronologie (candidats IA — §9.4.7)
-  const sansAccents = ascii(msg);
-  // Ordre d'origine conservé : synthèse, comparaison, chronologie.
-  if (SUMMARY.test(msg) || SUMMARY_A.test(sansAccents)) return R('ACCOUNT_SUMMARY', 'probable', 'synthèse', true);
-  if (COMPARE.test(msg) || COMPARE_A.test(sansAccents)) return R('ACCOUNT_COMPARISON', 'probable', 'comparaison', true);
-  if (TIMELINE.test(msg) || TIMELINE_A.test(sansAccents)) return R('ACCOUNT_TIMELINE', 'probable', 'chronologie', true);
+  // Comparaison AVANT synthèse : « Pourquoi ces deux documents donnent-ils
+  // des dates différentes ? » compare, il ne résume pas (§9.3).
+  if (COMPARE.test(t)) return R('ACCOUNT_COMPARISON', 'probable', 'comparaison', true);
 
-  // Étape 8 — Recherche compte par type d'objet (§9.4.8)
-  if (SUPPLIER.test(msg)) return R('ACCOUNT_SEARCH_SUPPLIER', 'probable', 'recherche fournisseur', true);
-  if (AGENDA.test(msg) || DEADLINE.test(msg)) return R('ACCOUNT_SEARCH_AGENDA', 'probable', 'recherche agenda', true);
-  if (DOC.test(msg)) return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'recherche document', true);
+  // Faits du compte (date d'achat, date d'un document, montant — 37.2).
+  if (FACT.test(t) && !SUMMARY.test(t) && !TIMELINE.test(t)) {
+    return DOC.test(t)
+      ? R('ACCOUNT_FACT_DOCUMENT', 'probable', 'donnée d’un document', true)
+      : R('ACCOUNT_FACT_ASSET', 'probable', 'donnée d’un bien', true);
+  }
+
+  // Étape 8 — Synthèse / chronologie (candidats IA — §9.4.7)
+  if (SUMMARY.test(t)) return R('ACCOUNT_SUMMARY', 'probable', 'synthèse', true);
+  if (TIMELINE.test(t)) return R('ACCOUNT_TIMELINE', 'probable', 'chronologie', true);
+
+  // Étape 9 — Recherche compte par type d'objet (§9.4.8)
+  if (SUPPLIER.test(t)) return R('ACCOUNT_SEARCH_SUPPLIER', 'probable', 'recherche fournisseur', true);
+  if (AGENDA.test(t) || DEADLINE.test(t)) return R('ACCOUNT_SEARCH_AGENDA', 'probable', 'recherche agenda', true);
+  if (DOC.test(t)) return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'recherche document', true);
   // En dernier des motifs par type : un message qui cite un document ET un bien
   // porte le plus souvent sur le document (« la facture de la maison »).
-  if (ASSET.test(msg)) return R('ACCOUNT_SEARCH_ASSET', 'probable', 'recherche bien', true);
+  if (ASSET.test(t)) return R('ACCOUNT_SEARCH_ASSET', 'probable', 'recherche bien', true);
 
-  // Étape 9 — Escalade classification IA (dernier recours — §9.4.9)
-  return { kind: 'needs_classification', normalized: msg };
+  // Étape 10 — Base d'aide (§9.4.7) : un article nettement pertinent suffit
+  // à router en aide produit, sans modèle.
+  if (ctx.helpCorpus) {
+    const [best] = searchHelpCorpus(ctx.helpCorpus, ctx.message, 1);
+    if (best && best.score >= HELP_CORPUS_ROUTE_THRESHOLD) {
+      return R('PRODUCT_HELP_HOW_TO', 'probable', `base d’aide — ${best.article.id}`);
+    }
+  }
+
+  // Étape 11 — Escalade classification IA (dernier recours — §9.4.9)
+  return { kind: 'needs_classification', normalized: ctx.message.trim().replace(/\s+/g, ' ').slice(0, 2000) };
 }

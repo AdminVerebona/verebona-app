@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
 
   if (!isTreatment(treatment) || typeof enabled !== 'boolean') {
     return NextResponse.json(
-      { error: 'INVALID_PAYLOAD', message: 'Indiquez `treatment` (T1 à T5) et `enabled`.' },
+      { error: 'INVALID_PAYLOAD', message: 'Indiquez `treatment` (T1 à T6) et `enabled`.' },
       { status: 400 },
     );
   }

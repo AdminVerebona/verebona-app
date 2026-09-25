@@ -7,23 +7,12 @@ import { Logo } from './Logo';
 import {
   LayoutDashboard,
   Users,
-  Package,
-  Tags,
-  Mail,
-  FileText,
   LogOut,
   Home,
-  Files,
-  Webhook,
   FileType,
-  ImageIcon,
   Building2,
-  Database,
-  Sparkles,
   Menu,
   X,
-  FileDown,
-  Activity,
   Gift,
   SlidersHorizontal,
   ListOrdered,
@@ -31,40 +20,47 @@ import {
   Coins,
   KeyRound,
   Gauge,
+  CreditCard,
+  BookOpen,
+  Mail,
+  ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-const navigation = [
+/**
+ * Navigation cible du back-office — CDC Back-Office V1 §3, REC-NAV-01/02/03.
+ *
+ * EXACTEMENT les 15 entrées du CDC, dans son ordre. Toutes directement
+ * visibles : aucune section repliable, aucun badge de compteur (UX-001).
+ *
+ * Retirées (§3 encadré, §14, §15) : « Gestion IA » (/admin/document-ai) et
+ * « Suivi IA » (/admin/ai-usage), ainsi que Webhooks Stripe, Biens,
+ * Documents, Types de biens, Types de documents, Exports, Logos système,
+ * Templates Email, Backups et Journal d'audit. Leurs pages restent
+ * accessibles par URL tant que les écrans cibles (Supervision, Référentiels,
+ * Communications) ne les ont pas absorbées.
+ *
+ * Toute modification de cette liste doit rester alignée sur le test
+ * `src/components/__tests__/admin-sidebar.test.ts`.
+ */
+export const ADMIN_NAVIGATION = [
   { name: 'Dashboard', href: '/admin', icon: LayoutDashboard },
-  { name: 'Utilisateurs', href: '/admin/users', icon: Users },
   { name: 'Comptes', href: '/admin/accounts', icon: Building2 },
-  { name: 'Parrainage', href: '/admin/referrals', icon: Gift },
-  { name: 'Webhooks Stripe', href: '/admin/stripe-webhooks', icon: Webhook },
-  { name: 'Biens', href: '/admin/assets', icon: Package },
-  { name: 'Documents', href: '/admin/documents', icon: Files },
-  // Console de configuration IA (CDC BO IA). Placée avant les deux consoles
-  // historiques, qu'elle absorbera : le §18.1 prévoit la disparition de
-  // « Gestion IA » comme console parallèle et la répartition de « Suivi IA »
-  // entre Dashboard, Exécutions & logs et Coûts.
-  // Le Dashboard IA ouvre le bloc BO IA : le SCR-01 en fait le point d'entrée,
-  // avec liens vers chaque écran de détail.
+  { name: 'Utilisateurs', href: '/admin/users', icon: Users },
+  { name: 'Abonnements & paiements', href: '/admin/subscriptions', icon: CreditCard },
+  { name: 'Parrainages & promotions', href: '/admin/referrals', icon: Gift },
+  { name: 'Référentiels', href: '/admin/referentials', icon: BookOpen },
+  { name: 'Communications', href: '/admin/communications', icon: Mail },
+  { name: 'Modèles d\'export', href: '/admin/export-templates', icon: FileType },
+  { name: 'RGPD', href: '/admin/gdpr', icon: ShieldCheck },
+  // Écrans IA conservés (§14) — contenu défini par le CDC IA.
   { name: 'Tableau de bord IA', href: '/admin/ai-dashboard', icon: Gauge },
   { name: 'Configuration IA', href: '/admin/ai-config', icon: SlidersHorizontal },
   { name: 'File IA', href: '/admin/ai-queue', icon: ListOrdered },
   { name: 'Exécutions IA', href: '/admin/ai-executions', icon: ScrollText },
   { name: 'Coûts IA', href: '/admin/ai-costs', icon: Coins },
   { name: 'Fournisseur IA', href: '/admin/ai-provider', icon: KeyRound },
-  { name: 'Gestion IA', href: '/admin/document-ai', icon: Sparkles },
-  { name: 'Suivi IA', href: '/admin/ai-usage', icon: Activity },
-  { name: 'Types de biens', href: '/admin/asset-types', icon: Tags },
-  { name: 'Types de documents', href: '/admin/document-types', icon: FileText },
-  { name: 'Exports', href: '/admin/exports', icon: FileDown },
-  { name: 'Modèles d\'export', href: '/admin/export-templates', icon: FileType },
-  { name: 'Logos système', href: '/admin/system-logos', icon: ImageIcon },
-  { name: 'Templates Email', href: '/admin/email-templates', icon: Mail },
-  { name: 'Backups', href: '/admin/backups', icon: Database },
-  { name: 'Journal d\'audit', href: '/admin/audit-log', icon: FileText },
-];
+] as const;
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -101,7 +97,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       {/* Scrollable Nav */}
       <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {navigation.map((item) => {
+          {ADMIN_NAVIGATION.map((item) => {
             const isActive = pathname === item.href ||
               (item.href !== '/admin' && pathname.startsWith(item.href));
             return (

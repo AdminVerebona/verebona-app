@@ -1,5 +1,14 @@
 "use client"
 
+/**
+ * Modèles e-mail — consultation, aperçu et test (CDC Back-Office V1 §10).
+ *
+ * COM-013 / REC-MOD-06 : le contenu n'est pas éditable depuis le BO. L'éditeur
+ * (sujet / corps), la réinitialisation et l'initialisation (« seed ») ont été
+ * retirés avec leurs routes API ; le contenu est versionné dans le code ou les
+ * migrations. L'aperçu reste disponible en lecture seule.
+ */
+
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -23,7 +32,7 @@ import {
   TabsTrigger,
 } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { Mail, Edit, Send, Settings, Code, Eye, RotateCcw, Database } from 'lucide-react';
+import { Mail, Send, Settings, Code, Eye } from 'lucide-react';
 
 interface EmailTemplate {
   id: number;
@@ -54,10 +63,9 @@ export default function AdminEmailTemplatesPage() {
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Edit dialog state
+  // Aperçu (lecture seule)
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<EmailTemplate | null>(null);
-  const [editLoading, setEditLoading] = useState(false);
   
   // Test dialog state
   const [testDialogOpen, setTestDialogOpen] = useState(false);
@@ -65,22 +73,11 @@ export default function AdminEmailTemplatesPage() {
   const [testEmail, setTestEmail] = useState('');
   const [testLoading, setTestLoading] = useState(false);
   
-  // Form state
-  const [formData, setFormData] = useState({
-    subject: '',
-    body: '',
-  });
-
   // Settings form state
   const [settingsFormData, setSettingsFormData] = useState<Partial<EmailSettings>>({});
 
   const [previewMode, setPreviewMode] = useState<'code' | 'preview'>('code');
 
-  // Reset loading state per template
-  const [resettingId, setResettingId] = useState<number | null>(null);
-
-  // Seed loading state
-  const [seeding, setSeeding] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -167,43 +164,10 @@ export default function AdminEmailTemplatesPage() {
     }
   };
 
-  const handleEdit = (template: EmailTemplate) => {
+  const handlePreview = (template: EmailTemplate) => {
     setEditingTemplate(template);
-    setFormData({
-      subject: template.subject,
-      body: template.body,
-    });
-    setPreviewMode('code');
+    setPreviewMode('preview');
     setEditDialogOpen(true);
-  };
-
-  const handleSave = async () => {
-    if (!editingTemplate) return;
-
-    try {
-      setEditLoading(true);
-
-      const response = await fetch(`/api/admin/email-templates/${editingTemplate.id}`, {
-      credentials: 'include',
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formData),
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la mise à jour');
-      }
-
-      toast.success('Template mis à jour avec succès');
-      setEditDialogOpen(false);
-      loadTemplates();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setEditLoading(false);
-    }
   };
 
   const handleTestOpen = (template: EmailTemplate) => {
@@ -219,7 +183,7 @@ export default function AdminEmailTemplatesPage() {
   };
 
   const handleTestSend = async () => {
-    if (!testTemplate || !testEmail) return;
+    if (!testTemplate) return;
 
     try {
       setTestLoading(true);
@@ -230,7 +194,8 @@ export default function AdminEmailTemplatesPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ testEmail }),
+        // COM-010 : le serveur envoie à l'adresse de l'administrateur connecté.
+        body: JSON.stringify({}),
       });
 
       if (!response.ok) {
@@ -244,53 +209,6 @@ export default function AdminEmailTemplatesPage() {
       toast.error(err instanceof Error ? err.message : 'Erreur lors de l\'envoi');
     } finally {
       setTestLoading(false);
-    }
-  };
-
-  // Réinitialiser un template à sa version par défaut (avec logo centré)
-  const handleReset = async (template: EmailTemplate) => {
-    try {
-      setResettingId(template.id);
-      const res = await fetch(`/api/admin/email-templates/${template.id}/reset`, {
-      credentials: 'include',
-        method: 'POST',
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Impossible de réinitialiser');
-      }
-      toast.success('Template réinitialisé');
-      await loadTemplates();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erreur inconnue');
-    } finally {
-      setResettingId(null);
-    }
-  };
-
-  const handleSeed = async () => {
-    try {
-      setSeeding(true);
-
-      const res = await fetch('/api/admin/email-templates/seed', {
-      credentials: 'include',
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur lors du seed');
-
-      const created = data.created as string[];
-      const skipped = data.skipped as string[];
-      if (created.length > 0) {
-        toast.success(`${created.length} template(s) créé(s) : ${created.join(', ')}`);
-      } else {
-        toast.success(`Tous les templates sont déjà présents (${skipped.length} ignorés)`);
-      }
-      await loadTemplates();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Erreur inconnue');
-    } finally {
-      setSeeding(false);
     }
   };
 
@@ -352,19 +270,9 @@ export default function AdminEmailTemplatesPage() {
         <div>
           <h1 className="text-2xl md:text-3xl font-bold">Templates Email</h1>
           <p className="text-muted-foreground mt-1">
-            Gestion des emails transactionnels système
+            Consultation des e-mails transactionnels système
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleSeed}
-          disabled={seeding}
-          className="shrink-0 mt-1"
-        >
-          <Database className="w-4 h-4 mr-2" />
-          {seeding ? 'Chargement…' : 'Initialiser les templates'}
-        </Button>
       </div>
 
       {/* Paramètres Généraux */}
@@ -571,10 +479,10 @@ export default function AdminEmailTemplatesPage() {
                       variant="outline"
                       size="sm"
                       className="flex-1"
-                      onClick={() => handleEdit(template)}
+                      onClick={() => handlePreview(template)}
                     >
-                      <Edit className="h-4 w-4 mr-1" />
-                      Modifier
+                      <Eye className="h-4 w-4 mr-1" />
+                      Aperçu
                     </Button>
                     <Button
                       variant="outline"
@@ -584,15 +492,6 @@ export default function AdminEmailTemplatesPage() {
                     >
                       <Send className="h-4 w-4" />
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleReset(template)}
-                      disabled={resettingId === template.id}
-                      title="Réinitialiser au template par défaut"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -601,102 +500,59 @@ export default function AdminEmailTemplatesPage() {
         )}
       </div>
 
-      {/* Edit Dialog */}
+      {/* Aperçu (lecture seule, COM-013) */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh]">
           <DialogHeader>
-            <DialogTitle>Modifier le template email</DialogTitle>
+            <DialogTitle>Aperçu du modèle e-mail</DialogTitle>
             <DialogDescription>
-              {editingTemplate && `Template: ${getTypeLabel(editingTemplate.type)}`}
+              {editingTemplate && `Modèle : ${getTypeLabel(editingTemplate.type)} — contenu non modifiable depuis le back-office.`}
             </DialogDescription>
           </DialogHeader>
-          
-          <div className="space-y-4 overflow-y-auto flex-1">
-            <div>
-              <Label htmlFor="subject">Sujet</Label>
-              <Input
-                id="subject"
-                value={formData.subject}
-                onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
-                placeholder="Ex: Vérifiez votre adresse email"
-              />
-            </div>
 
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <Label htmlFor="body">Corps du message (Texte simple ou HTML)</Label>
-                <Tabs value={previewMode} onValueChange={(v) => setPreviewMode(v as 'code' | 'preview')} className="w-auto">
-                  <TabsList className="h-8">
-                    <TabsTrigger value="code" className="text-xs h-7 px-3">
-                      <Code className="h-3 w-3 mr-1" />
-                      Code
-                    </TabsTrigger>
-                    <TabsTrigger value="preview" className="text-xs h-7 px-3">
-                      <Eye className="h-3 w-3 mr-1" />
-                      Aperçu
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
+          {editingTemplate && (
+            <div className="space-y-4 overflow-y-auto flex-1">
+              <div>
+                <div className="text-sm text-muted-foreground mb-1">Sujet</div>
+                <div className="text-sm font-medium">{editingTemplate.subject}</div>
               </div>
 
-              {previewMode === 'code' ? (
-                <>
-                  <Textarea
-                    id="body"
-                    value={formData.body}
-                    onChange={(e) => setFormData({ ...formData, body: e.target.value })}
-                    placeholder="Texte simple :&#10;Bonjour {{firstName}},&#10;&#10;HTML :&#10;<html><body><h1>Bonjour {{firstName}}</h1><p>Votre message ici...</p></body></html>"
-                    rows={16}
-                    className="font-mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    💡 Vous pouvez coller du <strong>HTML complet</strong> ou du texte simple. 
-                    Utilisez les variables : {`{{firstName}}`}, {`{{verificationUrl}}`}, etc.
-                  </p>
-                </>
-              ) : (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm text-muted-foreground">Corps du message</div>
+                  <Tabs value={previewMode} onValueChange={(v) => setPreviewMode(v as 'code' | 'preview')} className="w-auto">
+                    <TabsList className="h-8">
+                      <TabsTrigger value="preview" className="text-xs h-7 px-3">
+                        <Eye className="h-3 w-3 mr-1" />
+                        Aperçu
+                      </TabsTrigger>
+                      <TabsTrigger value="code" className="text-xs h-7 px-3">
+                        <Code className="h-3 w-3 mr-1" />
+                        Source
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </div>
+
                 <div className="border rounded-md p-4 bg-muted min-h-[400px] max-h-[400px] overflow-auto">
-                  {isHtmlContent(formData.body) ? (
-                    <div 
-                      dangerouslySetInnerHTML={{ __html: formData.body }}
+                  {previewMode === 'preview' && isHtmlContent(editingTemplate.body) ? (
+                    <div
+                      dangerouslySetInnerHTML={{ __html: editingTemplate.body }}
                       className="prose prose-sm max-w-none"
                     />
                   ) : (
-                    <pre className="whitespace-pre-wrap text-sm font-sans">
-                      {formData.body}
+                    <pre className={`whitespace-pre-wrap text-sm ${previewMode === 'code' ? 'font-mono' : 'font-sans'}`}>
+                      {editingTemplate.body}
                     </pre>
                   )}
                 </div>
-              )}
-            </div>
-
-            {editingTemplate && (
-              <div className="bg-muted p-3 rounded">
-                <div className="text-sm font-medium mb-2">Variables disponibles pour ce template:</div>
-                <div className="flex flex-wrap gap-1">
-                  {parsePlaceholders(editingTemplate.placeholders).map((placeholder) => (
-                    <code key={placeholder} className="bg-background px-2 py-1 rounded text-xs font-mono">
-                      {`{{${placeholder}}}`}
-                    </code>
-                  ))}
-                </div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setEditDialogOpen(false)}
-              disabled={editLoading}
-            >
-              Annuler
-            </Button>
-            <Button
-              onClick={handleSave}
-              disabled={editLoading}
-            >
-              {editLoading ? 'Enregistrement...' : 'Enregistrer'}
+            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
+              Fermer
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -713,19 +569,9 @@ export default function AdminEmailTemplatesPage() {
           </DialogHeader>
           
           <div className="space-y-4">
-            <div>
-              <Label htmlFor="testEmail">Adresse email de test</Label>
-              <Input
-                id="testEmail"
-                type="email"
-                value={testEmail}
-                onChange={(e) => setTestEmail(e.target.value)}
-                placeholder="admin@example.com"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                L'email sera envoyé avec des valeurs de test automatiques
-              </p>
-            </div>
+            <p className="text-sm text-muted-foreground">
+              L&apos;e-mail de test est envoyé à votre adresse d&apos;administrateur, avec des valeurs de test automatiques.
+            </p>
 
             {testTemplate && (
               <div className="bg-muted p-3 rounded text-sm">
@@ -748,7 +594,7 @@ export default function AdminEmailTemplatesPage() {
             </Button>
             <Button
               onClick={handleTestSend}
-              disabled={testLoading || !testEmail}
+              disabled={testLoading}
             >
               <Send className="h-4 w-4 mr-2" />
               {testLoading ? 'Envoi...' : 'Envoyer le test'}

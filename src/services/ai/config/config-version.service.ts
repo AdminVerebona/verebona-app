@@ -187,12 +187,24 @@ export async function promote(versionId: number): Promise<PromotionResult> {
 
   // La machine à états refusera si la version n'est pas un Brouillon.
   await promoteToTest(versionId);
+  // La version « À tester » devient effective en préproduction (VER-004) :
+  // même raison que pour une bascule d'Active, elle doit s'appliquer tout de suite.
+  await invalidateCaches();
   return { diff, validation, promoted: true };
 }
 
-/** VER-005 — retour en Brouillon : la préproduction revient sur la dernière Active. */
+/**
+ * VER-012 (partie II) / VER-005 — retour « À tester » → Brouillon : la
+ * préproduction revient sur la dernière Active.
+ *
+ * Les caches sont vidés : la version « À tester » était la version EFFECTIVE
+ * en préproduction (VER-004) ; sans invalidation, les appels continueraient de
+ * l'utiliser jusqu'à trente secondes après le retour — précisément la version
+ * qu'on vient de juger mauvaise.
+ */
 export async function backToDraft(versionId: number): Promise<void> {
   await demoteToDraft(versionId);
+  await invalidateCaches();
 }
 
 // ── WF-03 — Validation ──────────────────────────────────────────────────────

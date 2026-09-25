@@ -66,6 +66,12 @@ export interface AssistantApiResponse {
   } | null;
   /** Commande préparée : aperçu à confirmer (jamais de paramètres modifiables). */
   commandPlan?: import('../commands/catalog').CommandPlanPreview | null;
+  /**
+   * Erreur fonctionnelle (§27.11), présente quand `status === 'error'` :
+   * code stable, libellé Verebona (jamais un message technique brut) et
+   * possibilité de réessayer. Le client l'affiche dans le fil (§4.2).
+   */
+  error?: { code: VerebonaErrorCode; message: string; recoverable: boolean } | null;
 }
 
 /** Codes fonctionnels stables — CDC §27.11. */
@@ -107,6 +113,11 @@ export interface PageContext {
 export interface AssistantRequestInput {
   accountId: number;
   userId: number;
+  /**
+   * Offre EFFECTIVE pour l'assistant, dérivée des droits
+   * (`assistantPlanFromEntitlements`) et jamais lue telle quelle dans le JWT :
+   * l'essai 7 jours vaut Premium (§6.5).
+   */
   planType: string;
   message: string;
   pageContext?: PageContext;
@@ -132,6 +143,12 @@ export interface AssistantRequestInput {
   threadContextText?: string;
   /** Une revalidation ciblée a déjà eu lieu pour cette demande (pas de boucle). */
   revalidationDone?: boolean;
+  /**
+   * Budget d'appels modèle du message (§15.5, CA-07), créé par
+   * `runAssistant` et partagé par référence entre classification,
+   * revalidation et génération. Jamais fourni par le client.
+   */
+  aiBudget?: import('../core/ai-call-budget').AiCallBudget;
   /**
    * Message tel que posé, quand `message` ne porte plus que les sous-demandes
    * autorisées d'une requête mixte (historique fidèle).

@@ -10,18 +10,27 @@ import { GoogleGenerativeAI, type Part } from '@google/generative-ai';
 import type { AiProvider, ProviderCallInput, ProviderCallOutput } from './provider.port';
 import { AiGatewayError } from '../errors';
 import { prepareAttachmentParts, cleanupTemporaryFiles } from './gemini-files';
+import { getProviderSecret } from '../../provider/provider-secret';
 
 export class GeminiProvider implements AiProvider {
   readonly name = 'gemini';
 
-  isConfigured(): boolean {
-    return Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY);
+  /**
+   * Vrai si une clé est disponible : clé ACTIVE du BO, sinon environnement
+   * (PROV-UI-05, WF-21). Asynchrone parce que la clé administrée est en base ;
+   * la lecture est mise en cache 60 s (provider-secret), donc sans coût réel
+   * sur le chemin d'appel.
+   */
+  async isConfigured(): Promise<boolean> {
+    return Boolean(await getProviderSecret(this.name));
   }
 
   async call(input: ProviderCallInput): Promise<ProviderCallOutput> {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
+    // Même source que `isConfigured` : la clé activée depuis le BO remplace
+    // celle de l'environnement dès l'activation (cache vidé), sans redéploiement.
+    const apiKey = await getProviderSecret(this.name);
     if (!apiKey) {
-      throw new AiGatewayError('PROVIDER_UNAVAILABLE', 'n/a', 'GEMINI_API_KEY absente', { recoverable: false });
+      throw new AiGatewayError('PROVIDER_UNAVAILABLE', 'n/a', 'Aucune clé Gemini (BO ni GEMINI_API_KEY)', { recoverable: false });
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -34,7 +43,9 @@ export class GeminiProvider implements AiProvider {
         : {}),
     });
 
-    // PDF et vidéo via Files API, images en inline, bureautique extraite côté serveur.
+    // PDF et vidéo via Files API, images en inline, bureautique extraite côté
+    // serveur. La clé est transmise : l'upload et le nettoyage utilisent la
+    // même clé administrée que la génération.
     const { parts, temporaryFileUris } = await prepareAttachmentParts(input.attachments, apiKey);
 
     try {

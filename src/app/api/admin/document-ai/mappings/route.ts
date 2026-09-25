@@ -1,4 +1,9 @@
 /**
+ * CDC Back-Office V1 — LECTURE SEULE.
+ * REFD-006 : consultation seule des mappings (Référentiels > Règles et mappings).
+ * POST supprimé, ainsi que `mappings/[id]` (PATCH, DELETE).
+ */
+/**
  * GET  /api/admin/document-ai/mappings — Liste les mappings de taxonomie IA
  * POST /api/admin/document-ai/mappings — Crée un nouveau mapping manuellement
  * CDC §19 : "Le rattachement d'une proposition à une valeur canonique crée un mapping réutilisable."
@@ -36,34 +41,3 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
-  try {
-    await requireAdmin(req);
-
-    const body = await req.json();
-    const { mappingType, rawLabel, canonicalCode, canonicalLabel, confidenceThreshold } = body;
-
-    if (!mappingType || !rawLabel || !canonicalCode || !canonicalLabel) {
-      return NextResponse.json({ error: 'MISSING_FIELDS' }, { status: 400 });
-    }
-    if (!['function_code', 'date_label'].includes(mappingType)) {
-      return NextResponse.json({ error: 'INVALID_MAPPING_TYPE' }, { status: 400 });
-    }
-
-    const [created] = await db.insert(documentTaxonomyMappings).values({
-      mappingType,
-      rawLabel,
-      canonicalCode,
-      canonicalLabel,
-      confidenceThreshold: confidenceThreshold ? String(confidenceThreshold) : '0.75',
-      source: 'manual',
-      status: 'active',
-    }).returning();
-
-    return NextResponse.json({ mapping: created }, { status: 201 });
-  } catch (error) {
-    if (error instanceof Response) return error;
-    console.error('POST /api/admin/document-ai/mappings error:', error);
-    return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
-  }
-}

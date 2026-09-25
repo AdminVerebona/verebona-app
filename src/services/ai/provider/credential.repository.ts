@@ -145,39 +145,56 @@ export async function recordTest(id: number, ok: boolean, detail: TestDetail): P
 /**
  * Active une candidate — refuse si son dernier test n'est pas un succès.
  *
- * Le contrôle est en base, dans la condition du `UPDATE`, et non lu puis
- * vérifié : entre la lecture et l'écriture, un second test pourrait avoir
- * échoué. La bascule et la rétrogradation de l'ancienne active tiennent dans
- * une seule instruction, pour que l'index unique ne rejette jamais une moitié
- * du changement.
+ * Le contrôle est en base, sous verrou (`FOR UPDATE`), et non lu puis vérifié
+ * hors transaction : entre la lecture et l'écriture, un second test pourrait
+ * avoir échoué.
+ *
+ * Transaction ORDONNÉE (même correctif que WF-03) : l'ancienne CTE lisait
+ * `promue` avant `ancienne`, si bien que PostgreSQL promouvait AVANT de
+ * retirer, et l'index `ai_provider_credential_single_active_idx` rejetait
+ * l'activation dès qu'une clé active existait — c'est-à-dire à chaque
+ * rotation. Ici : retirer l'active, puis promouvoir, ou rien.
+ *
+ * PROV-UI-05 / WF-21 : le cache de clé du runtime est vidé après succès, pour
+ * que la nouvelle clé serve dès l'appel suivant sur cette instance.
  */
 export async function activateCandidate(
   id: number, userId: number, provider = 'gemini',
 ): Promise<{ activated: boolean; previousId: number | null }> {
-  const rows = await pgClient.unsafe(
-    `WITH candidate AS (
-       SELECT id FROM ai_provider_credential
-        WHERE id = $1 AND provider = $3 AND status = 'CANDIDATE' AND last_test_ok IS TRUE
-     ), ancienne AS (
-       UPDATE ai_provider_credential
-          SET status = 'RETIRED', retired_at = NOW()
-        WHERE provider = $3 AND status = 'ACTIVE'
-          AND EXISTS (SELECT 1 FROM candidate)
-        RETURNING id
-     ), promue AS (
-       UPDATE ai_provider_credential
-          SET status = 'ACTIVE', activated_by = $2, activated_at = NOW()
-        WHERE id IN (SELECT id FROM candidate)
-        RETURNING id
-     )
-     SELECT (SELECT id FROM promue) AS promoted, (SELECT id FROM ancienne) AS previous`,
-    [id, userId, provider] as never[],
-  );
+  const r = await pgClient.begin(async (tx) => {
+    const t = tx as unknown as { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+    const candidate = (await t.unsafe(
+      `SELECT id FROM ai_provider_credential
+        WHERE id = $1 AND provider = $2 AND status = 'CANDIDATE' AND last_test_ok IS TRUE
+        FOR UPDATE`,
+      [id, provider] as never[],
+    )) as Row[];
+    if (!candidate[0]) return { promoted: null, previous: null };
 
-  const r = (rows as unknown as Row[])[0];
+    const ancienne = (await t.unsafe(
+      `UPDATE ai_provider_credential
+          SET status = 'RETIRED', retired_at = NOW()
+        WHERE provider = $1 AND status = 'ACTIVE'
+        RETURNING id`,
+      [provider] as never[],
+    )) as Row[];
+    const promue = (await t.unsafe(
+      `UPDATE ai_provider_credential
+          SET status = 'ACTIVE', activated_by = $2, activated_at = NOW()
+        WHERE id = $1
+        RETURNING id`,
+      [id, userId] as never[],
+    )) as Row[];
+    return { promoted: promue[0]?.id ?? null, previous: ancienne[0]?.id ?? null };
+  });
+
+  if (r.promoted != null) {
+    const { invalidateProviderSecretCache } = await import('./provider-secret');
+    invalidateProviderSecretCache();
+  }
   return {
-    activated: r?.promoted != null,
-    previousId: r?.previous == null ? null : Number(r.previous),
+    activated: r.promoted != null,
+    previousId: r.previous == null ? null : Number(r.previous),
   };
 }
 

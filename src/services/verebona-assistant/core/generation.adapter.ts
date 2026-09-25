@@ -23,7 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { z } from 'zod';
-import { AiGateway } from '@/services/ai/gateway/ai-gateway';
+import { executeWithinBudget } from './ai-call-budget';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import { assistantIdempotencyKey } from './assistant-cache-key';
 import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
@@ -94,7 +94,9 @@ export async function generateAssistantAnswer(
   try {
     const promptVariables = {
       TODAY: new Date().toISOString().slice(0, 10),
-      QUESTION: input.message,
+      // Balisée <question> dans le prompt : un `<` saisi ne peut pas refermer
+      // la balise et se faire passer pour une consigne.
+      QUESTION: escapeUntrusted(input.message),
       DATA: formatSourcesData(sources),
       SOURCES: formatSourcesList(sources),
       INTENT: route.intent,
@@ -105,12 +107,15 @@ export async function generateAssistantAnswer(
       // données du compte — seuls les articles servent (CDC Centre d'aide §5,
       // T2-06).
       CONVERSATION: input.threadContextText && !isHelpIntent(route.intent)
-        ? input.threadContextText
+        ? escapeUntrusted(input.threadContextText)
         : isHelpIntent(route.intent)
           ? '(question d’utilisation de Verebona : réponds uniquement à partir des articles du Centre d’aide fournis)'
           : '(nouvelle conversation, aucun échange précédent)',
     };
-    const res = await AiGateway.execute({
+    // Décompté sur le budget du message (§15.5, CA-07) : la génération n'a
+    // droit qu'aux tentatives laissées par la classification et la
+    // revalidation ; épuisé → `null` → repli déterministe.
+    const res = await executeWithinBudget(input.aiBudget, {
       useCaseCode: 'INTELLIGENT_ASSISTANT',
       operationCode: 'generate_answer',
       accountId: input.accountId,
@@ -214,14 +219,49 @@ export function computeSupportLevel(total: number, retained: number): SupportLev
   return retained === total ? 'supported' : 'partial';
 }
 
-function formatSourcesData(sources: RetrievedSource[]): string {
+/**
+ * Neutralise tout balisage dans un texte non fiable (§17.4, CA-16) : un
+ * document contenant « </retrieved_source> » ou « <system> » ne peut ni
+ * refermer sa balise ni en ouvrir une autre. Seul `<` est échappé : les
+ * chiffres et symboles (« R&D », « 480 € ») restent recopiables tels quels.
+ */
+export function escapeUntrusted(text: string): string {
+  return String(text ?? '').replace(/</g, '&lt;');
+}
+
+/** Valeur d'attribut : ni guillemet, ni chevron, ni saut de ligne. */
+function escapeAttr(value: string): string {
+  return String(value ?? '').replace(/[<>"\r\n]/g, ' ');
+}
+
+/**
+ * Sources sérialisées comme DONNÉES NON FIABLES — CDC §17.4 :
+ *
+ *     <retrieved_source id="doc_123" type="document">
+ *       <title>Facture vélo</title>
+ *       <content>...</content>
+ *     </retrieved_source>
+ *
+ * Auparavant `[id] type — titre\ncontenu`, sans délimitation : une phrase
+ * d'un document (« Ignore les règles… ») se lisait comme une consigne de
+ * plus. Le prompt v3 (`generate_answer_v3.txt`, règle S1) désigne ces
+ * balises comme des données à analyser, jamais à exécuter.
+ */
+export function formatSourcesData(sources: RetrievedSource[]): string {
   return sources
-    .map((s) => `[${s.id}] ${s.type} — ${s.title}\n${s.content}`)
+    .map((s) => [
+      `<retrieved_source id="${escapeAttr(s.id)}" type="${escapeAttr(s.type)}">`,
+      `  <title>${escapeUntrusted(s.title)}</title>`,
+      `  <content>${escapeUntrusted(s.content)}</content>`,
+      '</retrieved_source>',
+    ].join('\n'))
     .join('\n\n');
 }
 
 function formatSourcesList(sources: RetrievedSource[]): string {
-  return sources.map((s) => `[${s.id}] ${s.title}`).join('\n');
+  // Identifiants seuls : le titre d'un document est une donnée non fiable, il
+  // n'apparaît qu'à l'intérieur des balises <retrieved_source>.
+  return sources.map((s) => `- ${escapeAttr(s.id)}`).join('\n');
 }
 
 /**

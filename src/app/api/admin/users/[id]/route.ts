@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { users, assets, assetFiles, events, deadlines, adminAuditLog, subscriptionHistory, accounts, accountMemberships, assetTransmissions, duoAccounts, duoMemberships } from '@/db/schema';
+import { users, assets, assetFiles, events, deadlines, subscriptionHistory, accounts, accountMemberships } from '@/db/schema';
 import { eq, and, sql, isNull, desc, inArray } from 'drizzle-orm';
-import { requireAdmin } from '@/lib/auth-guards';
+import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { SessionService } from '@/lib/session-service';
+import { logAdminAction } from '@/lib/admin-audit';
+import {
+  ADMIN_ROLES,
+  isActiveAdmin,
+  isAdminRole,
+  setUserAdminStatus,
+  UserAdminError,
+} from '@/services/admin/user-admin.service';
+import { parseUserId, invalidUserId, userAdminErrorResponse } from './_shared';
 
 export async function GET(
   request: NextRequest,
@@ -137,6 +146,18 @@ export async function GET(
 
     const linkedAccount = account ?? memberAccountResult?.[0] ?? null;
 
+    // USR-A09 / UX-003 : l'interface désactive, avec son motif, le retrait du
+    // statut admin et la désactivation du dernier administrateur actif. Le
+    // serveur refuse de toute façon (409 LAST_ADMIN).
+    const activeAdminRows = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(inArray(users.role, [...ADMIN_ROLES]), eq(users.status, 'ACTIVE')));
+    const adminStatus = {
+      isAdmin: isAdminRole(user.role),
+      isLastActiveAdmin: isActiveAdmin(user) && activeAdminRows.length <= 1,
+    };
+
     return NextResponse.json({
       user: {
         ...user,
@@ -147,6 +168,7 @@ export async function GET(
         proUntil: account?.proUntil || null,
       },
       account: linkedAccount,
+      adminStatus,
       assets: userAssets,
       stats: {
         documentsCount,
@@ -163,211 +185,83 @@ export async function GET(
   }
 }
 
+/**
+ * PUT /api/admin/users/[id] — statut administrateur UNIQUEMENT.
+ *
+ * CDC Back-Office V1 SEC-004 / USR-A08 / USR-A09 / USR-A10 : le BO ne modifie
+ * jamais l'identité (nom, prénom, société, e-mail, langue), ni l'offre, ni le
+ * statut par ce biais. Le seul changement admis est l'octroi ou le retrait du
+ * statut administrateur : `{ "isAdmin": boolean }`. Tout autre champ est
+ * refusé (400) plutôt qu'ignoré, pour qu'un client obsolète ne croie pas avoir
+ * modifié quelque chose.
+ *
+ * Le retrait du dernier administrateur actif est refusé (409 LAST_ADMIN, en
+ * transaction). Le retrait révoque les sessions de la cible.
+ *
+ * DELETE a été supprimé : la suppression passe par la fiche Compte et le
+ * workflow unique de suppression (ACC-A14).
+ */
 export async function PUT(
   request: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
-  const params = await context.params;
+  let adminId: number;
   try {
-      const adminUserId = await await requireAdmin(request);
-
-      const adminUserResult = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, adminUserId))
-        .limit(1);
-
-      if (adminUserResult.length === 0) {
-        return NextResponse.json(
-          { error: 'Admin user not found', code: 'ADMIN_NOT_FOUND' },
-          { status: 404 }
-        );
-      }
-
-      const adminUser = adminUserResult[0];
-      const userId = params.id;
-      const targetUserId = parseInt(userId);
-
-    const targetUserResult = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, targetUserId))
-      .limit(1);
-
-    if (targetUserResult.length === 0) {
-      return NextResponse.json(
-        { error: 'User not found', code: 'USER_NOT_FOUND' },
-        { status: 404 }
-      );
-    }
-
-    const targetUser = targetUserResult[0];
-    const body = await request.json();
-    const { firstName, lastName, username, company, planType, locale, status, role } = body;
-
-    const updateData: any = {
-      updatedAt: new Date(),
-    };
-
-    const changedFields: string[] = [];
-    if (firstName !== undefined && firstName !== targetUser.firstName) {
-      updateData.firstName = firstName.trim();
-      changedFields.push('firstName');
-    }
-    if (lastName !== undefined && lastName !== targetUser.lastName) {
-      updateData.lastName = lastName.trim();
-      changedFields.push('lastName');
-    }
-    if (username !== undefined && username !== targetUser.username) {
-      updateData.username = username ? username.trim() : null;
-      changedFields.push('username');
-    }
-    if (company !== undefined && company !== targetUser.company) {
-      updateData.company = company || null;
-      changedFields.push('company');
-    }
-    if (planType !== undefined && planType !== targetUser.planType) {
-      updateData.planType = planType;
-      changedFields.push('planType');
-    }
-    if (locale !== undefined && locale !== targetUser.locale) {
-      updateData.locale = locale;
-      changedFields.push('locale');
-    }
-    if (status !== undefined && status !== targetUser.status) {
-      updateData.status = status;
-      changedFields.push('status');
-    }
-    if (role !== undefined && role !== targetUser.role) {
-      updateData.role = role;
-      changedFields.push('role');
-    }
-
-    if (changedFields.length === 0) {
-      const { passwordHash, ...userWithoutPassword } = targetUser;
-      return NextResponse.json(userWithoutPassword, { status: 200 });
-    }
-
-    const updatedUser = await db
-      .update(users)
-      .set(updateData)
-      .where(eq(users.id, targetUserId))
-      .returning();
-
-    await db.insert(adminAuditLog).values({
-      timestamp: new Date(),
-      adminUserId: adminUserId,
-      adminEmail: adminUser.email,
-      actionType: 'USER_UPDATE',
-      targetType: 'USER',
-      targetId: targetUserId,
-      details: JSON.stringify({
-        changedFields,
-        previousValues: Object.fromEntries(
-          changedFields.map(field => [field, targetUser[field as keyof typeof targetUser]])
-        ),
-        newValues: Object.fromEntries(
-          changedFields.map(field => [field, updateData[field]])
-        ),
-      }),
-    });
-
-    const { passwordHash, ...userWithoutPassword } = updatedUser[0];
-    return NextResponse.json(userWithoutPassword, { status: 200 });
+    adminId = await requireAdmin(request);
   } catch (error) {
-    if (error instanceof Response) return error;
-    console.error('PUT error:', error);
-    return SessionService.handleSessionError(error);
+    return sessionErrorResponse(error);
   }
-}
+  const userId = parseUserId((await context.params).id);
+  if (!userId) return invalidUserId();
 
-export async function DELETE(
-  request: NextRequest,
-  context: { params: Promise<{ id: string }> }
-) {
-  const params = await context.params;
+  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+  const extraFields = body ? Object.keys(body).filter((k) => k !== 'isAdmin') : [];
+  if (!body || typeof body.isAdmin !== 'boolean' || extraFields.length > 0) {
+    return NextResponse.json(
+      {
+        error: 'READ_ONLY_FIELDS',
+        code: 'READ_ONLY_FIELDS',
+        message:
+          "Seul le statut administrateur est modifiable depuis le back-office (corps attendu : { isAdmin: boolean }).",
+        rejectedFields: extraFields,
+      },
+      { status: 400 },
+    );
+  }
+  const makeAdmin = body.isAdmin;
+
   try {
-      const adminUserId = await await requireAdmin(request);
-
-      const adminUserResult = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, adminUserId))
-      .limit(1);
-
-    if (adminUserResult.length === 0) {
-      return NextResponse.json({ error: 'Admin user not found' }, { status: 404 });
+    const change = await setUserAdminStatus(userId, makeAdmin);
+    if (change.changed) {
+      await logAdminAction({
+        adminId,
+        action: 'USER_ADMIN_ROLE_CHANGE',
+        targetType: 'USER',
+        targetId: userId,
+        result: 'SUCCESS',
+        before: change.before,
+        after: change.after,
+        details: { sessionsRevoked: !makeAdmin },
+      });
     }
-
-    const adminUser = adminUserResult[0];
-    const targetUserId = parseInt(params.id);
-
-    const body = await request.json();
-    if (body.confirmId !== targetUserId) {
-      return NextResponse.json({ error: 'Confirmation ID mismatch' }, { status: 400 });
-    }
-
-    const [targetUser] = await db.select().from(users).where(eq(users.id, targetUserId)).limit(1);
-    if (!targetUser) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-
-    // Nullify assetTransmissions user FKs (no onDelete clause on these columns)
-    await db.execute(sql`UPDATE asset_transmissions SET initiator_user_id = NULL WHERE initiator_user_id = ${targetUserId}`);
-    await db.execute(sql`UPDATE asset_transmissions SET recipient_user_id = NULL WHERE recipient_user_id = ${targetUserId}`);
-
-    // Find owned account and nullify assetTransmissions duplicatedAssetId FK before cascade
-    const [ownedAccount] = await db.select({ id: accounts.id })
-      .from(accounts).where(eq(accounts.ownerUserId, targetUserId)).limit(1);
-
-    if (ownedAccount) {
-      const accountAssets = await db.select({ id: assets.id })
-        .from(assets).where(eq(assets.accountId, ownedAccount.id));
-      if (accountAssets.length > 0) {
-        const assetIds = accountAssets.map(a => a.id);
-        await db.update(assetTransmissions).set({ duplicatedAssetId: null })
-          .where(inArray(assetTransmissions.duplicatedAssetId, assetIds));
-      }
-
-      // Delete duo data linked to this owner
-      const duoList = await db.select({ id: duoAccounts.id })
-        .from(duoAccounts).where(eq(duoAccounts.billingOwnerUserId, targetUserId));
-      for (const duo of duoList) {
-        await db.delete(duoMemberships).where(eq(duoMemberships.duoId, duo.id));
-        await db.delete(duoAccounts).where(eq(duoAccounts.id, duo.id));
-      }
-
-      // Delete the account (cascades memberships, assets, audit logs, etc.)
-      await db.delete(accounts).where(eq(accounts.id, ownedAccount.id));
-    }
-
-    const deletedUser = await db
-      .delete(users)
-      .where(eq(users.id, targetUserId))
-      .returning();
-
-    const deletedRecord = deletedUser[0] ?? targetUser;
-    await db.insert(adminAuditLog).values({
-      timestamp: new Date(),
-      adminUserId: adminUserId,
-      adminEmail: adminUser.email,
-      actionType: 'USER_DELETE',
-      targetType: 'USER',
-      targetId: targetUserId,
-      details: JSON.stringify({
-        userEmail: deletedRecord.email,
-        userName: `${deletedRecord.firstName} ${deletedRecord.lastName}`,
-      }),
-    });
-
-    const { passwordHash, ...userWithoutPassword } = deletedRecord;
-    return NextResponse.json({
-      message: 'User deleted successfully',
-      deletedUser: userWithoutPassword,
-    }, { status: 200 });
+    return NextResponse.json({ success: true, role: change.after.role, changed: change.changed });
   } catch (error) {
-    if (error instanceof Response) return error;
-    console.error('DELETE error:', error);
-    return SessionService.handleSessionError(error);
+    if (isSessionError(error)) return sessionErrorResponse(error);
+    const denied = error instanceof UserAdminError;
+    await logAdminAction({
+      adminId,
+      action: 'USER_ADMIN_ROLE_CHANGE',
+      targetType: 'USER',
+      targetId: userId,
+      result: denied ? 'DENIED' : 'FAILURE',
+      after: { isAdmin: makeAdmin },
+      details: { error: denied ? error.code : (error as Error).message },
+    });
+    if (denied) return userAdminErrorResponse(error);
+    console.error('[admin/users PUT] échec :', error);
+    return NextResponse.json(
+      { error: 'ROLE_CHANGE_FAILED', code: 'ROLE_CHANGE_FAILED', message: 'Le changement de statut administrateur a échoué.' },
+      { status: 500 },
+    );
   }
 }

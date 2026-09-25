@@ -22,6 +22,9 @@ import { resolvePrompt } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
+import { treatmentForUseCase } from '../config/treatments';
+import { assertTreatmentRunnable } from '../queue/runnable-guard';
+import { noteGatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
 
 export class AiGateway {
   static async execute<T>(req: AiGatewayRequest<T>): Promise<AiGatewayResponse<T>> {
@@ -40,6 +43,16 @@ export class AiGateway {
       throw new AiGatewayError('OPERATION_UNKNOWN', req.operationCode,
         `L'opération « ${op.operationCode} » est déterministe : elle ne doit pas passer par la gateway.`);
     }
+
+    // ── Arrêt d'urgence et état du traitement (CDC BO IA OPS-011, OPS-008,
+    //    OPS-024, WF-07, WF-08, MOD-012) ──────────────────────────────────────
+    // Point de passage de TOUS les appels modèle : T2, T3, T4, T1 en file
+    // mémoire, T5 et T6 sont couverts sans que chaque appelant y pense. Lève
+    // `AI_BLOCKED`, non récupérable ; chaque appelant retombe sur son chemin
+    // sans IA. Placée avant l'idempotence : pendant un arrêt, aucun appel ne
+    // part, et l'on ne sert pas non plus de résultat mis en cache comme si
+    // l'IA tournait. Cache de 5 s (runnable-guard).
+    await assertTreatmentRunnable(treatmentForUseCase(op.useCaseCode), op.operationCode);
 
     // ── Idempotence (CDC §5.7) ─────────────────────────────────────────────
     const key = req.idempotencyKey ?? buildIdempotencyKey({
@@ -62,7 +75,8 @@ export class AiGateway {
     const traceId = randomUUID();
     const startedAt = Date.now();
 
-    if (!provider.isConfigured()) {
+    // Attendu : la clé administrée (BO) est résolue en base, avec cache (WF-21).
+    if (!(await provider.isConfigured())) {
       throw new AiGatewayError('PROVIDER_UNAVAILABLE', operationCode,
         `Fournisseur « ${provider.name} » non configuré.`, { recoverable: true });
     }
@@ -102,8 +116,24 @@ export class AiGateway {
       ? promptTechnique
       : composePrompt(configuration.promptPreamble, promptTechnique);
 
-    const models = [configuration.primaryModel, ...configuration.fallbackModels];
+    // Budget de tentatives imposé par l'appelant (CDC Assistant §15.5,
+    // CA-07) : la chaîne principal → replis est tronquée, jamais allongée.
+    // Sans budget, comportement inchangé.
+    const chaine = [configuration.primaryModel, ...configuration.fallbackModels];
+    const models = req.maxModelAttempts === undefined
+      ? chaine
+      : chaine.slice(0, Math.max(0, Math.floor(req.maxModelAttempts)));
     const failures: string[] = [];
+    if (models.length === 0) failures.push('budget de tentatives modèle épuisé');
+
+    // Circuit breaker (MOD-007 à MOD-014) : issue de chaque modèle sollicité,
+    // puis de la chaîne. Une chaîne tronquée par un budget d'appelant n'est pas
+    // un échec COMPLET (tous les modèles configurés n'ont pas été essayés) :
+    // elle ne fait pas progresser le disjoncteur, seulement les compteurs des
+    // modèles réellement sollicités.
+    const treatment = treatmentForUseCase(op.useCaseCode);
+    const attempts: ModelAttempt[] = [];
+    const chaineComplete = models.length === 1 + configuration.fallbackModels.length;
 
     for (let i = 0; i < models.length; i++) {
       const model = models[i];
@@ -154,6 +184,9 @@ export class AiGateway {
           outputPreview: previewForLog(out.rawText),
         });
 
+        attempts.push({ model, succeeded: true });
+        noteGatewayOutcome({ treatment, attempts, chainSucceeded: true });
+
         return {
           data, provider: provider.name, model, promptVersion, usedFallback,
           inputTokens: out.inputTokens, outputTokens: out.outputTokens,
@@ -162,6 +195,7 @@ export class AiGateway {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         failures.push(`${model} : ${message}`);
+        attempts.push({ model, succeeded: false });
 
         await recordCallTrace({
           traceId,
@@ -184,10 +218,15 @@ export class AiGateway {
         }).catch(() => { /* la trace ne doit jamais masquer l'erreur d'origine */ });
 
         // Une erreur non récupérable arrête immédiatement la chaîne de repli.
-        if (isAiGatewayError(e) && !e.recoverable) throw e;
+        // Elle compte pour le modèle, pas comme échec complet de la chaîne.
+        if (isAiGatewayError(e) && !e.recoverable) {
+          noteGatewayOutcome({ treatment, attempts, chainSucceeded: null });
+          throw e;
+        }
       }
     }
 
+    noteGatewayOutcome({ treatment, attempts, chainSucceeded: chaineComplete ? false : null });
     throw new AiGatewayError('ALL_MODELS_FAILED', operationCode,
       `Tous les modèles ont échoué. ${failures.join(' — ')}`, { recoverable: true });
   }

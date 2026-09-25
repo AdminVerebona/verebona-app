@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { aiInstructions } from '@/db/schema';
 import { eq, desc } from 'drizzle-orm';
-import { getSession } from '@/lib/auth-guards';
+import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import postgres from 'postgres';
 
 const client = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
@@ -24,10 +24,9 @@ async function ensureTable() {
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getSession(request);
-    if (session.role !== 'ADMIN' && session.role !== 'SUPER_ADMIN') {
-      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
-    }
+    // Garde admin serveur unique (CDC BO GEN-002) : rôle relu en base si le
+    // jeton est antérieur à une promotion, refus 401/403 sinon.
+    await requireAdmin(request);
     await ensureTable();
     const rows = await db
       .select()
@@ -36,6 +35,7 @@ export async function GET(request: NextRequest) {
       .limit(50);
     return NextResponse.json({ instructions: rows });
   } catch (e) {
+    if (isSessionError(e)) return sessionErrorResponse(e);
     console.error('[ai-instructions GET]', e);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
@@ -43,10 +43,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getSession(request);
-    if (session.role !== 'ADMIN' && session.role !== 'SUPER_ADMIN') {
-      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
-    }
+    // Garde admin serveur unique (CDC BO GEN-002) : rôle relu en base si le
+    // jeton est antérieur à une promotion, refus 401/403 sinon.
+    const adminId = await requireAdmin(request);
     await ensureTable();
     const { instruction } = await request.json();
     if (!instruction?.trim()) {
@@ -57,11 +56,12 @@ export async function POST(request: NextRequest) {
       .values({
         instruction: instruction.trim(),
         status: 'pending',
-        createdByUserId: session.userId,
+        createdByUserId: adminId,
       })
       .returning();
     return NextResponse.json({ instruction: row });
   } catch (e) {
+    if (isSessionError(e)) return sessionErrorResponse(e);
     console.error('[ai-instructions POST]', e);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
@@ -69,10 +69,9 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const session = await getSession(request);
-    if (session.role !== 'ADMIN' && session.role !== 'SUPER_ADMIN') {
-      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
-    }
+    // Garde admin serveur unique (CDC BO GEN-002) : rôle relu en base si le
+    // jeton est antérieur à une promotion, refus 401/403 sinon.
+    await requireAdmin(request);
     const { id, status } = await request.json();
     if (!id || !['applied', 'dismissed', 'pending'].includes(status)) {
       return NextResponse.json({ error: 'INVALID_PARAMS' }, { status: 400 });
@@ -83,6 +82,7 @@ export async function PATCH(request: NextRequest) {
       .where(eq(aiInstructions.id, id));
     return NextResponse.json({ ok: true });
   } catch (e) {
+    if (isSessionError(e)) return sessionErrorResponse(e);
     console.error('[ai-instructions PATCH]', e);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }

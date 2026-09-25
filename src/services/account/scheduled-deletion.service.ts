@@ -38,7 +38,23 @@ import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 /** Délai avant suppression effective, en jours (§13.3). */
 export const DELETION_DELAY_DAYS = 30;
 
-export type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED';
+export type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'ADMIN';
+
+/**
+ * Qui a engagé la suppression (CDC Back-Office ACC-A14, migration 0170).
+ *
+ * Le BO déclenche la suppression par ce même workflow unique : « seule
+ * l'origine diffère ». Elle est déduite du motif quand l'appelant ne la
+ * précise pas, pour que les appelants existants (rétractation) restent
+ * inchangés.
+ */
+export type DeletionOrigin = 'user' | 'system' | 'admin';
+
+export function defaultOriginFor(reason: DeletionReason): DeletionOrigin {
+  if (reason === 'ADMIN') return 'admin';
+  if (reason === 'TRIAL_ABANDONED') return 'system';
+  return 'user';
+}
 export type DeletionStatus = 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
 
 export interface ScheduledDeletion {
@@ -46,6 +62,7 @@ export interface ScheduledDeletion {
   accountId: number;
   userId: number | null;
   reason: DeletionReason;
+  origin: DeletionOrigin;
   confirmedAt: Date;
   scheduledAt: Date;
   status: DeletionStatus;
@@ -70,6 +87,8 @@ export interface ScheduleInput {
   accountId: number;
   userId: number;
   reason: DeletionReason;
+  /** Défaut : déduite du motif (`defaultOriginFor`). */
+  origin?: DeletionOrigin;
   /** Instant de référence. `scheduledAt` en découle et n'est jamais recalculé. */
   confirmedAt?: Date;
   delayDays?: number;
@@ -93,6 +112,7 @@ export async function scheduleDeletion(input: ScheduleInput): Promise<ScheduledD
       accountId: input.accountId,
       userId: input.userId,
       reason: input.reason,
+      origin: input.origin ?? defaultOriginFor(input.reason),
       confirmedAt,
       scheduledAt,
       status: 'SCHEDULED',
@@ -117,6 +137,7 @@ function toScheduled(row: typeof scheduledAccountDeletions.$inferSelect): Schedu
     accountId: row.accountId,
     userId: row.userId ?? null,
     reason: row.reason as DeletionReason,
+    origin: (row.origin ?? defaultOriginFor(row.reason as DeletionReason)) as DeletionOrigin,
     confirmedAt: row.confirmedAt,
     scheduledAt: row.scheduledAt,
     status: row.status as DeletionStatus,

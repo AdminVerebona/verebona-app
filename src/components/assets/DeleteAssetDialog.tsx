@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,9 +9,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Label } from "@/components/ui/label"
-import { Trash2, File, Calendar } from "lucide-react"
+import { Trash2 } from "lucide-react"
 
 interface DeleteAssetDialogProps {
   open: boolean
@@ -22,6 +19,25 @@ interface DeleteAssetDialogProps {
   isLoading?: boolean
 }
 
+/**
+ * Confirmation de suppression d'un bien — GAP-05 (CDC Centre d'aide §14).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LA CASE « CONSERVER LES DOCUMENTS » NE CONSERVAIT RIEN
+ *
+ * Le dialogue proposait « Conserver les documents » et « Conserver les
+ * événements ». Or `DELETE /api/assets?id=` supprime la ligne `assets` et,
+ * par les clés étrangères `ON DELETE CASCADE`, tous les fichiers
+ * (`asset_files`), événements et échéances du bien ; ses branches
+ * `keepDocuments` / `keepEvents` sont vides, et la page appelante ne
+ * transmettait même pas le choix. L'utilisateur qui cochait la case perdait
+ * ses documents en croyant les garder.
+ *
+ * Le message décrit donc la règle réellement appliquée. Si le produit arrête
+ * une règle de conservation (GAP-05), elle devra d'abord exister dans l'API
+ * avant de réapparaître ici. `onConfirm` garde sa signature (tout supprimé).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 export function DeleteAssetDialog({
   open,
   onOpenChange,
@@ -29,14 +45,8 @@ export function DeleteAssetDialog({
   assetName,
   isLoading = false,
 }: DeleteAssetDialogProps) {
-  const [keepDocuments, setKeepDocuments] = useState(false)
-  const [keepEvents, setKeepEvents] = useState(false)
-
   const handleConfirm = () => {
-    onConfirm({
-      documents: !keepDocuments,
-      events: !keepEvents,
-    })
+    onConfirm({ documents: true, events: true })
   }
 
   return (
@@ -46,47 +56,17 @@ export function DeleteAssetDialog({
           <div className="flex items-start gap-3">
             <Trash2 className="w-5 h-5 text-destructive mt-1 flex-shrink-0 btn-delete-trash-icon" />
             <div>
-              <AlertDialogTitle>Supprimer le bien "{assetName}" ?</AlertDialogTitle>
+              <AlertDialogTitle>Supprimer le bien &quot;{assetName}&quot; ?</AlertDialogTitle>
               <AlertDialogDescription className="mt-2">
-                Cette action est irréversible. Le bien sera supprimé définitivement.
+                Cette action est irréversible. Le bien sera supprimé définitivement, ainsi que ses documents, photos, événements et échéances.
               </AlertDialogDescription>
             </div>
           </div>
         </AlertDialogHeader>
 
-        <div className="space-y-4 py-4">
-          <p className="text-sm text-muted-foreground">
-            Vos documents et événements associés peuvent être conservés. Que souhaitez-vous faire ?
-          </p>
-
-          <div className="space-y-3 pl-2">
-            <div className="flex items-center gap-3 p-2 rounded hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setKeepDocuments(!keepDocuments)}>
-              <Checkbox
-                id="keep-docs"
-                checked={keepDocuments}
-                onCheckedChange={(checked) => setKeepDocuments(checked as boolean)}
-                disabled={isLoading}
-              />
-              <Label htmlFor="keep-docs" className="font-medium text-sm cursor-pointer flex items-center gap-2">
-                <File className="w-4 h-4" />
-                Conserver les documents
-              </Label>
-            </div>
-
-            <div className="flex items-center gap-3 p-2 rounded hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setKeepEvents(!keepEvents)}>
-              <Checkbox
-                id="keep-events"
-                checked={keepEvents}
-                onCheckedChange={(checked) => setKeepEvents(checked as boolean)}
-                disabled={isLoading}
-              />
-              <Label htmlFor="keep-events" className="font-medium text-sm cursor-pointer flex items-center gap-2">
-                <Calendar className="w-4 h-4" />
-                Conserver les événements
-              </Label>
-            </div>
-          </div>
-        </div>
+        <p className="text-sm text-muted-foreground py-4">
+          Pour garder un document, téléchargez-le avant de supprimer le bien.
+        </p>
 
         <div className="flex gap-2 justify-end pt-4 border-t">
           <AlertDialogCancel disabled={isLoading}>Annuler</AlertDialogCancel>

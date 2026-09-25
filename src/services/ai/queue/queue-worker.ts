@@ -190,6 +190,21 @@ export function startQueueWorker(): void {
         if (repris.length > 0) {
           console.warn(`[queue] ${repris.length} exécution(s) abandonnée(s) reprise(s) :`, repris.map((r) => `${r.id}→${r.status}`).join(', '));
         }
+        // Sondes du circuit breaker (WF-09, MOD-013, MOD-014) : AVANT le
+        // prélèvement, pour qu'un traitement réactivé soit servi dès ce tour.
+        // Isolées : une sonde en échec ne doit pas priver la file de son tour.
+        // Sous le même bail que la file : une seule instance sonde à la fois,
+        // le fournisseur n'est pas sollicité N fois par sonde.
+        try {
+          const { runDueProbes } = await import('./circuit-breaker.repository');
+          const sondes = await runDueProbes();
+          for (const r of sondes) {
+            console.info(`[queue] sonde ${r.treatment} : ${r.reactivated ? `réactivé (${r.recoveredWith})` : 'toujours indisponible'}.`);
+          }
+        } catch (e) {
+          console.error('[queue] sondes en échec (non bloquant) :', (e as Error).message);
+        }
+
         const n = await runOnce();
         if (n > 0) console.info(`[queue] ${n} travail(aux) traité(s).`);
       });

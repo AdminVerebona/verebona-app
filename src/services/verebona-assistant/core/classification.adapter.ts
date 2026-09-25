@@ -34,7 +34,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { z } from 'zod';
-import { AiGateway } from '@/services/ai/gateway/ai-gateway';
+import { executeWithinBudget } from './ai-call-budget';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import { assistantIdempotencyKey } from './assistant-cache-key';
 import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
@@ -73,7 +73,9 @@ export async function classifyAssistantIntent(
   if (!message.trim()) return null;
 
   try {
-    const res = await AiGateway.execute({
+    // Décompté sur le budget du message (§15.5, CA-07) : épuisé, aucun appel
+    // n'est émis et l'intention reste inconnue (repli déterministe).
+    const res = await executeWithinBudget(input.aiBudget, {
       useCaseCode: 'INTELLIGENT_ASSISTANT',
       operationCode: 'understand_request',
       accountId: input.accountId,

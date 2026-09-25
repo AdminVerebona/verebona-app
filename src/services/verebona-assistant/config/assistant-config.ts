@@ -68,7 +68,10 @@ export function loadAssistantConfig(): AssistantConfig {
     maxExcerptChars: num('VEREBONA_ASSISTANT_MAX_EXCERPT_CHARS', 1500),
     aiTimeoutMs: num('VEREBONA_ASSISTANT_AI_TIMEOUT_MS', 12000),
     totalTimeoutMs: num('VEREBONA_ASSISTANT_TOTAL_TIMEOUT_MS', 20000),
-    historyDays: num('VEREBONA_ASSISTANT_HISTORY_DAYS', 7),
+    // Centre d'aide GAP-16 / T2-09 : la décision produit fixe 3 mois
+    // d'historique conversationnel (et non 7 jours). Surchargeable par
+    // environnement ; la purge doit lire la même variable.
+    historyDays: num('VEREBONA_ASSISTANT_HISTORY_DAYS', 90),
     rateLimitPerMinute: num('VEREBONA_ASSISTANT_RATE_LIMIT_PER_MINUTE', 10),
     locale: str('VEREBONA_ASSISTANT_LOCALE', 'fr-FR'),
     retrievalCacheTtlSeconds: num('VEREBONA_ASSISTANT_RETRIEVAL_CACHE_TTL_SECONDS', 300),

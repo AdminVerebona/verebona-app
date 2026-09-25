@@ -26,6 +26,7 @@
 import { z } from 'zod';
 import { pgClient } from '@/db';
 import { splitValueAndUnit } from '@/services/ai/knowledge/document-knowledge';
+import type { AiCallBudget } from './ai-call-budget';
 
 export type RevalidationTrigger = 'LOW_CONFIDENCE' | 'CONFLICT' | 'WEAK_EVIDENCE';
 export type RevalidationMode = 'PERSISTED_CONTENT' | 'SOURCE_RECHECK';
@@ -200,6 +201,8 @@ export interface RevalidationDeps {
     question: string; fact: string; currentValue: string; location: string;
     mode: RevalidationMode; content: string;
     attachment?: { url: string; mimeType: string; displayName?: string };
+    /** Budget d'appels modèle du message (§15.5, CA-07). */
+    budget?: AiCallBudget;
   }): Promise<{ output: RevalidationModelOutput; model: string | null; costMicros: number } | null>;
   /** URL signée de la source originale (pour SOURCE_RECHECK). */
   sourceUrl(accountId: number, fileId: number): Promise<{ url: string; mimeType: string; displayName?: string } | null>;
@@ -214,9 +217,11 @@ export interface RevalidationDeps {
 
 export const defaultRevalidationDeps: RevalidationDeps = {
   async callModel(req) {
-    const { AiGateway } = await import('@/services/ai/gateway/ai-gateway');
+    const { executeWithinBudget } = await import('./ai-call-budget');
     try {
-      const res = await AiGateway.execute({
+      // Décompté sur le budget du message : la revalidation ne peut pas
+      // consommer les appels réservés à la génération au-delà du plafond.
+      const res = await executeWithinBudget(req.budget, {
         useCaseCode: 'INTELLIGENT_ASSISTANT',
         operationCode: 'revalidate_fact',
         accountId: req.accountId,
@@ -295,6 +300,12 @@ export async function revalidateFact(
      * vérification sans modèle sur le contenu persisté est tentée.
      */
     allowModel?: boolean;
+    /**
+     * Budget d'appels modèle du message (§15.5, CA-07). Épuisé : aucune
+     * relecture par modèle n'est tentée, seule la vérification sans modèle
+     * reste possible.
+     */
+    budget?: AiCallBudget;
   },
   deps: RevalidationDeps = defaultRevalidationDeps,
 ): Promise<RevalidationResult | null> {
@@ -329,11 +340,13 @@ export async function revalidateFact(
   }
 
   const ask = async (m: RevalidationMode, content: string, attachment?: { url: string; mimeType: string; displayName?: string }) => {
+    // Budget du message épuisé : pas d'appel, donc pas de tentative comptée.
+    if (p.budget && !p.budget.canCall()) return null;
     aiCalls += 1;
     const r = await deps.callModel({
       accountId: p.accountId, userId: p.userId, conversationId: p.conversationId,
       question: p.question, fact: describeFact(f), currentValue: `${initial ?? '—'}${f.valueUnit ? ` ${f.valueUnit}` : ''}`,
-      location: describeLocation(page, table), mode: m, content, attachment,
+      location: describeLocation(page, table), mode: m, content, attachment, budget: p.budget,
     });
     if (!r) return null;
     model = r.model; costMicros += r.costMicros;

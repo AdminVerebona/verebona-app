@@ -26,24 +26,38 @@ export async function activateVersion(
   versionId: number,
   userId: number,
 ): Promise<ActivationResult> {
-  const rows = await pgClient.unsafe(
-    `WITH previous AS (
-       UPDATE ai_prompt_versions
-          SET status = 'SUPERSEDED'
+  // Transaction ORDONNÉE (même correctif que WF-03, config-version.repository) :
+  // l'ancienne CTE lisait `activated` avant `previous`, si bien que PostgreSQL
+  // promouvait avant de retirer et l'index `ai_prompt_versions_single_active_idx`
+  // rejetait l'activation dès qu'une version était active. Pire : si la
+  // candidate n'existait pas, l'ancienne était retirée quand même et le prompt
+  // restait sans version active. Ici, rien n'est écrit si la candidate manque.
+  const row = await pgClient.begin(async (tx) => {
+    const t = tx as unknown as { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+    const cand = (await t.unsafe(
+      `SELECT id FROM ai_prompt_versions
+        WHERE id = $2 AND prompt_code = $1 AND status = 'CANDIDATE' FOR UPDATE`,
+      [promptCode, versionId] as never[],
+    )) as Array<{ id: number }>;
+    if (!cand[0]) return null;
+    const previous = (await t.unsafe(
+      `UPDATE ai_prompt_versions SET status = 'SUPERSEDED'
         WHERE prompt_code = $1 AND status = 'ACTIVE'
-        RETURNING id
-     ), activated AS (
-       UPDATE ai_prompt_versions
-          SET status = 'ACTIVE', activated_at = NOW(), activated_by = $3
-        WHERE id = $2 AND prompt_code = $1 AND status = 'CANDIDATE'
-        RETURNING id
-     )
-     SELECT (SELECT id FROM activated) AS activated_id,
-            (SELECT id FROM previous)  AS superseded_id`,
-    [promptCode, versionId, userId] as never[],
-  );
-
-  const row = (rows as unknown as Array<{ activated_id: number | null; superseded_id: number | null }>)[0];
+        RETURNING id`,
+      [promptCode] as never[],
+    )) as Array<{ id: number }>;
+    const activated = (await t.unsafe(
+      `UPDATE ai_prompt_versions
+          SET status = 'ACTIVE', activated_at = NOW(), activated_by = $2
+        WHERE id = $1
+        RETURNING id`,
+      [versionId, userId] as never[],
+    )) as Array<{ id: number }>;
+    return {
+      activated_id: activated[0]?.id ?? null,
+      superseded_id: previous[0]?.id ?? null,
+    };
+  });
 
   if (!row?.activated_id) {
     throw new Error(
@@ -55,40 +69,48 @@ export async function activateVersion(
   // Le cache mémoire de chaque instance doit relire la nouvelle version.
   invalidatePromptCache(promptCode);
 
-  return { activatedVersionId: row.activated_id, supersededVersionId: row.superseded_id };
+  return { activatedVersionId: Number(row.activated_id), supersededVersionId: row.superseded_id == null ? null : Number(row.superseded_id) };
 }
 
 /**
  * Restaure la version précédemment active. Opération d'urgence : elle doit
  * rester possible en un geste, sans redéploiement ni migration.
+ *
+ * Transaction ordonnée : retrait de l'active PUIS restauration (la CTE unique
+ * restaurait avant de retirer, et heurtait l'index « une seule active »).
  */
 export async function rollbackToPrevious(
   promptCode: string,
   userId: number,
 ): Promise<ActivationResult> {
-  const rows = await pgClient.unsafe(
-    `WITH current_active AS (
-       UPDATE ai_prompt_versions
-          SET status = 'ROLLED_BACK'
-        WHERE prompt_code = $1 AND status = 'ACTIVE'
-        RETURNING id
-     ), previous AS (
-       SELECT id FROM ai_prompt_versions
+  const row = await pgClient.begin(async (tx) => {
+    const t = tx as unknown as { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+    const previous = (await t.unsafe(
+      `SELECT id FROM ai_prompt_versions
         WHERE prompt_code = $1 AND status = 'SUPERSEDED'
         ORDER BY activated_at DESC NULLS LAST
-        LIMIT 1
-     ), restored AS (
-       UPDATE ai_prompt_versions
+        LIMIT 1 FOR UPDATE`,
+      [promptCode] as never[],
+    )) as Array<{ id: number }>;
+    if (!previous[0]) return null;
+    const current = (await t.unsafe(
+      `UPDATE ai_prompt_versions SET status = 'ROLLED_BACK'
+        WHERE prompt_code = $1 AND status = 'ACTIVE'
+        RETURNING id`,
+      [promptCode] as never[],
+    )) as Array<{ id: number }>;
+    const restored = (await t.unsafe(
+      `UPDATE ai_prompt_versions
           SET status = 'ACTIVE', activated_at = NOW(), activated_by = $2
-        WHERE id = (SELECT id FROM previous)
-        RETURNING id
-     )
-     SELECT (SELECT id FROM restored) AS activated_id,
-            (SELECT id FROM current_active) AS superseded_id`,
-    [promptCode, userId] as never[],
-  );
-
-  const row = (rows as unknown as Array<{ activated_id: number | null; superseded_id: number | null }>)[0];
+        WHERE id = $1
+        RETURNING id`,
+      [previous[0].id, userId] as never[],
+    )) as Array<{ id: number }>;
+    return {
+      activated_id: restored[0]?.id ?? null,
+      superseded_id: current[0]?.id ?? null,
+    };
+  });
 
   if (!row?.activated_id) {
     throw new Error(
@@ -98,7 +120,7 @@ export async function rollbackToPrevious(
   }
 
   invalidatePromptCache(promptCode);
-  return { activatedVersionId: row.activated_id, supersededVersionId: row.superseded_id };
+  return { activatedVersionId: Number(row.activated_id), supersededVersionId: row.superseded_id == null ? null : Number(row.superseded_id) };
 }
 
 export async function getActiveVersion(promptCode: string): Promise<PromptVersion | null> {

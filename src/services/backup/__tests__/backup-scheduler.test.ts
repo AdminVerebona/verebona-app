@@ -35,8 +35,8 @@ describe('la sauvegarde est réellement branchée', () => {
     expect(read('src/app/api/admin/dashboard/route.ts')).toMatch(/Prefix: 'backups\/'/);
   });
 
-  it('la page du menu d’administration existe', () => {
-    expect(read('src/components/AdminSidebar.tsx')).toMatch(/href: '\/admin\/backups'/);
+  it('la page d’administration existe (hors navigation : absorbée par la Supervision, CDC BO §15)', () => {
+    expect(read('src/components/AdminSidebar.tsx')).not.toMatch(/href: '\/admin\/backups'/);
     expect(read('src/app/admin/backups/page.tsx')).toMatch(/\/api\/admin\/backups/);
   });
 

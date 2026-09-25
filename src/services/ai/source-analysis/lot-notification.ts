@@ -93,6 +93,12 @@ export function resolveLotNotificationType(
  * analyse perdue une régression.
  */
 export async function notifyLotCompleted(input: LotNotificationInput): Promise<void> {
+  // Mascotte d'accueil : l'analyse terminée change la prise de parole du
+  // compte ; elle est préparée en arrière-plan (CDC Mascotte RUN-007).
+  void import('@/services/home/mascot/mascot.service')
+    .then((m) => m.scheduleMascotPregeneration(input.accountId))
+    .catch(() => {});
+
   // Sans destinataire, il n'y a personne à prévenir — cas d'une analyse
   // déclenchée par une tâche planifiée.
   if (!input.userId) return;

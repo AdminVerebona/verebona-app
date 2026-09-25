@@ -25,6 +25,7 @@ import {
   type JobOrigin, type JobScope, type JobStatus, type QueueDecision,
 } from './queue-policy';
 import { abortLocalExecutions } from './execution-control';
+import { invalidateRuntimeGuardCache } from './runnable-guard';
 
 type Row = Record<string, unknown>;
 
@@ -525,6 +526,24 @@ export async function setTreatmentState(
        updated_at = NOW()`,
     [treatment, state, reason ?? null, userId] as never[],
   );
+  // La garde de la gateway (runnable-guard) prend l'état en compte tout de
+  // suite sur cette instance, et sous cinq secondes sur les autres.
+  invalidateRuntimeGuardCache();
+
+  // Disjoncteur (0171) : une décision manuelle efface la suspension
+  // automatique. Réactiver force la remise à zéro du breaker (OPS-027) ; les
+  // compteurs PAR MODÈLE (`model_failures`) sont conservés : leurs alertes
+  // persistent jusqu'au succès de chacun (WF-09, exceptions). Instruction
+  // séparée et tolérante : avant la migration 0171, ces colonnes n'existent
+  // pas, et l'état principal doit tout de même s'écrire.
+  await pgClient.unsafe(
+    `UPDATE ai_treatment_state
+        SET suspended_by_breaker = FALSE,
+            consecutive_chain_failures = CASE WHEN $2 = 'ENABLED' THEN 0 ELSE consecutive_chain_failures END,
+            next_probe_at = NULL, probe_attempts = 0
+      WHERE treatment = $1`,
+    [treatment, state] as never[],
+  ).catch((e: Error) => console.warn('[queue] remise à zéro du disjoncteur impossible :', e.message));
 
   // §4.2 : « les nouveaux jobs batch restent en file ; aucune nouvelle
   // exécution ne démarre ». Les exécutions en cours, elles, sont remises en
@@ -568,6 +587,7 @@ export async function setEmergencyStop(
       WHERE id = TRUE`,
     [active, userId, reason ?? null] as never[],
   );
+  invalidateRuntimeGuardCache();
 
   if (active) {
     // Les exécutions en cours reviennent en tête : elles reprendront depuis le

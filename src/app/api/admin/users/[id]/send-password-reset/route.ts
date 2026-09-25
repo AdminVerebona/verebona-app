@@ -1,104 +1,64 @@
+/**
+ * POST /api/admin/users/[id]/send-password-reset — CDC Back-Office V1 USR-A07,
+ * REC-USR-03, AUD-003.
+ *
+ * Déclenche STRICTEMENT le parcours « Mot de passe oublié » de l'utilisateur :
+ * même service (`services/auth/password-reset.service.ts`), même jeton signé,
+ * même e-mail, même page. Le BO ne définit jamais de mot de passe.
+ * L'ancienne version n'envoyait rien (« would be sent ») et lisait l'identité
+ * de l'administrateur dans un en-tête client forgeable.
+ */
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { users, adminAuditLog } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { logAdminAction } from '@/lib/admin-audit';
+import { startPasswordResetForUser } from '@/services/auth/password-reset.service';
+import { parseUserId, invalidUserId } from '../_shared';
 
-export async function POST(
-  request: NextRequest,
-  context: { params: Promise<{ id: string }> }
-) {
-  const params = await context.params;
+export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  let adminId: number;
   try {
-    // Get admin user ID from header (placeholder auth)
-    const adminUserId = request.headers.get('x-user-id');
-    if (!adminUserId || isNaN(parseInt(adminUserId))) {
-      return NextResponse.json(
-        { error: 'Authentication required', code: 'AUTHENTICATION_REQUIRED' },
-        { status: 401 }
-      );
-    }
-
-    // Fetch admin user to check role
-    const adminUserResult = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, parseInt(adminUserId)))
-      .limit(1);
-
-    if (adminUserResult.length === 0) {
-      return NextResponse.json(
-        { error: 'Admin user not found', code: 'ADMIN_NOT_FOUND' },
-        { status: 404 }
-      );
-    }
-
-    const currentUser = adminUserResult[0];
-
-    // Check if user has ADMIN role
-    if (currentUser.role !== 'ADMIN') {
-      return NextResponse.json(
-        { error: 'Access forbidden: ADMIN role required', code: 'FORBIDDEN' },
-        { status: 403 }
-      );
-    }
-
-    // Validate ID parameter
-    const userId = params.id;
-    if (!userId || isNaN(parseInt(userId))) {
-      return NextResponse.json(
-        { error: 'Valid user ID is required', code: 'INVALID_ID' },
-        { status: 400 }
-      );
-    }
-
-    // Fetch target user by ID
-    const targetUserResult = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, parseInt(userId)))
-      .limit(1);
-
-    if (targetUserResult.length === 0) {
-      return NextResponse.json(
-        { error: 'User not found', code: 'USER_NOT_FOUND' },
-        { status: 404 }
-      );
-    }
-
-    const targetUser = targetUserResult[0];
-
-    // V1: Log to console that password reset would be sent
-
-    // Create audit log entry
-    await db.insert(adminAuditLog).values({
-      timestamp: new Date(),
-      adminUserId: parseInt(adminUserId),
-      adminEmail: currentUser.email,
-      actionType: 'PASSWORD_RESET_SENT',
-      targetType: 'USER',
-      targetId: targetUser.id,
-      details: JSON.stringify({
-        userEmail: targetUser.email,
-      }),
-    });
-
-    // Return success message
-    return NextResponse.json(
-      {
-        success: true,
-        message: `Password reset email would be sent to ${targetUser.email}`,
-        userEmail: targetUser.email,
-      },
-      { status: 200 }
-    );
+    adminId = await requireAdmin(request);
   } catch (error) {
-    console.error('POST password reset error:', error);
+    return sessionErrorResponse(error);
+  }
+  const userId = parseUserId((await context.params).id);
+  if (!userId) return invalidUserId();
+
+  try {
+    const result = await startPasswordResetForUser(userId);
+    const ok = result.status === 'sent';
+    await logAdminAction({
+      adminId,
+      action: 'USER_PASSWORD_RESET',
+      targetType: 'USER',
+      targetId: userId,
+      result: ok ? 'SUCCESS' : 'FAILURE',
+      details: { outcome: result.status },
+    });
+    if (result.status === 'unknown_email') {
+      return NextResponse.json({ error: 'USER_NOT_FOUND', code: 'USER_NOT_FOUND', message: 'Utilisateur introuvable.' }, { status: 404 });
+    }
+    if (result.status === 'send_failed') {
+      return NextResponse.json(
+        { error: 'EMAIL_SEND_FAILED', code: 'EMAIL_SEND_FAILED', message: "L'e-mail de réinitialisation n'a pas pu être envoyé." },
+        { status: 502 },
+      );
+    }
+    return NextResponse.json({ success: true, message: "E-mail de réinitialisation envoyé à l'utilisateur." });
+  } catch (error) {
+    if (isSessionError(error)) return sessionErrorResponse(error);
+    console.error('[admin/users/send-password-reset] échec :', error);
+    await logAdminAction({
+      adminId,
+      action: 'USER_PASSWORD_RESET',
+      targetType: 'USER',
+      targetId: userId,
+      result: 'FAILURE',
+      details: { error: (error as Error).message },
+    });
     return NextResponse.json(
-      {
-        error: 'Internal server error: ' + (error instanceof Error ? error.message : 'Unknown error'),
-        code: 'INTERNAL_ERROR',
-      },
-      { status: 500 }
+      { error: 'PASSWORD_RESET_FAILED', code: 'PASSWORD_RESET_FAILED', message: 'La réinitialisation a échoué.' },
+      { status: 500 },
     );
   }
 }

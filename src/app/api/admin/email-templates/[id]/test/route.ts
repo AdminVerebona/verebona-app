@@ -29,13 +29,16 @@ export async function POST(
     const adminUserId = session.userId;
     const adminEmail = session.email;
 
-    // Get body
-    const body = await request.json();
-    const { testEmail } = body;
-
+    // ══════════════════════════════════════════════════════════════════
+    // COM-010 / REC-MOD-02 (CDC Back-Office V1) : l'e-mail de test part
+    // UNIQUEMENT vers l'adresse de l'administrateur connecté. Toute adresse
+    // envoyée par le client est ignorée — sinon le BO servirait à envoyer
+    // des e-mails Verebona à n'importe qui.
+    // ══════════════════════════════════════════════════════════════════
+    const testEmail = adminEmail;
     if (!testEmail || !testEmail.includes('@')) {
       return NextResponse.json(
-        { error: 'Valid test email is required', code: 'INVALID_EMAIL' },
+        { error: 'Adresse e-mail de l’administrateur introuvable', code: 'INVALID_EMAIL' },
         { status: 400 }
       );
     }

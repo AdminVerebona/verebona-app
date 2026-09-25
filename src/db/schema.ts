@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 // ── Timestamp helpers ────────────────────────────────────────────────────────
@@ -298,6 +298,11 @@ export const adminAuditLog = pgTable('admin_audit_log', {
   targetType: text('target_type').notNull(),
   targetId: integer('target_id'),
   details: text('details'),
+  /** SUCCESS | FAILURE | DENIED — CDC BO AUD-001 (migration 0170). NULL = ligne antérieure. */
+  result: text('result'),
+  /** Ancienne / nouvelle valeur lorsque pertinent (AUD-001, migration 0170). */
+  oldValue: jsonb('old_value').$type<Record<string, unknown>>(),
+  newValue: jsonb('new_value').$type<Record<string, unknown>>(),
 }, (table) => ({
   actionTypeIdx: index('admin_audit_log_action_type_idx').on(table.actionType),
   adminUserIdIdx: index('admin_audit_log_admin_user_id_idx').on(table.adminUserId),
@@ -630,6 +635,8 @@ export const planLimits = pgTable('plan_limits', {
   maxUsers: integer('max_users').notNull().default(1),
   trialAnalysisQuota: integer('trial_analysis_quota').notNull(),
   yearlyAnalysisQuota: integer('yearly_analysis_quota').notNull(),
+  /** Plafond de stockage du compte, en octets (CDC BO STO-001, migration 0170). NULL = repli code. */
+  maxStorageBytes: bigint('max_storage_bytes', { mode: 'number' }),
   featuresJson: jsonb('features_json').$type<Record<string, unknown>>(),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -2412,8 +2419,10 @@ export const scheduledAccountDeletions = pgTable('scheduled_account_deletions', 
   // Pas de clé étrangère (migration 0144) : la trace survit au compte supprimé.
   accountId: integer('account_id').notNull(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
-  /** WITHDRAWAL | VOLUNTARY | TRIAL_ABANDONED. */
+  /** WITHDRAWAL | VOLUNTARY | TRIAL_ABANDONED | ADMIN. */
   reason: text('reason').notNull(),
+  /** user | system | admin — qui a engagé la suppression (CDC BO ACC-A14, migration 0170). */
+  origin: text('origin').notNull().default('user'),
   confirmedAt: tstz('confirmed_at'),
   /** `confirmedAt` + 30 jours, figé à l'écriture. */
   scheduledAt: tstz('scheduled_at'),

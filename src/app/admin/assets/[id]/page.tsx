@@ -1,59 +1,32 @@
 "use client"
 
+/**
+ * Bien — consultation pour diagnostic (CDC Back-Office V1 ACC-D06, GEN-001,
+ * SEC-003). Changement de statut et suppression retirés, avec les handlers
+ * PATCH / DELETE de `/api/admin/assets/[id]`.
+ */
+
 import React, { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { toast } from 'sonner';
 import {
   ArrowLeft,
   Package,
   User,
   Calendar,
   FileText,
-  Trash2,
-  AlertTriangle,
   Clock,
   Send,
   CheckCircle,
   XCircle,
   Ban,
   History,
-  RefreshCw,
+  Trash2,
 } from 'lucide-react';
-
-const ASSET_STATUSES = [
-  { value: 'EN_SERVICE',    label: 'En service' },
-  { value: 'EN_PANNE',      label: 'En panne' },
-  { value: 'EN_REPARATION', label: 'En réparation' },
-  { value: 'INACTIF',       label: 'Inactif' },
-  { value: 'VENDU',         label: 'Vendu' },
-  { value: 'DETRUIT',       label: 'Détruit' },
-  { value: 'ARCHIVED',      label: 'Archivé' },
-  { value: 'TRANSMIS',      label: 'Transmis' },
-];
 
 interface TransmissionRecord {
   id: number;
@@ -108,11 +81,6 @@ export default function AdminAssetDetailPage() {
   const [data, setData] = useState<AssetData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [confirmIdInput, setConfirmIdInput] = useState('');
-  const [statusLoading, setStatusLoading] = useState(false);
-  const [selectedStatus, setSelectedStatus] = useState<string>('');
   
 
   useEffect(() => {
@@ -144,77 +112,11 @@ export default function AdminAssetDetailPage() {
 
       const assetData = await response.json();
       setData(assetData);
-      setSelectedStatus(assetData.asset.status);
     } catch (err) {
       console.error('Error loading asset:', err);
       setError(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleStatusChange = async () => {
-    if (!selectedStatus || selectedStatus === data?.asset.status) return;
-
-    try {
-      setStatusLoading(true);
-      const response = await fetch(`/api/admin/assets/${assetId}`, {
-      credentials: 'include',
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ status: selectedStatus }),
-      });
-
-      if (!response.ok) throw new Error('Erreur lors de la mise à jour');
-
-      toast.success(`Statut mis à jour : ${ASSET_STATUSES.find(s => s.value === selectedStatus)?.label}`);
-      await loadAssetData();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setStatusLoading(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (confirmIdInput !== assetId) {
-      toast.error('L\'ID saisi ne correspond pas');
-      return;
-    }
-
-    try {
-      setDeleteLoading(true);
-
-      const response = await fetch(`/api/admin/assets/${assetId}`, {
-      credentials: 'include',
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          confirmId: parseInt(assetId),
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Erreur lors de la suppression');
-      }
-
-      const result = await response.json();
-      
-      toast.success(
-        `Bien supprimé avec succès. ${result.cascadeDeleted.documents} documents, ${result.cascadeDeleted.events} événements et ${result.cascadeDeleted.deadlines} échéances ont été supprimés.`
-      );
-      
-      // Redirect to assets list after 2 seconds
-      setTimeout(() => {
-        router.push('/admin/assets');
-      }, 2000);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-      setDeleteLoading(false);
     }
   };
 
@@ -260,6 +162,7 @@ export default function AdminAssetDetailPage() {
       </Badge>
     );
   };
+
 
   if (isLoading) {
     return (
@@ -309,67 +212,6 @@ export default function AdminAssetDetailPage() {
           {asset.categoryLabel}
         </Badge>
       </div>
-
-      {/* Status Management */}
-      <Card className="border-primary/30">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <RefreshCw className="w-5 h-5" />
-            Changer le statut
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">
-            En tant qu&apos;administrateur, vous pouvez modifier le statut de ce bien, y compris le remettre actif depuis &quot;Archivé&quot; ou &quot;Transmis&quot;.
-          </p>
-          <div className="flex items-center gap-3">
-            <Select value={selectedStatus} onValueChange={setSelectedStatus}>
-              <SelectTrigger className="w-52">
-                <SelectValue placeholder="Choisir un statut" />
-              </SelectTrigger>
-              <SelectContent>
-                {ASSET_STATUSES.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              onClick={handleStatusChange}
-              disabled={statusLoading || selectedStatus === asset.status || !selectedStatus}
-            >
-              {statusLoading ? 'Mise à jour...' : 'Appliquer'}
-            </Button>
-            {selectedStatus !== asset.status && selectedStatus && (
-              <span className="text-xs text-muted-foreground">
-                {asset.status} → {selectedStatus}
-              </span>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Danger Zone */}
-      <Card className="border-destructive">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-destructive">
-            <AlertTriangle className="w-5 h-5" />
-            Zone dangereuse
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">
-            La suppression de ce bien est irréversible. Tous les documents, événements
-            et échéances associés seront également supprimés.
-          </p>
-          <Button
-            variant="destructive"
-            onClick={() => setDeleteDialogOpen(true)}
-          >
-            <Trash2 className="h-4 w-4 mr-2" />
-            Supprimer définitivement
-          </Button>
-        </CardContent>
-      </Card>
 
       {/* Asset Info */}
       <Card>
@@ -532,59 +374,6 @@ export default function AdminAssetDetailPage() {
         </Card>
       </div>
 
-      {/* Delete Confirmation Dialog */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle className="w-5 h-5" />
-              Confirmer la suppression
-            </AlertDialogTitle>
-            <AlertDialogDescription className="space-y-4">
-              <p>
-                Vous êtes sur le point de supprimer définitivement le bien <strong>{asset.name}</strong>.
-              </p>
-              <p>
-                Cette action supprimera également:
-              </p>
-              <ul className="list-disc list-inside space-y-1 text-sm">
-                <li>{stats.documentsCount} document(s)</li>
-                <li>{stats.eventsCount} événement(s)</li>
-                <li>{stats.deadlinesCount} échéance(s)</li>
-              </ul>
-              <p className="font-semibold">
-                Cette action est irréversible. Pour confirmer, veuillez saisir l'ID du bien: <strong>{asset.id}</strong>
-              </p>
-              <div>
-                <Label htmlFor="confirmId">ID du bien</Label>
-                <Input
-                  id="confirmId"
-                  type="text"
-                  placeholder={`Saisissez ${asset.id}`}
-                  value={confirmIdInput}
-                  onChange={(e) => setConfirmIdInput(e.target.value)}
-                  className="mt-2"
-                />
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel 
-              disabled={deleteLoading}
-              onClick={() => setConfirmIdInput('')}
-            >
-              Annuler
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={deleteLoading || confirmIdInput !== assetId}
-              className="bg-destructive hover:bg-destructive/90"
-            >
-              {deleteLoading ? 'Suppression...' : 'Supprimer définitivement'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

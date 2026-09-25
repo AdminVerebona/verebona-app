@@ -59,7 +59,8 @@ export interface AccountRunResult {
   accountId: number;
   triggerType: T3TriggerType;
   scope: 'full' | 'incremental';
-  status: 'completed' | 'partial' | 'failed' | 'skipped_concurrent';
+  /** `skipped_blocked` : T3 désactivé, suspendu, ou arrêt d'urgence (OPS-008, OPS-011). */
+  status: 'completed' | 'partial' | 'failed' | 'skipped_concurrent' | 'skipped_blocked';
   startedAt: string;
   finishedAt: string;
   objectsExamined: number;
@@ -195,6 +196,23 @@ async function claim(accountId: number, trigger: T3Trigger, scope: 'full' | 'inc
   }
 }
 
+/**
+ * T3 peut-il démarrer une exécution ? (CDC BO IA OPS-008, OPS-011, WF-07, WF-08)
+ *
+ * Jusqu'ici, T3 ne lisait ni son état ni l'arrêt d'urgence : le bouton
+ * « Désactiver T3 » était sans effet. Base illisible : on laisse passer — les
+ * appels modèle restent de toute façon filtrés par la garde de la passerelle.
+ */
+async function t3PeutDemarrer(): Promise<boolean> {
+  try {
+    const { canStart } = await import('../queue/job-queue.repository');
+    return await canStart('T3');
+  } catch (e) {
+    console.warn('[t3] état du traitement illisible, démarrage autorisé :', (e as Error).message);
+    return true;
+  }
+}
+
 export async function reconcileAccount(
   accountId: number,
   trigger: T3Trigger,
@@ -203,6 +221,15 @@ export async function reconcileAccount(
 ): Promise<AccountRunResult> {
   const scope = options.scope ?? (trigger.type === 'manual' ? 'full' : 'incremental');
   const startedAt = new Date().toISOString();
+  // Aucun démarrage si T3 est coupé : la demande en file (`queued`) n'est pas
+  // réclamée, elle reste en attente et sera exécutée à la réactivation (WF-07).
+  if (!(await t3PeutDemarrer())) {
+    return {
+      runId: 0, accountId, triggerType: trigger.type, scope, status: 'skipped_blocked', startedAt, finishedAt: startedAt,
+      objectsExamined: 0, objectsModified: 0, decisionsApplied: 0, conflictsCreated: 0, arbitrationsNeeded: 0,
+      errors: 0, aiCalls: 0, details: [],
+    };
+  }
   const runId = await claim(accountId, trigger, scope, options.queuedRunId);
   if (!runId) {
     return {
@@ -301,6 +328,8 @@ export async function processDueAccountReconciliations(
   limit = 20,
   deps: AccountReconciliationDeps = defaultDeps,
 ): Promise<AccountRunResult[]> {
+  // T3 coupé : on ne sélectionne rien, les demandes restent `queued` (WF-07).
+  if (!(await t3PeutDemarrer())) return [];
   const due = (await pgClient.unsafe(
     `SELECT id, account_id, trigger_event, trigger_object_type, trigger_object_id, correlation_id
        FROM account_reconciliation_runs
@@ -330,6 +359,7 @@ export async function runScheduledAccountReconciliations(
   limit = 50,
   deps: AccountReconciliationDeps = defaultDeps,
 ): Promise<AccountRunResult[]> {
+  if (!(await t3PeutDemarrer())) return [];
   const comptes = (await pgClient.unsafe(
     `SELECT a.id FROM accounts a
       WHERE EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)

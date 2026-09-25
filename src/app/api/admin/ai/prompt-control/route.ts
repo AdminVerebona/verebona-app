@@ -106,6 +106,12 @@ export async function POST(req: NextRequest) {
     // Échec du modèle : le motif réel (réponse illisible, délai, modèle
     // indisponible…) est rendu à l'écran. Un « Opération impossible »
     // générique obligeait à fouiller les journaux pour chaque échec.
+    // Refus d'exploitation levé par la garde de la passerelle (arrêt
+    // d'urgence ou T5 coupé entre-temps) : même réponse que le contrôle
+    // préalable, et non une « erreur modèle » 502.
+    if (isAiGatewayError(e) && e.code === 'AI_BLOCKED') {
+      return NextResponse.json({ error: 'AI_BLOCKED', message: e.message }, { status: 503 });
+    }
     if (isAiGatewayError(e)) {
       console.error('[POST /api/admin/ai/prompt-control]', e.code, e.message);
       return NextResponse.json(

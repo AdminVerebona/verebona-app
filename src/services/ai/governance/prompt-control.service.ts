@@ -143,6 +143,18 @@ export async function assertAiAvailable(): Promise<void> {
       + (reason ? ` Motif : ${reason}.` : ''),
     );
   }
+
+  // T5-015 (suite) : T5 désactivé ou suspendu est lui aussi indisponible.
+  // L'arrêt d'urgence seul était vérifié. La garde de la passerelle le
+  // refuserait de toute façon, mais seulement APRÈS le chargement de la
+  // version : refuser ici donne un message clair, sans travail inutile.
+  const { isTreatmentRunnable } = await import('../queue/runnable-guard');
+  if (!(await isTreatmentRunnable('T5'))) {
+    throw new T5Refused(
+      'AI_BLOCKED',
+      'Prompt Control (T5) est désactivé ou suspendu : réactivez-le depuis la configuration IA (T5-015).',
+    );
+  }
 }
 
 async function loadVersion(versionId: number): Promise<ConfigVersionWithEntries> {
