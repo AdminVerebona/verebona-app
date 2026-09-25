@@ -15,6 +15,7 @@ import { documentAnalysisRuns, documentAnalysisProposals, assetFiles } from '@/d
 import { and, eq } from 'drizzle-orm';
 import type { SourceAnalysisResult, SourceInput } from '../types';
 import { EXTRACT_SOURCE_PROMPT_VERSION } from '../prompt-version';
+import { refineDocumentTitle } from '../document-title';
 
 export interface PersistResultInput {
   input: SourceInput;
@@ -172,13 +173,35 @@ async function updateSourceMetadata(p: PersistResultInput): Promise<void> {
   const d = p.result.document;
   const patch: Record<string, unknown> = { lastAnalysisAt: new Date(), updatedAt: new Date() };
 
-  if (d.title?.value) patch.retainedTitle = d.title.value;
+  // Titre différenciant (règle R9 du prompt, et filet de sécurité si le
+  // modèle rend malgré tout « Facture N° … »).
+  const title = refineDocumentTitle(d.title?.value, {
+    typeCode: d.type?.value ?? null,
+    subjects: [
+      ...p.result.extractedFields.map((f) => f.subject),
+      ...(d.visual?.observations ?? []).map((o) => o.subject),
+    ].filter((s): s is string => Boolean(s)),
+    supplier: d.supplier?.value.name ?? null,
+    documentDate: d.date?.value ?? null,
+  });
+  if (title) patch.retainedTitle = title;
   if (d.type?.value) patch.documentType = d.type.value;
   if (d.description?.value) patch.description = d.description.value;
   if (d.transcription) patch.extractedText = d.transcription;
   if (d.supplier?.value.name) patch.supplier = d.supplier.value.name;
   if (typeof d.amountCents?.value === 'number') patch.amountCents = d.amountCents.value;
   if (d.date?.value) patch.documentDate = d.date.value;
+
+  // Une valeur modifiée à la main par l'utilisateur n'est jamais écrasée par
+  // une nouvelle analyse (le tiroir marque ces champs dans userEditedFields).
+  const [current] = await db
+    .select({ userEditedFields: assetFiles.userEditedFields })
+    .from(assetFiles)
+    .where(and(eq(assetFiles.id, p.leadSourceId), eq(assetFiles.accountId, p.input.accountId)))
+    .limit(1);
+  for (const [key, edited] of Object.entries(current?.userEditedFields ?? {})) {
+    if (edited === true && key in patch && key !== 'lastAnalysisAt' && key !== 'updatedAt') delete patch[key];
+  }
 
   await db.update(assetFiles)
     .set(patch as never)

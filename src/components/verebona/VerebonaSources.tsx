@@ -2,6 +2,7 @@
 /** Panneau sources repliable — CDC §19 (≤ 5 affichées, disponibilité, ouverture). */
 import { useState } from 'react';
 import Link from 'next/link';
+import { openDrawerFromLink } from '@/lib/drawers';
 
 interface SourceRow {
   source_type: string; title_snapshot: string | null;
@@ -38,7 +39,11 @@ export function VerebonaSources({ messageId, count }: { messageId: string; count
               {/* Le lien n'apparaît que si le serveur en a fourni un : pas de
                   destination devinée côté client (§22.1). */}
               {r.href && (
-                <Link href={r.href} className="mt-1 inline-block text-primary underline">
+                <Link
+                  href={r.href}
+                  onClick={(e) => openDrawerFromLink(e, r.href)}
+                  className="mt-1 inline-block text-primary underline"
+                >
                   Ouvrir
                 </Link>
               )}

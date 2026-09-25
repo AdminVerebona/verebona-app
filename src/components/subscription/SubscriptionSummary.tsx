@@ -167,16 +167,36 @@ export function SubscriptionSummary() {
     }
   };
 
+  /**
+   * Portail Stripe (factures, moyens de paiement) : dans un NOUVEL onglet,
+   * pour ne pas quitter Verebona.
+   *
+   * L'onglet est ouvert tout de suite, au clic : ouvert après la réponse du
+   * serveur, il serait bloqué comme fenêtre surgissante (Safari, Firefox).
+   * Il reçoit ensuite l'adresse du portail, ou se referme en cas d'échec.
+   */
   const openPortal = async () => {
     setPortalLoading(true);
+    const onglet = typeof window !== 'undefined' ? window.open('', '_blank') : null;
     try {
       const res = await apiClient.post<{ portal_url?: string; message?: string }>(
         '/api/billing/create-customer-portal-session',
         {},
       );
-      if (res.portal_url) window.location.href = res.portal_url;
-      else toast.error(res.message || 'Portail indisponible pour le moment.');
+      if (res.portal_url) {
+        if (onglet) {
+          onglet.opener = null;
+          onglet.location.href = res.portal_url;
+        } else {
+          // Fenêtre refusée par le navigateur : dernier recours, même onglet.
+          window.location.href = res.portal_url;
+        }
+      } else {
+        onglet?.close();
+        toast.error(res.message || 'Portail indisponible pour le moment.');
+      }
     } catch {
+      onglet?.close();
       toast.error('Impossible d\'ouvrir le portail de facturation.');
     } finally {
       setPortalLoading(false);

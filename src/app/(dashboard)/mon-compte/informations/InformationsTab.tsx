@@ -327,14 +327,19 @@ export default function InformationsTab() {
   return (
     <div className="w-full max-w-full">
 
-      {/* ══ Grille 2 colonnes ══ */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+      {/* ══ Grille 2 colonnes ══
+          Le profil occupait seul la colonne gauche et s'étirait (items-stretch
+          + flex-1) sur la hauteur des quatre blocs de droite : un grand vide
+          sous quatre champs. Les blocs sont désormais répartis — identité,
+          sécurité et suppression à gauche ; agenda et historique IA à droite —
+          et chaque carte garde sa hauteur naturelle. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
 
-        {/* ── Colonne gauche : Profil ── */}
+        {/* ── Colonne gauche : Profil + Sécurité + Zone dangereuse ── */}
         <div className="flex flex-col gap-4">
 
           {/* Profil */}
-          <Card className="flex flex-col flex-1">
+          <Card className="flex flex-col">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -352,7 +357,7 @@ export default function InformationsTab() {
               </div>
               <CardDescription>Vos informations personnelles.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3 flex-1">
+            <CardContent className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="firstName">Prénom</Label>
@@ -367,7 +372,7 @@ export default function InformationsTab() {
                   <Input id="username" value={profile.username} onChange={e => setProfile({...profile, username: e.target.value})} />
                   <p className="text-xs text-muted-foreground">Affiché dans le message de bienvenue et les emails.</p>
                 </div>
-                <div className="space-y-1.5 sm:col-span-2">
+                <div className="space-y-1.5">
                   <Label htmlFor="email">Email <span className="text-muted-foreground">(non modifiable)</span></Label>
                   <Input id="email" value={profile.email} disabled className="bg-muted" />
                 </div>
@@ -380,13 +385,81 @@ export default function InformationsTab() {
               bouton « Changer d'offre », le bloc Duo et le parrainage y
               ont été déplacés. */}
 
+          {/* Sécurité */}
+          <Card className="flex flex-col">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <Key className="h-4 w-4 text-[#3b82f6]" />
+                <CardTitle className="text-base">Sécurité</CardTitle>
+              </div>
+              <CardDescription>Gérez vos identifiants de connexion.</CardDescription>
+            </CardHeader>
+            <CardContent className="flex-1">
+              <Dialog open={isPasswordDialogOpen} onOpenChange={setIsPasswordDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" className="rounded-full gap-2">
+                    <Key className="w-4 h-4" />
+                    Modifier mon mot de passe
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <form onSubmit={handleChangePassword}>
+                    <DialogHeader>
+                      <DialogTitle>Modifier le mot de passe</DialogTitle>
+                      <DialogDescription>Veuillez saisir votre mot de passe actuel avant d'en choisir un nouveau.</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="currentPassword">Mot de passe actuel</Label>
+                        <PasswordInput id="currentPassword" value={passwordForm.currentPassword} onChange={e => setPasswordForm({...passwordForm, currentPassword: e.target.value})} required />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="newPassword">Nouveau mot de passe</Label>
+                        <PasswordInput id="newPassword" value={passwordForm.newPassword} onChange={e => setPasswordForm({...passwordForm, newPassword: e.target.value})} required />
+                        <PasswordRequirements password={passwordForm.newPassword} confirmPassword={passwordForm.confirmPassword} showConfirmRule={true} />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
+                        <PasswordInput id="confirmPassword" value={passwordForm.confirmPassword} onChange={e => setPasswordForm({...passwordForm, confirmPassword: e.target.value})} required />
+                      </div>
+                      <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] px-3 py-2.5">
+                        <p className="text-xs text-muted-foreground">
+                          Tous les appareils et navigateurs connectés à votre compte seront déconnectés.
+                        </p>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={keepCurrentSession}
+                            onChange={(e) => setKeepCurrentSession(e.target.checked)}
+                            className="h-4 w-4"
+                          />
+                          Rester connecté sur cet appareil
+                        </label>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button type="button" variant="ghost" onClick={() => setIsPasswordDialogOpen(false)}>Annuler</Button>
+                      <button type="submit" disabled={changingPassword} className="btn-add disabled:opacity-40">
+                        {changingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                        {changingPassword ? 'Mise à jour…' : 'Mettre à jour'}
+                      </button>
+                    </DialogFooter>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            </CardContent>
+          </Card>
+
+          {/* Zone dangereuse */}
+          <DeleteAccountCard />
+
         </div>{/* end left col */}
 
-        {/* ── Colonne droite : Synchronisation + Sécurité + Zone dangereuse ── */}
+        {/* ── Colonne droite : Synchronisation agenda + Historique IA ── */}
         <div className="flex flex-col gap-4">
 
           {/* Synchronisation agenda */}
-          <Card id="sync-agenda" className="flex flex-col flex-1">
+          <Card id="sync-agenda" className="flex flex-col">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -454,73 +527,6 @@ export default function InformationsTab() {
           {/* Historique des modifications automatiques IA */}
           <AiHistoryBlock />
 
-          {/* Sécurité */}
-          <Card className="flex flex-col flex-1">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <Key className="h-4 w-4 text-[#3b82f6]" />
-                <CardTitle className="text-base">Sécurité</CardTitle>
-              </div>
-              <CardDescription>Gérez vos identifiants de connexion.</CardDescription>
-            </CardHeader>
-            <CardContent className="flex-1">
-              <Dialog open={isPasswordDialogOpen} onOpenChange={setIsPasswordDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button variant="outline" className="rounded-full gap-2">
-                    <Key className="w-4 h-4" />
-                    Modifier mon mot de passe
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <form onSubmit={handleChangePassword}>
-                    <DialogHeader>
-                      <DialogTitle>Modifier le mot de passe</DialogTitle>
-                      <DialogDescription>Veuillez saisir votre mot de passe actuel avant d'en choisir un nouveau.</DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 py-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="currentPassword">Mot de passe actuel</Label>
-                        <PasswordInput id="currentPassword" value={passwordForm.currentPassword} onChange={e => setPasswordForm({...passwordForm, currentPassword: e.target.value})} required />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="newPassword">Nouveau mot de passe</Label>
-                        <PasswordInput id="newPassword" value={passwordForm.newPassword} onChange={e => setPasswordForm({...passwordForm, newPassword: e.target.value})} required />
-                        <PasswordRequirements password={passwordForm.newPassword} confirmPassword={passwordForm.confirmPassword} showConfirmRule={true} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
-                        <PasswordInput id="confirmPassword" value={passwordForm.confirmPassword} onChange={e => setPasswordForm({...passwordForm, confirmPassword: e.target.value})} required />
-                      </div>
-                      <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] px-3 py-2.5">
-                        <p className="text-xs text-muted-foreground">
-                          Tous les appareils et navigateurs connectés à votre compte seront déconnectés.
-                        </p>
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={keepCurrentSession}
-                            onChange={(e) => setKeepCurrentSession(e.target.checked)}
-                            className="h-4 w-4"
-                          />
-                          Rester connecté sur cet appareil
-                        </label>
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button type="button" variant="ghost" onClick={() => setIsPasswordDialogOpen(false)}>Annuler</Button>
-                      <button type="submit" disabled={changingPassword} className="btn-add disabled:opacity-40">
-                        {changingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                        {changingPassword ? 'Mise à jour…' : 'Mettre à jour'}
-                      </button>
-                    </DialogFooter>
-                  </form>
-                </DialogContent>
-              </Dialog>
-            </CardContent>
-          </Card>
-
-          {/* Zone dangereuse */}
-          <DeleteAccountCard />
 
         </div>{/* end right col */}
 
@@ -584,7 +590,7 @@ function DeleteAccountCard() {
   };
 
   return (
-    <Card className="border-red-500/30 bg-red-950/10 flex flex-col flex-1">
+    <Card className="border-red-500/30 bg-red-950/10 flex flex-col">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
           <Trash2 className="h-5 w-5 text-red-500" />

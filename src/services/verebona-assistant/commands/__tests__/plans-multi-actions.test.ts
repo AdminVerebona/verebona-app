@@ -23,7 +23,7 @@ const executors = (echecs: string[], refus: string[] = []) => {
     if (refus.includes(a.actionId)) return { actionId: a.actionId, status: 'REFUSED', message: 'Droits' };
     return { actionId: a.actionId, status: 'SUCCESS', message: 'ok' };
   };
-  return { CREATE_AGENDA_ITEM: run, MARK_AGENDA_DONE: run, CANCEL_AGENDA_ITEM: run };
+  return { CREATE_AGENDA_ITEM: run, MARK_AGENDA_DONE: run, CANCEL_AGENDA_ITEM: run, UPDATE_ASSET_FIELD: run };
 };
 const ctx = { accountId: 1, userId: 2 };
 

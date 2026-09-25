@@ -28,6 +28,7 @@
  * qu'une URL plausible : un lien mort est pire qu'une action absente, parce
  * qu'il fait porter à l'utilisateur le coût de la découvrir.
  */
+import { drawerHref } from '@/lib/drawers';
 
 /** Familles d'entités référençables par une source (§19.2). */
 export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room';
@@ -124,13 +125,15 @@ export function hrefBien(id: number, onglet?: OngletBien): string {
  * URL d'ouverture d'une entité, ou `null` si l'application n'a pas de
  * destination pour elle.
  *
- * Cas notables :
- *   · `agenda_item` — l'agenda n'a pas de page de détail (`/agenda/[id]`
- *     n'existe pas), le détail s'ouvre dans un tiroir. On renvoie donc la page
- *     agenda : l'utilisateur arrive au bon endroit, sans promesse d'ancrage.
- *   · `equipment` / `room` — pas d'entité de premier niveau ; on ouvre le bien
- *     parent sur l'onglet correspondant. Sans `assetId` dans les métadonnées,
- *     il n'y a rien à ouvrir.
+ * Document, échéance, équipement et pièce s'ouvrent en tiroir, par lien
+ * profond `?tiroir=<kind>:<id>` (src/lib/drawers.ts) : l'utilisateur arrive
+ * sur la fiche elle-même, pas sur une liste où la chercher.
+ *   · `document` — `/documents/[id]` attend l'identifiant public et n'est pas
+ *     la vue de référence ; le tiroir l'est.
+ *   · `agenda_item` — l'agenda n'a pas de page de détail, le tiroir en tient lieu.
+ *   · `equipment` / `room` — ouverts sur le bien parent, onglet correspondant,
+ *     quand `assetId` est connu ; sinon sur l'accueil, le tiroir retrouvant
+ *     lui-même le bien.
  */
 export function hrefEntite(
   ref: EntityRef,
@@ -140,14 +143,15 @@ export function hrefEntite(
     case 'asset':
       return hrefBien(ref.id);
     case 'document':
-      return `${ROUTES.DOCUMENTS}/${ref.id}`;
+      return drawerHref({ kind: 'document', id: ref.id }, ROUTES.DOCUMENTS);
     case 'agenda_item':
-      return ROUTES.AGENDA;
+      return drawerHref({ kind: 'echeance', id: ref.id }, ROUTES.AGENDA);
     case 'equipment':
     case 'room': {
+      const kind = ref.kind === 'room' ? 'piece' : 'equipement';
       const parent = versEntierPositif(String(meta?.assetId ?? ''));
-      if (parent == null) return null;
-      return hrefBien(parent, ref.kind === 'room' ? 'rooms' : 'equipments');
+      const page = parent == null ? '/accueil' : hrefBien(parent, ref.kind === 'room' ? 'rooms' : 'equipments');
+      return drawerHref({ kind, id: ref.id }, page);
     }
     default:
       return null;

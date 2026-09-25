@@ -22,6 +22,9 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { emit } from '@/lib/notifications';
+import { LOT_DOCUMENTS_MAX, lotNotificationPayload, type LotDocument } from './lot-notification-text';
+
+export { lotNotificationPayload, lotNotificationText, type LotDocument } from './lot-notification-text';
 
 export interface LotNotificationInput {
   accountId: number;
@@ -29,6 +32,31 @@ export interface LotNotificationInput {
   lotId: number;
   analysedCount: number;
   failedCount: number;
+  /** Documents analysés ; relus en base s'ils ne sont pas fournis. */
+  documents?: LotDocument[];
+}
+
+/**
+ * Documents analysés d'un lot, avec leur titre retenu. Ne lève jamais :
+ * sans titres, la notification reste émise, simplement moins précise.
+ */
+export async function loadLotDocuments(lotId: number): Promise<LotDocument[]> {
+  try {
+    const { db } = await import('@/db');
+    const rows = await db.$client<{ assetFileId: number; title: string | null }[]>`
+      SELECT li.asset_file_id AS "assetFileId",
+             COALESCE(NULLIF(af.retained_title, ''), NULLIF(af.original_filename, ''), af.filename) AS title
+      FROM document_lot_items li
+      JOIN asset_files af ON af.id = li.asset_file_id
+      WHERE li.lot_id = ${lotId} AND li.analysis_status = 'completed' AND af.deleted_at IS NULL
+      ORDER BY li.position ASC
+      LIMIT ${LOT_DOCUMENTS_MAX + 1}
+    `;
+    return rows.filter((r) => r.title).map((r) => ({ assetFileId: r.assetFileId, title: r.title as string }));
+  } catch (e) {
+    console.warn(`[source-analysis] titres du lot ${lotId} non lus :`, (e as Error).message);
+    return [];
+  }
 }
 
 /**
@@ -86,12 +114,12 @@ export async function notifyLotCompleted(input: LotNotificationInput): Promise<v
       accountId: input.accountId,
       entityType: 'document_lot',
       entityId: input.lotId,
-      payload: {
-        lotId: input.lotId,
-        analysedCount: input.analysedCount,
-        // Les échecs ne sont plus annoncés à l'utilisateur.
-        failedCount: 0,
-      },
+      // Les échecs ne sont plus annoncés à l'utilisateur (failedCount: 0).
+      payload: lotNotificationPayload(
+        input.lotId,
+        input.analysedCount,
+        input.documents ?? await loadLotDocuments(input.lotId),
+      ),
       // Stable : un rejeu du même lot ne produit pas une seconde
       // notification (§7.2, et défaut de la route supprimée au lot 0).
       dedupeKey: `document:lot-completed:${input.lotId}`,

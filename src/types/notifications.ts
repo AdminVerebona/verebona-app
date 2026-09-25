@@ -85,7 +85,12 @@ export interface NotificationPayloadMap {
   DEADLINE_DUE_IN_7_DAYS: { count: number; date: string; agendaItemIds?: number[]; forecastCount?: number };
 
   DOCUMENT_ANALYZED: { assetFileId: number; analysedCount: number; failedCount: number; documentTitle?: string };
-  DOCUMENT_BATCH_COMPLETED: { lotId: number; analysedCount: number; failedCount: number };
+  DOCUMENT_BATCH_COMPLETED: {
+    lotId: number; analysedCount: number; failedCount: number;
+    /** Un seul document analysé : il est nommé et s'ouvre en tiroir. */
+    assetFileId?: number; documentTitle?: string;
+    documents?: Array<{ assetFileId: number; title: string }>;
+  };
   DOCUMENT_BATCH_PARTIALLY_FAILED: { lotId: number; analysedCount: number; failedCount: number };
   DOCUMENT_BATCH_FAILED: { lotId: number; analysedCount: number; failedCount: number };
   ANALYSIS_FAILED_PERSISTENT: { assetFileId: number; documentTitle?: string; errorReason?: string };

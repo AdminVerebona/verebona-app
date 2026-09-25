@@ -106,12 +106,13 @@ export const apiClient = {
     const isDashboard = url.includes('/api/dashboard');
     const isHomeSummary = url.includes('/api/home/summary');
     const isAiSuggestions = url.includes('/ai-suggestions');
-    // Prompt Control (T5) réécrit un prompt complet : l'opération a 60 s par
-    // modèle côté serveur. À 20 s, l'écran abandonnait alors que l'écriture dans
-    // le brouillon pouvait encore aboutir — l'administrateur voyait une erreur
-    // pour une modification pourtant faite.
+    // Prompt Control (T5) peut réécrire plusieurs prompts complets : 120 s par
+    // modèle côté serveur, repli compris (opération `control_prompts`). Un délai
+    // plus court abandonnait alors que l'écriture dans le brouillon pouvait
+    // encore aboutir — l'administrateur voyait une erreur pour une
+    // modification pourtant faite.
     const isPromptControl = url.includes('/api/admin/ai/prompt-control');
-    const timeoutMs = isPromptControl ? 120_000
+    const timeoutMs = isPromptControl ? 250_000
       : isAiSuggestions ? 90_000
         : (isDashboard || isHomeSummary) ? 15_000 : method === 'GET' ? 15_000 : 20_000;
 

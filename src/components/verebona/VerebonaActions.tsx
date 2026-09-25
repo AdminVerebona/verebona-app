@@ -1,6 +1,7 @@
 'use client';
 /** Boutons d'action contrôlés — CDC §22. Le href vient TOUJOURS du serveur (§27.1). */
 import type { VerebonaAction } from '@/lib/verebona/useVerebona';
+import { openDrawerFromLink } from '@/lib/drawers';
 
 export function VerebonaActions({ actions }: { actions: VerebonaAction[] }) {
   return (
@@ -8,6 +9,7 @@ export function VerebonaActions({ actions }: { actions: VerebonaAction[] }) {
       {actions.map((a) => (
         a.href ? (
           <a key={a.actionId} href={a.href} data-analytics={a.analyticsCode}
+             onClick={(e) => openDrawerFromLink(e, a.href)}
              className="rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-muted">
             {a.label}
           </a>

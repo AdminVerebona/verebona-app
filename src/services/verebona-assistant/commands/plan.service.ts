@@ -27,6 +27,8 @@ import type {
 import { WRITE_COMMAND_CATALOG } from './catalog';
 import { parseCommands, type CommandDraft } from './parser';
 import { runAction, EXECUTORS, type Executor } from './executors';
+import { ASSISTANT_ASSET_FIELDS, familyOf, formatFieldValue } from './asset-fields';
+import { validateDetailChanges } from '@/lib/asset-detail-rules';
 
 /** Validité d'un plan non confirmé. */
 export const PLAN_TTL_MS = 15 * 60_000;
@@ -56,6 +58,18 @@ export interface CommandLookup {
   getAgendaItem(accountId: number, id: number): Promise<{ id: number; title: string; date: string | null; manualStatus: string | null } | null>;
   /** Échéances ouvertes (non réalisées / annulées), éventuellement passées, d'un bien. */
   listOpenAgendaItems(accountId: number, opts: { pastOnly: boolean; assetIds: number[]; today: string; limit: number }): Promise<Array<{ id: number; title: string; date: string | null }>>;
+  /** Bien et ses caractéristiques, pour UPDATE_ASSET_FIELD (ancienne valeur, famille, disponibilité). */
+  getAssetState?(accountId: number, id: number): Promise<AssetState | null>;
+}
+
+export interface AssetState {
+  id: number;
+  name: string;
+  city?: string | null;
+  category: string;
+  status: string | null;
+  lockState: string | null;
+  characteristics: Record<string, unknown>;
 }
 
 /** Plafond d'une action en masse : au-delà, on demande de restreindre. */
@@ -103,6 +117,31 @@ export const sqlLookup: CommandLookup = {
         ORDER BY i.start_date NULLS LAST, i.id LIMIT $5`,
       [accountId, pastOnly, today, assetIds.length ? assetIds : null, limit] as never[],
     )) as unknown as Array<{ id: number; title: string; date: string | null }>;
+  },
+  async getAssetState(accountId, id) {
+    const r = (await pgClient.unsafe(
+      `SELECT id, name, city, category, status, lock_state AS "lockState", key_characteristics AS kc,
+              purchase_date AS "purchaseDate", purchase_price_cents AS "purchasePriceCents",
+              registration_number AS "registrationNumber"
+         FROM assets WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
+      [id, accountId] as never[],
+    )) as unknown as Array<{
+      id: number; name: string; city: string | null; category: string; status: string | null; lockState: string | null;
+      kc: string | null; purchaseDate: string | Date | null; purchasePriceCents: number | null; registrationNumber: string | null;
+    }>;
+    const a = r[0];
+    if (!a) return null;
+    let kc: Record<string, unknown> = {};
+    try { kc = a.kc ? JSON.parse(a.kc) : {}; } catch { /* caractéristiques illisibles : vides */ }
+    // Mêmes replis que la fiche bien (GET /details) : colonnes historiques.
+    const jour = (d: string | Date | null) => (d ? (typeof d === 'string' ? d : d.toISOString()).slice(0, 10) : null);
+    const characteristics = {
+      ...kc,
+      acquisitionDate: kc.acquisitionDate ?? jour(a.purchaseDate),
+      acquisitionPrice: kc.acquisitionPrice ?? (a.purchasePriceCents != null ? a.purchasePriceCents / 100 : null),
+      registrationNumber: kc.registrationNumber ?? a.registrationNumber,
+    };
+    return { id: a.id, name: a.name, city: a.city, category: a.category, status: a.status, lockState: a.lockState, characteristics };
   },
   async getAgendaItem(accountId, id) {
     const r = (await pgClient.unsafe(
@@ -155,6 +194,10 @@ export async function resolveDraft(
     };
   }
 
+  if (draft.command === 'UPDATE_ASSET_FIELD') {
+    return resolveAssetFieldUpdate(draft, input, lookup, actionId);
+  }
+
   // Action en masse : une action — donc un résultat — par échéance visée.
   if (draft.bulk) {
     return resolveBulk(draft as Extract<CommandDraft, { targetWords: string[] }>, input, lookup, actionId);
@@ -182,6 +225,73 @@ export async function resolveDraft(
     effects: [
       `Échéance : ${item.title}${quand}`,
       `Nouveau statut : ${draft.command === 'MARK_AGENDA_DONE' ? 'réalisée' : 'annulée'}`,
+    ],
+  };
+}
+
+/**
+ * Modification d'une caractéristique : bien trouvé dans le compte, champ
+ * applicable à sa famille, valeur valide selon les règles de la fiche,
+ * ancienne valeur lue — et présentée — avant toute confirmation.
+ */
+async function resolveAssetFieldUpdate(
+  draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_FIELD' }>,
+  input: AssistantRequestInput,
+  lookup: CommandLookup,
+  actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const def = ASSISTANT_ASSET_FIELDS.find((f) => f.key === draft.field);
+  if (!def || !lookup.getAssetState) return { needInfo: 'Je ne peux pas modifier ce champ depuis l’assistant.' };
+
+  // Le bien : nommé, ou celui du fil / de la page.
+  let assetId: number | null = null;
+  if (draft.assetWords.length) {
+    const found = await lookup.findAssets(input.accountId, draft.assetWords);
+    if (found.length === 0) return { needInfo: `Je n’ai pas trouvé ce bien dans votre compte. Pour quel bien voulez-vous modifier « ${def.label} » ?` };
+    if (found.length > 1) {
+      return { needInfo: `Plusieurs biens correspondent : ${found.slice(0, 5).map((a) => nomBien(a)).join(', ')}. Précisez lequel.` };
+    }
+    assetId = found[0].id;
+  } else if (input.reference?.type === 'asset') {
+    assetId = input.reference.id;
+  } else if (Number(input.pageContext?.assetId)) {
+    assetId = Number(input.pageContext?.assetId);
+  }
+  if (!assetId) return { needInfo: `Pour quel bien voulez-vous modifier « ${def.label} » ?` };
+
+  const asset = await lookup.getAssetState(input.accountId, assetId);
+  if (!asset) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte.' };
+  if (asset.status === 'ARCHIVED' || (asset.lockState && asset.lockState !== 'NONE')) {
+    return { needInfo: `${nomBien(asset)} n’est pas modifiable actuellement (bien archivé ou verrouillé par votre offre).` };
+  }
+  const section = def.sections[familyOf(asset.category)];
+  if (!section) return { needInfo: `« ${def.label} » ne s’applique pas à ${nomBien(asset)}.` };
+
+  if (draft.value === null) {
+    const attendu = def.type === 'date' ? 'une date complète, par exemple 25/05/2021' : def.type === 'number' ? 'un nombre' : 'une valeur';
+    return { needInfo: `Quelle valeur voulez-vous pour « ${def.label} » de ${nomBien(asset)} ? Indiquez ${attendu}.` };
+  }
+
+  const previous = asset.characteristics[def.key] ?? null;
+  // Mêmes contrôles que l'enregistrement depuis la fiche.
+  const erreurs = validateDetailChanges({ [def.key]: draft.value }, { [def.key]: previous }, lookup.today());
+  if (erreurs.length) return { needInfo: erreurs.map((e) => e.message).join(' ') };
+  if (previous !== null && String(previous) === String(draft.value)) {
+    return { needInfo: `« ${def.label} » de ${nomBien(asset)} vaut déjà ${formatFieldValue(def, draft.value)}.` };
+  }
+
+  const avant = formatFieldValue(def, previous);
+  const apres = formatFieldValue(def, draft.value);
+  return {
+    actionId, command: 'UPDATE_ASSET_FIELD', dependsOn: [],
+    targets: [{ type: 'asset', id: asset.id, label: nomBien(asset) }],
+    params: { assetId: asset.id, section, field: def.key, value: draft.value, previous },
+    preview: `Modifier « ${def.label} » de ${nomBien(asset)} : ${avant} → ${apres}.`,
+    effects: [
+      `Bien : ${nomBien(asset)}`,
+      `Champ : ${def.label}`,
+      `Valeur actuelle : ${avant}`,
+      `Nouvelle valeur : ${apres}`,
     ],
   };
 }

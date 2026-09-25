@@ -21,6 +21,7 @@ import { resolveImpacts, type DependencyRule } from './field-dependency.service'
 import { computeHash, recordVersion } from './version-tracker.service';
 import { determineAction, createInconsistency, autoResolveForField } from './inconsistency.service';
 import { isFieldAllowedForCategory } from '@/lib/field-validator';
+import { acceptDetailDate } from '@/lib/asset-detail-rules';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -60,8 +61,8 @@ function normalizeFieldValue(key: string, raw: unknown): unknown {
   const dateFields = ['acquisitionDate', 'estimatedValueDate', 'dpeDate', 'firstRegistrationDate', 'mileageDate', 'insuranceExpiry', 'nextInspection', 'lastRevision', 'valuationDate', 'warrantyEnd'];
   if (dateFields.includes(key)) {
     const s = String(raw);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-    try { const d = new Date(s); if (!isNaN(d.getTime())) return d.toISOString().split('T')[0]; } catch {}
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return acceptDetailDate(key, s);
+    try { const d = new Date(s); if (!isNaN(d.getTime())) return acceptDetailDate(key, d.toISOString().split('T')[0]); } catch {}
     return null;
   }
   return raw;
@@ -168,7 +169,9 @@ function extractFieldsFromAnalysis(
     for (const candidate of candidates) {
       const val = analysis[candidate] ?? analysis[candidate.toLowerCase()];
       if (!isEmptyValue(val)) {
-        fields[docField] = normalizeFieldValue(docField.replace('document_extracted_', ''), val);
+        const normalized = normalizeFieldValue(docField.replace('document_extracted_', ''), val);
+        // Valeur écartée (date passée d'un champ « à venir ») : rien à écrire.
+        if (normalized !== null) fields[docField] = normalized;
         break;
       }
     }

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Search, X, Package, FileText, Calendar, LayoutDashboard, Sparkles } from 'lucide-react'
 import { apiClient } from '@/lib/api-client'
+import { openDrawer, type DrawerTarget } from '@/lib/drawers'
 
 // « Fournisseur » a été retirée : aucune source ne produit plus ce résultat,
 // l'application n'ayant pas de page fournisseur à ouvrir.
@@ -12,6 +13,8 @@ type Category = 'Navigation' | 'Bien' | 'Document' | 'Agenda'
 interface SearchResult {
   id: string
   docId?: number
+  /** Fiche à ouvrir en tiroir, sans quitter l'écran. */
+  drawer?: DrawerTarget
   label: string
   sublabel?: string
   href: string
@@ -110,6 +113,8 @@ export function MobileSearchOverlay({ open, onClose, isPaidPlan, planCode = '' }
         label: r.label,
         sublabel: r.sublabel,
         href: r.href,
+        docId: typeof r.docId === 'number' ? r.docId : undefined,
+        drawer: r.drawer,
         category: r.category as Category,
       }))
       if (!isAI) {
@@ -159,8 +164,10 @@ export function MobileSearchOverlay({ open, onClose, isPaidPlan, planCode = '' }
 
   const handleSelect = (r: SearchResult) => {
     onClose()
-    if (r.category === 'Document' && r.docId) {
-      window.dispatchEvent(new CustomEvent('open-document-drawer', { detail: { docId: r.docId } }))
+    if (r.drawer) {
+      openDrawer(r.drawer)
+    } else if (r.category === 'Document' && r.docId) {
+      openDrawer({ kind: 'document', id: r.docId })
     } else {
       router.push(r.href)
     }

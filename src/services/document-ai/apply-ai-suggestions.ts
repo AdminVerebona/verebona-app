@@ -21,6 +21,7 @@ import { AiUsageTracker } from './ai-usage-tracker';
 import type { AiBusinessResult } from '@/types/ai-usage';
 import { calcCostMicros } from './gemini-client';
 import { isFieldAllowedForCategory } from '@/lib/field-validator';
+import { acceptDetailDate } from '@/lib/asset-detail-rules';
 
 // ─── Section / field registry (mirrors ai-suggestions/route.ts) ───────────────
 
@@ -78,10 +79,10 @@ function normalizeValue(key: string, raw: unknown): unknown {
   const dateFields = ['acquisitionDate', 'estimatedValueDate', 'dpeDate', 'firstRegistrationDate', 'mileageDate', 'insuranceExpiry', 'nextInspection', 'lastRevision', 'valuationDate'];
   if (dateFields.includes(key)) {
     const s = String(raw);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return acceptDetailDate(key, s);
     try {
       const d = new Date(s);
-      if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+      if (!isNaN(d.getTime())) return acceptDetailDate(key, d.toISOString().split('T')[0]);
     } catch {}
     return null;
   }

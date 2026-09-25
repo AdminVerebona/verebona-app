@@ -19,6 +19,8 @@
  *    (`neverBell`).
  */
 
+import { lotNotificationText } from '@/services/ai/source-analysis/lot-notification-text';
+import { drawerHref } from '@/lib/drawers';
 import { z } from 'zod';
 import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications';
 import { subscriptionNotificationText } from './subscription-messages';
@@ -130,13 +132,21 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     category: 'documents', priority: 'normal', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: false }, retentionDays: 90,
+    // Le document est nommé ; un seul document s'ouvre directement en tiroir.
     render: (p) => content(
       'Analyse terminée',
-      `${p.analysedCount} document(s) analysé(s)`,
-      { body: 'Votre analyse de documents est terminée.' },
+      lotNotificationText(p),
+      { body: lotNotificationText(p) },
     ),
-    deepLink: () => '/documents',
-    payloadSchema: z.object({ lotId: z.number(), analysedCount: z.number(), failedCount: z.number() }),
+    deepLink: (p) => (p.assetFileId
+      ? drawerHref({ kind: 'document', id: p.assetFileId }, '/documents')
+      : '/documents'),
+    payloadSchema: z.object({
+      lotId: z.number(), analysedCount: z.number(), failedCount: z.number(),
+      assetFileId: z.number().optional(),
+      documentTitle: z.string().optional(),
+      documents: z.array(z.object({ assetFileId: z.number(), title: z.string() })).optional(),
+    }),
   },
   // ══════════════════════════════════════════════════════════════════════════
   // ⚠️ PLUS D'EMAIL SUR UN ÉCHEC D'ANALYSE
@@ -316,16 +326,24 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   },
 
   // ── Transmission ─────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAS D'E-MAIL ICI — un seul e-mail par transmission
+  //
+  // L'invitation part déjà par e-mail à la création de la transmission
+  // (`sendTransmissionEmail`, objet « Prénom Nom vous transmet un bien —
+  // Verebona »), destinataire inscrit ou non. Cette entrée en envoyait un
+  // second (« Vous avez reçu une transmission ») aux destinataires déjà
+  // inscrits. Elle reste pour la cloche et le push, sans modèle d'e-mail.
+  // ══════════════════════════════════════════════════════════════════════════
   [T.TRANSMISSION_RECEIVED]: {
     type: T.TRANSMISSION_RECEIVED,
     category: 'transmission', priority: 'high', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
-    defaults: { push: true, email: true }, retentionDays: 180,
+    defaults: { push: true, email: false }, retentionDays: 180,
     render: (p) => content(
       'Transmission reçue',
       `${p.senderName ?? 'Quelqu\'un'} vous a transmis un bien.`,
       { body: 'Vous avez reçu une transmission.' },
-      'notif_transmission_received',
     ),
     deepLink: (p) => (p.transmissionToken ? `/transmission/${p.transmissionToken}` : null),
     payloadSchema: z.object({ transmissionToken: z.string().optional(), senderName: z.string().optional(), assetName: z.string().optional() }),

@@ -16,6 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
+import { todayParis } from '@/lib/asset-detail-rules';
 import { toast } from 'sonner';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
@@ -30,6 +31,8 @@ export interface FieldDef {
   type?: 'text' | 'number' | 'date' | 'textarea' | 'select';
   options?: { value: string; label: string }[];
   readonly?: boolean;
+  /** Date : échéance à venir — les jours passés ne sont pas proposés (le serveur les refuse aussi). */
+  futureOnly?: boolean;
   /** Retourne true quand le champ est sans objet (affiche N/A, désactivé en édition, envoyé null) */
   notApplicableWhen?: (data: Record<string, unknown>) => boolean;
 }
@@ -372,6 +375,7 @@ export function AssetDetailSection({
                         <DatePicker
                           value={String(form[field.key] ?? '')}
                           onChange={v => setField(field.key, v)}
+                          min={field.futureOnly ? todayParis() : undefined}
                           className=""
                         />
                       ) : field.type === 'number' && field.key.toLowerCase().includes('year') ? (

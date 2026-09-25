@@ -119,7 +119,9 @@ export class AiGateway {
           // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
           // c'est aussi le comportement le plus sûr — un repli sollicité parce
           // que le principal a échoué ne doit pas en plus changer de format.
-          maxOutputTokens: configuration.maxOutputTokens ?? undefined,
+          maxOutputTokens: op.minOutputTokens
+            ? Math.max(configuration.maxOutputTokens ?? 0, op.minOutputTokens)
+            : configuration.maxOutputTokens ?? undefined,
         });
 
         // Aucune persistance d'une sortie brute invalide (CDC §5.3).

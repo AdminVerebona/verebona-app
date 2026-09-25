@@ -19,10 +19,22 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { analyze, modify, T5Refused } from '@/services/ai/governance/prompt-control.service';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
+import { isAiGatewayError } from '@/services/ai/gateway/errors';
 
+function gatewayMessage(code: string, detail: string): string {
+  const why: Record<string, string> = {
+    ALL_MODELS_FAILED: 'Aucun modèle n’a rendu une réponse exploitable',
+    INVALID_OUTPUT: 'La réponse du modèle ne respecte pas le format attendu',
+    TIMEOUT: 'Le modèle n’a pas répondu à temps',
+    PROVIDER_UNAVAILABLE: 'Le fournisseur IA n’est pas configuré ou pas joignable',
+  };
+  return `${why[code] ?? 'Prompt Control n’a pas abouti'}. Détail technique : ${detail.slice(0, 400)}`;
+}
+
+// Aucun traitement à désigner : T5 détermine lui-même le ou les prompts
+// concernés (SCR-06, champ unique « Demander une modification »).
 const Demande = {
   versionId: z.number().int().positive(),
-  treatment: z.string().min(2).max(4),
   instruction: z.string().trim().min(5).max(5000),
 };
 
@@ -34,6 +46,9 @@ const Modify = z.object({
   /** Créer un nouveau Brouillon depuis l'Active même si d'autres existent. */
   createDraft: z.boolean().optional(),
 });
+
+/** Jusqu'à deux modèles × 120 s (repli compris). */
+export const maxDuration = 260;
 
 const Body = z.discriminatedUnion('action', [Analyze, Modify]);
 
@@ -72,10 +87,9 @@ export async function POST(req: NextRequest) {
   const d = parsed.data;
   try {
     const result = d.action === 'analyze'
-      ? await analyze(d.versionId, d.treatment, d.instruction, compte, guard.ctx.adminUserId)
+      ? await analyze(d.versionId, d.instruction, compte, guard.ctx.adminUserId)
       : await modify({
         versionId: d.versionId,
-        treatment: d.treatment,
         instruction: d.instruction,
         createDraft: d.createDraft,
         accountId: compte,
@@ -87,6 +101,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: e.code, message: e.message, details: e.details ?? null },
         { status: statusFor(e.code) },
+      );
+    }
+    // Échec du modèle : le motif réel (réponse illisible, délai, modèle
+    // indisponible…) est rendu à l'écran. Un « Opération impossible »
+    // générique obligeait à fouiller les journaux pour chaque échec.
+    if (isAiGatewayError(e)) {
+      console.error('[POST /api/admin/ai/prompt-control]', e.code, e.message);
+      return NextResponse.json(
+        { error: `AI_${e.code}`, message: gatewayMessage(e.code, e.message) },
+        { status: 502 },
       );
     }
     return toErrorResponse(e, 'POST /api/admin/ai/prompt-control');

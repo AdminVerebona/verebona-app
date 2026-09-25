@@ -114,7 +114,7 @@ describe('T2 : citation ≠ observation', () => {
 
 describe('garde-fous', () => {
   it('prompt v4 : lu / observé, zéro invention, pas de faux extrait', () => {
-    const p = src('src/services/ai/prompts/source-analysis/extract_source_v4.txt');
+    const p = src('src/services/ai/prompts/source-analysis/extract_source_v5.txt');
     expect(p).toMatch(/explicitement LISIBLE ou directement OBSERVABLE/);
     expect(p).toMatch(/Ne mets PAS d'`excerpt`/);
     expect(p).toMatch(/Une photo sans texte n'a PAS de transcription/);

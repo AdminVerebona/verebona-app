@@ -1,11 +1,13 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Bell, X, CheckCheck, Info, ArrowRightLeft, Trash2, UserPlus, Cpu, SendHorizonal, AlertTriangle, CreditCard } from 'lucide-react';
+import { Bell, X, CheckCheck, Info, ArrowRightLeft, Trash2, UserPlus, Cpu, SendHorizonal, AlertTriangle, CreditCard, Loader2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { createPortal } from 'react-dom';
 import { apiClient } from '@/lib/api-client';
+import { drawerHref, openDrawer } from '@/lib/drawers';
+import { lotNotificationText } from '@/services/ai/source-analysis/lot-notification-text';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -35,6 +37,8 @@ interface NotificationPayload extends SubscriptionNotificationPayload {
   failedCount?: number;
   errorReason?: string;
   documentTitle?: string;
+  /** Fin de lot : documents analysés, nommés (lot-notification-text). */
+  documents?: Array<{ assetFileId: number; title: string }>;
   inviteToken?: string;
   lotId?: number;
   assetFileId?: number;
@@ -104,7 +108,7 @@ function getNotificationText(
       return `${p.inviterName ?? 'Quelqu\'un'} vous a invité(e) à rejoindre ${p.accountName ?? 'un compte'}`;
     // ── Documents : une notification par lot (cf. CDC §7.2) ──────────────────
     case 'DOCUMENT_BATCH_COMPLETED':
-      return `Analyse terminée : ${p.analysedCount ?? 0} document(s) analysé(s)`;
+      return lotNotificationText(p);
     case 'DOCUMENT_BATCH_PARTIALLY_FAILED':
       return `Analyse terminée avec une anomalie : ${p.analysedCount ?? 0} document(s) analysé(s), ${p.failedCount ?? 0} à vérifier`;
     case 'DOCUMENT_BATCH_FAILED':
@@ -115,7 +119,7 @@ function getNotificationText(
         return `Analyse échouée${p.documentTitle ? ` : ${p.documentTitle}` : ''}`;
       }
       return p.documentTitle
-        ? `Analyse terminée : ${p.documentTitle}`
+        ? lotNotificationText({ analysedCount: 1, documentTitle: p.documentTitle })
         : `Analyse terminée : ${p.analysedCount ?? 0} document(s) traité(s)${p.failedCount ? `, ${p.failedCount} échoué(s)` : ''}`;
     case 'ANALYSIS_QUOTA_90':
       return `Vous avez utilisé 90 % de votre quota d'analyses ce mois-ci`;
@@ -233,14 +237,14 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
     return `/transmission/${p.transmissionToken}`;
   }
   // Documents : vue du document concerné, ou liste des documents pour un lot.
-  if (type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_BATCH_PARTIALLY_FAILED' || type === 'DOCUMENT_BATCH_FAILED') {
+  if ((type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_ANALYZED') && p.assetFileId) {
+    return drawerHref({ kind: 'document', id: p.assetFileId }, '/documents');
+  }
+  if (type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_BATCH_PARTIALLY_FAILED' || type === 'DOCUMENT_BATCH_FAILED' || type === 'DOCUMENT_ANALYZED') {
     return '/documents';
   }
-  if (type === 'DOCUMENT_ANALYZED') {
-    return p.assetFileId ? `/documents/${p.assetFileId}` : '/documents';
-  }
   if (type === 'ANALYSIS_FAILED_PERSISTENT' && p.assetFileId) {
-    return `/documents/${p.assetFileId}`;
+    return drawerHref({ kind: 'document', id: p.assetFileId }, '/documents');
   }
   // Abonnement : information seule, non cliquable — le clic marque la
   // notification comme lue, sans navigation.
@@ -265,6 +269,7 @@ function getNotificationIcon(type: string) {
     case 'ACCOUNT_INVITATION':
       return <UserPlus className="w-4 h-4 flex-shrink-0" />;
     case 'DOCUMENT_ANALYZED':
+    case 'DOCUMENT_BATCH_COMPLETED':
       return <Cpu className="w-4 h-4 flex-shrink-0" />;
     case 'ANALYSIS_FAILED_PERSISTENT':
       return <AlertTriangle className="w-4 h-4 flex-shrink-0 text-destructive" />;
@@ -289,6 +294,8 @@ export function NotificationBell() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  /** Premier chargement terminé : avant, « Aucune notification » serait faux. */
+  const [loaded, setLoaded] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const isMobile = useIsMobile();
@@ -324,12 +331,21 @@ export function NotificationBell() {
       });
     } catch {
       // Silently fail polling
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
-  // Initial fetch delayed by 5s to avoid competing with critical page requests,
-  // then poll every 30s. Polling pauses when the tab is hidden (Visibility API)
-  // to avoid unnecessary network requests in the background.
+  // ══════════════════════════════════════════════════════════════════════
+  // PREMIER CHARGEMENT IMMÉDIAT
+  //
+  // Le premier appel était différé de 5 s « pour ne pas concurrencer les
+  // requêtes critiques ». Conséquence visible : ouvrir la cloche peu après
+  // l'arrivée sur une page montrait « Aucune notification » pendant plusieurs
+  // secondes, puis la liste. La requête est légère (index composites,
+  // migration 0165) : elle part désormais tout de suite, puis toutes les 30 s.
+  // Le sondage s'arrête quand l'onglet est masqué (Visibility API).
+  // ══════════════════════════════════════════════════════════════════════
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null;
 
@@ -354,17 +370,14 @@ export function NotificationBell() {
       }
     }
 
-    const initialDelay = setTimeout(() => {
-      if (!document.hidden) {
-        fetchNotifications();
-        startPolling();
-      }
-    }, 5_000);
+    if (!document.hidden) {
+      fetchNotifications();
+      startPolling();
+    }
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      clearTimeout(initialDelay);
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
@@ -402,6 +415,11 @@ export function NotificationBell() {
       if (fastInterval) clearInterval(fastInterval);
     };
   }, [fetchNotifications]);
+
+  // Ouverture du panneau : la liste affichée est relue, sans attendre le sondage.
+  useEffect(() => {
+    if (open) void fetchNotifications();
+  }, [open, fetchNotifications]);
 
   // Close panel on outside click
   useEffect(() => {
@@ -447,14 +465,21 @@ export function NotificationBell() {
     if (!notif.readAt) {
       await markOneRead(notif.id);
     }
-    if (notif.type === 'DOCUMENT_ANALYZED') {
-      setOpen(false);
-      if (notif.payload?.lotId) {
-        window.dispatchEvent(new CustomEvent('open-analysis-review', { detail: { lotId: notif.payload.lotId, showAnalysisResults: true } }));
-      } else if (notif.payload?.assetFileId) {
-        window.dispatchEvent(new CustomEvent('open-document-drawer', { detail: { docId: notif.payload.assetFileId, showAnalysisResults: true } }));
+    // Analyse terminée : le document s'ouvre en tiroir, sur ses résultats,
+    // sur l'écran courant — plus de rechargement vers la liste des documents.
+    if (notif.type === 'DOCUMENT_ANALYZED' || notif.type === 'DOCUMENT_BATCH_COMPLETED') {
+      const p = notif.payload ?? {};
+      const docId = p.assetFileId ?? (p.documents?.length === 1 ? p.documents[0].assetFileId : undefined);
+      if (docId) {
+        setOpen(false);
+        openDrawer({ kind: 'document', id: docId, showAnalysisResults: true });
+        return;
       }
-      return;
+      if (p.lotId) {
+        setOpen(false);
+        window.dispatchEvent(new CustomEvent('open-analysis-review', { detail: { lotId: p.lotId, showAnalysisResults: true } }));
+        return;
+      }
     }
     const href = getNotificationHref(notif.type, notif.payload);
     if (href) {
@@ -494,7 +519,12 @@ export function NotificationBell() {
 
           {/* List */}
           <div className="overflow-y-auto flex-1">
-            {notifications.length === 0 ? (
+            {!loaded && notifications.length === 0 ? (
+              <div className="flex items-center justify-center py-10 text-[color:var(--text-muted)] text-sm gap-2" role="status">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Chargement…</span>
+              </div>
+            ) : notifications.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-[color:var(--text-muted)] text-sm gap-2">
                 <Bell className="w-8 h-8 opacity-30" />
                 <span>Aucune notification</span>

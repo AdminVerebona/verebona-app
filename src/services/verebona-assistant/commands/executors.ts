@@ -51,6 +51,46 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     return ok(action, `« ${item.title} » marquée comme réalisée.`, item.id);
   },
 
+  /**
+   * Caractéristique d'un bien : par le service de la fiche bien, avec ses
+   * contrôles (bien du compte, disponible, section applicable, dates).
+   * La valeur actuelle est relue : si elle n'est plus celle présentée à la
+   * confirmation, rien n'est écrit — l'utilisateur a validé « A → B », pas
+   * « valeur quelconque → B ».
+   */
+  async UPDATE_ASSET_FIELD(action, ctx) {
+    const p = action.params as Extract<CommandParams, { field: string }>;
+    const { loadWritableAsset, updateAssetDetails, AssetDetailsError } =
+      await import('@/services/assets/asset-details-write.service');
+    const { sqlLookup } = await import('./plan.service');
+    const label = action.effects.find((e) => e.startsWith('Champ : '))?.slice(8) ?? p.field;
+    try {
+      await loadWritableAsset(p.assetId, ctx.accountId);
+      const state = await sqlLookup.getAssetState?.(ctx.accountId, p.assetId);
+      const actuelle = state?.characteristics[p.field] ?? null;
+      if (String(actuelle ?? '') !== String(p.previous ?? '')) {
+        return ko(action, `« ${label} » a été modifié entre-temps : rien n’a été écrit. Refaites votre demande.`);
+      }
+      await updateAssetDetails({
+        assetId: p.assetId, accountId: ctx.accountId, section: p.section, fields: { [p.field]: p.value },
+      });
+    } catch (e) {
+      if (e instanceof AssetDetailsError) {
+        if (e.code === 'NOT_FOUND') {
+          return { actionId: action.actionId, status: 'REFUSED', message: 'Bien introuvable ou hors de votre compte.' };
+        }
+        return ko(action, e.message);
+      }
+      throw e;
+    }
+    const cible = action.targets[0]?.label ?? 'le bien';
+    return {
+      actionId: action.actionId, status: 'SUCCESS',
+      message: `« ${label} » de ${cible} mis à jour.`,
+      entity: { type: 'asset', id: p.assetId },
+    };
+  },
+
   async CANCEL_AGENDA_ITEM(action, ctx) {
     const p = action.params as Extract<CommandParams, { agendaItemId: number }>;
     const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');

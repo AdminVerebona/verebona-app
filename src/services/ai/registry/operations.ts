@@ -33,6 +33,15 @@ export interface AiOperationDefinition {
    * `promptCode`, faute de quoi son comportement échapperait à la gouvernance.
    */
   dynamicPrompt?: boolean;
+  /**
+   * Plancher de tokens de sortie, appliqué par la gateway au-dessus du plafond
+   * de la configuration versionnée.
+   *
+   * Pour une opération dont la sortie est intrinsèquement longue — réécrire des
+   * prompts complets —, un plafond réglé pour des réponses courtes tronque le
+   * JSON : la sortie devient invalide et l'appel échoue sur tous les modèles.
+   */
+  minOutputTokens?: number;
   /** Une opération inactive ne peut pas être exécutée par la gateway. */
   active: boolean;
   /** false ⇒ n'incrémente pas les compteurs de quota client. */
@@ -250,6 +259,17 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
     promptCode: 'analyze_instruction_v1', timeoutMs: 60_000,
     outputSchema: 'InstructionAnalysisOutput', active: true, billable: false,
+  },
+  // Prompt Control (T5) — CDC BO IA SCR-06 : une demande en langage naturel,
+  // T5 choisit lui-même le ou les prompts T1–T4 à faire évoluer. Prompt propre
+  // (`prompt_control_v2`), distinct d'`analyze_instruction` qui sert encore la
+  // route historique `prompt-changes` avec un autre format de sortie.
+  control_prompts: {
+    operationCode: 'control_prompts', useCaseCode: 'AI_GOVERNANCE',
+    label: 'Prompt Control — diagnostic et réécriture des prompts administrables',
+    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
+    promptCode: 'prompt_control_v2', timeoutMs: 120_000, minOutputTokens: 32_768,
+    outputSchema: 'PromptControlOutput', active: true, billable: false,
   },
   propose_change: {
     operationCode: 'propose_change', useCaseCode: 'AI_GOVERNANCE',

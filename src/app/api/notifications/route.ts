@@ -3,7 +3,7 @@ import { extractAccessToken } from '@/lib/auth/token-extractor';
 import { verifyAccessToken } from '@/lib/jwt';
 import { db } from '@/db';
 import { notifications } from '@/db/schema';
-import { eq, and, isNull, desc, sql } from 'drizzle-orm';
+import { eq, and, isNull, desc, sql, inArray } from 'drizzle-orm';
 
 export async function GET(request: NextRequest) {
   try {
@@ -19,32 +19,29 @@ export async function GET(request: NextRequest) {
 
     const url = new URL(request.url);
     const unreadOnly = url.searchParams.get('unread') === 'true';
-    const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+    const rawLimit = Number.parseInt(url.searchParams.get('limit') || '20', 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
 
-    const query = db
-      .select()
-      .from(notifications)
-      .where(
-        unreadOnly
-          ? and(eq(notifications.userId, payload.userId), isNull(notifications.readAt))
-          : eq(notifications.userId, payload.userId)
-      )
-      .orderBy(desc(notifications.createdAt))
-      .limit(limit);
-
-    const notifs = await query;
-
-    const unreadCountResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(notifications)
-      .where(
-        and(
-          eq(notifications.userId, payload.userId),
-          isNull(notifications.readAt)
+    // Liste et compteur en parallèle : la cloche attendait les deux requêtes
+    // l'une après l'autre (index composites : migration 0165).
+    const [notifs, unreadCountResult] = await Promise.all([
+      db
+        .select()
+        .from(notifications)
+        .where(
+          unreadOnly
+            ? and(eq(notifications.userId, payload.userId), isNull(notifications.readAt))
+            : eq(notifications.userId, payload.userId)
         )
-      );
+        .orderBy(desc(notifications.createdAt))
+        .limit(limit),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(notifications)
+        .where(and(eq(notifications.userId, payload.userId), isNull(notifications.readAt))),
+    ]);
 
-    const unreadCount = unreadCountResult[0]?.count ?? 0;
+    const unreadCount = Number(unreadCountResult[0]?.count ?? 0);
 
     return NextResponse.json({ 
       notifications: notifs.map(n => ({
@@ -99,16 +96,12 @@ export async function PATCH(request: NextRequest) {
           )
         );
     } else if (notificationIds && Array.isArray(notificationIds)) {
-      for (const id of notificationIds) {
+      const ids = notificationIds.filter((id: unknown): id is number => Number.isSafeInteger(id));
+      if (ids.length > 0) {
         await db
           .update(notifications)
           .set({ readAt: now })
-          .where(
-            and(
-              eq(notifications.id, id),
-              eq(notifications.userId, payload.userId)
-            )
-          );
+          .where(and(inArray(notifications.id, ids), eq(notifications.userId, payload.userId)));
       }
     }
 

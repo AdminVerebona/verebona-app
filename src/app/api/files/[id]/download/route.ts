@@ -7,6 +7,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import { FileLogger } from '@/lib/file-logger';
 import { SessionService } from '@/lib/session-service';
+import { contentDisposition, downloadFilename } from '@/lib/download-filename';
 
 const s3Client = new S3Client({
   region: process.env.OVH_S3_REGION || 'gra',
@@ -18,9 +19,6 @@ const s3Client = new S3Client({
   forcePathStyle: false,
 });
 
-function sanitizeFilenameForHeader(filename: string): string {
-  return filename.replace(/[^\w\s.-]/g, '_');
-}
 
 export async function GET(
   request: NextRequest,
@@ -208,13 +206,14 @@ export async function GET(
       );
     }
 
-    // Sanitize filename for Content-Disposition header
-      const safeFilename = sanitizeFilenameForHeader((file.originalFilename || file.filename) ?? 'file');
+    // Nom lisible : titre du document + extension, accents conservés
+    // (voir src/lib/download-filename.ts).
+      const downloadName = downloadFilename(file);
 
       const command = new GetObjectCommand({
         Bucket: file.s3Bucket ?? undefined,
         Key: file.s3Key ?? undefined,
-        ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
+        ResponseContentDisposition: contentDisposition(downloadName),
         ResponseContentType: file.mimeType ?? undefined,
       });
 
@@ -238,7 +237,7 @@ export async function GET(
 
     return NextResponse.json({
       downloadUrl,
-      filename: file.originalFilename,
+      filename: downloadName,
       expiresIn: 3600,
     }, { status: 200 });
 

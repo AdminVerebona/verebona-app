@@ -7,6 +7,7 @@
  * produit un brouillon que `plan.service` résout dans le compte puis fige.
  */
 import type { WriteCommandType } from './catalog';
+import { findAssetField, parseFieldValue } from './asset-fields';
 
 export type CommandDraft =
   | {
@@ -30,6 +31,17 @@ export type CommandDraft =
        * résultat par échéance visée.
        */
       bulk?: { scope: 'past' | 'open'; assetWords: string[] };
+    }
+  | {
+      command: 'UPDATE_ASSET_FIELD';
+      /** Clé du champ (liste fermée : asset-fields.ts). */
+      field: string;
+      /** Valeur comprise, ou null si elle ne l'a pas été. */
+      value: string | number | null;
+      /** Mots désignant le bien (« pour la polo »). */
+      assetWords: string[];
+      /** « pour ce véhicule » : bien du fil. */
+      assetFromContext: boolean;
     };
 
 /** Segment d'un message à plusieurs commandes. */
@@ -93,9 +105,54 @@ function motsUtiles(s: string): string[] {
 
 const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
+/** Verbes de modification d'une caractéristique (« mets », « change », « renseigne »…). */
+const UPDATE = /\b(mets|mettre|met|modifie|modifier|change|changer|renseigne|renseigner|indique|indiquer|corrige|corriger|actualise|actualiser|remplace|remplacer|fixe|fixer|passe|passer|note|noter)\b/;
+const DETERMINANT = String.raw`(?:(?:ma|mon|mes|la|le|l'|notre|votre|sa|son|ce|cet|cette)\s*)?`;
+const BIEN_APRES = new RegExp(String.raw`\b(?:pour|de|du|sur)\s+(${DETERMINANT})([a-z][a-z0-9'-]*(?:\s+[a-z][a-z0-9'-]*){0,3}?)(?=\s*$|\s*[?.!,;]|\s+(?:au|a|le|en|par|est|avec|:)\b|\s+\d)`);
+
+/**
+ * « Mets la date d'achat le 25/05/2021 pour la Polo » : champ de la liste
+ * fermée + valeur + bien. Le bien et l'ancienne valeur sont résolus ensuite
+ * dans le compte (plan.service) ; rien n'est écrit sans confirmation.
+ */
+function parseAssetFieldUpdate(message: string, today: string): CommandDraft | null {
+  const nfc = message.normalize('NFC');
+  const m = plain(nfc);
+  if (!UPDATE.test(m) || DONE.test(m)) return null;
+  const hit = findAssetField(nfc);
+  if (!hit) return null;
+  const debut = hit.index + hit.alias.length;
+  const apresOriginal = nfc.slice(debut);
+  const apres = m.slice(debut);
+  const value = parseFieldValue(hit.def, apresOriginal, today, parseDateFr);
+
+  // Le bien : cherché hors de la valeur (« à MAIF pour la polo », « au 12/03/2027 »).
+  let zone = `${m.slice(0, hit.index)} ${apres}`;
+  if (hit.def.type === 'text' && typeof value === 'string') zone = zone.replace(plain(value), ' ');
+  zone = zone.replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d[\d .,]*\b/g, ' ');
+  const bien = BIEN_APRES.exec(zone);
+  const assetFromContext = !!bien && /^(ce|cet|cette)\b/.test(bien[1].trim());
+  return {
+    command: 'UPDATE_ASSET_FIELD',
+    field: hit.def.key,
+    value,
+    assetWords: bien && !assetFromContext ? motsUtiles(bien[2]) : [],
+    assetFromContext,
+  };
+}
+
 /** Brouillon de commande, ou `null` si le message n'est pas une commande claire. */
 export function parseCommand(message: string, today: string): CommandDraft | null {
   const m = plain(message).trim();
+
+  // ── Modifier une caractéristique d'un bien ────────────────────────────
+  // « Mets le contrôle technique au … » désigne le champ du véhicule ; une
+  // création (« ajoute / enregistre un contrôle technique … ») reste une
+  // création d'échéance, comme avant.
+  if (!(CREATE.test(m) && AGENDA_NOUN.test(m))) {
+    const update = parseAssetFieldUpdate(message, today);
+    if (update) return update;
+  }
 
   // ── Créer une échéance ────────────────────────────────────────────────
   if (CREATE.test(m) && AGENDA_NOUN.test(m)) {
@@ -146,7 +203,7 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
 }
 
 /** Verbes qui ouvrent une nouvelle commande dans un même message. */
-const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler)\b)/i;
+const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler|mets|modifie|change|renseigne|corrige)\b)/i;
 
 /**
  * Découpe un message en commandes successives (« ajoute… et marque… »,

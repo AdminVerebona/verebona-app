@@ -15,6 +15,7 @@ import { isPremiumPlan } from '@/types/domain';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { acceptDetailDate } from '@/lib/asset-detail-rules';
 
 // ─── Section/field registry ───────────────────────────────────────────────────
 
@@ -83,11 +84,11 @@ function normalizeValue(key: string, raw: unknown): unknown {
   const dateFields = ['acquisitionDate', 'estimatedValueDate', 'dpeDate', 'firstRegistrationDate', 'mileageDate', 'insuranceExpiry', 'nextInspection', 'lastRevision', 'valuationDate'];
   if (dateFields.includes(key)) {
     const s = String(raw);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return acceptDetailDate(key, s);
     // Try to parse partial dates
     try {
       const d = new Date(s);
-      if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+      if (!isNaN(d.getTime())) return acceptDetailDate(key, d.toISOString().split('T')[0]);
     } catch {}
     return null;
   }

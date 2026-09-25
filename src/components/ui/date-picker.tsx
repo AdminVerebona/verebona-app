@@ -32,6 +32,11 @@ interface DatePickerProps {
   max?: string
 }
 
+function parseLocalDay(s?: string): Date | undefined {
+  const m = s ? /^(\d{4})-(\d{2})-(\d{2})/.exec(s) : null
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : undefined
+}
+
 export function DatePicker({
   value,
   onChange,
@@ -62,8 +67,10 @@ export function DatePicker({
     }
   }
 
-  const minDate = min ? new Date(min) : undefined
-  const maxDate = max ? new Date(max) : undefined
+  // Bornes lues comme des jours LOCAUX : `new Date('2026-09-25')` vaut minuit
+  // UTC, soit la veille au soir en France — le jour même aurait été refusé.
+  const minDate = parseLocalDay(min)
+  const maxDate = parseLocalDay(max)
 
   const currentYear = new Date().getFullYear()
   const years = Array.from({ length: 201 }, (_, i) => currentYear - 100 + i)

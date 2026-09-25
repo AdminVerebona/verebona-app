@@ -55,6 +55,7 @@ const AssetFormDialog = dynamic(() => import('./AssetFormDialog').then(m => ({ d
 const UnifiedDocumentDialog = dynamic(() => import('./documents/unified-document-dialog').then(m => ({ default: m.UnifiedDocumentDialog })), { ssr: false });
 const CreateAgendaItemDrawer = dynamic(() => import('./agenda/CreateAgendaItemDrawer').then(m => ({ default: m.CreateAgendaItemDrawer })), { ssr: false });
 import { NavigationProgress } from './NavigationProgress';
+const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
@@ -768,6 +769,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
               showAnalysisResults={globalDocDrawerShowAnalysis}
             />
           )}
+
+          {/* Échéance, équipement, pièce : tiroirs ouverts depuis n'importe quel écran (src/lib/drawers.ts). */}
+          <GlobalDrawerHost />
 
           {/* Action Dialogs */}
           {user?.id && (

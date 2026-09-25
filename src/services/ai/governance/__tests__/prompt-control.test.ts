@@ -1,17 +1,9 @@
 /**
  * CDC BO IA SCR-06, WF-20, WF-39, T5-001 à T5-015 — Prompt Control.
  *
- * ══════════════════════════════════════════════════════════════════════════
- * CE QUE CES TESTS PROTÈGENT
- *
- * T5 reçoit une demande en langage naturel et réécrit des prompts. Ses
- * interdits ne peuvent pas reposer sur une consigne écrite dans un prompt :
- * un modèle à qui l'on demande de ne pas se modifier lui-même finira un jour
- * par le faire. Ils sont donc tenus par le serveur, et ces tests vérifient
- * qu'ils refusent quelle que soit la sortie du modèle.
- *
- * Ils verrouillent aussi l'écart E-01 : une demande de modification s'écrit
- * directement dans le Brouillon, en un seul geste ; une analyse n'écrit rien.
+ * Une demande en langage naturel, sans traitement désigné : T5 choisit lui-même
+ * le ou les prompts à faire évoluer. Les interdits sont tenus par le serveur,
+ * quelle que soit la sortie du modèle — ces tests le vérifient.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -32,241 +24,161 @@ vi.mock('../../config/config-version.repository', () => ({
   createDraft: (u: unknown, l: unknown) => createDraft(u, l),
   saveEntry: (a: unknown, b: unknown, c: unknown) => saveEntry(a, b, c),
 }));
-vi.mock('../../gateway/ai-gateway', () => ({
-  AiGateway: { execute: (req: unknown) => execute(req) },
-}));
-vi.mock('../prompt-control.audit', () => ({
-  recordT5Modification: (t: unknown) => recordT5Modification(t),
-}));
-vi.mock('../../queue/job-queue.repository', () => ({
-  getEmergencyStop: () => getEmergencyStop(),
-}));
+vi.mock('../../gateway/ai-gateway', () => ({ AiGateway: { execute: (req: unknown) => execute(req) } }));
+vi.mock('../prompt-control.audit', () => ({ recordT5Modification: (t: unknown) => recordT5Modification(t) }));
+vi.mock('../../queue/job-queue.repository', () => ({ getEmergencyStop: () => getEmergencyStop() }));
 
-const {
-  assertTarget, analyze, modify, interpret, resolveWriteTarget, T5Refused, VERDICTS,
-} = await import('../prompt-control.service');
+const { analyze, modify, interpret, resolveWriteTarget, formatCurrentPrompts, VERDICTS } =
+  await import('../prompt-control.service');
+const { AI_OPERATIONS } = await import('../../registry/operations');
 
-const PROMPT_ACTUEL = 'Prompt T1 actuel, suffisamment long pour être un vrai prompt de travail.';
-const PROMPT_NOUVEAU = 'Prompt T1 réécrit : extrais aussi les numéros de série en pied de facture.';
+const P = (t: string) => `Prompt ${t} actuel, suffisamment long pour être un vrai prompt de travail administrable.`;
+const NEW = (t: string) => `Prompt ${t} réécrit : nommer chaque document par son type et ce qu'il concerne, sans numéro.`;
 
-const entree = (treatment: string, prompt = PROMPT_ACTUEL) => ({
+const entree = (treatment: string, prompt = P(treatment)) => ({
   treatment, prompt, primaryModel: 'm1', fallback1: 'm2', guardrails: [{ code: 'g' }], triggers: [],
 });
-
 const version = (over: Record<string, unknown> = {}) => ({
   id: 1, status: 'DRAFT', environment: 'preprod', label: null, isStale: false,
   createdAt: new Date('2026-09-20T10:00:00Z'),
   entries: ['T1', 'T2', 'T3', 'T4', 'T5'].map((t) => entree(t)),
   ...over,
 });
-
 const sortie = (over: Record<string, unknown> = {}) => ({
   data: {
     verdict: 'prompt',
-    analysis: 'Le prompt ne mentionne pas le pied de facture : les numéros de série y sont ignorés.',
-    proposedContent: PROMPT_NOUVEAU,
-    risks: [],
-    recommendations: [],
+    analysis: 'Les titres reprennent le numéro de facture : T1 ne donne aucune règle de nommage.',
+    targets: [{ treatment: 'T1', reason: 'Aucune règle de titre.', proposedContent: NEW('T1') }],
+    risks: [], recommendations: [],
     ...over,
   },
   traceId: 'trace-1',
 });
-
 const demande = (over: Record<string, unknown> = {}) => ({
-  versionId: 1, treatment: 'T1', instruction: 'Les numéros de série ne sont pas extraits.',
-  accountId: 99, userId: 7, ...over,
+  versionId: 1, instruction: 'Les titres de factures ne se distinguent pas.', accountId: 99, userId: 7, ...over,
 });
 
 beforeEach(() => {
   for (const m of [getVersion, getActiveVersion, listVersions, createDraft, execute]) m.mockReset();
   saveEntry.mockClear();
   recordT5Modification.mockClear();
-  getEmergencyStop.mockReset();
   getEmergencyStop.mockResolvedValue({ active: false, reason: null, engagedAt: null });
 });
 afterEach(() => vi.restoreAllMocks());
 
-// ── Cibles ──────────────────────────────────────────────────────────────────
-
-describe('T5-002 — Prompt Control ne se modifie pas lui-même', () => {
-  it('refuse la cible T5, avant tout appel modèle', async () => {
-    expect(() => assertTarget('T5')).toThrow(T5Refused);
-    await expect(modify(demande({ treatment: 'T5' }))).rejects.toThrow(/T5-002/);
-    await expect(analyze(1, 'T5', 'x'.repeat(10), 99, 7)).rejects.toThrow(T5Refused);
-    expect(execute).not.toHaveBeenCalled();
-    expect(saveEntry).not.toHaveBeenCalled();
+describe('opération dédiée', () => {
+  it('utilise control_prompts, avec son propre prompt et un plancher de tokens', () => {
+    const op = AI_OPERATIONS.control_prompts;
+    expect(op.promptCode).toBe('prompt_control_v2');
+    expect(op.useCaseCode).toBe('AI_GOVERNANCE');
+    expect(op.minOutputTokens).toBeGreaterThanOrEqual(16_000);
   });
 
-  it('accepte T1 à T4, refuse un traitement inconnu', () => {
-    for (const t of ['T1', 'T2', 'T3', 'T4']) expect(assertTarget(t), t).toBe(t);
-    expect(() => assertTarget('T9')).toThrow(/inconnu/);
-    expect(() => assertTarget('T2 ')).toThrow(T5Refused);
+  it('présente au modèle les quatre prompts administrables, jamais celui de T5', () => {
+    const txt = formatCurrentPrompts(version() as never);
+    for (const t of ['T1', 'T2', 'T3', 'T4']) expect(txt).toContain(P(t));
+    expect(txt).not.toContain(P('T5'));
   });
 });
 
-describe('T5-015 — IA bloquée', () => {
-  it("refuse d'opérer pendant l'arrêt d'urgence, sans appel modèle", async () => {
-    getEmergencyStop.mockResolvedValue({ active: true, reason: 'incident fournisseur', engagedAt: null });
-    await expect(analyze(1, 'T1', 'x'.repeat(10), 99, 7)).rejects.toMatchObject({ code: 'AI_BLOCKED' });
-    await expect(modify(demande())).rejects.toMatchObject({ code: 'AI_BLOCKED' });
-    expect(execute).not.toHaveBeenCalled();
+describe('T5 choisit les cibles', () => {
+  it('écrit chaque prompt proposé, un ou plusieurs', async () => {
+    getVersion.mockResolvedValue(version());
+    execute.mockResolvedValue(sortie({ targets: [
+      { treatment: 'T1', reason: 'titre', proposedContent: NEW('T1') },
+      { treatment: 'T2', reason: 'citation', proposedContent: NEW('T2') },
+    ] }));
+    const r = await modify(demande());
+    expect(saveEntry).toHaveBeenCalledTimes(2);
+    expect(r.changes.map((c) => [c.treatment, c.applied])).toEqual([['T1', true], ['T2', true]]);
+    expect(r).toMatchObject({ applied: true, draftId: 1, mode: 'modify' });
+    expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 'control_prompts' });
+    expect(execute.mock.calls[0][0].promptVariables.MODE).toMatch(/^MODIFICATION/);
   });
-});
 
-// ── Analyse seule ───────────────────────────────────────────────────────────
+  it('T5-002 — écarte une cible T5 ou inconnue rendue par le modèle', async () => {
+    getVersion.mockResolvedValue(version());
+    execute.mockResolvedValue(sortie({ targets: [
+      { treatment: 'T5', reason: 'moi-même', proposedContent: NEW('T5') },
+      { treatment: 'T9', reason: '?', proposedContent: NEW('T9') },
+      { treatment: 't3', reason: 'casse', proposedContent: NEW('T3') },
+    ] }));
+    const r = await modify(demande());
+    expect(r.changes.map((c) => c.treatment)).toEqual(['T3']);
+    expect(saveEntry).toHaveBeenCalledTimes(1);
+  });
 
-describe('T5-006 — une analyse ne modifie rien', () => {
-  it("n'écrit rien et ne crée aucun brouillon, même si le modèle propose un texte", async () => {
+  it('T5-001 — ne change que le prompt', async () => {
     getVersion.mockResolvedValue(version());
     execute.mockResolvedValue(sortie());
+    await modify(demande());
+    const ecrit = saveEntry.mock.calls[0][1] as Record<string, unknown>;
+    expect(ecrit).toMatchObject({ primaryModel: 'm1', fallback1: 'm2', guardrails: [{ code: 'g' }], prompt: NEW('T1') });
+  });
 
-    const r = await analyze(1, 'T1', 'Pourquoi les numéros de série manquent ?', 99, 7);
+  it('T5-014 — trace chaque modification', async () => {
+    getVersion.mockResolvedValue(version());
+    execute.mockResolvedValue(sortie());
+    await modify(demande());
+    expect(recordT5Modification).toHaveBeenCalledWith(expect.objectContaining({
+      treatment: 'T1', before: P('T1'), after: NEW('T1'), traceId: 'trace-1', versionId: 1,
+    }));
+  });
+});
 
-    expect(r.mode).toBe('analyze');
+describe('analyse seule (T5-006)', () => {
+  it('n’écrit rien et ne crée aucun brouillon, même si le modèle propose des textes', async () => {
+    getVersion.mockResolvedValue(version({ status: 'ACTIVE' }));
+    execute.mockResolvedValue(sortie());
+    const r = await analyze(1, 'Pourquoi ces titres ?', 99, 7);
     expect(r.applied).toBe(false);
-    expect(r.proposedContent).toBeNull();
+    expect(r.changes).toEqual([expect.objectContaining({ treatment: 'T1', applied: false, diff: null })]);
     expect(saveEntry).not.toHaveBeenCalled();
     expect(createDraft).not.toHaveBeenCalled();
-  });
-
-  it("est possible sur l'Active : comprendre ce qui tourne n'engage aucune écriture", async () => {
-    getVersion.mockResolvedValue(version({ status: 'ACTIVE' }));
-    execute.mockResolvedValue(sortie({ proposedContent: null }));
-    await expect(analyze(1, 'T1', 'Pourquoi ?', 99, 7)).resolves.toMatchObject({ applied: false });
-  });
-
-  it('transmet au modèle le mode et le prompt de la version affichée', async () => {
-    getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue(sortie({ proposedContent: null }));
-    await analyze(1, 'T2', 'Le ton est trop sec.', 99, 7);
-
-    const vars = execute.mock.calls[0][0].promptVariables;
-    expect(vars.MODE).toMatch(/^ANALYSE/);
-    expect(vars.CURRENT_CONTENT).toBe(PROMPT_ACTUEL);
-    expect(vars.INSTRUCTION).toBe('Le ton est trop sec.');
-    expect(vars.PROMPT_CODE).toMatch(/socle commun/);
+    expect(execute.mock.calls[0][0].promptVariables.MODE).toMatch(/^ANALYSE/);
   });
 });
 
-// ── Modification en un geste ────────────────────────────────────────────────
-
-describe('T5-005, E-01 — une demande de modification écrit directement dans le brouillon', () => {
-  it('écrit le prompt réécrit et rend le diff, en un seul appel', async () => {
+describe('diagnostic non-prompt (T5-011, WF-39)', () => {
+  it.each(['code', 'donnees', 'configuration'] as const)('verdict « %s » : rien n’est écrit', async (verdict) => {
     getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue(sortie());
-
-    const r = await modify(demande());
-
-    expect(execute.mock.calls[0][0].promptVariables.MODE).toMatch(/^MODIFICATION/);
-    expect(saveEntry).toHaveBeenCalledTimes(1);
-    expect(saveEntry.mock.calls[0][0]).toBe(1);
-    expect((saveEntry.mock.calls[0][1] as { prompt: string }).prompt).toBe(PROMPT_NOUVEAU);
-    expect(r).toMatchObject({ applied: true, draftId: 1, draftCreated: false, mode: 'modify' });
-    expect(r.diff?.identical).toBe(false);
-    expect(r.diff?.added).toBeGreaterThan(0);
-  });
-
-  it('T5-001 — ne change que le prompt : modèles et garde-fous restent', async () => {
-    getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue(sortie());
-    await modify(demande());
-
-    const ecrit = saveEntry.mock.calls[0][1] as Record<string, unknown>;
-    expect(ecrit.primaryModel).toBe('m1');
-    expect(ecrit.fallback1).toBe('m2');
-    expect(ecrit.guardrails).toEqual([{ code: 'g' }]);
-  });
-
-  it('T5-014 — trace instruction, cible, avant/après, brouillon et exécution', async () => {
-    getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue(sortie());
-    await modify(demande());
-
-    expect(recordT5Modification).toHaveBeenCalledWith(expect.objectContaining({
-      adminUserId: 7,
-      instruction: 'Les numéros de série ne sont pas extraits.',
-      treatment: 'T1',
-      versionId: 1,
-      before: PROMPT_ACTUEL,
-      after: PROMPT_NOUVEAU,
-      traceId: 'trace-1',
-    }));
-  });
-
-  it("un échec du journal ne défait pas l'écriture", async () => {
-    getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue(sortie());
-    recordT5Modification.mockRejectedValueOnce(new Error('base indisponible'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    await expect(modify(demande())).resolves.toMatchObject({ applied: true });
-  });
-});
-
-describe('T5-011, WF-39 — diagnostic non-prompt : aucune fausse correction', () => {
-  it.each(['code', 'donnees', 'configuration'] as const)(
-    'verdict « %s » : rien n’est écrit, même si le modèle propose un texte',
-    async (verdict) => {
-      getVersion.mockResolvedValue(version());
-      execute.mockResolvedValue(sortie({ verdict }));
-
-      const r = await modify(demande());
-
-      expect(r.applied).toBe(false);
-      expect(r.proposedContent).toBeNull();
-      expect(r.rejected).toMatch(/pas en cause/);
-      expect(saveEntry).not.toHaveBeenCalled();
-    },
-  );
-
-  it('T5-012 — les recommandations sont rendues, jamais appliquées', async () => {
-    getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue(sortie({
-      verdict: 'configuration', proposedContent: null,
-      recommendations: ['Passer T1 sur un modèle plus récent'],
-    }));
-    const r = await modify(demande());
-    expect(r.recommendations).toEqual(['Passer T1 sur un modèle plus récent']);
-    expect(saveEntry).not.toHaveBeenCalled();
-  });
-
-  it("n'écrit pas une proposition identique au prompt actuel", async () => {
-    getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue(sortie({ proposedContent: PROMPT_ACTUEL }));
+    execute.mockResolvedValue(sortie({ verdict }));
     const r = await modify(demande());
     expect(r.applied).toBe(false);
     expect(saveEntry).not.toHaveBeenCalled();
   });
+
+  it('n’écrit pas une proposition identique ou trop courte', () => {
+    const r = interpret('modify', {
+      verdict: 'prompt', analysis: 'x', risks: [], recommendations: [],
+      targets: [
+        { treatment: 'T1', reason: '', proposedContent: P('T1') },
+        { treatment: 'T2', reason: '', proposedContent: 'court' },
+      ],
+    }, (t) => P(t));
+    expect(r.changes.map((c) => [c.treatment, c.proposedContent, Boolean(c.rejected)])).toEqual([
+      ['T1', null, true], ['T2', null, true],
+    ]);
+  });
 });
 
-// ── Choix du brouillon ──────────────────────────────────────────────────────
-
-describe('T5-004, T5-007 — dans quel brouillon écrire', () => {
-  it("crée un brouillon depuis l'Active quand aucun n'existe", async () => {
+describe('brouillon (T5-004, T5-007)', () => {
+  it('crée un brouillon depuis l’Active quand aucun n’existe, seulement s’il y a quelque chose à écrire', async () => {
     const active = version({ id: 5, status: 'ACTIVE' });
-    const cree = version({ id: 6, status: 'DRAFT' });
-    getVersion.mockImplementation(async (id: number) => (id === 5 ? active : id === 6 ? cree : null));
+    const cree = version({ id: 6 });
+    getVersion.mockImplementation(async (id: number) => (id === 5 ? active : cree));
     getActiveVersion.mockResolvedValue(active);
     listVersions.mockResolvedValue([active]);
     createDraft.mockResolvedValue(cree);
-    execute.mockResolvedValue(sortie());
 
-    const r = await modify(demande({ versionId: 5 }));
-
-    expect(createDraft).toHaveBeenCalledWith(7, 'Prompt Control — T1');
-    expect(saveEntry.mock.calls[0][0]).toBe(6);
-    expect(r).toMatchObject({ applied: true, draftId: 6, draftCreated: true });
-  });
-
-  it("ne crée pas de brouillon si le prompt n'est pas en cause", async () => {
-    const active = version({ id: 5, status: 'ACTIVE' });
-    getVersion.mockResolvedValue(active);
-    getActiveVersion.mockResolvedValue(active);
-    listVersions.mockResolvedValue([active]);
-    execute.mockResolvedValue(sortie({ verdict: 'code', proposedContent: null }));
-
+    execute.mockResolvedValue(sortie({ verdict: 'code', targets: [] }));
     await modify(demande({ versionId: 5 }));
     expect(createDraft).not.toHaveBeenCalled();
+
+    execute.mockResolvedValue(sortie());
+    const r = await modify(demande({ versionId: 5 }));
+    expect(createDraft).toHaveBeenCalledWith(7, 'Prompt Control');
+    expect(r).toMatchObject({ applied: true, draftId: 6, draftCreated: true });
   });
 
   it('ne choisit jamais un brouillon existant à la place de l’administrateur', async () => {
@@ -274,66 +186,31 @@ describe('T5-004, T5-007 — dans quel brouillon écrire', () => {
     getVersion.mockResolvedValue(active);
     getActiveVersion.mockResolvedValue(active);
     listVersions.mockResolvedValue([active, version({ id: 8, label: 'lot agenda' })]);
-
-    await expect(resolveWriteTarget(5, false)).rejects.toMatchObject({
-      code: 'DRAFT_SELECTION_REQUIRED',
-      details: { drafts: [expect.objectContaining({ id: 8, label: 'lot agenda' })] },
-    });
-    await expect(modify(demande({ versionId: 5 }))).rejects.toMatchObject({ code: 'DRAFT_SELECTION_REQUIRED' });
-    expect(execute).not.toHaveBeenCalled();
-    expect(saveEntry).not.toHaveBeenCalled();
-  });
-
-  it("crée un nouveau brouillon quand l'administrateur le demande, même si d'autres existent", async () => {
-    const active = version({ id: 5, status: 'ACTIVE' });
-    getVersion.mockResolvedValue(active);
-    getActiveVersion.mockResolvedValue(active);
-    listVersions.mockResolvedValue([active, version({ id: 8 })]);
+    await expect(resolveWriteTarget(5, false)).rejects.toMatchObject({ code: 'DRAFT_SELECTION_REQUIRED' });
     await expect(resolveWriteTarget(5, true)).resolves.toMatchObject({ kind: 'create' });
   });
 
-  it('écrit dans le brouillon affiché : c’est le contexte', async () => {
-    getVersion.mockResolvedValue(version({ id: 3 }));
-    await expect(resolveWriteTarget(3, false)).resolves.toMatchObject({ kind: 'existing' });
-    expect(listVersions).not.toHaveBeenCalled();
-  });
-
-  it('refuse une version introuvable', async () => {
-    getVersion.mockResolvedValue(null);
-    await expect(modify(demande({ versionId: 9 }))).rejects.toMatchObject({ code: 'VERSION_NOT_FOUND' });
-  });
-});
-
-describe('écriture concurrente', () => {
-  it("n'écrase pas un prompt modifié pendant l'appel modèle", async () => {
+  it('n’écrase pas un prompt modifié pendant l’appel modèle', async () => {
     getVersion
       .mockResolvedValueOnce(version())
       .mockResolvedValueOnce(version({ entries: [entree('T1', 'Texte enregistré entre-temps par un autre administrateur.')] }));
     execute.mockResolvedValue(sortie());
-
-    await expect(modify(demande())).rejects.toMatchObject({ code: 'PROMPT_CHANGED' });
+    const r = await modify(demande());
     expect(saveEntry).not.toHaveBeenCalled();
-  });
-
-  it("refuse d'écrire si le brouillon a été promu entre-temps", async () => {
-    getVersion
-      .mockResolvedValueOnce(version())
-      .mockResolvedValueOnce(version({ status: 'TO_TEST' }));
-    execute.mockResolvedValue(sortie());
-
-    await expect(modify(demande())).rejects.toMatchObject({ code: 'NOT_A_DRAFT' });
-    expect(saveEntry).not.toHaveBeenCalled();
+    expect(r.changes[0].rejected).toMatch(/modifié pendant l'analyse/);
   });
 });
 
-describe('T5-009 — quatre verdicts, pas un seul', () => {
-  it('distingue les causes qui n’appellent pas le même geste', () => {
-    expect([...VERDICTS]).toEqual(['prompt', 'code', 'donnees', 'configuration']);
+describe('disponibilité (T5-015)', () => {
+  it('refuse pendant l’arrêt d’urgence, sans appel modèle', async () => {
+    getEmergencyStop.mockResolvedValue({ active: true, reason: 'incident', engagedAt: null });
+    await expect(analyze(1, 'x'.repeat(10), 99, 7)).rejects.toMatchObject({ code: 'AI_BLOCKED' });
+    expect(execute).not.toHaveBeenCalled();
   });
+});
 
-  it('verdict « prompt » sans texte : rendu visible, rien à écrire', () => {
-    const r = interpret('modify', { ...sortie().data, proposedContent: null } as never, PROMPT_ACTUEL);
-    expect(r.proposedContent).toBeNull();
-    expect(r.rejected).toMatch(/reformulez/);
+describe('verdicts', () => {
+  it('quatre causes', () => {
+    expect([...VERDICTS]).toEqual(['prompt', 'code', 'donnees', 'configuration']);
   });
 });

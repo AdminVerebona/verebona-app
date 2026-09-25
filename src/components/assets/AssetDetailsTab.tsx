@@ -149,7 +149,7 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     { key: 'insuranceClientNumber', label: 'N° de client' },
     { key: 'insuranceExpiry', label: 'Date d\'échéance', type: 'date' },
     { key: 'insurancePremium', label: 'Prime annuelle (€)', type: 'number' },
-    { key: 'nextInspection', label: 'Prochain contrôle technique', type: 'date' },
+    { key: 'nextInspection', label: 'Prochain contrôle technique', type: 'date', futureOnly: true },
   ],
   insurance: [
     { key: 'isInsured', label: 'Assuré', type: 'select', options: [{ value: 'true', label: 'Oui' }, { value: 'false', label: 'Non' }] },
@@ -371,6 +371,16 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
   const [detailData, setDetailData] = useState<{ family: string; sections: Record<string, Record<string, unknown>>; coherenceAlerts?: CoherenceAlert[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Modification confirmée depuis l'assistant : la fiche affichée est relue.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent<{ assetId?: number }>).detail?.assetId;
+      if (!id || id === asset.id) setRefreshTrigger((n) => n + 1);
+    };
+    window.addEventListener('asset-details-updated', handler);
+    return () => window.removeEventListener('asset-details-updated', handler);
+  }, [asset.id]);
   // Resolve forcedOpenSection immediately from URL param — no need to wait for data load
   const [forcedOpenSection, setForcedOpenSection] = useState<string | null>(() => {
     if (!highlightField) return null;

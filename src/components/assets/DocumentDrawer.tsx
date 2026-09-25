@@ -1069,11 +1069,15 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const handleDownload = useCallback(async () => {
     if (!doc) return;
     try {
-      const data = await apiClient.get<{ viewUrl: string }>(`/api/files/${doc.id}/view`);
-      if (data.viewUrl) {
+      // `/download` et non `/view` : l'URL signée porte un en-tête
+      // « attachment » avec le titre du document comme nom de fichier. Le
+      // lien de consultation, lui, est « inline » — et l'attribut `download`
+      // est ignoré sur une URL d'une autre origine.
+      const data = await apiClient.get<{ downloadUrl: string }>(`/api/files/${doc.id}/download`);
+      if (data.downloadUrl) {
         const a = document.createElement('a');
-        a.href = data.viewUrl;
-        a.download = doc.originalFilename;
+        a.href = data.downloadUrl;
+        a.rel = 'noopener';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

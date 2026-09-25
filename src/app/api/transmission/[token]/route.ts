@@ -20,7 +20,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { accountMemberships, assetTransmissions, assets, assetFiles, agendaItems, agendaAssetLinks, users } from '@/db/schema';
-import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { eq, and, isNull, inArray, or, lt } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
 import { SessionService } from '@/lib/session-service';
 import { CopyObjectCommand } from '@aws-sdk/client-s3';
@@ -172,6 +172,9 @@ export async function GET(
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 
+/** Au-delà, une réservation d'acceptation est considérée comme abandonnée. */
+const CLAIM_TTL_MS = 10 * 60_000;
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ token: string }> },
@@ -207,10 +210,23 @@ export async function POST(
   const now = new Date();
 
   if (action === 'refuse') {
-    await db
+    // Pas de refus pendant une acceptation en cours : la copie écrirait
+    // ensuite « acceptée » par-dessus, et le bien serait dupliqué quand même.
+    const refused = await db
       .update(assetTransmissions)
       .set({ status: 'refused', refusedAt: now })
-      .where(eq(assetTransmissions.id, row.id));
+      .where(and(
+        eq(assetTransmissions.id, row.id),
+        eq(assetTransmissions.status, 'pending'),
+        isNull(assetTransmissions.acceptedAt),
+      ))
+      .returning({ id: assetTransmissions.id });
+    if (refused.length === 0) {
+      return NextResponse.json({
+        error: 'ACCEPT_IN_PROGRESS',
+        message: 'Cette transmission est en cours d’acceptation et ne peut plus être refusée.',
+      }, { status: 409 });
+    }
 
     // Notify initiator
     let snapshot: any = null;
@@ -318,6 +334,40 @@ export async function POST(
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // RÉSERVATION DE L'ACCEPTATION
+  //
+  // Un double clic, ou un nouvel essai pendant la copie, lançait deux copies
+  // du bien. La transmission est réservée atomiquement avant toute écriture :
+  // `accepted_at` posé tant que le statut est encore `pending` (la contrainte
+  // de statut n'autorise pas d'état intermédiaire). Un échec de la création
+  // du bien libère la réservation, pour qu'un nouvel essai reste possible.
+  // ══════════════════════════════════════════════════════════════════════════
+  const claimed = await db
+    .update(assetTransmissions)
+    .set({ acceptedAt: now })
+    .where(and(
+      eq(assetTransmissions.id, row.id),
+      eq(assetTransmissions.status, 'pending'),
+      // Une réservation abandonnée (processus interrompu) se reprend après
+      // CLAIM_TTL_MS : sans cela, la transmission resterait bloquée à vie.
+      or(
+        isNull(assetTransmissions.acceptedAt),
+        lt(assetTransmissions.acceptedAt, new Date(now.getTime() - CLAIM_TTL_MS)),
+      ),
+    ))
+    .returning({ id: assetTransmissions.id });
+  if (claimed.length === 0) {
+    return NextResponse.json({
+      error: 'ACCEPT_IN_PROGRESS',
+      message: 'Cette transmission est déjà en cours d’acceptation. Patientez quelques secondes puis rechargez la page.',
+    }, { status: 409 });
+  }
+  const releaseClaim = () => db
+    .update(assetTransmissions)
+    .set({ acceptedAt: null })
+    .where(and(eq(assetTransmissions.id, row.id), eq(assetTransmissions.status, 'pending')));
+
   // ── 1. Duplicate asset record for recipient ────────────────────────────────
   let duplicatedAssetId: number | null = null;
 
@@ -348,7 +398,12 @@ export async function POST(
           acquisitionDate: now.toISOString().split('T')[0],
         }),
         thumbnailUrl: (selected.includeThumbnail !== false && snapshot.thumbnailUrl) ? snapshot.thumbnailUrl : null,
-        copySourceRequestId: row.id,
+        // ⚠️ Jamais l'ID de la transmission ici : cette colonne référence
+        // `asset_move_requests` (clé étrangère, migration 0055) ; y écrire
+        // l'ID d'une TRANSMISSION faisait échouer l'insertion — c'était
+        // l'erreur DUPLICATION_FAILED à chaque acceptation. Le lien vers la
+        // transmission est porté par `asset_transmissions.duplicated_asset_id`.
+        copySourceRequestId: null,
         scope: 'personal',
         createdAt: now,
         updatedAt: now,
@@ -357,315 +412,376 @@ export async function POST(
     duplicatedAssetId = newAsset.id;
   } catch (err) {
     console.error('[Transmission] Failed to duplicate asset:', err);
-    return NextResponse.json({ error: 'DUPLICATION_FAILED' }, { status: 500 });
+    await releaseClaim().catch(() => {});
+    return NextResponse.json({
+      error: 'DUPLICATION_FAILED',
+      message: 'Le bien n’a pas pu être ajouté à votre compte. Réessayez dans un instant ; si le problème persiste, contactez le support.',
+    }, { status: 500 });
   }
 
-  // ── 2. Copy documents ─────────────────────────────────────────────────────
-  // selectedDocIds: query the DB directly (avoids snapshot staleness — docs
-  // uploaded right before initiation may still be processing in the snapshot).
-  // include-all fallback: use snapshot (point-in-time semantics).
-  if (duplicatedAssetId && recipientUser.accountId) {
-    const allSnapshotDocs: DocumentRef[] = Array.isArray(snapshot.documents) ? snapshot.documents : [];
-
-    let docsToTransfer: DocumentRef[];
-    if (!selected.includeDocuments) {
-      docsToTransfer = [];
-    } else if (selected.selectedDocIds && selected.selectedDocIds.length > 0) {
-      // Fetch directly from DB by ID — bypasses any snapshot freshness issue
-      const dbDocs = await db
-        .select({
-          id: assetFiles.id,
-          s3Key: assetFiles.s3Key,
-          s3Bucket: assetFiles.s3Bucket,
-          originalFilename: assetFiles.originalFilename,
-          documentType: assetFiles.documentType,
-          documentDate: assetFiles.documentDate,
-          description: assetFiles.description,
-          retainedTitle: assetFiles.retainedTitle,
-          retainedFunctionCode: assetFiles.retainedFunctionCode,
-          mimeType: assetFiles.mimeType,
-          size: assetFiles.size,
-          sha256Hash: assetFiles.sha256Hash,
-          isWebLink: assetFiles.isWebLink,
-          webLinkUrl: assetFiles.webLinkUrl,
-          webLinkTitle: assetFiles.webLinkTitle,
-          substructureId: assetFiles.substructureId,
-          equipmentId: assetFiles.equipmentId,
-          supplier: assetFiles.supplier,
-          amountCents: assetFiles.amountCents,
-          notes: assetFiles.notes,
-        })
-        .from(assetFiles)
-        .where(and(
-          inArray(assetFiles.id, selected.selectedDocIds),
-          isNull(assetFiles.deletedAt),
-        ));
-      docsToTransfer = dbDocs as DocumentRef[];
-    } else {
-      // No specific selection — include all from snapshot (point-in-time)
-      docsToTransfer = allSnapshotDocs;
+  // ══════════════════════════════════════════════════════════════════════════
+  // COPIE (documents, photos, échéances) — tout ou rien côté destinataire
+  //
+  // Une erreur non rattrapée ici laissait un bien à moitié copié chez le
+  // destinataire et la réservation posée : chaque nouvel essai répondait
+  // « en cours d'acceptation ». Le bien copié est désormais retiré et la
+  // réservation libérée, pour qu'un nouvel essai reparte de zéro.
+  // ══════════════════════════════════════════════════════════════════════════
+  const rollback = async (reason: unknown) => {
+    console.error('[Transmission] Copie interrompue, annulation :', reason);
+    if (duplicatedAssetId) {
+      await db.update(assets).set({ deletedAt: new Date() }).where(eq(assets.id, duplicatedAssetId)).catch(() => {});
     }
+    await releaseClaim().catch(() => {});
+  };
 
-    // Insert all docs in DB first (sequential — each needs a new ID for the S3 key)
-    const insertedDocs: Array<{ newFileId: number; doc: DocumentRef }> = [];
-    for (const doc of docsToTransfer) {
-      try {
-        const [newFile] = await db.insert(assetFiles).values({
-          userId: recipientUser!.id,
-          accountId: recipientUser!.accountId!,
-          assetId: duplicatedAssetId!,
-          isWebLink: doc.isWebLink ?? false,
-          webLinkUrl: doc.webLinkUrl ?? null,
-          webLinkTitle: doc.webLinkTitle ?? null,
-          filename: doc.originalFilename ?? null,
-          originalFilename: doc.originalFilename ?? null,
-          mimeType: doc.mimeType ?? null,
-          fileExtension: doc.originalFilename?.split('.').pop() ?? null,
-          size: doc.size ?? null,
-          sha256Hash: doc.sha256Hash ?? null,
-          s3Key: doc.s3Key ?? null,
-          s3Bucket: doc.s3Bucket ?? null,
-          documentType: doc.documentType ?? 'AUTRE',
-          documentDate: doc.documentDate ? String(doc.documentDate).split('T')[0] : null,
-          description: doc.description ?? null,
-          supplier: doc.supplier ?? null,
-          amountCents: doc.amountCents ?? null,
-          notes: doc.notes ?? null,
-          retainedTitle: doc.retainedTitle ?? null,
-          retainedFunctionCode: doc.retainedFunctionCode ?? null,
-          uploadStatus: 'COMPLETED' as const,
-          scope: 'personal' as const,
-          isDraft: false,
-          isIgnored: false,
-          uploadedAt: now,
-          createdAt: now,
-          updatedAt: now,
-        }).returning({ id: assetFiles.id });
-        insertedDocs.push({ newFileId: newFile.id, doc });
-      } catch (err) {
-        console.error(`[Transmission] Failed to insert doc id=${doc.id} (${doc.originalFilename}):`, err);
+  try {
+    // ── 2. Copy documents ─────────────────────────────────────────────────────
+    // selectedDocIds: query the DB directly (avoids snapshot staleness — docs
+    // uploaded right before initiation may still be processing in the snapshot).
+    // include-all fallback: use snapshot (point-in-time semantics).
+    if (duplicatedAssetId && recipientUser.accountId) {
+      const allSnapshotDocs: DocumentRef[] = Array.isArray(snapshot.documents) ? snapshot.documents : [];
+
+      let docsToTransfer: DocumentRef[];
+      if (!selected.includeDocuments) {
+        docsToTransfer = [];
+      } else if (selected.selectedDocIds && selected.selectedDocIds.length > 0) {
+        // Fetch directly from DB by ID — bypasses any snapshot freshness issue
+        const dbDocs = await db
+          .select({
+            id: assetFiles.id,
+            s3Key: assetFiles.s3Key,
+            s3Bucket: assetFiles.s3Bucket,
+            originalFilename: assetFiles.originalFilename,
+            documentType: assetFiles.documentType,
+            documentDate: assetFiles.documentDate,
+            description: assetFiles.description,
+            retainedTitle: assetFiles.retainedTitle,
+            retainedFunctionCode: assetFiles.retainedFunctionCode,
+            mimeType: assetFiles.mimeType,
+            size: assetFiles.size,
+            sha256Hash: assetFiles.sha256Hash,
+            isWebLink: assetFiles.isWebLink,
+            webLinkUrl: assetFiles.webLinkUrl,
+            webLinkTitle: assetFiles.webLinkTitle,
+            substructureId: assetFiles.substructureId,
+            equipmentId: assetFiles.equipmentId,
+            supplier: assetFiles.supplier,
+            amountCents: assetFiles.amountCents,
+            notes: assetFiles.notes,
+          })
+          .from(assetFiles)
+          .where(and(
+            inArray(assetFiles.id, selected.selectedDocIds),
+            isNull(assetFiles.deletedAt),
+          ));
+        docsToTransfer = dbDocs as DocumentRef[];
+      } else {
+        // No specific selection — include all from snapshot (point-in-time)
+        docsToTransfer = allSnapshotDocs;
       }
-    }
 
-    // Copy S3 objects in parallel batches of 10
-    const BATCH = 10;
-    let docsCopied = 0;
-    for (let i = 0; i < insertedDocs.length; i += BATCH) {
-      const batch = insertedDocs.slice(i, i + BATCH);
-      await Promise.all(batch.map(async ({ newFileId, doc }) => {
-        if (!doc.isWebLink && doc.s3Key && doc.s3Bucket) {
-          try {
-            const newKey = await copyS3File(
-              doc.s3Key,
-              doc.s3Bucket,
-              recipientUser!.id,
-              duplicatedAssetId!,
-              newFileId,
-              doc.originalFilename,
-            );
-            if (newKey) {
-              await db.update(assetFiles)
-                .set({ s3Key: newKey, s3Bucket: S3_BUCKET })
-                .where(eq(assetFiles.id, newFileId));
-            }
-          } catch (s3Err) {
-            console.error(`[Transmission] S3 copy failed for doc id=${doc.id}, recipient keeps reference to source key:`, s3Err);
-          }
+      // Insert all docs in DB first (sequential — each needs a new ID for the S3 key)
+      const insertedDocs: Array<{ newFileId: number; doc: DocumentRef }> = [];
+      for (const doc of docsToTransfer) {
+        try {
+          const [newFile] = await db.insert(assetFiles).values({
+            userId: recipientUser!.id,
+            accountId: recipientUser!.accountId!,
+            assetId: duplicatedAssetId!,
+            isWebLink: doc.isWebLink ?? false,
+            webLinkUrl: doc.webLinkUrl ?? null,
+            webLinkTitle: doc.webLinkTitle ?? null,
+            filename: doc.originalFilename ?? null,
+            originalFilename: doc.originalFilename ?? null,
+            mimeType: doc.mimeType ?? null,
+            fileExtension: doc.originalFilename?.split('.').pop() ?? null,
+            size: doc.size ?? null,
+            sha256Hash: doc.sha256Hash ?? null,
+            s3Key: doc.s3Key ?? null,
+            s3Bucket: doc.s3Bucket ?? null,
+            documentType: doc.documentType ?? 'AUTRE',
+            documentDate: doc.documentDate ? String(doc.documentDate).split('T')[0] : null,
+            description: doc.description ?? null,
+            supplier: doc.supplier ?? null,
+            amountCents: doc.amountCents ?? null,
+            notes: doc.notes ?? null,
+            retainedTitle: doc.retainedTitle ?? null,
+            retainedFunctionCode: doc.retainedFunctionCode ?? null,
+            uploadStatus: 'COMPLETED' as const,
+            scope: 'personal' as const,
+            isDraft: false,
+            isIgnored: false,
+            uploadedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          }).returning({ id: assetFiles.id });
+          insertedDocs.push({ newFileId: newFile.id, doc });
+        } catch (err) {
+          console.error(`[Transmission] Failed to insert doc id=${doc.id} (${doc.originalFilename}):`, err);
         }
-        docsCopied++;
-      }));
-    }
-    if (docsCopied > 0) console.info(`[Transmission] Copied ${docsCopied}/${docsToTransfer.length} document(s) to asset ${duplicatedAssetId}`);
-  }
-
-  // ── 3. Copy photos ────────────────────────────────────────────────────────
-  // selectedPhotoIds = assetFiles.id values — fetch from DB for same reasons as docs.
-  if (duplicatedAssetId && recipientUser.accountId) {
-    const allSnapshotPhotos: PhotoRef[] = Array.isArray(snapshot.photos) ? snapshot.photos : [];
-
-    let photosToTransfer: PhotoRef[];
-    if (!selected.includePhotos) {
-      photosToTransfer = [];
-    } else if (selected.selectedPhotoIds && selected.selectedPhotoIds.length > 0) {
-      // Fetch photo file metadata directly from DB by assetFiles.id
-      const dbPhotoFiles = await db
-        .select({
-          id: assetFiles.id,
-          s3Key: assetFiles.s3Key,
-          s3Bucket: assetFiles.s3Bucket,
-          mimeType: assetFiles.mimeType,
-          originalFilename: assetFiles.originalFilename,
-          size: assetFiles.size,
-        })
-        .from(assetFiles)
-        .where(and(
-          inArray(assetFiles.id, selected.selectedPhotoIds),
-          isNull(assetFiles.deletedAt),
-        ));
-      // Re-attach photo display metadata (displayOrder, isPrimary, caption) from snapshot
-      const snapshotPhotoMap = new Map(allSnapshotPhotos.map(p => [p.fileId, p]));
-      photosToTransfer = dbPhotoFiles.map(f => {
-        const snap = snapshotPhotoMap.get(f.id);
-        return {
-          id: snap?.id ?? 0,
-          fileId: f.id,
-          s3Key: f.s3Key ?? null,
-          s3Bucket: f.s3Bucket ?? null,
-          mimeType: f.mimeType ?? null,
-          originalFilename: f.originalFilename ?? null,
-          size: f.size ?? null,
-          displayOrder: snap?.displayOrder ?? 0,
-          isPrimary: snap?.isPrimary ?? false,
-          caption: snap?.caption ?? null,
-        };
-      });
-    } else {
-      photosToTransfer = allSnapshotPhotos;
-    }
-
-    let photosCopied = 0;
-    for (const photo of photosToTransfer) {
-      try {
-        const [newFile] = await db.insert(assetFiles).values({
-          userId: recipientUser.id,
-          accountId: recipientUser.accountId!,
-          assetId: duplicatedAssetId,
-          isWebLink: false,
-          filename: photo.originalFilename ?? null,
-          originalFilename: photo.originalFilename ?? null,
-          mimeType: photo.mimeType ?? 'image/jpeg',
-          fileExtension: photo.originalFilename?.split('.').pop() ?? null,
-          size: photo.size ?? null,
-          s3Key: photo.s3Key ?? null,
-          s3Bucket: photo.s3Bucket ?? null,
-          documentType: 'AUTRE',
-          uploadStatus: 'COMPLETED' as const,
-          scope: 'personal' as const,
-          isDraft: false,
-          isIgnored: false,
-          uploadedAt: now,
-          createdAt: now,
-          updatedAt: now,
-        }).returning({ id: assetFiles.id });
-
-        if (photo.s3Key && photo.s3Bucket) {
-          try {
-            const newKey = await copyS3File(
-              photo.s3Key,
-              photo.s3Bucket,
-              recipientUser.id,
-              duplicatedAssetId,
-              newFile.id,
-              photo.originalFilename,
-            );
-            if (newKey) {
-              await db.update(assetFiles)
-                .set({ s3Key: newKey, s3Bucket: S3_BUCKET })
-                .where(eq(assetFiles.id, newFile.id));
-            }
-          } catch (s3Err) {
-            console.error(`[Transmission] S3 copy failed for photo id=${photo.fileId}, recipient keeps reference to source key:`, s3Err);
-          }
-        }
-
-        photosCopied++;
-      } catch (err) {
-        console.error(`[Transmission] Failed to copy photo id=${photo.fileId} (${photo.originalFilename}):`, err);
       }
+
+      // Copy S3 objects in parallel batches of 10
+      const BATCH = 10;
+      let docsCopied = 0;
+      for (let i = 0; i < insertedDocs.length; i += BATCH) {
+        const batch = insertedDocs.slice(i, i + BATCH);
+        await Promise.all(batch.map(async ({ newFileId, doc }) => {
+          if (!doc.isWebLink && doc.s3Key && doc.s3Bucket) {
+            try {
+              const newKey = await copyS3File(
+                doc.s3Key,
+                doc.s3Bucket,
+                recipientUser!.id,
+                duplicatedAssetId!,
+                newFileId,
+                doc.originalFilename,
+              );
+              if (newKey) {
+                await db.update(assetFiles)
+                  .set({ s3Key: newKey, s3Bucket: S3_BUCKET })
+                  .where(eq(assetFiles.id, newFileId));
+              }
+            } catch (s3Err) {
+              console.error(`[Transmission] S3 copy failed for doc id=${doc.id}, recipient keeps reference to source key:`, s3Err);
+            }
+          }
+          docsCopied++;
+        }));
+      }
+      if (docsCopied > 0) console.info(`[Transmission] Copied ${docsCopied}/${docsToTransfer.length} document(s) to asset ${duplicatedAssetId}`);
     }
-    if (photosCopied > 0) console.info(`[Transmission] Copied ${photosCopied}/${photosToTransfer.length} photo(s) to asset ${duplicatedAssetId}`);
-  }
 
-  // ── 4. Copy agenda items ──────────────────────────────────────────────────
-  if (duplicatedAssetId && recipientUser.accountId && selected.includeEvents) {
-    // Find all agenda items linked to the source asset
-    const linkedItems = await db
-      .select({ item: agendaItems })
-      .from(agendaItems)
-      .innerJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
-      .where(
-        selected.selectedEventIds && selected.selectedEventIds.length > 0
-          ? and(eq(agendaAssetLinks.assetId, row.assetId), inArray(agendaItems.id, selected.selectedEventIds))
-          : eq(agendaAssetLinks.assetId, row.assetId)
-      );
+    // ── 3. Copy photos ────────────────────────────────────────────────────────
+    // selectedPhotoIds = assetFiles.id values — fetch from DB for same reasons as docs.
+    if (duplicatedAssetId && recipientUser.accountId) {
+      const allSnapshotPhotos: PhotoRef[] = Array.isArray(snapshot.photos) ? snapshot.photos : [];
 
-    let agendaCopied = 0;
-    for (const { item } of linkedItems) {
-      try {
-        const [newItem] = await db.insert(agendaItems).values({
-          accountId: recipientUser.accountId!,
-          createdByUserId: recipientUser.id,
-          title: item.title,
-          description: item.description ?? null,
-          startDate: item.startDate ?? null,
-          startTime: item.startTime ?? null,
-          endDate: item.endDate ?? null,
-          endTime: item.endTime ?? null,
-          manualStatus: item.manualStatus ?? null,
-          isAutomatic: false,
-          isAutomaticModified: false,
-          requiresQualification: false,
-          originType: 'manual',
-          createdAt: now,
-          updatedAt: now,
-        }).returning({ id: agendaItems.id });
-
-        // Link the new agenda item to the duplicated asset
-        await db.insert(agendaAssetLinks).values({
-          agendaItemId: newItem.id,
-          assetId: duplicatedAssetId!,
+      let photosToTransfer: PhotoRef[];
+      if (!selected.includePhotos) {
+        photosToTransfer = [];
+      } else if (selected.selectedPhotoIds && selected.selectedPhotoIds.length > 0) {
+        // Fetch photo file metadata directly from DB by assetFiles.id
+        const dbPhotoFiles = await db
+          .select({
+            id: assetFiles.id,
+            s3Key: assetFiles.s3Key,
+            s3Bucket: assetFiles.s3Bucket,
+            mimeType: assetFiles.mimeType,
+            originalFilename: assetFiles.originalFilename,
+            size: assetFiles.size,
+          })
+          .from(assetFiles)
+          .where(and(
+            inArray(assetFiles.id, selected.selectedPhotoIds),
+            isNull(assetFiles.deletedAt),
+          ));
+        // Re-attach photo display metadata (displayOrder, isPrimary, caption) from snapshot
+        const snapshotPhotoMap = new Map(allSnapshotPhotos.map(p => [p.fileId, p]));
+        photosToTransfer = dbPhotoFiles.map(f => {
+          const snap = snapshotPhotoMap.get(f.id);
+          return {
+            id: snap?.id ?? 0,
+            fileId: f.id,
+            s3Key: f.s3Key ?? null,
+            s3Bucket: f.s3Bucket ?? null,
+            mimeType: f.mimeType ?? null,
+            originalFilename: f.originalFilename ?? null,
+            size: f.size ?? null,
+            displayOrder: snap?.displayOrder ?? 0,
+            isPrimary: snap?.isPrimary ?? false,
+            caption: snap?.caption ?? null,
+          };
         });
-        agendaCopied++;
-      } catch (err) {
-        console.error(`[Transmission] Failed to copy agenda item id=${item.id} (${item.title}):`, err);
+      } else {
+        photosToTransfer = allSnapshotPhotos;
       }
+
+      let photosCopied = 0;
+      for (const photo of photosToTransfer) {
+        try {
+          const [newFile] = await db.insert(assetFiles).values({
+            userId: recipientUser.id,
+            accountId: recipientUser.accountId!,
+            assetId: duplicatedAssetId,
+            isWebLink: false,
+            filename: photo.originalFilename ?? null,
+            originalFilename: photo.originalFilename ?? null,
+            mimeType: photo.mimeType ?? 'image/jpeg',
+            fileExtension: photo.originalFilename?.split('.').pop() ?? null,
+            size: photo.size ?? null,
+            s3Key: photo.s3Key ?? null,
+            s3Bucket: photo.s3Bucket ?? null,
+            documentType: 'AUTRE',
+            uploadStatus: 'COMPLETED' as const,
+            scope: 'personal' as const,
+            isDraft: false,
+            isIgnored: false,
+            uploadedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          }).returning({ id: assetFiles.id });
+
+          if (photo.s3Key && photo.s3Bucket) {
+            try {
+              const newKey = await copyS3File(
+                photo.s3Key,
+                photo.s3Bucket,
+                recipientUser.id,
+                duplicatedAssetId,
+                newFile.id,
+                photo.originalFilename,
+              );
+              if (newKey) {
+                await db.update(assetFiles)
+                  .set({ s3Key: newKey, s3Bucket: S3_BUCKET })
+                  .where(eq(assetFiles.id, newFile.id));
+              }
+            } catch (s3Err) {
+              console.error(`[Transmission] S3 copy failed for photo id=${photo.fileId}, recipient keeps reference to source key:`, s3Err);
+            }
+          }
+
+          photosCopied++;
+        } catch (err) {
+          console.error(`[Transmission] Failed to copy photo id=${photo.fileId} (${photo.originalFilename}):`, err);
+        }
+      }
+      if (photosCopied > 0) console.info(`[Transmission] Copied ${photosCopied}/${photosToTransfer.length} photo(s) to asset ${duplicatedAssetId}`);
     }
-    if (agendaCopied > 0) console.info(`[Transmission] Copied ${agendaCopied}/${linkedItems.length} agenda item(s) to asset ${duplicatedAssetId}`);
+
+    // ── 4. Copy agenda items ──────────────────────────────────────────────────
+    if (duplicatedAssetId && recipientUser.accountId && selected.includeEvents) {
+      // Find all agenda items linked to the source asset
+      const linkedItems = await db
+        .select({ item: agendaItems })
+        .from(agendaItems)
+        .innerJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
+        .where(
+          selected.selectedEventIds && selected.selectedEventIds.length > 0
+            ? and(eq(agendaAssetLinks.assetId, row.assetId), inArray(agendaItems.id, selected.selectedEventIds))
+            : eq(agendaAssetLinks.assetId, row.assetId)
+        );
+
+      let agendaCopied = 0;
+      for (const { item } of linkedItems) {
+        try {
+          const [newItem] = await db.insert(agendaItems).values({
+            accountId: recipientUser.accountId!,
+            createdByUserId: recipientUser.id,
+            title: item.title,
+            description: item.description ?? null,
+            startDate: item.startDate ?? null,
+            startTime: item.startTime ?? null,
+            endDate: item.endDate ?? null,
+            endTime: item.endTime ?? null,
+            manualStatus: item.manualStatus ?? null,
+            isAutomatic: false,
+            isAutomaticModified: false,
+            requiresQualification: false,
+            originType: 'manual',
+            createdAt: now,
+            updatedAt: now,
+          }).returning({ id: agendaItems.id });
+
+          // Link the new agenda item to the duplicated asset
+          await db.insert(agendaAssetLinks).values({
+            agendaItemId: newItem.id,
+            assetId: duplicatedAssetId!,
+          });
+          agendaCopied++;
+        } catch (err) {
+          console.error(`[Transmission] Failed to copy agenda item id=${item.id} (${item.title}):`, err);
+        }
+      }
+      if (agendaCopied > 0) console.info(`[Transmission] Copied ${agendaCopied}/${linkedItems.length} agenda item(s) to asset ${duplicatedAssetId}`);
+    }
+  } catch (err) {
+    await rollback(err);
+    return NextResponse.json({
+      error: 'COPY_FAILED',
+      message: 'La copie du bien n’a pas abouti ; rien n’a été ajouté à votre compte. Réessayez dans un instant.',
+    }, { status: 500 });
   }
 
-  // ── 5. Archive sender's asset unless keepActiveAfter ──────────────────────
+  // ── 5. Update transmission record ─────────────────────────────────────────
+  // Conditionné à l'état `pending` : si l'expéditeur a annulé pendant la
+  // copie, l'acceptation n'est pas écrite par-dessus et la copie est retirée.
+  let finalized: Array<{ id: number }> = [];
+  try {
+    finalized = await db
+      .update(assetTransmissions)
+      .set({
+        status: 'accepted',
+        acceptedAt: now,
+        recipientUserId: recipientUser.id,
+        duplicatedAssetId,
+      })
+      .where(and(eq(assetTransmissions.id, row.id), eq(assetTransmissions.status, 'pending')))
+      .returning({ id: assetTransmissions.id });
+  } catch (err) {
+    await rollback(err);
+    return NextResponse.json({
+      error: 'COPY_FAILED',
+      message: 'L’acceptation n’a pas pu être enregistrée ; rien n’a été ajouté à votre compte. Réessayez dans un instant.',
+    }, { status: 500 });
+  }
+  if (finalized.length === 0) {
+    await rollback('transmission annulée pendant la copie');
+    return NextResponse.json({
+      error: 'CANCELLED',
+      message: 'L’expéditeur a annulé cette transmission pendant l’acceptation.',
+    }, { status: 410 });
+  }
+
+  // ── 6. Archive sender's asset unless keepActiveAfter ──────────────────────
+  // Le bien est déjà chez le destinataire : un échec ici ne doit pas faire
+  // échouer l'acceptation (il laisserait croire au destinataire que rien
+  // n'a été ajouté). Il est journalisé pour reprise.
   if (!row.keepActiveAfter) {
-    await db
-      .update(assets)
-      .set({ status: 'TRANSMIS', archivedReason: 'transmitted' })
-      .where(eq(assets.id, row.assetId));
+    try {
+      await db
+        .update(assets)
+        .set({ status: 'TRANSMIS', archivedReason: 'transmitted' })
+        .where(eq(assets.id, row.assetId));
+    } catch (err) {
+      console.error(`[Transmission] Archivage du bien source ${row.assetId} impossible :`, err);
+    }
   }
 
-  // ── 6. Update transmission record ─────────────────────────────────────────
-  await db
-    .update(assetTransmissions)
-    .set({
-      status: 'accepted',
-      acceptedAt: now,
-      recipientUserId: recipientUser.id,
-      duplicatedAssetId,
-    })
-    .where(eq(assetTransmissions.id, row.id));
+  // L'acceptation est acquise : une notification ou une relecture en échec
+  // ne doit pas la faire passer pour un échec.
+  let recipientUserCheck: { id: number } | undefined;
+  try {
+    // Notify initiator of acceptance
+    const [recipientUserInfo] = await db
+      .select({ firstName: users.firstName, lastName: users.lastName, email: users.email })
+      .from(users)
+      .where(eq(users.id, recipientUser.id))
+      .limit(1);
+    const recipientDisplayName = recipientUserInfo
+      ? [recipientUserInfo.firstName, recipientUserInfo.lastName].filter(Boolean).join(' ') || recipientUserInfo.email
+      : row.recipientEmail;
+    await emit({
+      type: 'TRANSMISSION_ACCEPTED',
+      recipientUserIds: [row.initiatorUserId],
+      entityType: 'asset_transmission',
+      entityId: row.id,
+      payload: { recipientName: recipientDisplayName, assetName: snapshot?.name ?? 'votre bien' },
+      dedupeKey: `transmission:accepted:${row.id}`,
+    });
 
-  // Notify initiator of acceptance
-  const [recipientUserInfo] = await db
-    .select({ firstName: users.firstName, lastName: users.lastName, email: users.email })
-    .from(users)
-    .where(eq(users.id, recipientUser.id))
-    .limit(1);
-  const recipientDisplayName = recipientUserInfo
-    ? [recipientUserInfo.firstName, recipientUserInfo.lastName].filter(Boolean).join(' ') || recipientUserInfo.email
-    : row.recipientEmail;
-  await emit({
-    type: 'TRANSMISSION_ACCEPTED',
-    recipientUserIds: [row.initiatorUserId],
-    entityType: 'asset_transmission',
-    entityId: row.id,
-    payload: { recipientName: recipientDisplayName, assetName: snapshot?.name ?? 'votre bien' },
-    dedupeKey: `transmission:accepted:${row.id}`,
-  });
-
-  // Check if recipient has an account (for redirect hint)
-  const [recipientUserCheck] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, row.recipientEmail))
-    .limit(1);
+    // Check if recipient has an account (for redirect hint)
+    [recipientUserCheck] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, row.recipientEmail))
+      .limit(1);
+  } catch (err) {
+    console.error('[Transmission] Suites de l’acceptation en échec (non bloquant) :', err);
+  }
 
   return NextResponse.json({
     success: true,

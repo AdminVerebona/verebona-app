@@ -2,138 +2,117 @@
  * Prompt Control (T5) — CDC BO IA SCR-06, WF-20, WF-39, T5-001 à T5-015.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * UNE DEMANDE EN LANGAGE NATUREL, PAS UN PROMPT
+ * UNE DEMANDE, ET T5 CHOISIT LUI-MÊME LES PROMPTS À FAIRE ÉVOLUER
  *
- * L'administrateur décrit un comportement attendu ou un problème constaté.
- * T5 comprend la demande, décide si le prompt est en cause et, sur demande de
- * modification, réécrit lui-même le prompt de T1, le socle commun de T2, ou le
- * prompt de T3 ou de T4. L'administrateur n'a jamais à rédiger de prompt.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * DEUX MODES, ET UN SEUL GESTE PAR MODE — SCR-06, T5-005, T5-006, écart E-01
- *
- * · `analyze` : diagnostic seul. Aucune écriture, aucun Brouillon créé, sur
- *   n'importe quelle version — y compris l'Active, qu'on veut souvent
- *   comprendre avant de la changer.
- * · `modify`  : le prompt proposé est écrit DIRECTEMENT dans le Brouillon,
- *   puis le résumé et le diff sont rendus. Pas de second bouton
- *   d'approbation : le filet de sécurité est le cycle de version (Brouillon →
- *   À tester → Active), pas une confirmation de plus.
+ * L'administrateur décrit un comportement attendu ou un problème constaté,
+ * sans désigner de traitement. T5 lit les quatre prompts administrables (T1,
+ * socle T2, T3, T4), détermine lesquels sont en cause — aucun, un ou
+ * plusieurs — et, sur demande de modification, les réécrit.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * T5 DOIT POUVOIR DIRE « CE N'EST PAS LE PROMPT » — T5-009, T5-011, WF-39
+ * DEUX MODES, UN GESTE CHACUN — SCR-06, T5-005, T5-006, écart E-01
  *
- * Un modèle à qui l'on demande une modification en produira une, d'autant plus
- * volontiers qu'il n'a pas d'autre issue. Il en a donc une : un verdict
- * explicite, et un schéma qui accepte une réponse sans proposition. Sur un
- * verdict autre que « prompt », rien n'est écrit, même en mode `modify`.
+ * · `analyze` : diagnostic seul, sur n'importe quelle version. Rien n'est
+ *   écrit, aucun Brouillon créé.
+ * · `modify`  : chaque prompt réécrit est écrit DIRECTEMENT dans le
+ *   Brouillon, puis résumés et diffs sont rendus.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * INTERDITS TENUS PAR LE SERVEUR, PAS PAR LE PROMPT
  *
- * · T5-002 — T5 ne modifie jamais son propre prompt ;
- * · T5-003 — seul le socle commun de T2 est modifiable, pas ses instructions
- *   spécialisées, qui vivent dans le code et ne sont pas dans la config ;
+ * · T5-002 — une cible T5 (ou inconnue) rendue par le modèle est écartée ;
+ * · T5-003 — seul le socle commun de T2 est dans la configuration ;
  * · T5-004 — une modification s'écrit dans un Brouillon, jamais ailleurs ;
  * · T5-007 — plusieurs Brouillons sans contexte : T5 ne choisit pas ;
+ * · T5-011 — verdict autre que « prompt » : rien n'est écrit ;
  * · T5-015 — IA bloquée : T5 n'opère pas ;
  * · T5-001 — seul le prompt change : modèles, replis et garde-fous restent.
  *
- * Un modèle à qui l'on demande de ne pas se modifier lui-même finira un jour
- * par le faire. Ces règles sont vérifiées avant toute écriture, et refusent
- * quelle que soit la sortie du modèle.
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI UNE NOUVELLE OPÉRATION (`control_prompts`, prompt `prompt_control_v2`)
+ *
+ * L'ancienne opération `analyze_instruction` lit d'abord la version ACTIVE
+ * de son prompt en base (`ai_prompt_versions`), qui prime sur le fichier. Une
+ * version antérieure au format « verdict » y est restée active : le modèle
+ * rendait l'ancien format, la validation le refusait, et « Analyser »
+ * échouait à chaque fois. Le nouveau code de prompt n'a aucune version en
+ * base : c'est le fichier du dépôt qui fait foi.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 import { z } from 'zod';
 import { AiGateway } from '../gateway/ai-gateway';
 import { computeDiff, type DiffSummary } from './diff.service';
-import { isTreatment, isPromptAdministrable, type Treatment } from '../config/treatments';
+import { T5_TARGETS, type Treatment } from '../config/treatments';
 import {
   getVersion, getActiveVersion, listVersions, createDraft, saveEntry,
 } from '../config/config-version.repository';
 import type { ConfigVersionWithEntries } from '../config/config-types';
 import { recordT5Modification } from './prompt-control.audit';
 
-/**
- * Verdict du diagnostic — SCR-06, zone « Diagnostic ».
- *
- * Les quatre causes n'appellent pas le même geste, et les confondre fait
- * chercher au mauvais endroit : retoucher un prompt quand c'est le code qui
- * cloche est le plus sûr moyen de dégrader les deux.
- */
 export const VERDICTS = ['prompt', 'code', 'donnees', 'configuration'] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
 export const T5_MODES = ['analyze', 'modify'] as const;
 export type T5Mode = (typeof T5_MODES)[number];
 
-/**
- * Libellé transmis au prompt technique (`{{MODE}}`). Informatif seulement : la
- * règle « l'analyse n'écrit rien » est tenue par ce service, pas par le modèle.
- */
 const MODE_PROMPT: Record<T5Mode, string> = {
-  analyze: 'ANALYSE — diagnostic uniquement, ne propose aucun texte de prompt',
-  modify: 'MODIFICATION — si le prompt est en cause, renvoie le prompt complet modifié',
+  analyze: 'ANALYSE — diagnostic uniquement : `proposedContent` vaut null pour chaque cible',
+  modify: 'MODIFICATION — pour chaque cible, renvoie le prompt complet réécrit',
+};
+
+/** Libellé de chaque prompt, tel que T5 et l'écran le présentent. */
+export const TARGET_LABELS: Record<string, string> = {
+  T1: 'T1 — Sources (prompt maître)',
+  T2: 'T2 — Assistant (socle commun)',
+  T3: 'T3 — Rationalisation',
+  T4: 'T4 — Échéances',
 };
 
 /**
- * Désignation du prompt ciblé, telle que T5 la lit (`{{PROMPT_CODE}}`).
- *
- * Un code « T2 » seul ne dit rien au modèle ; il doit savoir quel traitement
- * il réécrit et, pour T2, qu'il ne tient que le socle commun (T5-003).
+ * Sortie du modèle, tolérante sur la forme : une valeur hors bornes ne doit
+ * pas faire échouer tout l'appel quand elle peut être ramenée à une valeur
+ * sûre. Seul le contenu d'un prompt reste strict (au moins 50 caractères).
  */
-const TARGET_PROMPT: Record<Exclude<Treatment, 'T5'>, string> = {
-  T1: 'T1 — Sources : prompt maître de l’analyse des documents déposés',
-  T2: 'T2 — Assistant : socle commun uniquement (les instructions spécialisées restent dans le code)',
-  T3: 'T3 — Rationalisation : prompt de mise en cohérence des données du compte',
-  T4: 'T4 — Échéances : prompt de détection et de suivi des échéances',
-};
-
-const T5Output = z.object({
-  verdict: z.enum(VERDICTS),
-  /** Résumé destiné à l'administrateur, quel que soit le verdict. */
-  analysis: z.string().min(20).max(3000),
-  /**
-   * Prompt complet proposé — uniquement si le verdict est « prompt ».
-   *
-   * Nullable par conception : c'est ce qui permet au modèle de conclure que le
-   * problème est ailleurs sans avoir à inventer une modification.
-   */
-  proposedContent: z.string().min(50).max(50_000).nullable().default(null),
-  risks: z.array(z.string().max(300)).max(10).default([]),
-  /** Recommandations non appliquées : modèle, repli, réglage (T5-012). */
-  recommendations: z.array(z.string().max(300)).max(10).default([]),
+const TargetOut = z.object({
+  treatment: z.string(),
+  reason: z.string().default('').transform((s) => s.slice(0, 1000)),
+  proposedContent: z.string().nullable().default(null),
 });
+const PromptControlOutput = z.object({
+  verdict: z.enum(VERDICTS),
+  analysis: z.string().min(1).transform((s) => s.slice(0, 4000)),
+  targets: z.array(TargetOut).max(8).default([]),
+  risks: z.array(z.string()).default([]).transform((a) => a.slice(0, 10).map((s) => s.slice(0, 400))),
+  recommendations: z.array(z.string()).default([]).transform((a) => a.slice(0, 10).map((s) => s.slice(0, 400))),
+});
+type PromptControlOut = z.infer<typeof PromptControlOutput>;
 
-type T5Output = z.infer<typeof T5Output>;
-
-export interface T5Analysis {
-  mode: T5Mode;
+export interface T5Change {
   treatment: Treatment;
+  label: string;
+  reason: string;
+  diff: DiffSummary | null;
+  /** Écrit dans le Brouillon. */
+  applied: boolean;
+  /** Raison pour laquelle cette cible n'a pas été écrite. */
+  rejected?: string;
+}
+
+export interface T5Result {
+  mode: T5Mode;
   verdict: Verdict;
   analysis: string;
-  /** Texte écrit dans le Brouillon (mode `modify` uniquement). */
-  proposedContent: string | null;
+  changes: T5Change[];
   risks: string[];
   recommendations: string[];
-  diff: DiffSummary | null;
-  /** Raison pour laquelle aucune modification n'a été écrite, s'il y en a une. */
-  rejected?: string;
-  /** Vrai si le prompt a été écrit dans un Brouillon. */
+  /** Au moins un prompt écrit dans le Brouillon. */
   applied: boolean;
-  /** Brouillon écrit (mode `modify`, `applied` vrai). */
   draftId: number | null;
-  /** Le Brouillon a été créé depuis l'Active pour cette demande. */
   draftCreated: boolean;
-  /** Trace de l'appel modèle, pour l'écran Exécutions & logs. */
   traceId: string;
 }
 
-export interface DraftChoice {
-  id: number;
-  label: string | null;
-  isStale: boolean;
-  createdAt: string;
-}
+export interface DraftChoice { id: number; label: string | null; isStale: boolean; createdAt: string }
 
 export class T5Refused extends Error {
   constructor(readonly code: string, message: string, readonly details?: Record<string, unknown>) {
@@ -142,34 +121,9 @@ export class T5Refused extends Error {
   }
 }
 
-// ── Contrôles préalables, avant tout appel modèle ──────────────────────────
+// ── Contrôles préalables ────────────────────────────────────────────────────
 
-/**
- * Cible modifiable par T5 : T1 à T4 (T5-001, T5-002).
- *
- * Vérifiée AVANT l'appel modèle : un appel est payé même quand son résultat
- * sera refusé, et aucune sortie du modèle ne peut contourner ce refus.
- */
-export function assertTarget(treatment: string): Treatment {
-  if (!isTreatment(treatment)) {
-    throw new T5Refused('UNKNOWN_TREATMENT', `Traitement inconnu : « ${treatment} ».`);
-  }
-  if (!isPromptAdministrable(treatment)) {
-    throw new T5Refused(
-      'SELF_MODIFICATION',
-      'Prompt Control ne peut pas modifier son propre comportement (T5-002) : '
-      + 'il est défini dans le code. Choisissez T1, T2, T3 ou T4.',
-    );
-  }
-  return treatment;
-}
-
-/**
- * T5-015 — T5 n'opère pas si l'IA globale est bloquée.
- *
- * L'état est lu à chaque demande. Si la table n'existe pas encore (base
- * antérieure à l'arrêt d'urgence), il n'y a pas d'arrêt à respecter.
- */
+/** T5-015 — T5 n'opère pas si l'IA globale est bloquée. */
 export async function assertAiAvailable(): Promise<void> {
   let active = false;
   let reason: string | null = null;
@@ -198,112 +152,85 @@ function promptOf(version: ConfigVersionWithEntries | null, t: Treatment): strin
   return version?.entries.find((e) => e.treatment === t)?.prompt ?? '';
 }
 
-// ── Interprétation de la sortie du modèle ──────────────────────────────────
+/** Les quatre prompts administrables, présentés au modèle. */
+export function formatCurrentPrompts(version: ConfigVersionWithEntries | null): string {
+  return T5_TARGETS.map((t) => {
+    const content = promptOf(version, t).trim();
+    return `──── ${TARGET_LABELS[t]} ────\n${content || '(vide)'}`;
+  }).join('\n\n');
+}
+
+// ── Interprétation ──────────────────────────────────────────────────────────
 
 /**
- * Ramène la sortie du modèle à ce qui peut être écrit.
+ * Ramène la sortie du modèle à ce qui peut être écrit. Pure.
  *
- * Pure : aucune écriture. `proposedContent` n'est conservé que lorsqu'il est
- * réellement applicable — c'est la condition d'écriture en mode `modify`.
+ * Écarte : T5 ou tout traitement inconnu (T5-002), les doublons, et en mode
+ * `modify` tout texte vide, trop court ou identique. En analyse, aucun texte
+ * n'est jamais retenu.
  */
 export function interpret(
   mode: T5Mode,
-  d: T5Output,
-  currentContent: string,
-): Pick<T5Analysis, 'verdict' | 'analysis' | 'proposedContent' | 'risks' | 'recommendations' | 'diff' | 'rejected'> {
-  const base = {
-    verdict: d.verdict,
-    analysis: d.analysis,
-    risks: d.risks,
-    recommendations: d.recommendations,
-  };
+  d: PromptControlOut,
+  current: (t: Treatment) => string,
+): { verdict: Verdict; analysis: string; changes: Array<T5Change & { proposedContent: string | null }>; risks: string[]; recommendations: string[] } {
+  const seen = new Set<string>();
+  const changes: Array<T5Change & { proposedContent: string | null }> = [];
 
-  // Analyse seule : jamais de texte à appliquer, quoi que le modèle ait rendu
-  // (T5-006). Le mode `modify` existe pour cela.
-  if (mode === 'analyze') return { ...base, proposedContent: null, diff: null };
+  for (const t of d.targets) {
+    const treatment = t.treatment.trim().toUpperCase();
+    if (!(T5_TARGETS as readonly string[]).includes(treatment) || seen.has(treatment)) continue;
+    seen.add(treatment);
+    const tr = treatment as Treatment;
+    const base = { treatment: tr, label: TARGET_LABELS[tr], reason: t.reason, applied: false };
 
-  // Verdict autre que « prompt » : T5-011, on n'écrit rien, même si le modèle a
-  // proposé un texte.
-  if (d.verdict !== 'prompt') {
-    return {
-      ...base, proposedContent: null, diff: null,
-      rejected: "Le prompt n'est pas en cause : aucune modification n'a été écrite.",
-    };
+    if (mode === 'analyze' || d.verdict !== 'prompt') {
+      changes.push({ ...base, diff: null, proposedContent: null });
+      continue;
+    }
+    const text = t.proposedContent?.trim() ?? '';
+    if (text.length < 50) {
+      changes.push({ ...base, diff: null, proposedContent: null, rejected: 'Aucun texte de prompt exploitable n’a été proposé.' });
+      continue;
+    }
+    const diff = computeDiff(current(tr), text);
+    if (diff.identical) {
+      changes.push({ ...base, diff, proposedContent: null, rejected: 'La proposition est identique au prompt actuel.' });
+      continue;
+    }
+    changes.push({ ...base, diff, proposedContent: text });
   }
 
-  // Verdict « prompt » sans proposition : le modèle s'est contredit. On ne
-  // devine pas ce qu'il voulait dire — on le rend visible.
-  if (!d.proposedContent) {
-    return {
-      ...base, proposedContent: null, diff: null,
-      rejected: 'Le diagnostic conclut au prompt mais ne propose aucun texte : reformulez la demande.',
-    };
-  }
-
-  const diff = computeDiff(currentContent, d.proposedContent);
-  if (diff.identical) {
-    return {
-      ...base, proposedContent: null, diff,
-      rejected: 'La proposition est identique au prompt actuel : rien à écrire.',
-    };
-  }
-
-  return { ...base, proposedContent: d.proposedContent, diff };
+  return { verdict: d.verdict, analysis: d.analysis, changes, risks: d.risks, recommendations: d.recommendations };
 }
 
-async function callModel(
-  mode: T5Mode,
-  treatment: Treatment,
-  currentContent: string,
-  instruction: string,
-  accountId: number,
-  userId: number,
-): Promise<{ output: T5Output; traceId: string }> {
+async function callModel(mode: T5Mode, version: ConfigVersionWithEntries | null, instruction: string, accountId: number, userId: number) {
   const res = await AiGateway.execute({
     useCaseCode: 'AI_GOVERNANCE',
-    operationCode: 'analyze_instruction',
+    operationCode: 'control_prompts',
     accountId,
     userId,
     promptVariables: {
-      PROMPT_CODE: TARGET_PROMPT[treatment as Exclude<Treatment, 'T5'>] ?? treatment,
-      CURRENT_CONTENT: currentContent,
-      INSTRUCTION: instruction,
       MODE: MODE_PROMPT[mode],
+      CURRENT_PROMPTS: formatCurrentPrompts(version),
+      INSTRUCTION: instruction,
     },
-    outputSchema: T5Output,
+    outputSchema: PromptControlOutput,
   });
   return { output: res.data, traceId: res.traceId };
 }
 
 // ── Analyse ─────────────────────────────────────────────────────────────────
 
-/**
- * Analyse une demande en langage naturel, sans rien modifier (T5-006).
- *
- * Possible sur toute version, y compris l'Active : comprendre ce qui tourne
- * est le premier usage de T5, et n'engage aucune écriture.
- */
-export async function analyze(
-  versionId: number,
-  treatment: string,
-  instruction: string,
-  accountId: number,
-  userId: number,
-): Promise<T5Analysis> {
-  const cible = assertTarget(treatment);
+export async function analyze(versionId: number, instruction: string, accountId: number, userId: number): Promise<T5Result> {
   await assertAiAvailable();
   const version = await loadVersion(versionId);
-  const actuel = promptOf(version, cible);
-
-  const { output, traceId } = await callModel('analyze', cible, actuel, instruction, accountId, userId);
+  const { output, traceId } = await callModel('analyze', version, instruction, accountId, userId);
+  const r = interpret('analyze', output, (t) => promptOf(version, t));
   return {
-    mode: 'analyze',
-    treatment: cible,
-    ...interpret('analyze', output, actuel),
-    applied: false,
-    draftId: null,
-    draftCreated: false,
-    traceId,
+    mode: 'analyze', ...r,
+    changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
+    applied: false, draftId: null, draftCreated: false, traceId,
   };
 }
 
@@ -314,22 +241,12 @@ type WriteTarget =
   | { kind: 'create'; base: ConfigVersionWithEntries | null };
 
 /**
- * Brouillon dans lequel écrire — T5-004 et « plusieurs Brouillons » (§14 T5-006/T5-007, §26 T5-007/T5-008).
- *
- * · version affichée au statut Brouillon : c'est le contexte, on y écrit ;
- * · sinon, création explicitement demandée : nouveau Brouillon depuis l'Active ;
- * · sinon, aucun Brouillon : T5 en crée un depuis l'Active ;
- * · sinon : refus, avec la liste. Même avec un seul Brouillon — il peut
- *   préparer une autre évolution, et y écrire sans qu'on l'ait ouvert serait
- *   un choix fait à la place de l'administrateur.
- *
- * La création elle-même est différée après l'appel modèle : une demande dont
- * le verdict n'est pas « prompt » ne doit pas laisser un Brouillon vide.
+ * Brouillon dans lequel écrire (T5-004, T5-007) :
+ * version affichée au statut Brouillon → elle ; création demandée → nouveau
+ * Brouillon depuis l'Active ; aucun Brouillon → création ; sinon refus avec
+ * la liste, même pour un seul Brouillon existant.
  */
-export async function resolveWriteTarget(
-  versionId: number,
-  createNewDraft: boolean,
-): Promise<WriteTarget> {
+export async function resolveWriteTarget(versionId: number, createNewDraft: boolean): Promise<WriteTarget> {
   const version = await loadVersion(versionId);
   if (version.status === 'DRAFT') return { kind: 'existing', draft: version };
 
@@ -340,10 +257,7 @@ export async function resolveWriteTarget(
   if (drafts.length === 0) return { kind: 'create', base };
 
   const choices: DraftChoice[] = drafts.map((d) => ({
-    id: d.id,
-    label: d.label,
-    isStale: d.isStale,
-    createdAt: d.createdAt.toISOString(),
+    id: d.id, label: d.label, isStale: d.isStale, createdAt: d.createdAt.toISOString(),
   }));
   throw new T5Refused(
     'DRAFT_SELECTION_REQUIRED',
@@ -356,88 +270,61 @@ export async function resolveWriteTarget(
 
 export interface ModifyRequest {
   versionId: number;
-  treatment: string;
   instruction: string;
-  /** Créer un nouveau Brouillon depuis l'Active même si d'autres existent. */
   createDraft?: boolean;
   accountId: number;
   userId: number;
 }
 
-/**
- * Modifie un prompt à partir d'une demande en langage naturel (WF-20).
- *
- * Le texte proposé est écrit directement dans le Brouillon, puis rendu avec
- * son diff (T5-005, E-01). Seul le champ `prompt` change (T5-001).
- */
-export async function modify(req: ModifyRequest): Promise<T5Analysis> {
-  const cible = assertTarget(req.treatment);
+export async function modify(req: ModifyRequest): Promise<T5Result> {
   await assertAiAvailable();
   const target = await resolveWriteTarget(req.versionId, Boolean(req.createDraft));
-
   const source = target.kind === 'existing' ? target.draft : target.base;
-  const actuel = promptOf(source, cible);
 
-  const { output, traceId } = await callModel(
-    'modify', cible, actuel, req.instruction, req.accountId, req.userId,
-  );
-  const result = interpret('modify', output, actuel);
+  const { output, traceId } = await callModel('modify', source, req.instruction, req.accountId, req.userId);
+  const r = interpret('modify', output, (t) => promptOf(source, t));
+  const writable = r.changes.filter((c) => c.proposedContent);
 
-  const sansEcriture: T5Analysis = {
-    mode: 'modify', treatment: cible, ...result,
+  const result: T5Result = {
+    mode: 'modify', verdict: r.verdict, analysis: r.analysis, risks: r.risks, recommendations: r.recommendations,
+    changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
     applied: false, draftId: null, draftCreated: false, traceId,
   };
-  if (!result.proposedContent) return sansEcriture;
+  if (writable.length === 0) return result;
 
-  // ── Écriture ──────────────────────────────────────────────────────────
-  const draft = target.kind === 'existing'
-    ? target.draft
-    : await createDraft(req.userId, `Prompt Control — ${cible}`);
+  const draft = target.kind === 'existing' ? target.draft : await createDraft(req.userId, 'Prompt Control');
 
-  // Relu juste avant l'écriture : un autre enregistrement a pu passer pendant
-  // l'appel modèle. Écraser un texte que T5 n'a pas lu effacerait ce travail
-  // sans que le diff affiché le montre.
-  const frais = await getVersion(draft.id);
-  const entry = frais?.entries.find((e) => e.treatment === cible);
-  if (!frais || frais.status !== 'DRAFT' || !entry) {
-    throw new T5Refused(
-      'NOT_A_DRAFT',
-      `La version ${draft.id} n'est plus un brouillon modifiable : rien n'a été écrit (T5-004).`,
-    );
-  }
-  if (entry.prompt !== actuel) {
-    throw new T5Refused(
-      'PROMPT_CHANGED',
-      `Le prompt ${cible} a été modifié pendant l'analyse : rien n'a été écrit. Relancez la demande.`,
-    );
+  // Relu juste avant l'écriture : un enregistrement concurrent pendant l'appel
+  // modèle ne doit pas être écrasé par un texte que T5 n'a pas lu.
+  const fresh = await getVersion(draft.id);
+  if (!fresh || fresh.status !== 'DRAFT') {
+    throw new T5Refused('NOT_A_DRAFT', `La version ${draft.id} n'est plus un brouillon modifiable : rien n'a été écrit (T5-004).`);
   }
 
-  // Seul le prompt change : modèles, replis, garde-fous et déclencheurs
-  // restent ceux du Brouillon (T5-001, T5-012).
-  await saveEntry(draft.id, { ...entry, prompt: result.proposedContent }, req.userId);
-
-  // T5-014. Un échec du journal ne défait pas une écriture déjà faite — il est
-  // signalé, et la trace de l'appel modèle reste dans les exécutions IA.
-  try {
-    await recordT5Modification({
-      adminUserId: req.userId,
-      instruction: req.instruction,
-      treatment: cible,
-      versionId: draft.id,
-      draftCreated: target.kind === 'create',
-      before: actuel,
-      after: result.proposedContent,
-      traceId,
-      verdict: result.verdict,
-    });
-  } catch (e) {
-    console.error('[T5] Journal de modification non écrit', { traceId, versionId: draft.id, e });
+  for (const c of writable) {
+    const entry = fresh.entries.find((e) => e.treatment === c.treatment);
+    const changed = result.changes.find((x) => x.treatment === c.treatment)!;
+    if (!entry) { changed.rejected = `Configuration ${c.treatment} absente du brouillon.`; continue; }
+    if (entry.prompt !== promptOf(source, c.treatment)) {
+      changed.rejected = `Le prompt ${c.treatment} a été modifié pendant l'analyse : il n'a pas été écrasé. Relancez la demande.`;
+      continue;
+    }
+    // Seul le prompt change (T5-001).
+    await saveEntry(draft.id, { ...entry, prompt: c.proposedContent! }, req.userId);
+    changed.applied = true;
+    try {
+      await recordT5Modification({
+        adminUserId: req.userId, instruction: req.instruction, treatment: c.treatment,
+        versionId: draft.id, draftCreated: target.kind === 'create',
+        before: entry.prompt, after: c.proposedContent!, traceId, verdict: r.verdict,
+      });
+    } catch (e) {
+      console.error('[T5] Journal de modification non écrit', { traceId, versionId: draft.id, e });
+    }
   }
 
-  return {
-    ...sansEcriture,
-    applied: true,
-    draftId: draft.id,
-    draftCreated: target.kind === 'create',
-  };
+  result.applied = result.changes.some((c) => c.applied);
+  result.draftId = result.applied || target.kind === 'create' ? draft.id : null;
+  result.draftCreated = target.kind === 'create';
+  return result;
 }

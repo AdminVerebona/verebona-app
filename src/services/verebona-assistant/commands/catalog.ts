@@ -21,7 +21,7 @@ export function actionKind(type: VerebonaActionType | WriteCommandType): ActionK
   return 'display';
 }
 
-export const WRITE_COMMANDS = ['CREATE_AGENDA_ITEM', 'MARK_AGENDA_DONE', 'CANCEL_AGENDA_ITEM'] as const;
+export const WRITE_COMMANDS = ['CREATE_AGENDA_ITEM', 'MARK_AGENDA_DONE', 'CANCEL_AGENDA_ITEM', 'UPDATE_ASSET_FIELD'] as const;
 export type WriteCommandType = (typeof WRITE_COMMANDS)[number];
 
 export interface WriteCommandDefinition {
@@ -46,12 +46,22 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     type: 'CANCEL_AGENDA_ITEM', label: 'Annuler une échéance',
     service: 'AgendaWriteService.updateManualStatus(annule)', requiresWriteAccess: true,
   },
+  UPDATE_ASSET_FIELD: {
+    type: 'UPDATE_ASSET_FIELD', label: 'Modifier une caractéristique d’un bien',
+    service: 'asset-details-write.service.updateAssetDetails', requiresWriteAccess: true,
+  },
 };
 
 /** Paramètres figés d'une action préparée. */
 export type CommandParams =
   | { title: string; startDate: string; assetIds: number[] }            // CREATE_AGENDA_ITEM
-  | { agendaItemId: number };                                           // MARK / CANCEL
+  | { agendaItemId: number }                                            // MARK / CANCEL
+  | {                                                                   // UPDATE_ASSET_FIELD
+      assetId: number; section: string; field: string;
+      value: string | number;
+      /** Valeur présentée comme « ancienne » : l'exécution refuse si elle a changé depuis. */
+      previous: unknown;
+    };
 
 /** Action d'un plan, préparée et figée avant toute confirmation. */
 export interface PlannedAction {
@@ -76,7 +86,7 @@ export interface ActionResult {
   status: ActionOutcome;
   message: string;
   /** Objet créé ou modifié. */
-  entity?: { type: 'agenda_item'; id: number } | null;
+  entity?: { type: 'agenda_item' | 'asset'; id: number } | null;
 }
 
 export type PlanStatus =

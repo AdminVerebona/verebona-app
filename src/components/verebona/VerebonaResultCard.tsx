@@ -1,5 +1,6 @@
 'use client';
 /** Carte de résultat (bien/document/échéance) — CDC §7 / §19. Réutilise ui/card. */
+import { openDrawerFromLink } from '@/lib/drawers';
 import { Card } from '@/components/ui/card';
 
 export interface VerebonaResultCardProps {
@@ -17,5 +18,5 @@ export function VerebonaResultCard({ title, subtitle, typeLabel, href }: Verebon
       {subtitle && <div className="text-xs text-muted-foreground">{subtitle}</div>}
     </Card>
   );
-  return href ? <a href={href}>{content}</a> : content;
+  return href ? <a href={href} onClick={(e) => openDrawerFromLink(e, href)}>{content}</a> : content;
 }

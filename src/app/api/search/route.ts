@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { drawerHref } from '@/lib/drawers';
 import { SessionService } from '@/lib/session-service';
 import { db, ensureMigrations, ensureUnaccent } from '@/db';
 import { geminiSearch } from '@/lib/gemini-search';
@@ -156,8 +157,10 @@ export async function GET(req: NextRequest) {
         category: 'Document' as const,
         label: r.retained_title || r.original_filename || r.filename || 'Document',
         sublabel: r.asset_name || r.document_type || undefined,
-        href: `/documents`,
+        // Lien profond : le document s'ouvre en tiroir (src/lib/drawers.ts).
+        href: drawerHref({ kind: 'document', id: Number(r.id) }, '/documents'),
         docId: Number(r.id),
+        drawer: { kind: 'document' as const, id: Number(r.id) },
         mimeType: r.mime_type,
       })),
       ...agendaRows.map((r: any) => {
@@ -170,7 +173,8 @@ export async function GET(req: NextRequest) {
           category: 'Agenda' as const,
           label: r.title,
           sublabel: parts.join(' · ') || undefined,
-          href: `/agenda`,
+          href: drawerHref({ kind: 'echeance', id: Number(r.id) }, '/agenda'),
+          drawer: { kind: 'echeance' as const, id: Number(r.id) },
         };
       }),
     ];

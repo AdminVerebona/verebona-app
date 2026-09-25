@@ -37,6 +37,7 @@ import { toast } from 'sonner';
 import { LayoutGrid, List, Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
+import { openDrawer } from '@/lib/drawers';
 import {
   TO_PROCESS_NO_FILTER_RESULT,
   toProcessHeadline,
@@ -106,6 +107,14 @@ export function ToProcessQueue() {
     void load(orderMode);
   }, [orderMode, load]);
 
+  // Une fiche complétée dans un tiroir retire l'action de la file.
+  useEffect(() => {
+    const reload = () => { void load(orderMode); };
+    const events = ['refresh-a-traiter', 'agenda-mutated', 'document-analysis-complete'];
+    events.forEach((e) => window.addEventListener(e, reload));
+    return () => events.forEach((e) => window.removeEventListener(e, reload));
+  }, [orderMode, load]);
+
   /**
    * Application d'une proposition.
    *
@@ -160,11 +169,24 @@ export function ToProcessQueue() {
     }
   };
 
-  /** « Autre » et « Compléter » ouvrent l'objet sur le champ concerné (§8.5, §8.6). */
+  /**
+   * « Autre » et « Compléter » ouvrent l'objet sur le champ concerné (§8.5, §8.6).
+   * Document, équipement et échéance s'ouvrent en tiroir, sans quitter la
+   * file : on revient à l'action suivante en fermant le tiroir. Le bien reste
+   * une page (onglets, champ mis en évidence).
+   */
   const openTarget = (action: ActionView) => {
     const field = action.fieldKey ?? action.relationKey ?? '';
-    if (action.targetType === 'DOCUMENT' && action.target.publicId) {
-      router.push(`/documents/${action.target.publicId}?field=${field}`);
+    if (action.targetType === 'DOCUMENT') {
+      openDrawer({ kind: 'document', id: action.targetId });
+      return;
+    }
+    if (action.targetType === 'EQUIPMENT') {
+      openDrawer({ kind: 'equipement', id: action.targetId });
+      return;
+    }
+    if (action.targetType === 'AGENDA_ITEM') {
+      openDrawer({ kind: 'echeance', id: action.targetId, initialMode: 'edit' });
       return;
     }
     if (action.targetType === 'ASSET' && action.target.publicId) {

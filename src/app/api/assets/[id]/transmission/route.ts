@@ -42,20 +42,19 @@ async function sendTransmissionEmail(opts: {
 
   const year = new Date().getFullYear().toString();
 
-  let subject: string;
   let htmlBody: string;
 
+  // Objet fixe, quel que soit le modèle en base : c'est l'unique e-mail d'une
+  // transmission (l'e-mail de la notification TRANSMISSION_RECEIVED a été
+  // retiré), et c'est celui que le destinataire doit reconnaître.
+  const subject = `${opts.senderName} vous transmet un bien — Verebona`;
   if (tpl) {
-    subject = tpl.subject
-      .replace(/\{\{senderName\}\}/g, opts.senderName)
-      .replace(/\{\{assetName\}\}/g, opts.assetName);
     htmlBody = tpl.body
       .replace(/\{\{senderName\}\}/g, opts.senderName)
       .replace(/\{\{assetName\}\}/g, opts.assetName)
       .replace(/\{\{shareUrl\}\}/g, opts.shareUrl)
       .replace(/\{\{year\}\}/g, year);
   } else {
-    subject = `${opts.senderName} vous transmet un bien — Verebona`;
     htmlBody = buildTransmissionHtml(opts.senderName, opts.assetName, opts.shareUrl, year);
   }
 

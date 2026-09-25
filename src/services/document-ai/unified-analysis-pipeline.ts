@@ -11,6 +11,8 @@
  * Fire-and-forget : appelé sans await depuis /api/files/confirm.
  */
 
+import { loadLotDocuments } from '@/services/ai/source-analysis/lot-notification';
+import { lotNotificationPayload } from '@/services/ai/source-analysis/lot-notification-text';
 import { db } from '@/db';
 import {
   assetFiles,
@@ -680,7 +682,8 @@ export async function runUnifiedAnalysisPipeline(
       accountId,
       entityType: 'document_lot',
       entityId: lotId,
-      payload: { lotId, analysedCount, failedCount: 0 },
+      // Titre et identifiant du document : « Le document “Titre” a été analysé ».
+      payload: lotNotificationPayload(lotId, analysedCount, await loadLotDocuments(lotId)),
       // Clé stable par lot (le moteur ajoute l'utilisateur).
       dedupeKey: `document:batch-complete:${lotId}`,
     });

@@ -311,7 +311,17 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
     } else if (decision === 'cancel') {
       texte = 'D’accord, je n’ai rien modifié.';
     } else {
-      const lignes = (data.results ?? []) as Array<{ status: string; message: string }>;
+      const lignes = (data.results ?? []) as Array<{ status: string; message: string; entity?: { type: string; id: number } | null }>;
+      // Les écrans ouverts sous l'assistant se remettent à jour.
+      if (typeof window !== 'undefined') {
+        if (lignes.some((r) => r.status === 'SUCCESS' && r.entity?.type === 'agenda_item')) window.dispatchEvent(new CustomEvent('agenda-mutated'));
+        for (const r of lignes) {
+          if (r.status === 'SUCCESS' && r.entity?.type === 'asset') {
+            window.dispatchEvent(new CustomEvent('asset-details-updated', { detail: { assetId: r.entity.id } }));
+          }
+        }
+        window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
+      }
       texte = lignes.length > 1
         ? `${data.summary}\n${lignes.map((r) => `• ${r.status === 'SUCCESS' ? '✓' : r.status === 'SKIPPED_DEPENDENCY' ? '↷' : '✗'} ${r.message}`).join('\n')}`
         : (data.summary ?? 'Action effectuée.');
