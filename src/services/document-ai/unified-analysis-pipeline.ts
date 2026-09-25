@@ -671,6 +671,11 @@ export async function runUnifiedAnalysisPipeline(
   // nombre de fichiers/groupes ; canaux et préférences appliqués par le moteur.
   // Seule la réussite est annoncée — mêmes règles que le moteur unifié
   // (`lot-notification.ts`) : plus de notification « Analyse impossible ».
+  // Mascotte d'accueil : fin d'analyse (réussie ou non) = contexte changé (RUN-007).
+  void import('@/services/home/mascot/mascot.service')
+    .then((m) => m.scheduleMascotPregeneration(accountId))
+    .catch(() => {});
+
   if (analysedCount === 0) {
     if (failedCount > 0) console.warn(`[unified-pipeline] lot ${lotId} : ${failedCount} échec(s), aucune notification émise.`);
     return;

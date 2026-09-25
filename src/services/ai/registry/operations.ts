@@ -287,6 +287,17 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     dynamicPrompt: true,
     timeoutMs: 90_000, outputSchema: 'PromptEvaluationOutput', active: true, billable: false,
   },
+
+  // ── Usage 6 — Mascotte d'accueil (T6) ─────────────────────────────────────
+  // Synchrone, hors file (BO-003). Délai court : l'accueil ne réessaie pas et
+  // bascule sur le texte déterministe (RUN-002) — un modèle lent vaut un échec.
+  formulate_mascot: {
+    operationCode: 'formulate_mascot', useCaseCode: 'HOME_MASCOT',
+    label: "Formulation du discours de la mascotte d'accueil",
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: 'mascot_t6_v1', timeoutMs: 8_000,
+    outputSchema: 'MascotT6Output', active: true, billable: false,
+  },
 };
 
 export type AiOperationCode = keyof typeof AI_OPERATIONS;

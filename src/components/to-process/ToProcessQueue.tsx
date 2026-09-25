@@ -37,7 +37,7 @@ import { toast } from 'sonner';
 import { LayoutGrid, List, Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
-import { openDrawer } from '@/lib/drawers';
+import { openToProcessTarget } from '@/lib/to-process-target';
 import {
   TO_PROCESS_NO_FILTER_RESULT,
   toProcessHeadline,
@@ -176,24 +176,17 @@ export function ToProcessQueue() {
    * une page (onglets, champ mis en évidence).
    */
   const openTarget = (action: ActionView) => {
-    const field = action.fieldKey ?? action.relationKey ?? '';
-    if (action.targetType === 'DOCUMENT') {
-      openDrawer({ kind: 'document', id: action.targetId });
-      return;
-    }
-    if (action.targetType === 'EQUIPMENT') {
-      openDrawer({ kind: 'equipement', id: action.targetId });
-      return;
-    }
-    if (action.targetType === 'AGENDA_ITEM') {
-      openDrawer({ kind: 'echeance', id: action.targetId, initialMode: 'edit' });
-      return;
-    }
-    if (action.targetType === 'ASSET' && action.target.publicId) {
-      router.push(`/assets/${action.target.publicId}?field=${field}`);
-      return;
-    }
-    toast.info('Ouvrez cet élément depuis sa page pour compléter l’information.');
+    // Resolver commun avec la mascotte d'accueil (CDC Mascotte ATP-005).
+    openToProcessTarget(
+      {
+        targetType: action.targetType,
+        targetId: action.targetId,
+        targetPublicId: action.target.publicId ?? null,
+        field: action.fieldKey ?? action.relationKey ?? '',
+      },
+      router,
+      () => toast.info('Ouvrez cet élément depuis sa page pour compléter l’information.'),
+    );
   };
 
   const count = page?.shown ?? 0;

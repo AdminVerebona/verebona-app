@@ -80,6 +80,7 @@ const USE_CASE_DIRECTORY: Record<AiUseCaseCode, string> = {
   INTELLIGENT_ASSISTANT: 'assistant',
   AGENDA_INTELLIGENCE: 'agenda',
   AI_GOVERNANCE: 'governance',
+  HOME_MASCOT: 'mascot',
 };
 
 const PROMPTS_ROOT = 'src/services/ai/prompts';

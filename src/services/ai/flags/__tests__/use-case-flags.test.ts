@@ -66,7 +66,7 @@ describe('état de bascule', () => {
   it('expose un instantané complet pour l\'administration', () => {
     process.env.AI_AGENDA_ENGINE = 'shadow';
     const snap = snapshotUseCaseModes();
-    expect(Object.keys(snap)).toHaveLength(5);
+    expect(Object.keys(snap)).toHaveLength(6);
     expect(snap.AGENDA_INTELLIGENCE).toBe('shadow');
     expect(snap.SOURCE_ANALYSIS).toBe('legacy');
   });

@@ -249,8 +249,33 @@ async function metricsT5(days: number): Promise<Metric[]> {
   ];
 }
 
+/**
+ * T6 — mascotte d'accueil (CDC Mascotte BO-009) : formulations affichées,
+ * pré-générations non affichées et textes de secours, distingués.
+ */
+async function metricsT6(days: number): Promise<Metric[]> {
+  const r = await one(
+    `SELECT COUNT(*) FILTER (WHERE mode = 'display' AND status = 'generated')::int AS affichees,
+            COUNT(*) FILTER (WHERE mode = 'pregen' AND status = 'generated')::int  AS pregen,
+            COUNT(*) FILTER (WHERE status IN ('fallback', 'validation_failed', 'error', 'disabled'))::int AS secours,
+            COUNT(*) FILTER (WHERE status = 'validation_failed')::int               AS invalides,
+            COUNT(*) FILTER (WHERE status = 'cache_hit')::int                       AS cache
+       FROM home_mascot_generations
+      WHERE created_at >= NOW() - ($1 || ' days')::interval`,
+    [String(days)],
+  ).catch((): Row => ({}));
+
+  return [
+    M('displayed', 'Formulations affichées', Number(r.affichees ?? 0)),
+    M('pregenerated', 'Pré-générations (non affichées)', Number(r.pregen ?? 0)),
+    M('cache', 'Servies depuis le cache', Number(r.cache ?? 0)),
+    M('fallback', 'Textes de secours', Number(r.secours ?? 0)),
+    M('invalid', 'Sorties rejetées par la validation', Number(r.invalides ?? 0)),
+  ];
+}
+
 const PAR_TRAITEMENT: Record<Treatment, (days: number) => Promise<Metric[]>> = {
-  T1: metricsT1, T2: metricsT2, T3: metricsT3, T4: metricsT4, T5: metricsT5,
+  T1: metricsT1, T2: metricsT2, T3: metricsT3, T4: metricsT4, T5: metricsT5, T6: metricsT6,
 };
 
 /**

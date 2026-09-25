@@ -164,7 +164,7 @@ export default function AiExecutionsPage() {
         <select value={treatment} onChange={(e) => changeFilter(() => setTreatment(e.target.value))}
           className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Tous les traitements</option>
-          {['T1', 'T2', 'T3', 'T4', 'T5'].map((t) => <option key={t} value={t}>{t}</option>)}
+          {['T1', 'T2', 'T3', 'T4', 'T5', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <Input placeholder="Compte" value={account} inputMode="numeric"
           onChange={(e) => changeFilter(() => setAccount(e.target.value))}

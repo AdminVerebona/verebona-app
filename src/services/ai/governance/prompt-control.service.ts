@@ -5,8 +5,8 @@
  * UNE DEMANDE, ET T5 CHOISIT LUI-MÊME LES PROMPTS À FAIRE ÉVOLUER
  *
  * L'administrateur décrit un comportement attendu ou un problème constaté,
- * sans désigner de traitement. T5 lit les quatre prompts administrables (T1,
- * socle T2, T3, T4), détermine lesquels sont en cause — aucun, un ou
+ * sans désigner de traitement. T5 lit les prompts administrables (T1, socle
+ * T2, T3, T4, charte de voix T6), détermine lesquels sont en cause — aucun, un ou
  * plusieurs — et, sur demande de modification, les réécrit.
  *
  * ══════════════════════════════════════════════════════════════════════════
@@ -66,6 +66,9 @@ export const TARGET_LABELS: Record<string, string> = {
   T2: 'T2 — Assistant (socle commun)',
   T3: 'T3 — Rationalisation',
   T4: 'T4 — Échéances',
+  // CDC Mascotte BO-008 : T5 peut faire évoluer la charte de voix de T6, pas
+  // les règles du moteur de la mascotte, qui sont dans le code.
+  T6: 'T6 — Mascotte (charte de voix)',
 };
 
 /**
@@ -152,7 +155,7 @@ function promptOf(version: ConfigVersionWithEntries | null, t: Treatment): strin
   return version?.entries.find((e) => e.treatment === t)?.prompt ?? '';
 }
 
-/** Les quatre prompts administrables, présentés au modèle. */
+/** Les prompts administrables (T1–T4, T6), présentés au modèle. */
 export function formatCurrentPrompts(version: ConfigVersionWithEntries | null): string {
   return T5_TARGETS.map((t) => {
     const content = promptOf(version, t).trim();

@@ -44,6 +44,6 @@ describe('séparation des drapeaux', () => {
     // fait tomber la bijection usage ⇄ drapeau et le rapport d'inventaire, le
     // 18/09/2026 — à juste titre : une bascule technique n'est pas un usage.
     expect(AI_FLAGS as readonly string[]).not.toContain('AI_DURABLE_QUEUE');
-    expect(AI_FLAGS).toHaveLength(5);
+    expect(AI_FLAGS).toHaveLength(6); // un par usage, mascotte T6 comprise
   });
 });

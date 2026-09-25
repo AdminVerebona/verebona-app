@@ -36,7 +36,7 @@ describe('fraîcheur des données', () => {
 
 describe('câblage', () => {
   it('apiClient marque les écritures réussies', () => {
-    expect(read('src/lib/api-client.ts')).toContain('if (isDataMutation(method, url)) markAccountDataMutated();');
+    expect(read('src/lib/api-client.ts')).toMatch(/if \(isDataMutation\(method, url\)\) \{\s*markAccountDataMutated\(\);/);
   });
 
   it('l’accueil n’utilise plus le cache client et demande un résumé frais', () => {

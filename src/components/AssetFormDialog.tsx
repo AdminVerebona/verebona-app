@@ -157,6 +157,9 @@ export function AssetFormDialog({
       }
 
       const createdAsset = await response.json();
+      // Création hors apiClient : le changement est signalé explicitement
+      // (accueil, mascotte — CDC Mascotte §15).
+      window.dispatchEvent(new CustomEvent('verebona:data-mutated'));
       toast.success('Bien créé avec succès !');
       onOpenChange(false);
       router.push(`/assets/${createdAsset.id}`);

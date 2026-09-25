@@ -45,7 +45,7 @@ import { apiClient } from '@/lib/api-client';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
 
-type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5';
+type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
 type Status = 'DRAFT' | 'TO_TEST' | 'ACTIVE' | 'VALIDATED' | 'ARCHIVED';
 
 interface GuardrailDef { code: string; label: string; description: string; unit: string }
@@ -375,7 +375,7 @@ function PromptControl({
         </Button>
         {encours && (
           <span className="text-xs text-[color:var(--text-muted)]">
-            Prompt Control lit les quatre prompts — cela peut prendre une à deux minutes.
+            Prompt Control lit les prompts administrables — cela peut prendre une à deux minutes.
           </span>
         )}
       </div>

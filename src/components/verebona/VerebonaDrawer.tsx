@@ -69,7 +69,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
   // Ouverture programmée (bulle d'accueil, centre d'aide…), avec question optionnelle.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ question?: string }>).detail;
+      const detail = (e as CustomEvent<{ question?: string; context?: { intent?: string; assetId?: number } }>).detail;
       let autorise = false;
       garder(() => { autorise = true; });
       if (!autorise) return;
@@ -79,7 +79,14 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
       //
       // Un mécanisme de pré-remplissage existait ici — retiré avec l'ouverture
       // à la frappe qui le justifiait.
-      if (detail?.question) v.send(detail.question);
+      // Question rapide de la mascotte : la question part telle quelle, avec
+      // son contexte structuré (CDC Mascotte SEC-005).
+      if (detail?.question) {
+        const ctx: Record<string, string> = {};
+        if (detail.context?.intent) ctx.intent = detail.context.intent;
+        if (detail.context?.assetId) ctx.assetId = String(detail.context.assetId);
+        v.send(detail.question, Object.keys(ctx).length ? ctx : undefined);
+      }
     };
     window.addEventListener('verebona:open', handler);
     return () => window.removeEventListener('verebona:open', handler);

@@ -13,6 +13,7 @@ export const AI_USE_CASE_CODES = [
   'INTELLIGENT_ASSISTANT',
   'AGENDA_INTELLIGENCE',
   'AI_GOVERNANCE',
+  'HOME_MASCOT',
 ] as const;
 
 export type AiUseCaseCode = (typeof AI_USE_CASE_CODES)[number];
@@ -62,6 +63,15 @@ export const AI_USE_CASES: Record<AiUseCaseCode, AiUseCaseDefinition> = {
     label: 'Administration et gouvernance IA',
     purpose: 'Versionner, tester, valider et restaurer les prompts et modèles.',
     replacesLegacyUsages: [11],
+    active: true,
+  },
+  // T6 — CDC Mascotte d'accueil : formulation naturelle d'un contexte déjà
+  // décidé par le moteur déterministe. Aucun usage historique absorbé.
+  HOME_MASCOT: {
+    code: 'HOME_MASCOT',
+    label: "Mascotte d'accueil",
+    purpose: "Formuler naturellement les sujets choisis par le moteur de l'accueil, sans rien décider.",
+    replacesLegacyUsages: [],
     active: true,
   },
 };

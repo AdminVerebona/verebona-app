@@ -1,5 +1,5 @@
 /**
- * Traitements T1 à T5 — CDC BO IA §1.3.
+ * Traitements T1 à T6 — CDC BO IA §1.3 ; T6 : CDC Mascotte d'accueil §19.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * DEUX VOCABULAIRES POUR CINQ CHOSES
@@ -18,7 +18,7 @@
  */
 import { AI_USE_CASE_CODES, type AiUseCaseCode } from '../registry/use-cases';
 
-export const TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T5'] as const;
+export const TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6'] as const;
 export type Treatment = (typeof TREATMENTS)[number];
 
 export interface TreatmentDefinition {
@@ -40,6 +40,8 @@ export const TREATMENT_DEFINITIONS: Readonly<Record<Treatment, TreatmentDefiniti
   T3: { code: 'T3', useCaseCode: 'DATA_RECONCILIATION', label: 'Rationalisation', batch: true },
   T4: { code: 'T4', useCaseCode: 'AGENDA_INTELLIGENCE', label: 'Échéances', batch: true },
   T5: { code: 'T5', useCaseCode: 'AI_GOVERNANCE', label: 'Prompt Control', batch: false },
+  // CDC Mascotte BO-003 : synchrone, hors file globale, comme T2 et T5.
+  T6: { code: 'T6', useCaseCode: 'HOME_MASCOT', label: 'Mascotte', batch: false },
 };
 
 /**

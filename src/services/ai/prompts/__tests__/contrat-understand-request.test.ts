@@ -123,3 +123,23 @@ describe('analyze_instruction — le prompt offre bien une issue autre que « mo
     expect(prompt).not.toContain("TU N'APPLIQUES PAS");
   });
 });
+
+describe('prompt_control_v2 — Prompt Control multi-cibles', () => {
+  const prompt = lirePrompt('prompt_control_v2', 'governance');
+
+  it('reçoit les quatre prompts et la demande, sans désigner de cible', () => {
+    for (const v of ['{{CURRENT_PROMPTS}}', '{{INSTRUCTION}}', '{{MODE}}']) expect(prompt, v).toContain(v);
+    expect(prompt).not.toContain('{{PROMPT_CODE}}');
+  });
+
+  it('demande les champs que le validateur lit', () => {
+    for (const champ of ['"verdict"', '"analysis"', '"targets"', '"treatment"', '"proposedContent"', '"risks"', '"recommendations"']) {
+      expect(prompt, champ).toContain(champ);
+    }
+  });
+
+  it('offre une issue sans cible (T5-009)', () => {
+    expect(prompt).toContain('"targets": []');
+    for (const v of ['"prompt"', '"code"', '"donnees"', '"configuration"']) expect(prompt, v).toContain(v);
+  });
+});

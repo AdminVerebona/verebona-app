@@ -46,8 +46,9 @@ export async function GET(req: NextRequest) {
   const report = {
     generatedAt: new Date().toISOString(),
     activeUseCaseCount: useCases.length,
-    expectedUseCaseCount: 5,
-    compliant: useCases.length === 5,
+    // Cinq usages de la refonte IA + mascotte d'accueil (T6).
+    expectedUseCaseCount: 6,
+    compliant: useCases.length === 6,
     useCases,
     flags: snapshotFlags(),
     // Signalements d'exploitation : présents dans l'inventaire pour que les

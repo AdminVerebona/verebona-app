@@ -47,7 +47,8 @@ describe('file globale (GEN-004)', () => {
 describe('garde-fous', () => {
   it('reconnaît un code de traitement valide', () => {
     expect(isTreatment('T3')).toBe(true);
-    expect(isTreatment('T6')).toBe(false);
+    expect(isTreatment('T6')).toBe(true);
+    expect(isTreatment('T7')).toBe(false);
     expect(isTreatment('SOURCE_ANALYSIS')).toBe(false);
   });
 
@@ -58,9 +59,10 @@ describe('garde-fous', () => {
 });
 
 describe('prompt administrable (T5-001, T5-003, écart E-02)', () => {
-  it('T1 à T4 ont un prompt administrable, T5 non', () => {
-    expect(TREATMENTS.filter(isPromptAdministrable)).toEqual(['T1', 'T2', 'T3', 'T4']);
-    expect(T5_TARGETS).toEqual(['T1', 'T2', 'T3', 'T4']);
+  it('T1 à T4 et T6 ont un prompt administrable, T5 non', () => {
+    expect(TREATMENTS.filter(isPromptAdministrable)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    // CDC Mascotte BO-008 : T5 peut faire évoluer la charte de voix de T6.
+    expect(T5_TARGETS).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
   });
 
   it('la normalisation vide le prompt de T5 et laisse les autres intacts', () => {

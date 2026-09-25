@@ -163,7 +163,12 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
     })();
   }, [refreshThreads, loadThread]);
 
-  const send = useCallback(async (text: string) => {
+  /**
+   * `extraContext` : contexte structuré transmis par l'appelant — question
+   * rapide de la mascotte (CDC Mascotte SEC-005 : intention, bien). Il
+   * complète le contexte de page ; le serveur revalide tout identifiant.
+   */
+  const send = useCallback(async (text: string, extraContext?: Record<string, string>) => {
     const message = text.trim();
     if (!message || message.length > 2000) return;
 
@@ -182,7 +187,7 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
         body: JSON.stringify({
           message,
           clientRequestId: newId(),
-          pageContext,
+          pageContext: extraContext ? { ...(pageContext ?? {}), ...extraContext } : pageContext,
           conversationId: conversationRef.current,
         }),
         signal: controller.signal,

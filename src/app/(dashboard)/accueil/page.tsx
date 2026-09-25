@@ -330,13 +330,15 @@ export default function DashboardPage() {
     <>
       <div className="space-y-6 w-full max-w-full overflow-x-hidden pb-24">
 
-        {/* Bandeau mascotte + bulle (remplace SituationMessage) */}
-        {summary && (
-          <MascotGreeting
-            situation={summary.situation}
-            userName={user.username || user.firstName}
-          />
-        )}
+        {/* Mascotte d'accueil : sa prise de parole a son propre chargement
+            (GET /api/home/mascot) et ne retarde pas le reste de la page
+            (CDC Mascotte NFR-001, NFR-002). Le prénom est le nom affiché
+            (UX-003). */}
+        <MascotGreeting
+          firstName={user.firstName || user.username || ''}
+          onCreateAsset={() => setShowAssetDialog(true)}
+          onUploadDocument={() => setShowUploadDialog(true)}
+        />
 
         {/* ══════════════════════════════════════════════════════════════
             LE BLOC « À FAIRE » DISPARAÎT QUAND IL EST VIDE

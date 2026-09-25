@@ -13,9 +13,9 @@ import { AI_OPERATIONS, getOperation, listLlmOperations, listOperationsByUseCase
 import { assertAiRegistryStartup } from '../index';
 
 describe('référentiel des usages', () => {
-  it('déclare exactement cinq usages', () => {
-    expect(AI_USE_CASE_CODES).toHaveLength(5);
-    expect(listActiveUseCases()).toHaveLength(5);
+  it('déclare exactement six usages (cinq de la refonte + mascotte T6)', () => {
+    expect(AI_USE_CASE_CODES).toHaveLength(6);
+    expect(listActiveUseCases()).toHaveLength(6);
   });
 
   it('couvre les onze usages historiques sans en oublier', () => {

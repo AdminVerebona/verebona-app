@@ -39,17 +39,17 @@ describe('lecture de la fenêtre', () => {
 });
 
 describe('section déclarée', () => {
-  it('recense exactement les cinq usages du référentiel', () => {
+  it('recense exactement les six usages du référentiel (cinq + mascotte T6)', () => {
     const d = buildDeclaredSection();
-    expect(d.activeUseCaseCount).toBe(5);
-    expect(d.expectedUseCaseCount).toBe(5);
+    expect(d.activeUseCaseCount).toBe(6);
+    expect(d.expectedUseCaseCount).toBe(6);
     expect(d.compliant).toBe(true);
-    expect(d.useCases).toHaveLength(5);
+    expect(d.useCases).toHaveLength(6);
   });
 
   it("joint l'état des drapeaux, sans lequel le rapport ne s'interprète pas", () => {
     const d = buildDeclaredSection();
-    expect(Object.keys(d.flags)).toHaveLength(5);
+    expect(Object.keys(d.flags)).toHaveLength(6);
     expect(d.flags).toHaveProperty('AI_INTELLIGENT_ASSISTANT');
   });
 

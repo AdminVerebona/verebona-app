@@ -82,7 +82,7 @@ describe('T5 — pas de prompt administrable (T5-003, E-02)', () => {
     const entries = TREATMENTS.map((t) => valide({
       treatment: t,
       prompt: t === 'T5' ? '' : 'un prompt',
-      triggers: t === 'T2' || t === 'T5' ? [] : valide().triggers,
+      triggers: t === 'T2' || t === 'T5' || t === 'T6' ? [] : valide().triggers,
     }));
     expect(validateVersion(entries, catalogues()).valid).toBe(true);
   });
@@ -206,7 +206,7 @@ describe('déclencheurs', () => {
 });
 
 describe('version entière', () => {
-  const cinq = () => TREATMENTS.map((t) => valide({ treatment: t, triggers: t === 'T2' || t === 'T5' ? [] : valide().triggers }));
+  const cinq = () => TREATMENTS.map((t) => valide({ treatment: t, triggers: t === 'T2' || t === 'T5' || t === 'T6' ? [] : valide().triggers }));
 
   it('accepte une version complète et cohérente', () => {
     expect(validateVersion(cinq(), catalogues()).valid).toBe(true);
@@ -299,9 +299,9 @@ describe('modèles retirés du catalogue (SCR-10)', () => {
     expect(unavailableModels([valide()], dispo)).toEqual([]);
   });
 
-  it('parcourt les cinq traitements d’une version', () => {
+  it('parcourt tous les traitements d’une version (T1 à T6)', () => {
     const entries = TREATMENTS.map((t) => valide({ treatment: t, primaryModel: 'disparu', triggers: [] }));
-    expect(unavailableModels(entries, dispo)).toHaveLength(5);
+    expect(unavailableModels(entries, dispo)).toHaveLength(6);
   });
 
   it('ignore les replis non configurés', () => {

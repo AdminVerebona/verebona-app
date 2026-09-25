@@ -96,6 +96,8 @@ export interface AssistantApiError {
 /** Contexte de page transmis par le front — CDC §27.1. */
 export interface PageContext {
   route?: string;
+  /** Intention d'une question rapide de la mascotte (CDC Mascotte, annexe B). */
+  intent?: string;
   assetId?: string;
   documentId?: string;
   supplierId?: string;

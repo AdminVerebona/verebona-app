@@ -13,13 +13,14 @@
  * Une divergence avec l'Active de production est rendue, jamais bloquante : le
  * WF-04 demande « avertissement + diff, mais pas blocage sauf conflit réel ».
  */
+import { defaultT6Config } from '@/services/ai/config/t6-defaults';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { importPackage, type PackagePayload } from '@/services/ai/config/config-package.service';
 import { requireAdminContext, toErrorResponse } from '../../config-versions/_shared';
 
 const Entry = z.object({
-  treatment: z.enum(['T1', 'T2', 'T3', 'T4', 'T5']),
+  treatment: z.enum(['T1', 'T2', 'T3', 'T4', 'T5', 'T6']),
   prompt: z.string(),
   primaryModel: z.string().nullable(),
   fallback1: z.string().nullable(),
@@ -49,9 +50,11 @@ const Body = z.object({
     sourceEnvironment: z.enum(['local', 'preprod', 'production']),
     visibleNumber: z.number().int().positive(),
     label: z.string().nullable(),
-    // Cinq exactement : le GEN-002 veut un instantané complet, et un package
-    // amputé laisserait deux traitements sur l'ancienne configuration.
-    entries: z.array(Entry).length(5),
+    // Un instantané complet (GEN-002). Six traitements depuis T6 ; un package
+    // exporté avant T6 en compte cinq et reçoit la configuration T6 par défaut
+    // (CDC Mascotte BO-004), sans quoi la version importée ne serait pas
+    // promouvable.
+    entries: z.array(Entry).min(5).max(6),
   }),
 });
 
@@ -71,8 +74,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const payload = parsed.data.payload as PackagePayload;
+    if (!payload.entries.some((e) => e.treatment === 'T6')) {
+      payload.entries = [...payload.entries, defaultT6Config()];
+    }
     const r = await importPackage(
-      parsed.data.payload as PackagePayload,
+      payload,
       parsed.data.uid,
       guard.ctx.adminUserId,
     );

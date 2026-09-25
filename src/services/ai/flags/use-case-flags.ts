@@ -34,6 +34,7 @@ export const USE_CASE_FLAGS: Record<AiUseCaseCode, AiFlag> = {
   INTELLIGENT_ASSISTANT: 'AI_INTELLIGENT_ASSISTANT',
   AGENDA_INTELLIGENCE: 'AI_AGENDA_ENGINE',
   AI_GOVERNANCE: 'AI_PROMPT_GOVERNANCE',
+  HOME_MASCOT: 'AI_HOME_MASCOT',
 };
 
 export function getUseCaseFlag(useCaseCode: AiUseCaseCode): AiFlag {

@@ -14,6 +14,9 @@ export const AI_FLAGS = [
   'AI_INTELLIGENT_ASSISTANT',
   'AI_AGENDA_ENGINE',
   'AI_PROMPT_GOVERNANCE',
+  // T6 — mascotte d'accueil. `legacy` (défaut) : texte déterministe seul ;
+  // `enabled` : formulation T6. Pas de mode observation (voir plus bas).
+  'AI_HOME_MASCOT',
 ] as const;
 
 // ⚠️ N'AJOUTEZ PAS DE DRAPEAU ICI QUI NE SOIT PAS UN USAGE IA.
@@ -94,7 +97,7 @@ export function shouldRunLegacy(flag: AiFlag): boolean {
  * qu'il n'y a rien à mesurer.
  * ══════════════════════════════════════════════════════════════════════════
  */
-const SANS_MODE_OBSERVATION: readonly AiFlag[] = ['AI_INTELLIGENT_ASSISTANT'];
+const SANS_MODE_OBSERVATION: readonly AiFlag[] = ['AI_INTELLIGENT_ASSISTANT', 'AI_HOME_MASCOT'];
 
 /** Lève si un drapeau porte un mode qu'il ne sait pas honorer. */
 export function assertFlagModesSupported(): void {

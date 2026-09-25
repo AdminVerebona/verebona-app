@@ -130,6 +130,34 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     return () => window.removeEventListener('open-document-drawer', handler);
   }, []);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // PRÉ-GÉNÉRATION DE LA MASCOTTE — CDC Mascotte RUN-007 à RUN-009
+  //
+  // Un changement validé ailleurs dans l'application (document, échéance,
+  // action « À traiter », bien, export, « C'est fait ») prépare la prochaine
+  // prise de parole de l'accueil en arrière-plan : au retour sur l'accueil,
+  // le texte est déjà prêt. Le serveur temporise 3 s et regroupe les rafales ;
+  // sur l'accueil même, la page recalcule elle-même.
+  // ══════════════════════════════════════════════════════════════════════
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const events = ['verebona:data-mutated', 'document-added', 'document-deleted', 'document-analysis-complete', 'agenda-mutated', 'refresh-a-traiter'];
+    const onChange = () => {
+      if (window.location.pathname === '/accueil') return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        // `fetch` et non `apiClient` : ce POST ne doit pas lui-même compter
+        // comme une modification des données du compte.
+        void fetch('/api/home/mascot/pregenerate', { method: 'POST', credentials: 'include' }).catch(() => {});
+      }, 1_000);
+    };
+    events.forEach((e) => window.addEventListener(e, onChange));
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, onChange));
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   const [availableAssets, setAvailableAssets] = useState<{ id: number; name: string }[]>([]);
   const [aTraiterCount, setATraiterCount] = useState<number | null>(null);
 

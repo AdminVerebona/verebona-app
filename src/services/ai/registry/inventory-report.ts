@@ -90,8 +90,9 @@ export function buildDeclaredSection(): DeclaredSection {
 
   return {
     activeUseCaseCount: useCases.length,
-    expectedUseCaseCount: 5,
-    compliant: useCases.length === 5,
+    // Cinq usages de la refonte IA, plus la mascotte d'accueil (T6).
+    expectedUseCaseCount: 6,
+    compliant: useCases.length === 6,
     useCases: useCases.map((uc) => {
       const ops = listOperationsByUseCase(uc.code);
       return {

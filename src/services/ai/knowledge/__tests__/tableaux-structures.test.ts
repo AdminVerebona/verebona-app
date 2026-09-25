@@ -162,7 +162,7 @@ describe('T2 : intersection ligne / colonne', () => {
 
 describe('garde-fous', () => {
   it('prompt v4 : structure explicite, cellules vides, fusion, multi-pages, doute', () => {
-    const p = src('src/services/ai/prompts/source-analysis/extract_source_v4.txt');
+    const p = src('src/services/ai/prompts/source-analysis/extract_source_v5.txt');
     for (const r of [/R2ter — TABLEAUX/, /`value: null` — ne l'omets pas/, /`colspan` \/ `rowspan`/, /UN seul tableau \(`pageStart`, `pageEnd`\)/, /ne reconstruis AUCUNE association/]) expect(p).toMatch(r);
     const i = p.indexOf('{\n  "title"');
     expect(() => ExtractSourceOutput.parse(JSON.parse(p.slice(i, p.lastIndexOf('}') + 1)))).not.toThrow();

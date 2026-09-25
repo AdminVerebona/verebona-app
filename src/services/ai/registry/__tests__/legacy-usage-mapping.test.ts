@@ -15,7 +15,7 @@ import { join } from 'path';
 import {
   LEGACY_USAGE_MAPPING, resolveLegacyUseCase, listLegacyIdentifiers,
 } from '../legacy-usage-mapping';
-import { AI_USE_CASE_CODES } from '../use-cases';
+import { AI_USE_CASE_CODES, AI_USE_CASES } from '../use-cases';
 
 /** Relit les valeurs INSERT de la migration 0110. */
 function mappingFromMigration(): Record<string, { useCaseCode: string; operationCode: string; legacyUsageNo: number }> {
@@ -81,9 +81,11 @@ describe('cohérence avec le référentiel', () => {
     }
   });
 
-  it('couvre les cinq usages — aucun n\'est orphelin d\'historique', () => {
+  it('couvre les usages issus de la refonte — aucun n\'est orphelin d\'historique', () => {
+    // La mascotte (T6) est un usage nouveau : elle n'absorbe aucun usage historique.
     const covered = new Set(Object.values(LEGACY_USAGE_MAPPING).map(m => m.useCaseCode));
-    expect([...covered].sort()).toEqual([...AI_USE_CASE_CODES].sort());
+    const issus = AI_USE_CASE_CODES.filter((c) => AI_USE_CASES[c].replacesLegacyUsages.length > 0);
+    expect([...covered].sort()).toEqual([...issus].sort());
   });
 
   it('conserve les onze usages de l\'ancienne nomenclature', () => {

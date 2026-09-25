@@ -176,7 +176,12 @@ export const apiClient = {
 
       // Écriture réussie : les écrans qui résument le compte (accueil)
       // demanderont un état frais au prochain chargement.
-      if (isDataMutation(method, url)) markAccountDataMutated();
+      if (isDataMutation(method, url)) {
+        markAccountDataMutated();
+        // Mascotte d'accueil : un changement validé prépare sa prochaine prise
+        // de parole (CDC Mascotte RUN-007) — écouté par DashboardLayout.
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('verebona:data-mutated'));
+      }
 
       const contentType = response.headers.get('content-type');
       if (contentType?.includes('application/json')) {

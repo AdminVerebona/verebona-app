@@ -11,6 +11,7 @@ import { eq, and, or, isNull, isNotNull, gte, lte, sql, inArray, notInArray, des
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import type { TargetType } from '@/services/to-process/action-model';
 import { ACTION_KIND_LABELS } from '@/lib/referential/v2/microcopy';
+import { isAgendaActionItem } from '@/services/home/mascot/collector';
 
 /**
  * Correspondance des cibles V2 vers les types d'objet de l'accueil.
@@ -108,9 +109,6 @@ export interface HomeItem {
 
 export interface HomeSituation {
   status: SituationStatus;
-  message: string;
-  /** Message humain enrichi (peut contenir **gras**) */
-  richMessage?: string;
   todoCount?: number;
   upcomingCount?: number;
   firstTodoTitle?: string | null;
@@ -506,14 +504,8 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   // Fallback sur originType si homeCategory non encore renseigné
   const upcomingItems: HomeItem[] = [];
 
-  function isActionItem(item: { homeCategory: string | null; originType: string; title: string }): boolean {
-    if (item.homeCategory === 'action') return true;
-    if (item.homeCategory === 'information') return false;
-    // homeCategory null → fallback : dates passives (fin assurance, reconduction tacite) → information
-    if (/fin.*(p.riode|contrat).*assurance|reconduction|renouvellement.*auto/i.test(item.title)) return false;
-    // fallback sur originType
-    return item.originType !== 'asset_field';
-  }
+  // Règle partagée avec la mascotte : une seule définition (CDC Mascotte MIG-001).
+  const isActionItem = isAgendaActionItem;
 
   const actionAgendaItems = agendaRows.filter(item => isActionItem(item));
 
@@ -751,62 +743,21 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     });
   }
 
-  // ── Message de situation ──────────────────────────────────────────────────
+  // ── Situation ─────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════
+  // PLUS DE MESSAGE ICI — CDC Mascotte MIG-002
+  //
+  // `message` et `richMessage` formaient un second discours, concurrent de
+  // celui de la mascotte. La prise de parole est désormais produite par
+  // `services/home/mascot` (GET /api/home/mascot) ; il ne reste ici que
+  // l'état et les agrégats dont la page a besoin pour sa mise en page.
+  // ══════════════════════════════════════════════════════════════════════
   const isEmpty = assetRows.length === 0 && agendaRows.length === 0;
-
-  let situationStatus: SituationStatus;
-  let situationMessage: string;
-  let situationRichMessage: string;
   const firstTodo = visibleTodo[0] ?? null;
   const nextUpcoming = upcomingItems.find(i => i.date && i.date >= today) ?? null;
-
-  if (isEmpty) {
-    situationStatus = 'empty';
-    situationMessage = 'Commencez par ajouter un bien, un document ou une date importante.';
-    situationRichMessage = situationMessage;
-  } else if (totalTodo > 0) {
-    situationStatus = 'actions_required';
-    situationMessage = totalTodo === 1
-      ? '1 élément demande votre attention.'
-      : `${totalTodo} éléments demandent votre attention.`;
-    // Message humain enrichi
-    if (totalTodo === 1 && firstTodo) {
-      const ctx = firstTodo.context ? ` — **${firstTodo.context}**` : '';
-      situationRichMessage = `**${firstTodo.title}**${ctx} mérite votre attention.`;
-    } else if (totalTodo === 2 && firstTodo) {
-      situationRichMessage = `**${totalTodo} éléments** demandent votre attention, dont **${firstTodo.title}**.`;
-    } else if (firstTodo) {
-      // Nommer le plus urgent plutôt que d'annoncer un décompte : « 5
-      // éléments » n'indique pas par où commencer.
-      const ctx = firstTodo.context ? ` — **${firstTodo.context}**` : '';
-      situationRichMessage =
-        `**${totalTodo} éléments** demandent votre attention. Le plus urgent : ` +
-        `**${firstTodo.title}**${ctx}.`;
-    } else {
-      situationRichMessage = situationMessage;
-    }
-  } else if (totalUpcoming > 0) {
-    situationStatus = 'all_clear';
-    if (nextUpcoming?.date) {
-      // Une date prévisionnelle est annoncée comme telle, jamais comme certaine.
-      const quand = nextUpcoming.forecast ? 'est prévue autour du' : 'est le';
-      situationMessage = `Bravo, tout est à jour. Votre prochaine date importante ${quand} ${formatDateFR(nextUpcoming.date)}.`;
-      const titlePart = nextUpcoming.title ? ` pour **${nextUpcoming.title}**` : '';
-      const ctxPart = nextUpcoming.context ? ` — ${nextUpcoming.context}` : '';
-      const estim = nextUpcoming.forecast ? ' (date estimée à partir de la récurrence)' : '';
-      situationRichMessage = `**Bravo**, tout est à jour. Votre prochaine date importante ${quand} **${formatDateFR(nextUpcoming.date)}**${titlePart}${ctxPart}${estim}.`;
-    } else {
-      situationMessage = 'Bravo, tout est à jour. Vous avez des éléments à venir.';
-      situationRichMessage = situationMessage;
-    }
-  } else {
-    // Rien à faire : la mascotte félicite au lieu de constater. Un simple
-    // « tout est à jour » se lit comme un écran vide ; « bravo » marque que
-    // l'état est le bon, et non que rien n'a été chargé.
-    situationStatus = 'all_clear';
-    situationMessage = 'Bravo, tout est à jour pour le moment.';
-    situationRichMessage = '**Bravo**, tout est à jour pour le moment.';
-  }
+  const situationStatus: SituationStatus = isEmpty
+    ? 'empty'
+    : totalTodo > 0 ? 'actions_required' : 'all_clear';
 
   // ── Assets enrichis avec micro-signaux ───────────────────────────────────
   // Les signed URLs S3 sont intentionnellement absentes ici pour ne pas bloquer
@@ -834,8 +785,6 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   return {
     situation: {
       status: situationStatus,
-      message: situationMessage,
-      richMessage: situationRichMessage,
       todoCount: totalTodo,
       upcomingCount: totalUpcoming,
       firstTodoTitle: firstTodo?.title ?? null,
