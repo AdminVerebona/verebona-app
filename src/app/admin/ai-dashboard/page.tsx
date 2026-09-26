@@ -34,11 +34,12 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import {
-  Loader2, RefreshCw, OctagonX, AlertTriangle, Info, ArrowRight, Plus,
+  Loader2, RefreshCw, AlertTriangle, Info, ArrowRight, Plus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
+import { EmergencyStopControl } from './_components/AiEnvBanner';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
 type State = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
@@ -49,6 +50,11 @@ interface Health {
   primaryModel: string | null; pending: number; running: number; failed: number;
   /** MOD-008 : modèles à dix échecs consécutifs ou plus pour ce traitement. */
   alertingModels?: Array<{ model: string; consecutiveFailures: number }>;
+  /** HLT-01 / PER-01 / VOL-01 : activité (appels modèle), `null` si indisponible. */
+  activity?: {
+    calls24h: number; calls7d: number; calls30d: number;
+    successRate7d: number | null; lastCallAt: string | null; lastErrorAt: string | null;
+  } | null;
 }
 
 interface Alert { severity: 'critical' | 'warning' | 'info'; message: string; href: string }
@@ -135,16 +141,6 @@ export default function AiDashboardPage() {
     } finally { setBusy(false); }
   };
 
-  const release = async () => {
-    setBusy(true);
-    try {
-      await apiClient.post('/api/admin/ai/queue/emergency-stop', { active: false });
-      toast.success('Arrêt d’urgence relâché');
-      await load();
-    } catch {
-      toast.error('Le relâchement n’a pas abouti.');
-    } finally { setBusy(false); }
-  };
 
   if (erreur) {
     return <EcranEnErreur titre="Tableau de bord indisponible" message={erreur} onRetry={load} />;
@@ -185,17 +181,12 @@ export default function AiDashboardPage() {
             </p>
           </div>
 
-          {data.emergencyStop.active ? (
-            <Button size="sm" variant="outline" onClick={release} disabled={busy}>
-              <OctagonX className="w-3.5 h-3.5 mr-1.5 text-red-400" /> Relâcher l&apos;arrêt
-            </Button>
-          ) : (
-            <Link href="/admin/ai-queue">
-              <Button size="sm" variant="outline">
-                <OctagonX className="w-3.5 h-3.5 mr-1.5" /> Arrêt d&apos;urgence
-              </Button>
-            </Link>
-          )}
+          {/* EST-01 : engagement (motif obligatoire) et relâchement (confirmé)
+              directement ici, sans passer par la File IA. */}
+          <EmergencyStopControl
+            stop={{ active: data.emergencyStop.active, reason: data.emergencyStop.reason, engagedAt: null }}
+            onChange={load}
+          />
           <Button size="sm" variant="ghost" onClick={load} disabled={busy}>
             <RefreshCw className="w-3.5 h-3.5" />
           </Button>
@@ -264,6 +255,23 @@ export default function AiDashboardPage() {
               </p>
             ) : (
               <p className="text-xs text-[color:var(--text-muted)]">Répond en direct</p>
+            )}
+            {/* HLT-01 / PER-01 / VOL-01 : volumes, succès, dernière exécution —
+                lien préfiltré vers les exécutions du traitement (ALT-01). */}
+            {h.activity && (
+              <Link href={`/admin/ai-executions?treatment=${h.treatment}`} className="block text-xs text-[color:var(--text-muted)] hover:underline">
+                Appels 24 h / 7 j / 30 j : {h.activity.calls24h} / {h.activity.calls7d} / {h.activity.calls30d}
+                {h.activity.successRate7d !== null && (
+                  <span className={h.activity.successRate7d < 0.9 ? ' text-amber-500' : ''}>
+                    {' '}· succès 7 j {Math.round(h.activity.successRate7d * 100)} %
+                  </span>
+                )}
+                {h.activity.lastCallAt && (
+                  <span className="block">
+                    Dernier appel : {new Date(h.activity.lastCallAt).toLocaleString('fr-FR')}
+                  </span>
+                )}
+              </Link>
             )}
             {h.suspendedReason && (
               <p className="text-xs text-amber-500 line-clamp-2">{h.suspendedReason}</p>

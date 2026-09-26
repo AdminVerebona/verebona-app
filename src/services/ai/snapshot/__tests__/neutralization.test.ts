@@ -145,3 +145,23 @@ describe('comptes de test (SNP-009)', () => {
     expect(testAccountEmails()).toEqual([]);
   });
 });
+
+describe('script SQL pour la chaîne d’exploitation (SNP-007, SNP-008)', () => {
+  it('rend chaque étape, avec les comptes préservés en littéral et sans paramètre restant', async () => {
+    const { renderNeutralizationScript, NEUTRALIZATION_PLAN } = await import('../neutralization-plan');
+    const sql = renderNeutralizationScript(['qa@verebona.fr', "o'brien@test.fr"]);
+    for (const s of NEUTRALIZATION_PLAN) expect(sql).toContain(`${s.id} :`);
+    expect(sql).not.toMatch(/\$1/);
+    expect(sql).toContain("ARRAY['qa@verebona.fr', 'o''brien@test.fr']::text[]");
+    expect(sql).toMatch(/^BEGIN;$/m);
+    expect(sql).toMatch(/^COMMIT;$/m);
+  });
+  it('refuse une adresse suspecte (injection sur une copie de production)', async () => {
+    const { renderNeutralizationScript } = await import('../neutralization-plan');
+    expect(() => renderNeutralizationScript(['a@b.c; DROP TABLE users'])).toThrow(/refusée/);
+  });
+  it('sans compte de test : tout est neutralisé (tableau vide typé)', async () => {
+    const { renderNeutralizationScript } = await import('../neutralization-plan');
+    expect(renderNeutralizationScript([])).toContain('ARRAY[]::text[]');
+  });
+});

@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Clock, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { libelleEssai } from './trial-label';
+import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
+import { isUnpaid, type TrialStatusPayload, type UnpaidCyclePayload } from '@/lib/trial-status';
 
 /**
  * Bandeau d'essai (CDC §9.2).
@@ -17,7 +19,7 @@ import { libelleEssai } from './trial-label';
  * le composant n'effectue aucun calcul de droits.
  */
 
-interface TrialStatus {
+interface TrialStatus extends TrialStatusPayload {
   trial: {
     status: 'none' | 'active' | 'expired' | 'converted';
     /** L'adresse a déjà consommé son essai (§3.4) — pas une panne. */
@@ -27,6 +29,7 @@ interface TrialStatus {
     isUrgent: boolean;
   };
   isRestricted: boolean;
+  unpaid?: UnpaidCyclePayload | null;
 }
 
 export function TrialBanner() {
@@ -77,6 +80,13 @@ export function TrialBanner() {
   //
   // Le troisième ne doit pas emprunter le vocabulaire du premier.
   // ══════════════════════════════════════════════════════════════════════
+
+  // Impayé en cours : PREMIER cas examiné. Le compte est restreint comme
+  // après un essai, mais le discours n'a rien à voir (paiement échoué,
+  // date limite, régularisation) — voir `isUnpaid`.
+  if (isUnpaid(data)) {
+    return <UnpaidPaymentNotice unpaid={data.unpaid} variant="banner" />;
+  }
 
   // Essai déjà consommé par cette adresse (§3.4). Ce n'est pas une panne :
   // recréer un compte ne redonne pas un essai, et le dire évite de laisser

@@ -37,12 +37,14 @@ import type { Treatment } from '../config/treatments';
 import { listBatchTreatments } from '../config/treatments';
 import {
   claimNext, completeJob, failJob, renewLease, recoverAbandonedJobs, isExecutionActive, LEASE_SECONDS,
-  type QueuedJob,
+  releaseInterruptedJob, type QueuedJob,
 } from './job-queue.repository';
 import {
   createExecutionGuard, registerLocalExecution, unregisterLocalExecution,
   isExecutionCancelled, ExecutionCancelledError, type ExecutionGuard,
 } from './execution-control';
+import { runInJobContext, executionTimeoutMs } from './job-context';
+import { isAiBlocked } from './runnable-guard';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -93,13 +95,35 @@ export async function runOne(treatment: Treatment): Promise<boolean> {
   const handler = handlers.get(treatment);
   if (!handler) return false;
 
-  const job = await claimNext(treatment, WORKER_ID);
+  // VER-016 : la version effective est lue AU DÉMARRAGE et figée sur le job ;
+  // VER-015 : l'exécution la garde jusqu'au bout (contexte ci-dessous).
+  const configVersionId = await pinnableVersionId();
+  const job = await claimNext(treatment, WORKER_ID, LEASE_SECONDS, configVersionId);
   if (!job) return false;
 
   // Annulation : signal local, bail, jeton en base (execution-control).
   const controller = new AbortController();
   registerLocalExecution(job.id, controller);
   const guard = createExecutionGuard(job, controller, isExecutionActive);
+
+  // GEN-012 : timeout GLOBAL d'exécution, distinct du timeout par appel. Le
+  // chronomètre part au prélèvement : l'attente en file est exclue. Au
+  // dépassement, l'exécution est interrompue (plus aucune écriture : garde)
+  // et le job suit le chemin d'échec normal (backoff, puis échec définitif).
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const limit = executionTimeoutMs(treatment);
+  const deadline = limit
+    ? new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        const err = new ExecutionCancelledError(`délai global d'exécution dépassé (${Math.round(limit / 1000)} s)`);
+        controller.abort(err);
+        reject(err);
+      }, limit);
+      timer.unref?.();
+    })
+    : null;
 
   // Bail renouvelé tant que l'exécutant travaille : un processus arrêté
   // brutalement cesse de le renouveler, et le job est repris après expiration
@@ -116,7 +140,19 @@ export async function runOne(treatment: Treatment): Promise<boolean> {
   heartbeat?.unref?.();
 
   try {
-    await handler(job, guard);
+    // Contexte d'exécution : version figée et job parent, lus par la
+    // passerelle (config-resolver) et la trace (§9.1 : job_id, version).
+    const execution = runInJobContext(
+      {
+        jobId: job.id, treatment, configVersionId: job.configVersionId ?? configVersionId,
+        signal: controller.signal,
+        // MOD-011 : jeton de démarrage, comparé à l'ouverture du disjoncteur
+        // par la garde de la passerelle (runnable-guard).
+        startedAt: Date.now(),
+      },
+      () => handler(job, guard),
+    );
+    await (deadline ? Promise.race([execution, deadline]) : execution);
     // Dernier contrôle : une exécution interrompue ne clôt jamais le job
     // (la clôture est de toute façon conditionnée au jeton).
     await guard.assertActive('clôture');
@@ -125,10 +161,27 @@ export async function runOne(treatment: Treatment): Promise<boolean> {
       console.warn(`[queue] ${treatment} job ${job.id} : exécution dépossédée, clôture ignorée.`);
     }
   } catch (e) {
-    if (isExecutionCancelled(e) || controller.signal.aborted) {
-      // Interrompu par l'administration ou dépossédé : le job a déjà été
-      // remis en file pour une reprise propre. Rien à écrire ici.
-      console.warn(`[queue] ${treatment} job ${job.id} interrompu — ${(e as Error).message}`);
+    if (timedOut) {
+      // Échec, pas interruption : le travail n'a pas abouti pour une raison
+      // qui lui est propre. Le jeton est révoqué par `failJob` : l'exécution
+      // qui continuerait en mémoire ne peut plus rien écrire.
+      const { permanent } = await failJob(job.id, (e as Error).message, job.executionId);
+      console.error(`[queue] ${treatment} job ${job.id} : ${(e as Error).message}${permanent ? ' — échec définitif' : ''}.`);
+    } else if (isExecutionCancelled(e) || isAiBlocked(e) || controller.signal.aborted) {
+      // Interrompu (administration, dépossession) ou refusé par la garde de
+      // la passerelle (`AI_BLOCKED` : arrêt d'urgence, désactivation,
+      // suspension). Ce n'est pas un échec : aucune tentative n'est
+      // consommée (MOD-005). Dans le cas usuel, l'administration a déjà remis
+      // le job en file et révoqué le jeton — `releaseInterruptedJob` est alors
+      // sans effet ; sinon (garde en cache sur une autre instance, blocage
+      // constaté par l'exécutant), c'est lui qui remet le job en tête.
+      // Revue indépendante lot IA 2 : AI_BLOCKED passait par `failJob`.
+      const released = await releaseInterruptedJob(job.id, job.executionId, (e as Error).message ?? 'interruption')
+        .catch(() => false);
+      console.warn(
+        `[queue] ${treatment} job ${job.id} interrompu — ${(e as Error).message}`
+        + `${released ? ' (remis en tête, sans tentative consommée)' : ''}`,
+      );
     } else {
       // Une erreur d'exécutant n'interrompt jamais la boucle : le travail
       // suivant n'a pas à payer l'échec du précédent.
@@ -139,10 +192,21 @@ export async function runOne(treatment: Treatment): Promise<boolean> {
       );
     }
   } finally {
+    if (timer) clearTimeout(timer);
     if (heartbeat) clearInterval(heartbeat);
     unregisterLocalExecution(job.id, controller);
   }
   return true;
+}
+
+/** Version effective à figer ; jamais bloquant (repli : configuration du code). */
+async function pinnableVersionId(): Promise<number | null> {
+  try {
+    const { resolveEffectiveVersionId } = await import('../config/config-resolver');
+    return await resolveEffectiveVersionId();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -162,6 +226,26 @@ export async function runOnce(maxPerTreatment = 5): Promise<number> {
     }
   }
   return traites;
+}
+
+/**
+ * Évaluateurs périodiques (garde-fous, budgets, anomalies). Chaque passage est
+ * réservé en base (`claimEvaluatorRun`) : plusieurs instances n'évaluent
+ * jamais la même fenêtre deux fois. Isolés les uns des autres.
+ */
+async function runEvaluators(): Promise<void> {
+  const { claimEvaluatorRun } = await import('../alerts/alerts.repository').catch(() => ({ claimEvaluatorRun: null }));
+  if (!claimEvaluatorRun) return;
+  const run = async (name: string, everySeconds: number, fn: () => Promise<unknown>) => {
+    try {
+      if (await claimEvaluatorRun(name, everySeconds)) await fn();
+    } catch (e) {
+      console.error(`[queue] évaluateur ${name} en échec (non bloquant) :`, (e as Error).message);
+    }
+  };
+  await run('guardrails', 300, async () => (await import('../alerts/guardrail-evaluator')).evaluateGuardrails());
+  await run('budgets', 3_600, async () => (await import('../alerts/cost-evaluator')).evaluateBudgetAlerts());
+  await run('cost_anomalies', 86_400 - 600, async () => (await import('../alerts/cost-evaluator')).evaluateAnomalyAlerts());
 }
 
 const INTERVAL_MS = Number(process.env.AI_QUEUE_INTERVAL_MS ?? 15_000);
@@ -204,6 +288,22 @@ export function startQueueWorker(): void {
         } catch (e) {
           console.error('[queue] sondes en échec (non bloquant) :', (e as Error).message);
         }
+
+        // Planifications versionnées (§15.1, T3-006, T3-UI-05) : un passage
+        // global échu est mis en file AVANT le prélèvement.
+        try {
+          const { runDueSchedules } = await import('./triggers');
+          for (const f of await runDueSchedules()) {
+            console.info(`[queue] passage planifié ${f.treatment} (${f.triggerCode}) mis en file.`);
+          }
+        } catch (e) {
+          console.error('[queue] planification en échec (non bloquant) :', (e as Error).message);
+        }
+
+        // Garde-fous (toutes les 5 min), budgets (toutes les heures) et
+        // anomalies de coût (une fois par jour) — une seule instance, grâce
+        // à la réservation en base. Jamais bloquant pour la file.
+        void runEvaluators();
 
         const n = await runOnce();
         if (n > 0) console.info(`[queue] ${n} travail(aux) traité(s).`);

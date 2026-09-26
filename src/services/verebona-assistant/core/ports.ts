@@ -25,7 +25,10 @@ import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource } from '../types/sources';
 import type { ActionIntent } from '../types/actions';
 import { retrieve } from './retrieval.service';
-import { helpArticlePublished } from './help-corpus.service';
+import { detectHelpContradiction, helpArticlePublished, isHelpIntent } from './help-corpus.service';
+import { areWriteCommandsEnabled } from '../config/assistant-config';
+import { checkMonthlyBudget } from './budget.service';
+import { isRequestCancelled } from './request-lifecycle.service';
 import { resolveSourcesForDisplay } from './source-resolver.service';
 import { resolveActions, exigeUneCible, type AccessChecker } from './action-resolver.service';
 import { parseEntityRef } from './entity-ref';
@@ -102,6 +105,25 @@ export function construireActionIntents(
   const aide = helpPrimaryAction(input.message, route.intent);
   if (aide && autorisees.has(aide)) intents.push({ type: aide });
 
+  // ── Aide produit : l'ARTICLE précis, et le support si besoin ───────────
+  // Lien profond vers l'article le plus pertinent (« Lire l'article ») au
+  // lieu de l'accueil du Centre d'aide ; renvoi au formulaire de contact
+  // quand le corpus ne répond pas ou se contredit (CDC Centre d'aide §5,
+  // T2-03, T2-04).
+  const aideSources = isHelpIntent(route.intent) ? sources.filter((s) => s.type === 'help_entry') : [];
+  let aideCiblee = false;
+  const contradiction = aideSources.length ? detectHelpContradiction(aideSources) : null;
+  if (contradiction && autorisees.has('OPEN_CONTACT')) intents.push({ type: 'OPEN_CONTACT' });
+  const article = aideSources.find((s) => typeof s.meta?.articleId === 'string' && typeof s.meta?.path === 'string');
+  if (article && autorisees.has('OPEN_HELP') && !contradiction) {
+    intents.push({
+      type: 'OPEN_HELP',
+      targetId: String(article.meta!.articleId),
+      params: { path: String(article.meta!.path).split('#')[0] },
+    });
+    aideCiblee = true;
+  }
+
   for (const source of sources) {
     const ref = parseEntityRef(source.id);
     if (!ref) continue;
@@ -142,7 +164,11 @@ export function construireActionIntents(
   }
 
   const repli = DEFAULT_ACTION_BY_INTENT[route.intent];
-  if (repli && autorisees.has(repli) && !exigeUneCible(repli)) intents.push({ type: repli });
+  if (repli && autorisees.has(repli) && !exigeUneCible(repli) && !(repli === 'OPEN_HELP' && aideCiblee)) intents.push({ type: repli });
+  // Question d'aide sans article : l'aveu s'accompagne du contact (T2-03).
+  if (isHelpIntent(route.intent) && aideSources.length === 0 && autorisees.has('OPEN_CONTACT')) {
+    intents.push({ type: 'OPEN_CONTACT' });
+  }
 
   // Actions d'interface (hors quota métier) : seulement s'il y a de quoi
   // montrer — un « Voir les sources » sans source serait un bouton mort.
@@ -219,6 +245,7 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         const r = await revalidateFact({
           accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
           factId, question: input.message, trigger: req.trigger,
+          requestId: input.requestId,
           // Mêmes conditions qu'une génération : usage basculé, offre éligible.
           allowModel: isUseCaseRunning('INTELLIGENT_ASSISTANT') && isPlanAiEligible(input.planType),
           // Budget partagé du message : la revalidation y puise comme la
@@ -236,12 +263,23 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     },
 
     // Commandes métier : préparées et figées, exécutées après confirmation.
+    //
+    // Écart assumé au CDC §4.8 / §22.5 (V1 sans écriture) : conservées sur
+    // décision produit, derrière VEREBONA_ASSISTANT_WRITE_COMMANDS. Coupé :
+    // aucun plan n'est préparé, la demande suit le parcours de lecture.
     prepareCommand: async (input) => {
+      if (!areWriteCommandsEnabled()) return null;
       const { prepareCommand } = await import('../commands/plan.service');
       const r = await prepareCommand(input);
       if (!r) return null;
       return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview } : r;
     },
+
+    // Annulation effective (§7.8, §9.7) : consultée avant chaque appel modèle.
+    isCancelled: (requestId) => isRequestCancelled(requestId),
+
+    // Plafond budgétaire mensuel du compte (§6.6, §31.3).
+    checkMonthlyBudget: (accountId) => checkMonthlyBudget(accountId),
 
     // Mémoire du fil : bornée au fil, à l'utilisateur et au compte.
     loadThreadContext: (input) =>

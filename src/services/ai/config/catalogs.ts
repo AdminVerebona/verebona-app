@@ -112,19 +112,60 @@ export interface TriggerDefinition {
  * limitation : une expression mal formée ne se découvre qu'au moment où le job
  * ne part pas, c'est-à-dire trop tard.
  */
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LUS AU RUNTIME (lot IA 2 — T1-UI-08, T3-UI-04/05, T4-UI-04, T3-003, WF-18)
+ *
+ * `queue/triggers.ts` décide, pour chaque événement émis et à chaque tour du
+ * boucleur, si le déclencheur est actif dans la version effective. Deux
+ * conséquences sur ce catalogue :
+ *   · un code n'y figure que s'il est RÉELLEMENT émis quelque part, ou
+ *     planifié par le boucleur ;
+ *   · les planifications ne s'appliquent qu'aux traitements qui ont un
+ *     « périmètre planifié » défini dans le code (§15.1) : T1 (sources non
+ *     analysées ou en échec récupérable) et T3 (comptes à rationaliser). T4
+ *     n'en a pas : ses candidats viennent d'une analyse T1, une planification
+ *     n'aurait rien à lui donner.
+ *
+ * `agenda_item_due` a été retiré : aucun code ne l'émettait, il ne pouvait
+ * donc rien déclencher. `document_linked` et `arbitration_resolved` ont été
+ * ajoutés : ce sont les deux événements à impact de cohérence que le code
+ * émettait déjà vers T3 sans qu'on puisse les choisir (T3-004, T3-005).
+ */
+const SCHEDULABLE = ['T1', 'T3'] as const;
+
 export const TRIGGER_CATALOG: readonly TriggerDefinition[] = [
-  { code: 'schedule_hourly', label: 'Toutes les heures', kind: 'schedule' },
-  { code: 'schedule_6h', label: 'Toutes les six heures', kind: 'schedule' },
-  { code: 'schedule_daily', label: 'Quotidien', kind: 'schedule' },
-  { code: 'schedule_weekly', label: 'Hebdomadaire', kind: 'schedule' },
-  { code: 'schedule_monthly', label: 'Mensuel', kind: 'schedule' },
+  { code: 'schedule_hourly', label: 'Toutes les heures', kind: 'schedule', treatments: SCHEDULABLE },
+  { code: 'schedule_6h', label: 'Toutes les six heures', kind: 'schedule', treatments: SCHEDULABLE },
+  { code: 'schedule_12h', label: 'Toutes les douze heures', kind: 'schedule', treatments: SCHEDULABLE },
+  { code: 'schedule_daily', label: 'Quotidien', kind: 'schedule', treatments: SCHEDULABLE },
+  { code: 'schedule_weekly', label: 'Hebdomadaire', kind: 'schedule', treatments: SCHEDULABLE },
+  { code: 'schedule_monthly', label: 'Mensuel', kind: 'schedule', treatments: SCHEDULABLE },
 
   { code: 'source_uploaded', label: 'Dépôt d\'une source', kind: 'event', treatments: ['T1'] },
+  // Conservé (versions existantes) mais NON conditionnant : l'analyse d'un
+  // lien web est l'action synchrone de l'utilisateur qui l'ajoute, pas un
+  // traitement de fond — la refuser silencieusement serait pire.
   { code: 'web_link_added', label: 'Ajout d\'un lien web', kind: 'event', treatments: ['T1'] },
   { code: 'source_analyzed', label: 'Analyse de source terminée', kind: 'event', treatments: ['T3', 'T4'] },
+  { code: 'document_linked', label: 'Rattachement d\'un document à un bien', kind: 'event', treatments: ['T3'] },
   { code: 'asset_updated', label: 'Modification d\'un bien', kind: 'event', treatments: ['T3'] },
-  { code: 'agenda_item_due', label: 'Échéance arrivée à terme', kind: 'event', treatments: ['T4'] },
+  { code: 'arbitration_resolved', label: 'Arbitrage « À traiter » résolu', kind: 'event', treatments: ['T3'] },
 ];
+
+/**
+ * Période d'une planification simple (§15.1, T3-006 : « X heures / quotidien /
+ * hebdo / mensuel ; pas de cron libre »). Mensuel = 30 jours : l'intervalle
+ * compte, pas la date du calendrier.
+ */
+export const SCHEDULE_PERIOD_HOURS: Readonly<Record<string, number>> = {
+  schedule_hourly: 1,
+  schedule_6h: 6,
+  schedule_12h: 12,
+  schedule_daily: 24,
+  schedule_weekly: 24 * 7,
+  schedule_monthly: 24 * 30,
+};
 
 export function listTriggers(treatment?: string): TriggerDefinition[] {
   return TRIGGER_CATALOG.filter(

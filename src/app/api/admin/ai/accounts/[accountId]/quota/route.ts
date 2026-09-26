@@ -7,16 +7,23 @@ import { db } from '@/db';
 import { aiUsageAccountCounter, aiAdminAuditLog, users } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
+import { requireAdmin } from '@/lib/auth-guards';
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ accountId: string }> }
 ) {
   try {
-    const session = await SessionService.getSession(request);
-    if (session.role !== 'ADMIN' && session.role !== 'SUPER_ADMIN') {
-      return NextResponse.json({ error: 'Accès refusé' }, { status: 403 });
+    // Garde serveur commune à /api/admin (CDC BO GEN-002, BO IA GEN-013) :
+    // `requireAdmin` relit le rôle en base si le jeton est antérieur à une
+    // promotion, ce que la comparaison manuelle du rôle ne faisait pas.
+    let adminUserId: number;
+    try {
+      adminUserId = await requireAdmin(request);
+    } catch (e) {
+      return SessionService.handleSessionError(e);
     }
+    const session = await SessionService.getSession(request);
 
     const { accountId: accountIdStr } = await params;
     const accountId = parseInt(accountIdStr);
@@ -59,9 +66,9 @@ export async function PATCH(
     }
 
     // Audit
-    const adminUser = await db.select({ email: users.email }).from(users).where(eq(users.id, session.userId)).limit(1).then(r => r[0]);
+    const adminUser = await db.select({ email: users.email }).from(users).where(eq(users.id, adminUserId)).limit(1).then(r => r[0]);
     await db.insert(aiAdminAuditLog).values({
-      adminUserId: session.userId,
+      adminUserId: adminUserId,
       adminEmail: adminUser?.email ?? session.email,
       actionType: 'modify_quota',
       targetAccountId: accountId,

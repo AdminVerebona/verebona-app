@@ -32,7 +32,10 @@ describe('la sauvegarde est réellement branchée', () => {
     const src = read('src/services/backup/database-backup.service.ts');
     expect(src).toMatch(/Key: `\$\{BACKUP_PREFIX\}\$\{stamp\}\.json`/);
     expect(src.indexOf('envoi.terminer()')).toBeLessThan(src.indexOf('`${BACKUP_PREFIX}${stamp}.json`'));
-    expect(read('src/app/api/admin/dashboard/route.ts')).toMatch(/Prefix: 'backups\/'/);
+    // La lecture du dernier manifeste vit dans le service (partagée avec le
+    // contrôle quotidien d'ancienneté) ; le tableau de bord l'appelle.
+    expect(src).toMatch(/export async function latestBackupAt[\s\S]*?Prefix: BACKUP_PREFIX/);
+    expect(read('src/app/api/admin/dashboard/route.ts')).toMatch(/checkBackupFreshness\(await latestBackupAt\(\)\)/);
   });
 
   it('la page d’administration existe (hors navigation : absorbée par la Supervision, CDC BO §15)', () => {

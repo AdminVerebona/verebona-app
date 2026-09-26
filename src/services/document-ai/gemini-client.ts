@@ -10,6 +10,7 @@ import { join } from 'path';
 import { isVideoMimeType, isPdfMimeType, uploadUrlToGemini, deleteGeminiFile } from './upload-to-gemini';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
+import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
 
 const NOMINAL_MODEL   = 'gemini-3.1-flash-lite';
 const FALLBACK_MODEL  = 'gemini-3.5-flash';
@@ -262,10 +263,10 @@ function parseJsonFromText(text: string): unknown {
  * Fallback uniquement sur : échec technique, JSON invalide, sortie vide.
  */
 export async function callGeminiWithFallback(options: GeminiCallOptions): Promise<GeminiAnalysisResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY not configured');
-  }
+  // Clé ACTIVE du BO et garde d'exploitation T1 (arrêt d'urgence, état du
+  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
+  // (legacy-gemini-access).
+  const apiKey = await requireLegacyGeminiKey('T1', 'gemini-client');
 
   // ── Vidéos et PDFs : upload préalable vers Gemini Files API ───────────────
   // Gemini ne peut pas récupérer des URLs presignées S3 privées (OVH).

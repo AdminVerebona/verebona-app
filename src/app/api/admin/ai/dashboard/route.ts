@@ -32,6 +32,8 @@ import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatmen
 import { unavailableModels } from '@/services/ai/config/config-validation.service';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
 import { getModelAlerts } from '@/services/ai/queue/circuit-breaker.repository';
+import { listAlerts } from '@/services/ai/alerts/alerts.repository';
+import { getTreatmentActivity } from '@/services/ai/telemetry/treatment-activity.repository';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 export interface DashboardAlert {
@@ -76,12 +78,19 @@ export async function GET(req: NextRequest) {
       // MOD-008 / OPS-019 : modèles à dix échecs consécutifs ou plus, par
       // traitement (alertingModels). Dixième source, isolée comme les autres.
       getModelAlerts(),
+      // Alertes système ouvertes : garde-fous, budgets, anomalies de coût
+      // (T1-UI-09, WF-22, WF-44, ALT-01). Onzième source, isolée.
+      listAlerts({ openOnly: true, limit: 20 }),
+      // HLT-01, PER-01, VOL-01 (lot IA 2) : volumes 24 h / 7 j / 30 j, taux de
+      // succès, dernier appel, par traitement. Douzième source, isolée.
+      getTreatmentActivity(),
     ]);
 
     const NOMS = [
       'versions', 'version active', 'version effective', 'packages',
       'file d’attente', 'états des traitements', 'arrêt d’urgence',
-      'erreurs récentes', 'coûts', 'alertes modèles',
+      'erreurs récentes', 'coûts', 'alertes modèles', 'alertes système',
+      'activité par traitement',
     ];
 
     const degraded: Array<{ source: string; message: string }> = [];
@@ -115,6 +124,8 @@ export async function GET(req: NextRequest) {
     } as Awaited<ReturnType<typeof getCostReport>>);
 
     const modelAlerts = valeur(9, [] as Awaited<ReturnType<typeof getModelAlerts>>);
+    const systemAlerts = valeur(10, [] as Awaited<ReturnType<typeof listAlerts>>);
+    const activity = valeur(11, [] as Awaited<ReturnType<typeof getTreatmentActivity>>);
 
     const alerts: DashboardAlert[] = [];
 
@@ -126,18 +137,28 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // Garde-fous franchis, budgets dépassés, anomalies — liens préfiltrés vers
+    // les exécutions responsables (WF-22 étape 143, COST-009).
+    for (const a of systemAlerts) {
+      alerts.push({
+        severity: a.severity,
+        message: a.message,
+        href: a.drilldownHref ?? (a.kind === 'guardrail' ? '/admin/ai-queue' : '/admin/ai-costs'),
+      });
+    }
+
     for (const s of states) {
       if (s.state === 'SUSPENDED') {
         alerts.push({
           severity: 'critical',
           message: `${s.treatment} est suspendu${s.suspendedReason ? ` : ${s.suspendedReason}` : ''}.`,
-          href: '/admin/ai-queue',
+          href: `/admin/ai-queue?treatment=${s.treatment}`,
         });
       } else if (s.state === 'DISABLED') {
         alerts.push({
           severity: 'warning',
           message: `${s.treatment} est désactivé : sa file se remplit sans être servie.`,
-          href: '/admin/ai-queue',
+          href: `/admin/ai-queue?treatment=${s.treatment}`,
         });
       }
     }
@@ -160,7 +181,7 @@ export async function GET(req: NextRequest) {
         severity: 'warning',
         message: `${e.count} échecs en 7 jours sur ${e.treatment ?? 'un traitement'}`
           + `${e.errorCode ? ` (${e.errorCode})` : ''}.`,
-        href: '/admin/ai-executions?errorsOnly=1',
+        href: `/admin/ai-executions?errorsOnly=1${e.treatment ? `&treatment=${e.treatment}` : ''}${e.model ? `&model=${encodeURIComponent(e.model)}` : ''}`,
       });
     }
 
@@ -173,7 +194,9 @@ export async function GET(req: NextRequest) {
       if (!def.batch) continue;
       const entry = effective?.entries.find((e) => e.treatment === t);
       if (!entry) continue;
-      if (!entry.triggers.some((x) => x.active)) {
+      // Liste vide = déclencheurs par défaut du code (queue/triggers.ts) : pas
+      // d'alerte. Liste renseignée sans actif = manuel uniquement.
+      if (entry.triggers.length > 0 && !entry.triggers.some((x) => x.active)) {
         alerts.push({
           severity: 'warning',
           message: `${t} n'a aucun déclencheur actif : rien ne le lancera automatiquement.`,
@@ -237,6 +260,8 @@ export async function GET(req: NextRequest) {
         pending: q?.pending ?? 0,
         running: q?.running ?? 0,
         failed: q?.failed ?? 0,
+        // HLT-01 / PER-01 / VOL-01 : `null` si la source est dégradée.
+        activity: activity.find((a) => a.treatment === t) ?? null,
       };
     });
 
@@ -258,6 +283,7 @@ export async function GET(req: NextRequest) {
       packages,
       alerts,
       modelAlerts,
+      systemAlerts,
       // Nommées plutôt que tues : un tableau de bord partiel qui ne le dit pas
       // ferait lire des zéros comme des mesures.
       degraded,

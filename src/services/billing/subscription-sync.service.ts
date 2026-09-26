@@ -47,6 +47,7 @@ import { serverCacheDelete, serverCacheGet, serverCacheSet } from '@/lib/server-
 import { markTrialConverted } from '@/services/trial.service';
 import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/lib/email/billing-emails';
 import { enforceStandardLimits } from '@/lib/plan-enforcement';
+import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 
 // ─── Lecture des objets Stripe (API 2025-08-27.basil) ─────────────────────────
 
@@ -127,6 +128,44 @@ function tierFromVerifiedMetadata(
     'retenue d\'après les métadonnées, montant vérifié. Contrôler les variables STRIPE_PRICE_*.',
   );
   return tier;
+}
+
+/** Fenêtre pendant laquelle un webhook est l'écho d'un changement admin. */
+export const ADMIN_PLAN_CHANGE_ECHO_MS = 15 * 60 * 1000;
+
+/**
+ * L'événement est-il l'écho d'un changement exceptionnel d'offre fait depuis
+ * le back-office (`admin-plan-change.service`) ? Pure.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * COURSE ADMIN / WEBHOOK (CDC BO ACC-A05, ACC-A07, ACC-A11)
+ *
+ * L'update Stripe admin déclenche `customer.subscription.updated`. Traité
+ * avant l'application locale, il était synchronisé comme un changement
+ * client : notification « offre modifiée » + courriels à l'utilisateur, et
+ * historique écrit ici PUIS par l'application locale.
+ *
+ * Le marqueur `admin_plan_change` (date) + `admin_plan_change_to` (offre)
+ * posé sur l'abonnement est reconnu ici : aucune notification, aucun
+ * courriel, source 'admin:override'. Il reste sur l'abonnement Stripe après
+ * coup : il n'est donc retenu que dans une fenêtre courte ET si l'offre
+ * synchronisée est bien l'offre cible — un changement ultérieur du client
+ * est traité normalement.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export function isAdminPlanChangeEcho(
+  metadata: Record<string, string> | null | undefined,
+  planTier: PlanTier,
+  now: Date = new Date(),
+): boolean {
+  const at = Date.parse(metadata?.admin_plan_change ?? '');
+  if (Number.isNaN(at)) return false;
+  const age = now.getTime() - at;
+  // Tolérance d'horloge : quelques minutes dans le futur.
+  if (age > ADMIN_PLAN_CHANGE_ECHO_MS || age < -5 * 60 * 1000) return false;
+  const target = metadata?.admin_plan_change_to;
+  // Marqueur antérieur sans offre cible : on n'en déduit rien.
+  return target === planTier;
 }
 
 export interface SubscriptionSyncInput {
@@ -211,6 +250,10 @@ export async function syncSubscriptionFromStripe(
     console.warn(`[subscription-sync] ${source} : prix inconnu ${price?.id} (abonnement ${subscription.id})`);
     return null;
   }
+
+  const adminEcho = isAdminPlanChangeEcho(subscription.metadata, planTier);
+  const effectiveSource = adminEcho ? 'admin:override' : source;
+  const effectiveNotify = adminEcho ? false : (input.notify ?? true);
 
   const metadataAccountId = Number(subscription.metadata?.accountId);
   const account = await findAccount(customerId, [input.accountIdHint, metadataAccountId]);
@@ -331,8 +374,15 @@ export async function syncSubscriptionFromStripe(
           : account.subscriptionStartedAt,
         // L'essai Verebona est terminé dès qu'une offre payée est en place.
         trialEndsAt: isPaid ? null : account.trialEndsAt,
+        // Cycle d'impayé de 90 jours (GAP-06, voir unpaid-cycle.rules) :
+        // refermé par un paiement confirmé ; ouvert ici si l'abonnement
+        // arrive `past_due` avant le webhook `invoice.payment_failed`
+        // (ordre non garanti). J0 n'est jamais déplacé.
         ...(isPaid && status !== 'past_due'
           ? { pastDueGraceStartedAt: null, pastDueGraceEndsAt: null }
+          : {}),
+        ...(status === 'past_due' && !account.pastDueGraceStartedAt
+          ? { pastDueGraceStartedAt: now, pastDueGraceEndsAt: unpaidDeadline(now) }
           : {}),
         ...(planTier === 'premium_duo' && isPaid ? { maxMembers: 2, duoAccountId } : {}),
         ...(isPaid ? { checkoutSessionId: null, checkoutSessionCreatedAt: null } : {}),
@@ -394,8 +444,9 @@ export async function syncSubscriptionFromStripe(
 
   const result: SubscriptionSyncResult = { ...base, newPlanType, newStatus, activated };
   await applyTransitionEffects(result, {
-    source,
-    notify: input.notify ?? true,
+    source: effectiveSource,
+    notify: effectiveNotify,
+    silent: adminEcho,
     premiumUntil: isPaid && periodEnd ? Math.floor(periodEnd.getTime() / 1000) : null,
     oldPremiumUntil: account.premiumUntil,
   });
@@ -422,7 +473,14 @@ const PREMIUM_PLANS = ['PREMIUM', 'PREMIUM_DUO'];
  */
 async function applyTransitionEffects(
   result: SubscriptionSyncResult,
-  opts: { source: string; notify: boolean; premiumUntil: number | null; oldPremiumUntil: number | null },
+  opts: {
+    source: string;
+    notify: boolean;
+    /** Écho d'un changement admin : ni notification ni courriel (ACC-A05). */
+    silent?: boolean;
+    premiumUntil: number | null;
+    oldPremiumUntil: number | null;
+  },
 ): Promise<void> {
   const { accountId, ownerUserId, oldPlanType, newPlanType } = result;
   if (oldPlanType === newPlanType && !result.activated) return;
@@ -448,7 +506,9 @@ async function applyTransitionEffects(
   // push) mais n'envoie pas son propre email « Votre abonnement Verebona ».
   const confirmationEmail = becomesPremium && opts.notify && !!opts.premiumUntil;
 
-  await notifierChangementDeStatut(result, { confirmationEmailSent: confirmationEmail });
+  if (!opts.silent) {
+    await notifierChangementDeStatut(result, { confirmationEmailSent: confirmationEmail });
+  }
 
   if (becomesPremium) {
     if (confirmationEmail && opts.premiumUntil) {
@@ -466,7 +526,8 @@ async function applyTransitionEffects(
     if (opts.notify && !result.isPaid) {
       sendDowngradeToStandardEmail(ownerUserId).catch(console.error);
     }
-    await enforceStandardLimits(accountId, ownerUserId).catch((e: Error) =>
+    // Courriels de retrait des membres : pas sur un changement admin.
+    await enforceStandardLimits(accountId, ownerUserId, !opts.silent).catch((e: Error) =>
       console.error('[subscription-sync] limites Standard non appliquées :', e.message),
     );
   }

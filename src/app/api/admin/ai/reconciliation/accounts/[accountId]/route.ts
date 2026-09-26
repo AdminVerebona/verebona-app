@@ -5,15 +5,21 @@
  * GET  /api/admin/ai/reconciliation/accounts/[accountId] — dernières
  *   exécutions T3 du compte, avec leur résultat consolidé.
  *
- * T3 rejoue la cohérence à partir des connaissances persistées : aucune
- * extraction, aucune relecture de fichier. Une exécution déjà en cours sur le
- * compte → 409 (pas de run concurrent).
+ * CDC BO IA WF-11, T3-011, OPS-001 (lot IA 2) : le lancement manuel MET EN
+ * FILE DURABLE un travail `origin = manual` (toujours une nouvelle exécution,
+ * sans déduplication) au lieu d'exécuter la réconciliation dans la requête
+ * HTTP — qui expirait sur un gros compte et échappait au backoff, à la relance
+ * et à l'écran File IA. Réponse 202 avec l'identifiant du job.
+ *
+ * Refus explicite (409 AI_BLOCKED) si T3 est coupé ou l'arrêt d'urgence
+ * engagé : la demande ne serait pas exécutée, l'accepter tromperait l'admin.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { requireAdmin } from '@/lib/auth-guards';
 import { ensureMigrations, pgClient } from '@/db';
-import { reconcileAccount } from '@/services/ai/reconciliation/account-reconciliation.service';
+import { canStart } from '@/services/ai/queue/job-queue.repository';
+import { enqueueT3Manual } from '@/services/ai/reconciliation/t3-queue';
 
 type Ctx = { params: Promise<{ accountId: string }> };
 
@@ -28,15 +34,13 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const body = await req.json().catch(() => ({}));
   const scope = body.scope === 'incremental' ? 'incremental' : 'full';
 
-  const result = await reconcileAccount(accountId, { type: 'manual', requestedByUserId: adminId }, { scope });
-  if (result.status === 'skipped_blocked') {
-    // OPS-008 / OPS-011 : refus explicite plutôt qu'un « terminé » vide.
+  if (!(await canStart('T3'))) {
     return NextResponse.json({ error: 'AI_BLOCKED', message: 'T3 est désactivé, suspendu, ou l’arrêt d’urgence est engagé.' }, { status: 409 });
   }
-  if (result.status === 'skipped_concurrent') {
-    return NextResponse.json({ error: 'RUN_IN_PROGRESS', message: 'Une exécution T3 est déjà en cours sur ce compte.' }, { status: 409 });
-  }
-  return NextResponse.json(result);
+  // Déclencheur manuel tracé : { type: 'manual', requestedByUserId: adminId }
+  // est reconstitué par l'exécutant à partir du contexte du job.
+  const jobId = await enqueueT3Manual(accountId, adminId, scope);
+  return NextResponse.json({ queued: true, jobId, accountId, scope }, { status: 202 });
 }
 
 export async function GET(req: NextRequest, { params }: Ctx) {

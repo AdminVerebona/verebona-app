@@ -7,6 +7,13 @@ import { Loader2, Users, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
 import { ForceTheme } from '@/components/ForceTheme';
 import { LogoWithBaseline } from '@/components/Logo';
+import {
+  duoJoinErrorMessage,
+  joinDuo,
+  peekPendingDuoJoin,
+  rememberPendingDuoJoin,
+  takePendingDuoJoin,
+} from '@/lib/duo/pending-duo-join';
 
 type PageState =
   | 'loading'
@@ -35,9 +42,10 @@ function DuoJoinContent() {
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
-
-    // Validate the token
-    fetch(`/api/duo/join`, { credentials: 'include' })
+    if (!token) return;
+    // Le jeton DOIT accompagner la vérification : sans lui, la route
+    // répondait 400 MISSING_TOKEN et tout invité voyait « Lien invalide ».
+    fetch(`/api/duo/join?token=${encodeURIComponent(token)}`, { credentials: 'include' })
       .then(async (res) => {
         const data = await res.json();
         if (res.ok && data.valid) {
@@ -56,40 +64,46 @@ function DuoJoinContent() {
 
   const handleJoin = async () => {
     if (!user) {
-      // Not logged in — redirect to signup with invite token
+      // Pas encore connecté : l'invitation est mémorisée, puis consommée
+      // automatiquement une fois connecté (voir `lib/duo/pending-duo-join`).
+      rememberPendingDuoJoin(token);
       router.push(`/signup?inviteToken=${encodeURIComponent(token)}`);
       return;
     }
 
     setPageState('joining');
-    try {
-      const res = await fetch('/api/duo/join', {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ token }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        setPageState('success');
-        setTimeout(() => router.push('/accueil'), 2000);
-      } else if (data.error === 'ALREADY_IN_DUO') {
-        setPageState('already_in_duo');
-      } else if (data.error === 'EXPIRED_TOKEN') {
-        setPageState('expired');
-      } else {
-        setErrorMessage(data.message || 'Une erreur est survenue.');
-        setPageState('error');
-      }
-    } catch {
-      setErrorMessage('Une erreur est survenue. Veuillez réessayer.');
+    // Tentative unique : le jeton mémorisé est retiré quelle que soit l'issue.
+    if (peekPendingDuoJoin() === token) takePendingDuoJoin();
+    const result = await joinDuo(token);
+    if (result.ok) {
+      setPageState('success');
+      setTimeout(() => router.push('/accueil'), 2000);
+    } else if (result.error === 'ALREADY_IN_DUO') {
+      setPageState('already_in_duo');
+    } else if (result.error === 'EXPIRED_TOKEN') {
+      setPageState('expired');
+    } else {
+      setErrorMessage(result.message || duoJoinErrorMessage(result.error));
       setPageState('error');
     }
   };
+
+  const handleLogin = () => {
+    rememberPendingDuoJoin(token);
+    // Le jeton vient de l'URL : encodé dans le chemin pour que la cible reste
+    // exactement cette page (la page de connexion n'accepte de toute façon
+    // qu'un chemin interne, voir `safe-redirect.ts`).
+    router.push(`/login?returnUrl=${encodeURIComponent(`/duo/join/${encodeURIComponent(token)}`)}`);
+  };
+
+  // Retour sur la page après connexion (`returnUrl`) avec l'invitation
+  // mémorisée : le rattachement se fait sans second clic.
+  useEffect(() => {
+    if (pageState !== 'valid' || sessionLoading || !user) return;
+    if (peekPendingDuoJoin() !== token) return;
+    void handleJoin();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- déclenchement unique, à la validation
+  }, [pageState, sessionLoading, user, token]);
 
   const renderContent = () => {
     if (pageState === 'loading') {
@@ -209,6 +223,11 @@ function DuoJoinContent() {
           <Button onClick={handleJoin} className="w-full" size="lg">
             {user ? 'Rejoindre' : 'Créer un compte et rejoindre'}
           </Button>
+          {!sessionLoading && !user && (
+            <Button variant="outline" onClick={handleLogin} className="w-full">
+              J&apos;ai déjà un compte : me connecter et rejoindre
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => router.push(user ? '/accueil' : '/')}

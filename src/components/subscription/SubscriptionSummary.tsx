@@ -4,12 +4,14 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CreditCard, AlertTriangle, Clock, Crown, Lock, ShieldAlert, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/useSession';
 import { ReferralBlock } from '@/components/account/ReferralBlock';
 import { DuoInvitationPanel } from './DuoInvitationPanel';
 import { libelleEssai } from './trial-label';
+import { openBillingPortal } from '@/lib/billing/open-billing-portal';
+import { isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-status';
+import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
 
 /**
  * Ecran « Mon abonnement » (CDC tarification §9.1 et §9.4).
@@ -57,6 +59,9 @@ interface StatusResponse {
   status: string;
   premiumFeatures: boolean;
   isRestricted: boolean;
+  canWrite?: boolean;
+  /** Cycle d'impayé en cours (paiement échoué), `null` sinon. */
+  unpaid?: UnpaidCyclePayload | null;
   subscription: {
     planCode: string | null;
     billingPeriod: 'monthly' | 'yearly' | null;
@@ -169,35 +174,12 @@ export function SubscriptionSummary() {
 
   /**
    * Portail Stripe (factures, moyens de paiement) : dans un NOUVEL onglet,
-   * pour ne pas quitter Verebona.
-   *
-   * L'onglet est ouvert tout de suite, au clic : ouvert après la réponse du
-   * serveur, il serait bloqué comme fenêtre surgissante (Safari, Firefox).
-   * Il reçoit ensuite l'adresse du portail, ou se referme en cas d'échec.
+   * pour ne pas quitter Verebona. Séquence partagée : `openBillingPortal`.
    */
   const openPortal = async () => {
     setPortalLoading(true);
-    const onglet = typeof window !== 'undefined' ? window.open('', '_blank') : null;
     try {
-      const res = await apiClient.post<{ portal_url?: string; message?: string }>(
-        '/api/billing/create-customer-portal-session',
-        {},
-      );
-      if (res.portal_url) {
-        if (onglet) {
-          onglet.opener = null;
-          onglet.location.href = res.portal_url;
-        } else {
-          // Fenêtre refusée par le navigateur : dernier recours, même onglet.
-          window.location.href = res.portal_url;
-        }
-      } else {
-        onglet?.close();
-        toast.error(res.message || 'Portail indisponible pour le moment.');
-      }
-    } catch {
-      onglet?.close();
-      toast.error('Impossible d\'ouvrir le portail de facturation.');
+      await openBillingPortal();
     } finally {
       setPortalLoading(false);
     }
@@ -221,7 +203,7 @@ export function SubscriptionSummary() {
       </Button>
       {/* Données absentes : on ne sait pas s'il existe un abonnement Stripe,
           le portail répondra lui-même (message d'erreur explicite sinon). */}
-      {(!data || data.subscription.hasStripeSubscription) && (
+      {(!data || data.subscription.hasStripeSubscription || isUnpaid(data)) && (
         <Button variant="outline" size="sm" onClick={openPortal} disabled={portalLoading}>
           <CreditCard className="mr-1.5 h-4 w-4" />
           Factures et moyens de paiement
@@ -301,8 +283,12 @@ export function SubscriptionSummary() {
         </div>
       )}
 
-      {/* Essai expiré */}
-      {data.isRestricted && (
+      {/* Impayé : paiement échoué, date limite, ce qui reste possible et
+          mise à jour du moyen de paiement. Ce n'est PAS une fin d'essai. */}
+      {isUnpaid(data) && <UnpaidPaymentNotice unpaid={data.unpaid} />}
+
+      {/* Essai expiré (ou restriction sans impayé) */}
+      {data.isRestricted && !isUnpaid(data) && (
         <div className="mb-5 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
           <p className="text-sm text-[color:var(--text-primary)]">

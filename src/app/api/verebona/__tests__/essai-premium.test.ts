@@ -28,7 +28,8 @@ vi.mock('@/services/entitlements.service', () => ({ getEntitlements: vi.fn(async
 vi.mock('@/lib/write-access-guard', () => ({ refuserSiPasDIA: vi.fn(async () => null) }));
 vi.mock('@/services/verebona-assistant', () => ({
   runAssistant: h.runAssistant,
-  getAssistantConfig: () => ({ enabled: true, locale: 'fr-FR' }),
+  getAssistantConfig: () => ({ enabled: true, locale: 'fr-FR', totalTimeoutMs: 20_000 }),
+  ensureAssistantStartupChecked: () => ({ ok: true }),
 }));
 vi.mock('@/services/verebona-assistant/core/assistant-orchestrator.service', () => ({ runAssistant: h.runAssistant }));
 vi.mock('@/services/verebona-assistant/core/ports', () => ({

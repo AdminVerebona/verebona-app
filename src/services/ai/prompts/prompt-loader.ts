@@ -1,19 +1,19 @@
 /**
- * Résolution des prompts — CDC §4.5 et §6.1.
+ * Résolution des prompts techniques — CDC §4.5, §6.1 ; CDC BO IA GEN-015,
+ * E-05, WF-41.
  *
- * Les prompts sont des DONNÉES VERSIONNÉES en base (`ai_prompt_versions`), et
- * non plus des fichiers lus au moment de l'appel. C'est la seule façon d'obtenir
- * activation, retour arrière et coexistence de versions sur un hébergement au
- * système de fichiers immuable — l'ancienne route d'administration écrivait
- * directement dans les `.txt`, ce qui est à la fois interdit par le CDC §4.5.3
- * et non fiable en production.
+ * Les prompts techniques sont les fichiers du dépôt, versionnés avec le code
+ * et relus en revue : ils portent le contrat de sortie que le serveur valide.
+ * Le texte administrable depuis le BO est le PRÉAMBULE de chaque traitement,
+ * porté par la version de configuration (config-resolver) — c'est là, et
+ * seulement là, que se font activation et retour arrière.
  *
- * Les fichiers du dépôt restent la source d'amorçage (seed) et la trace en
- * revue de code ; ils servent aussi de repli si la table n'est pas encore seedée.
+ * Historique : les prompts ont été des données versionnées en base
+ * (`ai_prompt_versions`, routes `prompt-changes`). Cette gouvernance
+ * parallèle est retirée (lot IA 2) : voir `loadActiveVersion`.
  */
 import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
-import { pgClient } from '@/db';
 import type { AiUseCaseCode } from '../registry/use-cases';
 
 interface ResolvedPrompt {
@@ -35,6 +35,19 @@ export async function resolvePrompt(
   return { text: substitute(base.text, variables), version: base.version };
 }
 
+/**
+ * Prompt technique d'une opération : TOUJOURS le fichier du dépôt.
+ *
+ * CDC BO IA GEN-015, E-05, WF-41 (lot IA 2) — fin de la gouvernance
+ * parallèle. `ai_prompt_versions` (routes `prompt-changes`, retirées) primait
+ * sur le fichier : une version ancienne restée ACTIVE en base a déjà fait
+ * échouer T5 (format « verdict » refusé) et obligé à renommer
+ * `extract_source_v5` pour contourner une v4 active en base. Le partage est
+ * désormais celui du CDC : le prompt TECHNIQUE (contrat de sortie) vient du
+ * dépôt, versionné avec le code ; le PRÉAMBULE administrable vient de la
+ * version de configuration du BO (config-resolver), modifiable par T5.
+ * La table est conservée (historique), elle n'est plus lue.
+ */
 async function loadActiveVersion(
   promptCode: string,
   useCaseCode?: AiUseCaseCode,
@@ -42,23 +55,7 @@ async function loadActiveVersion(
   const hit = cache.get(promptCode);
   if (hit && hit.expiresAt > Date.now()) return hit.value;
 
-  let resolved: ResolvedPrompt | null = null;
-
-  try {
-    const rows = await pgClient.unsafe(
-      `SELECT content, version FROM ai_prompt_versions
-        WHERE prompt_code = $1 AND status = 'ACTIVE'
-        ORDER BY created_at DESC LIMIT 1`,
-      [promptCode] as never[],
-    );
-    const row = (rows as unknown as Array<{ content: string; version: string }>)[0];
-    if (row) resolved = { text: row.content, version: row.version };
-  } catch {
-    // Table absente avant le lot 6 : on tombe sur le fichier.
-  }
-
-  if (!resolved) resolved = await loadFromFile(promptCode, useCaseCode);
-
+  const resolved = await loadFromFile(promptCode, useCaseCode);
   cache.set(promptCode, { value: resolved, expiresAt: Date.now() + CACHE_TTL_MS });
   return resolved;
 }
@@ -112,8 +109,7 @@ async function loadFromFile(
     ? `${PROMPTS_ROOT}/${USE_CASE_DIRECTORY[useCaseCode]}/${promptCode}.txt`
     : `${PROMPTS_ROOT}/**/${promptCode}.txt`;
   throw new Error(
-    `[prompt-loader] Prompt « ${promptCode} » introuvable, ni en base ` +
-    `(ai_prompt_versions, statut ACTIVE) ni sur disque (${searched}).`,
+    `[prompt-loader] Prompt « ${promptCode} » introuvable sur disque (${searched}).`,
   );
 }
 

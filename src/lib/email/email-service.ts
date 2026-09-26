@@ -2,6 +2,7 @@ import { Resend } from 'resend';
 import { db } from '@/db';
 import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
+import { isTransactionalEmailActive } from '@/lib/notifications/channel-activation';
 
 // Couleur Verebona fixe
 const VEREBONA_PRIMARY_COLOR = '#3B82F6';
@@ -325,6 +326,12 @@ class EmailService {
     to: string;
     variables: Record<string, string>;
     userId?: number;
+    /**
+     * Ignore l'activation par canal (CDC BO COM-011). Réservé à l'envoi de
+     * test vers l'administrateur connecté (COM-010) et au moteur de
+     * notifications, qui contrôle lui-même le canal par type d'événement.
+     */
+    skipChannelCheck?: boolean;
   }): Promise<{success: boolean, error?: string}> {
     const logEntry: any = {
       templateCode: options.templateCode,
@@ -347,7 +354,17 @@ class EmailService {
         await db.insert(emailLogs).values(logEntry);
         return { success: false, error: 'Emails disabled' };
       }
-      
+
+      // CDC BO COM-011 : e-mail transactionnel désactivé depuis l'écran
+      // Communications. Journalisé « skipped » (ni envoi, ni échec, COM-003).
+      if (!options.skipChannelCheck && !(await isTransactionalEmailActive(options.templateCode))) {
+        logEntry.status = 'skipped';
+        logEntry.errorMessage = 'CHANNEL_DISABLED';
+        logEntry.subject = `[Désactivé] Email ${options.templateCode}`;
+        await db.insert(emailLogs).values(logEntry);
+        return { success: false, error: 'CHANNEL_DISABLED' };
+      }
+
       // ══════════════════════════════════════════════════════════════════
       // QUINZE GABARITS ÉTAIENT INTROUVABLES PAR CONSTRUCTION
       //
@@ -446,7 +463,19 @@ class EmailService {
     }
   }
   
-  async sendTest(templateCode: string, testEmail: string): Promise<{success: boolean, error?: string}> {
+  /**
+   * Envoi de test. `variables`, lorsqu'il est fourni, REMPLACE le jeu fictif
+   * ci-dessous : l'écran Communications transmet les données du propre compte
+   * de l'administrateur connecté (CDC BO COM-007, SEC-005).
+   */
+  async sendTest(
+    templateCode: string,
+    testEmail: string,
+    variables?: Record<string, string>,
+  ): Promise<{success: boolean, error?: string}> {
+    if (variables) {
+      return this.send({ templateCode, to: testEmail, variables, skipChannelCheck: true });
+    }
     const mockVariables: Record<string, string> = {
       // Generic
       firstName: 'John',
@@ -481,6 +510,7 @@ class EmailService {
       templateCode,
       to: testEmail,
       variables: mockVariables,
+      skipChannelCheck: true,
     });
   }
 }

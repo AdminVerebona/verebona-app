@@ -48,9 +48,16 @@ export type AdminActionType =
   | 'USER_FORCE_LOGOUT'
   | 'USER_PASSWORD_RESET'
   | 'USER_ADMIN_ROLE_CHANGE'
-  | 'EXPORT_TEMPLATE_TOGGLE';
+  | 'EXPORT_TEMPLATE_TOGGLE'
+  | 'COMMUNICATION_CHANNEL_TOGGLE'
+  // Résolution manuelle d'une anomalie de supervision (CDC BO AUD-003, SUP-007).
+  | 'ANOMALY_RESOLVE'
+  // Demandes RGPD manuelles (CDC BO AUD-003 « réouverture RGPD », GDP-010, GDP-014, GDP-016).
+  | 'GDPR_REQUEST_CREATE'
+  | 'GDPR_REQUEST_UPDATE'
+  | 'GDPR_REQUEST_REOPEN';
 
-export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE';
+export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

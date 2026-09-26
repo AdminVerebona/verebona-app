@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { emailService } from '@/lib/email/email-service';
+import { buildEmailVerificationUrl } from '@/services/auth/email-verification.service';
 
 /**
  * Route pour renvoyer l'email de vérification
@@ -49,13 +50,10 @@ export async function POST(request: NextRequest) {
       });
     }
     
-    // Générer nouveau token de vérification
-    const timestamp = Date.now();
-    const tokenData = `${user.email}:${timestamp}`;
-    const token = Buffer.from(tokenData).toString('base64');
-    
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    const verificationUrl = `${baseUrl}/api/auth/verify-email?token=${token}`;
+    // Nouveau lien SIGNÉ (voir `email-verification.service`). C'est aussi
+    // la sortie proposée aux titulaires d'un lien émis avant ce format.
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'http://localhost:3000';
+    const verificationUrl = buildEmailVerificationUrl(baseUrl, { id: user.id, email: user.email });
     
     // Envoyer email de vérification
     const result = await emailService.send({

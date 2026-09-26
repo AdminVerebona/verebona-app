@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { AiGateway } from '../gateway/ai-gateway';
 import type { ReconciliationDecision, EvidenceCandidate } from './types';
+import { isExecutionCancelled } from '../queue/execution-control';
 
 const ResolveAmbiguityOutput = z.object({
   /** Identifiant de la preuve retenue, ou null si le modèle s'abstient. */
@@ -102,6 +103,9 @@ export async function resolveAmbiguity(
       deterministic: false,
     };
   } catch (e) {
+    // Dans une exécution de file, un refus AI_BLOCKED est une interruption :
+    // pas de repli déterministe écrit à la place de l'IA (execution-control).
+    if (isExecutionCancelled(e)) throw e;
     // Indisponibilité du fournisseur : le pipeline reste fonctionnel (§11.4).
     console.error('[resolve_ambiguity] échec non bloquant :', (e as Error).message);
     return { ...decision, action: 'create_conflict',

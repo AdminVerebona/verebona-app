@@ -86,6 +86,52 @@ export function nextProbeDelay(probeAttempts: number): number {
 }
 
 /**
+ * Oscillation du disjoncteur — revue indépendante lot IA 2 (WF-09, MOD-013).
+ *
+ * La sonde est volontairement triviale (« Réponds exactement : OK », sans
+ * pièce jointe ni donnée utilisateur — MOD-013). Elle peut donc réussir alors
+ * que les vrais appels échouent encore (quota de jetons, documents lourds,
+ * modèle partiellement dégradé). Le traitement était alors réactivé, ouvrait
+ * de nouveau après cinq échecs complets, était sondé trente secondes plus
+ * tard, réactivé… : une oscillation qui fait échouer des exécutions réelles à
+ * chaque cycle, et que le planning progressif ne freinait pas puisqu'il
+ * repartait de zéro à chaque ouverture.
+ *
+ * Le nombre de RÉOUVERTURES RÉCENTES (ouverture survenue moins de
+ * `REOPEN_WINDOW_SECONDS` après une réactivation par sonde) allonge donc le
+ * délai de la première sonde, et fait démarrer le planning plus loin. Une
+ * réactivation qui tient au-delà de la fenêtre remet le compteur à zéro.
+ */
+export const REOPEN_WINDOW_SECONDS = 3_600;
+/** Plafond du délai de première sonde après réouvertures répétées. */
+export const REOPEN_DELAY_CAP_SECONDS = 3_600;
+
+export interface ReopenPlan {
+  /** Réouvertures récentes consécutives, à mémoriser (0 = ouverture « fraîche »). */
+  reopens: number;
+  /** Point de départ du planning progressif des sondes suivantes. */
+  probeAttempts: number;
+  /** Délai avant la première sonde. */
+  delaySeconds: number;
+}
+
+export function reopenPlan(
+  lastReactivatedAt: Date | null,
+  previousReopens: number,
+  now: Date = new Date(),
+): ReopenPlan {
+  const recent = lastReactivatedAt !== null
+    && now.getTime() - lastReactivatedAt.getTime() < REOPEN_WINDOW_SECONDS * 1000;
+  const reopens = recent ? Math.max(previousReopens, 0) + 1 : 0;
+  if (reopens === 0) return { reopens: 0, probeAttempts: 0, delaySeconds: nextProbeDelay(0) };
+  return {
+    reopens,
+    probeAttempts: Math.min(2 * reopens, PROBE_SCHEDULE_SECONDS.length - 1),
+    delaySeconds: Math.min(REOPEN_DELAY_CAP_SECONDS, nextProbeDelay(0) * 4 ** reopens),
+  };
+}
+
+/**
  * Ordre des modèles à sonder : principal, puis repli 1, puis repli 2 (WF-09).
  *
  * Toujours dans cet ordre, même si le principal vient d'échouer : MOD-002 veut

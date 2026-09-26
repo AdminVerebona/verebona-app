@@ -315,6 +315,35 @@ export async function listDatabaseBackups(limit = 60): Promise<BackupListItem[]>
   }));
 }
 
+/**
+ * Date du dernier manifeste de sauvegarde (écrit en dernier sous `backups/`).
+ *
+ * `undefined` = état inconnu (identifiants absents, stockage injoignable ou
+ * trop lent) : l'appelant ne doit RIEN conclure — surtout pas « aucune
+ * sauvegarde ». `null` = stockage lu, aucune sauvegarde.
+ *
+ * Déplacée depuis `/api/admin/dashboard` : le contrôle d'ancienneté tourne
+ * aussi chaque jour dans `daily-maintenance-scheduler`, sans attendre qu'un
+ * administrateur ouvre la Supervision.
+ */
+export async function latestBackupAt(timeoutMs = 5000): Promise<Date | null | undefined> {
+  if (!process.env.OVH_S3_ACCESS_KEY_ID) return undefined;
+  try {
+    const result = await Promise.race([
+      s3().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: BACKUP_PREFIX, MaxKeys: 1000 })),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+    if (!result) return undefined;
+    const dates = (result.Contents ?? [])
+      .filter((o) => o.Key?.endsWith('.json') && o.LastModified)
+      .map((o) => o.LastModified!.getTime());
+    return dates.length ? new Date(Math.max(...dates)) : null;
+  } catch (error) {
+    console.error('[backup] lecture des sauvegardes impossible :', (error as Error).message);
+    return undefined;
+  }
+}
+
 /** Supprime les sauvegardes plus anciennes que la durée de rétention. */
 async function purgerAnciennesSauvegardes(client: S3Client): Promise<number> {
   const limite = Date.now() - RETENTION_JOURS * 24 * 60 * 60 * 1000;

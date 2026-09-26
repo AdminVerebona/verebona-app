@@ -2,7 +2,7 @@
  * Chronologie d'événements — CDC §17.6.
  */
 
-export const ACCOUNT_TIMELINE_PROMPT_VERSION = 'account-timeline-v2.0' as const;
+export const ACCOUNT_TIMELINE_PROMPT_VERSION = 'account-timeline-v3.0' as const;
 
 export const ACCOUNT_TIMELINE_PROMPT = [
   'TÂCHE — Chronologie des événements liés à un bien.',

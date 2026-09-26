@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
+import { areWriteCommandsEnabled, WRITE_COMMANDS_DISABLED_MESSAGE } from '@/services/verebona-assistant/config/assistant-config';
 import { confirmCommandPlan } from '@/services/verebona-assistant/commands/plan.service';
 
 export async function POST(
@@ -22,6 +23,17 @@ export async function POST(
   catch (e) { return SessionService.handleSessionError(e); }
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
+
+  // Écart assumé au CDC §4.8 / §22.5 : commandes d'écriture conservées sur
+  // décision produit, derrière VEREBONA_ASSISTANT_WRITE_COMMANDS. Coupées,
+  // un plan préparé avant la bascule ne s'exécute plus : refus propre, en
+  // français, sans aucune écriture.
+  if (!areWriteCommandsEnabled()) {
+    return NextResponse.json(
+      { error: { code: 'WRITE_COMMANDS_DISABLED', message: WRITE_COMMANDS_DISABLED_MESSAGE, recoverable: false } },
+      { status: 403 },
+    );
+  }
 
   await ensureMigrations();
   const { planId } = await params;

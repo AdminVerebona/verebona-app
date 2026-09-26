@@ -31,7 +31,7 @@
 import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import {
-  alertingModels, applyProbeResults, nextProbeDelay, probeOrder,
+  alertingModels, applyProbeResults, nextProbeDelay, probeOrder, reopenPlan,
   type ModelFailures,
 } from './circuit-breaker';
 import { invalidateRuntimeGuardCache } from './runnable-guard';
@@ -140,20 +140,44 @@ export async function recordChainOutcome(
  * terminent. La prochaine sonde est planifiée selon `nextProbeDelay(0)`.
  */
 export async function suspendTreatment(treatment: Treatment, reason: string): Promise<boolean> {
+  // Anti-oscillation (migration 0178, `reopenPlan`) : une réouverture peu
+  // après une réactivation par sonde allonge le délai de la première sonde.
+  // Lecture tolérante : avant la migration 0178, plan « ouverture fraîche ».
+  let plan = reopenPlan(null, 0);
+  try {
+    const cur = (await pgClient.unsafe(
+      `SELECT breaker_last_reactivated_at, breaker_reopen_count
+         FROM ai_treatment_state WHERE treatment = $1`,
+      [treatment] as never[],
+    )) as unknown as Row[];
+    const r = cur[0];
+    plan = reopenPlan(
+      r?.breaker_last_reactivated_at ? new Date(String(r.breaker_last_reactivated_at)) : null,
+      Number(r?.breaker_reopen_count ?? 0),
+    );
+  } catch { /* colonnes absentes : plan par défaut */ }
+
   const rows = await pgClient.unsafe(
     `UPDATE ai_treatment_state
         SET state = 'SUSPENDED', suspended_reason = $2, suspended_at = NOW(),
-            suspended_by_breaker = TRUE, probe_attempts = 0,
+            suspended_by_breaker = TRUE, probe_attempts = $4::int,
             next_probe_at = NOW() + make_interval(secs => $3::int),
             updated_by = NULL, updated_at = NOW()
       WHERE treatment = $1 AND state = 'ENABLED'
       RETURNING treatment`,
-    [treatment, reason, nextProbeDelay(0)] as never[],
+    [treatment, reason, plan.delaySeconds, plan.probeAttempts] as never[],
   );
   const opened = (rows as unknown as Row[]).length > 0;
   if (opened) {
+    await pgClient.unsafe(
+      `UPDATE ai_treatment_state SET breaker_reopen_count = $2::int WHERE treatment = $1`,
+      [treatment, plan.reopens] as never[],
+    ).catch(() => { /* avant 0178 : sans compteur */ });
     invalidateRuntimeGuardCache();
-    console.error(`[circuit-breaker] ${treatment} SUSPENDU — ${reason}.`);
+    console.error(
+      `[circuit-breaker] ${treatment} SUSPENDU — ${reason}`
+      + `${plan.reopens > 0 ? ` (réouverture n° ${plan.reopens} peu après une réactivation : première sonde dans ${plan.delaySeconds} s)` : ''}.`,
+    );
   }
   return opened;
 }
@@ -291,6 +315,12 @@ export async function runDueProbes(probe: ProbeFn = defaultProbe): Promise<Probe
           WHERE treatment = $1 AND state = 'SUSPENDED' AND suspended_by_breaker = TRUE`,
         [treatment, JSON.stringify(outcome.failures)] as never[],
       );
+      // Horodatage de la réactivation : une réouverture dans l'heure sera
+      // comptée comme oscillation (`reopenPlan`). Tolérant avant 0178.
+      await pgClient.unsafe(
+        `UPDATE ai_treatment_state SET breaker_last_reactivated_at = NOW() WHERE treatment = $1`,
+        [treatment] as never[],
+      ).catch(() => {});
       invalidateRuntimeGuardCache();
       console.info(`[circuit-breaker] ${treatment} réactivé par sonde (${outcome.recoveredWith}).`);
     } else {

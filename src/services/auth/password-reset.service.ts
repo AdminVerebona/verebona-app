@@ -33,16 +33,36 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db } from '@/db';
 import { users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { emailService } from '@/lib/email/email-service';
 
 /** Durée de validité d'un lien de réinitialisation. */
 export const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 
-function resetSecret(): string {
-  // Même secret que les jetons de session (voir `lib/jwt.ts`) ; une variable
-  // dédiée permet de le séparer sans changement de code.
-  return process.env.PASSWORD_RESET_SECRET || process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+/** Valeur de repli historique — publique (dans le dépôt), donc sans valeur de secret. */
+const INSECURE_DEFAULT_SECRET = 'your-secret-key-change-in-production';
+
+/**
+ * Secret de signature des liens de réinitialisation.
+ *
+ * Même secret que les jetons de session (voir `lib/jwt.ts`) ; une variable
+ * dédiée (`PASSWORD_RESET_SECRET`) permet de le séparer sans changement de code.
+ *
+ * EN PRODUCTION, AUCUN SECRET PAR DÉFAUT : la valeur de repli figure dans le
+ * code source ; avec elle, n'importe qui pourrait signer un lien valide pour
+ * n'importe quel compte. Une configuration manquante doit échouer bruyamment
+ * (erreur explicite, 500 côté route) plutôt que dégrader silencieusement la
+ * sécurité. Hors production, le repli reste admis pour le développement.
+ */
+export function resetSecret(): string {
+  const configured = process.env.PASSWORD_RESET_SECRET || process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === 'production' && (!configured || configured === INSECURE_DEFAULT_SECRET)) {
+    throw new Error(
+      '[password-reset] Aucun secret configuré : définissez PASSWORD_RESET_SECRET (ou JWT_SECRET) '
+      + 'avec une valeur aléatoire. Les liens de réinitialisation ne peuvent pas être signés.',
+    );
+  }
+  return configured || INSECURE_DEFAULT_SECRET;
 }
 
 interface ResetSubject {
@@ -111,8 +131,14 @@ export function checkPasswordResetToken(
   return { ok: true, userId: subject.id };
 }
 
-/** Vérifie un jeton reçu par `/api/auth/reset-password`. */
-export async function verifyPasswordResetToken(token: string): Promise<ResetTokenCheck> {
+/**
+ * Vérifie un jeton reçu par `/api/auth/reset-password`. Renvoie aussi
+ * l'empreinte du mot de passe contre laquelle il a été validé : c'est elle
+ * qui conditionne l'écriture (voir `consumePasswordResetToken`).
+ */
+export async function verifyPasswordResetToken(
+  token: string,
+): Promise<{ ok: true; userId: number; passwordHash: string } | { ok: false; code: 'INVALID_TOKEN' | 'TOKEN_EXPIRED' }> {
   const parsed = parsePasswordResetToken(token);
   if (!parsed) return { ok: false, code: 'INVALID_TOKEN' };
   const [user] = await db
@@ -120,7 +146,42 @@ export async function verifyPasswordResetToken(token: string): Promise<ResetToke
     .from(users)
     .where(eq(users.id, parsed.userId))
     .limit(1);
-  return checkPasswordResetToken(token, user ?? null);
+  const check = checkPasswordResetToken(token, user ?? null);
+  if (!check.ok) return check;
+  if (!user) return { ok: false, code: 'INVALID_TOKEN' };
+  return { ok: true, userId: check.userId, passwordHash: user.passwordHash };
+}
+
+/**
+ * Consomme un jeton : remplace le mot de passe SI ET SEULEMENT SI il n'a pas
+ * changé depuis la vérification.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * USAGE UNIQUE, Y COMPRIS EN CONCURRENCE
+ *
+ * L'empreinte du mot de passe dans la signature rend le jeton caduc après
+ * usage — mais seulement pour les requêtes qui le vérifient APRÈS l'écriture.
+ * Deux requêtes simultanées portant le même lien (double clic, lien
+ * intercepté rejoué en parallèle) passaient toutes deux la vérification,
+ * puis écrivaient chacune leur mot de passe : le dernier arrivé l'emportait.
+ *
+ * L'écriture est donc un UPDATE conditionnel sur l'ancienne empreinte, avec
+ * RETURNING : PostgreSQL sérialise les deux UPDATE sur la ligne ; le second,
+ * réévaluant la condition après le premier, ne trouve plus l'ancienne
+ * empreinte et ne modifie rien (0 ligne) → refus INVALID_TOKEN.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export async function consumePasswordResetToken(
+  userId: number,
+  expectedPasswordHash: string,
+  newPasswordHash: string,
+): Promise<boolean> {
+  const updated = await db
+    .update(users)
+    .set({ passwordHash: newPasswordHash, updatedAt: new Date() })
+    .where(and(eq(users.id, userId), eq(users.passwordHash, expectedPasswordHash)))
+    .returning({ id: users.id });
+  return updated.length === 1;
 }
 
 export type StartResetResult =

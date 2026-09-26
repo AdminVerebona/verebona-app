@@ -9,6 +9,7 @@ import { eq, and, or } from 'drizzle-orm';
 import crypto from 'crypto';
 import { emailService } from '@/lib/email/email-service';
 import { emit } from '@/lib/notifications';
+import { orderSessionAccounts, type SessionAccountCandidate } from '@/lib/auth/account-suspension';
 import type { PlanType, SubscriptionTier, SubscriptionStatus, MembershipRole, MembershipStatus } from '@/types/domain';
 
 export interface Account {
@@ -502,11 +503,20 @@ export class AccountService {
     return { hasAccess: true, role: membership.role as 'owner' | 'member' };
   }
 
-  static async getUserDefaultAccount(userId: number): Promise<Account | null> {
+  /**
+   * Comptes dont l'utilisateur est membre actif, dans un ordre STABLE
+   * (titulaire, puis administrateur, puis membre ; puis ancienneté ; puis id).
+   * Voir `lib/auth/account-suspension.ts` : l'ancien tri n'était pas total et
+   * dépendait de l'ordre des lignes renvoyées par la base.
+   */
+  static async getUserSessionAccounts(userId: number): Promise<SessionAccountCandidate<Account>[]> {
     const memberships = await db
       .select({
         account: accounts,
         role: accountMemberships.role,
+        membershipId: accountMemberships.id,
+        joinedAt: accountMemberships.joinedAt,
+        createdAt: accountMemberships.createdAt,
       })
       .from(accountMemberships)
       .innerJoin(accounts, eq(accountMemberships.accountId, accounts.id))
@@ -520,16 +530,27 @@ export class AccountService {
         )
       );
 
-    if (!memberships.length) return null;
+    return orderSessionAccounts(
+      memberships.map((m) => ({
+        account: m.account as Account,
+        role: m.role,
+        membershipId: m.membershipId,
+        joinedAt: m.joinedAt ?? null,
+        createdAt: m.createdAt ?? null,
+      })),
+    );
+  }
 
-    // Priorité : owner/admin en premier, puis les autres
-    const sorted = memberships.sort((a, b) => {
-      const aIsAdmin = a.role === 'owner' || a.role === 'admin';
-      const bIsAdmin = b.role === 'owner' || b.role === 'admin';
-      return aIsAdmin ? -1 : bIsAdmin ? 1 : 0;
-    });
-
-    return sorted[0].account as Account;
+  /**
+   * Compte « par défaut » : le premier compte NON suspendu dans l'ordre
+   * stable ci-dessus ; à défaut (tous suspendus), le premier — les appelants
+   * qui ouvrent une session contrôlent la suspension via
+   * `resolveSessionAccount`.
+   */
+  static async getUserDefaultAccount(userId: number): Promise<Account | null> {
+    const ordered = await this.getUserSessionAccounts(userId);
+    if (!ordered.length) return null;
+    return (ordered.find((c) => c.account.isActive !== false) ?? ordered[0]).account;
   }
 
     static async transferOwnership(

@@ -26,6 +26,7 @@ import { randomUUID } from 'crypto';
 import type { ActionIntent, VerebonaAction, VerebonaActionType } from '../types/actions';
 import type { VerebonaIntent } from '../types/intents';
 import { getActionDefinition, allowedActionsFor } from '../registries/action-registry';
+import { HELP_CONTACT_PATH, integratedHelpHref, isHelpPath } from '@/lib/help-center/open';
 import {
   parseEntityRef, hrefBien, ROUTES,
   type EntityKind, type EntityRef, type OngletBien,
@@ -120,10 +121,17 @@ function buildHref(
       return ROUTES.COMPTE;
     case 'OPEN_PRICING':
       return ROUTES.OFFRES;
-    // La page d'aide n'expose pas d'article en lien profond : pas de
-    // `/aide/[slug]` ni de paramètre lu. On ouvre l'aide, sans ancrage.
-    case 'OPEN_HELP':
-      return ROUTES.AIDE;
+    // Lien profond vers l'ARTICLE (audit P2 « lien d'aide vers l'article
+    // précis ») : le Centre d'aide intégré lit `?page=/aide/<slug>`
+    // (`integratedHelpHref`). L'ancien commentaire (« pas de lien profond »)
+    // était devenu faux. `path` est posé par le serveur depuis le corpus,
+    // jamais par le modèle, et revalidé ici (`isHelpPath`).
+    case 'OPEN_HELP': {
+      const path = typeof params?.path === 'string' ? params.path.split('#')[0] : '';
+      return path && isHelpPath(path) ? integratedHelpHref(path) : ROUTES.AIDE;
+    }
+    case 'OPEN_CONTACT':
+      return integratedHelpHref(HELP_CONTACT_PATH);
     // La création d'un bien se fait par une boîte de dialogue depuis la liste,
     // il n'existe pas de page `/assets/nouveau`.
     case 'START_ADD_ASSET':
@@ -153,7 +161,7 @@ const LABELS: Record<VerebonaActionType, string> = {
   OPEN_AGENDA: "Ouvrir l'agenda", OPEN_AGENDA_ITEM: "Voir dans l'agenda",
   OPEN_TO_PROCESS: 'Ouvrir « À traiter »', OPEN_SUPPLIERS: 'Voir les fournisseurs',
   OPEN_SUPPLIER: 'Ouvrir le fournisseur', OPEN_ACCOUNT: 'Ouvrir mon compte',
-  OPEN_PRICING: 'Voir les offres', OPEN_HELP: "Consulter l'aide",
+  OPEN_PRICING: 'Voir les offres', OPEN_HELP: "Consulter l'aide", OPEN_CONTACT: 'Contacter le support',
   START_ADD_ASSET: 'Ajouter un bien', START_ADD_DOCUMENT: 'Ajouter un document',
   START_ADD_AGENDA_ITEM: 'Créer une échéance', OPEN_EXPORT_AREA: 'Préparer un export',
   SHOW_SOURCES: 'Voir les sources', SHOW_EXPLANATION: 'Pourquoi cette réponse ?',
@@ -213,7 +221,8 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     out.push({
       actionId: randomUUID(),
       type: ai.type,
-      label: LABELS[ai.type],
+      // Article précis : « Lire l'article » plutôt qu'un renvoi générique.
+      label: ai.type === 'OPEN_HELP' && href && href !== ROUTES.AIDE ? 'Lire l’article' : LABELS[ai.type],
       href,
       token: null,
       requiresConfirmation: false, // aucune action destructrice en V1 (§22.10)

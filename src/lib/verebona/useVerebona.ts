@@ -7,10 +7,11 @@
  * Le client ne reconstruit JAMAIS d'URL d'action : il utilise `action.href` fourni
  * par le serveur (§27.1).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseWriteBlocked, type WriteBlockedInfo } from '@/lib/write-blocked';
 import { toAssistantUiError, type AssistantUiError } from './error-messages';
-import { errorActions, errorAssistantMessage, retryTarget } from './assistant-ui';
+import { currentPlatform, errorActions, errorAssistantMessage, isCancelledResponse, retryTarget } from './assistant-ui';
+import { enrichPageContext } from '@/lib/help-center/screens';
 
 export interface VerebonaAction {
   actionId: string;
@@ -112,7 +113,12 @@ export interface UseVerebonaOptions {
   onWriteBlocked?: (info: WriteBlockedInfo) => void;
 }
 
-export function useVerebona(pageContext?: Record<string, string>, options: UseVerebonaOptions = {}) {
+export function useVerebona(rawPageContext?: Record<string, string>, options: UseVerebonaOptions = {}) {
+  // Contexte de page ENRICHI (§13.3, §27.1) : le layout n'envoie que la
+  // route ; le bien / document ouverts en sont extraits (« ce bien » sur
+  // `/assets/42`), avec la plateforme (choix des articles d'aide, T2-05).
+  // Le serveur revalide chaque identifiant.
+  const pageContext = useMemo(() => enrichPageContext(rawPageContext, currentPlatform()), [rawPageContext]);
   const onWriteBlockedRef = useRef(options.onWriteBlocked);
   onWriteBlockedRef.current = options.onWriteBlocked;
   const [state, setState] = useState<UseVerebonaState>({ messages: [], isLoading: false, error: null });
@@ -120,6 +126,8 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
   const [conversationId, setConversationIdState] = useState<number | null>(null);
   const conversationRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** Identifiant client de la demande en cours : l'annulation le transmet au serveur. */
+  const pendingRequestRef = useRef<string | null>(null);
   /** Contexte structuré de chaque question envoyée, pour « Réessayer ». */
   const contextByMessage = useRef(new Map<string, Record<string, string> | undefined>());
   const messagesRef = useRef<VerebonaMessage[]>([]);
@@ -179,9 +187,14 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
    * rapide de la mascotte (CDC Mascotte SEC-005 : intention, bien). Il
    * complète le contexte de page ; le serveur revalide tout identifiant.
    */
-  const send = useCallback(async (text: string, extraContext?: Record<string, string>) => {
+  /**
+   * Rend `true` si une réponse (même en erreur affichée) est arrivée,
+   * `false` si la question n'a pas abouti : l'appelant peut alors rendre le
+   * texte saisi (§7.6, saisie conservée si l'appel échoue).
+   */
+  const send = useCallback(async (text: string, extraContext?: Record<string, string>): Promise<boolean> => {
     const message = text.trim();
-    if (!message || message.length > 2000) return;
+    if (!message || message.length > 2000) return false;
 
     // Une seule demande active (§7.8) : on annule la précédente.
     abortRef.current?.abort();
@@ -203,13 +216,15 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
       }));
     };
 
+    const clientRequestId = newId();
+    pendingRequestRef.current = clientRequestId;
     try {
       const res = await fetch('/api/verebona/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message,
-          clientRequestId: newId(),
+          clientRequestId,
           pageContext: extraContext ? { ...(pageContext ?? {}), ...extraContext } : pageContext,
           conversationId: conversationRef.current,
         }),
@@ -217,6 +232,8 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        // Demande annulée (Stop, fermeture du tiroir) : rien n'est affiché.
+        if (isCancelledResponse(err)) return false;
         // Refus de droits (essai terminé) : la question n'a pas été posée.
         // On la retire du fil plutôt que d'afficher une erreur technique.
         const refus = res.status === 403 ? parseWriteBlocked(err) : null;
@@ -228,7 +245,7 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
             error: null,
           }));
           onWriteBlockedRef.current?.(refus);
-          return;
+          return false;
         }
         if (res.status === 404) {
           // Le fil n'existe plus (effacé ailleurs, expiré) : la question
@@ -237,9 +254,10 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
           void refreshThreads();
         }
         afficherErreur(toAssistantUiError(err, res.status));
-        return;
+        return false;
       }
       const data = await res.json();
+      if (isCancelledResponse(data)) return false;
       if (data.conversationId && data.conversationId !== conversationRef.current) {
         setConversationId(data.conversationId);
       }
@@ -265,9 +283,13 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
         if (!assistantMsg.actions?.length) assistantMsg.actions = errorActions(e, assistantMsg.id);
       }
       setState((s) => ({ ...s, messages: [...s.messages, assistantMsg], isLoading: false, error: assistantMsg.error?.message ?? null }));
+      return !assistantMsg.error;
     } catch (e) {
-      if ((e as Error).name === 'AbortError') return; // annulation volontaire
+      if ((e as Error).name === 'AbortError') return false; // annulation volontaire
       afficherErreur(toAssistantUiError({ error: { code: 'NETWORK_ERROR' } }));
+      return false;
+    } finally {
+      if (pendingRequestRef.current === clientRequestId) pendingRequestRef.current = null;
     }
   }, [pageContext, refreshThreads, setConversationId]);
 
@@ -403,8 +425,17 @@ export function useVerebona(pageContext?: Record<string, string>, options: UseVe
     await loadThread(id);
   }, [loadThread]);
 
+  /**
+   * Annulation EFFECTIVE (§7.8, §9.7, CA-22) : l'attente est abandonnée ET le
+   * serveur est prévenu (DELETE par identifiant client — la réservation existe
+   * dès le début du traitement). Le serveur n'enregistre alors pas la
+   * réponse : elle ne réapparaîtra pas au rechargement.
+   */
   const cancel = useCallback(() => {
     abortRef.current?.abort();
+    const id = pendingRequestRef.current;
+    pendingRequestRef.current = null;
+    if (id) void fetch(`/api/verebona/requests/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => null);
     setState((s) => ({ ...s, isLoading: false }));
   }, []);
 

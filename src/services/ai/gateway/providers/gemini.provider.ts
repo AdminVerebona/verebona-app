@@ -6,11 +6,12 @@
  * (eslint.config.mjs) et par `scripts/check-legacy-ai.mjs` en CI.
  * Critère d'acceptation n°4 du CDC §12.
  */
-import { GoogleGenerativeAI, type Part } from '@google/generative-ai';
+import { GoogleGenerativeAI, type GenerationConfig, type Part } from '@google/generative-ai';
 import type { AiProvider, ProviderCallInput, ProviderCallOutput } from './provider.port';
 import { AiGatewayError } from '../errors';
 import { prepareAttachmentParts, cleanupTemporaryFiles } from './gemini-files';
 import { getProviderSecret } from '../../provider/provider-secret';
+import { buildGenerationConfig } from './gemini-generation-config';
 
 export class GeminiProvider implements AiProvider {
   readonly name = 'gemini';
@@ -36,11 +37,11 @@ export class GeminiProvider implements AiProvider {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
       model: input.model,
-      // Absent = défaut du fournisseur. Le §2.1 rend ce plafond administrable ;
-      // l'appliquer ici est ce qui empêche le champ d'être décoratif.
-      ...(input.maxOutputTokens
-        ? { generationConfig: { maxOutputTokens: input.maxOutputTokens } }
-        : {}),
+      // Température fixée dans le code (GEN-011), plafond de sortie et niveau
+      // de raisonnement administrés (§2.1). `thinkingConfig` n'est pas typé
+      // par la version 0.24 du SDK, mais `generationConfig` est transmis tel
+      // quel à l'API REST, qui le reconnaît.
+      generationConfig: buildGenerationConfig(input) as GenerationConfig,
     });
 
     // PDF et vidéo via Files API, images en inline, bureautique extraite côté

@@ -72,27 +72,59 @@ export interface SuggestionEntry {
   id: string;
   label: string;
   routePrefix?: string; // contexte de page (§8.2)
+  /** Routes exactes (l'accueil : « / » préfixe TOUTES les routes). */
+  routeExact?: string[];
   priority: number;     // plus bas = plus prioritaire
 }
 
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * SUGGESTIONS PAR PAGE — §8.1, §8.2 (audit P2)
+ *
+ * Les suggestions d'accueil portaient `routePrefix: '/'`, qui préfixe toutes
+ * les routes : sur `/assets/42`, « Que dois-je traiter en priorité ? » se
+ * mêlait à « Quels documents sont liés à ce bien ? ». L'accueil est désormais
+ * une route EXACTE ; chaque page a ses suggestions, et les génériques ne
+ * complètent que s'il en manque (priorité page > générique).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+const HOME = ['/', '/accueil'];
+
 export const SUGGESTIONS: SuggestionEntry[] = [
-  { id: 'home_priority', label: 'Que dois-je traiter en priorité ?', routePrefix: '/', priority: 1 },
-  { id: 'home_deadlines', label: 'Quelles échéances arrivent bientôt ?', routePrefix: '/', priority: 2 },
-  { id: 'home_add_doc', label: 'Comment ajouter un document ?', routePrefix: '/', priority: 4 },
+  { id: 'home_priority', label: 'Que dois-je traiter en priorité ?', routeExact: HOME, priority: 1 },
+  { id: 'home_deadlines', label: 'Quelles échéances arrivent bientôt ?', routeExact: HOME, priority: 2 },
+  { id: 'home_add_doc', label: 'Comment ajouter un document ?', routeExact: HOME, priority: 4 },
+  { id: 'todo_explain', label: 'À quoi sert « À traiter » ?', routePrefix: '/accueil/a-traiter', priority: 1 },
+  { id: 'todo_priority', label: 'Que dois-je traiter en priorité ?', routePrefix: '/accueil/a-traiter', priority: 2 },
   { id: 'asset_docs', label: 'Quels documents sont liés à ce bien ?', routePrefix: '/assets/', priority: 1 },
   { id: 'asset_deadlines', label: 'Quelles échéances concernent ce bien ?', routePrefix: '/assets/', priority: 2 },
   { id: 'asset_complete', label: 'Comment compléter sa fiche ?', routePrefix: '/assets/', priority: 3 },
+  { id: 'assets_add', label: 'Comment ajouter un bien ?', routeExact: ['/assets'], priority: 1 },
   { id: 'docs_find_invoice', label: 'Retrouve une facture.', routePrefix: '/documents', priority: 1 },
   { id: 'docs_unlinked', label: "Quels documents ne sont rattachés à aucun bien ?", routePrefix: '/documents', priority: 2 },
   { id: 'docs_in_analysis', label: 'Pourquoi un document est-il encore en analyse ?', routePrefix: '/documents', priority: 3 },
-  // Génériques (fallback)
+  { id: 'agenda_next', label: 'Quelles échéances arrivent bientôt ?', routePrefix: '/agenda', priority: 1 },
+  { id: 'agenda_sync', label: 'Comment synchroniser mon agenda ?', routePrefix: '/agenda', priority: 2 },
+  { id: 'account_plan', label: 'Que comprend mon offre ?', routePrefix: '/mon-compte', priority: 1 },
+  { id: 'account_notif', label: 'Comment gérer mes notifications ?', routePrefix: '/mon-compte', priority: 2 },
+  // Génériques (complément)
   { id: 'generic_help', label: 'Comment utiliser Verebona ?', priority: 9 },
+  { id: 'generic_add_doc', label: 'Comment ajouter un document ?', priority: 10 },
+  { id: 'generic_deadlines', label: 'Quelles échéances arrivent bientôt ?', priority: 11 },
 ];
 
-/** Renvoie 3–4 suggestions selon la route (§8.1 / §8.2). */
+function matchesPage(s: SuggestionEntry, route: string): boolean {
+  if (s.routeExact) return s.routeExact.includes(route);
+  return s.routePrefix != null && route.startsWith(s.routePrefix);
+}
+
+/** Renvoie 3–4 suggestions selon la route (§8.1 / §8.2) : page d'abord, génériques ensuite. */
 export function suggestionsForRoute(route: string | undefined): SuggestionEntry[] {
-  const r = route ?? '/';
-  const matching = SUGGESTIONS.filter((s) => !s.routePrefix || r.startsWith(s.routePrefix));
-  const withGeneric = matching.length >= 3 ? matching : [...matching, ...SUGGESTIONS.filter((s) => !s.routePrefix)];
-  return withGeneric.sort((a, b) => a.priority - b.priority).slice(0, 4);
+  const r = (route ?? '/').split(/[?#]/)[0].replace(/(.)\/$/, '$1');
+  const page = SUGGESTIONS.filter((s) => matchesPage(s, r)).sort((a, b) => a.priority - b.priority);
+  const vus = new Set(page.map((s) => s.label));
+  const generiques = SUGGESTIONS
+    .filter((s) => !s.routeExact && !s.routePrefix && !vus.has(s.label))
+    .sort((a, b) => a.priority - b.priority);
+  return [...page, ...generiques].slice(0, page.length >= 3 ? 4 : 3);
 }

@@ -131,6 +131,11 @@ export interface TestDetail {
   generationOk: boolean;
   model: string | null;
   error?: string;
+  /**
+   * PROV-UI-03 (lot IA 2) : modèles de la configuration effective que la clé
+   * ne liste pas. Non vide = clé incompatible, test en échec.
+   */
+  missingModels?: string[];
 }
 
 export async function recordTest(id: number, ok: boolean, detail: TestDetail): Promise<void> {

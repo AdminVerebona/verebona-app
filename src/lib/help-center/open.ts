@@ -8,12 +8,23 @@
  *   quitter l'application (MOB-01, MOB-03).
  */
 import { publicSiteUrl } from '@/lib/external-urls';
+import { safeInternalPath } from '@/lib/safe-redirect';
 
 export const EMBED_QUERY = 'integre=app';
 
-/** Chemin d'aide sûr : `/aide`, `/aide/<slug>`, `/aide/theme/<slug>`, avec `?q=` éventuel. */
+/**
+ * Formulaire de contact du site public — CDC Centre d'aide §5 (« si le corpus
+ * ne permet pas de répondre, renvoyer vers le formulaire de contact »).
+ */
+export const HELP_CONTACT_PATH = '/contact';
+
+/**
+ * Chemin d'aide sûr : `/aide`, `/aide/<slug>`, `/aide/theme/<slug>`, avec
+ * `?q=` éventuel, ou le formulaire de contact `/contact` (renvoi au support
+ * depuis l'assistant).
+ */
 export function isHelpPath(path: string): boolean {
-  return /^\/aide(\/(theme\/)?[a-z0-9-]+)?(\?q=[^#]*)?$/.test(path);
+  return /^\/aide(\/(theme\/)?[a-z0-9-]+)?(\?q=[^#]*)?$/.test(path) || path === HELP_CONTACT_PATH;
 }
 
 export function helpPageUrl(path: string, embedded: boolean): string {
@@ -27,8 +38,10 @@ export function helpPageUrl(path: string, embedded: boolean): string {
  * ni une adresse d'un autre site (`//hôte`).
  */
 export function safeReturnPath(raw: string | null | undefined): string {
-  if (!raw || !/^\/(?!\/)[^\s\\]*$/.test(raw) || /^\/aide(\/|\?|$)/.test(raw)) return '/accueil';
-  return raw;
+  // Même règle « chemin interne » que les pages d'authentification
+  // (`safe-redirect.ts`) : une seule implémentation à tenir juste.
+  const path = safeInternalPath(raw, '/accueil');
+  return /^\/aide(\/|\?|$)/.test(path) ? '/accueil' : path;
 }
 
 /**

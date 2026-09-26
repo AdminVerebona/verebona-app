@@ -129,3 +129,60 @@ describe('changePlanAsAdmin', () => {
     expect(await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps)).toMatchObject({ ok: false, code: 'ACCOUNT_NOT_FOUND' });
   });
 });
+
+// ── Course changement d'offre admin / webhook (ACC-A05, ACC-A07) ──────────────
+import { planAlreadyApplied } from '@/services/billing/admin-plan-change.service';
+import { isAdminPlanChangeEcho, ADMIN_PLAN_CHANGE_ECHO_MS } from '@/services/billing/subscription-sync.service';
+
+describe('marqueur admin posé sur l’abonnement Stripe', () => {
+  it('porte la date et l’offre cible', () => {
+    const now = new Date('2026-09-26T10:00:00Z');
+    const p = buildStripeUpdateParams('si_1', 'price_x', 'premium', now);
+    expect(p.metadata).toEqual({ admin_plan_change: now.toISOString(), admin_plan_change_to: 'premium' });
+  });
+
+  it('changePlanAsAdmin transmet l’offre cible au marqueur', async () => {
+    const { deps, update } = makeDeps({});
+    await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM_DUO' }, deps);
+    expect(update).toHaveBeenCalledWith('sub_1', expect.objectContaining({
+      metadata: expect.objectContaining({ admin_plan_change_to: 'premium_duo' }),
+    }));
+  });
+});
+
+describe('isAdminPlanChangeEcho : la synchronisation reconnaît l’écho admin', () => {
+  const now = new Date('2026-09-26T10:00:00Z');
+  const meta = (minutesAgo: number, to?: string) => ({
+    admin_plan_change: new Date(now.getTime() - minutesAgo * 60_000).toISOString(),
+    ...(to ? { admin_plan_change_to: to } : {}),
+  });
+
+  it('webhook reçu juste après l’update admin, offre cible : écho (pas de notification)', () => {
+    expect(isAdminPlanChangeEcho(meta(0, 'premium'), 'premium', now)).toBe(true);
+    expect(isAdminPlanChangeEcho(meta(10, 'premium'), 'premium', now)).toBe(true);
+  });
+
+  it('marqueur ancien : changement ultérieur du client traité normalement', () => {
+    const old = meta(ADMIN_PLAN_CHANGE_ECHO_MS / 60_000 + 1, 'premium');
+    expect(isAdminPlanChangeEcho(old, 'premium', now)).toBe(false);
+  });
+
+  it('offre synchronisée différente de la cible : pas un écho', () => {
+    expect(isAdminPlanChangeEcho(meta(1, 'premium'), 'standard', now)).toBe(false);
+  });
+
+  it('sans marqueur, ou marqueur historique sans offre cible : pas un écho', () => {
+    expect(isAdminPlanChangeEcho({}, 'premium', now)).toBe(false);
+    expect(isAdminPlanChangeEcho(undefined, 'premium', now)).toBe(false);
+    expect(isAdminPlanChangeEcho(meta(1), 'premium', now)).toBe(false);
+    expect(isAdminPlanChangeEcho({ admin_plan_change: 'n/a', admin_plan_change_to: 'premium' }, 'premium', now)).toBe(false);
+  });
+});
+
+describe('application locale idempotente', () => {
+  it('offre déjà appliquée par le webhook : pas de seconde ligne d’historique', () => {
+    expect(planAlreadyApplied('PREMIUM', 'PREMIUM')).toBe(true);
+    expect(planAlreadyApplied('STANDARD', 'PREMIUM')).toBe(false);
+    expect(planAlreadyApplied(undefined, 'PREMIUM')).toBe(false);
+  });
+});

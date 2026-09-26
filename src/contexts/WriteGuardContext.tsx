@@ -32,9 +32,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
+import { isUnpaid } from '@/lib/trial-status';
 import {
-  TRIAL_EXPIRED_MESSAGE,
   WRITE_BLOCKED_EVENT,
+  restrictedWriteInfo,
   setWriteBlockedListenerMounted,
   type WriteBlockedInfo,
 } from '@/lib/write-blocked';
@@ -77,15 +78,16 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       // Un compte sans offre (essai terminé, abonnement absent) qui touche
       // une fonction Premium n'a pas à lire « Passez à Premium » : son
       // blocage, c'est l'absence d'offre. Même fenêtre que partout ailleurs.
-      const sansOffre = entitlementsRef.current?.isRestricted === true;
+      const droits = entitlementsRef.current;
+      const sansOffre = droits?.isRestricted === true;
+      const impaye = isUnpaid(droits);
       if (recu.code === 'PREMIUM_REQUIRED' && sansOffre) {
-        const essaiFini = entitlementsRef.current?.trial?.status === 'expired';
-        setInfo({
-          code: essaiFini ? 'TRIAL_EXPIRED' : 'SUBSCRIPTION_REQUIRED',
-          message: essaiFini
-            ? TRIAL_EXPIRED_MESSAGE
-            : 'Un abonnement actif est nécessaire pour effectuer cette action.',
-        });
+        setInfo(restrictedWriteInfo(impaye ? droits : { trial: droits?.trial }));
+      } else if (impaye && (recu.code === 'SUBSCRIPTION_REQUIRED' || recu.code === 'TRIAL_EXPIRED')) {
+        // Refus serveur pendant un impayé : son message dit déjà la date
+        // limite ; on y ajoute le contexte qui fait proposer la mise à jour
+        // du moyen de paiement plutôt que le choix d'une offre.
+        setInfo({ ...restrictedWriteInfo(droits), message: recu.message || restrictedWriteInfo(droits).message });
       } else {
         setInfo(recu);
       }
@@ -101,8 +103,6 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       setWriteBlockedListenerMounted(false);
     };
   }, [refresh]);
-
-  const essaiExpire = entitlements?.trial.status === 'expired';
 
   /** Refus applicable, ou `null` si l'action peut se faire. */
   const refus = useCallback(
@@ -121,12 +121,8 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       }
 
       if (isRestricted || entitlements?.canWrite === false) {
-        return {
-          code: essaiExpire ? 'TRIAL_EXPIRED' : 'SUBSCRIPTION_REQUIRED',
-          message: essaiExpire
-            ? TRIAL_EXPIRED_MESSAGE
-            : 'Un abonnement actif est nécessaire pour effectuer cette action.',
-        };
+        // Impayé, essai expiré ou absence d'offre : trois discours distincts.
+        return restrictedWriteInfo(isUnpaid(entitlements) ? entitlements : { trial: entitlements.trial });
       }
 
       if (!quota) return null;
@@ -144,7 +140,7 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       }
       return null;
     },
-    [entitlements, essaiExpire, isLoading, isRestricted, refresh],
+    [entitlements, isLoading, isRestricted, refresh],
   );
 
   const valeur = useMemo<WriteGuardValue>(

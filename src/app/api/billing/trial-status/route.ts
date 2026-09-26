@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { accountMemberships, assets, assetFiles, accountSubscriptions } from '@/db/schema';
+import { accountMemberships, accounts, assets, assetFiles, accountSubscriptions } from '@/db/schema';
 import { eq, and, or, isNull, count } from 'drizzle-orm';
 import { getTrialState, hasUsedTrial } from '@/services/trial.service';
 import { getEntitlements, quotaUsage } from '@/services/entitlements.service';
 import { getScheduledChange } from '@/services/plan-change.service';
 import { syncPendingCheckoutForAccount } from '@/services/billing/subscription-sync.service';
+import { computeUnpaidCycle } from '@/services/billing/unpaid-cycle.rules';
 
 /**
  * GET /api/billing/trial-status
@@ -60,6 +61,17 @@ export async function GET(request: NextRequest) {
       .from(accountSubscriptions)
       .where(eq(accountSubscriptions.accountId, accountId))
       .limit(1);
+
+    // Cycle d'impayé de 90 jours (GAP-06, AID-BILL-008) : l'écran doit
+    // distinguer l'impayé d'une fin d'essai et afficher l'échéance.
+    const [cycleRow] = await db
+      .select({ startedAt: accounts.pastDueGraceStartedAt, endsAt: accounts.pastDueGraceEndsAt })
+      .from(accounts)
+      .where(eq(accounts.id, accountId))
+      .limit(1);
+    const unpaidCycle = cycleRow?.startedAt
+      ? computeUnpaidCycle(cycleRow.startedAt, new Date(), cycleRow.endsAt)
+      : null;
 
     // Consommation reelle (biens et documents non supprimes)
     const [assetRow] = await db
@@ -135,6 +147,13 @@ export async function GET(request: NextRequest) {
           : null,
         hasStripeSubscription: Boolean(sub?.stripeSubscriptionId),
       },
+      unpaid: unpaidCycle
+        ? {
+            startedAt: unpaidCycle.startedAt.toISOString(),
+            deadlineAt: unpaidCycle.deadlineAt.toISOString(),
+            daysLeft: unpaidCycle.daysLeft,
+          }
+        : null,
       premiumFeatures: entitlements.premiumFeatures,
       canWrite: entitlements.canWrite,
       isRestricted: entitlements.isRestricted,

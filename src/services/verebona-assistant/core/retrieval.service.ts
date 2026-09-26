@@ -19,7 +19,7 @@ import { getEnabledAdapters } from '../registries/retrieval-adapter-registry';
 import { resolveEntities } from './entity-resolution.service';
 import { isInventoryQuery } from './query-terms';
 import type { ConversationRefs } from '../types/machine';
-import { isHelpIntent, retrieveHelpSources } from './help-corpus.service';
+import { helpContextFromPage, isHelpIntent, retrieveHelpSources } from './help-corpus.service';
 
 export async function retrieve(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]> {
   const cfg = getAssistantConfig();
@@ -35,7 +35,9 @@ export async function retrieve(route: IntentRoute, input: AssistantRequestInput)
   // incluse (T2-07).
   // ══════════════════════════════════════════════════════════════════════
   if (isHelpIntent(route.intent)) {
-    return retrieveHelpSources(input.message, input.planType, cfg.maxSources);
+    // T2-05 : écran, type d'objet et plateforme pondèrent le choix des
+    // articles (un article « mobile » n'est pas proposé sur le web).
+    return retrieveHelpSources(input.message, input.planType, cfg.maxSources, helpContextFromPage(input.pageContext));
   }
 
   // 1. Sécurité & périmètre (§13.2) — accountId vient du serveur, jamais du client.

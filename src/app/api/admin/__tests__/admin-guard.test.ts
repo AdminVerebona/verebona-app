@@ -37,12 +37,8 @@ const HEADER_IDENTITY = /headers\.get\(\s*['"]x-(?:admin-)?user-id['"]\s*\)/i;
 const EXCEPTIONS: Record<string, string> = {
   // Route retirée : répond 410 sans lire ni écrire aucune donnée.
   'ai-instructions/apply/route.ts': 'Route retirée (410 Gone), aucun accès aux données.',
-  // Zone IA traitée par un autre lot (CDC IA). Contrôle manuel du rôle via
-  // SessionService.getSession + comparaison ADMIN/SUPER_ADMIN : sûr, mais non
-  // harmonisé. Signalé pour reprise par le lot IA.
-  'ai/accounts/[accountId]/quota/route.ts': 'Lot IA — contrôle manuel du rôle, à harmoniser.',
-  'ai/accounts/[accountId]/reset-counter/route.ts': 'Lot IA — contrôle manuel du rôle, à harmoniser.',
-  'ai/accounts/[accountId]/unlock-security/route.ts': 'Lot IA — contrôle manuel du rôle, à harmoniser.',
+  // Les routes ai/accounts/[accountId]/{quota,reset-counter,unlock-security}
+  // passent désormais par `requireAdmin` (lot IA 2, GEN-013) : plus d'exception.
 };
 
 function listRoutes(dir: string): string[] {

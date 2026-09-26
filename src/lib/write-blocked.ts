@@ -16,6 +16,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { toast } from 'sonner';
+import { unpaidRestrictionMessage } from '@/services/billing/unpaid-cycle.rules';
 
 /** Page de souscription — cible unique des CTA de deblocage. */
 export const OFFERS_PATH = '/mon-compte/offres';
@@ -48,6 +49,42 @@ export interface WriteBlockedInfo {
   message: string;
   /** Quota concerne, lorsque le refus vient d'une limite chiffree. */
   limit?: number;
+  /**
+   * Refus du a un impaye (paiement echoue) : la fenetre propose alors la mise
+   * a jour du moyen de paiement, pas le choix d'une offre. Le serveur renvoie
+   * `SUBSCRIPTION_REQUIRED` dans ce cas ; c'est le client, qui connait le
+   * cycle d'impaye (`/api/billing/trial-status`), qui le precise.
+   */
+  unpaid?: { deadlineAt: string; daysLeft: number };
+}
+
+/** Titre de la fenetre en cas d'impaye. */
+export const UNPAID_BLOCKED_TITLE = 'Paiement à régulariser';
+
+/**
+ * Refus a annoncer pour un compte RESTREINT, d'apres ses droits.
+ *
+ * Trois situations, trois discours — c'etait un seul (« essai termine ») :
+ *   · impaye en cours → message de regularisation, avec la date limite ;
+ *   · essai expire    → TRIAL_EXPIRED ;
+ *   · sinon           → SUBSCRIPTION_REQUIRED generique.
+ * Partage par `WriteGuardContext` et la page des biens.
+ */
+export function restrictedWriteInfo(entitlements: {
+  trial?: { status?: string } | null;
+  unpaid?: { deadlineAt: string; daysLeft: number } | null;
+} | null | undefined): WriteBlockedInfo {
+  if (entitlements?.unpaid) {
+    return {
+      code: 'SUBSCRIPTION_REQUIRED',
+      message: unpaidRestrictionMessage(new Date(entitlements.unpaid.deadlineAt)),
+      unpaid: { deadlineAt: entitlements.unpaid.deadlineAt, daysLeft: entitlements.unpaid.daysLeft },
+    };
+  }
+  if (entitlements?.trial?.status === 'expired') {
+    return { code: 'TRIAL_EXPIRED', message: TRIAL_EXPIRED_MESSAGE };
+  }
+  return { code: 'SUBSCRIPTION_REQUIRED', message: 'Un abonnement actif est nécessaire pour effectuer cette action.' };
 }
 
 export function isWriteBlockedCode(code: unknown): code is WriteBlockedCode {

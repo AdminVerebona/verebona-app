@@ -49,7 +49,7 @@ export function VerebonaTrigger({ onClick, hidden }: VerebonaTriggerProps) {
         alt=""
         width={64}
         height={64}
-        className="select-none animate-[vb-float_6s_ease-in-out_infinite] [filter:drop-shadow(0_14px_24px_rgba(4,10,26,.6))]"
+        className="select-none animate-[vb-float_6s_ease-in-out_infinite] motion-reduce:animate-none [filter:drop-shadow(0_14px_24px_rgba(4,10,26,.6))]"
       />
     </button>
   );

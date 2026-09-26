@@ -72,6 +72,8 @@ export interface CostReport {
   byModel: CostBreakdownRow[];
   byRank: CostBreakdownRow[];
   byVersion: CostBreakdownRow[];
+  /** CST-UI-06, COST-003, COST-014 : comptes les plus coûteux (pas de budget par compte). */
+  byAccount: CostBreakdownRow[];
   /** Vrai si au moins un appel n'a pas de tarif : l'agrégat est incomplet. */
   incomplete: boolean;
 }
@@ -147,7 +149,7 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
   const p = params(f, since, until);
   const where = whereClause();
 
-  const [totalsRows, treatmentRows, modelRows, rankRows, versionRows] = await Promise.all([
+  const [totalsRows, treatmentRows, modelRows, rankRows, versionRows, accountRows] = await Promise.all([
     pgClient.unsafe(
       `SELECT ${AGG},
               COUNT(*) FILTER (WHERE e.status = 'error')::int AS failed,
@@ -182,6 +184,12 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
         GROUP BY v.visible_number ORDER BY functional DESC LIMIT 20`,
       p as never[],
     ),
+    pgClient.unsafe(
+      `SELECT e.account_id::text AS key, ${AGG}
+         FROM ai_usage_event e ${where}
+        GROUP BY e.account_id ORDER BY functional DESC LIMIT 20`,
+      p as never[],
+    ),
   ]);
 
   const t = (totalsRows as unknown as Row[])[0] ?? {};
@@ -211,6 +219,7 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
       toBreakdown(r, RANK_LABELS[String(r.key)] ?? 'Rang inconnu')),
     byVersion: (versionRows as unknown as Row[]).map((r) =>
       toBreakdown(r, r.key === 'sans version' ? 'Sans version' : `v${r.key}`)),
+    byAccount: (accountRows as unknown as Row[]).map((r) => toBreakdown(r, `Compte ${r.key}`)),
     incomplete: totals.unpricedCalls > 0,
   };
 }

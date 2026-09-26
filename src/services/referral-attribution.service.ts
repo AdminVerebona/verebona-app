@@ -24,6 +24,7 @@
 import { db } from '@/db';
 import { referralLinks, signupContexts } from '@/db/schema';
 import { and, eq, isNull, or, gt } from 'drizzle-orm';
+import { reportReferralAttributionFailure } from '@/services/admin/anomaly.service';
 
 /**
  * Durée de validité de l'attribution mémorisée.
@@ -150,6 +151,7 @@ export async function recordSignupReferral(
       `[referral] enregistrement de l'attribution impossible pour l'utilisateur ${input.userId} :`,
       (e as Error).message,
     );
+    await reportReferralAttributionFailure({ userId: input.userId, accountId: input.accountId ?? null, code }, e);
     return null;
   }
 }

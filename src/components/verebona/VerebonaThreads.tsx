@@ -6,6 +6,7 @@
  * rien reprendre des autres. Les fils sont ceux de l'utilisateur connecté
  * uniquement (privés en Duo).
  */
+import { useState } from 'react';
 import type { VerebonaThread } from '@/lib/verebona/useVerebona';
 
 export interface VerebonaThreadsProps {
@@ -27,6 +28,8 @@ export function libelleFil(t: VerebonaThread): string {
 }
 
 export function VerebonaThreads({ threads, currentId, disabled, onSelect, onNew, onClear }: VerebonaThreadsProps) {
+  // §24.4 : l'effacement est définitif — il demande une confirmation.
+  const [confirmer, setConfirmer] = useState(false);
   const courantConnu = currentId != null && threads.some((t) => t.id === currentId);
   return (
     <div className="flex items-center gap-2 border-b px-4 py-2">
@@ -51,16 +54,23 @@ export function VerebonaThreads({ threads, currentId, disabled, onSelect, onNew,
       >
         + Nouvelle
       </button>
-      {currentId != null && (
+      {currentId != null && !confirmer && (
         <button
           type="button"
-          onClick={onClear}
+          onClick={() => setConfirmer(true)}
           disabled={disabled}
           className="shrink-0 text-xs text-muted-foreground underline"
           aria-label="Effacer cette conversation"
         >
           Effacer
         </button>
+      )}
+      {currentId != null && confirmer && (
+        <span role="alertdialog" aria-label="Confirmer l’effacement" className="flex shrink-0 items-center gap-1 text-xs">
+          <span>Effacer définitivement ?</span>
+          <button type="button" className="rounded border px-1.5 py-0.5 text-destructive" onClick={() => { setConfirmer(false); onClear(); }}>Oui</button>
+          <button type="button" className="rounded border px-1.5 py-0.5" autoFocus onClick={() => setConfirmer(false)}>Non</button>
+        </span>
       )}
     </div>
   );

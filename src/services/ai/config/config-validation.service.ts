@@ -32,6 +32,7 @@
  * faire échouer le démarrage de la production.
  */
 import { TREATMENTS, getTreatment, isPromptAdministrable, type Treatment } from './treatments';
+import { TRIGGER_CATALOG } from './catalogs';
 import {
   REASONING_LEVELS, GUARDRAIL_REACTIONS, FIELD_LABELS,
   type TreatmentConfig, type ConfigFieldKey,
@@ -73,6 +74,16 @@ export interface ConfigCatalogs {
    * l'arbitrage n'est pas rendu ; avertissement par défaut.
    */
   requireActiveTrigger?: boolean;
+}
+
+/**
+ * Le déclencheur s'applique-t-il à ce traitement ? Un code absent du catalogue
+ * statique est laissé au contrôle « inconnu du catalogue » (catalogue injecté).
+ */
+export function isTriggerApplicable(code: string, treatment: Treatment): boolean {
+  const def = TRIGGER_CATALOG.find((d) => d.code === code);
+  if (!def) return true;
+  return !def.treatments || def.treatments.includes(treatment);
 }
 
 function issue(
@@ -220,13 +231,28 @@ function validateTriggers(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIs
       out.push(issue(t, 'triggers', `Déclencheur inconnu du catalogue : « ${tr.code} ».`));
       continue;
     }
+    // T3-003, T4-016 : un déclencheur n'est sélectionnable que pour les
+    // traitements auxquels le catalogue l'applique — il est désormais lu au
+    // runtime (queue/triggers.ts), un code hors périmètre ne ferait rien.
+    if (!isTriggerApplicable(tr.code, t)) {
+      out.push(issue(t, 'triggers', `Le déclencheur « ${tr.code} » ne s'applique pas à ${t}.`));
+    }
     if (vus.has(tr.code)) {
       out.push(issue(t, 'triggers', `Déclencheur « ${tr.code} » déclaré deux fois.`));
     }
     vus.add(tr.code);
   }
 
-  if (!c.triggers.some((x) => x.active)) {
+  if (c.triggers.length === 0) {
+    // Liste jamais renseignée : les déclencheurs par défaut du code
+    // s'appliquent (queue/triggers.ts, DEFAULT_TRIGGERS). Signalé, pas bloquant :
+    // c'est l'état de toutes les versions antérieures à l'application runtime.
+    out.push(issue(
+      t, 'triggers',
+      'Aucun déclencheur renseigné : les déclencheurs par défaut du code s\'appliquent.',
+      cat.requireActiveTrigger === true,
+    ));
+  } else if (!c.triggers.some((x) => x.active)) {
     out.push(issue(
       t, 'triggers',
       "Aucun déclencheur actif : ce traitement ne partira que manuellement.",

@@ -13,6 +13,7 @@
  */
 import { acquireJobLock, releaseJobLock } from '@/lib/job-lock';
 import { runDatabaseBackup } from './database-backup.service';
+import { reportBackupFailure, resolveBackupFailure } from '@/services/admin/anomaly.service';
 
 const TOUR_MS = 30 * 60 * 1000;
 const DELAI_INITIAL_MS = 2 * 60 * 1000;
@@ -61,9 +62,11 @@ async function tour(): Promise<void> {
   if (!bail) return;
   try {
     await runDatabaseBackup('scheduler');
+    await resolveBackupFailure();
     // Bail conservé : il cadence la prochaine sauvegarde.
   } catch (e) {
     console.error('[backup-scheduler] sauvegarde échouée :', (e as Error).message);
+    await reportBackupFailure('scheduler', e);
     await releaseJobLock(bail);
   }
 }

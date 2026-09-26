@@ -42,6 +42,7 @@ import { apiClient } from '@/lib/api-client';
 import { getPlanTheme } from '@/lib/plan-theme';
 import { formatBytes, formatDate, formatDateTime, formatMoney } from '@/lib/admin/format';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
+import { AccountWithdrawals } from './_components/AccountWithdrawals';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -510,6 +511,9 @@ export default function AccountDetailPage() {
               </table>
             </div>
           </section>
+
+          {/* ── Rétractations (SUB-015) ── */}
+          <AccountWithdrawals accountId={account.id} />
 
           {/* ── Changement exceptionnel d'offre (ACC-A06) ── */}
           <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 overflow-hidden">

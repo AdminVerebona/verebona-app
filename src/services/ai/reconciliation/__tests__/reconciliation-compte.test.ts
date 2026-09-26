@@ -45,10 +45,12 @@ describe('un orchestrateur, pas un second moteur', () => {
 });
 
 describe('déclencheurs et concurrence', () => {
-  it('manuel (admin tracé), planifié (intervalle configurable), événementiel (temporisé, fusionné)', () => {
-    expect(read('src/app/api/admin/ai/reconciliation/accounts/[accountId]/route.ts')).toMatch(/type: 'manual', requestedByUserId: adminId/);
-    expect(S).toMatch(/T3_ACCOUNT_RECONCILIATION_INTERVAL_HOURS/);
-    expect(S).toMatch(/ON CONFLICT \(account_id\) WHERE status = 'queued'/);
+  it('manuel (admin tracé), planifié (déclencheurs versionnés), événementiel (temporisé, fusionné) — via la file durable', () => {
+    // Lot IA 2 (OPS-001) : les trois origines passent par ai_job_queue ;
+    // la logique est testée dans t3-queue.test.ts.
+    expect(read('src/app/api/admin/ai/reconciliation/accounts/[accountId]/route.ts')).toMatch(/enqueueT3Manual\(accountId, adminId, scope\)/);
+    expect(S).not.toMatch(/T3_ACCOUNT_RECONCILIATION_INTERVAL_HOURS/);
+    expect(S).toMatch(/enqueueT3ForEvent/);
     expect(S).toMatch(/T3_EVENT_DEBOUNCE_MS/);
   });
   it('événements métier branchés : modification de bien, arbitrage, rattachement de document', () => {

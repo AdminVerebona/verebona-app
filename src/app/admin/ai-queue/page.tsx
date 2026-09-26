@@ -20,6 +20,17 @@
  * ligne et affichée en clair.
  *
  * ══════════════════════════════════════════════════════════════════════════
+ * LOT IA 2
+ *
+ * · Filtres lus depuis l'URL (liens préfiltrés du tableau de bord et des
+ *   alertes) ; filtres origine, déclencheur et période (QUE-UI-04).
+ * · Colonnes : identifiant, déclencheur, création, reprise prévue ; lien
+ *   « Voir les appels » vers les exécutions du job (QUE-UI-05, SCR-08).
+ * · « Relancer » un échec définitif (MOD-006, OPS-018) ; « Forcer la
+ *   réactivation » d'un traitement suspendu (OPS-027) ; confirmation au
+ *   relâchement de l'arrêt d'urgence (EST-01).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
  * CE QUE L'ÉCRAN NE PROPOSE PAS
  *
  * Aucune priorité manuelle : le §1.4 l'exclut de la V1, et l'offrir ici
@@ -27,18 +38,22 @@
  * signalée, jamais attribuée à la main.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { Suspense, useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
-  Loader2, RefreshCw, OctagonX, Play, Pause, ArrowUp, XCircle, Clock,
+  Loader2, RefreshCw, OctagonX, Play, Pause, ArrowUp, XCircle, Clock, RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
+import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
+import { ManualLaunch } from './_components/ManualLaunch';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
 type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED';
@@ -59,6 +74,9 @@ interface Job {
   coalesceRequested: boolean;
   headPriority: boolean;
   createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  configVersionId: number | null;
 }
 
 interface Summary { treatment: Treatment; pending: number; running: number; failed: number }
@@ -133,14 +151,32 @@ function targetLabel(job: Job): string {
 }
 
 export default function AiQueuePage() {
+  // `useSearchParams` exige une frontière Suspense (Next.js 15).
+  return (
+    <Suspense fallback={<div className="py-20 text-center text-[color:var(--text-muted)]">Chargement…</div>}>
+      <AiQueueScreen />
+    </Suspense>
+  );
+}
+
+function AiQueueScreen() {
+  const sp = useSearchParams();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [filterTreatment, setFilterTreatment] = useState('');
-  const [filterStatus, setFilterStatus] = useState('PENDING');
-  const [filterAccount, setFilterAccount] = useState('');
+  // Filtres initialisés depuis l'URL : les liens préfiltrés ouvrent enfin
+  // l'écran filtré (ALT-01, COST-009).
+  const [filterTreatment, setFilterTreatment] = useState(sp.get('treatment') ?? '');
+  const [filterStatus, setFilterStatus] = useState(sp.get('status') ?? (sp.get('treatment') ? '' : 'PENDING'));
+  const [filterAccount, setFilterAccount] = useState(sp.get('accountId') ?? '');
+  const [filterOrigin, setFilterOrigin] = useState(sp.get('origin') ?? '');
+  const [filterTrigger, setFilterTrigger] = useState(sp.get('trigger') ?? '');
+  const [filterFrom, setFilterFrom] = useState(sp.get('from') ?? '');
+  const [filterTo, setFilterTo] = useState(sp.get('to') ?? '');
+  const [releaseDialog, setReleaseDialog] = useState(false);
+  const [forcing, setForcing] = useState<Treatment | null>(null);
   const [cancelling, setCancelling] = useState<Job | null>(null);
   const [stopDialog, setStopDialog] = useState(false);
   const [stopReason, setStopReason] = useState('');
@@ -151,6 +187,11 @@ export default function AiQueuePage() {
       if (filterTreatment) params.set('treatment', filterTreatment);
       if (filterStatus) params.set('status', filterStatus);
       if (/^\d+$/.test(filterAccount)) params.set('accountId', filterAccount);
+      if (filterOrigin) params.set('origin', filterOrigin);
+      if (filterTrigger) params.set('trigger', filterTrigger);
+      if (filterFrom) params.set('from', filterFrom);
+      if (filterTo) params.set('to', filterTo);
+      window.history.replaceState(null, '', `?${params}`);
 
       const [o, j] = await Promise.all([
         apiClient.get<Overview>('/api/admin/ai/queue'),
@@ -169,7 +210,7 @@ export default function AiQueuePage() {
     } finally {
       setLoading(false);
     }
-  }, [filterTreatment, filterStatus, filterAccount]);
+  }, [filterTreatment, filterStatus, filterAccount, filterOrigin, filterTrigger, filterFrom, filterTo]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -195,6 +236,18 @@ export default function AiQueuePage() {
       await load();
     } catch {
       toast.error("L'arrêt d'urgence n'a pas pu être modifié.");
+    } finally { setBusy(false); }
+  };
+
+  /** MOD-006 : relance d'un échec définitif, depuis le modèle principal. */
+  const retry = async (job: Job) => {
+    setBusy(true);
+    try {
+      await apiClient.post(`/api/admin/ai/queue/jobs/${job.id}/retry`, {});
+      toast.success(`Travail ${job.id} relancé`);
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message || 'Relance impossible.');
     } finally { setBusy(false); }
   };
 
@@ -229,6 +282,8 @@ export default function AiQueuePage() {
 
   return (
     <div className="space-y-6 max-w-5xl">
+      {/* VER-026 / GST-01 : environnement et état global, sur chaque page IA */}
+      <AiEnvBanner showControl={false} />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">File d&apos;attente IA</h1>
@@ -240,6 +295,9 @@ export default function AiQueuePage() {
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Actualiser
         </Button>
       </div>
+
+      {/* WF-11 : lancement manuel T1 / T3 (estimation, confirmation) */}
+      <ManualLaunch onLaunched={load} />
 
       {stop?.active && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 flex items-start gap-3">
@@ -254,7 +312,7 @@ export default function AiQueuePage() {
               Les traitements retrouveront leur état précédent au relâchement.
             </p>
           </div>
-          <Button size="sm" variant="outline" onClick={() => toggleStop(false)} disabled={busy}>
+          <Button size="sm" variant="outline" onClick={() => setReleaseDialog(true)} disabled={busy}>
             Relâcher
           </Button>
         </div>
@@ -280,12 +338,21 @@ export default function AiQueuePage() {
               {s.state === 'SUSPENDED' && s.suspendedReason && (
                 <p className="text-xs text-amber-500">{s.suspendedReason}</p>
               )}
-              <Button size="sm" variant="ghost" disabled={busy || s.state === 'SUSPENDED'}
-                onClick={() => toggleTreatment(s.treatment, s.state !== 'ENABLED')}>
-                {s.state === 'ENABLED'
-                  ? <><Pause className="w-3.5 h-3.5 mr-1.5" /> Désactiver</>
-                  : <><Play className="w-3.5 h-3.5 mr-1.5" /> Réactiver</>}
-              </Button>
+              {s.state === 'SUSPENDED' ? (
+                // OPS-027 : réactivation forcée — remet le disjoncteur à zéro,
+                // conserve les alertes par modèle. Confirmée : la cause de la
+                // suspension n'est peut-être pas levée.
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => setForcing(s.treatment)}>
+                  <Play className="w-3.5 h-3.5 mr-1.5" /> Forcer la réactivation
+                </Button>
+              ) : (
+                <Button size="sm" variant="ghost" disabled={busy}
+                  onClick={() => toggleTreatment(s.treatment, s.state !== 'ENABLED')}>
+                  {s.state === 'ENABLED'
+                    ? <><Pause className="w-3.5 h-3.5 mr-1.5" /> Désactiver</>
+                    : <><Play className="w-3.5 h-3.5 mr-1.5" /> Réactiver</>}
+                </Button>
+              )}
             </div>
           );
         })}
@@ -308,6 +375,16 @@ export default function AiQueuePage() {
         <Input placeholder="Compte" value={filterAccount} inputMode="numeric"
           onChange={(e) => setFilterAccount(e.target.value)}
           className="max-w-[140px] bg-[color:var(--bg-input)]" />
+        <select value={filterOrigin} onChange={(e) => setFilterOrigin(e.target.value)}
+          className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
+          <option value="">Toutes origines</option>
+          <option value="automatic">Automatique</option>
+          <option value="manual">Manuelle</option>
+        </select>
+        <Input placeholder="Déclencheur" value={filterTrigger} onChange={(e) => setFilterTrigger(e.target.value)}
+          className="max-w-[160px] bg-[color:var(--bg-input)]" />
+        <Input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} className="max-w-[160px] bg-[color:var(--bg-input)]" />
+        <Input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} className="max-w-[160px] bg-[color:var(--bg-input)]" />
       </div>
 
       {/* Liste */}
@@ -325,6 +402,7 @@ export default function AiQueuePage() {
                 {job.headPriority && (
                   <ArrowUp className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-label="remis en tête" />
                 )}
+                <span className="text-xs text-[color:var(--text-muted)]">#{job.id}</span>
                 <span className={`text-xs px-2 py-0.5 rounded-full border ${STATUS_STYLE[job.status]}`}>
                   {STATUS_LABEL[job.status]}
                 </span>
@@ -335,12 +413,28 @@ export default function AiQueuePage() {
                 {job.origin === 'manual' && (
                   <span className="text-xs text-[color:var(--text-muted)]">lancé à la main</span>
                 )}
+                {job.status === 'FAILED' && (
+                  <Button size="sm" variant="ghost" onClick={() => retry(job)} disabled={busy}>
+                    <RotateCcw className="w-3.5 h-3.5 mr-1" /> Relancer
+                  </Button>
+                )}
                 {job.status === 'PENDING' && (
-                  <Button size="sm" variant="ghost" onClick={() => setCancelling(job)} disabled={busy}>
+                  <Button size="sm" variant="ghost" onClick={() => setCancelling(job)} disabled={busy} aria-label="Annuler">
                     <XCircle className="w-3.5 h-3.5" />
                   </Button>
                 )}
               </div>
+              <p className="text-xs text-[color:var(--text-muted)]">
+                {job.triggerCode ? `Déclencheur ${job.triggerCode}` : 'Sans déclencheur'}
+                {' · créé le '}{new Date(job.createdAt).toLocaleString('fr-FR')}
+                {job.status === 'PENDING' && ` · disponible à ${new Date(job.availableAt).toLocaleString('fr-FR')}`}
+                {job.startedAt && ` · démarré ${new Date(job.startedAt).toLocaleTimeString('fr-FR')}`}
+                {job.finishedAt && ` · fini ${new Date(job.finishedAt).toLocaleTimeString('fr-FR')}`}
+                {job.configVersionId && ` · version #${job.configVersionId}`}
+                {job.status !== 'PENDING' && job.status !== 'CANCELLED' && (
+                  <> · <Link href={`/admin/ai-executions?jobId=${job.id}`} className="text-[color:var(--accent)] hover:underline">Voir les appels</Link></>
+                )}
+              </p>
 
               {reason && (
                 <p className="text-xs text-amber-500 flex items-start gap-1.5">
@@ -387,6 +481,38 @@ export default function AiQueuePage() {
             <Button variant="destructive" onClick={() => cancelling && cancel(cancelling)}>
               Annuler le travail
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={releaseDialog} onOpenChange={setReleaseDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Relâcher l&apos;arrêt d&apos;urgence</DialogTitle>
+            <DialogDescription>
+              Les appels IA reprennent immédiatement dans tout l&apos;environnement ; chaque traitement
+              retrouve l&apos;état qu&apos;il avait avant l&apos;arrêt. Motif de l&apos;arrêt : {stop?.reason ?? '—'}.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={() => setReleaseDialog(false)}>Revenir</Button>
+            <Button onClick={() => { setReleaseDialog(false); toggleStop(false); }}>Relâcher</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={forcing !== null} onOpenChange={(o) => !o && setForcing(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Forcer la réactivation de {forcing}</DialogTitle>
+            <DialogDescription>
+              Le disjoncteur est remis à zéro et le traitement redémarre sans attendre la prochaine sonde.
+              Les alertes par modèle sont conservées jusqu&apos;au prochain succès de chacun.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={() => setForcing(null)}>Revenir</Button>
+            <Button onClick={() => { const t = forcing; setForcing(null); if (t) toggleTreatment(t, true); }}>Forcer</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

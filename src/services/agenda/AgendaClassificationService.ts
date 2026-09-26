@@ -9,8 +9,8 @@
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { legacyGeminiKeyOrNull } from '@/services/ai/provider/legacy-gemini-access';
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || '';
 const MODEL = 'gemini-2.0-flash';
 
 export type HomeCategory = 'action' | 'information';
@@ -89,11 +89,15 @@ export async function classifyAgendaItem(
   const ruleResult = classifyByRules(title, originType, originFieldKey);
   if (ruleResult !== null) return ruleResult;
 
-  // 2. Appel IA si pas de clé configurée → fallback 'action'
-  if (!GEMINI_API_KEY) return 'action';
+  // 2. Appel IA — clé ACTIVE du BO, et seulement si T4 peut appeler l'IA
+  //    (arrêt d'urgence, désactivation, suspension : OPS-011, WF-07, WF-08).
+  //    Sinon, repli déterministe 'action', comme sans clé. Lue à l'appel et non
+  //    au chargement du module : la rotation depuis le BO s'applique (WF-21).
+  const apiKey = await legacyGeminiKeyOrNull('T4');
+  if (!apiKey) return 'action';
 
   try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: MODEL });
 
     const prompt = `Tu es un assistant qui classe des événements agenda en deux catégories :

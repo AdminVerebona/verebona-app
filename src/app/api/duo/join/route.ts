@@ -86,6 +86,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'SUBSCRIPTION_INACTIVE' }, { status: 403 });
     }
 
+    // Invitation nominative : si elle désigne une adresse, seul le compte de
+    // cette adresse peut l'utiliser (même règle que l'inscription sur
+    // invitation, `lib/prelaunch-invitations.ts`). Sans ce contrôle, toute
+    // personne à qui le lien est transféré rejoignait le Duo — et accédait à
+    // l'espace partagé du titulaire.
+    if (
+      duo.pendingInviteEmail
+      && duo.pendingInviteEmail.trim().toLowerCase() !== String(session.email ?? '').trim().toLowerCase()
+    ) {
+      return NextResponse.json(
+        {
+          error: 'INVITE_EMAIL_MISMATCH',
+          message: 'Cette invitation a été envoyée à une autre adresse e-mail. Connectez-vous avec l’adresse invitée.',
+        },
+        { status: 403 },
+      );
+    }
+
     // Cannot join your own duo
     if (duo.billingOwnerUserId === session.userId) {
       return NextResponse.json({ error: 'CANNOT_JOIN_OWN_DUO' }, { status: 409 });

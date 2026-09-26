@@ -107,6 +107,8 @@ export interface PageContext {
   assetId?: string;
   documentId?: string;
   supplierId?: string;
+  /** Plateforme d'affichage (choix des articles d'aide — T2-05). */
+  platform?: 'web' | 'mobile';
 }
 
 /** Requête d'entrée normalisée côté serveur. */
@@ -122,6 +124,14 @@ export interface AssistantRequestInput {
   message: string;
   pageContext?: PageContext;
   clientRequestId: string;
+  /**
+   * Identifiant serveur de la demande, réservé par la route AVANT le
+   * traitement (ligne `verebona_request_runs` en `pending`) : il rend la
+   * demande annulable pendant qu'elle s'exécute (§7.8, §27.5) et rattache
+   * chaque appel modèle à sa demande (§28.8). Absent : généré par
+   * `runAssistant`.
+   */
+  requestId?: string;
   locale: string; // fr-FR
   /**
    * Conversation de l'utilisateur à laquelle la demande appartient, résolue

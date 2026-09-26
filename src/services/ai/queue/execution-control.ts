@@ -24,6 +24,7 @@
  * d'administration interrompent.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { currentJobContext } from './job-context';
 
 export class ExecutionCancelledError extends Error {
   readonly code = 'EXECUTION_CANCELLED';
@@ -33,9 +34,32 @@ export class ExecutionCancelledError extends Error {
   }
 }
 
+/**
+ * L'erreur est-elle une INTERRUPTION (et non un échec) ?
+ *
+ * Deux codes :
+ *   · `EXECUTION_CANCELLED` — jeton révoqué, bail perdu, signal local ;
+ *   · `AI_BLOCKED` — la garde de la passerelle a refusé l'appel (arrêt
+ *     d'urgence, désactivation, suspension). C'est une décision
+ *     d'exploitation, pas une défaillance du travail : la traiter en échec
+ *     consommait une tentative (MOD-005) et marquait la source
+ *     ANALYSIS_FAILED, alors que le travail doit simplement attendre la
+ *     réactivation (WF-07 étapes 40-41, WF-08). Revue indépendante lot IA 2.
+ *
+ * Tous les appelants qui rethrowent une interruption (pipeline T1,
+ * réconciliation T3, classification T4) la laissent ainsi remonter jusqu'à la
+ * file, qui remet le travail en attente sans compter de tentative.
+ *
+ * `AI_BLOCKED` n'est une interruption qu'À L'INTÉRIEUR d'une exécution de
+ * file (contexte job-context : file durable, file mémoire T1). Hors file
+ * (route synchrone, appel T2), il n'y a rien à remettre en attente : les
+ * appelants gardent leur repli sans IA (déterministe), comme avant.
+ */
 export function isExecutionCancelled(e: unknown): boolean {
-  return e instanceof ExecutionCancelledError
-    || (typeof e === 'object' && e !== null && (e as { code?: string }).code === 'EXECUTION_CANCELLED');
+  if (e instanceof ExecutionCancelledError) return true;
+  const code = typeof e === 'object' && e !== null ? (e as { code?: string }).code : undefined;
+  if (code === 'EXECUTION_CANCELLED') return true;
+  return code === 'AI_BLOCKED' && currentJobContext() !== null;
 }
 
 /** Garde transmise à l'exécutant : signal + contrôle avant écriture. */

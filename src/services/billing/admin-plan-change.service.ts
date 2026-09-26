@@ -102,7 +102,12 @@ export function billingPeriodOfPrice(price: Pick<Stripe.Price, 'recurring'> | nu
  * Paramètres de mise à jour de l'abonnement Stripe. Pure : c'est ici que se
  * concentrent ACC-A09 et ACC-A10, donc ici qu'on les vérifie.
  */
-export function buildStripeUpdateParams(itemId: string, priceId: string): Stripe.SubscriptionUpdateParams {
+export function buildStripeUpdateParams(
+  itemId: string,
+  priceId: string,
+  targetPlan?: PlanCode,
+  now: Date = new Date(),
+): Stripe.SubscriptionUpdateParams {
   return {
     items: [{ id: itemId, price: priceId, quantity: 1 }],
     // ACC-A09 : ni prorata, ni débit immédiat, ni remboursement, ni avoir.
@@ -110,8 +115,33 @@ export function buildStripeUpdateParams(itemId: string, priceId: string): Stripe
     // ACC-A10 : l'échéance ne bouge pas ; le prix normal s'applique à la
     // prochaine échéance, à la périodicité existante.
     billing_cycle_anchor: 'unchanged',
-    metadata: { admin_plan_change: new Date().toISOString() },
+    // ══════════════════════════════════════════════════════════════════
+    // MARQUEUR LU PAR LA SYNCHRONISATION (course admin / webhook)
+    //
+    // `subscriptions.update` déclenche `customer.subscription.updated`. Si
+    // ce webhook est traité AVANT l'application locale, la synchronisation
+    // voyait un changement d'offre « client » : notification et email à
+    // l'utilisateur (contraire à ACC-A05, esprit ACC-A17) et historique
+    // écrit une première fois, puis une seconde par l'application locale.
+    //
+    // Le marqueur (date + offre cible) permet à `syncSubscriptionFromStripe`
+    // de reconnaître l'écho de CE changement : pas de notification, source
+    // 'admin:override' (voir `isAdminPlanChangeEcho`).
+    // ══════════════════════════════════════════════════════════════════
+    metadata: {
+      admin_plan_change: now.toISOString(),
+      ...(targetPlan ? { admin_plan_change_to: targetPlan } : {}),
+    },
   };
+}
+
+/**
+ * L'offre cible est-elle déjà en place localement ? Pure.
+ * Vrai quand le webhook de l'update Stripe a été synchronisé avant
+ * l'application locale : l'historique est alors déjà écrit.
+ */
+export function planAlreadyApplied(currentPlanType: string | null | undefined, newPlan: AdminAssignablePlan): boolean {
+  return currentPlanType === newPlan;
 }
 
 interface AccountSnapshot {
@@ -171,17 +201,39 @@ async function loadAccountSnapshot(accountId: number): Promise<AccountSnapshot |
  * Statut d’abonnement et échéance conservés : seule l’offre change.
  */
 async function applyLocalPlanChange(snapshot: AccountSnapshot, newPlan: AdminAssignablePlan): Promise<void> {
+  // ══════════════════════════════════════════════════════════════════════
+  // IDEMPOTENT FACE AU WEBHOOK
+  //
+  // L'état est RELU : le webhook `customer.subscription.updated` de l'update
+  // Stripe a pu être synchronisé entre-temps (offre, statut, échéance déjà à
+  // jour, historique écrit avec la source 'admin:override'). Dans ce cas
+  // aucune seconde ligne d'historique n'est écrite ; les effets idempotents
+  // (Duo, limites Standard sans courriel) sont seulement confirmés, avec
+  // l'offre de départ du snapshot pour que la sortie de Duo s'applique.
+  // ══════════════════════════════════════════════════════════════════════
+  const [current] = await db
+    .select({
+      planType: accounts.planType,
+      subscriptionStatus: accounts.subscriptionStatus,
+      premiumUntil: accounts.premiumUntil,
+    })
+    .from(accounts)
+    .where(eq(accounts.id, snapshot.id))
+    .limit(1);
+  const alreadyApplied = planAlreadyApplied(current?.planType, newPlan);
+
   await applyPlanChange({
     accountId: snapshot.id,
     ownerUserId: snapshot.ownerUserId,
     oldPlanType: snapshot.planType,
     newPlanType: newPlan as KnownPlan,
-    newSubStatus: snapshot.subscriptionStatus,
-    newPremiumUntil: snapshot.premiumUntil,
+    newSubStatus: current?.subscriptionStatus ?? snapshot.subscriptionStatus,
+    newPremiumUntil: current ? current.premiumUntil : snapshot.premiumUntil,
     newMaxMembers: newPlan === 'PREMIUM_DUO' ? 2 : 1,
     source: 'admin:override',
     // ACC-A05 / A17 esprit : pas de courriel automatique sur action admin.
     sendEmails: false,
+    recordHistory: !alreadyApplied,
   });
   await db
     .update(accountSubscriptions)
@@ -258,7 +310,10 @@ export async function changePlanAsAdmin(
 
       try {
         const priceId = deps.resolvePrice(PLAN_CODE_OF[input.newPlan], billingPeriod);
-        await deps.stripe().subscriptions.update(subscription.id, buildStripeUpdateParams(item.id, priceId));
+        await deps.stripe().subscriptions.update(
+          subscription.id,
+          buildStripeUpdateParams(item.id, priceId, PLAN_CODE_OF[input.newPlan]),
+        );
         stripeUpdated = true;
       } catch (error) {
         return {

@@ -11,7 +11,14 @@ import { getSession } from '@/lib/auth-guards';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
-import { checkAccountStorageQuota, storageQuotaExceededResponse } from '@/lib/storage-quota';
+import {
+  checkAccountStorageQuota,
+  discardRejectedUploads,
+  storageQuotaExceededResponse,
+  withAccountStorageLock,
+  type StorageExecutor,
+  type StorageQuotaDecision,
+} from '@/lib/storage-quota';
 
 export async function POST(request: NextRequest) {
   try {
@@ -145,15 +152,6 @@ export async function POST(request: NextRequest) {
     if (accountForGuard) {
       const refus = await refuserSiLectureSeule(accountForGuard);
       if (refus) return refus;
-
-      // Plafond de stockage (CDC BO STO-003) : `presign` l'a vérifié fichier
-      // par fichier, mais plusieurs dépôts préparés en parallèle peuvent
-      // ensemble le dépasser. Le volume confirmé exclut les fichiers PENDING,
-      // d'où l'ajout du lot entier.
-      const storageDecision = await checkAccountStorageQuota(accountForGuard, cumul);
-      if (!storageDecision.allowed) {
-        return storageQuotaExceededResponse(storageDecision);
-      }
     }
 
     // Update the file records to COMPLETED
@@ -184,7 +182,7 @@ export async function POST(request: NextRequest) {
       updateData.equipmentId = parseInt(equipmentId.toString());
     }
 
-    const updatedFiles = await db
+    const confirmer = (executor: StorageExecutor) => executor
       .update(assetFiles)
       .set(updateData)
       .where(
@@ -195,6 +193,38 @@ export async function POST(request: NextRequest) {
         )
       )
       .returning();
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PLAFOND DE STOCKAGE (CDC BO STO-003) — CONTRÔLE ET ÉCRITURE ATOMIQUES
+    //
+    // `presign` l'a vérifié fichier par fichier, mais plusieurs dépôts
+    // préparés en parallèle peuvent ensemble le dépasser. Le volume confirmé
+    // exclut les fichiers PENDING, d'où l'ajout du lot entier.
+    //
+    // Contrôle et passage en COMPLETED se font sous verrou consultatif du
+    // compte, dans une même transaction : deux confirmations simultanées ne
+    // peuvent plus lire la même somme et dépasser ensemble le plafond.
+    //
+    // Un lot refusé (413) ne sera jamais confirmé : ses lignes sont écartées
+    // et ses objets S3 programmés pour suppression (`pending_blob_deletions`)
+    // dans la même transaction — ni objet ni ligne PENDING orphelins.
+    // ══════════════════════════════════════════════════════════════════════
+    type Issue = { kind: 'ok'; files: Awaited<ReturnType<typeof confirmer>> } | { kind: 'quota'; decision: StorageQuotaDecision };
+    const issue: Issue = accountForGuard
+      ? await withAccountStorageLock(accountForGuard, async (tx): Promise<Issue> => {
+          const decision = await checkAccountStorageQuota(accountForGuard, cumul, tx);
+          if (!decision.allowed) {
+            await discardRejectedUploads(tx, fileRecords.map((f) => ({ id: f.id, s3Key: f.s3Key })), userId);
+            return { kind: 'quota', decision };
+          }
+          return { kind: 'ok', files: await confirmer(tx) };
+        })
+      : { kind: 'ok', files: await confirmer(db) };
+
+    if (issue.kind === 'quota') {
+      return storageQuotaExceededResponse(issue.decision);
+    }
+    const updatedFiles = issue.files;
 
     if (updatedFiles.length === 0) {
       return NextResponse.json(

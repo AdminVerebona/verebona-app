@@ -5,6 +5,7 @@
  * Changer de fournisseur ne doit impliquer aucune modification métier.
  */
 import type { AiAttachment } from '../types';
+import type { ReasoningLevel } from '../../config/config-types';
 
 export interface ProviderCallInput {
   model: string;
@@ -21,6 +22,12 @@ export interface ProviderCallInput {
    * son schéma — une troncature transformerait donc un réglage en panne.
    */
   maxOutputTokens?: number;
+  /**
+   * Niveau de raisonnement administré pour le rang sollicité (T1-UI-06,
+   * T2-UI-03, T3-UI-03, T4-UI-03). `null`/absent = défaut du modèle. Chaque
+   * adaptateur le projette sur le réglage de son fournisseur.
+   */
+  reasoning?: ReasoningLevel | null;
 }
 
 export interface ProviderCallOutput {

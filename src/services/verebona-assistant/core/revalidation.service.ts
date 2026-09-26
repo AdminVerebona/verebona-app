@@ -203,6 +203,8 @@ export interface RevalidationDeps {
     attachment?: { url: string; mimeType: string; displayName?: string };
     /** Budget d'appels modèle du message (§15.5, CA-07). */
     budget?: AiCallBudget;
+    /** Demande d'origine : rattache l'appel à `verebona_ai_runs` (§28.8). */
+    requestId?: string;
   }): Promise<{ output: RevalidationModelOutput; model: string | null; costMicros: number } | null>;
   /** URL signée de la source originale (pour SOURCE_RECHECK). */
   sourceUrl(accountId: number, fileId: number): Promise<{ url: string; mimeType: string; displayName?: string } | null>;
@@ -233,7 +235,10 @@ export const defaultRevalidationDeps: RevalidationDeps = {
         },
         attachments: req.attachment ? [req.attachment] : undefined,
         outputSchema: RevalidationOutput,
-      });
+      }, req.requestId ? {
+        requestId: req.requestId, routeReason: `revalidation ${req.mode}`,
+        promptId: 'revalidate_fact', promptVersion: 'revalidate_fact_v1',
+      } : undefined);
       return { output: res.data, model: res.model ?? null, costMicros: res.costMicros ?? 0 };
     } catch (e) {
       console.warn('[revalidation] appel modèle impossible :', (e as Error).message);
@@ -347,6 +352,7 @@ export async function revalidateFact(
       accountId: p.accountId, userId: p.userId, conversationId: p.conversationId,
       question: p.question, fact: describeFact(f), currentValue: `${initial ?? '—'}${f.valueUnit ? ` ${f.valueUnit}` : ''}`,
       location: describeLocation(page, table), mode: m, content, attachment, budget: p.budget,
+      requestId: p.requestId,
     });
     if (!r) return null;
     model = r.model; costMicros += r.costMicros;

@@ -7,6 +7,7 @@ import { NotificationsCard } from '@/components/account/NotificationsCard';
 import { LegalInformationCard } from '@/components/account/LegalInformationCard';
 import { WithdrawalCard } from '@/components/account/WithdrawalCard';
 import { SubscriptionSummary } from '@/components/subscription/SubscriptionSummary';
+import { MyDataCard } from './mes-donnees/MyDataCard';
 
 export default function MonComptePage() {
   const { setBreadcrumbs } = useBreadcrumb();
@@ -29,6 +30,8 @@ export default function MonComptePage() {
       <InformationsTab />
       <NotificationsCard />
       <WithdrawalCard />
+      {/* Export RGPD « Mes données » (CDC BO GDP-020). */}
+      <MyDataCard />
       <LegalInformationCard />
     </div>
   );

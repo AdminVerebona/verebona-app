@@ -30,6 +30,8 @@ import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
 import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource, Claim, SupportLevel } from '../types/sources';
 import { isHelpIntent } from './help-corpus.service';
+import { intentTaskFor } from '../prompts/intent-tasks';
+import { validateGeneratedAnswer } from './response-validator.service';
 
 /**
  * Schéma de la réponse attendue du modèle.
@@ -92,6 +94,9 @@ export async function generateAssistantAnswer(
   if (sources.length === 0) return null;
 
   try {
+    // Consigne propre à l'intention (synthèse, comparaison, chronologie,
+    // aide) injectée dans la section TÂCHE du prompt maître (§17.6).
+    const task = intentTaskFor(route.intent);
     const promptVariables = {
       TODAY: new Date().toISOString().slice(0, 10),
       // Balisée <question> dans le prompt : un `<` saisi ne peut pas refermer
@@ -99,7 +104,7 @@ export async function generateAssistantAnswer(
       QUESTION: escapeUntrusted(input.message),
       DATA: formatSourcesData(sources),
       SOURCES: formatSourcesList(sources),
-      INTENT: route.intent,
+      INTENT: task.intentVariable,
       // Contexte borné du fil courant (≤ 8 messages utiles, référence déjà
       // résolue) — jamais l'historique brut du compte ni d'un autre fil.
       //
@@ -124,6 +129,11 @@ export async function generateAssistantAnswer(
       outputSchema: AssistantAnswerOutput,
       // Réponse brute mise en cache rattachée au fil : purgée à l'effacement.
       idempotencyKey: assistantIdempotencyKey(input, 'generate_answer', promptVariables),
+    }, {
+      requestId: input.requestId ?? input.clientRequestId,
+      routeReason: route.routeReason,
+      promptId: task.promptId,
+      promptVersion: task.promptVersion,
     });
 
     const out = toGeneratedAnswer(res.data, sources);
@@ -131,7 +141,13 @@ export async function generateAssistantAnswer(
       console.warn('[assistant] Aucune affirmation étayée par les sources — repli déterministe.');
       return null;
     }
-    return { ...out, model: res.model };
+    // Contrôles de forme (§18.4, §21.2, §21.7) : langue, longueur.
+    const valide = validateGeneratedAnswer(out, route.intent);
+    if (!valide) {
+      console.warn('[assistant] Réponse rejetée par le validateur (langue ou citations) — repli déterministe.');
+      return null;
+    }
+    return { ...out, answer: valide.answer, claims: valide.claims, supportLevel: valide.supportLevel, model: res.model };
   } catch (e) {
     const detail = isAiGatewayError(e) ? `${e.code} — ${e.message}` : (e as Error).message;
     console.warn(`[assistant] Génération indisponible (${detail}) — repli déterministe.`);

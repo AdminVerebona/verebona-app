@@ -2,7 +2,7 @@
  * Comparaison entre biens ou documents — CDC §17.6.
  */
 
-export const ACCOUNT_COMPARISON_PROMPT_VERSION = 'account-comparison-v2.0' as const;
+export const ACCOUNT_COMPARISON_PROMPT_VERSION = 'account-comparison-v3.0' as const;
 
 export const ACCOUNT_COMPARISON_PROMPT = [
   'TÂCHE — Comparaison entre plusieurs biens ou documents.',

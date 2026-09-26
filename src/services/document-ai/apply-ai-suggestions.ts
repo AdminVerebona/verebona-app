@@ -22,6 +22,7 @@ import type { AiBusinessResult } from '@/types/ai-usage';
 import { calcCostMicros } from './gemini-client';
 import { isFieldAllowedForCategory } from '@/lib/field-validator';
 import { acceptDetailDate } from '@/lib/asset-detail-rules';
+import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
 
 // ─── Section / field registry (mirrors ai-suggestions/route.ts) ───────────────
 
@@ -93,8 +94,10 @@ function normalizeValue(key: string, raw: unknown): unknown {
 // ─── AI call ──────────────────────────────────────────────────────────────────
 
 async function callGeminiWithUsage(prompt: string): Promise<{ parsed: unknown; inputTokens: number; outputTokens: number; costMicros: number }> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
+  // Clé ACTIVE du BO et garde d'exploitation T3 (arrêt d'urgence, état du
+  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
+  // (legacy-gemini-access).
+  const apiKey = await requireLegacyGeminiKey('T3', 'apply-ai-suggestions');
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',

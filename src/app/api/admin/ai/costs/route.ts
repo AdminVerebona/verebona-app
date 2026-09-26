@@ -12,6 +12,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCostReport, averageCostPerCall } from '@/services/ai/telemetry/cost-report.repository';
 import { isTreatment } from '@/services/ai/config/treatments';
+import { getAiEnvironment } from '@/services/ai/config/environment';
+import { getT2UsageSummary } from '@/services/ai/telemetry/t2-routing.repository';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 /** Périodes du SCR-09, en jours. `custom` passe par `since` et `until`. */
@@ -35,8 +37,12 @@ export async function GET(req: NextRequest) {
   };
 
   const until = parseDate(p.get('until')) ?? new Date();
+  // COST-002 : « mois » = mois CALENDAIRE en cours (période des budgets),
+  // distinct des 30 jours glissants.
   const since = parseDate(p.get('since'))
-    ?? new Date(until.getTime() - (PERIODS[period] ?? 30) * 86_400_000);
+    ?? (period === 'month'
+      ? new Date(Date.UTC(until.getUTCFullYear(), until.getUTCMonth(), 1))
+      : new Date(until.getTime() - (PERIODS[period] ?? 30) * 86_400_000));
 
   try {
     const report = await getCostReport({
@@ -44,10 +50,17 @@ export async function GET(req: NextRequest) {
       treatment: treatment && isTreatment(treatment) ? treatment : undefined,
       accountId: accountId && /^\d+$/.test(accountId) ? Number(accountId) : undefined,
     });
+    // COST-015 : usage T2 comparé au coût (requêtes tranchées sans IA incluses).
+    const t2Usage = await getT2UsageSummary(since).catch(() => null);
+    let environment: string | null = null;
+    try { environment = getAiEnvironment(); } catch { environment = null; }
 
     return NextResponse.json({
       ...report,
       averageCostPerCall: averageCostPerCall(report.totals),
+      // COST-003 : axe environnement — une instance = un environnement.
+      environment,
+      t2Usage,
       // Signalé explicitement : le SCR-09 demande de « signaler l'incomplétude »
       // plutôt que de rendre un agrégat qui paraîtrait exact.
       warning: report.incomplete

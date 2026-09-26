@@ -24,6 +24,7 @@
 import { z } from 'zod';
 import { AiGateway } from '../gateway/ai-gateway';
 import { isAiGatewayError } from '../gateway/errors';
+import { isExecutionCancelled } from '../queue/execution-control';
 
 /** Seuils de rétention, repris à l'identique de l'existant pour ne pas changer le comportement. */
 export const LINK_SCORE_THRESHOLDS = {
@@ -89,6 +90,9 @@ export async function reconcileLinks(
     });
     return res.data;
   } catch (e) {
+    // Dans une exécution de file, un refus AI_BLOCKED est une interruption :
+    // pas de repli déterministe écrit à la place de l'IA (execution-control).
+    if (isExecutionCancelled(e)) throw e;
     // Une erreur de gateway est journalisée avec son code : c'est ce qui permet
     // de distinguer « prompt absent » de « fournisseur indisponible » sans
     // ouvrir les traces.

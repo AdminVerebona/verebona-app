@@ -101,3 +101,30 @@ export function formatExplanation(rows: ExplanationRow[] | null | undefined): Ex
 /** Phrase affichée quand aucune affirmation n'est enregistrée pour la réponse. */
 export const EXPLANATION_EMPTY =
   'Cette réponse a été produite par une règle de l’application, à partir des éléments affichés dans les sources.';
+
+/**
+ * Statut de traitement court et contextualisé — CDC §7.7 (P3).
+ * « Verebona réfléchit… » seul ne disait rien de l'avancement ; le libellé
+ * suit le temps écoulé, sans prétendre à une précision qu'il n'a pas.
+ */
+export function processingStatus(elapsedMs: number): string {
+  if (elapsedMs < 2500) return 'Je recherche les informations utiles…';
+  if (elapsedMs < 6000) return 'Je vérifie vos documents…';
+  return 'Je prépare la réponse…';
+}
+
+/**
+ * Réponse serveur à ignorer côté client : demande annulée par l'utilisateur
+ * (la réponse tardive n'est jamais affichée — §7.8, CA-22).
+ */
+export function isCancelledResponse(data: unknown): boolean {
+  const d = data as { status?: string; error?: { code?: string } } | null;
+  return d?.status === 'cancelled' || d?.error?.code === 'REQUEST_CANCELLED';
+}
+
+/** Plateforme d'affichage transmise au serveur (choix des articles d'aide — T2-05). */
+export function currentPlatform(): 'web' | 'mobile' {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'web';
+  return window.matchMedia('(max-width: 767px)').matches || window.matchMedia('(display-mode: standalone)').matches
+    ? 'mobile' : 'web';
+}

@@ -6,7 +6,9 @@
  * route finale (§22.7). Gemini ne produit JAMAIS d'URL libre (§22.1, §18.7).
  */
 
-export const ACTION_CATALOG_VERSION = 'action-catalog-v1.0' as const;
+// v1.1 : OPEN_CONTACT (renvoi au formulaire de contact du Centre d'aide —
+// CDC Centre d'aide §5, T2-03, T2-04).
+export const ACTION_CATALOG_VERSION = 'action-catalog-v1.1' as const;
 
 export const VEREBONA_ACTION_TYPES = [
   'OPEN_ASSET',
@@ -21,6 +23,7 @@ export const VEREBONA_ACTION_TYPES = [
   'OPEN_ACCOUNT',
   'OPEN_PRICING',
   'OPEN_HELP',
+  'OPEN_CONTACT',
   'START_ADD_ASSET',
   'START_ADD_DOCUMENT',
   'START_ADD_AGENDA_ITEM',

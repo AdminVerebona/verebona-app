@@ -22,7 +22,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import {
-  NEUTRALIZATION_PLAN, affectedTables, testAccountEmails,
+  NEUTRALIZATION_PLAN, affectedTables, testAccountEmails, renderNeutralizationScript,
 } from '@/services/ai/snapshot/neutralization-plan';
 import {
   assertNeutralizationAllowed, runNeutralization, NeutralizationRefused,
@@ -33,6 +33,25 @@ import { requireAdminContext, toErrorResponse } from '../config-versions/_shared
 export async function GET(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
+
+  // SNP-007 / SNP-008 (lot IA 2) : `?format=sql` rend le plan sous forme de
+  // script, à appliquer par la chaîne d'exploitation sur la copie CÔTÉ PROD
+  // avant publication. Téléchargement seul : rien n'est exécuté ici, et le
+  // script est disponible en production précisément pour cet usage.
+  if (req.nextUrl.searchParams.get('format') === 'sql') {
+    try {
+      return new NextResponse(renderNeutralizationScript(), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/sql; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="neutralisation-snapshot.sql"',
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (e) {
+      return NextResponse.json({ error: 'INVALID_TEST_ACCOUNTS', message: (e as Error).message }, { status: 422 });
+    }
+  }
 
   const environment = getAiEnvironment();
 

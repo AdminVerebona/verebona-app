@@ -42,6 +42,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import { isUnpaid } from '@/lib/trial-status';
 
 /** Evenement a emettre apres un changement de droits (connexion, offre). */
 export const ENTITLEMENTS_REFRESH_EVENT = 'entitlements:refresh';
@@ -79,6 +80,8 @@ export interface EntitlementsState {
     isUrgent: boolean;
     dejaConsomme: boolean;
   };
+  /** Cycle d'impayé en cours (paiement échoué), `null` sinon. */
+  unpaid?: { startedAt: string; deadlineAt: string; daysLeft: number } | null;
 }
 
 export function useEntitlements() {
@@ -146,8 +149,10 @@ export function useEntitlements() {
     isLoading,
     /** Relit les droits aupres du serveur. */
     refresh,
-    /** Ecriture bloquee par les droits (essai termine, offre resiliee). */
+    /** Ecriture bloquee par les droits (essai termine, offre resiliee, impaye). */
     isRestricted: data?.isRestricted ?? false,
+    /** Restriction due a un paiement echoue (≠ fin d'essai) — voir `isUnpaid`. */
+    isUnpaid: isUnpaid(data),
     /** Quota de biens atteint — distinct du mode restreint. */
     isAssetQuotaFull: data?.quotas?.assets?.isFull ?? false,
     /** Quota de documents atteint. */

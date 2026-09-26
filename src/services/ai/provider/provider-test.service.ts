@@ -27,6 +27,7 @@
  */
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import type { TestDetail } from './credential.repository';
+import { calcCostMicros } from '../gateway/cost-catalog';
 
 /** Aucune donnée utilisateur, et une réponse assez courte pour coûter presque rien. */
 const PROBE_PROMPT = 'Réponds exactement : OK';
@@ -45,11 +46,45 @@ export interface ProviderTestResult {
  * d'erreur du fournisseur peut contenir l'URL appelée, clé comprise, et cette
  * URL ne doit pas atterrir dans un log d'exploitation.
  */
+/**
+ * Modèles employés par la configuration effective (principal et replis de
+ * chaque traitement), ou par le référentiel du code pour un traitement sans
+ * version. Ce sont eux que la clé doit servir — PROV-UI-03 « compatibilité ».
+ */
+export async function configuredModelsInUse(): Promise<string[]> {
+  const [{ TREATMENTS, TREATMENT_DEFINITIONS }, { resolveTreatmentConfig }, { listOperationsByUseCase }] = await Promise.all([
+    import('../config/treatments'),
+    import('../config/config-resolver'),
+    import('../registry/operations'),
+  ]);
+  const out = new Set<string>();
+  for (const t of TREATMENTS) {
+    const entry = await resolveTreatmentConfig(t).catch(() => null);
+    if (entry?.primaryModel) {
+      for (const m of [entry.primaryModel, entry.fallback1, entry.fallback2]) if (m) out.add(m);
+      continue;
+    }
+    for (const op of listOperationsByUseCase(TREATMENT_DEFINITIONS[t].useCaseCode)) {
+      if (op.provider === 'none' || !op.active) continue;
+      for (const m of [op.primaryModel, ...op.fallbackModels]) if (m) out.add(m);
+    }
+  }
+  return [...out].sort();
+}
+
+/** Modèles configurés absents de la liste du fournisseur (pur). */
+export function missingConfiguredModels(listed: string[], configured: string[]): string[] {
+  const servis = new Set(listed.map((n) => n.replace(/^models\//, '')));
+  return configured.filter((m) => !servis.has(m));
+}
+
 export async function testProviderKey(
   secret: string,
   model: string,
   accountId: number,
   userId: number,
+  /** Injectable en test ; par défaut, la configuration effective. */
+  configured?: string[],
 ): Promise<ProviderTestResult> {
   const started = Date.now();
   const detail: TestDetail = {
@@ -58,7 +93,7 @@ export async function testProviderKey(
 
   try {
     // 1. Authentification et catalogue.
-    const listing = await fetch(`${MODELS_ENDPOINT}?key=${encodeURIComponent(secret)}`, {
+    const listing = await fetch(`${MODELS_ENDPOINT}?pageSize=1000&key=${encodeURIComponent(secret)}`, {
       method: 'GET',
       signal: AbortSignal.timeout(15_000),
     });
@@ -72,6 +107,20 @@ export async function testProviderKey(
     detail.authenticated = true;
     const body = await listing.json().catch(() => ({}));
     detail.modelsListed = Array.isArray(body?.models) ? body.models.length : null;
+
+    // PROV-UI-03 (lot IA 2) : compatibilité — chaque modèle de la
+    // configuration effective doit être servi par CETTE clé. Une clé qui en
+    // ignore un couperait ce traitement dès son activation.
+    if (Array.isArray(body?.models)) {
+      const listed = (body.models as Array<{ name?: unknown }>).map((m) => String(m?.name ?? ''));
+      const missing = missingConfiguredModels(listed, configured ?? await configuredModelsInUse());
+      if (missing.length > 0) {
+        detail.missingModels = missing;
+        detail.error = `Modèles configurés non servis par cette clé : ${missing.join(', ')}.`;
+        await trace(accountId, userId, model, false, Date.now() - started, detail.error);
+        return { ok: false, detail };
+      }
+    }
 
     // 2. Génération minimale — la seule qui prouve que le modèle est servi.
     const generation = await fetch(
@@ -94,7 +143,15 @@ export async function testProviderKey(
     }
 
     detail.generationOk = true;
-    await trace(accountId, userId, model, true, Date.now() - started);
+    // PROV-UI-03 : jetons réels de la génération de test, tracés (coût
+    // technique, jamais métier) plutôt qu'un zéro.
+    const usage = ((await generation.json().catch(() => ({}))) as {
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+    }).usageMetadata;
+    await trace(accountId, userId, model, true, Date.now() - started, undefined, {
+      inputTokens: Number(usage?.promptTokenCount ?? 0),
+      outputTokens: Number(usage?.candidatesTokenCount ?? 0),
+    });
     return { ok: true, detail };
   } catch (e) {
     detail.error = nettoyer((e as Error).message ?? 'erreur inconnue', secret);
@@ -117,6 +174,7 @@ function nettoyer(message: string, secret: string): string {
 async function trace(
   accountId: number, userId: number, model: string,
   ok: boolean, durationMs: number, error?: string,
+  tokens: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 },
 ): Promise<void> {
   await recordCallTrace({
     traceId: crypto.randomUUID(),
@@ -128,9 +186,11 @@ async function trace(
     model,
     promptVersion: 'provider-test-v1',
     usedFallback: false,
-    inputTokens: 0,
-    outputTokens: 0,
-    costMicros: 0,
+    inputTokens: tokens.inputTokens,
+    outputTokens: tokens.outputTokens,
+    costMicros: tokens.inputTokens + tokens.outputTokens > 0
+      ? calcCostMicros(model, tokens.inputTokens, tokens.outputTokens, 'gemini')
+      : 0,
     durationMs,
     status: ok ? 'success' : 'error',
     errorMessage: error,

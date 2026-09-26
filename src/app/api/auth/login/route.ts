@@ -9,7 +9,7 @@ import { AccountService } from '@/services/account-service';
 import { checkAuthRateLimit, resetAuthRateLimit, getClientIp } from '@/lib/rate-limiter';
 import { userGuideProgress } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { isAccountSuspended, accountSuspendedResponse } from '@/lib/auth/account-suspension';
+import { resolveSessionAccount, accountSuspendedResponse } from '@/lib/auth/account-suspension';
 
 export async function POST(request: NextRequest) {
   // ── Rate limiting : 5 tentatives / IP / 15 minutes (désactivé en dev) ───
@@ -143,22 +143,30 @@ export async function POST(request: NextRequest) {
       return ApiErrors.invalidCredentials();
     }
 
-    const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
-
     // CDC BO ACC-A02 : un compte suspendu par l'administration n'ouvre plus de
     // session. Contrôlé APRÈS le mot de passe, pour ne pas révéler l'état
     // d'un compte à qui ne connaît que l'e-mail ; et AVANT toute écriture
     // (dernière connexion, progression du guide).
-    if (isAccountSuspended(defaultAccount)) {
+    //
+    // La session s'ouvre sur le premier compte ACTIF (ordre stable : titulaire
+    // d'abord, puis ancienneté). Le refus n'intervient que si TOUS les comptes
+    // de l'utilisateur sont suspendus ; un administrateur BO garde alors
+    // l'accès au BO, sans compte courant (règles : lib/auth/account-suspension).
+    const resolution = resolveSessionAccount(
+      await AccountService.getUserSessionAccounts(user.id),
+      { role: user.role },
+    );
+    if (!resolution.allowed) {
       void logUserActivity({
         activityType: 'LOGIN_FAILED',
         userId: user.id,
         userEmail: user.email,
-        details: { reason: 'account_suspended_by_admin', accountStatus: 'suspended', accountId: defaultAccount?.id },
+        details: { reason: 'account_suspended_by_admin', accountStatus: 'suspended', accountId: resolution.suspendedAccountId },
         request,
       });
       return accountSuspendedResponse();
     }
+    const defaultAccount = resolution.account;
 
     await db.$client`
       UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = ${user.id}

@@ -22,7 +22,10 @@ vi.mock('@/db', async () => {
     getUserSessionCutoff: async () => cutoff,
   };
 });
-vi.mock('@/services/account-service', () => ({ AccountService: { getUserDefaultAccount: async () => ({ id: 9, subscriptionStatus: 'ACTIVE' }) } }));
+vi.mock('@/services/account-service', () => ({ AccountService: {
+  getUserDefaultAccount: async () => ({ id: 9, subscriptionStatus: 'ACTIVE' }),
+  getUserSessionAccounts: async () => [{ account: { id: 9, subscriptionStatus: 'ACTIVE' }, membershipId: 1, role: 'owner' }],
+} }));
 vi.mock('@/lib/audit-logger', () => ({ logUserActivity: () => {} }));
 
 const { POST: refresh } = await import('../refresh/route');

@@ -8,6 +8,7 @@ import {
 } from '@/services/referral-reward.service';
 import { checkReferralEligibility } from '@/services/referral/referral-eligibility.service';
 import { getStripeServer } from '@/lib/stripe';
+import { autoResolveAnomaly, referralRewardFingerprint, reportReferralRewardFailure } from '@/services/admin/anomaly.service';
 
 /**
  * GET /api/cron/referral-rewards
@@ -27,7 +28,9 @@ import { getStripeServer } from '@/lib/stripe';
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  // Secret non configuré : refus. Sans ce garde, l'en-tête littéral
+  // « Bearer undefined » suffisait à déclencher la tâche.
+  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -128,6 +131,7 @@ export async function GET(request: Request) {
         }
 
         result.granted++;
+        await autoResolveAnomaly(referralRewardFingerprint(event.id), { origin: 'referral_reward_cron' });
         console.info(
           `[cron/referral-rewards] avantage accordé au parrain — événement ${event.id}, ` +
           `compte ${event.referrerAccountId}`,
@@ -135,6 +139,7 @@ export async function GET(request: Request) {
       } catch (error) {
         result.errors++;
         console.error(`[cron/referral-rewards] echec sur l'evenement ${event.id}:`, error);
+        await reportReferralRewardFailure(event, cutoff, error); // SUP-009 : après plusieurs passages
       }
     }
 

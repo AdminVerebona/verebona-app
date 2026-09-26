@@ -62,11 +62,6 @@ export default function TransmissionPage() {
       });
   }, [token]);
 
-  const isAlreadyLoggedIn = () => {
-    if (typeof window === 'undefined') return false;
-    return true;
-  };
-
   const handleAction = async (action: 'accept' | 'refuse', confirmDuplicate = false) => {
     setPageState(action === 'accept' ? 'accepting' : 'refusing');
 
@@ -81,10 +76,20 @@ export default function TransmissionPage() {
       });
       const data = await res.json();
 
+      if (data.requiresLogin) {
+        // L'acceptation exige la session du destinataire (l'identité ne vient
+        // plus jamais du client). Retour sur CETTE page après connexion :
+        // l'utilisateur confirme lui-même, rien n'est accepté à son insu.
+        const email = data.recipientEmail ? `email=${encodeURIComponent(data.recipientEmail)}&` : '';
+        router.push(`/login?${email}returnUrl=${encodeURIComponent(`/transmission/${encodeURIComponent(token)}`)}`);
+        return;
+      }
       if (data.requiresSignup) {
         // No account yet — save token, redirect to signup with email prefilled
         localStorage.setItem('pending_transfer_token', token);
-        router.push(`/signup?email=${encodeURIComponent(data.recipientEmail ?? '')}`);
+        // Le jeton accompagne l'inscription : en pré-lancement, il vaut
+        // invitation (sans lui, l'inscription est fermée au destinataire).
+        router.push(`/signup?email=${encodeURIComponent(data.recipientEmail ?? '')}&transmissionToken=${encodeURIComponent(token)}`);
         return;
       } else if (data.conflict) {
         setConflictData(data);
@@ -94,16 +99,12 @@ export default function TransmissionPage() {
         setErrorMessage(data.message ?? data.error);
       } else {
         if (action === 'accept') {
-          // If user is already logged in, redirect directly to dashboard
-          if (isAlreadyLoggedIn()) {
-            router.push('/accueil');
-            return;
-          }
-          if (data.recipientHasAccount !== undefined) {
-            setRecipientHasAccount(data.recipientHasAccount);
-          }
+          // Une acceptation réussie implique une session (contrôle serveur) :
+          // le destinataire retrouve directement le bien dans son accueil.
+          router.push('/accueil');
+          return;
         }
-        setPageState(action === 'accept' ? 'accepted' : 'refused');
+        setPageState('refused');
       }
     } catch {
       setPageState('error');
@@ -232,7 +233,7 @@ export default function TransmissionPage() {
                       Le bien vous attend. Créez votre compte Verebona pour y accéder.
                     </p>
                     <Button asChild className="mt-2">
-                      <a href={`/signup${transmission?.recipientEmail ? `?email=${encodeURIComponent(transmission.recipientEmail)}` : ''}`}>
+                      <a href={`/signup?transmissionToken=${encodeURIComponent(token)}${transmission?.recipientEmail ? `&email=${encodeURIComponent(transmission.recipientEmail)}` : ''}`}>
                         Créer mon compte
                       </a>
                     </Button>

@@ -2,7 +2,8 @@
  * Persistance conversationnelle & historique — CDC §24 / §28.
  *
  * Gère la conversation active, les messages, l'idempotence (`client_request_id`),
- * l'historique 7 jours et l'effacement manuel (§24.5).
+ * l'historique (90 jours par défaut, Centre d'aide GAP-16) et l'effacement
+ * manuel (§24.5).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * UNE CONVERSATION APPARTIENT À UN UTILISATEUR, PAS AU COMPTE
@@ -20,6 +21,14 @@
  *
  * Les données métier du compte (biens, documents) restent partagées : seule
  * la mémoire conversationnelle est privée.
+ *
+ * ── ÉCART ASSUMÉ AU CDC (décision produit) ────────────────────────────────
+ * Le CDC Assistant (§0.14, §6.3, §24.2, §24.3, §28.1, §29.9, CA-12, 37.10)
+ * prévoit UNE conversation active par COMPTE, partagée en Duo. La décision
+ * produit maintient des conversations PRIVÉES par utilisateur, en plusieurs
+ * fils (migrations 0151, 0152) : un membre du Duo ne lit ni les questions ni
+ * les sources de l'autre. Ne pas « corriger » vers le CDC sans nouvel
+ * arbitrage ; le test `conversations-privees.test.ts` fige ce choix.
  * ══════════════════════════════════════════════════════════════════════════
  *
  * Utilise les tables verebona_* (voir migration 0100). Câblé sur `@/db` (postgres.js).
@@ -29,6 +38,7 @@ import type { AssistantRunResult, AssistantRequestInput } from '../types/contrac
 import { getAssistantConfig } from '../config/assistant-config';
 import { assistantCachePrefix } from './assistant-cache-key';
 import { parseEntityRef } from './entity-ref';
+import { INTENT_CATALOG_VERSION } from '../types/intents';
 import type { PresentedEntity, ReferencedType, ThreadContext } from './reference-resolver';
 
 const expiresFromNow = () =>
@@ -197,6 +207,9 @@ export interface ReplayedAnswer {
   content: string;
   intent: string | null;
   mode: string | null;
+  /** Rejeu fidèle (§31.9, CA-29) : mêmes sources et mêmes actions. */
+  sourceCount: number;
+  actions: Array<{ actionId: string; type: string; label: string; href: string | null; requiresConfirmation: boolean; expiresAt: string | null; analyticsCode: string }>;
 }
 
 export async function findReplayedAnswer(
@@ -216,7 +229,28 @@ export async function findReplayedAnswer(
     [accountId, userId, clientRequestId],
   );
   const r = (rows as unknown as Array<{ id: number; conversation_id: number; request_id: string; content: string | null; intent: string | null; mode: string | null }>)[0];
-  return r ? { conversationId: r.conversation_id, messageId: r.id, requestId: r.request_id, content: r.content ?? '', intent: r.intent, mode: r.mode } : null;
+  if (!r) return null;
+  // Le rejeu rendait `sourcesAvailable: false` et `actions: []` : la même
+  // demande donnait une réponse appauvrie. Sources et actions sont relues.
+  const [src] = (await pgClient.unsafe(
+    `SELECT count(*)::int AS n FROM verebona_message_sources WHERE message_id = $1`, [r.id],
+  )) as unknown as Array<{ n: number }>;
+  const act = (await pgClient.unsafe(
+    `SELECT id, action_type, label, resolved_href, requires_confirmation, analytics_code, expires_at
+       FROM verebona_message_actions WHERE message_id = $1 ORDER BY id ASC`, [r.id],
+  )) as unknown as Array<{ id: number; action_type: string; label: string; resolved_href: string | null; requires_confirmation: boolean; analytics_code: string | null; expires_at: Date | null }>;
+  return {
+    conversationId: r.conversation_id, messageId: r.id, requestId: r.request_id, content: r.content ?? '',
+    intent: r.intent, mode: r.mode,
+    sourceCount: src?.n ?? 0,
+    actions: act
+      .filter((a) => !a.expires_at || new Date(a.expires_at).getTime() > Date.now())
+      .map((a) => ({
+        actionId: `replay-${a.id}`, type: a.action_type, label: a.label, href: a.resolved_href,
+        requiresConfirmation: Boolean(a.requires_confirmation), expiresAt: a.expires_at ? new Date(a.expires_at).toISOString() : null,
+        analyticsCode: a.analytics_code ?? `verebona.action.${a.action_type.toLowerCase()}`,
+      })),
+  };
 }
 
 /**
@@ -309,6 +343,32 @@ export async function persistResult(
         [conversationId, input.accountId, input.userId],
       );
       if ((fil as unknown as unknown[]).length === 0) return null;
+
+      // ── 0 bis. La demande n'a pas été annulée pendant le traitement ─────
+      //
+      // CDC §7.8, §9.7, CA-22 : une réponse arrivée après l'annulation n'est
+      // jamais réinjectée. La réservation (`request-lifecycle.service`) est
+      // relue sous verrou, ce qui sérialise avec DELETE /requests/{id} : soit
+      // l'annulation passe avant et rien n'est écrit, soit la réponse est
+      // enregistrée et l'annulation répond « déjà terminée ».
+      const run = (await tx.unsafe(
+        `SELECT status FROM verebona_request_runs
+          WHERE request_id = $1 AND account_id = $2 FOR UPDATE`,
+        [result.requestId, input.accountId],
+      )) as unknown as Array<{ status: string | null }>;
+      const reservation = run[0] ?? null;
+      if (reservation?.status === 'cancelled') {
+        // Le coût du traitement reste tracé (§31.3), sans aucun message.
+        await tx.unsafe(
+          `UPDATE verebona_request_runs
+              SET intent = $2, mode = $3, machine_final_state = 'CANCELLED', source_count = $4,
+                  latency_ms = $5, intent_catalog_version = $6
+            WHERE request_id = $1`,
+          [result.requestId, result.route?.intent ?? null, result.mode, result.sources.length,
+           result.cascade?.latencyMs ?? null, INTENT_CATALOG_VERSION],
+        );
+        return null;
+      }
 
       // ── 1. Question de l'utilisateur ────────────────────────────────────
       //
@@ -457,21 +517,32 @@ export async function persistResult(
           }
         // Refus sans cascade : le classement des sous-demandes reste tracé.
         : (result.scope ? { scope: result.scope } : null);
+      // Réservée au début (route POST messages) : la ligne est complétée.
+      // Sans réservation (reprise de clarification, appel direct) : insérée.
+      const traceParams = [result.requestId, input.clientRequestId, conversationId,
+        input.accountId, input.userId,
+        result.route?.intent ?? null, result.mode, result.finalState,
+        result.sources.length,
+        result.error ? 'error' : 'ok',
+        result.error?.code ?? null,
+        cascade ? JSON.stringify(cascade) : null,
+        result.cascade?.sourceCount ?? null,
+        result.cascade?.latencyMs ?? null,
+        INTENT_CATALOG_VERSION];
       await tx.unsafe(
-        `INSERT INTO verebona_request_runs
-           (request_id, client_request_id, conversation_id, account_id, user_id,
-            intent, mode, machine_final_state, source_count, status, error_code,
-            retrieval_methods_json, candidate_count, latency_ms)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)`,
-        [result.requestId, input.clientRequestId, conversationId,
-         input.accountId, input.userId,
-         result.route?.intent ?? null, result.mode, result.finalState,
-         result.sources.length,
-         result.error ? 'error' : 'ok',
-         result.error?.code ?? null,
-         cascade ? JSON.stringify(cascade) : null,
-         result.cascade?.sourceCount ?? null,
-         result.cascade?.latencyMs ?? null],
+        reservation
+          ? `UPDATE verebona_request_runs
+                SET client_request_id = $2, conversation_id = $3, user_id = $5, intent = $6, mode = $7,
+                    machine_final_state = $8, source_count = $9, status = $10, error_code = $11,
+                    retrieval_methods_json = $12::jsonb, candidate_count = $13, latency_ms = $14,
+                    intent_catalog_version = $15
+              WHERE request_id = $1 AND account_id = $4`
+          : `INSERT INTO verebona_request_runs
+               (request_id, client_request_id, conversation_id, account_id, user_id,
+                intent, mode, machine_final_state, source_count, status, error_code,
+                retrieval_methods_json, candidate_count, latency_ms, intent_catalog_version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)`,
+        traceParams,
       );
 
       // Mémorise l'état de la machine pour une reprise de conversation (§24),

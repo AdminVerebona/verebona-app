@@ -24,7 +24,10 @@
  */
 import { PUBLIC_SITE_URL } from '@/lib/external-urls';
 import { HELP_T2_CORPUS_PATH } from '@/lib/help-center/catalog';
+import { helpScreenForRoute } from '@/lib/help-center/screens';
+import { parseEnvironment } from '@/services/ai/config/environment';
 import type { RetrievedSource } from '../types/sources';
+import type { PageContext } from '../types/contracts';
 
 export interface HelpCorpusSection { anchor: string; heading: string; text: string }
 export interface HelpCorpusArticle {
@@ -39,6 +42,13 @@ export interface HelpCorpusArticle {
   offersNote: string | null;
   synonyms: string[];
   sections: HelpCorpusSection[];
+  // Métadonnées de ciblage publiées par le site (T2-05). Facultatives : un
+  // corpus plus ancien qui ne les porte pas reste lisible.
+  roles?: string[];
+  authState?: string[];
+  screens?: string[];
+  objectTypes?: string[];
+  platforms?: string[];
 }
 export interface HelpCorpus {
   schema: 'verebona-help-t2-v1';
@@ -87,7 +97,14 @@ export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     const res = await fetch(helpCorpusUrl(), { signal: ctrl.signal }).finally(() => clearTimeout(timer));
-    const corpus = res.ok ? parseHelpCorpus(await res.json()) : null;
+    let corpus = res.ok ? parseHelpCorpus(await res.json()) : null;
+    // ENV-02 : la préproduction de l'application ne lit jamais le corpus de
+    // production, et inversement. Une variable mal renseignée ferait sinon
+    // répondre l'assistant sur des articles d'un autre environnement.
+    if (corpus && !corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
+      console.error(`[assistant] Corpus d'aide refusé : environnement « ${corpus.environment} » ≠ application « ${process.env.NEXT_PUBLIC_APP_ENV} » (ENV-02).`);
+      corpus = null;
+    }
     cache = { at: Date.now(), corpus };
     return corpus;
   } catch (e) {
@@ -95,6 +112,17 @@ export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
     cache = { at: Date.now() - TTL_MS + 30_000, corpus: null };
     return null;
   }
+}
+
+/**
+ * Le corpus appartient-il à l'environnement de l'application (ENV-02) ?
+ * Seules la production et la préproduction sont contraintes : en local, lire
+ * le corpus de préproduction est l'usage normal.
+ */
+export function corpusMatchesEnvironment(corpusEnv: string | undefined, appEnvRaw: string | undefined): boolean {
+  const app = parseEnvironment(appEnvRaw);
+  if (app !== 'production' && app !== 'preprod') return true;
+  return parseEnvironment(corpusEnv) === app;
 }
 
 /** Réservé aux tests. */
@@ -134,11 +162,13 @@ export interface HelpHit {
  * de la moitié des mots significatifs n'est pas retenue. Mieux vaut « je ne
  * peux pas répondre de façon fiable » qu'une procédure hors sujet.
  */
-export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4): HelpHit[] {
+export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4, ctx?: HelpSearchContext): HelpHit[] {
   const q = [...new Set(terms(question))];
   if (q.length === 0) return [];
   const hits: HelpHit[] = [];
   for (const a of corpus.articles) {
+    const poids = contextWeight(a, ctx);
+    if (poids === 0) continue;
     const head = new Set(terms(`${a.title} ${a.synonyms.join(' ')} ${a.summary}`));
     for (const s of a.sections) {
       const body = new Set(terms(`${s.heading} ${s.text}`));
@@ -152,7 +182,7 @@ export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4
       }
       const coverage = found / q.length;
       if (coverage < 0.5) continue;
-      hits.push({ article: a, section: s, score: (score / (3 * q.length)) * coverage });
+      hits.push({ article: a, section: s, score: (score / (3 * q.length)) * coverage * poids });
     }
   }
   hits.sort((x, y) => y.score - x.score);
@@ -163,6 +193,46 @@ export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4
     perArticle.set(h.article.id, n + 1);
     return n < 2;
   }).slice(0, limit);
+}
+
+/**
+ * Contexte de l'interaction — CDC Centre d'aide §5, T2-05.
+ *
+ * Avant, seule l'offre était exploitée : « comment ajouter un document ? »
+ * posée depuis une fiche bien ne privilégiait pas l'article de l'onglet
+ * Documents du bien, et une procédure « mobile » pouvait répondre sur le web.
+ */
+export interface HelpSearchContext {
+  /** Libellés d'écran du référentiel (`helpScreenForRoute`). */
+  screens: string[];
+  objectType: string | null;
+  platform: 'web' | 'mobile' | null;
+  /** Rôle de l'utilisateur dans le compte (owner, duo_member…), s'il est connu. */
+  role: string | null;
+}
+
+export function helpContextFromPage(page: PageContext | undefined, role: string | null = null): HelpSearchContext {
+  const { screens, objectType } = helpScreenForRoute(page?.route);
+  const platform = page?.platform === 'mobile' || page?.platform === 'web' ? page.platform : null;
+  return { screens, objectType, platform, role };
+}
+
+/**
+ * Pondération d'un article selon le contexte :
+ *   · plateforme déclarée et différente → article écarté (0) — une
+ *     procédure mobile n'est pas une réponse sur le web ;
+ *   · écran courant cité par l'article → ×1,25 ; type d'objet → ×1,1 ;
+ *   · rôle déclaré, sans « all » ni le rôle de l'utilisateur → ×0,6 (pas
+ *     écarté : le rôle n'est pas toujours connu avec certitude).
+ */
+export function contextWeight(a: HelpCorpusArticle, ctx?: HelpSearchContext): number {
+  if (!ctx) return 1;
+  if (ctx.platform && a.platforms?.length && !a.platforms.includes(ctx.platform)) return 0;
+  let w = 1;
+  if (ctx.screens.length && a.screens?.some((s) => ctx.screens.includes(s))) w *= 1.25;
+  if (ctx.objectType && a.objectTypes?.includes(ctx.objectType)) w *= 1.1;
+  if (ctx.role && a.roles?.length && !a.roles.includes('all') && !a.roles.includes(ctx.role)) w *= 0.6;
+  return w;
 }
 
 /** Offre du compte au format des articles (`STANDARD` → `standard`). */
@@ -207,10 +277,10 @@ export function toHelpSources(hits: HelpHit[], planType?: string): RetrievedSour
 }
 
 /** Recherche complète pour une question d'usage. Vide si le corpus est indisponible. */
-export async function retrieveHelpSources(question: string, planType?: string, limit = 4): Promise<RetrievedSource[]> {
+export async function retrieveHelpSources(question: string, planType?: string, limit = 4, ctx?: HelpSearchContext): Promise<RetrievedSource[]> {
   const corpus = await loadHelpCorpus();
   if (!corpus) return [];
-  return toHelpSources(searchHelpCorpus(corpus, question, limit), planType);
+  return toHelpSources(searchHelpCorpus(corpus, question, limit, ctx), planType);
 }
 
 /** Article publié dans l'environnement (contrôle d'accès de l'action OPEN_HELP). */
@@ -219,21 +289,106 @@ export async function helpArticlePublished(id: string): Promise<boolean> {
   return Boolean(corpus?.articles.some((a) => a.id === id));
 }
 
+/** Score à partir duquel un article répond « exactement » (§10.5, §10.6). */
+export const HELP_EXACT_THRESHOLD = 0.75;
+
+/** Premier passage utile d'une section, borné à ~240 caractères (§19.5). */
+export function helpExcerpt(text: string, max = 240): string {
+  const propre = text.replace(/\s+/g, ' ').trim();
+  if (propre.length <= max) return propre;
+  const coupe = propre.slice(0, max);
+  const fin = coupe.lastIndexOf('. ');
+  return fin >= 80 ? coupe.slice(0, fin + 1) : `${coupe.replace(/\s+\S*$/, '')}…`;
+}
+
+const titreArticle = (s: RetrievedSource) => String(s.title).split(' — ')[0];
+
 /**
- * Réponse sans modèle à une question d'usage — T2-01, T2-03.
+ * Réponse sans modèle à une question d'usage — T2-01, T2-03, §10.6.
  *
- * Avec des sources : les articles, cités, que l'utilisateur ouvre d'un clic.
- * Sans source : l'aveu explicite et le contact, jamais une procédure devinée.
+ * Avant : « Le Centre d'aide traite ce sujet dans l'article… Ouvrez les
+ * sources », sans la réponse elle-même — inutile en Standard, qui n'a pas
+ * de rédaction par modèle. Désormais : l'extrait pertinent de la meilleure
+ * section, puis le renvoi à l'article (bouton « Lire l'article », lien
+ * profond construit par le serveur). Sans source : l'aveu explicite et le
+ * renvoi au support (bouton « Contacter le support »).
  */
 export function fallbackFromHelpSources(sources: RetrievedSource[]): string {
-  const titles = [...new Set(sources.filter((s) => s.type === 'help_entry')
-    .map((s) => String(s.title).split(' — ')[0]))].slice(0, 4);
-  if (titles.length === 0) {
+  const aide = sources.filter((s) => s.type === 'help_entry');
+  if (aide.length === 0) {
     return 'Je ne peux pas répondre de façon fiable à cette question à partir du Centre d’aide. '
-      + 'Vous pouvez reformuler votre question ou contacter le support depuis le Centre d’aide.';
+      + 'Vous pouvez reformuler votre question ou contacter le support.';
   }
-  const list = titles.map((t) => `« ${t} »`);
-  const joined = list.length === 1 ? list[0] : `${list.slice(0, -1).join(', ')} et ${list[list.length - 1]}`;
-  return `Le Centre d’aide traite ce sujet dans ${list.length === 1 ? 'l’article' : 'les articles'} ${joined}. `
-    + 'Ouvrez les sources ci-dessous pour la procédure complète.';
+  const meilleure = aide[0];
+  const extrait = helpExcerpt(String(meilleure.content).split('\n[Offre]')[0]);
+  const autres = [...new Set(aide.slice(1).map(titreArticle))].filter((t) => t !== titreArticle(meilleure)).slice(0, 2);
+  const suite = autres.length ? ` Voir aussi ${autres.map((t) => `« ${t} »`).join(' et ')}.` : '';
+  const offre = meilleure.meta?.notIncludedInPlan ? ` Cette fonction n’est pas incluse dans votre offre actuelle (${meilleure.meta.offersLabel}).` : '';
+  return `D’après l’article « ${titreArticle(meilleure)} » : ${extrait}${offre} La procédure complète est dans l’article.${suite}`;
+}
+
+// ── Contradiction entre articles — T2-04 ────────────────────────────────────
+
+const QUANTITE = /(\d+(?:[.,]\d+)?)\s*(mo|go|ko|jours?|heures?|h|minutes?|min|mois|ans?|caract[eè]res?|€|euros?|documents?|biens?)\b/gi;
+
+function quantites(text: string): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const m of text.toLowerCase().matchAll(QUANTITE)) {
+    const unite = m[2].normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/s$/, '').replace(/^euro$/, '€').replace(/^h$/, 'heure').replace(/^min$/, 'minute').replace(/^an$/, 'an');
+    const v = m[1].replace(',', '.');
+    if (!out.has(unite)) out.set(unite, new Set());
+    out.get(unite)!.add(v);
+  }
+  return out;
+}
+
+export interface HelpContradiction {
+  articles: [string, string];
+  titles: [string, string];
+  unit: string;
+}
+
+/**
+ * Deux articles ÉGALEMENT pertinents donnent-ils des valeurs différentes pour
+ * une même grandeur (25 Mo / 10 Mo, 24 h / 48 h) ? Le CDC (T2-04) interdit
+ * d'arbitrer : l'assistant ne répond pas, renvoie au support, et la
+ * contradiction est journalisée pour correction documentaire.
+ *
+ * « Également pertinents » : score ≥ 80 % du meilleur, articles distincts.
+ * Une seule valeur par article et par unité est comparée — un article qui
+ * cite lui-même deux valeurs (ancienne / nouvelle limite) n'est pas jugé.
+ */
+export function detectHelpContradiction(sources: RetrievedSource[]): HelpContradiction | null {
+  const aide = sources.filter((s) => s.type === 'help_entry');
+  if (aide.length < 2) return null;
+  const best = aide[0].relevanceScore ?? 0;
+  const proches = aide.filter((s) => (s.relevanceScore ?? 0) >= best * 0.8);
+  const parArticle = new Map<string, { title: string; q: Map<string, Set<string>> }>();
+  for (const s of proches) {
+    const id = String(s.meta?.articleId ?? s.id);
+    const prev = parArticle.get(id);
+    const q = quantites(String(s.content).split('\n[Offre]')[0]);
+    if (!prev) parArticle.set(id, { title: titreArticle(s), q });
+    else for (const [u, v] of q) { const set = prev.q.get(u) ?? new Set(); v.forEach((x) => set.add(x)); prev.q.set(u, set); }
+  }
+  const liste = [...parArticle.entries()];
+  for (let i = 0; i < liste.length; i++) {
+    for (let j = i + 1; j < liste.length; j++) {
+      const [ida, a] = liste[i];
+      const [idb, b] = liste[j];
+      for (const [unite, va] of a.q) {
+        const vb = b.q.get(unite);
+        if (!vb || va.size !== 1 || vb.size !== 1) continue;
+        const [x] = [...va]; const [y] = [...vb];
+        if (x !== y) return { articles: [ida, idb], titles: [a.title, b.title], unit: unite };
+      }
+    }
+  }
+  return null;
+}
+
+export function contradictionAnswer(c: HelpContradiction): string {
+  return `Je ne peux pas vous répondre de façon fiable : les articles « ${c.titles[0]} » et « ${c.titles[1]} » `
+    + 'du Centre d’aide donnent des informations différentes sur ce point. Le support peut vous aider, '
+    + 'et l’écart a été signalé pour correction.';
 }

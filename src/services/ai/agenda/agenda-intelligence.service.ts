@@ -25,6 +25,7 @@ import type {
   AgendaDecision, ExistingAgendaItem, HomeCategory, AgendaClassificationInput,
 } from './types';
 import type { AgendaCandidate } from '../source-analysis/types';
+import { isExecutionCancelled } from '../queue/execution-control';
 
 const ClassifyEventOutput = z.object({
   category: z.enum(['action', 'information']),
@@ -380,6 +381,10 @@ export async function classifyAgendaCategory(
     });
     return res.data.category;
   } catch (e) {
+    // Interruption (garde AI_BLOCKED, jeton révoqué) : pas de repli
+    // silencieux sur « action », qui ferait écrire une classification par
+    // défaut ; le travail T4 est remis en file (execution-control).
+    if (isExecutionCancelled(e)) throw e;
     console.warn('[agenda] classification modèle indisponible :', (e as Error).message);
     return 'action';
   }

@@ -49,6 +49,23 @@ const TARGET_TYPE = 'asset_file';
  *
  * Deux valeurs seulement. Un mode observation n'aurait pas de sens : deux files
  * analyseraient le même document deux fois, ce que le §10.4 interdit.
+ *
+ * ── DÉCISION LOT IA 2 (OPS-001, T1-024) : LE DÉFAUT RESTE `legacy` POUR T1 ──
+ * T3 et T4 sont passés en file durable sans drapeau. T1 non, pour trois
+ * raisons vérifiées dans le code, à lever avant la bascule :
+ *   · débit : la file mémoire analyse 2 fichiers en parallèle dès le dépôt ;
+ *     le boucleur sert T1 séquentiellement (5 par tour, tour toutes les
+ *     15 s après un premier tour différé de 30 s) — un dépôt de 20 fichiers
+ *     serait nettement plus lent ;
+ *   · état du fichier : la file mémoire remet à « non analysé » un fichier
+ *     resté `UPLOADED` après son tour (`remettreEnAttenteSiIntact`), la file
+ *     durable non — un fichier refusé pour quota resterait « En file
+ *     d'attente » à l'écran ;
+ *   · le bail du boucleur (`withJobLock`, 30 s) est plus court qu'une analyse
+ *     T1 : deux tours peuvent se chevaucher (sans doublon grâce à SKIP LOCKED,
+ *     mais avec deux analyses T1 simultanées).
+ * Le boucleur est bien démarré en production (`instrumentation.ts`, étape 6) ;
+ * la bascule reste un simple `AI_DURABLE_QUEUE=enabled`, réversible.
  */
 export function isDurableQueueEnabled(): boolean {
   const raw = (process.env.AI_DURABLE_QUEUE ?? 'legacy').toLowerCase();
@@ -102,7 +119,23 @@ export async function enqueueDurableFileAnalyses(
  */
 export function registerSourceAnalysisHandler(): void {
   registerJobHandler('T1', async (job, guard) => {
-    const payload = (job.payload ?? {}) as { fileId?: number; userId?: number | null; origin?: string };
+    // Passage planifié (déclencheur `schedule_*` de la version effective,
+    // §15.1) : périmètre = sources jamais analysées, en échec récupérable ou
+    // bloquées — exactement ce que sait reprendre `analysis-recovery`, qui
+    // vérifie aussi le quota de chaque compte. Réutilisé plutôt que dupliqué.
+    if (job.accountId == null && job.targetType == null) {
+      await guard.assertActive('reprise planifiée');
+      const { runAnalysisRecovery } = await import('@/services/document-ai/analysis-recovery.service');
+      const r = await runAnalysisRecovery();
+      console.info(`[t1-queue] passage planifié ${job.triggerCode ?? ''} : ${r.retried}/${r.found} source(s) relancée(s).`);
+      return;
+    }
+
+    const payload = (job.payload ?? {}) as {
+      fileId?: number; userId?: number | null; origin?: string;
+      /** Réanalyse lancée par l'administration (WF-11) : non facturée au compte. */
+      billable?: boolean;
+    };
     const fileId = payload.fileId ?? (job.targetId ? Number(job.targetId) : NaN);
 
     if (!Number.isInteger(fileId) || !job.accountId) {
@@ -120,6 +153,9 @@ export function registerSourceAnalysisHandler(): void {
       userId: payload.userId ?? undefined,
       origin: payload.origin ?? 'queue',
       guard,
+      // WF-11 / T1-021 : une réanalyse manuelle ne consomme pas les crédits
+      // de l'utilisateur et n'est pas refusée faute de crédit (manual-launch).
+      ...(payload.billable === false ? { billable: false } : {}),
     });
   });
 

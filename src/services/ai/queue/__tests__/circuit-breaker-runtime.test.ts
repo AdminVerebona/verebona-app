@@ -61,9 +61,11 @@ describe('ouverture du disjoncteur (OPS-022, MOD-011)', () => {
   it('au seuil : SUSPENDED avec prochaine sonde, SANS remise en file', async () => {
     unsafe
       .mockResolvedValueOnce([{ consecutive_chain_failures: CHAIN_FAILURE_SUSPEND_THRESHOLD, state: 'ENABLED' }])
+      // Lecture anti-oscillation (0178) : jamais réactivé par sonde.
+      .mockResolvedValueOnce([{ breaker_last_reactivated_at: null, breaker_reopen_count: 0 }])
       .mockResolvedValueOnce([{ treatment: 'T3' }]);
     await expect(recordChainOutcome('T3', false)).resolves.toBe(true);
-    const suspend = unsafe.mock.calls[1];
+    const suspend = unsafe.mock.calls[2];
     expect(String(suspend[0])).toMatch(/state = 'SUSPENDED'/);
     expect(String(suspend[0])).toMatch(/suspended_by_breaker = TRUE/);
     // Jamais par-dessus une désactivation manuelle.
@@ -71,6 +73,30 @@ describe('ouverture du disjoncteur (OPS-022, MOD-011)', () => {
     expect(suspend[1]).toContain(nextProbeDelay(0));
     // MOD-011 : aucune écriture sur la file, aucun requeue.
     expect(sqls().some((s) => /ai_job_queue/.test(s))).toBe(false);
+  });
+
+  it('réouverture peu après une réactivation par sonde : première sonde retardée (anti-oscillation)', async () => {
+    const { reopenPlan } = await import('../circuit-breaker');
+    unsafe
+      .mockResolvedValueOnce([{ consecutive_chain_failures: CHAIN_FAILURE_SUSPEND_THRESHOLD, state: 'ENABLED' }])
+      .mockResolvedValueOnce([{ breaker_last_reactivated_at: new Date(Date.now() - 60_000).toISOString(), breaker_reopen_count: 1 }])
+      .mockResolvedValueOnce([{ treatment: 'T1' }]);
+    await expect(recordChainOutcome('T1', false)).resolves.toBe(true);
+    const suspend = unsafe.mock.calls[2];
+    const plan = reopenPlan(new Date(Date.now() - 60_000), 1);
+    expect(plan.reopens).toBe(2);
+    expect(suspend[1]).toEqual(['T1', expect.any(String), plan.delaySeconds, plan.probeAttempts]);
+    expect(plan.delaySeconds).toBeGreaterThan(nextProbeDelay(0));
+    // Le compteur de réouvertures est mémorisé.
+    expect(sqls()[3]).toMatch(/breaker_reopen_count = \$2/);
+    expect(unsafe.mock.calls[3][1]).toEqual(['T1', 2]);
+  });
+
+  it('réactivation par sonde : horodatée pour détecter une réouverture rapide', async () => {
+    const t4 = getOperation('classify_event');
+    unsafe.mockResolvedValueOnce([{ treatment: 'T4', model_failures: {}, probe_attempts: 0 }]);
+    await runDueProbes(async (m) => m === t4.primaryModel);
+    expect(sqls().some((q) => /breaker_last_reactivated_at = NOW\(\)/.test(q))).toBe(true);
   });
 
   it('un succès remet la série d’échecs complets à zéro', async () => {

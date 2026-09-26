@@ -75,3 +75,38 @@ describe('acceptation robuste (revue)', () => {
   });
 });
 
+
+describe('identité du destinataire : la session, jamais le client', () => {
+  const src = readFileSync(join(process.cwd(), 'src/app/api/transmission/[token]/route.ts'), 'utf-8');
+  const post = src.slice(src.indexOf('export async function POST'));
+
+  it('n’accepte plus de recipientUserId venant du corps de la requête', () => {
+    expect(post).not.toMatch(/const \{[^}]*recipientUserId[^}]*\} = body/);
+    expect(post).not.toMatch(/eq\(users\.id, recipientUserId\)/);
+  });
+
+  it('n’attribue plus le bien au compte de l’adresse invitée sans session', () => {
+    // Sans session : on oriente (connexion / inscription), on ne copie rien.
+    expect(post).toMatch(/if \(!session\) \{[\s\S]*?requiresLogin: true[\s\S]*?status: 401/);
+    expect(post).toMatch(/requiresSignup: true/);
+    const noSession = post.slice(post.indexOf('if (!session) {'), post.indexOf('const [sessionUser]'));
+    expect(noSession).not.toMatch(/insert\(assets\)/);
+  });
+
+  it('refuse une session dont l’adresse n’est pas l’adresse invitée, avant toute copie', () => {
+    expect(post).toMatch(/isInvitedRecipient\(row\.recipientEmail, sessionUser\.email\)/);
+    expect(post).toMatch(/RECIPIENT_EMAIL_MISMATCH[\s\S]*?status: 403/);
+    expect(post.indexOf('RECIPIENT_EMAIL_MISMATCH')).toBeLessThan(post.indexOf('.insert(assets)'));
+    // L'adresse est relue en base, pas dans le jeton de session.
+    expect(post).toMatch(/\.where\(eq\(users\.id, session\.userId\)\)/);
+  });
+
+  it('les pages suivent : connexion puis retour sur la transmission ; accueil signale un refus', () => {
+    const page = readFileSync(join(process.cwd(), 'src/app/transmission/[token]/page.tsx'), 'utf-8');
+    expect(page).toMatch(/data\.requiresLogin/);
+    expect(page).toMatch(/returnUrl=\$\{encodeURIComponent\(`\/transmission\//);
+    expect(page).not.toMatch(/recipientUserId/);
+    const accueil = readFileSync(join(process.cwd(), 'src/app/(dashboard)/accueil/page.tsx'), 'utf-8');
+    expect(accueil).toMatch(/RECIPIENT_EMAIL_MISMATCH/);
+  });
+});

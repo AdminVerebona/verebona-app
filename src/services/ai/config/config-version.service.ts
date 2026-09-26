@@ -30,7 +30,7 @@ import { guardrailCodes, triggerCodes } from './catalogs';
 import {
   getVersion, getActiveVersion, createDraft, saveEntry,
   promoteToTest, demoteToDraft, validateVersion as commitValidation,
-  switchActive, archiveVersion,
+  switchActive, archiveVersion, listVersions, markStaleDrafts,
 } from './config-version.repository';
 import type { ConfigVersionWithEntries, TreatmentConfig } from './config-types';
 
@@ -60,7 +60,11 @@ async function buildCatalogs(): Promise<ConfigCatalogs> {
 
   if (getCacheState().loadedAt === null) await loadPricingCache();
 
-  const available = new Set(GEMINI_PUBLIC_CATALOG.map((e) => e.model));
+  // E-04, WF-29, WF-40 : disponibilité réelle chez le fournisseur, au dernier
+  // rafraîchissement du catalogue ; jamais rafraîchi → catalogue du code.
+  const { getCatalogState, selectableModels } = await import('../provider/model-catalog.service');
+  const state = await getCatalogState().catch(() => ({ refreshedAt: null, models: [] }));
+  const available = selectableModels(GEMINI_PUBLIC_CATALOG.map((e) => e.model), state);
   const priced = new Set<string>();
   for (const model of available) {
     if (getCachedPrice('gemini', model)) priced.add(model);
@@ -165,7 +169,10 @@ async function invalidateCaches(): Promise<void> {
   invalidateConfigVersionCache();
 }
 
-export async function promote(versionId: number): Promise<PromotionResult> {
+export async function promote(
+  versionId: number,
+  options: { acknowledgeStale?: boolean } = {},
+): Promise<PromotionResult> {
   const environment = getAiEnvironment();
   if (!allowsTestVersions(environment)) {
     throw new ConfigOperationRefused(
@@ -176,6 +183,28 @@ export async function promote(versionId: number): Promise<PromotionResult> {
   }
 
   const { diff, version } = await diffAgainstActive(versionId);
+
+  // VER-002 : un seul « À tester ». Jusqu'ici l'index unique levait une
+  // erreur transformée en 500 générique ; le refus est désormais explicite et
+  // désigne la version à repasser en Brouillon (l'écran le propose).
+  const existing = (await listVersions()).find((v) => v.status === 'TO_TEST' && v.id !== versionId);
+  if (existing) {
+    throw new ConfigOperationRefused(
+      'TO_TEST_EXISTS',
+      `La version « ${existing.label ?? existing.id} » est déjà À tester : repassez-la en Brouillon d'abord.`,
+      { id: existing.id },
+    );
+  }
+  // WF-27, WF-01 : pas de promotion silencieuse d'un Brouillon obsolète —
+  // l'Active de base a changé ; l'administrateur doit avoir vu le diff.
+  if (version.isStale && !options.acknowledgeStale) {
+    throw new ConfigOperationRefused(
+      'STALE_DRAFT',
+      'Ce Brouillon est obsolète : l\'Active dont il dérive a changé. Relisez le diff puis confirmez.',
+      { diff },
+    );
+  }
+
   const validation = validateVersion(version.entries, await buildCatalogs());
 
   if (diff.identical) {
@@ -249,6 +278,9 @@ export interface SwitchResult {
 export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
   const r = await switchActive(versionId, userId, 'activate');
   await invalidateCaches();
+  // WF-27 : les Brouillons dérivés de l'Active remplacée deviennent obsolètes
+  // (jusqu'ici seul `validateVersion` les marquait).
+  if (r.previousId) await markStaleDrafts(r.previousId);
   // WF-05 : « aucune interruption des exécutions en cours ». Elles se terminent
   // avec leur configuration ; seuls les démarrages suivants utilisent celle-ci.
   return { previousId: r.previousId, interrupts: false, requeuedJobs: 0 };
@@ -277,6 +309,7 @@ export async function rollback(versionId: number, userId: number): Promise<Switc
 
   const r = await switchActive(versionId, userId, 'rollback');
   await invalidateCaches();
+  if (r.previousId) await markStaleDrafts(r.previousId);
 
   const { requeueRunning } = await import('../queue/job-queue.repository');
   const { listBatchTreatments } = await import('./treatments');
@@ -288,7 +321,29 @@ export async function rollback(versionId: number, userId: number): Promise<Switc
   return { previousId: r.previousId, interrupts: true, requeuedJobs: requeued };
 }
 
-/** VER-008 et VER-009 — archivage définitif, impossible sur une Active. */
+/**
+ * VER-008 et VER-009 — archivage définitif, impossible sur une Active.
+ *
+ * VER-020 : l'archivage ne doit jamais supprimer le DERNIER point de rollback
+ * viable — une version Validée déjà active par le passé, autre que l'Active.
+ * Sans elle, un incident sur l'Active n'aurait plus de retour arrière.
+ */
 export async function archive(versionId: number): Promise<void> {
+  const versions = await listVersions(undefined, 500);
+  if (isLastRollbackPoint(versionId, versions)) {
+    throw new ConfigOperationRefused(
+      'LAST_ROLLBACK',
+      'Cette version est le dernier point de rollback viable : l\'archiver supprimerait tout retour arrière (VER-020).',
+    );
+  }
   await archiveVersion(versionId);
+}
+
+/** Pur : la version est-elle le seul rollback viable ? */
+export function isLastRollbackPoint(
+  versionId: number,
+  versions: Array<Pick<ConfigVersionWithEntries, 'id' | 'status' | 'activatedAt'>>,
+): boolean {
+  const viables = versions.filter((v) => v.status === 'VALIDATED' && v.activatedAt !== null);
+  return viables.length === 1 && viables[0].id === versionId;
 }

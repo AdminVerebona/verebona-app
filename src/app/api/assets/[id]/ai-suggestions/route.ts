@@ -16,6 +16,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { acceptDetailDate } from '@/lib/asset-detail-rules';
+import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
 
 // ─── Section/field registry ───────────────────────────────────────────────────
 
@@ -104,8 +105,10 @@ const NOMINAL_MODEL  = 'gemini-2.5-flash';
 const FALLBACK_MODEL = 'gemini-2.5-flash';
 
 async function callGeminiTextOnly(prompt: string): Promise<unknown> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
+  // Clé ACTIVE du BO et garde d'exploitation T3 (arrêt d'urgence, état du
+  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
+  // (legacy-gemini-access).
+  const apiKey = await requireLegacyGeminiKey('T3', 'ai-suggestions');
 
   const genAI = new GoogleGenerativeAI(apiKey);
 

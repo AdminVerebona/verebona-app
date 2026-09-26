@@ -6,6 +6,7 @@
  * Retourne l'URI Gemini (`files/xxxx`) à passer en fileData.fileUri.
  * Supprime automatiquement le fichier Gemini après l'analyse (TTL 48h max, mais on nettoie).
  */
+import { requireLegacyGeminiKey, legacyGeminiKeyForCleanup } from '@/services/ai/provider/legacy-gemini-access';
 
 
 const VIDEO_MIME_TYPES = new Set([
@@ -38,8 +39,10 @@ export async function uploadUrlToGemini(
   mimeType: string,
   displayName: string,
 ): Promise<{ fileUri: string; geminiName: string }> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
+  // Clé ACTIVE du BO et garde d'exploitation T1 (arrêt d'urgence, état du
+  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
+  // (legacy-gemini-access).
+  const apiKey = await requireLegacyGeminiKey('T1', 'upload-to-gemini');
 
   // 1. Télécharger le fichier depuis S3
   const response = await fetch(url);
@@ -120,7 +123,9 @@ export async function uploadUrlToGemini(
  * À appeler après l'analyse pour libérer le quota (TTL max 48h de toute façon).
  */
 export async function deleteGeminiFile(geminiName: string): Promise<void> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  // Nettoyage : jamais bloqué par la garde (un arrêt d'urgence ne doit pas
+  // laisser de documents chez le fournisseur) ; clé du BO.
+  const apiKey = await legacyGeminiKeyForCleanup();
   if (!apiKey) return;
 
   try {

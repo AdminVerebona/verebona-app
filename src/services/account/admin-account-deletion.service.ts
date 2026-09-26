@@ -34,11 +34,21 @@
  * résilie jamais un abonnement (§7.4) ; supprimer le compte en laissant
  * l'abonnement actif continuerait de facturer un client sans compte. La
  * résiliation se fait dans Stripe (lien fourni), puis la suppression.
+ *
+ * TOUS LES ABONNEMENTS CONNUS DU COMPTE sont contrôlés, pas seulement
+ * `account_subscriptions` (tarification V2) : un compte antérieur ne porte
+ * son abonnement que sur `accounts.stripe_subscription_id`, un Duo sur
+ * `duo_accounts.stripe_subscription_id`. Le statut est relu chez Stripe
+ * (source de vérité de la facturation) ; Stripe injoignable → repli sur le
+ * statut local, et dans le doute on refuse (un refus se lève en résiliant
+ * dans Stripe ; une facturation sans compte ne se rattrape pas).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import type Stripe from 'stripe';
 import { db } from '@/db';
-import { accounts, accountSubscriptions } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { accounts, accountSubscriptions, duoAccounts } from '@/db/schema';
+import { eq, or } from 'drizzle-orm';
+import { getStripeServer } from '@/lib/stripe';
 import {
   cancelDeletion,
   executeScheduledDeletion,
@@ -76,13 +86,41 @@ export function hasBillingStripeSubscription(sub: {
   return BILLING_SUBSCRIPTION_STATUSES.has((sub.status ?? '').toLowerCase());
 }
 
-export async function deleteAccountAsAdmin(accountId: number, now: Date = new Date()): Promise<AdminDeletionOutcome> {
+/** Statuts locaux (colonnes `accounts` / `duo_accounts`) d'un abonnement qui facture. */
+const LOCAL_BILLING_STATUSES: ReadonlySet<string> = new Set([
+  'ACTIVE', 'TRIALING', 'PAST_DUE', 'PAST_DUE_GRACE', 'UNPAID_RECOVERY',
+  'active', 'trialing', 'past_due', 'unpaid',
+]);
+
+export interface SubscriptionCandidate {
+  stripeSubscriptionId: string;
+  /** Statut local connu (repli si Stripe est injoignable). */
+  localStatus: string | null;
+  localCancelAtPeriodEnd: boolean | null;
+}
+
+/**
+ * Abonnements Stripe connus d'un compte, dédoublonnés : V2
+ * (`account_subscriptions`), historique (`accounts`), Duo (`duo_accounts`
+ * rattaché au compte ou dont le titulaire est le propriétaire du compte).
+ */
+export async function listAccountSubscriptionCandidates(accountId: number): Promise<SubscriptionCandidate[]> {
   const [account] = await db
-    .select({ id: accounts.id, ownerUserId: accounts.ownerUserId })
+    .select({
+      ownerUserId: accounts.ownerUserId,
+      duoAccountId: accounts.duoAccountId,
+      stripeSubscriptionId: accounts.stripeSubscriptionId,
+      subscriptionStatus: accounts.subscriptionStatus,
+    })
     .from(accounts)
     .where(eq(accounts.id, accountId))
     .limit(1);
-  if (!account) return { ok: false, code: 'ACCOUNT_NOT_FOUND' };
+  if (!account) return [];
+
+  const out = new Map<string, SubscriptionCandidate>();
+  const add = (id: string | null | undefined, localStatus: string | null, cancel: boolean | null) => {
+    if (id && !out.has(id)) out.set(id, { stripeSubscriptionId: id, localStatus, localCancelAtPeriodEnd: cancel });
+  };
 
   const [sub] = await db
     .select({
@@ -93,8 +131,75 @@ export async function deleteAccountAsAdmin(accountId: number, now: Date = new Da
     .from(accountSubscriptions)
     .where(eq(accountSubscriptions.accountId, accountId))
     .limit(1);
-  if (hasBillingStripeSubscription(sub)) {
-    return { ok: false, code: 'STRIPE_SUBSCRIPTION_ACTIVE', stripeSubscriptionId: sub!.stripeSubscriptionId! };
+  add(sub?.stripeSubscriptionId, sub?.status ?? null, sub?.cancelAtPeriodEnd ?? null);
+  add(account.stripeSubscriptionId, account.subscriptionStatus, null);
+
+  const duos = await db
+    .select({ stripeSubscriptionId: duoAccounts.stripeSubscriptionId, status: duoAccounts.subscriptionStatus })
+    .from(duoAccounts)
+    .where(account.duoAccountId
+      ? or(eq(duoAccounts.id, account.duoAccountId), eq(duoAccounts.billingOwnerUserId, account.ownerUserId))
+      : eq(duoAccounts.billingOwnerUserId, account.ownerUserId));
+  for (const d of duos) add(d.stripeSubscriptionId, d.status, null);
+
+  return [...out.values()];
+}
+
+/**
+ * Premier abonnement qui facture encore, statut relu chez Stripe.
+ * Abonnement inconnu de Stripe (supprimé, autre mode) : ne facture pas.
+ * Stripe injoignable : statut local.
+ */
+export async function findBillingSubscription(
+  candidates: SubscriptionCandidate[],
+  stripe: Pick<Stripe, 'subscriptions'>,
+): Promise<string | null> {
+  for (const c of candidates) {
+    let billing: boolean;
+    try {
+      const s = await stripe.subscriptions.retrieve(c.stripeSubscriptionId);
+      billing = hasBillingStripeSubscription({
+        stripeSubscriptionId: s.id,
+        status: s.status,
+        cancelAtPeriodEnd: s.cancel_at_period_end,
+      });
+    } catch (e) {
+      const code = (e as { code?: string; statusCode?: number });
+      if (code.code === 'resource_missing' || code.statusCode === 404) continue;
+      billing = !c.localCancelAtPeriodEnd && LOCAL_BILLING_STATUSES.has(c.localStatus ?? '');
+    }
+    if (billing) return c.stripeSubscriptionId;
+  }
+  return null;
+}
+
+export async function deleteAccountAsAdmin(
+  accountId: number,
+  now: Date = new Date(),
+  stripe: () => Pick<Stripe, 'subscriptions'> = getStripeServer,
+): Promise<AdminDeletionOutcome> {
+  const [account] = await db
+    .select({ id: accounts.id, ownerUserId: accounts.ownerUserId })
+    .from(accounts)
+    .where(eq(accounts.id, accountId))
+    .limit(1);
+  if (!account) return { ok: false, code: 'ACCOUNT_NOT_FOUND' };
+
+  const candidates = await listAccountSubscriptionCandidates(accountId);
+  if (candidates.length > 0) {
+    let client: Pick<Stripe, 'subscriptions'> | null = null;
+    try {
+      client = stripe();
+    } catch {
+      client = null; // Stripe non configuré : repli sur les statuts locaux.
+    }
+    const offline: Pick<Stripe, 'subscriptions'> = {
+      subscriptions: { retrieve: async () => { throw new Error('STRIPE_UNAVAILABLE'); } },
+    } as unknown as Pick<Stripe, 'subscriptions'>;
+    const billing = await findBillingSubscription(candidates, client ?? offline);
+    if (billing) {
+      return { ok: false, code: 'STRIPE_SUBSCRIPTION_ACTIVE', stripeSubscriptionId: billing };
+    }
   }
 
   let supersededScheduleId: number | null = null;

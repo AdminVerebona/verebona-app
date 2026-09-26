@@ -25,6 +25,12 @@ interface PlanChangeOptions {
   newMaxMembers: number;
   source: string; // e.g. 'admin:override', 'webhook:subscription.updated'
   sendEmails?: boolean;
+  /**
+   * Faux quand l'historique a déjà été écrit pour ce changement (écho du
+   * webhook synchronisé avant l'application locale admin) : évite la ligne
+   * en double dans `subscription_history`.
+   */
+  recordHistory?: boolean;
 }
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
@@ -48,6 +54,7 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
     newMaxMembers,
     source,
     sendEmails = true,
+    recordHistory = true,
   } = opts;
 
   const subscriptionTier =
@@ -135,7 +142,7 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
   }
 
   // 4. Subscription history audit
-  await db.insert(subscriptionHistory).values({
+  if (recordHistory) await db.insert(subscriptionHistory).values({
     userId: ownerUserId,
     accountId,
     oldTier: oldPlanType,

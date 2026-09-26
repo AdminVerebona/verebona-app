@@ -42,7 +42,11 @@ import {
   type DataAnswerOutcome,
 } from './data-answer.service';
 import { DEFAULT_THRESHOLDS, type CascadeThresholdsLike } from './sufficiency';
-import { fallbackFromHelpSources, isHelpIntent, type HelpCorpus } from './help-corpus.service';
+import {
+  contradictionAnswer, detectHelpContradiction, fallbackFromHelpSources, HELP_EXACT_THRESHOLD,
+  isHelpIntent, type HelpCorpus,
+} from './help-corpus.service';
+import { MONTHLY_BUDGET_NOTICE } from './budget.service';
 import { createAiCallBudget, type AiCallBudget } from './ai-call-budget';
 import { findNavigationTarget } from './navigation-targets';
 import { assistantErrorMessage } from '@/lib/verebona/error-messages';
@@ -119,6 +123,13 @@ export interface OrchestratorPorts {
     | { kind: 'need_info'; message: string }
     | null
   >;
+  /**
+   * La demande a-t-elle été annulée (DELETE /requests/{id}) ? Consulté avant
+   * chaque appel modèle : une demande annulée n'en déclenche plus (§7.8).
+   */
+  isCancelled?(requestId: string): Promise<boolean>;
+  /** Plafond budgétaire mensuel du compte (§6.6, §31.3). Absent : pas de plafond. */
+  checkMonthlyBudget?(accountId: number): Promise<{ allowed: boolean }>;
 }
 
 export async function runAssistant(
@@ -131,8 +142,10 @@ export async function runAssistant(
   // replis compris. Partagé par référence : les copies `{ ...input }`
   // successives gardent le même objet.
   const budget: AiCallBudget = input.aiBudget ?? createAiCallBudget(cfg.maxAiCallsPerRequest);
-  input = { ...input, aiBudget: budget };
-  const requestId = randomUUID();
+  // Identifiant RÉSERVÉ par la route (ligne `pending`, annulable) s'il
+  // existe ; sinon généré ici (reprise de clarification, tests).
+  const requestId = input.requestId ?? randomUUID();
+  input = { ...input, aiBudget: budget, requestId };
   const messageId = randomUUID();
   const machine = new ConversationMachine('IDLE');
   const deadline = Date.now() + cfg.totalTimeoutMs;
@@ -224,6 +237,40 @@ export async function runAssistant(
       trace.sufficiency = sufficiency;
       trace.sourceCount = sourceCount;
       trace.latencyMs = Date.now() - startedAt;
+    };
+
+    // ══════════════════════════════════════════════════════════════════════
+    // AVANT TOUT APPEL MODÈLE : ANNULATION ET PLAFOND MENSUEL
+    //
+    // · Annulée (§7.8, CA-22) : aucun appel de plus, la demande se termine
+    //   en CANCELLED ; la persistance n'écrira que la trace.
+    // · Plafond mensuel du compte atteint (§6.6) : le budget du message est
+    //   épuisé d'office — même repli déterministe que « budget épuisé », avec
+    //   un message non culpabilisant.
+    // Le plafond n'est lu qu'une fois par demande, et seulement si un appel
+    // modèle est envisagé (aucune requête pour une réponse déterministe).
+    // ══════════════════════════════════════════════════════════════════════
+    let budgetMensuelVerifie = false;
+    let budgetMensuelAtteint = false;
+    const avantAppelModele = async (): Promise<'ok' | 'cancelled'> => {
+      if (ports.isCancelled && await ports.isCancelled(requestId).catch(() => false)) return 'cancelled';
+      if (!budgetMensuelVerifie && ports.checkMonthlyBudget) {
+        budgetMensuelVerifie = true;
+        const b = await ports.checkMonthlyBudget(input.accountId).catch(() => ({ allowed: true }));
+        if (!b.allowed) {
+          budgetMensuelAtteint = true;
+          budget.consume(budget.max);
+          trace.escalationReasons.push('AI_MONTHLY_BUDGET_EXCEEDED');
+        }
+      }
+      return 'ok';
+    };
+    const annuler = async (): Promise<AssistantRunResult> => {
+      machine.transition('CANCELLED');
+      done('fallback', 'cancelled', null, 0);
+      const r: AssistantRunResult = { ...base, finalState: 'CANCELLED', mode: 'fallback', answer: '', sources: [], claims: [], actions: [] };
+      await safePersist(ports, r, input);
+      return r;
     };
 
     // ══════════════════════════════════════════════════════════════════════
@@ -356,6 +403,7 @@ export async function runAssistant(
       // connaissance mise à jour.
       // ══════════════════════════════════════════════════════════════════
       if (data?.revalidation && ports.revalidateFacts && !input.revalidationDone) {
+        if (await avantAppelModele() === 'cancelled') return annuler();
         const avantRv = budget.used;
         const rv = await ports.revalidateFacts(input, data.revalidation).catch(() => null);
         if (rv) {
@@ -430,6 +478,9 @@ export async function runAssistant(
     }
 
     // ── Classification IA, seulement maintenant (§9.4.9, §15.5) ────────────
+    if (needsClassification && ports.classifyWithAI && isPlanAiEligible(input.planType)) {
+      if (await avantAppelModele() === 'cancelled') return annuler();
+    }
     if (needsClassification && ports.classifyWithAI && isPlanAiEligible(input.planType) && !budget.canCall()) {
       trace.escalationReasons.push('ROUTING:AI_BUDGET_EXHAUSTED');
     } else if (needsClassification && ports.classifyWithAI && isPlanAiEligible(input.planType)) {
@@ -458,7 +509,36 @@ export async function runAssistant(
     let resolved: ResolvedSource[] = [];
     if (route.requiresRetrieval || det.needsSimpleRetrieval) {
       if (machine.state !== 'RETRIEVING') machine.transition('RETRIEVING');
-      const adapters = (await withDeadline(ports.retrieve(route, input), deadline)).slice(0, cfg.maxSources);
+      let adapters: RetrievedSource[];
+      try {
+        adapters = (await withDeadline(ports.retrieve(route, input), deadline)).slice(0, cfg.maxSources);
+      } catch (e) {
+        // ══════════════════════════════════════════════════════════════════
+        // TIMEOUT : LES RÉSULTATS DÉTERMINISTES SONT CONSERVÉS (§9.6, §30.1)
+        //
+        // L'échéance globale levait jusqu'au `catch` final : ERROR_FINAL et
+        // perte de ce que les niveaux 1 et 2 avaient déjà trouvé. Si des
+        // sources du compte sont déjà en main, elles sont rendues (état
+        // récupérable, « Réessayer » reste possible) ; sinon, l'erreur suit
+        // son cours.
+        // ══════════════════════════════════════════════════════════════════
+        const deja = isHelpIntent(route.intent) ? [] : (data?.contextSources ?? []);
+        if ((e as Error)?.message !== 'REQUEST_TIMEOUT' || deja.length === 0) throw e;
+        machine.fail(false);
+        trace.escalationReasons.push('TIMEOUT:PARTIAL_RESULTS');
+        const partiel = dedupeSources(deja).slice(0, cfg.maxSources);
+        const resolvedPartiel = await ports.resolveSources(partiel, input.accountId).catch(() => []);
+        const actionsPartiel = await ports.resolveActions(route, input, partiel).catch(() => []);
+        done('fallback', 'timeout.partial', 'INSUFFICIENT', partiel.length);
+        const r = await finalize(base, machine, 'classic_search',
+          `La recherche complète a pris trop de temps. Voici ce que j’ai déjà trouvé : ${fallbackFromSources(partiel)}`,
+          [], resolvedPartiel, actionsPartiel, ports, input, 'insufficient');
+        // État récupérable, mais PAS de `error` dans la réponse : le client
+        // remplacerait le texte par le libellé d'erreur et perdrait les
+        // résultats déjà trouvés, qui sont précisément ce qu'on conserve.
+        r.finalState = 'ERROR_RECOVERABLE';
+        return r;
+      }
       // Les données T1 rassemblées au niveau 2 enrichissent le contexte : le
       // modèle, s'il est appelé, répond sur ce que T1 a déjà extrait.
       // Question d'utilisation : les articles seuls, jamais le contexte du
@@ -466,6 +546,36 @@ export async function runAssistant(
       const contexte = isHelpIntent(route.intent) ? [] : (data?.contextSources ?? []);
       sources = dedupeSources([...contexte, ...adapters]).slice(0, cfg.maxSources);
       resolved = await ports.resolveSources(sources, input.accountId);
+
+      // ══════════════════════════════════════════════════════════════════
+      // AIDE PRODUIT — contradiction, puis réponse d'article sans modèle
+      //
+      // T2-04 : deux articles également pertinents qui se contredisent ne
+      // sont pas arbitrés — ni par le code, ni par le modèle. Réponse « non
+      // fiable », renvoi au support (OPEN_CONTACT, via `resolveActions`) et
+      // alerte éditoriale journalisée avec les deux identifiants.
+      //
+      // §10.5 / §10.6 : un article qui répond exactement (score ≥ seuil)
+      // suffit, en Standard comme en Premium : extrait + lien vers l'article,
+      // sans appel modèle. Le modèle ne reformule que les cas moins nets, et
+      // seulement si le compte y est éligible.
+      // ══════════════════════════════════════════════════════════════════
+      if (isHelpIntent(route.intent) && sources.length > 0) {
+        const contradiction = detectHelpContradiction(sources);
+        if (contradiction) {
+          console.warn(`[verebona][alerte-éditoriale] CONTRADICTION ${contradiction.articles[0]} / ${contradiction.articles[1]} (${contradiction.unit}) — correction documentaire à prévoir (T2-04).`);
+          trace.escalationReasons.push(`HELP_CONTRADICTION:${contradiction.articles.join('|')}`);
+          const actions = await ports.resolveActions(route, input, sources);
+          done('template', 'help.contradiction', 'CONFLICTING', sources.length);
+          return finalize(base, machine, 'deterministic', contradictionAnswer(contradiction), [], resolved, actions, ports, input, 'conflicting');
+        }
+        const exact = (sources[0].relevanceScore ?? 0) >= HELP_EXACT_THRESHOLD;
+        if (exact || !route.aiEligible) {
+          const actions = await ports.resolveActions(route, input, sources);
+          done('retrieval', exact ? 'help.exact_article' : 'help.article_excerpt', exact ? 'SUFFICIENT_TEXT' : 'INSUFFICIENT', sources.length);
+          return finalize(base, machine, 'classic_search', fallbackFromHelpSources(sources), [], resolved, actions, ports, input, 'supported');
+        }
+      }
 
       // Réponse exacte à partir des résultats (tryDeterministicFromRetrieval).
       const exact = answerFromRetrievedSources(route.intent, input.message, adapters, thresholds);
@@ -500,7 +610,11 @@ export async function runAssistant(
         aiAllowed: true,
         clarificationCount: 0,
       });
-      if (okGuard) {
+      if (okGuard && await avantAppelModele() === 'cancelled') return annuler();
+      if (okGuard && !budget.canCall()) {
+        // Plafond mensuel atteint à l'instant : pas d'appel (repli ci-dessous).
+        trace.escalationReasons.push('N3:AI_BUDGET_EXHAUSTED');
+      } else if (okGuard) {
         const avantGen = budget.used;
         const gen = await withDeadline(ports.generateWithAI!(route, sources, input), deadline).catch(() => null);
         reconcilierBudget(budget, avantGen, 1);
@@ -523,7 +637,9 @@ export async function runAssistant(
     // ── Repli sans modèle : jamais une phrase vide de contenu ───────────────
     // Question d'utilisation : articles cités, ou aveu explicite et contact —
     // jamais « ces éléments de votre compte » (CDC Centre d'aide §5, T2-03).
-    const answer = isHelpIntent(route.intent) ? fallbackFromHelpSources(sources) : fallbackFromSources(sources);
+    const repli = isHelpIntent(route.intent) ? fallbackFromHelpSources(sources) : fallbackFromSources(sources);
+    // Plafond mensuel : le dire, sans culpabiliser (§6.6).
+    const answer = budgetMensuelAtteint && route.aiEligible ? `${repli}\n\n${MONTHLY_BUDGET_NOTICE}` : repli;
     const actions = await ports.resolveActions(route, input, sources);
     done('fallback', 'fallback.sources', 'INSUFFICIENT', sources.length);
     return finalize(base, machine, resolved.length ? 'classic_search' : 'fallback', answer, [], resolved, actions, ports, input);

@@ -50,6 +50,15 @@ export interface ExecutionFilters {
   until?: Date;
   /** Durée minimale, pour retrouver les appels lents (SCR-07, filtre « durée »). */
   minDurationMs?: number;
+  /** LOG-UI-02 : utilisateur à l'origine de l'appel. */
+  userId?: number;
+  /**
+   * LOG-UI-02, CST-UI-05 : rang du modèle réellement utilisé. `fallback` =
+   * n'importe quel repli (drill-down des alertes « taux de fallback »).
+   */
+  rank?: 'primary' | 'fallback_1' | 'fallback_2' | 'fallback';
+  /** LOG-UI-02 : exécution de file parente. */
+  jobId?: number;
   limit?: number;
   offset?: number;
 }
@@ -150,6 +159,9 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
     f.since?.toISOString() ?? null, // $8
     f.until?.toISOString() ?? null, // $9
     f.minDurationMs ?? null,        // $10
+    f.userId ?? null,               // $11
+    f.rank ?? null,                 // $12
+    f.jobId ?? null,                // $13
   ];
 
   const where = `
@@ -162,7 +174,12 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
         AND ($7::bool IS NULL OR e.status = 'error')
         AND ($8::timestamptz IS NULL OR e.created_at >= $8)
         AND ($9::timestamptz IS NULL OR e.created_at <= $9)
-        AND ($10::int IS NULL OR e.duration_ms >= $10)`;
+        AND ($10::int IS NULL OR e.duration_ms >= $10)
+        AND ($11::int IS NULL OR e.user_id = $11)
+        AND ($12::text IS NULL
+             OR ($12 = 'fallback' AND (e.model_rank IN ('fallback_1', 'fallback_2') OR e.is_fallback))
+             OR e.model_rank = $12)
+        AND ($13::int IS NULL OR e.job_id = $13)`;
 
   const rows = await pgClient.unsafe(
     `SELECT e.id, e.created_at, e.use_case_code, e.operation_code, e.account_id, e.user_id,
@@ -190,6 +207,84 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
     limit,
     offset,
   };
+}
+
+/**
+ * Détail d'une exécution — LOG-UI-04, SCR-07, NFR-004.
+ *
+ * À partir d'un appel, reconstitue l'exécution : tous les appels de la même
+ * trace (principal puis replis), les étapes de pipeline rattachées, le job de
+ * file parent (déclencheur, origine, tentatives, version figée) et la version
+ * de configuration appliquée. `getExecutionSteps` existait sans être exposé.
+ */
+export interface ExecutionDetail {
+  call: ExecutionRow;
+  traceId: string | null;
+  calls: ExecutionRow[];
+  steps: ExecutionStep[];
+  job: {
+    id: number; treatment: string; status: string; origin: string; triggerCode: string | null;
+    attempts: number; configVersionId: number | null; createdAt: Date; startedAt: Date | null;
+    finishedAt: Date | null; lastError: string | null; accountId: number | null;
+    targetType: string | null; targetId: string | null;
+  } | null;
+}
+
+const DETAIL_COLS = `e.id, e.created_at, e.use_case_code, e.operation_code, e.account_id, e.user_id,
+            e.provider, e.model, e.model_rank, e.is_fallback, e.input_tokens, e.output_tokens,
+            e.cost_micros, e.duration_ms, e.status, e.error_code, e.error_message,
+            e.config_version_id, e.app_version, e.job_id, e.metadata,
+            v.visible_number AS config_visible_number`;
+
+export async function getExecutionDetail(id: number): Promise<ExecutionDetail | null> {
+  const rows = await pgClient.unsafe(
+    `SELECT ${DETAIL_COLS} FROM ai_usage_event e
+       LEFT JOIN ai_config_versions v ON v.id = e.config_version_id
+      WHERE e.id = $1 LIMIT 1`,
+    [id] as never[],
+  );
+  const r = (rows as unknown as Row[])[0];
+  if (!r) return null;
+  const call = toRow(r);
+  const traceId = typeof (r.metadata as Record<string, unknown> | null)?.traceId === 'string'
+    ? String((r.metadata as Record<string, unknown>).traceId) : null;
+
+  const calls = traceId
+    ? ((await pgClient.unsafe(
+      `SELECT ${DETAIL_COLS} FROM ai_usage_event e
+         LEFT JOIN ai_config_versions v ON v.id = e.config_version_id
+        WHERE e.metadata->>'traceId' = $1
+        ORDER BY e.created_at, e.id LIMIT 20`,
+      [traceId] as never[],
+    )) as unknown as Row[]).map(toRow)
+    : [call];
+
+  const steps = traceId ? await getExecutionSteps(traceId) : [];
+
+  let job: ExecutionDetail['job'] = null;
+  if (call.jobId) {
+    const j = ((await pgClient.unsafe(
+      `SELECT id, treatment, status, origin, trigger_code, attempts, config_version_id,
+              created_at, started_at, finished_at, last_error, account_id, target_type, target_id
+         FROM ai_job_queue WHERE id = $1 LIMIT 1`,
+      [call.jobId] as never[],
+    )) as unknown as Row[])[0];
+    if (j) {
+      job = {
+        id: Number(j.id), treatment: String(j.treatment), status: String(j.status), origin: String(j.origin),
+        triggerCode: j.trigger_code == null ? null : String(j.trigger_code), attempts: Number(j.attempts),
+        configVersionId: j.config_version_id == null ? null : Number(j.config_version_id),
+        createdAt: new Date(String(j.created_at)),
+        startedAt: j.started_at ? new Date(String(j.started_at)) : null,
+        finishedAt: j.finished_at ? new Date(String(j.finished_at)) : null,
+        lastError: j.last_error == null ? null : String(j.last_error),
+        accountId: j.account_id == null ? null : Number(j.account_id),
+        targetType: j.target_type == null ? null : String(j.target_type),
+        targetId: j.target_id == null ? null : String(j.target_id),
+      };
+    }
+  }
+  return { call, traceId, calls, steps, job };
 }
 
 export interface ExecutionStep {

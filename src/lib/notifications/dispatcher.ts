@@ -17,6 +17,7 @@ import { notificationDeliveries } from '@/db/schema';
 import { getCatalogEntry } from './catalog';
 import { renderContent } from './content-renderer';
 import { resolveChannels } from './policy-resolver';
+import { applyChannelActivation, loadDisabledChannels, CHANNEL_DISABLED_ERROR_CODE } from './channel-activation';
 import { deliverBell, deliverEmail, deliverWebPush, type DeliveryOutcome, type DeliveryContext } from './channels';
 import { claimByIds, claimPending, markProcessed, releaseOrFail, type OutboxRow } from './outbox';
 
@@ -59,8 +60,20 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   }
 
   const payload = row.payload_json ?? {};
-  const channels = await resolveChannels(row.recipient_user_id, entry);
+  const resolved = await resolveChannels(row.recipient_user_id, entry);
   const rendered = renderContent(entry, payload, row.deep_link);
+
+  // CDC BO COM-011 / REC-MOD-01 : un canal désactivé depuis le BO n'est pas
+  // livré ; les autres canaux de l'événement le sont. Canaux obligatoires
+  // du catalogue (§2.11) jamais bloqués.
+  const { channels, blocked } = applyChannelActivation(
+    resolved,
+    await loadDisabledChannels(row.event_type),
+    {
+      bell: !!row.mandatory_bell || entry.mandatoryBell,
+      email: !!row.mandatory_email || entry.mandatoryEmail,
+    },
+  );
 
   const ctx: DeliveryContext = {
     outboxId: row.id,
@@ -73,6 +86,13 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   };
 
   const outcomes: DeliveryOutcome['status'][] = [];
+
+  // Trace de diagnostic : le canal était prévu mais a été coupé par l'admin.
+  // « skipped_* » n'est pas un échec (§18.4) et n'est pas compté comme envoi.
+  for (const channel of blocked) {
+    await recordDelivery(row.id, ctx.userId, channel, { status: 'skipped_unavailable', errorCode: CHANNEL_DISABLED_ERROR_CODE });
+    outcomes.push('skipped_unavailable');
+  }
 
   let bellNotificationId: number | undefined;
   if (channels.bell) {

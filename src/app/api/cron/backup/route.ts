@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { acquireJobLock, releaseJobLock } from '@/lib/job-lock';
 import { runDatabaseBackup } from '@/services/backup/database-backup.service';
+import { reportBackupFailure, resolveBackupFailure } from '@/services/admin/anomaly.service';
 
 /**
  * GET /api/cron/backup — sauvegarde déclenchée par un planificateur externe.
@@ -20,9 +21,11 @@ export async function GET(request: Request) {
   }
   try {
     const manifest = await runDatabaseBackup('cron');
+    await resolveBackupFailure();
     return NextResponse.json({ success: true, manifest });
   } catch (e) {
     console.error('[cron/backup] échec :', e);
+    await reportBackupFailure('cron', e);
     return NextResponse.json({ error: 'BACKUP_FAILED', message: (e as Error).message }, { status: 500 });
   } finally {
     await releaseJobLock(bail);

@@ -1,6 +1,11 @@
 /**
  * GET /api/verebona/requests/[requestId]    — statut d'une demande (polling/annulation UI, §27.5).
  * DELETE /api/verebona/requests/[requestId]  — annule une demande en cours (§7.8, §30.5).
+ *
+ * `[requestId]` accepte l'identifiant serveur OU le `clientRequestId` généré
+ * par le client : celui-ci peut ainsi annuler une demande dont il n'a pas
+ * encore reçu la réponse (la réservation `pending` est écrite au début du
+ * traitement — `request-lifecycle.service.ts`).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
@@ -21,7 +26,8 @@ export async function GET(
   const rows = await pgClient.unsafe(
     `SELECT request_id, status, mode, error_code, created_at
        FROM verebona_request_runs
-      WHERE request_id = $1 AND account_id = $2 AND user_id = $3 LIMIT 1`,
+      WHERE (request_id = $1 OR client_request_id = $1) AND account_id = $2 AND user_id = $3
+      ORDER BY id DESC LIMIT 1`,
     [requestId, accountId, session.userId],
   );
   const list = rows as unknown[];
@@ -58,18 +64,18 @@ export async function DELETE(
   const annulees = await pgClient`
     UPDATE verebona_request_runs
        SET status = 'cancelled'
-     WHERE request_id = ${requestId}
+     WHERE (request_id = ${requestId} OR client_request_id = ${requestId})
        AND account_id = ${accountId}
        AND user_id = ${session.userId}
        AND status NOT IN ('ok', 'error', 'cancelled')
-    RETURNING id
+    RETURNING id, request_id
   `;
 
   if (annulees.length === 0) {
     // Existe-t-elle, et dans quel état ?
     const [existante] = await pgClient<{ status: string }[]>`
       SELECT status FROM verebona_request_runs
-       WHERE request_id = ${requestId} AND account_id = ${accountId}
+       WHERE (request_id = ${requestId} OR client_request_id = ${requestId}) AND account_id = ${accountId}
          AND user_id = ${session.userId}
        LIMIT 1
     `;
@@ -89,12 +95,12 @@ export async function DELETE(
   await pgClient`
     UPDATE verebona_messages
        SET status = 'cancelled'
-     WHERE request_id = ${requestId}
+     WHERE request_id = ${String((annulees[0] as { request_id: string }).request_id)}
        AND account_id = ${accountId}
        AND conversation_id IN (SELECT id FROM verebona_conversations
                                 WHERE account_id = ${accountId} AND user_id = ${session.userId})
        AND status = 'pending'
   `;
 
-  return NextResponse.json({ ok: true, requestId, status: 'cancelled' });
+  return NextResponse.json({ ok: true, requestId: (annulees[0] as { request_id: string }).request_id, status: 'cancelled' });
 }

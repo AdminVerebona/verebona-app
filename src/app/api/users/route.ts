@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { users, accounts, accountMemberships } from '@/db/schema';
-import { eq, like, or, and } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
 import { emailService } from '@/lib/email/email-service';
+import { buildEmailVerificationUrl } from '@/services/auth/email-verification.service';
 import { grantTrial } from '@/services/trial.service';
 import { recordSignupReferral } from '@/services/referral-attribution.service';
 import { getCurrentVersion } from '@/services/legal';
 import { logDatabaseError } from '@/lib/database-diagnostic';
 import { recordAcceptance } from '@/services/legal/legal-acceptances.service';
+import { getSignupMode, SIGNUP_CLOSED_CODE, SIGNUP_CLOSED_MESSAGE } from '@/lib/prelaunch';
+import { resolveSignupInvitation, type SignupInvitation } from '@/lib/prelaunch-invitations';
 
 const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
@@ -18,73 +21,23 @@ function excludePasswordHash<T extends { passwordHash?: string }>(user: T): Omit
   return userWithoutPassword;
 }
 
-export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    // Single user by ID
-    if (id) {
-      if (isNaN(parseInt(id))) {
-        return NextResponse.json({ error: 'Valid ID is required', code: 'INVALID_ID' }, { status: 400 });
-      }
-
-      const user = await db.select().from(users).where(eq(users.id, parseInt(id))).limit(1);
-
-      if (user.length === 0) {
-        return NextResponse.json({ error: 'User not found', code: 'USER_NOT_FOUND' }, { status: 404 });
-      }
-
-      return NextResponse.json(excludePasswordHash(user[0]), { status: 200 });
-    }
-
-    // List users with pagination, search, and filters
-    const limit = Math.min(parseInt(searchParams.get('limit') ?? '10'), 100);
-    const offset = parseInt(searchParams.get('offset') ?? '0');
-    const search = searchParams.get('search');
-    const planType = searchParams.get('planType');
-    const isActiveParam = searchParams.get('isActive');
-
-    let query = db.select().from(users).$dynamic();
-
-    const conditions: any[] = [];
-
-    // Search condition
-    if (search) {
-      conditions.push(
-        or(
-          like(users.email, `%${search}%`),
-          like(users.firstName, `%${search}%`),
-          like(users.lastName, `%${search}%`),
-          like(users.username, `%${search}%`)
-        )
-      );
-    }
-
-    // Filter by planType
-    if (planType) {
-      conditions.push(eq(users.planType, planType));
-    }
-
-    // Filter by isActive
-    if (isActiveParam !== null) {
-      const isActive = isActiveParam === 'true';
-      conditions.push(eq(users.isActive, isActive));
-    }
-
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions));
-    }
-
-    const results = await query.limit(limit).offset(offset);
-    const usersWithoutPasswords = results.map((user) => excludePasswordHash(user));
-
-    return NextResponse.json(usersWithoutPasswords, { status: 200 });
-  } catch (error) {
-    console.error('GET error:', error);
-    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
-  }
-}
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ * GET, PUT ET DELETE SUPPRIMÉS — FAILLE CRITIQUE (revue de sécurité)
+ *
+ * Cette route est publique (inscription) : `middleware.ts` la déclare sans
+ * JWT, et aucun handler ne vérifiait de session. N'importe quel visiteur
+ * anonyme pouvait donc :
+ *   - GET    : lister et rechercher TOUS les utilisateurs (e-mails, noms…) ;
+ *   - PUT    : modifier n'importe quel utilisateur (`isActive`, `planType`,
+ *              identifiants Stripe…) par `?id=` ;
+ *   - DELETE : supprimer n'importe quel utilisateur par `?id=`.
+ * Aucun écran ne les appelait (seul `SignupForm` utilise POST) : le profil
+ * passe par `/api/users/me`, l'administration par `/api/admin/users/**`
+ * (garde `requireAdmin`). Ils sont retirés plutôt que protégés — Next.js
+ * répond désormais 405 à ces méthodes.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 
 export async function POST(request: NextRequest) {
   try {
@@ -100,12 +53,43 @@ export async function POST(request: NextRequest) {
       locale,
       acceptedTerms,
       termsVersion,
-      inviteToken,
+      inviteToken: rawInviteToken,
+      // Jeton d'une transmission de bien reçue sans compte : vaut invitation
+      // (voir `lib/prelaunch-invitations.ts`), sans rien consommer ici.
+      transmissionToken,
       referralCode, // CDC parrainage §4.3 : transmis directement au serveur a la creation du compte
       signupPlan: rawSignupPlan, // conserve pour compatibilite : l'inscription ne choisit plus d'offre (CDC tarification §3.1)
     } = body;
 
     const signupPlan = rawSignupPlan === 'duo' ? 'premium_duo' : rawSignupPlan;
+    // Hors pré-lancement, l'inscription est ouverte : un jeton de
+    // transmission devenu caduc (déjà accepté…) ne doit pas la bloquer — il
+    // n'est donc pris en compte qu'en pré-lancement, où il ouvre l'accès.
+    const inviteToken = rawInviteToken || (getSignupMode() === 'prelaunch' ? transmissionToken : undefined);
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PRÉ-LANCEMENT — inscription fermée sauf invitation (src/lib/prelaunch.ts)
+    //
+    // Contrôle placé AVANT toute autre étape, et en particulier avant
+    // `releaseUnverifiedEmail`, qui écrit en base : une inscription fermée ne
+    // doit rien modifier. Seule une invitation valide (compte partagé ou
+    // Premium Duo, destinée à cet email) ouvre la création du compte.
+    // ══════════════════════════════════════════════════════════════════════
+    let invitation: SignupInvitation | null = null;
+    const invitationEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (getSignupMode() === 'prelaunch') {
+      invitation = inviteToken ? await resolveSignupInvitation(inviteToken, invitationEmail) : null;
+      if (!invitation || !invitation.valid) {
+        return NextResponse.json(
+          {
+            error: SIGNUP_CLOSED_MESSAGE,
+            code: SIGNUP_CLOSED_CODE,
+            ...(invitation && !invitation.valid ? { invitationError: invitation.code } : {}),
+          },
+          { status: 403 }
+        );
+      }
+    }
 
     // Validate required fields
     if (!email) {
@@ -242,30 +226,26 @@ export async function POST(request: NextRequest) {
 
     const now = new Date();
 
-    // If this is an invite signup, validate the invite BEFORE creating the user (prevents orphan users)
+    // Invitation : validée AVANT la création de l'utilisateur (pas d'orphelin).
+    // - compte partagé : l'inscription rejoint le compte et consomme le jeton ;
+    // - Premium Duo : compte standard créé ici, rattachement au Duo ensuite par
+    //   POST /api/duo/join (jeton non consommé).
     let pendingMembership:
       | (typeof accountMemberships.$inferSelect)
       | undefined;
 
     if (inviteToken) {
-      const membershipRows = await db
-        .select()
-        .from(accountMemberships)
-        .where(eq(accountMemberships.inviteToken, String(inviteToken)))
-        .limit(1);
-
-      pendingMembership = membershipRows[0];
-
-      if (!pendingMembership || pendingMembership.status !== 'pending') {
-        return NextResponse.json({ error: 'Invalid invite token', code: 'INVALID_INVITE_TOKEN' }, { status: 400 });
+      invitation ??= await resolveSignupInvitation(inviteToken, sanitizedEmail);
+      if (!invitation.valid) {
+        const messages = {
+          INVALID_INVITE_TOKEN: 'Invalid invite token',
+          INVITE_EMAIL_MISMATCH: 'Invite token email mismatch',
+          INVITE_TOKEN_EXPIRED: 'Invite token expired',
+        } as const;
+        return NextResponse.json({ error: messages[invitation.code], code: invitation.code }, { status: 400 });
       }
-
-      if (pendingMembership.invitedEmail && pendingMembership.invitedEmail !== sanitizedEmail) {
-        return NextResponse.json({ error: 'Invite token email mismatch', code: 'INVITE_EMAIL_MISMATCH' }, { status: 400 });
-      }
-
-      if (pendingMembership.inviteTokenExpiresAt && pendingMembership.inviteTokenExpiresAt.getTime() < Date.now()) {
-        return NextResponse.json({ error: 'Invite token expired', code: 'INVITE_TOKEN_EXPIRED' }, { status: 400 });
+      if (invitation.kind === 'account') {
+        pendingMembership = invitation.membership;
       }
     }
 
@@ -281,8 +261,12 @@ export async function POST(request: NextRequest) {
         lastName: sanitizedLastName,
         username: sanitizedUsername,
         company: company || null,
-        planType: planType || 'STANDARD',
-        isActive: inviteToken ? true : false,
+        // Offre imposée côté serveur : le `planType` du corps (toujours
+        // STANDARD depuis le formulaire) était recopié tel quel — un appel
+        // direct pouvait créer un compte PREMIUM_PRO sans paiement.
+        // L'offre ne change que par Stripe ou l'administration.
+        planType: 'STANDARD',
+        isActive: pendingMembership ? true : false,
         locale: locale || 'fr-FR',
         acceptedTermsAt: now,
         termsVersion: acceptedVersionCode,
@@ -298,7 +282,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'User creation failed', code: 'USER_CREATION_FAILED' }, { status: 500 });
       }
 
-      if (inviteToken && pendingMembership) {
+      if (pendingMembership) {
         await db
           .update(accountMemberships)
           .set({
@@ -315,7 +299,8 @@ export async function POST(request: NextRequest) {
         const accountName = `Compte de ${sanitizedFirstName} ${sanitizedLastName}`;
 
         // Accounts table has a different planType enum; keep it consistent.
-        const accountPlanType = planType || 'STANDARD';
+        // Même règle que l'utilisateur : jamais l'offre fournie par le client.
+        const accountPlanType = 'STANDARD';
 
         const insertedAccounts = await db
           .insert(accounts)
@@ -404,11 +389,11 @@ export async function POST(request: NextRequest) {
       }
 
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'http://localhost:3000';
-      const timestamp = Date.now();
-      const tokenData = `${newUser.email}:${timestamp}`;
-      const token = Buffer.from(tokenData).toString('base64');
-      const planParam = signupPlan && ['standard', 'premium', 'premium_duo', 'premium_pro'].includes(signupPlan) ? `&plan=${signupPlan}` : '';
-      const verificationUrl = `${baseUrl}/api/auth/verify-email?token=${token}${planParam}`;
+      // Lien SIGNÉ (voir `email-verification.service`) : l'ancien
+      // `base64(email:horodatage)` se fabriquait sans recevoir l'e-mail et
+      // ouvrait une session.
+      const plan = signupPlan && ['standard', 'premium', 'premium_duo', 'premium_pro'].includes(signupPlan) ? signupPlan : null;
+      const verificationUrl = buildEmailVerificationUrl(baseUrl, { id: newUser.id, email: newUser.email }, plan);
 
       await emailService
         .send({
@@ -499,109 +484,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-
-export async function PUT(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id || isNaN(parseInt(id))) {
-      return NextResponse.json({ error: 'Valid ID is required', code: 'INVALID_ID' }, { status: 400 });
-    }
-
-    // Check if user exists
-    const existingUser = await db.select().from(users).where(eq(users.id, parseInt(id))).limit(1);
-
-    if (existingUser.length === 0) {
-      return NextResponse.json({ error: 'User not found', code: 'USER_NOT_FOUND' }, { status: 404 });
-    }
-
-    const body = await request.json();
-    const {
-      firstName,
-      lastName,
-      username,
-      company,
-      planType,
-      planRenewalDate,
-      stripeCustomerId,
-      stripeSubscriptionId,
-      isActive,
-      locale,
-    } = body;
-
-    // Validate planType if provided
-    if (planType && !VALID_PLAN_TYPES.includes(planType)) {
-      return NextResponse.json(
-        { error: 'Invalid plan type. Must be one of: ' + VALID_PLAN_TYPES.join(', '), code: 'INVALID_PLAN_TYPE' },
-        { status: 400 }
-      );
-    }
-
-    // Prepare update data
-    const updateData: Record<string, unknown> = {
-      updatedAt: new Date(),
-    };
-
-    if (firstName !== undefined) updateData.firstName = String(firstName).trim();
-    if (lastName !== undefined) updateData.lastName = String(lastName).trim();
-    if (username !== undefined) updateData.username = username ? String(username).trim() : null;
-    if (company !== undefined) updateData.company = company || null;
-    if (planType !== undefined) updateData.planType = planType;
-    if (planRenewalDate !== undefined) updateData.planRenewalDate = planRenewalDate || null;
-    if (stripeCustomerId !== undefined) updateData.stripeCustomerId = stripeCustomerId || null;
-    if (stripeSubscriptionId !== undefined) updateData.stripeSubscriptionId = stripeSubscriptionId || null;
-    if (isActive !== undefined) updateData.isActive = isActive;
-    if (locale !== undefined) updateData.locale = locale;
-
-    try {
-      const updatedUser = await db.update(users).set(updateData).where(eq(users.id, parseInt(id))).returning();
-      return NextResponse.json(excludePasswordHash(updatedUser[0]), { status: 200 });
-    } catch (dbError: any) {
-      // Check for unique constraint violation
-      if (dbError.message && dbError.message.includes('UNIQUE constraint failed')) {
-        if (dbError.message.includes('username')) {
-          return NextResponse.json({ error: 'Username already exists', code: 'DUPLICATE_USERNAME' }, { status: 400 });
-        }
-      }
-      throw dbError;
-    }
-  } catch (error) {
-    console.error('PUT error:', error);
-    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
-  }
-}
-
-export async function DELETE(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id || isNaN(parseInt(id))) {
-      return NextResponse.json({ error: 'Valid ID is required', code: 'INVALID_ID' }, { status: 400 });
-    }
-
-    // Check if user exists
-    const existingUser = await db.select().from(users).where(eq(users.id, parseInt(id))).limit(1);
-
-    if (existingUser.length === 0) {
-      return NextResponse.json({ error: 'User not found', code: 'USER_NOT_FOUND' }, { status: 404 });
-    }
-
-    const deletedUser = await db.delete(users).where(eq(users.id, parseInt(id))).returning();
-
-    return NextResponse.json(
-      {
-        message: 'User deleted successfully',
-        user: excludePasswordHash(deletedUser[0]),
-      },
-      { status: 200 }
-    );
-  } catch (error) {
-    console.error('DELETE error:', error);
-    return NextResponse.json({ error: 'Une erreur interne est survenue.', code: 'INTERNAL_ERROR' }, { status: 500 });
-  }
-}
 
 /**
  * Libère l'adresse email d'un compte jamais vérifié.

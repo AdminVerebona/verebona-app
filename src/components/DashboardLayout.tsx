@@ -18,6 +18,7 @@ import { suggestionsForRoute } from '@/services/verebona-assistant/registries/ca
 import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { TrialBanner } from '@/components/subscription/TrialBanner';
+import { isUnpaid } from '@/lib/trial-status';
 import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
 import { Sun, Moon } from 'lucide-react';
@@ -316,6 +317,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
    * d'offre et affichait « Standard » à quelqu'un en essai.
    */
   const statutAbonnement = useMemo(() => {
+    // Impayé d'abord : sinon un abonné dont le paiement a échoué lisait
+    // « Essai terminé » ou le nom de son offre, comme si tout allait bien.
+    if (isUnpaid(entitlements)) return 'Paiement à régulariser';
     if (entitlements?.trial.status === 'active') return 'Essai en cours';
     if (entitlements?.trial.status === 'expired') return 'Essai terminé';
     const libelles: Record<string, string> = {

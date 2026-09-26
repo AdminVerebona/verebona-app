@@ -99,7 +99,9 @@ export async function deliverEmail(
     actionUrl: rendered.href ? absoluteUrl(rendered.href) : '',
   };
 
-  const res = await emailService.send({ templateCode, to: user.email, variables, userId: ctx.userId });
+  // L'activation du canal a déjà été contrôlée par le dispatcher, par type
+  // d'événement (CDC BO COM-011) : pas de second contrôle par gabarit.
+  const res = await emailService.send({ templateCode, to: user.email, variables, userId: ctx.userId, skipChannelCheck: true });
   if (res.success) return { status: 'sent' };
   return { status: 'failed', errorCode: 'email_send_error', errorMessage: res.error };
 }

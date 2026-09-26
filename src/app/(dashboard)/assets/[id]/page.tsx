@@ -497,8 +497,9 @@ export default function AssetDetailPage() {
       <DeleteAssetDialog
         open={showArchiveConfirm}
         onOpenChange={setShowArchiveConfirm}
+        assetId={asset.id}
         assetName={asset.name}
-        onConfirm={(deleteRelated) => {
+        onConfirm={() => {
           setShowArchiveConfirm(false);
           handleArchive();
         }}

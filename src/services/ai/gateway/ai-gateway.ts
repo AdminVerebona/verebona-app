@@ -25,6 +25,19 @@ import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency
 import { treatmentForUseCase } from '../config/treatments';
 import { assertTreatmentRunnable } from '../queue/runnable-guard';
 import { noteGatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
+import { currentJobContext } from '../queue/job-context';
+import type { ModelRank } from '../telemetry/execution-context';
+import type { ProviderCallOutput } from './providers/provider.port';
+
+/**
+ * Rang d'un modèle dans la chaîne (§9.1, CST-UI-05, LOG-UI-05). L'indice suffit :
+ * la chaîne est construite dans l'ordre principal → fallback 1 → fallback 2,
+ * et un budget d'appelant ne fait que la tronquer, jamais la réordonner.
+ */
+export const RANKS: readonly ModelRank[] = ['primary', 'fallback_1', 'fallback_2'];
+export function rankAt(index: number): ModelRank | null {
+  return RANKS[index] ?? null;
+}
 
 export class AiGateway {
   static async execute<T>(req: AiGatewayRequest<T>): Promise<AiGatewayResponse<T>> {
@@ -135,12 +148,20 @@ export class AiGateway {
     const attempts: ModelAttempt[] = [];
     const chaineComplete = models.length === 1 + configuration.fallbackModels.length;
 
+    // Exécution de file : job parent tracé à chaque appel (§9.1).
+    const jobId = currentJobContext()?.jobId ?? null;
+
     for (let i = 0; i < models.length; i++) {
       const model = models[i];
       const usedFallback = i > 0;
+      const modelRank = rankAt(i);
+      // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
+      // les jetons ont été consommés et facturés — COST-005 exige de garder
+      // le coût réel de l'appel échoué.
+      let out: ProviderCallOutput | null = null;
 
       try {
-        const out = await provider.call({
+        out = await provider.call({
           model,
           prompt,
           attachments: req.attachments ?? [],
@@ -152,6 +173,8 @@ export class AiGateway {
           maxOutputTokens: op.minOutputTokens
             ? Math.max(configuration.maxOutputTokens ?? 0, op.minOutputTokens)
             : configuration.maxOutputTokens ?? undefined,
+          // T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03 : niveau du rang sollicité.
+          reasoning: configuration.reasoningByRank[i] ?? null,
         });
 
         // Aucune persistance d'une sortie brute invalide (CDC §5.3).
@@ -161,7 +184,9 @@ export class AiGateway {
         // Le tarif est indexé sur le fournisseur DÉCLARÉ dans le référentiel,
         // non sur l'instance d'exécution : un double de test reste tarifé comme
         // le fournisseur qu'il remplace.
-        const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider) ?? 0;
+        // COST-008 : sans tarif, le coût reste NULL (« non calculable »), jamais
+        // un 0 qui se confondrait avec un appel gratuit dans les agrégats.
+        const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
 
         await recordCallTrace({
           traceId,
@@ -182,6 +207,9 @@ export class AiGateway {
           billable: op.billable && !req.shadow,
           shadow: Boolean(req.shadow),
           outputPreview: previewForLog(out.rawText),
+          modelRank,
+          jobId,
+          configVersionId: configuration.configVersionId,
         });
 
         attempts.push({ model, succeeded: true });
@@ -190,7 +218,7 @@ export class AiGateway {
         return {
           data, provider: provider.name, model, promptVersion, usedFallback,
           inputTokens: out.inputTokens, outputTokens: out.outputTokens,
-          costMicros, durationMs, traceId, fromCache: false,
+          costMicros: costMicros ?? 0, durationMs, traceId, fromCache: false,
         };
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -208,13 +236,21 @@ export class AiGateway {
           model,
           promptVersion,
           usedFallback,
-          inputTokens: 0, outputTokens: 0, costMicros: 0,
+          // COST-005 : réponse obtenue puis rejetée (sortie invalide) → jetons
+          // et coût réels ; aucune réponse → rien de consommé.
+          inputTokens: out?.inputTokens ?? 0,
+          outputTokens: out?.outputTokens ?? 0,
+          costMicros: out ? calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider) : 0,
           durationMs: Date.now() - startedAt,
           status: 'error',
           errorCode: isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE',
           errorMessage: message,
-          billable: false,
+          // Un appel facturé par le fournisseur reste une dépense métier.
+          billable: Boolean(out) && op.billable && !req.shadow,
           shadow: Boolean(req.shadow),
+          modelRank,
+          jobId,
+          configVersionId: configuration.configVersionId,
         }).catch(() => { /* la trace ne doit jamais masquer l'erreur d'origine */ });
 
         // Une erreur non récupérable arrête immédiatement la chaîne de repli.

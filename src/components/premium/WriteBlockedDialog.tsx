@@ -29,11 +29,16 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { useState } from 'react';
 import Link from 'next/link';
-import { Crown, Check, ArrowRight, Sparkles } from 'lucide-react';
+import { Crown, Check, ArrowRight, Sparkles, CreditCard } from 'lucide-react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { openBillingPortal } from '@/lib/billing/open-billing-portal';
+import { UPDATE_PAYMENT_METHOD_LABEL } from '@/components/subscription/UnpaidPaymentNotice';
+import { unpaidDeadlineLabel } from '@/lib/trial-status';
 import {
   writeBlockedTitle,
+  UNPAID_BLOCKED_TITLE,
   OFFERS_PATH,
   type WriteBlockedInfo,
 } from '@/lib/write-blocked';
@@ -57,11 +62,16 @@ function estFinEssai(code: string | undefined): boolean {
 }
 
 export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDialogProps) {
-  const finEssai = estFinEssai(info?.code);
+  // Impayé : ni « essai terminé » ni « passez à Premium ». Le client a une
+  // offre ; son paiement a échoué. Le geste utile est de mettre à jour son
+  // moyen de paiement, pas d'en choisir une autre.
+  const impaye = Boolean(info?.unpaid);
+  const finEssai = !impaye && estFinEssai(info?.code);
   // Fonctionnalité réservée (dossiers prêts à l'usage…) : les deux offres
   // qui la débloquent sont nommées, pas seulement Premium.
   const premiumRequis = info?.code === 'PREMIUM_REQUIRED';
   const fermer = () => onOpenChange(false);
+  const [portailEnCours, setPortailEnCours] = useState(false);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -80,14 +90,16 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
               className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center"
               style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
             >
-              {finEssai ? (
+              {impaye ? (
+                <CreditCard className="w-7 h-7 text-white" />
+              ) : finEssai ? (
                 <Sparkles className="w-7 h-7 text-white" />
               ) : (
                 <Crown className="w-7 h-7 text-white" />
               )}
             </div>
             <h2 className="text-xl font-bold text-white mb-1">
-              {info ? writeBlockedTitle(info.code) : 'Limite atteinte'}
+              {impaye ? UNPAID_BLOCKED_TITLE : info ? writeBlockedTitle(info.code) : 'Limite atteinte'}
             </h2>
             <p className="text-sm text-white/70">
               {/* Le message vient du serveur : il connaît l'offre, le quota
@@ -98,7 +110,30 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
         </div>
 
         <div className="px-6 py-5 space-y-4 bg-[color:var(--bg-card)]">
-          {finEssai ? (
+          {impaye && info?.unpaid ? (
+            <>
+              {/* Ce qui reste possible pendant le cycle d'impayé
+                  (AID-BILL-008) : le dire évite de croire le compte perdu. */}
+              <div className="space-y-2.5">
+                {[
+                  'Vos biens et documents restent consultables',
+                  'Vous pouvez les exporter à tout moment',
+                  'Vous pouvez toujours transmettre un bien',
+                ].map((texte) => (
+                  <div key={texte} className="flex items-center gap-3 text-sm">
+                    <div className="w-6 h-6 rounded-full bg-blue-500/10 flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3.5 h-3.5 text-blue-500" />
+                    </div>
+                    <span className="text-foreground/80">{texte}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-sm text-muted-foreground text-center">
+                Date limite de régularisation :{' '}
+                <strong className="text-foreground">{unpaidDeadlineLabel(info.unpaid)}</strong>.
+              </p>
+            </>
+          ) : finEssai ? (
             <>
               <p className="text-sm text-muted-foreground text-center">
                 Choisissez l&apos;offre qui vous convient pour reprendre l&apos;ajout et la
@@ -157,25 +192,45 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
           )}
 
           <div className="pt-1 space-y-2">
-            <Link
-              href={OFFERS_PATH}
-              onClick={fermer}
-              className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
-              style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
-            >
-              {/* « Choisir une offre » plutôt que « Passer à Premium » : sans
-                  offre en cours, il n'y a pas de montée en gamme. Même
-                  libellé que le bandeau de fin d'essai. */}
-              {finEssai ? (
-                <>Choisir mon offre</>
-              ) : (
-                <>
-                  <Crown className="w-4 h-4" />
-                  {premiumRequis ? 'Passer à Premium ou Premium Duo' : 'Passer à Premium'}
-                </>
-              )}
-              <ArrowRight className="w-4 h-4" />
-            </Link>
+            {impaye ? (
+              <button
+                type="button"
+                disabled={portailEnCours}
+                onClick={async () => {
+                  setPortailEnCours(true);
+                  try {
+                    if (await openBillingPortal()) fermer();
+                  } finally {
+                    setPortailEnCours(false);
+                  }
+                }}
+                className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-60"
+                style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
+              >
+                <CreditCard className="w-4 h-4" />
+                {UPDATE_PAYMENT_METHOD_LABEL}
+              </button>
+            ) : (
+              <Link
+                href={OFFERS_PATH}
+                onClick={fermer}
+                className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
+                style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
+              >
+                {/* « Choisir une offre » plutôt que « Passer à Premium » : sans
+                    offre en cours, il n'y a pas de montée en gamme. Même
+                    libellé que le bandeau de fin d'essai. */}
+                {finEssai ? (
+                  <>Choisir mon offre</>
+                ) : (
+                  <>
+                    <Crown className="w-4 h-4" />
+                    {premiumRequis ? 'Passer à Premium ou Premium Duo' : 'Passer à Premium'}
+                  </>
+                )}
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            )}
             <button
               onClick={fermer}
               className="w-full py-2.5 rounded-xl text-sm text-muted-foreground hover:text-foreground transition-colors"

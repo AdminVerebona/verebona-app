@@ -44,6 +44,7 @@ import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
 import { MepPackages } from './_components/MepPackages';
+import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
 
@@ -662,6 +663,15 @@ function TreatmentEditor({
         })}
       </div>
 
+      {/* T2-UI-11 : ce que le BO ne règle pas pour l'assistant. */}
+      {entry.treatment === 'T2' && (
+        <p className="text-xs text-[color:var(--text-muted)] rounded-lg border border-[color:var(--border-subtle)] p-3">
+          Le prompt ci-dessus est le socle commun de l&apos;assistant. Les prompts spécialisés
+          (compréhension de la demande, rédaction de la réponse, revalidation d&apos;un fait) sont
+          gérés dans le code, avec leur contrat de sortie : ils ne sont pas modifiables ici.
+        </p>
+      )}
+
       {/* Cascade coût/qualité — assistant uniquement (§11.2) */}
       {entry.treatment === 'T2' && (
         <div className="space-y-2">
@@ -772,7 +782,9 @@ export default function AiConfigPage() {
   const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
-  const [confirm, setConfirm] = useState<null | { kind: 'rollback' | 'validate' | 'activate' | 'demote'; onOk: () => void }>(null);
+  const [confirm, setConfirm] = useState<null | {
+    kind: 'rollback' | 'validate' | 'activate' | 'demote' | 'promote' | 'archive'; onOk: () => void;
+  }>(null);
   // Confirmation renforcée en production (VER-026, WF-04) : saisir le nom de
   // l'environnement avant d'activer ou de restaurer.
   const [saisieEnv, setSaisieEnv] = useState('');
@@ -884,6 +896,23 @@ export default function AiConfigPage() {
     }
   };
 
+  // VER-007, WF-26 : quitter la page (fermeture, rechargement, lien externe)
+  // avec des saisies non enregistrées demande confirmation au navigateur.
+  useEffect(() => {
+    if (dirty.size === 0) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
+
+  /** VER-008 : « Réinitialiser » — annule les modifications locales d'un traitement. */
+  const resetTreatment = (t: Treatment) => {
+    const saved = current?.entries.find((e) => e.treatment === t);
+    if (!saved) return;
+    setDrafts((d) => ({ ...d, [t]: saved }));
+    setDirty((s) => { const n = new Set(s); n.delete(t); return n; });
+  };
+
   /** WF-01 — trois choix quand une saisie n'est pas enregistrée. */
   const guardUnsaved = (go: () => void) => {
     if (dirty.size === 0) { go(); return; }
@@ -934,12 +963,12 @@ export default function AiConfigPage() {
     } finally { setBusy(false); }
   };
 
-  const act = async (path: string, success: string) => {
+  const act = async (path: string, success: string, body: Record<string, unknown> = {}) => {
     if (!current) return;
     setBusy(true);
     try {
       const r = await apiClient.post<Record<string, unknown>>(
-        `/api/admin/ai/config-versions/${current.id}/${path}`, {},
+        `/api/admin/ai/config-versions/${current.id}/${path}`, body,
       );
       if (path === 'promote' && r.promoted === false) {
         setDiff({ ...(r as unknown as DiffResponse), promotable: false, activeVisibleNumber: null });
@@ -951,8 +980,24 @@ export default function AiConfigPage() {
       toast.success(success);
       await load();
       await openVersion(current.id);
-    } catch {
-      toast.error("L'opération n'a pas abouti.");
+    } catch (e) {
+      // Refus explicites du serveur (409) : leur message dit quoi faire.
+      const err = e as { message?: string; code?: string; details?: { id?: number } };
+      if (err.code === 'STALE_DRAFT') {
+        // WF-27 : Brouillon obsolète — diff affiché, confirmation explicite.
+        await showDiff();
+        setConfirm({ kind: 'promote', onOk: () => act('promote', 'Version passée à l’essai', { acknowledgeStale: true }) });
+        toast.warning(err.message ?? 'Brouillon obsolète : relisez le diff.');
+      } else if (err.code === 'TO_TEST_EXISTS') {
+        // VER-002 : proposer d'ouvrir la version À tester pour la repasser en Brouillon.
+        toast.error(err.message ?? 'Une version est déjà À tester.', {
+          action: err.details?.id
+            ? { label: 'Ouvrir', onClick: () => guardUnsaved(() => openVersion(err.details!.id!)) }
+            : undefined,
+        });
+      } else {
+        toast.error(err.message || "L'opération n'a pas abouti.");
+      }
     } finally { setBusy(false); }
   };
 
@@ -973,6 +1018,8 @@ export default function AiConfigPage() {
 
   return (
     <div className="space-y-6 max-w-5xl">
+      {/* VER-026 / GST-01 : environnement et état global, sur chaque page IA */}
+      <AiEnvBanner />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Configuration IA</h1>
@@ -1040,7 +1087,12 @@ export default function AiConfigPage() {
             </Button>
 
             {current.status === 'DRAFT' && (
-              <Button size="sm" onClick={() => act('promote', 'Version passée à l’essai')} disabled={busy}>
+              // VER-009, WF-02 : diff et contrôles affichés AVANT la mise à
+              // l'essai, qui est confirmée.
+              <Button size="sm" disabled={busy} onClick={async () => {
+                await showDiff();
+                setConfirm({ kind: 'promote', onOk: () => act('promote', 'Version passée à l’essai') });
+              }}>
                 <Play className="w-3.5 h-3.5 mr-1.5" /> Mettre à l&apos;essai
               </Button>
             )}
@@ -1071,9 +1123,11 @@ export default function AiConfigPage() {
                 )}
               </>
             )}
-            {current.status !== 'ACTIVE' && current.status !== 'ARCHIVED' && (
-              <Button size="sm" variant="ghost" disabled={busy}
-                onClick={() => act('archive', 'Version archivée')}>
+            {/* ACT-01 : pas d'Archiver sur une version À tester (transition
+                interdite par la machine à états) ; VER-020 / WF-28 : confirmé. */}
+            {current.status !== 'ACTIVE' && current.status !== 'ARCHIVED' && current.status !== 'TO_TEST' && (
+              <Button size="sm" variant="ghost" disabled={busy} aria-label="Archiver"
+                onClick={() => setConfirm({ kind: 'archive', onOk: () => act('archive', 'Version archivée') })}>
                 <Archive className="w-3.5 h-3.5" />
               </Button>
             )}
@@ -1084,7 +1138,9 @@ export default function AiConfigPage() {
             lui-même le ou les prompts à faire évoluer. Plus d'onglet par
             traitement pour cela.
           */}
-          <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
+          {/* Ancre `#prompt-control` : cible du lien de remplacement renvoyé
+              par l'ancienne route `/api/admin/ai-instructions/apply` (410). */}
+          <div id="prompt-control" className="scroll-mt-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
             <PromptControl
               versionId={current.id}
               readOnly={readOnly}
@@ -1148,7 +1204,10 @@ export default function AiConfigPage() {
                   )}
 
                   {!readOnly && (
-                    <div className="flex justify-end">
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => resetTreatment(t.code)} disabled={!dirty.has(t.code) || busy}>
+                        <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Réinitialiser
+                      </Button>
                       <Button size="sm" onClick={() => saveTreatment(t.code)} disabled={!dirty.has(t.code) || busy}>
                         <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer {t.code}
                       </Button>
@@ -1215,15 +1274,28 @@ export default function AiConfigPage() {
               {confirm?.kind === 'rollback' ? 'Restaurer cette version'
                 : confirm?.kind === 'validate' ? 'Valider et activer'
                   : confirm?.kind === 'demote' ? 'Revenir en brouillon'
-                    : 'Activer cette version'}
+                    : confirm?.kind === 'promote' ? 'Mettre à l’essai'
+                      : confirm?.kind === 'archive' ? 'Archiver cette version'
+                        : 'Activer cette version'}
             </DialogTitle>
             <DialogDescription>
-              {confirm?.kind === 'rollback'
+              {confirm?.kind === 'promote'
+                ? `La version devient effective en préproduction dès maintenant. ${diff
+                  ? (diff.diff.identical ? 'Elle est identique à l’Active.' : 'Écarts avec l’Active ci-dessous.')
+                  : ''}${diff && diff.validation.issues.some((i) => i.blocking) ? ' Des contrôles bloquants échouent : la mise à l’essai sera refusée.' : ''}`
+                : confirm?.kind === 'archive'
+                  ? 'L’archivage est définitif : la version ne pourra plus être activée ni restaurée. Le dernier point de rollback viable ne peut pas être archivé.'
+                  : confirm?.kind === 'rollback'
                 ? 'Les exécutions en cours seront interrompues et les traitements par lots repris depuis le début avec cette version.'
                 : confirm?.kind === 'demote'
                   ? 'La version redevient un brouillon modifiable. La préproduction revient immédiatement sur la dernière Active pour les nouveaux appels.'
                   : 'Les exécutions en cours se termineront avec la configuration actuelle. Les suivantes utiliseront celle-ci.'}
-              {confirm?.kind !== 'demote' && (current?.unavailableModels?.length ?? 0) > 0 && (
+              {confirm?.kind === 'promote' && diff && !diff.diff.identical && (
+                <pre className="block mt-2 max-h-60 overflow-auto text-xs whitespace-pre-wrap font-mono text-[color:var(--text-secondary)]">
+                  {diff.text}
+                </pre>
+              )}
+              {confirm?.kind !== 'demote' && confirm?.kind !== 'archive' && (current?.unavailableModels?.length ?? 0) > 0 && (
                 <span className="block mt-2 text-amber-500">
                   Attention : {current!.unavailableModels.map((m) =>
                     `${m.treatment} utilise « ${m.model} » (${m.rank})`).join(', ')} — le
@@ -1253,7 +1325,9 @@ export default function AiConfigPage() {
               onClick={() => { const ok = confirm?.onOk; setConfirm(null); setSaisieEnv(''); ok?.(); }}
             >
               {confirm?.kind === 'rollback' ? 'Restaurer'
-                : confirm?.kind === 'demote' ? 'Revenir en brouillon' : 'Activer'}
+                : confirm?.kind === 'demote' ? 'Revenir en brouillon'
+                  : confirm?.kind === 'promote' ? 'Mettre à l’essai'
+                    : confirm?.kind === 'archive' ? 'Archiver' : 'Activer'}
             </Button>
           </DialogFooter>
         </DialogContent>

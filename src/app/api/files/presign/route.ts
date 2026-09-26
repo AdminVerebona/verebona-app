@@ -268,6 +268,13 @@ export async function POST(request: NextRequest) {
       // consultation, suppression, export, transmission — reste possible.
       // Contrôlé ici (avant l'URL signée) et de nouveau à la confirmation,
       // pour les dépôts préparés en parallèle.
+      //
+      // Pas de verrou ici, volontairement : la ligne créée plus bas est
+      // PENDING et n'entre pas dans le volume compté — un verrou ne
+      // protégerait aucune écriture comptée. Ce contrôle n'est qu'un refus
+      // précoce (éviter un téléversement voué à l'échec) ; le contrôle qui
+      // fait foi est celui de `/api/files/confirm`, sous verrou consultatif
+      // du compte (`withAccountStorageLock`).
       // ══════════════════════════════════════════════════════════════════
       const storageDecision = await checkAccountStorageQuota(currentAccountId, sizeInt);
       if (!storageDecision.allowed) {

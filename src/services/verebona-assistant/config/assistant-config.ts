@@ -19,16 +19,46 @@ function bool(name: string, def: boolean): boolean {
 function str(name: string, def: string): string {
   return process.env[name] ?? def;
 }
+/**
+ * Interrupteur « activé par défaut » : seules les valeurs explicites
+ * off / false / 0 / no le coupent (casse et espaces ignorés). Toute autre
+ * valeur, ou l'absence de variable, le laisse actif — une faute de frappe ne
+ * doit pas couper silencieusement une fonction en production.
+ */
+export function flagOnByDefault(raw: string | undefined): boolean {
+  if (raw == null) return true;
+  return !['off', 'false', '0', 'no'].includes(raw.trim().toLowerCase());
+}
+
+/**
+ * Commandes d'écriture actives ? Lu à CHAQUE appel (pas de cache) : couper
+ * l'interrupteur prend effet dès la relecture de l'environnement, et les
+ * tests peuvent le basculer sans réinitialiser la configuration.
+ */
+export function areWriteCommandsEnabled(): boolean {
+  return flagOnByDefault(process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS);
+}
+
+/** Message français rendu quand une commande est refusée par l'interrupteur. */
+export const WRITE_COMMANDS_DISABLED_MESSAGE =
+  'Les modifications depuis l’assistant sont désactivées. Rien n’a été modifié : '
+  + 'vous pouvez faire ce changement directement depuis l’écran concerné.';
 
 export interface AssistantConfig {
   enabled: boolean;
   aiEnabled: boolean;
+  /** false : une seule tentative modèle par appel, sans escalade (§15.6, §43). */
   aiFallbackEnabled: boolean;
-  defaultModelAlias: string;
-  escalationModelAlias: string;
-  /** Résolution initiale des alias (le registre de modèles peut surcharger). */
-  modelDefault: string;
-  modelEscalation: string;
+  /**
+   * Commandes d'écriture depuis le chat (« ajoute un rappel… »).
+   *
+   * Écart assumé au CDC §4.8 / §5.2 / §22.5 (V1 sans écriture) : décision
+   * produit de les CONSERVER, mais derrière l'interrupteur
+   * `VEREBONA_ASSISTANT_WRITE_COMMANDS` (défaut : activé ; off/false/0 →
+   * désactivé). Désactivé : aucun plan n'est préparé (ports.prepareCommand)
+   * et toute confirmation est refusée (routes commands/[planId]/confirm|cancel).
+   */
+  writeCommandsEnabled: boolean;
   maxAiCallsPerRequest: number;
   maxInputTokens: number;
   maxOutputTokens: number;
@@ -49,6 +79,14 @@ export interface AssistantConfig {
   maxCandidates: number;
   // Coûts (§31.3)
   costAlertPerResponseUsd: number;
+  /**
+   * Plafond budgétaire par compte et par mois civil (§6.6, §31.3), en
+   * micro-unités de la grille tarifaire de la passerelle (colonne
+   * `estimated_cost_micros` de `verebona_ai_runs`). 0 = pas de plafond.
+   */
+  monthlyBudgetMicros: number;
+  /** Part du plafond à partir de laquelle une alerte d'exploitation est émise. */
+  budgetAlertRatio: number;
 }
 
 export function loadAssistantConfig(): AssistantConfig {
@@ -56,10 +94,16 @@ export function loadAssistantConfig(): AssistantConfig {
     enabled: bool('VEREBONA_ASSISTANT_ENABLED', true),
     aiEnabled: bool('VEREBONA_ASSISTANT_AI_ENABLED', true),
     aiFallbackEnabled: bool('VEREBONA_ASSISTANT_AI_FALLBACK_ENABLED', true),
-    defaultModelAlias: str('VEREBONA_ASSISTANT_DEFAULT_MODEL_ALIAS', 'assistant-default'),
-    escalationModelAlias: str('VEREBONA_ASSISTANT_ESCALATION_MODEL_ALIAS', 'assistant-escalation'),
-    modelDefault: str('VEREBONA_ASSISTANT_MODEL_ASSISTANT_DEFAULT', 'gemini-2.5-flash-lite'),
-    modelEscalation: str('VEREBONA_ASSISTANT_MODEL_ASSISTANT_ESCALATION', 'gemini-3.1-flash-lite'),
+    // Les MODÈLES ne sont plus configurés ici (CDC §15.3, §15.8, §15.11) :
+    // `registries/model-registry.ts` et les variables
+    // VEREBONA_ASSISTANT_MODEL_* n'étaient lus par aucun chemin d'exécution et
+    // annonçaient gemini-2.5 alors que la passerelle appelait gemini-3.5.
+    // Source unique : `services/ai/registry/operations.ts` (surchargeable par
+    // la configuration versionnée du BO). Les alias fonctionnels
+    // (assistant-default / assistant-escalation) sont dérivés à la trace
+    // (`usage-tracking.service.ts`), le contrôle de démarrage lit les
+    // opérations réelles (`assertConfigAtStartup`).
+    writeCommandsEnabled: flagOnByDefault(process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS),
     maxAiCallsPerRequest: num('VEREBONA_ASSISTANT_MAX_AI_CALLS_PER_REQUEST', 2),
     maxInputTokens: num('VEREBONA_ASSISTANT_MAX_INPUT_TOKENS', 12000),
     maxOutputTokens: num('VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', 500),
@@ -81,6 +125,11 @@ export function loadAssistantConfig(): AssistantConfig {
     geminiStore: bool('VEREBONA_ASSISTANT_GEMINI_STORE', false),
     maxCandidates: num('VEREBONA_ASSISTANT_MAX_CANDIDATES', 20),
     costAlertPerResponseUsd: num('VEREBONA_ASSISTANT_COST_ALERT_USD', 0.005),
+    // 2 000 000 micro-unités ≈ 2 USD / compte / mois, soit ~1 000 réponses
+    // intelligentes à l'objectif de 0,002 USD (§31.3) : un garde-fou contre
+    // l'usage anormal, jamais atteint par un usage normal.
+    monthlyBudgetMicros: num('VEREBONA_ASSISTANT_MONTHLY_BUDGET_MICROS', 2_000_000),
+    budgetAlertRatio: num('VEREBONA_ASSISTANT_BUDGET_ALERT_RATIO', 0.8),
   };
 }
 
@@ -89,12 +138,28 @@ export function getAssistantConfig(): AssistantConfig {
   if (!_cached) _cached = loadAssistantConfig();
   return _cached;
 }
+/** Réservé aux tests : relit l'environnement au prochain appel. */
+export function resetAssistantConfigForTests(): void {
+  _cached = null;
+}
+
+/** Opérations passerelle de l'assistant (source unique des modèles). */
+export const ASSISTANT_OPERATIONS = ['understand_request', 'revalidate_fact', 'generate_answer'] as const;
+
+/** Modèles d'une opération, tels que la contrôle le démarrage. */
+export interface OperationModels { primaryModel: string; fallbackModels: string[] }
 
 /**
- * Contrôle au démarrage — CDC §15.14.
+ * Contrôle au démarrage — CDC §15.14, §15.13, §15.7, §31.2.
  * Refuse une configuration incohérente (fail-fast) et journalise.
+ *
+ * Les modèles contrôlés sont ceux que la passerelle appelle RÉELLEMENT
+ * (`AI_OPERATIONS`), et non plus un registre parallèle jamais lu.
  */
-export function assertConfigAtStartup(cfg: AssistantConfig = getAssistantConfig()): void {
+export function assertConfigAtStartup(
+  cfg: AssistantConfig = getAssistantConfig(),
+  operations: Record<string, OperationModels | undefined> = {},
+): void {
   const errors: string[] = [];
 
   if (cfg.webGroundingEnabled) errors.push('Recherche web interdite en V1 (§15.7)');
@@ -102,17 +167,20 @@ export function assertConfigAtStartup(cfg: AssistantConfig = getAssistantConfig(
   if (cfg.geminiStore) errors.push('GEMINI_STORE doit rester false en V1 (§25.4)');
   if (cfg.maxSources > 8) errors.push('MAX_SOURCES > 8 interdit (§13.9)');
   if (cfg.maxOutputTokens > 500) errors.push('MAX_OUTPUT_TOKENS > 500 hors budget V1 (§31.2)');
+  if (cfg.monthlyBudgetMicros < 0) errors.push('MONTHLY_BUDGET_MICROS négatif');
 
-  // §15.14 : refuser default == fallback sans décision explicite.
-  if (
-    cfg.defaultModelAlias === cfg.escalationModelAlias &&
-    process.env.VEREBONA_ASSISTANT_ALLOW_SAME_MODEL !== 'true'
-  ) {
-    errors.push('Alias default == escalation sans décision explicite (§15.14)');
-  }
-  // Interdiction d'un alias fournisseur "latest" (§15.13).
-  for (const m of [cfg.modelDefault, cfg.modelEscalation]) {
-    if (/latest/i.test(m)) errors.push(`Modèle "${m}" : alias "latest" interdit (§15.13)`);
+  for (const code of ASSISTANT_OPERATIONS) {
+    const op = operations[code];
+    if (!op) { errors.push(`Opération passerelle « ${code} » absente`); continue; }
+    const modeles = [op.primaryModel, ...op.fallbackModels];
+    // §15.13 : jamais d'alias fournisseur « latest ».
+    for (const m of modeles) if (/latest/i.test(m)) errors.push(`${code} : alias « latest » interdit (${m}) (§15.13)`);
+    // §15.6 / §31.2 : aucun modèle Pro dans le chemin utilisateur.
+    for (const m of modeles) if (/-pro\b/i.test(m)) errors.push(`${code} : modèle Pro interdit (${m}) (§15.6)`);
+    // §15.14 : escalade identique au modèle par défaut sans décision explicite.
+    if (op.fallbackModels.includes(op.primaryModel) && process.env.VEREBONA_ASSISTANT_ALLOW_SAME_MODEL !== 'true') {
+      errors.push(`${code} : modèle d'escalade identique au modèle par défaut (§15.14)`);
+    }
   }
 
   if (errors.length) {

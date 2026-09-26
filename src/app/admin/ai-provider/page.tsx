@@ -30,6 +30,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { ModelCatalog } from './_components/ModelCatalog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -38,6 +39,7 @@ import {
 import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
+import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 
 interface Credential {
   id: number;
@@ -193,6 +195,8 @@ export default function AiProviderPage() {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {/* VER-026 / GST-01 : environnement et état global, sur chaque page IA */}
+      <AiEnvBanner />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Fournisseur IA</h1>
@@ -204,6 +208,9 @@ export default function AiProviderPage() {
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Actualiser
         </Button>
       </div>
+
+      {/* E-04, PROV-UI-06 à 08 : catalogue réel du fournisseur */}
+      <ModelCatalog />
 
       {/* Clé active */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">

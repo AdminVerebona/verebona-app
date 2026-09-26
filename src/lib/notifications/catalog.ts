@@ -24,6 +24,7 @@ import { drawerHref } from '@/lib/drawers';
 import { z } from 'zod';
 import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications';
 import { subscriptionNotificationText } from './subscription-messages';
+import { formatUnpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 
 export type NotificationCategory =
   | 'deadlines'
@@ -504,12 +505,56 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     deepLink: () => '/mon-compte/offres',
     payloadSchema: z.object({ referralEventId: z.number(), referredAccountId: z.number().optional() }),
   },
+  // Export « Mes données » prêt (CDC BO GDP-021) : émis seulement lorsque la
+  // génération n'a pas pu aboutir pendant la requête. Cloche obligatoire :
+  // l'utilisateur a demandé l'archive et doit savoir qu'elle l'attend. Le
+  // lien mène à Mon compte (session requise), jamais à l'URL de stockage.
+  [T.GDPR_EXPORT_READY]: {
+    type: T.GDPR_EXPORT_READY,
+    category: 'account', priority: 'normal', deliveryMode: 'immediate',
+    mandatoryBell: true, mandatoryEmail: false, neverBell: false,
+    defaults: { push: true, email: true }, retentionDays: 30,
+    render: () => content(
+      'Export de vos données prêt',
+      'L’archive de vos données est prête. Téléchargez-la depuis Mon compte avant son expiration.',
+      { body: 'L’archive de vos données est prête.' },
+      'notif_gdpr_export',
+    ),
+    deepLink: () => '/mon-compte#mes-donnees',
+    payloadSchema: z.object({ exportId: z.number(), expiresAt: z.string().optional() }),
+  },
 
   // ── Compte et abonnement — obligatoires (§2.11) ────────────────────────────
-  [T.PAYMENT_FAILED]: accountMandatory(T.PAYMENT_FAILED, 'Incident de paiement', 'Un paiement a échoué. Merci de régulariser votre moyen de paiement.', 'notif_payment_incident'),
+  // Cycle d'impayé de 90 jours (Centre d'aide GAP-06, AID-BILL-008) : J0 et
+  // rappels J-7 / J-1. L'échéance figure dans la cloche et l'email ; le push
+  // reste générique (§4.3).
+  [T.PAYMENT_FAILED]: {
+    ...accountMandatory(T.PAYMENT_FAILED, 'Incident de paiement', 'Un paiement a échoué. Merci de régulariser votre moyen de paiement.', 'notif_payment_incident'),
+    render: (p) => content(
+      'Incident de paiement',
+      unpaidNotificationText('J0', p?.deadlineAt),
+      { body: 'Un paiement a échoué. Merci de régulariser votre moyen de paiement.' },
+      'notif_payment_incident',
+    ),
+  },
   [T.PAYMENT_ACTION_REQUIRED]: accountMandatory(T.PAYMENT_ACTION_REQUIRED, 'Action requise sur votre paiement', 'Une action est requise pour valider votre paiement.', 'notif_payment_incident'),
   [T.SUBSCRIPTION_SUSPENDED]: accountMandatory(T.SUBSCRIPTION_SUSPENDED, 'Abonnement suspendu', 'Votre abonnement est suspendu pour un motif de paiement.', 'notif_payment_incident'),
-  [T.ACCOUNT_READ_ONLY]: accountMandatory(T.ACCOUNT_READ_ONLY, 'Compte en lecture seule', 'Votre compte est passé en lecture seule pour un motif de paiement.', 'notif_payment_incident'),
+  [T.ACCOUNT_READ_ONLY]: {
+    ...accountMandatory(T.ACCOUNT_READ_ONLY, 'Compte en lecture seule', 'Votre compte est passé en lecture seule pour un motif de paiement.', 'notif_payment_incident'),
+    render: (p) => p?.reason === 'unpaid'
+      ? content(
+          'Suppression prochaine de vos données',
+          unpaidNotificationText('REMINDER', p?.deadlineAt),
+          { title: 'Paiement à régulariser', body: 'Régularisez votre paiement pour conserver vos données.' },
+          'notif_payment_incident',
+        )
+      : content(
+          'Compte en lecture seule',
+          'Votre compte est passé en lecture seule pour un motif de paiement.',
+          undefined,
+          'notif_payment_incident',
+        ),
+  },
 
   // ── Sécurité — obligatoires (§7.7) ─────────────────────────────────────────
   [T.PASSWORD_CHANGED]: security(T.PASSWORD_CHANGED, 'Mot de passe modifié', 'Votre mot de passe a été modifié.'),
@@ -576,6 +621,22 @@ function accountConfigurable(type: NotificationType, bellTitle: string, body: st
     deepLink: () => '/mon-compte/offres',
     payloadSchema: z.object({}).passthrough(),
   };
+}
+
+/** Texte cloche/email du cycle d'impayé (AID-BILL-008). */
+export function unpaidNotificationText(moment: 'J0' | 'REMINDER', deadlineAt?: string | null): string {
+  const date = deadlineAt ? formatUnpaidDeadline(deadlineAt) : '';
+  if (moment === 'J0') {
+    return date
+      ? 'Un paiement a échoué : les fonctions de votre compte sont suspendues. Vos biens et documents restent ' +
+        `consultables, exportables et transmissibles. Régularisez votre paiement avant le ${date} ; sans ` +
+        'régularisation, vos données seront supprimées à cette date.'
+      : 'Un paiement a échoué. Merci de régulariser votre moyen de paiement.';
+  }
+  return date
+    ? `Sans régularisation de votre paiement, vos données seront supprimées le ${date}. D'ici là, vous pouvez ` +
+      'régulariser, exporter vos données ou transmettre vos biens.'
+    : 'Sans régularisation de votre paiement, vos données seront prochainement supprimées.';
 }
 
 function accountMandatory(type: NotificationType, bellTitle: string, body: string, emailTemplateCode: string): CatalogEntry {

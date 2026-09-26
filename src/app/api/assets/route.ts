@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { db } from '@/db';
-import { assets, accounts as accountsTable, assetTransmissions } from '@/db/schema';
+import { assets, accounts as accountsTable } from '@/db/schema';
 import { eq, like, and, lt, desc, count, isNull, notInArray } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
@@ -9,6 +9,7 @@ import { SessionService } from '@/lib/session-service';
 import { getFeatureFlags, canCreateAsset } from '@/lib/feature-flags';
 import { canCreateAsset as canCreateAssetEntitlement, canModifyAssets } from '@/services/entitlements.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
+import { deleteAssetCompletely } from '@/services/assets/asset-deletion.service';
 import { isValidObjectCategory } from '@/types/domain';
 import type { PlanType } from '@/types/domain';
 
@@ -509,9 +510,18 @@ export async function PUT(request: NextRequest) {
   }
 }
 
+/**
+ * DELETE /api/assets?id=
+ *
+ * Suppression DÉFINITIVE du bien et de TOUT son contenu (documents, photos,
+ * échéances, événements, pièces, équipements, exports…), objets de stockage
+ * compris (mis en file de purge). Règle produit : aucune conservation
+ * partielle — les anciens paramètres `keepDocuments` / `keepEvents` n'ont
+ * jamais été appliqués et sont retirés. Voir asset-deletion.service.
+ * Le décompte affiché avant confirmation : GET /api/assets/[id]/deletion-summary.
+ */
 export async function DELETE(request: NextRequest) {
   try {
-    // Auth check with proper error handling
     let session: Awaited<ReturnType<typeof SessionService.tryGetSession>>;
     try {
       session = await SessionService.getSession(request);
@@ -525,8 +535,6 @@ export async function DELETE(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
-    const keepDocuments = searchParams.get('keepDocuments') === 'true';
-    const keepEvents = searchParams.get('keepEvents') === 'true';
 
     if (!id || isNaN(parseInt(id))) {
       return apiError(400, 'INVALID_INPUT', 'Valid ID is required');
@@ -534,59 +542,36 @@ export async function DELETE(request: NextRequest) {
 
     const assetId = parseInt(id);
 
-    // Check if asset exists
     const existingAsset = await db
-      .select()
+      .select({ id: assets.id, accountId: assets.accountId, thumbnailUrl: assets.thumbnailUrl })
       .from(assets)
       .where(eq(assets.id, assetId))
       .limit(1);
 
-      if (existingAsset.length === 0) {
-        return NextResponse.json(
-          {
-            message: 'Asset already deleted or does not exist',
-            assetId: assetId,
-          },
-          { status: 200 }
-        );
-      }
-
-      // Check ownership via accountId
-      if (!session.currentAccountId) {
-        return apiError(401, 'UNAUTHORIZED', 'No account selected');
-      }
-      if (existingAsset[0].accountId !== session.currentAccountId) {
-        return apiError(403, 'FORBIDDEN', 'Access denied');
-      }
-
-    // If NOT keeping documents, delete them (soft delete via deletedAt)
-    if (!keepDocuments) {
-      // Would need to handle document deletion here based on your schema
-      // For now: documents may be handled separately or soft-deleted
+    if (existingAsset.length === 0) {
+      return NextResponse.json(
+        {
+          message: 'Asset already deleted or does not exist',
+          assetId: assetId,
+        },
+        { status: 200 }
+      );
     }
 
-    // If NOT keeping events, delete them (soft delete via deletedAt)
-    if (!keepEvents) {
-      // Would need to handle event deletion here based on your schema
-      // For now: events may be handled separately or soft-deleted
+    if (!session.currentAccountId) {
+      return apiError(401, 'UNAUTHORIZED', 'No account selected');
+    }
+    if (existingAsset[0].accountId !== session.currentAccountId) {
+      return apiError(403, 'FORBIDDEN', 'Access denied');
     }
 
-    // Null out FK reference from transmissions before deleting
-    await db
-      .update(assetTransmissions)
-      .set({ duplicatedAssetId: null })
-      .where(eq(assetTransmissions.duplicatedAssetId, assetId));
-
-    const deletedAsset = await db
-      .delete(assets)
-      .where(eq(assets.id, assetId))
-      .returning();
+    const { blobsScheduled } = await deleteAssetCompletely(existingAsset[0]);
 
     return NextResponse.json(
       {
         message: 'Asset deleted successfully',
-        asset: deletedAsset[0],
-        options: { keepDocuments, keepEvents }
+        assetId,
+        blobsScheduled,
       },
       { status: 200 }
     );

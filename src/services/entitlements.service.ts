@@ -21,6 +21,7 @@ import { db } from '@/db';
 import { accountSubscriptions, accounts, users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { TRIAL_LIMITS, hasUsedTrial } from './trial.service';
+import { unpaidRestrictionMessage } from './billing/unpaid-cycle.rules';
 
 export type EntitlementPlan = 'trial' | 'standard' | 'premium' | 'premium_duo' | 'none';
 
@@ -33,7 +34,8 @@ export interface Quotas {
 export interface Entitlements {
   /** Offre effective utilisee pour les droits. */
   plan: EntitlementPlan;
-  /** Statut brut de l'abonnement (trialing | active | readonly | past_due | canceled). */
+  /** Statut brut de l'abonnement (trialing | active | readonly | past_due | canceled).
+   *  `past_due` : impayé, compte restreint (GAP-06). */
   status: string;
   quotas: Quotas;
   /** Fonctions Premium (questions a Verebona, sync agenda, dossiers prets). */
@@ -141,8 +143,13 @@ export async function getEntitlements(
 
   const status = essaiEchu ? 'readonly' : row.status;
 
-  // Mode restreint : essai expire sans souscription, ou abonnement suspendu.
-  if (status === 'readonly' || status === 'canceled') {
+  // Mode restreint : essai expire sans souscription, abonnement suspendu, ou
+  // impayé. Cycle d'impayé de 90 jours (Centre d'aide GAP-06, AID-BILL-008) :
+  // « dès l'échec de paiement, les fonctions normales et payantes sont
+  // suspendues, mais le compte reste accessible » — lecture, export et
+  // transmission (routes non gardées par `canWrite`) restent ouvertes.
+  // Auparavant `past_due` laissait tout écrire pendant 15 jours de grâce.
+  if (status === 'readonly' || status === 'canceled' || status === 'past_due') {
     return {
       plan: 'none', status, quotas: NO_QUOTAS,
       premiumFeatures: false, canWrite: false, canRead: true, isRestricted: true,
@@ -157,7 +164,7 @@ export async function getEntitlements(
     };
   }
 
-  // Abonnement actif (ou en impaye : on laisse ecrire pendant la periode de grace).
+  // Abonnement actif.
   const plan = (['standard', 'premium', 'premium_duo'] as const).find((p) => p === row.planCode)
     ?? 'standard';
 
@@ -221,6 +228,18 @@ export async function restrictedRefusal(
   accountId: number,
   status: string,
 ): Promise<{ code: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED'; message: string }> {
+  // Cycle d'impayé en cours (GAP-06) : le message dit pourquoi, ce qui reste
+  // possible et la date limite de régularisation.
+  if (status === 'past_due' || status === 'canceled') {
+    const [row] = await db
+      .select({ startedAt: accounts.pastDueGraceStartedAt, endsAt: accounts.pastDueGraceEndsAt })
+      .from(accounts)
+      .where(eq(accounts.id, accountId))
+      .limit(1);
+    if (row?.startedAt || status === 'past_due') {
+      return { code: 'SUBSCRIPTION_REQUIRED', message: unpaidRestrictionMessage(row?.endsAt ?? null) };
+    }
+  }
   if (status === 'readonly') {
     // `readonly` sert aussi à la récupération après rétractation : ce n'est
     // pas une fin d'essai, et le dire enverrait vers le mauvais écran.

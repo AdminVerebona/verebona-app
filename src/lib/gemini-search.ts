@@ -9,6 +9,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { db } from '@/db';
+import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const TIMEOUT_MS = 30_000;
@@ -165,8 +166,10 @@ function loadSearchPrompt(query: string, contextText: string): string {
 }
 
 async function callGemini(query: string, contextText: string): Promise<GeminiMatch[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
+  // Clé ACTIVE du BO et garde d'exploitation T2 (arrêt d'urgence, état du
+  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
+  // (legacy-gemini-access).
+  const apiKey = await requireLegacyGeminiKey('T2', 'gemini-search');
 
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });

@@ -8,6 +8,7 @@ import { eq, and, or } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
 import { deleteUserNotificationData } from '@/lib/notifications/account-cleanup';
 import { getTrialState } from '@/services/trial.service';
+import { onSelfServiceDeletion } from '@/services/gdpr/system-requests';
 
 export async function GET(request: NextRequest) {
   try {
@@ -271,6 +272,24 @@ export async function DELETE(req: NextRequest) {
       passwordHash: '',
       updatedAt: deletedAt,
     }).where(eq(users.id, session.userId));
+
+    // Registre RGPD (CDC BO GDP-007, GDP-008) : demande système d'effacement,
+    // née traitée, non modifiable depuis le back-office. Les archives
+    // « Mes données » sont supprimées : l'utilisateur ne peut plus s'y connecter.
+    // Best-effort : l'anonymisation est déjà faite.
+    const [membership] = await db
+      .select({ accountId: accountMemberships.accountId })
+      .from(accountMemberships)
+      .where(eq(accountMemberships.userId, session.userId))
+      .limit(1)
+      .catch(() => []);
+    await onSelfServiceDeletion(session.userId, membership?.accountId ?? null, deletedAt);
+    try {
+      const { purgeUserExports } = await import('@/services/gdpr/gdpr-export.service');
+      await purgeUserExports(session.userId);
+    } catch (err) {
+      console.error('[users/me DELETE] purge des exports RGPD échouée:', err);
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

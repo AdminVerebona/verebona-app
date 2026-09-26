@@ -23,23 +23,32 @@ export type {
 } from './types';
 
 import { onSourceAnalyzed } from '../source-analysis/events';
-import { reconcileAsset } from './reconciliation-engine';
+import { registerJobHandler } from '../queue/queue-worker';
+import { enqueueT3ForAnalyzedAsset, t3JobHandler } from './t3-queue';
 
 /**
- * Abonnement à l'analyse — étape 13 du §4.1.4.
- * À appeler une fois au démarrage, depuis `instrumentation.ts`.
+ * Abonnement à l'analyse — étape 13 du §4.1.4 — et exécutant T3 de la file.
+ * À appeler une fois au démarrage, depuis `instrumentation.ts`, avant
+ * `startQueueWorker` (c'est le cas : étape 5, boucleur à l'étape 6).
+ *
+ * CDC BO IA OPS-001, NFR-003, WF-06 : l'abonné ne réconcilie plus EN LIGNE ;
+ * il met un travail T3 en file durable (déclencheur `source_analyzed`,
+ * soumis à la version effective). Un redémarrage ne perd plus la
+ * réconciliation, et désactivation, arrêt d'urgence et rollback s'y
+ * appliquent comme à T1.
  */
 export function registerReconciliationHandlers(): void {
+  registerJobHandler('T3', t3JobHandler);
+
   // Le drapeau est déclaré ici : l'émetteur n'exécute cet abonné que si
   // `AI_RECONCILIATION_ENGINE` l'autorise, indépendamment des autres usages.
   onSourceAnalyzed('AI_RECONCILIATION_ENGINE', async (e) => {
     if (!e.assetId) return;
-    await reconcileAsset({
+    await enqueueT3ForAnalyzedAsset({
       accountId: e.accountId,
       userId: e.userId,
       assetId: e.assetId,
-      triggeredBy: 'document_analyzed',
-      sourceFileId: e.leadSourceId,
+      leadSourceId: e.leadSourceId,
     });
   });
 }

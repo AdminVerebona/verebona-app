@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
 import { emit } from '@/lib/notifications';
 import { revokeAllUserSessions } from '@/db';
 import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
-import { verifyPasswordResetToken } from '@/services/auth/password-reset.service';
+import { verifyPasswordResetToken, consumePasswordResetToken } from '@/services/auth/password-reset.service';
 
 /**
  * Route pour réinitialiser le mot de passe avec un token
@@ -51,34 +48,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Trouver l'utilisateur
-    const userResult = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, check.userId))
-      .limit(1);
-
-    if (userResult.length === 0) {
-      return NextResponse.json(
-        { error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' },
-        { status: 404 }
-      );
-    }
-
-    const user = userResult[0];
-    
-    // Hasher le nouveau mot de passe
+    // Hasher le nouveau mot de passe AVANT l'écriture conditionnelle : la
+    // fenêtre entre vérification et écriture n'a plus d'importance, c'est
+    // l'UPDATE conditionnel qui tranche (usage unique même en concurrence).
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    
-    // Mettre à jour le mot de passe
-    await db
-      .update(users)
-      .set({ 
-        passwordHash,
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, user.id));
-    
+    const consumed = await consumePasswordResetToken(check.userId, check.passwordHash, passwordHash);
+    if (!consumed) {
+      // Mot de passe déjà changé entre-temps (lien déjà utilisé, requête
+      // concurrente) ou utilisateur disparu : le jeton n'est plus valable.
+      return NextResponse.json({ error: 'Token invalide', code: 'INVALID_TOKEN' }, { status: 400 });
+    }
+    const user = { id: check.userId };
+
     // Réinitialisation = même risque qu'un changement : toutes les sessions
     // existantes (y compris celle d'un éventuel intrus) sont révoquées.
     await revokeAllUserSessions(user.id, 'PASSWORD_RESET');

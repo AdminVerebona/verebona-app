@@ -5,7 +5,10 @@
  *
  * POST /api/transmission/[token]
  *   Accepter ou refuser la transmission
- *   body: { action: 'accept' | 'refuse', recipientUserId?: number, confirmDuplicate?: boolean }
+ *   body: { action: 'accept' | 'refuse', confirmDuplicate?: boolean }
+ *
+ *   Identité du destinataire : TOUJOURS la session, jamais le corps de la
+ *   requête (voir « QUI ACCEPTE ? » plus bas).
  *
  *   Acceptation :
  *   - Duplique le bien chez le destinataire
@@ -23,6 +26,7 @@ import { accountMemberships, assetTransmissions, assets, assetFiles, agendaItems
 import { eq, and, isNull, inArray, or, lt } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
 import { SessionService } from '@/lib/session-service';
+import { isInvitedRecipient } from '@/lib/invited-recipient';
 import { CopyObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 import { generateS3Key, parseS3Key } from '@/lib/s3-naming';
@@ -181,9 +185,11 @@ export async function POST(
 ) {
   const { token } = await params;
   const body = await request.json().catch(() => ({}));
-  const { action, recipientUserId, confirmDuplicate } = body as {
+  // Seuls l'action et la confirmation de doublon sont lus. Un éventuel
+  // `recipientUserId` (ancien client) est ignoré : l'identité ne vient
+  // jamais du client.
+  const { action, confirmDuplicate } = body as {
     action?: 'accept' | 'refuse';
-    recipientUserId?: number;
     confirmDuplicate?: boolean;
   };
 
@@ -267,9 +273,25 @@ export async function POST(
   };
   try { selected = { ...selected, ...JSON.parse(row.selectedPayload || '{}') }; } catch {}
 
-  // Resolve recipient user — session > explicit id > email lookup
-  let recipientUser: { id: number; accountId: number | null } | null = null;
-
+  // ══════════════════════════════════════════════════════════════════════
+  // QUI ACCEPTE ?
+  //
+  // Le destinataire était résolu par « session > `recipientUserId` du corps >
+  // compte portant l'adresse invitée ». Les deux replis se passaient de toute
+  // authentification :
+  //   · `recipientUserId` : quiconque détenait le lien pouvait faire copier le
+  //     bien — photos, documents, adresse — dans le compte DE SON CHOIX ;
+  //   · recherche par adresse : le bien était versé dans le compte invité sans
+  //     que son titulaire se soit connecté ni ait rien accepté.
+  // Et une session quelconque suffisait, même d'un autre compte que celui
+  // invité : un lien transféré ou intercepté détournait la transmission.
+  //
+  // Désormais : session OBLIGATOIRE, et son adresse doit être l'adresse
+  // invitée (même règle que l'invitation Duo et l'inscription sur invitation,
+  // `lib/prelaunch-invitations.ts` : comparaison sans espaces ni casse).
+  // L'adresse est relue en base, pas dans le jeton de session, qui peut
+  // précéder un changement d'adresse.
+  // ══════════════════════════════════════════════════════════════════════
   const resolveAccountId = async (userId: number): Promise<number | null> => {
     const [membership] = await db
       .select({ accountId: accountMemberships.accountId })
@@ -279,36 +301,45 @@ export async function POST(
     return membership?.accountId ?? null;
   };
 
-  // Prefer the authenticated session if present
   const session = await SessionService.tryGetSession(request);
-  if (session) {
-    recipientUser = { id: session.userId, accountId: await resolveAccountId(session.userId) };
-  }
-
-  if (!recipientUser && recipientUserId) {
-    const [u] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.id, recipientUserId))
-      .limit(1);
-    if (u) recipientUser = { id: u.id, accountId: await resolveAccountId(u.id) };
-  }
-  if (!recipientUser && row.recipientEmail) {
-    const [u] = await db
+  if (!session) {
+    // Le destinataire a-t-il déjà un compte ? Même information que le GET
+    // (`recipientHasAccount`) : la page oriente vers la connexion ou
+    // l'inscription, la transmission reste en attente.
+    const [existing] = await db
       .select({ id: users.id })
       .from(users)
       .where(eq(users.email, row.recipientEmail))
       .limit(1);
-    if (u) recipientUser = { id: u.id, accountId: await resolveAccountId(u.id) };
+    if (!existing) {
+      return NextResponse.json({ requiresSignup: true, recipientEmail: row.recipientEmail });
+    }
+    return NextResponse.json({
+      error: 'AUTH_REQUIRED',
+      requiresLogin: true,
+      recipientEmail: row.recipientEmail,
+      message: 'Connectez-vous avec l’adresse à laquelle la transmission a été envoyée pour l’accepter.',
+    }, { status: 401 });
   }
 
-  // No account exists yet — keep transmission pending, ask recipient to sign up
-  if (!recipientUser) {
-    return NextResponse.json({
-      requiresSignup: true,
-      recipientEmail: row.recipientEmail,
-    });
+  const [sessionUser] = await db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .limit(1);
+  if (!sessionUser) {
+    return NextResponse.json({ error: 'AUTH_REQUIRED', requiresLogin: true }, { status: 401 });
   }
+  if (!isInvitedRecipient(row.recipientEmail, sessionUser.email)) {
+    return NextResponse.json({
+      error: 'RECIPIENT_EMAIL_MISMATCH',
+      message: 'Cette transmission a été envoyée à une autre adresse e-mail. Connectez-vous avec l’adresse destinataire pour l’accepter.',
+    }, { status: 403 });
+  }
+  const recipientUser: { id: number; accountId: number | null } = {
+    id: sessionUser.id,
+    accountId: await resolveAccountId(sessionUser.id),
+  };
 
   // Doublon check: uniquement les biens en cours d'usage actif (EN_SERVICE, EN_PANNE, EN_REPARATION).
   // VENDU, DETRUIT, INACTIF, ARCHIVED, TRANSMIS ne comptent pas comme doublons.
@@ -753,7 +784,6 @@ export async function POST(
 
   // L'acceptation est acquise : une notification ou une relecture en échec
   // ne doit pas la faire passer pour un échec.
-  let recipientUserCheck: { id: number } | undefined;
   try {
     // Notify initiator of acceptance
     const [recipientUserInfo] = await db
@@ -773,12 +803,6 @@ export async function POST(
       dedupeKey: `transmission:accepted:${row.id}`,
     });
 
-    // Check if recipient has an account (for redirect hint)
-    [recipientUserCheck] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, row.recipientEmail))
-      .limit(1);
   } catch (err) {
     console.error('[Transmission] Suites de l’acceptation en échec (non bloquant) :', err);
   }
@@ -787,6 +811,7 @@ export async function POST(
     success: true,
     status: 'accepted',
     duplicatedAssetId,
-    recipientHasAccount: !!recipientUserCheck,
+    // Toujours vrai désormais : l'acceptation exige la session du destinataire.
+    recipientHasAccount: true,
   });
 }

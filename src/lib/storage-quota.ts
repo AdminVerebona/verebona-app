@@ -24,8 +24,8 @@
 import { NextResponse } from 'next/server';
 import { formatBytes } from '@/lib/admin/format';
 import { db } from '@/db';
-import { assetFiles, planLimits } from '@/db/schema';
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { assetFiles, pendingBlobDeletions, planLimits } from '@/db/schema';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   getCommercialPlanForAccount,
   type CommercialPlanCode,
@@ -87,9 +87,19 @@ export async function getStorageLimitBytes(planCode: CommercialPlanCode): Promis
   return typeof fromDb === 'number' && fromDb > 0 ? fromDb : DEFAULT_STORAGE_LIMIT_BYTES[planCode];
 }
 
+/**
+ * Exécuteur de requêtes : la connexion globale ou une transaction. Le calcul
+ * du volume doit se faire DANS la transaction qui tient le verrou (voir
+ * `withAccountStorageLock`), pas sur une autre connexion du pool.
+ */
+export type StorageExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
+
 /** Volume consommé par un compte, en octets (voir l'en-tête). */
-export async function getAccountStorageUsedBytes(accountId: number): Promise<number> {
-  const [row] = await db
+export async function getAccountStorageUsedBytes(
+  accountId: number,
+  executor: StorageExecutor = db,
+): Promise<number> {
+  const [row] = await executor
     .select({ used: sql<string>`coalesce(sum(${assetFiles.size}), 0)` })
     .from(assetFiles)
     .where(
@@ -105,10 +115,11 @@ export async function getAccountStorageUsedBytes(accountId: number): Promise<num
 /** Consommation et plafond d'un compte (fiche Compte du BO, STO-002). */
 export async function getAccountStorageUsage(
   accountId: number,
+  executor: StorageExecutor = db,
 ): Promise<{ usedBytes: number; limitBytes: number; planCode: CommercialPlanCode }> {
   const planCode = await getCommercialPlanForAccount(accountId);
   const [usedBytes, limitBytes] = await Promise.all([
-    getAccountStorageUsedBytes(accountId),
+    getAccountStorageUsedBytes(accountId, executor),
     getStorageLimitBytes(planCode),
   ]);
   return { usedBytes, limitBytes, planCode };
@@ -118,9 +129,77 @@ export async function getAccountStorageUsage(
 export async function checkAccountStorageQuota(
   accountId: number,
   incomingBytes: number,
+  executor: StorageExecutor = db,
 ): Promise<StorageQuotaDecision> {
-  const { usedBytes, limitBytes } = await getAccountStorageUsage(accountId);
+  const { usedBytes, limitBytes } = await getAccountStorageUsage(accountId, executor);
   return checkStorageQuota({ usedBytes, incomingBytes, limitBytes });
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * VERROU PAR COMPTE — CONTRÔLE ET ÉCRITURE INDISSOCIABLES
+ *
+ * Le contrôle (« somme des fichiers confirmés + ce lot ≤ plafond ») et
+ * l'écriture (passage en COMPLETED) étaient deux requêtes indépendantes :
+ * deux confirmations simultanées lisaient chacune la même somme, passaient
+ * chacune le contrôle, et ensemble dépassaient le plafond.
+ *
+ * Un verrou consultatif transactionnel (`pg_advisory_xact_lock`) par compte
+ * sérialise désormais les sections « contrôle + écriture » d'un même compte.
+ * Il est libéré automatiquement au COMMIT/ROLLBACK — aucun risque de verrou
+ * oublié — et ne bloque que les dépôts du même compte.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export function storageLockKey(accountId: number): string {
+  return `storage_quota:${accountId}`;
+}
+
+export async function withAccountStorageLock<T>(
+  accountId: number,
+  fn: (tx: StorageExecutor) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${storageLockKey(accountId)}))`);
+    return fn(tx);
+  });
+}
+
+/**
+ * Écarte des dépôts refusés (413 à la confirmation) : l'objet a déjà été
+ * téléversé, mais il ne sera jamais confirmé — le laisser, c'est un objet
+ * S3 et une ligne PENDING orphelins jusqu'à la purge des 24 h, et un
+ * stockage consommé sans être compté.
+ *
+ * Même mécanisme que `purgePendingUploads` : suppression logique de la ligne
+ * et programmation IMMÉDIATE de l'objet dans `pending_blob_deletions`
+ * (traitée par `/api/cron/purge-blobs`). Seules les lignes encore PENDING
+ * de l'utilisateur sont concernées.
+ */
+export async function discardRejectedUploads(
+  executor: StorageExecutor,
+  files: Array<{ id: number; s3Key: string | null }>,
+  userId: number,
+): Promise<number> {
+  if (files.length === 0) return 0;
+  const now = new Date();
+  const discarded = await executor
+    .update(assetFiles)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(and(
+      inArray(assetFiles.id, files.map((f) => f.id)),
+      eq(assetFiles.userId, userId),
+      eq(assetFiles.uploadStatus, 'PENDING'),
+      isNull(assetFiles.deletedAt),
+    ))
+    .returning({ id: assetFiles.id, s3Key: assetFiles.s3Key });
+  // `temp` : clé provisoire du presign, ne désigne aucun objet réel.
+  const blobs = discarded.filter((f) => f.s3Key && f.s3Key !== 'temp');
+  if (blobs.length > 0) {
+    await executor.insert(pendingBlobDeletions).values(
+      blobs.map((f) => ({ fileId: f.id, storagePath: f.s3Key as string, scheduledFor: now, createdAt: now })),
+    );
+  }
+  return discarded.length;
 }
 
 /** Réponse 413 `STORAGE_QUOTA_EXCEEDED` (STO-003). */

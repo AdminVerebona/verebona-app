@@ -5,6 +5,12 @@ import { eq } from 'drizzle-orm';
 import { emailService } from '@/lib/email/email-service';
 import { generateAccessToken, generateRefreshToken } from '@/lib/jwt';
 import { AccountService } from '@/services/account-service';
+import {
+  checkEmailVerificationToken,
+  consumeEmailVerification,
+  isLegacyVerificationToken,
+  parseEmailVerificationToken,
+} from '@/services/auth/email-verification.service';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
 
 const baseUrl = () =>
@@ -14,11 +20,17 @@ function redirect(path: string) {
   return NextResponse.redirect(`${baseUrl()}${path}`);
 }
 
+/** Offres acceptées dans le paramètre `plan` : il est recopié dans l'URL de redirection. */
+const KNOWN_PLANS = new Set(['standard', 'premium', 'premium_duo', 'premium_pro']);
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const token = searchParams.get('token');
   const plan = searchParams.get('plan'); // 'premium' | 'premium_duo' | 'duo' | null
-  const normalizedPlan = plan === 'duo' ? 'premium_duo' : plan;
+  // Liste fermée : le paramètre n'est pas signé et finit dans une URL de
+  // redirection ; une valeur libre pourrait y injecter d'autres paramètres.
+  const rawPlan = plan === 'duo' ? 'premium_duo' : plan;
+  const normalizedPlan = rawPlan && KNOWN_PLANS.has(rawPlan) ? rawPlan : null;
   const planSuffix = normalizedPlan ? `&plan=${normalizedPlan}` : '';
 
   // Garde rétablie : `token` provient de la query string du lien reçu par
@@ -28,20 +40,15 @@ export async function GET(request: NextRequest) {
     return redirect('/verify-email?error=missing_token');
   }
 
-  let email: string;
-  let timestamp: number;
+  // Lien émis avant le passage au jeton signé : refusé, mais expliqué — et
+  // l'adresse qu'il contient pré-remplit le renvoi (qui ne révèle rien).
+  const legacy = isLegacyVerificationToken(token);
+  if (legacy) {
+    return redirect(`/verify-email?error=link_outdated&email=${encodeURIComponent(legacy.email)}${planSuffix}`);
+  }
 
-  try {
-    const decoded = Buffer.from(token, 'base64').toString('utf-8');
-    const [emailPart, timestampPart] = decoded.split(':');
-    email = emailPart;
-    timestamp = parseInt(timestampPart, 10);
-
-    const expiryTime = 24 * 60 * 60 * 1000;
-    if (Date.now() - timestamp > expiryTime) {
-      return redirect(`/verify-email?error=token_expired${planSuffix}`);
-    }
-  } catch {
+  const parsed = parseEmailVerificationToken(token);
+  if (!parsed) {
     return redirect(`/verify-email?error=invalid_token${planSuffix}`);
   }
 
@@ -59,23 +66,32 @@ export async function GET(request: NextRequest) {
         status: users.status,
       })
       .from(users)
-      .where(eq(users.email, email))
+      .where(eq(users.id, parsed.userId))
       .limit(1);
 
-    if (userResult.length === 0) {
-      return redirect('/verify-email?error=user_not_found');
+    // Compte introuvable ou signature fausse : même réponse. Distinguer les
+    // deux dirait à un fabricant de liens quels identifiants existent.
+    const user = userResult[0] ?? null;
+    const check = checkEmailVerificationToken(token, user);
+    if (!check.ok || !user) {
+      if (check.ok === false && check.code === 'TOKEN_EXPIRED' && user) {
+        // Signature valide : c'est bien le lien de cette adresse, on peut
+        // pré-remplir le renvoi.
+        return redirect(`/verify-email?error=token_expired&email=${encodeURIComponent(user.email)}${planSuffix}`);
+      }
+      return redirect(`/verify-email?error=invalid_token${planSuffix}`);
     }
 
-    const user = userResult[0];
-
     if (user.isActive) {
+      // Usage unique : un lien déjà utilisé n'ouvre plus de session.
       return redirect(`/verify-email?status=already_verified${planSuffix}`);
     }
 
-    await db
-      .update(users)
-      .set({ isActive: true, updatedAt: new Date() })
-      .where(eq(users.id, user.id));
+    // Activation conditionnelle : seule la requête qui fait passer le compte
+    // de « non vérifié » à « actif » obtient une session (voir le service).
+    if (!(await consumeEmailVerification(user.id))) {
+      return redirect(`/verify-email?status=already_verified${planSuffix}`);
+    }
 
     await emailService.send({
       templateCode: 'WELCOME',

@@ -34,11 +34,18 @@ import {
   withdrawalRequests,
 } from '@/db/schema';
 import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import {
+  onDeletionCancelled,
+  onDeletionExecuted,
+  onDeletionFailed,
+  onDeletionScheduled,
+} from '@/services/gdpr/system-requests';
 
 /** Délai avant suppression effective, en jours (§13.3). */
 export const DELETION_DELAY_DAYS = 30;
 
-export type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'ADMIN';
+/** UNPAID : J+90 d'un impayé non régularisé (Centre d'aide GAP-06, migration 0182). */
+export type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'ADMIN' | 'UNPAID';
 
 /**
  * Qui a engagé la suppression (CDC Back-Office ACC-A14, migration 0170).
@@ -52,7 +59,7 @@ export type DeletionOrigin = 'user' | 'system' | 'admin';
 
 export function defaultOriginFor(reason: DeletionReason): DeletionOrigin {
   if (reason === 'ADMIN') return 'admin';
-  if (reason === 'TRIAL_ABANDONED') return 'system';
+  if (reason === 'TRIAL_ABANDONED' || reason === 'UNPAID') return 'system';
   return 'user';
 }
 export type DeletionStatus = 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
@@ -122,7 +129,12 @@ export async function scheduleDeletion(input: ScheduleInput): Promise<ScheduledD
     .onConflictDoNothing()
     .returning();
 
-  if (inserted.length > 0) return toScheduled(inserted[0]);
+  if (inserted.length > 0) {
+    const created = toScheduled(inserted[0]);
+    // Registre RGPD (CDC BO GDP-007, GDP-008) : best-effort, ne lève jamais.
+    await onDeletionScheduled(created);
+    return created;
+  }
 
   const existing = await getActiveSchedule(input.accountId);
   if (!existing) {
@@ -193,6 +205,7 @@ export async function cancelDeletion(
     .returning();
 
   if (row) {
+    await onDeletionCancelled(row.id, reason);
     console.info(
       `[deletion] compte ${accountId} : suppression annulée (${reason}), ` +
       `échéance ${row.scheduledAt.toISOString()} abandonnée.`,
@@ -321,6 +334,9 @@ export interface ExecutionResult {
 const SURVIVING_TABLES = new Set([
   'legal_acceptances', 'withdrawal_requests', 'withdrawal_events', 'scheduled_account_deletions',
   'pending_blob_deletions',
+  // Registre RGPD : preuve du traitement, détaché par ON DELETE SET NULL
+  // (références conservées dans subject_*_ref, migration 0174).
+  'gdpr_requests',
 ]);
 const ACCOUNT_COLUMNS = ['account_id', 'owner_account_id'];
 const USER_COLUMNS = ['user_id', 'owner_user_id', 'billing_owner_user_id', 'initiator_user_id', 'recipient_user_id', 'created_by_user_id'];
@@ -392,6 +408,7 @@ export async function executeScheduledDeletion(
       .update(scheduledAccountDeletions)
       .set({ status: 'EXECUTED', executedAt: now, updatedAt: now })
       .where(eq(scheduledAccountDeletions.id, scheduleId));
+    await onDeletionExecuted(scheduleId, now);
     return { status: 'executed', reason: 'ACCOUNT_ALREADY_GONE' };
   }
 
@@ -432,6 +449,7 @@ export async function executeScheduledDeletion(
         .update(scheduledAccountDeletions)
         .set({ status: 'FAILED', failureReason: reason, updatedAt: now })
         .where(eq(scheduledAccountDeletions.id, scheduleId));
+      await onDeletionFailed(scheduleId, reason);
     }
     console.error(`[deletion] compte ${account.id} : ${reason}`);
     return { status: 'failed', reason };
@@ -452,6 +470,24 @@ export async function executeScheduledDeletion(
       if (files.length > 0) {
         await tx.insert(pendingBlobDeletions).values(
           files.map((f) => ({ fileId: null, storagePath: f.s3Key as string, scheduledFor: now, createdAt: now })),
+        );
+      }
+      // Archives « Mes données » (export RGPD, migration 0174) : même file de
+      // purge, la cascade effaçant `gdpr_exports`.
+      // Garde : une base où la 0174 manque ne doit pas faire échouer la suppression.
+      const asRows = <T,>(res: unknown): T[] =>
+        Array.isArray(res) ? (res as T[]) : ((res as { rows?: T[] }).rows ?? []);
+      const [reg] = asRows<{ t: string | null }>(await tx.execute(sql`SELECT to_regclass('gdpr_exports')::text AS t`));
+      const archiveRows = reg?.t
+        ? asRows<{ s3_key: string }>(await tx.execute(sql`
+            SELECT s3_key FROM gdpr_exports
+             WHERE s3_key IS NOT NULL
+               AND user_id IN (${sql.join(userIds.map((u) => sql`${u}`), sql`, `)})
+          `))
+        : [];
+      if (archiveRows.length > 0) {
+        await tx.insert(pendingBlobDeletions).values(
+          archiveRows.map((a) => ({ fileId: null, storagePath: a.s3_key, scheduledFor: now, createdAt: now })),
         );
       }
 
@@ -536,6 +572,8 @@ export async function executeScheduledDeletion(
       .update(scheduledAccountDeletions)
       .set({ status: 'EXECUTED', executedAt: now, userId: null, updatedAt: now })
       .where(eq(scheduledAccountDeletions.id, scheduleId));
+    // Demande RGPD Traitée ; e-mail et nom de compte figés effacés.
+    await onDeletionExecuted(scheduleId, now);
 
     console.info(
       `[deletion] compte ${account.id} supprimé — utilisateurs ${userIds.join(', ')}, ` +
@@ -554,6 +592,7 @@ export async function executeScheduledDeletion(
       .update(scheduledAccountDeletions)
       .set({ status: 'FAILED', failureReason: reason, updatedAt: now })
       .where(eq(scheduledAccountDeletions.id, scheduleId));
+    await onDeletionFailed(scheduleId, reason);
     console.error(`[deletion] compte ${account.id} : échec — ${reason}`);
     return { status: 'failed', reason };
   }

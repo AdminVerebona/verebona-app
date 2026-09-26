@@ -36,6 +36,8 @@ export interface PurgeReport {
   tracesRedacted: number;
   technicalLogsDeleted: number;
   feedbackDeleted: number;
+  /** Traces de demandes et d'appels modèle de l'assistant (§29.7 : 90 j). */
+  assistantRunsDeleted: number;
   durationMs: number;
 }
 
@@ -82,12 +84,22 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
     `created_at < NOW() - INTERVAL '${RETENTION.feedbackMonths} months'`,
   ).catch(() => 0);  // table optionnelle selon l'état du déploiement
 
+  // 6. Traces de l'assistant (§29.7, audit P3) : `verebona_request_runs` et
+  //    `verebona_ai_runs` n'étaient jamais purgées. Sans texte de
+  //    conversation (seulement identifiants, coûts, versions), elles suivent
+  //    la durée des logs techniques. Le mois courant reste toujours lisible
+  //    pour le plafond budgétaire mensuel (90 j > 1 mois).
+  const assistantRuns =
+    await deleteWhere('verebona_request_runs', `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`).catch(() => 0)
+    + await deleteWhere('verebona_ai_runs', `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`).catch(() => 0);
+
   return {
     messagesDeleted: messages,
     conversationsDeleted: conversations,
     tracesRedacted: traces,
     technicalLogsDeleted: technical,
     feedbackDeleted: feedback,
+    assistantRunsDeleted: assistantRuns,
     durationMs: Date.now() - startedAt,
   };
 }

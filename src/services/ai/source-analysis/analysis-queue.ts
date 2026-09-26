@@ -103,6 +103,16 @@ export async function enqueueFileAnalyses(
   const { isDurableQueueEnabled, enqueueDurableFileAnalyses } =
     await import('./queue/t1-handler');
 
+  // T1-UI-08 (lot IA 2) : le dépôt n'enclenche l'analyse que si le
+  // déclencheur `source_uploaded` est actif dans la version effective (liste
+  // vide = défauts du code, donc actif). Les autres origines — reprise,
+  // relance demandée par l'utilisateur — ne sont pas des déclencheurs
+  // automatiques du catalogue et ne sont pas filtrées.
+  if (options.origin === UPLOAD_ORIGIN && !(await t1TriggerActive('source_uploaded'))) {
+    console.info(`[analysis-queue] déclencheur « source_uploaded » inactif : ${fileIds.length} fichier(s) non mis en file.`);
+    return [];
+  }
+
   if (isDurableQueueEnabled()) {
     await marquerEnFile(fileIds, accountId);
     return enqueueDurableFileAnalyses(fileIds, accountId, options);
@@ -119,6 +129,18 @@ export async function enqueueFileAnalyses(
   }
   pomper();
   return nouveaux;
+}
+
+/** Origine des dépôts (route `files/confirm`) — déclencheur `source_uploaded`. */
+const UPLOAD_ORIGIN = 'files/confirm';
+
+async function t1TriggerActive(code: string): Promise<boolean> {
+  try {
+    const { isTriggerActive } = await import('../queue/triggers');
+    return await isTriggerActive('T1', code);
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -181,28 +203,96 @@ function demarrer(): void {
     const travail = file.shift()!;
     const gen = generation;
     actifs++;
-    void executer(travail).finally(() => {
+    void executer(travail).then((remisEnFile) => {
       if (gen !== generation) return;
       actifs--;
-      connus.delete(travail.fileId);
+      // Remis en file après interruption : il reste « connu », sinon un
+      // nouveau dépôt du même fichier le mettrait une seconde fois en file.
+      if (!remisEnFile) connus.delete(travail.fileId);
       pomper();
     });
   }
 }
 
-async function executer(t: QueuedAnalysis): Promise<void> {
+/**
+ * Exécute une analyse. Rend `true` si le travail a été REMIS en file parce
+ * qu'il a été interrompu (et non parce qu'il a échoué).
+ *
+ * ── CONTEXTE D'EXÉCUTION (VER-015, VER-016, MOD-011) ────────────────────────
+ * Comme la file durable, la file mémoire ouvre un contexte d'exécution :
+ *   · version de configuration figée au démarrage — une activation en cours
+ *     d'analyse ne change plus de modèle ni de préambule en route ;
+ *   · instant de démarrage — sous disjoncteur, l'analyse déjà lancée termine
+ *     (exemption de la garde de la passerelle, runnable-guard).
+ *
+ * ── INTERRUPTION ≠ ÉCHEC (revue indépendante lot IA 2) ──────────────────────
+ * Un refus `AI_BLOCKED` (arrêt d'urgence, désactivation) marquait la source
+ * ANALYSIS_FAILED et incrémentait son compteur d'échecs, alors que rien
+ * n'avait échoué : l'exploitation avait coupé l'IA. Le pipeline laisse
+ * désormais remonter l'interruption (execution-control) ; ici, la source
+ * repasse « En file d'attente » et le travail reprend sa place en TÊTE de
+ * file — `pomper` attend la réactivation (WF-07 étapes 40-41, WF-08).
+ */
+async function executer(t: QueuedAnalysis): Promise<boolean> {
+  let remisEnFile = false;
   try {
+    const [{ runInJobContext }, configVersionId] = await Promise.all([
+      import('../queue/job-context'),
+      versionEffective(),
+    ]);
     // Un seul fichier : aucun regroupement, aucune suppression de source.
-    await analyzeFileSources([t.fileId], t.accountId, {
-      userId: t.userId,
-      origin: `${t.origin} (file)`,
-    });
+    await runInJobContext(
+      { jobId: null, treatment: 'T1', configVersionId, startedAt: Date.now() },
+      () => analyzeFileSources([t.fileId], t.accountId, {
+        userId: t.userId,
+        origin: `${t.origin} (file)`,
+      }),
+    );
   } catch (e) {
-    // `analyzeFileSources` ne lève pas en principe ; filet de sécurité.
-    console.error(`[analysis-queue] analyse du fichier ${t.fileId} impossible :`, (e as Error).message);
+    const [{ isExecutionCancelled }, { isAiBlocked }] = await Promise.all([
+      import('../queue/execution-control'),
+      import('../queue/runnable-guard'),
+    ]);
+    if (isExecutionCancelled(e) || isAiBlocked(e)) {
+      remisEnFile = await remettreEnFileApresInterruption(t, (e as Error).message);
+    } else {
+      // `analyzeFileSources` ne lève pas en principe ; filet de sécurité.
+      console.error(`[analysis-queue] analyse du fichier ${t.fileId} impossible :`, (e as Error).message);
+    }
   } finally {
-    await remettreEnAttenteSiIntact(t.fileId);
+    if (!remisEnFile) await remettreEnAttenteSiIntact(t.fileId);
   }
+  return remisEnFile;
+}
+
+/** Version effective à figer ; jamais bloquant (repli : configuration du code). */
+async function versionEffective(): Promise<number | null> {
+  try {
+    const { resolveEffectiveVersionId } = await import('../config/config-resolver');
+    return await resolveEffectiveVersionId();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remet en tête de file un travail interrompu. La source, laissée
+ * `ANALYZING` par le pipeline, repasse `UPLOADED` : sinon la reprise
+ * l'ignorerait (`excludeInProgress`) et l'écran afficherait « en cours »
+ * indéfiniment.
+ */
+async function remettreEnFileApresInterruption(t: QueuedAnalysis, raison: string): Promise<boolean> {
+  try {
+    await db
+      .update(assetFiles)
+      .set({ analysisState: 'UPLOADED', updatedAt: new Date() })
+      .where(and(eq(assetFiles.id, t.fileId), eq(assetFiles.analysisState, 'ANALYZING')));
+  } catch {
+    /* check-pending reprendra la source ; la remise en file suffit */
+  }
+  file.unshift(t);
+  console.warn(`[analysis-queue] analyse du fichier ${t.fileId} interrompue (${raison}) — remise en tête de file.`);
+  return true;
 }
 
 /**

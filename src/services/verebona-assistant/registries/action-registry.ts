@@ -34,7 +34,9 @@ export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = 
   OPEN_SUPPLIER: A('OPEN_SUPPLIER', 'Fiche fournisseur', ['supplierId'], 'account_object'),
   OPEN_ACCOUNT: A('OPEN_ACCOUNT', 'Mon compte', ['section'], 'account_route'),
   OPEN_PRICING: A('OPEN_PRICING', 'Page des offres', ['offer'], 'known_offer'),
-  OPEN_HELP: A('OPEN_HELP', 'Aide Verebona', ['helpEntryId'], 'published_help'),
+  OPEN_HELP: A('OPEN_HELP', 'Aide Verebona', ['helpEntryId', 'path'], 'published_help'),
+  // Formulaire de contact du Centre d'aide : route fixe, sans objet du compte.
+  OPEN_CONTACT: A('OPEN_CONTACT', 'Contacter le support', [], 'account_route'),
   START_ADD_ASSET: A('START_ADD_ASSET', 'Création bien', ['assetType'], 'supported_type'),
   START_ADD_DOCUMENT: A('START_ADD_DOCUMENT', 'Ajout document', ['assetId'], 'account_object'),
   START_ADD_AGENDA_ITEM: A('START_ADD_AGENDA_ITEM', 'Création échéance', ['assetId'], 'account_object'),
@@ -53,12 +55,14 @@ export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActi
   // Dictionnaire de navigation (core/navigation-targets.ts) : agenda, À
   // traiter, documents, compte, offres, aide — une seule action retenue.
   NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_PRICING', 'OPEN_HELP'],
-  NAVIGATION_FIND: ['OPEN_HELP', 'OPEN_DOCUMENTS_PAGE', 'OPEN_AGENDA', 'OPEN_TO_PROCESS'],
-  PRODUCT_HELP_HOW_TO: ['OPEN_HELP', 'START_ADD_DOCUMENT', 'START_ADD_ASSET', 'START_ADD_AGENDA_ITEM'],
+  // OPEN_CONTACT sur toutes les intentions d'aide : renvoi au support quand
+  // le corpus ne répond pas ou se contredit (CDC Centre d'aide §5, T2-04).
+  NAVIGATION_FIND: ['OPEN_HELP', 'OPEN_DOCUMENTS_PAGE', 'OPEN_AGENDA', 'OPEN_TO_PROCESS', 'OPEN_CONTACT'],
+  PRODUCT_HELP_HOW_TO: ['OPEN_HELP', 'START_ADD_DOCUMENT', 'START_ADD_ASSET', 'START_ADD_AGENDA_ITEM', 'OPEN_CONTACT'],
   // « À quoi sert À traiter ? » → bouton « Ouvrir « À traiter » » (37.4,
   // §10.5) : la page expliquée est la suite la plus utile.
-  PRODUCT_HELP_EXPLAIN: ['OPEN_HELP', 'OPEN_TO_PROCESS', 'OPEN_AGENDA', 'OPEN_DOCUMENTS_PAGE'],
-  PRODUCT_HELP_STATUS: ['OPEN_HELP', 'OPEN_TO_PROCESS'],
+  PRODUCT_HELP_EXPLAIN: ['OPEN_HELP', 'OPEN_TO_PROCESS', 'OPEN_AGENDA', 'OPEN_DOCUMENTS_PAGE', 'OPEN_CONTACT'],
+  PRODUCT_HELP_STATUS: ['OPEN_HELP', 'OPEN_TO_PROCESS', 'OPEN_CONTACT'],
   PRODUCT_PLAN_LIMIT: ['OPEN_PRICING'],
   ACCOUNT_SEARCH_ASSET: ['OPEN_ASSET', 'OPEN_SEARCH_RESULTS'],
   ACCOUNT_SEARCH_DOCUMENT: ['OPEN_DOCUMENT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_SEARCH_RESULTS'],
@@ -75,8 +79,8 @@ export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActi
   ACCOUNT_SUMMARY: ['OPEN_DOCUMENT', 'SHOW_SOURCES', 'SHOW_EXPLANATION'],
   ACCOUNT_COMPARISON: ['OPEN_DOCUMENT', 'SHOW_SOURCES', 'SHOW_EXPLANATION', 'OPEN_TO_PROCESS'],
   ACCOUNT_TIMELINE: ['OPEN_DOCUMENT', 'OPEN_AGENDA_ITEM', 'SHOW_SOURCES'],
-  EXPORT_HELP: ['OPEN_EXPORT_AREA', 'OPEN_HELP'],
-  TECHNICAL_ISSUE: ['OPEN_HELP', 'RETRY_REQUEST'],
+  EXPORT_HELP: ['OPEN_EXPORT_AREA', 'OPEN_HELP', 'OPEN_CONTACT'],
+  TECHNICAL_ISSUE: ['OPEN_HELP', 'RETRY_REQUEST', 'OPEN_CONTACT'],
   UNSUPPORTED_ACTION: ['OPEN_HELP'],
   SENSITIVE_ADVICE: ['OPEN_DOCUMENT', 'OPEN_HELP'],
 };

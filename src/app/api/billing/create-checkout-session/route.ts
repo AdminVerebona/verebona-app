@@ -387,6 +387,13 @@ export async function POST(request: NextRequest) {
                 referralCode: resolvedReferral ? (referralCode ?? '') : '',
             },
             billing_address_collection: 'auto',
+            // CDC BO PRO-001/PRO-002 : les codes promotionnels sont créés dans
+            // Stripe ; sans ce champ, Checkout n'offre aucune saisie et aucun
+            // usage ne peut exister. Activation soumise à décision produit :
+            // STRIPE_CHECKOUT_ALLOW_PROMOTION_CODES=true.
+            ...(process.env.STRIPE_CHECKOUT_ALLOW_PROMOTION_CODES === 'true'
+                ? { allow_promotion_codes: true }
+                : {}),
             payment_method_collection: 'always',
             locale: 'fr',
             customer_update: {

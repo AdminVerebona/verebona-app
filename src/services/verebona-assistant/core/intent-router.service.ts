@@ -58,14 +58,59 @@ export type RouteOutcome =
 // ── Sécurité (§9.4.1, §29.2, §9.3 « autres utilisateurs ») ─────────────────
 const UNSAFE_INJECTION = /ignore[rz]? (les |tes |vos |toutes les )?(regles|instructions|consignes)|system prompt|prompt systeme|jailbreak|drop table|<script/;
 /**
- * « mon autre compte » (changement de compte) n'est pas une tentative d'accès
- * aux données d'autrui : le possessif est exclu.
+ * Accès aux données d'autrui (§9.3 « autres utilisateurs », §29.1).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI LA RÈGLE A ÉTÉ RESSERRÉE
+ *
+ * L'ancienne règle se déclenchait dès que « autre utilisateur » ou « autre
+ * compte » apparaissait, quel que soit le sens de la phrase. Des questions
+ * d'usage parfaitement légitimes — « Comment inviter un autre utilisateur ? »,
+ * « Comment basculer vers un autre compte ? », « Comment créer un autre
+ * compte ? », « …en tant qu'autre utilisateur » — recevaient une réponse de
+ * refus pour tentative malveillante.
+ *
+ * La mention d'un tiers ne suffit plus : il faut une DEMANDE D'ACCÈS à ce
+ * qui lui appartient. Trois formes sont reconnues :
+ *   1. un objet de données rattaché à un tiers — « les données DES autres
+ *      utilisateurs », « les biens D'un autre compte », « les documents DE
+ *      quelqu'un », « data OF other users » ;
+ *   2. un verbe de consultation dont l'objet direct est un tiers — « montre-
+ *      moi un autre compte », « liste tous les utilisateurs » ;
+ *   3. le compte d'un tiers — « le compte d'un autre », « se connecter au
+ *      compte de quelqu'un », « someone else's account ».
+ * Le possessif (« mon autre compte », « mes autres comptes ») reste exclu :
+ * c'est un changement de compte de l'utilisateur lui-même.
+ * ══════════════════════════════════════════════════════════════════════════
  */
-const UNSAFE_OTHER_ACCOUNTS = new RegExp(
-  "(?<![\\p{L}])(?<!mon |mes |ma )(?:autres? utilisateurs?|autres? comptes?|autres? clients?|tous les (?:comptes|utilisateurs|clients)"
-  + "|compte d'un autre|comptes? des autres|donnees de (?:tout le monde|tous)|other users?|other accounts?)(?![\\p{L}])",
+/** Un tiers, sauf s'il est introduit par un possessif de l'utilisateur. */
+const OTHER_PARTY = "(?<!(?:mon|ma|mes|notre|nos) )(?:autres? (?:utilisateurs?|comptes?|clients?|abonnes?|personnes?)"
+  + "|autrui|quelqu'un(?: d'autre)?|tout le monde|tous les (?:comptes|utilisateurs|clients|abonnes)"
+  + "|(?:other|another) (?:users?|accounts?|customers?|people|person)|someone else)(?![\\p{L}])";
+/** Ce qui appartient à un compte : données, documents, biens… */
+const DATA_NOUN = "(?:donnees|documents?|biens?|informations?|infos?|fichiers?|factures?|contrats?|agendas?|echeances?"
+  + "|patrimoine|contenus?|photos?|historiques?|data|files|info|information|records?|assets?)";
+const DATA_OF_OTHERS = new RegExp(
+  `(?<![\\p{L}])${DATA_NOUN} (?:[\\p{L}']+ ){0,2}?(?:de |des |du |d'|of |appartenant a |chez )(?:un |une |l'|la |le |les )?${OTHER_PARTY}`
+  + `|(?:other users?'?s?|another (?:user|account)'?s?|someone else'?s) ${DATA_NOUN}(?![\\p{L}])`,
   'u',
 );
+const SHOW_OTHERS = new RegExp(
+  "(?<![\\p{L}])(?:montre[rz]?|affiche[rz]?|donne[rz]?|liste[rz]?|voir|vois|consulte[rz]?|acceder|accede[rz]?|lire|lis"
+  + "|explore[rz]?|parcour(?:s|ir)|espionne[rz]?|pirate[rz]?|show|list|view|display|access|read)"
+  + "(?:[ -](?!tant)[\\p{L}']+){0,2}? (?:un |une |les |des |d'autres |aux |a un |a une |a des |a d'autres |tous les )?"
+  + OTHER_PARTY,
+  'u',
+);
+const ACCOUNT_OF_OTHERS = new RegExp(
+  "(?<![\\p{L}])comptes? (?:de quelqu'un|d'autrui|d'un autre|d'une autre|d'autres|des autres|de l'autre|de tout le monde)(?![\\p{L}])"
+  + "|(?:connecter|connecte|connexion|acceder|accede|entrer|rentrer) (?:au|sur le|dans le|a le) compte (?:de |d')(?!(?:mon|ma|notre) (?:duo|foyer)(?![\\p{L}]))"
+  + "|(?:someone else'?s|another user'?s|other users'?) accounts?",
+  'u',
+);
+function isOtherAccountsRequest(t: string): boolean {
+  return DATA_OF_OTHERS.test(t) || SHOW_OTHERS.test(t) || ACCOUNT_OF_OTHERS.test(t);
+}
 
 // ── Politesses (§9.4.3) ─────────────────────────────────────────────────────
 const GREETINGS = startsWith('bonjour|bonsoir|salut|coucou|hello|hey|yo|hi');
@@ -174,7 +219,7 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
 
   // Étape 1 — Sécurité / anti-injection / données d'autrui (§9.4.1, §29.2)
   if (UNSAFE_INJECTION.test(t)) return R('UNSAFE_OR_MALICIOUS', 'exact', 'motif malveillant détecté');
-  if (UNSAFE_OTHER_ACCOUNTS.test(t)) return R('UNSAFE_OR_MALICIOUS', 'exact', 'données d’autres comptes demandées');
+  if (isOtherAccountsRequest(t)) return R('UNSAFE_OR_MALICIOUS', 'exact', 'données d’autres comptes demandées');
 
   // Étape 2 — Réponse à une clarification en attente (§9.4.2)
   if (ctx.hasPendingClarification) return R('CLARIFICATION_ANSWER', 'exact', 'clarification en attente');

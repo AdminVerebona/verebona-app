@@ -55,15 +55,22 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
   // `envoyer` rend `false` quand la question est refusée : le champ de
   // saisie garde alors son texte, qui n'est pas perdu.
   // ══════════════════════════════════════════════════════════════════════
-  const envoyer = (texte: string): boolean => {
+  const envoyer = (texte: string): false | Promise<boolean> => {
     let autorise = false;
     garder(() => { autorise = true; });
     if (!autorise) {
       setOpen(false);
       return false;
     }
-    void v.send(texte);
-    return true;
+    // Promesse : le champ restaure le texte si la question n'aboutit pas (§7.6).
+    return v.send(texte);
+  };
+
+  // Fermer le tiroir pendant un traitement ANNULE la demande côté serveur
+  // (§7.8) : sa réponse ne sera ni affichée ni enregistrée.
+  const changerOuverture = (ouvert: boolean) => {
+    if (!ouvert && v.isLoading) v.cancel();
+    setOpen(ouvert);
   };
 
   // Ouverture programmée (bulle d'accueil, centre d'aide…), avec question optionnelle.
@@ -109,7 +116,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
   }, []);
 
   return (
-    <Drawer open={open} onOpenChange={setOpen} direction="right">
+    <Drawer open={open} onOpenChange={changerOuverture} direction="right">
       {/* Garde à l'OUVERTURE, non à l'envoi : ouvrir l'assistant pour refuser
           la question une fois rédigée ferait perdre la saisie. Même principe
           que les tiroirs d'édition. */}
@@ -133,7 +140,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
               alt=""
               width={64}
               height={64}
-              className="select-none animate-[vb-float_6s_ease-in-out_infinite] [filter:drop-shadow(0_14px_24px_rgba(4,10,26,.6))]"
+              className="select-none animate-[vb-float_6s_ease-in-out_infinite] motion-reduce:animate-none [filter:drop-shadow(0_14px_24px_rgba(4,10,26,.6))]"
             />
           </button>
         </DrawerTrigger>
@@ -142,8 +149,10 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
       <DrawerContent className="ml-auto flex h-full w-full max-w-md flex-col sm:w-[28rem]">
         <DrawerHeader className="flex items-center justify-between border-b">
           <DrawerTitle className="flex items-center gap-2">
-            <VerebonaMascot pose="idle" size={24} />
-            Demander à Verebona
+            {/* §7.4 : le tiroir s'intitule « Verebona » ; « Demander à
+                Verebona » reste le libellé du point d'entrée (§7.1). */}
+            <VerebonaMascot pose={v.isLoading ? 'thinking' : 'idle'} size={24} />
+            Verebona
           </DrawerTitle>
           <DrawerClose aria-label="Fermer l'assistant" className="rounded p-1 hover:bg-muted">✕</DrawerClose>
         </DrawerHeader>
@@ -159,7 +168,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
 
         <div className="flex-1 overflow-hidden" aria-live="polite">
           {v.messages.length === 0 ? (
-            <VerebonaSuggestions suggestions={suggestions} onPick={(label) => { envoyer(label); }} />
+            <VerebonaSuggestions suggestions={suggestions} onPick={(label) => { void envoyer(label); }} />
           ) : (
             <VerebonaConversation
               messages={v.messages}

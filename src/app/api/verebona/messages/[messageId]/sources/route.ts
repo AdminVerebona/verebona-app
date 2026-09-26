@@ -13,6 +13,8 @@ import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
 import { hrefSource } from '@/services/verebona-assistant/core/entity-ref';
 import { MESSAGE_OWNED_BY_USER } from '@/services/verebona-assistant/core/conversation.service';
+import { marquerDisponibilite } from '@/services/verebona-assistant/core/source-availability.service';
+import type { ResolvedSource } from '@/services/verebona-assistant/types/sources';
 
 export async function GET(
   req: NextRequest,
@@ -40,12 +42,25 @@ export async function GET(
     [messageId, accountId, session.userId],
   );
 
-  const sources = (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
-    ...r,
-    // Une source marquée indisponible (§19.10) ne reçoit pas de lien : l'objet
-    // a été supprimé ou n'est plus accessible depuis la récupération.
-    href: r.is_available === false ? null : hrefSource(String(r.source_id ?? '')),
-  }));
+  const lignes = rows as unknown as Array<Record<string, unknown>>;
+  // §19.10, §30.5, 37.14 : la disponibilité est REVÉRIFIÉE à la relecture.
+  // Un document supprimé APRÈS la réponse gardait son lien (is_available
+  // figé au moment de la réponse). Vérification impossible : l'état
+  // enregistré fait foi.
+  const verifiees = await marquerDisponibilite(
+    lignes.map((r) => ({ id: String(r.source_id ?? ''), type: r.source_type, isAvailable: r.is_available !== false }) as unknown as ResolvedSource),
+    accountId,
+  ).catch(() => null);
+  const sources = lignes.map((r, i) => {
+    const disponible = r.is_available !== false && (verifiees ? verifiees[i]?.isAvailable !== false : true);
+    return {
+      ...r,
+      is_available: disponible,
+      // Une source indisponible (§19.10) ne reçoit pas de lien : l'objet a
+      // été supprimé ou n'est plus accessible.
+      href: disponible ? hrefSource(String(r.source_id ?? '')) : null,
+    };
+  });
 
   return NextResponse.json({ sources });
 }

@@ -15,10 +15,16 @@
  * des données versionnées, plus des fichiers.
  *
  * ── CE QUI LA REMPLACE ───────────────────────────────────────────────────
- * `POST /api/admin/ai/prompt-changes` crée une demande de modification et la
- * fait analyser. La suite passe par `/diff`, les tests, puis deux validations
- * humaines distinctes avant `/activate`. `/rollback` restaure la version
- * précédente.
+ * L'écran Prompt Control (T5) de la Configuration IA — `/admin/ai-config`,
+ * section `#prompt-control` (CDC BO IA SCR-06, WF-20) — adossé à
+ * `POST /api/admin/ai/prompt-control` : l'administrateur décrit le besoin en
+ * français, T5 analyse puis réécrit le prompt DANS UN BROUILLON ; la mise en
+ * service suit le cycle Brouillon → À tester → Active des versions de
+ * configuration.
+ *
+ * Cette réponse renvoyait auparavant vers `/api/admin/ai/prompt-changes`
+ * (et `/diff`, `/activate`, `/rollback`) : ces routes ont été SUPPRIMÉES. Un
+ * client qui suivait le lien de remplacement tombait sur un 404.
  *
  * ── POURQUOI UN 410 PLUTÔT QU'UNE SUPPRESSION ────────────────────────────
  * Une interface déployée peut encore appeler cette URL. Un 404 laisserait
@@ -28,7 +34,10 @@
  */
 import { NextResponse } from 'next/server';
 
-const REMPLACEMENT = '/api/admin/ai/prompt-changes';
+/** Écran Prompt Control (Configuration IA) — destination à montrer à l'administrateur. */
+const REMPLACEMENT_ECRAN = '/admin/ai-config#prompt-control';
+/** Route qui porte Prompt Control — successeur technique de celle-ci. */
+const REMPLACEMENT_API = '/api/admin/ai/prompt-control';
 
 export async function POST() {
   return NextResponse.json(
@@ -36,10 +45,11 @@ export async function POST() {
       error: 'ROUTE_REMOVED',
       message:
         "L'application directe d'une modification de prompt n'est plus possible. " +
-        'Créez une demande de modification, consultez le diff, exécutez les tests, ' +
-        'puis faites valider l’activation par une seconde personne.',
-      replacement: REMPLACEMENT,
+        'Utilisez Prompt Control dans la Configuration IA : décrivez le besoin, ' +
+        'la modification est écrite dans un brouillon, testée, puis activée.',
+      replacement: REMPLACEMENT_ECRAN,
+      replacementApi: REMPLACEMENT_API,
     },
-    { status: 410, headers: { Link: `<${REMPLACEMENT}>; rel="successor-version"` } },
+    { status: 410, headers: { Link: `<${REMPLACEMENT_API}>; rel="successor-version"` } },
   );
 }

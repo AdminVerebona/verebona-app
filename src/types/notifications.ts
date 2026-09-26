@@ -55,6 +55,8 @@ export const NOTIFICATION_TYPES = {
   ANALYSIS_QUOTA_90: 'ANALYSIS_QUOTA_90',
   ANALYSIS_QUOTA_100: 'ANALYSIS_QUOTA_100',
   REFERRAL_REWARD_GRANTED: 'REFERRAL_REWARD_GRANTED',
+  /** Archive « Mes données » prête (CDC BO GDP-021, génération asynchrone). */
+  GDPR_EXPORT_READY: 'GDPR_EXPORT_READY',
 
   // ── Compte et abonnement — obligatoires (cloche + email) ─────────────────
   PAYMENT_FAILED: 'PAYMENT_FAILED',
@@ -165,11 +167,14 @@ export interface NotificationPayloadMap {
   ANALYSIS_QUOTA_90: { accountId: number; threshold: 90; includedConsumed: number; includedQuota: number; cta?: string; planCode?: string };
   ANALYSIS_QUOTA_100: { accountId: number; threshold: 100; includedConsumed: number; includedQuota: number; cta?: string; planCode?: string };
   REFERRAL_REWARD_GRANTED: { referralEventId: number; referredAccountId?: number };
+  GDPR_EXPORT_READY: { exportId: number; expiresAt?: string };
 
-  PAYMENT_FAILED: { accountId?: number; duoId?: number };
+  // deadlineAt : échéance J+90 du cycle d'impayé (GAP-06).
+  PAYMENT_FAILED: { accountId?: number; duoId?: number; deadlineAt?: string };
   PAYMENT_ACTION_REQUIRED: { accountId?: number; duoId?: number };
   SUBSCRIPTION_SUSPENDED: { accountId?: number };
-  ACCOUNT_READ_ONLY: { accountId?: number; reason?: string };
+  // reason 'unpaid' : rappel J-7 / J-1 du cycle d'impayé (GAP-06).
+  ACCOUNT_READ_ONLY: { accountId?: number; reason?: string; deadlineAt?: string; daysLeft?: number };
 
   PASSWORD_CHANGED: Record<string, never>;
   EMAIL_CHANGE_REQUESTED: { newEmail?: string };

@@ -43,7 +43,8 @@
  */
 import { getOperation, type AiOperationDefinition } from '../registry/operations';
 import { isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
-import type { TreatmentConfig } from './config-types';
+import type { ReasoningLevel, TreatmentConfig } from './config-types';
+import { currentJobContext } from '../queue/job-context';
 
 /** Configuration réellement appliquée à un appel. */
 export interface ResolvedOperationConfig {
@@ -51,6 +52,12 @@ export interface ResolvedOperationConfig {
   fallbackModels: string[];
   maxOutputTokens: number | null;
   reasoningPrimary: string | null;
+  /**
+   * Niveau de raisonnement PAR RANG (T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03) :
+   * index 0 = principal, 1 = fallback 1, 2 = fallback 2. `null` = défaut du
+   * modèle. Jusqu'ici saisi et versionné mais jamais transmis au fournisseur.
+   */
+  reasoningByRank: Array<ReasoningLevel | null>;
   /** Préambule administrable, à placer devant le prompt technique. */
   promptPreamble: string | null;
   /** Version dont vient cette configuration. `null` = configuration du code. */
@@ -68,9 +75,93 @@ let cache: {
   byTreatment: Map<string, TreatmentConfig>;
 } | null = null;
 
+/**
+ * Versions épinglées par une exécution (VER-015). Une version numérotée
+ * (Validée, Active, Archivée) ou À tester n'est plus modifiable (`saveEntry`
+ * refuse tout statut ≠ DRAFT) : son contenu peut être gardé sans expiration.
+ * Borné pour ne pas grossir indéfiniment sur une instance de longue durée.
+ */
+const pinned = new Map<number, Map<string, TreatmentConfig>>();
+const PINNED_MAX = 16;
+
 /** Vidé à chaque bascule d'Active, pour qu'une activation prenne effet tout de suite. */
 export function invalidateConfigCache(): void {
   cache = null;
+}
+
+/**
+ * Réservé aux tests : pose la version effective (et des versions épinglables)
+ * sans base. `null` remet l'état initial.
+ */
+export function __setConfigForTests(
+  effective: { versionId: number; entries: TreatmentConfig[] } | null,
+  pinnable: Array<{ versionId: number; entries: TreatmentConfig[] }> = [],
+): void {
+  pinned.clear();
+  cache = effective
+    ? {
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      versionId: effective.versionId,
+      visibleNumber: null,
+      byTreatment: new Map(effective.entries.map((e) => [e.treatment as string, e])),
+    }
+    : null;
+  for (const p of pinnable) pinned.set(p.versionId, new Map(p.entries.map((e) => [e.treatment as string, e])));
+}
+
+/**
+ * Identifiant de la version effective à cet instant — celle qu'un job prélevé
+ * maintenant doit figer (VER-016). Ne lève jamais : `null` = configuration du code.
+ */
+export async function resolveEffectiveVersionId(): Promise<number | null> {
+  return (await loadEffective()).versionId;
+}
+
+async function loadPinned(versionId: number): Promise<Map<string, TreatmentConfig> | null> {
+  const hit = pinned.get(versionId);
+  if (hit) return hit;
+  try {
+    const { getVersion } = await import('./config-version.repository');
+    const v = await withTimeout(getVersion(versionId), LOOKUP_TIMEOUT_MS, null);
+    if (!v) return null;
+    const map = new Map(v.entries.map((e) => [e.treatment as string, e]));
+    if (pinned.size >= PINNED_MAX) pinned.delete(pinned.keys().next().value as number);
+    pinned.set(versionId, map);
+    return map;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Configuration d'un traitement sous laquelle tourne l'appel courant.
+ *
+ * Dans une exécution de file, c'est la version figée au démarrage (VER-015) ;
+ * hors file, la version effective. `null` = configuration du code.
+ */
+async function entriesForCurrentExecution(): Promise<{
+  versionId: number | null; visibleNumber: number | null; byTreatment: Map<string, TreatmentConfig>;
+}> {
+  const effective = await loadEffective();
+  const ctx = currentJobContext();
+  if (!ctx || ctx.configVersionId === effective.versionId) return effective;
+  // Aucune version au démarrage : le code s'applique jusqu'au bout, même si
+  // une version est activée pendant l'exécution.
+  if (ctx.configVersionId === null) return { versionId: null, visibleNumber: null, byTreatment: new Map() };
+  const map = await loadPinned(ctx.configVersionId);
+  // Version épinglée illisible (base indisponible) : repli sur l'effective,
+  // plutôt que sur le code — c'est la plus proche de ce qui a été figé.
+  if (!map) return effective;
+  return { versionId: ctx.configVersionId, visibleNumber: null, byTreatment: map };
+}
+
+/**
+ * Ligne de configuration d'un traitement (déclencheurs, garde-fous) dans la
+ * version effective, ou `null` sans version. Ne lève jamais.
+ */
+export async function resolveTreatmentConfig(treatment: Treatment): Promise<TreatmentConfig | null> {
+  const effective = await loadEffective();
+  return effective.byTreatment.get(treatment) ?? null;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -131,12 +222,13 @@ export async function resolveOperationConfig(
     fallbackModels: [...op.fallbackModels],
     maxOutputTokens: null,
     reasoningPrimary: null,
+    reasoningByRank: [],
     promptPreamble: null,
     configVersionId: null,
     visibleNumber: null,
   };
 
-  const effective = await loadEffective();
+  const effective = await entriesForCurrentExecution();
   if (effective.versionId === null) return duCode;
 
   let treatment: string;
@@ -153,6 +245,12 @@ export async function resolveOperationConfig(
   const fallbacks = [entry.fallback1, entry.fallback2].filter(
     (m): m is string => Boolean(m),
   );
+  // Le niveau suit le modèle auquel il est attaché : un fallback 1 absent
+  // décale le fallback 2 au rang 1 dans la chaîne, son niveau le suit.
+  const reasoningFallbacks = ([
+    [entry.fallback1, entry.reasoningFallback1],
+    [entry.fallback2, entry.reasoningFallback2],
+  ] as const).filter(([m]) => Boolean(m)).map(([, r]) => r ?? null);
 
   return {
     primaryModel: entry.primaryModel ?? duCode.primaryModel,
@@ -162,6 +260,11 @@ export async function resolveOperationConfig(
     fallbackModels: entry.primaryModel ? fallbacks : duCode.fallbackModels,
     maxOutputTokens: entry.maxOutputTokens,
     reasoningPrimary: entry.reasoningPrimary,
+    // Principal du code conservé (version sans principal) : aucun niveau
+    // administré ne s'applique à un modèle que l'administrateur n'a pas choisi.
+    reasoningByRank: entry.primaryModel
+      ? [entry.reasoningPrimary ?? null, ...reasoningFallbacks]
+      : [],
     promptPreamble: preambleFor(entry.treatment, entry.prompt),
     configVersionId: effective.versionId,
     visibleNumber: effective.visibleNumber,

@@ -586,6 +586,16 @@ export const invoices = pgTable('invoices', {
   paidAt: tstzOptional('paid_at'),
   invoicePdf: text('invoice_pdf'),
   hostedInvoiceUrl: text('hosted_invoice_url'),
+  // Migration 0180 — offre facturée et suivi (CDC BO SUB-009, SUB-010).
+  stripeSubscriptionId: text('stripe_subscription_id'),
+  stripePriceId: text('stripe_price_id'),
+  planCode: text('plan_code'),
+  billingPeriod: text('billing_period'),
+  billingReason: text('billing_reason'),
+  periodStartAt: tstzOptional('period_start_at'),
+  periodEndAt: tstzOptional('period_end_at'),
+  lastPaymentFailedAt: tstzOptional('last_payment_failed_at'),
+  amountRefunded: integer('amount_refunded').notNull().default(0),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({

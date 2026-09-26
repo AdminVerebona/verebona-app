@@ -1,6 +1,10 @@
 # Fixtures de prompts (CDC §17.9 / §35)
 
-Chaque prompt versionné possède un jeu de cas de référence (entrée → sortie attendue)
-servant à la non-régression avant toute modification. À compléter en Phase 3/4.
+Les cas de référence exécutables vivent désormais dans
+`src/services/verebona-assistant/eval/` (`cases.ts` + runner vitest) et dans
+les tests de contrat des prompts maîtres
+(`src/services/ai/prompts/__tests__/contrat-*.test.ts`).
 
-Convention : `<prompt-id>.fixtures.ts` exportant `Array<{ name, input, expected }>`.
+Toute modification d'un prompt maître ou d'une consigne de tâche
+(`prompts/*.ts`, registre `registries/prompt-registry.ts`) doit laisser ces
+deux jeux au vert.

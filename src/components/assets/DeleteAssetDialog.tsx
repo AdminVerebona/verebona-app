@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -9,45 +10,85 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Trash2 } from "lucide-react"
+import { AlertTriangle, Loader2, Trash2 } from "lucide-react"
+import { apiClient } from "@/lib/api-client"
+
+export interface AssetDeletionSummary {
+  documents: number
+  photos: number
+  deadlines: number
+  events: number
+  rooms: number
+  equipments: number
+}
 
 interface DeleteAssetDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onConfirm: (deleteRelated: { documents: boolean; events: boolean }) => void
+  /** Suppression confirmée : tout le contenu du bien part avec lui. */
+  onConfirm: () => void
+  assetId: number
   assetName: string
   isLoading?: boolean
 }
 
+const LABELS: Array<{ key: keyof AssetDeletionSummary; one: string; many: string }> = [
+  { key: "documents", one: "document", many: "documents" },
+  { key: "deadlines", one: "échéance", many: "échéances" },
+  { key: "events", one: "événement", many: "événements" },
+  { key: "photos", one: "photo", many: "photos" },
+  { key: "rooms", one: "pièce", many: "pièces" },
+  { key: "equipments", one: "équipement", many: "équipements" },
+]
+
+/** « 12 documents », « 1 échéance » — éléments à zéro omis. */
+export function describeDeletionSummary(summary: AssetDeletionSummary): string[] {
+  return LABELS.filter(({ key }) => summary[key] > 0).map(
+    ({ key, one, many }) => `${summary[key]} ${summary[key] > 1 ? many : one}`,
+  )
+}
+
 /**
- * Confirmation de suppression d'un bien — GAP-05 (CDC Centre d'aide §14).
+ * Confirmation de suppression d'un bien — règle produit : TOUT est supprimé.
  *
- * ══════════════════════════════════════════════════════════════════════════
- * LA CASE « CONSERVER LES DOCUMENTS » NE CONSERVAIT RIEN
- *
- * Le dialogue proposait « Conserver les documents » et « Conserver les
- * événements ». Or `DELETE /api/assets?id=` supprime la ligne `assets` et,
- * par les clés étrangères `ON DELETE CASCADE`, tous les fichiers
- * (`asset_files`), événements et échéances du bien ; ses branches
- * `keepDocuments` / `keepEvents` sont vides, et la page appelante ne
- * transmettait même pas le choix. L'utilisateur qui cochait la case perdait
- * ses documents en croyant les garder.
- *
- * Le message décrit donc la règle réellement appliquée. Si le produit arrête
- * une règle de conservation (GAP-05), elle devra d'abord exister dans l'API
- * avant de réapparaître ici. `onConfirm` garde sa signature (tout supprimé).
- * ══════════════════════════════════════════════════════════════════════════
+ * Le dialogue annonce, chiffres à l'appui (GET /api/assets/[id]/deletion-summary),
+ * ce que la suppression emportera : documents, échéances, événements, photos,
+ * pièces, équipements. Aucune option « conserver les documents » : l'API n'en
+ * a jamais appliqué aucune (anciens `keepDocuments` / `keepEvents`, retirés).
+ * Les fichiers stockés sont purgés ensuite. L'action est irréversible.
  */
 export function DeleteAssetDialog({
   open,
   onOpenChange,
   onConfirm,
+  assetId,
   assetName,
   isLoading = false,
 }: DeleteAssetDialogProps) {
-  const handleConfirm = () => {
-    onConfirm({ documents: true, events: true })
-  }
+  const [summary, setSummary] = useState<AssetDeletionSummary | null>(null)
+  const [summaryState, setSummaryState] = useState<"idle" | "loading" | "ready" | "error">("idle")
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setSummary(null)
+    setSummaryState("loading")
+    apiClient
+      .get<AssetDeletionSummary>(`/api/assets/${assetId}/deletion-summary`)
+      .then((data) => {
+        if (cancelled) return
+        setSummary(data)
+        setSummaryState("ready")
+      })
+      .catch(() => {
+        if (!cancelled) setSummaryState("error")
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, assetId])
+
+  const items = summary ? describeDeletionSummary(summary) : []
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -58,24 +99,56 @@ export function DeleteAssetDialog({
             <div>
               <AlertDialogTitle>Supprimer le bien &quot;{assetName}&quot; ?</AlertDialogTitle>
               <AlertDialogDescription className="mt-2">
-                Cette action est irréversible. Le bien sera supprimé définitivement, ainsi que ses documents, photos, événements et échéances.
+                Le bien et tout ce qui lui est rattaché seront supprimés définitivement.
+                Cette action est irréversible.
               </AlertDialogDescription>
             </div>
           </div>
         </AlertDialogHeader>
 
-        <p className="text-sm text-muted-foreground py-4">
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm space-y-2">
+          <div className="flex items-center gap-2 font-medium text-destructive">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            Seront également supprimés
+          </div>
+          {summaryState === "loading" && (
+            <p className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Calcul des éléments concernés…
+            </p>
+          )}
+          {summaryState === "ready" && items.length > 0 && (
+            <ul className="list-disc pl-5 text-foreground" data-testid="asset-deletion-summary">
+              {items.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+          {summaryState === "ready" && items.length === 0 && (
+            <p className="text-muted-foreground">
+              Aucun document, échéance ni autre élément n&apos;est rattaché à ce bien.
+            </p>
+          )}
+          {summaryState === "error" && (
+            <p className="text-muted-foreground">
+              Le décompte n&apos;a pas pu être chargé. Tous les documents, photos, échéances,
+              événements, pièces et équipements du bien seront néanmoins supprimés.
+            </p>
+          )}
+        </div>
+
+        <p className="text-sm text-muted-foreground">
           Pour garder un document, téléchargez-le avant de supprimer le bien.
         </p>
 
         <div className="flex gap-2 justify-end pt-4 border-t">
           <AlertDialogCancel disabled={isLoading}>Annuler</AlertDialogCancel>
           <AlertDialogAction
-            onClick={handleConfirm}
-            disabled={isLoading}
+            onClick={onConfirm}
+            disabled={isLoading || summaryState === "loading"}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90 btn-delete border-0"
           >
-            {isLoading ? "Suppression en cours..." : "Supprimer le bien"}
+            {isLoading ? "Suppression en cours..." : "Supprimer définitivement"}
           </AlertDialogAction>
         </div>
       </AlertDialogContent>

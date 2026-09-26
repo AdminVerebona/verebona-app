@@ -12,6 +12,8 @@ import { DowngradeConfirmDialog } from '@/components/subscription/DowngradeConfi
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { getPlanTheme } from '@/lib/plan-theme';
+import { isTrialOver, isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-status';
+import { UnpaidPaymentNotice } from '@/components/subscription/UnpaidPaymentNotice';
 
 interface BillingInfo {
   plan_type: string;
@@ -109,6 +111,8 @@ export default function OffresPage() {
    * ensuite divergé.
    */
   const [essaiTermine, setEssaiTermine] = useState(false);
+  /** Cycle d'impayé en cours : message et mise à jour du moyen de paiement. */
+  const [impaye, setImpaye] = useState<UnpaidCyclePayload | null>(null);
   // Incrémenté pour relire l'état après une montée en gamme (retour Stripe).
   const [etatVersion, setEtatVersion] = useState(0);
 
@@ -141,8 +145,11 @@ export default function OffresPage() {
           : null,
         );
         // `isRestricted` couvre aussi l'abonnement résilié : c'est bien « vous
-        // n'avez plus accès », pas seulement « votre essai a expiré ».
-        setEssaiTermine(data.trial?.status === 'expired' || Boolean(data.isRestricted));
+        // n'avez plus accès », pas seulement « votre essai a expiré ». Mais
+        // PAS l'impayé : critère partagé `isTrialOver` (même que le bandeau),
+        // l'impayé a son propre encadré ci-dessous.
+        setEssaiTermine(isTrialOver(data));
+        setImpaye(isUnpaid(data) ? data.unpaid : null);
         if (data.subscription?.billingPeriod) setBillingPeriod(data.subscription.billingPeriod);
       } catch {
         // Sans cette information, on reste sur le comportement de souscription.
@@ -408,6 +415,10 @@ export default function OffresPage() {
               : 'Comparez les offres et choisissez celle qui vous convient.'}
           </p>
         </div>
+
+        {/* Impayé : le geste utile est de régulariser, pas de choisir une
+            offre. L'encadré passe AVANT la grille des offres. */}
+        {impaye && <UnpaidPaymentNotice unpaid={impaye} />}
 
         {/* Trois rassurances, reprises de l'ancienne page dédiée.
             Affichées seulement quand elles répondent à une inquiétude : les

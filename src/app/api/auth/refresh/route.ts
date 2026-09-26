@@ -9,7 +9,7 @@ import { AccountService } from '@/services/account-service';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
 import { revokeTokenOnce } from '@/db';
 import { logUserActivity } from '@/lib/audit-logger';
-import { isAccountSuspended, accountSuspendedResponse } from '@/lib/auth/account-suspension';
+import { resolveSessionAccount, accountSuspendedResponse } from '@/lib/auth/account-suspension';
 
 /**
  * Refresh token endpoint
@@ -99,18 +99,25 @@ export async function POST(request: NextRequest) {
         return ApiErrors.accountInactive();
       }
 
-      // Get user's default account
-      const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
-
       // CDC BO ACC-A02 : pas de nouvelle session sur un compte suspendu. La
       // suspension révoque déjà les jetons émis ; ce contrôle couvre aussi un
       // jeton émis entre la révocation et la bascule du drapeau. Cookies
       // effacés : le client revient à l'écran de connexion.
-      if (isAccountSuspended(defaultAccount)) {
+      //
+      // C'est le compte DE LA SESSION (`currentAccountId` du jeton) qui est
+      // contrôlé — et non un compte « par défaut » recalculé, qui pouvait
+      // différer de celui réellement utilisé. Règles complètes (dont le
+      // maintien de l'accès BO des administrateurs) : lib/auth/account-suspension.
+      const resolution = resolveSessionAccount(
+        await AccountService.getUserSessionAccounts(user.id),
+        { role: user.role, preferredAccountId: payload.currentAccountId ?? null },
+      );
+      if (!resolution.allowed) {
         const refus = accountSuspendedResponse();
         clearSessionCookies(refus);
         return refus;
       }
+      const defaultAccount = resolution.account;
 
       const isSubscribedOrTrialing = !!defaultAccount && ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'].includes(defaultAccount.subscriptionStatus);
 

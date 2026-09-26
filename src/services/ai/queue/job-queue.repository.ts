@@ -53,6 +53,8 @@ export interface QueuedJob {
   workerId: string | null;
   leaseExpiresAt: Date | null;
   recoveredCount: number;
+  /** Version de configuration figée au démarrage (VER-016). */
+  configVersionId: number | null;
 }
 
 function toJob(r: Row): QueuedJob {
@@ -78,13 +80,15 @@ function toJob(r: Row): QueuedJob {
     workerId: r.worker_id == null ? null : String(r.worker_id),
     leaseExpiresAt: r.lease_expires_at ? new Date(String(r.lease_expires_at)) : null,
     recoveredCount: Number(r.recovered_count ?? 0),
+    configVersionId: r.config_version_id == null ? null : Number(r.config_version_id),
   };
 }
 
 const COLS = `id, treatment, account_id, target_type, target_id, status, origin,
               trigger_code, attempts, last_error, available_at,
               coalesce_requested, head_priority, created_at, started_at, finished_at,
-              payload, execution_id, worker_id, lease_expires_at, recovered_count`;
+              payload, execution_id, worker_id, lease_expires_at, recovered_count,
+              config_version_id`;
 
 // ── Mise en file ────────────────────────────────────────────────────────────
 
@@ -94,7 +98,29 @@ export interface EnqueueInput {
   origin?: JobOrigin;
   triggerCode?: string | null;
   payload?: Record<string, unknown> | null;
+  /**
+   * Temporisation avant le premier prélèvement (secondes). Sert au T3
+   * événementiel : laisser la réconciliation locale post-T1 passer avant un
+   * contrôle global du compte (ancien `not_before` de la file T3 dédiée).
+   */
+  delaySeconds?: number;
+  /**
+   * Que faire du contexte quand la demande est absorbée par un job vivant
+   * (WF-10 : `skip` en attente, `coalesce` en cours) ?
+   *  · absent : le job existant garde son contexte (T1 : seul l'identifiant
+   *    du fichier compte, il est identique) ;
+   *  · `replace` : le contexte le plus récent l'emporte (T4 : une réanalyse
+   *    du document produit des candidats plus frais que ceux en attente) ;
+   *  · `append_events` : les événements s'accumulent dans `payload.events`
+   *    (T3 : trace des événements fusionnés, comme `events_json` de 0157).
+   * Sur un job en cours, la mise à jour n'affecte que le passage consolidé
+   * suivant (`completeJob` relit le contexte au moment de re-mettre en file).
+   */
+  payloadOnDedupe?: 'replace' | 'append_events';
 }
+
+/** Borne des événements fusionnés conservés dans un contexte (T3). */
+export const MAX_MERGED_EVENTS = 50;
 
 export interface EnqueueResult {
   decision: QueueDecision;
@@ -126,18 +152,40 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
     origin,
   );
 
-  if (decision === 'skip') {
-    return { decision, jobId: Number(existing.id) };
-  }
-
-  if (decision === 'coalesce') {
-    // Un drapeau sur l'exécution en cours, jamais une seconde ligne : dix
-    // événements pendant une analyse produisent un passage, pas dix.
-    await pgClient.unsafe(
-      `UPDATE ai_job_queue SET coalesce_requested = TRUE WHERE id = $1`,
-      [Number(existing.id)] as never[],
-    );
-    return { decision, jobId: Number(existing.id) };
+  if (decision === 'skip' || decision === 'coalesce') {
+    const existingId = Number(existing.id);
+    if (decision === 'coalesce') {
+      // Un drapeau sur l'exécution en cours, jamais une seconde ligne : dix
+      // événements pendant une analyse produisent un passage, pas dix.
+      await pgClient.unsafe(
+        `UPDATE ai_job_queue SET coalesce_requested = TRUE WHERE id = $1`,
+        [existingId] as never[],
+      );
+    }
+    if (input.payload && input.payloadOnDedupe === 'replace') {
+      await pgClient.unsafe(
+        `UPDATE ai_job_queue SET payload = $2::jsonb WHERE id = $1`,
+        [existingId, JSON.stringify(input.payload)] as never[],
+      );
+    } else if (input.payload && input.payloadOnDedupe === 'append_events') {
+      const events = Array.isArray(input.payload.events) ? input.payload.events : [];
+      if (events.length > 0) {
+        // Borné : un compte très actif ne doit pas faire grossir la ligne sans fin.
+        await pgClient.unsafe(
+          `UPDATE ai_job_queue
+              SET payload = jsonb_set(
+                    COALESCE(payload, '{}'::jsonb), '{events}',
+                    (SELECT COALESCE(jsonb_agg(e), '[]'::jsonb) FROM (
+                       SELECT e FROM jsonb_array_elements(
+                         COALESCE(payload->'events', '[]'::jsonb) || $2::jsonb) AS t(e)
+                       OFFSET GREATEST(jsonb_array_length(COALESCE(payload->'events', '[]'::jsonb) || $2::jsonb) - $3, 0)
+                    ) s))
+            WHERE id = $1`,
+          [existingId, JSON.stringify(events), MAX_MERGED_EVENTS] as never[],
+        );
+      }
+    }
+    return { decision, jobId: existingId };
   }
 
   const scope = input.scope ?? {};
@@ -154,8 +202,8 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   // ══════════════════════════════════════════════════════════════════════
   const rows = await pgClient.unsafe(
     `INSERT INTO ai_job_queue
-       (treatment, account_id, target_type, target_id, dedupe_key, origin, trigger_code, payload)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       (treatment, account_id, target_type, target_id, dedupe_key, origin, trigger_code, payload, available_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW() + ($9 || ' seconds')::interval)
      RETURNING id, payload`,
     [
       input.treatment,
@@ -164,6 +212,7 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
       scope.targetId == null ? null : String(scope.targetId),
       key, origin, input.triggerCode ?? null,
       input.payload ? JSON.stringify(input.payload) : null,
+      String(Math.max(0, Math.floor(input.delaySeconds ?? 0))),
     ] as never[],
   );
 
@@ -204,6 +253,13 @@ export async function claimNext(
   treatment: Treatment,
   workerId: string | null = null,
   leaseSeconds: number = LEASE_SECONDS,
+  /**
+   * Version de configuration effective AU DÉMARRAGE (VER-016, §21 RUNNING :
+   * « config_version_id figée au start »). Écrite sur le job : l'exécution la
+   * garde jusqu'au bout, même si une autre version est activée entre-temps
+   * (VER-015). `null` = aucune version effective, la configuration du code.
+   */
+  configVersionId: number | null = null,
 ): Promise<QueuedJob | null> {
   if (!(await canStart(treatment))) return null;
 
@@ -220,10 +276,10 @@ export async function claimNext(
             attempts = attempts + 1, head_priority = FALSE,
             execution_id = gen_random_uuid(), worker_id = $2,
             lease_expires_at = NOW() + ($3 || ' seconds')::interval,
-            heartbeat_at = NOW()
+            heartbeat_at = NOW(), config_version_id = $4
       WHERE id IN (SELECT id FROM suivant)
       RETURNING ${COLS}`,
-    [treatment, workerId, String(leaseSeconds)] as never[],
+    [treatment, workerId, String(leaseSeconds), configVersionId] as never[],
   );
 
   const r = (rows as unknown as Row[])[0];
@@ -412,6 +468,38 @@ export async function requeueRunning(treatment: Treatment, reason: string): Prom
 }
 
 /**
+ * Remet en attente UNE exécution interrompue sans échec — refus `AI_BLOCKED`
+ * de la passerelle, ou interruption constatée avant que l'administration ait
+ * elle-même remis le job en file (cache de 5 s de la garde sur une autre
+ * instance, blocage constaté au démarrage de T3).
+ *
+ * Même effet que `requeueRunning` pour ce seul job : en tête, tentative
+ * rendue (une décision d'exploitation n'est pas un échec — MOD-005), jeton
+ * révoqué. Conditionné au jeton : si l'administration a déjà remis le job en
+ * file (jeton révoqué) ou si une autre exécution le détient, rien n'est
+ * écrit — c'est le cas normal d'une désactivation, et l'appel est alors
+ * sans effet.
+ */
+export async function releaseInterruptedJob(
+  jobId: number,
+  executionId: string | null,
+  reason: string,
+): Promise<boolean> {
+  if (!executionId) return false;
+  const rows = await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET status = 'PENDING', head_priority = TRUE, started_at = NULL,
+            attempts = GREATEST(attempts - 1, 0), available_at = NOW(),
+            last_error = $3,
+            execution_id = NULL, worker_id = NULL, lease_expires_at = NULL
+      WHERE id = $1 AND execution_id = $2::uuid AND status = 'RUNNING'
+      RETURNING id`,
+    [jobId, executionId, `interrompu : ${reason}`.slice(0, 2000)] as never[],
+  );
+  return (rows as unknown as Row[]).length > 0;
+}
+
+/**
  * Annule un job en attente (SCR-08).
  *
  * Refuse un job démarré. Le SCR-08 l'exige : « ne pas simuler une annulation
@@ -425,6 +513,32 @@ export async function cancelJob(jobId: number, userId: number): Promise<boolean>
       WHERE id = $1 AND status = 'PENDING'
       RETURNING id`,
     [jobId, userId] as never[],
+  );
+  return (rows as unknown as Row[]).length > 0;
+}
+
+/**
+ * Relance manuelle d'un échec définitif — MOD-006, OPS-018, SCR-07.
+ *
+ * FAILED → PENDING, tentatives remises à zéro : la relance repart du modèle
+ * principal (la chaîne de modèles est reparcourue à chaque exécution) et
+ * bénéficie de nouveau des cinq cycles du MOD-005. L'origine devient
+ * `manual` : la relance est identifiable dans les journaux (WF-11) et n'est
+ * pas absorbée par la déduplication automatique.
+ *
+ * Refuse tout autre statut : relancer un job en attente ou en cours
+ * produirait une seconde exécution du même travail.
+ */
+export async function retryFailedJob(jobId: number): Promise<boolean> {
+  const rows = await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET status = 'PENDING', attempts = 0, origin = 'manual',
+            available_at = NOW(), finished_at = NULL, started_at = NULL,
+            last_error = NULL, execution_id = NULL, worker_id = NULL,
+            lease_expires_at = NULL, config_version_id = NULL
+      WHERE id = $1 AND status = 'FAILED'
+      RETURNING id`,
+    [jobId] as never[],
   );
   return (rows as unknown as Row[]).length > 0;
 }
@@ -461,6 +575,13 @@ export interface QueueFilters {
   treatment?: Treatment;
   status?: JobStatus;
   accountId?: number;
+  /** QUE-UI-04 : origine (automatique / manuelle). */
+  origin?: JobOrigin;
+  /** QUE-UI-04 : déclencheur (code du catalogue ou `coalesced`). */
+  triggerCode?: string;
+  /** QUE-UI-04 : période de création (bornes incluses). */
+  createdFrom?: Date;
+  createdTo?: Date;
   limit?: number;
 }
 
@@ -471,11 +592,17 @@ export async function listJobs(filters: QueueFilters = {}): Promise<QueuedJob[]>
       WHERE ($1::text IS NULL OR treatment = $1)
         AND ($2::text IS NULL OR status = $2)
         AND ($3::int  IS NULL OR account_id = $3)
+        AND ($5::text IS NULL OR origin = $5)
+        AND ($6::text IS NULL OR trigger_code = $6)
+        AND ($7::timestamptz IS NULL OR created_at >= $7)
+        AND ($8::timestamptz IS NULL OR created_at <= $8)
       ORDER BY head_priority DESC, created_at
       LIMIT $4`,
     [
       filters.treatment ?? null, filters.status ?? null,
       filters.accountId ?? null, Math.min(filters.limit ?? 100, 500),
+      filters.origin ?? null, filters.triggerCode ?? null,
+      filters.createdFrom?.toISOString() ?? null, filters.createdTo?.toISOString() ?? null,
     ] as never[],
   );
   return (rows as unknown as Row[]).map(toJob);
@@ -544,6 +671,13 @@ export async function setTreatmentState(
       WHERE treatment = $1`,
     [treatment, state] as never[],
   ).catch((e: Error) => console.warn('[queue] remise à zéro du disjoncteur impossible :', e.message));
+  // Décision manuelle : l'historique d'oscillation (0178) repart de zéro.
+  await pgClient.unsafe(
+    `UPDATE ai_treatment_state
+        SET breaker_reopen_count = 0, breaker_last_reactivated_at = NULL
+      WHERE treatment = $1`,
+    [treatment] as never[],
+  ).catch(() => { /* avant la migration 0178 */ });
 
   // §4.2 : « les nouveaux jobs batch restent en file ; aucune nouvelle
   // exécution ne démarre ». Les exécutions en cours, elles, sont remises en

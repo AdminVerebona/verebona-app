@@ -87,6 +87,11 @@ export async function classifyAssistantIntent(
       outputSchema: ToolPlanOutput,
       // Rattachée au fil : purgée à l'effacement de l'historique.
       idempotencyKey: assistantIdempotencyKey(input, 'understand_request', { QUESTION: message, INTENTS: describeCatalog() }),
+    }, {
+      // Trace §28.8 : rattachée à la demande, prompt maître de classification.
+      requestId: input.requestId ?? input.clientRequestId,
+      routeReason: 'classification : aucune règle déterministe',
+      promptId: 'understand_request', promptVersion: 'understand_request_v1',
     });
 
     return toIntentRoute(res.data as ToolPlan, input.planType);

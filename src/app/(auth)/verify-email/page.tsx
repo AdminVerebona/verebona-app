@@ -10,7 +10,8 @@
  *
  *   1. la fin de l'inscription — `router.push('/verify-email?email=...')` ;
  *   2. le lien reçu par email — `/api/auth/verify-email` redirige vers
- *      `/verify-email?status=...` ou `?error=...` dans les six cas de sortie.
+ *      `/verify-email?status=...` ou `?error=...` (dont `link_outdated` pour
+ *      les liens émis avant le passage au lien signé).
  *
  * Les deux aboutissaient donc à un 404 : la création de compte paraissait
  * cassée même lorsque le compte était correctement créé côté serveur.
@@ -32,6 +33,7 @@ import { MailCheck, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 /** Cas de sortie produits par `/api/auth/verify-email`. */
 type VerificationError =
+  | 'link_outdated'
   | 'missing_token'
   | 'token_expired'
   | 'invalid_token'
@@ -43,6 +45,15 @@ type VerificationError =
  * peut faire : une page d'erreur sans issue est une impasse.
  */
 const ERROR_CONTENT: Record<VerificationError, { title: string; message: string; canResend: boolean }> = {
+  // Liens envoyés avant le passage au lien signé : ils ne sont plus acceptés
+  // (ils pouvaient être fabriqués). Le compte n'est pas en cause, et un
+  // nouveau lien suffit — c'est ce que le message doit dire en premier.
+  link_outdated: {
+    title: 'Ce lien n’est plus valable',
+    message:
+      "Pour mieux protéger votre compte, nous avons changé le format des liens de vérification : celui-ci, envoyé avant ce changement, ne fonctionne plus. Votre compte n'est pas perdu. Demandez un nouveau lien ci-dessous, il arrivera dans quelques instants.",
+    canResend: true,
+  },
   missing_token: {
     title: 'Lien incomplet',
     message:
@@ -58,7 +69,7 @@ const ERROR_CONTENT: Record<VerificationError, { title: string; message: string;
   invalid_token: {
     title: 'Lien invalide',
     message:
-      "Ce lien n'a pas pu être lu. Vérifiez que vous l'avez copié en entier, ou demandez un nouvel envoi.",
+      "Ce lien n'a pas pu être vérifié. Vérifiez que vous l'avez copié en entier et qu'il s'agit du dernier lien reçu, ou demandez un nouvel envoi.",
     canResend: true,
   },
   user_not_found: {
@@ -122,6 +133,8 @@ function VerifyEmailContent() {
             {alreadyVerified ? 'Adresse déjà vérifiée' : 'Adresse vérifiée'}
           </CardTitle>
           <CardDescription className="text-center text-[color:var(--text-muted)]">
+            {/* Un lien déjà utilisé n'ouvre plus de session (usage unique) :
+                d'où l'invitation à se connecter, pas à « accéder ». */}
             {alreadyVerified
               ? 'Votre adresse email était déjà confirmée. Vous pouvez vous connecter.'
               : 'Votre compte est actif. Votre essai gratuit de 7 jours a commencé.'}
@@ -135,8 +148,8 @@ function VerifyEmailContent() {
               enregistrée et aucun prélèvement n&apos;aura lieu à la fin de l&apos;essai.
             </div>
           )}
-          <Button className="w-full" onClick={() => router.push('/accueil')}>
-            Accéder à Verebona
+          <Button className="w-full" onClick={() => router.push(alreadyVerified ? '/login' : '/accueil')}>
+            {alreadyVerified ? 'Se connecter' : 'Accéder à Verebona'}
           </Button>
         </CardContent>
       </Shell>
@@ -164,6 +177,7 @@ function VerifyEmailContent() {
           {content.canResend && (
             <ResendBlock
               email={resendEmail}
+              askEmail={!emailFromUrl}
               onEmailChange={setResendEmail}
               state={resendState}
               onResend={handleResend}
@@ -213,6 +227,7 @@ function VerifyEmailContent() {
         </p>
         <ResendBlock
           email={resendEmail}
+          askEmail={!emailFromUrl}
           onEmailChange={setResendEmail}
           state={resendState}
           onResend={handleResend}
@@ -230,11 +245,14 @@ function VerifyEmailContent() {
 
 function ResendBlock({
   email,
+  askEmail,
   onEmailChange,
   state,
   onResend,
 }: {
   email: string;
+  /** Adresse inconnue de l'URL : le champ reste affiché pendant la saisie. */
+  askEmail: boolean;
   onEmailChange: (value: string) => void;
   state: 'idle' | 'sending' | 'sent' | 'failed';
   onResend: () => void;
@@ -249,7 +267,9 @@ function ResendBlock({
 
   return (
     <div className="space-y-2">
-      {!email && (
+      {/* Le champ disparaissait dès le premier caractère (`!email`) : il
+          dépend de l'origine de l'adresse, pas de sa valeur courante. */}
+      {askEmail && (
         <input
           type="email"
           value={email}

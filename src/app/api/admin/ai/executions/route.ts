@@ -28,6 +28,17 @@ function date(v: string | null): Date | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
+function endOfDay(v: string | null): Date | undefined {
+  if (!v) return undefined;
+  const d = date(/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T23:59:59.999Z` : v);
+  return d;
+}
+
+const RANKS = ['primary', 'fallback_1', 'fallback_2', 'fallback'] as const;
+function rank(v: string | null): (typeof RANKS)[number] | undefined {
+  return (RANKS as readonly string[]).includes(v ?? '') ? (v as (typeof RANKS)[number]) : undefined;
+}
+
 export async function GET(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
@@ -45,9 +56,14 @@ export async function GET(req: NextRequest) {
       configVersionId: entier(p.get('configVersionId')),
       operationCode: p.get('operationCode') ?? undefined,
       errorsOnly: p.get('errorsOnly') === '1',
-      since: date(p.get('since')),
-      until: date(p.get('until')),
+      // `from`/`to` (AAAA-MM-JJ) : forme des liens préfiltrés des alertes et
+      // des coûts (COST-009) ; `to` couvre toute la journée.
+      since: date(p.get('since')) ?? date(p.get('from')),
+      until: date(p.get('until')) ?? endOfDay(p.get('to')),
       minDurationMs: entier(p.get('minDurationMs')),
+      userId: entier(p.get('userId')),
+      rank: rank(p.get('rank')),
+      jobId: entier(p.get('jobId')),
       limit: entier(p.get('limit')),
       offset: entier(p.get('offset')),
     });

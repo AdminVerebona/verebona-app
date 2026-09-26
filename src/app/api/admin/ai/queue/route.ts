@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getQueueSummary, getTreatmentStates, getEmergencyStop,
 } from '@/services/ai/queue/job-queue.repository';
+import { getAiEnvironment } from '@/services/ai/config/environment';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 export async function GET(req: NextRequest) {
@@ -24,7 +25,9 @@ export async function GET(req: NextRequest) {
     const [summary, states, stop] = await Promise.all([
       getQueueSummary(), getTreatmentStates(), getEmergencyStop(),
     ]);
-    return NextResponse.json({ summary, states, emergencyStop: stop });
+    // VER-026 / GST-01 : l'environnement accompagne l'état global, pour le
+    // bandeau permanent des pages IA (AiEnvBanner).
+    return NextResponse.json({ summary, states, emergencyStop: stop, environment: getAiEnvironment() });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/queue');
   }

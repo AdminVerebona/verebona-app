@@ -14,6 +14,7 @@
 import { db } from '@/db';
 import { notificationOutbox } from '@/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
+import { autoResolveNotificationChannels, reportNotificationFailure } from '@/services/admin/anomaly.service';
 
 // db et une transaction Drizzle partagent la même API de requête.
 export type DbHandle = typeof db | any;
@@ -74,6 +75,10 @@ export async function markProcessed(id: string, status: OutboxFinalStatus): Prom
   await db.update(notificationOutbox)
     .set({ status, processedAt: new Date(), attemptCount: sql`${notificationOutbox.attemptCount} + 1` })
     .where(eq(notificationOutbox.id, id));
+  // Supervision (CDC BO SUP-008/009) : un canal en échec au traitement est un
+  // échec final (pas de relance par canal) ; un canal délivré résout l'anomalie.
+  if (status !== 'failed') await autoResolveNotificationChannels(id);
+  if (status !== 'sent') await reportNotificationFailure(id);
 }
 
 /** Remet un événement en file (échec technique retryable) ou le marque failed. */
@@ -88,6 +93,8 @@ export async function releaseOrFail(id: string, currentAttempt: number, error: s
       ...(failed ? { processedAt: new Date() } : {}),
     })
     .where(eq(notificationOutbox.id, id));
+  // Retries épuisés : échec définitif, anomalie de supervision (SUP-009).
+  if (failed) await reportNotificationFailure(id);
 }
 
 /** Utilisé par la purge (Lot 6) et les tests. */

@@ -24,6 +24,7 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { FRESH_HEADER, markAccountDataMutated, mutatedSince } from '@/lib/data-freshness';
 import { useRouter } from 'next/navigation';
+import { duoJoinErrorMessage, joinDuo, takePendingDuoJoin } from '@/lib/duo/pending-duo-join';
 import type { HomeSummaryPayload, HomeItem } from '@/services/home/HomeSummaryService';
 
 // ⚡ Lazy load des dialogs lourds
@@ -205,6 +206,22 @@ export default function DashboardPage() {
     }
   }, [user]);
 
+  // Invitation Premium Duo mémorisée avant l'inscription : l'invité est
+  // rattaché dès sa première arrivée sur l'accueil, sans repasser par le lien.
+  useEffect(() => {
+    if (!user) return;
+    const duoToken = takePendingDuoJoin();
+    if (!duoToken) return;
+    void joinDuo(duoToken).then((result) => {
+      if (result.ok) {
+        toast.success('Vous avez rejoint l’espace Premium Duo.');
+        loadSummary();
+      } else {
+        toast.error(duoJoinErrorMessage(result.error));
+      }
+    });
+  }, [user, loadSummary]);
+
   // Transfer token
   useEffect(() => {
     if (!user) return;
@@ -222,6 +239,12 @@ export default function DashboardPage() {
         if (data.success) {
           toast.success('Un bien vous a été transmis et ajouté à votre portefeuille !');
           loadSummary();
+        } else if (data.error === 'RECIPIENT_EMAIL_MISMATCH' || data.conflict) {
+          // L'acceptation est faite par la session, et seulement si son
+          // adresse est celle invitée. Un refus (autre adresse, doublon) est
+          // dit, pas avalé : sinon le destinataire attend un bien qui ne
+          // viendra pas. Le lien reçu par e-mail reste utilisable.
+          toast.error(data.message ?? 'La transmission n’a pas pu être acceptée automatiquement. Rouvrez le lien reçu par e-mail.');
         }
       })
       .catch(() => {});

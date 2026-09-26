@@ -34,6 +34,7 @@
 import { pgClient } from '@/db';
 import { AiGatewayError } from '../gateway/errors';
 import type { Treatment } from '../config/treatments';
+import { currentJobContext } from './job-context';
 
 export type RuntimeTreatmentState = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
 
@@ -41,6 +42,13 @@ export interface RuntimeSnapshot {
   emergencyStop: boolean;
   /** Absence de ligne = jamais configuré = activé (même règle que `canStart`). */
   states: Partial<Record<Treatment, RuntimeTreatmentState>>;
+  /**
+   * Suspensions posées par le disjoncteur : instant d'ouverture (ms epoch).
+   * Sert l'exemption MOD-011 — une exécution démarrée AVANT cet instant
+   * termine. Absente pour une suspension manuelle, qui, elle, interrompt
+   * (requeueRunning) et n'exempte donc personne.
+   */
+  breakerSuspendedAt?: Partial<Record<Treatment, number>>;
 }
 
 const CACHE_TTL_MS = 5_000;
@@ -57,14 +65,22 @@ let injectedLoader: Loader | null = null;
 async function loadFromDatabase(): Promise<RuntimeSnapshot> {
   const [stop, states] = await Promise.all([
     pgClient.unsafe(`SELECT active FROM ai_emergency_stop WHERE id = TRUE LIMIT 1`, [] as never[]),
-    pgClient.unsafe(`SELECT treatment, state FROM ai_treatment_state`, [] as never[]),
+    pgClient.unsafe(
+      `SELECT treatment, state, suspended_at, suspended_by_breaker FROM ai_treatment_state`,
+      [] as never[],
+    ),
   ]);
   const snapshot: RuntimeSnapshot = {
     emergencyStop: Boolean((stop as unknown as Array<Record<string, unknown>>)[0]?.active),
     states: {},
+    breakerSuspendedAt: {},
   };
   for (const r of states as unknown as Array<Record<string, unknown>>) {
-    snapshot.states[String(r.treatment) as Treatment] = String(r.state) as RuntimeTreatmentState;
+    const t = String(r.treatment) as Treatment;
+    snapshot.states[t] = String(r.state) as RuntimeTreatmentState;
+    if (r.state === 'SUSPENDED' && r.suspended_by_breaker === true && r.suspended_at) {
+      snapshot.breakerSuspendedAt![t] = new Date(String(r.suspended_at)).getTime();
+    }
   }
   return snapshot;
 }
@@ -122,13 +138,50 @@ export async function getRuntimeSnapshot(): Promise<RuntimeSnapshot> {
  *
  * Fonction pure : l'arrêt d'urgence prime (§4.3) ; il ne modifie aucun état
  * local, il se superpose.
+ *
+ * ── MOD-011 / OPS-023 : EXEMPTION DES EXÉCUTIONS DÉJÀ LANCÉES ──────────────
+ * La garde était aveugle au moment du démarrage : dès l'ouverture du
+ * disjoncteur, l'appel suivant d'une analyse T1 en cours était refusé, et
+ * l'exécution échouait — alors que le CDC veut que « les exécutions déjà en
+ * cours terminent ; seules les nouvelles ne démarrent plus ».
+ *
+ * `executionStartedAt` (contexte d'exécution, job-context) sert de jeton :
+ * une exécution démarrée AVANT l'ouverture du disjoncteur continue d'appeler
+ * le modèle. Choisi plutôt qu'une remise en file : remettre en file ferait
+ * perdre le travail déjà fait, précisément ce que le MOD-011 protège.
+ *
+ * L'exemption est limitée à la suspension AUTOMATIQUE. Arrêt d'urgence et
+ * désactivation manuelle (y compris une suspension posée à la main)
+ * interrompent les exécutions en cours (OPS-008, OPS-011, WF-07 étape 38,
+ * WF-08 étape 44) : aucune exemption.
  */
-export function blockReason(snapshot: RuntimeSnapshot, treatment: Treatment): string | null {
+export function blockReason(
+  snapshot: RuntimeSnapshot,
+  treatment: Treatment,
+  executionStartedAt?: number | null,
+): string | null {
   if (snapshot.emergencyStop) return 'arrêt d\'urgence engagé';
   const state = snapshot.states[treatment];
   if (state === 'DISABLED') return `traitement ${treatment} désactivé`;
-  if (state === 'SUSPENDED') return `traitement ${treatment} suspendu (circuit breaker)`;
+  if (state === 'SUSPENDED') {
+    const openedAt = snapshot.breakerSuspendedAt?.[treatment];
+    if (openedAt !== undefined && executionStartedAt != null && executionStartedAt < openedAt) {
+      return null;
+    }
+    return `traitement ${treatment} suspendu (circuit breaker)`;
+  }
   return null;
+}
+
+/**
+ * Instant de démarrage de l'exécution courante pour ce traitement, ou `null`.
+ * Un contexte d'un AUTRE traitement (T1 qui émet vers T3 dans la même pile)
+ * n'exempte pas : l'exécution de T3, elle, n'a pas démarré.
+ */
+function currentExecutionStart(treatment: Treatment): number | null {
+  const ctx = currentJobContext();
+  if (!ctx || ctx.treatment !== treatment || ctx.startedAt == null) return null;
+  return ctx.startedAt;
 }
 
 /**
@@ -143,7 +196,7 @@ export async function assertTreatmentRunnable(
   treatment: Treatment,
   operationCode = 'n/a',
 ): Promise<void> {
-  const reason = blockReason(await getRuntimeSnapshot(), treatment);
+  const reason = blockReason(await getRuntimeSnapshot(), treatment, currentExecutionStart(treatment));
   if (reason) {
     throw new AiGatewayError(
       'AI_BLOCKED', operationCode,
@@ -155,5 +208,10 @@ export async function assertTreatmentRunnable(
 
 /** Variante booléenne, pour les points d'entrée qui veulent éviter de lancer du travail. */
 export async function isTreatmentRunnable(treatment: Treatment): Promise<boolean> {
-  return blockReason(await getRuntimeSnapshot(), treatment) === null;
+  return blockReason(await getRuntimeSnapshot(), treatment, currentExecutionStart(treatment)) === null;
+}
+
+/** `AI_BLOCKED` : refus d'exploitation, pas une défaillance (voir execution-control). */
+export function isAiBlocked(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { code?: string }).code === 'AI_BLOCKED';
 }

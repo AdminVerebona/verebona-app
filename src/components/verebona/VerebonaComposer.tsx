@@ -6,9 +6,11 @@ export interface VerebonaComposerProps {
   isLoading: boolean;
   /**
    * Rend `false` si l'envoi est refusé (fin d'essai…) : le texte saisi est
-   * alors conservé dans le champ.
+   * alors conservé dans le champ. Une promesse résolue à `false` (échec
+   * réseau, erreur serveur, annulation) RESTAURE le texte (§7.6) : la saisie
+   * n'est jamais perdue.
    */
-  onSend: (text: string) => boolean | void;
+  onSend: (text: string) => boolean | void | Promise<boolean>;
   onCancel: () => void;
 }
 
@@ -16,8 +18,13 @@ export function VerebonaComposer({ isLoading, onSend, onCancel }: VerebonaCompos
   const [text, setText] = useState('');
   const submit = () => {
     if (!text.trim() || isLoading) return;
-    if (onSend(text) === false) return;
+    const envoye = text;
+    const r = onSend(envoye);
+    if (r === false) return;
     setText('');
+    if (r instanceof Promise) {
+      void r.then((ok) => { if (!ok) setText((courant) => (courant.trim() ? courant : envoye)); });
+    }
   };
   return (
     <div className="border-t p-3">

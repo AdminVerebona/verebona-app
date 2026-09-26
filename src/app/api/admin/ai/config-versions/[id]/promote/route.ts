@@ -26,7 +26,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (versionId === null) return invalidId(id);
 
   try {
-    const result = await promote(versionId);
+    // WF-27 : un Brouillon obsolète n'est promu qu'après lecture du diff,
+    // confirmée par `acknowledgeStale` (refus 409 STALE_DRAFT sinon).
+    const body = await req.json().catch(() => ({}));
+    const result = await promote(versionId, { acknowledgeStale: body?.acknowledgeStale === true });
     return NextResponse.json({
       promoted: result.promoted,
       diff: result.diff,

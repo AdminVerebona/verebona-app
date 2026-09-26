@@ -10,15 +10,19 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import { rateLimiter, getClientIp } from '@/lib/rate-limiter';
+import { checkAssistantRateLimit } from '@/lib/verebona/rate-limit';
 import { ensureMigrations } from '@/db';
 import { getEntitlements } from '@/services/entitlements.service';
 import { refuserSiPasDIA } from '@/lib/write-access-guard';
 import {
   runAssistant,
   getAssistantConfig,
+  ensureAssistantStartupChecked,
   type AssistantRequestInput,
 } from '@/services/verebona-assistant';
+import { closePendingRequest, requestStatus, reserveRequest } from '@/services/verebona-assistant/core/request-lifecycle.service';
+import { sanitizePageContext } from '@/services/verebona-assistant/core/page-context';
+import { AccountScopeError, assertNoClientAccountOverride } from '@/services/verebona-assistant/security/account-scope';
 import { buildOrchestratorPorts } from '@/services/verebona-assistant/core/ports';
 import {
   ConversationNotFoundError,
@@ -50,13 +54,24 @@ export async function POST(req: NextRequest) {
   if (!cfg.enabled) {
     return NextResponse.json({ error: 'ASSISTANT_DISABLED' }, { status: 503 });
   }
+  // Contrôle de démarrage §15.14 (une fois par processus) : hors des limites
+  // V1 (web, Pro, « latest », > 2 appels…), l'assistant refuse de tourner.
+  const demarrage = ensureAssistantStartupChecked();
+  if (!demarrage.ok) {
+    return NextResponse.json(
+      { error: { code: 'ASSISTANT_UNAVAILABLE', message: 'Assistant momentanément indisponible.', recoverable: false } },
+      { status: 503 },
+    );
+  }
 
-  // 2. Rate limit (§6.6) : 10 messages/min/user par défaut.
-  const rl = rateLimiter.check(`verebona:${session.userId}:${getClientIp(req.headers)}`);
+  // 2. Rate limit (§6.6) : `VEREBONA_ASSISTANT_RATE_LIMIT_PER_MINUTE` par
+  //    utilisateur (10 par défaut) et 3× par compte — limiteur DÉDIÉ, qui ne
+  //    partage plus son quota avec le téléversement de fichiers.
+  const rl = checkAssistantRateLimit(session.userId, accountId, cfg.rateLimitPerMinute);
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: { code: 'RATE_LIMITED', message: 'Trop de messages, réessayez dans un instant.', recoverable: true } },
-      { status: 429 },
+      { error: { code: 'RATE_LIMITED', message: 'Vous avez posé beaucoup de questions en peu de temps. Réessayez dans un instant.', recoverable: true } },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil(rl.retryAfterMs / 1000)) } },
     );
   }
 
@@ -64,6 +79,15 @@ export async function POST(req: NextRequest) {
 
   // 3. Validation d'entrée (§7.5 : champ ≤ 2 000 caractères).
   const body = await req.json().catch(() => ({}));
+  // §13.2, §27.1 : le compte vient de la session. Un `accountId` différent
+  // dans le corps est une tentative de surcharge — refusée, jamais ignorée
+  // en silence (garde `security/account-scope.ts`, jusqu'ici jamais appelée).
+  try {
+    assertNoClientAccountOverride((body as Record<string, unknown>)?.accountId, accountId);
+  } catch (e) {
+    if (e instanceof AccountScopeError) return NextResponse.json({ error: 'ACCOUNT_SCOPE_VIOLATION' }, { status: 403 });
+    throw e;
+  }
   const message = typeof body.message === 'string' ? body.message.trim() : '';
   const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId : '';
   if (!message) return NextResponse.json({ error: 'EMPTY_MESSAGE' }, { status: 400 });
@@ -101,9 +125,10 @@ export async function POST(req: NextRequest) {
       intent: (deja.intent ?? 'UNKNOWN') as VerebonaIntent,
       mode: (deja.mode ?? 'fallback') as ResponseMode,
       answer: deja.content,
-      sourcesAvailable: false,
-      sourceCount: 0,
-      actions: [],
+      // Rejeu fidèle (CA-29) : sources et actions relues en base.
+      sourcesAvailable: deja.sourceCount > 0,
+      sourceCount: deja.sourceCount,
+      actions: deja.actions as AssistantApiResponse['actions'],
       clarification: null,
     };
     return NextResponse.json({ ...replay, replayed: true });
@@ -124,6 +149,40 @@ export async function POST(req: NextRequest) {
     throw e;
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // RÉSERVATION DE LA DEMANDE — AVANT tout traitement (§6.6, §7.8, §31.9)
+  //
+  // · même envoi déjà en cours (double clic) : 409, AUCUN second pipeline ;
+  // · autre demande en cours dans ce fil : 409 REQUEST_IN_PROGRESS ;
+  // · sinon : ligne `pending` → la demande est annulable dès maintenant
+  //   (DELETE /api/verebona/requests/{requestId ou clientRequestId}).
+  // Voir `request-lifecycle.service.ts`.
+  // ══════════════════════════════════════════════════════════════════════
+  let requestId: string | undefined;
+  try {
+    const r = await reserveRequest({
+      accountId, userId: session.userId, conversationId, clientRequestId,
+      staleAfterMs: cfg.totalTimeoutMs + 10_000,
+    });
+    if (r.kind === 'reserved') requestId = r.requestId;
+    else if (r.kind === 'duplicate_finished') {
+      return NextResponse.json(
+        { requestId: r.requestId, status: r.status === 'cancelled' ? 'cancelled' : 'error',
+          error: { code: r.status === 'cancelled' ? 'REQUEST_CANCELLED' : 'REQUEST_ALREADY_HANDLED', message: 'Cette demande a déjà été traitée.', recoverable: true } },
+        { status: 409 },
+      );
+    } else {
+      return NextResponse.json(
+        { requestId: r.requestId, error: { code: 'REQUEST_IN_PROGRESS', message: 'Une demande est déjà en cours dans cette conversation. Patientez ou annulez-la.', recoverable: true } },
+        { status: 409 },
+      );
+    }
+  } catch (e) {
+    // Base indisponible pour la réservation : on ne bloque pas l'utilisateur,
+    // la demande suit le parcours historique (trace écrite à la fin).
+    console.warn('[verebona] réservation de la demande impossible :', (e as Error).message);
+  }
+
   const input: AssistantRequestInput = {
     accountId,
     userId: session.userId,
@@ -131,8 +190,10 @@ export async function POST(req: NextRequest) {
     // 7 jours a le comportement Premium, IA comprise (§6.5).
     planType: assistantPlanFromEntitlements(entitlements, session.planType),
     message,
-    pageContext: body.pageContext ?? undefined,
+    // Contexte de page VALIDÉ (clés et formats connus) — §27.1, §27.6.
+    pageContext: sanitizePageContext(body.pageContext),
     clientRequestId,
+    requestId,
     locale: cfg.locale,
     // Fil de l'utilisateur, résolu côté serveur : la persistance et les
     // copies en cache du modèle y sont rattachées (purge à l'effacement).
@@ -153,6 +214,9 @@ export async function POST(req: NextRequest) {
       const suite = await executerIssueClarification(issue, {
         accountId, userId: session.userId, planType: input.planType, locale: input.locale, typedText: message,
       }, { runAssistant, ports });
+      // La reprise de clarification a sa propre trace : la réservation de ce
+      // message est close pour libérer le fil.
+      if (requestId && suite.kind !== 'abandoned') await closePendingRequest(requestId, suite.kind === 'result' ? 'ok' : 'error');
       if (suite.kind === 'result') return NextResponse.json(toApiPayload(suite.result, conversationId));
       if (suite.kind === 'rejected') {
         return NextResponse.json(
@@ -164,9 +228,24 @@ export async function POST(req: NextRequest) {
 
     const result = await runAssistant(input, ports);
 
+    if (requestId) {
+      // Annulée pendant le traitement : la réponse n'a pas été enregistrée et
+      // n'est pas rendue (le client a déjà abandonné l'attente).
+      if (result.finalState === 'CANCELLED' || await requestStatus(requestId) === 'cancelled') {
+        return NextResponse.json(
+          { requestId, status: 'cancelled', error: { code: 'REQUEST_CANCELLED', message: 'Demande annulée.', recoverable: true } },
+          { status: 409 },
+        );
+      }
+      // Persistance impossible (fil effacé entre-temps…) : la réservation ne
+      // doit pas bloquer le fil jusqu'à son expiration.
+      await closePendingRequest(requestId, result.error ? 'error' : 'ok', result.error?.code);
+    }
+
     const payload: AssistantApiResponse = toApiPayload(result, conversationId);
     return NextResponse.json(payload);
   } catch (e) {
+    if (requestId) await closePendingRequest(requestId, 'error', 'ASSISTANT_UNAVAILABLE');
     console.error('[POST /api/verebona/messages]', e);
     return NextResponse.json(
       { error: { code: 'ASSISTANT_UNAVAILABLE', message: 'Assistant momentanément indisponible.', recoverable: true } },

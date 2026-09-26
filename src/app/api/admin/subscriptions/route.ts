@@ -1,67 +1,38 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { accounts, users } from '@/db/schema';
-import { desc, or, isNotNull, gte, eq } from 'drizzle-orm';
-import { requireAdmin } from '@/lib/auth-guards';
-
 /**
- * GET /api/admin/subscriptions
- * Liste tous les abonnements actifs et récents
+ * GET /api/admin/subscriptions?sort=plan|status|period|payment|renewal|end&dir=asc|desc&page=N
+ * — CDC Back-Office V1 §7.1 et §7.2.
+ *
+ * Synthèse en tête (actifs, essais en cours, fins programmées, paiements
+ * échoués — SUB-001, sans MRR SUB-002) et liste triable (SUB-007), paginée
+ * (SUB-008), sans recherche transverse (SUB-006). Lecture seule : aucune
+ * mutation d'abonnement depuis cet onglet (§7.4, SUB-014).
  */
+import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin, sessionErrorResponse } from '@/lib/auth-guards';
+import { getSubscriptionsOverview, parseSubscriptionSort } from '@/services/admin/subscriptions.service';
+
+const PAGE_SIZE = 25;
+
 export async function GET(request: NextRequest) {
   try {
     await requireAdmin(request);
-
-    const now = Date.now();
-    const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
-
-      const subscriptions = await db
-        .select({
-          id: accounts.id,
-          email: users.email,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          planType: accounts.planType,
-          stripeCustomerId: accounts.stripeCustomerId,
-          stripeSubscriptionId: accounts.stripeSubscriptionId,
-          premiumUntil: accounts.premiumUntil,
-          createdAt: accounts.createdAt,
-        })
-        .from(accounts)
-      .innerJoin(users, eq(accounts.ownerUserId, users.id))
-      .where(
-        or(
-          isNotNull(accounts.stripeCustomerId),
-          isNotNull(accounts.stripeSubscriptionId),
-          gte(accounts.premiumUntil, thirtyDaysAgo)
-        )
-      )
-      .orderBy(desc(accounts.premiumUntil));
-
-      const stats = {
-        total: subscriptions.length,
-        standard: subscriptions.filter(s => s.planType === 'STANDARD').length,
-        premium: subscriptions.filter(s => s.planType === 'PREMIUM').length,
-        premium_duo: subscriptions.filter(s => s.planType === 'PREMIUM_DUO').length,
-        premium_pro: subscriptions.filter(s => s.planType === 'PREMIUM_PRO').length,
-        active: subscriptions.filter(s =>
-          s.premiumUntil && Number(s.premiumUntil) > now
-        ).length,
-      };
-
-    return NextResponse.json({
-      subscriptions,
-      stats,
-    });
   } catch (error) {
-    if (error instanceof Response) {
-      return error;
-    }
+    return sessionErrorResponse(error);
+  }
 
-    console.error('[Admin Subscriptions] Error:', error);
+  const url = new URL(request.url);
+  const sort = parseSubscriptionSort(url.searchParams.get('sort'));
+  const direction = url.searchParams.get('dir') === 'desc' ? 'desc' : 'asc';
+  const page = Math.max(1, Number.parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+
+  try {
+    const { summary, list } = await getSubscriptionsOverview({ sort, direction, page, pageSize: PAGE_SIZE });
+    return NextResponse.json({ summary, ...list, sort, dir: direction });
+  } catch (error) {
+    console.error('[admin/subscriptions] GET :', error);
     return NextResponse.json(
-      { error: 'Failed to fetch subscriptions' },
-      { status: 500 }
+      { code: 'SUBSCRIPTIONS_LOAD_FAILED', message: 'Impossible de charger les abonnements.' },
+      { status: 500 },
     );
   }
 }

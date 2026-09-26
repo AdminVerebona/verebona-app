@@ -1,99 +1,31 @@
 /**
- * Usage IA n°3 — Assistant intelligent.
+ * Usage IA n°3 — Assistant intelligent : briques partagées.
  *
- * Point d'entrée : `answerQuestion`. Enchaîne les six étapes du §4.3 :
- * éligibilité, sujets réservés, sélection d'outils, exécution, génération,
- * vérification des citations.
+ * ══════════════════════════════════════════════════════════════════════════
+ * NETTOYAGE (audit assistant, « answer-composer.service.ts aligné ou supprimé »)
+ *
+ * `answerQuestion` → `tool-planner.service` → `answer-composer.service`
+ * formaient une seconde conception de l'assistant (par outils), sans aucun
+ * appelant. Pire : `composeAnswer` appelait l'opération `generate_answer`
+ * avec des variables qui ne sont plus celles du prompt v3 (ni INTENT ni
+ * CONVERSATION, sources en `[id:n]` hors balises <retrieved_source>) et des
+ * `sourceIds` numériques. La réactiver par erreur aurait contourné le
+ * budget d'appels (§15.5), la trace (§28.8) et l'enveloppe anti-injection
+ * (§17.4). Supprimés : le seul chemin vivant est
+ * `services/verebona-assistant` (route POST /api/verebona/messages).
+ *
+ * Restent ici les briques réellement utilisées : outils de lecture
+ * (enregistrés au démarrage par `instrumentation.ts`), vérification des
+ * citations, purge des journaux (cron).
+ * ══════════════════════════════════════════════════════════════════════════
  */
-// Module déplacé vers l'implémentation branchée — voir le commentaire en
-// tête de `verebona-assistant/core/blocked-topics.ts`.
-import { checkBlockedTopic } from '@/services/verebona-assistant/core/blocked-topics';
-import { planTools } from './tool-planner.service';
-import { executeTool, registerReadTools } from './tools/tool-registry';
-import { composeAnswer } from './answer-composer.service';
-import { ASSISTANT_LIMITS } from './tools/tool.port';
-import type { SourceRef, ToolContext } from './tools/tool.port';
-import type { AssistantResponse } from './answer-composer.service';
+import { registerReadTools } from './tools/tool-registry';
 
-export interface AnswerQuestionInput {
-  question: string;
-  accountId: number;
-  userId: number;
-  /** Offre du compte — l'assistant est réservé à Premium, Duo, Pro et essai. */
-  planCode: string;
-}
-
-/** Offres donnant accès aux réponses intelligentes — CDC-1 §2.1, CDC Assistant §6. */
-const ELIGIBLE_PLANS = new Set(['premium', 'premium_duo', 'pro', 'trial']);
-
-export async function answerQuestion(input: AnswerQuestionInput): Promise<AssistantResponse> {
-  // ── 1. Éligibilité par offre ────────────────────────────────────────────
-  if (!ELIGIBLE_PLANS.has(input.planCode.toLowerCase())) {
-    return {
-      status: 'blocked',
-      text:
-        "Les réponses en langage naturel sont incluses dans les offres Premium. " +
-        "Votre offre actuelle donne accès à l'analyse automatique de vos documents, " +
-        'au classement et aux échéances.',
-      sources: [], droppedClaims: [],
-    };
-  }
-
-  // ── 2. Sujets réservés ──────────────────────────────────────────────────
-  const topic = checkBlockedTopic(input.question);
-  if (topic.blocked) {
-    return { status: 'blocked', text: topic.message!, sources: [], droppedClaims: [] };
-  }
-
-  // ── 3. Sélection d'outils (appel modèle n°1) ────────────────────────────
-  const plan = await planTools(input.question, input.accountId, input.userId);
-  if (plan.ambiguous) {
-    return {
-      status: 'ambiguous',
-      text: plan.clarification
-        ?? 'Pouvez-vous préciser votre question, par exemple en indiquant le bien concerné ?',
-      sources: [], droppedClaims: [],
-    };
-  }
-
-  // ── 4. Exécution des outils — aucun appel modèle ────────────────────────
-  const ctx: ToolContext = {
-    accountId: input.accountId,
-    userId: input.userId,
-    maxResults: ASSISTANT_LIMITS.maxSourcesRetrieved,
-  };
-
-  const collected: unknown[] = [];
-  const sources: SourceRef[] = [];
-
-  for (const call of plan.calls) {
-    try {
-      const result = await executeTool(call.name, call.params, ctx);
-      collected.push({ tool: call.name, data: result.data });
-      sources.push(...result.sources);
-    } catch (e) {
-      // Un outil en échec ne fait pas échouer la réponse : elle sera simplement
-      // moins complète, et le sourçage empêchera d'affirmer sans preuve.
-      console.warn(`[assistant] outil ${call.name} en échec :`, (e as Error).message);
-    }
-  }
-
-  // ── 5 et 6. Génération puis vérification (appel modèle n°2) ─────────────
-  return composeAnswer(
-    input.question,
-    collected,
-    sources.slice(0, ASSISTANT_LIMITS.maxSourcesRetrieved),
-    input.accountId,
-    input.userId,
-  );
-}
-
-export { registerReadTools } from './tools/tool-registry';
+export { registerReadTools };
 export { checkBlockedTopic } from '@/services/verebona-assistant/core/blocked-topics';
 export { verifyClaims, composeVerifiedText } from './claim-verifier.service';
 export { purgeAssistantData, RETENTION } from './retention/purge-assistant-logs.job';
 export { ASSISTANT_LIMITS } from './tools/tool.port';
-export type { AssistantResponse, AssistantStatus } from './answer-composer.service';
 export type { SourceRef, ToolContext, AssistantTool } from './tools/tool.port';
 
 /** À appeler une fois au démarrage, depuis `instrumentation.ts`. */

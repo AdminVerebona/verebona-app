@@ -15,7 +15,9 @@ import { runAnalysisRecovery } from '@/services/document-ai/analysis-recovery.se
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  // Secret non configuré : refus. Sans ce garde, l'en-tête littéral
+  // « Bearer undefined » suffisait à déclencher la tâche.
+  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

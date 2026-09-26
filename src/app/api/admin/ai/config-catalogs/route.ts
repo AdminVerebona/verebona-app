@@ -21,6 +21,7 @@ import { listGuardrails, listTriggers } from '@/services/ai/config/catalogs';
 import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
 import { REASONING_LEVELS, GUARDRAIL_REACTIONS } from '@/services/ai/config/config-types';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
+import { getCatalogState, selectableModels } from '@/services/ai/provider/model-catalog.service';
 
 export async function GET(req: NextRequest) {
   const guard = await requireAdminContext(req);
@@ -29,11 +30,17 @@ export async function GET(req: NextRequest) {
   try {
     if (getCacheState().loadedAt === null) await loadPricingCache();
 
-    const models = GEMINI_PUBLIC_CATALOG.map((e) => {
-      const price = getCachedPrice('gemini', e.model);
+    // E-04, PROV-UI-06 : disponibilité lue dans le catalogue du fournisseur
+    // (dernier rafraîchissement) ; un modèle indisponible n'est plus
+    // sélectionnable. Jamais rafraîchi : catalogue du code, comme avant.
+    const state = await getCatalogState().catch(() => ({ refreshedAt: null, models: [] as never[] }));
+    const selectable = selectableModels(GEMINI_PUBLIC_CATALOG.map((e) => e.model), state);
+    const names = [...new Set([...GEMINI_PUBLIC_CATALOG.map((e) => e.model), ...state.models.map((m: { model: string }) => m.model)])];
+    const models = names.map((model) => {
+      const price = getCachedPrice('gemini', model);
       return {
-        model: e.model,
-        available: true,
+        model,
+        available: selectable.has(model),
         priced: price !== null,
         // `verified` distingue la grille du compte, opposable à la facture, du
         // tarif public — juste, mais sans les remises éventuelles.
@@ -43,6 +50,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       models,
+      catalogRefreshedAt: state.refreshedAt,
       reasoningLevels: REASONING_LEVELS,
       guardrailReactions: GUARDRAIL_REACTIONS,
       treatments: TREATMENTS.map((t) => ({

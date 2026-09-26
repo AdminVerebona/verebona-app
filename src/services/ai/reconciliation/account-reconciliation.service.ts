@@ -28,6 +28,7 @@ import { randomUUID } from 'crypto';
 import { pgClient } from '@/db';
 import type { ReconcileInput } from './reconciliation-engine';
 import type { ReconciliationRun } from './types';
+import { isExecutionCancelled } from '../queue/execution-control';
 
 export type T3TriggerType = 'manual' | 'scheduled' | 'event';
 
@@ -216,7 +217,11 @@ async function t3PeutDemarrer(): Promise<boolean> {
 export async function reconcileAccount(
   accountId: number,
   trigger: T3Trigger,
-  options: { scope?: 'full' | 'incremental'; queuedRunId?: number; userId?: number } = {},
+  options: {
+    scope?: 'full' | 'incremental'; queuedRunId?: number; userId?: number;
+    /** Garde d'exécution de la file (rollback, arrêt d'urgence, désactivation). */
+    guard?: import('../queue/execution-control').ExecutionGuard;
+  } = {},
   deps: AccountReconciliationDeps = defaultDeps,
 ): Promise<AccountRunResult> {
   const scope = options.scope ?? (trigger.type === 'manual' ? 'full' : 'incremental');
@@ -247,6 +252,9 @@ export async function reconcileAccount(
         details.push({ objectType: 'asset', objectId: c.id, status: 'SKIPPED', applied: 0, conflicts: 0, aiReviews: 0, reason: c.reason });
         continue;
       }
+      // Interrompue par l'administration (WF-06, WF-07) : aucun bien de plus
+      // n'est réconcilié. L'erreur remonte au boucleur, qui ne clôt pas le job.
+      if (options.guard) await options.guard.assertActive(`bien ${c.id}`);
       try {
         const run = await deps.reconcile({
           accountId, assetId: c.id, userId: options.userId ?? trigger.requestedByUserId ?? undefined,
@@ -258,6 +266,10 @@ export async function reconcileAccount(
           applied: run.appliedCount, conflicts: run.conflictCount, aiReviews: run.aiReviewCount,
         });
       } catch (e) {
+        // Interruption (jeton révoqué, garde AI_BLOCKED) : on s'arrête là,
+        // sans compter le bien en erreur ; le job est remis en file par le
+        // boucleur (execution-control, MOD-005).
+        if (isExecutionCancelled(e)) throw e;
         // L'échec d'un bien n'empêche pas les autres d'être traités.
         details.push({ objectType: 'asset', objectId: c.id, status: 'ERROR', applied: 0, conflicts: 0, aiReviews: 0, reason: (e as Error).message.slice(0, 300) });
       }
@@ -283,35 +295,29 @@ export async function reconcileAccount(
   };
 }
 
-// ── Déclenchement événementiel : temporisation et fusion ───────────────────
+// ── Déclenchement : file durable (CDC BO IA OPS-001, NFR-003, T3-003) ──────
 
-/** Délai laissé à la réconciliation locale post-T1 avant un contrôle global. */
+/**
+ * Délai laissé à la réconciliation locale post-T1 avant un contrôle global.
+ * Appliqué par la file durable (`t3-queue.ts`, `delaySeconds`).
+ */
 export const EVENT_DEBOUNCE_MS = Number(process.env.T3_EVENT_DEBOUNCE_MS ?? 10 * 60_000);
 
 /**
- * Demande une exécution T3 suite à un événement métier. Les événements
- * rapprochés d'un même compte FUSIONNENT dans une seule demande en attente
- * (index unique « une demande en attente par compte ») ; l'exécution a lieu
- * après `EVENT_DEBOUNCE_MS`, ce qui évite de doubler la réconciliation
- * locale qui suit immédiatement une analyse T1.
+ * Demande une exécution T3 suite à un événement métier.
+ *
+ * Passe désormais par `ai_job_queue` (lot IA 2) : temporisation, fusion des
+ * événements rapprochés d'un même compte (WF-10), backoff, relance, écran File
+ * IA. Rend l'identifiant du job, ou `null` si l'événement ne déclenche rien
+ * (hors catalogue, ou déclencheur inactif dans la version effective).
  */
 export async function enqueueAccountReconciliation(
   accountId: number,
   event: { event: string; objectType?: T3Trigger['objectType']; objectId?: number; correlationId?: string },
   now: Date = new Date(),
-): Promise<number> {
-  const trace = JSON.stringify([{ ...event, at: now.toISOString() }]);
-  const notBefore = new Date(now.getTime() + EVENT_DEBOUNCE_MS).toISOString();
-  const rows = (await pgClient.unsafe(
-    `INSERT INTO account_reconciliation_runs
-       (account_id, trigger_type, trigger_event, trigger_object_type, trigger_object_id, correlation_id, scope, status, not_before, events_json)
-     VALUES ($1, 'event', $2, $3, $4, $5, 'incremental', 'queued', $6, $7::jsonb)
-     ON CONFLICT (account_id) WHERE status = 'queued'
-     DO UPDATE SET events_json = account_reconciliation_runs.events_json || EXCLUDED.events_json
-     RETURNING id`,
-    [accountId, event.event, event.objectType ?? null, event.objectId ?? null, event.correlationId ?? randomUUID(), notBefore, trace] as never[],
-  )) as unknown as Array<{ id: number }>;
-  return rows[0].id;
+): Promise<number | null> {
+  const { enqueueT3ForEvent } = await import('./t3-queue');
+  return enqueueT3ForEvent(accountId, event, undefined, now);
 }
 
 /** Non bloquant : un événement métier ne doit jamais échouer à cause de T3. */
@@ -323,54 +329,64 @@ export function notifyCoherenceEvent(
     console.error('[t3] demande de réconciliation non enregistrée :', (e as Error).message));
 }
 
-/** Exécute les demandes événementielles arrivées à échéance. */
+/**
+ * Reprise des demandes de l'ancienne file T3 (`account_reconciliation_runs`
+ * au statut `queued`) — transition.
+ *
+ * Plus rien n'y écrit ; les demandes restées en attente au déploiement sont
+ * TRANSFÉRÉES dans la file durable (même temporisation résiduelle), puis la
+ * ligne `queued` est supprimée : elle n'était qu'une demande, jamais une
+ * exécution, et la garder ferait croire à un travail en attente.
+ *
+ * Conservé sous ce nom parce que la route cron l'appelle : il rend une liste
+ * vide d'exécutions, puisque l'exécution appartient désormais au boucleur.
+ */
 export async function processDueAccountReconciliations(
-  limit = 20,
-  deps: AccountReconciliationDeps = defaultDeps,
+  limit = 200,
 ): Promise<AccountRunResult[]> {
-  // T3 coupé : on ne sélectionne rien, les demandes restent `queued` (WF-07).
-  if (!(await t3PeutDemarrer())) return [];
-  const due = (await pgClient.unsafe(
-    `SELECT id, account_id, trigger_event, trigger_object_type, trigger_object_id, correlation_id
+  const pending = (await pgClient.unsafe(
+    `SELECT id, account_id, trigger_event, trigger_object_type, trigger_object_id, correlation_id,
+            GREATEST(EXTRACT(EPOCH FROM (not_before - now())), 0)::int AS delay
        FROM account_reconciliation_runs
-      WHERE status = 'queued' AND not_before <= now()
+      WHERE status = 'queued'
       ORDER BY not_before LIMIT $1`,
     [limit] as never[],
-  )) as unknown as Array<{ id: number; account_id: number; trigger_event: string | null; trigger_object_type: T3Trigger['objectType'] | null; trigger_object_id: number | null; correlation_id: string }>;
-  const out: AccountRunResult[] = [];
-  for (const q of due) {
-    out.push(await reconcileAccount(q.account_id, {
-      type: 'event', event: q.trigger_event ?? undefined, objectType: q.trigger_object_type ?? undefined,
-      objectId: q.trigger_object_id ?? undefined, correlationId: q.correlation_id,
-    }, { scope: 'incremental', queuedRunId: q.id }, deps));
+  ).catch(() => [])) as unknown as Array<{ id: number; account_id: number; trigger_event: string | null; trigger_object_type: T3Trigger['objectType'] | null; trigger_object_id: number | null; correlation_id: string; delay: number }>;
+  if (pending.length === 0) return [];
+  const { enqueue } = await import('../queue/job-queue.repository');
+  for (const q of pending) {
+    try {
+      await enqueue({
+        treatment: 'T3',
+        scope: { accountId: q.account_id },
+        triggerCode: q.trigger_event ?? 'event',
+        delaySeconds: q.delay,
+        payload: {
+          kind: 'account', scope: 'incremental',
+          events: [{ event: q.trigger_event ?? 'event', objectType: q.trigger_object_type ?? undefined, objectId: q.trigger_object_id ?? undefined, correlationId: q.correlation_id }],
+        },
+        payloadOnDedupe: 'append_events',
+      });
+      await pgClient.unsafe(`DELETE FROM account_reconciliation_runs WHERE id = $1 AND status = 'queued'`, [q.id] as never[]);
+    } catch (e) {
+      // SCR-08 : la ligne n'est supprimée qu'une fois le transfert acquitté.
+      console.error(`[t3] transfert de la demande ${q.id} impossible :`, (e as Error).message);
+    }
   }
-  return out;
+  console.info(`[t3] ${pending.length} demande(s) de l'ancienne file transférée(s) dans la file durable.`);
+  return [];
 }
 
-/** Fréquence de l'exécution planifiée (heures), modifiable par l'environnement. */
-export const SCHEDULE_INTERVAL_HOURS = Number(process.env.T3_ACCOUNT_RECONCILIATION_INTERVAL_HOURS ?? 24);
-
 /**
- * Exécution planifiée : rejoue la cohérence des comptes dont la dernière
- * exécution T3 date de plus de SCHEDULE_INTERVAL_HOURS — à partir des
- * connaissances persistées, jamais par réanalyse des documents.
+ * Ancienne planification par variable d'environnement — RETIRÉE (T3-006,
+ * T3-UI-05). La planification T3 est désormais portée par les déclencheurs
+ * `schedule_*` de la version effective, mis en file par le boucleur
+ * (`queue/triggers.ts`) ; sans version renseignée, le défaut du code est
+ * quotidien, comme l'ancienne valeur par défaut de 24 h.
+ *
+ * Rend une liste vide : la route cron qui l'appelle reste compatible, et deux
+ * planificateurs ne tournent jamais ensemble.
  */
-export async function runScheduledAccountReconciliations(
-  limit = 50,
-  deps: AccountReconciliationDeps = defaultDeps,
-): Promise<AccountRunResult[]> {
-  if (!(await t3PeutDemarrer())) return [];
-  const comptes = (await pgClient.unsafe(
-    `SELECT a.id FROM accounts a
-      WHERE EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
-        AND NOT EXISTS (
-          SELECT 1 FROM account_reconciliation_runs r
-           WHERE r.account_id = a.id AND r.status IN ('completed', 'partial', 'running')
-             AND coalesce(r.finished_at, r.started_at) > now() - ($1 || ' hours')::interval)
-      ORDER BY a.id LIMIT $2`,
-    [String(SCHEDULE_INTERVAL_HOURS), limit] as never[],
-  )) as unknown as Array<{ id: number }>;
-  const out: AccountRunResult[] = [];
-  for (const c of comptes) out.push(await reconcileAccount(c.id, { type: 'scheduled' }, { scope: 'incremental' }, deps));
-  return out;
+export async function runScheduledAccountReconciliations(): Promise<AccountRunResult[]> {
+  return [];
 }

@@ -10,16 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
+import { toast } from 'sonner';
+import { DeleteAssetDialog } from '@/components/assets/DeleteAssetDialog';
 import { Plus, AlertCircle, Lock, Package, Loader2, SlidersHorizontal } from 'lucide-react';
 
 
@@ -33,7 +25,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useSession } from '@/hooks/useSession';
 import { useFeatureFlags } from '@/hooks/useFeatureFlags';
 import { useEntitlements } from '@/hooks/useEntitlements';
-import { type WriteBlockedInfo } from '@/lib/write-blocked';
+import { restrictedWriteInfo, type WriteBlockedInfo } from '@/lib/write-blocked';
+import { isUnpaid } from '@/lib/trial-status';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
@@ -256,7 +249,9 @@ function AssetsPageContent() {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [showArchived, setShowArchived] = useState(false);
-  const [deleteAssetId, setDeleteAssetId] = useState<number | null>(null);
+  // Bien dont la suppression est demandée (id + nom pour le dialogue).
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [showLimitModal, setShowLimitModal] = useState(false);
   // Motif exact du refus, tel que le serveur l'a formule. Null tant qu'aucun
   // refus n'a eu lieu : la fenetre retombe alors sur son discours generique.
@@ -350,11 +345,9 @@ function AssetsPageContent() {
     // Mode restreint : inutile de faire remplir un formulaire que le serveur
     // refusera. Le motif est annonce avant la saisie, pas apres.
     if (isRestricted) {
-      setLimitInfo({
-        code: 'TRIAL_EXPIRED',
-        message:
-          "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.",
-      });
+      // Même motif que la garde d'écriture : un impayé n'est pas une fin
+      // d'essai (message de régularisation et date limite).
+      setLimitInfo(restrictedWriteInfo(isUnpaid(entitlements) ? entitlements : { trial: entitlements?.trial }));
       setShowLimitModal(true);
       return;
     }
@@ -379,19 +372,25 @@ function AssetsPageContent() {
   }, [checkCanCreateAsset, activeAssets.length, isRestricted, entitlements]);
 
   const handleDeleteAsset = useCallback(async (id: number) => {
+    setIsDeleting(true);
     try {
       await apiClient.delete(`/api/assets?id=${id}`);
-      setAssets(assets.filter(a => a.id !== id));
-      setDeleteAssetId(null);
+      setAssets((prev) => prev.filter(a => a.id !== id));
+      setDeleteTarget(null);
     } catch (error) {
       console.error('Error deleting asset:', error);
+      // L'échec était silencieux : le bien restait affiché sans explication.
+      toast.error('La suppression du bien a échoué. Veuillez réessayer.');
+    } finally {
+      setIsDeleting(false);
     }
-  }, [assets]);
+  }, []);
 
   // ✅ FIXED: Use callback to open delete dialog
   const openDeleteDialog = useCallback((id: number) => {
-    setDeleteAssetId(id);
-  }, []);
+    const asset = assets.find((a) => a.id === id);
+    setDeleteTarget({ id, name: asset?.name ?? 'ce bien' });
+  }, [assets]);
 
   if (isSessionLoading || isLoading || isFeaturesLoading) {
     return (
@@ -564,25 +563,18 @@ function AssetsPageContent() {
             </div>
         )}
 
-        <AlertDialog open={deleteAssetId !== null} onOpenChange={() => setDeleteAssetId(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Supprimer ce bien ?</AlertDialogTitle>
-              <AlertDialogDescription>
-                La suppression est définitive et irréversible. Tous les documents, photos, équipements et événements associés à ce bien seront également supprimés.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Annuler</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => deleteAssetId && handleDeleteAsset(deleteAssetId)}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90 btn-delete"
-              >
-                Supprimer
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        {/* Même confirmation que la fiche du bien : elle ANNONCE, chiffres à
+            l'appui, ce que la suppression emportera (documents, échéances,
+            photos…). La confirmation propre à cette page ne donnait aucun
+            décompte — l'utilisateur supprimait à l'aveugle. */}
+        <DeleteAssetDialog
+          open={deleteTarget !== null}
+          onOpenChange={(open) => { if (!open && !isDeleting) setDeleteTarget(null); }}
+          assetId={deleteTarget?.id ?? 0}
+          assetName={deleteTarget?.name ?? ''}
+          isLoading={isDeleting}
+          onConfirm={() => { if (deleteTarget) void handleDeleteAsset(deleteTarget.id); }}
+        />
 
         {/* Fenêtre de refus — extraite dans `WriteBlockedDialog`.
             Elle doit se déclencher depuis une douzaine d'actions ; recopier

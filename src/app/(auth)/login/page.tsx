@@ -14,13 +14,14 @@ import { ArrowLeft } from 'lucide-react';
 import { ForceTheme } from '@/components/ForceTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
+import { safeReturnUrl } from '@/lib/safe-redirect';
 
 function LoginForm() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const rawReturn = searchParams.get('returnUrl') || '/accueil';
-  // Eviter les boucles login→login
-  const returnUrl = rawReturn.startsWith('/login') || rawReturn.startsWith('/signup') ? '/accueil' : rawReturn;
+  // Chemin interne uniquement (redirection ouverte, voir `safe-redirect.ts`) ;
+  // jamais une page d'authentification (boucle login → login).
+  const returnUrl = safeReturnUrl(searchParams.get('returnUrl'));
   
   const [email, setEmail] = useState(searchParams.get('email') ?? '');
   const [password, setPassword] = useState('');

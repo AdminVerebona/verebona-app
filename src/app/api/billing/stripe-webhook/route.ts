@@ -30,6 +30,13 @@ import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { enforceStandardLimits } from '@/lib/plan-enforcement';
 import { grantReferralRewardForFirstBilling } from '@/services/commercial-model.service';
 import { emit } from '@/lib/notifications';
+import { autoResolveAnomaly, buildFingerprint, isStripeRetryExhausted, reportAnomaly } from '@/services/admin/anomaly.service';
+import { recordChargeRefund, recordStripeInvoice } from '@/services/billing/invoice-ledger.service';
+import {
+  recordCheckoutPromoRedemptions,
+  recordSubscriptionPromoRedemptions,
+} from '@/services/billing/promo-redemption.service';
+import { startUnpaidCycle } from '@/services/billing/unpaid-cycle.service';
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
@@ -46,7 +53,11 @@ const getStripe = () => getStripeServer();
  *   customer.subscription.updated   → sync status (cancel_at_period_end, past_due, etc.)
  *   customer.subscription.deleted   → downgrade vers STANDARD local
  *   invoice.payment_succeeded       → renewal → update premiumUntil
- *   invoice.payment_failed          → grace period 15j (Premium) ou PAST_DUE_GRACE (DUO)
+ *   invoice.payment_failed          → J0 du cycle d'impayé de 90 jours (GAP-06)
+ *   invoice.finalized / updated / voided / marked_uncollectible, invoice.paid,
+ *   invoice.payment_succeeded, invoice.payment_failed
+ *                                   → registre `invoices` (CDC BO DOV-002, SUB-009)
+ *   charge.refunded                 → montant remboursé sur la facture
  */
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
@@ -129,15 +140,27 @@ export async function POST(request: NextRequest) {
       case 'charge.refund.updated':
         await handleRefundEvent(event);
         break;
+      // Registre des factures (CDC BO DOV-002, SUB-009, SUB-010) : écrit AVANT
+      // les effets, pour qu'une erreur de base fasse rejouer l'événement sans
+      // avoir produit d'effet de bord. Idempotent (clé : facture Stripe).
+      case 'invoice.finalized':
+      case 'invoice.updated':
+      case 'invoice.voided':
+      case 'invoice.marked_uncollectible':
+        await recordStripeInvoice(event.data.object as Stripe.Invoice, { eventType: event.type });
+        break;
       case 'invoice.payment_succeeded':
+        await recordStripeInvoice(event.data.object as Stripe.Invoice, { eventType: event.type });
         await handlePaymentSucceeded(event.data.object as Stripe.Invoice);
         break;
       case 'invoice.payment_failed':
+        await recordStripeInvoice(event.data.object as Stripe.Invoice, { eventType: event.type });
         await handlePaymentFailed(event.data.object as Stripe.Invoice);
         break;
       // ── Evenements ajoutes par le CDC §6.1 ──
       case 'invoice.paid':
         // Alias moderne de invoice.payment_succeeded : meme traitement.
+        await recordStripeInvoice(event.data.object as Stripe.Invoice, { eventType: event.type });
         await handlePaymentSucceeded(event.data.object as Stripe.Invoice);
         break;
       case 'invoice.payment_action_required':
@@ -160,6 +183,8 @@ export async function POST(request: NextRequest) {
         processingTimeMs: Date.now() - startTime,
       })
       .where(eq(stripeWebhookLogs.eventId, event.id));
+    // Supervision (CDC BO SUP-008) : la relance Stripe a abouti.
+    await autoResolveAnomaly(buildFingerprint('stripe', 'webhook', event.id), { origin: 'stripe_webhook_retry' });
 
     return NextResponse.json({ received: true });
   } catch (error) {
@@ -187,6 +212,11 @@ export async function POST(request: NextRequest) {
         processingTimeMs: Date.now() - startTime,
         createdAt: new Date(),
       }).onConflictDoNothing();
+    }
+    // Supervision (CDC BO SUP-009) : anomalie seulement quand les relances
+    // automatiques de Stripe échouent depuis un moment, pas au premier échec.
+    if (event && isStripeRetryExhausted(event.created)) {
+      await reportAnomaly({ domain: 'stripe', fingerprint: buildFingerprint('stripe', 'webhook', event.id), title: `Webhook Stripe en échec : ${event.type}`, detail: { eventId: event.id, eventType: event.type, error: error instanceof Error ? error.message : String(error) } });
     }
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
@@ -226,6 +256,10 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
     await activateDuoOnAccount(duoId);
   }
 
+  // CDC BO PRO-002 : usage d'un code promotionnel Stripe à la souscription.
+  // Idempotent (un usage par compte et par code) ; ne lève jamais.
+  await recordCheckoutPromoRedemptions(session, result.accountId);
+
   // CDC CGVU §8.2 et §10.1 : la souscription est rattachée à la version
   // applicable, et l'email de confirmation porte son permalien.
   //
@@ -261,6 +295,12 @@ async function handleSubscriptionUpdated(
   });
 
   if (!result || result.skipped) return;
+
+  // CDC BO PRO-002 : code promotionnel appliqué hors Checkout (portail,
+  // dashboard). Idempotent ; aucune lecture Stripe sans remise.
+  if (subscription.discounts?.length) {
+    await recordSubscriptionPromoRedemptions(subscription, result.accountId);
+  }
 
   // Bascule d'échéancier (changement de périodicité ou baisse de gamme) :
   // Stripe émet `customer.subscription.updated` au passage de phase. Simple
@@ -336,6 +376,20 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
       updatedAt: new Date(),
     })
     .where(eq(accounts.id, account.id));
+
+  // Les droits se lisent sur `account_subscriptions` (entitlements) : sans
+  // cette écriture, un abonnement terminé restait `active` et continuait
+  // d'ouvrir l'écriture. Une rétractation (`readonly`) garde son statut.
+  // Un cycle d'impayé en cours se poursuit (colonnes past_due_grace_*
+  // inchangées) jusqu'à régularisation ou J+90.
+  await db
+    .update(accountSubscriptions)
+    .set({ status: 'canceled', updatedAt: new Date() })
+    .where(and(
+      eq(accountSubscriptions.accountId, account.id),
+      eq(accountSubscriptions.stripeSubscriptionId, subscriptionId),
+      sql`${accountSubscriptions.status} <> 'readonly'`,
+    ));
 
   await db.insert(subscriptionHistory).values({
     userId: account.ownerUserId,
@@ -477,14 +531,29 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
 // ─── invoice.payment_failed ───────────────────────────────────────────────────
 
 /**
- * Premium : grace period 15 jours (subscriptionStatus = PAST_DUE_GRACE).
- * L'accès Premium est conservé pendant cette période.
- * Si Stripe abandonne → subscription.deleted → downgrade STANDARD.
+ * J0 du cycle d'impayé de 90 jours (Centre d'aide GAP-06, AID-BILL-008).
  *
- * DUO : idem, grace deadline 15j stocké sur duo_accounts.
+ * ══════════════════════════════════════════════════════════════════════════
+ * AVANT : période de grâce de 15 jours pendant laquelle tout restait permis,
+ * puis rien — ni restriction, ni suppression.
+ *
+ * RÈGLE CIBLE : dès l'échec, les fonctions normales et payantes sont
+ * suspendues (entitlements : `past_due` = lecture, export, transmission) ;
+ * le compte reste accessible ; régularisation possible jusqu'à J+90 ; à
+ * J+90, suppression (cron `billing/unpaid-cycle`).
+ *
+ * Le cycle s'ouvre UNE fois (J0 jamais déplacé par une nouvelle tentative
+ * échouée) — y compris si `customer.subscription.updated` (past_due) est
+ * arrivé avant : la condition porte sur la date J0, plus sur le statut, qui
+ * pouvait déjà valoir PAST_DUE_GRACE et faisait sauter la notification.
+ *
+ * Duo : le mécanisme de récupération Duo (PAST_DUE_GRACE → UNPAID_RECOVERY)
+ * est conservé tel quel ; le cycle général s'applique en plus au compte du
+ * titulaire de facturation (AID-BILL-008 : « Offres : toutes »).
+ * ══════════════════════════════════════════════════════════════════════════
  */
 async function handlePaymentFailed(invoice: Stripe.Invoice) {
-  const customerId = invoice.customer as string;
+  const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
   const subscriptionId = getInvoiceSubscriptionId(invoice);
 
   if (!customerId) return;
@@ -517,30 +586,46 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
           stage: 'T0',
           sentAt: now,
         }).onConflictDoNothing();
+      }
 
-        // Incident de paiement obligatoire pour le titulaire de la facturation Duo.
-        if (duoAccount.billingOwnerUserId) {
-          try {
-            await emit({
-              type: 'PAYMENT_FAILED',
-              recipientUserIds: [duoAccount.billingOwnerUserId],
-              entityType: 'invoice',
-              entityId: invoice.id,
-              payload: { duoId: duoAccount.id },
-              dedupeKey: `account:payment-failed:${invoice.id}`,
-            });
-          } catch (err) {
-            console.error('[stripe-webhook] emit PAYMENT_FAILED (duo) échoué:', err);
-          }
+      // Compte payeur du Duo : cycle général de 90 jours.
+      const [payer] = await db
+        .select({ id: accounts.id })
+        .from(accounts)
+        .where(eq(accounts.duoAccountId, duoAccount.id))
+        .limit(1);
+      const payerAccountId = payer?.id
+        ?? (await db.select({ id: accounts.id }).from(accounts)
+          .where(eq(accounts.ownerUserId, duoAccount.billingOwnerUserId)).limit(1))[0]?.id;
+      const cycle = payerAccountId ? await startUnpaidCycle(payerAccountId) : null;
+
+      // Incident de paiement obligatoire pour le titulaire de la facturation Duo.
+      // Dédupliqué par facture : les nouvelles tentatives ne renotifient pas.
+      if (duoAccount.billingOwnerUserId) {
+        try {
+          await emit({
+            type: 'PAYMENT_FAILED',
+            recipientUserIds: [duoAccount.billingOwnerUserId],
+            entityType: 'invoice',
+            entityId: invoice.id,
+            payload: {
+              duoId: duoAccount.id,
+              ...(payerAccountId ? { accountId: payerAccountId } : {}),
+              ...(cycle ? { deadlineAt: cycle.deadlineAt.toISOString() } : {}),
+            },
+            dedupeKey: `account:payment-failed:${invoice.id}`,
+          });
+        } catch (err) {
+          console.error('[stripe-webhook] emit PAYMENT_FAILED (duo) échoué:', err);
         }
       }
       return;
     }
   }
 
-  // ── Premium payment failed ──
+  // ── Premium / Standard payment failed ──
   const [account] = await db
-    .select()
+    .select({ id: accounts.id })
     .from(accounts)
     .where(eq(accounts.stripeCustomerId, customerId))
     .limit(1);
@@ -550,33 +635,24 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
     return;
   }
 
-  // Only enter grace period once
-  if (account.subscriptionStatus !== 'PAST_DUE_GRACE') {
-    const now = new Date();
-    const graceEnds = new Date(now.getTime() + 15 * 24 * 60 * 60 * 1000);
-    await db
-      .update(accounts)
-      .set({
-        subscriptionStatus: 'PAST_DUE_GRACE',
-        pastDueGraceStartedAt: now,
-        pastDueGraceEndsAt: graceEnds,
-        updatedAt: now,
-      })
-      .where(eq(accounts.id, account.id));
+  const cycle = await startUnpaidCycle(account.id);
 
-    // Incident de paiement obligatoire (cloche + email, CDC §7.6).
-    try {
-      await emit({
-        type: 'PAYMENT_FAILED',
+  // Incident de paiement obligatoire (cloche + email, CDC §7.6), avec
+  // l'échéance de régularisation (AID-BILL-008). Dédupliqué par facture.
+  try {
+    await emit({
+      type: 'PAYMENT_FAILED',
+      accountId: account.id,
+      entityType: 'invoice',
+      entityId: invoice.id,
+      payload: {
         accountId: account.id,
-        entityType: 'invoice',
-        entityId: invoice.id,
-        payload: { accountId: account.id },
-        dedupeKey: `account:payment-failed:${invoice.id}`,
-      });
-    } catch (err) {
-      console.error('[stripe-webhook] emit PAYMENT_FAILED échoué:', err);
-    }
+        ...(cycle ? { deadlineAt: cycle.deadlineAt.toISOString() } : {}),
+      },
+      dedupeKey: `account:payment-failed:${invoice.id}`,
+    });
+  } catch (err) {
+    console.error('[stripe-webhook] emit PAYMENT_FAILED échoué:', err);
   }
 }
 
@@ -861,6 +937,9 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
     'montant',
     charge.amount_refunded,
   );
+  // Registre des factures : montant remboursé (le CA encaissé reste la somme
+  // encaissée à sa date, DOV-002 ; le remboursement est porté à part).
+  await recordChargeRefund(charge);
 }
 
 /**

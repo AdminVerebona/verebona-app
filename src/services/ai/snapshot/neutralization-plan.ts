@@ -211,3 +211,68 @@ export function stepsByFamily(family: NeutralizationFamily): NeutralizationStep[
 export function affectedTables(): string[] {
   return [...new Set(NEUTRALIZATION_PLAN.flatMap((s) => s.tables))].sort();
 }
+
+// ── Script SQL pour la chaîne d'exploitation — SNP-007, SNP-008 ─────────────
+//
+// DÉCISION LOT IA 2 (snapshot Prod → Préprod, SNP-001 à SNP-021, SCR-11) :
+// la génération, la copie S3, l'installation avec sauvegarde de sécurité, la
+// maintenance et le rollback automatique dépendent de l'hébergeur (pg_dump
+// sur l'instance de PROD, buckets, bascule de trafic) et ne sont PAS réalisés
+// par l'application : un bouton qui prétendrait les faire donnerait l'illusion
+// d'un mécanisme complet. Ils restent à outiller côté exploitation.
+//
+// Ce que l'application PEUT fournir, et fournit ici : le plan de
+// neutralisation sous forme d'un script autonome, pour que la chaîne
+// d'exploitation l'applique à la COPIE, CÔTÉ PROD, AVANT que le snapshot ne
+// quitte le périmètre de production (SNP-007 / SNP-008) :
+//
+//   pg_dump prod | psql copie_temporaire
+//   psql copie_temporaire -f neutralisation.sql   ← ce script
+//   pg_dump copie_temporaire > snapshot_publiable
+//
+// Il est téléchargeable par `GET /api/admin/ai/snapshot?format=sql`, qui
+// n'exécute RIEN. `runNeutralization` reste la dernière barrière côté
+// préproduction, jamais la seule.
+
+/**
+ * Littéral SQL d'une adresse préservée. Rejette tout caractère hors du jeu
+ * courant des adresses : le script est exécuté sur une copie de PRODUCTION,
+ * une injection y serait irréparable. L'apostrophe est doublée par sûreté.
+ */
+function sqlEmailLiteral(email: string): string {
+  if (!/^[a-z0-9._%+@'-]+$/i.test(email)) {
+    throw new Error(`Adresse de compte de test refusée dans le script : « ${email} ».`);
+  }
+  return `'${email.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Script SQL autonome (une transaction) : chaque étape du plan, `$1` remplacé
+ * par la liste des comptes de test préservés. Une table absente est ignorée
+ * (même règle que `runNeutralization`), toute autre erreur annule tout.
+ */
+export function renderNeutralizationScript(preservedEmails: string[] = testAccountEmails()): string {
+  const array = preservedEmails.length === 0
+    ? `ARRAY[]::text[]`
+    : `ARRAY[${preservedEmails.map((e) => sqlEmailLiteral(e.toLowerCase())).join(', ')}]::text[]`;
+  const lines: string[] = [
+    '-- Neutralisation d\'une copie de production — CDC BO IA SNP-005 à SNP-009.',
+    '-- À appliquer sur la COPIE, côté production, AVANT publication (SNP-007, SNP-008).',
+    `-- Comptes de test préservés : ${preservedEmails.length}. Tables : ${affectedTables().join(', ')}.`,
+    'SET standard_conforming_strings = on;',
+    'BEGIN;',
+  ];
+  for (const step of NEUTRALIZATION_PLAN) {
+    const sql = step.sql.replace(/\$1::text\[\]/g, () => array);
+    lines.push(
+      '',
+      `-- [${step.family}] ${step.id} : ${step.label}`,
+      'DO $snp$ BEGIN',
+      `  ${sql.replace(/\n\s*/g, ' ')};`,
+      `EXCEPTION WHEN undefined_table THEN RAISE NOTICE 'étape ${step.id} ignorée : table absente';`,
+      'END $snp$;',
+    );
+  }
+  lines.push('', 'COMMIT;', '');
+  return lines.join('\n');
+}

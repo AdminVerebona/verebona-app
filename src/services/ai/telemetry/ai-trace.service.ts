@@ -13,6 +13,8 @@ import { db } from '@/db';
 import { aiPipelineStep, aiUsageEvent } from '@/db/schema';
 import type { AiUseCaseCode } from '../registry/use-cases';
 import { getExecutionContext, type ModelRank } from './execution-context';
+import { currentJobContext } from '../queue/job-context';
+import { getCachedPrice } from '../gateway/pricing/pricing.repository';
 
 export interface CallTrace {
   traceId: string;
@@ -27,7 +29,8 @@ export interface CallTrace {
   usedFallback: boolean;
   inputTokens: number;
   outputTokens: number;
-  costMicros: number;
+  /** `null` = tarif inconnu, coût non calculable (COST-008) — jamais inventé. */
+  costMicros: number | null;
   durationMs: number;
   status: 'success' | 'error';
   errorCode?: string;
@@ -44,6 +47,11 @@ export interface CallTrace {
   modelRank?: ModelRank | null;
   /** Travail de file à l'origine de l'appel, s'il y en a un. */
   jobId?: number | null;
+  /**
+   * Version dont vient la configuration APPLIQUÉE (figée par l'exécution,
+   * VER-015). Absente : version effective au moment de la trace.
+   */
+  configVersionId?: number | null;
 }
 
 export async function recordCallTrace(t: CallTrace): Promise<void> {
@@ -91,16 +99,36 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
       status: t.status,
       errorCode: t.errorCode,
       errorMessage: t.errorMessage,
-      metadata: { traceId: t.traceId, promptVersion: t.promptVersion, shadow: t.shadow },
+      metadata: {
+        traceId: t.traceId, promptVersion: t.promptVersion, shadow: t.shadow,
+        // COST-007 (§9.1, lot IA 2) : référence tarifaire FIGÉE avec l'appel —
+        // le tarif appliqué reste lisible même après une révision de grille.
+        // `null` = aucun tarif connu (coût non calculable, COST-008).
+        pricing: pricingRef(t.provider, t.model),
+      },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,
-      configVersionId: ctx.configVersionId,
+      configVersionId: t.configVersionId !== undefined ? t.configVersionId : ctx.configVersionId,
       appVersion: ctx.appVersion,
       modelRank: t.modelRank ?? (t.usedFallback ? null : 'primary'),
-      jobId: t.jobId ?? null,
+      jobId: t.jobId ?? currentJobContext()?.jobId ?? null,
     } as never);
   } catch (e) {
     // La télémétrie ne doit jamais faire échouer un traitement métier.
     console.error('[ai-trace] écriture impossible (non bloquant) :', (e as Error).message);
+  }
+}
+
+/** Tarif en cache au moment de l'appel, sous forme de référence figée (COST-007). */
+export function pricingRef(provider: string, model: string): {
+  inputMicros: number; outputMicros: number; currency: string; source: string; verified: boolean;
+} | null {
+  try {
+    const p = getCachedPrice(provider, model);
+    return p
+      ? { inputMicros: p.inputMicros, outputMicros: p.outputMicros, currency: p.currency, source: String(p.source), verified: p.verified }
+      : null;
+  } catch {
+    return null;
   }
 }
