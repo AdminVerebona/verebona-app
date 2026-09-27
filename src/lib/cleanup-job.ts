@@ -6,7 +6,7 @@
  * - Entrées DB correspondantes (hard delete)
  * 
  * Usage :
- * - Route admin privée : POST /api/admin/cleanup
+ * - (La route admin POST /api/admin/cleanup a été retirée : CDC BO GEN-001.)
  * - Cron externe : bun run cleanup
  * - Job serverless (ex: Vercel Cron)
  */
@@ -101,6 +101,10 @@ export async function runCleanupJob(deps: { deleteObject?: DeleteObjectFn } = {}
       const { purgeExpired } = await import('@/services/verebona-assistant/core/conversation.service');
       const purged = await purgeExpired();
       if (purged) console.log(`[CLEANUP] Verebona conversations purgées: ${purged}`);
+      // Commandes proposées et jamais confirmées : closes comme EXPIRED.
+      const { expirePendingPlans } = await import('@/services/verebona-assistant/commands/plan.service');
+      const expired = await expirePendingPlans();
+      if (expired) console.log(`[CLEANUP] Verebona propositions de commande expirées: ${expired}`);
     } catch (verebonaError) {
       console.error('[CLEANUP] Purge Verebona échouée:', verebonaError);
     }

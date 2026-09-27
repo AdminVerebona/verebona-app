@@ -10,13 +10,11 @@ import { assets, assetFiles, aiFieldUpdates, agendaItems, agendaAssetLinks } fro
 import { eq, and, isNull, not, or } from 'drizzle-orm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai';
 import { AiUsageTracker } from './ai-usage-tracker';
 import { emitAssetUpdated } from '../coherence/impact-propagation.service';
 import { getAllowedFieldsSet } from '@/lib/field-validator';
-import { calcCostMicros } from './gemini-client';
 import { acceptDetailDate } from '@/lib/asset-detail-rules';
-import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
+import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
 
 // ─── Section / field registry (mirrors apply-ai-suggestions.ts) ──────────
 
@@ -87,23 +85,11 @@ function normalizeValue(key: string, raw: unknown): unknown {
 
 // ─── AI call with fallback ─────────────────────────────────────────────────
 
-const COHERENCE_NOMINAL_MODEL   = 'gemini-3.1-flash-lite';
-const COHERENCE_FALLBACK_MODEL  = 'gemini-2.5-flash-lite';
-const COHERENCE_FALLBACK2_MODEL = 'gemini-2.0-flash-lite';
-
-const MODEL_TIMEOUT_MS = 45_000; // 45s par appel modèle — échoue vite si le modèle n'est pas disponible
-
-async function callOneModel(model: GenerativeModel, prompt: string): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  const result = await model.generateContent(prompt, { timeout: MODEL_TIMEOUT_MS });
-  const text = result.response.text();
-  const usage = (result.response.usageMetadata ?? {}) as { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
-  if (!text?.trim()) throw new Error('Empty response from Gemini');
-  return {
-    text,
-    inputTokens: usage.promptTokenCount ?? 0,
-    outputTokens: usage.candidatesTokenCount ?? 0,
-  };
-}
+// Passerelle (plan de retrait WF-41) : opération `legacy_enrich_coherence` de
+// l'usage DATA_RECONCILIATION (T3). Les modèles sont ceux de la version figée
+// de T3 (principal → repli 1 → repli 2), le délai de 45 s par modèle est celui
+// de l'opération, JSON natif et plafond de 8 000 jetons comme avant.
+export const LEGACY_ENRICH_COHERENCE_OPERATION = 'legacy_enrich_coherence';
 
 function parseJsonResponse(text: string): unknown {
   const attempts = [
@@ -117,55 +103,28 @@ function parseJsonResponse(text: string): unknown {
   throw new Error('No valid JSON in Gemini response');
 }
 
-async function callGeminiCombined(prompt: string): Promise<{ parsed: unknown; inputTokens: number; outputTokens: number; costMicros: number }> {
-  // Clé ACTIVE du BO et garde d'exploitation T3 (arrêt d'urgence, état du
-  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
-  // (legacy-gemini-access).
-  const apiKey = await requireLegacyGeminiKey('T3', 'enrich-and-coherence');
-  const genAI = new GoogleGenerativeAI(apiKey);
+/** Critère de repli de l'ancien module : réponse vide ou JSON illisible. */
+function isUsableJson(text: string): boolean {
+  if (!text?.trim()) return false;
+  try { parseJsonResponse(text); return true; } catch { return false; }
+}
 
-  const jsonConfig = { responseMimeType: 'application/json' as const, maxOutputTokens: 8000 };
-  const nominal   = genAI.getGenerativeModel({ model: COHERENCE_NOMINAL_MODEL, generationConfig: jsonConfig });
-  const fallback  = genAI.getGenerativeModel({ model: COHERENCE_FALLBACK_MODEL, generationConfig: jsonConfig });
-  const fallback2 = genAI.getGenerativeModel({ model: COHERENCE_FALLBACK2_MODEL, generationConfig: jsonConfig });
-  let rawText: string = '';
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let modelUsed = COHERENCE_NOMINAL_MODEL;
-
-  try {
-    const r = await callOneModel(nominal, prompt);
-    rawText = r.text;
-    inputTokens += r.inputTokens;
-    outputTokens += r.outputTokens;
-    parseJsonResponse(rawText);
-  } catch (err) {
-    console.warn(`[enrich-coherence] ${COHERENCE_NOMINAL_MODEL} failed (${err instanceof Error ? err.message.slice(0, 80) : err}) — fallback on ${COHERENCE_FALLBACK_MODEL}`);
-    try {
-      const r = await callOneModel(fallback, prompt);
-      rawText = r.text;
-      inputTokens += r.inputTokens;
-      outputTokens += r.outputTokens;
-      parseJsonResponse(rawText);
-      modelUsed = COHERENCE_FALLBACK_MODEL;
-    } catch {
-      console.warn(`[enrich-coherence] ${COHERENCE_FALLBACK_MODEL} failed — fallback on ${COHERENCE_FALLBACK2_MODEL}`);
-      try {
-        const r = await callOneModel(fallback2, prompt);
-        rawText = r.text;
-        inputTokens += r.inputTokens;
-        outputTokens += r.outputTokens;
-        parseJsonResponse(rawText);
-        modelUsed = COHERENCE_FALLBACK2_MODEL;
-      } catch {
-        // Tous les Flash-lite ont echoue -> on propage l'erreur
-        throw new Error('Tous les modeles Flash-lite ont echoue');
-      }
-    }
-  }
-
-  const costMicros = calcCostMicros(modelUsed, inputTokens, outputTokens);
-  return { parsed: parseJsonResponse(rawText!), inputTokens, outputTokens, costMicros };
+async function callGeminiCombined(
+  prompt: string,
+  ctx: { accountId: number; parentOperationId?: number },
+): Promise<{ parsed: unknown; inputTokens: number; outputTokens: number; costMicros: number }> {
+  // `AI_BLOCKED` (arrêt d'urgence, T3 désactivé ou suspendu) est levé par la
+  // passerelle avant tout appel, et traité par l'appelant comme un échec IA.
+  const r = await executeLegacyPrompt({
+    useCaseCode: 'DATA_RECONCILIATION',
+    operationCode: LEGACY_ENRICH_COHERENCE_OPERATION,
+    accountId: ctx.accountId,
+    parentOperationId: ctx.parentOperationId,
+    prompt,
+    accept: isUsableJson,
+    maxOutputTokensCap: 8000,
+  });
+  return { parsed: parseJsonResponse(r.data), inputTokens: r.inputTokens, outputTokens: r.outputTokens, costMicros: r.costMicros };
 }
 
 // ─── Combined function ──────────────────────────────────────────────────────
@@ -357,7 +316,7 @@ export async function applyAiEnrichmentAndCoherence({
       environment: 'production',
     });
 
-    const { parsed, inputTokens: i, outputTokens: o, costMicros: c } = await callGeminiCombined(prompt);
+    const { parsed, inputTokens: i, outputTokens: o, costMicros: c } = await callGeminiCombined(prompt, { accountId, parentOperationId: opId ?? undefined });
     aiResult = parsed;
     inputTokens = i; outputTokens = o; costMicros = c;
 

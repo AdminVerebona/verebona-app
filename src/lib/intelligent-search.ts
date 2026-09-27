@@ -10,14 +10,18 @@
  *   5. Logging dans ai_search_log
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { db, pgClient } from '@/db';
 import { aiSearchLog } from '@/db/schema';
-import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
+import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+/**
+ * Passerelle (plan de retrait WF-41) : opération `legacy_intelligent_search`
+ * de l'usage INTELLIGENT_ASSISTANT (T2). Modèle principal de la version figée
+ * de T2, UNE tentative comme avant ; la course contre TIMEOUT_MS est conservée.
+ */
+export const LEGACY_INTELLIGENT_SEARCH_OPERATION = 'legacy_intelligent_search';
 const TIMEOUT_MS = 25_000;
 
 // Plans Premium autorisés à la recherche intelligente
@@ -152,13 +156,9 @@ function detectIntent(query: string): boolean {
 async function generateAnswer(
   query: string,
   context: string,
-  offerCode: string
-): Promise<{ answer: string; inputTokens: number; outputTokens: number; costMicros: number }> {
-  // Clé ACTIVE du BO et garde d'exploitation T2 (arrêt d'urgence, état du
-  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
-  // (legacy-gemini-access).
-  const apiKey = await requireLegacyGeminiKey('T2', 'intelligent-search');
-
+  offerCode: string,
+  ctx: { accountId: number; userId: number | null },
+): Promise<{ answer: string; model: string; inputTokens: number; outputTokens: number; costMicros: number }> {
   let promptTemplate: string;
   try {
     promptTemplate = readFileSync(
@@ -180,20 +180,27 @@ async function generateAnswer(
 
   const prompt = finalTemplate.replace('{{QUERY}}', query).replace('{{CONTEXT}}', context);
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+  // `AI_BLOCKED` (arrêt d'urgence, T2 désactivé ou suspendu) est levé par la
+  // passerelle avant tout appel : l'appelant journalise une erreur.
+  const result = await executeLegacyPrompt({
+    useCaseCode: 'INTELLIGENT_ASSISTANT',
+    operationCode: LEGACY_INTELLIGENT_SEARCH_OPERATION,
+    accountId: ctx.accountId,
+    userId: ctx.userId ?? undefined,
+    prompt,
+    maxModelAttempts: 1,
+  });
+  const text = result.data.trim();
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
-
-  // Estimation coût Gemini 2.5 Flash : ~0.075$/M input, ~0.30$/M output (en micro-€)
-  const usageMeta = (result.response as any).usageMetadata;
-  const inputTok = usageMeta?.promptTokenCount ?? Math.round(prompt.length / 4);
-  const outputTok = usageMeta?.candidatesTokenCount ?? Math.round(text.length / 4);
-  // Prix indicatif converti en micro-€ (1$ ≈ 0.92€)
-  const costMicros = Math.round((inputTok * 0.075 + outputTok * 0.30) / 1_000_000 * 1_000_000 * 0.92);
-
-  return { answer: text, inputTokens: inputTok, outputTokens: outputTok, costMicros };
+  // Jetons et coût mesurés par la passerelle (tarifs du BO), et non plus
+  // estimés ici sur un tarif codé en dur.
+  return {
+    answer: text,
+    model: result.model,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+    costMicros: result.costMicros,
+  };
 }
 
 // ─── Construction des sources (SQL classique post-réponse) ────────────────────
@@ -380,12 +387,12 @@ export async function intelligentSearch(params: {
       buildSources(params.query, params.accountId),
     ]);
 
-    const answerPromise = generateAnswer(params.query, context, params.offerCode);
+    const answerPromise = generateAnswer(params.query, context, params.offerCode, params);
     const timeoutPromise = new Promise<never>((_, rej) =>
       setTimeout(() => rej(new Error('answer timeout')), TIMEOUT_MS)
     );
 
-    const { answer, inputTokens, outputTokens, costMicros } = await Promise.race([
+    const { answer, model, inputTokens, outputTokens, costMicros } = await Promise.race([
       answerPromise,
       timeoutPromise,
     ]);
@@ -404,7 +411,7 @@ export async function intelligentSearch(params: {
       outputTokens,
       durationMs,
       provider: 'google',
-      model: GEMINI_MODEL,
+      model,
       businessResult: 'success',
       blockReason: null,
       trackingId,
@@ -427,7 +434,8 @@ export async function intelligentSearch(params: {
       outputTokens: 0,
       durationMs,
       provider: 'google',
-      model: GEMINI_MODEL,
+      // Modèle inconnu : l'échec a pu survenir avant tout appel (AI_BLOCKED).
+      model: '',
       businessResult: 'error',
       blockReason: (err as Error).message,
       trackingId,

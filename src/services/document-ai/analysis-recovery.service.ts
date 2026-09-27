@@ -9,23 +9,43 @@
  *
  * Dans tous les cas, le compte doit avoir du crédit disponible (canConsumeAnalysis).
  *
+ *   - UPLOADED bloqué > 10m   → mis en file puis perdu (redémarrage de la
+ *                               file mémoire) — autrefois repris par
+ *                               `/api/analysis/check-pending`, appelé par le
+ *                               navigateur (E-06) : la reprise est désormais
+ *                               exclusivement serveur.
+ *
+ * Dans tous les cas, le compte doit avoir du crédit disponible (canConsumeAnalysis).
+ *
  * Appelé :
  *   1. Par le scheduler interne (instrumentation.ts) toutes les INTERVAL_MS
  *   2. Par GET /api/cron/retry-analysis (cron externe ou appel manuel)
- *   3. Par /api/analysis/check-pending (appelé au chargement de l'app côté client)
+ *   3. Par le passage planifié T1 de la file durable (t1-handler)
  *
- * Concurrence : batchs de BATCH_SIZE, avec BATCH_DELAY_MS entre chaque batch.
+ * ══════════════════════════════════════════════════════════════════════════
+ * JAMAIS DEUX ANALYSES DU MÊME FICHIER (§10.4 — lot 3, bascule durable)
+ *
+ * La reprise appelait `analyzeFileSources` DIRECTEMENT, à côté de la file.
+ * Avec `AI_DURABLE_QUEUE=enabled`, un fichier dont le job T1 attendait son
+ * backoff (état ANALYSIS_FAILED ou UPLOADED) ou s'exécutait depuis plus de
+ * dix minutes (ANALYZING, délai global de 15 min) était relancé une seconde
+ * fois, hors file — et sous garde, le pipeline ne filtre plus les ANALYZING.
+ *
+ * Désormais :
+ *   · tout fichier ayant un job T1 VIVANT (PENDING ou RUNNING) est écarté,
+ *     et son état n'est jamais réinitialisé ;
+ *   · en file mémoire (`legacy`), un fichier encore connu de la file de ce
+ *     processus est écarté de même ;
+ *   · la relance passe par `enqueueFileAnalyses` — la file active, avec sa
+ *     déduplication (WF-10 en durable, ensemble `connus` en mémoire) et sa
+ *     concurrence bornée — au lieu d'un appel direct.
  */
 
 import { db } from '@/db';
 import { assetFiles, accounts } from '@/db/schema';
 import { eq, inArray, isNull, and, lt, or } from 'drizzle-orm';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
-import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 import { withJobLock } from '@/lib/job-lock';
-
-const BATCH_SIZE = 3;
-const BATCH_DELAY_MS = 3_000;
 /** Un document en ANALYZING depuis plus de 10 min est considéré bloqué */
 const STUCK_THRESHOLD_MS = 10 * 60 * 1_000;
 
@@ -122,10 +142,25 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
               eq(assetFiles.analysisState, 'ANALYZING'),
               lt(assetFiles.updatedAt, stuckThreshold),
             ),
+            // Mis en file puis perdu (redémarrage de la file mémoire) — E-06.
+            and(
+              eq(assetFiles.analysisState, 'UPLOADED'),
+              lt(assetFiles.updatedAt, stuckThreshold),
+            ),
           ),
         ),
       )
       .limit(50);
+
+    // §10.4 : écarter ce que la file traite déjà (voir l'en-tête).
+    const vivants = await fichiersEnFile(candidates.map((c) => c.id));
+    const ecartes = candidates.filter((c) => vivants.has(c.id)).length;
+    if (ecartes > 0) {
+      console.info(`[analysis-recovery] ${ecartes} document(s) déjà en file — non relancé(s).`);
+    }
+    const aRelancer = candidates.filter((c) => !vivants.has(c.id));
+    candidates.length = 0;
+    candidates.push(...aRelancer);
 
     result.found = candidates.length;
 
@@ -154,31 +189,20 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
         .where(inArray(assetFiles.id, stuckAnalyzingIds));
     }
 
-    // 6. Traiter par batchs de BATCH_SIZE
-    const allDocs = candidates.filter(d => d.accountId != null);
-    for (let i = 0; i < allDocs.length; i += BATCH_SIZE) {
-      const batch = allDocs.slice(i, i + BATCH_SIZE);
-
-      await Promise.all(
-        batch.map(async (doc) => {
-          if (!doc.accountId) return;
-          try {
-            analyzeFileSources([doc.id], doc.accountId, {
-              billable: false,
-              origin: 'analysis-recovery',
-            }).catch((err: Error) => {
-              console.error(`[analysis-recovery] File ${doc.id} failed:`, err.message);
-            });
-            result.retried++;
-          } catch (err) {
-            console.error(`[analysis-recovery] Erreur relance file ${doc.id}:`, (err as Error).message);
-            result.errors++;
-          }
-        }),
-      );
-
-      if (i + BATCH_SIZE < allDocs.length) {
-        await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
+    // 6. Remettre en file, compte par compte. La file active (durable ou
+    //    mémoire) borne la concurrence et déduplique ; non facturé, comme
+    //    avant (la reprise n'est pas une nouvelle demande de l'utilisateur).
+    const { enqueueFileAnalyses } = await import('@/services/ai/source-analysis/analysis-queue');
+    for (const [accountId, ids] of byAccount) {
+      try {
+        const acceptes = await enqueueFileAnalyses(ids, accountId, {
+          origin: 'analysis-recovery',
+          billable: false,
+        });
+        result.retried += acceptes.length;
+      } catch (err) {
+        console.error(`[analysis-recovery] Remise en file impossible (compte ${accountId}) :`, (err as Error).message);
+        result.errors += ids.length;
       }
     }
 
@@ -189,4 +213,32 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
   // Le bail est rendu par `withJobLock`, y compris en cas d'exception.
 
   return result;
+}
+
+/**
+ * Fichiers déjà pris en charge par une file : job T1 vivant dans la file
+ * durable (quel que soit le mode : le lancement manuel T1 y passe toujours),
+ * ou, en mode `legacy`, fichier connu de la file mémoire de ce processus.
+ *
+ * File durable illisible : on écarte TOUT — mieux vaut une reprise différée de
+ * cinq minutes qu'une double analyse facturée deux fois au fournisseur.
+ */
+async function fichiersEnFile(ids: number[]): Promise<Set<number>> {
+  const vivants = new Set<number>();
+  if (ids.length === 0) return vivants;
+  try {
+    const { listLiveTargets } = await import('@/services/ai/queue/job-queue.repository');
+    for (const t of await listLiveTargets('T1', 'asset_file', ids)) vivants.add(Number(t));
+  } catch (e) {
+    console.warn('[analysis-recovery] file durable illisible, reprise différée :', (e as Error).message);
+    return new Set(ids);
+  }
+  try {
+    const { isDurableQueueEnabled } = await import('@/services/ai/source-analysis/queue/t1-handler');
+    if (!isDurableQueueEnabled()) {
+      const { isFileQueuedInMemory } = await import('@/services/ai/source-analysis/analysis-queue');
+      for (const id of ids) if (isFileQueuedInMemory(id)) vivants.add(id);
+    }
+  } catch { /* file mémoire indisponible : rien de plus à écarter */ }
+  return vivants;
 }

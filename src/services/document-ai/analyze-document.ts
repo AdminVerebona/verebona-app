@@ -440,6 +440,8 @@ export async function analyzeDocument(
 
     await onProgress?.('extraction');
     const fullResult = await callGeminiWithFallback({
+      accountId,
+      sourceIds: allFileIds,
       promptVersion: PROMPT_VERSIONS.extract_full,
       fileUrls: allUrls,
       mimeType,

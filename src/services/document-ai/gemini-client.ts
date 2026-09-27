@@ -1,20 +1,37 @@
 /**
- * Client Gemini via Google AI Studio (API key) — V3.3
- * Modèle nominal : gemini-1.5-pro
- * Fallback : gemini-2.0-flash — uniquement sur échec technique, sortie invalide, ou sortie vide
+ * Analyse documentaire historique — passes `extract_full` et `detect_groups`.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * PASSE PAR LA PASSERELLE (plan de retrait WF-41, E-05)
+ *
+ * Ce module instanciait le SDK Gemini, uploadait lui-même les PDF et vidéos
+ * vers la Files API et enchaînait trois modèles codés en dur. Il passe
+ * désormais par `AiGateway.execute`, sous l'opération
+ * `legacy_document_analysis` de l'usage SOURCE_ANALYSIS (T1) : trace, coût
+ * et jetons, arrêt d'urgence et état de T1 (`AI_BLOCKED`), disjoncteur, clé
+ * du BO, modèles et plafonds de la version figée de T1.
+ *
+ * Inchangés : les gabarits de prompt et leurs substitutions, la préparation
+ * des contenus (lien web cité, DOCX lu ou ses images scannées, fichiers
+ * téléchargés côté serveur ; PDF et vidéos via la Files API, désormais par
+ * l'adaptateur), le mode JSON natif, les plafonds de sortie (3 000 / 8 000),
+ * le critère de repli (réponse vide ou JSON illisible), le dernier recours en
+ * texte libre sur le dernier modèle, puis `{}`.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { GoogleGenerativeAI, GenerativeModel, type Part } from '@google/generative-ai';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { isVideoMimeType, isPdfMimeType, uploadUrlToGemini, deleteGeminiFile } from './upload-to-gemini';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
-import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
+import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
+import { isAiGatewayError } from '@/services/ai/gateway/errors';
+import { isProviderNativeUri } from '@/services/ai/gateway/providers/gemini-files';
+import { resolveOperationConfig } from '@/services/ai/config/config-resolver';
+import type { AiAttachment } from '@/services/ai/gateway/types';
 
-const NOMINAL_MODEL   = 'gemini-3.1-flash-lite';
-const FALLBACK_MODEL  = 'gemini-3.5-flash';
-const FALLBACK2_MODEL = 'gemini-2.5-pro';
+/** Opération du référentiel portant ce module (usage SOURCE_ANALYSIS, T1). */
+export const LEGACY_DOCUMENT_ANALYSIS_OPERATION = 'legacy_document_analysis';
 
 export const PROMPT_VERSIONS = {
   extract:           'extract_v1',
@@ -39,6 +56,10 @@ function loadPrompt(promptVersion: string): string {
 }
 
 export interface GeminiCallOptions {
+  /** Compte analysé : trace, coût et quotas de la passerelle. */
+  accountId: number;
+  /** Fichiers analysés (`asset_files.id`) — trace de la passerelle. */
+  sourceIds?: number[];
   promptVersion: string;
   /** Publicly accessible URLs (S3 presigned) or GCS URIs */
   fileUrls: string[];
@@ -59,16 +80,23 @@ export interface GeminiAnalysisResult {
   costMicros: number;
 }
 
-// Tarifs Gemini en micros USD par token (1 USD = 1_000_000 micros)
-export const COST_MICROS_PER_TOKEN: Record<string, { input: number; output: number }> = {
-  'gemini-1.5-flash-8b': { input: 0.0375, output: 0.15  }, // $0.0375/M input, $0.15/M output
-  'gemini-2.5-flash':    { input: 0.075,  output: 0.30  }, // $0.075/M input, $0.30/M output
-  'gemini-2.5-pro':      { input: 1.25,   output: 10.0  }, // $1.25/M input, $10/M output
-};
+const VIDEO_MIME_TYPES = new Set([
+  'video/mp4',
+  'video/quicktime',
+  'video/x-msvideo',
+  'video/webm',
+  'video/x-matroska',
+]);
 
-export function calcCostMicros(model: string, inputTokens: number, outputTokens: number): number {
-  const rates = COST_MICROS_PER_TOKEN[model] ?? COST_MICROS_PER_TOKEN['gemini-1.5-flash-8b'];
-  return Math.round((inputTokens * rates.input + outputTokens * rates.output));
+// PDF et vidéos passent par la Files API (l'adaptateur de la passerelle s'en
+// charge) : l'inlineData base64 provoque des réponses vides sur certains PDF
+// denses, et les URLs présignées S3 privées ne sont pas lisibles par Gemini.
+function isVideoMimeType(mimeType: string): boolean {
+  return VIDEO_MIME_TYPES.has(mimeType);
+}
+
+function isPdfMimeType(mimeType: string): boolean {
+  return mimeType === 'application/pdf';
 }
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -130,13 +158,8 @@ async function extractDocxContent(url: string): Promise<
   return { type: 'images', parts: imageParts };
 }
 
-async function urlToInlineData(url: string, mimeType: string): Promise<{ inlineData: { mimeType: string; data: string } }> {
-  // GCS URIs (gs://) are handled natively by Gemini — pass as fileData
-  // S3 presigned URLs must be downloaded server-side and sent as base64 inlineData
-  // because Gemini's servers cannot access private S3 buckets
-  if (url.startsWith('gs://')) {
-    return { inlineData: { mimeType, data: url } }; // won't be used, handled below
-  }
+/** Télécharge un fichier côté serveur et le rend en base64 (données en ligne). */
+async function downloadAsBase64(url: string): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) {
     const hint = res.status === 403
@@ -147,20 +170,11 @@ async function urlToInlineData(url: string, mimeType: string): Promise<{ inlineD
     throw new Error(`Téléchargement du fichier échoué: HTTP ${res.status}${hint}`);
   }
   const buffer = await res.arrayBuffer();
-  const base64 = Buffer.from(buffer).toString('base64');
-  return { inlineData: { mimeType, data: base64 } };
+  return Buffer.from(buffer).toString('base64');
 }
 
-interface CallModelResult {
-  text: string;
-  inputTokens: number;
-  outputTokens: number;
-}
-
-async function callModel(
-  model: GenerativeModel,
-  options: GeminiCallOptions,
-): Promise<CallModelResult> {
+/** Prompt de la passe : gabarit du dépôt, substitutions, marqueurs non résolus retirés. */
+function buildPromptText(options: GeminiCallOptions): string {
   let promptText = loadPrompt(options.promptVersion);
   if (options.promptSubstitutions) {
     for (const [key, value] of Object.entries(options.promptSubstitutions)) {
@@ -168,61 +182,60 @@ async function callModel(
     }
   }
   // Remove any unresolved substitution markers
-  promptText = promptText.replace(/\{\{[A-Z_]+\}\}/g, '');
+  return promptText.replace(/\{\{[A-Z_]+\}\}/g, '');
+}
 
-  // Build file parts:
-  // - GCS URIs (gs://) → fileData.fileUri (Gemini accès natif)
-  // - Weblinks (text/html) → injecté comme texte dans le prompt, pas de binaire à fetcher
-  //   (les sites externes bloquent souvent les bots avec 403/429)
-  // - Tout autre fichier → téléchargé côté serveur → inlineData base64
-  const webLinkTexts: string[] = [];
-  const fileParts: Part[] = [];
+/**
+ * Contenus transmis au modèle, préparés comme par l'ancien client :
+ * - URI GCS (gs://) ou Files API → référencée nativement ;
+ * - lien web (text/html) → URL citée en tête de prompt, sans téléchargement
+ *   (les sites externes bloquent souvent les robots avec 403/429) ;
+ * - DOCX/XLSX → texte extrait en tête de prompt, sinon images scannées
+ *   intégrées envoyées en ligne, sinon rien ;
+ * - PDF et vidéos → pièce jointe par URL, uploadée vers la Files API par
+ *   l'adaptateur (attente de l'état ACTIVE, suppression après l'appel) ;
+ * - tout autre fichier → téléchargé côté serveur, envoyé en ligne (base64).
+ */
+async function prepareContents(options: GeminiCallOptions): Promise<{ prompt: string; attachments: AiAttachment[] }> {
+  const promptText = buildPromptText(options);
 
-  await Promise.all(options.fileUrls.map(async (url, i) => {
+  const prepared = await Promise.all(options.fileUrls.map(async (url, i): Promise<{ texts: string[]; attachments: AiAttachment[] }> => {
     const mime = options.fileMimeTypes?.[i] ?? options.mimeType;
-    if (url.startsWith('gs://') || url.startsWith('https://generativelanguage.googleapis.com/')) {
-      // GCS URI ou Gemini Files API URI — accès natif par Gemini
-      fileParts.push({ fileData: { mimeType: mime, fileUri: url } });
-    } else if (mime === 'text/html') {
-      // Weblink : passer l'URL comme texte, Gemini extrait le titre/contexte sans fetch
-      webLinkTexts.push(`URL du document web : ${url}`);
-    } else if (isUnsupportedBinaryMime(mime)) {
-      // DOCX/XLSX : Gemini ne supporte pas ces MIME types en inlineData.
-      // On extrait le texte s'il existe, sinon on récupère les images scannées intégrées.
+    if (isProviderNativeUri(url)) {
+      return { texts: [], attachments: [{ url, mimeType: mime }] };
+    }
+    if (mime === 'text/html') {
+      return { texts: [`URL du document web : ${url}`], attachments: [] };
+    }
+    if (isUnsupportedBinaryMime(mime)) {
       const content = await extractDocxContent(url);
       if (content.type === 'text') {
-        webLinkTexts.push(`Contenu du document (DOCX) :\n${content.value}`);
-      } else if (content.type === 'images') {
-        // Images scannées : on les envoie comme inlineData image à Gemini
-        fileParts.push(...content.parts);
+        return { texts: [`Contenu du document (DOCX) :\n${content.value}`], attachments: [] };
       }
-      // type === 'empty' : DOCX vide ou illisible — on envoie juste le prompt sans contenu binaire
-    } else {
-      const { inlineData } = await urlToInlineData(url, mime);
-      fileParts.push({ inlineData });
+      if (content.type === 'images') {
+        return {
+          texts: [],
+          attachments: content.parts.map((p, k) => ({
+            url: `${url}#image-${k}`, mimeType: p.inlineData.mimeType, data: p.inlineData.data,
+          })),
+        };
+      }
+      // type === 'empty' : DOCX vide ou illisible — le prompt seul, sans contenu binaire
+      return { texts: [], attachments: [] };
     }
+    if (isVideoMimeType(mime) || isPdfMimeType(mime)) {
+      const prefix = isVideoMimeType(mime) ? 'video' : 'pdf';
+      return { texts: [], attachments: [{ url, mimeType: mime, displayName: `${prefix}-analysis-${Date.now()}-${i}` }] };
+    }
+    return { texts: [], attachments: [{ url, mimeType: mime, data: await downloadAsBase64(url) }] };
   }));
 
+  const webLinkTexts = prepared.flatMap((p) => p.texts);
   // Injecter les URLs weblink en tête de prompt
-  const fullPrompt = webLinkTexts.length > 0
+  const prompt = webLinkTexts.length > 0
     ? `${webLinkTexts.join('\n')}\n\n${promptText}`
     : promptText;
-
-  const result = await model.generateContent([
-    { text: fullPrompt },
-    ...fileParts,
-  ]);
-
-  const text = result.response.text();
-  if (!text || text.trim().length === 0) {
-    throw new Error('Empty response from model');
-  }
-  const usage = result.response.usageMetadata;
-  return {
-    text,
-    inputTokens: usage?.promptTokenCount ?? 0,
-    outputTokens: usage?.candidatesTokenCount ?? 0,
-  };
+  return { prompt, attachments: prepared.flatMap((p) => p.attachments) };
 }
 
 function sanitizeJsonText(text: string): string {
@@ -256,146 +269,78 @@ function parseJsonFromText(text: string): unknown {
   throw new Error('No valid JSON found in response');
 }
 
+/** Critère de repli de l'ancien client : réponse vide ou JSON illisible. */
+function isUsableJsonText(text: string): boolean {
+  if (!text || text.trim().length === 0) return false;
+  try { parseJsonFromText(text); return true; } catch { return false; }
+}
+
 /**
- * Appelle Gemini avec fallback.
- * Pour les vidéos : uploade d'abord le fichier via Gemini Files API (requis car les URLs
- * presignées S3 privées ne sont pas accessibles par Gemini directement).
- * Fallback uniquement sur : échec technique, JSON invalide, sortie vide.
+ * Appelle le modèle via la passerelle, avec la chaîne de repli de la version
+ * de configuration de T1 (principal → repli 1 → repli 2), en JSON natif.
+ * Repli uniquement sur : échec technique, JSON invalide, sortie vide.
+ * Si le DERNIER modèle a échoué sur une sortie invalide, dernier recours en
+ * texte libre sur ce même modèle ; en cas d'échec, résultat vide `{}`.
+ * `AI_BLOCKED` (arrêt d'urgence, T1 désactivé ou suspendu) est propagé.
  */
 export async function callGeminiWithFallback(options: GeminiCallOptions): Promise<GeminiAnalysisResult> {
-  // Clé ACTIVE du BO et garde d'exploitation T1 (arrêt d'urgence, état du
-  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
-  // (legacy-gemini-access).
-  const apiKey = await requireLegacyGeminiKey('T1', 'gemini-client');
+  const { prompt, attachments } = await prepareContents(options);
 
-  // ── Vidéos et PDFs : upload préalable vers Gemini Files API ───────────────
-  // Gemini ne peut pas récupérer des URLs presignées S3 privées (OVH).
-  // On télécharge ces fichiers côté serveur et on les uploade vers l'API Files.
-  // Les PDFs passent aussi par l'API Files : l'inlineData base64 provoque des réponses
-  // vides sur certains PDFs denses (brochures commerciales, documents multi-pages lourds).
-  let resolvedOptions = options;
-  const geminiNamesToCleanup: string[] = [];
-
-  const needsFilesApi = options.fileMimeTypes
-    ? options.fileMimeTypes.some(m => isVideoMimeType(m) || isPdfMimeType(m))
-    : isVideoMimeType(options.mimeType) || isPdfMimeType(options.mimeType);
-
-  if (needsFilesApi) {
-    const resolvedUrls: string[] = [];
-    const resolvedMimeTypes: string[] = [];
-
-    for (let i = 0; i < options.fileUrls.length; i++) {
-      const mime = options.fileMimeTypes?.[i] ?? options.mimeType;
-      if (isVideoMimeType(mime) || isPdfMimeType(mime)) {
-        const prefix = isVideoMimeType(mime) ? 'video' : 'pdf';
-        const displayName = `${prefix}-analysis-${Date.now()}-${i}`;
-        const { fileUri, geminiName } = await uploadUrlToGemini(options.fileUrls[i], mime, displayName);
-        resolvedUrls.push(fileUri);
-        geminiNamesToCleanup.push(geminiName);
-      } else {
-        resolvedUrls.push(options.fileUrls[i]);
-      }
-      resolvedMimeTypes.push(mime);
-    }
-
-    resolvedOptions = {
-      ...options,
-      fileUrls: resolvedUrls,
-      fileMimeTypes: resolvedMimeTypes,
-    };
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
   // extract_detail requires more tokens (full transcription of multi-page docs)
   const isDetailPass = options.promptVersion.includes('detail');
-  const maxOutputTokens = isDetailPass ? 8000 : 3000;
+  const maxOutputTokensCap = isDetailPass ? 8000 : 3000;
 
-  // Configs : JSON strict en premier, texte libre en dernier recours
-  const jsonConfig  = { maxOutputTokens, responseMimeType: 'application/json' };
-  const plainConfig = { maxOutputTokens };
-
-  const nominalModel   = genAI.getGenerativeModel({ model: NOMINAL_MODEL,   generationConfig: jsonConfig });
-  const fallbackModel  = genAI.getGenerativeModel({ model: FALLBACK_MODEL,  generationConfig: jsonConfig });
-  const fallback2Model = genAI.getGenerativeModel({ model: FALLBACK2_MODEL, generationConfig: jsonConfig });
-  // Mode texte libre : dernier recours, Gemini répond en markdown, on extrait le JSON manuellement
-  const fallback2PlainModel = genAI.getGenerativeModel({ model: FALLBACK2_MODEL, generationConfig: plainConfig });
-
-  let rawText: string;
-  let usedFallback = false;
-  let modelUsed = NOMINAL_MODEL;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
+  const base = {
+    useCaseCode: 'SOURCE_ANALYSIS' as const,
+    operationCode: LEGACY_DOCUMENT_ANALYSIS_OPERATION,
+    accountId: options.accountId,
+    sourceIds: options.sourceIds,
+    prompt,
+    attachments,
+    accept: isUsableJsonText,
+    maxOutputTokensCap,
+  };
 
   try {
-    // Tentative 1 : flash-8b (le moins cher), JSON forcé
+    const r = await executeLegacyPrompt(base);
+    return toResult(r.data, r);
+  } catch (error) {
+    const invalidOutput = isAiGatewayError(error)
+      && error.code === 'ALL_MODELS_FAILED'
+      && error.lastFailureCode === 'INVALID_OUTPUT';
+    if (!invalidOutput) throw error;
+
+    // Tentative de dernier recours : dernier modèle de la chaîne, texte libre
+    // (Gemini répond en markdown, on extrait le JSON manuellement).
+    const configuration = await resolveOperationConfig(LEGACY_DOCUMENT_ANALYSIS_OPERATION);
+    const chain = [configuration.primaryModel, ...configuration.fallbackModels];
+    const lastIndex = chain.length - 1;
+    console.warn(`[GEMINI] JSON forcé échoué sur tous les modèles — tentative texte libre avec ${chain[lastIndex]}.`);
     try {
-      const r = await callModel(nominalModel, resolvedOptions);
-      rawText = r.text;
-      totalInputTokens += r.inputTokens;
-      totalOutputTokens += r.outputTokens;
-      parseJsonFromText(rawText);
-    } catch (nominalError) {
-      console.warn(`[GEMINI] ${NOMINAL_MODEL} failed:`, (nominalError as Error).message, '— fallback sur', FALLBACK_MODEL);
-
-      // Tentative 2 : flash-2.5, JSON forcé
-      try {
-        const r = await callModel(fallbackModel, resolvedOptions);
-        rawText = r.text;
-        totalInputTokens += r.inputTokens;
-        totalOutputTokens += r.outputTokens;
-        parseJsonFromText(rawText);
-        usedFallback = true;
-        modelUsed = FALLBACK_MODEL;
-      } catch (fallbackError) {
-        console.warn(`[GEMINI] ${FALLBACK_MODEL} failed:`, (fallbackError as Error).message, '— fallback sur', FALLBACK2_MODEL);
-
-        // Tentative 3 : pro-2.5, JSON forcé
-        try {
-          const r = await callModel(fallback2Model, resolvedOptions);
-          rawText = r.text;
-          totalInputTokens += r.inputTokens;
-          totalOutputTokens += r.outputTokens;
-          parseJsonFromText(rawText);
-          usedFallback = true;
-          modelUsed = FALLBACK2_MODEL;
-        } catch (fallback2Error) {
-          const lastMsg = (fallback2Error as Error).message;
-          const isJsonParseError = lastMsg.includes('No valid JSON') || lastMsg.includes('Empty response');
-
-          if (!isJsonParseError) {
-            throw new Error(`Tous les modèles ont échoué (${NOMINAL_MODEL} → ${FALLBACK_MODEL} → ${FALLBACK2_MODEL}). Dernière erreur : ${lastMsg}`);
-          }
-
-          // Tentative 4 : pro-2.5 en texte libre (dernier recours)
-          console.warn(`[GEMINI] JSON forcé échoué sur tous les modèles — tentative texte libre avec ${FALLBACK2_MODEL}.`);
-          try {
-            const r = await callModel(fallback2PlainModel, resolvedOptions);
-            rawText = r.text;
-            totalInputTokens += r.inputTokens;
-            totalOutputTokens += r.outputTokens;
-            parseJsonFromText(rawText);
-            usedFallback = true;
-            modelUsed = FALLBACK2_MODEL;
-          } catch {
-            console.warn(`[GEMINI] Toutes tentatives échouées pour la passe "${options.promptVersion}" — résultat vide retourné.`);
-            rawText = '{}';
-            usedFallback = true;
-            modelUsed = FALLBACK2_MODEL;
-          }
-        }
-      }
+      const r = await executeLegacyPrompt({ ...base, jsonResponse: false, firstModelIndex: lastIndex, maxModelAttempts: 1 });
+      return { ...toResult(r.data, r), usedFallback: true };
+    } catch (lastError) {
+      if (isAiGatewayError(lastError) && lastError.code === 'AI_BLOCKED') throw lastError;
+      console.warn(`[GEMINI] Toutes tentatives échouées pour la passe "${options.promptVersion}" — résultat vide retourné.`);
+      return {
+        parsed: {}, rawText: '{}', model: chain[lastIndex], usedFallback: true,
+        inputTokens: 0, outputTokens: 0, costMicros: 0,
+      };
     }
-  } finally {
-    await Promise.all(geminiNamesToCleanup.map(name => deleteGeminiFile(name)));
   }
+}
 
+function toResult(
+  rawText: string,
+  r: { model: string; usedFallback: boolean; inputTokens: number; outputTokens: number; costMicros: number },
+): GeminiAnalysisResult {
   return {
-    parsed: parseJsonFromText(rawText!),
-    rawText: rawText!,
-    model: modelUsed,
-    usedFallback,
-    inputTokens: totalInputTokens,
-    outputTokens: totalOutputTokens,
-    costMicros: calcCostMicros(modelUsed, totalInputTokens, totalOutputTokens),
+    parsed: parseJsonFromText(rawText),
+    rawText,
+    model: r.model,
+    usedFallback: r.usedFallback,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    costMicros: r.costMicros,
   };
 }

@@ -187,6 +187,7 @@ export async function createAgendaItem(
           input.description,
           input.originType ?? 'manual',
           input.originFieldKey,
+          { accountId, userId: createdByUserId ?? undefined },
         )
   );
 

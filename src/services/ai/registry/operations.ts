@@ -42,6 +42,41 @@ export interface AiOperationDefinition {
    * JSON : la sortie devient invalide et l'appel échoue sur tous les modèles.
    */
   minOutputTokens?: number;
+  /**
+   * Format de la sortie validée (cf. `output-validator`). `json` par défaut ;
+   * `text` : la réponse brute est validée par le schéma de l'appelant.
+   */
+  outputFormat?: 'json' | 'text';
+  /** Mode JSON natif du fournisseur (`responseMimeType: application/json`). */
+  jsonResponse?: boolean;
+  /**
+   * Prompt HISTORIQUE, composé par l'appelant à partir de son gabarit du dépôt
+   * (`src/services/document-ai/prompts/…`) et transmis dans la variable
+   * `LEGACY_PROMPT` d'un prompt technique de simple relais.
+   *
+   * Plan de retrait WF-41 : ces modules passent par la passerelle (trace,
+   * coût, garde d'exploitation, disjoncteur, clé du BO, modèles de la version
+   * figée) SANS changer leur prompt ni leur contrat de sortie. Le préambule
+   * administrable du traitement n'y est donc PAS ajouté : il est rédigé pour
+   * le prompt technique de l'usage (sortie et schéma propres), et le préfixer
+   * à un prompt au contrat différent reproduirait le désaccord prompt/schéma
+   * de la panne du 18/09/2026.
+   */
+  legacyPrompt?: boolean;
+  /**
+   * Variables transmises SANS masquage (`redaction.ts`).
+   *
+   * ⚠️ ÉCART ASSUMÉ AU §5.6 (minimisation), limité aux prompts historiques
+   * relayés (`legacyPrompt`) — décision de la revue de migration WF-41.
+   * Le masquage porte sur des suites de 13 à 19 chiffres, IBAN et NIR : sur
+   * le texte d'un document (DOCX lu, texte extrait), il effaçait les SIRET,
+   * numéros de contrat, numéros de série et IBAN fournisseurs que ces modules
+   * ont précisément pour rôle d'extraire — alors que le même document en PDF,
+   * transmis en pièce jointe, n'est jamais masqué. Avant la migration, ces
+   * modules envoyaient le texte intégral : ce comportement est conservé.
+   * Le contrôle de démarrage refuse cette exemption hors `legacyPrompt`.
+   */
+  unredactedVariables?: readonly string[];
   /** Une opération inactive ne peut pas être exécutée par la gateway. */
   active: boolean;
   /** false ⇒ n'incrémente pas les compteurs de quota client. */
@@ -49,6 +84,13 @@ export interface AiOperationDefinition {
 }
 
 const GEMINI = 'gemini';
+
+/**
+ * Variable de relais des prompts historiques (`legacy_*_v1.txt`), exemptée de
+ * masquage — voir `unredactedVariables`. Même nom que
+ * `gateway/legacy-prompt#LEGACY_PROMPT_VARIABLE`.
+ */
+const LEGACY_RELAY_VARIABLES = ['LEGACY_PROMPT'] as const;
 
 /**
  * ⚠️ CDC Assistant V3.1 §15.10 — SÉPARATION DES FAMILLES DE TRAITEMENT
@@ -297,6 +339,90 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
     promptCode: 'mascot_t6_v1', timeoutMs: 8_000,
     outputSchema: 'MascotT6Output', active: true, billable: false,
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MODULES HISTORIQUES MIGRÉS SUR LA PASSERELLE — plan de retrait WF-41 (E-05)
+  //
+  // Anciennement hors passerelle (`legacy-gemini-access`, supprimé) : chacun
+  // appelait le SDK avec ses propres modèles. Ils passent désormais par
+  // `AiGateway.execute` — trace d'exécution, coût et jetons, arrêt d'urgence et
+  // état du traitement, disjoncteur, clé du BO — avec les modèles de la version
+  // de configuration de LEUR traitement (T1 à T4).
+  //
+  // Prompt et contrat de sortie inchangés (`legacyPrompt`, `outputFormat:
+  // 'text'`) : le prompt est composé par le module à partir de son gabarit, la
+  // réponse brute lui est rendue et il l'analyse comme avant.
+  //
+  // Déclarées APRÈS les opérations nominales de chaque usage : le disjoncteur
+  // sonde les modèles de la PREMIÈRE opération active d'un usage.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // T1 — analyse documentaire historique (`gemini-client`, passes
+  // `extract_full` et `detect_groups`). Pas de délai dans l'ancien client :
+  // 5 min, la durée maximale d'attente d'une vidéo côté fournisseur.
+  legacy_document_analysis: {
+    operationCode: 'legacy_document_analysis', useCaseCode: 'SOURCE_ANALYSIS',
+    label: 'Analyse documentaire historique (passe unique, regroupement)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: 'legacy_document_analysis_v1', timeoutMs: 300_000,
+    outputSchema: 'LegacyRawText', outputFormat: 'text', jsonResponse: true, legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
+    active: true, billable: true,
+  },
+
+  // T3 — complétion des champs d'un bien et cohérence (usages historiques 3 à 5).
+  legacy_asset_suggest: {
+    operationCode: 'legacy_asset_suggest', useCaseCode: 'DATA_RECONCILIATION',
+    label: "Suggestions IA à la demande pour l'onglet Informations d'un bien",
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: 'legacy_asset_suggest_v1', timeoutMs: 120_000,
+    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
+    active: true, billable: false,
+  },
+  legacy_apply_suggestions: {
+    operationCode: 'legacy_apply_suggestions', useCaseCode: 'DATA_RECONCILIATION',
+    label: "Complétion silencieuse des champs vides d'un bien",
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: 'legacy_apply_suggestions_v1', timeoutMs: 120_000,
+    outputSchema: 'LegacyRawText', outputFormat: 'text', jsonResponse: true, legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
+    active: true, billable: true,
+  },
+  legacy_enrich_coherence: {
+    operationCode: 'legacy_enrich_coherence', useCaseCode: 'DATA_RECONCILIATION',
+    label: "Enrichissement et contrôle de cohérence combinés d'un bien",
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: 'legacy_enrich_coherence_v1', timeoutMs: 45_000,
+    outputSchema: 'LegacyRawText', outputFormat: 'text', jsonResponse: true, legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
+    active: true, billable: true,
+  },
+
+  // T2 — recherche historique (usages 6 et 7), famille de modèles assistant
+  // (§15.10). Délais repris des modules (course contre un minuteur).
+  legacy_semantic_search: {
+    operationCode: 'legacy_semantic_search', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    label: 'Recherche sémantique historique (repli de la recherche classique)',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: 'legacy_semantic_search_v1', timeoutMs: 30_000,
+    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
+    active: true, billable: false,
+  },
+  legacy_intelligent_search: {
+    operationCode: 'legacy_intelligent_search', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    label: 'Réponse générative historique de la recherche intelligente',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: 'legacy_intelligent_search_v1', timeoutMs: 25_000,
+    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
+    active: true, billable: true,
+  },
+
+  // T4 — classement action / information d'une échéance (usage historique 8).
+  legacy_classify_home_category: {
+    operationCode: 'legacy_classify_home_category', useCaseCode: 'AGENDA_INTELLIGENCE',
+    label: "Classement action / information d'une échéance (moteur historique)",
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: 'legacy_classify_home_category_v1', timeoutMs: 30_000,
+    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
+    active: true, billable: false,
   },
 };
 

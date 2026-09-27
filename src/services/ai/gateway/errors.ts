@@ -25,14 +25,26 @@ export class AiGatewayError extends Error {
   readonly operationCode: string;
   readonly recoverable: boolean;
   readonly cause?: unknown;
+  /**
+   * `ALL_MODELS_FAILED` uniquement : code de l'échec du DERNIER modèle
+   * sollicité. Permet à un appelant de distinguer une sortie invalide
+   * (`INVALID_OUTPUT`) d'une panne technique sans analyser le message.
+   */
+  readonly lastFailureCode?: AiErrorCode;
 
-  constructor(code: AiErrorCode, operationCode: string, message: string, opts?: { recoverable?: boolean; cause?: unknown }) {
+  constructor(
+    code: AiErrorCode,
+    operationCode: string,
+    message: string,
+    opts?: { recoverable?: boolean; cause?: unknown; lastFailureCode?: AiErrorCode },
+  ) {
     super(message);
     this.name = 'AiGatewayError';
     this.code = code;
     this.operationCode = operationCode;
     this.recoverable = opts?.recoverable ?? false;
     this.cause = opts?.cause;
+    this.lastFailureCode = opts?.lastFailureCode;
   }
 }
 

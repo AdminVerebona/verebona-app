@@ -56,6 +56,9 @@ export function enrichPageContext(
   const doc = /^\/documents\/(\d+)(\/|$)/.exec(route);
   if (asset && !out.assetId) out.assetId = asset[1];
   if (doc && !out.documentId) out.documentId = doc[1];
+  // Fiche fournisseur (`/fournisseurs/[id]`) : « ce fournisseur ».
+  const fournisseur = /^\/fournisseurs\/(\d+)(\/|$)/.exec(route);
+  if (fournisseur && !out.supplierId) out.supplierId = fournisseur[1];
   if (platform && !out.platform) out.platform = platform;
   return out;
 }

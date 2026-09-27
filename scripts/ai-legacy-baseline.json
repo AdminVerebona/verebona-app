@@ -4,16 +4,8 @@
     "Ce fichier ne doit JAMAIS grossir. Chaque entrée retirée devient définitivement interdite.",
     "Régénération après résorption : npm run ai:baseline"
   ],
-  "generatedAt": "2026-09-18T08:13:24.794Z",
+  "generatedAt": "2026-09-27T13:50:45.280Z",
   "phase": 1,
-  "count": 7,
-  "allowed": [
-    "sdk:src/app/api/assets/[id]/ai-suggestions/route.ts",
-    "sdk:src/lib/gemini-search.ts",
-    "sdk:src/lib/intelligent-search.ts",
-    "sdk:src/services/agenda/AgendaClassificationService.ts",
-    "sdk:src/services/document-ai/apply-ai-suggestions.ts",
-    "sdk:src/services/document-ai/enrich-and-coherence.service.ts",
-    "sdk:src/services/document-ai/gemini-client.ts"
-  ]
+  "count": 0,
+  "allowed": []
 }

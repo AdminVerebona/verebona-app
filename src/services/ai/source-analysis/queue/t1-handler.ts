@@ -33,8 +33,9 @@
  * un document supprimé entre la mise en file et l'exécution doit être ignoré,
  * pas analysé à partir d'un instantané périmé.
  */
-import { registerJobHandler } from '../../queue/queue-worker';
-import { enqueue } from '../../queue/job-queue.repository';
+import { registerJobHandler, nudgeQueueWorker, type JobOutcome } from '../../queue/queue-worker';
+import { enqueue, type QueuedJob } from '../../queue/job-queue.repository';
+import { JobDeferredError } from '../../queue/queue-policy';
 
 /** Type de cible, pour la clé de déduplication. */
 const TARGET_TYPE = 'asset_file';
@@ -52,18 +53,19 @@ const TARGET_TYPE = 'asset_file';
  *
  * ── DÉCISION LOT IA 2 (OPS-001, T1-024) : LE DÉFAUT RESTE `legacy` POUR T1 ──
  * T3 et T4 sont passés en file durable sans drapeau. T1 non, pour trois
- * raisons vérifiées dans le code, à lever avant la bascule :
- *   · débit : la file mémoire analyse 2 fichiers en parallèle dès le dépôt ;
- *     le boucleur sert T1 séquentiellement (5 par tour, tour toutes les
- *     15 s après un premier tour différé de 30 s) — un dépôt de 20 fichiers
- *     serait nettement plus lent ;
- *   · état du fichier : la file mémoire remet à « non analysé » un fichier
- *     resté `UPLOADED` après son tour (`remettreEnAttenteSiIntact`), la file
- *     durable non — un fichier refusé pour quota resterait « En file
- *     d'attente » à l'écran ;
- *   · le bail du boucleur (`withJobLock`, 30 s) est plus court qu'une analyse
- *     T1 : deux tours peuvent se chevaucher (sans doublon grâce à SKIP LOCKED,
- *     mais avec deux analyses T1 simultanées).
+ * freins constatés au lot 2. Le lot 3 les lève ; le défaut reste `legacy`
+ * jusqu'à la recette, la bascule se fait par variable d'environnement :
+ *   · débit — LEVÉ : le boucleur tient `AI_QUEUE_CONCURRENCY` exécutions
+ *     simultanées par instance (3 par défaut), et une mise en file T1 le
+ *     réveille immédiatement (`nudgeQueueWorker`) ;
+ *   · état du fichier — LEVÉ : les suites T1 (`onT1JobSettled`) alignent
+ *     l'état du fichier sur l'issue du job. Un refus de quota REPORTE le job
+ *     (backoff, puis échec définitif motivé) et le fichier repasse « non
+ *     analysé » : jamais « En file d'attente » sans job vivant ;
+ *   · bail — LEVÉ : le bail du tour ne couvre plus que l'entretien ; chaque
+ *     exécution tient son propre bail (`AI_QUEUE_LEASE_SECONDS`, 300 s),
+ *     renouvelé toutes les 100 s tant qu'elle travaille, et le délai global
+ *     GEN-012 (15 min pour T1) borne l'exécution.
  * Le boucleur est bien démarré en production (`instrumentation.ts`, étape 6) ;
  * la bascule reste un simple `AI_DURABLE_QUEUE=enabled`, réversible.
  */
@@ -83,7 +85,11 @@ export function isDurableQueueEnabled(): boolean {
 export async function enqueueDurableFileAnalyses(
   fileIds: number[],
   accountId: number,
-  options: { userId?: number; origin: string },
+  options: {
+    userId?: number; origin: string;
+    /** Reprise serveur ou réanalyse d'exploitation : non facturée au compte. */
+    billable?: boolean;
+  },
 ): Promise<number[]> {
   const acceptes: number[] = [];
 
@@ -94,7 +100,10 @@ export async function enqueueDurableFileAnalyses(
         treatment: 'T1',
         scope: { accountId, targetType: TARGET_TYPE, targetId: fileId },
         triggerCode: options.origin,
-        payload: { fileId, userId: options.userId ?? null, origin: options.origin },
+        payload: {
+          fileId, userId: options.userId ?? null, origin: options.origin,
+          ...(options.billable === false ? { billable: false } : {}),
+        },
       });
       // `skip` : un travail équivalent attend déjà. Ce n'est pas un refus, mais
       // le fichier n'a pas à être compté deux fois comme nouvellement accepté.
@@ -106,6 +115,8 @@ export async function enqueueDurableFileAnalyses(
     }
   }
 
+  // Un dépôt n'attend pas le tour suivant du boucleur (15 s) : réveil immédiat.
+  if (acceptes.length > 0) nudgeQueueWorker();
   return acceptes;
 }
 
@@ -149,7 +160,7 @@ export function registerSourceAnalysisHandler(): void {
     // La garde suit l'exécution jusque dans le pipeline : après un rollback,
     // un arrêt d'urgence ou une désactivation, aucun résultat de cette
     // exécution n'est écrit (contrôle avant chaque écriture significative).
-    await analyzeFileSources([fileId], job.accountId, {
+    const outcome = await analyzeFileSources([fileId], job.accountId, {
       userId: payload.userId ?? undefined,
       origin: payload.origin ?? 'queue',
       guard,
@@ -157,7 +168,89 @@ export function registerSourceAnalysisHandler(): void {
       // de l'utilisateur et n'est pas refusée faute de crédit (manual-launch).
       ...(payload.billable === false ? { billable: false } : {}),
     });
-  });
+
+    // Quota épuisé : le pipeline n'a rien fait. Clore DONE mentirait au SCR-08
+    // et laisserait le fichier « En file d'attente » ; le job est REPORTÉ
+    // (backoff, sans tentative consommée), puis abandonné avec un motif clair.
+    if (outcome?.skippedReason === 'quota') {
+      throw new JobDeferredError('quota d’analyse du compte épuisé');
+    }
+  }, { onSettled: onT1JobSettled });
 
   console.info('[t1-queue] Exécutant T1 enregistré auprès du boucleur.');
+}
+
+/**
+ * Suites d'un job T1 : l'état du fichier, visible par l'utilisateur, suit
+ * l'état du job — audit final BO IA ligne 1 (« fichier laissé En file sur
+ * refus quota »), SCR-08.
+ *
+ *   issue                              fichier
+ *   ─────────────────────────────────  ───────────────────────────────────────
+ *   done                               resté `UPLOADED` (rien fait) → non analysé
+ *   deferred (quota), ou définitif     `UPLOADED`/`ANALYZING` → non analysé ;
+ *                                      la reprise serveur le remet en file dès
+ *                                      que le compte a du crédit
+ *   failed, nouvelle tentative prévue  `ANALYZING` → `UPLOADED` (« En file » :
+ *                                      c'est vrai, un job l'attend)
+ *   failed définitif (dont timeout)    `UPLOADED`/`ANALYZING` → `ANALYSIS_FAILED`
+ *                                      avec le motif
+ *   interrupted (rollback, arrêt…)     `ANALYZING` → `UPLOADED` (remis en tête)
+ *
+ * Seuls les états transitoires sont touchés : un fichier déjà ANALYZED (ou
+ * supprimé) n'est jamais réécrit.
+ */
+export async function onT1JobSettled(job: QueuedJob, outcome: JobOutcome): Promise<void> {
+  if (job.targetType !== TARGET_TYPE || job.accountId == null) return;
+  const payloadFileId = (job.payload as { fileId?: unknown } | null)?.fileId;
+  const fileId = Number(payloadFileId ?? job.targetId);
+  if (!Number.isInteger(fileId)) return;
+
+  switch (outcome.kind) {
+    case 'done':
+      await setFileState(fileId, job.accountId, ['UPLOADED'], { analysisState: null });
+      return;
+    case 'deferred':
+      await setFileState(fileId, job.accountId, ['UPLOADED', 'ANALYZING'], { analysisState: null });
+      return;
+    case 'interrupted':
+      await setFileState(fileId, job.accountId, ['ANALYZING'], { analysisState: 'UPLOADED' });
+      return;
+    case 'failed':
+      if (!outcome.permanent) {
+        await setFileState(fileId, job.accountId, ['ANALYZING'], { analysisState: 'UPLOADED' });
+      } else {
+        await setFileState(fileId, job.accountId, ['UPLOADED', 'ANALYZING'], {
+          analysisState: 'ANALYSIS_FAILED',
+          analysisFailReason: outcome.timedOut
+            ? 'Analyse interrompue : délai maximal dépassé.'
+            : 'Analyse impossible après plusieurs tentatives.',
+          incrementRetry: true,
+        });
+      }
+      return;
+  }
+}
+
+async function setFileState(
+  fileId: number,
+  accountId: number,
+  from: string[],
+  patch: { analysisState: string | null; analysisFailReason?: string; incrementRetry?: boolean },
+): Promise<void> {
+  const [{ db }, { assetFiles }, { and, eq, inArray, sql }] = await Promise.all([
+    import('@/db'), import('@/db/schema'), import('drizzle-orm'),
+  ]);
+  await db.update(assetFiles)
+    .set({
+      analysisState: patch.analysisState,
+      ...(patch.analysisFailReason ? { analysisFailReason: patch.analysisFailReason } : {}),
+      ...(patch.incrementRetry ? { analysisRetryCount: sql`${assetFiles.analysisRetryCount} + 1` } : {}),
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(assetFiles.id, fileId),
+      eq(assetFiles.accountId, accountId),
+      inArray(assetFiles.analysisState, from),
+    ));
 }

@@ -31,6 +31,7 @@ import {
   parseEntityRef, hrefBien, ROUTES,
   type EntityKind, type EntityRef, type OngletBien,
 } from './entity-ref';
+import { supplierHref } from '@/lib/supplier-routes';
 
 /**
  * Vérificateurs d'appartenance au compte (§22.7).
@@ -42,6 +43,11 @@ export interface AccessChecker {
   assetInAccount(accountId: number, assetId: number): Promise<boolean>;
   documentInAccount(accountId: number, documentId: number): Promise<boolean>;
   agendaItemInAccount(accountId: number, agendaItemId: number): Promise<boolean>;
+  /**
+   * Fournisseur du compte (non supprimé). Facultatif : un vérificateur qui ne
+   * le fournit pas refuse toute ouverture de fiche fournisseur.
+   */
+  supplierInAccount?(accountId: number, supplierId: number): Promise<boolean>;
   helpEntryPublished(slug: string): Promise<boolean>;
 }
 
@@ -55,6 +61,7 @@ export const CIBLE_ATTENDUE: Readonly<Partial<Record<VerebonaActionType, EntityK
   OPEN_ASSET: 'asset',
   OPEN_DOCUMENT: 'document',
   OPEN_AGENDA_ITEM: 'agenda_item',
+  OPEN_SUPPLIER: 'supplier',
   START_ADD_DOCUMENT: 'asset',
   START_ADD_AGENDA_ITEM: 'asset',
   OPEN_EXPORT_AREA: 'asset',
@@ -117,6 +124,11 @@ function buildHref(
       return ROUTES.AGENDA;
     case 'OPEN_TO_PROCESS':
       return ROUTES.A_TRAITER;
+    // Fiche fournisseur (`/fournisseurs/[id]`) et liste (`/fournisseurs`).
+    case 'OPEN_SUPPLIER':
+      return ref ? supplierHref(ref.id) : null;
+    case 'OPEN_SUPPLIERS':
+      return ROUTES.FOURNISSEURS;
     case 'OPEN_ACCOUNT':
       return ROUTES.COMPTE;
     case 'OPEN_PRICING':
@@ -250,6 +262,7 @@ async function checkAccess(
         case 'asset': return access.assetInAccount(accountId, ref.id);
         case 'document': return access.documentInAccount(accountId, ref.id);
         case 'agenda_item': return access.agendaItemInAccount(accountId, ref.id);
+        case 'supplier': return access.supplierInAccount ? access.supplierInAccount(accountId, ref.id) : false;
         // Équipements et pièces n'ouvrent jamais directement : ils sont
         // convertis en OPEN_ASSET sur le bien parent en amont.
         default: return false;

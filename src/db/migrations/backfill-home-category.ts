@@ -33,6 +33,7 @@ async function main() {
       description: agendaItems.description,
       originType: agendaItems.originType,
       originFieldKey: agendaItems.originFieldKey,
+      accountId: agendaItems.accountId,
     })
     .from(agendaItems)
     .where(isNull(agendaItems.homeCategory));
@@ -59,6 +60,7 @@ async function main() {
           item.description,
           item.originType,
           item.originFieldKey,
+          { accountId: item.accountId },
         );
 
         await db

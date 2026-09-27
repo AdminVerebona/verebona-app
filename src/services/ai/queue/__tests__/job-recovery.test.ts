@@ -85,6 +85,9 @@ describe('reprise des RUNNING abandonnés (SQL)', () => {
   it('le boucleur reprend les abandonnés avant de prélever', () => {
     const worker = read('src/services/ai/queue/queue-worker.ts');
     const tick = worker.slice(worker.indexOf('const tick'));
-    expect(tick.indexOf('recoverAbandonedJobs()')).toBeLessThan(tick.indexOf('runOnce()'));
+    // Lot 3 : le prélèvement se fait par le pool borné (`fillSlots`), hors du
+    // bail d'entretien — toujours APRÈS la reprise des abandonnés.
+    expect(tick.indexOf('recoverAbandonedJobs()')).toBeGreaterThan(-1);
+    expect(tick.indexOf('recoverAbandonedJobs()')).toBeLessThan(tick.indexOf('fillSlots()'));
   });
 });

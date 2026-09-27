@@ -38,6 +38,7 @@ import { isPlanAiEligible } from '../registries/capability-registry';
 import { saveClarification } from './clarification.service';
 import { pgClient } from '@/db';
 import { buildGenerationPort } from './generation.adapter';
+import { isTreatmentRunnable } from '@/services/ai/queue/runnable-guard';
 import { buildClassificationPort } from './classification.adapter';
 import { answerFromData } from './data-answer.service';
 import { accountDataRepository } from './account-data.repository';
@@ -61,6 +62,9 @@ function buildAccessChecker(): AccessChecker {
       exists(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL LIMIT 1`, [id, a]),
     agendaItemInAccount: (a, id) =>
       exists(`SELECT 1 FROM agenda_items WHERE id = $1 AND account_id = $2 LIMIT 1`, [id, a]),
+    // Fiche fournisseur : mêmes règles que la page (`supplier-detail.service`).
+    supplierInAccount: (a, id) =>
+      exists(`SELECT 1 FROM suppliers WHERE id = $1 AND account_id = $2 AND status <> 'deleted' LIMIT 1`, [id, a]),
     // Article publié dans le corpus du Centre d'aide de l'environnement — la
     // table `verebona_help_entries` n'est plus une source (CDC Centre d'aide §2).
     helpEntryPublished: (id) => helpArticlePublished(id),
@@ -138,6 +142,9 @@ export function construireActionIntents(
       case 'agenda_item':
         if (autorisees.has('OPEN_AGENDA_ITEM')) intents.push({ type: 'OPEN_AGENDA_ITEM', targetId: source.id });
         break;
+      case 'supplier':
+        if (autorisees.has('OPEN_SUPPLIER')) intents.push({ type: 'OPEN_SUPPLIER', targetId: source.id });
+        break;
       // Un équipement ou une pièce n'a pas d'existence propre dans la
       // navigation : on ouvre le bien parent sur le bon onglet. C'est aussi ce
       // qui permet au contrôle d'accès de porter sur une table réelle.
@@ -199,6 +206,8 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     // traverser l'état pour rien.
     classifyWithAI: buildClassificationPort(),
     generateWithAI: buildGenerationPort(),
+    // EStop / T2 désactivé ou suspendu : message explicite au repli (T2-041).
+    isAiUnavailable: async () => !(await isTreatmentRunnable('T2')),
 
     // ── Cascade de non-escalade : niveaux 1 et 2, sans modèle ────────────
     answerFromData: (route, input, thresholds) =>
@@ -215,7 +224,7 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         intent: route.intent,
       }),
     loadThresholds: () => loadCascadeThresholds(),
-    // Étape « base d'aide » du routage (§9.4.7) — corpus en cache 5 min.
+    // Étape « base d'aide » du routage (§9.4.7) — corpus en cache (§43 HELP_CACHE_TTL_SECONDS).
     loadHelpCorpus: () => loadHelpCorpus(),
 
     resolveActions: (route, input, sources) =>

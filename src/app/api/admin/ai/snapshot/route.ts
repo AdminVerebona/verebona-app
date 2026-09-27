@@ -1,5 +1,5 @@
 /**
- * /api/admin/ai/snapshot — CDC BO IA SCR-11, SNP-005 à SNP-009.
+ * /api/admin/ai/snapshot — CDC BO IA SCR-11, SNP-005 à SNP-010.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CETTE ROUTE NE COPIE RIEN
@@ -10,7 +10,11 @@
  * l'illusion d'un mécanisme complet là où il n'y a qu'une moitié.
  *
  * GET  décrit le plan et dit si l'exécution est possible ici.
- * POST l'applique, sous trois gardes.
+ *      `?check=reopening` : contrôle anti-effets (SNP-010), en lecture ;
+ *      409 tant que la neutralisation est incomplète — la chaîne
+ *      d'exploitation l'interroge avant de rouvrir la préproduction.
+ *      `?format=sql-check` : le même contrôle en script SQL autonome.
+ * POST l'applique, sous trois gardes, puis rejoue le contrôle.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * LE GET NE DÉCLENCHE RIEN, ET C'EST INTENTIONNEL
@@ -23,9 +27,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import {
   NEUTRALIZATION_PLAN, affectedTables, testAccountEmails, renderNeutralizationScript,
+  renderReopeningCheckScript,
 } from '@/services/ai/snapshot/neutralization-plan';
 import {
-  assertNeutralizationAllowed, runNeutralization, NeutralizationRefused,
+  assertNeutralizationAllowed, runNeutralization, NeutralizationRefused, verifyNeutralization,
 } from '@/services/ai/snapshot/neutralization.service';
 import { getAiEnvironment } from '@/services/ai/config/environment';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
@@ -51,6 +56,35 @@ export async function GET(req: NextRequest) {
     } catch (e) {
       return NextResponse.json({ error: 'INVALID_TEST_ACCOUNTS', message: (e as Error).message }, { status: 422 });
     }
+  }
+
+  // SNP-010 : script de contrôle seul, en lecture, pour la chaîne côté
+  // préproduction (psql -v ON_ERROR_STOP=1 : échoue s'il reste un résidu).
+  if (req.nextUrl.searchParams.get('format') === 'sql-check') {
+    try {
+      return new NextResponse(renderReopeningCheckScript(), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/sql; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="controle-reouverture-snapshot.sql"',
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (e) {
+      return NextResponse.json({ error: 'INVALID_TEST_ACCOUNTS', message: (e as Error).message }, { status: 422 });
+    }
+  }
+
+  // SNP-010 : contrôle anti-effets avant réouverture. Lecture seule ; 409 tant
+  // qu'un contrôle n'est pas à 0, pour qu'un `curl --fail` arrête la chaîne.
+  if (req.nextUrl.searchParams.get('check') === 'reopening') {
+    const verification = await verifyNeutralization();
+    return NextResponse.json(
+      verification.complete
+        ? { reopeningAllowed: true, ...verification }
+        : { reopeningAllowed: false, error: 'NEUTRALIZATION_INCOMPLETE', ...verification },
+      { status: verification.complete ? 200 : 409 },
+    );
   }
 
   const environment = getAiEnvironment();

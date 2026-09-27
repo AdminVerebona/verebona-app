@@ -9,6 +9,13 @@ export interface AiAttachment {
   url: string;
   mimeType: string;
   displayName?: string;
+  /**
+   * Contenu déjà en mémoire, encodé en base64 : transmis tel quel en données
+   * en ligne, sans téléchargement ni extraction. Sert aux modules historiques
+   * migrés (images extraites d'un DOCX scanné, fichiers téléchargés côté
+   * serveur) — `url` n'est alors qu'un libellé de trace.
+   */
+  data?: string;
 }
 
 export interface AiGatewayRequest<T> {
@@ -50,6 +57,31 @@ export interface AiGatewayRequest<T> {
    * n'autorise aucun appel.
    */
   maxModelAttempts?: number;
+  /**
+   * Rang du premier modèle sollicité dans la chaîne (0 = principal, 1 =
+   * premier repli…). Absent : 0. Sert à l'ESCALADE explicite de l'assistant
+   * (CDC Assistant §15.4) : le modèle d'escalade est appelé seul, sans
+   * rappeler le principal. Combiné à `maxModelAttempts`, qui compte à partir
+   * de ce rang.
+   */
+  firstModelIndex?: number;
+  /**
+   * Plafond de jetons de sortie imposé par l'appelant (CDC Assistant §13.9,
+   * §31.2 : 500). Ne peut que RÉDUIRE la valeur configurée, jamais l'augmenter.
+   */
+  maxOutputTokensCap?: number;
+  /**
+   * Plafond de durée par tentative imposé par l'appelant (CDC Assistant
+   * §30.1 : 12 s par appel). Ne peut que réduire le timeout de l'opération.
+   */
+  timeoutMsCap?: number;
+  /**
+   * Mode JSON natif du fournisseur (`responseMimeType: application/json`)
+   * pour CET appel. Absent : valeur déclarée par l'opération (`jsonResponse`).
+   * Sert au dernier recours « texte libre » de l'analyse historique
+   * (gemini-client), qui relance le dernier modèle sans le mode JSON.
+   */
+  jsonResponse?: boolean;
 }
 
 export interface AiGatewayResponse<T> {

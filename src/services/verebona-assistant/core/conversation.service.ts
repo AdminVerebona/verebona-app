@@ -2,7 +2,7 @@
  * Persistance conversationnelle & historique — CDC §24 / §28.
  *
  * Gère la conversation active, les messages, l'idempotence (`client_request_id`),
- * l'historique (90 jours par défaut, Centre d'aide GAP-16) et l'effacement
+ * l'historique (90 jours par défaut, décision produit GAP-16 ; VEREBONA_ASSISTANT_HISTORY_DAYS) et l'effacement
  * manuel (§24.5).
  *
  * ══════════════════════════════════════════════════════════════════════════
@@ -265,7 +265,7 @@ export async function listActiveMessages(
   limit = 200,
 ) {
   return pgClient.unsafe(
-    `SELECT m.id, m.role, m.content, m.intent, m.mode, m.created_at,
+    `SELECT m.id, m.role, m.content, m.intent, m.mode, m.created_at, m.result_groups_json,
             (SELECT count(*)::int FROM verebona_message_sources s WHERE s.message_id = m.id) AS source_count
        FROM verebona_messages m
        JOIN verebona_conversations c ON c.id = m.conversation_id
@@ -389,8 +389,9 @@ export async function persistResult(
       const messageRows = await tx.unsafe(
         `INSERT INTO verebona_messages
            (conversation_id, account_id, author_user_id, role, status, content,
-            intent, mode, support_level, request_id, response_locale, expires_at)
-         VALUES ($1, $2, NULL, 'assistant', $3, $4, $5, $6, $7, $8, $9, $10)
+            intent, mode, support_level, request_id, response_locale, expires_at,
+            result_groups_json)
+         VALUES ($1, $2, NULL, 'assistant', $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
          RETURNING id`,
         [conversationId, input.accountId,
          result.error ? 'error' : 'ready',
@@ -398,7 +399,9 @@ export async function persistResult(
          result.route?.intent ?? null,
          result.mode,
          result.supportLevel,
-         result.requestId, input.locale, expires],
+         result.requestId, input.locale, expires,
+         // Cartes de résultats (§11.3, migration 0190) : relues à la reprise.
+         result.resultGroups?.length ? JSON.stringify(result.resultGroups) : null],
       );
       const messageId = (messageRows as unknown as Array<{ id: number }>)[0].id;
 
@@ -411,14 +414,18 @@ export async function persistResult(
       // que les citations référencent, pas leur rang d'affichage.
       const ligneParSource = new Map<string, number>();
       for (const [rang, source] of result.sources.entries()) {
+        // TOUTES les sources de la réponse (≤ 8), avec type, bien lié, date
+        // utile, statut, score et version (§19.3, §19.5, §19.13, §28.4).
         const rows = await tx.unsafe(
           `INSERT INTO verebona_message_sources
              (message_id, source_type, source_id, title_snapshot, excerpt_snapshot,
-              rank, is_available)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+              rank, is_available, linked_asset_label, useful_date, status_label,
+              relevance_score, source_version)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            RETURNING id`,
           [messageId, source.type, source.id, source.title, source.excerpt,
-           rang, source.isAvailable],
+           rang, source.isAvailable, source.linkedAssetLabel ?? null, source.usefulDate ?? null,
+           source.statusLabel ?? null, source.relevanceScore ?? null, source.sourceVersion ?? null],
         );
         ligneParSource.set(source.id, (rows as unknown as Array<{ id: number }>)[0].id);
       }
@@ -457,6 +464,19 @@ export async function persistResult(
            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
           [messageId, action.type, action.label, action.href,
            action.requiresConfirmation, action.analyticsCode, action.expiresAt],
+        );
+      }
+
+      // ── 5 ter. Commande proposée : rattachée au message qui la présente ──
+      //
+      // L'historique rechargé restitue ainsi l'état du plan (en attente et
+      // annulable, annulé, expiré, exécuté — migration 0203). Seul un plan
+      // du même compte et du même utilisateur est rattaché.
+      if (result.commandPlan?.planId) {
+        await tx.unsafe(
+          `UPDATE verebona_command_plans SET message_id = $1, conversation_id = $2
+            WHERE plan_id = $3 AND account_id = $4 AND user_id = $5`,
+          [messageId, conversationId, result.commandPlan.planId, input.accountId, input.userId],
         );
       }
 

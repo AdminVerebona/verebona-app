@@ -32,6 +32,12 @@ export function assertAiRegistryStartup(): void {
         'Déclarez un `promptCode`, ou `dynamicPrompt: true` si le prompt est fourni à l\'appel.',
       );
     }
+    // Exemption de masquage (§5.6) : réservée aux prompts historiques relayés.
+    if (op.unredactedVariables?.length && !op.legacyPrompt) {
+      throw new Error(
+        `[ai-registry] Opération « ${op.operationCode} » : \`unredactedVariables\` n'est admis que pour un prompt historique relayé (\`legacyPrompt\`).`,
+      );
+    }
   }
 }
 

@@ -411,6 +411,8 @@ export async function runUnifiedAnalysisPipeline(
   if (fileInfos.length > 1) {
     try {
       const groupingResult = await callGeminiWithFallback({
+        accountId,
+        sourceIds: fileInfos.map(f => f.id),
         promptVersion: PROMPT_VERSIONS.detect_groups,
         fileUrls: fileInfos.map(f => f.url),
         mimeType: 'application/pdf',

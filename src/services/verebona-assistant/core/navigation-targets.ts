@@ -23,7 +23,7 @@ import type { VerebonaIntent } from '../types/intents';
 import { normalizeForRouting, word } from './routing-text';
 
 export interface NavigationTarget {
-  key: 'to_process' | 'agenda' | 'documents' | 'account' | 'pricing' | 'help';
+  key: 'to_process' | 'agenda' | 'documents' | 'suppliers' | 'account' | 'pricing' | 'help';
   action: VerebonaActionType;
   /** Gabarit de réponse court (§22.10 : bouton unique, aucune ouverture auto). */
   answer: string;
@@ -39,6 +39,8 @@ export const NAVIGATION_TARGETS: readonly NavigationTarget[] = [
   { key: 'to_process', action: 'OPEN_TO_PROCESS', answer: 'Voici vos éléments « À traiter ».', pattern: word("a traiter|elements? a traiter|taches? a traiter") },
   { key: 'agenda', action: 'OPEN_AGENDA', answer: 'Voici votre agenda.', pattern: word('agenda|calendrier|planning|echeances?|rendez-vous|rappels') },
   { key: 'documents', action: 'OPEN_DOCUMENTS_PAGE', answer: 'Voici vos documents.', pattern: word('documents|mes documents|mes fichiers|fichiers|justificatifs') },
+  // Page `/fournisseurs` (liste, puis fiche de chacun).
+  { key: 'suppliers', action: 'OPEN_SUPPLIERS', answer: 'Voici vos fournisseurs.', pattern: word('fournisseurs?|prestataires?|artisans?') },
   { key: 'account', action: 'OPEN_ACCOUNT', answer: 'Voici votre compte.', pattern: word('mon compte|compte|profil|parametres|reglages') },
   { key: 'pricing', action: 'OPEN_PRICING', answer: 'Voici les offres Verebona.', pattern: word('offres?|abonnements?|tarifs?|forfaits?') },
   { key: 'help', action: 'OPEN_HELP', answer: 'Voici le Centre d’aide.', pattern: word("aide|centre d'aide|faq|support") },
@@ -83,7 +85,7 @@ export function helpPrimaryAction(message: string, intent: VerebonaIntent): Vere
 export const DEFAULT_ACTION_BY_INTENT: Partial<Record<VerebonaIntent, VerebonaActionType>> = {
   ACCOUNT_TO_PROCESS: 'OPEN_TO_PROCESS',
   ACCOUNT_SEARCH_DOCUMENT: 'OPEN_DOCUMENTS_PAGE',
-  ACCOUNT_SEARCH_SUPPLIER: 'OPEN_DOCUMENTS_PAGE',
+  ACCOUNT_SEARCH_SUPPLIER: 'OPEN_SUPPLIERS',
   ACCOUNT_SEARCH_AGENDA: 'OPEN_AGENDA',
   ACCOUNT_MISSING_INFORMATION: 'OPEN_TO_PROCESS',
   PRODUCT_HELP_HOW_TO: 'OPEN_HELP',

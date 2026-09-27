@@ -3,8 +3,15 @@
  * Vérifie si le compte a des documents non analysés avec du crédit disponible,
  * et déclenche leur analyse en arrière-plan.
  *
- * Appelé au chargement de l'app (côté client, une fois par session).
  * Réponse immédiate — l'analyse tourne en fire-and-forget.
+ *
+ * ⚠️ DÉPRÉCIÉ (CDC BO IA E-06) : plus appelé par l'application. Le bandeau lit
+ * `/api/analysis/queue-status` (lecture seule) et la reprise des analyses est
+ * exclusivement serveur (`analysis-recovery`, y compris les fichiers restés
+ * « En file » après un redémarrage). Conservé le temps de la bascule
+ * `AI_DURABLE_QUEUE=enabled`, pour les clients encore chargés ; à retirer
+ * ensuite. Il passe par `enqueueFileAnalyses` : la déduplication de la file
+ * active s'applique.
  */
 
 import { NextRequest, NextResponse } from 'next/server';

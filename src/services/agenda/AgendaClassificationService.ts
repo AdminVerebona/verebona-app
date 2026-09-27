@@ -8,10 +8,20 @@
  *                 ex : fin de garantie, date d'achat, date de fabrication, échéance DPE
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { legacyGeminiKeyOrNull } from '@/services/ai/provider/legacy-gemini-access';
+import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
 
-const MODEL = 'gemini-2.0-flash';
+/**
+ * Passerelle (plan de retrait WF-41) : opération
+ * `legacy_classify_home_category` de l'usage AGENDA_INTELLIGENCE (T4).
+ * Modèle principal de la version figée de T4, UNE tentative comme avant.
+ */
+export const LEGACY_CLASSIFY_HOME_CATEGORY_OPERATION = 'legacy_classify_home_category';
+
+/** Compte (et auteur) de l'échéance classée : trace et coût de la passerelle. */
+export interface AgendaClassificationContext {
+  accountId: number;
+  userId?: number;
+}
 
 export type HomeCategory = 'action' | 'information';
 
@@ -75,7 +85,7 @@ function classifyByRules(
 }
 
 /**
- * Classifie un item agenda via Gemini Flash.
+ * Classifie un item agenda (règles, puis modèle via la passerelle).
  * Retourne 'action' en cas d'erreur (fallback sûr : mieux vaut afficher
  * une date d'information dans "Prochaines dates" que la masquer).
  */
@@ -83,23 +93,18 @@ export async function classifyAgendaItem(
   title: string,
   description: string | null | undefined,
   originType: string,
-  originFieldKey?: string | null,
+  originFieldKey: string | null | undefined,
+  ctx: AgendaClassificationContext,
 ): Promise<HomeCategory> {
   // 1. Règles déterministes d'abord
   const ruleResult = classifyByRules(title, originType, originFieldKey);
   if (ruleResult !== null) return ruleResult;
 
-  // 2. Appel IA — clé ACTIVE du BO, et seulement si T4 peut appeler l'IA
-  //    (arrêt d'urgence, désactivation, suspension : OPS-011, WF-07, WF-08).
-  //    Sinon, repli déterministe 'action', comme sans clé. Lue à l'appel et non
-  //    au chargement du module : la rotation depuis le BO s'applique (WF-21).
-  const apiKey = await legacyGeminiKeyOrNull('T4');
-  if (!apiKey) return 'action';
-
+  // 2. Appel IA via la passerelle — clé ACTIVE du BO, garde d'exploitation de
+  //    T4 (arrêt d'urgence, désactivation, suspension : OPS-011, WF-07, WF-08),
+  //    disjoncteur. Tout échec, `AI_BLOCKED` compris, retombe sur le repli
+  //    déterministe 'action', comme sans clé.
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: MODEL });
-
     const prompt = `Tu es un assistant qui classe des événements agenda en deux catégories :
 - "action" : une tâche qui nécessite une intervention physique ou une décision de l'utilisateur (contrôle technique, réparation, rendez-vous, entretien, récupération d'un objet stocké, reprise de pneus, restitution d'un dépôt, etc.)
 - "information" : un fait passif qui ne nécessite aucune action de la part de l'utilisateur (fin de garantie, date d'achat, fin de période d'assurance avec reconduction automatique, date d'expiration d'un diagnostic, etc.)
@@ -114,8 +119,15 @@ Titre : ${title}${description ? `\nDescription : ${description}` : ''}
 
 Réponds UNIQUEMENT avec le mot "action" ou "information", sans ponctuation ni explication.`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text().trim().toLowerCase();
+    const result = await executeLegacyPrompt({
+      useCaseCode: 'AGENDA_INTELLIGENCE',
+      operationCode: LEGACY_CLASSIFY_HOME_CATEGORY_OPERATION,
+      accountId: ctx.accountId,
+      userId: ctx.userId,
+      prompt,
+      maxModelAttempts: 1,
+    });
+    const text = result.data.trim().toLowerCase();
 
     if (text === 'information') return 'information';
     return 'action'; // par défaut

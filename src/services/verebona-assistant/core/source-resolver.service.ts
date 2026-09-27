@@ -12,23 +12,34 @@ import { getAssistantConfig } from '../config/assistant-config';
 import { parseEntityRef, hrefEntite } from './entity-ref';
 import { integratedHelpHref } from '@/lib/help-center/open';
 
-const TYPE_LABELS: Record<SourceType, string> = {
+export const TYPE_LABELS: Record<SourceType, string> = {
   asset_field: 'Bien', document: 'Document', document_extraction: 'Donnée extraite',
   agenda_item: 'Échéance', supplier: 'Fournisseur', to_process_item: 'À traiter',
   help_entry: 'Aide', product_rule: "Règle d'offre",
 };
 
+/**
+ * Sources résolues — TOUTES celles de la réponse (≤ `maxSources`, 8), et non
+ * plus les 5 premières : tronquer avant persistance perdait les sources 6 à 8
+ * et leurs liens claim → source (§19.3). L'affichage en montre 5, puis
+ * « Voir toutes les sources » (pagination de la route sources, §27.8).
+ */
 export function resolveSourcesForDisplay(sources: RetrievedSource[]): ResolvedSource[] {
   const cfg = getAssistantConfig();
-  return sources.slice(0, cfg.maxVisibleSources).map((s) => ({
+  return sources.slice(0, Math.max(cfg.maxSources, cfg.maxVisibleSources)).map((s) => ({
     // Conservé : c'est ce qui relie une citation à son document.
     id: s.id,
     type: s.type,
     typeLabel: TYPE_LABELS[s.type],
     title: s.title,
-    linkedAssetLabel: (s.meta?.assetName as string) ?? null,
-    usefulDate: (s.meta?.date as string) ?? null,
+    linkedAssetLabel: typeof s.meta?.assetName === 'string' ? s.meta.assetName : null,
+    usefulDate: typeof s.meta?.date === 'string' ? s.meta.date : null,
     excerpt: s.content.slice(0, 240),
+    statusLabel: typeof s.meta?.statusLabel === 'string' ? s.meta.statusLabel : null,
+    relevanceScore: typeof s.relevanceScore === 'number' ? s.relevanceScore : null,
+    // Article d'aide : version du corpus (§19.13, §28.4 `source_version`).
+    sourceVersion: typeof s.meta?.version === 'string' ? s.meta.version
+      : typeof s.meta?.corpusVersion === 'string' ? s.meta.corpusVersion : null,
     // Optimiste par défaut ; `marquerDisponibilite` tranche juste avant
     // l'affichage (§19.10). Vérifier ici forcerait une requête par source
     // dans une boucle de rendu.
@@ -73,10 +84,13 @@ function ouvertureDeSource(source: RetrievedSource): VerebonaAction | null {
   const href = hrefEntite(ref, source.meta);
   if (!href) return null;
 
-  const type = ref.kind === 'document' ? 'OPEN_DOCUMENT' : 'OPEN_ASSET';
+  const type = ref.kind === 'document' ? 'OPEN_DOCUMENT'
+    : ref.kind === 'agenda_item' ? 'OPEN_AGENDA_ITEM'
+      : ref.kind === 'supplier' ? 'OPEN_SUPPLIER'
+        : 'OPEN_ASSET';
   return {
     actionId: randomUUID(),
-    type: ref.kind === 'agenda_item' ? 'OPEN_AGENDA_ITEM' : type,
+    type,
     label: 'Ouvrir',
     href,
     token: null,

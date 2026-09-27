@@ -17,10 +17,9 @@ const A = (
 ): ActionDefinition => ({ type, target, paramKeys, control, isBusinessAction });
 
 /**
- * ⚠️ `OPEN_SUPPLIER` et `OPEN_SUPPLIERS` restent au catalogue (le type est une
- * union fermée, §22.11) mais ne sont plus proposés par aucune intention :
- * l'application n'expose pas de route `/fournisseurs`. Les rétablir suppose
- * d'ouvrir la page correspondante d'abord.
+ * `OPEN_SUPPLIER` (fiche `/fournisseurs/[id]`, fournisseur du compte) et
+ * `OPEN_SUPPLIERS` (liste `/fournisseurs`) : pages ouvertes, actions
+ * proposées pour la recherche de fournisseurs et la navigation (§22.4).
  */
 export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = {
   OPEN_ASSET: A('OPEN_ASSET', "Fiche d'un bien", ['assetId'], 'account_object'),
@@ -54,7 +53,7 @@ export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = 
 export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActionType[]>> = {
   // Dictionnaire de navigation (core/navigation-targets.ts) : agenda, À
   // traiter, documents, compte, offres, aide — une seule action retenue.
-  NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_PRICING', 'OPEN_HELP'],
+  NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_PRICING', 'OPEN_HELP', 'OPEN_SUPPLIERS', 'OPEN_SUPPLIER'],
   // OPEN_CONTACT sur toutes les intentions d'aide : renvoi au support quand
   // le corpus ne répond pas ou se contredit (CDC Centre d'aide §5, T2-04).
   NAVIGATION_FIND: ['OPEN_HELP', 'OPEN_DOCUMENTS_PAGE', 'OPEN_AGENDA', 'OPEN_TO_PROCESS', 'OPEN_CONTACT'],
@@ -67,10 +66,8 @@ export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActi
   ACCOUNT_SEARCH_ASSET: ['OPEN_ASSET', 'OPEN_SEARCH_RESULTS'],
   ACCOUNT_SEARCH_DOCUMENT: ['OPEN_DOCUMENT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_SEARCH_RESULTS'],
   ACCOUNT_SEARCH_AGENDA: ['OPEN_AGENDA_ITEM', 'OPEN_AGENDA'],
-  // Les fournisseurs n'ont pas de page dédiée : ils se consultent depuis les
-  // documents et les équipements qui les référencent. On oriente donc vers
-  // les documents plutôt que vers une route inexistante.
-  ACCOUNT_SEARCH_SUPPLIER: ['OPEN_DOCUMENTS_PAGE', 'OPEN_DOCUMENT'],
+  // Fiche du fournisseur trouvé, sinon la liste des fournisseurs.
+  ACCOUNT_SEARCH_SUPPLIER: ['OPEN_SUPPLIER', 'OPEN_SUPPLIERS', 'OPEN_DOCUMENT'],
   ACCOUNT_FACT_ASSET: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'SHOW_SOURCES'],
   ACCOUNT_FACT_DOCUMENT: ['OPEN_DOCUMENT', 'SHOW_SOURCES'],
   ACCOUNT_FACT_AGENDA: ['OPEN_AGENDA_ITEM', 'SHOW_SOURCES'],

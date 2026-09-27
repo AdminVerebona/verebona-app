@@ -126,3 +126,60 @@ export function compareJobs(
   if (a.headPriority !== b.headPriority) return a.headPriority ? -1 : 1;
   return a.createdAt.getTime() - b.createdAt.getTime();
 }
+
+// ── Report (ni succès, ni échec) ────────────────────────────────────────────
+
+/**
+ * Report d'un job : l'exécutant n'a PAS pu travailler pour une raison
+ * extérieure au travail lui-même (quota d'analyse du compte épuisé), qui ne se
+ * résoudra pas en quelques secondes.
+ *
+ * Ce n'est pas un échec : aucune tentative MOD-005 n'est consommée — sinon un
+ * compte sans crédit épuiserait les cinq cycles d'un document parfaitement
+ * sain. Ce n'est pas non plus un succès : clore le job DONE ferait croire au
+ * SCR-08 que le document a été analysé, et l'écran afficherait « En file
+ * d'attente » sans fin (audit final BO IA, ligne 1).
+ *
+ * Le job revient en file avec un délai croissant (`deferralDelaySeconds`),
+ * puis passe en échec définitif — motif explicite — après
+ * `MAX_DEFERRALS` reports. Le fichier, lui, repasse « non analysé » : la
+ * reprise serveur (`analysis-recovery`) le remettra en file dès que le compte
+ * aura de nouveau du crédit.
+ */
+export class JobDeferredError extends Error {
+  readonly code = 'JOB_DEFERRED';
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = 'JobDeferredError';
+  }
+}
+
+export function isJobDeferred(e: unknown): e is JobDeferredError {
+  return e instanceof JobDeferredError
+    || (typeof e === 'object' && e !== null && (e as { code?: string }).code === 'JOB_DEFERRED');
+}
+
+/** Nombre de reports avant l'échec définitif (variable `AI_QUEUE_MAX_DEFERRALS`, 3 par défaut). */
+export function maxDeferrals(): number {
+  const n = Number(process.env.AI_QUEUE_MAX_DEFERRALS);
+  return Number.isInteger(n) && n >= 0 ? n : 3;
+}
+
+/** 5 min, 15 min, 1 h, puis 1 h : le crédit d'un compte ne revient pas à la seconde. */
+const DEFERRAL_DELAYS_SECONDS = [300, 900, 3_600];
+
+/** Délai avant la reprise d'un job reporté pour la `n`-ième fois (n ≥ 1). */
+export function deferralDelaySeconds(n: number): number {
+  const i = Math.min(Math.max(1, Math.floor(n)), DEFERRAL_DELAYS_SECONDS.length) - 1;
+  return DEFERRAL_DELAYS_SECONDS[i];
+}
+
+/** Issue d'un report : nouvelle attente, ou échec définitif au-delà du plafond. */
+export function afterDeferral(
+  previousDeferrals: number,
+  max: number = maxDeferrals(),
+): { status: Extract<JobStatus, 'PENDING' | 'FAILED'>; deferrals: number; retryInSeconds: number } {
+  const deferrals = Math.max(0, previousDeferrals) + 1;
+  if (deferrals > max) return { status: 'FAILED', deferrals, retryInSeconds: 0 };
+  return { status: 'PENDING', deferrals, retryInSeconds: deferralDelaySeconds(deferrals) };
+}

@@ -12,7 +12,7 @@
  */
 import { randomUUID } from 'crypto';
 import type { AiGatewayRequest, AiGatewayResponse } from './types';
-import { AiGatewayError, isAiGatewayError } from './errors';
+import { AiGatewayError, isAiGatewayError, type AiErrorCode } from './errors';
 import { getOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
 import { validateOutput } from './output-validator';
@@ -94,8 +94,10 @@ export class AiGateway {
         `Fournisseur « ${provider.name} » non configuré.`, { recoverable: true });
     }
 
-    // Masquage AVANT construction du prompt (CDC §5.2, §5.6).
-    const safeVariables = redactVariables(req.promptVariables);
+    // Masquage AVANT construction du prompt (CDC §5.2, §5.6), sauf pour les
+    // variables explicitement exemptées par l'opération (`unredactedVariables`,
+    // réservé aux prompts historiques relayés — voir operations.ts).
+    const safeVariables = redactVariables(req.promptVariables, op.unredactedVariables);
 
     // Prompt fourni à l'appel : uniquement pour les opérations déclarées
     // `dynamicPrompt` — en pratique l'évaluation d'une version candidate.
@@ -125,18 +127,26 @@ export class AiGateway {
     // autre chose que ce qui est soumis.
     // ══════════════════════════════════════════════════════════════════════
     const configuration = await resolveOperationConfig(operationCode);
-    const prompt = op.dynamicPrompt
+    // Prompt historique relayé tel quel (`legacyPrompt`, plan de retrait
+    // WF-41) : pas de préambule, rédigé pour un autre contrat de sortie.
+    const prompt = op.dynamicPrompt || op.legacyPrompt
       ? promptTechnique
       : composePrompt(configuration.promptPreamble, promptTechnique);
+    // Mode JSON natif : choix de l'appel, sinon déclaration de l'opération.
+    const jsonResponse = req.jsonResponse ?? op.jsonResponse ?? false;
 
     // Budget de tentatives imposé par l'appelant (CDC Assistant §15.5,
     // CA-07) : la chaîne principal → replis est tronquée, jamais allongée.
     // Sans budget, comportement inchangé.
-    const chaine = [configuration.primaryModel, ...configuration.fallbackModels];
+    // Escalade explicite (Assistant §15.4) : la chaîne commence au rang
+    // demandé — le modèle d'escalade seul, sans rappeler le principal.
+    const premierRang = Math.max(0, Math.floor(req.firstModelIndex ?? 0));
+    const chaine = [configuration.primaryModel, ...configuration.fallbackModels].slice(premierRang);
     const models = req.maxModelAttempts === undefined
       ? chaine
       : chaine.slice(0, Math.max(0, Math.floor(req.maxModelAttempts)));
     const failures: string[] = [];
+    let lastFailureCode: AiErrorCode | undefined;
     if (models.length === 0) failures.push('budget de tentatives modèle épuisé');
 
     // Circuit breaker (MOD-007 à MOD-014) : issue de chaque modèle sollicité,
@@ -146,126 +156,153 @@ export class AiGateway {
     // modèles réellement sollicités.
     const treatment = treatmentForUseCase(op.useCaseCode);
     const attempts: ModelAttempt[] = [];
-    const chaineComplete = models.length === 1 + configuration.fallbackModels.length;
+    const chaineComplete = premierRang === 0 && models.length === 1 + configuration.fallbackModels.length;
 
     // Exécution de file : job parent tracé à chaque appel (§9.1).
     const jobId = currentJobContext()?.jobId ?? null;
 
-    for (let i = 0; i < models.length; i++) {
-      const model = models[i];
-      const usedFallback = i > 0;
-      const modelRank = rankAt(i);
-      // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
-      // les jetons ont été consommés et facturés — COST-005 exige de garder
-      // le coût réel de l'appel échoué.
-      let out: ProviderCallOutput | null = null;
+    // Pièces jointes préparées une fois pour toute la chaîne (upload Files API
+    // unique, réutilisé par les replis), libérées en fin de chaîne quelle que
+    // soit l'issue.
+    const attachmentSession = (req.attachments?.length ?? 0) > 0 && provider.openAttachmentSession
+      ? provider.openAttachmentSession(req.attachments!)
+      : undefined;
 
-      try {
-        out = await provider.call({
-          model,
-          prompt,
-          attachments: req.attachments ?? [],
-          timeoutMs: op.timeoutMs,
-          // §2.1 : le plafond ne vaut que pour le modèle principal ; les replis
-          // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
-          // c'est aussi le comportement le plus sûr — un repli sollicité parce
-          // que le principal a échoué ne doit pas en plus changer de format.
-          maxOutputTokens: op.minOutputTokens
-            ? Math.max(configuration.maxOutputTokens ?? 0, op.minOutputTokens)
-            : configuration.maxOutputTokens ?? undefined,
-          // T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03 : niveau du rang sollicité.
-          reasoning: configuration.reasoningByRank[i] ?? null,
-        });
+    try {
+      for (let i = 0; i < models.length; i++) {
+        const model = models[i];
+        const usedFallback = i + premierRang > 0;
+        const modelRank = rankAt(i + premierRang);
+        // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
+        // les jetons ont été consommés et facturés — COST-005 exige de garder
+        // le coût réel de l'appel échoué.
+        let out: ProviderCallOutput | null = null;
 
-        // Aucune persistance d'une sortie brute invalide (CDC §5.3).
-        const data = validateOutput<T>(out.rawText, req.outputSchema, operationCode);
+        try {
+          out = await provider.call({
+            model,
+            prompt,
+            attachments: req.attachments ?? [],
+            timeoutMs: req.timeoutMsCap && req.timeoutMsCap > 0 ? Math.min(op.timeoutMs, req.timeoutMsCap) : op.timeoutMs,
+            // §2.1 : le plafond ne vaut que pour le modèle principal ; les replis
+            // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
+            // c'est aussi le comportement le plus sûr — un repli sollicité parce
+            // que le principal a échoué ne doit pas en plus changer de format.
+            maxOutputTokens: plafonnerSortie(
+              op.minOutputTokens
+                ? Math.max(configuration.maxOutputTokens ?? 0, op.minOutputTokens)
+                : configuration.maxOutputTokens ?? undefined,
+              req.maxOutputTokensCap,
+            ),
+            // T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03 : niveau du rang sollicité.
+            reasoning: configuration.reasoningByRank[i] ?? null,
+            ...(jsonResponse ? { jsonResponse: true } : {}),
+            ...(attachmentSession ? { attachmentSession } : {}),
+          });
 
-        const durationMs = Date.now() - startedAt;
-        // Le tarif est indexé sur le fournisseur DÉCLARÉ dans le référentiel,
-        // non sur l'instance d'exécution : un double de test reste tarifé comme
-        // le fournisseur qu'il remplace.
-        // COST-008 : sans tarif, le coût reste NULL (« non calculable »), jamais
-        // un 0 qui se confondrait avec un appel gratuit dans les agrégats.
-        const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
+          // Aucune persistance d'une sortie brute invalide (CDC §5.3).
+          const data = validateOutput<T>(out.rawText, req.outputSchema, operationCode, op.outputFormat ?? 'json');
 
-        await recordCallTrace({
-          traceId,
-          useCaseCode: op.useCaseCode,
-          operationCode,
-          accountId: req.accountId,
-          userId: req.userId,
-          parentOperationId: req.parentOperationId,
-          provider: provider.name,
-          model,
-          promptVersion,
-          usedFallback,
-          inputTokens: out.inputTokens,
-          outputTokens: out.outputTokens,
-          costMicros,
-          durationMs,
-          status: 'success',
-          billable: op.billable && !req.shadow,
-          shadow: Boolean(req.shadow),
-          outputPreview: previewForLog(out.rawText),
-          modelRank,
-          jobId,
-          configVersionId: configuration.configVersionId,
-        });
+          const durationMs = Date.now() - startedAt;
+          // Le tarif est indexé sur le fournisseur DÉCLARÉ dans le référentiel,
+          // non sur l'instance d'exécution : un double de test reste tarifé comme
+          // le fournisseur qu'il remplace.
+          // COST-008 : sans tarif, le coût reste NULL (« non calculable »), jamais
+          // un 0 qui se confondrait avec un appel gratuit dans les agrégats.
+          const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
 
-        attempts.push({ model, succeeded: true });
-        noteGatewayOutcome({ treatment, attempts, chainSucceeded: true });
+          await recordCallTrace({
+            traceId,
+            useCaseCode: op.useCaseCode,
+            operationCode,
+            accountId: req.accountId,
+            userId: req.userId,
+            parentOperationId: req.parentOperationId,
+            provider: provider.name,
+            model,
+            promptVersion,
+            usedFallback,
+            inputTokens: out.inputTokens,
+            outputTokens: out.outputTokens,
+            costMicros,
+            durationMs,
+            status: 'success',
+            billable: op.billable && !req.shadow,
+            shadow: Boolean(req.shadow),
+            outputPreview: previewForLog(out.rawText),
+            modelRank,
+            jobId,
+            configVersionId: configuration.configVersionId,
+          });
 
-        return {
-          data, provider: provider.name, model, promptVersion, usedFallback,
-          inputTokens: out.inputTokens, outputTokens: out.outputTokens,
-          costMicros: costMicros ?? 0, durationMs, traceId, fromCache: false,
-        };
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        failures.push(`${model} : ${message}`);
-        attempts.push({ model, succeeded: false });
+          attempts.push({ model, succeeded: true });
+          noteGatewayOutcome({ treatment, attempts, chainSucceeded: true });
 
-        await recordCallTrace({
-          traceId,
-          useCaseCode: op.useCaseCode,
-          operationCode,
-          accountId: req.accountId,
-          userId: req.userId,
-          parentOperationId: req.parentOperationId,
-          provider: provider.name,
-          model,
-          promptVersion,
-          usedFallback,
-          // COST-005 : réponse obtenue puis rejetée (sortie invalide) → jetons
-          // et coût réels ; aucune réponse → rien de consommé.
-          inputTokens: out?.inputTokens ?? 0,
-          outputTokens: out?.outputTokens ?? 0,
-          costMicros: out ? calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider) : 0,
-          durationMs: Date.now() - startedAt,
-          status: 'error',
-          errorCode: isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE',
-          errorMessage: message,
-          // Un appel facturé par le fournisseur reste une dépense métier.
-          billable: Boolean(out) && op.billable && !req.shadow,
-          shadow: Boolean(req.shadow),
-          modelRank,
-          jobId,
-          configVersionId: configuration.configVersionId,
-        }).catch(() => { /* la trace ne doit jamais masquer l'erreur d'origine */ });
+          return {
+            data, provider: provider.name, model, promptVersion, usedFallback,
+            inputTokens: out.inputTokens, outputTokens: out.outputTokens,
+            costMicros: costMicros ?? 0, durationMs, traceId, fromCache: false,
+          };
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          failures.push(`${model} : ${message}`);
+          lastFailureCode = isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE';
+          attempts.push({ model, succeeded: false });
 
-        // Une erreur non récupérable arrête immédiatement la chaîne de repli.
-        // Elle compte pour le modèle, pas comme échec complet de la chaîne.
-        if (isAiGatewayError(e) && !e.recoverable) {
-          noteGatewayOutcome({ treatment, attempts, chainSucceeded: null });
-          throw e;
+          await recordCallTrace({
+            traceId,
+            useCaseCode: op.useCaseCode,
+            operationCode,
+            accountId: req.accountId,
+            userId: req.userId,
+            parentOperationId: req.parentOperationId,
+            provider: provider.name,
+            model,
+            promptVersion,
+            usedFallback,
+            // COST-005 : réponse obtenue puis rejetée (sortie invalide) → jetons
+            // et coût réels ; aucune réponse → rien de consommé.
+            inputTokens: out?.inputTokens ?? 0,
+            outputTokens: out?.outputTokens ?? 0,
+            costMicros: out ? calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider) : 0,
+            durationMs: Date.now() - startedAt,
+            status: 'error',
+            errorCode: isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE',
+            errorMessage: message,
+            // Un appel facturé par le fournisseur reste une dépense métier.
+            billable: Boolean(out) && op.billable && !req.shadow,
+            shadow: Boolean(req.shadow),
+            modelRank,
+            jobId,
+            configVersionId: configuration.configVersionId,
+          }).catch(() => { /* la trace ne doit jamais masquer l'erreur d'origine */ });
+
+          // Une erreur non récupérable arrête immédiatement la chaîne de repli.
+          // Elle compte pour le modèle, pas comme échec complet de la chaîne.
+          if (isAiGatewayError(e) && !e.recoverable) {
+            noteGatewayOutcome({ treatment, attempts, chainSucceeded: null });
+            throw e;
+          }
         }
       }
-    }
 
-    noteGatewayOutcome({ treatment, attempts, chainSucceeded: chaineComplete ? false : null });
-    throw new AiGatewayError('ALL_MODELS_FAILED', operationCode,
-      `Tous les modèles ont échoué. ${failures.join(' — ')}`, { recoverable: true });
+      noteGatewayOutcome({ treatment, attempts, chainSucceeded: chaineComplete ? false : null });
+      throw new AiGatewayError('ALL_MODELS_FAILED', operationCode,
+        `Tous les modèles ont échoué. ${failures.join(' — ')}`, { recoverable: true, lastFailureCode });
+    } finally {
+      // Nettoyage systématique des fichiers temporaires (CDC §5.2, §4.1.7).
+      await attachmentSession?.release().catch(() => { /* non bloquant : expiration à 48 h */ });
+    }
   }
+}
+
+/**
+ * Plafond de sortie de l'appelant : ne fait que réduire (jamais augmenter) la
+ * valeur configurée ; sans valeur configurée, le plafond s'applique seul.
+ */
+export function plafonnerSortie(configure: number | undefined, plafond: number | undefined): number | undefined {
+  if (!plafond || plafond <= 0) return configure;
+  return configure && configure > 0 ? Math.min(configure, plafond) : plafond;
 }
 
 /** Substitution `{{VARIABLE}}`, identique à celle du chargeur de prompts. */

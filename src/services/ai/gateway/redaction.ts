@@ -18,8 +18,15 @@ export function redact(input: string): string {
   return PATTERNS.reduce((acc, p) => acc.replace(p.re, p.replacement), input);
 }
 
-/** Masque récursivement les valeurs texte d'un objet de variables de prompt. */
-export function redactVariables(vars: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Masque récursivement les valeurs texte d'un objet de variables de prompt.
+ * `exempt` : variables de premier niveau transmises telles quelles (liste
+ * d'exemption déclarée par l'opération, jamais par l'appelant).
+ */
+export function redactVariables(
+  vars: Record<string, unknown>,
+  exempt: readonly string[] = [],
+): Record<string, unknown> {
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') return redact(v);
     if (Array.isArray(v)) return v.map(walk);
@@ -28,7 +35,9 @@ export function redactVariables(vars: Record<string, unknown>): Record<string, u
     }
     return v;
   };
-  return walk(vars) as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(vars).map(([k, v]) => [k, exempt.includes(k) ? v : walk(v)]),
+  );
 }
 
 /** Ne jamais journaliser une sortie brute complète : extrait borné et masqué. */

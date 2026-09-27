@@ -44,10 +44,26 @@ export function extractJson(raw: string): unknown {
   }
 }
 
-export function validateOutput<T>(raw: string, schema: ZodType<T>, operationCode: string): T {
+/**
+ * Format de sortie déclaré par l'opération :
+ *   · `json` (défaut) — le JSON est extrait de la réponse puis validé ;
+ *   · `text` — la réponse BRUTE est validée telle quelle par le schéma
+ *     (typiquement `z.string()` raffiné). Réservé aux modules historiques
+ *     migrés, dont l'analyse de la réponse reste chez l'appelant ; le schéma
+ *     garde le rôle de filtre : une réponse qu'il refuse est un échec
+ *     récupérable, qui passe au modèle suivant.
+ */
+export type OutputFormat = 'json' | 'text';
+
+export function validateOutput<T>(
+  raw: string,
+  schema: ZodType<T>,
+  operationCode: string,
+  format: OutputFormat = 'json',
+): T {
   let parsed: unknown;
   try {
-    parsed = extractJson(raw);
+    parsed = format === 'text' ? raw : extractJson(raw);
   } catch (e) {
     throw new AiGatewayError('INVALID_OUTPUT', operationCode,
       `Sortie non parsable : ${(e as Error).message}. Extrait : ${previewForLog(raw, 200)}`,

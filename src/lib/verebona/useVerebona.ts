@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseWriteBlocked, type WriteBlockedInfo } from '@/lib/write-blocked';
 import { toAssistantUiError, type AssistantUiError } from './error-messages';
-import { currentPlatform, errorActions, errorAssistantMessage, isCancelledResponse, retryTarget } from './assistant-ui';
+import { currentPlatform, errorActions, errorAssistantMessage, isCancelledResponse, retryTarget, type UiResultGroup } from './assistant-ui';
 import { enrichPageContext } from '@/lib/help-center/screens';
 
 export interface VerebonaAction {
@@ -28,9 +28,17 @@ export interface VerebonaCommandPlan {
   summary: string;
   expiresAt: string;
   actions: Array<{ actionId: string; label: string; preview: string; effects: string[]; dependsOn: string[] }>;
-  /** État côté client : en attente, ou traité (confirmé / annulé). */
-  status: 'PENDING_CONFIRMATION' | 'HANDLED' | 'CANCELLED';
+  /**
+   * État du plan (§9.6) : en attente (annulable), décision en cours d'envoi
+   * (`DECIDING`), puis l'état rendu par le serveur — y compris après un
+   * rechargement du fil.
+   */
+  status: VerebonaPlanStatus;
 }
+
+export type VerebonaPlanStatus =
+  | 'PENDING_CONFIRMATION' | 'DECIDING' | 'EXECUTING' | 'EXECUTED' | 'PARTIAL' | 'FAILED'
+  | 'CANCELLED' | 'EXPIRED' | 'REFUSED' | 'HANDLED';
 
 export interface VerebonaMessage {
   id: string;
@@ -47,6 +55,8 @@ export interface VerebonaMessage {
     choices: Array<{ choiceId: string; label: string; secondaryLabel?: string }>;
   } | null;
   commandPlan?: VerebonaCommandPlan | null;
+  /** Cartes de résultats groupées par type (§11.3, §22.3). */
+  resultGroups?: UiResultGroup[] | null;
   /**
    * Erreur affichée DANS le fil (§4.2, §27.11) : libellé Verebona, et les
    * actions « Réessayer » / « Ouvrir l'aide » portées par `actions`.
@@ -91,6 +101,7 @@ function recallThread(): number | null {
 interface HistoryRow {
   id: number; role: 'user' | 'assistant'; content: string | null;
   intent: string | null; mode: string | null; source_count?: number;
+  result_groups_json?: UiResultGroup[] | null;
 }
 const fromHistory = (r: HistoryRow): VerebonaMessage => ({
   id: String(r.id),
@@ -100,6 +111,7 @@ const fromHistory = (r: HistoryRow): VerebonaMessage => ({
   intent: r.intent ?? undefined,
   sourcesAvailable: (r.source_count ?? 0) > 0,
   sourceCount: r.source_count ?? 0,
+  resultGroups: Array.isArray(r.result_groups_json) ? r.result_groups_json : null,
 });
 
 function newId(): string {
@@ -162,6 +174,13 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     const data = await res.json().catch(() => ({ conversationId: null, messages: [] }));
     setConversationId(data.conversationId ?? null);
     const messages: VerebonaMessage[] = (data.messages ?? []).map(fromHistory);
+    // Commandes proposées : restituées sur le message qui les présentait,
+    // avec leur état réel (une proposition en attente reste annulable).
+    const plans: Array<VerebonaCommandPlan & { messageId: number }> = Array.isArray(data.commandPlans) ? data.commandPlans : [];
+    for (const { messageId, ...plan } of plans) {
+      const m = messages.find((x) => x.id === String(messageId));
+      if (m) m.commandPlan = plan;
+    }
     // Clarification encore ouverte : ses choix reviennent sur la dernière
     // réponse de l'assistant.
     if (data.clarification) {
@@ -273,6 +292,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         actions: data.actions ?? [],
         clarification: data.clarification ?? null,
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
+        resultGroups: Array.isArray(data.resultGroups) ? data.resultGroups : null,
       };
       // Réponse `status: 'error'` (§27.11) : le libellé et les suites
       // viennent de `error-messages`, jamais d'un texte technique.
@@ -357,6 +377,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         actions: data.actions ?? [],
         clarification: data.clarification ?? null,
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
+        resultGroups: Array.isArray(data.resultGroups) ? data.resultGroups : null,
       };
       setState((s) => ({ ...s, messages: [...s.messages, assistantMsg], isLoading: false }));
       void refreshThreads();
@@ -376,21 +397,32 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
    * plan part au serveur, qui exécute ce qui a été présenté — rien d'autre.
    */
   const decidePlan = useCallback(async (planId: string, decision: 'confirm' | 'cancel') => {
-    setState((s) => ({
-      ...s,
-      isLoading: true,
-      error: null,
-      messages: s.messages.map((m) => (m.commandPlan?.planId === planId
-        ? { ...m, commandPlan: { ...m.commandPlan, status: decision === 'cancel' ? 'CANCELLED' as const : 'HANDLED' as const } }
-        : m)),
-    }));
+    const planStatus = (status: VerebonaPlanStatus) => (m: VerebonaMessage): VerebonaMessage => (
+      m.commandPlan?.planId === planId ? { ...m, commandPlan: { ...m.commandPlan, status } } : m
+    );
+    // Précédent état, rétabli si la décision n'a pas pu être transmise.
+    const avant = messagesRef.current.find((m) => m.commandPlan?.planId === planId)?.commandPlan?.status ?? 'PENDING_CONFIRMATION';
+    // Boutons désactivés pendant l'envoi : un double clic n'envoie qu'une décision.
+    setState((s) => ({ ...s, isLoading: true, error: null, messages: s.messages.map(planStatus('DECIDING')) }));
     const res = await fetch(`/api/verebona/commands/${encodeURIComponent(planId)}/${decision}`, { method: 'POST' }).catch(() => null);
     const data = res ? await res.json().catch(() => ({})) : {};
+    // État final rendu par le serveur (annulée, expirée, exécutée…) ; à
+    // défaut (réseau), la proposition redevient utilisable.
+    // Refus de l'interrupteur (403 sans état) : la proposition reste annulable.
+    const serveur = (data?.status ?? null) as VerebonaPlanStatus | null;
+    const retour: VerebonaPlanStatus = avant === 'DECIDING' ? 'PENDING_CONFIRMATION' : avant;
+    const etat: VerebonaPlanStatus = serveur ?? (!res || res.status === 403 ? retour : 'HANDLED');
+    setState((s) => ({ ...s, messages: s.messages.map(planStatus(etat)) }));
     let texte: string;
     if (!res || !res.ok) {
       texte = data?.error?.message ?? 'Action impossible pour le moment.';
     } else if (decision === 'cancel') {
-      texte = 'D’accord, je n’ai rien modifié.';
+      texte = data.message ?? 'D’accord, j’ai annulé cette action : rien n’a été modifié.';
+      // Annulation rejouée (déjà annulée) : pas de second message dans le fil.
+      if (data.alreadyHandled) {
+        setState((s) => ({ ...s, isLoading: false }));
+        return;
+      }
     } else {
       const lignes = (data.results ?? []) as Array<{ status: string; message: string; entity?: { type: string; id: number } | null }>;
       // Les écrans ouverts sous l'assistant se remettent à jour.
@@ -403,9 +435,11 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         }
         window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
       }
-      texte = lignes.length > 1
+      // Texte de l'issue fourni par le serveur : le même que celui enregistré
+      // dans le fil (rechargement identique).
+      texte = data.message ?? (lignes.length > 1
         ? `${data.summary}\n${lignes.map((r) => `• ${r.status === 'SUCCESS' ? '✓' : r.status === 'SKIPPED_DEPENDENCY' ? '↷' : '✗'} ${r.message}`).join('\n')}`
-        : (data.summary ?? 'Action effectuée.');
+        : (data.summary ?? 'Action effectuée.'));
     }
     setState((s) => ({ ...s, isLoading: false, messages: [...s.messages, { id: newId(), role: 'assistant', content: texte }] }));
   }, []);

@@ -5,13 +5,17 @@
  * get back a PRECISE ranked list of matching entity IDs.
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { db } from '@/db';
-import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
+import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+/**
+ * Passerelle (plan de retrait WF-41) : opération `legacy_semantic_search` de
+ * l'usage INTELLIGENT_ASSISTANT (T2). Modèle principal de la version figée de
+ * T2, UNE tentative comme avant ; la course contre TIMEOUT_MS est conservée.
+ */
+export const LEGACY_SEMANTIC_SEARCH_OPERATION = 'legacy_semantic_search';
 const TIMEOUT_MS = 30_000;
 const MAX_ASSETS = 300;
 const MAX_DOCS = 300;
@@ -165,19 +169,19 @@ function loadSearchPrompt(query: string, contextText: string): string {
   }
 }
 
-async function callGemini(query: string, contextText: string): Promise<GeminiMatch[]> {
-  // Clé ACTIVE du BO et garde d'exploitation T2 (arrêt d'urgence, état du
-  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
-  // (legacy-gemini-access).
-  const apiKey = await requireLegacyGeminiKey('T2', 'gemini-search');
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-
+async function callGemini(query: string, contextText: string, accountId: number): Promise<GeminiMatch[]> {
   const prompt = loadSearchPrompt(query, contextText);
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
+  // `AI_BLOCKED` (arrêt d'urgence, T2 désactivé ou suspendu) est levé par la
+  // passerelle avant tout appel : l'appelant retombe sur « aucun résultat IA ».
+  const result = await executeLegacyPrompt({
+    useCaseCode: 'INTELLIGENT_ASSISTANT',
+    operationCode: LEGACY_SEMANTIC_SEARCH_OPERATION,
+    accountId,
+    prompt,
+    maxModelAttempts: 1,
+  });
+  const text = result.data.trim();
 
   const jsonMatch = text.match(/\[[\s\S]*\]/);
   if (!jsonMatch) return [];
@@ -264,7 +268,7 @@ export async function geminiSearch(
   const data = await loadAccountData(accountId);
   const contextText = serializeForPrompt(data as any);
 
-  const searchPromise = callGemini(query, contextText);
+  const searchPromise = callGemini(query, contextText, accountId);
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Gemini timeout')), TIMEOUT_MS)
   );

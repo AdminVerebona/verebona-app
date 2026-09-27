@@ -21,10 +21,10 @@
 import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import {
-  dedupeKey, decideQueueing, afterFailure, MAX_ATTEMPTS,
+  dedupeKey, decideQueueing, afterFailure, afterDeferral, MAX_ATTEMPTS,
   type JobOrigin, type JobScope, type JobStatus, type QueueDecision,
 } from './queue-policy';
-import { abortLocalExecutions } from './execution-control';
+import { abortLocalExecutions, abortMemoryExecutions } from './execution-control';
 import { invalidateRuntimeGuardCache } from './runnable-guard';
 
 type Row = Record<string, unknown>;
@@ -420,6 +420,72 @@ export async function failJob(
 }
 
 /**
+ * Report d'une exécution (quota épuisé…) — voir `JobDeferredError`.
+ *
+ * Ni échec ni succès : la tentative est rendue (MOD-005), le job revient en
+ * file avec un délai croissant, puis passe FAILED au-delà du plafond de
+ * reports, avec un motif lisible au SCR-08. Le compteur vit dans le contexte
+ * (`payload.deferrals`) : aucune migration, et il suit le job s'il est relancé.
+ * Conditionné au jeton, comme `failJob`.
+ */
+export async function deferJob(
+  jobId: number,
+  reason: string,
+  executionId: string | null = null,
+): Promise<{ permanent: boolean; stale?: boolean; retryInSeconds?: number; deferrals?: number }> {
+  const rows0 = await pgClient.unsafe(
+    `SELECT COALESCE((payload->>'deferrals')::int, 0) AS deferrals FROM ai_job_queue WHERE id = $1 LIMIT 1`,
+    [jobId] as never[],
+  );
+  const previous = Number((rows0 as unknown as Row[])[0]?.deferrals ?? 0);
+  const outcome = afterDeferral(previous);
+  const message = outcome.status === 'FAILED'
+    ? `${reason} — reporté ${previous} fois, abandonné (le fichier reste « non analysé »)`
+    : `${reason} — reporté (${outcome.deferrals}), reprise dans ${Math.round(outcome.retryInSeconds / 60)} min`;
+
+  const upd = await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET status = $2, last_error = $3,
+            attempts = GREATEST(attempts - 1, 0),
+            available_at = NOW() + ($4 || ' seconds')::interval,
+            finished_at = CASE WHEN $2 = 'FAILED' THEN NOW() ELSE NULL END,
+            started_at = NULL,
+            execution_id = NULL, worker_id = NULL, lease_expires_at = NULL,
+            payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{deferrals}', to_jsonb($6::int))
+      WHERE id = $1 AND status = 'RUNNING'
+        AND ($5::uuid IS NULL OR execution_id = $5::uuid)
+      RETURNING id`,
+    [jobId, outcome.status, message.slice(0, 2000), String(outcome.retryInSeconds), executionId, outcome.deferrals] as never[],
+  );
+  if ((upd as unknown as Row[]).length === 0) return { permanent: false, stale: true };
+  return { permanent: outcome.status === 'FAILED', retryInSeconds: outcome.retryInSeconds, deferrals: outcome.deferrals };
+}
+
+/**
+ * Cibles ayant un travail VIVANT (en attente ou en cours) dans la file
+ * durable, parmi `targetIds`.
+ *
+ * Sert la reprise serveur (`analysis-recovery`) : un fichier dont un job T1
+ * attend son tour (backoff, report) ou s'exécute ne doit pas être relancé par
+ * un autre chemin — ce serait la double analyse que le §10.4 interdit.
+ */
+export async function listLiveTargets(
+  treatment: Treatment,
+  targetType: string,
+  targetIds: Array<number | string>,
+): Promise<Set<string>> {
+  if (targetIds.length === 0) return new Set();
+  const rows = await pgClient.unsafe(
+    `SELECT DISTINCT target_id FROM ai_job_queue
+      WHERE treatment = $1 AND target_type = $2
+        AND status IN ('PENDING', 'RUNNING')
+        AND target_id = ANY($3::text[])`,
+    [treatment, targetType, targetIds.map(String)] as never[],
+  );
+  return new Set((rows as unknown as Row[]).map((r) => String(r.target_id)));
+}
+
+/**
  * L'exécution `executionId` est-elle toujours titulaire du job ?
  *
  * Contrôle d'écriture : appelé par la garde d'exécution avant chaque écriture
@@ -464,7 +530,11 @@ export async function requeueRunning(treatment: Treatment, reason: string): Prom
   );
   const ids = (rows as unknown as Row[]).map((r) => Number(r.id));
   abortLocalExecutions(ids, reason);
-  return ids.length;
+  // File mémoire T1 (chemin `legacy`) : aucune ligne en base, mais la même
+  // interruption — l'exécution locale est coupée et remise en tête de SA file
+  // (analysis-queue). Comptée avec les jobs remis en file.
+  const horsFile = abortMemoryExecutions(treatment, reason);
+  return ids.length + horsFile;
 }
 
 /**

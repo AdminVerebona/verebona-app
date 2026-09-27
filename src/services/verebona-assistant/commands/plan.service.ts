@@ -477,21 +477,28 @@ export async function confirmCommandPlan(
         SET status = 'EXECUTING', confirmed_at = now()
       WHERE plan_id = $1 AND account_id = $2 AND user_id = $3
         AND status = 'PENDING_CONFIRMATION' AND expires_at > now()
-      RETURNING actions_payload, params_hash, summary`,
+      RETURNING actions_payload, params_hash, summary, conversation_id AS "conversationId", message_id AS "messageId"`,
     [p.planId, p.accountId, p.userId] as never[],
-  )) as unknown as Array<{ actions_payload: string; params_hash: string; summary: string }>;
+  )) as unknown as Array<{ actions_payload: string; params_hash: string; summary: string; conversationId: number | null; messageId: number | null }>;
 
   if (!pris[0]) {
     const [etat] = (await pgClient.unsafe(
-      `SELECT status, expires_at < now() AS expired FROM verebona_command_plans
+      `SELECT status, expires_at < now() AS expired, conversation_id AS "conversationId", message_id AS "messageId"
+         FROM verebona_command_plans
         WHERE plan_id = $1 AND account_id = $2 AND user_id = $3`,
       [p.planId, p.accountId, p.userId] as never[],
-    )) as unknown as Array<{ status: PlanStatus; expired: boolean }>;
+    )) as unknown as Array<{ status: PlanStatus; expired: boolean; conversationId?: number | null; messageId?: number | null }>;
     if (!etat) return { ok: false, code: 'PLAN_NOT_FOUND', message: 'Cette action n’existe pas ou ne vous appartient pas.' };
-    if (etat.status === 'PENDING_CONFIRMATION' && etat.expired) {
-      await pgClient.unsafe(`UPDATE verebona_command_plans SET status = 'EXPIRED' WHERE plan_id = $1 AND status = 'PENDING_CONFIRMATION'`, [p.planId] as never[]);
-      await tracer(p.planId, p.accountId, p.userId, 'EXPIRED');
-      return { ok: false, code: 'PLAN_EXPIRED', message: 'Cette proposition a expiré. Refaites votre demande.', status: 'EXPIRED' };
+    if (etat.status === 'EXPIRED' || (etat.status === 'PENDING_CONFIRMATION' && etat.expired)) {
+      if (etat.status === 'PENDING_CONFIRMATION') {
+        await pgClient.unsafe(`UPDATE verebona_command_plans SET status = 'EXPIRED' WHERE plan_id = $1 AND status = 'PENDING_CONFIRMATION'`, [p.planId] as never[]);
+        await tracer(p.planId, p.accountId, p.userId, 'EXPIRED');
+        await recordPlanOutcome({ ...p, conversationId: etat.conversationId ?? null, messageId: etat.messageId ?? null }, EXPIRED_MESSAGE);
+      }
+      return { ok: false, code: 'PLAN_EXPIRED', message: EXPIRED_MESSAGE, status: 'EXPIRED' };
+    }
+    if (etat.status === 'CANCELLED') {
+      return { ok: false, code: 'PLAN_ALREADY_HANDLED', message: 'Cette action a été annulée : rien n’a été modifié.', status: 'CANCELLED' };
     }
     return { ok: false, code: 'PLAN_ALREADY_HANDLED', message: 'Cette action a déjà été traitée.', status: etat.status };
   }
@@ -504,12 +511,15 @@ export async function confirmCommandPlan(
   };
 
   await tracer(p.planId, p.accountId, p.userId, 'CONFIRMED');
+  const fil = { ...p, conversationId: pris[0].conversationId ?? null, messageId: pris[0].messageId ?? null };
 
   // Paramètres figés : l'empreinte doit correspondre à ce qui a été présenté.
   if (hashActions(pris[0].actions_payload) !== pris[0].params_hash) {
     await fin('FAILED', []);
     await tracer(p.planId, p.accountId, p.userId, 'INTEGRITY_FAILED');
-    return { ok: false, code: 'PLAN_INTEGRITY', message: 'Cette action ne peut pas être exécutée. Refaites votre demande.', status: 'FAILED' };
+    const message = 'Cette action ne peut pas être exécutée. Refaites votre demande.';
+    await recordPlanOutcome(fil, message);
+    return { ok: false, code: 'PLAN_INTEGRITY', message, status: 'FAILED' };
   }
   const actions = JSON.parse(pris[0].actions_payload) as PlannedAction[];
 
@@ -521,6 +531,7 @@ export async function confirmCommandPlan(
     const refus = actions.map((a) => ({ actionId: a.actionId, status: 'REFUSED' as const, message: droit.message ?? 'Écriture non autorisée.' }));
     await fin('REFUSED', refus);
     await tracer(p.planId, p.accountId, p.userId, 'REFUSED', { reason: droit.message });
+    await recordPlanOutcome(fil, droit.message ?? 'Écriture non autorisée.');
     return { ok: false, code: 'WRITE_REFUSED', message: droit.message ?? 'Écriture non autorisée.', status: 'REFUSED' };
   }
 
@@ -528,7 +539,9 @@ export async function confirmCommandPlan(
   const status = planStatusFrom(results);
   await fin(status, results);
   await tracer(p.planId, p.accountId, p.userId, 'EXECUTED', { status, results });
-  return { ok: true, status, results, summary: summarizeResults(results) };
+  const summary = summarizeResults(results);
+  await recordPlanOutcome(fil, outcomeText(summary, results));
+  return { ok: true, status, results, summary };
 }
 
 async function defaultCanWrite(accountId: number): Promise<{ allowed: boolean; message?: string }> {
@@ -538,14 +551,176 @@ async function defaultCanWrite(accountId: number): Promise<{ allowed: boolean; m
   return { allowed: false, message: r.message };
 }
 
-export async function cancelCommandPlan(p: { planId: string; accountId: number; userId: number }): Promise<boolean> {
+// ── Annulation d'une proposition ───────────────────────────────────────────
+
+export type Cancellation =
+  /**
+   * Proposition close sans aucune écriture : annulée maintenant, déjà
+   * annulée (appel rejoué — idempotence), ou expirée entre-temps.
+   */
+  | { ok: true; status: 'CANCELLED' | 'EXPIRED'; alreadyHandled: boolean; message: string }
+  | { ok: false; code: 'PLAN_NOT_FOUND' | 'PLAN_ALREADY_HANDLED'; message: string; status?: PlanStatus };
+
+export const CANCELLED_MESSAGE = 'D’accord, j’ai annulé cette action : rien n’a été modifié.';
+export const EXPIRED_MESSAGE = 'Cette proposition a expiré : rien n’a été modifié. Refaites votre demande si besoin.';
+
+/**
+ * Annulation, par l'utilisateur, d'une commande proposée et NON confirmée
+ * (CDC §5.3 « possibilité d'annulation », §9.6 états CANCELLED / EXPIRED,
+ * §27.5 idempotence).
+ *
+ *   · prise atomique : seul un plan EN ATTENTE, non expiré, du même compte
+ *     ET du même utilisateur passe à CANCELLED — une confirmation
+ *     concurrente et une annulation ne peuvent pas réussir toutes les deux ;
+ *   · idempotente : rejouée sur un plan déjà annulé, elle rend le même
+ *     résultat, sans nouvelle trace ni nouveau message ;
+ *   · une proposition expirée est close comme EXPIRED (rien à annuler) ;
+ *   · un plan déjà confirmé n'est plus annulable ici (pas de retour arrière
+ *     sur des écritures exécutées) ;
+ *   · le plan d'un autre utilisateur (autre membre d'un Duo) ou d'un autre
+ *     compte est traité comme inexistant ;
+ *   · l'issue est enregistrée dans le fil (message de l'assistant) et tracée.
+ *
+ * Aucune donnée métier n'est touchée.
+ */
+export async function cancelCommandPlan(p: { planId: string; accountId: number; userId: number }): Promise<Cancellation> {
   const rows = (await pgClient.unsafe(
-    `UPDATE verebona_command_plans SET status = 'CANCELLED'
-      WHERE plan_id = $1 AND account_id = $2 AND user_id = $3 AND status = 'PENDING_CONFIRMATION'
-      RETURNING plan_id`,
+    `UPDATE verebona_command_plans SET status = 'CANCELLED', cancelled_at = now()
+      WHERE plan_id = $1 AND account_id = $2 AND user_id = $3
+        AND status = 'PENDING_CONFIRMATION' AND expires_at > now()
+      RETURNING conversation_id AS "conversationId", message_id AS "messageId"`,
     [p.planId, p.accountId, p.userId] as never[],
-  )) as unknown as unknown[];
-  if (rows.length) await tracer(p.planId, p.accountId, p.userId, 'CANCELLED');
-  return rows.length > 0;
+  )) as unknown as Array<{ conversationId: number | null; messageId: number | null }>;
+  if (rows[0]) {
+    await tracer(p.planId, p.accountId, p.userId, 'CANCELLED');
+    await recordPlanOutcome({ ...p, ...rows[0] }, CANCELLED_MESSAGE);
+    return { ok: true, status: 'CANCELLED', alreadyHandled: false, message: CANCELLED_MESSAGE };
+  }
+
+  const [etat] = (await pgClient.unsafe(
+    `SELECT status, expires_at < now() AS expired, conversation_id AS "conversationId", message_id AS "messageId"
+       FROM verebona_command_plans WHERE plan_id = $1 AND account_id = $2 AND user_id = $3`,
+    [p.planId, p.accountId, p.userId] as never[],
+  )) as unknown as Array<{ status: PlanStatus; expired: boolean; conversationId: number | null; messageId: number | null }>;
+  if (!etat) return { ok: false, code: 'PLAN_NOT_FOUND', message: 'Cette action n’existe pas ou ne vous appartient pas.' };
+
+  if (etat.status === 'CANCELLED') {
+    return { ok: true, status: 'CANCELLED', alreadyHandled: true, message: CANCELLED_MESSAGE };
+  }
+  if (etat.status === 'EXPIRED' || (etat.status === 'PENDING_CONFIRMATION' && etat.expired)) {
+    if (etat.status === 'PENDING_CONFIRMATION') {
+      const passe = (await pgClient.unsafe(
+        `UPDATE verebona_command_plans SET status = 'EXPIRED' WHERE plan_id = $1 AND status = 'PENDING_CONFIRMATION' RETURNING plan_id`,
+        [p.planId] as never[],
+      )) as unknown as unknown[];
+      if (passe.length) {
+        await tracer(p.planId, p.accountId, p.userId, 'EXPIRED');
+        await recordPlanOutcome({ ...p, conversationId: etat.conversationId, messageId: etat.messageId }, EXPIRED_MESSAGE);
+        return { ok: true, status: 'EXPIRED', alreadyHandled: false, message: EXPIRED_MESSAGE };
+      }
+    }
+    return { ok: true, status: 'EXPIRED', alreadyHandled: true, message: EXPIRED_MESSAGE };
+  }
+  return {
+    ok: false, code: 'PLAN_ALREADY_HANDLED', status: etat.status,
+    message: 'Cette action a déjà été confirmée : elle ne peut plus être annulée depuis l’assistant.',
+  };
 }
 
+/**
+ * Passe à EXPIRED les propositions en attente dont la validité est dépassée
+ * (purge quotidienne, et avant restitution d'un fil). Rend leur nombre.
+ * Aucun message n'est ajouté aux fils : l'état suffit à l'affichage.
+ */
+export async function expirePendingPlans(scope: { accountId?: number; userId?: number } = {}): Promise<number> {
+  const rows = (await pgClient.unsafe(
+    `UPDATE verebona_command_plans SET status = 'EXPIRED'
+      WHERE status = 'PENDING_CONFIRMATION' AND expires_at <= now()
+        AND ($1::int IS NULL OR account_id = $1) AND ($2::int IS NULL OR user_id = $2)
+      RETURNING plan_id, account_id, user_id`,
+    [scope.accountId ?? null, scope.userId ?? null] as never[],
+  )) as unknown as Array<{ plan_id: string; account_id: number; user_id: number }>;
+  for (const r of rows) await tracer(r.plan_id, r.account_id, r.user_id, 'EXPIRED', { by: 'expiry' });
+  return rows.length;
+}
+
+/** Plan tel que restitué dans l'historique d'un fil. */
+export interface ThreadCommandPlan extends CommandPlanPreview {
+  messageId: number;
+  status: PlanStatus;
+}
+
+/**
+ * Plans présentés dans un fil de l'utilisateur, par message : l'historique
+ * rechargé montre leur état réel (en attente et encore annulable, annulé,
+ * expiré, exécuté). Seuls les plans du compte ET de l'utilisateur sortent.
+ */
+export async function listThreadCommandPlans(
+  accountId: number,
+  userId: number,
+  conversationId: number,
+): Promise<ThreadCommandPlan[]> {
+  await expirePendingPlans({ accountId, userId });
+  const rows = (await pgClient.unsafe(
+    `SELECT plan_id AS "planId", account_id AS "accountId", user_id AS "userId", conversation_id AS "conversationId",
+            message_id AS "messageId", status, summary, actions_payload AS "actionsPayload", expires_at AS "expiresAt"
+       FROM verebona_command_plans
+      WHERE account_id = $1 AND user_id = $2 AND conversation_id = $3 AND message_id IS NOT NULL
+      ORDER BY created_at ASC`,
+    [accountId, userId, conversationId] as never[],
+  )) as unknown as Array<{
+    planId: string; accountId: number; userId: number; conversationId: number | null; messageId: number;
+    status: PlanStatus; summary: string; actionsPayload: string; expiresAt: string | Date;
+  }>;
+  const out: ThreadCommandPlan[] = [];
+  for (const r of rows) {
+    let actions: PlannedAction[];
+    try { actions = JSON.parse(r.actionsPayload) as PlannedAction[]; } catch { continue; }
+    const expiresAt = r.expiresAt instanceof Date ? r.expiresAt.toISOString() : String(r.expiresAt);
+    const preview = toPreview({ ...r, actions, expiresAt });
+    out.push({ ...preview, messageId: r.messageId, status: r.status });
+  }
+  return out;
+}
+
+/**
+ * Issue d'un plan (annulation, expiration, exécution) enregistrée dans le
+ * fil comme message de l'assistant, rattaché au message qui présentait le
+ * plan. Seulement si le fil existe toujours et appartient à l'utilisateur.
+ * Ne lève jamais : l'issue est déjà rendue et tracée.
+ */
+export async function recordPlanOutcome(
+  p: { planId: string; accountId: number; userId: number; conversationId: number | null; messageId: number | null },
+  content: string,
+): Promise<void> {
+  if (!p.conversationId) return;
+  try {
+    const { getAssistantConfig } = await import('../config/assistant-config');
+    const expires = new Date(Date.now() + getAssistantConfig().historyDays * 86400_000).toISOString();
+    const rows = (await pgClient.unsafe(
+      `INSERT INTO verebona_messages
+         (conversation_id, account_id, author_user_id, role, status, content, intent, mode,
+          parent_message_id, response_locale, expires_at)
+       SELECT c.id, $2, NULL, 'assistant', 'ready', $4, 'WRITE_COMMAND', 'deterministic', $5, 'fr-FR', $6
+         FROM verebona_conversations c
+        WHERE c.id = $1 AND c.account_id = $2 AND c.user_id = $3 AND c.status = 'active'
+       RETURNING conversation_id`,
+      [p.conversationId, p.accountId, p.userId, content, p.messageId, expires] as never[],
+    )) as unknown as unknown[];
+    if (rows.length) {
+      await pgClient.unsafe(
+        `UPDATE verebona_conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`,
+        [p.conversationId] as never[],
+      );
+    }
+  } catch (e) {
+    console.error('[verebona] issue de commande non enregistrée dans le fil :', (e as Error).message);
+  }
+}
+
+/** Texte de l'issue d'une exécution, tel qu'il est montré et enregistré. */
+export function outcomeText(summary: string, results: ActionResult[]): string {
+  if (results.length <= 1) return summary;
+  const puce = (s: ActionResult['status']) => (s === 'SUCCESS' ? '✓' : s === 'SKIPPED_DEPENDENCY' ? '↷' : '✗');
+  return `${summary}\n${results.map((r) => `• ${puce(r.status)} ${r.message}`).join('\n')}`;
+}

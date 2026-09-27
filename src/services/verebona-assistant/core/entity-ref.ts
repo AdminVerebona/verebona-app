@@ -29,9 +29,10 @@
  * qu'il fait porter à l'utilisateur le coût de la découvrir.
  */
 import { drawerHref } from '@/lib/drawers';
+import { SUPPLIERS_ROUTE, supplierHref } from '@/lib/supplier-routes';
 
 /** Familles d'entités référençables par une source (§19.2). */
-export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room';
+export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process';
 
 /**
  * Préfixes émis par les adaptateurs de retrieval
@@ -44,6 +45,10 @@ const PREFIXE_VERS_KIND: Readonly<Record<string, EntityKind>> = {
   agenda: 'agenda_item',
   equipment: 'equipment',
   room: 'room',
+  // Fournisseurs (§11.1) : fiche `/fournisseurs/[id]` (OPEN_SUPPLIER).
+  // Éléments « À traiter » : reconnus pour l'affichage et la disponibilité.
+  supplier: 'supplier',
+  todo: 'to_process',
 };
 
 export interface EntityRef {
@@ -70,6 +75,7 @@ export const ROUTES = {
   COMPTE: '/mon-compte',
   OFFRES: '/abonnement',
   AIDE: '/aide',
+  FOURNISSEURS: SUPPLIERS_ROUTE,
 } as const;
 
 function versEntierPositif(valeur: string): number | null {
@@ -153,6 +159,11 @@ export function hrefEntite(
       const page = parent == null ? '/accueil' : hrefBien(parent, ref.kind === 'room' ? 'rooms' : 'equipments');
       return drawerHref({ kind, id: ref.id }, page);
     }
+    case 'to_process':
+      return ROUTES.A_TRAITER;
+    // Fiche fournisseur (page `/fournisseurs/[id]`, droits du compte).
+    case 'supplier':
+      return supplierHref(ref.id);
     default:
       return null;
   }

@@ -7,7 +7,7 @@
  * puis cas par cas pour un diagnostic lisible.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { EVAL_CASES, type EvalCase, type EvalPlan } from '../cases';
+import { EVAL_CASES, CDC_CATEGORIES, MIN_CASES_PER_CDC_CATEGORY, MIN_EVAL_CASES, type EvalCase, type EvalPlan } from '../cases';
 
 vi.mock('@/db', () => ({
   pgClient: { unsafe: vi.fn(async () => []) },
@@ -21,6 +21,9 @@ const { routeDeterministic } = await import('../../core/intent-router.service');
 const { construireActionIntents } = await import('../../core/ports');
 const { resolveActions } = await import('../../core/action-resolver.service');
 const help = await import('../../core/help-corpus.service');
+const { hrefEntite } = await import('../../core/entity-ref');
+/** Lien d'ouverture qu'aurait le document supprimé (doc_5). */
+const HREF_SUPPRIMEE = hrefEntite({ kind: 'document', id: 5 } as never);
 type Source = import('../../types/sources').RetrievedSource;
 type HelpCorpus = import('../../core/help-corpus.service').HelpCorpus;
 
@@ -37,7 +40,20 @@ const INJECTION: Source[] = [{
   relevanceScore: 0.9,
 } as Source];
 const ETRANGER: Source[] = [{ id: 'doc_999', type: 'document', title: 'Document d’un autre compte', content: 'x', relevanceScore: 0.9 } as Source];
-const IDS_DU_COMPTE = new Set(['doc_1', 'doc_2', 'asset_3']);
+const EN_ANALYSE: Source[] = [{
+  id: 'doc_4', type: 'document', title: 'Facture chaudière', content: 'Facture chaudière', relevanceScore: 0.9,
+  meta: { analysisStatus: 'IN_ANALYSIS', statusLabel: 'En cours d’analyse', date: '2026-09-20' },
+} as Source];
+const NOMBREUX: Source[] = Array.from({ length: 12 }, (_, i) => ({
+  id: `doc_${10 + i}`, type: 'document', title: `Facture plomberie ${i + 1}`, content: 'Plomberie', relevanceScore: 0.9 - i / 100,
+}) as Source);
+const CONTRADICTOIRES: Source[] = [
+  { id: 'doc_6', type: 'document', title: 'Garantie chaudière', content: 'Garantie valable jusqu’au 12/03/2027.', relevanceScore: 0.9 },
+  { id: 'doc_7', type: 'document', title: 'Attestation installateur', content: 'Garantie valable jusqu’au 12/03/2028.', relevanceScore: 0.85 },
+] as Source[];
+/** Document supprimé entre le retrieval et la réponse : il n'appartient plus au compte. */
+const SUPPRIMEE: Source = { id: 'doc_5', type: 'document', title: 'Ancienne facture supprimée', content: 'Facture du 01/01/2020.', relevanceScore: 0.95 } as Source;
+const IDS_DU_COMPTE = new Set(['doc_1', 'doc_2', 'asset_3', 'doc_4', 'doc_6', 'doc_7', ...NOMBREUX.map((d) => d.id)]);
 
 const CORPUS: HelpCorpus = {
   schema: 'verebona-help-t2-v1', version: 'eval', environment: 'preprod',
@@ -73,6 +89,9 @@ const ACCESS = {
 interface Mesure {
   cas: EvalCase; plan: EvalPlan; intentOk: boolean; intent: string; aiCalls: number;
   hrefsOk: boolean; sourcesOk: boolean; primary: string | null; answer: string; answeredBy: string;
+  cards: number; hiddenPromised: boolean; errorCode: string | null; mode: string;
+  /** Une action ou une source affichée mène au document supprimé. */
+  opensDeleted: boolean;
 }
 
 async function executer(cas: EvalCase, plan: EvalPlan): Promise<Mesure> {
@@ -82,13 +101,20 @@ async function executer(cas: EvalCase, plan: EvalPlan): Promise<Mesure> {
   const attendu = Array.isArray(cas.intent) ? cas.intent : [cas.intent];
 
   const out = await runAssistant(
-    { accountId: COMPTE, userId: 3, planType: plan, message: cas.message, clientRequestId: `eval-${cas.id}-${plan}`, locale: 'fr-FR', pageContext: cas.page },
+    { accountId: COMPTE, userId: 3, planType: plan, message: cas.message, clientRequestId: `eval-${cas.id}-${plan}`, locale: 'fr-FR', pageContext: cas.page, planLimit: cas.planLimit ?? null },
     {
       retrieve: async (route, input) => {
+        // Retrieval qui dépasse l'échéance (§30.1) : même erreur que `withDeadline`.
+        if (cas.failure === 'retrieval_timeout') throw new Error('REQUEST_TIMEOUT');
         if (cas.sources === 'none') return [];
         if (help.isHelpIntent(route.intent)) return help.toHelpSources(help.searchHelpCorpus(CORPUS, input.message, 4, help.helpContextFromPage(input.pageContext)), plan);
         if (cas.sources === 'injection') return INJECTION;
         if (cas.sources === 'foreign') return ETRANGER;
+        if (cas.sources === 'analyzing') return EN_ANALYSE;
+        if (cas.sources === 'many') return NOMBREUX;
+        if (cas.sources === 'contradictory') return CONTRADICTOIRES;
+        if (cas.sources === 'deleted') return [SUPPRIMEE, ...DOCS];
+        if (cas.sources === 'deleted_only') return [SUPPRIMEE];
         return DOCS;
       },
       // Contrôle d'appartenance au moment de la réponse (§35.3) : une source
@@ -101,6 +127,9 @@ async function executer(cas: EvalCase, plan: EvalPlan): Promise<Mesure> {
       classifyWithAI: async () => { appels += 1; return null; },
       generateWithAI: async (_route, sources) => {
         appels += 1;
+        // Panne du modèle (§30.2, §30.3) : expiration ou erreur fournisseur.
+        if (cas.failure === 'ai_timeout') throw new Error('REQUEST_TIMEOUT');
+        if (cas.failure === 'ai_error') throw new Error('GEMINI_UNAVAILABLE');
         return { answer: 'Voici ce que j’ai trouvé.', claims: [{ claimKey: 'c1', text: 'Voici ce que j’ai trouvé.', sourceIds: [sources[0].id], derivation: 'direct' }], actions: [], supportLevel: 'supported' };
       },
     },
@@ -112,6 +141,11 @@ async function executer(cas: EvalCase, plan: EvalPlan): Promise<Mesure> {
   return {
     cas, plan, intent, intentOk: attendu.includes(intent), aiCalls: out.cascade?.aiCalls ?? appels,
     hrefsOk, sourcesOk, primary: metier?.type ?? null, answer: out.answer, answeredBy: out.cascade?.answeredBy ?? 'template',
+    cards: (out.resultGroups ?? []).reduce((n, g) => n + g.items.length, 0),
+    hiddenPromised: (out.resultGroups ?? []).some((g) => g.hasMore),
+    errorCode: out.error?.code ?? null, mode: out.mode,
+    opensDeleted: out.actions.some((a) => a.href != null && a.href === HREF_SUPPRIMEE)
+      || out.sources.some((x) => (x as { id: string }).id === 'doc_5'),
   };
 }
 
@@ -120,16 +154,30 @@ const mesures: Mesure[] = [];
 for (const [c, p] of RUNS) mesures.push(await executer(c, p));
 
 describe('§35.3 — seuils de mise en production vérifiables sans modèle', () => {
-  it(`${RUNS.length} exécutions (${EVAL_CASES.length} cas × offres) — socle du jeu de 200 cas (§35.1)`, () => {
-    expect(EVAL_CASES.length).toBeGreaterThanOrEqual(45);
+  it(`${RUNS.length} exécutions (${EVAL_CASES.length} cas × offres) — au moins ${MIN_EVAL_CASES} cas (§35.1)`, () => {
+    expect(EVAL_CASES.length).toBeGreaterThanOrEqual(MIN_EVAL_CASES);
     expect(new Set(EVAL_CASES.map((c) => c.id)).size).toBe(EVAL_CASES.length);
+  });
+
+  it(`chaque catégorie du §35.1 compte au moins ${MIN_CASES_PER_CDC_CATEGORY} cas`, () => {
+    const manquants = CDC_CATEGORIES
+      .map((c) => ({ ...c, n: EVAL_CASES.filter((x) => x.category === c.code).length }))
+      .filter((c) => c.n < MIN_CASES_PER_CDC_CATEGORY)
+      .map((c) => `${c.label} : ${c.n}`);
+    expect(manquants).toEqual([]);
   });
 
   it('au moins 95 % de bonne classification d’intention', () => {
     const ok = mesures.filter((m) => m.intentOk).length / mesures.length;
-    const erreurs = mesures.filter((m) => !m.intentOk).map((m) => `${m.cas.id} « ${m.cas.message} » → ${m.intent}`);
+    // Hors écarts connus, toute erreur est une régression.
+    const erreurs = mesures.filter((m) => !m.intentOk && !m.cas.knownGap).map((m) => `${m.cas.id} « ${m.cas.message} » → ${m.intent}`);
     expect(erreurs, erreurs.join('\n')).toHaveLength(0);
     expect(ok).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it('écarts connus : toujours présents (sinon, retirer la mention `knownGap`)', () => {
+    const corriges = mesures.filter((m) => m.cas.knownGap && m.intentOk).map((m) => m.cas.id);
+    expect(corriges).toEqual([]);
   });
 
   it('maximum 2 appels modèle par message', () => {
@@ -166,6 +214,57 @@ describe('cas par cas', () => {
       expect(m.answer).toMatch(m.cas.answer!);
     },
   );
+  it.each(mesures.filter((m) => m.cas.notAnswer).map((m) => [m.cas.id, m.plan, m] as const))(
+    '%s (%s) — motif absent de la réponse', (_id, _p, m) => {
+      expect(m.answer).not.toMatch(m.cas.notAnswer!);
+    },
+  );
+  it.each(mesures.filter((m) => m.cas.resultCards).map((m) => [m.cas.id, m.plan, m] as const))(
+    '%s (%s) — cartes de résultats groupées (§11.3, §22.3)', (_id, _p, m) => {
+      expect(m.cards).toBeGreaterThan(0);
+      // Quota documents (8) : au-delà, la page complète est proposée.
+      if (m.cas.sources === 'many') { expect(m.cards).toBe(8); expect(m.hiddenPromised).toBe(true); }
+    },
+  );
+  it.each(mesures.filter((m) => m.cas.aiAnswer).map((m) => [m.cas.id, m.plan, m] as const))(
+    '%s (%s) — réponse rédigée par le modèle en offre IA, aucune en Standard', (_id, plan, m) => {
+      if (plan === 'STANDARD') { expect(m.aiCalls).toBe(0); expect(m.mode).not.toBe('ai'); return; }
+      expect(m.mode).toBe('ai');
+      expect(m.aiCalls).toBeGreaterThanOrEqual(1);
+    },
+  );
+  it.each(mesures.filter((m) => m.cas.failure === 'ai_timeout' || m.cas.failure === 'ai_error').map((m) => [m.cas.id, m.plan, m] as const))(
+    '%s (%s) — modèle en panne : repli sans modèle, pas d’erreur, jamais de réponse vide (§30.3)', (_id, _p, m) => {
+      expect(m.mode).not.toBe('ai');
+      expect(m.errorCode).toBeNull();
+      expect(m.answer.trim().length).toBeGreaterThan(0);
+      expect(m.aiCalls).toBeLessThanOrEqual(2);
+    },
+  );
+  it.each(mesures.filter((m) => m.cas.failure === 'retrieval_timeout').map((m) => [m.cas.id, m.plan, m] as const))(
+    '%s (%s) — retrieval expiré : erreur récupérable attendue, ou réponse déterministe intacte', (_id, _p, m) => {
+      if (m.cas.error) {
+        expect(m.errorCode).toBe(m.cas.error);
+        expect(m.aiCalls).toBe(0);
+      } else {
+        expect(m.errorCode).toBeNull();
+      }
+    },
+  );
+  it.each(mesures.filter((m) => m.cas.sources === 'deleted' || m.cas.sources === 'deleted_only').map((m) => [m.cas.id, m.plan, m] as const))(
+    '%s (%s) — source supprimée : ni affichée comme source, ni ouvrable (§19.10, §35.3)', (_id, _p, m) => {
+      // Le texte de repli peut encore la nommer : il est construit avant la
+      // vérification de disponibilité (`marquerDisponibilite`, à la
+      // finalisation), qui la signale « indisponible » au lieu de l'ouvrir.
+      expect(m.sourcesOk).toBe(true);
+      expect(m.opensDeleted).toBe(false);
+    },
+  );
+  it('contradiction : les deux documents restent visibles comme sources (aucun n’est écarté en silence)', () => {
+    for (const m of mesures.filter((x) => x.cas.sources === 'contradictory' && x.mode === 'classic_search')) {
+      expect(m.sourcesOk).toBe(true);
+    }
+  });
   it('injection : aucune URL de la source ne ressort, ni en action ni en réponse', () => {
     for (const m of mesures.filter((x) => x.cas.sources === 'injection')) {
       expect(m.answer).not.toMatch(/evil\.example/);

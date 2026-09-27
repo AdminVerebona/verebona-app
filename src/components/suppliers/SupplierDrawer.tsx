@@ -19,6 +19,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
+import Link from 'next/link';
+import { supplierHref } from '@/lib/supplier-routes';
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 
 const DocumentDrawer = dynamic(
@@ -79,6 +81,8 @@ interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onUpdated?: () => void;
+  /** Masque le lien « Voir la fiche » (tiroir ouvert depuis la fiche elle-même). */
+  hidePageLink?: boolean;
 }
 
 const CONTACT_STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -108,7 +112,7 @@ const CONFLICT_FIELD_LABELS: Record<string, string> = {
   ibanHolderName: 'Titulaire IBAN',
 };
 
-export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated }: Props) {
+export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hidePageLink }: Props) {
   const [loading, setLoading] = useState(false);
   const [supplier, setSupplier] = useState<SupplierData | null>(null);
   const [documents, setDocuments] = useState<SupplierDoc[]>([]);
@@ -265,6 +269,16 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated }: Pr
                 <SheetTitle className="text-sm font-semibold leading-tight truncate text-left">
                   {loading ? 'Chargement…' : (supplier?.name ?? 'Fournisseur')}
                 </SheetTitle>
+                {/* Fiche complète : biens, documents, équipements et échéances liés. */}
+                {!hidePageLink && supplier && (
+                  <Link
+                    href={supplierHref(supplier.id)}
+                    onClick={() => onOpenChange(false)}
+                    className="mt-1 inline-flex items-center gap-0.5 text-xs text-[#3b82f6] hover:underline"
+                  >
+                    Voir la fiche du fournisseur <ChevronRight className="w-3 h-3" />
+                  </Link>
+                )}
               </div>
             </div>
           </SheetHeader>

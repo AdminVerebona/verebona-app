@@ -57,6 +57,7 @@ export function buildGenerationConfig(input: {
   model: string;
   maxOutputTokens?: number;
   reasoning?: ReasoningLevel | null;
+  jsonResponse?: boolean;
 }): Record<string, unknown> {
   const thinkingConfig = thinkingConfigFor(input.model, input.reasoning);
   return {
@@ -65,5 +66,8 @@ export function buildGenerationConfig(input: {
     // l'appliquer ici est ce qui empêche le champ d'être décoratif.
     ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(thinkingConfig ? { thinkingConfig } : {}),
+    // Mode JSON natif, déclaré par l'opération : repris des modules
+    // historiques qui l'utilisaient (analyse documentaire, enrichissement).
+    ...(input.jsonResponse ? { responseMimeType: 'application/json' } : {}),
   };
 }

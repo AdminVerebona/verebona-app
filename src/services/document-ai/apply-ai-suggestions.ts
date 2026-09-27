@@ -16,13 +16,11 @@ import { assets, assetFiles, aiFieldUpdates } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AiUsageTracker } from './ai-usage-tracker';
 import type { AiBusinessResult } from '@/types/ai-usage';
-import { calcCostMicros } from './gemini-client';
 import { isFieldAllowedForCategory } from '@/lib/field-validator';
 import { acceptDetailDate } from '@/lib/asset-detail-rules';
-import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
+import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
 
 // ─── Section / field registry (mirrors ai-suggestions/route.ts) ───────────────
 
@@ -93,24 +91,12 @@ function normalizeValue(key: string, raw: unknown): unknown {
 
 // ─── AI call ──────────────────────────────────────────────────────────────────
 
-async function callGeminiWithUsage(prompt: string): Promise<{ parsed: unknown; inputTokens: number; outputTokens: number; costMicros: number }> {
-  // Clé ACTIVE du BO et garde d'exploitation T3 (arrêt d'urgence, état du
-  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
-  // (legacy-gemini-access).
-  const apiKey = await requireLegacyGeminiKey('T3', 'apply-ai-suggestions');
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 8000 },
-  });
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
-  const usage = (result.response.usageMetadata ?? {}) as { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
-  const inputTokens = usage.promptTokenCount ?? 0;
-  const outputTokens = usage.candidatesTokenCount ?? 0;
-  const costMicros = calcCostMicros('gemini-2.5-flash', inputTokens, outputTokens);
+// Passerelle (plan de retrait WF-41) : opération `legacy_apply_suggestions` de
+// l'usage DATA_RECONCILIATION (T3). Modèle principal de la version figée de
+// T3, UNE seule tentative comme avant (aucun repli), JSON natif, 8 000 jetons.
+export const LEGACY_APPLY_SUGGESTIONS_OPERATION = 'legacy_apply_suggestions';
 
-  if (!text?.trim()) throw new Error('Empty response from Gemini');
+function parseSuggestionJson(text: string): unknown {
   // Tentatives de parse dans l'ordre de robustesse
   const attempts = [
     () => JSON.parse(text),
@@ -118,9 +104,34 @@ async function callGeminiWithUsage(prompt: string): Promise<{ parsed: unknown; i
     () => { const s = text.indexOf('{'); const e = text.lastIndexOf('}'); if (s === -1 || e <= s) throw new Error('no obj'); return JSON.parse(text.slice(s, e + 1)); },
   ];
   for (const attempt of attempts) {
-    try { return { parsed: attempt(), inputTokens, outputTokens, costMicros }; } catch { /* suivant */ }
+    try { return attempt(); } catch { /* suivant */ }
   }
   throw new Error('No valid JSON in Gemini response');
+}
+
+function isUsableJson(text: string): boolean {
+  if (!text?.trim()) return false;
+  try { parseSuggestionJson(text); return true; } catch { return false; }
+}
+
+async function callGeminiWithUsage(
+  prompt: string,
+  ctx: { accountId: number; sourceIds?: number[]; parentOperationId?: number },
+): Promise<{ parsed: unknown; inputTokens: number; outputTokens: number; costMicros: number }> {
+  // `AI_BLOCKED` (arrêt d'urgence, T3 désactivé ou suspendu) est levé par la
+  // passerelle avant tout appel, et traité par l'appelant comme un échec IA.
+  const r = await executeLegacyPrompt({
+    useCaseCode: 'DATA_RECONCILIATION',
+    operationCode: LEGACY_APPLY_SUGGESTIONS_OPERATION,
+    accountId: ctx.accountId,
+    sourceIds: ctx.sourceIds,
+    parentOperationId: ctx.parentOperationId,
+    prompt,
+    accept: isUsableJson,
+    maxModelAttempts: 1,
+    maxOutputTokensCap: 8000,
+  });
+  return { parsed: parseSuggestionJson(r.data), inputTokens: r.inputTokens, outputTokens: r.outputTokens, costMicros: r.costMicros };
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -248,7 +259,11 @@ export async function applyAiSuggestionsToAsset({
       environment: 'production',
     });
 
-    const { parsed, inputTokens: i, outputTokens: o, costMicros: c } = await callGeminiWithUsage(prompt);
+    const { parsed, inputTokens: i, outputTokens: o, costMicros: c } = await callGeminiWithUsage(prompt, {
+      accountId,
+      sourceIds: sourceFileId ? [sourceFileId] : undefined,
+      parentOperationId: opId ?? undefined,
+    });
     aiResult = parsed;
     inputTokens = i; outputTokens = o; costMicros = c;
 

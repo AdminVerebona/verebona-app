@@ -12,7 +12,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { areWriteCommandsEnabled, WRITE_COMMANDS_DISABLED_MESSAGE } from '@/services/verebona-assistant/config/assistant-config';
-import { confirmCommandPlan } from '@/services/verebona-assistant/commands/plan.service';
+import { confirmCommandPlan, outcomeText } from '@/services/verebona-assistant/commands/plan.service';
 
 export async function POST(
   req: NextRequest,
@@ -42,5 +42,6 @@ export async function POST(
     const status = r.code === 'PLAN_NOT_FOUND' ? 404 : r.code === 'WRITE_REFUSED' ? 403 : 409;
     return NextResponse.json({ error: { code: r.code, message: r.message, recoverable: r.code !== 'WRITE_REFUSED' }, status: r.status ?? null }, { status });
   }
-  return NextResponse.json({ planId, status: r.status, summary: r.summary, results: r.results });
+  // `message` : texte de l'issue, tel qu'enregistré dans le fil.
+  return NextResponse.json({ planId, status: r.status, summary: r.summary, results: r.results, message: outcomeText(r.summary, r.results) });
 }

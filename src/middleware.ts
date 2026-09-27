@@ -88,6 +88,7 @@ export async function middleware(request: NextRequest) {
     '/documents',
     '/dashboard',
     '/mon-compte',
+    '/fournisseurs',
   ].some((route) => pathname === route || pathname.startsWith(route + '/'));
 
   if (isProtectedUI) {
@@ -345,5 +346,6 @@ export const config = {
     '/documents/:path*',
     '/dashboard/:path*',
     '/mon-compte/:path*',
+    '/fournisseurs/:path*',
   ],
 };

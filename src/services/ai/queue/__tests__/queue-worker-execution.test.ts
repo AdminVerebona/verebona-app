@@ -60,6 +60,10 @@ describe('timeout global d’exécution (GEN-012)', () => {
     let signal: AbortSignal | undefined;
     registerJobHandler('T4', (_job, guard) => { signal = guard.signal; return new Promise(() => {}); });
     const p = runOne('T4');
+    // Exécutant qui ignore le signal : le job n'est libéré qu'après le délai
+    // de grâce (une seconde durée de délai global) — revue lot 3.
+    await vi.advanceTimersByTimeAsync(EXECUTION_TIMEOUT_MS.T4 + 10);
+    expect(failJob).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(EXECUTION_TIMEOUT_MS.T4 + 10);
     await expect(p).resolves.toBe(true);
     expect(signal?.aborted).toBe(true);

@@ -7,14 +7,52 @@
  * Critère d'acceptation n°4 du CDC §12.
  */
 import { GoogleGenerativeAI, type GenerationConfig, type Part } from '@google/generative-ai';
-import type { AiProvider, ProviderCallInput, ProviderCallOutput } from './provider.port';
+import type { AiProvider, AttachmentSession, ProviderCallInput, ProviderCallOutput } from './provider.port';
+import type { AiAttachment } from '../types';
 import { AiGatewayError } from '../errors';
 import { prepareAttachmentParts, cleanupTemporaryFiles } from './gemini-files';
 import { getProviderSecret } from '../../provider/provider-secret';
 import { buildGenerationConfig } from './gemini-generation-config';
 
+/**
+ * Préparation partagée par les tentatives d'une exécution : fichiers envoyés
+ * une seule fois à la Files API, réutilisés par les replis, supprimés à la
+ * libération. Un échec de préparation n'est pas mémorisé : la tentative
+ * suivante réessaie, comme avant.
+ */
+export class GeminiAttachmentSession implements AttachmentSession {
+  private prepared: Promise<{ parts: Part[]; temporaryFileUris: string[]; apiKey: string }> | null = null;
+  private released = false;
+
+  constructor(private readonly attachments: AiAttachment[]) {}
+
+  async parts(apiKey: string): Promise<Part[]> {
+    if (this.released) throw new Error('Session de pièces jointes déjà libérée');
+    if (!this.prepared) {
+      const p = prepareAttachmentParts(this.attachments, apiKey).then((r) => ({ ...r, apiKey }));
+      this.prepared = p;
+      p.catch(() => { if (this.prepared === p) this.prepared = null; });
+    }
+    return (await this.prepared).parts;
+  }
+
+  async release(): Promise<void> {
+    if (this.released) return;
+    this.released = true;
+    const pending = this.prepared;
+    this.prepared = null;
+    if (!pending) return;
+    const ready = await pending.catch(() => null);
+    if (ready) await cleanupTemporaryFiles(ready.temporaryFileUris, ready.apiKey);
+  }
+}
+
 export class GeminiProvider implements AiProvider {
   readonly name = 'gemini';
+
+  openAttachmentSession(attachments: AiAttachment[]): AttachmentSession {
+    return new GeminiAttachmentSession(attachments);
+  }
 
   /**
    * Vrai si une clé est disponible : clé ACTIVE du BO, sinon environnement
@@ -46,8 +84,15 @@ export class GeminiProvider implements AiProvider {
 
     // PDF et vidéo via Files API, images en inline, bureautique extraite côté
     // serveur. La clé est transmise : l'upload et le nettoyage utilisent la
-    // même clé administrée que la génération.
-    const { parts, temporaryFileUris } = await prepareAttachmentParts(input.attachments, apiKey);
+    // même clé administrée que la génération. Avec une session (passerelle),
+    // la préparation est faite une fois pour toute la chaîne, et c'est la
+    // session — non l'appel — qui supprime les fichiers temporaires.
+    const session = input.attachmentSession instanceof GeminiAttachmentSession
+      ? input.attachmentSession
+      : null;
+    const { parts, temporaryFileUris } = session
+      ? { parts: await session.parts(apiKey), temporaryFileUris: [] as string[] }
+      : await prepareAttachmentParts(input.attachments, apiKey);
 
     try {
       const contents: Part[] = [{ text: input.prompt }, ...parts];

@@ -84,12 +84,35 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
     };
   }, [handleStart, handleComplete]);
 
-  // Au montage : vérifier si des documents non analysés existent et déclencher leur analyse.
-  // Couvre le cas où l'utilisateur avait épuisé son quota puis a rechargé du crédit / upgradé.
+  // Au montage : LIRE l'état des analyses du compte (en attente, en cours) pour
+  // réafficher le bandeau après un rechargement — CDC BO IA E-06.
+  //
+  // L'appel à `/api/analysis/check-pending` RELANÇAIT les analyses : la reprise
+  // T1 dépendait de l'ouverture d'une session. Elle est désormais
+  // exclusivement serveur (analysis-recovery : planificateur, passage planifié
+  // T1, qui reprend aussi les documents d'un compte redevenu créditeur) ; ce
+  // point d'entrée est en lecture seule et marche avec les deux files
+  // (`AI_DURABLE_QUEUE`). Le suivi de fin reste le polling ci-dessous.
   useEffect(() => {
-    fetch('/api/analysis/check-pending', {
-      credentials: 'include',
-    }).catch(() => {});
+    let annule = false;
+    fetch('/api/analysis/queue-status', { credentials: 'include' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { files?: Array<{ fileId?: unknown }> } | null) => {
+        if (annule || !data || !Array.isArray(data.files)) return;
+        const ids = data.files
+          .map((f) => Number(f?.fileId))
+          .filter((id) => Number.isInteger(id) && id > 0);
+        if (ids.length === 0) return;
+        const now = Date.now();
+        setAnalyzingFileIds((cur) => [...cur, ...ids.filter((id) => !cur.includes(id))]);
+        setAnalysisStartTimes((times) => {
+          const t = { ...times };
+          for (const id of ids) if (t[id] === undefined) t[id] = now;
+          return t;
+        });
+      })
+      .catch(() => {});
+    return () => { annule = true; };
   }, []);
 
   // Polling de sécurité : vérifie en DB l'état des docs encore en cours

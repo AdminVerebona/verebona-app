@@ -14,9 +14,8 @@ import { SessionService } from '@/lib/session-service';
 import { isPremiumPlan } from '@/types/domain';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { acceptDetailDate } from '@/lib/asset-detail-rules';
-import { requireLegacyGeminiKey } from '@/services/ai/provider/legacy-gemini-access';
+import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
 
 // ─── Section/field registry ───────────────────────────────────────────────────
 
@@ -101,38 +100,41 @@ function normalizeValue(key: string, raw: unknown): unknown {
 
 // ─── AI call (text-only) ─────────────────────────────────────────────────────
 
-const NOMINAL_MODEL  = 'gemini-2.5-flash';
-const FALLBACK_MODEL = 'gemini-2.5-flash';
+// Passerelle (plan de retrait WF-41) : opération `legacy_asset_suggest` de
+// l'usage DATA_RECONCILIATION (T3). Deux tentatives comme avant (l'ancien
+// « repli » rappelait le même modèle) : principal puis repli 1 de la version
+// figée de T3. Texte libre, sans plafond de sortie propre.
+const LEGACY_ASSET_SUGGEST_OPERATION = 'legacy_asset_suggest';
 
-async function callGeminiTextOnly(prompt: string): Promise<unknown> {
-  // Clé ACTIVE du BO et garde d'exploitation T3 (arrêt d'urgence, état du
-  // traitement) — PROV-UI-05, OPS-011 ; module historique hors passerelle
-  // (legacy-gemini-access).
-  const apiKey = await requireLegacyGeminiKey('T3', 'ai-suggestions');
+function parseJson(text: string): unknown {
+  try { return JSON.parse(text); } catch {}
+  const match = text.match(/```(?:json)?\s*([\s\S]+?)```/);
+  if (match) return JSON.parse(match[1].trim());
+  throw new Error('No valid JSON in response');
+}
 
-  const genAI = new GoogleGenerativeAI(apiKey);
+/** Critère de repli de l'ancien module : réponse vide ou JSON illisible. */
+function isUsableJson(text: string): boolean {
+  if (!text?.trim()) return false;
+  try { parseJson(text); return true; } catch { return false; }
+}
 
-  function parseJson(text: string): unknown {
-    try { return JSON.parse(text); } catch {}
-    const match = text.match(/```(?:json)?\s*([\s\S]+?)```/);
-    if (match) return JSON.parse(match[1].trim());
-    throw new Error('No valid JSON in response');
-  }
-
-  async function tryModel(modelName: string): Promise<unknown> {
-    const model = genAI.getGenerativeModel({ model: modelName });
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    if (!text?.trim()) throw new Error('Empty response');
-    return parseJson(text);
-  }
-
-  try {
-    return await tryModel(NOMINAL_MODEL);
-  } catch (err1) {
-    console.warn('[ai-suggestions] Nominal model failed:', (err1 as Error).message, '— fallback');
-    return await tryModel(FALLBACK_MODEL);
-  }
+async function callGeminiTextOnly(
+  prompt: string,
+  ctx: { accountId: number; userId?: number },
+): Promise<unknown> {
+  // `AI_BLOCKED` (arrêt d'urgence, T3 désactivé ou suspendu) est levé par la
+  // passerelle avant tout appel : réponse AI_ERROR, comme toute panne IA.
+  const r = await executeLegacyPrompt({
+    useCaseCode: 'DATA_RECONCILIATION',
+    operationCode: LEGACY_ASSET_SUGGEST_OPERATION,
+    accountId: ctx.accountId,
+    userId: ctx.userId,
+    prompt,
+    accept: isUsableJson,
+    maxModelAttempts: 2,
+  });
+  return parseJson(r.data);
 }
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
@@ -261,7 +263,7 @@ export async function POST(
     // Call AI
     let aiResult: unknown;
     try {
-      aiResult = await callGeminiTextOnly(prompt);
+      aiResult = await callGeminiTextOnly(prompt, { accountId: session.currentAccountId, userId: session.userId });
     } catch (err) {
       console.error('[ai-suggestions] AI call failed:', err);
       return NextResponse.json({ error: 'AI_ERROR', message: 'Une erreur est survenue lors de l\'analyse.' }, { status: 500 });
