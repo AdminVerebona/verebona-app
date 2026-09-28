@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { searchExecutions } from '@/services/ai/telemetry/execution-log.repository';
 import { isTreatment } from '@/services/ai/config/treatments';
+import { T6_MODES, type T6ModeFilter } from '@/services/ai/telemetry/execution-filters';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 function entier(v: string | null): number | undefined {
@@ -42,6 +43,11 @@ function token(v: string | null): string | undefined {
 const RANKS = ['primary', 'fallback_1', 'fallback_2', 'fallback'] as const;
 function rank(v: string | null): (typeof RANKS)[number] | undefined {
   return (RANKS as readonly string[]).includes(v ?? '') ? (v as (typeof RANKS)[number]) : undefined;
+}
+
+/** Mode de génération T6 (BO-009) ; sinon ignoré. */
+function t6Mode(v: string | null): T6ModeFilter | undefined {
+  return (T6_MODES as readonly string[]).includes(v ?? '') ? (v as T6ModeFilter) : undefined;
 }
 
 export async function GET(req: NextRequest) {
@@ -73,6 +79,8 @@ export async function GET(req: NextRequest) {
       objectType: token(p.get('objectType')),
       objectId: token(p.get('objectId')),
       trigger: token(p.get('trigger')),
+      // CDC Mascotte BO-009 : affichée / pré-génération / texte de secours.
+      t6Mode: t6Mode(p.get('t6Mode')),
       limit: entier(p.get('limit')),
       offset: entier(p.get('offset')),
     });

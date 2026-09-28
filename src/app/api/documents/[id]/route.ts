@@ -256,7 +256,7 @@ export async function PUT(
     }
 
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
-    if (accountId) void emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
+    if (accountId) await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
 
     return NextResponse.json(
       { message: 'Document mis à jour avec succès', documentId },

@@ -13,11 +13,16 @@
  * « limitation temporaire avec message non culpabilisant »). Base
  * injoignable : on n'empêche pas l'usage (échec ouvert, journalisé).
  *
- * Les alertes sont des journaux `[verebona][alerte-coût]` destinés à la
- * supervision (un cron d'alerting global relève d'un autre lot).
+ * Les alertes de plafond sont écrites dans `ai_alerts` (alertes du BO IA,
+ * type `budget`), dédupliquées par compte, niveau et mois : elles n'étaient
+ * que des `console.warn`, invisibles du tableau de bord. Les alertes de coût
+ * moyen (par réponse sur 24 h, par utilisateur actif) sont évaluées toutes
+ * les heures par `observability/assistant-alerts.ts` — la moyenne
+ * journalière remplace l'ancienne alerte portée sur chaque réponse (§31.3).
  */
 import { pgClient } from '@/db';
 import { getAssistantConfig } from '../config/assistant-config';
+import type { AlertInput } from '@/services/ai/alerts/alerts.repository';
 
 export interface MonthlyBudgetStatus {
   allowed: boolean;
@@ -63,21 +68,60 @@ export async function checkMonthlyBudget(accountId: number): Promise<MonthlyBudg
     return { allowed: true, usedMicros: 0, limitMicros: cfg.monthlyBudgetMicros, alert: false };
   }
   const status = evaluateBudget(used, cfg.monthlyBudgetMicros, cfg.budgetAlertRatio);
-  if (!status.allowed) {
-    console.warn(`[verebona][alerte-coût] compte ${accountId} : plafond mensuel atteint (${used} / ${status.limitMicros} micro-unités) — IA suspendue jusqu'au mois suivant (§6.6).`);
-  } else if (status.alert) {
-    console.warn(`[verebona][alerte-coût] compte ${accountId} : ${Math.round((used / status.limitMicros) * 100)} % du plafond mensuel consommé (§31.3).`);
-  }
+  if (status.alert) await raiseBudgetAlert(accountId, status, cfg.budgetAlertRatio);
   return status;
 }
 
-/** Alerte « coût par réponse » (§31.3 : > 0,005 USD par défaut). */
-export function alertIfCostlyResponse(accountId: number, requestId: string, costMicros: number | null): boolean {
-  if (costMicros == null) return false;
-  const seuil = getAssistantConfig().costAlertPerResponseUsd * 1_000_000;
-  if (seuil > 0 && costMicros > seuil) {
-    console.warn(`[verebona][alerte-coût] demande ${requestId} (compte ${accountId}) : ${costMicros} micro-unités > seuil ${seuil} (§31.3).`);
-    return true;
+// ── Alertes de plafond (ai_alerts) ─────────────────────────────────────────
+
+type RaiseAlert = (a: AlertInput) => Promise<boolean>;
+let raiseAlertImpl: RaiseAlert = async (a) => (await import('@/services/ai/alerts/alerts.repository')).raiseAlert(a);
+
+/** Réservé aux tests : remplace l'écriture dans `ai_alerts` (`null` : la vraie). */
+export function setBudgetAlertWriterForTests(fn: RaiseAlert | null): void {
+  raiseAlertImpl = fn ?? (async (a) => (await import('@/services/ai/alerts/alerts.repository')).raiseAlert(a));
+  dejaSignalees.clear();
+}
+
+/** Alertes déjà écrites par ce processus (clé de déduplication) : une écriture par mois, pas par demande. */
+const dejaSignalees = new Set<string>();
+
+/**
+ * Écrit l'alerte de plafond du compte dans `ai_alerts` : « part d'alerte
+ * franchie » (warning) ou « plafond atteint, IA suspendue » (critique).
+ * Dédupliquée par compte, niveau et mois. Ne lève jamais : un échec
+ * d'écriture est journalisé, sans bloquer la demande.
+ */
+export async function raiseBudgetAlert(
+  accountId: number,
+  status: MonthlyBudgetStatus,
+  alertRatio: number,
+  now = new Date(),
+): Promise<boolean> {
+  const atteint = !status.allowed;
+  const mois = now.toISOString().slice(0, 7);
+  const dedupeKey = `assistant:monthly_budget:${atteint ? 'reached' : 'threshold'}:${accountId}:${mois}`;
+  if (dejaSignalees.has(dedupeKey)) return false;
+  const partUtilisee = status.limitMicros > 0 ? status.usedMicros / status.limitMicros : 0;
+  try {
+    const nouvelle = await raiseAlertImpl({
+      kind: 'budget',
+      code: atteint ? 'assistant_monthly_budget_reached' : 'assistant_monthly_budget_threshold',
+      treatment: 'T2',
+      accountId,
+      severity: atteint ? 'critical' : 'warning',
+      message: atteint
+        ? `Assistant : plafond mensuel du compte ${accountId} atteint (${status.usedMicros} / ${status.limitMicros} micro-unités) — réponses rédigées suspendues jusqu'au mois suivant (§6.6).`
+        : `Assistant : ${Math.round(partUtilisee * 100)} % du plafond mensuel du compte ${accountId} consommé (seuil ${Math.round(alertRatio * 100)} %, §31.3).`,
+      // Seuils appliqués, tracés avec l'alerte (§31.3).
+      details: { usedMicros: status.usedMicros, limitMicros: status.limitMicros, alertRatio, month: mois },
+      drilldownHref: `/admin/ai-executions?treatment=T2&accountId=${accountId}`,
+      dedupeKey,
+    });
+    dejaSignalees.add(dedupeKey);
+    return nouvelle;
+  } catch (e) {
+    console.warn(`[verebona][alerte-coût] compte ${accountId} : alerte de plafond non enregistrée (${(e as Error).message}).`);
+    return false;
   }
-  return false;
 }

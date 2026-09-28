@@ -6,23 +6,35 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
 import { MESSAGE_OWNED_BY_USER } from '@/services/verebona-assistant/core/conversation.service';
-import { httpRequestId, parseWith } from '@/lib/verebona/api-guard';
+import { httpRequestId, parseWith, readRateLimited, withRequestId } from '@/lib/verebona/api-guard';
 import { MessageParamsSchema } from '@/lib/verebona/api-schemas';
 import { explanationDetails, type ExplanationTrace } from '@/services/verebona-assistant/core/explanation';
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: Promise<{ messageId: string }> },
+  ctx: { params: Promise<{ messageId: string }> },
 ) {
+  // §27 : requestId journalisé et renvoyé (x-request-id) sur toute réponse.
+  const httpId = httpRequestId(req);
+  return withRequestId(await lire(req, ctx, httpId), httpId);
+}
+
+async function lire(
+  req: NextRequest,
+  { params }: { params: Promise<{ messageId: string }> },
+  httpId: string,
+): Promise<NextResponse> {
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
+  // §27 : lectures limitées elles aussi (limiteur dédié de l'assistant).
+  const limite = readRateLimited(session.userId, accountId, httpId);
+  if (limite) return limite;
 
   await ensureMigrations();
   // §27 : identifiant validé par schéma (entier positif) avant toute requête.
-  const httpId = httpRequestId(req);
   const p = parseWith(MessageParamsSchema, await params, httpId);
   if (!p.ok) return p.response;
   const { messageId } = p.data;

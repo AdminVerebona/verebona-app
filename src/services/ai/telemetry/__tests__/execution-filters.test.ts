@@ -20,6 +20,15 @@ describe('filtres lus depuis l’URL', () => {
   });
 });
 
+describe('mode de génération T6 (CDC Mascotte BO-009)', () => {
+  it('affichée / pré-génération / secours lus depuis l’URL ; valeur inconnue ignorée', () => {
+    expect(readExecutionFilters(new URLSearchParams('treatment=T6&t6Mode=fallback'))).toMatchObject({ treatment: 'T6', t6Mode: 'fallback' });
+    expect(readExecutionFilters(new URLSearchParams('t6Mode=pregeneration')).t6Mode).toBe('pregeneration');
+    expect(readExecutionFilters(new URLSearchParams('t6Mode=autre')).t6Mode).toBe('');
+    expect(executionFiltersToParams(readExecutionFilters(new URLSearchParams('t6Mode=displayed'))).toString()).toBe('t6Mode=displayed');
+  });
+});
+
 describe('périodes (COST-002)', () => {
   const now = new Date('2026-09-26T10:00:00Z');
   it('mois calendaire distinct des 30 jours glissants', () => {

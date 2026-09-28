@@ -4,15 +4,19 @@
  *
  * Stratégie V1 : génération synchrone dans la requête HTTP
  * - INSERT pending → UPDATE generating (verrou atomique) → génère → UPDATE ready/error
- * - En cas d'erreur : email support@verebona.com + status='error'
+ * - En cas d'erreur : notification réelle du support (SUPPORT_EMAIL) + status='error'
+ *   ; l'utilisateur reçoit un message générique et un code (détail en journal)
  * - Client poll GET toutes les 3s si timeout
+ *
+ * Accès par compte (`assets.accountId = session.currentAccountId`) : le
+ * co-titulaire Duo voit l'historique et génère comme le titulaire (DRH-002).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { assets, exportGenerations, accountMemberships, accounts } from '@/db/schema';
-import { eq, and, ne, desc, or } from 'drizzle-orm';
+import { exportGenerations, accounts } from '@/db/schema';
+import { eq, and, desc } from 'drizzle-orm';
 import { getExportSignedUrl } from '@/services/export-upload.service';
 import { buildAssetSnapshot } from '@/services/export-snapshot.service';
 import { buildExportManifest } from '@/services/export-manifest.service';
@@ -23,9 +27,19 @@ import { renderExportToPdf } from '@/services/pdf-renderer.service';
 import { buildExportZip } from '@/services/export-zip.service';
 import { uploadExportFile, buildExportS3Key } from '@/services/export-upload.service';
 import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
+import { findAccessibleAssetForExport } from '@/services/exports/export-access';
+import {
+  evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE, CIL_ACTION_REQUIRED_MESSAGE,
+} from '@/services/exports/cil-preparation.service';
+import {
+  EXPORT_ERROR_MESSAGES, safeExportErrorMessage, technicalErrorMessage, exportRouteError,
+} from '@/services/exports/export-errors';
+import { notifySupportOfExportFailure } from '@/services/exports/export-support-notifier';
 
+// DOSSIER_COMPLET manquait : la carte et le renderer existaient mais le POST
+// répondait 400 INVALID_EXPORT_TYPE (dossier non générable).
 const VALID_EXPORT_TYPES: ExportType[] = [
-  'CIL_REGLEMENTAIRE', 'DOSSIER_VENTE',
+  'CIL_REGLEMENTAIRE', 'DOSSIER_VENTE', 'DOSSIER_COMPLET',
   'ASSURANCE_ESTIMATION', 'ASSURANCE_INDEMNISATION', 'EXPORT_BRUT',
 ];
 
@@ -38,32 +52,6 @@ const PREMIUM_EXPORT_TYPES: ExportType[] = [
   'ASSURANCE_INDEMNISATION',
 ];
 
-async function resolveAccountId(userId: number): Promise<number | null> {
-  const [membership] = await db
-    .select({ accountId: accountMemberships.accountId })
-    .from(accountMemberships)
-    .where(and(
-      eq(accountMemberships.userId, userId),
-      or(eq(accountMemberships.status, 'active'), eq(accountMemberships.status, 'ACTIVE')),
-    ))
-    .limit(1);
-  return membership?.accountId ?? null;
-}
-
-async function sendSupportEmail(params: {
-  assetId: number;
-  exportId: number;
-  exportType: string;
-  errorMessage: string;
-  attemptCount: number;
-  userId: number;
-}): Promise<void> {
-  // Best-effort: log + send email via nodemailer or Resend if configured
-  console.error('[ExportSupport] Generation failed — support notification:', params);
-  // TODO: wire to actual email service (Resend/Nodemailer) when available
-  // For now, logged to console and stored in error_payload.supportEmailSent = true
-}
-
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -74,23 +62,18 @@ export async function GET(
     const assetId = parseInt(id);
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
-    const [asset] = await db
-      .select({ id: assets.id })
-      .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
-      .limit(1);
+    const asset = await findAccessibleAssetForExport(session, assetId);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
     const { searchParams } = new URL(request.url);
     const limit = Math.min(parseInt(searchParams.get('limit') ?? '50'), 50);
 
+    // DRH-004 : une entrée dont le fichier a été supprimé reste dans
+    // l'historique (statut `deleted`, sans lien de téléchargement).
     const rows = await db
       .select()
       .from(exportGenerations)
-      .where(and(
-        eq(exportGenerations.assetId, assetId),
-        ne(exportGenerations.status, 'deleted'),
-      ))
+      .where(eq(exportGenerations.assetId, assetId))
       .orderBy(desc(exportGenerations.createdAt))
       .limit(limit);
 
@@ -106,10 +89,8 @@ export async function GET(
         } catch {}
       }
 
-      let errorMessage: string | null = null;
-      if (row.status === 'error' && row.errorPayload) {
-        try { errorMessage = JSON.parse(row.errorPayload)?.message ?? null; } catch {}
-      }
+      // Message générique uniquement : le détail technique n'est jamais renvoyé.
+      const errorMessage = row.status === 'error' ? safeExportErrorMessage(row.errorPayload) : null;
 
       return {
         id: row.id,
@@ -129,7 +110,7 @@ export async function GET(
 
     return NextResponse.json({ exports });
   } catch (error) {
-    return SessionService.handleSessionError(error);
+    return exportRouteError(error, '[Exports GET]');
   }
 }
 
@@ -143,11 +124,7 @@ export async function POST(
     const assetId = parseInt(id);
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
-    const [asset] = await db
-      .select({ id: assets.id, userId: assets.userId, category: assets.category, subtype: assets.subtype })
-      .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
-      .limit(1);
+    const asset = await findAccessibleAssetForExport(session, assetId);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
     const body = await request.json();
@@ -159,21 +136,18 @@ export async function POST(
     };
 
     if (!VALID_EXPORT_TYPES.includes(exportType)) {
-      return NextResponse.json({ error: 'INVALID_EXPORT_TYPE' }, { status: 400 });
+      return NextResponse.json({ error: 'INVALID_EXPORT_TYPE', code: 'INVALID_EXPORT_TYPE', message: 'Type de dossier inconnu.' }, { status: 400 });
     }
 
-    // Validate asset category compatibility with export type
-    const IMMO_VEHICLE_TYPES: ExportType[] = ['DOSSIER_VENTE'];
+    // Compatibilité famille / type : seul le CIL est restreint. Le dossier de
+    // vente couvre immobilier, véhicule et objet (CDC V12 §1.2, §10).
     // CIL : maisons et appartements uniquement (GAP-08, `lib/asset-capabilities`).
     if (exportType === 'CIL_REGLEMENTAIRE' && !isCilEligible(asset)) {
       return NextResponse.json({ error: 'INCOMPATIBLE_ASSET_CATEGORY', message: CIL_NOT_ELIGIBLE_MESSAGE }, { status: 400 });
     }
-    if (IMMO_VEHICLE_TYPES.includes(exportType) && !['IMMOBILIER', 'VEHICULE'].includes(asset.category)) {
-      return NextResponse.json({ error: 'INCOMPATIBLE_ASSET_CATEGORY', message: 'Ce type d\'export est réservé aux biens immobiliers et aux véhicules.' }, { status: 400 });
-    }
 
-    const accountId = await resolveAccountId(session.userId);
-    if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
+    // Compte du bien (= compte courant de la session, vérifié ci-dessus).
+    const accountId = asset.accountId;
 
     // Dossiers prêts à l'usage : Premium et Premium Duo uniquement (essai
     // Premium compris). L'export de données brutes reste ouvert à Standard.
@@ -186,6 +160,19 @@ export async function POST(
           { error: decision.reason, code: decision.reason, message: decision.message },
           { status: 403 },
         );
+      }
+    }
+
+    // CIL-RULE-002 : B1, B3 et B8 à compléter bloquent la génération.
+    if (exportType === 'CIL_REGLEMENTAIRE') {
+      const readiness = await evaluateCilReadiness(asset);
+      if (readiness.globalStatus === 'action_required') {
+        return NextResponse.json({
+          error: CIL_ACTION_REQUIRED_CODE,
+          code: CIL_ACTION_REQUIRED_CODE,
+          message: CIL_ACTION_REQUIRED_MESSAGE,
+          blockingBlocks: readiness.blockingBlocks.map(b => ({ id: b.id, label: b.label })),
+        }, { status: 422 });
       }
     }
 
@@ -244,7 +231,7 @@ export async function POST(
       const outputs: ExportOutput[] = (requestedOutputs ?? ['PDF']) as ExportOutput[];
 
       // Snapshot
-      const snapshot = await buildAssetSnapshot(assetId, session.userId);
+      const snapshot = await buildAssetSnapshot(assetId, session.userId, { accountId });
 
       // Manifest
       const manifest = buildExportManifest(exportType, snapshot, {
@@ -322,8 +309,27 @@ export async function POST(
       });
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      const errorPayload = { code: 'GENERATION_FAILED', message: errorMessage, supportEmailSent: true };
+      const technicalMessage = technicalErrorMessage(error);
+      console.error('[Exports POST] Génération échouée :', { exportId: newExport.id, assetId, exportType, error });
+
+      // Notification réelle du support ; `supportEmailSent` reflète le
+      // résultat effectif de l'envoi (jamais forcé à true).
+      const supportEmailSent = await notifySupportOfExportFailure({
+        assetId,
+        exportId: newExport.id,
+        exportType,
+        technicalMessage,
+        attemptCount: 1,
+        userId: session.userId,
+        accountId,
+      });
+
+      const errorPayload = {
+        code: 'GENERATION_FAILED',
+        message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
+        technicalMessage, // interne : jamais renvoyé au client
+        supportEmailSent,
+      };
 
       await db
         .update(exportGenerations)
@@ -334,24 +340,18 @@ export async function POST(
         })
         .where(eq(exportGenerations.id, newExport.id));
 
-      // Notify support (best-effort, non-blocking)
-      await sendSupportEmail({
-        assetId,
-        exportId: newExport.id,
-        exportType,
-        errorMessage,
-        attemptCount: 1,
-        userId: session.userId,
-      }).catch(() => {});
-
       return NextResponse.json({
         exportId: newExport.id,
         publicId: newExport.publicId,
         status: 'error',
-        errorMessage,
+        errorCode: 'GENERATION_FAILED',
+        errorMessage: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
+        // Lus par `apiClient` pour le message affiché à l'utilisateur.
+        code: 'GENERATION_FAILED',
+        message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
       }, { status: 500 });
     }
   } catch (error) {
-    return SessionService.handleSessionError(error);
+    return exportRouteError(error, '[Exports POST]');
   }
 }

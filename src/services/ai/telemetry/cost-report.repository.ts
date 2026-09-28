@@ -31,6 +31,8 @@
 import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
+import { t6ModeSql } from './execution-log.repository';
+import type { T6ModeFilter } from './execution-filters';
 
 type Row = Record<string, unknown>;
 
@@ -40,6 +42,12 @@ export interface CostFilters {
   treatment?: Treatment;
   accountId?: number;
   configVersionId?: number;
+  /**
+   * CDC Mascotte BO-009 : génération T6 affichée, pré-génération ou texte de
+   * secours. Lu sur les appels détaillés seulement : les agrégats journaliers
+   * (> 90 jours, archivés) n'en gardent pas la trace et sont alors exclus.
+   */
+  t6Mode?: T6ModeFilter;
 }
 
 export interface CostTotals {
@@ -83,7 +91,8 @@ function whereClause(): string {
       WHERE e.created_at >= $1 AND e.created_at <= $2
         AND ($3::text IS NULL OR e.use_case_code = $3)
         AND ($4::int  IS NULL OR e.account_id = $4)
-        AND ($5::int  IS NULL OR e.config_version_id = $5)`;
+        AND ($5::int  IS NULL OR e.config_version_id = $5)
+        AND ($6::text IS NULL OR e.t6_mode = $6)`;
 }
 
 /**
@@ -108,6 +117,7 @@ function params(f: CostFilters, since: Date, until: Date): unknown[] {
     f.treatment ? TREATMENT_DEFINITIONS[f.treatment].useCaseCode : null,
     f.accountId ?? null,
     f.configVersionId ?? null,
+    f.t6Mode ?? null,
   ];
 }
 
@@ -128,12 +138,13 @@ const UNPRICED = `(cost_micros IS NULL OR (cost_micros = 0 AND COALESCE(input_to
 const SOURCE = `(
     SELECT created_at, use_case_code, account_id, config_version_id, model, model_rank, is_billable,
            cost_micros, input_tokens, output_tokens, 1 AS n,
-           (status = 'error')::int AS failed_n, (${UNPRICED})::int AS unpriced_n
-      FROM ai_usage_event
+           (u.status = 'error')::int AS failed_n, (${UNPRICED})::int AS unpriced_n,
+           ${t6ModeSql('u')} AS t6_mode
+      FROM ai_usage_event u
     UNION ALL
     SELECT (day::timestamp AT TIME ZONE 'UTC') AS created_at, use_case_code, account_id, config_version_id, model,
            model_rank, is_billable, cost_micros, input_tokens, output_tokens, calls AS n,
-           failed_calls AS failed_n, unpriced_calls AS unpriced_n
+           failed_calls AS failed_n, unpriced_calls AS unpriced_n, NULL::text AS t6_mode
       FROM ai_usage_daily_rollup
   ) e`;
 

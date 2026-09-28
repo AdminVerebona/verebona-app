@@ -54,6 +54,8 @@ export interface ActionView {
     mimeType?: string | null;
     publicId?: string | null;
     assetName?: string | null;
+    /** Fournisseur résolu (cible SUPPLIER) — ouvre `/fournisseurs/[id]`. */
+    supplierId?: number | null;
   };
 }
 

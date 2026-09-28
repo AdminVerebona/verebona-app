@@ -42,6 +42,9 @@ export type AdminActionType =
   | 'ACCOUNT_SUSPEND'
   | 'ACCOUNT_REACTIVATE'
   | 'ACCOUNT_PLAN_CHANGE'
+  // Resynchronisation manuelle depuis Stripe (bouton « Synchroniser Stripe ») :
+  // peut modifier l'offre et le statut d'abonnement (CDC BO AUD-001, ERR-004).
+  | 'ACCOUNT_STRIPE_RESYNC'
   | 'ACCOUNT_DELETE'
   | 'USER_SUSPEND'
   | 'USER_REACTIVATE'

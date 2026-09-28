@@ -85,6 +85,34 @@ function ttlMs(): number {
 }
 const TIMEOUT_MS = 3_000;
 let cache: { at: number; corpus: HelpCorpus | null } | null = null;
+/** Dernière version de corpus lue par ce processus (détection des publications). */
+let derniereVersion: string | null = null;
+
+/**
+ * Publication d'articles d'aide — CDC §25.7 `HELP_ENTRY_PUBLISHED`, §31.7.
+ *
+ * Les articles sont publiés par le site du Centre d'aide, pas par
+ * l'application : la publication se constate ici, quand le corpus relu porte
+ * une version différente de la précédente. L'événement est GLOBAL (compte
+ * `null`) : il incrémente la version globale d'invalidation, partagée par
+ * toutes les instances. Première lecture du processus : aucune référence,
+ * aucun événement. Rend `true` si un événement a été émis.
+ */
+export async function noteHelpCorpusVersion(version: string | null | undefined): Promise<boolean> {
+  if (!version) return false;
+  const precedente = derniereVersion;
+  derniereVersion = version;
+  if (precedente == null || precedente === version) return false;
+  const { emitBusinessEvent } = await import('../events/business-events');
+  await emitBusinessEvent({ type: 'HELP_ENTRY_PUBLISHED', accountId: null, entityId: version.slice(0, 60) });
+  return true;
+}
+
+/** Réservé aux tests. */
+export function resetHelpCorpusCacheForTests(): void {
+  cache = null;
+  derniereVersion = null;
+}
 
 /** Site du Centre d'aide : `HELP_CENTER_URL` côté serveur, sinon le site public. */
 export function helpCorpusUrl(): string {
@@ -128,6 +156,7 @@ export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
       corpus = null;
     }
     cache = { at: Date.now(), corpus };
+    if (corpus) await noteHelpCorpusVersion(corpus.version);
     return corpus;
   } catch (e) {
     console.warn(`[assistant] Corpus du Centre d'aide indisponible (${(e as Error).message}).`);

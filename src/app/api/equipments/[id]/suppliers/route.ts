@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { equipmentSuppliers, suppliers, accounts } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -112,6 +113,8 @@ export async function POST(
       isPrimary: isPrimary ?? false,
     });
 
+    // CDC Assistant §31.7 : fournisseur rattaché à un équipement.
+    await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: null });
     return NextResponse.json({ success: true }, { status: 201 });
   } catch (err) {
     return SessionService.handleSessionError(err);

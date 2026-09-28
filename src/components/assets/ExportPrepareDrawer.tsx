@@ -168,6 +168,9 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
     if (usage === 'CIL_REGLEMENTAIRE') loadCilPrep();
   }, [usage, loadCilPrep]);
 
+  // Génération du CIL impossible tant que des blocs bloquants sont à compléter.
+  const cilBlocked = usage === 'CIL_REGLEMENTAIRE' && cilPrep?.eligible === true && cilPrep.globalStatus === 'action_required';
+
   const handleSetResolution = async (blockId: string, resolution: 'not_applicable' | 'unknown_confirmed') => {
     try {
       await apiClient.patch(`/api/assets/${assetId}/exports/cil/resolutions`, { blockId, resolution });
@@ -796,6 +799,12 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
                     </p>
                   </div>
 
+                  {!isReady && (
+                    <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-800 px-4 py-3 text-xs text-rose-700 dark:text-rose-400">
+                      Action requise : le CIL ne peut pas être généré tant que les blocs {blocks.filter(b => b.blocking && (b.status === 'missing' || b.status === 'invalid' || b.status === 'unknown')).map(b => b.id).join(', ')} ne sont pas complétés.
+                    </div>
+                  )}
+
                   {/* Blocs B1-B9 */}
                   <div className="space-y-2">
                     {blocks.map(block => {
@@ -1069,7 +1078,9 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
               <>
                 <div className="w-px bg-border" />
                 {(usage === 'CIL_REGLEMENTAIRE' || usage === 'DOSSIER_COMPLET') ? (() => {
-                  const isDisabled = generating || loadingData || cilLoading;
+                  // CIL-RULE-002 : B1/B3/B8 à compléter → génération bloquée
+                  // (le serveur refuse aussi, code CIL_ACTION_REQUIRED).
+                  const isDisabled = generating || loadingData || cilLoading || cilBlocked;
                   return (
                     <>
                       <button

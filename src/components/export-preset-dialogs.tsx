@@ -26,6 +26,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { DatePicker } from '@/components/ui/date-picker';
+import { markAccountDataMutated } from '@/lib/data-freshness';
+
+/**
+ * Ces dialogues appellent `fetch` directement (réponse binaire PDF/ZIP) et
+ * échappent donc au signal qu'`apiClient` émet après toute écriture réussie.
+ * On le reproduit ici après une génération réussie : l'accueil relira un
+ * résumé frais et la mascotte prépare sa prochaine prise de parole (CDC
+ * Mascotte §15, RUN-007 — écouté par DashboardLayout).
+ */
+function signalerExportCree(): void {
+  markAccountDataMutated();
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('verebona:data-mutated'));
+}
 
 type DocumentItem = {
   id: string;
@@ -123,6 +136,7 @@ export const ExportReventeDialog = memo(({
       });
 
       if (!response.ok) throw new Error('Erreur lors de la génération');
+      signalerExportCree();
 
       const blob = await response.blob();
       const contentType = response.headers.get('content-type');
@@ -391,6 +405,7 @@ export const ExportAssuranceDevisDialog = memo(({
       });
 
       if (!response.ok) throw new Error('Erreur lors de la génération');
+      signalerExportCree();
 
       const blob = await response.blob();
       
@@ -711,6 +726,7 @@ export const ExportAssuranceSinistreDialog = memo(({
       });
 
       if (!response.ok) throw new Error('Erreur lors de la génération');
+      signalerExportCree();
 
       const blob = await response.blob();
       
@@ -1042,6 +1058,7 @@ export const ExportSavGarantieDialog = memo(({
       });
 
       if (!response.ok) throw new Error('Erreur lors de la génération');
+      signalerExportCree();
 
       const blob = await response.blob();
       
@@ -1334,6 +1351,7 @@ export const ExportCilDialog = memo(({
       });
 
       if (!response.ok) throw new Error('Erreur lors de la génération');
+      signalerExportCree();
 
       const blob = await response.blob();
       
@@ -1608,6 +1626,7 @@ export const ExportDossierCompletDialog = memo(({
       });
 
       if (!response.ok) throw new Error('Erreur lors de la génération');
+      signalerExportCree();
 
       const blob = await response.blob();
       

@@ -575,7 +575,9 @@ async function metricsT5(days: number): Promise<Metric[]> {
 
 /**
  * T6 — mascotte d'accueil (CDC Mascotte BO-009) : formulations affichées,
- * pré-générations non affichées et textes de secours, distingués.
+ * pré-générations non affichées et textes de secours, distingués ; coûts et
+ * replis modèle lus dans `ai_usage_event` comme pour les autres traitements
+ * (BO-002).
  */
 async function metricsT6(days: number): Promise<Metric[]> {
   const r = await one(
@@ -595,7 +597,53 @@ async function metricsT6(days: number): Promise<Metric[]> {
     M('cache', 'Servies depuis le cache', Number(r.cache ?? 0)),
     M('fallback', 'Textes de secours', Number(r.secours ?? 0)),
     M('invalid', 'Sorties rejetées par la validation', Number(r.invalides ?? 0)),
+    ...(await costMetrics('HOME_MASCOT', days)).metrics,
   ];
+}
+
+const T6_MODE_LABELS: Record<string, string> = { display: 'Affichage', pregen: 'Pré-génération' };
+const T6_STATUS_LABELS: Record<string, string> = {
+  generated: 'Générée',
+  cache_hit: 'Cache',
+  fallback: 'Secours',
+  validation_failed: 'Sortie rejetée',
+  error: 'Erreur',
+  disabled: 'Désactivé',
+  skipped: 'Non appelé',
+};
+
+/**
+ * Derniers appels T6 (BO-002) : ni l'entrée ni la sortie (données métier du
+ * compte, LOG-005) — des références, le statut et la trace, qui mène au
+ * détail dans « Exécutions & logs ».
+ */
+async function tablesT6(days: number): Promise<MetricTable[]> {
+  const rows = await many(
+    `SELECT created_at, account_id, mode, status, model, used_fallback_model, latency_ms, cost_micros, trace_id, error
+       FROM home_mascot_generations
+      WHERE created_at >= NOW() - ($1 || ' days')::interval AND status <> 'cache_hit'
+      ORDER BY created_at DESC LIMIT 20`,
+    [String(days)],
+  ).catch((): Row[] => []);
+  return [{
+    key: 't6_calls',
+    label: 'Derniers appels T6',
+    columns: [
+      { key: 'date', label: 'Date' }, { key: 'account', label: 'Compte' }, { key: 'mode', label: 'Mode' },
+      { key: 'status', label: 'Statut' }, { key: 'model', label: 'Modèle' }, { key: 'latency', label: 'Latence (ms)' },
+      { key: 'cost', label: 'Coût (µ$)' }, { key: 'trace', label: 'Trace' },
+    ],
+    rows: rows.map((r) => ({
+      date: r.created_at == null ? null : new Date(String(r.created_at)).toISOString(),
+      account: num(r.account_id),
+      mode: T6_MODE_LABELS[String(r.mode)] ?? String(r.mode ?? ''),
+      status: `${T6_STATUS_LABELS[String(r.status)] ?? String(r.status ?? '')}${r.error ? ` — ${String(r.error).slice(0, 80)}` : ''}`,
+      model: r.model == null ? null : `${String(r.model)}${r.used_fallback_model ? ' (repli)' : ''}`,
+      latency: num(r.latency_ms),
+      cost: num(r.cost_micros),
+      trace: r.trace_id == null ? null : String(r.trace_id),
+    })),
+  }];
 }
 
 const PAR_TRAITEMENT: Record<Treatment, (days: number) => Promise<Metric[]>> = {
@@ -605,6 +653,7 @@ const PAR_TRAITEMENT: Record<Treatment, (days: number) => Promise<Metric[]>> = {
 const TABLES: Partial<Record<Treatment, (days: number) => Promise<MetricTable[]>>> = {
   T1: tablesT1,
   T2: tablesT2,
+  T6: tablesT6,
 };
 
 /**

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import {
@@ -53,6 +54,8 @@ export async function PATCH(
     const result = await updateAssetDetails({
       assetId, accountId: session.currentAccountId, section, fields,
     });
+    // CDC Assistant §25.7, §31.7 : fiche du bien modifiée.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId });
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof AssetDetailsError) {

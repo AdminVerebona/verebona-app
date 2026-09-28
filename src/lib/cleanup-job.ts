@@ -95,7 +95,8 @@ export async function runCleanupJob(deps: { deleteObject?: DeleteObjectFn } = {}
 
   try {
 
-    // Verebona Assistant — purge de l'historique conversationnel expiré (> 7 j, CDC §28.13).
+    // Verebona Assistant — purge de l'historique conversationnel expiré (> 90 j par défaut,
+    // VEREBONA_ASSISTANT_HISTORY_DAYS, décision produit GAP-16 ; CDC §28.13).
     // Best-effort : ne doit jamais interrompre le cleanup S3 principal.
     try {
       const { purgeExpired } = await import('@/services/verebona-assistant/core/conversation.service');

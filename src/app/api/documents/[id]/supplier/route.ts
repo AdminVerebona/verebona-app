@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { documentSuppliers, assetFiles, suppliers } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -67,6 +68,8 @@ export async function PUT(
         ));
     }
 
+    // CDC Assistant §25.7, §31.7 : fournisseur du document modifié.
+    await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
     return NextResponse.json({ success: true });
   } catch (err) {
     return SessionService.handleSessionError(err);
@@ -105,6 +108,7 @@ export async function DELETE(
       eq(documentSuppliers.supplierId, supplierId),
     ));
 
+    await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
     return NextResponse.json({ success: true });
   } catch (err) {
     return SessionService.handleSessionError(err);

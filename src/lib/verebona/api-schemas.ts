@@ -115,3 +115,15 @@ export const PlanParamsSchema = z.object({
 
 /** POST /api/verebona/conversations : corps vide ou ignoré. */
 export const CreateConversationSchema = z.object({}).passthrough();
+
+/**
+ * GET /api/verebona/suggestions — §8.1, §27.
+ * `route` : chemin interne de la page (jamais une URL). Au-delà de 500
+ * caractères : VALIDATION_FAILED ; un chemin hors du motif interne retombe
+ * sur « / » (suggestions génériques), comme avant — le panneau ne doit pas
+ * perdre ses suggestions pour une page au chemin inattendu.
+ */
+export const SuggestionsQuerySchema = z.object({
+  route: z.string().max(500, 'INVALID_ROUTE').optional()
+    .transform((r) => (r && /^\/[\w\-/]{0,200}$/.test(r) ? r : '/')),
+});

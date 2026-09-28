@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { equipments, assets, substructures } from '@/db/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
@@ -170,6 +171,8 @@ export async function POST(
     // Fire-and-forget: AI auto-link against existing documents, agenda and suppliers
     runEquipmentAutoLink(newEquipment.id, session.currentAccountId!).catch(() => { /* non-blocking */ });
 
+    // CDC Assistant §25.7, §31.7 : équipement ajouté au bien.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
     return NextResponse.json({
       id: newEquipment.id,
       name: newEquipment.name,

@@ -35,7 +35,8 @@ interface MascotGreetingProps {
   /** Prénom : c'est le nom affiché (UX-003). */
   firstName: string;
   onCreateAsset: () => void;
-  onUploadDocument: () => void;
+  /** Ouvre l'ajout de document, sur le bien de l'action s'il est connu (ONB-DOC). */
+  onUploadDocument: (assetId?: number | null) => void;
 }
 
 const BTN_PRIMARY = 'inline-flex items-center min-h-[36px] px-3.5 py-1.5 rounded-full border border-[color:var(--accent)] '
@@ -62,7 +63,7 @@ export function MascotGreeting({ firstName, onCreateAsset, onUploadDocument }: M
       return;
     }
     if (t.kind === 'create_asset') { onCreateAsset(); return; }
-    if (t.kind === 'upload_document') { onUploadDocument(); return; }
+    if (t.kind === 'upload_document') { onUploadDocument(t.assetId ?? null); return; }
 
     setBusy(action.actionId);
     try {
@@ -89,6 +90,7 @@ export function MascotGreeting({ firstName, onCreateAsset, onUploadDocument }: M
             : { kind: t.drawer, id: t.id, initialMode: t.mode });
           break;
         case 'to_process':
+          // ATP-005 : fiche fournisseur si le fournisseur est résolu, sinon la file.
           openToProcessTarget(t, router, () => router.push('/accueil/a-traiter'));
           break;
         case 'route':

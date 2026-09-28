@@ -189,10 +189,9 @@ export function buildExportManifest(
   snapshot: AssetSnapshot,
   options: BuildManifestOptions = {},
 ): ExportManifest {
-  // Guard: DOSSIER_VENTE only for IMMOBILIER or VEHICULE
-  if (exportType === 'DOSSIER_VENTE' && !['IMMOBILIER', 'VEHICULE'].includes(snapshot.category)) {
-    throw new Error(`Export type DOSSIER_VENTE is only available for IMMOBILIER or VEHICULE assets (got: ${snapshot.category})`);
-  }
+  // Dossier de vente : immobilier, véhicule ET objet (CDC Exports V12 §1.2 /
+  // §10 « Familles : Immobilier, véhicule, objet »). L'ancienne garde
+  // excluait les objets alors que l'interface les proposait.
 
   const sections = buildSections(exportType, snapshot, options.customSections, snapshot.category);
   const { included: includedDocuments, unqualifiedCount } = selectDocuments(exportType, snapshot, options.customDocIds);

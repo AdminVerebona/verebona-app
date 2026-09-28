@@ -49,6 +49,44 @@ export interface MascotRawData {
   agenda: MascotAgendaRow[] | null;
   /** Acquittements « C'est fait » actifs du compte. */
   acknowledgments: Array<{ occurrenceKey: string; cycleKey: string }> | null;
+  /**
+   * Échéances portées par une action « À traiter » ouverte, au-delà des
+   * seules actions lues (la lecture de la file est bornée, NFR-001) : aucune
+   * ne doit revenir en « prochaine date » (ATP-004). Absent : déduit de
+   * `toProcess`.
+   */
+  toProcessAgendaIds?: number[] | null;
+  /**
+   * Offre et droits du compte (REC-005). Absent ou `null` (lecture en échec) :
+   * aucune restriction n'est présumée — le parcours cible reste gardé côté
+   * serveur (quota, lecture seule).
+   */
+  rights?: MascotRights | null;
+}
+
+/** Droits utiles aux recommandations (REC-005). */
+export interface MascotRights {
+  /** Écriture autorisée (compte ni en lecture seule, ni restreint). */
+  canWrite: boolean;
+  /** Un bien peut être ajouté (écriture + quota de biens non atteint). */
+  canAddAsset: boolean;
+  /** Un document peut être ajouté (écriture + quota documentaire non atteint). */
+  canAddDocument: boolean;
+}
+
+/**
+ * Droits à partir des droits effectifs et des volumes du compte — mêmes
+ * règles que les gardes serveur (`canCreateAsset`, `canAddDocument`).
+ */
+export function mascotRightsFrom(
+  ent: { canWrite: boolean; quotas: { maxAssets: number; maxDocuments: number } },
+  counts: { assets: number; documents: number },
+): MascotRights {
+  return {
+    canWrite: ent.canWrite,
+    canAddAsset: ent.canWrite && counts.assets < ent.quotas.maxAssets,
+    canAddDocument: ent.canWrite && counts.documents < ent.quotas.maxDocuments,
+  };
 }
 
 export interface MascotCandidates {
@@ -180,6 +218,11 @@ export function onboardingStep(raw: MascotRawData): 'ONB-ASSET' | 'ONB-DOC' | nu
 function onboardingSubjects(raw: MascotRawData): MascotSubject[] {
   const step = onboardingStep(raw);
   if (!step) return [];
+  // REC-005 : jamais « Ajouter un bien / un document » si l'offre ou les
+  // droits du compte le refuseraient (lecture seule, quota atteint). Pas
+  // d'upsell (hors périmètre) : l'étape est simplement tue.
+  if (step === 'ONB-ASSET' && raw.rights && !raw.rights.canAddAsset) return [];
+  if (step === 'ONB-DOC' && raw.rights && !raw.rights.canAddDocument) return [];
   if (step === 'ONB-ASSET') {
     return [subject('ONBOARDING', {
       subjectId: 'ONB-ASSET',
@@ -239,6 +282,9 @@ function toProcessSubjects(raw: MascotRawData): MascotSubject[] {
       actions: [action(`ATP:${a.publicId}:open`, verbe, {
         kind: 'to_process', publicId: a.publicId, targetType: a.targetType, targetId: a.targetId,
         targetPublicId: a.target.publicId ?? null, field: a.fieldKey ?? a.relationKey ?? null,
+        // ATP-005 : la fiche fournisseur n'est ouverte que sur un fournisseur
+        // résolu par le service source, jamais sur `targetId` (id de revue possible).
+        ...(a.targetType === 'SUPPLIER' ? { supplierId: a.target.supplierId ?? null } : {}),
       })],
       fallbackText: `${a.question} Cela concerne ${contexte}.`,
       allowedHighlight: cible,
@@ -254,7 +300,9 @@ function toProcessSubjects(raw: MascotRawData): MascotSubject[] {
 
 /** Échéances déjà portées par une action « À traiter » : jamais en double (ATP-004). */
 function agendaInToProcess(raw: MascotRawData): Set<number> {
-  return new Set((raw.toProcess ?? []).filter((a) => a.targetType === 'AGENDA_ITEM').map((a) => a.targetId));
+  const ids = new Set((raw.toProcess ?? []).filter((a) => a.targetType === 'AGENDA_ITEM').map((a) => a.targetId));
+  (raw.toProcessAgendaIds ?? []).forEach((id) => ids.add(id));
+  return ids;
 }
 
 function dateSubjects(raw: MascotRawData): MascotSubject[] {
@@ -341,6 +389,9 @@ function daysBetween(a: string, b: string): number {
 }
 
 function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
+  // REC-005 : « C'est fait » et « Préciser l'échéance » écrivent ; un compte
+  // en lecture seule se les verrait refuser — aucune recommandation propre.
+  if (raw.rights && !raw.rights.canWrite) return [];
   const exclues = agendaInToProcess(raw);
   const acquittes = new Set((raw.acknowledgments ?? []).map((a) => `${a.occurrenceKey}|${a.cycleKey}`));
   const echues = (raw.agenda ?? [])

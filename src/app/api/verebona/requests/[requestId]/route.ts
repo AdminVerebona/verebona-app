@@ -10,22 +10,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
-import { httpRequestId, mutationRateLimited, parseWith } from '@/lib/verebona/api-guard';
+import { httpRequestId, mutationRateLimited, parseWith, readRateLimited, withRequestId } from '@/lib/verebona/api-guard';
 import { RequestParamsSchema } from '@/lib/verebona/api-schemas';
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: Promise<{ requestId: string }> },
+  ctx: { params: Promise<{ requestId: string }> },
 ) {
+  // §27 : requestId journalisé et renvoyé (x-request-id) sur toute réponse.
+  const httpId = httpRequestId(req);
+  return withRequestId(await lire(req, ctx, httpId), httpId);
+}
+
+async function lire(
+  req: NextRequest,
+  { params }: { params: Promise<{ requestId: string }> },
+  httpId: string,
+): Promise<NextResponse> {
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
+  // §27 : lectures limitées elles aussi (le client interroge l'état en boucle).
+  const limite = readRateLimited(session.userId, accountId, httpId);
+  if (limite) return limite;
 
   await ensureMigrations();
   // §27 : identifiant validé par schéma avant toute requête.
-  const p = parseWith(RequestParamsSchema, await params, httpRequestId(req));
+  const p = parseWith(RequestParamsSchema, await params, httpId);
   if (!p.ok) return p.response;
   const { requestId } = p.data;
   const rows = await pgClient.unsafe(

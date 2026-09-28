@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
@@ -128,6 +129,8 @@ export async function POST(
       RETURNING id, name, asset_id, order_index
     `;
 
+    // CDC Assistant §25.7, §31.7 : pièce ajoutée au bien.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
     return NextResponse.json({ id: newSubstructure.id, name: newSubstructure.name, assetId: newSubstructure.asset_id, orderIndex: newSubstructure.order_index }, { status: 201 });
   } catch (error) {
     console.error('POST substructure error:', error);

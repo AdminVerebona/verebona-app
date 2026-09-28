@@ -41,7 +41,13 @@ import { pgClient } from '@/db';
 
 type Row = Record<string, unknown>;
 
-export const ARCHIVED_TABLES = ['ai_usage_event', 'ai_pipeline_step'] as const;
+/**
+ * `home_mascot_generations` : journal T6 de la mascotte d'accueil (CDC
+ * Mascotte LOG-006 — « la rétention des logs T6 suit la politique du BO
+ * IA »). Même horizon, même registre ; entrée et sortie T6 (données métier
+ * du compte) ne sont pas archivées (`sanitizeForArchive`).
+ */
+export const ARCHIVED_TABLES = ['ai_usage_event', 'ai_pipeline_step', 'home_mascot_generations'] as const;
 export type ArchivedTable = (typeof ARCHIVED_TABLES)[number];
 
 const T2_USE_CASE = 'INTELLIGENT_ASSISTANT';
@@ -92,6 +98,13 @@ async function s3Store(): Promise<ArchiveStore> {
  */
 export function sanitizeForArchive(table: ArchivedTable, row: Row): Row {
   const out: Row = { ...row };
+  if (table === 'home_mascot_generations') {
+    // LOG-005/LOG-006 : le contexte transmis à T6 et le texte produit restent
+    // en base le temps de la rétention BO IA, jamais dans l'archive.
+    out.input_json = null;
+    out.output_json = null;
+    return out;
+  }
   const isT2 = row.use_case_code === T2_USE_CASE;
   if (table === 'ai_pipeline_step') {
     out.output_preview = null;
@@ -140,7 +153,12 @@ export async function archiveAiLogs(opts: { maxDays?: number; chunk?: number; st
   const environment = getAiEnvironment();
   const after = archiveAfterDays();
 
-  const report: ArchiveReport = { archives: 0, rowsArchived: { ai_usage_event: 0, ai_pipeline_step: 0 }, days: [], durationMs: 0 };
+  const report: ArchiveReport = {
+    archives: 0,
+    rowsArchived: { ai_usage_event: 0, ai_pipeline_step: 0, home_mascot_generations: 0 },
+    days: [],
+    durationMs: 0,
+  };
 
   for (const table of ARCHIVED_TABLES) {
     const days = (await pgClient.unsafe(
@@ -205,7 +223,8 @@ export async function archiveAiLogs(opts: { maxDays?: number; chunk?: number; st
               [ids, day] as never[],
             );
           }
-          await t.unsafe(`DELETE FROM ${table} WHERE id = ANY($1::int[])`, [ids] as never[]);
+          // bigint[] : `home_mascot_generations.id` est un BIGSERIAL.
+          await t.unsafe(`DELETE FROM ${table} WHERE id = ANY($1::bigint[])`, [ids] as never[]);
         });
 
         report.archives += 1;

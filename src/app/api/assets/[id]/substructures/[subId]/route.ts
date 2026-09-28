@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { substructures, assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -58,6 +59,8 @@ export async function PUT(
       return apiError(404, 'NOT_FOUND', 'Substructure not found');
     }
 
+    // CDC Assistant §25.7, §31.7 : pièce modifiée.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
     return NextResponse.json({ id: rows[0].id, name: rows[0].name, assetId: rows[0].asset_id });
   } catch (error) {
     console.error('PUT substructure error:', error);
@@ -109,6 +112,8 @@ export async function DELETE(
       return apiError(404, 'NOT_FOUND', 'Substructure not found');
     }
 
+    // CDC Assistant §25.7, §31.7 : pièce supprimée.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
     return NextResponse.json({ message: 'Substructure deleted successfully' });
   } catch (error) {
     console.error('DELETE substructure error:', error);

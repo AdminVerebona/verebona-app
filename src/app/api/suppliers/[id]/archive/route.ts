@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { suppliers } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -33,6 +34,8 @@ export async function POST(
       .set({ status: 'archived', updatedAt: new Date() })
       .where(eq(suppliers.id, supplierId));
 
+    // CDC Assistant §31.7 : fournisseur archivé.
+    await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: supplierId });
     return NextResponse.json({ success: true });
   } catch (err) {
     return SessionService.handleSessionError(err);

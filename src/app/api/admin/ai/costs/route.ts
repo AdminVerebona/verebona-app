@@ -14,6 +14,7 @@ import { getCostReport, averageCostPerCall } from '@/services/ai/telemetry/cost-
 import { isTreatment } from '@/services/ai/config/treatments';
 import { getAiEnvironment } from '@/services/ai/config/environment';
 import { getT2UsageSummary } from '@/services/ai/telemetry/t2-routing.repository';
+import { T6_MODES, type T6ModeFilter } from '@/services/ai/telemetry/execution-filters';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 /** Périodes du SCR-09, en jours. `custom` passe par `since` et `until`. */
@@ -29,6 +30,8 @@ export async function GET(req: NextRequest) {
   const period = p.get('period') ?? '30d';
   const treatment = p.get('treatment');
   const accountId = p.get('accountId');
+  // CDC Mascotte BO-009 : génération T6 affichée / pré-génération / secours.
+  const t6Mode = p.get('t6Mode');
 
   const parseDate = (v: string | null): Date | undefined => {
     if (!v) return undefined;
@@ -49,6 +52,7 @@ export async function GET(req: NextRequest) {
       since, until,
       treatment: treatment && isTreatment(treatment) ? treatment : undefined,
       accountId: accountId && /^\d+$/.test(accountId) ? Number(accountId) : undefined,
+      t6Mode: (T6_MODES as readonly string[]).includes(t6Mode ?? '') ? (t6Mode as T6ModeFilter) : undefined,
     });
     // COST-015 : usage T2 comparé au coût (requêtes tranchées sans IA incluses).
     const t2Usage = await getT2UsageSummary(since).catch(() => null);

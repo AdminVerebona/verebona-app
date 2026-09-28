@@ -13,6 +13,17 @@
  */
 const TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6'];
 const RANKS = ['primary', 'fallback_1', 'fallback_2', 'fallback'];
+/**
+ * CDC Mascotte BO-009 : génération T6 affichée, pré-génération non affichée,
+ * texte de secours (appel en échec ou sortie rejetée).
+ */
+export const T6_MODES = ['displayed', 'pregeneration', 'fallback'] as const;
+export type T6ModeFilter = (typeof T6_MODES)[number];
+export const T6_MODE_LABELS: Record<T6ModeFilter, string> = {
+  displayed: 'T6 : génération affichée',
+  pregeneration: 'T6 : pré-génération',
+  fallback: 'T6 : texte de secours',
+};
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const INT = /^\d+$/;
 const TOKEN = /^[A-Za-z0-9_.:-]{1,80}$/;
@@ -34,13 +45,15 @@ export interface ExecutionScreenFilters {
   objectType: string;
   objectId: string;
   trigger: string;
+  /** BO-009 : mode de génération T6 (`displayed`, `pregeneration`, `fallback`). */
+  t6Mode: string;
   errorsOnly: boolean;
 }
 
 export const EMPTY_EXECUTION_FILTERS: ExecutionScreenFilters = {
   treatment: '', accountId: '', userId: '', model: '', rank: '', configVersionId: '',
   operationCode: '', jobId: '', from: '', to: '', minDurationMs: '',
-  status: '', objectType: '', objectId: '', trigger: '', errorsOnly: false,
+  status: '', objectType: '', objectId: '', trigger: '', t6Mode: '', errorsOnly: false,
 };
 
 type Params = { get(name: string): string | null };
@@ -66,6 +79,7 @@ export function readExecutionFilters(p: Params): ExecutionScreenFilters {
     objectType: pick('objectType', (v) => TOKEN.test(v)),
     objectId: pick('objectId', (v) => TOKEN.test(v)),
     trigger: pick('trigger', (v) => TOKEN.test(v)),
+    t6Mode: pick('t6Mode', (v) => (T6_MODES as readonly string[]).includes(v)),
     errorsOnly: p.get('errorsOnly') === '1',
   };
 }

@@ -229,8 +229,8 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
  * instrumenter, et évite qu'on redécouvre chaque fois pourquoi la case est vide.
  */
 function Supervision({
-  metrics, tables, windowDays, onWindowChange,
-}: { metrics: Metric[]; tables?: MetricTable[]; windowDays: number; onWindowChange: (d: number) => void }) {
+  treatment, metrics, tables, windowDays, onWindowChange,
+}: { treatment: string; metrics: Metric[]; tables?: MetricTable[]; windowDays: number; onWindowChange: (d: number) => void }) {
   const format = (m: Metric): string => {
     if (m.value === null) return '—';
     if (m.unit === 'percent') return `${m.value} %`;
@@ -318,7 +318,11 @@ function Supervision({
         </div>
       ))}
 
-      <a href="/admin/ai-executions"
+      {/* Lien préfiltré sur ce traitement et sa fenêtre (CDC Mascotte BO-002, COST-009). */}
+      <a href={`/admin/ai-executions?${new URLSearchParams({
+          treatment,
+          from: new Date(Date.now() - windowDays * 86_400_000).toISOString().slice(0, 10),
+        })}`}
         className="inline-block text-xs text-[color:var(--accent)] hover:underline">
         Voir les appels correspondants
       </a>
@@ -1336,6 +1340,7 @@ export default function AiConfigPage() {
 
                   {metrics[t.code] && (
                     <Supervision
+                      treatment={t.code}
                       metrics={metrics[t.code].metrics}
                       tables={metrics[t.code].tables}
                       windowDays={metrics[t.code].windowDays}

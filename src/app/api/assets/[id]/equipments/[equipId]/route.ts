@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -120,6 +121,8 @@ export async function PUT(
       return apiError(404, 'NOT_FOUND', 'Equipment not found');
     }
 
+    // CDC Assistant §25.7, §31.7 : équipement modifié.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: effectiveAssetId });
     return NextResponse.json({
       id: rows[0].id,
       name: rows[0].name,
@@ -180,6 +183,8 @@ export async function DELETE(
       return apiError(404, 'NOT_FOUND', 'Equipment not found');
     }
 
+    // CDC Assistant §25.7, §31.7 : équipement archivé.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
     return NextResponse.json({ message: 'Equipment archived successfully' });
   } catch (error) {
     console.error('DELETE equipment error:', error);

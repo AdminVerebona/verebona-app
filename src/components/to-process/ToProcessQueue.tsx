@@ -183,6 +183,7 @@ export function ToProcessQueue() {
         targetId: action.targetId,
         targetPublicId: action.target.publicId ?? null,
         field: action.fieldKey ?? action.relationKey ?? '',
+        supplierId: action.target.supplierId ?? null,
       },
       router,
       () => toast.info('Ouvrez cet élément depuis sa page pour compléter l’information.'),

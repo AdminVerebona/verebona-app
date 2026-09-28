@@ -36,7 +36,7 @@ const { AI_OPERATIONS } = await import('@/services/ai/registry/operations');
 const { intentTaskFor } = await import('../../prompts/intent-tasks');
 const { createAiCallBudget, executeWithinBudget } = await import('../ai-call-budget');
 const { validateGeneratedAnswer, looksFrench, countSentences } = await import('../response-validator.service');
-const { evaluateBudget, checkMonthlyBudget, alertIfCostlyResponse } = await import('../budget.service');
+const { evaluateBudget, checkMonthlyBudget, setBudgetAlertWriterForTests } = await import('../budget.service');
 const { PROMPTS } = await import('../../registries/prompt-registry');
 
 const ROOT = join(process.cwd(), 'src/services');
@@ -198,22 +198,18 @@ describe('plafond budgétaire mensuel (§6.6, §31.3)', () => {
     expect(evaluateBudget(2_000_000, 2_000_000, 0.8)).toMatchObject({ allowed: false, alert: true });
   });
 
-  it('lit la somme du mois du compte dans verebona_ai_runs', async () => {
+  it('lit la somme du mois du compte dans verebona_ai_runs ; plafond atteint → alerte ai_alerts', async () => {
     (globalThis as { __cout?: number }).__cout = 2_500_000;
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const raise = vi.fn(async () => true);
+    setBudgetAlertWriterForTests(raise);
     const s = await checkMonthlyBudget(7);
     expect(s.allowed).toBe(false);
-    expect(warn.mock.calls.some((c) => /alerte-coût.*plafond mensuel atteint/.test(String(c[0])))).toBe(true);
+    expect(raise).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'budget', code: 'assistant_monthly_budget_reached', accountId: 7, severity: 'critical',
+    }));
     const q = h.sql.find((x) => /SUM\(estimated_cost_micros\)/.test(x.q))!;
     expect(q.p[0]).toBe(7);
     (globalThis as { __cout?: number }).__cout = 0;
-    warn.mockRestore();
-  });
-
-  it('alerte « coût par réponse » au-delà de 0,005 USD', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(alertIfCostlyResponse(7, 'r', 6_000)).toBe(true);
-    expect(alertIfCostlyResponse(7, 'r', 1_000)).toBe(false);
-    warn.mockRestore();
+    setBudgetAlertWriterForTests(null);
   });
 });

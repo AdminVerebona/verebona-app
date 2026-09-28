@@ -151,6 +151,10 @@ export async function logT6(p: {
   accountId: number; contextHash: string; mode: T6Mode; outcome: T6Outcome; input: T6Input | null;
 }): Promise<void> {
   const o = p.outcome;
+  // LOG-005 : une lecture du cache n'est pas un appel T6 — ni l'entrée ni la
+  // sortie (déjà conservées par la génération d'origine et par le cache) ne
+  // sont dupliquées ; la ligne ne sert qu'aux agrégats BO-009.
+  const leger = o.status === 'cache_hit';
   try {
     await pgClient.unsafe(
       `INSERT INTO home_mascot_generations
@@ -160,8 +164,9 @@ export async function logT6(p: {
       [p.accountId, p.contextHash, p.mode, o.status, o.promptVersion, o.model ?? null,
         Boolean(o.usedFallbackModel), o.latencyMs ?? null, o.costMicros ?? null, o.traceId ?? null,
         // LOG-005 : rien de plus que ce qui a été transmis à T6.
-        p.input ? JSON.stringify(p.input) : null,
-        o.output !== undefined ? JSON.stringify(o.output) : (o.messages ? JSON.stringify({ messages: o.messages }) : null),
+        !leger && p.input ? JSON.stringify(p.input) : null,
+        leger ? null
+          : o.output !== undefined ? JSON.stringify(o.output) : (o.messages ? JSON.stringify({ messages: o.messages }) : null),
         o.error ?? null] as never[],
     );
   } catch (e) {
@@ -171,11 +176,16 @@ export async function logT6(p: {
 
 // ── Exécution ────────────────────────────────────────────────────────────────
 
+/** Mode mascotte → mode d'appel déclaré à la gateway (BO-009). */
+export function gatewayCallerMode(mode: T6Mode): 'displayed' | 'pregeneration' {
+  return mode === 'display' ? 'displayed' : 'pregeneration';
+}
+
 /** Générations en cours, par clé : l'affichage et la pré-génération ne paient pas deux fois. */
 const inflight = new Map<string, Promise<T6Outcome>>();
 
 async function generate(p: {
-  accountId: number; input: T6Input; cacheKey: string; contextHash: string; promptVersion: string;
+  accountId: number; input: T6Input; cacheKey: string; contextHash: string; promptVersion: string; mode: T6Mode;
 }): Promise<T6Outcome> {
   const startedAt = Date.now();
   try {
@@ -189,6 +199,10 @@ async function generate(p: {
       // pendant une heure une sortie que la validation sémantique rejette.
       // La déduplication est assurée ici (en cours) et par le cache du compte.
       idempotencyKey: `mascot:${p.cacheKey}:${randomUUID()}`,
+      // BO-009 : Exécutions et Coûts distinguent génération affichée et
+      // pré-génération (le texte de secours se lit sur le statut de l'appel
+      // et sur `home_mascot_generations`, par `trace_id`).
+      callerMode: gatewayCallerMode(p.mode),
     });
     const base = {
       promptVersion: p.promptVersion, model: res.model, usedFallbackModel: res.usedFallback,
@@ -257,7 +271,7 @@ export async function formulateWithT6(
 
   let run = inflight.get(cacheKey);
   if (!run) {
-    run = generate({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion })
+    run = generate({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode })
       .finally(() => inflight.delete(cacheKey));
     inflight.set(cacheKey, run);
     // La génération qui s'achève après le délai d'affichage est journalisée

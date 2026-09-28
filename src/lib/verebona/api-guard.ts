@@ -8,13 +8,14 @@
  *     code fonctionnel stable du §27.11, jamais un message technique ;
  *   · journalisent un `requestId` — repris de l'en-tête `x-request-id` s'il
  *     est bien formé, sinon généré — et le renvoient dans le même en-tête ;
- *   · limitent le débit de toutes les routes qui écrivent (limiteur dédié de
- *     l'assistant, `rate-limit.ts`).
+ *   · limitent le débit de toutes les routes — écritures (`mutationRateLimited`)
+ *     comme lectures (`readRateLimited`) — avec le limiteur dédié de
+ *     l'assistant (`rate-limit.ts`).
  */
 import { randomUUID } from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import type { ZodType } from 'zod';
-import { checkAssistantMutationRateLimit, type MutationBucket } from './rate-limit';
+import { checkAssistantMutationRateLimit, checkAssistantReadRateLimit, type MutationBucket, type RateDecision } from './rate-limit';
 import { assistantErrorMessage } from './error-messages';
 
 const REQUEST_ID = /^[A-Za-z0-9._:-]{8,100}$/;
@@ -83,7 +84,18 @@ export function mutationRateLimited(
   bucket: MutationBucket,
   requestId: string,
 ): NextResponse | null {
-  const d = checkAssistantMutationRateLimit(userId, accountId, bucket);
+  return rateLimitedResponse(checkAssistantMutationRateLimit(userId, accountId, bucket), requestId);
+}
+
+/**
+ * Limiteur des routes de lecture (§27) : explication, sources, historique,
+ * état d'une demande, suggestions. Même réponse 429 que les écritures.
+ */
+export function readRateLimited(userId: number, accountId: number, requestId: string): NextResponse | null {
+  return rateLimitedResponse(checkAssistantReadRateLimit(userId, accountId), requestId);
+}
+
+function rateLimitedResponse(d: RateDecision, requestId: string): NextResponse | null {
   if (d.allowed) return null;
   return withRequestId(NextResponse.json(
     { requestId, status: 'error', error: { code: 'RATE_LIMITED', message: assistantErrorMessage('RATE_LIMITED'), recoverable: true } },

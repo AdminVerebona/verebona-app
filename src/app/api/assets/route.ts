@@ -313,7 +313,8 @@ export async function POST(request: NextRequest) {
     });
 
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
-    void emitBusinessEvent({ type: 'ASSET_CREATED', accountId: session.currentAccountId, entityId: newAsset[0]?.id ?? null });
+    // §31.7 : attendu (ne lève jamais) — l'invalidation précède la réponse.
+    await emitBusinessEvent({ type: 'ASSET_CREATED', accountId: session.currentAccountId, entityId: newAsset[0]?.id ?? null });
     return NextResponse.json(newAsset[0], { status: 201 });
   } catch (error) {
     console.error('POST error:', error);
@@ -506,6 +507,9 @@ export async function PUT(request: NextRequest) {
       .where(eq(assets.id, assetId))
       .returning();
 
+    // §25.7, §31.7 : modification directe d'un bien — cache de l'assistant
+    // invalidé sur toutes les instances avant la réponse.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId });
     return NextResponse.json(updatedAsset[0], { status: 200 });
   } catch (error) {
     console.error('PUT error:', error);
@@ -570,7 +574,7 @@ export async function DELETE(request: NextRequest) {
 
     const { blobsScheduled } = await deleteAssetCompletely(existingAsset[0]);
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
-    void emitBusinessEvent({ type: 'ASSET_DELETED', accountId: existingAsset[0].accountId, entityId: existingAsset[0].id });
+    await emitBusinessEvent({ type: 'ASSET_DELETED', accountId: existingAsset[0].accountId, entityId: existingAsset[0].id });
 
     return NextResponse.json(
       {
@@ -640,6 +644,8 @@ export async function PATCH(request: NextRequest) {
 
     await db.update(assets).set(updatePayload as any).where(eq(assets.id, assetId));
 
+    // §25.7, §31.7 : statut ou nom modifié.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId });
     return NextResponse.json({ updated: true });
   } catch (error) {
     console.error('PATCH /api/assets error:', error);

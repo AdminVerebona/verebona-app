@@ -26,9 +26,11 @@
  * filtre est posé.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/db';
-import { assetFiles, assets, equipments, toProcessActions } from '@/db/schema';
+import {
+  assetFiles, assets, equipments, supplierReviewItems, suppliers, toProcessActions,
+} from '@/db/schema';
 import type {
   ActionKind,
   ActionPriority,
@@ -48,6 +50,13 @@ export interface ActionTargetContext {
   publicId?: string | null;
   assetId?: number | null;
   assetName?: string | null;
+  /**
+   * Fournisseur réellement visé (cible SUPPLIER). `targetId` peut être celui
+   * d'une revue fournisseur sans fournisseur rattaché (`supplierId ?? revue.id`
+   * côté producteur) : seul cet identifiant résolu peut ouvrir la fiche
+   * `/fournisseurs/[id]`. `null` : aucun fournisseur identifié.
+   */
+  supplierId?: number | null;
 }
 
 export interface ToProcessActionView {
@@ -87,7 +96,7 @@ export interface ToProcessPage {
 
 export async function getToProcessPage(
   accountId: number,
-  options: { orderMode?: OrderMode; filters?: ToProcessFilters } = {},
+  options: { orderMode?: OrderMode; filters?: ToProcessFilters; limit?: number } = {},
 ): Promise<ToProcessPage> {
   // §8.2 : « Par priorité » est la vue par défaut à CHAQUE visite ; le choix
   // n'est pas mémorisé. Le défaut est donc posé ici et non lu d'une préférence.
@@ -102,8 +111,26 @@ export async function getToProcessPage(
   if (filters.actionKind) conditions.push(eq(toProcessActions.actionKind, filters.actionKind));
   if (filters.priority) conditions.push(eq(toProcessActions.priority, filters.priority));
 
+  // Lecture bornée (CDC Mascotte NFR-001) : seules les N premières actions
+  // « Par priorité » sont lues. L'ordre SQL reproduit `comparePriorityMode`
+  // (priorité, puis ancienneté) pour que la borne garde les MÊMES actions
+  // que la file complète. Sans objet si le filtre « bien » (appliqué après
+  // hydratation) ou l'ordre « Par action » sont demandés.
+  const borne = options.limit && orderMode === 'BY_PRIORITY' && !filters.assetIds?.length
+    ? Math.max(1, Math.floor(options.limit))
+    : null;
+  const lecture = db.select().from(toProcessActions).where(and(...conditions));
+
   const [rows, [totalRow]] = await Promise.all([
-    db.select().from(toProcessActions).where(and(...conditions)),
+    borne
+      ? lecture
+        .orderBy(
+          sql`CASE ${toProcessActions.priority} WHEN 'DO_FIRST' THEN 0 WHEN 'DO_NEXT' THEN 1 ELSE 2 END`,
+          asc(toProcessActions.activeSince),
+          asc(toProcessActions.id),
+        )
+        .limit(borne)
+      : lecture,
     db
       .select({ total: sql<number>`COUNT(*)::int` })
       .from(toProcessActions)
@@ -249,7 +276,97 @@ async function hydrateTargets(
     }
   }
 
+  const supplierTargets = byType.get('SUPPLIER');
+  if (supplierTargets?.length) {
+    for (const [cle, ctx] of await hydrateSupplierTargets(accountId, [...new Set(supplierTargets)])) {
+      contexts.set(cle, ctx);
+    }
+  }
+
   return contexts;
+}
+
+/**
+ * Cibles SUPPLIER — CDC Mascotte ATP-005 / ATP-03.
+ *
+ * Le producteur SUPPLIER-IDENTITY pose `targetId = supplierId ?? revue.id` :
+ * l'identifiant est celui d'un fournisseur OU d'une revue sans fournisseur.
+ * On ne devine pas : on retrouve la revue ouverte qui a produit l'action.
+ *   1. une revue ouverte porte ce fournisseur → c'est lui ;
+ *   2. sinon une revue ouverte sans fournisseur porte cet id → aucun
+ *      fournisseur à ouvrir (`supplierId: null`, repli côté client) ;
+ *   3. sinon (action historique sans revue) → le fournisseur de ce numéro,
+ *      s'il existe dans le compte.
+ * Dans tous les cas le fournisseur retenu doit appartenir au compte et ne pas
+ * être supprimé.
+ */
+async function hydrateSupplierTargets(
+  accountId: number,
+  ids: number[],
+): Promise<Map<string, ActionTargetContext>> {
+  const revues = await db
+    .select({
+      id: supplierReviewItems.id,
+      supplierId: supplierReviewItems.supplierId,
+      detectedName: supplierReviewItems.detectedName,
+    })
+    .from(supplierReviewItems)
+    .where(
+      and(
+        eq(supplierReviewItems.accountId, accountId),
+        eq(supplierReviewItems.status, 'open'),
+        or(inArray(supplierReviewItems.supplierId, ids), inArray(supplierReviewItems.id, ids)),
+      ),
+    );
+
+  const { candidats } = resolveSupplierContexts(ids, revues, []);
+  const connus = candidats.length
+    ? await db
+      .select({ id: suppliers.id, name: suppliers.name })
+      .from(suppliers)
+      .where(
+        and(
+          eq(suppliers.accountId, accountId),
+          inArray(suppliers.id, candidats),
+          ne(suppliers.status, 'deleted'),
+        ),
+      )
+    : [];
+  return resolveSupplierContexts(ids, revues, connus).contexts;
+}
+
+/**
+ * Partie pure de la résolution SUPPLIER (voir `hydrateSupplierTargets`).
+ * `candidats` : identifiants qui PEUVENT être des fournisseurs (à vérifier en
+ * base) ; `contexts` : contexte par cible, une fois les fournisseurs connus
+ * du compte (`connus`) fournis.
+ */
+export function resolveSupplierContexts(
+  ids: number[],
+  revues: Array<{ id: number; supplierId: number | null; detectedName: string | null }>,
+  connus: Array<{ id: number; name: string }>,
+): { candidats: number[]; contexts: Map<string, ActionTargetContext> } {
+  const parFournisseur = new Map<number, string | null>();
+  const revueSansFournisseur = new Map<number, string | null>();
+  for (const r of revues) {
+    if (r.supplierId != null && ids.includes(r.supplierId)) parFournisseur.set(r.supplierId, r.detectedName);
+    if (r.supplierId == null && ids.includes(r.id)) revueSansFournisseur.set(r.id, r.detectedName);
+  }
+  // Une revue ouverte sans fournisseur a produit l'action : son id n'est PAS
+  // celui d'un fournisseur, même si un fournisseur porte ce numéro.
+  const candidats = ids.filter((id) => parFournisseur.has(id) || !revueSansFournisseur.has(id));
+  const noms = new Map(connus.filter((f) => candidats.includes(f.id)).map((f) => [f.id, f.name]));
+
+  const contexts = new Map<string, ActionTargetContext>();
+  for (const id of ids) {
+    if (noms.has(id)) {
+      contexts.set(`SUPPLIER:${id}`, { label: noms.get(id)!, supplierId: id });
+    } else {
+      const detecte = parFournisseur.get(id) ?? revueSansFournisseur.get(id) ?? null;
+      if (detecte) contexts.set(`SUPPLIER:${id}`, { label: detecte, supplierId: null });
+    }
+  }
+  return { candidats, contexts };
 }
 
 /** Action unique, par son identifiant public. */

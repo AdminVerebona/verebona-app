@@ -50,7 +50,7 @@ import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import {
-  readExecutionFilters, executionFiltersToParams, type ExecutionScreenFilters,
+  readExecutionFilters, executionFiltersToParams, T6_MODES, T6_MODE_LABELS, type ExecutionScreenFilters,
 } from '@/services/ai/telemetry/execution-filters';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
@@ -81,6 +81,8 @@ interface Execution {
   objectId: string | null;
   trigger: string | null;
   origin: string | null;
+  /** BO-009 : mode déclaré par la mascotte (`displayed` / `pregeneration`). */
+  callerMode?: string | null;
 }
 
 interface Page { rows: Execution[]; total: number; limit: number; offset: number }
@@ -282,6 +284,12 @@ function AiExecutionsScreen() {
               <option value="">Tous les traitements</option>
               {['T1', 'T2', 'T3', 'T4', 'T5', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
+            {/* CDC Mascotte BO-009 : génération affichée / pré-génération / texte de secours. */}
+            <select value={filters.t6Mode} onChange={(e) => set('t6Mode', e.target.value)} className={SELECT}
+              aria-label="Mode de génération T6">
+              <option value="">Tous les modes T6</option>
+              {T6_MODES.map((m) => <option key={m} value={m}>{T6_MODE_LABELS[m]}</option>)}
+            </select>
             <select value={filters.rank} onChange={(e) => set('rank', e.target.value)} className={SELECT}>
               <option value="">Tous les rangs</option>
               {Object.entries(RANK_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
@@ -398,6 +406,11 @@ function AiExecutionsScreen() {
                   {r.status === 'error' ? 'Échec' : 'Succès'}
                 </span>
                 <span className="text-sm font-medium text-[color:var(--text-primary)]">{r.treatment ?? '—'}</span>
+                {r.callerMode && (
+                  <span className="text-xs text-[color:var(--text-muted)]">
+                    {r.callerMode === 'pregeneration' ? 'pré-génération' : 'affichée'}
+                  </span>
+                )}
                 <span className="text-sm text-[color:var(--text-secondary)]">{r.operationCode}</span>
                 <span className="text-sm text-[color:var(--text-muted)]">{r.model}</span>
                 <span className={`text-xs px-1.5 py-0.5 rounded ${r.modelRank && r.modelRank !== 'primary'

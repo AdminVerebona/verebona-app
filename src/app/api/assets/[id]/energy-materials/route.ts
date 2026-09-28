@@ -5,6 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { assets, energyMaterials } from '@/db/schema';
@@ -81,6 +82,8 @@ export async function POST(
       updatedAt: now,
     }).returning();
 
+    // CDC Assistant §25.7, §31.7.
+    if (asset.accountId != null) await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: asset.accountId, entityId: assetId });
     return NextResponse.json({ material: created });
   } catch (err: any) {
     console.error('[energy-materials POST]', err);
@@ -99,7 +102,7 @@ export async function DELETE(
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
     const [asset] = await db
-      .select({ id: assets.id })
+      .select({ id: assets.id, accountId: assets.accountId })
       .from(assets)
       .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
       .limit(1);
@@ -113,6 +116,7 @@ export async function DELETE(
       .delete(energyMaterials)
       .where(and(eq(energyMaterials.id, materialId), eq(energyMaterials.assetId, assetId)));
 
+    if (asset.accountId != null) await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: asset.accountId, entityId: assetId });
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });

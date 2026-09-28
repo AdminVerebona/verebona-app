@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
 import { updateManualStatus } from '@/services/agenda/AgendaWriteService';
 
@@ -28,6 +29,8 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     }
 
     const item = await updateManualStatus(id, manualStatus, accountId);
+    // CDC Assistant §25.7, §31.7.
+    await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId, entityId: id });
     return NextResponse.json({ item });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';

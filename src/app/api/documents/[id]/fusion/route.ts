@@ -7,6 +7,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
@@ -87,6 +88,8 @@ export async function POST(
         .set({ deletedAt: now, updatedAt: now })
         .where(eq(assetFiles.id, candidateFileId));
 
+      // CDC Assistant §25.7, §31.7 : le candidat fusionné disparaît.
+      await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId, entityId: candidateFileId });
       return NextResponse.json({ success: true, action: 'merged', keptFileId: assetFileId, deletedFileId: candidateFileId });
     }
 
@@ -96,6 +99,7 @@ export async function POST(
         .set({ deletedAt: now, updatedAt: now })
         .where(eq(assetFiles.id, assetFileId));
 
+      await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId, entityId: assetFileId });
       return NextResponse.json({ success: true, action: 'replaced', keptFileId: candidateFileId, deletedFileId: assetFileId });
     }
 

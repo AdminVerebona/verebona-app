@@ -7,13 +7,23 @@
  */
 import { pgClient } from '@/db';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
-import type { MascotAgendaRow, MascotDocRow, MascotExportRow, MascotRawData } from './signals';
-import { EXT_ACTION_LOOKBACK_DAYS } from './signals';
+import { getEntitlements } from '@/services/entitlements.service';
+import type { MascotAgendaRow, MascotDocRow, MascotExportRow, MascotRawData, MascotRights } from './signals';
+import { EXT_ACTION_LOOKBACK_DAYS, mascotRightsFrom } from './signals';
+import { MAX_SECONDARIES, MAX_SUBJECTS } from './types';
 
 /** Un envoi ou une analyse bloqués depuis plus longtemps ne sont plus « en cours ». */
 const PROCESSING_WINDOW_HOURS = 24;
 /** Horizon de l'agenda lu pour la prochaine date. */
 const AGENDA_FORWARD_DAYS = 730;
+/**
+ * NFR-001 : la mascotte n'utilise que la tête de la file « À traiter » — au
+ * plus 2 sujets et 3 secondaires. Le double laisse la marge des doublons
+ * écartés par la sélection ; au-delà, la page « À traiter » fait foi.
+ */
+export const MASCOT_TO_PROCESS_LIMIT = (MAX_SUBJECTS + MAX_SECONDARIES) * 2;
+/** Échéances portées par des actions ouvertes : identifiants seuls, bornés. */
+const TO_PROCESS_AGENDA_IDS_LIMIT = 500;
 
 export function todayParis(now: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -149,6 +159,36 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
     }));
 }
 
+/** ATP-004 : toutes les échéances déjà portées par une action ouverte (ids seuls). */
+async function readToProcessAgendaIds(accountId: number): Promise<number[]> {
+  const r = await rows(
+    `SELECT DISTINCT target_id FROM to_process_actions
+      WHERE account_id = $1 AND resolved_at IS NULL AND target_type = 'AGENDA_ITEM'
+      LIMIT ${TO_PROCESS_AGENDA_IDS_LIMIT}`,
+    [accountId],
+  );
+  return r.map((x) => Number(x.target_id));
+}
+
+/**
+ * REC-005 : droits effectifs et volumes comptés comme les gardes serveur
+ * (`POST /api/assets` : tous les biens du compte ; `files/presign` : documents
+ * non supprimés, envoi terminé).
+ */
+async function readRights(accountId: number): Promise<MascotRights> {
+  const [ent, [c]] = await Promise.all([
+    getEntitlements(accountId),
+    rows(
+      `SELECT (SELECT COUNT(*) FROM assets WHERE account_id = $1)::int AS assets,
+              (SELECT COUNT(*) FROM asset_files
+                WHERE account_id = $1 AND deleted_at IS NULL
+                  AND COALESCE(upload_status, 'COMPLETED') = 'COMPLETED')::int AS documents`,
+      [accountId],
+    ),
+  ]);
+  return mascotRightsFrom(ent, { assets: Number(c?.assets ?? 0), documents: Number(c?.documents ?? 0) });
+}
+
 async function readAcknowledgments(accountId: number): Promise<Array<{ occurrenceKey: string; cycleKey: string }>> {
   const r = await rows(
     `SELECT occurrence_key AS "occurrenceKey", cycle_key AS "cycleKey"
@@ -170,12 +210,22 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
       return null;
     }
   };
-  const [processing, onboarding, toProcess, agenda, acknowledgments] = await Promise.all([
+  const [processing, onboarding, toProcess, toProcessAgendaIds, agenda, acknowledgments, rights] = await Promise.all([
     safe('traitements', () => readProcessing(accountId)),
     safe('onboarding', () => readOnboarding(accountId)),
-    safe('à traiter', async () => (await getToProcessPage(accountId, { orderMode: 'BY_PRIORITY' })).actions),
+    // NFR-001 : tête de file seulement, dans l'ordre « Par priorité » du service.
+    safe('à traiter', async () => (await getToProcessPage(accountId, {
+      orderMode: 'BY_PRIORITY', limit: MASCOT_TO_PROCESS_LIMIT,
+    })).actions),
+    safe('à traiter (échéances)', () => readToProcessAgendaIds(accountId)),
     safe('agenda', () => readAgenda(accountId, today)),
     safe('acquittements', () => readAcknowledgments(accountId)),
+    safe('droits', () => readRights(accountId)),
   ]);
-  return { accountId, today, processing, onboarding, toProcess, agenda, acknowledgments };
+  return {
+    accountId, today, processing, onboarding, toProcess, agenda, acknowledgments,
+    // Échéances d'actions ouvertes : en échec, la file lue suffit (repli sur `toProcess`).
+    toProcessAgendaIds,
+    rights,
+  };
 }

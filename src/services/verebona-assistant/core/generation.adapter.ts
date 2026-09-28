@@ -29,6 +29,7 @@ import {
 } from './model-call-policy';
 import { logSecurityEvents, sanitizeModelText, type SecurityEvent } from './output-safety';
 import { fitToInputBudget } from './context-budget';
+import { applySensitiveDataPolicy, maskSensitiveText, sensitiveNecessityFor } from './sensitive-data.policy';
 import { getAssistantConfig } from '../config/assistant-config';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import { assistantIdempotencyKey } from './assistant-cache-key';
@@ -189,9 +190,19 @@ export async function generateAssistantAnswerDetailed(
     // 12 000 jetons d'entrée au plus : moins d'extraits d'abord, puis des
     // extraits plus courts, puis sans le contexte du fil. Au-delà : aucun
     // appel (repli déterministe), jamais un envoi hors budget.
+    // §29.4 : politique « données sensibles » AVANT tout calcul de budget —
+    // documents d'identité ou médicaux non nécessaires exclus, numéros de
+    // pièce, données médicales, données de tiers et secrets masqués dans les
+    // extraits, la question et le contexte du fil. Trace sans contenu.
+    const politique = applySensitiveDataPolicy(sources, input.message);
+    generationEvents.push(...politique.events);
+    if (politique.sources.length === 0) return echec('NO_SOURCE');
+    const besoin = sensitiveNecessityFor(input.message);
+    const question = maskSensitiveText(input.message, besoin).text;
+    const conversationMasquee = maskSensitiveText(conversation, besoin).text;
     const fit = fitToInputBudget({
-      sources, conversation,
-      fixed: `${input.message}\n${task.intentVariable}`,
+      sources: politique.sources, conversation: conversationMasquee,
+      fixed: `${question}\n${task.intentVariable}`,
       maxInputTokens: cfg.maxInputTokens,
       maxExcerptChars: cfg.maxExcerptChars,
     });
@@ -203,7 +214,7 @@ export async function generateAssistantAnswerDetailed(
       TODAY: new Date().toISOString().slice(0, 10),
       // Balisée <question> dans le prompt : un `<` saisi ne peut pas refermer
       // la balise et se faire passer pour une consigne.
-      QUESTION: escapeUntrusted(input.message),
+      QUESTION: escapeUntrusted(question),
       DATA: formatSourcesData(kept),
       SOURCES: formatSourcesList(kept),
       INTENT: task.intentVariable,

@@ -87,6 +87,6 @@ export async function POST(
   }
 
   // CDC Assistant §25.7 : événement métier (caches de l'assistant).
-  void emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: publicId });
+  await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: publicId });
   return NextResponse.json({ ok: true, previousValue: result.previousValue });
 }

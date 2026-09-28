@@ -1252,6 +1252,8 @@ export const pendingBlobDeletions = pgTable('pending_blob_deletions', {
   scheduledFor: tstz('scheduled_for'),
   processedAt: tstzOptional('processed_at'),
   errorMessage: text('error_message'),
+  // Échecs de suppression consécutifs (migration 0211) : backoff puis exclusion.
+  attemptCount: integer('attempt_count').notNull().default(0),
   createdAt: tstz('created_at'),
 }, (table) => ({
   scheduledForIdx: index('pending_blob_deletions_scheduled_for_idx').on(table.scheduledFor),

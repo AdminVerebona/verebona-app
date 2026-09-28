@@ -16,6 +16,7 @@ import {
 import { deleteAccountAsAdmin } from '@/services/account/admin-account-deletion.service';
 import { planAtDate } from '@/lib/admin/plan-at-date';
 import { loadAccountHistory } from '@/services/admin/account-history.service';
+import { loadAccountPendingDeletion } from '@/services/admin/account-deletion-status.service';
 import { pgClient } from '@/db';
 
 
@@ -170,6 +171,10 @@ export async function GET(
       .innerJoin(users, eq(users.id, accountMemberships.userId))
       .where(eq(accountMemberships.accountId, accountId));
 
+    // §5.2.1 : suppression en cours (même règle que la liste, ACC-L01).
+    // Lecture seule : aucune action d'annulation depuis le BO (GDP-008).
+    const deletion = await loadAccountPendingDeletion(accountId, account.ownerUserId);
+
     // ── Consommations et quotas §5.2.3 (ACC-D04 : lecture seule) ─────────
     const storage = await getAccountStorageUsage(accountId);
     const [limits] = await db
@@ -239,6 +244,7 @@ export async function GET(
     return NextResponse.json({
       account: { ...accountPublic, lastLoginAt: lastLogin?.at ?? null },
       subscription: subscription ?? null,
+      deletion,
       stripeLinks,
       quotas,
       payments,

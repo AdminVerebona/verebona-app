@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { users, accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
+import { logAdminAction } from '@/lib/admin-audit';
 import { StripeConfigError } from '@/lib/stripe';
 import { syncAccountFromStripeCustomer } from '@/services/billing/subscription-sync.service';
 import { isStripeResourceMissing } from '@/lib/stripe-customer';
@@ -16,13 +17,38 @@ import { isStripeResourceMissing } from '@/lib/stripe-customer';
  * par la contrainte `accounts_subscription_status_check` — et ne touchait pas
  * `account_subscriptions`, source des droits. Elle passe désormais par le
  * service de synchronisation commun au webhook et au retour de paiement.
+ *
+ * AUD-001 : l'action peut modifier l'offre et le statut d'abonnement du
+ * compte ; elle est journalisée (`ACCOUNT_STRIPE_RESYNC`, cible ACCOUNT) avec
+ * l'offre et le statut avant / après, y compris en cas d'échec une fois le
+ * compte identifié.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let adminId: number | null = null;
+  // Compte ciblé et état avant la synchronisation, connus une fois le compte lu.
+  let audited: {
+    accountId: number;
+    userId: number;
+    before: { planType: string; subscriptionStatus: string };
+  } | null = null;
+  const logFailure = async (result: 'FAILURE' | 'DENIED', error: string) => {
+    if (adminId === null || !audited) return;
+    await logAdminAction({
+      adminId,
+      action: 'ACCOUNT_STRIPE_RESYNC',
+      targetType: 'ACCOUNT',
+      targetId: audited.accountId,
+      result,
+      before: audited.before,
+      details: { userId: audited.userId, error },
+    });
+  };
+
   try {
-    await requireAdmin(request);
+    adminId = await requireAdmin(request);
 
     const { id } = await params;
     const userId = parseInt(id);
@@ -39,6 +65,7 @@ export async function POST(
       .select({
         id: accounts.id,
         planType: accounts.planType,
+        subscriptionStatus: accounts.subscriptionStatus,
         stripeCustomerId: accounts.stripeCustomerId,
       })
       .from(accounts)
@@ -48,7 +75,13 @@ export async function POST(
     if (!account) {
       return NextResponse.json({ error: 'User has no account' }, { status: 404 });
     }
+    audited = {
+      accountId: account.id,
+      userId,
+      before: { planType: account.planType, subscriptionStatus: account.subscriptionStatus },
+    };
     if (!account.stripeCustomerId) {
+      await logFailure('DENIED', 'NO_STRIPE_CUSTOMER');
       return NextResponse.json({ error: 'Aucun client Stripe rattaché à ce compte' }, { status: 400 });
     }
 
@@ -58,6 +91,7 @@ export async function POST(
     });
 
     if (!result) {
+      await logFailure('FAILURE', subscriptionCount === 0 ? 'NO_STRIPE_SUBSCRIPTION' : 'SUBSCRIPTION_NOT_SYNCABLE');
       return NextResponse.json(
         {
           error: subscriptionCount === 0
@@ -69,6 +103,23 @@ export async function POST(
     }
 
     const changed = result.oldPlanType !== result.newPlanType || result.oldStatus !== result.newStatus;
+
+    await logAdminAction({
+      adminId,
+      action: 'ACCOUNT_STRIPE_RESYNC',
+      targetType: 'ACCOUNT',
+      targetId: account.id,
+      result: 'SUCCESS',
+      before: { planType: result.oldPlanType, subscriptionStatus: result.oldStatus },
+      after: { planType: result.newPlanType, subscriptionStatus: result.newStatus },
+      details: {
+        userId,
+        changed,
+        skipped: result.skipped ?? null,
+        stripeStatus: result.stripeStatus,
+        billingPeriod: result.billingPeriod,
+      },
+    });
 
     return NextResponse.json({
       success: true,
@@ -94,6 +145,7 @@ export async function POST(
       return error;
     }
     console.error('[Sync Stripe] Error:', error);
+    await logFailure('FAILURE', error instanceof Error ? error.message : 'Unknown error');
 
     if (error instanceof StripeConfigError) {
       return NextResponse.json({ error: `Configuration Stripe : ${error.message}` }, { status: 503 });

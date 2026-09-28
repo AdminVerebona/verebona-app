@@ -34,6 +34,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { z } from 'zod';
+import { maskSensitiveText, sensitiveNecessityFor } from './sensitive-data.policy';
 import { callWithRepairOrEscalation, repairInstruction } from './model-call-policy';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import { assistantIdempotencyKey } from './assistant-cache-key';
@@ -77,7 +78,10 @@ export async function classifyAssistantIntent(
     // n'est émis et l'intention reste inconnue (repli déterministe).
     // Premier appel au modèle par défaut seul ; sortie invalide → une
     // réparation (§18.6), sortie vide → escalade (§15.4). Rien d'autre.
-    const variables = { QUESTION: message, INTENTS: describeCatalog() };
+    // §29.4 : la classification n'a besoin que de l'intention — données
+    // sensibles de la question masquées (secrets toujours, le reste sauf
+    // besoin exprimé).
+    const variables = { QUESTION: maskSensitiveText(message, sensitiveNecessityFor(message)).text, INTENTS: describeCatalog() };
     const { res, events } = await callWithRepairOrEscalation({
       budget: input.aiBudget,
       schemaDescription: '{"intent":"<intention du catalogue>","confidence":"exact"|"probable"|"ambiguous","entityHints":[],"reason":"…"}',

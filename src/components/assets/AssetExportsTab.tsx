@@ -156,6 +156,8 @@ interface Props {
 function StatusIcon({ status }: { status: string }) {
   if (status === 'ready') return <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />;
   if (status === 'error') return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />;
+  // DRH-004 : fichier supprimé, entrée conservée dans l'historique.
+  if (status === 'deleted') return <Trash2 className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
   return <Clock className="w-4 h-4 text-blue-400 flex-shrink-0 animate-pulse" />;
 }
 
@@ -335,7 +337,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
     setDeleting(exportId);
     try {
       await apiClient.delete(`/api/assets/${assetId}/exports/${exportId}`);
-      toast.success('Export supprimé');
+      toast.success('Fichier supprimé');
       setDeleteConfirm(null);
       await loadExports();
     } catch (err: any) {
@@ -571,6 +573,9 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
                   {(exp.status === 'pending' || exp.status === 'generating') && (
                     <p className="text-xs text-muted-foreground mt-0.5">En cours…</p>
                   )}
+                  {exp.status === 'deleted' && (
+                    <p className="text-xs text-muted-foreground mt-0.5">Fichier supprimé</p>
+                  )}
                 </div>
                 {exp.completedAt && (
                   <span className="text-xs text-muted-foreground flex-shrink-0">{formatDate(exp.completedAt)}</span>
@@ -607,12 +612,12 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
                       <RefreshCw className="w-3 h-3 animate-spin" />
                     </div>
                   )}
-                  {exp.status !== 'generating' && (
+                  {exp.status !== 'generating' && exp.status !== 'deleted' && (
                     <Button
                       size="icon"
                       variant="ghost"
                       className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                      title="Supprimer cet export"
+                      title="Supprimer le fichier de cet export"
                       onClick={() => setDeleteConfirm(exp)}
                       disabled={deleting === exp.id}
                     >
@@ -632,9 +637,9 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
       <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => { if (!open) setDeleteConfirm(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Supprimer cet export ?</AlertDialogTitle>
+            <AlertDialogTitle>Supprimer le fichier de cet export ?</AlertDialogTitle>
             <AlertDialogDescription>
-              L&apos;export <strong>{TYPE_LABELS[deleteConfirm?.exportType ?? ''] ?? deleteConfirm?.exportType}</strong> sera supprimé définitivement. Les fichiers téléchargés restent disponibles localement.
+              Le fichier de l&apos;export <strong>{TYPE_LABELS[deleteConfirm?.exportType ?? ''] ?? deleteConfirm?.exportType}</strong> sera supprimé définitivement ; l&apos;entrée reste visible dans l&apos;historique. Les fichiers déjà téléchargés restent disponibles localement.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -240,6 +240,7 @@ export class AiGateway {
             modelRank,
             jobId,
             configVersionId: configuration.configVersionId,
+            callerMode: req.callerMode,
           });
 
           attempts.push({ model, succeeded: true });
@@ -285,6 +286,7 @@ export class AiGateway {
             modelRank,
             jobId,
             configVersionId: configuration.configVersionId,
+            callerMode: req.callerMode,
           }).catch(() => { /* la trace ne doit jamais masquer l'erreur d'origine */ });
 
           // Une erreur non récupérable arrête immédiatement la chaîne de repli.

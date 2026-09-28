@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { supplierReviewItems, suppliers, documentSuppliers } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
@@ -103,6 +104,8 @@ export async function POST(
       })
       .where(eq(supplierReviewItems.id, reviewItemId));
 
+    // CDC Assistant §25.7, §31.7 : élément « À traiter » résolu.
+    await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: reviewItemId });
     return NextResponse.json({ success: true });
   } catch (err) {
     return SessionService.handleSessionError(err);

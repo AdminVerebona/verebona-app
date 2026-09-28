@@ -51,7 +51,9 @@ import { Loader2, RefreshCw, AlertTriangle, ArrowRight, Bell } from 'lucide-reac
 import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
-import { periodBounds, type CostPeriod } from '@/services/ai/telemetry/execution-filters';
+import {
+  periodBounds, T6_MODES, T6_MODE_LABELS, type CostPeriod,
+} from '@/services/ai/telemetry/execution-filters';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 
 interface Breakdown {
@@ -156,6 +158,8 @@ function AiCostsScreen() {
   const [custom, setCustom] = useState({ from: sp.get('from') ?? '', to: sp.get('to') ?? '' });
   const [treatment, setTreatment] = useState(sp.get('treatment') ?? '');
   const [accountId, setAccountId] = useState(/^\d+$/.test(sp.get('accountId') ?? '') ? sp.get('accountId')! : '');
+  // CDC Mascotte BO-009 : génération T6 affichée / pré-génération / secours.
+  const [t6Mode, setT6Mode] = useState((T6_MODES as readonly string[]).includes(sp.get('t6Mode') ?? '') ? sp.get('t6Mode')! : '');
   const [report, setReport] = useState<Report | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draftBudgets, setDraftBudgets] = useState<Record<string, string>>({});
@@ -170,8 +174,9 @@ function AiCostsScreen() {
     if (period === 'custom') { q.set('from', bounds.from); q.set('to', bounds.to); }
     if (treatment) q.set('treatment', treatment);
     if (accountId) q.set('accountId', accountId);
+    if (t6Mode) q.set('t6Mode', t6Mode);
     router.replace(`?${q}`, { scroll: false });
-  }, [period, bounds.from, bounds.to, treatment, accountId, router]);
+  }, [period, bounds.from, bounds.to, treatment, accountId, t6Mode, router]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -181,6 +186,7 @@ function AiCostsScreen() {
       if (period === 'custom') { q.set('since', `${bounds.from}T00:00:00Z`); q.set('until', `${bounds.to}T23:59:59.999Z`); }
       if (treatment) q.set('treatment', treatment);
       if (accountId) q.set('accountId', accountId);
+      if (t6Mode) q.set('t6Mode', t6Mode);
       const [r, s, a] = await Promise.all([
         apiClient.get<Report>(`/api/admin/ai/costs?${q}`),
         apiClient.get<Settings>('/api/admin/ai/cost-settings').catch(() => null),
@@ -197,7 +203,7 @@ function AiCostsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [period, bounds.from, bounds.to, treatment, accountId]);
+  }, [period, bounds.from, bounds.to, treatment, accountId, t6Mode]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -225,6 +231,7 @@ function AiCostsScreen() {
     const q = new URLSearchParams({ from: bounds.from, to: bounds.to, ...extra });
     if (treatment && !extra.treatment) q.set('treatment', treatment);
     if (accountId && !extra.accountId) q.set('accountId', accountId);
+    if (t6Mode && !extra.t6Mode) q.set('t6Mode', t6Mode);
     return `/admin/ai-executions?${q}`;
   };
 
@@ -261,6 +268,11 @@ function AiCostsScreen() {
           className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Tous les traitements</option>
           {['T1', 'T2', 'T3', 'T4', 'T5', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select value={t6Mode} onChange={(e) => setT6Mode(e.target.value)} aria-label="Mode de génération T6"
+          className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
+          <option value="">Tous les modes T6</option>
+          {T6_MODES.map((m) => <option key={m} value={m}>{T6_MODE_LABELS[m]}</option>)}
         </select>
         <Input placeholder="Compte" value={accountId} inputMode="numeric" onChange={(e) => setAccountId(e.target.value.replace(/\D/g, ''))}
           className="max-w-[120px] bg-[color:var(--bg-input)]" />

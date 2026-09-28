@@ -8,7 +8,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { assets, cilBlockResolutions } from '@/db/schema';
+import { cilBlockResolutions } from '@/db/schema';
+import { findAccessibleAssetForExport } from '@/services/exports/export-access';
 import { eq, and } from 'drizzle-orm';
 
 export async function PATCH(
@@ -21,11 +22,8 @@ export async function PATCH(
     const assetId = parseInt(id);
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
-    const [asset] = await db
-      .select({ id: assets.id })
-      .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
-      .limit(1);
+    // Accès par compte (Duo compris).
+    const asset = await findAccessibleAssetForExport(session, assetId);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
     const body = await request.json();
@@ -85,11 +83,8 @@ export async function DELETE(
     const assetId = parseInt(id);
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
-    const [asset] = await db
-      .select({ id: assets.id })
-      .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
-      .limit(1);
+    // Accès par compte (Duo compris).
+    const asset = await findAccessibleAssetForExport(session, assetId);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
     const { searchParams } = new URL(request.url);

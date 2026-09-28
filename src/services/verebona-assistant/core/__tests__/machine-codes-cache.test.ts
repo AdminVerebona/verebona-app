@@ -15,7 +15,7 @@ vi.mock('@/db', () => ({
 const { runAssistant, noticesFor, RETRIEVAL_CACHE_HIT_EVENT } = await import('../assistant-orchestrator.service');
 const { ConversationMachine } = await import('../conversation-machine');
 const { toApiPayload } = await import('../api-payload');
-const { cachedRetrieve, retrievalCacheKey, invalidateRetrievalCacheForAccount, clearRetrievalCache } = await import('../retrieval-cache');
+const { cachedRetrieve, retrievalCacheKey, invalidateRetrievalCacheForAccount, clearRetrievalCache, setCacheVersionStoreForTests } = await import('../retrieval-cache');
 const { capabilityAllows, isAiEligibleFor, capabilitiesForPlan } = await import('../../registries/capability-registry');
 const { routeForIntent } = await import('../intent-router.service');
 const { describeAccountRights } = await import('../../prompts/rights-layer');
@@ -145,6 +145,8 @@ describe('§27.11 — codes informatifs émis', () => {
 
 describe('§43 — cache de retrieval (RETRIEVAL_CACHE_TTL_SECONDS) et cache_hit (§28.7)', () => {
   const route = routeForIntent('ACCOUNT_SUMMARY', 'PREMIUM', 't');
+  // Versions d'invalidation (§31.7) : stockage en mémoire, la base étant absente ici.
+  beforeEach(() => setCacheVersionStoreForTests({ read: async () => ({}), bump: async () => {} }));
 
   it('servi par le cache pendant la durée configurée, plafonnée à 60 s, puis rechargé', async () => {
     let t = 1_000;

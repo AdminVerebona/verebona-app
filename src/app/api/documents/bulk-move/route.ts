@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvents } from '@/services/verebona-assistant/events/business-events';
 import { hasProjectableKnowledge, projectDocumentKnowledgeToAsset } from '@/services/ai/knowledge/document-knowledge.service';
 import { db } from '@/db';
 import { assetFiles, assets } from '@/db/schema';
@@ -113,6 +114,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // CDC Assistant §25.7, §31.7 : document rattaché à un autre bien.
+    await emitBusinessEvents(updated.map((d) => ({ type: 'DOCUMENT_UPDATED' as const, accountId, entityId: d.id })));
     return NextResponse.json({
       success: true,
       moved: updated.length,

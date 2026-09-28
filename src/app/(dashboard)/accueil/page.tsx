@@ -84,6 +84,8 @@ export default function DashboardPage() {
 
   // Dialogs
   const [showUploadDialog, setShowUploadDialog] = useState(false);
+  // Bien présélectionné quand l'ajout vient d'une action mascotte (ONB-DOC).
+  const [uploadAssetId, setUploadAssetId] = useState<number | null>(null);
   const [showAssetDialog, setShowAssetDialog] = useState(false);
   // Refus d'ajout d'un bien : même fenêtre que partout ailleurs (motif serveur).
   const { signalerRefus } = useWriteGuard();
@@ -360,7 +362,7 @@ export default function DashboardPage() {
         <MascotGreeting
           firstName={user.firstName || user.username || ''}
           onCreateAsset={() => setShowAssetDialog(true)}
-          onUploadDocument={() => setShowUploadDialog(true)}
+          onUploadDocument={(assetId) => { setUploadAssetId(assetId ?? null); setShowUploadDialog(true); }}
         />
 
         {/* ══════════════════════════════════════════════════════════════
@@ -508,7 +510,8 @@ export default function DashboardPage() {
       {showUploadDialog && (
         <UnifiedDocumentDialog
           open={showUploadDialog}
-          onOpenChange={setShowUploadDialog}
+          onOpenChange={(open) => { setShowUploadDialog(open); if (!open) setUploadAssetId(null); }}
+          preselectedAssetId={uploadAssetId ?? undefined}
           availableAssets={assets.map(a => ({ id: a.id, name: a.name }))}
           onSuccess={refreshSummary}
         />

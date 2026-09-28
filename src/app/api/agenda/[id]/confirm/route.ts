@@ -3,6 +3,7 @@
  * prévisionnelle telle quelle (elle devient « confirmée », sa date protégée).
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { confirmForecastOccurrence } from '@/services/agenda/AgendaWriteService';
@@ -23,6 +24,8 @@ export async function POST(req: NextRequest, context: RouteContext) {
   if (isNaN(id)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   try {
     const item = await confirmForecastOccurrence(id, accountId, session.userId);
+    // CDC Assistant §25.7, §31.7.
+    await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId, entityId: id });
     return NextResponse.json({ item });
   } catch (e) {
     const message = (e as Error).message;

@@ -71,17 +71,30 @@ function questionAction(code: string, assetId?: number | null, assetName?: strin
   };
 }
 
+/** Famille d'un code source (`ATP-…` → À traiter, `DATE-NEXT…` → Date). */
+function familyOfCode(code: string): MascotSubject['sourceFamily'] | null {
+  if (code.startsWith('ATP-')) return 'TO_PROCESS';
+  if (code === 'DATE-NEXT' || code === 'DATE-NEXT-2') return 'DATE';
+  return null;
+}
+
 /**
  * Questions éligibles, dans l'ordre du catalogue, sans celles qui répètent un
- * sujet déjà affiché (SEC-004, T2-02).
+ * sujet OU une action déjà affichés (SEC-004, T2-02) : une action À traiter
+ * ou une date visible en élément secondaire exclut aussi Q-TODO / Q-NEXT-DATE.
  */
 export function eligibleQuestions(
   input: MascotCandidates,
   shown: MascotSubject[],
   onboarding: 'ONB-ASSET' | 'ONB-DOC' | null,
+  visibleSecondaries: MascotSecondary[] = [],
 ): MascotSecondary[] {
-  const codes = new Set(shown.map((s) => s.sourceCode));
-  const familles = new Set(shown.map((s) => s.sourceFamily));
+  const codes = new Set([...shown.map((s) => s.sourceCode), ...visibleSecondaries.map((s) => s.sourceCode)]);
+  const familles = new Set<string>(shown.map((s) => s.sourceFamily));
+  for (const s of visibleSecondaries) {
+    const f = familyOfCode(s.sourceCode);
+    if (f) familles.add(f);
+  }
   const out: MascotSecondary[] = [];
 
   if (onboarding === 'ONB-ASSET') {
@@ -150,7 +163,9 @@ export function buildSecondaries(
   }
 
   const step = onboarding ? (onboarding.sourceCode as 'ONB-ASSET' | 'ONB-DOC') : null;
-  liste.push(...eligibleQuestions(input, subjects, step));
+  // SEC-004 : seules les recommandations qui seront réellement visibles
+  // (dans la limite des places) excluent leur question équivalente.
+  liste.push(...eligibleQuestions(input, subjects, step, liste.slice(0, places)));
 
   // L'onboarding garde sa place même si la file de recommandations est longue
   // (SEL-006) : il est en tête, et la troncature se fait par la fin.

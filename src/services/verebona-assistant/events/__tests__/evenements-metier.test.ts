@@ -7,7 +7,7 @@ const h = vi.hoisted(() => ({ unsafe: vi.fn(async (_sql: string, _p?: unknown[])
 vi.mock('@/db', () => ({ pgClient: { unsafe: h.unsafe }, ensureMigrations: vi.fn(async () => {}) }));
 
 const bus = await import('../business-events');
-const { registerAssistantBusinessEventHandlers, resetAssistantHandlersForTests, purgeAccountModelCache } = await import('../handlers');
+const { registerAssistantBusinessEventHandlers, resetAssistantHandlersForTests, purgeAccountModelCache, flushModelCachePurgesForTests } = await import('../handlers');
 const { cachedRetrieve, clearRetrievalCache, retrievalCacheSize } = await import('../../core/retrieval-cache');
 const { routeForIntent } = await import('../../core/intent-router.service');
 
@@ -59,18 +59,43 @@ describe('consommateurs : caches de l’assistant (§31.4)', () => {
     expect(retrievalCacheSize()).toBe(0);
   });
 
-  it('une suppression purge les réponses modèle en cache des fils du compte', async () => {
+  it('une suppression purge les réponses modèle en cache des fils du compte (préfixe indexable)', async () => {
     registerAssistantBusinessEventHandlers();
     h.unsafe.mockImplementation(async (sql: string) => (/FROM verebona_conversations/.test(sql) ? [{ id: 5 }, { id: 6 }] : [1, 1]));
     await bus.emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId: 7, entityId: 12 });
+    await flushModelCachePurgesForTests();
     const purge = h.unsafe.mock.calls.find(([sql]) => /DELETE FROM ai_operation_idempotency/.test(String(sql)));
-    expect(purge?.[1]).toEqual([['assistant:c5:%', 'assistant:c6:%']]);
+    expect(String(purge?.[0])).toMatch(/key_hash LIKE 'assistant:c%'/);
+    expect(String(purge?.[0])).not.toMatch(/LIKE ANY/);
+    expect(purge?.[1]).toEqual([['c5', 'c6']]);
+  });
+
+  it('la purge part en arrière-plan : l’émetteur n’attend pas, un échec est journalisé', async () => {
+    registerAssistantBusinessEventHandlers();
+    let liberer: () => void = () => {};
+    const bloque = new Promise<void>((r) => { liberer = r; });
+    h.unsafe.mockImplementation(async (sql: string) => {
+      if (/FROM verebona_conversations/.test(sql)) { await bloque; throw new Error('boum'); }
+      return [];
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await bus.emitBusinessEvent({ type: 'ASSET_DELETED', accountId: 7, entityId: 1 });
+    // Deuxième suppression pendant la purge : une seule relance, pas deux purges concurrentes.
+    await bus.emitBusinessEvent({ type: 'ASSET_DELETED', accountId: 7, entityId: 2 });
+    await bus.emitBusinessEvent({ type: 'ASSET_DELETED', accountId: 7, entityId: 3 });
+    liberer();
+    await flushModelCachePurgesForTests();
+    expect(h.unsafe.mock.calls.filter(([sql]) => /FROM verebona_conversations/.test(String(sql)))).toHaveLength(2);
+    expect(err.mock.calls.some((c) => /purge du cache modèle/.test(String(c[0])))).toBe(true);
+    err.mockRestore();
   });
 
   it('une mise à jour ne purge pas les réponses modèle (clé = contenu : elles se renouvellent seules)', async () => {
     registerAssistantBusinessEventHandlers();
     await bus.emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: 7 });
-    expect(h.unsafe).not.toHaveBeenCalled();
+    expect(h.unsafe.mock.calls.some(([sql]) => /ai_operation_idempotency/.test(String(sql)))).toBe(false);
+    // …mais la version d'invalidation du compte est incrémentée (§31.7).
+    expect(h.unsafe.mock.calls.some(([sql, p]) => /verebona_cache_versions/.test(String(sql)) && (p as unknown[])[0] === 'account:7')).toBe(true);
   });
 
   it('compte sans fil : rien à purger', async () => {

@@ -68,6 +68,8 @@ export interface ExecutionFilters {
   objectId?: string;
   /** LOG-UI-02 : déclencheur (`trigger_code` du job) ou origine (`manual`, `automatic`). */
   trigger?: string;
+  /** CDC Mascotte BO-009 : génération T6 affichée, pré-génération ou texte de secours. */
+  t6Mode?: 'displayed' | 'pregeneration' | 'fallback';
   limit?: number;
   offset?: number;
 }
@@ -102,6 +104,8 @@ export interface ExecutionRow {
   /** LOG-UI-03 : déclencheur du job (ou `null` pour un appel synchrone). */
   trigger: string | null;
   origin: string | null;
+  /** BO-009 : mode déclaré par la mascotte (`displayed` / `pregeneration`), sinon null. */
+  callerMode: string | null;
 }
 
 /** Traitement correspondant à un code d'usage, sans requête. */
@@ -144,6 +148,7 @@ function toRow(r: Row): ExecutionRow {
     objectId: r.object_id == null ? null : String(r.object_id),
     trigger: r.trigger_code == null ? null : String(r.trigger_code),
     origin: r.job_origin == null ? null : String(r.job_origin),
+    callerMode: typeof metadata.callerMode === 'string' ? metadata.callerMode : null,
   };
 }
 
@@ -157,6 +162,39 @@ const OBJECT_ID = `COALESCE(j.target_id, e.asset_file_id::text)`;
 const OBJECT_COLS = `${OBJECT_TYPE} AS object_type, ${OBJECT_ID} AS object_id,
             j.trigger_code AS trigger_code, j.origin AS job_origin`;
 const JOB_JOIN = `LEFT JOIN ai_job_queue j ON j.id = e.job_id`;
+
+/**
+ * Mode de génération T6 d'un appel — CDC Mascotte BO-009.
+ *
+ * ⚠️ Le classement suit l'ISSUE de la génération, pas le statut de l'appel.
+ * Toutes les tentatives d'une même exécution gateway (principal, repli 1,
+ * repli 2) partagent un `traceId`. Une tentative en échec suivie d'un repli
+ * réussi dont le texte a été affiché n'est PAS un « texte de secours » : son
+ * coût a produit un affichage. On lit donc `home_mascot_generations` par
+ * `trace_id` (index partiel, migration 0210) :
+ *   · une génération `generated` en mode `display` → `displayed` ;
+ *   · une génération `generated` seulement en `pregen` (pré-génération, ou
+ *     génération achevée après le délai d'affichage) → `pregeneration` ;
+ *   · une génération non retenue (sortie rejetée…) → `fallback` ;
+ *   · aucune génération rattachée à la trace : la chaîne entière a échoué
+ *     (l'issue « erreur » ne porte pas de trace) → `fallback`.
+ * `NULL` pour tout appel hors mascotte (pas de `callerMode`).
+ */
+export function t6ModeSql(alias: string): string {
+  return `(CASE
+    WHEN ${alias}.metadata->>'callerMode' IS NULL THEN NULL
+    ELSE COALESCE((
+      SELECT CASE
+               WHEN bool_or(g.status = 'generated' AND g.mode = 'display') THEN 'displayed'
+               WHEN bool_or(g.status = 'generated') THEN 'pregeneration'
+               ELSE 'fallback'
+             END
+        FROM home_mascot_generations g
+       WHERE g.trace_id = ${alias}.metadata->>'traceId'
+      HAVING COUNT(*) > 0
+    ), 'fallback')
+  END)`;
+}
 
 const MAX_LIMIT = 200;
 
@@ -195,6 +233,7 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
     f.objectType ?? null,           // $14
     f.objectId ?? null,             // $15
     f.trigger ?? null,              // $16
+    f.t6Mode ?? null,               // $17
   ];
 
   const where = `
@@ -215,7 +254,8 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
         AND ($13::int IS NULL OR e.job_id = $13)
         AND ($14::text IS NULL OR ${OBJECT_TYPE} = $14)
         AND ($15::text IS NULL OR ${OBJECT_ID} = $15)
-        AND ($16::text IS NULL OR j.trigger_code = $16 OR j.origin = $16)`;
+        AND ($16::text IS NULL OR j.trigger_code = $16 OR j.origin = $16)
+        AND ($17::text IS NULL OR ${t6ModeSql('e')} = $17)`;
 
   const rows = await pgClient.unsafe(
     `SELECT e.id, e.created_at, e.use_case_code, e.operation_code, e.account_id, e.user_id,

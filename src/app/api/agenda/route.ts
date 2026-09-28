@@ -1,4 +1,5 @@
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaItems } from '@/services/agenda/AgendaQueryService';
@@ -66,6 +67,8 @@ export async function POST(req: NextRequest) {
       accountId,
       session.userId
     );
+    // CDC Assistant §25.7, §31.7 : cache de l'assistant invalidé avant la réponse.
+    await emitBusinessEvent({ type: 'AGENDA_ITEM_CREATED', accountId, entityId: (item as { id?: number } | null)?.id ?? null });
     return NextResponse.json({ item }, { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';

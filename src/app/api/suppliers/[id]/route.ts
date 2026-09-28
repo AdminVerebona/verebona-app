@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { suppliers, documentSuppliers, assetFiles, assets, supplierReviewItems } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -119,6 +120,8 @@ export async function PATCH(
       .where(eq(suppliers.id, supplierId))
       .returning();
 
+    // CDC Assistant §31.7 : modification d'un fournisseur.
+    await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: supplierId });
     return NextResponse.json({ supplier: updated });
   } catch (err) {
     return SessionService.handleSessionError(err);

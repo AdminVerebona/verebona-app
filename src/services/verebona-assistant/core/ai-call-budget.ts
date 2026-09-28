@@ -27,7 +27,6 @@ import type { AiGatewayRequest, AiGatewayResponse } from '@/services/ai/gateway/
 import { getAssistantConfig } from '../config/assistant-config';
 import { isAssistantFlagOn } from '../config/assistant-flags';
 import { hashPromptVariables, recordAiRun, type AiRunContext } from './usage-tracking.service';
-import { alertIfCostlyResponse } from './budget.service';
 import { aliasForRank, resolveAliases } from '../registries/model-registry';
 
 export class AiCallBudget {
@@ -156,7 +155,6 @@ export async function executeWithinBudget<T>(
         attemptNumber: tentative, status: res.fromCache ? 'cached' : 'ok',
         promptHash: hashPromptVariables(req.promptVariables),
       });
-      if (!res.fromCache) alertIfCostlyResponse(req.accountId, trace.requestId, res.costMicros);
     }
     return res;
   } catch (e) {

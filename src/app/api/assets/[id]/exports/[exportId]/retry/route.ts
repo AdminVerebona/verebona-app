@@ -4,12 +4,14 @@
  *
  * Conditions : status='error' OR (status='generating' AND generation_started_at < now()-5min AND output_payload IS NULL)
  * Idempotence : vérifie output_payload IS NULL avant de relancer
+ * Accès par compte (Duo compris) ; CIL bloqué si B1/B3/B8 à compléter
+ * (CIL-RULE-002) ; message d'erreur générique, support réellement notifié.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { assets, exportGenerations, accounts } from '@/db/schema';
+import { exportGenerations, accounts } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 import { isPremiumPlan } from '@/types/domain';
@@ -19,6 +21,14 @@ import type { ExportType, ExportOutput } from '@/services/export-manifest.servic
 import { renderExportToPdf } from '@/services/pdf-renderer.service';
 import { buildExportZip } from '@/services/export-zip.service';
 import { uploadExportFile, buildExportS3Key, getExportSignedUrl } from '@/services/export-upload.service';
+import { findAccessibleAssetForExport } from '@/services/exports/export-access';
+import {
+  evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE, CIL_ACTION_REQUIRED_MESSAGE,
+} from '@/services/exports/cil-preparation.service';
+import {
+  EXPORT_ERROR_MESSAGES, technicalErrorMessage, exportRouteError,
+} from '@/services/exports/export-errors';
+import { notifySupportOfExportFailure } from '@/services/exports/export-support-notifier';
 
 export async function POST(
   request: NextRequest,
@@ -34,12 +44,8 @@ export async function POST(
       return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
     }
 
-    // Verify asset ownership
-    const [asset] = await db
-      .select({ id: assets.id, category: assets.category, subtype: assets.subtype })
-      .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
-      .limit(1);
+    // Accès par compte (Duo compris)
+    const asset = await findAccessibleAssetForExport(session, assetId);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
     // Load export
@@ -71,14 +77,35 @@ export async function POST(
       return NextResponse.json({
         error: 'RETRY_NOT_ALLOWED',
         status: exportRow.status,
-        message: 'Export cannot be retried in its current state',
+        code: 'RETRY_NOT_ALLOWED',
+        message: 'Cet export ne peut pas être relancé dans son état actuel.',
       }, { status: 400 });
+    }
+
+    // CIL-RULE-002 : même blocage qu'à la création.
+    if (exportRow.exportType === 'CIL_REGLEMENTAIRE') {
+      const readiness = await evaluateCilReadiness(asset);
+      if (readiness.globalStatus === 'action_required') {
+        return NextResponse.json({
+          error: CIL_ACTION_REQUIRED_CODE,
+          code: CIL_ACTION_REQUIRED_CODE,
+          message: CIL_ACTION_REQUIRED_MESSAGE,
+          blockingBlocks: readiness.blockingBlocks.map(b => ({ id: b.id, label: b.label })),
+        }, { status: 422 });
+      }
     }
 
     // Idempotence guard: if output already exists, return current state
     if (exportRow.outputPayload) {
       return NextResponse.json({ exportId: exportIdNum, status: exportRow.status });
     }
+
+    // Compte du bien, vérifié par `findAccessibleAssetForExport`. Pas
+    // `exportRow.accountId` : les exports antérieurs au lot 7 ont reçu un
+    // compte choisi au hasard parmi les adhésions (ancien resolveAccountId),
+    // qui peut différer du compte du bien (snapshot introuvable, clé S3,
+    // offre et notification sur le mauvais compte).
+    const accountId = asset.accountId;
 
     const now = new Date();
     const newAttemptCount = (exportRow.generationAttemptCount ?? 0) + 1;
@@ -91,6 +118,8 @@ export async function POST(
         generationStartedAt: now,
         generationAttemptCount: newAttemptCount,
         errorPayload: null,
+        // Réaligne l'entrée sur le compte du bien (anciennes lignes).
+        accountId,
       })
       .where(and(
         eq(exportGenerations.id, exportIdNum),
@@ -106,7 +135,7 @@ export async function POST(
     const [accountRow] = await db
       .select({ planType: accounts.planType })
       .from(accounts)
-      .where(eq(accounts.id, exportRow.accountId))
+      .where(eq(accounts.id, accountId))
       .limit(1);
     const isPremium = isPremiumPlan(accountRow?.planType ?? '');
 
@@ -123,7 +152,7 @@ export async function POST(
     const exportType = exportRow.exportType as ExportType;
 
     try {
-      const snapshot = await buildAssetSnapshot(assetId, session.userId);
+      const snapshot = await buildAssetSnapshot(assetId, session.userId, { accountId });
       const manifest = buildExportManifest(exportType, snapshot, {
         ...manifestOptions,
         requestedOutputs: outputs,
@@ -134,20 +163,20 @@ export async function POST(
 
       if (exportType === 'EXPORT_BRUT') {
         const zipBuffer = await buildExportZip(manifest, snapshot, null, isPremium);
-        const zipKey = buildExportS3Key(exportRow.accountId, assetId, exportIdNum, 'export_brut.zip');
+        const zipKey = buildExportS3Key(accountId, assetId, exportIdNum, 'export_brut.zip');
         await uploadExportFile(zipBuffer, zipKey, 'application/zip');
         outputPayload.zipS3Key = zipKey;
         outputPayload.zipSize = zipBuffer.length;
       } else {
         const pdfBuffer = await renderExportToPdf(manifest, snapshot);
-        const pdfKey = buildExportS3Key(exportRow.accountId, assetId, exportIdNum, `${exportType}.pdf`);
+        const pdfKey = buildExportS3Key(accountId, assetId, exportIdNum, `${exportType}.pdf`);
         await uploadExportFile(pdfBuffer, pdfKey, 'application/pdf');
         outputPayload.pdfS3Key = pdfKey;
         outputPayload.pdfSize = pdfBuffer.length;
 
         if (outputs.includes('ZIP') && isPremium) {
           const zipBuffer = await buildExportZip(manifest, snapshot, pdfBuffer, isPremium);
-          const zipKey = buildExportS3Key(exportRow.accountId, assetId, exportIdNum, `${exportType}.zip`);
+          const zipKey = buildExportS3Key(accountId, assetId, exportIdNum, `${exportType}.zip`);
           await uploadExportFile(zipBuffer, zipKey, 'application/zip');
           outputPayload.zipS3Key = zipKey;
           outputPayload.zipSize = zipBuffer.length;
@@ -172,21 +201,44 @@ export async function POST(
       return NextResponse.json({ exportId: exportIdNum, status: 'ready', downloadUrl, downloadZipUrl });
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const technicalMessage = technicalErrorMessage(error);
+      console.error('[ExportRetry] Generation failed after retry:', { exportId: exportIdNum, attemptCount: newAttemptCount, error });
+
+      const supportEmailSent = await notifySupportOfExportFailure({
+        assetId,
+        exportId: exportIdNum,
+        exportType,
+        technicalMessage,
+        attemptCount: newAttemptCount,
+        userId: session.userId,
+        accountId,
+      });
+
       await db
         .update(exportGenerations)
         .set({
           status: 'error',
-          errorPayload: JSON.stringify({ code: 'GENERATION_FAILED', message: errorMessage, supportEmailSent: true, attemptCount: newAttemptCount }),
+          errorPayload: JSON.stringify({
+            code: 'GENERATION_FAILED',
+            message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
+            technicalMessage, // interne : jamais renvoyé au client
+            supportEmailSent,
+            attemptCount: newAttemptCount,
+          }),
           completedAt: new Date(),
         })
         .where(eq(exportGenerations.id, exportIdNum));
 
-      console.error('[ExportRetry] Generation failed after retry:', { exportId: exportIdNum, errorMessage, attemptCount: newAttemptCount });
-
-      return NextResponse.json({ exportId: exportIdNum, status: 'error', errorMessage }, { status: 500 });
+      return NextResponse.json({
+        exportId: exportIdNum,
+        status: 'error',
+        errorCode: 'GENERATION_FAILED',
+        errorMessage: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
+        code: 'GENERATION_FAILED',
+        message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
+      }, { status: 500 });
     }
   } catch (error) {
-    return SessionService.handleSessionError(error);
+    return exportRouteError(error, '[ExportRetry]');
   }
 }

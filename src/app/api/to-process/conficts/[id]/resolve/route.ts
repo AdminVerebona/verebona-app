@@ -26,6 +26,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { pgClient } from '@/db';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
@@ -95,6 +96,8 @@ export async function POST(
       ] as never[],
     );
 
+    // CDC Assistant §25.7, §31.7 : élément « À traiter » résolu.
+    await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: conflictId });
     return NextResponse.json({ success: true, resolution, retainedValue: retained });
   } catch (err) {
     return SessionService.handleSessionError(err);

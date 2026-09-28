@@ -9,6 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { supplierReviewItems, suppliers, supplierContactObservations } from '@/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
@@ -110,6 +111,7 @@ export async function POST(request: NextRequest) {
             eq(supplierReviewItems.status, 'open'),
           ));
       }
+      await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: null });
       return NextResponse.json({ resolved: ids.length });
     }
 
@@ -132,6 +134,7 @@ export async function POST(request: NextRequest) {
     if (openConflicts.length === 0) {
       // Still try to auto-resolve deduplication items with no candidates
       const resolvedDedup = await autoResolveDeduplicationNoCandidates(db, accountId, session.userId);
+      await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: null });
       return NextResponse.json({ resolved: 0, deduplicationResolved: resolvedDedup });
     }
 
@@ -192,6 +195,8 @@ export async function POST(request: NextRequest) {
     // Also auto-resolve deduplication items with no candidates
     const resolvedDedup = await autoResolveDeduplicationNoCandidates(db, accountId, session.userId);
 
+    // CDC Assistant §25.7, §31.7 : éléments « À traiter » résolus.
+    await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: null });
     return NextResponse.json({ resolved: falsePositiveIds.length, total: openConflicts.length, deduplicationResolved: resolvedDedup });
   } catch (err) {
     return SessionService.handleSessionError(err);

@@ -16,7 +16,10 @@ export function invalidUserId(): NextResponse {
   return NextResponse.json({ error: 'INVALID_ID', code: 'INVALID_ID', message: 'Identifiant utilisateur invalide.' }, { status: 400 });
 }
 
-/** Réponse d'un refus métier (`USER_NOT_FOUND` 404, `LAST_ADMIN` 409). */
+/**
+ * Réponse d'un refus métier (`USER_NOT_FOUND` 404 ; `LAST_ADMIN` et
+ * `PENDING_DELETION` 409).
+ */
 export function userAdminErrorResponse(error: UserAdminError): NextResponse {
   const status = error.code === 'USER_NOT_FOUND' ? 404 : 409;
   return NextResponse.json({ error: error.code, code: error.code, message: error.message }, { status });

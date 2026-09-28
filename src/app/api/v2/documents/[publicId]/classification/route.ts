@@ -22,6 +22,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
@@ -133,6 +134,8 @@ export async function PATCH(
     );
   }
 
+  // CDC Assistant §25.7, §31.7 : classement du document modifié.
+  await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: row.id });
   return NextResponse.json({
     classification: outcome.result,
     changes: outcome.changes,

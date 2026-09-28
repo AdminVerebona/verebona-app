@@ -31,7 +31,7 @@
  *                           traitement que GET /api/cron/gdpr-exports-purge ;
  *   · ai-log-archive      — archivage S3 des logs IA > 90 jours (WF-25),
  *                           juste avant la purge de l'assistant ;
- *   · assistant-purge     — historique de l'assistant (7 j, §24.1) et
+ *   · assistant-purge     — historique de l'assistant (90 j, GAP-16) et
  *                           journaux (§29.7) ; même traitement que
  *                           GET /api/cron/ai/purge-assistant-logs ;
  *   · ai-pricing-refresh  — tarifs des modèles, le lundi ; même traitement
@@ -39,6 +39,11 @@
  *   · supervision-sweep   — domaines Exports / IA de la Supervision (SUP-004) ;
  *   · admin-audit-purge   — rétention du journal admin (AUD-004,
  *                           ADMIN_AUDIT_RETENTION_DAYS, désactivée sans valeur) ;
+ *   · blob-purge          — file `pending_blob_deletions` (objets S3 à
+ *                           supprimer : exports, fichiers de biens
+ *                           supprimés…) ; même traitement que
+ *                           GET /api/cron/purge-blobs, jusque-là appelée par
+ *                           aucun planificateur ; BLOB_PURGE=off la retire ;
  *   · backup-freshness    — ancienneté de la dernière sauvegarde (> 48 h ⇒
  *                           anomalie de Supervision). Jusqu'ici contrôlée
  *                           seulement à l'ouverture de l'écran Supervision :
@@ -236,6 +241,22 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
         const { purgeAdminAuditLog } = await import('@/services/admin/audit-retention.service');
         const r = await purgeAdminAuditLog(auditRetentionDays);
         if (r.deleted > 0) console.info(`[daily-jobs] admin-audit-purge : ${r.deleted} ligne(s) antérieure(s) au ${r.cutoff}.`);
+      },
+    });
+  }
+
+  // File de purge du stockage (objets S3 : exports supprimés, fichiers de
+  // biens et de comptes supprimés). La route /api/cron/purge-blobs n'était
+  // appelée par aucun planificateur du dépôt : sans configuration externe,
+  // rien n'était supprimé. Ordonnée, par lots, avec backoff : un objet en
+  // échec ne bloque plus la file. Désactivable par BLOB_PURGE=off.
+  if (!['off', 'false', '0'].includes((env.BLOB_PURGE ?? '').trim().toLowerCase())) {
+    tasks.push({
+      lock: 'daily-blob-purge',
+      window: [5, 8],
+      run: async () => {
+        const { purgePendingBlobs } = await import('@/services/storage/blob-purge.service');
+        console.info('[daily-jobs] blob-purge :', JSON.stringify(await purgePendingBlobs()));
       },
     });
   }

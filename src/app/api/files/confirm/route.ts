@@ -11,6 +11,7 @@ import { getSession } from '@/lib/auth-guards';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
+import { emitBusinessEvents } from '@/services/verebona-assistant/events/business-events';
 import {
   checkAccountStorageQuota,
   discardRejectedUploads,
@@ -242,6 +243,9 @@ export async function POST(request: NextRequest) {
     // compte n'a pas de crédit : les fichiers restent « non analysés » et
     // `check-pending` les reprendra.
     if (accountId) {
+      // §25.7, §31.7 : un événement par document, une seule invalidation
+      // (toutes instances) pour la demande, avant la réponse. Ne lève jamais.
+      await emitBusinessEvents(updatedFiles.map((f) => ({ type: 'DOCUMENT_UPLOADED' as const, accountId, entityId: f.id })));
       const confirmedIds = updatedFiles.map((f) => f.id);
       try {
         const gate = await canConsumeAnalysis(accountId, 1);

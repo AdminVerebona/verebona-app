@@ -54,6 +54,15 @@ const ORIGIN_LABELS: Record<'user' | 'admin' | 'system' | 'stripe', string> = {
   stripe: 'Stripe',
 };
 
+/** Motif d'une suppression programmée (infobulle du badge §5.2.1). */
+const DELETION_REASON_LABELS: Record<string, string> = {
+  VOLUNTARY: 'suppression demandée par le titulaire',
+  WITHDRAWAL: 'rétractation',
+  UNPAID: 'impayé non régularisé',
+  TRIAL_ABANDONED: 'essai abandonné',
+  ADMIN: 'suppression engagée par le back-office',
+};
+
 interface DuoMember {
   id: number;
   userId: number | null;
@@ -122,6 +131,8 @@ interface AccountDetail {
     cancelAtPeriodEnd: boolean;
     trialEndsAt: string | null;
   } | null;
+  /** Suppression en cours (§5.2.1, ACC-L01) : lecture seule, aucune annulation depuis le BO. */
+  deletion: { scheduledAt: string; reason: string; origin: string } | null;
   stripeLinks: { customer: string | null; subscription: string | null };
   quotas: {
     assets: Quota;
@@ -349,6 +360,14 @@ export default function AccountDetailPage() {
           <Badge variant={account.isActive ? 'outline' : 'destructive'}>
             {account.isActive ? 'Actif' : 'Suspendu'}
           </Badge>
+          {data.deletion && (
+            <Badge
+              variant="destructive"
+              title={`Suppression en cours (${DELETION_REASON_LABELS[data.deletion.reason] ?? data.deletion.reason}). Elle ne peut pas être annulée depuis le back-office.`}
+            >
+              Suppression prévue le {formatDate(data.deletion.scheduledAt)}
+            </Badge>
+          )}
           <Button variant="ghost" size="icon" onClick={load} title="Rafraîchir" disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>

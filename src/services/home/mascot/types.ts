@@ -38,6 +38,11 @@ export type MascotActionTarget =
       targetId: number;
       targetPublicId: string | null;
       field: string | null;
+      /**
+       * Cible SUPPLIER : fournisseur réellement visé, résolu côté serveur
+       * (`targetId` peut être celui d'une revue). Absent/null : repli (ATP-005).
+       */
+      supplierId?: number | null;
     }
   | { kind: 'route'; href: string }
   | { kind: 'create_asset' }

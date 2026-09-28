@@ -6,6 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
@@ -62,6 +63,8 @@ export async function POST(
       });
     }
 
+    // CDC Assistant §25.7, §31.7 : extraction validée, reportée sur le bien.
+    await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: assetFileId });
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof Response) return error;

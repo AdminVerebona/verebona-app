@@ -92,9 +92,18 @@ export type TargetCheck = 'ok' | 'gone' | 'resolved';
 export async function checkTarget(accountId: number, target: MascotActionTarget): Promise<TargetCheck> {
   switch (target.kind) {
     case 'drawer': {
+      // §20 « Action déjà résolue entre affichage et clic » : une échéance
+      // réalisée ou annulée depuis l'affichage (`manual_status` renseigné)
+      // n'ouvre pas le tiroir — le client dit « déjà traitée » puis recalcule.
+      if (target.drawer === 'echeance') {
+        const [i] = await rows(
+          `SELECT manual_status FROM agenda_items WHERE id = $1 AND account_id = $2`, [target.id, accountId],
+        );
+        if (!i) return 'gone';
+        return i.manual_status && String(i.manual_status).trim() ? 'resolved' : 'ok';
+      }
       const sql = {
         document: `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
-        echeance: `SELECT 1 FROM agenda_items WHERE id = $1 AND account_id = $2`,
         equipement: `SELECT 1 FROM equipments e JOIN assets a ON a.id = e.asset_id
                       WHERE e.id = $1 AND a.account_id = $2 AND a.deleted_at IS NULL AND e.archived_at IS NULL`,
         piece: `SELECT 1 FROM substructures s JOIN assets a ON a.id = s.asset_id
@@ -108,7 +117,17 @@ export async function checkTarget(accountId: number, target: MascotActionTarget)
         [target.publicId, accountId],
       );
       if (!a) return 'gone';
-      return a.resolved_at ? 'resolved' : 'ok';
+      if (a.resolved_at) return 'resolved';
+      // ATP-005 : la fiche fournisseur n'est ouverte que si le fournisseur
+      // résolu appartient toujours au compte (SEC-006).
+      if (target.targetType === 'SUPPLIER' && target.supplierId != null) {
+        const f = await rows(
+          `SELECT 1 FROM suppliers WHERE id = $1 AND account_id = $2 AND status <> 'deleted'`,
+          [target.supplierId, accountId],
+        );
+        if (!f.length) return 'gone';
+      }
+      return 'ok';
     }
     case 'done': {
       const id = parseExtActionKey(target.occurrenceKey);

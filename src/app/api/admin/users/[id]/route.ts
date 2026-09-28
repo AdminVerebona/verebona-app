@@ -23,6 +23,8 @@ import {
 } from '@/services/admin/user-detail.service';
 import { communicationTypeLabel } from '@/services/admin/communications.service';
 import { buildPreferenceMatrix } from '@/lib/notifications/preference-matrix';
+import { getActiveUserSchedule } from '@/services/account/scheduled-deletion.service';
+import { isPendingDeletion } from '@/lib/auth/account-closure';
 
 export async function GET(
   request: NextRequest,
@@ -168,6 +170,14 @@ export async function GET(
       isLastActiveAdmin: isActiveAdmin(user) && activeAdminRows.length <= 1,
     };
 
+    // GDP-008 / REC-GDP-05 : suppression volontaire en cours. La fiche affiche
+    // « Suppression en cours — prévue le … » et désactive Désactiver /
+    // Réactiver (le serveur refuse de toute façon : 409 PENDING_DELETION).
+    // `scheduledAt` nul : compte clôturé sans compte à rebours (anomalie).
+    const pendingDeletion = isPendingDeletion(user.status)
+      ? { scheduledAt: (await getActiveUserSchedule(userIdParam))?.scheduledAt ?? null }
+      : null;
+
     // §6.2 / COM-014 / USR-D01 : données de support (lecture seule). Un échec
     // de l'une d'elles fait échouer la fiche (ERR-001 : pas de fiche partielle
     // présentée comme complète).
@@ -200,6 +210,7 @@ export async function GET(
       communications,
       loginHistory: { days: LOGIN_HISTORY_DAYS, entries: logins },
       adminStatus,
+      pendingDeletion,
       assets: userAssets,
       stats: {
         documentsCount,

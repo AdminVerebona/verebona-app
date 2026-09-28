@@ -65,6 +65,32 @@ export function checkAssistantMutationRateLimit(
   return { allowed: true, retryAfterMs: 0, scope: null };
 }
 
+/**
+ * Routes de LECTURE (§27 : « toutes les routes appliquent les limitations de
+ * débit ») : explication, sources, historique, état d'une demande,
+ * suggestions. Quota commun à ces lectures, distinct des questions et des
+ * écritures, volontairement large — une page d'historique ouvre plusieurs
+ * lectures d'affilée : 120 par minute et par utilisateur par défaut
+ * (`VEREBONA_ASSISTANT_READ_RATE_LIMIT_PER_MINUTE`), 3× par compte.
+ */
+export function readRatePerMinute(): number {
+  const n = Number(process.env.VEREBONA_ASSISTANT_READ_RATE_LIMIT_PER_MINUTE);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 120;
+}
+
+export function checkAssistantReadRateLimit(
+  userId: number,
+  accountId: number,
+  perMinute = readRatePerMinute(),
+  now = Date.now(),
+): RateDecision {
+  const user = limiter.take(`r:u:${userId}`, perMinute, now);
+  if (!user.allowed) return { allowed: false, retryAfterMs: user.retryAfterMs, scope: 'user' };
+  const account = limiter.take(`r:a:${accountId}`, perMinute * 3, now);
+  if (!account.allowed) return { allowed: false, retryAfterMs: account.retryAfterMs, scope: 'account' };
+  return { allowed: true, retryAfterMs: 0, scope: null };
+}
+
 export function checkAssistantRateLimit(userId: number, accountId: number, perMinute: number, now = Date.now()): RateDecision {
   const user = limiter.take(`u:${userId}`, perMinute, now);
   if (!user.allowed) return { allowed: false, retryAfterMs: user.retryAfterMs, scope: 'user' };

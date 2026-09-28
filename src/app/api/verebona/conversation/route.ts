@@ -21,8 +21,9 @@ import { chargerClarification } from '@/services/verebona-assistant/core/clarifi
 import { isExpired } from '@/services/verebona-assistant/core/clarification-builder';
 import { reverifierCartesDesMessages } from '@/services/verebona-assistant/core/source-availability.service';
 import { listThreadCommandPlans } from '@/services/verebona-assistant/commands/plan.service';
-import { httpRequestId, mutationRateLimited, parseWith, queryObject, withRequestId } from '@/lib/verebona/api-guard';
+import { httpRequestId, mutationRateLimited, parseWith, queryObject, readRateLimited, withRequestId } from '@/lib/verebona/api-guard';
 import { ConversationQuerySchema } from '@/lib/verebona/api-schemas';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 
 /** `undefined` : absent ; `null` : présent mais invalide. */
 function parseConversationId(req: NextRequest): number | null | undefined {
@@ -45,6 +46,9 @@ async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   catch (e) { return SessionService.handleSessionError(e); }
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
+  // §27 : lectures limitées elles aussi (limiteur dédié de l'assistant).
+  const limite = readRateLimited(session.userId, accountId, httpId);
+  if (limite) return limite;
 
   await ensureMigrations();
   // §27.6 : `limit` (≤ 50), `cursor` / `before` validés par schéma.
@@ -117,5 +121,10 @@ async function effacer(req: NextRequest, httpId: string): Promise<NextResponse> 
 
   const purge = await clearUserHistory(accountId, session.userId, requested);
   if (requested !== undefined && purge.conversations === 0) return notFound();
+  // §31.7 : l'effacement de la conversation invalide le cache de l'assistant
+  // (toutes instances) — rien de ce qui a été calculé dans le fil n'est resservi.
+  if (purge.conversations > 0) {
+    await emitBusinessEvent({ type: 'CONVERSATION_CLEARED', accountId, entityId: requested ?? null });
+  }
   return NextResponse.json({ ok: true, deleted: purge.conversations });
 }

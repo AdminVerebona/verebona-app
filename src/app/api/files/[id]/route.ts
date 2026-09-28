@@ -193,7 +193,7 @@ export async function DELETE(
     });
 
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
-    if (file.accountId) void emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId: file.accountId, entityId: fileId });
+    if (file.accountId) await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId: file.accountId, entityId: fileId });
 
     return NextResponse.json(
       {

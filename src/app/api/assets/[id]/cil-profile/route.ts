@@ -4,6 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { assets, assetCilProfiles } from '@/db/schema';
@@ -108,6 +109,8 @@ export async function POST(
       .where(eq(assetCilProfiles.assetId, assetId))
       .limit(1);
 
+    // CDC Assistant §25.7, §31.7.
+    if (asset.accountId != null) await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: asset.accountId, entityId: assetId });
     return NextResponse.json({ profile: updated });
   } catch (err: any) {
     console.error('[CIL profile POST]', err);

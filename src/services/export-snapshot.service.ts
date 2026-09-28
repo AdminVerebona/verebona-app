@@ -383,14 +383,26 @@ function buildDetailSections(
   };
 }
 
-export async function buildAssetSnapshot(assetId: number, userId: number): Promise<AssetSnapshot> {
+/**
+ * `scope.accountId` : accès par compte (exports, CDC V12 DRH-002) — le
+ * co-titulaire Duo n'est pas `assets.userId`. Sans `scope`, filtre historique
+ * par propriétaire (transmission, aperçu BO).
+ */
+export async function buildAssetSnapshot(
+  assetId: number,
+  userId: number,
+  scope?: { accountId: number },
+): Promise<AssetSnapshot> {
   const [assetRow] = await db
     .select()
     .from(assets)
-    .where(and(eq(assets.id, assetId), eq(assets.userId, userId)))
+    .where(and(
+      eq(assets.id, assetId),
+      scope ? eq(assets.accountId, scope.accountId) : eq(assets.userId, userId),
+    ))
     .limit(1);
 
-  if (!assetRow) throw new Error(`Asset ${assetId} not found for user ${userId}`);
+  if (!assetRow) throw new Error(`Asset ${assetId} not found for ${scope ? `account ${scope.accountId}` : `user ${userId}`}`);
 
   // Parse keyCharacteristics
   let keyChars: Record<string, unknown> = {};

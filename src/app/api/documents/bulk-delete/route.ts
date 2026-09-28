@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvents } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and, inArray, isNull } from 'drizzle-orm';
@@ -56,6 +57,9 @@ export async function POST(request: NextRequest) {
       )
       .returning();
 
+    // CDC Assistant §25.7, §31.7 : un événement par document supprimé, une
+    // seule invalidation pour la demande (bus en lot).
+    await emitBusinessEvents(deleted.map((d) => ({ type: 'DOCUMENT_DELETED' as const, accountId, entityId: d.id })));
     return NextResponse.json({
       success: true,
       deleted: deleted.length,

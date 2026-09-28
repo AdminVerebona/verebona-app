@@ -88,6 +88,13 @@ export interface AiGatewayRequest<T> {
    * (gemini-client), qui relance le dernier modèle sans le mode JSON.
    */
   jsonResponse?: boolean;
+  /**
+   * Mode d'appel déclaré par l'appelant, figé dans la trace
+   * (`ai_usage_event.metadata.callerMode`) pour filtrer Exécutions et Coûts.
+   * CDC Mascotte BO-009 : `displayed` (génération attendue par l'affichage)
+   * ou `pregeneration` (pré-génération non affichée).
+   */
+  callerMode?: 'displayed' | 'pregeneration';
 }
 
 export interface AiGatewayResponse<T> {

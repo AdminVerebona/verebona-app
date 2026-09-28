@@ -53,6 +53,8 @@ export interface CallTrace {
    * VER-015). Absente : version effective au moment de la trace.
    */
   configVersionId?: number | null;
+  /** Mode d'appel déclaré par l'appelant (CDC Mascotte BO-009), figé en métadonnée. */
+  callerMode?: 'displayed' | 'pregeneration';
 }
 
 export async function recordCallTrace(t: CallTrace): Promise<void> {
@@ -106,6 +108,7 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
         // le tarif appliqué reste lisible même après une révision de grille.
         // `null` = aucun tarif connu (coût non calculable, COST-008).
         pricing: pricingRef(t.provider, t.model),
+        ...(t.callerMode ? { callerMode: t.callerMode } : {}),
       },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { assets, substructures } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -46,6 +47,8 @@ export async function PATCH(
       )
     );
 
+    // CDC Assistant §25.7, §31.7.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId });
     return NextResponse.json({ updated: true });
   } catch (error) {
     console.error('PATCH /substructures/order error:', error);

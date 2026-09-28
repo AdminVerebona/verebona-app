@@ -15,7 +15,9 @@
  * réactiver (USR-A02..A05), déconnecter toutes les sessions (USR-A06),
  * réinitialisation du mot de passe par le parcours « Mot de passe oublié »
  * (USR-A07), statut administrateur (USR-A08). Le dernier administrateur actif
- * ne peut être ni rétrogradé ni désactivé (USR-A09).
+ * ne peut être ni rétrogradé ni désactivé (USR-A09). Un utilisateur qui a
+ * demandé la suppression de son compte (PENDING_DELETION) ne peut être ni
+ * désactivé ni réactivé : seul lui peut annuler sa demande (GDP-008).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -46,7 +48,7 @@ import {
   Send,
 } from 'lucide-react';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
-import { formatDateTime } from '@/lib/admin/format';
+import { formatDate, formatDateTime } from '@/lib/admin/format';
 
 interface UserDetails {
   id: number;
@@ -112,6 +114,8 @@ interface UserData {
   user: UserDetails;
   account: LinkedAccount | null;
   adminStatus: { isAdmin: boolean; isLastActiveAdmin: boolean };
+  /** Suppression volontaire en cours (GDP-008) ; null sinon. */
+  pendingDeletion: { scheduledAt: string | null } | null;
   memberships: Membership[];
   statusChanges: StatusChange[];
   notificationPreferences: {
@@ -126,6 +130,20 @@ interface UserData {
 
 /** Motif affiché quand une action est impossible sur le dernier admin (UX-003). */
 const LAST_ADMIN_REASON = "Dernier administrateur actif : accordez d'abord le statut administrateur à un autre utilisateur.";
+
+/** Motif affiché quand le statut est figé par une suppression volontaire (GDP-008, UX-003). */
+const PENDING_DELETION_REASON =
+  "Suppression demandée par l'utilisateur : seul l'utilisateur peut l'annuler. Le statut ne peut pas être modifié depuis le back-office.";
+
+/** Libellé du statut, suppression volontaire comprise. */
+function statusLabel(status: string, pendingDeletion: UserData['pendingDeletion']): string {
+  if (pendingDeletion || status === 'PENDING_DELETION') {
+    return pendingDeletion?.scheduledAt
+      ? `Suppression en cours — prévue le ${formatDate(pendingDeletion.scheduledAt)}`
+      : 'Suppression en cours';
+  }
+  return status === 'ACTIVE' ? 'Actif' : 'Désactivé';
+}
 
 const ROLE_LABELS: Record<Membership['role'], string> = {
   holder: 'Titulaire',
@@ -283,6 +301,8 @@ export default function UserDetailPage() {
 
   const { user, account: linkedAccount, adminStatus, memberships, statusChanges, notificationPreferences, invitations, communications, loginHistory } = data;
   const lastAdmin = adminStatus?.isLastActiveAdmin ?? false;
+  const deletionPending = !!data.pendingDeletion || user.status === 'PENDING_DELETION';
+  const userStatusLabel = statusLabel(user.status, data.pendingDeletion);
   const mainMembership = memberships[0] ?? null;
   const reissuable = invitations.find((i) => i.reissuable) ?? null;
   const resendReason = reissuable
@@ -307,7 +327,13 @@ export default function UserDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {user.status === 'ACTIVE' ? <Badge variant="active">Actif</Badge> : <Badge variant="destructive">Désactivé</Badge>}
+          {deletionPending ? (
+            <Badge variant="outline">{userStatusLabel}</Badge>
+          ) : user.status === 'ACTIVE' ? (
+            <Badge variant="active">Actif</Badge>
+          ) : (
+            <Badge variant="destructive">Désactivé</Badge>
+          )}
           {adminStatus?.isAdmin && <Badge variant="default">Administrateur</Badge>}
         </div>
       </div>
@@ -319,7 +345,7 @@ export default function UserDetailPage() {
         <CardContent className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Identité">{`${user.firstName} ${user.lastName}`.trim() || '—'}</Field>
           <Field label="E-mail (non modifiable)">{user.email}</Field>
-          <Field label="Statut">{user.status === 'ACTIVE' ? 'Actif' : 'Désactivé'}</Field>
+          <Field label="Statut">{userStatusLabel}</Field>
           <Field label="Compte rattaché">
             {linkedAccount ? (
               <Link href={`/admin/accounts/${linkedAccount.id}`} className="hover:underline">
@@ -361,7 +387,18 @@ export default function UserDetailPage() {
               <Send className="h-4 w-4 mr-2" />
               Renvoyer l’invitation
             </Button>
-            {user.status === 'ACTIVE' ? (
+            {deletionPending ? (
+              <>
+                <Button variant="outline" disabled title={PENDING_DELETION_REASON}>
+                  <Ban className="h-4 w-4 mr-2" />
+                  Désactiver
+                </Button>
+                <Button variant="outline" disabled title={PENDING_DELETION_REASON}>
+                  <CheckCircle className="h-4 w-4 mr-2" />
+                  Réactiver
+                </Button>
+              </>
+            ) : user.status === 'ACTIVE' ? (
               <Button
                 variant="outline"
                 onClick={() => setSuspendDialogOpen(true)}
@@ -397,6 +434,9 @@ export default function UserDetailPage() {
           </div>
           {resendReason && <p className="text-xs text-muted-foreground">Renvoi d’invitation indisponible : {resendReason}</p>}
           {lastAdmin && <p className="text-xs text-muted-foreground">{LAST_ADMIN_REASON}</p>}
+          {deletionPending && (
+            <p className="text-xs text-muted-foreground">Désactivation et réactivation indisponibles : {PENDING_DELETION_REASON}</p>
+          )}
         </CardContent>
       </Card>
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -125,6 +126,8 @@ export async function POST(
       .set({ keyCharacteristics: JSON.stringify(kc), updatedAt: new Date() } as any)
       .where(eq(assets.id, assetId));
 
+    // CDC Assistant §25.7, §31.7 : valorisation du bien.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId });
     return NextResponse.json({ entry: newEntry });
   } catch (error) {
     console.error('POST /valuations error:', error);

@@ -63,7 +63,7 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     const body = await req.json();
     const item = await updateAgendaItem(id, body, accountId);
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
-    void emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId, entityId: id });
+    await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId, entityId: id });
     return NextResponse.json({ item });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';
@@ -90,7 +90,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
     await deleteAgendaItem(id, accountId);
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
-    void emitBusinessEvent({ type: 'AGENDA_ITEM_DELETED', accountId, entityId: id });
+    await emitBusinessEvent({ type: 'AGENDA_ITEM_DELETED', accountId, entityId: id });
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';
