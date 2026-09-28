@@ -69,6 +69,8 @@ export const verebonaMessages = pgTable('verebona_messages', {
   actionCatalogVersion: text('action_catalog_version'),
   schemaVersion: text('schema_version'),
   responseLocale: text('response_locale'),
+  /** Cartes de résultats groupées (§11.3, migration 0190). */
+  resultGroupsJson: jsonb('result_groups_json'),
   createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   expiresAt: pgTimestamp('expires_at', { withTimezone: true }).notNull(),
 }, (t) => ({
@@ -101,6 +103,10 @@ export const verebonaMessageSources = pgTable('verebona_message_sources', {
   excerptSnapshot: text('excerpt_snapshot'),
   rank: integer('rank'),
   relevanceScore: real('relevance_score'),
+  /** Libellés figés à l'écriture (§19.5, migration 0190). */
+  linkedAssetLabel: text('linked_asset_label'),
+  usefulDate: text('useful_date'),
+  statusLabel: text('status_label'),
   isAvailable: boolean('is_available').notNull().default(true),
   createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
@@ -153,6 +159,8 @@ export const verebonaRequestRuns = pgTable('verebona_request_runs', {
 }, (t) => ({
   accountIdx: index('verebona_request_runs_account_idx').on(t.accountId, t.createdAt),
   requestIdx: index('verebona_request_runs_request_idx').on(t.requestId),
+  // §28.12 (migration 0204) : intention + date.
+  intentIdx: index('verebona_request_runs_intent_idx').on(t.intent, t.createdAt),
 }));
 
 export const verebonaAiRuns = pgTable('verebona_ai_runs', {
@@ -178,10 +186,15 @@ export const verebonaAiRuns = pgTable('verebona_ai_runs', {
   attemptNumber: integer('attempt_number'),
   status: text('status'),
   errorCode: text('error_code'),
+  /** §15.11, §31.3 (migration 0204) : modèle attendu derrière l'alias. */
+  expectedModelId: text('expected_model_id'),
   createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   accountIdx: index('verebona_ai_runs_account_idx').on(t.accountId, t.createdAt),
   modelIdx: index('verebona_ai_runs_model_idx').on(t.resolvedModelId, t.createdAt),
+  // §28.12, §28.8 (migration 0204) : alias + date ; rattachement par demande.
+  aliasIdx: index('verebona_ai_runs_alias_idx').on(t.modelAlias, t.createdAt),
+  requestIdx: index('verebona_ai_runs_request_idx').on(t.requestId),
 }));
 
 export const verebonaFeedback = pgTable('verebona_feedback', {

@@ -34,9 +34,17 @@ import type { VerebonaIntent } from '@/services/verebona-assistant/types/intents
 import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
-import { assistantPlanFromEntitlements } from '@/services/verebona-assistant/core/plan-eligibility';
+import { assistantPlanFromEntitlements, assistantPlanLimit } from '@/services/verebona-assistant/core/plan-eligibility';
+import { httpRequestId, parseWith, readJson, withRequestId } from '@/lib/verebona/api-guard';
+import { PostMessageSchema } from '@/lib/verebona/api-schemas';
 
 export async function POST(req: NextRequest) {
+  // §27 : identifiant de la demande HTTP, journalisé et renvoyé (x-request-id).
+  const httpId = httpRequestId(req);
+  return withRequestId(await traiter(req, httpId), httpId);
+}
+
+async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> {
   // 1. Session serveur (accountId de confiance — §27.1).
   let session;
   try {
@@ -77,8 +85,9 @@ export async function POST(req: NextRequest) {
 
   await ensureMigrations();
 
-  // 3. Validation d'entrée (§7.5 : champ ≤ 2 000 caractères).
-  const body = await req.json().catch(() => ({}));
+  // 3. Validation d'entrée par schéma (§27, §7.5 : champ ≤ 2 000 caractères).
+  //    Entrée invalide : VALIDATION_FAILED (§27.11), motif stable conservé.
+  const body = await readJson(req);
   // §13.2, §27.1 : le compte vient de la session. Un `accountId` différent
   // dans le corps est une tentative de surcharge — refusée, jamais ignorée
   // en silence (garde `security/account-scope.ts`, jusqu'ici jamais appelée).
@@ -88,25 +97,22 @@ export async function POST(req: NextRequest) {
     if (e instanceof AccountScopeError) return NextResponse.json({ error: 'ACCOUNT_SCOPE_VIOLATION' }, { status: 403 });
     throw e;
   }
-  const message = typeof body.message === 'string' ? body.message.trim() : '';
-  const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId : '';
-  if (!message) return NextResponse.json({ error: 'EMPTY_MESSAGE' }, { status: 400 });
-  if (message.length > 2000) return NextResponse.json({ error: 'MESSAGE_TOO_LONG' }, { status: 400 });
-  if (!clientRequestId) return NextResponse.json({ error: 'MISSING_CLIENT_REQUEST_ID' }, { status: 400 });
+  const entree = parseWith(PostMessageSchema, body, httpId);
+  if (!entree.ok) return entree.response;
+  const { message, clientRequestId } = entree.data;
   // Fil choisi par l'utilisateur (optionnel). Absent : fil le plus récent.
-  const requestedConversation =
-    body.conversationId == null || body.conversationId === '' ? null : Number(body.conversationId);
-  if (requestedConversation !== null && !Number.isInteger(requestedConversation)) {
-    return NextResponse.json({ error: 'CONVERSATION_NOT_FOUND' }, { status: 404 });
-  }
+  const requestedConversation = entree.data.conversationId;
 
   // 4. Éligibilité IA via l'existant (source de vérité serveur — §15.1).
   const entitlements = await getEntitlements(accountId);
 
-  // Essai terminé ou abonnement absent : l'assistant appelle un modèle, il
-  // est refusé comme les autres traitements IA. Même réponse que les routes
-  // d'écriture — le client l'affiche dans la fenêtre de fin d'essai.
-  if (!entitlements.canWrite) {
+  // Essai terminé ou abonnement absent (§6.5) : la recherche classique et
+  // l'aide RESTENT disponibles ; seuls les appels intelligents (offre
+  // Standard effective, sans IA) et les commandes d'écriture sont coupés,
+  // et l'assistant explique la limite avec « Voir les offres ». Refus
+  // complet seulement si le compte n'est même plus consultable.
+  const planLimit = assistantPlanLimit(entitlements);
+  if (planLimit === 'NO_ACCESS') {
     const refus = await refuserSiPasDIA(accountId);
     if (refus) return refus;
   }
@@ -180,7 +186,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     // Base indisponible pour la réservation : on ne bloque pas l'utilisateur,
     // la demande suit le parcours historique (trace écrite à la fin).
-    console.warn('[verebona] réservation de la demande impossible :', (e as Error).message);
+    console.warn(`[verebona][${httpId}] réservation de la demande impossible :`, (e as Error).message);
   }
 
   const input: AssistantRequestInput = {
@@ -191,13 +197,14 @@ export async function POST(req: NextRequest) {
     planType: assistantPlanFromEntitlements(entitlements, session.planType),
     message,
     // Contexte de page VALIDÉ (clés et formats connus) — §27.1, §27.6.
-    pageContext: sanitizePageContext(body.pageContext),
+    pageContext: sanitizePageContext(entree.data.pageContext ?? undefined),
     clientRequestId,
     requestId,
     locale: cfg.locale,
     // Fil de l'utilisateur, résolu côté serveur : la persistance et les
     // copies en cache du modèle y sont rattachées (purge à l'effacement).
     conversationId,
+    planLimit: planLimit === 'NO_ACCESS' ? null : planLimit,
   };
 
   // 5. Orchestration.
@@ -246,7 +253,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(payload);
   } catch (e) {
     if (requestId) await closePendingRequest(requestId, 'error', 'ASSISTANT_UNAVAILABLE');
-    console.error('[POST /api/verebona/messages]', e);
+    console.error(`[POST /api/verebona/messages][${httpId}]`, e);
     return NextResponse.json(
       { error: { code: 'ASSISTANT_UNAVAILABLE', message: 'Assistant momentanément indisponible.', recoverable: true } },
       { status: 500 },

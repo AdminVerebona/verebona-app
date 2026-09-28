@@ -35,8 +35,8 @@ const HEADER_IDENTITY = /headers\.get\(\s*['"]x-(?:admin-)?user-id['"]\s*\)/i;
  * échouer le test (voir plus bas), pour que la liste ne s'allonge pas en silence.
  */
 const EXCEPTIONS: Record<string, string> = {
-  // Route retirée : répond 410 sans lire ni écrire aucune donnée.
-  'ai-instructions/apply/route.ts': 'Route retirée (410 Gone), aucun accès aux données.',
+  // `ai-instructions/apply` (410) et `ai-instructions` (GET/POST/PATCH sans
+  // écran) ont été supprimées : plus d'exception.
   // Les routes ai/accounts/[accountId]/{quota,reset-counter,unlock-security}
   // passent désormais par `requireAdmin` (lot IA 2, GEN-013) : plus d'exception.
 };

@@ -451,7 +451,10 @@ export default function InformationsTab() {
           </Card>
 
           {/* Zone dangereuse */}
-          <DeleteAccountCard />
+          <DeleteAccountCard
+            duoRole={sessionUser?.duoRole ?? null}
+            hasPaidSubscription={Boolean(subscription?.has_stripe_subscription)}
+          />
 
         </div>{/* end left col */}
 
@@ -537,21 +540,39 @@ export default function InformationsTab() {
 }
 
 /* ─────────────────────────────────────────────────────────────────
-   Composant : suppression de compte
+   Composant : suppression de compte — différée de 30 jours
+   (décision produit ; AID-ACCOUNT-006). Clôture immédiate, annulation et
+   export possibles pendant 30 jours, suppression définitive ensuite.
 ───────────────────────────────────────────────────────────────── */
-function DeleteAccountCard() {
+const DELETION_DELAY_DAYS = 30;
+const REQUIRED_TEXT = 'SUPPRIMER MON COMPTE';
+
+function formatLongDate(d: Date): string {
+  return new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'long' }).format(d);
+}
+
+function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
+  duoRole: 'BILLING_OWNER' | 'MEMBER' | null;
+  hasPaidSubscription: boolean;
+}) {
   const router = useRouter();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2>(1);
   const [open, setOpen] = useState(false);
   const [confirmation, setConfirmation] = useState('');
+  const [password, setPassword] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const REQUIRED_TEXT = 'SUPPRIMER MON COMPTE';
+  // Date indicative affichée avant confirmation ; la date qui fait foi est
+  // celle renvoyée par le serveur (et rappelée par e-mail).
+  const plannedDate = formatLongDate(new Date(Date.now() + DELETION_DELAY_DAYS * 24 * 60 * 60 * 1000));
 
   const resetDialog = () => {
     setStep(1);
     setConfirmation('');
+    setPassword('');
     setDeleting(false);
+    setError(null);
   };
 
   const handleOpenChange = (v: boolean) => {
@@ -560,31 +581,29 @@ function DeleteAccountCard() {
   };
 
   const handleDelete = async () => {
-    if (confirmation !== REQUIRED_TEXT) return;
+    if (confirmation !== REQUIRED_TEXT || !password) return;
     setDeleting(true);
+    setError(null);
     try {
-      const res = await fetch('/api/users/me', {
-      credentials: 'include',
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ confirmation }),
+      const res = await fetch('/api/users/me/deletion', {
+        credentials: 'include',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation, password }),
       });
+      const d = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        toast.error(d.message || 'Une erreur est survenue. Veuillez réessayer.');
+        setError(d.message || 'Une erreur est survenue. Veuillez réessayer.');
         setDeleting(false);
         return;
       }
-      // Clear session
-      localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
-      toast.success('Votre compte a été supprimé.');
+      toast.success('Votre compte est clôturé. Sa suppression est programmée.');
       setOpen(false);
-      router.push('/');
+      // Session rouverte en mode « compte en cours de suppression ».
+      router.replace(d.redirectTo || '/compte-en-suppression');
     } catch {
-      toast.error('Une erreur est survenue. Veuillez réessayer.');
+      setError('Une erreur est survenue. Veuillez réessayer.');
       setDeleting(false);
     }
   };
@@ -597,7 +616,8 @@ function DeleteAccountCard() {
           <CardTitle className="text-red-500">Zone dangereuse</CardTitle>
         </div>
         <CardDescription>
-          La suppression de votre compte est irréversible. Toutes vos données seront définitivement perdues.
+          Votre compte est clôturé immédiatement, puis supprimé définitivement {DELETION_DELAY_DAYS} jours plus tard.
+          Pendant ce délai, vous pouvez annuler la suppression ou exporter vos données.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex-1">
@@ -608,31 +628,60 @@ function DeleteAccountCard() {
               Supprimer mon compte
             </Button>
           </DialogTrigger>
-          <DialogContent className="sm:max-w-md">
+          <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
 
-            {/* ── Étape 1 : avertissement ── */}
+            {/* ── Étape 1 : conséquences et date ── */}
             {step === 1 && (
               <>
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2 text-red-500">
                     <AlertTriangle className="w-5 h-5" />
-                    Suppression du compte
+                    Supprimer votre compte
                   </DialogTitle>
-                  <DialogDescription className="sr-only">Avertissement avant suppression</DialogDescription>
+                  <DialogDescription className="sr-only">Conséquences de la suppression du compte</DialogDescription>
                 </DialogHeader>
-                <div className="space-y-4 py-2">
-                  <div className="rounded-lg border border-red-500/30 bg-red-950/20 px-4 py-3 space-y-2">
-                    <p className="text-sm font-semibold text-red-400">Cette action est irréversible.</p>
-                    <ul className="text-sm text-[color:var(--text-secondary)] space-y-1.5 list-disc list-inside">
-                      <li>Tous vos <strong>biens</strong> et leurs informations</li>
-                      <li>Tous vos <strong>documents</strong> uploadés</li>
-                      <li>Tout votre <strong>agenda</strong> de biens</li>
-                      <li>Votre <strong>abonnement</strong> et historique de facturation</li>
-                      <li>Votre accès à l'<strong>espace Duo</strong> si applicable</li>
+                <div className="space-y-4 py-2 text-sm">
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3 space-y-1.5">
+                    <p className="font-semibold text-[color:var(--text-warning)]">Ce qui se passe dès votre confirmation</p>
+                    <ul className="text-[color:var(--text-secondary)] space-y-1 list-disc list-inside">
+                      <li>Votre compte est <strong>clôturé</strong> : vos autres appareils sont déconnectés et vous ne pouvez plus utiliser Verebona normalement.</li>
+                      {hasPaidSubscription && (
+                        <li>Votre <strong>abonnement ne sera plus renouvelé</strong>. La période en cours n’est pas remboursée : ce n’est pas une rétractation.</li>
+                      )}
+                      {duoRole === 'BILLING_OWNER' && (
+                        <li>Votre <strong>Premium Duo prend fin</strong> : le second utilisateur perd l’accès à votre espace. Il conserve son propre compte et ses propres biens.</li>
+                      )}
+                      {duoRole === 'MEMBER' && (
+                        <li>Vous <strong>quittez le Premium Duo</strong>. Les biens de l’espace partagé, y compris ceux que vous y avez ajoutés, restent au titulaire.</li>
+                      )}
                     </ul>
                   </div>
-                  <p className="text-sm text-[color:var(--text-muted)]">
-                    Si vous avez un abonnement actif, pensez à le résilier d'abord depuis votre portail de paiement.
+
+                  <div className="rounded-lg border border-red-500/30 bg-red-950/20 px-4 py-3 space-y-1.5">
+                    <p className="font-semibold text-red-400">Le {plannedDate}, suppression définitive de :</p>
+                    <ul className="text-[color:var(--text-secondary)] space-y-1 list-disc list-inside">
+                      <li>vos <strong>biens</strong> et toutes leurs informations ;</li>
+                      <li>vos <strong>documents, photos et fichiers</strong> stockés ;</li>
+                      <li>votre <strong>agenda</strong>, vos échéances et vos fournisseurs ;</li>
+                      <li>l’historique de l’<strong>assistant</strong>, vos notifications et vos exports ;</li>
+                      <li>votre <strong>profil</strong> et vos identifiants de connexion.</li>
+                    </ul>
+                    <p className="text-xs text-[color:var(--text-muted)] pt-1">
+                      Restent conservés, détachés de votre compte : les factures, les preuves d’acceptation des conditions générales, vos éventuelles demandes de rétractation, ainsi que la trace de votre demande de suppression et son inscription au registre des demandes RGPD (sans votre adresse e-mail).
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-[color:var(--border-subtle)] px-4 py-3 space-y-1">
+                    <p className="font-semibold">Jusqu’au {plannedDate}</p>
+                    <p className="text-[color:var(--text-secondary)]">
+                      Reconnectez-vous pour <strong>annuler la suppression</strong> ou <strong>exporter vos données</strong>.
+                      Annuler rétablit votre accès, mais ne réactive pas l’abonnement ni le partage Duo.
+                      Un e-mail de rappel vous est envoyé 7 jours avant la suppression.
+                    </p>
+                  </div>
+
+                  <p className="text-xs text-[color:var(--text-muted)]">
+                    Conseil : exportez dès maintenant vos données depuis « Mes données », dans Mon compte.
                   </p>
                 </div>
                 <DialogFooter className="gap-2">
@@ -648,49 +697,15 @@ function DeleteAccountCard() {
               </>
             )}
 
-            {/* ── Étape 2 : deuxième confirmation ── */}
+            {/* ── Étape 2 : confirmation renforcée (texte + mot de passe) ── */}
             {step === 2 && (
               <>
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2 text-red-500">
-                    <AlertTriangle className="w-5 h-5" />
-                    Êtes-vous vraiment sûr ?
-                  </DialogTitle>
-                  <DialogDescription className="sr-only">Deuxième confirmation</DialogDescription>
-                </DialogHeader>
-                <div className="py-2 space-y-3">
-                  <p className="text-sm text-[color:var(--text-secondary)]">
-                    Vous êtes sur le point de supprimer définitivement votre compte Verebona.
-                    Cette opération <strong>ne peut pas être annulée</strong>.
-                  </p>
-                  <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3">
-                    <p className="text-sm text-[color:var(--text-warning)] font-medium">
-                      Toutes vos données seront supprimées immédiatement et de façon permanente.
-                    </p>
-                  </div>
-                </div>
-                <DialogFooter className="gap-2">
-                  <Button variant="ghost" onClick={() => setOpen(false)}>Annuler</Button>
-                  <Button
-                    variant="outline"
-                    className="border-red-500/40 text-red-500 hover:bg-red-500/10"
-                    onClick={() => setStep(3)}
-                  >
-                    Oui, je veux supprimer mon compte
-                  </Button>
-                </DialogFooter>
-              </>
-            )}
-
-            {/* ── Étape 3 : saisie de confirmation ── */}
-            {step === 3 && (
-              <>
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2 text-red-500">
                     <Trash2 className="w-5 h-5" />
-                    Confirmation finale
+                    Confirmation
                   </DialogTitle>
-                  <DialogDescription className="sr-only">Saisie du texte de confirmation</DialogDescription>
+                  <DialogDescription className="sr-only">Saisie du texte de confirmation et du mot de passe</DialogDescription>
                 </DialogHeader>
                 <div className="py-2 space-y-4">
                   <p className="text-sm text-[color:var(--text-secondary)]">
@@ -700,6 +715,7 @@ function DeleteAccountCard() {
                     <code className="text-sm font-mono font-bold text-red-400 select-all">{REQUIRED_TEXT}</code>
                   </div>
                   <Input
+                    aria-label="Texte de confirmation"
                     placeholder={REQUIRED_TEXT}
                     value={confirmation}
                     onChange={e => setConfirmation(e.target.value)}
@@ -707,17 +723,31 @@ function DeleteAccountCard() {
                     disabled={deleting}
                     autoFocus
                   />
+                  <div className="space-y-2">
+                    <Label htmlFor="delete-account-password">Votre mot de passe</Label>
+                    <PasswordInput
+                      id="delete-account-password"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      autoComplete="current-password"
+                      disabled={deleting}
+                    />
+                  </div>
+                  <p className="text-xs text-[color:var(--text-muted)]">
+                    Votre compte sera clôturé immédiatement et supprimé définitivement le {plannedDate}.
+                  </p>
+                  {error && <p className="text-sm text-red-400" role="alert">{error}</p>}
                 </div>
                 <DialogFooter className="gap-2">
                   <Button variant="ghost" onClick={() => setOpen(false)} disabled={deleting}>Annuler</Button>
                   <Button
                     variant="destructive"
-                    disabled={confirmation !== REQUIRED_TEXT || deleting}
+                    disabled={confirmation !== REQUIRED_TEXT || !password || deleting}
                     onClick={handleDelete}
                     className="gap-2 btn-delete"
                   >
                     {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4 btn-delete-trash-icon" />}
-                    {deleting ? 'Suppression…' : 'Supprimer définitivement'}
+                    {deleting ? 'Clôture…' : 'Clôturer et supprimer mon compte'}
                   </Button>
                 </DialogFooter>
               </>

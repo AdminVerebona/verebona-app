@@ -28,6 +28,7 @@ import { helpScreenForRoute } from '@/lib/help-center/screens';
 import { parseEnvironment } from '@/services/ai/config/environment';
 import type { RetrievedSource } from '../types/sources';
 import type { PageContext } from '../types/contracts';
+import { getAssistantConfig } from '../config/assistant-config';
 
 export interface HelpCorpusSection { anchor: string; heading: string; text: string }
 export interface HelpCorpusArticle {
@@ -49,6 +50,11 @@ export interface HelpCorpusArticle {
   screens?: string[];
   objectTypes?: string[];
   platforms?: string[];
+  /**
+   * Statut éditorial publié par le site (§10.4) : seul `published` est une
+   * source. Absent (corpus antérieur) : l'article est considéré publié.
+   */
+  status?: string;
 }
 export interface HelpCorpus {
   schema: 'verebona-help-t2-v1';
@@ -68,7 +74,15 @@ export function isHelpIntent(intent: string): boolean {
 
 // ── Lecture ─────────────────────────────────────────────────────────────────
 
-const TTL_MS = 5 * 60_000;
+/**
+ * Durée de cache du corpus : `VEREBONA_ASSISTANT_HELP_CACHE_TTL_SECONDS`
+ * (§43 : 86 400 s). Lue à chaque accès : un changement de configuration
+ * s'applique sans redémarrage du cache.
+ */
+function ttlMs(): number {
+  const s = getAssistantConfig().helpCacheTtlSeconds;
+  return (Number.isFinite(s) && s > 0 ? s : 86_400) * 1000;
+}
 const TIMEOUT_MS = 3_000;
 let cache: { at: number; corpus: HelpCorpus | null } | null = null;
 
@@ -83,16 +97,24 @@ export function parseHelpCorpus(json: unknown): HelpCorpus | null {
   if (!c || c.schema !== 'verebona-help-t2-v1' || !Array.isArray(c.articles)) return null;
   const ok = c.articles.every((a) => a && typeof a.id === 'string' && typeof a.path === 'string'
     && /^\/aide\/[a-z0-9-]+$/.test(a.path) && Array.isArray(a.sections));
-  return ok ? (c as HelpCorpus) : null;
+  if (!ok) return null;
+  // §10.4 : un article archivé ou en brouillon n'est jamais une source — ni
+  // cité, ni proposé en lien (`helpArticlePublished` lit ce même corpus).
+  return { ...(c as HelpCorpus), articles: c.articles.filter(articlePublie) };
+}
+
+/** Article citable : statut absent (corpus antérieur) ou `published`. */
+export function articlePublie(a: Pick<HelpCorpusArticle, 'status'>): boolean {
+  return a.status == null || String(a.status).toLowerCase() === 'published';
 }
 
 /**
- * Corpus de l'environnement, mis en cache 5 minutes. Ne lève jamais : sans
+ * Corpus de l'environnement, mis en cache (HELP_CACHE_TTL_SECONDS, §43). Ne lève jamais : sans
  * corpus, l'assistant dit qu'il ne peut pas répondre de façon fiable (T2-03)
  * au lieu d'improviser une procédure.
  */
 export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.corpus;
+  if (cache && Date.now() - cache.at < ttlMs()) return cache.corpus;
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -109,7 +131,7 @@ export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
     return corpus;
   } catch (e) {
     console.warn(`[assistant] Corpus du Centre d'aide indisponible (${(e as Error).message}).`);
-    cache = { at: Date.now() - TTL_MS + 30_000, corpus: null };
+    cache = { at: Date.now() - ttlMs() + 30_000, corpus: null };
     return null;
   }
 }
@@ -167,6 +189,9 @@ export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4
   if (q.length === 0) return [];
   const hits: HelpHit[] = [];
   for (const a of corpus.articles) {
+    // §10.4 : double garde — un corpus construit sans `parseHelpCorpus`
+    // (tests, cache) ne fait pas remonter un article archivé.
+    if (!articlePublie(a)) continue;
     const poids = contextWeight(a, ctx);
     if (poids === 0) continue;
     const head = new Set(terms(`${a.title} ${a.synonyms.join(' ')} ${a.summary}`));
@@ -209,12 +234,18 @@ export interface HelpSearchContext {
   platform: 'web' | 'mobile' | null;
   /** Rôle de l'utilisateur dans le compte (owner, duo_member…), s'il est connu. */
   role: string | null;
+  /**
+   * Tous les rôles de l'utilisateur (un titulaire de Duo est `owner` ET
+   * `billing_owner`). Prioritaire sur `role` quand il est fourni.
+   */
+  roles?: string[];
 }
 
-export function helpContextFromPage(page: PageContext | undefined, role: string | null = null): HelpSearchContext {
+export function helpContextFromPage(page: PageContext | undefined, role: string | string[] | null = null): HelpSearchContext {
   const { screens, objectType } = helpScreenForRoute(page?.route);
   const platform = page?.platform === 'mobile' || page?.platform === 'web' ? page.platform : null;
-  return { screens, objectType, platform, role };
+  const roles = Array.isArray(role) ? role : role ? [role] : [];
+  return { screens, objectType, platform, role: roles[0] ?? null, roles };
 }
 
 /**
@@ -222,7 +253,7 @@ export function helpContextFromPage(page: PageContext | undefined, role: string 
  *   · plateforme déclarée et différente → article écarté (0) — une
  *     procédure mobile n'est pas une réponse sur le web ;
  *   · écran courant cité par l'article → ×1,25 ; type d'objet → ×1,1 ;
- *   · rôle déclaré, sans « all » ni le rôle de l'utilisateur → ×0,6 (pas
+ *   · rôles déclarés, sans « all » ni aucun rôle de l'utilisateur → ×0,6 (pas
  *     écarté : le rôle n'est pas toujours connu avec certitude).
  */
 export function contextWeight(a: HelpCorpusArticle, ctx?: HelpSearchContext): number {
@@ -231,7 +262,8 @@ export function contextWeight(a: HelpCorpusArticle, ctx?: HelpSearchContext): nu
   let w = 1;
   if (ctx.screens.length && a.screens?.some((s) => ctx.screens.includes(s))) w *= 1.25;
   if (ctx.objectType && a.objectTypes?.includes(ctx.objectType)) w *= 1.1;
-  if (ctx.role && a.roles?.length && !a.roles.includes('all') && !a.roles.includes(ctx.role)) w *= 0.6;
+  const userRoles = ctx.roles ?? (ctx.role ? [ctx.role] : []);
+  if (userRoles.length && a.roles?.length && !a.roles.includes('all') && !a.roles.some((r) => userRoles.includes(r))) w *= 0.6;
   return w;
 }
 
@@ -252,7 +284,7 @@ function offerOf(planType: string | undefined): string | null {
  * source le dit, et la réponse le dira. Rien n'invite à changer d'offre
  * (T2-08) : c'est un constat, pas une proposition.
  */
-export function toHelpSources(hits: HelpHit[], planType?: string): RetrievedSource[] {
+export function toHelpSources(hits: HelpHit[], planType?: string, corpusVersion?: string | null): RetrievedSource[] {
   const offer = offerOf(planType);
   return hits.map(({ article: a, section: s, score }) => {
     const notIncluded = offer !== null && !a.offers.includes(offer);
@@ -270,6 +302,8 @@ export function toHelpSources(hits: HelpHit[], planType?: string): RetrievedSour
         category: a.categoryName,
         offersLabel: a.offersLabel,
         notIncludedInPlan: notIncluded,
+        // Version du corpus, tracée avec la source (§19.13, §28.4).
+        corpusVersion: corpusVersion ?? null,
       },
       relevanceScore: Math.min(1, score),
     };
@@ -280,7 +314,7 @@ export function toHelpSources(hits: HelpHit[], planType?: string): RetrievedSour
 export async function retrieveHelpSources(question: string, planType?: string, limit = 4, ctx?: HelpSearchContext): Promise<RetrievedSource[]> {
   const corpus = await loadHelpCorpus();
   if (!corpus) return [];
-  return toHelpSources(searchHelpCorpus(corpus, question, limit, ctx), planType);
+  return toHelpSources(searchHelpCorpus(corpus, question, limit, ctx), planType, corpus.version ?? null);
 }
 
 /** Article publié dans l'environnement (contrôle d'accès de l'action OPEN_HELP). */

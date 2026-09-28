@@ -71,6 +71,8 @@ function groupOf(s: RetrievedSource): ResultGroupType | null {
   const map: Partial<Record<SourceType, ResultGroupType>> = {
     asset_field: 'asset', document: 'document', document_extraction: 'document', agenda_item: 'agenda',
     supplier: 'supplier', to_process_item: 'to_process', help_entry: 'help',
+    // Exports et dossiers générés (§12.1) : des documents produits par l'application.
+    export_item: 'document',
   };
   return map[s.type] ?? null;
 }
@@ -82,6 +84,7 @@ function typeLabel(s: RetrievedSource): string {
   const labels: Partial<Record<SourceType, string>> = {
     asset_field: 'Bien', document: 'Document', document_extraction: 'Document', agenda_item: 'Échéance',
     supplier: 'Fournisseur', to_process_item: 'À traiter', help_entry: 'Aide',
+    export_item: 'Export',
   };
   return labels[s.type] ?? 'Résultat';
 }

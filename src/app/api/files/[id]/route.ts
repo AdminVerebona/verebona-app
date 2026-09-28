@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -190,6 +191,9 @@ export async function DELETE(
         fileOwner: file.userId,
       },
     });
+
+    // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
+    if (file.accountId) void emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId: file.accountId, entityId: fileId });
 
     return NextResponse.json(
       {

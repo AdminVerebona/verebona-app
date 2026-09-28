@@ -302,9 +302,8 @@ export async function applyAiEnrichmentAndCoherence({
 
   // 5. Call Gemini (one call, instrumented)
   let aiResult: unknown;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let costMicros = 0;
+  // GEN-005 : coût et jetons mesurés par la passerelle (étapes rattachées à
+  // `opId`), plus déclarés au tracker.
   let opId: number | null = null;
 
   try {
@@ -316,16 +315,12 @@ export async function applyAiEnrichmentAndCoherence({
       environment: 'production',
     });
 
-    const { parsed, inputTokens: i, outputTokens: o, costMicros: c } = await callGeminiCombined(prompt, { accountId, parentOperationId: opId ?? undefined });
+    const { parsed } = await callGeminiCombined(prompt, { accountId, parentOperationId: opId ?? undefined });
     aiResult = parsed;
-    inputTokens = i; outputTokens = o; costMicros = c;
 
     await AiUsageTracker.completeOperation({
       operationId: opId,
       businessResult: 'success',
-      totalCostMicros: costMicros,
-      totalInputTokens: inputTokens,
-      totalOutputTokens: outputTokens,
     });
   } catch (err) {
     console.error('[enrich-coherence] AI call failed:', err);
@@ -334,9 +329,6 @@ export async function applyAiEnrichmentAndCoherence({
         await AiUsageTracker.completeOperation({
           operationId: opId,
           businessResult: 'error',
-          totalCostMicros: costMicros,
-          totalInputTokens: inputTokens,
-          totalOutputTokens: outputTokens,
           errorMessage: err instanceof Error ? err.message : 'unknown',
         });
       } catch {}

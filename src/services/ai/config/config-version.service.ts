@@ -167,6 +167,12 @@ async function invalidateCaches(): Promise<void> {
   ]);
   invalidateConfigCache();
   invalidateConfigVersionCache();
+  // CDC Assistant §15.14 : tout changement de la version effective refait le
+  // contrôle du registre de modèles de l'assistant (non bloquant : le verdict
+  // et l'alerte éventuelle suffisent).
+  void import('@/services/verebona-assistant/core/model-startup-check')
+    .then(({ runAssistantStartupCheck }) => runAssistantStartupCheck('config_change'))
+    .catch(() => { /* contrôle impossible : journalisé par le module */ });
 }
 
 export async function promote(

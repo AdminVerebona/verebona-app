@@ -30,12 +30,24 @@ import { refuserSiPasDIA } from '@/lib/write-access-guard';
 import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
-import { assistantPlanFromEntitlements } from '@/services/verebona-assistant/core/plan-eligibility';
+import { assistantPlanFromEntitlements, assistantPlanLimit } from '@/services/verebona-assistant/core/plan-eligibility';
+import { checkAssistantRateLimit } from '@/lib/verebona/rate-limit';
+import { httpRequestId, parseWith, readJson, withRequestId } from '@/lib/verebona/api-guard';
+import { ClarificationAnswerSchema, ClarificationParamsSchema } from '@/lib/verebona/api-schemas';
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ clarificationId: string }> },
+  ctx: { params: Promise<{ clarificationId: string }> },
 ) {
+  const httpId = httpRequestId(req);
+  return withRequestId(await traiter(req, ctx, httpId), httpId);
+}
+
+async function traiter(
+  req: NextRequest,
+  { params }: { params: Promise<{ clarificationId: string }> },
+  httpId: string,
+): Promise<NextResponse> {
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }
@@ -43,16 +55,32 @@ export async function POST(
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
 
+  // La reprise relance le pipeline : même quota que l'envoi d'une question
+  // (§6.6, §31.10).
+  const rl = checkAssistantRateLimit(session.userId, accountId, getAssistantConfig().rateLimitPerMinute);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: { code: 'RATE_LIMITED', message: 'Vous avez posé beaucoup de questions en peu de temps. Réessayez dans un instant.', recoverable: true } },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil(rl.retryAfterMs / 1000)) } },
+    );
+  }
+
   await ensureMigrations();
-  const { clarificationId } = await params;
-  const body = await req.json().catch(() => ({}));
-  const choiceId = typeof body.choiceId === 'string' ? body.choiceId : '';
-  if (!choiceId) return NextResponse.json({ error: 'MISSING_CHOICE' }, { status: 400 });
+  // Entrées validées par schéma (§27.3) : identifiant de clarification et
+  // choix proposé ; jamais un identifiant d'objet arbitraire.
+  const p = parseWith(ClarificationParamsSchema, await params, httpId);
+  if (!p.ok) return p.response;
+  const { clarificationId } = p.data;
+  const b = parseWith(ClarificationAnswerSchema, await readJson(req), httpId);
+  if (!b.ok) return b.response;
+  const { choiceId } = b.data;
 
   // La reprise relance le pipeline (éventuellement un appel modèle) : mêmes
   // droits que l'envoi d'une question.
+  // Fin d'essai (§6.5) : la reprise reste possible SANS IA (offre Standard
+  // effective) ; refus seulement si le compte n'est plus consultable.
   const entitlements = await getEntitlements(accountId);
-  if (!entitlements.canWrite) {
+  if (assistantPlanLimit(entitlements) === 'NO_ACCESS') {
     const refus = await refuserSiPasDIA(accountId);
     if (refus) return refus;
   }
@@ -64,7 +92,7 @@ export async function POST(
     accountId,
     userId: session.userId,
     clarificationId,
-    conversationId: Number(body.conversationId) || undefined,
+    conversationId: b.data.conversationId ?? undefined,
     choiceId,
   });
 

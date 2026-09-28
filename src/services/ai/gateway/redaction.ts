@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 /**
  * Masquage avant transmission au fournisseur — CDC §5.6 (minimisation) et
  * §5.2 (masquage des secrets).
@@ -43,4 +45,19 @@ export function redactVariables(
 /** Ne jamais journaliser une sortie brute complète : extrait borné et masqué. */
 export function previewForLog(raw: string, maxChars = 500): string {
   return redact(raw).slice(0, maxChars);
+}
+
+/**
+ * Empreinte d'une sortie brute, sans son contenu (CDC Assistant §29.6) :
+ * « sha256:<12 premiers caractères> len:<n> ». Suffit à rapprocher deux
+ * traces d'une même sortie, ne permet pas de la relire.
+ */
+export function outputDigestForLog(raw: string): string {
+  const text = String(raw ?? '');
+  return `sha256:${createHash('sha256').update(text).digest('hex').slice(0, 12)} len:${text.length}`;
+}
+
+/** Retire l'extrait de sortie brute d'un message d'erreur de validation. */
+export function stripRawExcerpt(message: string): string {
+  return String(message ?? '').replace(/\s*Extrait\s*:[\s\S]*?(?=\s+—\s+|$)/g, ' [extrait non conservé]');
 }

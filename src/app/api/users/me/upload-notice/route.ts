@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
-import { verifyAccessToken } from '@/lib/jwt';
+import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const payload = await verifyAccessToken(token);
+  const payload = await verifySessionAccessToken(token, request);
 
   if (!payload) {
     return NextResponse.json(

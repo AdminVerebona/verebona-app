@@ -98,7 +98,10 @@ function LoginForm() {
         }
       } catch { /* silently ignore — useSession refera l'appel */ }
 
-      router.push(returnUrl);
+      // Compte clôturé (suppression programmée) : seul l'écran d'annulation
+      // et d'export est accessible.
+      const loggedUser = (data as { user?: { status?: string } }).user;
+      router.push(loggedUser?.status === 'PENDING_DELETION' ? '/compte-en-suppression' : returnUrl);
     } catch (err) {
       console.error('[Login] Error:', err);
       setError('Une erreur est survenue. Veuillez réessayer.');

@@ -6,6 +6,8 @@
  * locale, idempotence et conservation sont obligatoires (§43).
  */
 
+import { isAssistantFlagOn } from './assistant-flags';
+
 function num(name: string, def: number): number {
   const v = process.env[name];
   const n = v == null ? NaN : Number(v);
@@ -65,7 +67,10 @@ export interface AssistantConfig {
   maxSources: number;
   maxVisibleSources: number;
   maxExcerptChars: number;
+  /** Timeout par tentative modèle (§30.1 : 12 s), appliqué par la passerelle. */
   aiTimeoutMs: number;
+  /** Retrieval déterministe (§30.1 : 3 s au plus). */
+  retrievalTimeoutMs: number;
   totalTimeoutMs: number;
   historyDays: number;
   rateLimitPerMinute: number;
@@ -92,17 +97,20 @@ export interface AssistantConfig {
 export function loadAssistantConfig(): AssistantConfig {
   return {
     enabled: bool('VEREBONA_ASSISTANT_ENABLED', true),
-    aiEnabled: bool('VEREBONA_ASSISTANT_AI_ENABLED', true),
-    aiFallbackEnabled: bool('VEREBONA_ASSISTANT_AI_FALLBACK_ENABLED', true),
+    // Flags du §39 (`assistant-flags.ts`) : account_ai et fallback_model.
+    aiEnabled: isAssistantFlagOn('account_ai'),
+    aiFallbackEnabled: isAssistantFlagOn('fallback_model'),
     // Les MODÈLES ne sont plus configurés ici (CDC §15.3, §15.8, §15.11) :
     // `registries/model-registry.ts` et les variables
     // VEREBONA_ASSISTANT_MODEL_* n'étaient lus par aucun chemin d'exécution et
     // annonçaient gemini-2.5 alors que la passerelle appelait gemini-3.5.
     // Source unique : `services/ai/registry/operations.ts` (surchargeable par
-    // la configuration versionnée du BO). Les alias fonctionnels
-    // (assistant-default / assistant-escalation) sont dérivés à la trace
-    // (`usage-tracking.service.ts`), le contrôle de démarrage lit les
-    // opérations réelles (`assertConfigAtStartup`).
+    // la configuration versionnée du BO). Les alias fonctionnels sont
+    // CONFIGURÉS (§15.11, §43 : VEREBONA_ASSISTANT_*_MODEL_ALIAS et
+    // VEREBONA_ASSISTANT_MODEL_ASSISTANT_*) dans `registries/model-registry.ts`,
+    // résolus au moment de l'appel ; le contrôle du registre (§15.14) tourne
+    // au démarrage et à chaque changement de configuration
+    // (`core/model-startup-check.ts`).
     writeCommandsEnabled: flagOnByDefault(process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS),
     maxAiCallsPerRequest: num('VEREBONA_ASSISTANT_MAX_AI_CALLS_PER_REQUEST', 2),
     maxInputTokens: num('VEREBONA_ASSISTANT_MAX_INPUT_TOKENS', 12000),
@@ -111,10 +119,16 @@ export function loadAssistantConfig(): AssistantConfig {
     maxVisibleSources: num('VEREBONA_ASSISTANT_MAX_VISIBLE_SOURCES', 5),
     maxExcerptChars: num('VEREBONA_ASSISTANT_MAX_EXCERPT_CHARS', 1500),
     aiTimeoutMs: num('VEREBONA_ASSISTANT_AI_TIMEOUT_MS', 12000),
+    retrievalTimeoutMs: num('VEREBONA_ASSISTANT_RETRIEVAL_TIMEOUT_MS', 3000),
     totalTimeoutMs: num('VEREBONA_ASSISTANT_TOTAL_TIMEOUT_MS', 20000),
-    // Centre d'aide GAP-16 / T2-09 : la décision produit fixe 3 mois
-    // d'historique conversationnel (et non 7 jours). Surchargeable par
-    // environnement ; la purge doit lire la même variable.
+    // Historique conversationnel : 90 jours (3 mois). Le CDC Assistant §24.1
+    // prévoyait 7 jours, mais le cadrage produit, repris par le CDC Centre
+    // d'aide (GAP-16, bloquant), a fixé 3 mois — décision la plus récente,
+    // déjà livrée au lot 1 et décrite dans les articles d'aide. Seul
+    // l'historique suit cette durée ; les journaux ont leurs propres durées
+    // (§29.7 : logs techniques 90 j, traces détaillées expurgées 30 j,
+    // agrégats et feedback 13 mois — `purge-assistant-logs.job.ts`).
+    // La purge lit cette même valeur.
     historyDays: num('VEREBONA_ASSISTANT_HISTORY_DAYS', 90),
     rateLimitPerMinute: num('VEREBONA_ASSISTANT_RATE_LIMIT_PER_MINUTE', 10),
     locale: str('VEREBONA_ASSISTANT_LOCALE', 'fr-FR'),

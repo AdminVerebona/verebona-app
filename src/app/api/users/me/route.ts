@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
-import { verifyAccessToken } from '@/lib/jwt';
+import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { SessionService } from '@/lib/session-service';
 import { db, pgClient } from '@/db';
 import { users, accounts, accountMemberships, duoAccounts, duoMemberships } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
-import { deleteUserNotificationData } from '@/lib/notifications/account-cleanup';
 import { getTrialState } from '@/services/trial.service';
-import { onSelfServiceDeletion } from '@/services/gdpr/system-requests';
+import { handleCloseAccount } from './deletion/close-account';
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,7 +20,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const payload = await verifyAccessToken(token);
+    const payload = await verifySessionAccessToken(token, request);
 
     if (!payload) {
       return NextResponse.json(
@@ -206,6 +205,8 @@ export async function GET(request: NextRequest) {
        */
       accountsCount: nombreEspaces,
       role: userData.role,
+      // PENDING_DELETION : compte clôturé, suppression programmée (J+30).
+      status: userData.status,
       hasSeenUploadNotice: userData.hasSeenUploadNotice ?? false,
       subscription: {
         plan: effectivePlan,
@@ -241,60 +242,18 @@ export async function GET(request: NextRequest) {
   }
 }
 
+/**
+ * Suppression du compte — n'est plus immédiate.
+ *
+ * Ce point d'entrée anonymisait l'utilisateur dans la requête et laissait
+ * ses biens, documents et fichiers en place. Décision produit : la
+ * suppression volontaire est DIFFÉRÉE DE 30 JOURS (clôture immédiate,
+ * annulation et export possibles, suppression complète à J+30). Il délègue
+ * désormais au parcours unique `POST /api/users/me/deletion`, avec les mêmes
+ * exigences (texte de confirmation ET mot de passe).
+ */
 export async function DELETE(req: NextRequest) {
-  try {
-    const session = await SessionService.getSession(req);
-
-    const body = await req.json().catch(() => ({}));
-    const { confirmation } = body as { confirmation?: string };
-
-    if (confirmation !== 'SUPPRIMER MON COMPTE') {
-      return NextResponse.json({ error: 'INVALID_CONFIRMATION' }, { status: 400 });
-    }
-
-    // Soft-delete: mark user as DELETED and anonymise PII
-    const deletedAt = new Date();
-
-    // RGPD (§19.4) : supprimer explicitement les données de notification,
-    // car l'anonymisation ne déclenche pas les cascades FK.
-    try {
-      await deleteUserNotificationData(session.userId);
-    } catch (err) {
-      console.error('[users/me DELETE] purge notifications échouée:', err);
-    }
-
-    await db.update(users).set({
-      status: 'DELETED',
-      email: `deleted_${session.userId}_${Date.now()}@deleted.invalid`,
-      firstName: 'Compte',
-      lastName: 'Supprimé',
-      username: null,
-      passwordHash: '',
-      updatedAt: deletedAt,
-    }).where(eq(users.id, session.userId));
-
-    // Registre RGPD (CDC BO GDP-007, GDP-008) : demande système d'effacement,
-    // née traitée, non modifiable depuis le back-office. Les archives
-    // « Mes données » sont supprimées : l'utilisateur ne peut plus s'y connecter.
-    // Best-effort : l'anonymisation est déjà faite.
-    const [membership] = await db
-      .select({ accountId: accountMemberships.accountId })
-      .from(accountMemberships)
-      .where(eq(accountMemberships.userId, session.userId))
-      .limit(1)
-      .catch(() => []);
-    await onSelfServiceDeletion(session.userId, membership?.accountId ?? null, deletedAt);
-    try {
-      const { purgeUserExports } = await import('@/services/gdpr/gdpr-export.service');
-      await purgeUserExports(session.userId);
-    } catch (err) {
-      console.error('[users/me DELETE] purge des exports RGPD échouée:', err);
-    }
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    return SessionService.handleSessionError(error);
-  }
+  return handleCloseAccount(req);
 }
 
 export async function PUT(req: NextRequest) {

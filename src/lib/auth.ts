@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { extractAccessToken } from './auth/token-extractor';
-import { verifyAccessToken } from './jwt';
+import { sessionStatusAllows, verifySessionAccessToken } from './auth/session-guard';
 import type { UserRole, UserStatus } from '@/types/domain';
 
 export interface CurrentUser {
@@ -27,7 +27,10 @@ export async function getCurrentUser(request: NextRequest): Promise<CurrentUser 
     return null;
   }
 
-  const payload = await verifyAccessToken(token);
+  // Borne de révocation et statut de session (`lib/auth/session-guard`) :
+  // un jeton émis avant une révocation globale — changement de mot de passe,
+  // clôture du compte — est refusé tout de suite, pas à son expiration.
+  const payload = await verifySessionAccessToken(token, request);
   if (!payload || !payload.userId) {
     return null;
   }
@@ -55,6 +58,10 @@ export async function getCurrentUser(request: NextRequest): Promise<CurrentUser 
     }
 
     const user = userResult[0];
+    // Statut RÉEL en base (le jeton peut dater d'avant une clôture).
+    if (!sessionStatusAllows(user.status, request.nextUrl?.pathname ?? '', request.method ?? 'GET')) {
+      return null;
+    }
     return {
       id: user.id,
       email: user.email,

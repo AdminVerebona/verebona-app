@@ -2,7 +2,7 @@
  * Synthèse multi-sources — CDC §17.6.
  *
  * Consigne de TÂCHE injectée dans la section « 4. TÂCHE » du prompt maître
- * `generate_answer_v3` (via la variable INTENT — voir `intent-tasks.ts`).
+ * `generate_answer_v4` (via la variable INTENT — voir `intent-tasks.ts`).
  * Les règles communes (sécurité S1–S4, R1–R10, français) vivent dans le
  * prompt maître ; ce fichier n'exprime que ce qui distingue une synthèse.
  */

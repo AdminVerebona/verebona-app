@@ -98,7 +98,6 @@ const eslintConfig = [
   // ─────────────────────────────────────────────────────────────────────────
   {
     files: [
-      'src/app/api/admin/ai-instructions/apply/route.ts',   // lot 6
       // ⚠️ Les crochets de segment dynamique Next.js sont interprétés par
       //    minimatch comme une classe de caractères : `[id]` matche « i » ou
       //    « d », jamais la chaîne littérale. D'où le joker.

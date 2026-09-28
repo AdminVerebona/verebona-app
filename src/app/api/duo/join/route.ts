@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { signalerDroitsModifies } from '@/services/duo/duo-exit.service';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { users, duoAccounts, duoMemberships } from '@/db/schema';
@@ -133,17 +134,32 @@ export async function POST(request: NextRequest) {
 
     const now = new Date();
 
-    // Insert slot 1 membership
-    await db.insert(duoMemberships).values({
-      duoId: duo.id,
-      userId: session.userId,
-      status: 'ACTIVE',
-      slot: 1,
-      invitedAt: now,
-      joinedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    });
+    // Slot 1. Un ancien membre retiré ou parti (REMOVED / LEFT, GAP-13) a
+    // déjà une ligne pour ce Duo — (duo_id, user_id) est unique : on la
+    // réactive au lieu d'en insérer une seconde.
+    const [previous] = await db
+      .select({ id: duoMemberships.id })
+      .from(duoMemberships)
+      .where(and(eq(duoMemberships.duoId, duo.id), eq(duoMemberships.userId, session.userId)))
+      .limit(1);
+
+    if (previous) {
+      await db
+        .update(duoMemberships)
+        .set({ status: 'ACTIVE', slot: 1, invitedAt: now, joinedAt: now, leftAt: null, updatedAt: now })
+        .where(eq(duoMemberships.id, previous.id));
+    } else {
+      await db.insert(duoMemberships).values({
+        duoId: duo.id,
+        userId: session.userId,
+        status: 'ACTIVE',
+        slot: 1,
+        invitedAt: now,
+        joinedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
 
     // Clear the pending invitation
     await db
@@ -163,6 +179,8 @@ export async function POST(request: NextRequest) {
       .set({ planType: 'PREMIUM_DUO', updatedAt: now })
       .where(eq(users.id, session.userId));
 
+    // CDC Assistant §25.7 : droits du nouveau membre modifiés.
+    signalerDroitsModifies();
     return NextResponse.json({ success: true });
   } catch (error) {
     return SessionService.handleSessionError(error);

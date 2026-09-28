@@ -67,11 +67,18 @@ export interface AssistantApiResponse {
   /** Commande préparée : aperçu à confirmer (jamais de paramètres modifiables). */
   commandPlan?: import('../commands/catalog').CommandPlanPreview | null;
   /**
+   * Cartes de résultats groupées par type (§11.3, §22.2, §22.3). Absent
+   * quand la réponse n'est pas une liste de résultats.
+   */
+  resultGroups?: import('../core/result-groups').ResultGroup[];
+  /**
    * Erreur fonctionnelle (§27.11), présente quand `status === 'error'` :
    * code stable, libellé Verebona (jamais un message technique brut) et
    * possibilité de réessayer. Le client l'affiche dans le fil (§4.2).
    */
   error?: { code: VerebonaErrorCode; message: string; recoverable: boolean } | null;
+  /** §27.11 : codes informatifs non bloquants (voir `AssistantRunResult.notices`). */
+  notices?: AssistantNotice[];
 }
 
 /** Codes fonctionnels stables — CDC §27.11. */
@@ -160,6 +167,19 @@ export interface AssistantRequestInput {
    */
   aiBudget?: import('../core/ai-call-budget').AiCallBudget;
   /**
+   * Rapport des appels modèle du message, partagé par référence comme le
+   * budget : événements de sécurité (§18.7, 37.12), réparation / escalade
+   * (§15.4, §18.6), troncature du contexte (§13.9). Jamais fourni par le
+   * client ; versé dans la trace de la demande.
+   */
+  aiReport?: { securityEvents: import('../core/output-safety').SecurityEvent[]; events: string[] };
+  /**
+   * Fin d'essai ou abonnement absent (§6.5) : l'assistant reste disponible
+   * pour la recherche et l'aide, SANS appel intelligent, et explique la
+   * limite avec l'action « Voir les offres ».
+   */
+  planLimit?: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | null;
+  /**
    * Message tel que posé, quand `message` ne porte plus que les sous-demandes
    * autorisées d'une requête mixte (historique fidèle).
    */
@@ -214,6 +234,14 @@ export interface CascadeTrace {
   model: string | null;
   thresholds: { database: number; text: number; source: string };
   latencyMs: number;
+  /** Événements de sécurité sur la sortie modèle (§18.7, CA-09, 37.12). */
+  securityEvents?: Array<{ code: string; target?: string; detail?: string }>;
+  /** Réparation, escalade, troncature de contexte, rejet de génération. */
+  aiEvents?: string[];
+  /** §28.7 : le retrieval de la demande a été servi par le cache (§43). */
+  cacheHit?: boolean;
+  /** §27.11 : codes fonctionnels informatifs émis avec la réponse. */
+  notices?: VerebonaErrorCode[];
 }
 
 export interface AssistantRunResult {
@@ -254,5 +282,20 @@ export interface AssistantRunResult {
   clarification: ClarificationState | null;
   /** Commande métier préparée, en attente de confirmation explicite. */
   commandPlan?: import('../commands/catalog').CommandPlanPreview | null;
+  /** Cartes de résultats groupées (§11.3, §22.3). */
+  resultGroups?: import('../core/result-groups').ResultGroup[];
   error?: { code: import('./contracts').VerebonaErrorCode; message: string; recoverable: boolean };
+  /**
+   * §27.11 — codes fonctionnels INFORMATIFS, non bloquants : la réponse est
+   * rendue (`status: 'ready'`), mais une condition du §27.11 s'est produite
+   * (limite d'offre, aucune source pertinente, action refusée, source
+   * devenue indisponible, sortie modèle rejetée, demande refusée).
+   */
+  notices?: AssistantNotice[];
+}
+
+/** Code informatif du §27.11 joint à une réponse rendue. */
+export interface AssistantNotice {
+  code: VerebonaErrorCode;
+  message: string;
 }

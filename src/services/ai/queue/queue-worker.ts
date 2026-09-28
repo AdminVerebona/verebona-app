@@ -357,6 +357,10 @@ async function runEvaluators(): Promise<void> {
   await run('guardrails', 300, async () => (await import('../alerts/guardrail-evaluator')).evaluateGuardrails());
   await run('budgets', 3_600, async () => (await import('../alerts/cost-evaluator')).evaluateBudgetAlerts());
   await run('cost_anomalies', 86_400 - 600, async () => (await import('../alerts/cost-evaluator')).evaluateAnomalyAlerts());
+  // CDC Assistant §31.3, §15.13 : taux d'escalade, dérive des jetons, écart
+  // modèle résolu / attendu, dépréciation annoncée d'un modèle actif.
+  await run('assistant_alerts', 3_600, async () =>
+    (await import('@/services/verebona-assistant/observability/assistant-alerts')).evaluateAssistantAlerts());
 }
 
 // ── Pool d'exécution borné ─────────────────────────────────────────────────

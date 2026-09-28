@@ -24,9 +24,12 @@ import type { OrchestratorPorts } from './assistant-orchestrator.service';
 import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource } from '../types/sources';
 import type { ActionIntent } from '../types/actions';
-import { retrieve } from './retrieval.service';
+import { retrieve, retrieveNear } from './retrieval.service';
 import { detectHelpContradiction, helpArticlePublished, isHelpIntent } from './help-corpus.service';
-import { areWriteCommandsEnabled } from '../config/assistant-config';
+import { areWriteCommandsEnabled, getAssistantConfig } from '../config/assistant-config';
+import { cachedRetrieve } from './retrieval-cache';
+import { RETRIEVAL_CACHE_HIT_EVENT } from './assistant-orchestrator.service';
+import { registerAssistantBusinessEventHandlers } from '../events/handlers';
 import { checkMonthlyBudget } from './budget.service';
 import { isRequestCancelled } from './request-lifecycle.service';
 import { resolveSourcesForDisplay } from './source-resolver.service';
@@ -145,6 +148,19 @@ export function construireActionIntents(
       case 'supplier':
         if (autorisees.has('OPEN_SUPPLIER')) intents.push({ type: 'OPEN_SUPPLIER', targetId: source.id });
         break;
+      // Export ou dossier (§12.1) : l'onglet « Exports » de son bien, avec
+      // le type d'export pour le contrôle d'offre (§22.7).
+      case 'export': {
+        const assetId = source.meta?.assetId;
+        if (assetId != null && autorisees.has('OPEN_EXPORT_AREA')) {
+          intents.push({
+            type: 'OPEN_EXPORT_AREA',
+            targetId: `asset_${assetId}`,
+            ...(typeof source.meta?.exportType === 'string' ? { params: { exportType: source.meta.exportType } } : {}),
+          });
+        }
+        break;
+      }
       // Un équipement ou une pièce n'a pas d'existence propre dans la
       // navigation : on ouvre le bien parent sur le bon onglet. C'est aussi ce
       // qui permet au contrôle d'accès de porter sur une table réelle.
@@ -190,9 +206,19 @@ export function construireActionIntents(
 
 export function buildOrchestratorPorts(): OrchestratorPorts {
   const access = buildAccessChecker();
+  // Consommateurs des événements métier (§25.7) : idempotent.
+  registerAssistantBusinessEventHandlers();
 
   return {
-    retrieve: (route: IntentRoute, input: AssistantRequestInput) => retrieve(route, input),
+    // §43 RETRIEVAL_CACHE_TTL_SECONDS : cache par compte, invalidé par les
+    // événements métier (§25.7) ; un succès est signalé pour cache_hit (§28.7).
+    retrieve: async (route: IntentRoute, input: AssistantRequestInput) => {
+      const r = await cachedRetrieve(route, input, () => retrieve(route, input), getAssistantConfig().retrievalCacheTtlSeconds);
+      if (r.hit) input.aiReport?.events.push(RETRIEVAL_CACHE_HIT_EVENT);
+      return r.sources;
+    },
+    // Résultats proches quand la recherche n'a rien donné (§11.4).
+    retrieveNear: (route: IntentRoute, input: AssistantRequestInput) => retrieveNear(route, input),
 
     resolveSources: async (sources: RetrievedSource[]) => resolveSourcesForDisplay(sources),
 
@@ -216,6 +242,9 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         accountId: input.accountId,
         message: input.message,
         pageAssetId: Number(input.pageContext?.assetId) || null,
+        // Document de la page, de la clarification ou du fil (§12.2).
+        pageDocumentId: Number(input.pageContext?.documentId) || input.resume?.documentId
+          || (input.reference?.type === 'document' ? input.reference.id : null) || null,
         // Bien fixé par une clarification : il fait foi pour la reprise.
         // …ou par une référence du fil (« cette maison »).
         resolvedAssetId: input.resume?.assetId
@@ -233,6 +262,9 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         intent: route.intent,
         actionIntents: construireActionIntents(route, input, sources),
         access,
+        // Offre vérifiée pour chaque action (§22.7 étape 3).
+        planType: input.planType,
+        planLimit: input.planLimit ?? null,
       }).then((actions) => actions.filter((a) => a.href !== null || !a.type.startsWith('OPEN_'))),
 
     persist: (result, input) => persistResult(result, input),

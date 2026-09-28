@@ -32,6 +32,7 @@ import {
   type EntityKind, type EntityRef, type OngletBien,
 } from './entity-ref';
 import { supplierHref } from '@/lib/supplier-routes';
+import { isPlanAiEligible } from '../registries/capability-registry';
 
 /**
  * Vérificateurs d'appartenance au compte (§22.7).
@@ -186,6 +187,57 @@ export interface ResolveActionsInput {
   actionIntents: ActionIntent[];
   messageId?: string;
   access: AccessChecker;
+  /**
+   * Offre effective de l'assistant (`assistantPlanFromEntitlements`) et
+   * limite de compte (lecture seule) — §22.7 étape 3 « vérifie l'offre ».
+   * Absentes : aucune restriction d'offre (appelants historiques, tests).
+   */
+  planType?: string;
+  planLimit?: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// CONTRÔLE DE L'OFFRE — §22.7 étape 3
+//
+// `known_offer` et `supported_type` renvoyaient toujours vrai, et aucune
+// action n'était confrontée à l'offre : un compte Standard se voyait
+// proposer un dossier prêt à l'usage (Premium), un compte en lecture seule
+// un bouton « Ajouter un document » qui échouait au clic.
+// Les règles reprennent celles des routes de l'application (exports :
+// `app/api/assets/[id]/exports`, droits : `entitlements.service`).
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Offres connues de la page des offres (paramètre `offer` d'OPEN_PRICING). */
+export const OFFRES_CONNUES: ReadonlySet<string> = new Set(['STANDARD', 'PREMIUM', 'PREMIUM_DUO']);
+
+/** Familles de biens créables (paramètre `assetType` de START_ADD_ASSET). */
+export const TYPES_BIEN_SUPPORTES: ReadonlySet<string> = new Set(['IMMOBILIER', 'VEHICULE', 'MATERIEL_PRO', 'OBJECT']);
+
+/** Dossiers prêts à l'usage : Premium et Premium Duo seulement (EXPORT_BRUT exclu). */
+export const EXPORTS_PREMIUM: ReadonlySet<string> = new Set([
+  'CIL_REGLEMENTAIRE', 'DOSSIER_VENTE', 'DOSSIER_COMPLET', 'ASSURANCE_ESTIMATION', 'ASSURANCE_INDEMNISATION',
+]);
+
+/** Actions qui mènent à une création : impossibles sur un compte en lecture seule. */
+const ACTIONS_ECRITURE: ReadonlySet<VerebonaActionType> = new Set<VerebonaActionType>([
+  'START_ADD_ASSET', 'START_ADD_DOCUMENT', 'START_ADD_AGENDA_ITEM',
+]);
+
+/** L'offre du compte permet-elle cette action ? (§22.7 étape 3) */
+export function offrePermet(
+  type: VerebonaActionType,
+  params: Record<string, unknown> | undefined,
+  planType: string | undefined,
+  planLimit: ResolveActionsInput['planLimit'],
+): boolean {
+  // Compte en lecture seule (essai échu, abonnement requis) : ni création,
+  // ni dossier Premium — la consultation et l'export brut restent ouverts.
+  if (planLimit && ACTIONS_ECRITURE.has(type)) return false;
+  if (type === 'OPEN_EXPORT_AREA' && typeof params?.exportType === 'string' && EXPORTS_PREMIUM.has(params.exportType)) {
+    if (planLimit) return false;
+    if (planType !== undefined && !isPlanAiEligible(planType)) return false;
+  }
+  return true;
 }
 
 /**
@@ -224,8 +276,11 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     const ref = attendu && !sansCible ? parseEntityRef(ai.targetId, attendu) : null;
     if (attendu && !sansCible && !ref) continue;
 
+    // Offre (§22.7 étape 3), avant tout accès en base.
+    if (!offrePermet(ai.type, ai.params, input.planType, input.planLimit)) continue;
+
     const slug = ai.targetId != null ? String(ai.targetId) : undefined;
-    const authorized = sansCible || await checkAccess(input.accountId, def.control, ref, slug, input.access);
+    const authorized = sansCible || await checkAccess(input.accountId, def.control, ref, slug, input.access, ai.params);
     if (!authorized) continue;
 
     const href = buildHref(ai.type, ref, ai.params);
@@ -240,6 +295,10 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
       requiresConfirmation: false, // aucune action destructrice en V1 (§22.10)
       expiresAt: ai.type === 'OPEN_SEARCH_RESULTS' ? new Date(Date.now() + 30 * 60_000).toISOString() : null,
       analyticsCode: `verebona.action.${ai.type.toLowerCase()}`,
+      // §28.6 : cible contrôlée et paramètres validés, persistés avec l'action
+      // (jamais renvoyés au client : `toApiPayload` les retire).
+      targetRef: ref ? `${ref.kind}:${ref.id}` : null,
+      payload: ai.params ? { ...ai.params } : {},
     });
     vues.add(cle);
     if (def.isBusinessAction) businessCount++;
@@ -254,6 +313,7 @@ async function checkAccess(
   ref: EntityRef | null,
   slug: string | undefined,
   access: AccessChecker,
+  params?: Record<string, unknown>,
 ): Promise<boolean> {
   switch (control) {
     case 'account_object': {
@@ -270,12 +330,17 @@ async function checkAccess(
     }
     case 'published_help':
       return slug ? access.helpEntryPublished(slug) : true;
-    case 'account_route':
+    // Offre nommée : seulement une offre réellement proposée.
     case 'known_offer':
+      return params?.offer == null || (typeof params.offer === 'string' && OFFRES_CONNUES.has(params.offer));
+    // Type de bien : seulement une famille que l'application sait créer.
+    case 'supported_type':
+      return params?.assetType == null
+        || (typeof params.assetType === 'string' && TYPES_BIEN_SUPPORTES.has(params.assetType));
+    case 'account_route':
     case 'signed_token':
     case 'message_owner':
     case 'recoverable_request':
-    case 'supported_type':
       return true; // contrôles gérés par la route dédiée / sans cible d'objet
     default:
       return false;

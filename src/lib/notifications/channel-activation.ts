@@ -58,6 +58,9 @@ export const LOCKED_TRANSACTIONAL_EMAILS: Readonly<Record<string, string>> = {
   LEGAL_CONFIRMATION: 'Obligation légale : confirmation d’acceptation des conditions.',
   ACCOUNT_INVITATION: 'Seul vecteur du lien d’invitation au compte.',
   DUO_INVITATION: 'Seul vecteur du lien d’invitation Duo.',
+  // Suppression volontaire du compte (migration 0206) : dernier message à la
+  // personne, qui n'a plus d'accès pour le constater autrement.
+  ACCOUNT_DELETION_COMPLETED: 'Confirmation de l’effacement demandé par l’utilisateur (droit à l’effacement).',
 };
 
 export function transactionalLockReason(templateCode: string): string | null {

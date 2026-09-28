@@ -5,7 +5,8 @@
  *   minimum le compte, l'objet, la version de la source et l'opération. »
  *
  * Deux mécanismes complémentaires :
- *  1. verrou consultatif Postgres — empêche deux exécutions simultanées ;
+ *  1. dédoublonnage en mémoire — une seule exécution simultanée par clé et
+ *     par processus, sans retenir de connexion (voir `withIdempotency`) ;
  *  2. table `ai_operation_idempotency` — rejoue le résultat au lieu de
  *     réappeler le modèle.
  */
@@ -48,8 +49,34 @@ function stableHash(v: unknown): string {
 }
 
 /**
+ * Exécutions en cours dans CE processus, par empreinte de clé : un second
+ * appel concurrent sur la même clé attend la première exécution au lieu d'en
+ * lancer une autre.
+ */
+const enVol = new Map<string, Promise<unknown>>();
+
+/**
  * Exécute `fn` une seule fois par clé. Un second appel concurrent attend, puis
  * réutilise le résultat déjà produit.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * PLUS DE VERROU CONSULTATIF POSTGRES DE SESSION
+ *
+ * L'ancienne version prenait `pg_advisory_lock(parseInt(clé[0..8], 16))` :
+ *   · toutes les clés de l'assistant commencent par « assistant: » —
+ *     `parseInt('assistan', 16)` vaut 10 : TOUS les appels modèle de
+ *     l'assistant se sérialisaient sur le même verrou ;
+ *   · verrou et déverrouillage passaient par le pool, donc pas forcément par
+ *     la même connexion (verrou orphelin possible) ;
+ *   · l'attente bloquait une connexion du pool (1 seule dans le serveur Next,
+ *     8 ailleurs) pendant tout l'appel modèle — jusqu'à 12 s.
+ *
+ * Désormais : dédoublonnage EN MÉMOIRE (une exécution par empreinte de clé
+ * et par processus), aucune connexion retenue pendant l'appel modèle. Entre
+ * deux instances, deux appels simultanés sur la même clé peuvent encore
+ * s'exécuter tous deux : c'est un surcoût borné, pas une incohérence — le
+ * premier résultat écrit reste en cache (`ON CONFLICT DO NOTHING`).
+ * ══════════════════════════════════════════════════════════════════════════
  */
 export async function withIdempotency<T>(
   key: string,
@@ -62,48 +89,38 @@ export async function withIdempotency<T>(
   const cached = await readCached<T>(key);
   if (cached) return { ...cached, fromCache: true } as T;
 
-  // ⚠️ DÉGRADATION VOLONTAIRE — corrige un défaut de robustesse.
-  //
-  // La première version acquérait le verrou consultatif sans protection : une
-  // base momentanément indisponible faisait alors échouer TOUS les appels
-  // modèles, y compris ceux qui n'avaient rien à persister. L'idempotence est
-  // une optimisation, pas une condition d'exécution : son indisponibilité ne
-  // doit jamais empêcher un traitement métier (CDC §11.4).
-  //
-  // Sans verrou, deux appels concurrents sur la même clé peuvent tous deux
-  // s'exécuter. C'est un surcoût, pas une incohérence : le résultat reste
-  // correct et le second écrira simplement par-dessus le premier.
-  const lockId = lockIdFromKey(key);
-  let locked = false;
-  try {
-    await pgClient.unsafe('SELECT pg_advisory_lock($1)', [lockId] as never[]);
-    locked = true;
-  } catch (e) {
-    console.warn(
-      '[ai-idempotency] verrou indisponible, exécution sans protection de concurrence :',
-      (e as Error).message,
-    );
-    return fn();
+  const id = lockIdFromKey(key);
+  const existant = enVol.get(id) as Promise<T> | undefined;
+  if (existant) {
+    // Même clé déjà en cours ici : on partage son résultat (servi « du cache »).
+    const r = await existant;
+    return (r && typeof r === 'object' ? { ...r, fromCache: true } : r) as T;
   }
 
-  try {
-    // Relecture après obtention du verrou : le concurrent a pu terminer.
-    const afterLock = await readCached<T>(key);
-    if (afterLock) return { ...afterLock, fromCache: true } as T;
-
+  const execution = (async () => {
     const result = await fn();
     await writeCached(key, result, ttlSeconds);
     return result;
+  })();
+  enVol.set(id, execution);
+  try {
+    return await execution;
   } finally {
-    if (locked) {
-      await pgClient.unsafe('SELECT pg_advisory_unlock($1)', [lockId] as never[]).catch(() => null);
-    }
+    if (enVol.get(id) === execution) enVol.delete(id);
   }
 }
 
-function lockIdFromKey(key: string): number {
-  // 31 bits pour rester dans la plage d'un entier signé Postgres.
-  return parseInt(key.slice(0, 8), 16) % 2_147_483_647;
+/**
+ * Empreinte d'une clé (SHA-256 de la clé ENTIÈRE, 16 caractères hexadécimaux
+ * = 64 bits) : deux clés de même préfixe ont des empreintes distinctes.
+ */
+export function lockIdFromKey(key: string): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 16);
+}
+
+/** Nombre d'exécutions en cours (tests, diagnostic). */
+export function inFlightCount(): number {
+  return enVol.size;
 }
 
 async function readCached<T>(key: string): Promise<T | null> {

@@ -1,79 +1,25 @@
 /**
- * GET /api/verebona/conversation?conversationId=… — historique d'UN fil (§24, §27.3).
- *   Sans identifiant : le fil le plus récent de l'utilisateur (rien n'est créé).
- * DELETE /api/verebona/conversation?conversationId=… — efface ce fil (§24.5).
- *   Sans identifiant : efface tout l'historique de l'utilisateur.
+ * GET  /api/verebona/conversations — fils de conversation de L'UTILISATEUR.
+ * POST /api/verebona/conversations — crée explicitement un nouveau fil.
  *
- * En Duo, chaque membre n'accède qu'à ses propres fils : la propriété est
- * contrôlée en base sur l'identifiant de session ; un identifiant de fil
- * appartenant à un autre utilisateur est traité comme inexistant (404).
+ * Un nouveau fil démarre sans aucune mémoire des autres : seules les données
+ * métier du compte restent consultables par l'assistant. Les fils sont
+ * privés à l'utilisateur, y compris en Duo (compte + utilisateur de session).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
-import {
-  clearUserHistory,
-  findLatestConversation,
-  findOwnedConversation,
-  listActiveMessages,
-} from '@/services/verebona-assistant/core/conversation.service';
-import { chargerClarification } from '@/services/verebona-assistant/core/clarification.service';
-import { isExpired } from '@/services/verebona-assistant/core/clarification-builder';
-import { listThreadCommandPlans } from '@/services/verebona-assistant/commands/plan.service';
-
-/** `undefined` : absent ; `null` : présent mais invalide. */
-function parseConversationId(req: NextRequest): number | null | undefined {
-  const raw = req.nextUrl.searchParams.get('conversationId');
-  if (raw == null || raw === '') return undefined;
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-const notFound = () => NextResponse.json({ error: 'CONVERSATION_NOT_FOUND' }, { status: 404 });
+import { getAssistantConfig } from '@/services/verebona-assistant';
+import { createConversation, listConversations } from '@/services/verebona-assistant/core/conversation.service';
+import { httpRequestId, mutationRateLimited, parseWith, readJson, withRequestId } from '@/lib/verebona/api-guard';
+import { CreateConversationSchema } from '@/lib/verebona/api-schemas';
 
 export async function GET(req: NextRequest) {
-  let session;
-  try { session = await SessionService.getSession(req); }
-  catch (e) { return SessionService.handleSessionError(e); }
-  const accountId = session.currentAccountId;
-  if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
-
-  await ensureMigrations();
-  const requested = parseConversationId(req);
-  if (requested === null) return notFound();
-
-  const conversationId = requested === undefined
-    ? await findLatestConversation(accountId, session.userId)
-    : await findOwnedConversation(accountId, session.userId, requested);
-  if (requested !== undefined && !conversationId) return notFound();
-  if (!conversationId) return NextResponse.json({ conversationId: null, messages: [] });
-
-  const messages = await listActiveMessages(accountId, session.userId, conversationId);
-
-  // Clarification encore en attente dans ce fil : rendue pour que l'utilisateur
-  // puisse y répondre après un rechargement ou une reconnexion. Seuls la
-  // question et les choix sortent — l'état interne reste côté serveur.
-  const { etat } = await chargerClarification(accountId, session.userId, undefined, conversationId);
-  const clarification = etat && etat.originalMessage && (!etat.status || etat.status === 'PENDING') && !isExpired(etat)
-    ? {
-        clarificationId: etat.clarificationId,
-        question: etat.question,
-        expiresAt: etat.expiresAt,
-        choices: etat.candidates.map((c) => ({ choiceId: c.id, label: c.label, secondaryLabel: c.secondaryLabel })),
-      }
-    : null;
-  // Commandes proposées dans ce fil, avec leur état réel (§9.6 : en attente,
-  // annulée, expirée, exécutée) : une proposition encore en attente reste
-  // annulable après un rechargement ; une proposition close n'offre plus de
-  // bouton. Seuls les plans de l'utilisateur sortent.
-  const commandPlans = await listThreadCommandPlans(accountId, session.userId, conversationId).catch((e) => {
-    console.error('[verebona] plans du fil illisibles :', (e as Error).message);
-    return [];
-  });
-  return NextResponse.json({ conversationId, messages, clarification, commandPlans });
+  const httpId = httpRequestId(req);
+  return withRequestId(await lister(req), httpId);
 }
 
-export async function DELETE(req: NextRequest) {
+async function lister(req: NextRequest): Promise<NextResponse> {
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }
@@ -81,10 +27,28 @@ export async function DELETE(req: NextRequest) {
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
 
   await ensureMigrations();
-  const requested = parseConversationId(req);
-  if (requested === null) return notFound();
+  return NextResponse.json({ conversations: await listConversations(accountId, session.userId) });
+}
 
-  const purge = await clearUserHistory(accountId, session.userId, requested);
-  if (requested !== undefined && purge.conversations === 0) return notFound();
-  return NextResponse.json({ ok: true, deleted: purge.conversations });
+export async function POST(req: NextRequest) {
+  const httpId = httpRequestId(req);
+  return withRequestId(await creer(req, httpId), httpId);
+}
+
+async function creer(req: NextRequest, httpId: string): Promise<NextResponse> {
+  let session;
+  try { session = await SessionService.getSession(req); }
+  catch (e) { return SessionService.handleSessionError(e); }
+  const accountId = session.currentAccountId;
+  if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
+  // §31.10 : créer un fil est une écriture — limiteur dédié.
+  const limite = mutationRateLimited(session.userId, accountId, 'conversation', httpId);
+  if (limite) return limite;
+  // Corps facultatif, validé (§27) : aucun paramètre n'est lu.
+  const b = parseWith(CreateConversationSchema, (await readJson(req)) ?? {}, httpId);
+  if (!b.ok) return b.response;
+
+  await ensureMigrations();
+  const conversationId = await createConversation(accountId, session.userId, getAssistantConfig().locale);
+  return NextResponse.json({ conversationId }, { status: 201 });
 }

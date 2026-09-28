@@ -32,6 +32,20 @@ export interface VerebonaDrawerProps {
 
 export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawerProps) {
   const [open, setOpen] = useState(false);
+  // §8.2 : suggestions complétées par l'état du compte, calculées côté
+  // serveur à l'ouverture ; à défaut, celles de la page (props).
+  const [suggestionsCompte, setSuggestionsCompte] = useState<{ route: string; items: Array<{ id: string; label: string }> } | null>(null);
+  const routePage = pageContext?.route ?? '/';
+  useEffect(() => {
+    if (!open) return;
+    let annule = false;
+    void (async () => {
+      const res = await fetch(`/api/verebona/suggestions?route=${encodeURIComponent(routePage)}`).catch(() => null);
+      const data = res && res.ok ? await res.json().catch(() => null) : null;
+      if (!annule && Array.isArray(data?.suggestions) && data.suggestions.length > 0) setSuggestionsCompte({ route: routePage, items: data.suggestions });
+    })();
+    return () => { annule = true; };
+  }, [open, routePage]);
   const { garder, signalerRefus } = useWriteGuard();
 
   const [dimmed, setDimmed] = useState(false);
@@ -76,7 +90,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
   // Ouverture programmée (bulle d'accueil, centre d'aide…), avec question optionnelle.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ question?: string; context?: { intent?: string; assetId?: number } }>).detail;
+      const detail = (e as CustomEvent<{ question?: string; context?: { intent?: string; assetId?: number; documentId?: number } }>).detail;
       let autorise = false;
       garder(() => { autorise = true; });
       if (!autorise) return;
@@ -92,6 +106,8 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
         const ctx: Record<string, string> = {};
         if (detail.context?.intent) ctx.intent = detail.context.intent;
         if (detail.context?.assetId) ctx.assetId = String(detail.context.assetId);
+        // Tiroir d'un document (§23.3) : la question porte sur CE document.
+        if (detail.context?.documentId) ctx.documentId = String(detail.context.documentId);
         v.send(detail.question, Object.keys(ctx).length ? ctx : undefined);
       }
     };
@@ -168,11 +184,14 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
 
         <div className="flex-1 overflow-hidden" aria-live="polite">
           {v.messages.length === 0 ? (
-            <VerebonaSuggestions suggestions={suggestions} onPick={(label) => { void envoyer(label); }} />
+            <VerebonaSuggestions suggestions={suggestionsCompte?.route === routePage ? suggestionsCompte.items : suggestions} onPick={(label) => { void envoyer(label); }} />
           ) : (
             <VerebonaConversation
               messages={v.messages}
               isLoading={v.isLoading}
+              hasOlder={v.hasOlder}
+              loadingOlder={v.loadingOlder}
+              onLoadOlder={() => { void v.loadOlder(); }}
               onFeedback={v.sendFeedback}
               onClarify={(clarificationId, choice) => {
                 // Même garde que l'envoi d'une question.
@@ -189,6 +208,14 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
                 void v.confirmPlan(planId);
               }}
               onCancelPlan={(planId) => { void v.cancelPlan(planId); }}
+              onUndoPlan={(planId) => {
+                // Défaire une action exécutée EST une écriture : même garde
+                // que la confirmation (le serveur revérifie les droits).
+                let autorise = false;
+                garder(() => { autorise = true; });
+                if (!autorise) { setOpen(false); return; }
+                void v.undoPlan(planId);
+              }}
               onRetry={(fromMessageId) => {
                 // « Réessayer » renvoie une question : même garde que l'envoi.
                 let autorise = false;
@@ -204,6 +231,7 @@ export function VerebonaDrawer({ pageContext, suggestions = [] }: VerebonaDrawer
           isLoading={v.isLoading}
           onSend={envoyer}
           onCancel={v.cancel}
+          offline={!v.online}
         />
       </DrawerContent>
     </Drawer>

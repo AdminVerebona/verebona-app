@@ -490,6 +490,7 @@ export async function runUnifiedAnalysisPipeline(
         existingTitles,
         existingAgendaItems,
         linkedAssetContext,
+        parentOperationId: operationId ?? undefined,
         onProgress: async (stage: string) => {
           broadcast(leadFile.id, { type: 'progress', analysisState: 'ANALYZING', stage });
           await startStep(stage);
@@ -543,9 +544,6 @@ export async function runUnifiedAnalysisPipeline(
           AiUsageTracker.completeOperation({
             operationId,
             businessResult: 'duplicate', // ne sera pas compté dans incrementAnalysisCounter
-            totalCostMicros: result.totalCostMicros ?? 0,
-            totalInputTokens: result.totalInputTokens ?? 0,
-            totalOutputTokens: result.totalOutputTokens ?? 0,
             usedFallback: result.usedFallback,
             providerFallback: result.usedFallback ? result.modelUsed : undefined,
           }).catch(() => {});
@@ -566,9 +564,6 @@ export async function runUnifiedAnalysisPipeline(
         AiUsageTracker.completeOperation({
           operationId,
           businessResult: 'success',
-          totalCostMicros: result.totalCostMicros ?? 0,
-          totalInputTokens: result.totalInputTokens ?? 0,
-          totalOutputTokens: result.totalOutputTokens ?? 0,
           usedFallback: result.usedFallback,
           providerFallback: result.usedFallback ? result.modelUsed : undefined,
         }).catch(() => {});

@@ -47,6 +47,18 @@ export interface GdprRequestRow {
   subjectEmail: string | null;
   subjectName: string | null;
   accountName: string | null;
+  /**
+   * Suppression planifiée à l'origine de la demande (demande système
+   * `scheduled_deletion:<id>`) : état et date prévue, en lecture seule
+   * (GDP-008 : l'administrateur ne peut ni l'annuler ni la modifier).
+   */
+  deletion: {
+    status: 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
+    reason: string;
+    scheduledAt: string;
+    executedAt: string | null;
+    cancelledAt: string | null;
+  } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,12 +81,16 @@ const SELECT_COLUMNS = `
   coalesce(u.email, r.subject_email) AS subject_email,
   nullif(trim(coalesce(u.first_name, '') || ' ' || coalesce(u.last_name, '')), '') AS subject_name,
   coalesce(a.name, r.subject_account_name) AS account_name,
+  sd.status AS deletion_status, sd.reason AS deletion_reason, sd.scheduled_at AS deletion_scheduled_at,
+  sd.executed_at AS deletion_executed_at, sd.cancelled_at AS deletion_cancelled_at,
   r.created_at, r.updated_at`;
 
 const FROM = `
   FROM gdpr_requests r
   LEFT JOIN users u    ON u.id = r.user_id
-  LEFT JOIN accounts a ON a.id = r.account_id`;
+  LEFT JOIN accounts a ON a.id = r.account_id
+  LEFT JOIN scheduled_account_deletions sd
+         ON sd.id = substring(r.source_ref FROM '^scheduled_deletion:([0-9]+)$')::int`;
 
 type Raw = Record<string, unknown>;
 
@@ -103,6 +119,15 @@ function toRow(r: Raw): GdprRequestRow {
     subjectEmail: (r.subject_email as string) ?? null,
     subjectName: (r.subject_name as string) ?? null,
     accountName: (r.account_name as string) ?? null,
+    deletion: r.deletion_status
+      ? {
+          status: r.deletion_status as 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED',
+          reason: r.deletion_reason as string,
+          scheduledAt: iso(r.deletion_scheduled_at)!,
+          executedAt: iso(r.deletion_executed_at),
+          cancelledAt: iso(r.deletion_cancelled_at),
+        }
+      : null,
     createdAt: iso(r.created_at)!,
     updatedAt: iso(r.updated_at)!,
   };
@@ -283,6 +308,9 @@ export async function createManualRequest(
   const plan = planManualCreate(input, now);
   if (!plan.ok) return plan;
   const p = plan.value;
+  // ISO : un Date brut n'est pas sérialisable par `pgClient` (sérialiseur des
+  // horodatages neutralisé par drizzle, voir `system-requests.ts`).
+  const nowIso = now.toISOString();
   const sourceRef = idempotencyKey ? `manual:${idempotencyKey.slice(0, 200)}` : null;
 
   return pgClient.begin(async (sql) => {
@@ -306,8 +334,8 @@ export async function createManualRequest(
         'manual', ${subject.userId}, ${subject.accountId}, ${subject.userId}, ${subject.accountId},
         ${subject.email}, ${subject.accountName}, ${p.rightType}, ${p.channel}, ${p.status},
         (${p.receivedDate}::date)::timestamp AT TIME ZONE 'Europe/Paris', ${p.dueDate}::date,
-        ${p.status === 'done' ? now : null}, ${p.internalComment}, ${p.result},
-        ${adminId}, ${adminId}, ${sourceRef}, ${now}, ${now}
+        ${p.status === 'done' ? nowIso : null}::timestamptz, ${p.internalComment}, ${p.result},
+        ${adminId}, ${adminId}, ${sourceRef}, ${nowIso}::timestamptz, ${nowIso}::timestamptz
       ) RETURNING id`;
     const request = await selectDetail(sql as unknown as Sql, Number(row.id));
     return { ok: true as const, value: { request: request!, plan: p, replayed: false } };
@@ -358,11 +386,11 @@ export async function updateManualRequest(
     }
     if (c.dueDate !== undefined) set('due_date', c.dueDate, '::date');
     if (c.status !== undefined) set('status', c.status);
-    if (plan.value.becomesDone) set('processed_at', now);
+    if (plan.value.becomesDone) set('processed_at', now.toISOString(), '::timestamptz');
     if (c.internalComment !== undefined) set('internal_comment', c.internalComment);
     if (c.result !== undefined) set('result', c.result);
     set('updated_by', adminId);
-    set('updated_at', now);
+    set('updated_at', now.toISOString(), '::timestamptz');
 
     params.push(id);
     await s.unsafe(
@@ -391,8 +419,8 @@ export async function reopenManualRequest(
     await s`
       UPDATE gdpr_requests
          SET status = ${plan.value.status}, processed_at = NULL,
-             reopened_at = ${now}, reopened_by = ${adminId}, reopen_count = reopen_count + 1,
-             updated_by = ${adminId}, updated_at = ${now}
+             reopened_at = ${now.toISOString()}::timestamptz, reopened_by = ${adminId}, reopen_count = reopen_count + 1,
+             updated_by = ${adminId}, updated_at = ${now.toISOString()}::timestamptz
        WHERE id = ${id} AND origin = 'manual' AND status = 'done'`;
     const after = await selectDetail(s, id);
     return { ok: true as const, value: { before, after: after! } };

@@ -28,6 +28,18 @@
  * En préproduction, le VER-004 fait primer une version « À tester ». Afficher
  * la seule Active laisserait lire une configuration en croyant lire celle qui
  * tourne — et diagnostiquer un comportement à partir du mauvais texte.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * CHAMPS DU §28 (SCR-01)
+ *
+ * · VER-01 : vN, libellé, UID abrégé et date d'activation de la version
+ *   active (et de la version effective quand une « À tester » prime).
+ * · GST-01 : pastille « Opérationnel » / « Arrêt d'urgence », sans état
+ *   « dégradé » inventé.
+ * · PER-01 : sélecteur 24 h / 7 j / 30 j — ne change que la lecture des
+ *   métriques (activité, erreurs, coûts), jamais les données.
+ * · DRF-01 : liste des brouillons (libellé, base, obsolète, date, auteur),
+ *   chacun ouvrable dans la Configuration IA ; création sur place.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -39,6 +51,13 @@ import {
 import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
+import { formatDateTime } from '@/lib/admin/format';
+import {
+  DASHBOARD_WINDOWS,
+  DASHBOARD_WINDOW_LABELS,
+  DEFAULT_DASHBOARD_WINDOW,
+  type DashboardWindow,
+} from '@/lib/admin/ai-dashboard';
 import { EmergencyStopControl } from './_components/AiEnvBanner';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
@@ -54,6 +73,8 @@ interface Health {
   activity?: {
     calls24h: number; calls7d: number; calls30d: number;
     successRate7d: number | null; lastCallAt: string | null; lastErrorAt: string | null;
+    /** PER-01 : chiffres de la fenêtre choisie. */
+    window?: { calls: number; failed: number; successRate: number | null };
   } | null;
 }
 
@@ -71,19 +92,44 @@ interface Package {
 
 interface Degraded { source: string; message: string }
 
+/** DRF-01 : brouillon détaillé. */
+interface Draft {
+  id: number; uid: string; label: string | null; isStale: boolean; createdAt: string;
+  base: { id: number; visibleNumber: number | null; label: string | null } | null;
+  author: string | null;
+}
+
+interface VersionRef {
+  id: number; visibleNumber: number | null; label: string | null;
+  uid?: string; shortUid?: string; activatedAt?: string | null;
+}
+
 interface Dashboard {
   environment: string;
   isProduction: boolean;
   emergencyStop: { active: boolean; reason: string | null };
-  activeVersion: { id: number; visibleNumber: number | null; label: string | null } | null;
-  effectiveVersion: { id: number; status: string; visibleNumber: number | null } | null;
+  /** GST-01 */
+  globalStatus?: { key: 'operational' | 'emergency_stop'; label: string };
+  windowDays?: number;
+  activeVersion: VersionRef | null;
+  effectiveVersion: (VersionRef & { status: string; validatedAt?: string | null }) | null;
+  drafts?: Draft[];
   health: Health[];
   versions: Version[];
   packages: Package[];
   alerts: Alert[];
   /** Sources qui n'ont pas répondu : l'écran s'affiche sans elles, en le disant. */
   degraded?: Degraded[];
-  costs7d: { functionalMicros: number; technicalMicros: number; calls: number; failedCalls: number };
+  costs: { functionalMicros: number; technicalMicros: number; calls: number; failedCalls: number };
+}
+
+/** VER-01 : « v3 — Libellé · UID 1a2b3c4d · activée le … ». */
+function versionLine(v: VersionRef, dateLabel: string, date: string | null | undefined): string {
+  return [
+    `v${v.visibleNumber ?? '?'}${v.label ? ` — ${v.label}` : ''}`,
+    v.shortUid ? `UID ${v.shortUid}` : null,
+    date ? `${dateLabel} ${formatDateTime(date)}` : null,
+  ].filter(Boolean).join(' · ');
 }
 
 const STATE_STYLE: Record<State, string> = {
@@ -111,10 +157,13 @@ export default function AiDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // PER-01 : fenêtre de lecture des métriques.
+  const [days, setDays] = useState<DashboardWindow>(DEFAULT_DASHBOARD_WINDOW);
 
   const load = useCallback(async () => {
     try {
-      setData(await apiClient.get<Dashboard>('/api/admin/ai/dashboard'));
+      setData(await apiClient.get<Dashboard>(`/api/admin/ai/dashboard?days=${days}`));
+      setErreur(null);
     } catch (e) {
       // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
       // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
@@ -126,7 +175,7 @@ export default function AiDashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [days]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -154,8 +203,17 @@ export default function AiDashboardPage() {
     );
   }
 
-  const drafts = data.versions.filter((v) => v.status === 'DRAFT');
+  // DRF-01 : liste détaillée du serveur ; à défaut (source dégradée), les
+  // brouillons de la liste des versions, sans base ni auteur.
+  const drafts: Draft[] = data.drafts ?? data.versions
+    .filter((v) => v.status === 'DRAFT')
+    .map((v) => ({ id: v.id, uid: '', label: v.label, isStale: v.isStale, createdAt: v.createdAt, base: null, author: null }));
   const toTest = data.versions.find((v) => v.status === 'TO_TEST');
+  const status = data.globalStatus
+    ?? (data.emergencyStop.active
+      ? { key: 'emergency_stop' as const, label: 'Arrêt d’urgence' }
+      : { key: 'operational' as const, label: 'Opérationnel' });
+  const windowLabel = DASHBOARD_WINDOW_LABELS[days];
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -165,20 +223,35 @@ export default function AiDashboardPage() {
         : 'border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]'}`}>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">
-              Configuration IA — {data.environment}
-            </h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">
+                Configuration IA — {data.environment}
+              </h1>
+              {/* GST-01 : état global, deux valeurs seulement. */}
+              <span
+                role="status"
+                data-testid="ai-global-status"
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+                  status.key === 'emergency_stop'
+                    ? 'border-red-500/40 bg-red-500/10 text-red-400'
+                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'}`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${status.key === 'emergency_stop' ? 'bg-red-400' : 'bg-emerald-500'}`} />
+                {status.label}
+              </span>
+            </div>
+            {/* VER-01 : vN, libellé, UID abrégé, date d'activation. */}
             <p className="text-sm text-[color:var(--text-secondary)]">
               {data.activeVersion
-                ? `Version active : v${data.activeVersion.visibleNumber}`
-                  + (data.activeVersion.label ? ` — ${data.activeVersion.label}` : '')
+                ? <>Version active : {versionLine(data.activeVersion, 'activée le', data.activeVersion.activatedAt)}</>
                 : 'Aucune version active.'}
-              {data.effectiveVersion && (
-                <span className="text-amber-500">
-                  {' '}· une version à l&apos;essai s&apos;applique actuellement
-                </span>
-              )}
             </p>
+            {data.effectiveVersion && (
+              <p className="text-sm text-amber-500">
+                Version effective (à l&apos;essai) :{' '}
+                {versionLine(data.effectiveVersion, 'validée le', data.effectiveVersion.validatedAt)}
+              </p>
+            )}
           </div>
 
           {/* EST-01 : engagement (motif obligatoire) et relâchement (confirmé)
@@ -233,6 +306,26 @@ export default function AiDashboardPage() {
         </div>
       )}
 
+      {/* PER-01 : fenêtre de supervision — lecture seule des métriques */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Santé des traitements</h2>
+        <div role="group" aria-label="Fenêtre de supervision" className="inline-flex rounded-lg border border-[color:var(--border-subtle)] p-0.5">
+          {DASHBOARD_WINDOWS.map((w) => (
+            <button
+              key={w}
+              type="button"
+              aria-pressed={days === w}
+              onClick={() => setDays(w)}
+              className={`px-2.5 py-1 text-xs rounded-md transition-colors ${days === w
+                ? 'bg-[color:var(--accent-soft)] text-[color:var(--text-primary)] font-medium'
+                : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'}`}
+            >
+              {DASHBOARD_WINDOW_LABELS[w]}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Santé des cinq traitements — état affiché, jamais commandé */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {data.health.map((h) => (
@@ -260,15 +353,24 @@ export default function AiDashboardPage() {
                 lien préfiltré vers les exécutions du traitement (ALT-01). */}
             {h.activity && (
               <Link href={`/admin/ai-executions?treatment=${h.treatment}`} className="block text-xs text-[color:var(--text-muted)] hover:underline">
-                Appels 24 h / 7 j / 30 j : {h.activity.calls24h} / {h.activity.calls7d} / {h.activity.calls30d}
-                {h.activity.successRate7d !== null && (
-                  <span className={h.activity.successRate7d < 0.9 ? ' text-amber-500' : ''}>
-                    {' '}· succès 7 j {Math.round(h.activity.successRate7d * 100)} %
-                  </span>
-                )}
+                {(() => {
+                  const w = h.activity.window
+                    ?? { calls: h.activity.calls7d, failed: 0, successRate: h.activity.successRate7d };
+                  return (
+                    <>
+                      Appels {windowLabel} : {w.calls}
+                      {w.failed > 0 && <span className="text-red-400"> · {w.failed} en échec</span>}
+                      {w.successRate !== null && (
+                        <span className={w.successRate < 0.9 ? ' text-amber-500' : ''}>
+                          {' '}· succès {Math.round(w.successRate * 100)} %
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
                 {h.activity.lastCallAt && (
                   <span className="block">
-                    Dernier appel : {new Date(h.activity.lastCallAt).toLocaleString('fr-FR')}
+                    Dernier appel : {formatDateTime(h.activity.lastCallAt)}
                   </span>
                 )}
               </Link>
@@ -318,6 +420,50 @@ export default function AiDashboardPage() {
           )}
         </p>
 
+        {/* DRF-01 : libellé, base, obsolète, date, auteur ; ouvrir. */}
+        {drafts.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" data-testid="ai-drafts">
+              <thead>
+                <tr className="text-left text-xs text-[color:var(--text-muted)]">
+                  <th className="py-1.5 pr-3 font-medium">Brouillon</th>
+                  <th className="py-1.5 pr-3 font-medium">Base</th>
+                  <th className="py-1.5 pr-3 font-medium">Créé le</th>
+                  <th className="py-1.5 pr-3 font-medium">Auteur</th>
+                  <th className="py-1.5" />
+                </tr>
+              </thead>
+              <tbody>
+                {drafts.map((d) => (
+                  <tr key={d.id} className="border-t border-[color:var(--border-subtle)]">
+                    <td className="py-1.5 pr-3 text-[color:var(--text-primary)]">
+                      {d.label || `Brouillon #${d.id}`}
+                      {d.isStale && (
+                        <span className="ml-2 rounded border border-amber-500/40 px-1.5 py-0.5 text-[10px] text-amber-500"
+                          title="La version de base n’est plus l’Active : ce brouillon repose sur une version dépassée.">
+                          obsolète
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3 text-[color:var(--text-secondary)]">
+                      {d.base
+                        ? `v${d.base.visibleNumber ?? '?'}${d.base.label ? ` — ${d.base.label}` : ''}`
+                        : 'aucune (premier brouillon)'}
+                    </td>
+                    <td className="py-1.5 pr-3 text-xs text-[color:var(--text-secondary)]">{formatDateTime(d.createdAt)}</td>
+                    <td className="py-1.5 pr-3 text-xs text-[color:var(--text-secondary)]">{d.author ?? '—'}</td>
+                    <td className="py-1.5 text-right">
+                      <Link href={`/admin/ai-config?version=${d.id}`} className="text-xs text-[color:var(--accent)] hover:underline">
+                        Ouvrir
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         {!data.activeVersion && (
           <p className="text-sm text-amber-500">
             Aucune configuration active : les traitements utilisent les valeurs du code.
@@ -342,7 +488,7 @@ export default function AiDashboardPage() {
               <span className="text-[color:var(--text-muted)]">
                 {' '}· depuis {p.sourceEnvironment}
                 {p.importedAt
-                  ? ` · importé le ${new Date(p.importedAt).toLocaleDateString('fr-FR')}`
+                  ? ` · importé le ${formatDateTime(p.importedAt)}`
                   : ' · pas encore importé'}
               </span>
             </p>
@@ -355,14 +501,14 @@ export default function AiDashboardPage() {
         className="block rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 hover:opacity-80 transition-opacity">
         <div className="flex items-baseline justify-between gap-3">
           <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">
-            Dépense des sept derniers jours
+            Dépense — {windowLabel === '24 h' ? 'dernières 24 h' : `${windowLabel.replace(' j', '')} derniers jours`}
           </h2>
           <ArrowRight className="w-3.5 h-3.5 text-[color:var(--text-muted)]" />
         </div>
         <p className="text-sm text-[color:var(--text-secondary)]">
-          {usd(data.costs7d.functionalMicros)} métier · {usd(data.costs7d.technicalMicros)} technique
+          {usd(data.costs.functionalMicros)} métier · {usd(data.costs.technicalMicros)} technique
           <span className="text-[color:var(--text-muted)]">
-            {' '}· {data.costs7d.calls} appels, {data.costs7d.failedCalls} en échec
+            {' '}· {data.costs.calls} appels, {data.costs.failedCalls} en échec
           </span>
         </p>
       </Link>

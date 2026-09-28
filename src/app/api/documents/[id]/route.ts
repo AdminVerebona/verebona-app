@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { hasProjectableKnowledge, projectDocumentKnowledgeToAsset } from '@/services/ai/knowledge/document-knowledge.service';
 import { db } from '@/db';
 import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
@@ -253,6 +254,9 @@ export async function PUT(
         reason: 'document_attached',
       });
     }
+
+    // CDC Assistant §25.7 : événement métier (caches de l'assistant).
+    if (accountId) void emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
 
     return NextResponse.json(
       { message: 'Document mis à jour avec succès', documentId },

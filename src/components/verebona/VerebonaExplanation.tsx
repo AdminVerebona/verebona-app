@@ -3,17 +3,19 @@
  * « Pourquoi cette réponse ? » — CDC §19.8, §27.9.
  *
  * Appelle `GET /api/verebona/messages/{id}/explanation` (claims, nature,
- * sources enregistrées — aucun nouvel appel modèle) et affiche une
- * justification synthétique : les faits utilisés et leurs sources, jamais
- * un raisonnement interne.
+ * sources enregistrées, règle ou calcul, limites — aucun nouvel appel
+ * modèle) et affiche une justification synthétique : les faits utilisés,
+ * la règle appliquée, leurs sources et les limites de la réponse, jamais un
+ * raisonnement interne.
  */
 import { useEffect, useState } from 'react';
 import {
-  EXPLANATION_EMPTY, formatExplanation, type ExplanationItem,
+  EXPLANATION_EMPTY, formatExplanation, formatExplanationDetails, type ExplanationItem,
 } from '@/lib/verebona/assistant-ui';
 
 export function VerebonaExplanation({ messageId }: { messageId: string }) {
   const [items, setItems] = useState<ExplanationItem[] | null>(null);
+  const [details, setDetails] = useState<{ rule: string | null; limits: string[] }>({ rule: null, limits: [] });
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -24,6 +26,7 @@ export function VerebonaExplanation({ messageId }: { messageId: string }) {
       if (annule) return;
       if (!data) { setError(true); return; }
       setItems(formatExplanation(data.explanation));
+      setDetails(formatExplanationDetails(data));
     })();
     return () => { annule = true; };
   }, [messageId]);
@@ -37,8 +40,9 @@ export function VerebonaExplanation({ messageId }: { messageId: string }) {
   return (
     <div className="mt-2 rounded border p-2 text-xs" aria-label="Pourquoi cette réponse">
       <p className="mb-1 font-medium">Pourquoi cette réponse ?</p>
+      {details.rule && <p className="mb-1">{details.rule}</p>}
       {items.length === 0 ? (
-        <p className="text-muted-foreground">{EXPLANATION_EMPTY}</p>
+        !details.rule && <p className="text-muted-foreground">{EXPLANATION_EMPTY}</p>
       ) : (
         <ul className="space-y-1">
           {items.map((it, i) => (
@@ -51,6 +55,14 @@ export function VerebonaExplanation({ messageId }: { messageId: string }) {
             </li>
           ))}
         </ul>
+      )}
+      {details.limits.length > 0 && (
+        <div className="mt-1">
+          <p className="font-medium">Limites</p>
+          <ul className="list-disc pl-4 text-muted-foreground">
+            {details.limits.map((l) => <li key={l}>{l}</li>)}
+          </ul>
+        </div>
       )}
     </div>
   );

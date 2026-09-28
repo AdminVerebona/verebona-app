@@ -10,6 +10,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
+import { httpRequestId, mutationRateLimited, parseWith } from '@/lib/verebona/api-guard';
+import { RequestParamsSchema } from '@/lib/verebona/api-schemas';
 
 export async function GET(
   req: NextRequest,
@@ -22,7 +24,10 @@ export async function GET(
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
 
   await ensureMigrations();
-  const { requestId } = await params;
+  // §27 : identifiant validé par schéma avant toute requête.
+  const p = parseWith(RequestParamsSchema, await params, httpRequestId(req));
+  if (!p.ok) return p.response;
+  const { requestId } = p.data;
   const rows = await pgClient.unsafe(
     `SELECT request_id, status, mode, error_code, created_at
        FROM verebona_request_runs
@@ -44,7 +49,13 @@ export async function DELETE(
   catch (e) { return SessionService.handleSessionError(e); }
   if (!session.currentAccountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   const accountId = session.currentAccountId;
-  const { requestId } = await params;
+  // §31.10 : l'annulation est une écriture — limiteur dédié ; §27 : schéma.
+  const httpId = httpRequestId(req);
+  const limite = mutationRateLimited(session.userId, accountId, 'cancel', httpId);
+  if (limite) return limite;
+  const p = parseWith(RequestParamsSchema, await params, httpId);
+  if (!p.ok) return p.response;
+  const { requestId } = p.data;
 
   // ══════════════════════════════════════════════════════════════════════
   // ANNULER, PAS SEULEMENT LE DIRE

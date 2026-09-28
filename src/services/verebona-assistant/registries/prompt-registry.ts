@@ -10,7 +10,7 @@
  *
  * Maintenant :
  *  · prompts MAÎTRES (fichiers versionnés de la passerelle, seed de
- *    `ai_prompt_versions`) : `generate_answer_v3`, `understand_request_v1`,
+ *    `ai_prompt_versions`) : `generate_answer_v4`, `understand_request_v1`,
  *    `revalidate_fact_v1` ;
  *  · consignes de TÂCHE par intention (`prompts/*.ts`), injectées dans la
  *    section « 4. TÂCHE » du prompt maître par `intent-tasks.ts` et TRACÉES
@@ -26,45 +26,87 @@ import { ACCOUNT_SUMMARY_PROMPT_VERSION } from '../prompts/account-summary';
 import { ACCOUNT_COMPARISON_PROMPT_VERSION } from '../prompts/account-comparison';
 import { ACCOUNT_TIMELINE_PROMPT_VERSION } from '../prompts/account-timeline';
 import { PRODUCT_HELP_PROMPT_VERSION } from '../prompts/product-help';
+import { RESPONSE_SCHEMA_VERSION } from '../types/contracts';
 
 export type PromptStatus = 'draft' | 'candidate' | 'active' | 'archived';
+
+/** Entrée d'historique d'un prompt (§17.1 « historique des modifications »). */
+export interface PromptHistoryEntry {
+  version: string;
+  /** Date d'effet (AAAA-MM-JJ). */
+  effectiveDate: string;
+  status: PromptStatus;
+  /** Ce qui a changé, en une phrase. */
+  change: string;
+}
 
 export interface PromptEntry {
   id: string;
   version: string;
   kind: 'master' | 'task';
   status: PromptStatus;
+  /** Date d'effet de la version active (§17.1). */
+  effectiveDate: string;
+  /** Propriétaire fonctionnel (§17.1, §17.12). */
+  owner: string;
   compatibleIntents: VerebonaIntent[];
-  /** Jeu de cas exécutable qui le couvre (§17.9). */
+  /** Alias de modèles compatibles (§17.1, §15.11) — jamais un identifiant fournisseur. */
+  compatibleModels: string[];
+  /** Version du schéma de sortie attendu (§18.2). */
+  schemaVersion: string;
+  /** Jeu de cas exécutable qui le couvre (§17.9, §17.10). */
   testSuite: string;
+  /** Versions précédentes et motif de chaque changement (§17.1). */
+  history: PromptHistoryEntry[];
 }
 
 const HELP: VerebonaIntent[] = ['PRODUCT_HELP_HOW_TO', 'PRODUCT_HELP_EXPLAIN', 'PRODUCT_HELP_STATUS', 'NAVIGATION_FIND', 'EXPORT_HELP'];
+const ALIASES = ['assistant-default', 'assistant-escalation'];
+const PO = 'Product Owner Verebona';
+const TECH = 'Responsable technique assistant';
 
 export const PROMPTS: Record<string, PromptEntry> = {
   generate_answer: {
-    id: 'generate_answer', version: 'generate_answer_v3', kind: 'master', status: 'active',
-    compatibleIntents: [], testSuite: 'src/services/ai/prompts/__tests__/contrat-generate-answer.test.ts',
+    id: 'generate_answer', version: 'generate_answer_v4', kind: 'master', status: 'active',
+    effectiveDate: '2026-09-27', owner: TECH, compatibleIntents: [], compatibleModels: ALIASES,
+    schemaVersion: RESPONSE_SCHEMA_VERSION,
+    testSuite: 'src/services/ai/prompts/__tests__/contrat-generate-answer.test.ts',
+    history: [
+      { version: 'generate_answer_v2', effectiveDate: '2026-05-01', status: 'archived', change: 'Sources sérialisées sans délimitation — remplacé (injection documentaire).' },
+      { version: 'generate_answer_v3', effectiveDate: '2026-07-01', status: 'archived', change: 'Balises <retrieved_source>, règles S1–S4, français imposé.' },
+      { version: 'generate_answer_v4', effectiveDate: '2026-09-27', status: 'active', change: 'Couche « droits et offre » dynamique, ordre des couches du §17.3, sortie stricte (schemaVersion, intent, supportLevel), vocabulaire interdit.' },
+    ],
   },
   understand_request: {
     id: 'understand_request', version: 'understand_request_v1', kind: 'master', status: 'active',
-    compatibleIntents: ['UNKNOWN'], testSuite: 'src/services/ai/prompts/__tests__/contrat-understand-request.test.ts',
+    effectiveDate: '2026-05-01', owner: TECH, compatibleIntents: ['UNKNOWN'], compatibleModels: ALIASES,
+    schemaVersion: 'intent-classification-v1.0',
+    testSuite: 'src/services/ai/prompts/__tests__/contrat-understand-request.test.ts',
+    history: [{ version: 'understand_request_v1', effectiveDate: '2026-05-01', status: 'active', change: 'Classification dans le catalogue fermé des intentions.' }],
   },
   'account-summary': {
     id: 'account-summary', version: ACCOUNT_SUMMARY_PROMPT_VERSION, kind: 'task', status: 'active',
-    compatibleIntents: ['ACCOUNT_SUMMARY'], testSuite: 'src/services/verebona-assistant/eval',
+    effectiveDate: '2026-07-01', owner: PO, compatibleIntents: ['ACCOUNT_SUMMARY'], compatibleModels: ALIASES,
+    schemaVersion: RESPONSE_SCHEMA_VERSION, testSuite: 'src/services/verebona-assistant/eval',
+    history: [{ version: ACCOUNT_SUMMARY_PROMPT_VERSION, effectiveDate: '2026-07-01', status: 'active', change: 'Divergences présentées avec leurs sources (R6).' }],
   },
   'account-comparison': {
     id: 'account-comparison', version: ACCOUNT_COMPARISON_PROMPT_VERSION, kind: 'task', status: 'active',
-    compatibleIntents: ['ACCOUNT_COMPARISON'], testSuite: 'src/services/verebona-assistant/eval',
+    effectiveDate: '2026-07-01', owner: PO, compatibleIntents: ['ACCOUNT_COMPARISON'], compatibleModels: ALIASES,
+    schemaVersion: RESPONSE_SCHEMA_VERSION, testSuite: 'src/services/verebona-assistant/eval',
+    history: [{ version: ACCOUNT_COMPARISON_PROMPT_VERSION, effectiveDate: '2026-07-01', status: 'active', change: 'Version initiale versionnée.' }],
   },
   'account-timeline': {
     id: 'account-timeline', version: ACCOUNT_TIMELINE_PROMPT_VERSION, kind: 'task', status: 'active',
-    compatibleIntents: ['ACCOUNT_TIMELINE'], testSuite: 'src/services/verebona-assistant/eval',
+    effectiveDate: '2026-07-01', owner: PO, compatibleIntents: ['ACCOUNT_TIMELINE'], compatibleModels: ALIASES,
+    schemaVersion: RESPONSE_SCHEMA_VERSION, testSuite: 'src/services/verebona-assistant/eval',
+    history: [{ version: ACCOUNT_TIMELINE_PROMPT_VERSION, effectiveDate: '2026-07-01', status: 'active', change: 'Version initiale versionnée.' }],
   },
   'product-help': {
     id: 'product-help', version: PRODUCT_HELP_PROMPT_VERSION, kind: 'task', status: 'active',
-    compatibleIntents: HELP, testSuite: 'src/services/verebona-assistant/eval',
+    effectiveDate: '2026-07-01', owner: PO, compatibleIntents: HELP, compatibleModels: ALIASES,
+    schemaVersion: RESPONSE_SCHEMA_VERSION, testSuite: 'src/services/verebona-assistant/eval',
+    history: [{ version: PRODUCT_HELP_PROMPT_VERSION, effectiveDate: '2026-07-01', status: 'active', change: 'Réponse à partir des seuls articles du Centre d’aide.' }],
   },
 };
 

@@ -296,6 +296,7 @@ export async function POST(
           existingTitles,
           existingAgendaItems,
           linkedAssetContext,
+          parentOperationId: operationId ?? undefined,
           onProgress: async (stage: string) => {
             await writer.write(sseEvent({ type: 'progress', stage }));
             await startStep(stage);
@@ -338,9 +339,6 @@ export async function POST(
           AiUsageTracker.completeOperation({
             operationId,
             businessResult: 'success',
-            totalCostMicros: result.totalCostMicros ?? 0,
-            totalInputTokens: result.totalInputTokens ?? 0,
-            totalOutputTokens: result.totalOutputTokens ?? 0,
             usedFallback: result.usedFallback,
             providerFallback: result.usedFallback ? result.modelUsed : undefined,
           }).catch(() => {});

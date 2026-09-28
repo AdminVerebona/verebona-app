@@ -9,12 +9,14 @@
  * Un message d'erreur (§4.2) est signalé comme tel, avec ses suites.
  */
 import { useState } from 'react';
+import { OFFLINE_PENDING_LABEL } from '@/lib/verebona/offline';
 import type { VerebonaAction, VerebonaMessage } from '@/lib/verebona/useVerebona';
 import { VerebonaActions } from './VerebonaActions';
 import { VerebonaSources } from './VerebonaSources';
 import { VerebonaFeedback } from './VerebonaFeedback';
 import { VerebonaCommandPlan } from './VerebonaCommandPlan';
 import { VerebonaExplanation } from './VerebonaExplanation';
+import { VerebonaResultGroups } from './VerebonaResultGroups';
 
 export interface VerebonaMessageItemProps {
   message: VerebonaMessage;
@@ -22,11 +24,13 @@ export interface VerebonaMessageItemProps {
   onClarify: (clarificationId: string, choice: { choiceId: string; label: string; secondaryLabel?: string }) => void;
   onConfirmPlan?: (planId: string) => void;
   onCancelPlan?: (planId: string) => void;
+  /** « Annuler » une action exécutée (15 minutes, plans réversibles). */
+  onUndoPlan?: (planId: string) => void;
   /** Renvoie la dernière question précédant ce message (RETRY_REQUEST). */
   onRetry?: (fromMessageId: string) => void;
 }
 
-export function VerebonaMessageItem({ message, onFeedback, onClarify, onConfirmPlan, onCancelPlan, onRetry }: VerebonaMessageItemProps) {
+export function VerebonaMessageItem({ message, onFeedback, onClarify, onConfirmPlan, onCancelPlan, onUndoPlan, onRetry }: VerebonaMessageItemProps) {
   const isUser = message.role === 'user';
   const isError = !isUser && Boolean(message.error);
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -52,6 +56,10 @@ export function VerebonaMessageItem({ message, onFeedback, onClarify, onConfirmP
       >
         {message.content}
       </div>
+      {/* §30.6 : question conservée hors ligne, envoyée au retour du réseau. */}
+      {isUser && message.pendingOffline && (
+        <p role="status" className="mt-1 text-right text-[11px] text-muted-foreground">{OFFLINE_PENDING_LABEL}</p>
+      )}
 
       {!isUser && message.clarification && (
         <div className="mt-2 flex flex-wrap gap-2">
@@ -67,8 +75,12 @@ export function VerebonaMessageItem({ message, onFeedback, onClarify, onConfirmP
         </div>
       )}
 
+      {!isUser && !isError && message.resultGroups && message.resultGroups.length > 0 && (
+        <VerebonaResultGroups groups={message.resultGroups} />
+      )}
+
       {!isUser && message.commandPlan && onConfirmPlan && onCancelPlan && (
-        <VerebonaCommandPlan plan={message.commandPlan} onConfirm={onConfirmPlan} onCancel={onCancelPlan} />
+        <VerebonaCommandPlan plan={message.commandPlan} onConfirm={onConfirmPlan} onCancel={onCancelPlan} onUndo={onUndoPlan} />
       )}
 
       {!isUser && actions.length > 0 && (

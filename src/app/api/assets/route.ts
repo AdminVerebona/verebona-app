@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { db } from '@/db';
 import { assets, accounts as accountsTable } from '@/db/schema';
@@ -311,6 +312,8 @@ export async function POST(request: NextRequest) {
       accountId: session.currentAccountId,
     });
 
+    // CDC Assistant §25.7 : événement métier (caches de l'assistant).
+    void emitBusinessEvent({ type: 'ASSET_CREATED', accountId: session.currentAccountId, entityId: newAsset[0]?.id ?? null });
     return NextResponse.json(newAsset[0], { status: 201 });
   } catch (error) {
     console.error('POST error:', error);
@@ -566,6 +569,8 @@ export async function DELETE(request: NextRequest) {
     }
 
     const { blobsScheduled } = await deleteAssetCompletely(existingAsset[0]);
+    // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
+    void emitBusinessEvent({ type: 'ASSET_DELETED', accountId: existingAsset[0].accountId, entityId: existingAsset[0].id });
 
     return NextResponse.json(
       {

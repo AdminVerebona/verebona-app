@@ -12,6 +12,7 @@ export const SOURCE_TYPES = [
   'agenda_item',        // échéance / événement
   'supplier',           // fournisseur
   'to_process_item',    // élément « À traiter »
+  'export_item',        // export ou dossier généré pour un bien (§12.1)
   'help_entry',         // article d'aide produit
   'product_rule',       // règle d'offre / règle métier versionnée
 ] as const;
@@ -59,6 +60,12 @@ export interface ResolvedSource {
   linkedAssetLabel?: string | null;
   usefulDate?: string | null;
   excerpt: string;            // ≈ 240 caractères
+  /** Statut lisible (« En cours d'analyse »…) — §23.1. */
+  statusLabel?: string | null;
+  /** Score de retrieval (§28.4 `relevance_score`). */
+  relevanceScore?: number | null;
+  /** Version de la source (article d'aide : version du corpus — §19.13). */
+  sourceVersion?: string | null;
   isAvailable: boolean;       // false = supprimée/inaccessible (§19.10)
   openAction?: import('./actions').VerebonaAction | null;
 }

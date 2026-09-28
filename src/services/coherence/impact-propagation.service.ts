@@ -717,6 +717,8 @@ export async function emitDocumentAnalyzed(
     priority: 10, // High priority — documents usually bring fresh data
     metadata: { aiExtractedFields: aiExtractedFields ?? {} },
   });
+  // CDC Assistant §25.7 : événement métier interne (caches, métriques).
+  publierEvenementAssistant('DOCUMENT_ANALYSIS_COMPLETED', accountId, documentId);
 }
 
 /**
@@ -740,6 +742,8 @@ export async function emitUserFieldEdit(
     priority: 5,
     metadata: { changedFields },
   });
+  // CDC Assistant §25.7 : événement métier interne (caches, métriques).
+  publierEvenementAssistant('ASSET_UPDATED', accountId, assetId);
 }
 
 /**
@@ -758,6 +762,8 @@ export async function emitAssetUpdated(
     priority: 5,
     metadata: { changedFields },
   });
+  // CDC Assistant §25.7 : événement métier interne (caches, métriques).
+  publierEvenementAssistant('ASSET_UPDATED', accountId, assetId);
 }
 
 /**
@@ -777,6 +783,8 @@ export async function emitAgendaItemCreated(
     priority: 3,
     metadata: {},
   });
+  // CDC Assistant §25.7 : événement métier interne (caches, métriques).
+  publierEvenementAssistant('AGENDA_ITEM_CREATED', accountId, agendaItemId);
 }
 
 /**
@@ -794,4 +802,19 @@ export async function emitManualRePropagation(
     priority: 10,
     metadata: { fullRePropagation: true },
   });
+}
+
+/**
+ * Relais vers le bus d'événements de l'assistant (CDC Assistant §25.7).
+ * Import différé et erreurs absorbées : l'assistant ne doit jamais faire
+ * échouer la propagation d'impact.
+ */
+function publierEvenementAssistant(
+  type: 'DOCUMENT_ANALYSIS_COMPLETED' | 'ASSET_UPDATED' | 'AGENDA_ITEM_CREATED',
+  accountId: number,
+  entityId: number,
+): void {
+  void import('@/services/verebona-assistant/events/business-events')
+    .then(({ emitBusinessEvent }) => emitBusinessEvent({ type, accountId, entityId }))
+    .catch(() => { /* non bloquant */ });
 }

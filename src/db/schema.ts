@@ -576,8 +576,10 @@ export const stripeWebhookLogs = pgTable('stripe_webhook_logs', {
 
 export const invoices = pgTable('invoices', {
   id: serial('id').primaryKey(),
-  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
-  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  // Migration 0206 : la facture survit à la suppression du compte
+  // (conservation des pièces comptables) — liens mis à NULL, jamais effacés.
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
   stripeInvoiceId: text('stripe_invoice_id').notNull().unique(),
   stripeCustomerId: text('stripe_customer_id').notNull(),
   amount: integer('amount').notNull(),
@@ -1842,7 +1844,8 @@ export const aiUsageAccountCounter = pgTable('ai_usage_account_counter', {
 // 2. Événement de consommation IA
 export const aiUsageEvent = pgTable('ai_usage_event', {
   id: serial('id').primaryKey(),
-  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  // Nullable depuis 0200 : appel technique sans compte (sonde, MOD-013).
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
   assetFileId: integer('asset_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
   operationType: text('operation_type').notNull(),
@@ -2445,6 +2448,22 @@ export const scheduledAccountDeletions = pgTable('scheduled_account_deletions', 
   reminderJ7SentAt: tstzOptional('reminder_j7_sent_at'),
   reminderJ1SentAt: tstzOptional('reminder_j1_sent_at'),
   initialEmailSentAt: tstzOptional('initial_email_sent_at'),
+  /**
+   * `account` : tout le compte et tous ses utilisateurs (rétractation,
+   * impayé, admin, essai abandonné) ; `user` : l'utilisateur demandeur et les
+   * comptes dont il est titulaire (suppression volontaire, migration 0206).
+   */
+  scope: text('scope').notNull().default('account'),
+  /** Adresse de la confirmation finale, relevée avant exécution puis effacée à l'envoi (0206). */
+  notifyEmail: text('notify_email'),
+  finalEmailSentAt: tstzOptional('final_email_sent_at'),
+  /** Reprise après échec (portée user) : tentatives, prochain essai (0206). */
+  attemptCount: integer('attempt_count').notNull().default(0),
+  nextAttemptAt: tstzOptional('next_attempt_at'),
+  /** Exécution réservée (annulation refusée pendant ce temps) (0206). */
+  processingStartedAt: tstzOptional('processing_started_at'),
+  /** Anomalie d'administration déjà signalée pour ce compte à rebours (0206). */
+  anomalyReportedAt: tstzOptional('anomaly_reported_at'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({

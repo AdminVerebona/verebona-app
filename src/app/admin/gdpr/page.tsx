@@ -21,7 +21,7 @@ import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Loader2, Plus, RefreshCw
 import { formatDateTime } from '@/lib/admin/format';
 import { ORIGIN_LABELS, RIGHT_LABELS, STATUS_LABELS, daysRemaining, parisDateOf } from '@/services/gdpr/rules';
 import { GdprRequestDialog } from './_components/GdprRequestDialog';
-import { accountLabel, formatIsoDate, subjectLabel, type GdprRequestItem } from './_components/types';
+import { accountLabel, deletionLabel, formatIsoDate, subjectLabel, type GdprRequestItem } from './_components/types';
 
 type View = 'open' | 'history';
 
@@ -245,6 +245,7 @@ function GdprPageContent() {
                         <TableCell className="text-xs">{formatDateTime(r.receivedAt)}</TableCell>
                         <TableCell className="text-sm">
                           {STATUS_LABELS[r.status]}
+                          {deletionLabel(r.deletion) && <span className="block text-xs text-muted-foreground">{deletionLabel(r.deletion)}</span>}
                           {r.lastError && <span className="block text-xs text-red-400">Erreur de traitement</span>}
                         </TableCell>
                         <TableCell className="text-xs">{ORIGIN_LABELS[r.origin]}</TableCell>

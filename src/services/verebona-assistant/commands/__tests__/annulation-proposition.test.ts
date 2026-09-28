@@ -90,6 +90,8 @@ async function unsafe(sql: string, params: unknown[] = []): Promise<unknown[]> {
     return [{ conversation_id: conv }];
   }
   if (q.startsWith('UPDATE verebona_conversations')) return [];
+  // Purge quotidienne des annulations d'actions exécutées (undo.service).
+  if (q.startsWith('DELETE FROM verebona_command_undo_steps')) return [];
   throw new Error(`SQL non simulé : ${q.slice(0, 80)}`);
 }
 

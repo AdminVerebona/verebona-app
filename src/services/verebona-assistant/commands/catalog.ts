@@ -91,7 +91,9 @@ export interface ActionResult {
 
 export type PlanStatus =
   | 'PENDING_CONFIRMATION' | 'EXECUTING' | 'EXECUTED' | 'PARTIAL' | 'FAILED'
-  | 'CANCELLED' | 'EXPIRED' | 'REFUSED';
+  | 'CANCELLED' | 'EXPIRED' | 'REFUSED'
+  /** Exécuté puis annulé par l'utilisateur dans la fenêtre prévue (undo.service). */
+  | 'UNDONE';
 
 /** Ce que le client reçoit : jamais les paramètres modifiables, seulement l'aperçu. */
 export interface CommandPlanPreview {

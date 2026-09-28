@@ -41,6 +41,12 @@ export interface AiGatewayRequest<T> {
    */
   idempotencyKey?: string;
   /**
+   * Durée de vie, en secondes, du résultat mis en cache sous cette clé. Absent :
+   * durée par défaut du service d'idempotence (1 h). L'assistant y passe sa
+   * fenêtre d'idempotence (CDC Assistant §43).
+   */
+  idempotencyTtlSeconds?: number;
+  /**
    * Version de la source analysée. Entre dans la clé d'idempotence (§5.7) :
    * réanalyser la même version ne doit pas produire un second appel.
    */

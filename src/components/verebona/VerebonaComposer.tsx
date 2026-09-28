@@ -1,6 +1,7 @@
 'use client';
-/** Champ de saisie — CDC §7.5 (≤ 2 000 caractères) / §7.8 (annulation). */
+/** Champ de saisie — CDC §7.5 (≤ 2 000 caractères) / §7.8 (annulation) / §30.6 (hors ligne). */
 import { useState } from 'react';
+import { composerState } from '@/lib/verebona/offline';
 
 export interface VerebonaComposerProps {
   isLoading: boolean;
@@ -12,12 +13,18 @@ export interface VerebonaComposerProps {
    */
   onSend: (text: string) => boolean | void | Promise<boolean>;
   onCancel: () => void;
+  /**
+   * §30.6 : navigateur hors ligne — l'envoi est désactivé et expliqué, le
+   * texte saisi reste dans le champ (rien n'est perdu). Défaut : en ligne.
+   */
+  offline?: boolean;
 }
 
-export function VerebonaComposer({ isLoading, onSend, onCancel }: VerebonaComposerProps) {
+export function VerebonaComposer({ isLoading, onSend, onCancel, offline = false }: VerebonaComposerProps) {
   const [text, setText] = useState('');
+  const etat = composerState(!offline, isLoading, text);
   const submit = () => {
-    if (!text.trim() || isLoading) return;
+    if (!etat.canSend) return;
     const envoye = text;
     const r = onSend(envoye);
     if (r === false) return;
@@ -28,6 +35,9 @@ export function VerebonaComposer({ isLoading, onSend, onCancel }: VerebonaCompos
   };
   return (
     <div className="border-t p-3">
+      {etat.notice && (
+        <p role="status" className="mb-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">{etat.notice}</p>
+      )}
       <div className="flex items-end gap-2">
         <textarea
           value={text}
@@ -42,7 +52,7 @@ export function VerebonaComposer({ isLoading, onSend, onCancel }: VerebonaCompos
         {isLoading ? (
           <button onClick={onCancel} className="rounded-lg border px-3 py-2 text-sm" aria-label="Annuler">Stop</button>
         ) : (
-          <button onClick={submit} disabled={!text.trim()} className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" aria-label="Envoyer">Envoyer</button>
+          <button onClick={submit} disabled={!etat.canSend} className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" aria-label="Envoyer">Envoyer</button>
         )}
       </div>
       <div className="mt-1 text-right text-[10px] text-muted-foreground">{text.length}/2000</div>

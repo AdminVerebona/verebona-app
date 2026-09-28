@@ -117,7 +117,10 @@ export async function persistAgendaDecisions(
           break;
 
         case 'skip_duplicate':
-          // Un doublon certain n'est jamais recréé (§4.4.4). Rien à faire.
+          // Un doublon certain n'est jamais recréé (§4.4.4). La consolidation
+          // est tracée sur l'échéance existante : c'est l'indicateur
+          // « consolidées » de l'écran T4 (T4-UI-06, SCR-05).
+          await recordConsolidation(decision, accountId);
           break;
 
         case 'retire_forecast':
@@ -176,6 +179,63 @@ async function createItem(
       seriesKey: decision.occurrence.seriesKey,
     });
   }
+}
+
+/** Type d'événement d'une consolidation (doublon certain rattaché à l'existant). */
+export const CONSOLIDATED_EVENT = 'DUPLICATE_CONSOLIDATED';
+
+/**
+ * Seul motif de `skip_duplicate` qui soit une VRAIE consolidation : le moteur
+ * émet aussi `skip_duplicate` pour chaque occurrence de récurrence déjà
+ * présente (`RECURRENCE_OCCURRENCE_EXISTS`, `RECURRENCE_OCCURRENCE_IN_PERIOD`,
+ * `RECURRENCE_OCCURRENCE_USER_PROTECTED`) — ce n'est pas une consolidation,
+ * c'est la série qui se retrouve elle-même.
+ */
+export const CONSOLIDATION_REASON = 'EXACT_DUPLICATE';
+
+/**
+ * T4-UI-06 : trace une consolidation — un doublon certain venu d'une AUTRE
+ * source que celle de l'échéance existante — dans `agenda_occurrence_events`
+ * (sans migration : `event_type` est libre).
+ *
+ * N'est PAS tracé :
+ *   · un autre motif que `EXACT_DUPLICATE` (occurrences de récurrence) ;
+ *   · une décision sans fichier source, ou sans échéance existante (doublon
+ *     interne au lot, pas encore créé) ;
+ *   · la réanalyse du document qui a créé l'échéance (même source) ;
+ *   · un couple (échéance, fichier source) déjà tracé : réanalyser le second
+ *     document ne compte pas une nouvelle consolidation.
+ * Ne bloque jamais.
+ */
+export async function recordConsolidation(decision: AgendaDecision, accountId: number): Promise<boolean> {
+  const id = decision.existingItemId;
+  const sourceFileId = decision.sourceFileId;
+  if (decision.reasonCode !== CONSOLIDATION_REASON) return false;
+  if (!id || id <= 0 || !sourceFileId) return false;
+  try {
+    const [item] = await pgClient.unsafe<{ origin_ref_type: string | null; origin_ref_id: number | null; already: boolean }[]>(
+      `SELECT i.origin_ref_type, i.origin_ref_id,
+              EXISTS (SELECT 1 FROM agenda_occurrence_events e
+                       WHERE e.agenda_item_id = i.id AND e.event_type = $3
+                         AND e.detail_json ->> 'sourceFileId' = $4) AS already
+         FROM agenda_items i
+        WHERE i.id = $1 AND i.account_id = $2`,
+      [id, accountId, CONSOLIDATED_EVENT, String(sourceFileId)],
+    );
+    if (!item || item.already) return false;
+    if (item.origin_ref_type === 'asset_file' && Number(item.origin_ref_id) === sourceFileId) return false;
+  } catch (e) {
+    console.error('[agenda] contrôle de consolidation impossible :', (e as Error).message);
+    return false;
+  }
+  await recordOccurrenceEvent(id, accountId, CONSOLIDATED_EVENT, {
+    reasonCode: decision.reasonCode,
+    date: decision.date,
+    sourceFileId,
+    originFieldKey: decision.originFieldKey ?? null,
+    deterministic: decision.deterministic,
+  });
+  return true;
 }
 
 /** Trace d'une étape du cycle de vie d'une occurrence. Ne bloque jamais. */

@@ -352,9 +352,14 @@ export async function analyzeDocument(
       equipments: Array<{ id: number; name: string; type: string | null; category: string | null }>;
     };
     onProgress?: (stage: string) => Promise<void>;
+    /**
+     * `ai_operation.id` ouvert par l'appelant (AiUsageTracker) : la passerelle
+     * y rattache ses étapes, seule mesure du coût et des jetons (GEN-005).
+     */
+    parentOperationId?: number;
   }
 ): Promise<AnalyzeDocumentOutput> {
-  const { assetFileId, assetFileIds, lotId, signedUrl, signedUrls, mimeType, promptVersion, accountId, userAssets, existingTitles, existingAgendaItems, linkedAssetContext, onProgress } = input;
+  const { assetFileId, assetFileIds, lotId, signedUrl, signedUrls, mimeType, promptVersion, accountId, userAssets, existingTitles, existingAgendaItems, linkedAssetContext, onProgress, parentOperationId } = input;
 
   const leadFileId = assetFileId;
   const allFileIds = assetFileIds || [leadFileId];
@@ -442,6 +447,7 @@ export async function analyzeDocument(
     const fullResult = await callGeminiWithFallback({
       accountId,
       sourceIds: allFileIds,
+      parentOperationId,
       promptVersion: PROMPT_VERSIONS.extract_full,
       fileUrls: allUrls,
       mimeType,

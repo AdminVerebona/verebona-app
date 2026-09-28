@@ -12,6 +12,7 @@ import { parseWriteBlocked, type WriteBlockedInfo } from '@/lib/write-blocked';
 import { toAssistantUiError, type AssistantUiError } from './error-messages';
 import { currentPlatform, errorActions, errorAssistantMessage, isCancelledResponse, retryTarget, type UiResultGroup } from './assistant-ui';
 import { enrichPageContext } from '@/lib/help-center/screens';
+import { isBrowserOnline, OfflineQueue } from './offline';
 
 export interface VerebonaAction {
   actionId: string;
@@ -34,11 +35,18 @@ export interface VerebonaCommandPlan {
    * rechargement du fil.
    */
   status: VerebonaPlanStatus;
+  /**
+   * Fin de la fenêtre « Annuler » d'une action exécutée et réversible
+   * (15 minutes, décision produit) ; null ou absent : pas de bouton.
+   */
+  undoUntil?: string | null;
 }
 
 export type VerebonaPlanStatus =
   | 'PENDING_CONFIRMATION' | 'DECIDING' | 'EXECUTING' | 'EXECUTED' | 'PARTIAL' | 'FAILED'
-  | 'CANCELLED' | 'EXPIRED' | 'REFUSED' | 'HANDLED';
+  | 'CANCELLED' | 'EXPIRED' | 'REFUSED' | 'HANDLED'
+  /** Action exécutée puis annulée par l'utilisateur (« Annuler » dans les 15 minutes). */
+  | 'UNDONE';
 
 export interface VerebonaMessage {
   id: string;
@@ -62,6 +70,10 @@ export interface VerebonaMessage {
    * actions « Réessayer » / « Ouvrir l'aide » portées par `actions`.
    */
   error?: AssistantUiError | null;
+  /** §30.6 : question en attente de connexion, envoyée au retour du réseau. */
+  pendingOffline?: boolean;
+  /** §27.11 : codes informatifs joints à la réponse (non bloquants). */
+  notices?: Array<{ code: string; message: string }>;
 }
 
 export interface UseVerebonaState {
@@ -144,6 +156,12 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
   const contextByMessage = useRef(new Map<string, Record<string, string> | undefined>());
   const messagesRef = useRef<VerebonaMessage[]>([]);
   messagesRef.current = state.messages;
+  // §30.6 : connexion du navigateur, et questions en attente de réseau.
+  const [online, setOnline] = useState(true);
+  const offlineQueue = useRef(new OfflineQueue());
+  // §27.6 : curseur des messages plus anciens du fil (null : tout est chargé).
+  const [olderCursor, setOlderCursor] = useState<number | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   const setConversationId = useCallback((id: number | null) => {
     conversationRef.current = id;
@@ -173,6 +191,8 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     }
     const data = await res.json().catch(() => ({ conversationId: null, messages: [] }));
     setConversationId(data.conversationId ?? null);
+    // Pagination par curseur (§27.6) : la page la plus récente d'abord.
+    setOlderCursor(typeof data.nextCursor === 'number' ? data.nextCursor : null);
     const messages: VerebonaMessage[] = (data.messages ?? []).map(fromHistory);
     // Commandes proposées : restituées sur le message qui les présentait,
     // avec leur état réel (une proposition en attente reste annulable).
@@ -211,18 +231,48 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
    * `false` si la question n'a pas abouti : l'appelant peut alors rendre le
    * texte saisi (§7.6, saisie conservée si l'appel échoue).
    */
-  const send = useCallback(async (text: string, extraContext?: Record<string, string>): Promise<boolean> => {
+  const send = useCallback(async (
+    text: string,
+    extraContext?: Record<string, string>,
+    /**
+     * Renvoi d'une question en attente (§30.6) : même identifiant de requête
+     * (idempotence §31.9) et même message du fil, qui cesse d'être « en attente ».
+     */
+    reprise?: { clientRequestId: string; userMessageId: string },
+  ): Promise<boolean> => {
     const message = text.trim();
     if (!message || message.length > 2000) return false;
+
+    // §30.6 : hors ligne, la question n'est pas perdue — elle reste dans le
+    // fil, « en attente de connexion », et part au retour du réseau.
+    if (!isBrowserOnline()) {
+      if (reprise) {
+        // Toujours hors ligne au moment du renvoi : la question reste en attente.
+        offlineQueue.current.enqueue({ messageId: reprise.userMessageId, text: message, context: extraContext, clientRequestId: reprise.clientRequestId });
+        return true;
+      }
+      const enAttente: VerebonaMessage = { id: newId(), role: 'user', content: message, pendingOffline: true };
+      contextByMessage.current.set(enAttente.id, extraContext);
+      offlineQueue.current.enqueue({ messageId: enAttente.id, text: message, context: extraContext, clientRequestId: newId() });
+      setState((s) => ({ ...s, messages: [...s.messages, enAttente] }));
+      return true;
+    }
 
     // Une seule demande active (§7.8) : on annule la précédente.
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const userMsg: VerebonaMessage = { id: newId(), role: 'user', content: message };
+    const userMsg: VerebonaMessage = { id: reprise?.userMessageId ?? newId(), role: 'user', content: message };
     contextByMessage.current.set(userMsg.id, extraContext);
-    setState((s) => ({ ...s, messages: [...s.messages, userMsg], isLoading: true, error: null }));
+    setState((s) => ({
+      ...s,
+      // Renvoi : le message déjà affiché n'est plus « en attente » (pas de doublon).
+      messages: reprise
+        ? s.messages.map((m) => (m.id === userMsg.id ? { ...m, pendingOffline: false } : m))
+        : [...s.messages, userMsg],
+      isLoading: true, error: null,
+    }));
 
     // Jamais d'impasse (§4.2) : toute erreur devient un message de
     // l'assistant, avec « Réessayer » et « Ouvrir l'aide ».
@@ -235,7 +285,8 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
       }));
     };
 
-    const clientRequestId = newId();
+    // Identifiant de requête : celui d'origine pour un renvoi (§30.6, §31.9).
+    const clientRequestId = reprise?.clientRequestId ?? newId();
     pendingRequestRef.current = clientRequestId;
     try {
       const res = await fetch('/api/verebona/messages', {
@@ -293,6 +344,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         clarification: data.clarification ?? null,
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
         resultGroups: Array.isArray(data.resultGroups) ? data.resultGroups : null,
+        notices: Array.isArray(data.notices) ? data.notices : undefined,
       };
       // Réponse `status: 'error'` (§27.11) : le libellé et les suites
       // viennent de `error-messages`, jamais d'un texte technique.
@@ -306,12 +358,72 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
       return !assistantMsg.error;
     } catch (e) {
       if ((e as Error).name === 'AbortError') return false; // annulation volontaire
+      // Coupure réseau pendant l'envoi (§30.6) : la question reste affichée,
+      // en attente, et sera renvoyée au retour de la connexion.
+      if (!isBrowserOnline()) {
+        offlineQueue.current.enqueue({ messageId: userMsg.id, text: message, context: extraContext, clientRequestId });
+        setState((s) => ({
+          ...s, isLoading: false, error: null,
+          messages: s.messages.map((m) => (m.id === userMsg.id ? { ...m, pendingOffline: true } : m)),
+        }));
+        return true;
+      }
       afficherErreur(toAssistantUiError({ error: { code: 'NETWORK_ERROR' } }));
       return false;
     } finally {
       if (pendingRequestRef.current === clientRequestId) pendingRequestRef.current = null;
     }
   }, [pageContext, refreshThreads, setConversationId]);
+
+  // ── Hors ligne (§30.6) ────────────────────────────────────────────────
+  // État initial lu au montage ; au retour du réseau, les questions en
+  // attente partent dans l'ordre, chacune avec son identifiant de requête
+  // D'ORIGINE : une question déjà reçue par le serveur avant la coupure est
+  // reconnue (idempotence §31.9) et n'est pas traitée une seconde fois.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setOnline(isBrowserOnline());
+    const horsLigne = () => setOnline(false);
+    const enLigne = () => {
+      setOnline(true);
+      void (async () => {
+        for (const q of offlineQueue.current.drain()) {
+          await sendRef.current(q.text, q.context, { clientRequestId: q.clientRequestId, userMessageId: q.messageId });
+        }
+      })();
+    };
+    window.addEventListener('offline', horsLigne);
+    window.addEventListener('online', enLigne);
+    return () => {
+      window.removeEventListener('offline', horsLigne);
+      window.removeEventListener('online', enLigne);
+    };
+  }, []);
+
+  /**
+   * Messages plus anciens du fil (§27.6) : page précédente, par curseur,
+   * ajoutée en tête du fil.
+   */
+  const loadOlder = useCallback(async () => {
+    const id = conversationRef.current;
+    if (!id || olderCursor == null || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const res = await fetch(`/api/verebona/conversation?conversationId=${id}&cursor=${olderCursor}`).catch(() => null);
+      const data = res && res.ok ? await res.json().catch(() => null) : null;
+      if (!data || data.conversationId !== id) return;
+      const anciens: VerebonaMessage[] = (data.messages ?? []).map(fromHistory);
+      setOlderCursor(typeof data.nextCursor === 'number' ? data.nextCursor : null);
+      setState((s) => {
+        const vus = new Set(s.messages.map((m) => m.id));
+        return { ...s, messages: [...anciens.filter((m) => !vus.has(m.id)), ...s.messages] };
+      });
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [olderCursor, loadingOlder]);
 
   /**
    * « Réessayer » (RETRY_REQUEST, §27.11) : renvoie la dernière question
@@ -396,9 +508,9 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
    * Confirmation explicite d'une commande préparée : seul l'identifiant du
    * plan part au serveur, qui exécute ce qui a été présenté — rien d'autre.
    */
-  const decidePlan = useCallback(async (planId: string, decision: 'confirm' | 'cancel') => {
-    const planStatus = (status: VerebonaPlanStatus) => (m: VerebonaMessage): VerebonaMessage => (
-      m.commandPlan?.planId === planId ? { ...m, commandPlan: { ...m.commandPlan, status } } : m
+  const decidePlan = useCallback(async (planId: string, decision: 'confirm' | 'cancel' | 'undo') => {
+    const planStatus = (status: VerebonaPlanStatus, patch: Partial<VerebonaCommandPlan> = {}) => (m: VerebonaMessage): VerebonaMessage => (
+      m.commandPlan?.planId === planId ? { ...m, commandPlan: { ...m.commandPlan, ...patch, status } } : m
     );
     // Précédent état, rétabli si la décision n'a pas pu être transmise.
     const avant = messagesRef.current.find((m) => m.commandPlan?.planId === planId)?.commandPlan?.status ?? 'PENDING_CONFIRMATION';
@@ -412,10 +524,31 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     const serveur = (data?.status ?? null) as VerebonaPlanStatus | null;
     const retour: VerebonaPlanStatus = avant === 'DECIDING' ? 'PENDING_CONFIRMATION' : avant;
     const etat: VerebonaPlanStatus = serveur ?? (!res || res.status === 403 ? retour : 'HANDLED');
-    setState((s) => ({ ...s, messages: s.messages.map(planStatus(etat)) }));
+    // Fenêtre « Annuler » : ouverte par une confirmation réussie ; fermée
+    // définitivement par un refus d'annulation (délai dépassé, action
+    // irréversible, objet modifié depuis) — le bouton disparaît.
+    const patch: Partial<VerebonaCommandPlan> = decision === 'confirm' && res?.ok
+      ? { undoUntil: typeof data?.undoUntil === 'string' ? data.undoUntil : null }
+      : decision === 'undo' && res && (res.ok || res.status === 409 || res.status === 404) ? { undoUntil: null } : {};
+    setState((s) => ({ ...s, messages: s.messages.map(planStatus(etat, patch)) }));
     let texte: string;
     if (!res || !res.ok) {
       texte = data?.error?.message ?? 'Action impossible pour le moment.';
+    } else if (decision === 'undo') {
+      // Annulation rejouée (déjà défaite) : pas de second message dans le fil.
+      if (data.alreadyHandled) {
+        setState((s) => ({ ...s, isLoading: false }));
+        return;
+      }
+      texte = data.message ?? 'J’ai annulé cette action.';
+      const cibles = (data.entities ?? []) as Array<{ type: string; id: number }>;
+      if (typeof window !== 'undefined') {
+        if (cibles.some((e) => e.type === 'agenda_item')) window.dispatchEvent(new CustomEvent('agenda-mutated'));
+        for (const e of cibles) {
+          if (e.type === 'asset') window.dispatchEvent(new CustomEvent('asset-details-updated', { detail: { assetId: e.id } }));
+        }
+        window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
+      }
     } else if (decision === 'cancel') {
       texte = data.message ?? 'D’accord, j’ai annulé cette action : rien n’a été modifié.';
       // Annulation rejouée (déjà annulée) : pas de second message dans le fil.
@@ -450,6 +583,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     const res = await fetch('/api/verebona/conversations', { method: 'POST' }).catch(() => null);
     const data = res && res.ok ? await res.json().catch(() => ({})) : {};
     setConversationId(data.conversationId ?? null);
+    setOlderCursor(null);
     setState({ messages: [], isLoading: false, error: null });
     void refreshThreads();
   }, [refreshThreads, setConversationId]);
@@ -479,6 +613,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     const url = id ? `/api/verebona/conversation?conversationId=${id}` : '/api/verebona/conversation';
     await fetch(url, { method: 'DELETE' }).catch(() => null);
     setConversationId(null);
+    setOlderCursor(null);
     setState({ messages: [], isLoading: false, error: null });
     void refreshThreads();
   }, [refreshThreads, setConversationId]);
@@ -487,6 +622,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
   const clearAll = useCallback(async () => {
     await fetch('/api/verebona/conversation', { method: 'DELETE' }).catch(() => null);
     setConversationId(null);
+    setOlderCursor(null);
     setState({ messages: [], isLoading: false, error: null });
     setThreads([]);
   }, [setConversationId]);
@@ -503,6 +639,12 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     ...state,
     conversationId,
     threads,
+    /** §30.6 : le navigateur est-il en ligne ? */
+    online,
+    /** §27.6 : reste-t-il des messages plus anciens à charger ? */
+    hasOlder: olderCursor != null,
+    loadingOlder,
+    loadOlder,
     send,
     retry,
     cancel,
@@ -512,6 +654,8 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     answerClarification,
     confirmPlan: (planId: string) => decidePlan(planId, 'confirm'),
     cancelPlan: (planId: string) => decidePlan(planId, 'cancel'),
+    /** « Annuler » une action exécutée, dans les 15 minutes (plans réversibles seulement). */
+    undoPlan: (planId: string) => decidePlan(planId, 'undo'),
     newConversation,
     selectConversation,
   };

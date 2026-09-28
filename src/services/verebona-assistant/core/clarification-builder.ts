@@ -189,3 +189,117 @@ export function buildEntityClarification(p: {
     status: 'PENDING',
   };
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// PÉRIODE NON IDENTIFIABLE ET ACTION AMBIGUË — §20.1
+//
+// Deux déclencheurs obligatoires du §20.1 n'existaient pas : « la période
+// n'est pas identifiable » (« mes factures de mars » sans année, « le devis
+// de l'autre jour ») et « l'action est ambiguë » (« ajoute », sans objet).
+// Les choix sont construits ICI, par le serveur : la demande rejouée à la
+// reprise (`resumeMessage`) est une substitution contrôlée, jamais un texte
+// fourni par le client.
+// ══════════════════════════════════════════════════════════════════════════
+
+type BaseClarification = {
+  accountId: number;
+  userId: number;
+  conversationId?: number;
+  originalMessage: string;
+  originalMessageId: string;
+  originalIntent: VerebonaIntent;
+  chainDepth: number;
+  now?: Date;
+};
+
+function enveloppe(p: BaseClarification, extra: Pick<ClarificationState, 'ambiguity' | 'candidateType' | 'candidates' | 'question'>): ClarificationState {
+  const now = p.now ?? new Date();
+  return {
+    clarificationId: randomUUID(),
+    conversationId: p.conversationId,
+    accountId: p.accountId,
+    userId: p.userId,
+    originalMessageId: p.originalMessageId,
+    originalMessage: p.originalMessage,
+    originalIntent: p.originalIntent,
+    resolvedContext: {},
+    ...extra,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
+    attemptCount: 0,
+    chainDepth: p.chainDepth,
+    status: 'PENDING',
+  };
+}
+
+/** Remplace l'expression de période (texte normalisé) dans la demande. */
+function substituerPeriode(message: string, expression: string, remplacement: string): string {
+  const norm = message.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
+  const i = norm.indexOf(expression);
+  if (i < 0) return remplacement ? `${message} (${remplacement})` : message;
+  // Un texte saisi en caractères composés garde la même longueur une fois
+  // normalisé : les positions coïncident et l'on substitue dans l'original
+  // (casse et accents conservés). Sinon, dans le texte normalisé.
+  const base = norm.length === message.length ? message : norm;
+  return `${base.slice(0, i)}${remplacement}${base.slice(i + expression.length)}`
+    .replace(/\s+/g, ' ').replace(/\s+([?.!,])/g, '$1').trim();
+}
+
+export function buildPeriodClarification(p: BaseClarification & {
+  expression: string;
+  choices: Array<{ id: string; label: string; replacement: string }>;
+}): ClarificationState {
+  return enveloppe(p, {
+    ambiguity: { kind: 'period', field: 'period', reason: 'PERIOD_UNIDENTIFIABLE' },
+    candidateType: 'period',
+    candidates: p.choices.slice(0, 6).map((c) => ({
+      id: c.id,
+      label: c.label,
+      resumeMessage: substituerPeriode(p.originalMessage, p.expression, c.replacement),
+    })),
+    question: 'Sur quelle période ?',
+  });
+}
+
+/** Choix proposés pour un verbe d'action seul (§20.1). */
+const CHOIX_ACTION: Record<string, Array<{ id: string; label: string; message: string; intent: VerebonaIntent }>> = {
+  ajouter: [
+    { id: 'action_add_document', label: 'Ajouter un document', message: 'Comment ajouter un document ?', intent: 'PRODUCT_HELP_HOW_TO' },
+    { id: 'action_add_agenda', label: 'Créer une échéance', message: 'Comment créer une échéance ?', intent: 'PRODUCT_HELP_HOW_TO' },
+    { id: 'action_add_asset', label: 'Ajouter un bien', message: 'Comment ajouter un bien ?', intent: 'PRODUCT_HELP_HOW_TO' },
+  ],
+  ouvrir: [
+    { id: 'action_open_documents', label: 'Mes documents', message: 'Ouvre mes documents', intent: 'NAVIGATION_OPEN' },
+    { id: 'action_open_agenda', label: 'Mon agenda', message: 'Ouvre mon agenda', intent: 'NAVIGATION_OPEN' },
+    { id: 'action_open_todo', label: '« À traiter »', message: 'Ouvre À traiter', intent: 'NAVIGATION_OPEN' },
+  ],
+  exporter: [
+    { id: 'action_export_how', label: 'Préparer un export', message: 'Comment exporter un dossier ?', intent: 'EXPORT_HELP' },
+    { id: 'action_export_list', label: 'Voir mes exports', message: 'Quels exports sont disponibles ?', intent: 'ACCOUNT_SEARCH_DOCUMENT' },
+  ],
+  modifier: [
+    { id: 'action_edit_asset', label: 'Modifier un bien', message: 'Comment modifier un bien ?', intent: 'PRODUCT_HELP_HOW_TO' },
+    { id: 'action_edit_document', label: 'Modifier un document', message: 'Comment modifier un document ?', intent: 'PRODUCT_HELP_HOW_TO' },
+  ],
+};
+
+/** Famille d'un verbe d'action seul, ou `null`. */
+export function familleAction(message: string): keyof typeof CHOIX_ACTION | null {
+  const t = plain(message);
+  if (/^(ajoute|ajouter|cree|creer)\b/.test(t)) return 'ajouter';
+  if (/^(ouvre|ouvrir)\b/.test(t)) return 'ouvrir';
+  if (/^(exporte|exporter)\b/.test(t)) return 'exporter';
+  if (/^(modifie|modifier)\b/.test(t)) return 'modifier';
+  return null;
+}
+
+export function buildActionClarification(p: BaseClarification): ClarificationState | null {
+  const famille = familleAction(p.originalMessage);
+  if (!famille) return null;
+  return enveloppe(p, {
+    ambiguity: { kind: 'action', field: 'intent', reason: 'ACTION_AMBIGUOUS' },
+    candidateType: 'action',
+    candidates: CHOIX_ACTION[famille].map((c) => ({ id: c.id, label: c.label, resumeMessage: c.message, resumeIntent: c.intent })),
+    question: famille === 'ouvrir' ? 'Que souhaitez-vous ouvrir ?' : 'Que souhaitez-vous faire ?',
+  });
+}

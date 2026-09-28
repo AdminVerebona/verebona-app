@@ -46,7 +46,7 @@ import {
 import { serverCacheDelete, serverCacheGet, serverCacheSet } from '@/lib/server-cache';
 import { markTrialConverted } from '@/services/trial.service';
 import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/lib/email/billing-emails';
-import { enforceStandardLimits } from '@/lib/plan-enforcement';
+import { endDuoSharing, enforceStandardLimits } from '@/lib/plan-enforcement';
 import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 
 // ─── Lecture des objets Stripe (API 2025-08-27.basil) ─────────────────────────
@@ -234,6 +234,21 @@ async function invalidateSessions(accountId: number): Promise<void> {
 }
 
 export async function syncSubscriptionFromStripe(
+  input: SubscriptionSyncInput,
+): Promise<SubscriptionSyncResult | null> {
+  const result = await synchroniserAbonnement(input);
+  // CDC Assistant §25.7 : l'offre du compte a pu changer (webhook, retour de
+  // paiement, synchronisation, changement d'offre par l'administration) —
+  // les caches de l'assistant du compte sont invalidés.
+  if (result && !result.skipped && result.accountId) {
+    void import('@/services/verebona-assistant/events/business-events')
+      .then(({ emitBusinessEvent }) => emitBusinessEvent({ type: 'PLAN_CHANGED', accountId: result.accountId }))
+      .catch(() => { /* non bloquant */ });
+  }
+  return result;
+}
+
+async function synchroniserAbonnement(
   input: SubscriptionSyncInput,
 ): Promise<SubscriptionSyncResult | null> {
   const { subscription, source } = input;
@@ -518,6 +533,14 @@ async function applyTransitionEffects(
     import('@/services/document-ai/retroactive-analysis.service')
       .then(({ scheduleRetroactiveAnalysis }) => scheduleRetroactiveAnalysis(accountId))
       .catch((err: Error) => console.error('[subscription-sync] analyse rétroactive :', err.message));
+  }
+
+  // Sortie de Premium Duo vers Premium : plus de second utilisateur
+  // (AID-DUO-005). Vers Standard, `enforceStandardLimits` s'en charge.
+  if (oldPlanType === 'PREMIUM_DUO' && newPlanType === 'PREMIUM') {
+    await endDuoSharing(ownerUserId).catch((e: Error) =>
+      console.error('[subscription-sync] fin du partage Duo non appliquée :', e.message),
+    );
   }
 
   const leavesPremium = newPlanType === 'STANDARD' && PREMIUM_PLANS.includes(oldPlanType);

@@ -156,6 +156,12 @@ describe('gemini-client (analyse documentaire historique) → SOURCE_ANALYSIS / 
     expect(r).toMatchObject({ parsed: [[0, 1], [2]], model: 'm-principal', costMicros: 42, inputTokens: 10 });
   });
 
+  it('GEN-005 : rattache les appels à l’opération métier transmise (mesure unique)', async () => {
+    execute.mockImplementation(answer('{"a":1}'));
+    await callGeminiWithFallback({ ...base, parentOperationId: 555 });
+    expect(lastRequest().parentOperationId).toBe(555);
+  });
+
   it('passe de détail : plafond de 8 000 jetons', async () => {
     execute.mockImplementation(answer('{"a":1}'));
     await callGeminiWithFallback({ ...base, promptVersion: PROMPT_VERSIONS.extract_detail });
@@ -208,7 +214,8 @@ describe('enrich-and-coherence → DATA_RECONCILIATION / legacy_enrich_coherence
     expect(req.maxModelAttempts).toBeUndefined(); // chaîne complète de T3, comme les trois modèles d'avant
     expect(getOperation('legacy_enrich_coherence')).toMatchObject({ jsonResponse: true, timeoutMs: 45_000 });
     expect(req.promptVariables[LEGACY_PROMPT_VARIABLE]).toContain('Acte de vente');
-    expect(completeOperation).toHaveBeenCalledWith(expect.objectContaining({ businessResult: 'success', totalCostMicros: 42 }));
+    // GEN-005 : le coût n'est plus déclaré au tracker — la passerelle le mesure.
+    expect(completeOperation).toHaveBeenCalledWith({ operationId: 555, businessResult: 'success' });
   });
 
   it('AI_BLOCKED : aucun enrichissement, opération close en erreur', async () => {

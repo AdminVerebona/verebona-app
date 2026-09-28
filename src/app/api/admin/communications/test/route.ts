@@ -1,7 +1,8 @@
 /**
  * POST /api/admin/communications/test — CDC Back-Office V1 COM-010, REC-MOD-02.
  *
- * Corps : `{ eventCode }`. L'e-mail de test part UNIQUEMENT vers l'adresse de
+ * Corps : `{ eventCode, assetId?, documentId?, deadlineId?, paymentId?, withdrawalId? }` — le contexte
+ * optionnel (COM-008) est validé contre le compte de l'administrateur. L'e-mail de test part UNIQUEMENT vers l'adresse de
  * l'administrateur connecté, lue dans la session : aucun destinataire n'est
  * accepté du client. Les variables sont celles du propre compte de
  * l'administrateur (COM-007) ; le test part même si le canal est désactivé.
@@ -16,8 +17,13 @@ import {
   listEventDefinitions,
   loadAdminPreviewContext,
   loadEmailTemplateCodes,
+  loadPreviewContextOptions,
   resolveTemplateVariables,
+  selectPreviewContext,
+  contextVariables,
 } from '@/services/admin/communications.service';
+
+const idOf = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null);
 
 export async function POST(request: NextRequest) {
   let adminId: number;
@@ -32,7 +38,16 @@ export async function POST(request: NextRequest) {
     return sessionErrorResponse(error);
   }
 
-  const body = (await request.json().catch(() => null)) as { eventCode?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as
+    | {
+        eventCode?: unknown;
+        assetId?: unknown;
+        documentId?: unknown;
+        deadlineId?: unknown;
+        paymentId?: unknown;
+        withdrawalId?: unknown;
+      }
+    | null;
   if (!body || typeof body.eventCode !== 'string') {
     return NextResponse.json({ code: 'INVALID_BODY', message: 'Corps attendu : { eventCode }.' }, { status: 400 });
   }
@@ -51,7 +66,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const ctx = await loadAdminPreviewContext(adminId, currentAccountId);
+    const options = await loadPreviewContextOptions(adminId, currentAccountId);
+    const selected = selectPreviewContext(options, {
+      assetId: idOf(body.assetId),
+      documentId: idOf(body.documentId),
+      deadlineId: idOf(body.deadlineId),
+      paymentId: idOf(body.paymentId),
+      withdrawalId: idOf(body.withdrawalId),
+    });
+    const ctx = { ...(await loadAdminPreviewContext(adminId, currentAccountId)), extra: contextVariables(selected) };
     const { variables, missingCount } = resolveTemplateVariables([template.subject, template.body], ctx, appBaseUrl());
     const result = await emailService.sendTest(template.type, adminEmail, variables);
     if (!result.success) {

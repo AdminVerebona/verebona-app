@@ -35,6 +35,8 @@ import {
   transactionalLockReason,
   type CommunicationChannel,
 } from '@/lib/notifications/channel-activation';
+import { planLabelOf } from '@/lib/notifications/subscription-messages';
+import { formatMoney } from '@/lib/admin/format';
 
 // ── Libellés ────────────────────────────────────────────────────────────────
 
@@ -414,6 +416,8 @@ export interface AdminPreviewContext {
   email: string;
   accountName: string | null;
   planLabel: string | null;
+  /** Variables du contexte choisi (bien, document, échéance, abonnement — COM-008). */
+  extra?: Record<string, string>;
 }
 
 /** Données du PROPRE compte de l'administrateur connecté (COM-007, SEC-005). */
@@ -469,6 +473,7 @@ export function resolveTemplateVariables(
     loginUrl: `${base}/login`,
     appUrl: base,
     year: String(new Date().getFullYear()),
+    ...(ctx.extra ?? {}),
   };
   const names = new Set<string>();
   for (const text of texts) {
@@ -509,4 +514,341 @@ export async function findEmailTemplate(templateCode: string): Promise<EmailTemp
 
 export function appBaseUrl(): string {
   return process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'https://app.verebona.fr';
+}
+
+/**
+ * Libellé métier d'un type de communication (événement du catalogue ou code
+ * de gabarit e-mail), pour l'historique de la fiche utilisateur (COM-014).
+ */
+export function communicationTypeLabel(code: string): string {
+  if (!code) return '—';
+  if (EVENT_LABELS[code]) return EVENT_LABELS[code];
+  const upper = code.toUpperCase();
+  const tx = TRANSACTIONAL_EMAILS.find((t) => t.templateCode === upper);
+  if (tx) return tx.label;
+  if (EVENT_LABELS[upper]) return EVENT_LABELS[upper];
+  return code;
+}
+
+// ── COM-008 : contexte de prévisualisation choisi dans le compte de l'admin ──
+
+export interface PreviewContextOptions {
+  accountId: number | null;
+  assets: Array<{ id: number; name: string }>;
+  documents: Array<{ id: number; title: string; assetName: string | null }>;
+  deadlines: Array<{ id: number; title: string; date: string | null }>;
+  subscription: { planCode: string; status: string; currentPeriodEndAt: string | null } | null;
+  /** Paiements (factures) du compte, les plus récents d'abord (COM-008). */
+  payments: PreviewPaymentOption[];
+  /** Rétractations du compte, s'il y en a (COM-008). */
+  withdrawals: PreviewWithdrawalOption[];
+}
+
+export interface PreviewPaymentOption {
+  id: number;
+  /** Montant en centimes. */
+  amount: number;
+  currency: string;
+  status: string;
+  /** Date de paiement, sinon de création de la facture (ISO). */
+  date: string | null;
+  planCode: string | null;
+  billingPeriod: string | null;
+}
+
+export interface PreviewWithdrawalOption {
+  id: number;
+  publicReference: string;
+  status: string;
+  requestedAt: string | null;
+  /** Remboursement prévu, en centimes (null : à déterminer). */
+  amountExpected: number | null;
+  currency: string;
+  planCode: string | null;
+  billingPeriod: string | null;
+  dataExportDeadlineAt: string | null;
+}
+
+const toIso = (d: Date | string | null | undefined): string | null => {
+  if (!d) return null;
+  const date = new Date(d);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+/** Objets sélectionnables, pris EXCLUSIVEMENT dans le compte de l'admin (COM-007, COM-008). */
+export async function loadPreviewContextOptions(adminUserId: number, sessionAccountId?: number | null): Promise<PreviewContextOptions> {
+  const { resolveAdminOwnAccountId } = await import('./admin-own-account');
+  const accountId = await resolveAdminOwnAccountId(adminUserId, sessionAccountId);
+  if (!accountId) {
+    return { accountId: null, assets: [], documents: [], deadlines: [], subscription: null, payments: [], withdrawals: [] };
+  }
+  const [assets, documents, deadlines, [sub], payments, withdrawals] = await Promise.all([
+    pgClient.unsafe<{ id: number; name: string }[]>(
+      `SELECT id, name FROM assets WHERE account_id = $1 AND deleted_at IS NULL ORDER BY name LIMIT 100`,
+      [accountId],
+    ),
+    pgClient.unsafe<{ id: number; title: string; asset_name: string | null }[]>(
+      `SELECT f.id, coalesce(f.retained_title, f.original_filename, f.filename, 'Document #' || f.id) AS title, a.name AS asset_name
+         FROM asset_files f LEFT JOIN assets a ON a.id = f.asset_id
+        WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.is_web_link = false
+        ORDER BY coalesce(f.uploaded_at, f.created_at) DESC LIMIT 100`,
+      [accountId],
+    ),
+    pgClient.unsafe<{ id: number; title: string; start_date: string | null }[]>(
+      `SELECT id, title, start_date::text AS start_date FROM agenda_items
+        WHERE account_id = $1 ORDER BY start_date DESC NULLS LAST LIMIT 100`,
+      [accountId],
+    ),
+    pgClient.unsafe<{ plan_code: string; status: string; current_period_end_at: Date | null }[]>(
+      `SELECT plan_code, status, current_period_end_at FROM account_subscriptions WHERE account_id = $1 LIMIT 1`,
+      [accountId],
+    ),
+    pgClient.unsafe<{
+      id: number; amount: number; currency: string; status: string; paid_at: Date | null; created_at: Date | null;
+      plan_code: string | null; billing_period: string | null;
+    }[]>(
+      `SELECT id, amount, currency, status, paid_at, created_at, plan_code, billing_period
+         FROM invoices WHERE account_id = $1
+        ORDER BY coalesce(paid_at, created_at) DESC NULLS LAST LIMIT 50`,
+      [accountId],
+    ),
+    pgClient.unsafe<{
+      id: number; public_reference: string; status: string; requested_at: Date | null; amount_expected: number | null;
+      currency: string; plan_code: string | null; billing_period: string | null; data_export_deadline_at: Date | null;
+    }[]>(
+      `SELECT w.id, w.public_reference, w.status, w.requested_at, w.amount_expected, w.currency,
+              s.plan_code, s.billing_period, w.data_export_deadline_at
+         FROM withdrawal_requests w
+         LEFT JOIN account_subscriptions s ON s.id = w.subscription_id_internal
+        WHERE w.account_id = $1
+        ORDER BY w.requested_at DESC NULLS LAST LIMIT 20`,
+      [accountId],
+    ),
+  ]);
+  return {
+    accountId,
+    assets: assets.map((a) => ({ id: a.id, name: a.name })),
+    documents: documents.map((d) => ({ id: d.id, title: d.title, assetName: d.asset_name })),
+    deadlines: deadlines.map((d) => ({ id: d.id, title: d.title, date: d.start_date })),
+    subscription: sub
+      ? { planCode: sub.plan_code, status: sub.status, currentPeriodEndAt: sub.current_period_end_at ? new Date(sub.current_period_end_at).toISOString() : null }
+      : null,
+    payments: payments.map((p) => ({
+      id: p.id,
+      amount: Number(p.amount),
+      currency: p.currency,
+      status: p.status,
+      date: toIso(p.paid_at ?? p.created_at),
+      planCode: p.plan_code,
+      billingPeriod: p.billing_period,
+    })),
+    withdrawals: withdrawals.map((w) => ({
+      id: w.id,
+      publicReference: w.public_reference,
+      status: w.status,
+      requestedAt: toIso(w.requested_at),
+      amountExpected: w.amount_expected == null ? null : Number(w.amount_expected),
+      currency: w.currency,
+      planCode: w.plan_code,
+      billingPeriod: w.billing_period,
+      dataExportDeadlineAt: toIso(w.data_export_deadline_at),
+    })),
+  };
+}
+
+// ── COM-008 : paiements et rétractations ────────────────────────────────────
+
+export { relevantPreviewContexts } from '@/lib/admin/communication-contexts';
+
+/** Montant lisible (centimes → « 9,90 € »), vide si inconnu. Pur. */
+export function formatAmountLabel(cents: number | null | undefined, currency = 'eur'): string {
+  if (cents == null || !Number.isFinite(cents)) return '';
+  return formatMoney(cents, currency || 'eur');
+}
+
+const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  paid: 'Payé',
+  open: 'En attente de paiement',
+  draft: 'Brouillon',
+  uncollectible: 'Impayé',
+  void: 'Annulé',
+  failed: 'Échoué',
+};
+
+const WITHDRAWAL_STATUS_LABELS: Record<string, string> = {
+  received: 'Reçue',
+  manual_review: 'En cours d’examen',
+  processing: 'En cours de traitement',
+  completed: 'Traitée',
+  failed: 'En échec',
+  rejected: 'Refusée',
+};
+
+export const paymentStatusLabel = (s: string): string => PAYMENT_STATUS_LABELS[s] ?? s;
+export const withdrawalStatusLabel = (s: string): string => WITHDRAWAL_STATUS_LABELS[s] ?? s;
+
+const billingPeriodLabel = (p: string | null | undefined): string =>
+  p === 'yearly' ? 'annuelle' : p === 'monthly' ? 'mensuelle' : '';
+
+/** « Verebona Premium — facturation annuelle », comme l'accusé de rétractation. */
+function contractLabelOf(planCode: string | null, billingPeriod: string | null): string {
+  if (!planCode) return '';
+  const offer = `Verebona ${planLabelOf({ planCode }) ?? planCode}`;
+  const period = billingPeriodLabel(billingPeriod);
+  return period ? `${offer} — facturation ${period}` : offer;
+}
+
+export interface PreviewSelection {
+  assetId?: number | null;
+  documentId?: number | null;
+  deadlineId?: number | null;
+  paymentId?: number | null;
+  withdrawalId?: number | null;
+}
+
+export interface SelectedPreviewContext {
+  asset: { id: number; name: string } | null;
+  document: { id: number; title: string } | null;
+  deadline: { id: number; title: string; date: string | null } | null;
+  subscription: PreviewContextOptions['subscription'];
+  payment: PreviewPaymentOption | null;
+  withdrawal: PreviewWithdrawalOption | null;
+  /** Sélections refusées (objet hors du compte de l'admin) : jamais utilisées. */
+  rejected: string[];
+}
+
+/** Valide la sélection contre les options du compte de l'admin (SEC-005). Pur. */
+export function selectPreviewContext(options: PreviewContextOptions, sel: PreviewSelection): SelectedPreviewContext {
+  const rejected: string[] = [];
+  const pick = <T extends { id: number }>(list: T[], id: number | null | undefined, label: string): T | null => {
+    if (id == null) return null;
+    const found = list.find((x) => x.id === id) ?? null;
+    if (!found) rejected.push(label);
+    return found;
+  };
+  const document = pick(options.documents, sel.documentId, 'document');
+  return {
+    asset: pick(options.assets, sel.assetId, 'bien'),
+    document: document ? { id: document.id, title: document.title } : null,
+    deadline: pick(options.deadlines, sel.deadlineId, 'échéance'),
+    subscription: options.subscription,
+    payment: pick(options.payments ?? [], sel.paymentId, 'paiement'),
+    withdrawal: pick(options.withdrawals ?? [], sel.withdrawalId, 'rétractation'),
+    rejected,
+  };
+}
+
+const formatFrDate = (iso: string | null | undefined): string => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+};
+
+const formatFrDateTime = (iso: string | null | undefined): string => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ''
+    : new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'long', timeStyle: 'short' }).format(d);
+};
+
+/**
+ * Variables de gabarit issues du contexte choisi (COM-008). Pur.
+ * `appUrl` sert aux liens de suivi de rétractation.
+ */
+export function contextVariables(ctx: SelectedPreviewContext, appUrl: string = appBaseUrl()): Record<string, string> {
+  const v: Record<string, string> = {};
+  if (ctx.asset) {
+    v.assetName = ctx.asset.name;
+    v.assetLabel = ctx.asset.name;
+  }
+  if (ctx.document) {
+    v.documentTitle = ctx.document.title;
+    v.documentName = ctx.document.title;
+  }
+  if (ctx.deadline) {
+    v.deadlineLabel = ctx.deadline.title;
+    v.deadlineTitle = ctx.deadline.title;
+    if (ctx.deadline.date) v.deadlineDate = formatFrDate(ctx.deadline.date);
+  }
+  if (ctx.subscription) {
+    const end = formatFrDate(ctx.subscription.currentPeriodEndAt);
+    if (end) {
+      v.nextBillingDate = end;
+      v.expiryDate = end;
+      v.renewalDate = end;
+    }
+  }
+  // Paiement choisi : montant, date, statut et offre facturée.
+  if (ctx.payment) {
+    const p = ctx.payment;
+    const amount = formatAmountLabel(p.amount, p.currency);
+    if (amount) {
+      v.amountLabel = amount;
+      v.amount = amount;
+      v.paymentAmount = amount;
+    }
+    const date = formatFrDate(p.date);
+    if (date) {
+      v.paymentDate = date;
+      v.invoiceDate = date;
+    }
+    v.paymentStatus = paymentStatusLabel(p.status);
+    const contract = contractLabelOf(p.planCode, p.billingPeriod);
+    if (contract) v.contractLabel = contract;
+  }
+  // Rétractation choisie : prioritaire sur le paiement pour le montant, car
+  // l'accusé annonce le remboursement PRÉVU, pas le montant facturé.
+  if (ctx.withdrawal) {
+    const w = ctx.withdrawal;
+    const base = appUrl.replace(/\/+$/, '');
+    v.publicReference = w.publicReference;
+    v.withdrawalStatus = withdrawalStatusLabel(w.status);
+    const requested = formatFrDateTime(w.requestedAt);
+    if (requested) v.requestedAtLabel = requested;
+    v.amountLabel = w.amountExpected == null ? 'à déterminer' : formatAmountLabel(w.amountExpected, w.currency);
+    const contract = contractLabelOf(w.planCode, w.billingPeriod);
+    if (contract) v.contractLabel = contract;
+    const deadline = formatFrDate(w.dataExportDeadlineAt);
+    if (deadline) v.dataExportDeadlineLabel = deadline;
+    v.trackingUrl = `${base}/retractation/suivi/${encodeURIComponent(w.publicReference)}`;
+    v.legalPermalinkUrl = `${base}/cgvu`;
+  }
+  return v;
+}
+
+/** Payload de catalogue (push / in-app) construit depuis le contexte choisi. Pur. */
+export function contextPayload(ctx: SelectedPreviewContext, accountId: number | null): Record<string, unknown> {
+  const p: Record<string, unknown> = {};
+  if (accountId) p.accountId = accountId;
+  if (ctx.asset) {
+    p.assetId = ctx.asset.id;
+    p.assetName = ctx.asset.name;
+    p.assetLabel = ctx.asset.name;
+  }
+  if (ctx.document) {
+    p.assetFileId = ctx.document.id;
+    p.documentTitle = ctx.document.title;
+    p.documents = [{ assetFileId: ctx.document.id, title: ctx.document.title }];
+  }
+  if (ctx.deadline) {
+    p.count = 1;
+    p.agendaItemIds = [ctx.deadline.id];
+    if (ctx.deadline.date) p.date = ctx.deadline.date;
+    p.deadlineLabel = ctx.deadline.title;
+  }
+  if (ctx.subscription) p.planCode = ctx.subscription.planCode;
+  if (ctx.payment) {
+    p.invoiceId = ctx.payment.id;
+    p.amount = ctx.payment.amount;
+    p.currency = ctx.payment.currency;
+    p.amountLabel = formatAmountLabel(ctx.payment.amount, ctx.payment.currency);
+    if (ctx.payment.planCode) p.planCode = ctx.payment.planCode;
+    if (ctx.payment.billingPeriod) p.billingPeriod = ctx.payment.billingPeriod;
+  }
+  if (ctx.withdrawal) {
+    p.withdrawalId = ctx.withdrawal.id;
+    p.publicReference = ctx.withdrawal.publicReference;
+  }
+  return p;
 }

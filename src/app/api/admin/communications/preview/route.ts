@@ -7,9 +7,15 @@
  * remplacée par une mention explicite et la prévisualisation est déclarée
  * incomplète (COM-009) — jamais de donnée fictive ni d'un autre compte.
  *
- * Push / in-app : le contenu est rendu par le catalogue. Il reste générique
- * (vie privée, CDC notifications §4.3) ; lorsqu'il dépend d'un contexte (bien,
- * document, échéance), la prévisualisation l'indique.
+ * COM-008 : `assetId`, `documentId`, `deadlineId`, `paymentId` (facture) et
+ * `withdrawalId` (rétractation) optionnels désignent le
+ * contexte à utiliser, choisi parmi les objets du compte de l'administrateur
+ * (`GET …/preview-context`). Un identifiant hors de ce compte est ignoré et
+ * signalé (`rejected`), jamais utilisé.
+ *
+ * Push / in-app : le contenu est rendu par le catalogue avec le payload
+ * construit depuis ce contexte ; s'il manque une donnée requise, la
+ * prévisualisation est déclarée impossible ou incomplète (COM-009).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, getSession, sessionErrorResponse } from '@/lib/auth-guards';
@@ -23,8 +29,18 @@ import {
   listEventDefinitions,
   loadAdminPreviewContext,
   loadEmailTemplateCodes,
+  loadPreviewContextOptions,
   resolveTemplateVariables,
+  selectPreviewContext,
+  contextPayload,
+  contextVariables,
 } from '@/services/admin/communications.service';
+
+function optionalId(raw: string | null): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
 
 export async function GET(request: NextRequest) {
   let adminId: number;
@@ -50,6 +66,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ code: 'UNKNOWN_CHANNEL', message: 'Canal inconnu pour cet événement.' }, { status: 404 });
     }
 
+    const options = await loadPreviewContextOptions(adminId, currentAccountId);
+    const selected = selectPreviewContext(options, {
+      assetId: optionalId(url.searchParams.get('assetId')),
+      documentId: optionalId(url.searchParams.get('documentId')),
+      deadlineId: optionalId(url.searchParams.get('deadlineId')),
+      paymentId: optionalId(url.searchParams.get('paymentId')),
+      withdrawalId: optionalId(url.searchParams.get('withdrawalId')),
+    });
+    const rejected = selected.rejected;
+
     if (channel === 'email') {
       const template = found.event.emailTemplateCode ? await findEmailTemplate(found.event.emailTemplateCode) : null;
       if (!template) {
@@ -59,7 +85,7 @@ export async function GET(request: NextRequest) {
           message: 'Aucun gabarit e-mail n’est enregistré pour ce modèle : prévisualisation impossible.',
         });
       }
-      const ctx = await loadAdminPreviewContext(adminId, currentAccountId);
+      const ctx = { ...(await loadAdminPreviewContext(adminId, currentAccountId)), extra: contextVariables(selected) };
       const { variables, missingCount } = resolveTemplateVariables([template.subject, template.body], ctx, appBaseUrl());
       const body = fillTemplate(template.body, variables);
       return NextResponse.json({
@@ -71,6 +97,7 @@ export async function GET(request: NextRequest) {
         recipient: ctx.email,
         incomplete: missingCount > 0,
         missingCount,
+        rejected,
       });
     }
 
@@ -78,9 +105,11 @@ export async function GET(request: NextRequest) {
     if (!entry) {
       return NextResponse.json({ channel, available: false, message: 'Aucun rendu disponible pour ce canal.' });
     }
+    const payload = contextPayload(selected, options.accountId);
+    const parsed = entry.payloadSchema.safeParse(payload);
     let rendered: ReturnType<typeof entry.render> | null = null;
     try {
-      rendered = entry.render({});
+      rendered = entry.render((parsed.success ? parsed.data : payload) as never);
     } catch {
       rendered = null;
     }
@@ -88,20 +117,23 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         channel,
         available: false,
+        needsContext: true,
+        rejected,
         message:
-          'Ce modèle dépend d’un contexte (bien, document, échéance…) absent du compte administrateur : prévisualisation impossible.',
+          'Ce modèle dépend d’un contexte (bien, document, échéance…) : choisissez-le dans votre compte. Si votre compte n’en contient pas, la prévisualisation est impossible.',
       });
     }
     const title = channel === 'push' ? rendered.pushTitle : rendered.bellTitle;
     const body = channel === 'push' ? rendered.pushBody : rendered.bellBody;
-    const incomplete = /undefined|null|NaN/.test(`${title} ${body}`);
+    const incomplete = !parsed.success || /undefined|null|NaN/.test(`${title} ${body}`);
     return NextResponse.json({
       channel,
       available: true,
-      title: incomplete ? title.replace(/undefined|null|NaN/g, '[donnée indisponible]') : title,
-      body: incomplete ? body.replace(/undefined|null|NaN/g, '[donnée indisponible]') : body,
+      title: title.replace(/undefined|null|NaN/g, '[donnée indisponible]'),
+      body: body.replace(/undefined|null|NaN/g, '[donnée indisponible]'),
       incomplete,
-      contextual: true,
+      needsContext: !parsed.success,
+      rejected,
     });
   } catch (error) {
     console.error('[admin/communications/preview] GET :', error);

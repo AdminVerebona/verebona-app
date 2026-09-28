@@ -18,23 +18,40 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
+import { httpRequestId, mutationRateLimited, withRequestId } from '@/lib/verebona/api-guard';
+import { PlanParamsSchema } from '@/lib/verebona/api-schemas';
 import { cancelCommandPlan } from '@/services/verebona-assistant/commands/plan.service';
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ planId: string }> },
+  ctx: { params: Promise<{ planId: string }> },
 ) {
+  const httpId = httpRequestId(req);
+  return withRequestId(await traiter(req, ctx, httpId), httpId);
+}
+
+async function traiter(
+  req: NextRequest,
+  { params }: { params: Promise<{ planId: string }> },
+  httpId: string,
+): Promise<NextResponse> {
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
+  // §31.10 : limiteur des routes qui écrivent.
+  const limite = mutationRateLimited(session.userId, accountId, 'command', httpId);
+  if (limite) return limite;
 
   await ensureMigrations();
-  const { planId } = await params;
-  if (!planId || planId.length > 64) {
+  // §27 : identifiant validé par schéma ; un identifiant mal formé est
+  // traité comme inexistant (rien n'est révélé).
+  const parsed = PlanParamsSchema.safeParse(await params);
+  if (!parsed.success) {
     return NextResponse.json({ error: { code: 'PLAN_NOT_FOUND', message: 'Cette action n’existe pas ou ne vous appartient pas.', recoverable: false } }, { status: 404 });
   }
+  const { planId } = parsed.data;
   const r = await cancelCommandPlan({ planId, accountId, userId: session.userId });
   if (!r.ok) {
     return NextResponse.json(

@@ -12,15 +12,31 @@ export interface VerebonaConversationProps {
   onClarify: (clarificationId: string, choice: { choiceId: string; label: string; secondaryLabel?: string }) => void;
   onConfirmPlan?: (planId: string) => void;
   onCancelPlan?: (planId: string) => void;
+  /** « Annuler » une action exécutée (15 minutes, plans réversibles). */
+  onUndoPlan?: (planId: string) => void;
   /** « Réessayer » (RETRY_REQUEST, §27.11). */
   onRetry?: (fromMessageId: string) => void;
+  /** §27.6 : messages plus anciens disponibles (pagination par curseur). */
+  hasOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
 }
 
-export function VerebonaConversation({ messages, isLoading, onFeedback, onClarify, onConfirmPlan, onCancelPlan, onRetry }: VerebonaConversationProps) {
+export function VerebonaConversation({ messages, isLoading, onFeedback, onClarify, onConfirmPlan, onCancelPlan, onUndoPlan, onRetry, hasOlder, loadingOlder, onLoadOlder }: VerebonaConversationProps) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-4">
+      {hasOlder && onLoadOlder && (
+        <button
+          type="button"
+          onClick={onLoadOlder}
+          disabled={loadingOlder}
+          className="self-center rounded-full border px-3 py-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50"
+        >
+          {loadingOlder ? 'Chargement…' : 'Afficher les messages précédents'}
+        </button>
+      )}
       {messages.map((m) => (
-        <VerebonaMessageItem key={m.id} message={m} onFeedback={onFeedback} onClarify={onClarify} onConfirmPlan={onConfirmPlan} onCancelPlan={onCancelPlan} onRetry={onRetry} />
+        <VerebonaMessageItem key={m.id} message={m} onFeedback={onFeedback} onClarify={onClarify} onConfirmPlan={onConfirmPlan} onCancelPlan={onCancelPlan} onUndoPlan={onUndoPlan} onRetry={onRetry} />
       ))}
       {isLoading && <ProcessingStatus />}
     </div>

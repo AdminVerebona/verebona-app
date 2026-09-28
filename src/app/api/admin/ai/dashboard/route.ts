@@ -34,6 +34,13 @@ import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-publ
 import { getModelAlerts } from '@/services/ai/queue/circuit-breaker.repository';
 import { listAlerts } from '@/services/ai/alerts/alerts.repository';
 import { getTreatmentActivity } from '@/services/ai/telemetry/treatment-activity.repository';
+import { listDraftSummaries } from '@/services/ai/config/draft-summary.repository';
+import {
+  activityForWindow,
+  globalAiStatus,
+  parseDashboardWindow,
+  shortUid,
+} from '@/lib/admin/ai-dashboard';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 export interface DashboardAlert {
@@ -43,12 +50,18 @@ export interface DashboardAlert {
   href: string;
 }
 
+const isoOrNull = (d: Date | string | null | undefined): string | null =>
+  d ? new Date(d).toISOString() : null;
+
 export async function GET(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
 
   try {
     const environment = getAiEnvironment();
+    // PER-01 : fenêtre de supervision (24 h / 7 j / 30 j). Elle ne change que
+    // la lecture des métriques (erreurs, coûts, activité), jamais les données.
+    const windowDays = parseDashboardWindow(new URL(req.url).searchParams.get('days'));
 
     // ══════════════════════════════════════════════════════════════════════
     // ⚠️ NEUF SOURCES, ET AUCUNE NE DOIT POUVOIR BLANCHIR L'ÉCRAN
@@ -73,8 +86,8 @@ export async function GET(req: NextRequest) {
       getQueueSummary(),
       getTreatmentStates(),
       getEmergencyStop(),
-      getErrorBreakdown(7),
-      getCostReport({ since: new Date(Date.now() - 7 * 86_400_000) }),
+      getErrorBreakdown(windowDays),
+      getCostReport({ since: new Date(Date.now() - windowDays * 86_400_000) }),
       // MOD-008 / OPS-019 : modèles à dix échecs consécutifs ou plus, par
       // traitement (alertingModels). Dixième source, isolée comme les autres.
       getModelAlerts(),
@@ -84,13 +97,15 @@ export async function GET(req: NextRequest) {
       // HLT-01, PER-01, VOL-01 (lot IA 2) : volumes 24 h / 7 j / 30 j, taux de
       // succès, dernier appel, par traitement. Douzième source, isolée.
       getTreatmentActivity(),
+      // DRF-01 : brouillons détaillés (base, auteur). Treizième source, isolée.
+      listDraftSummaries(environment, 20),
     ]);
 
     const NOMS = [
       'versions', 'version active', 'version effective', 'packages',
       'file d’attente', 'états des traitements', 'arrêt d’urgence',
       'erreurs récentes', 'coûts', 'alertes modèles', 'alertes système',
-      'activité par traitement',
+      'activité par traitement', 'brouillons',
     ];
 
     const degraded: Array<{ source: string; message: string }> = [];
@@ -126,6 +141,8 @@ export async function GET(req: NextRequest) {
     const modelAlerts = valeur(9, [] as Awaited<ReturnType<typeof getModelAlerts>>);
     const systemAlerts = valeur(10, [] as Awaited<ReturnType<typeof listAlerts>>);
     const activity = valeur(11, [] as Awaited<ReturnType<typeof getTreatmentActivity>>);
+    const drafts = valeur(12, [] as Awaited<ReturnType<typeof listDraftSummaries>>);
+    const windowLabel = windowDays === 1 ? '24 h' : `${windowDays} jours`;
 
     const alerts: DashboardAlert[] = [];
 
@@ -179,7 +196,7 @@ export async function GET(req: NextRequest) {
     for (const e of errors.filter((x) => x.count >= 5).slice(0, 5)) {
       alerts.push({
         severity: 'warning',
-        message: `${e.count} échecs en 7 jours sur ${e.treatment ?? 'un traitement'}`
+        message: `${e.count} échecs en ${windowLabel} sur ${e.treatment ?? 'un traitement'}`
           + `${e.errorCode ? ` (${e.errorCode})` : ''}.`,
         href: `/admin/ai-executions?errorsOnly=1${e.treatment ? `&treatment=${e.treatment}` : ''}${e.model ? `&model=${encodeURIComponent(e.model)}` : ''}`,
       });
@@ -261,7 +278,10 @@ export async function GET(req: NextRequest) {
         running: q?.running ?? 0,
         failed: q?.failed ?? 0,
         // HLT-01 / PER-01 / VOL-01 : `null` si la source est dégradée.
-        activity: activity.find((a) => a.treatment === t) ?? null,
+        activity: (() => {
+          const a = activity.find((x) => x.treatment === t);
+          return a ? { ...a, window: activityForWindow(a, windowDays) } : null;
+        })(),
       };
     });
 
@@ -269,15 +289,38 @@ export async function GET(req: NextRequest) {
       environment,
       isProduction: environment === 'production',
       emergencyStop: stop,
+      // GST-01 : « Opérationnel » ou « Arrêt d'urgence », rien d'autre.
+      globalStatus: globalAiStatus(Boolean(stop.active)),
+      windowDays,
+      // VER-01 : vN, libellé, UID abrégé et date d'activation.
       activeVersion: active
-        ? { id: active.id, visibleNumber: active.visibleNumber, label: active.label }
+        ? {
+            id: active.id,
+            visibleNumber: active.visibleNumber,
+            label: active.label,
+            uid: active.uid,
+            shortUid: shortUid(active.uid),
+            activatedAt: isoOrNull(active.activatedAt),
+          }
         : null,
       // VER-004 : en préproduction, une version « À tester » prime sur l'Active.
       // Le bandeau doit le dire, sinon on lit la configuration active en croyant
-      // lire celle qui s'exécute.
+      // lire celle qui s'exécute. Une « À tester » n'a pas de date
+      // d'activation : on donne sa date de validation.
       effectiveVersion: effective && effective.id !== active?.id
-        ? { id: effective.id, status: effective.status, visibleNumber: effective.visibleNumber }
+        ? {
+            id: effective.id,
+            status: effective.status,
+            visibleNumber: effective.visibleNumber,
+            label: effective.label,
+            uid: effective.uid,
+            shortUid: shortUid(effective.uid),
+            activatedAt: isoOrNull(effective.activatedAt),
+            validatedAt: isoOrNull(effective.validatedAt),
+          }
         : null,
+      // DRF-01 : liste détaillée des brouillons (libellé, base, obsolète, date, auteur).
+      drafts,
       health,
       versions,
       packages,
@@ -287,7 +330,8 @@ export async function GET(req: NextRequest) {
       // Nommées plutôt que tues : un tableau de bord partiel qui ne le dit pas
       // ferait lire des zéros comme des mesures.
       degraded,
-      costs7d: {
+      // Coûts de la fenêtre choisie (PER-01), portée donnée par `windowDays`.
+      costs: {
         functionalMicros: costs.totals.functionalMicros,
         technicalMicros: costs.totals.technicalMicros,
         calls: costs.totals.calls,

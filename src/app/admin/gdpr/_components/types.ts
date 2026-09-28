@@ -21,6 +21,32 @@ export interface GdprRequestItem {
   subjectEmail: string | null;
   subjectName: string | null;
   accountName: string | null;
+  /** Suppression planifiée liée (demande système), en lecture seule — GDP-008. */
+  deletion?: {
+    status: 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
+    reason: string;
+    scheduledAt: string;
+    executedAt: string | null;
+    cancelledAt: string | null;
+  } | null;
+}
+
+const DELETION_STATUS_LABELS: Record<string, string> = {
+  SCHEDULED: 'Suppression programmée',
+  CANCELLED: 'Suppression annulée',
+  EXECUTED: 'Suppression exécutée',
+  FAILED: 'Suppression en échec',
+};
+
+/** « Suppression programmée le 28/10/2026 » — état et date de la suppression liée. */
+export function deletionLabel(d: GdprRequestItem['deletion']): string | null {
+  if (!d) return null;
+  const at = d.status === 'EXECUTED' && d.executedAt ? d.executedAt
+    : d.status === 'CANCELLED' && d.cancelledAt ? d.cancelledAt
+    : d.scheduledAt;
+  const date = new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'short' }).format(new Date(at));
+  const label = DELETION_STATUS_LABELS[d.status] ?? d.status;
+  return d.status === 'SCHEDULED' || d.status === 'FAILED' ? `${label} — prévue le ${date}` : `${label} le ${date}`;
 }
 
 export interface GdprRequestDetail extends GdprRequestItem {

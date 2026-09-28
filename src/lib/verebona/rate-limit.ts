@@ -38,6 +38,33 @@ export class SlidingWindowLimiter {
 
 const limiter = new SlidingWindowLimiter();
 
+/**
+ * Routes qui écrivent sans poser de question (§27, §31.10) : avis, fils,
+ * effacement, annulation, commandes. Quota propre à chaque famille (la
+ * question garde le sien), 30 par minute et par utilisateur par défaut
+ * (`VEREBONA_ASSISTANT_MUTATION_RATE_LIMIT_PER_MINUTE`), 3× par compte.
+ */
+export type MutationBucket = 'feedback' | 'conversation' | 'cancel' | 'command';
+
+export function mutationRatePerMinute(): number {
+  const n = Number(process.env.VEREBONA_ASSISTANT_MUTATION_RATE_LIMIT_PER_MINUTE);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+}
+
+export function checkAssistantMutationRateLimit(
+  userId: number,
+  accountId: number,
+  bucket: MutationBucket,
+  perMinute = mutationRatePerMinute(),
+  now = Date.now(),
+): RateDecision {
+  const user = limiter.take(`m:${bucket}:u:${userId}`, perMinute, now);
+  if (!user.allowed) return { allowed: false, retryAfterMs: user.retryAfterMs, scope: 'user' };
+  const account = limiter.take(`m:${bucket}:a:${accountId}`, perMinute * 3, now);
+  if (!account.allowed) return { allowed: false, retryAfterMs: account.retryAfterMs, scope: 'account' };
+  return { allowed: true, retryAfterMs: 0, scope: null };
+}
+
 export function checkAssistantRateLimit(userId: number, accountId: number, perMinute: number, now = Date.now()): RateDecision {
   const user = limiter.take(`u:${userId}`, perMinute, now);
   if (!user.allowed) return { allowed: false, retryAfterMs: user.retryAfterMs, scope: 'user' };

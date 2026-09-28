@@ -14,6 +14,7 @@
  * `generation.adapter.toGeneratedAnswer`. Ce module ajoute, APRÈS elle, ce
  * qui manquait :
  *   1. langue : la réponse est en français (§21.7, CA-27) — sinon repli ;
+ *   1 bis. vocabulaire interdit (§21.5) — sinon repli ;
  *   2. longueur : 4 phrases au plus avant cartes et actions (§21.2, CA-19),
  *      les étapes numérotées ne comptant pas ; chronologie et comparaison
  *      (listes) en sont exemptées mais restent sous 1 200 caractères ;
@@ -22,6 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { Claim, SupportLevel } from '../types/sources';
+import { findForbiddenVocabulary } from './output-safety';
 
 export const MAX_SENTENCES = 4;
 export const MAX_ANSWER_CHARS = 1200;
@@ -69,6 +71,12 @@ export function validateGeneratedAnswer(
   const violations: string[] = [];
   if (!looksFrench(g.answer)) {
     violations.push('LANGUAGE_NOT_FR');
+    return null;
+  }
+  // §21.5 : vocabulaire interdit (« en tant qu'IA », « je garantis »…) —
+  // réponse écartée (QUALITY_RULE : escalade permise, sinon repli).
+  if (findForbiddenVocabulary(g.answer).length > 0) {
+    violations.push('FORBIDDEN_VOCABULARY');
     return null;
   }
   let answer = g.answer;

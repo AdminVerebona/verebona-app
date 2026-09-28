@@ -63,6 +63,9 @@ export const NOTIFICATION_TYPES = {
   PAYMENT_ACTION_REQUIRED: 'PAYMENT_ACTION_REQUIRED',
   SUBSCRIPTION_SUSPENDED: 'SUBSCRIPTION_SUSPENDED',
   ACCOUNT_READ_ONLY: 'ACCOUNT_READ_ONLY',
+  /** Suppression volontaire du compte : clôture (J0) et rappel J-7 (migration 0206). */
+  ACCOUNT_DELETION_SCHEDULED: 'ACCOUNT_DELETION_SCHEDULED',
+  ACCOUNT_DELETION_REMINDER: 'ACCOUNT_DELETION_REMINDER',
 
   // ── Sécurité — obligatoires (cloche + email) ─────────────────────────────
   PASSWORD_CHANGED: 'PASSWORD_CHANGED',
@@ -175,6 +178,9 @@ export interface NotificationPayloadMap {
   SUBSCRIPTION_SUSPENDED: { accountId?: number };
   // reason 'unpaid' : rappel J-7 / J-1 du cycle d'impayé (GAP-06).
   ACCOUNT_READ_ONLY: { accountId?: number; reason?: string; deadlineAt?: string; daysLeft?: number };
+  // scheduledAt : date de suppression effective (J+30), ISO.
+  ACCOUNT_DELETION_SCHEDULED: { scheduledAt: string };
+  ACCOUNT_DELETION_REMINDER: { scheduledAt: string; daysLeft: number };
 
   PASSWORD_CHANGED: Record<string, never>;
   EMAIL_CHANGE_REQUESTED: { newEmail?: string };

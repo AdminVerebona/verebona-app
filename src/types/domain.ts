@@ -1,3 +1,4 @@
+import { assetSupportsRooms } from '@/lib/asset-capabilities';
 /**
  * Domain types and enums for Verebona
  * Centralizes all business domain types used across the application.
@@ -22,7 +23,8 @@ export const PLAN_TYPES = [
 ] as const;
 export type PlanType = typeof PLAN_TYPES[number];
 
-export const USER_STATUSES = ['ACTIVE', 'SUSPENDED', 'DELETED'] as const;
+/** PENDING_DELETION : compte clôturé par son utilisateur, suppression à J+30 (migration 0206). */
+export const USER_STATUSES = ['ACTIVE', 'SUSPENDED', 'DELETED', 'PENDING_DELETION'] as const;
 export type UserStatus = typeof USER_STATUSES[number];
 
 /** SUPER_ADMIN = compte technique Verebona, pas exposé aux utilisateurs */
@@ -419,16 +421,9 @@ export function isValidEquipmentStatus(value: string): value is EquipmentStatus 
 }
 
 /**
- * Checks if an asset type supports structural features like substructures and equipment
+ * Checks if an asset type supports structural features like substructures and equipment.
+ * Liste unique : `lib/asset-capabilities` (Centre d'aide GAP-04).
  */
 export function assetSupportsStructuralFeatures(asset: { category: string; subtype?: string | null }): boolean {
-  if (asset.category !== 'IMMOBILIER') return false;
-  
-  const subtype = asset.subtype?.toLowerCase() || '';
-  // Authorized: Maison, Appartement, Local commercial, Studio, Villa, Propriété
-  const authorized = ['maison', 'appartement', 'studio', 'local commercial', 'villa', 'propriété'];
-  // Specifically disallowed: Terrain, Garage
-  const disallowed = ['terrain', 'garage'];
-  
-  return authorized.some(a => subtype.includes(a)) && !disallowed.some(d => subtype === d);
+  return assetSupportsRooms(asset);
 }

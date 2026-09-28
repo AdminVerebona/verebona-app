@@ -8,7 +8,9 @@
 
 // v1.1 : OPEN_CONTACT (renvoi au formulaire de contact du Centre d'aide —
 // CDC Centre d'aide §5, T2-03, T2-04).
-export const ACTION_CATALOG_VERSION = 'action-catalog-v1.1' as const;
+// v1.2 : offre contrôlée par action (§22.7 étape 3) et OPEN_EXPORT_AREA
+// autorisé pour la liste des exports et dossiers disponibles (§12.1).
+export const ACTION_CATALOG_VERSION = 'action-catalog-v1.2' as const;
 
 export const VEREBONA_ACTION_TYPES = [
   'OPEN_ASSET',
@@ -82,6 +84,14 @@ export interface VerebonaAction {
   requiresConfirmation: boolean;
   expiresAt: string | null;
   analyticsCode: string;
+  /**
+   * Cible contrôlée par le serveur (« asset:42 » — famille:identifiant), persistée dans
+   * `verebona_message_actions.target_type/target_id` (§28.6). Interne : non
+   * exposée par l'API.
+   */
+  targetRef?: string | null;
+  /** Paramètres validés de l'action (onglet, chemin d'article…) — §28.6. Interne. */
+  payload?: Record<string, string | number | boolean | null>;
 }
 
 export function isVerebonaActionType(value: string): value is VerebonaActionType {

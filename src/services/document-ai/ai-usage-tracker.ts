@@ -10,39 +10,42 @@
  * PRINCIPE : Les jobs déjà démarrés vont à leur terme même en cas de quota dépassé.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * ⚠️ NE PAS SUPPRIMER CE FICHIER AVANT D'AVOIR ÉTEINT LES MOTEURS HISTORIQUES
+ * GEN-005 : PLUS AUCUNE MESURE DE COÛT NI DE JETONS ICI
  *
- * Le GEN-007 du CDC BO IA demande un point de mesure unique, et ce service doit
- * effectivement disparaître. Mais PAS EN PREMIER.
+ * La passerelle (`AiGateway.execute`) mesure désormais CHAQUE appel modèle
+ * (baseline `scripts/ai-legacy-baseline.json` à 0) : une ligne
+ * `ai_usage_event` par appel, et une étape `ai_pipeline_step` rattachée à
+ * l'opération quand l'appelant transmet `parentOperationId` (colonne
+ * `trace_id` renseignée).
  *
- * Ce tracker écrit des `operation_type` en texte libre — `operation_complete`,
- * `document_analysis` — là où la passerelle écrit des codes pris au référentiel.
- * C'est cette différence, et elle seule, qui permet à l'inventaire d'exécution
- * (`registry/execution-inventory.ts`) de prouver qu'un moteur historique a
- * tourné : une valeur hors catalogue suffit.
+ * Ce tracker tenait une SECONDE mesure : coûts et jetons déclarés par
+ * l'appelant, agrégés dans `ai_operation`, et surtout une ligne
+ * `ai_usage_event` « operation_complete » portant le coût total de
+ * l'opération — comptée une deuxième fois par l'écran Coûts, qui somme
+ * `ai_usage_event`. Elle est retirée :
+ *   · `completeOperation` n'accepte plus de coût ni de jetons ; les totaux de
+ *     `ai_operation` (lus par les écrans historiques de suivi par compte) sont
+ *     RELUS depuis les étapes de la passerelle rattachées à l'opération ;
+ *   · `completeStep` ne porte plus de coût : les étapes de ce tracker sont des
+ *     jalons (lecture, extraction…), le coût est dans celles de la passerelle ;
+ *   · `logUsageEvent` est supprimé.
  *
- * Le supprimer avant l'extinction produirait donc un inventaire « conforme »
- * non pas parce que les moteurs historiques se sont tus, mais parce que plus
- * personne ne les écoute. C'est le « regroupement artificiel » que le critère
- * n°24 interdit, obtenu par un autre chemin — et il n'existerait plus aucun
- * moyen de s'en apercevoir.
+ * Restent ici, inchangés : l'opération métier (résultat, réanalyse, version
+ * d'analyse), le compteur annuel d'analyses (`incrementAnalysisCounter`), le
+ * quota (`checkQuota`) et les verrous de sécurité (`checkSecurityRules`,
+ * `triggerSecurityLock`).
  *
- * ORDRE À RESPECTER :
- *   1. basculer les cinq usages ;
- *   2. éteindre les sept moteurs listés dans `scripts/ai-legacy-baseline.json` ;
- *   3. vérifier que l'inventaire observé ne rend plus aucune opération
- *      étrangère sur trente jours ;
- *   4. alors seulement, retirer ce fichier et ses appelants.
- *
- * Un test (`registry/__tests__/execution-inventory.test.ts`) rappelle cette
- * dépendance et échouera si ce fichier disparaît trop tôt.
+ * L'inventaire d'exécution (`registry/execution-inventory.ts`) ne s'appuie
+ * plus sur la ligne « operation_complete » pour prouver qu'un moteur
+ * historique a tourné : les opérations `legacy_*` de la passerelle en tiennent
+ * lieu.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { db } from '@/db';
 import {
   aiOperation, aiPipelineStep, aiAnalysisVersion,
-  aiUsageAccountCounter, aiSecurityLock, aiUsageEvent,
+  aiUsageAccountCounter, aiSecurityLock,
 } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 
@@ -56,7 +59,6 @@ const SECURITY_THRESHOLDS = {
 import type {
   AiOperationCategory, AiBusinessResult, AiPipelineStepStatus, AiOperationOrigin,
 } from '@/types/ai-usage';
-import { resolveLegacyUseCase } from '@/services/ai/registry/legacy-usage-mapping';
 
 // ─── Configuration routage multi-provider ────────────────────────────────────
 
@@ -109,14 +111,19 @@ export interface StartOperationOptions {
 export interface CompleteOperationOptions {
   operationId: number;
   businessResult: AiBusinessResult;
-  totalCostMicros?: number;
-  totalInputTokens?: number;
-  totalOutputTokens?: number;
+  // GEN-005 : ni coût ni jetons — relus depuis les étapes de la passerelle.
   errorCode?: string;
   errorMessage?: string;
   warningMessage?: string;
   usedFallback?: boolean;
   providerFallback?: string;
+}
+
+/** Totaux d'une opération, lus dans les étapes écrites par la passerelle. */
+export interface GatewayTotals {
+  costMicros: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface StartStepOptions {
@@ -132,9 +139,7 @@ export interface StartStepOptions {
 export interface CompleteStepOptions {
   stepId: number;
   status: AiPipelineStepStatus;
-  inputTokens?: number;
-  outputTokens?: number;
-  costMicros?: number;
+  // GEN-005 : un jalon ne porte pas de coût (mesuré par la passerelle).
   isFallback?: boolean;
   fallbackReason?: string;
   errorCode?: string;
@@ -174,8 +179,30 @@ export class AiUsageTracker {
   }
 
   /**
+   * Coût et jetons d'une opération, relus dans les étapes que la passerelle a
+   * rattachées à cette opération (`parentOperationId` → `ai_pipeline_step`
+   * avec `trace_id`). Aucune mesure propre : une lecture de la mesure unique.
+   */
+  static async gatewayTotals(operationId: number): Promise<GatewayTotals> {
+    const [row] = await db
+      .select({
+        costMicros: sql<number>`COALESCE(SUM(${aiPipelineStep.costMicros}), 0)::bigint`,
+        inputTokens: sql<number>`COALESCE(SUM(${aiPipelineStep.inputTokens}), 0)::bigint`,
+        outputTokens: sql<number>`COALESCE(SUM(${aiPipelineStep.outputTokens}), 0)::bigint`,
+      })
+      .from(aiPipelineStep)
+      .where(and(eq(aiPipelineStep.operationId, operationId), sql`trace_id IS NOT NULL`));
+    return {
+      costMicros: Number(row?.costMicros ?? 0),
+      inputTokens: Number(row?.inputTokens ?? 0),
+      outputTokens: Number(row?.outputTokens ?? 0),
+    };
+  }
+
+  /**
    * Finalise une opération IA.
    * Incrémente le compteur de documents analysés si succès + billable.
+   * Coût et jetons : ceux de la passerelle (GEN-005), jamais déclarés ici.
    */
   static async completeOperation(opts: CompleteOperationOptions): Promise<void> {
     const op = await db
@@ -188,12 +215,15 @@ export class AiUsageTracker {
     if (!op) return;
 
     const durationMs = op.startedAt ? Date.now() - new Date(op.startedAt).getTime() : null;
+    const totals = await this.gatewayTotals(opts.operationId).catch(
+      (): GatewayTotals => ({ costMicros: 0, inputTokens: 0, outputTokens: 0 }),
+    );
 
     await db.update(aiOperation).set({
       businessResult: opts.businessResult,
-      totalCostMicros: opts.totalCostMicros ?? 0,
-      totalInputTokens: opts.totalInputTokens ?? 0,
-      totalOutputTokens: opts.totalOutputTokens ?? 0,
+      totalCostMicros: totals.costMicros,
+      totalInputTokens: totals.inputTokens,
+      totalOutputTokens: totals.outputTokens,
       errorCode: opts.errorCode ?? null,
       errorMessage: opts.errorMessage ?? null,
       warningMessage: opts.warningMessage ?? null,
@@ -211,7 +241,7 @@ export class AiUsageTracker {
         operationId: opts.operationId,
         pipelineVersion: op.pipelineVersion ?? undefined,
         businessResult: opts.businessResult,
-        totalCostMicros: opts.totalCostMicros ?? 0,
+        totalCostMicros: totals.costMicros,
         providerUsed: op.providerPrimary ?? undefined,
         usedFallback: opts.usedFallback ?? false,
       });
@@ -221,15 +251,8 @@ export class AiUsageTracker {
     if (op.operationCategory === 'document_analysis' && op.isBillable && (opts.businessResult === 'success' || opts.businessResult === 'success_with_warning')) {
       await this.incrementAnalysisCounter(op.accountId);
     }
-
-    // Log événement de consommation
-    await this.logUsageEvent({
-      accountId: op.accountId,
-      assetFileId: op.assetFileId ?? undefined,
-      operationType: 'operation_complete',
-      costMicros: opts.totalCostMicros ?? 0,
-      isBillable: op.isBillable ?? true,
-    });
+    // GEN-005 : plus de ligne `ai_usage_event` « operation_complete » — la
+    // passerelle a déjà écrit une ligne par appel ; celle-ci doublait le coût.
   }
 
   /**
@@ -276,25 +299,13 @@ export class AiUsageTracker {
       status: opts.status,
       completedAt: new Date(),
       durationMs,
-      inputTokens: opts.inputTokens ?? null,
-      outputTokens: opts.outputTokens ?? null,
-      costMicros: opts.costMicros ?? null,
       isFallback: opts.isFallback ?? false,
       fallbackReason: opts.fallbackReason ?? null,
       errorCode: opts.errorCode ?? null,
       errorMessage: opts.errorMessage ?? null,
       outputPreview: opts.outputPreview ? opts.outputPreview.substring(0, 500) : null,
     }).where(eq(aiPipelineStep.id, opts.stepId));
-
-    // Agréger le coût dans l'opération parente
-    if (opts.costMicros) {
-      await db.update(aiOperation).set({
-        totalCostMicros: sql`${aiOperation.totalCostMicros} + ${opts.costMicros}`,
-        totalInputTokens: sql`${aiOperation.totalInputTokens} + ${opts.inputTokens ?? 0}`,
-        totalOutputTokens: sql`${aiOperation.totalOutputTokens} + ${opts.outputTokens ?? 0}`,
-        updatedAt: new Date(),
-      }).where(eq(aiOperation.id, step.operationId));
-    }
+    // GEN-005 : aucune agrégation de coût dans l'opération parente.
   }
 
   /**
@@ -498,55 +509,5 @@ export class AiUsageTracker {
     }
 
     await Promise.allSettled(checks);
-  }
-
-  /**
-   * Log un événement de consommation IA (granulaire).
-   */
-  static async logUsageEvent(opts: {
-    accountId: number;
-    userId?: number;
-    assetFileId?: number;
-    operationType: string;
-    provider?: string;
-    model?: string;
-    isBillable?: boolean;
-    isFallback?: boolean;
-    inputTokens?: number;
-    outputTokens?: number;
-    costMicros?: number;
-    durationMs?: number;
-    status?: string;
-    errorCode?: string;
-    errorMessage?: string;
-  }): Promise<void> {
-    try {
-      await db.insert(aiUsageEvent).values({
-        accountId: opts.accountId,
-        userId: opts.userId ?? null,
-        assetFileId: opts.assetFileId ?? null,
-        operationType: opts.operationType,
-        // Rattachement à l'écriture. La migration 0110 ne complète que les
-        // lignes existantes ; sans ceci, tout événement produit par un moteur
-        // historique après le déploiement reste non rattaché — et les moteurs
-        // historiques tournent tant que les drapeaux valent `legacy`.
-        useCaseCode: resolveLegacyUseCase(opts.operationType),
-        provider: opts.provider ?? null,
-        model: opts.model ?? null,
-        isBillable: opts.isBillable ?? true,
-        isFallback: opts.isFallback ?? false,
-        inputTokens: opts.inputTokens ?? null,
-        outputTokens: opts.outputTokens ?? null,
-        costMicros: opts.costMicros ?? null,
-        durationMs: opts.durationMs ?? null,
-        status: opts.status ?? 'success',
-        errorCode: opts.errorCode ?? null,
-        errorMessage: opts.errorMessage ?? null,
-        createdAt: new Date(),
-      });
-    } catch (e) {
-      // Les événements de log ne doivent pas bloquer le pipeline
-      console.error('[AiUsageTracker.logUsageEvent]', e);
-    }
   }
 }

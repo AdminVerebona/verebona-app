@@ -123,6 +123,18 @@ export async function registerNode(): Promise<void> {
   );
   registerAllRetrievalAdapters();
 
+  // 5 ter. Assistant — CDC §15.14 : contrôle du registre de modèles AU
+  // DÉMARRAGE (et non plus au premier message) — alias résolus, modèles
+  // autorisés, prix présents (cache tarifaire chargé à l'étape 3), sorties
+  // structurées. Un échec rend l'assistant indisponible (503) et lève une
+  // alerte dans le BO IA ; le reste de l'application démarre normalement.
+  // §25.7 : abonnés aux événements métier (caches de l'assistant).
+  const { runAssistantStartupCheck } = await import('@/services/verebona-assistant/core/model-startup-check');
+  const { registerAssistantBusinessEventHandlers } = await import('@/services/verebona-assistant/events/handlers');
+  registerAssistantBusinessEventHandlers();
+  await runAssistantStartupCheck('startup').catch((e) =>
+    console.error('[startup] contrôle du registre de l’assistant impossible :', (e as Error).message));
+
   // L'agenda reçoit ses accès base par injection : le module reste testable
   // sans démarrer l'application.
   const { loadExistingAgendaItems, persistAgendaDecisions } =

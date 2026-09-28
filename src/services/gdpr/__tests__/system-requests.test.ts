@@ -49,8 +49,10 @@ describe('branchements', () => {
     expect(deletion).toMatch(/SURVIVING_TABLES = new Set\(\[[\s\S]*'gdpr_requests'/);
   });
 
-  it('suppression en libre-service (DELETE /api/users/me)', () => {
-    expect(read('src/app/api/users/me/route.ts')).toContain('onSelfServiceDeletion(session.userId');
+  it('suppression en libre-service (DELETE /api/users/me) : parcours différé unique, registre alimenté à la planification', () => {
+    expect(read('src/app/api/users/me/route.ts')).toContain('return handleCloseAccount(req)');
+    expect(read('src/app/api/users/me/route.ts')).not.toContain('onSelfServiceDeletion');
+    expect(read('src/services/account/voluntary-deletion.service.ts')).toContain("reason: 'VOLUNTARY',\n    origin: 'user',");
   });
 
   it('les écritures système ne touchent jamais une demande manuelle', () => {

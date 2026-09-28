@@ -10,8 +10,8 @@
  * d'appel modèle de l'assistant (classification, revalidation, génération) :
  * aucune tentative ne peut y échapper.
  *
- * Ce qui est tracé : alias fonctionnel (assistant-default / -escalation,
- * déduit du repli), modèle réellement appelé, prompt maître et consigne de
+ * Ce qui est tracé : alias fonctionnel CONFIGURÉ (§15.11, résolu au rang de
+ * l'appel), modèle attendu derrière l'alias, modèle réellement appelé, prompt maître et consigne de
  * tâche (id + version), versions des catalogues d'intentions et d'actions,
  * version du schéma, empreinte SHA-256 des variables (jamais leur contenu —
  * §28.8 : prompts et extraits non stockés), jetons, coût, latence, statut.
@@ -24,6 +24,7 @@ import { pgClient } from '@/db';
 import { INTENT_CATALOG_VERSION } from '../types/intents';
 import { ACTION_CATALOG_VERSION } from '../types/actions';
 import { RESPONSE_SCHEMA_VERSION } from '../types/contracts';
+import { aliasForRank } from '../registries/model-registry';
 
 /** Contexte d'un appel, fourni par l'adaptateur qui le déclenche. */
 export interface AiRunContext {
@@ -37,6 +38,12 @@ export interface AiRunRecord extends AiRunContext {
   accountId: number;
   messageId?: number | null;
   operationCode: string;
+  /**
+   * Alias CONFIGURÉ sous lequel l'appel a été émis (§15.11) et modèle attendu
+   * derrière lui. Absents : déduits du rang (repli = escalade).
+   */
+  modelAlias?: string | null;
+  expectedModelId?: string | null;
   resolvedModelId: string | null;
   fallbackUsed: boolean;
   inputTokens: number;
@@ -54,26 +61,63 @@ export function hashPromptVariables(vars: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(vars)).digest('hex');
 }
 
-/** Alias fonctionnel (§15.11) : l'escalade est la chaîne de repli de la passerelle. */
+/**
+ * Alias fonctionnel (§15.11), CONFIGURÉ (`registries/model-registry.ts`) :
+ * rang 0 = alias par défaut, repli ou escalade = alias d'escalade.
+ */
 export function modelAliasFor(fallbackUsed: boolean): string {
-  return fallbackUsed ? 'assistant-escalation' : 'assistant-default';
+  return aliasForRank(fallbackUsed ? 1 : 0).alias;
 }
 
-export async function recordAiRun(rec: AiRunRecord): Promise<void> {
+/**
+ * Traces en cours d'écriture, par demande. L'appel modèle ne les attend pas
+ * (la réponse n'a pas à patienter), mais la persistance du message, elle,
+ * les attend (`awaitAiRuns`) pour y rattacher `message_id` (§28.8) et
+ * calculer `cache_hit` (§28.7).
+ */
+const enCours = new Map<string, Set<Promise<void>>>();
+
+/** Attend (au plus `timeoutMs`) les traces encore en écriture pour une demande. */
+export async function awaitAiRuns(requestId: string | undefined, timeoutMs = 2_000): Promise<void> {
+  if (!requestId) return;
+  const lot = enCours.get(requestId);
+  if (!lot || lot.size === 0) return;
+  await Promise.race([
+    Promise.allSettled([...lot]),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs).unref?.()),
+  ]);
+}
+
+export function recordAiRun(rec: AiRunRecord): Promise<void> {
+  const p = ecrireAiRun(rec);
+  const lot = enCours.get(rec.requestId) ?? new Set<Promise<void>>();
+  lot.add(p);
+  enCours.set(rec.requestId, lot);
+  void p.finally(() => {
+    lot.delete(p);
+    if (lot.size === 0 && enCours.get(rec.requestId) === lot) enCours.delete(rec.requestId);
+  });
+  return p;
+}
+
+async function ecrireAiRun(rec: AiRunRecord): Promise<void> {
   try {
+    const alias = rec.modelAlias ?? modelAliasFor(rec.fallbackUsed);
     await pgClient.unsafe(
       `INSERT INTO verebona_ai_runs
          (request_id, account_id, message_id, provider, model_alias, resolved_model_id,
           route_reason, prompt_id, prompt_version, prompt_hash, schema_version,
           intent_catalog_version, action_catalog_version, input_tokens, output_tokens,
-          estimated_cost_micros, latency_ms, fallback_used, attempt_number, status, error_code)
-       VALUES ($1,$2,$3,'ai-gateway',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+          estimated_cost_micros, latency_ms, fallback_used, attempt_number, status, error_code,
+          expected_model_id)
+       VALUES ($1,$2,$3,'ai-gateway',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
       [
         rec.requestId, rec.accountId, rec.messageId ?? null,
-        `${modelAliasFor(rec.fallbackUsed)}:${rec.operationCode}`, rec.resolvedModelId,
+        `${alias}:${rec.operationCode}`, rec.resolvedModelId,
         String(rec.routeReason ?? '').slice(0, 300), rec.promptId, rec.promptVersion, rec.promptHash, RESPONSE_SCHEMA_VERSION,
         INTENT_CATALOG_VERSION, ACTION_CATALOG_VERSION, rec.inputTokens, rec.outputTokens,
         rec.costMicros, rec.latencyMs, rec.fallbackUsed, rec.attemptNumber, rec.status, rec.errorCode ?? null,
+        rec.expectedModelId ?? null,
       ] as never[],
     );
   } catch (e) {

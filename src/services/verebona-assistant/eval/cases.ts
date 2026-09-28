@@ -386,6 +386,18 @@ export const EVAL_CASES: EvalCase[] = [
   { id: 'po-5', ref: '§9.4.3', category: 'politesse', message: 'Merci beaucoup, c’est parfait', intent: 'THANKS', deterministic: true },
   { id: 'lg-1', ref: '37.15', category: 'langue', message: 'How do I add an asset?', intent: 'PRODUCT_HELP_HOW_TO' },
   { id: 'lg-2', ref: '37.15', category: 'langue', message: 'What is À traiter?', intent: 'PRODUCT_HELP_EXPLAIN' },
+
+  // ── Gabarits déterministes, statut, exports, contexte de page (§9.2, §9.4, §12.1, §12.2, §14.1) ──
+  { id: 'gb-1', ref: '§9.2 PRODUCT_PLAN_LIMIT', category: 'standard', message: 'Que comprend mon offre ?', intent: 'PRODUCT_PLAN_LIMIT', deterministic: true, primaryAction: 'OPEN_PRICING', answer: /Premium/ },
+  { id: 'gb-2', ref: '§9.2 PRODUCT_PLAN_LIMIT', category: 'premium', message: 'La synchronisation de l’agenda est-elle incluse dans mon offre ?', intent: 'PRODUCT_PLAN_LIMIT', deterministic: true, primaryAction: 'OPEN_PRICING' },
+  { id: 'gb-3', ref: '§9.2 UNSUPPORTED_ACTION', category: 'hors_perimetre', message: 'Supprime la facture de mon vélo', intent: 'UNSUPPORTED_ACTION', deterministic: true, primaryAction: 'OPEN_HELP' },
+  { id: 'gb-4', ref: '§9.2 TECHNICAL_ISSUE', category: 'echec_ia', message: 'L’application plante quand j’ouvre mes documents', intent: 'TECHNICAL_ISSUE', deterministic: true, primaryAction: 'OPEN_HELP' },
+  { id: 'gb-5', ref: '§9.2 OUT_OF_SCOPE', category: 'hors_perimetre', message: 'Quelle est la météo à Lyon demain ?', intent: 'OUT_OF_SCOPE', deterministic: true },
+  { id: 'gb-6', ref: '§9.2 ACCOUNT_MISSING_INFORMATION', category: 'absent', message: 'Qu’est-ce qui manque sur mes biens ?', intent: 'ACCOUNT_MISSING_INFORMATION', deterministic: true },
+  { id: 'sd-1', ref: '§12.2', category: 'analyse', message: 'Quel est le statut de ce document ?', intent: 'ACCOUNT_FACT_DOCUMENT', page: { route: '/documents/1', documentId: '1' } },
+  { id: 'sd-2', ref: '§12.2', category: 'analyse', message: 'Où en est l’analyse de ma facture EDF ?', intent: 'ACCOUNT_FACT_DOCUMENT' },
+  { id: 'ex-1', ref: '§12.1', category: 'recherche', message: 'Quels exports sont disponibles ?', intent: 'ACCOUNT_SEARCH_DOCUMENT' },
+  { id: 'pg-1', ref: '§9.4 contexte de page', category: 'dates', message: 'Quel est le montant ?', intent: 'ACCOUNT_FACT_DOCUMENT', page: { route: '/documents/1', documentId: '1' } },
 ];
 
 /**

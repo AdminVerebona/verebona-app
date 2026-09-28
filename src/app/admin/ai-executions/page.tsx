@@ -53,6 +53,7 @@ import {
   readExecutionFilters, executionFiltersToParams, type ExecutionScreenFilters,
 } from '@/services/ai/telemetry/execution-filters';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
+import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
 
 interface Execution {
   id: number;
@@ -76,6 +77,10 @@ interface Execution {
   appVersion: string | null;
   jobId: number | null;
   promptVersion: string | null;
+  objectType: string | null;
+  objectId: string | null;
+  trigger: string | null;
+  origin: string | null;
 }
 
 interface Page { rows: Execution[]; total: number; limit: number; offset: number }
@@ -95,6 +100,23 @@ interface Detail {
     attempts: number; configVersionId: number | null; createdAt: string; startedAt: string | null;
     finishedAt: string | null; lastError: string | null; targetType: string | null; targetId: string | null;
   } | null;
+  inputs: Array<{ label: string; value: unknown }>;
+  modifications: Array<{ kind: string; label: string; detail: string | null; at: string | null }>;
+  t2: { requestId: string; sources: T2Source[] } | null;
+}
+
+interface T2Source {
+  messageId: number; sourceType: string; sourceId: string; title: string | null;
+  rank: number | null; relevanceScore: number | null; isAvailable: boolean;
+}
+
+interface ArchiveItem {
+  id: number; sourceTable: string; periodDay: string; part: number; s3Key: string;
+  rowCount: number; bytes: number; sha256: string; t2ContentExcluded: boolean; createdAt: string;
+}
+interface Archives {
+  items: ArchiveItem[];
+  totals: { archives: number; rows: number; bytes: number; oldestDay: string | null; newestDay: string | null };
 }
 
 interface T2Row {
@@ -134,7 +156,9 @@ function AiExecutionsScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [filters, setFilters] = useState<ExecutionScreenFilters>(() => readExecutionFilters(searchParams));
-  const [tab, setTab] = useState<'calls' | 't2'>(searchParams.get('tab') === 't2' ? 't2' : 'calls');
+  const [tab, setTab] = useState<'calls' | 't2' | 'archives'>(
+    searchParams.get('tab') === 't2' ? 't2' : searchParams.get('tab') === 'archives' ? 'archives' : 'calls');
+  const [archives, setArchives] = useState<Archives | null>(null);
   const [page, setPage] = useState<Page | null>(null);
   const [t2, setT2] = useState<{ rows: T2Row[]; total: number } | null>(null);
   const [t2Route, setT2Route] = useState(searchParams.get('route') ?? '');
@@ -148,6 +172,7 @@ function AiExecutionsScreen() {
   useEffect(() => {
     const q = executionFiltersToParams(filters);
     if (tab === 't2') { q.set('tab', 't2'); if (t2Route) q.set('route', t2Route); }
+    if (tab === 'archives') q.set('tab', 'archives');
     router.replace(`?${q}`, { scroll: false });
   }, [filters, tab, t2Route, router]);
 
@@ -158,7 +183,9 @@ function AiExecutionsScreen() {
       const params = executionFiltersToParams(filters);
       params.set('offset', String(offset));
       params.set('limit', '50');
-      if (tab === 't2') {
+      if (tab === 'archives') {
+        setArchives(await apiClient.get<Archives>('/api/admin/ai/log-archives?limit=100'));
+      } else if (tab === 't2') {
         const q = new URLSearchParams({ offset: String(offset), limit: '50' });
         for (const k of ['accountId', 'userId', 'from', 'to'] as const) if (filters[k]) q.set(k, filters[k]);
         if (t2Route) q.set('route', t2Route);
@@ -196,7 +223,7 @@ function AiExecutionsScreen() {
     }
   };
 
-  const total = tab === 't2' ? t2?.total ?? 0 : page?.total ?? 0;
+  const total = tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -215,11 +242,14 @@ function AiExecutionsScreen() {
       </div>
 
       <div className="flex gap-2">
-        {([['calls', 'Appels modèles'], ['t2', 'Requêtes T2 (routage)']] as const).map(([k, label]) => (
+        {([['calls', 'Appels modèles'], ['t2', 'Requêtes T2 (routage)'], ['archives', 'Archives (> 90 j)']] as const).map(([k, label]) => (
           <Button key={k} size="sm" variant={tab === k ? 'default' : 'outline'}
             onClick={() => { setTab(k); setOffset(0); }}>{label}</Button>
         ))}
       </div>
+
+      {/* §10.4 : trous de la base d'aide, remontés depuis l'assistant. */}
+      {tab === 't2' && <UnansweredHelpQuestions />}
 
       {tab === 'calls' && errors.length > 0 && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
@@ -266,6 +296,17 @@ function AiExecutionsScreen() {
               onChange={(e) => set('jobId', e.target.value.replace(/\D/g, ''))} className="max-w-[90px] bg-[color:var(--bg-input)]" />
             <Input placeholder="Durée ≥ ms" value={filters.minDurationMs} inputMode="numeric"
               onChange={(e) => set('minDurationMs', e.target.value.replace(/\D/g, ''))} className="max-w-[120px] bg-[color:var(--bg-input)]" />
+            <select value={filters.status} onChange={(e) => set('status', e.target.value)} className={SELECT}>
+              <option value="">Tous les statuts</option>
+              <option value="success">Succès</option>
+              <option value="error">Échec</option>
+            </select>
+            <Input placeholder="Type d'objet" value={filters.objectType} onChange={(e) => set('objectType', e.target.value.trim())}
+              className="max-w-[130px] bg-[color:var(--bg-input)]" />
+            <Input placeholder="Objet (id)" value={filters.objectId} onChange={(e) => set('objectId', e.target.value.trim())}
+              className="max-w-[110px] bg-[color:var(--bg-input)]" />
+            <Input placeholder="Déclencheur / origine" value={filters.trigger} onChange={(e) => set('trigger', e.target.value.trim())}
+              className="max-w-[170px] bg-[color:var(--bg-input)]" />
             <label className="flex items-center gap-2 text-sm text-[color:var(--text-secondary)]">
               <input type="checkbox" checked={filters.errorsOnly} onChange={(e) => set('errorsOnly', e.target.checked)} />
               Échecs seulement
@@ -279,6 +320,7 @@ function AiExecutionsScreen() {
             <option value="ai">Escaladées vers le modèle</option>
           </select>
         )}
+        {tab !== 'archives' && <>
         <Input placeholder="Compte" value={filters.accountId} inputMode="numeric"
           onChange={(e) => set('accountId', e.target.value.replace(/\D/g, ''))} className="max-w-[110px] bg-[color:var(--bg-input)]" />
         <Input placeholder="Utilisateur" value={filters.userId} inputMode="numeric"
@@ -289,8 +331,9 @@ function AiExecutionsScreen() {
         <label className="text-sm text-[color:var(--text-secondary)] flex items-center gap-1">
           au <input type="date" value={filters.to} onChange={(e) => set('to', e.target.value)} className={SELECT} />
         </label>
+        </>}
         <span className="text-sm text-[color:var(--text-muted)] ml-auto">
-          {total} {tab === 't2' ? 'requête' : 'appel'}{total > 1 ? 's' : ''}
+          {total} {tab === 't2' ? 'requête' : tab === 'archives' ? 'archive' : 'appel'}{total > 1 ? 's' : ''}
         </span>
       </div>
 
@@ -300,6 +343,8 @@ function AiExecutionsScreen() {
         <div className="flex items-center justify-center py-16 text-[color:var(--text-muted)]">
           <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…
         </div>
+      ) : tab === 'archives' ? (
+        <ArchivesPanel archives={archives} />
       ) : tab === 't2' ? (
         <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">
           {t2?.rows.length === 0 && <p className="p-6 text-sm text-[color:var(--text-muted)]">Aucune requête ne correspond.</p>}
@@ -329,6 +374,7 @@ function AiExecutionsScreen() {
                   <pre className="whitespace-pre-wrap break-all mt-1">{JSON.stringify(r.cascade, null, 2)}</pre>
                 </details>
               )}
+              <T2RequestExtras requestId={r.requestId} />
             </div>
           ))}
         </div>
@@ -365,6 +411,8 @@ function AiExecutionsScreen() {
                 {duration(r.durationMs)} · {cost(r.costMicros)}
                 {r.inputTokens !== null && ` · ${r.inputTokens} + ${r.outputTokens} tokens`}
                 {r.accountId && ` · compte ${r.accountId}`}
+                {r.objectType && ` · objet ${r.objectType} ${r.objectId ?? ''}`}
+                {(r.trigger || r.origin) && ` · déclencheur ${r.trigger ?? r.origin}`}
                 {r.jobId && ` · job ${r.jobId}`}
                 {r.configVisibleNumber !== null && ` · config v${r.configVisibleNumber}`}
                 {r.promptVersion && ` · prompt ${r.promptVersion}`}
@@ -438,6 +486,37 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
         )}
 
         <section className="space-y-1">
+          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Instantanés d&apos;entrée</h3>
+          {detail.inputs.filter((i) => i.value != null && i.value !== '').map((i) => (
+            <div key={i.label} className="text-xs text-[color:var(--text-secondary)]">
+              <span className="text-[color:var(--text-muted)]">{i.label} : </span>
+              {typeof i.value === 'object'
+                ? <pre className="whitespace-pre-wrap break-all">{JSON.stringify(i.value, null, 2)}</pre>
+                : String(i.value)}
+            </div>
+          ))}
+        </section>
+
+        <section className="space-y-1">
+          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Modifications produites</h3>
+          {detail.modifications.length === 0 ? (
+            <p className="text-xs text-[color:var(--text-muted)]">Aucune modification rattachée à cette exécution.</p>
+          ) : detail.modifications.map((m, i) => (
+            <p key={i} className="text-xs text-[color:var(--text-secondary)]">
+              <span className="font-medium">{m.kind}</span> · {m.label}{m.detail && ` — ${m.detail}`}
+              {m.at && <span className="text-[color:var(--text-muted)]"> · {new Date(m.at).toLocaleString('fr-FR')}</span>}
+            </p>
+          ))}
+        </section>
+
+        {detail.t2 && (
+          <section className="space-y-1">
+            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Sources T2 utilisées (requête {detail.t2.requestId})</h3>
+            <SourcesList sources={detail.t2.sources} />
+          </section>
+        )}
+
+        <section className="space-y-1">
           <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Exécution de file</h3>
           {job ? (
             <p className="text-xs text-[color:var(--text-secondary)]">
@@ -452,6 +531,117 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+/** LOG-UI-07 : sources réellement utilisées, sans extrait de contenu. */
+function SourcesList({ sources }: { sources: T2Source[] }) {
+  if (sources.length === 0) return <p className="text-xs text-[color:var(--text-muted)]">Aucune source enregistrée (ou conversation purgée).</p>;
+  return (
+    <ul className="text-xs text-[color:var(--text-secondary)] space-y-0.5">
+      {sources.map((s, i) => (
+        <li key={`${s.messageId}-${s.sourceId}-${i}`}>
+          {s.rank !== null && `#${s.rank} `}{s.sourceType} · {s.sourceId}{s.title && ` — ${s.title}`}
+          {s.relevanceScore !== null && ` · pertinence ${s.relevanceScore.toFixed(2)}`}
+          {!s.isAvailable && <span className="text-amber-500"> · plus disponible</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Requête T2 : sources (LOG-UI-07) et contenu conversationnel à accès
+ * RESTREINT (LOG-UI-08) — justification obligatoire, accès tracé, contenu
+ * expiré ou purgé introuvable.
+ */
+function T2RequestExtras({ requestId }: { requestId: string }) {
+  const [sources, setSources] = useState<T2Source[] | null>(null);
+  const [content, setContent] = useState<Array<{ role: string; content: string | null; createdAt: string }> | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const loadSources = async () => {
+    try {
+      const r = await apiClient.get<{ sources: T2Source[] }>(`/api/admin/ai/t2-requests/${encodeURIComponent(requestId)}`);
+      setSources(r.sources);
+    } catch { toast.error('Sources indisponibles.'); }
+  };
+  const loadContent = async () => {
+    const reason = window.prompt('Accès restreint au contenu conversationnel. Justification (tracée) :');
+    if (!reason) return;
+    try {
+      const r = await apiClient.post<{ messages: Array<{ role: string; content: string | null; createdAt: string }> }>(
+        `/api/admin/ai/t2-requests/${encodeURIComponent(requestId)}/content`, { reason });
+      setContent(r.messages);
+      setMsg(null);
+    } catch (e) {
+      setMsg((e as { message?: string }).message ?? 'Accès refusé.');
+    }
+  };
+
+  return (
+    <div className="text-xs space-y-1">
+      <div className="flex gap-3">
+        <button type="button" className="text-[color:var(--accent)] hover:underline" onClick={loadSources}>Sources utilisées</button>
+        <button type="button" className="text-[color:var(--accent)] hover:underline" onClick={loadContent}>Contenu (accès restreint)</button>
+      </div>
+      {sources && <SourcesList sources={sources} />}
+      {msg && <p className="text-amber-500">{msg}</p>}
+      {content && (
+        <div className="rounded border border-amber-500/30 bg-amber-500/5 p-2 space-y-1">
+          <p className="text-amber-500">Contenu confidentiel — consultation tracée, disparaît à la purge (3 mois).</p>
+          {content.map((m, i) => (
+            <p key={i} className="text-[color:var(--text-secondary)] whitespace-pre-wrap">
+              <span className="font-medium">{m.role === 'user' ? 'Utilisateur' : 'Assistant'} :</span> {m.content ?? '—'}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** LOG-UI-09 : statut des archives S3 — non interrogeables depuis le BO (V1). */
+function ArchivesPanel({ archives }: { archives: Archives | null }) {
+  if (!archives) return null;
+  const mo = (b: number) => (b >= 1_048_576 ? `${(b / 1_048_576).toFixed(1)} Mo` : `${Math.ceil(b / 1024)} Ko`);
+  return (
+    <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
+      <p className="text-sm text-[color:var(--text-secondary)]">
+        Les appels et étapes de plus de 90 jours sont archivés sur S3 puis retirés de la recherche
+        (restauration technique hors parcours). Le contenu conversationnel T2 n&apos;est jamais archivé.
+      </p>
+      <p className="text-xs text-[color:var(--text-muted)]">
+        {archives.totals.archives} archive(s) · {archives.totals.rows.toLocaleString('fr-FR')} ligne(s) · {mo(archives.totals.bytes)}
+        {archives.totals.oldestDay && ` · du ${archives.totals.oldestDay} au ${archives.totals.newestDay}`}
+      </p>
+      {archives.items.length === 0 ? (
+        <p className="text-sm text-[color:var(--text-muted)]">Aucune archive pour l&apos;instant.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-[color:var(--text-muted)]">
+                <th className="py-1 pr-3">Jour</th><th className="py-1 pr-3">Table</th><th className="py-1 pr-3">Lignes</th>
+                <th className="py-1 pr-3">Taille</th><th className="py-1 pr-3">Objet S3</th><th className="py-1 pr-3">SHA-256</th>
+              </tr>
+            </thead>
+            <tbody>
+              {archives.items.map((a) => (
+                <tr key={a.id} className="border-t border-[color:var(--border-subtle)] text-[color:var(--text-secondary)]">
+                  <td className="py-1 pr-3">{a.periodDay}{a.part > 0 && ` (${a.part + 1})`}</td>
+                  <td className="py-1 pr-3">{a.sourceTable}</td>
+                  <td className="py-1 pr-3">{a.rowCount}</td>
+                  <td className="py-1 pr-3">{mo(a.bytes)}</td>
+                  <td className="py-1 pr-3 break-all">{a.s3Key}</td>
+                  <td className="py-1 pr-3 font-mono">{a.sha256.slice(0, 12)}…</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

@@ -57,6 +57,15 @@ export interface ClarificationCandidate {
   entityId?: number;
   label: string;
   secondaryLabel?: string;
+  /**
+   * Clarification de période ou d'action (§20.1) : demande rejouée à la
+   * reprise, construite par le SERVEUR (substitution de l'expression de
+   * période, ou formulation complète de l'action choisie) — jamais un texte
+   * venu du client.
+   */
+  resumeMessage?: string;
+  /** Intention de la reprise quand le choix la fixe (action ambiguë). */
+  resumeIntent?: import('./intents').VerebonaIntent;
 }
 
 export type ClarificationStatus = 'PENDING' | 'RESOLVED' | 'EXPIRED' | 'EXHAUSTED' | 'ABANDONED';
@@ -81,8 +90,13 @@ export interface ClarificationState {
   /** Paramètres déjà identifiés (bien de la page, année…). */
   resolvedContext?: { pageAssetId?: number | null; assetId?: number | null };
   /** Ce qui est ambigu : le champ que le choix viendra fixer. */
-  ambiguity?: { kind: 'asset'; field: 'assetId'; reason: string };
-  candidateType: 'asset' | 'document' | 'agenda' | 'supplier';
+  ambiguity?:
+    | { kind: 'asset'; field: 'assetId'; reason: string }
+    /** Période non identifiable (§20.1). */
+    | { kind: 'period'; field: 'period'; reason: string }
+    /** Action ambiguë (§20.1). */
+    | { kind: 'action'; field: 'intent'; reason: string };
+  candidateType: 'asset' | 'document' | 'agenda' | 'supplier' | 'period' | 'action';
   candidates: ClarificationCandidate[];
   question: string;
   createdAt?: string;

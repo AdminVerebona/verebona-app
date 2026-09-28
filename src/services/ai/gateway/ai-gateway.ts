@@ -16,7 +16,7 @@ import { AiGatewayError, isAiGatewayError, type AiErrorCode } from './errors';
 import { getOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
 import { validateOutput } from './output-validator';
-import { redactVariables, previewForLog } from './redaction';
+import { redactVariables, previewForLog, outputDigestForLog, stripRawExcerpt } from './redaction';
 import { getAiProvider } from './providers';
 import { resolvePrompt } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
@@ -76,7 +76,11 @@ export class AiGateway {
       variables: req.promptVariables,
     });
 
-    return withIdempotency<AiGatewayResponse<T>>(key, () => this.call<T>(req, op.operationCode));
+    return withIdempotency<AiGatewayResponse<T>>(
+      key,
+      () => this.call<T>(req, op.operationCode),
+      req.idempotencyTtlSeconds && req.idempotencyTtlSeconds > 0 ? Math.floor(req.idempotencyTtlSeconds) : undefined,
+    );
   }
 
   private static async call<T>(
@@ -229,7 +233,10 @@ export class AiGateway {
             status: 'success',
             billable: op.billable && !req.shadow,
             shadow: Boolean(req.shadow),
-            outputPreview: previewForLog(out.rawText),
+            // CDC Assistant §29.6 : pour l'assistant, la sortie brute n'a pas
+            // encore passé la validation serveur (sources, sécurité) — jamais
+            // stockée, même en extrait : empreinte et longueur seulement.
+            outputPreview: sansSortieBrute(op.useCaseCode) ? outputDigestForLog(out.rawText) : previewForLog(out.rawText),
             modelRank,
             jobId,
             configVersionId: configuration.configVersionId,
@@ -268,7 +275,10 @@ export class AiGateway {
             durationMs: Date.now() - startedAt,
             status: 'error',
             errorCode: isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE',
-            errorMessage: message,
+            // §29.6 : le message d'une sortie invalide cite un extrait de la
+            // sortie brute — retiré pour l'assistant (code et longueur restent).
+            errorMessage: sansSortieBrute(op.useCaseCode) ? stripRawExcerpt(message) : message,
+            ...(sansSortieBrute(op.useCaseCode) && out ? { outputPreview: outputDigestForLog(out.rawText) } : {}),
             // Un appel facturé par le fournisseur reste une dépense métier.
             billable: Boolean(out) && op.billable && !req.shadow,
             shadow: Boolean(req.shadow),
@@ -312,4 +322,15 @@ function substituteOverride(template: string, variables: Record<string, unknown>
     if (v === undefined || v === null) return match;
     return typeof v === 'string' ? v : JSON.stringify(v);
   });
+}
+
+/**
+ * Usages dont la sortie brute n'est jamais journalisée (CDC Assistant §29.6) :
+ * l'assistant, dont la réponse n'est valide qu'après les contrôles serveur.
+ * Diagnostic ponctuel possible par `VEREBONA_ASSISTANT_DIAGNOSTIC_PREVIEW=on`
+ * (extrait expurgé, comme les autres usages).
+ */
+function sansSortieBrute(useCaseCode: string): boolean {
+  if (useCaseCode !== 'INTELLIGENT_ASSISTANT') return false;
+  return !/^(on|true|1)$/i.test(process.env.VEREBONA_ASSISTANT_DIAGNOSTIC_PREVIEW ?? '');
 }

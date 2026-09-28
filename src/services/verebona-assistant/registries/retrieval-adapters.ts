@@ -29,10 +29,15 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '@/db';
-import { assets, assetFiles, agendaItems, equipments, rooms } from '@/db/schema';
-import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
+import { assets, assetFiles, agendaItems, equipments, rooms, suppliers, toProcessActions } from '@/db/schema';
+import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import { likePatterns, likePatternsTolerants, nearMatchRatio, normalizeWord, termMatchRatio, type QueryTerm } from '../core/query-terms';
+import { dansPeriode } from '../core/query-period';
+import { ANALYSIS_STATUS_LABELS, documentAnalysisStatus } from '../core/document-status';
 import type { RetrievalAdapter, RetrievalQuery } from './retrieval-adapter-registry';
 import type { RetrievedSource } from '../types/sources';
+import { normalizedSql, searchExprMode } from '../core/search-sql';
 
 /** Erreur levée si une ligne échappe au périmètre du compte. */
 export class AccountScopeViolation extends Error {
@@ -65,15 +70,92 @@ function verifierPerimetre<T extends { accountId?: number | null }>(
   return lignes;
 }
 
-/** Motif de recherche insensible à la casse. */
-function motif(q: string): string {
-  return `%${q.trim()}%`;
+/**
+ * Condition « au moins un terme » sur plusieurs colonnes (§11.2, §13.5) :
+ * chaque terme est cherché par sa racine, ses synonymes et un préfixe (fautes
+ * en fin de mot), insensible à la casse ET aux accents (`unaccent`, migration
+ * 0060). Le classement fin est fait ensuite par `termMatchRatio`.
+ *
+ * DÉCISION V1 — RECHERCHE LEXICALE (CDC BO IA T2-008, Centre d'aide §4) :
+ * le niveau « recherche sémantique si utile et disponible » n'est pas activé
+ * en V1 ; aucune empreinte vectorielle n'est calculée. C'est ici que le
+ * niveau sémantique viendrait s'ajouter. En attendant, la recherche reste
+ * lexicale, servie par des index GIN trigrammes (migration 0208) :
+ * `verebona_unaccent_lower(col)` est l'expression EXACTE de ces index — ne
+ * pas la remplacer par `unaccent(lower(...))`, sinon l'index n'est plus
+ * utilisé (même résultat, parcours complet du compte). `normalizedSql`
+ * (core/search-sql.ts) ne s'en écarte que si la fonction est absente.
+ */
+async function conditionTermes(colonnes: Array<SQL | AnyPgColumn>, termes: QueryTerm[], tolerant = false): Promise<SQL | undefined> {
+  if (termes.length === 0) return undefined;
+  // Repli si la fonction de la migration 0208 est absente (search-sql.ts).
+  const mode = await searchExprMode();
+  const parts: SQL[] = [];
+  for (const t of termes) {
+    // Seconde passe « résultats proches » (§11.4) : motifs élargis.
+    for (const motifLike of tolerant ? likePatternsTolerants(t) : likePatterns(t)) {
+      for (const c of colonnes) parts.push(sql`${normalizedSql(mode, c)} LIKE ${normalizedSql(mode, motifLike)}`);
+    }
+  }
+  return parts.length ? or(...parts) : undefined;
+}
+
+/**
+ * Score composite (§13.7) : part des termes retrouvés, bonus si le bien est
+ * celui désigné, bonus de récence, de période et de type demandés. Sans
+ * terme (liste), score neutre.
+ *
+ * Résultats proches (§11.4, `q.tolerant`) : correspondance approximative,
+ * score plafonné à 0,5 — un résultat proche ne passe jamais pour un
+ * résultat exact.
+ */
+function scorer(q: RetrievalQuery, texte: string, bonus = 0): number | null {
+  const termes = q.terms ?? [];
+  if (termes.length === 0) return Math.max(0, Math.min(1, 0.6 + bonus));
+  if (q.tolerant) {
+    const approx = nearMatchRatio(termes, texte);
+    return approx > 0 ? Math.min(0.5, Math.round((0.2 + 0.3 * approx + bonus) * 1000) / 1000) : null;
+  }
+  const ratio = termMatchRatio(termes, texte);
+  if (ratio <= 0) return null;
+  return Math.max(0, Math.min(1, Math.round((0.4 + 0.55 * ratio + bonus) * 1000) / 1000));
+}
+
+/**
+ * Période demandée (§13.7) : +0,08 pour un élément daté DANS la période,
+ * −0,08 pour un élément daté hors période. Sans date connue, neutre : on ne
+ * pénalise pas ce qu'on ne sait pas dater.
+ */
+export function bonusPeriode(q: Pick<RetrievalQuery, 'period'>, date: string | null | undefined): number {
+  const dedans = dansPeriode(date, q.period);
+  return dedans === null ? 0 : dedans ? 0.08 : -0.08;
+}
+
+/**
+ * Type de document demandé (§13.7) : +0,08 quand le type du document
+ * (`document_type`, code du référentiel) contient la racine demandée
+ * (« facture » → FACTURE, FACTURE_TRAVAUX…).
+ */
+export function bonusType(q: Pick<RetrievalQuery, 'documentTypes'>, documentType: string | null | undefined): number {
+  const demandes = q.documentTypes ?? [];
+  if (demandes.length === 0 || !documentType) return 0;
+  const type = normalizeWord(documentType).replace(/[^a-z0-9]+/g, ' ');
+  return demandes.some((d) => type.includes(d)) ? 0.08 : 0;
+}
+
+/** Bonus de récence : un document de moins d'un an prime à pertinence égale. */
+function bonusRecence(date: string | null | undefined): number {
+  if (!date) return 0;
+  const t = Date.parse(date);
+  return Number.isFinite(t) && Date.now() - t < 365 * 86400_000 ? 0.03 : 0;
 }
 
 /** Extrait borné : le contrat impose 1 500 caractères au plus (§17.7). */
 function extrait(parts: Array<string | null | undefined>): string {
   return parts.filter(Boolean).join(' · ').slice(0, 1500);
 }
+
+export { documentAnalysisStatus, ANALYSIS_STATUS_LABELS, type DocumentAnalysisStatus } from '../core/document-status';
 
 /* ── Biens ─────────────────────────────────────────────────────────────── */
 
@@ -83,24 +165,15 @@ export const assetsAdapter: RetrievalAdapter = {
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
     const conditions = [eq(assets.accountId, q.accountId), isNull(assets.deletedAt)];
-
-    if (q.normalizedQuery.trim()) {
-      // `unaccent` est installée par la migration 0060 : sans elle, « énergie »
-      // ne trouverait pas « energie », ce que tout utilisateur tape.
-      const m = motif(q.normalizedQuery);
-      conditions.push(
-        or(
-          sql`unaccent(lower(coalesce(${assets.name}, ''))) LIKE unaccent(lower(${m}))`,
-          sql`unaccent(lower(coalesce(${assets.city}, ''))) LIKE unaccent(lower(${m}))`,
-          sql`unaccent(lower(coalesce(${assets.category}, ''))) LIKE unaccent(lower(${m}))`,
-        )!,
-      );
-    }
+    const termes = q.terms ?? [];
+    const cond = await conditionTermes([assets.name, assets.city, assets.category, assets.subtype, assets.registrationNumber], termes, q.tolerant);
+    if (cond) conditions.push(cond);
 
     const lignes = await db
       .select({
         id: assets.id, accountId: assets.accountId, name: assets.name,
-        category: assets.category, city: assets.city, status: assets.status,
+        category: assets.category, subtype: assets.subtype, city: assets.city, status: assets.status,
+        registrationNumber: assets.registrationNumber,
       })
       .from(assets)
       .where(and(...conditions))
@@ -109,17 +182,20 @@ export const assetsAdapter: RetrievalAdapter = {
 
     verifierPerimetre('assets', lignes, q.accountId);
 
-    return lignes.map((l) => ({
-      id: `asset_${l.id}`,
-      type: 'asset_field' as const,
-      title: l.name,
-      content: extrait([l.category, l.city, l.status]),
-      meta: { assetId: l.id },
-      // Un bien nommé exactement comme la requête prime sur une correspondance
-      // partielle sur la ville.
-      relevanceScore:
-        l.name?.toLowerCase() === q.normalizedQuery.trim().toLowerCase() ? 0.95 : 0.6,
-    }));
+    return lignes.flatMap((l) => {
+      const designe = q.entityFilters.assetId === l.id ? 0.05 : 0;
+      const exact = termes.length > 0 && normalizeWord(l.name ?? '') === termes.map((t) => t.raw).join(' ') ? 0.2 : 0;
+      const score = scorer(q, [l.name, l.city, l.category, l.subtype, l.registrationNumber].filter(Boolean).join(' '), designe + exact);
+      if (score == null) return [];
+      return [{
+        id: `asset_${l.id}`,
+        type: 'asset_field' as const,
+        title: l.name,
+        content: extrait([l.category, l.subtype, l.city, l.status]),
+        meta: { assetId: l.id, subtitle: extrait([l.subtype ?? l.category, l.city]) || null },
+        relevanceScore: score,
+      }];
+    });
   },
 };
 
@@ -133,26 +209,21 @@ export const documentsAdapter: RetrievalAdapter = {
     const conditions = [eq(assetFiles.accountId, q.accountId), isNull(assetFiles.deletedAt)];
 
     const assetId = q.entityFilters.assetId;
-    if (typeof assetId === 'number') conditions.push(eq(assetFiles.assetId, assetId));
+    if (typeof assetId === 'number') conditions.push(or(eq(assetFiles.assetId, assetId), eq(assetFiles.linkedAssetId, assetId))!);
 
     const documentType = q.entityFilters.documentType;
     if (typeof documentType === 'string') {
       conditions.push(eq(assetFiles.documentType, documentType));
     }
 
-    if (q.normalizedQuery.trim()) {
-      const m = motif(q.normalizedQuery);
-      conditions.push(
-        or(
-          ilike(assetFiles.retainedTitle, m),
-          ilike(assetFiles.originalFilename, m),
-          ilike(assetFiles.supplier, m),
-          // La description porte souvent le texte extrait : c'est là que se
-          // trouve la réponse à « quel est le montant de ma facture ».
-          ilike(assetFiles.description, m),
-        )!,
-      );
-    }
+    const termes = q.terms ?? [];
+    // Titre, nom de fichier, fournisseur, type, description ET texte extrait
+    // (« contenu textuel indexé », §12.1) : c'est souvent là qu'est la réponse.
+    const cond = await conditionTermes([
+      assetFiles.retainedTitle, assetFiles.originalFilename, assetFiles.supplier,
+      assetFiles.description, assetFiles.documentType, assetFiles.extractedText,
+    ], termes, q.tolerant);
+    if (cond) conditions.push(cond);
 
     const lignes = await db
       .select({
@@ -160,9 +231,16 @@ export const documentsAdapter: RetrievalAdapter = {
         title: assetFiles.retainedTitle, filename: assetFiles.originalFilename,
         documentType: assetFiles.documentType, documentDate: assetFiles.documentDate,
         supplier: assetFiles.supplier, description: assetFiles.description,
-        assetId: assetFiles.assetId,
+        assetId: assetFiles.assetId, assetName: assets.name,
+        analysisState: assetFiles.analysisState,
+        // Dédoublonnage logique (§13.8) : empreinte, taille, document principal.
+        contentHash: assetFiles.sha256Hash, size: assetFiles.size, groupedIntoFileId: assetFiles.groupedIntoFileId,
+        // Seul un court extrait du texte sert au classement : le texte entier
+        // ne quitte pas la base.
+        textHead: sql<string | null>`left(${assetFiles.extractedText}, 4000)`,
       })
       .from(assetFiles)
+      .leftJoin(assets, eq(assets.id, assetFiles.assetId))
       .where(and(...conditions))
       // Le plus récent d'abord : sur un même type de document, c'est presque
       // toujours celui qui fait foi.
@@ -171,14 +249,28 @@ export const documentsAdapter: RetrievalAdapter = {
 
     verifierPerimetre('documents', lignes, q.accountId);
 
-    return lignes.map((l) => ({
-      id: `doc_${l.id}`,
-      type: 'document' as const,
-      title: l.title ?? l.filename ?? `Document ${l.id}`,
-      content: extrait([l.documentType, l.supplier, l.documentDate, l.description]),
-      meta: { documentId: l.id, assetId: l.assetId },
-      relevanceScore: 0.7,
-    }));
+    return lignes.flatMap((l) => {
+      const titre = l.title ?? l.filename ?? `Document ${l.id}`;
+      const designe = typeof assetId === 'number' ? 0.05 : 0;
+      const score = scorer(q, [titre, l.filename, l.supplier, l.documentType, l.description, l.textHead].filter(Boolean).join(' '),
+        designe + bonusRecence(l.documentDate) + bonusPeriode(q, l.documentDate) + bonusType(q, l.documentType));
+      if (score == null) return [];
+      const statut = documentAnalysisStatus(l.analysisState);
+      return [{
+        id: `doc_${l.id}`,
+        type: 'document' as const,
+        title: titre,
+        content: extrait([l.documentType, l.supplier, l.documentDate, l.description]),
+        meta: {
+          documentId: l.id, assetId: l.assetId, assetName: l.assetName ?? null,
+          date: l.documentDate ?? null, analysisStatus: statut,
+          statusLabel: ANALYSIS_STATUS_LABELS[statut],
+          contentHash: l.contentHash ?? null, size: l.size ?? null,
+          logicalFileId: l.groupedIntoFileId ?? l.id,
+        },
+        relevanceScore: score,
+      }];
+    });
   },
 };
 
@@ -190,13 +282,9 @@ export const agendaAdapter: RetrievalAdapter = {
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
     const conditions = [eq(agendaItems.accountId, q.accountId)];
-
-    if (q.normalizedQuery.trim()) {
-      const m = motif(q.normalizedQuery);
-      conditions.push(
-        or(ilike(agendaItems.title, m), ilike(agendaItems.description, m))!,
-      );
-    }
+    const termes = q.terms ?? [];
+    const cond = await conditionTermes([agendaItems.title, agendaItems.description], termes, q.tolerant);
+    if (cond) conditions.push(cond);
 
     const lignes = await db
       .select({
@@ -215,14 +303,19 @@ export const agendaAdapter: RetrievalAdapter = {
 
     verifierPerimetre('agenda', lignes, q.accountId);
 
-    return lignes.map((l) => ({
-      id: `agenda_${l.id}`,
-      type: 'agenda_item' as const,
-      title: l.title,
-      content: extrait([l.startDate, l.manualStatus, l.description]),
-      meta: { agendaItemId: l.id },
-      relevanceScore: 0.65,
-    }));
+    return lignes.flatMap((l) => {
+      const date = l.startDate ? String(l.startDate).slice(0, 10) : null;
+      const score = scorer(q, [l.title, l.description].filter(Boolean).join(' '), bonusPeriode(q, date));
+      if (score == null) return [];
+      return [{
+        id: `agenda_${l.id}`,
+        type: 'agenda_item' as const,
+        title: l.title,
+        content: extrait([date, l.manualStatus, l.description]),
+        meta: { agendaItemId: l.id, date },
+        relevanceScore: score,
+      }];
+    });
   },
 };
 
@@ -233,9 +326,9 @@ export const equipmentsAdapter: RetrievalAdapter = {
   enabled: true,
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
-    if (!q.normalizedQuery.trim()) return [];
-
-    const m = motif(q.normalizedQuery);
+    const termes = q.terms ?? [];
+    const cond = await conditionTermes([equipments.name, equipments.type], termes, q.tolerant);
+    if (!cond) return [];
 
     // Les équipements ne portent pas `account_id` : ils dépendent d'un bien.
     // La jointure EST le contrôle de périmètre — d'où sa présence explicite
@@ -251,25 +344,23 @@ export const equipmentsAdapter: RetrievalAdapter = {
       })
       .from(equipments)
       .innerJoin(assets, eq(equipments.assetId, assets.id))
-      .where(
-        and(
-          eq(assets.accountId, q.accountId),
-          isNull(assets.deletedAt),
-          or(ilike(equipments.name, m), ilike(equipments.type, m))!,
-        ),
-      )
+      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), cond))
       .limit(q.limit);
 
     verifierPerimetre('equipments', lignes, q.accountId);
 
-    return lignes.map((l) => ({
-      id: `equipment_${l.id}`,
-      type: 'asset_field' as const,
-      title: l.name,
-      content: extrait([l.type, l.assetName ? `dans ${l.assetName}` : null]),
-      meta: { equipmentId: l.id, assetId: l.assetId },
-      relevanceScore: 0.55,
-    }));
+    return lignes.flatMap((l) => {
+      const score = scorer(q, [l.name, l.type].filter(Boolean).join(' '), -0.05);
+      if (score == null) return [];
+      return [{
+        id: `equipment_${l.id}`,
+        type: 'asset_field' as const,
+        title: l.name,
+        content: extrait([l.type, l.assetName ? `dans ${l.assetName}` : null]),
+        meta: { equipmentId: l.id, assetId: l.assetId, assetName: l.assetName ?? null },
+        relevanceScore: score,
+      }];
+    });
   },
 };
 
@@ -280,7 +371,9 @@ export const roomsAdapter: RetrievalAdapter = {
   enabled: true,
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
-    if (!q.normalizedQuery.trim()) return [];
+    const termes = q.terms ?? [];
+    const cond = await conditionTermes([rooms.name], termes, q.tolerant);
+    if (!cond) return [];
 
     const lignes = await db
       .select({
@@ -289,33 +382,125 @@ export const roomsAdapter: RetrievalAdapter = {
       })
       .from(rooms)
       .innerJoin(assets, eq(rooms.assetId, assets.id))
-      .where(
-        and(
-          eq(assets.accountId, q.accountId),
-          isNull(assets.deletedAt),
-          ilike(rooms.name, motif(q.normalizedQuery)),
-        ),
-      )
+      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), cond))
       .limit(q.limit);
 
     verifierPerimetre('rooms', lignes, q.accountId);
 
-    return lignes.map((l) => ({
-      id: `room_${l.id}`,
-      type: 'asset_field' as const,
-      title: l.name,
-      content: extrait([l.assetName ? `dans ${l.assetName}` : null]),
-      meta: { roomId: l.id, assetId: l.assetId },
-      relevanceScore: 0.5,
-    }));
+    return lignes.flatMap((l) => {
+      const score = scorer(q, l.name ?? '', -0.1);
+      if (score == null) return [];
+      return [{
+        id: `room_${l.id}`,
+        type: 'asset_field' as const,
+        title: l.name,
+        content: extrait([l.assetName ? `dans ${l.assetName}` : null]),
+        meta: { roomId: l.id, assetId: l.assetId, assetName: l.assetName ?? null },
+        relevanceScore: score,
+      }];
+    });
   },
 };
 
-/** Les cinq adaptateurs, dans l'ordre d'enregistrement. */
+/* ── Fournisseurs (§11.1, §12.1) ──────────────────────────────────────── */
+
+export const suppliersAdapter: RetrievalAdapter = {
+  code: 'structured',
+  enabled: true,
+
+  async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
+    const termes = q.terms ?? [];
+    const cond = await conditionTermes([suppliers.name, suppliers.city], termes, q.tolerant);
+    // Sans terme, les fournisseurs ne sont listés que pour une recherche de
+    // fournisseurs : sinon ils ajouteraient du bruit à toute question.
+    if (!cond && q.intent !== 'ACCOUNT_SEARCH_SUPPLIER') return [];
+    const conditions = [eq(suppliers.accountId, q.accountId), ne(suppliers.status, 'deleted')];
+    if (cond) conditions.push(cond);
+
+    const lignes = await db
+      .select({
+        id: suppliers.id, accountId: suppliers.accountId, name: suppliers.name,
+        city: suppliers.city, status: suppliers.status,
+      })
+      .from(suppliers)
+      .where(and(...conditions))
+      .orderBy(suppliers.name)
+      .limit(q.limit);
+
+    verifierPerimetre('suppliers', lignes, q.accountId);
+
+    return lignes.flatMap((l) => {
+      const score = scorer(q, [l.name, l.city].filter(Boolean).join(' '));
+      if (score == null) return [];
+      return [{
+        id: `supplier_${l.id}`,
+        type: 'supplier' as const,
+        title: l.name,
+        // Coordonnées volontairement absentes (minimisation, §29.3).
+        content: extrait([l.city]),
+        meta: { supplierId: l.id, subtitle: l.city ?? null },
+        relevanceScore: score,
+      }];
+    });
+  },
+};
+
+/* ── « À traiter » (§11.1, §12.1, §12.2) ─────────────────────────────── */
+
+const PRIORITES: Record<string, string> = { DO_FIRST: 'À faire en premier', DO_NEXT: 'À faire ensuite', CAN_WAIT: 'Peut attendre' };
+
+export const toProcessAdapter: RetrievalAdapter = {
+  code: 'structured',
+  enabled: true,
+
+  async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
+    const termes = q.terms ?? [];
+    const cond = await conditionTermes([toProcessActions.question], termes);
+    // Liste complète (bornée) pour « que dois-je traiter ? » ; sinon
+    // seulement les éléments dont la question correspond.
+    // « Qu'est-ce qui manque ? » (§9.2 ACCOUNT_MISSING_INFORMATION) : les
+    // informations à compléter SONT les éléments « À traiter » en attente.
+    const liste = q.intent === 'ACCOUNT_TO_PROCESS' || q.intent === 'ACCOUNT_MISSING_INFORMATION';
+    if (!cond && !liste) return [];
+    const conditions = [eq(toProcessActions.accountId, q.accountId), isNull(toProcessActions.resolvedAt)];
+    if (cond && !liste) conditions.push(cond);
+
+    const lignes = await db
+      .select({
+        id: toProcessActions.id, accountId: toProcessActions.accountId,
+        question: toProcessActions.question, priority: toProcessActions.priority,
+        dueDate: toProcessActions.dueDate, targetType: toProcessActions.targetType,
+      })
+      .from(toProcessActions)
+      .where(and(...conditions))
+      .orderBy(sql`CASE ${toProcessActions.priority} WHEN 'DO_FIRST' THEN 0 WHEN 'DO_NEXT' THEN 1 ELSE 2 END`, toProcessActions.dueDate)
+      .limit(q.limit);
+
+    verifierPerimetre('to_process', lignes, q.accountId);
+
+    return lignes.flatMap((l) => {
+      const score = liste ? Math.max(0.7, scorer(q, l.question) ?? 0.7) : scorer(q, l.question);
+      if (score == null) return [];
+      const date = l.dueDate ? new Date(l.dueDate as unknown as string).toISOString().slice(0, 10) : null;
+      return [{
+        id: `todo_${l.id}`,
+        type: 'to_process_item' as const,
+        title: l.question,
+        content: extrait([PRIORITES[l.priority] ?? null, date ? `échéance ${date}` : null]),
+        meta: { toProcessId: l.id, date, subtitle: PRIORITES[l.priority] ?? null },
+        relevanceScore: score,
+      }];
+    });
+  },
+};
+
+/** Les adaptateurs, dans l'ordre d'enregistrement. */
 export const ADAPTATEURS: RetrievalAdapter[] = [
   assetsAdapter,
   documentsAdapter,
   agendaAdapter,
   equipmentsAdapter,
   roomsAdapter,
+  suppliersAdapter,
+  toProcessAdapter,
 ];

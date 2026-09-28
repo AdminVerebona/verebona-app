@@ -23,4 +23,13 @@ describe('getTreatmentActivity', () => {
     expect(r.find((a) => a.treatment === 'T3')).toMatchObject({ calls30d: 0, successRate7d: null });
     expect(String(unsafe.mock.calls[0][0])).toMatch(/shadow/);
   });
+
+  it('PER-01 : taux et échecs par fenêtre 24 h / 7 j / 30 j', async () => {
+    unsafe.mockResolvedValueOnce([{ t: 'T2', c24: '4', c7: '10', c30: '20', ok24: '2', ok7: '9', ok30: '15', last_at: null, last_err: null }]);
+    const r = (await getTreatmentActivity(new Date('2026-09-26T00:00:00Z'))).find((a) => a.treatment === 'T2')!;
+    expect(r).toMatchObject({
+      successRate24h: 0.5, successRate7d: 0.9, successRate30d: 0.75,
+      failed24h: 2, failed7d: 1, failed30d: 5,
+    });
+  });
 });

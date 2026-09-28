@@ -6,8 +6,10 @@
  * clarification éventuelle avec ses choix).
  */
 import type { AssistantApiResponse, AssistantRunResult } from '../types/contracts';
+import { isAssistantFlagOn } from '../config/assistant-flags';
 
 export function toApiPayload(result: AssistantRunResult, conversationId?: number | null): AssistantApiResponse {
+  const sourcesOn = isAssistantFlagOn('sources');
   return {
     requestId: result.requestId,
     messageId: result.messageId,
@@ -16,9 +18,12 @@ export function toApiPayload(result: AssistantRunResult, conversationId?: number
     intent: result.route?.intent ?? 'UNKNOWN',
     mode: result.mode,
     answer: result.answer,
-    sourcesAvailable: result.sources.length > 0,
-    sourceCount: result.sources.length,
-    actions: result.actions,
+    // Flag §39 `verebona_assistant_sources` coupé : aucune source exposée.
+    sourcesAvailable: sourcesOn && result.sources.length > 0,
+    sourceCount: sourcesOn ? result.sources.length : 0,
+    // Cible et paramètres internes (§28.6) : persistés, jamais exposés.
+    actions: (sourcesOn ? result.actions : result.actions.filter((a) => a.type !== 'SHOW_SOURCES'))
+      .map(({ targetRef: _cible, payload: _parametres, ...publique }) => publique),
     clarification: result.clarification
       ? {
           clarificationId: result.clarification.clarificationId,
@@ -32,9 +37,12 @@ export function toApiPayload(result: AssistantRunResult, conversationId?: number
         }
       : null,
     commandPlan: result.commandPlan ?? null,
+    ...(result.resultGroups?.length ? { resultGroups: result.resultGroups } : {}),
     // §27.11 : `error {code, message, recoverable}` accompagne `status:
     // 'error'`, pour que le client affiche un message et « Réessayer » au
     // lieu d'une impasse (§4.2).
     ...(result.error ? { error: { ...result.error } } : {}),
+    // §27.11 : codes informatifs, non bloquants (la réponse reste `ready`).
+    ...(result.notices?.length ? { notices: result.notices.map((n) => ({ ...n })) } : {}),
   };
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
-import { verifyAccessToken } from '@/lib/jwt';
+import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -16,7 +16,7 @@ export async function POST(
       return NextResponse.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
     }
 
-    const payload = await verifyAccessToken(token);
+    const payload = await verifySessionAccessToken(token, request);
     if (!payload) {
       return NextResponse.json({ error: 'INVALID_TOKEN' }, { status: 401 });
     }

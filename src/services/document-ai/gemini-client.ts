@@ -60,6 +60,8 @@ export interface GeminiCallOptions {
   accountId: number;
   /** Fichiers analysés (`asset_files.id`) — trace de la passerelle. */
   sourceIds?: number[];
+  /** Opération métier (`ai_operation.id`) à laquelle rattacher les appels (GEN-005). */
+  parentOperationId?: number;
   promptVersion: string;
   /** Publicly accessible URLs (S3 presigned) or GCS URIs */
   fileUrls: string[];
@@ -295,6 +297,7 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
     operationCode: LEGACY_DOCUMENT_ANALYSIS_OPERATION,
     accountId: options.accountId,
     sourceIds: options.sourceIds,
+    parentOperationId: options.parentOperationId,
     prompt,
     attachments,
     accept: isUsableJsonText,

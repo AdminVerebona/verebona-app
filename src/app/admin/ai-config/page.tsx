@@ -45,6 +45,8 @@ import { apiClient } from '@/lib/api-client';
 import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
 import { MepPackages } from './_components/MepPackages';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
+import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGuard';
+import { useRouter } from 'next/navigation';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
 
@@ -128,6 +130,11 @@ interface T5Result {
   draftId: number | null;
   draftCreated: boolean;
   traceId: string;
+  comparison?: {
+    versionId: number; label: string; status: string;
+    diff: { identical: boolean; changeCount: number; treatments: Array<{ treatment: Treatment; changes: Array<{ label: string; before: string | null; after: string | null }> }> };
+  } | null;
+  logsDigest?: string | null;
 }
 
 interface DraftChoice { id: number; label: string | null; isStale: boolean; createdAt: string }
@@ -136,8 +143,15 @@ interface Metric {
   key: string;
   label: string;
   value: number | null;
-  unit?: 'count' | 'percent' | 'ms';
+  unit?: 'count' | 'percent' | 'ms' | 'usd_micros' | 'decimal';
   missingReason?: string;
+}
+
+interface MetricTable {
+  key: string;
+  label: string;
+  columns: Array<{ key: string; label: string }>;
+  rows: Array<Record<string, string | number | null>>;
 }
 
 interface Issue {
@@ -215,11 +229,16 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
  * instrumenter, et évite qu'on redécouvre chaque fois pourquoi la case est vide.
  */
 function Supervision({
-  metrics, windowDays, onWindowChange,
-}: { metrics: Metric[]; windowDays: number; onWindowChange: (d: number) => void }) {
+  metrics, tables, windowDays, onWindowChange,
+}: { metrics: Metric[]; tables?: MetricTable[]; windowDays: number; onWindowChange: (d: number) => void }) {
   const format = (m: Metric): string => {
     if (m.value === null) return '—';
     if (m.unit === 'percent') return `${m.value} %`;
+    if (m.unit === 'usd_micros') {
+      if (m.value === 0) return '0 $';
+      return m.value < 10_000 ? `${(m.value / 1_000_000).toFixed(4)} $` : `${(m.value / 1_000_000).toFixed(2)} $`;
+    }
+    if (m.unit === 'decimal') return m.value.toLocaleString('fr-FR', { maximumFractionDigits: 2 });
     if (m.unit === 'ms') return m.value >= 1000 ? `${(m.value / 1000).toFixed(1)} s` : `${m.value} ms`;
     return m.value.toLocaleString('fr-FR');
   };
@@ -269,6 +288,36 @@ function Supervision({
         ))}
       </div>
 
+      {tables?.map((t) => (
+        <div key={t.key} className="space-y-1.5">
+          <p className="text-xs font-medium text-[color:var(--text-primary)]">{t.label}</p>
+          {t.rows.length === 0 ? (
+            <p className="text-xs text-[color:var(--text-muted)]">Aucun élément sur la période.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[color:var(--text-muted)]">
+                    {t.columns.map((c) => <th key={c.key} className="py-1 pr-3 font-medium">{c.label}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {t.rows.map((r, i) => (
+                    <tr key={i} className="border-t border-[color:var(--border-subtle)]">
+                      {t.columns.map((c) => (
+                        <td key={c.key} className="py-1 pr-3 text-[color:var(--text-primary)]">
+                          {c.key === 'date' && r[c.key] ? new Date(String(r[c.key])).toLocaleString('fr-FR') : (r[c.key] ?? '—')}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+
       <a href="/admin/ai-executions"
         className="inline-block text-xs text-[color:var(--accent)] hover:underline">
         Voir les appels correspondants
@@ -294,8 +343,10 @@ function Supervision({
  * ══════════════════════════════════════════════════════════════════════════
  */
 function PromptControl({
-  versionId, readOnly, hasUnsaved, onModified, onOpenVersion,
+  versionId, readOnly, hasUnsaved, onModified, onOpenVersion, versions = [],
 }: {
+  /** T5-010 : versions proposées à la comparaison. */
+  versions?: Version[];
   versionId: number;
   /** La version affichée n'est pas un Brouillon : T5 en créera ou en demandera un. */
   readOnly: boolean;
@@ -309,6 +360,9 @@ function PromptControl({
   const [encours, setEncours] = useState<null | 'analyze' | 'modify'>(null);
   const [choixBrouillon, setChoixBrouillon] = useState<DraftChoice[] | null>(null);
   const [refus, setRefus] = useState<string | null>(null);
+  // T5-010 / T5-009 : contexte complémentaire, sur demande uniquement.
+  const [comparerAvec, setComparerAvec] = useState<string>('');
+  const [avecJournaux, setAvecJournaux] = useState(false);
 
   const VERDICT_LABEL: Record<T5Result['verdict'], string> = {
     prompt: 'Un ou plusieurs prompts sont en cause',
@@ -328,6 +382,8 @@ function PromptControl({
       const r = await apiClient.post<T5Result>('/api/admin/ai/prompt-control', {
         action, versionId, instruction: instruction.trim(),
         ...(action === 'modify' && createDraft ? { createDraft: true } : {}),
+        ...(comparerAvec ? { compareWithVersionId: Number(comparerAvec) } : {}),
+        ...(avecJournaux ? { includeLogs: true, logsDays: 7 } : {}),
       });
       setResultat(r);
       const ecrits = r.changes.filter((c) => c.applied).map((c) => c.treatment);
@@ -366,6 +422,23 @@ function PromptControl({
           + 'Je veux “Facture Béquille draisienne”. »'}
         className="min-h-[110px] bg-[color:var(--bg-input)]"
       />
+
+      <div className="flex flex-wrap items-center gap-3 text-xs text-[color:var(--text-secondary)]">
+        <label className="flex items-center gap-1.5">
+          Comparer avec
+          <select value={comparerAvec} onChange={(e) => setComparerAvec(e.target.value)} disabled={encours !== null}
+            className="h-8 rounded-md border border-[color:var(--border-subtle)] bg-transparent px-2 text-xs">
+            <option value="">— aucune version —</option>
+            {versions.filter((v) => v.id !== versionId).map((v) => (
+              <option key={v.id} value={v.id}>{versionName(v)} ({STATUS_LABEL[v.status]})</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={avecJournaux} onChange={(e) => setAvecJournaux(e.target.checked)} disabled={encours !== null} />
+          Inclure une synthèse des journaux (7 j)
+        </label>
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" onClick={() => envoyer('analyze')} disabled={encours !== null || !demandeValide}>
@@ -433,6 +506,31 @@ function PromptControl({
           </div>
 
           <p className="text-sm text-[color:var(--text-secondary)] whitespace-pre-wrap">{resultat.analysis}</p>
+
+          {resultat.comparison && (
+            <details>
+              <summary className="text-xs text-[color:var(--accent)] cursor-pointer">
+                Comparaison avec {resultat.comparison.label} ({STATUS_LABEL[resultat.comparison.status as Status] ?? resultat.comparison.status})
+                {' — '}{resultat.comparison.diff.identical ? 'aucune différence' : `${resultat.comparison.diff.changeCount} différence(s)`}
+              </summary>
+              <div className="mt-2 space-y-1">
+                {resultat.comparison.diff.treatments.map((t) => t.changes.map((c, i) => (
+                  <p key={`${t.treatment}-${i}`} className="text-xs text-[color:var(--text-secondary)]">
+                    <span className="font-medium">{t.treatment} · {c.label}</span> :{' '}
+                    <span className="text-red-400">{(c.before ?? '—').slice(0, 160)}</span> →{' '}
+                    <span className="text-emerald-500">{(c.after ?? '—').slice(0, 160)}</span>
+                  </p>
+                )))}
+              </div>
+            </details>
+          )}
+
+          {resultat.logsDigest && (
+            <details>
+              <summary className="text-xs text-[color:var(--accent)] cursor-pointer">Synthèse des journaux transmise à Prompt Control</summary>
+              <pre className="mt-2 text-xs whitespace-pre-wrap text-[color:var(--text-muted)]">{resultat.logsDigest}</pre>
+            </details>
+          )}
 
           {resultat.changes.length > 0 && (
             <div className="space-y-3">
@@ -792,7 +890,7 @@ export default function AiConfigPage() {
   const [runtime, setRuntime] = useState<TreatmentRuntimeState[]>([]);
   const [emergencyStop, setEmergencyStop] = useState(false);
   const [leaving, setLeaving] = useState<null | (() => void)>(null);
-  const [metrics, setMetrics] = useState<Record<string, { metrics: Metric[]; windowDays: number }>>({});
+  const [metrics, setMetrics] = useState<Record<string, { metrics: Metric[]; tables?: MetricTable[]; windowDays: number }>>({});
   // Fenêtre choisie par traitement : on observe rarement T1 et T2 à la même
   // échelle, et imposer une fenêtre commune obligerait à la régler deux fois.
   const [fenetres, setFenetres] = useState<Record<string, number>>({});
@@ -841,7 +939,7 @@ export default function AiConfigPage() {
     if (metrics[tab]?.windowDays === fenetre) return;
     let annule = false;
     apiClient
-      .get<{ metrics: Metric[]; windowDays: number }>(
+      .get<{ metrics: Metric[]; tables?: MetricTable[]; windowDays: number }>(
         `/api/admin/ai/treatments/${tab}/metrics?days=${fenetre}`,
       )
       .then((r) => { if (!annule) setMetrics((m) => ({ ...m, [tab]: r })); })
@@ -862,6 +960,20 @@ export default function AiConfigPage() {
       toast.error('Version introuvable.');
     }
   }, []);
+
+  // DRF-01 : le tableau de bord ouvre un brouillon par `?version=<id>`. Lu une
+  // seule fois, au premier chargement de la liste.
+  const [versionDemandee, setVersionDemandee] = useState<number | null | undefined>(undefined);
+  useEffect(() => {
+    if (versionDemandee !== undefined) return;
+    const id = Number(new URLSearchParams(window.location.search).get('version'));
+    setVersionDemandee(Number.isSafeInteger(id) && id > 0 ? id : null);
+  }, [versionDemandee]);
+  useEffect(() => {
+    if (!versionDemandee || versions.length === 0) return;
+    setVersionDemandee(null);
+    void openVersion(versionDemandee);
+  }, [versionDemandee, versions, openVersion]);
 
   /**
    * Après une écriture de Prompt Control.
@@ -918,6 +1030,13 @@ export default function AiConfigPage() {
     if (dirty.size === 0) { go(); return; }
     setLeaving(() => go);
   };
+
+  // VER-007, WF-26 : navigation client (menu, liens) interceptée elle aussi —
+  // `beforeunload` ne la voit pas.
+  const router = useRouter();
+  const askLeave = useCallback((go: () => void) => setLeaving(() => go), []);
+  const navigateTo = useCallback((href: string) => router.push(href), [router]);
+  useUnsavedNavigationGuard(dirty.size > 0, askLeave, navigateTo);
 
   const saveTreatment = async (t: Treatment): Promise<boolean> => {
     if (!current) return false;
@@ -1138,8 +1257,8 @@ export default function AiConfigPage() {
             lui-même le ou les prompts à faire évoluer. Plus d'onglet par
             traitement pour cela.
           */}
-          {/* Ancre `#prompt-control` : cible du lien de remplacement renvoyé
-              par l'ancienne route `/api/admin/ai-instructions/apply` (410). */}
+          {/* Ancre `#prompt-control` : point d'entrée de Prompt Control (T5),
+              successeur de l'ancienne « Gestion IA » (routes supprimées). */}
           <div id="prompt-control" className="scroll-mt-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
             <PromptControl
               versionId={current.id}
@@ -1147,6 +1266,7 @@ export default function AiConfigPage() {
               hasUnsaved={dirty.size > 0}
               onModified={afterT5Modification}
               onOpenVersion={(id) => guardUnsaved(() => openVersion(id))}
+              versions={versions}
             />
           </div>
 
@@ -1217,6 +1337,7 @@ export default function AiConfigPage() {
                   {metrics[t.code] && (
                     <Supervision
                       metrics={metrics[t.code].metrics}
+                      tables={metrics[t.code].tables}
                       windowDays={metrics[t.code].windowDays}
                       onWindowChange={(d) => setFenetres((f) => ({ ...f, [t.code]: d }))}
                     />
@@ -1256,7 +1377,10 @@ export default function AiConfigPage() {
           </DialogHeader>
           <DialogFooter className="gap-2">
             <Button variant="ghost" onClick={() => setLeaving(null)}>Annuler</Button>
-            <Button variant="outline" onClick={() => { const go = leaving; setDirty(new Set()); setLeaving(null); go?.(); }}>
+            <Button variant="outline" onClick={() => {
+              // WF-26 étape 3 : « Quitter » restaure la dernière valeur persistée.
+              const go = leaving; [...dirty].forEach(resetTreatment); setDirty(new Set()); setLeaving(null); go?.();
+            }}>
               Quitter sans enregistrer
             </Button>
             <Button onClick={async () => { if (await saveAllDirty()) { const go = leaving; setLeaving(null); go?.(); } }}>

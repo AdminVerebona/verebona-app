@@ -21,6 +21,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
 import {
   markNotApplicable,
@@ -85,5 +86,7 @@ export async function POST(
     notifyCoherenceEvent(accountId, { event: 'arbitration' });
   }
 
+  // CDC Assistant §25.7 : événement métier (caches de l'assistant).
+  void emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: publicId });
   return NextResponse.json({ ok: true, previousValue: result.previousValue });
 }

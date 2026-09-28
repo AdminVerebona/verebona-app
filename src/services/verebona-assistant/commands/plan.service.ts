@@ -26,7 +26,8 @@ import type {
 } from './catalog';
 import { WRITE_COMMAND_CATALOG } from './catalog';
 import { parseCommands, type CommandDraft } from './parser';
-import { runAction, EXECUTORS, type Executor } from './executors';
+import { runAction, EXECUTORS, type Executor, type ExecutionContext } from './executors';
+import { armUndo, purgeExpiredUndoSteps, type UndoCapture } from './undo.service';
 import { ASSISTANT_ASSET_FIELDS, familyOf, formatFieldValue } from './asset-fields';
 import { validateDetailChanges } from '@/lib/asset-detail-rules';
 
@@ -348,7 +349,7 @@ export function toPreview(plan: StoredPlan): CommandPlanPreview {
   };
 }
 
-async function tracer(planId: string, accountId: number, userId: number | null, event: string, detail: Record<string, unknown> = {}) {
+export async function tracer(planId: string, accountId: number, userId: number | null, event: string, detail: Record<string, unknown> = {}) {
   try {
     await pgClient.unsafe(
       `INSERT INTO verebona_command_events (plan_id, account_id, user_id, event_type, detail_json) VALUES ($1, $2, $3, $4, $5::jsonb)`,
@@ -419,7 +420,11 @@ export async function prepareCommand(
 // ── Confirmation et exécution ──────────────────────────────────────────────
 
 export type Confirmation =
-  | { ok: true; status: PlanStatus; results: ActionResult[]; summary: string }
+  | {
+      ok: true; status: PlanStatus; results: ActionResult[]; summary: string;
+      /** Fin de la fenêtre « Annuler » (undo.service) ; null si le plan n'est pas annulable. */
+      undoUntil: string | null;
+    }
   | { ok: false; code: 'PLAN_NOT_FOUND' | 'PLAN_EXPIRED' | 'PLAN_ALREADY_HANDLED' | 'PLAN_INTEGRITY' | 'WRITE_REFUSED'; message: string; status?: PlanStatus };
 
 /**
@@ -428,11 +433,12 @@ export type Confirmation =
  * Chaque action s'exécute seulement si TOUTES ses dépendances ont réussi ;
  * sinon SKIPPED_DEPENDENCY (et ses propres dépendantes à leur tour). Une
  * action indépendante continue malgré l'échec d'une autre. Aucun retour
- * arrière : ce qui a réussi reste acquis.
+ * arrière automatique : ce qui a réussi reste acquis (l'utilisateur peut
+ * ensuite « Annuler » un plan réversible, voir undo.service).
  */
 export async function executeActions(
   actions: PlannedAction[],
-  ctx: { accountId: number; userId: number },
+  ctx: ExecutionContext,
   executors: Record<PlannedAction['command'], Executor> = EXECUTORS,
 ): Promise<ActionResult[]> {
   const byId = new Map<string, ActionResult>();
@@ -535,16 +541,27 @@ export async function confirmCommandPlan(
     return { ok: false, code: 'WRITE_REFUSED', message: droit.message ?? 'Écriture non autorisée.', status: 'REFUSED' };
   }
 
-  const results = await executeActions(actions, { accountId: p.accountId, userId: p.userId }, deps.executors);
+  // Chaque exécuteur réversible décrit sa commande inverse et l'état
+  // antérieur de sa cible (undo.service) ; la fenêtre « Annuler » ne s'ouvre
+  // que si TOUTES les étapes réussies sont réversibles (T2-039).
+  const captures = new Map<string, UndoCapture>();
+  const results = await executeActions(
+    actions,
+    { accountId: p.accountId, userId: p.userId, recordUndo: (c) => { captures.set(c.actionId, c); } },
+    deps.executors,
+  );
   const status = planStatusFrom(results);
   await fin(status, results);
-  await tracer(p.planId, p.accountId, p.userId, 'EXECUTED', { status, results });
+  const undo = await armUndo(p, results, captures);
+  await tracer(p.planId, p.accountId, p.userId, 'EXECUTED', {
+    status, results, undo: { reversible: undo.undoUntil !== null, undoUntil: undo.undoUntil, reasons: undo.reasons },
+  });
   const summary = summarizeResults(results);
   await recordPlanOutcome(fil, outcomeText(summary, results));
-  return { ok: true, status, results, summary };
+  return { ok: true, status, results, summary, undoUntil: undo.undoUntil };
 }
 
-async function defaultCanWrite(accountId: number): Promise<{ allowed: boolean; message?: string }> {
+export async function defaultCanWrite(accountId: number): Promise<{ allowed: boolean; message?: string }> {
   const d = await getEntitlements(accountId);
   if (d.canWrite) return { allowed: true };
   const r = await restrictedRefusal(accountId, d.status);
@@ -641,6 +658,9 @@ export async function expirePendingPlans(scope: { accountId?: number; userId?: n
     [scope.accountId ?? null, scope.userId ?? null] as never[],
   )) as unknown as Array<{ plan_id: string; account_id: number; user_id: number }>;
   for (const r of rows) await tracer(r.plan_id, r.account_id, r.user_id, 'EXPIRED', { by: 'expiry' });
+  // Purge quotidienne (sans périmètre) : états antérieurs des annulations
+  // dont la fenêtre est close.
+  if (scope.accountId == null && scope.userId == null) await purgeExpiredUndoSteps();
   return rows.length;
 }
 
@@ -648,6 +668,11 @@ export async function expirePendingPlans(scope: { accountId?: number; userId?: n
 export interface ThreadCommandPlan extends CommandPlanPreview {
   messageId: number;
   status: PlanStatus;
+  /**
+   * Fin de la fenêtre « Annuler » d'un plan exécuté et réversible ; null
+   * sinon (irréversible, non exécuté, déjà annulé). Le serveur fait foi.
+   */
+  undoUntil: string | null;
 }
 
 /**
@@ -663,14 +688,15 @@ export async function listThreadCommandPlans(
   await expirePendingPlans({ accountId, userId });
   const rows = (await pgClient.unsafe(
     `SELECT plan_id AS "planId", account_id AS "accountId", user_id AS "userId", conversation_id AS "conversationId",
-            message_id AS "messageId", status, summary, actions_payload AS "actionsPayload", expires_at AS "expiresAt"
+            message_id AS "messageId", status, summary, actions_payload AS "actionsPayload", expires_at AS "expiresAt",
+            undo_until AS "undoUntil"
        FROM verebona_command_plans
       WHERE account_id = $1 AND user_id = $2 AND conversation_id = $3 AND message_id IS NOT NULL
       ORDER BY created_at ASC`,
     [accountId, userId, conversationId] as never[],
   )) as unknown as Array<{
     planId: string; accountId: number; userId: number; conversationId: number | null; messageId: number;
-    status: PlanStatus; summary: string; actionsPayload: string; expiresAt: string | Date;
+    status: PlanStatus; summary: string; actionsPayload: string; expiresAt: string | Date; undoUntil?: string | Date | null;
   }>;
   const out: ThreadCommandPlan[] = [];
   for (const r of rows) {
@@ -678,7 +704,11 @@ export async function listThreadCommandPlans(
     try { actions = JSON.parse(r.actionsPayload) as PlannedAction[]; } catch { continue; }
     const expiresAt = r.expiresAt instanceof Date ? r.expiresAt.toISOString() : String(r.expiresAt);
     const preview = toPreview({ ...r, actions, expiresAt });
-    out.push({ ...preview, messageId: r.messageId, status: r.status });
+    const annulable = (r.status === 'EXECUTED' || r.status === 'PARTIAL') && r.undoUntil;
+    out.push({
+      ...preview, messageId: r.messageId, status: r.status,
+      undoUntil: annulable ? new Date(r.undoUntil as string | Date).toISOString() : null,
+    });
   }
   return out;
 }

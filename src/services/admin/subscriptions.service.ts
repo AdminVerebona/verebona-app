@@ -332,7 +332,8 @@ export interface PaymentListItem {
   currency: string;
   status: PaymentDisplayStatus;
   statusLabel: string;
-  accountId: number;
+  /** NULL : compte supprimé — la facture est conservée, détachée (migration 0206). */
+  accountId: number | null;
   accountName: string;
   plan: string;
   stripeUrl: string | null;
@@ -344,15 +345,18 @@ export async function getPaymentsPage(page: number, pageSize: number): Promise<P
   const current = Math.min(Math.max(1, page), totalPages);
   const rows = await pgClient.unsafe<Array<Record<string, unknown>>>(
     `SELECT i.id, i.stripe_invoice_id, i.amount, i.currency, i.status, i.paid_at, i.created_at,
-            i.account_id, a.name AS account_name, a.plan_type
+            i.account_id, a.name AS account_name, a.plan_type, i.plan_code
        FROM invoices i
-       JOIN accounts a ON a.id = i.account_id
+       -- LEFT JOIN : même périmètre que le décompte ci-dessus. Les factures
+       -- d'un compte supprimé sont conservées (pièces comptables, migration
+       -- 0206) et restent listées, sans compte.
+       LEFT JOIN accounts a ON a.id = i.account_id
       ORDER BY coalesce(i.paid_at, i.created_at) DESC, i.id DESC
       LIMIT $1 OFFSET $2`,
     [pageSize, (current - 1) * pageSize],
   );
 
-  const accountIds = [...new Set(rows.map((r) => Number(r.account_id)))];
+  const accountIds = [...new Set(rows.filter((r) => r.account_id != null).map((r) => Number(r.account_id)))];
   const history = accountIds.length
     ? await pgClient.unsafe<Array<{ account_id: number; created_at: Date; old_tier: string | null; new_tier: string }>>(
         `SELECT account_id, created_at, old_tier, new_tier FROM subscription_history
@@ -377,9 +381,11 @@ export async function getPaymentsPage(page: number, pageSize: number): Promise<P
       currency: String(r.currency),
       status,
       statusLabel: PAYMENT_DISPLAY_LABELS[status],
-      accountId: Number(r.account_id),
-      accountName: String(r.account_name ?? ''),
-      plan: planAtDate(byAccount.get(Number(r.account_id)) ?? [], date, String(r.plan_type)),
+      accountId: r.account_id == null ? null : Number(r.account_id),
+      accountName: r.account_id == null ? 'Compte supprimé' : String(r.account_name ?? ''),
+      plan: r.account_id == null
+        ? String(r.plan_code ?? '—')
+        : planAtDate(byAccount.get(Number(r.account_id)) ?? [], date, String(r.plan_type)),
       stripeUrl: stripeDashboardUrl('invoices', r.stripe_invoice_id as string | null),
     };
   });

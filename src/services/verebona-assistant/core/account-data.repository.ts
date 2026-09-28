@@ -7,7 +7,7 @@
  */
 import { pgClient } from '@/db';
 import { SQL_IS_RENTED } from '@/lib/assets/occupancy';
-import type { AccountDataPort, AgendaRow, AssetRow, DocumentHit, FactHit } from './data-answer.service';
+import type { AccountDataPort, AgendaRow, AssetRow, DocumentHit, ExportRow, FactHit } from './data-answer.service';
 import { searchDocumentFacts, searchDocumentText, searchTableCells } from '@/services/ai/knowledge/document-knowledge.service';
 
 const rows = <T>(r: unknown) => r as unknown as T[];
@@ -152,7 +152,8 @@ export const accountDataRepository: AccountDataPort = {
     if (assetIds.length === 0) return [];
     const r = await pgClient.unsafe(
       `SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
-              to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms"
+              to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms",
+              f.analysis_state AS "analysisState"
          FROM asset_files f
          LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
         WHERE f.account_id = $1 AND f.deleted_at IS NULL
@@ -162,6 +163,38 @@ export const accountDataRepository: AccountDataPort = {
       [accountId, assetIds, Math.min(limit, 50)] as never[],
     );
     return rows<DocumentHit>(r);
+  },
+
+  // Statut d'un document désigné (§12.2) : borné au compte, non supprimé.
+  async findDocument(accountId, fileId) {
+    const r = rows<DocumentHit>(await pgClient.unsafe(
+      `SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
+              to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms",
+              f.analysis_state AS "analysisState"
+         FROM asset_files f
+         LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
+        WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
+        LIMIT 1`,
+      [fileId, accountId] as never[],
+    ));
+    return r[0] ?? null;
+  },
+
+  // Exports et dossiers générés (§12.1) : ceux des biens du compte, hors
+  // supprimés et annulés, les plus récents d'abord.
+  async listExports(accountId, { assetIds = [], limit = 10 } = {}) {
+    const r = await pgClient.unsafe(
+      `SELECT e.id, e.asset_id AS "assetId", a.name AS "assetName", e.export_type AS "exportType", e.status,
+              to_char(coalesce(e.completed_at, e.created_at) AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS date
+         FROM export_generation e
+         JOIN assets a ON a.id = e.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
+        WHERE e.account_id = $1 AND e.status NOT IN ('deleted', 'cancelled')
+          AND (cardinality($2::int[]) = 0 OR e.asset_id = ANY($2::int[]))
+        ORDER BY coalesce(e.completed_at, e.created_at) DESC, e.id DESC
+        LIMIT $3`,
+      [accountId, assetIds, Math.min(limit, 50)] as never[],
+    );
+    return rows<ExportRow>(r);
   },
 
   async searchDocuments(accountId, terms, assetId) {
@@ -174,7 +207,8 @@ export const accountDataRepository: AccountDataPort = {
     const meta = rows<DocumentHit & { matchedTerms: number }>(await pgClient.unsafe(
       `SELECT * FROM (
          SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
-                to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", (${score}) AS "matchedTerms"
+                to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", (${score}) AS "matchedTerms",
+                f.analysis_state AS "analysisState"
            FROM asset_files f
            LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
           WHERE f.account_id = $1 AND f.deleted_at IS NULL
@@ -194,6 +228,17 @@ export const accountDataRepository: AccountDataPort = {
       } else if (cur && !cur.snippet) {
         cur.snippet = t.snippet;
       }
+    }
+    // État d'analyse (§12.4, §23) des documents issus du texte intégral :
+    // une requête pour tous, bornée au compte.
+    const sansEtat = [...byFile.values()].filter((d) => d.analysisState === undefined).map((d) => d.fileId);
+    if (sansEtat.length) {
+      const etats = rows<{ id: number; analysisState: string | null }>(await pgClient.unsafe(
+        `SELECT id, analysis_state AS "analysisState" FROM asset_files
+          WHERE account_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL`,
+        [accountId, sansEtat] as never[],
+      ).catch(() => []));
+      for (const e of etats) { const d = byFile.get(e.id); if (d) d.analysisState = e.analysisState; }
     }
     return [...byFile.values()].sort((a, b) => b.matchedTerms - a.matchedTerms);
   },

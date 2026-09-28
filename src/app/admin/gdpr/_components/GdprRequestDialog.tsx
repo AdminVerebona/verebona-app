@@ -22,7 +22,7 @@ import {
   type GdprChannel, type GdprRightType, type GdprStatus,
 } from '@/services/gdpr/rules';
 import { SubjectPicker } from './SubjectPicker';
-import { accountLabel, formatIsoDate, subjectLabel, type GdprRequestDetail, type Subject } from './types';
+import { accountLabel, deletionLabel, formatIsoDate, subjectLabel, type GdprRequestDetail, type Subject } from './types';
 
 interface FormState {
   subject: Subject | null;
@@ -316,6 +316,11 @@ function ReadOnly({ detail }: { detail: GdprRequestDetail }) {
         {detail.status !== 'done' && ` (${days >= 0 ? `${days} j restant${days > 1 ? 's' : ''}` : `dépassée de ${-days} j`})`}
       </Row>
       <Row label="Statut">{STATUS_LABELS[detail.status]}</Row>
+      {detail.deletion && (
+        // GDP-008 : suppression initiée par l'utilisateur — consultable,
+        // jamais annulable ni modifiable depuis le back-office.
+        <Row label="Suppression du compte">{deletionLabel(detail.deletion)}</Row>
+      )}
       {detail.processedAt && <Row label="Traitée le">{formatDateTime(detail.processedAt)}</Row>}
       <Row label="Résultat">{detail.result ?? '—'}</Row>
       {detail.lastError && <Row label="Erreur"><span className="text-red-400">{detail.lastError}</span></Row>}

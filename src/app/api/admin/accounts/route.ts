@@ -3,6 +3,13 @@ import { db } from '@/db';
 import { accounts, users, accountMemberships, assets, assetFiles, duoAccounts, scheduledAccountDeletions } from '@/db/schema';
 import { and, count, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { parseListParams } from '@/services/admin/list-params';
+import {
+  ACCOUNT_SORTS,
+  pageAccounts,
+  parseAccountFilters,
+  summarizeAccounts,
+} from '@/services/admin/account-list.service';
 
 /**
  * GET /api/admin/accounts[?q=…] — liste des comptes, CDC Back-Office V1 §5.1.
@@ -17,7 +24,11 @@ import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-g
  *
  * SUB-012 : aucun identifiant Stripe renvoyé.
  *
- * Hors lot : filtres, tri serveur et pagination (ACC-L03 à L05, P2).
+ * ACC-L03 : filtres `plan` (STANDARD | PREMIUM | PREMIUM_DUO) et `status`
+ * (active | suspended | deletion_pending). ACC-L04 : `sort` (name, plan,
+ * status, storage, documents, assets, members, created, lastLogin) et `dir`.
+ * ACC-L05 / GEN-004 : pagination classique `page` (25 par page).
+ * La synthèse ACC-L01 porte toujours sur l'ensemble des comptes.
  */
 
 /** Motif ILIKE « contient », jokers de l'utilisateur neutralisés. */
@@ -50,7 +61,10 @@ export async function GET(request: NextRequest) {
   try {
     await requireAdmin(request);
 
-    const q = (request.nextUrl.searchParams.get('q') ?? '').trim().slice(0, 200);
+    const sp = request.nextUrl.searchParams;
+    const params = parseListParams(sp, ACCOUNT_SORTS, { sort: 'created', dir: 'desc' });
+    const q = params.q;
+    const filters = parseAccountFilters(sp);
 
     const allAccounts = await db
       .select({
@@ -69,8 +83,19 @@ export async function GET(request: NextRequest) {
       })
       .from(accounts)
       .leftJoin(users, eq(accounts.ownerUserId, users.id))
-      .leftJoin(duoAccounts, eq(accounts.duoAccountId, duoAccounts.id))
-      .where(q ? searchCondition(q) : undefined);
+      .leftJoin(duoAccounts, eq(accounts.duoAccountId, duoAccounts.id));
+
+    // Recherche ACC-L02 : ensemble des comptes correspondants ; la synthèse,
+    // elle, reste globale.
+    const matching = q
+      ? new Set(
+          (await db
+            .select({ id: accounts.id })
+            .from(accounts)
+            .leftJoin(users, eq(accounts.ownerUserId, users.id))
+            .where(searchCondition(q))).map((r) => r.id),
+        )
+      : null;
 
     const accountIds = allAccounts.map((a) => a.id);
 
@@ -107,11 +132,20 @@ export async function GET(request: NextRequest) {
             .innerJoin(users, eq(users.id, accountMemberships.userId))
             .where(inArray(accountMemberships.accountId, accountIds))
             .groupBy(accountMemberships.accountId),
+          // Suppression volontaire (portée `user`, migration 0206) : le
+          // compte n'est « en suppression » que si le demandeur en est le
+          // titulaire — un second utilisateur qui supprime son propre compte
+          // n'emporte pas l'espace partagé.
           db.select({ accountId: scheduledAccountDeletions.accountId })
             .from(scheduledAccountDeletions)
+            .innerJoin(accounts, eq(accounts.id, scheduledAccountDeletions.accountId))
             .where(and(
               inArray(scheduledAccountDeletions.accountId, accountIds),
               eq(scheduledAccountDeletions.status, 'SCHEDULED'),
+              or(
+                eq(scheduledAccountDeletions.scope, 'account'),
+                eq(accounts.ownerUserId, scheduledAccountDeletions.userId),
+              ),
             )),
         ])
       : [[], [], [], [], []];
@@ -137,14 +171,22 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    const summary = {
-      total: rows.length,
-      active: rows.filter((r) => r.status === 'active').length,
-      suspended: rows.filter((r) => r.status === 'suspended').length,
-      deletionPending: rows.filter((r) => r.status === 'deletion_pending').length,
-    };
+    const summary = summarizeAccounts(rows);
+    const searched = matching ? rows.filter((r) => matching.has(r.id)) : rows;
+    const page = pageAccounts(searched, { filters, sort: params.sort, dir: params.dir, page: params.page, pageSize: params.pageSize });
 
-    return NextResponse.json({ accounts: rows, summary, query: q || null });
+    return NextResponse.json({
+      accounts: page.items,
+      page: page.page,
+      pageSize: page.pageSize,
+      total: page.total,
+      totalPages: page.totalPages,
+      summary,
+      query: q || null,
+      filters,
+      sort: params.sort,
+      dir: params.dir,
+    });
   } catch (error) {
     if (isSessionError(error)) return sessionErrorResponse(error);
     console.error('Failed to fetch accounts:', error);

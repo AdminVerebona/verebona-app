@@ -60,7 +60,12 @@ export interface SystemRequestInput {
 /** Crée la demande si elle n'existe pas encore. Renvoie son identifiant. */
 export async function upsertSystemRequest(input: SystemRequestInput): Promise<number | null> {
   const due = computeDueDateFromInstant(input.receivedAt, input.rightType);
-  const processedAt = input.status === 'done' ? new Date() : null;
+  // Dates transmises en ISO : drizzle neutralise le sérialiseur des
+  // horodatages du client `postgres` partagé (`pgClient`) ; un objet Date
+  // brut y lève « The "string" argument must be of type string… », et la
+  // demande n'était jamais enregistrée (erreur avalée par `safely`).
+  const receivedAt = input.receivedAt.toISOString();
+  const processedAt = input.status === 'done' ? new Date().toISOString() : null;
   const [row] = await pgClient<{ id: number }[]>`
     INSERT INTO gdpr_requests (
       origin, user_id, account_id, subject_user_ref, subject_account_ref,
@@ -71,7 +76,7 @@ export async function upsertSystemRequest(input: SystemRequestInput): Promise<nu
            ${input.withoutEmailSnapshot ? pgClient`NULL::text` : pgClient`(SELECT email FROM users WHERE id = ${input.userId}::int)`},
            (SELECT name FROM accounts WHERE id = ${input.accountId}::int),
            ${input.rightType}::text, 'app', ${input.status}::text,
-           ${input.receivedAt}::timestamptz, ${due}::date, ${processedAt}::timestamptz, ${input.result ?? null}::text,
+           ${receivedAt}::timestamptz, ${due}::date, ${processedAt}::timestamptz, ${input.result ?? null}::text,
            ${input.sourceRef}::text, now(), now()
     ON CONFLICT (source_ref) DO NOTHING
     RETURNING id`;
@@ -143,7 +148,7 @@ export function onDeletionScheduled(s: {
 export function onDeletionCancelled(scheduleId: number, reason: string): Promise<void> {
   return safely(`suppression annulée #${scheduleId}`, () => updateSystemRequest(
     { sourceRef: deletionRef(scheduleId) },
-    { status: 'done', result: `Suppression annulée par le système : ${reason}.`, lastError: null },
+    { status: 'done', result: `Suppression annulée : ${reason}.`, lastError: null },
   ));
 }
 

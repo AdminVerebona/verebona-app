@@ -242,9 +242,8 @@ export async function applyAiSuggestionsToAsset({
 
   // 5. Call AI (instrumenté pour remonter les coûts "autres traitements" dans le suivi IA admin par compte)
   let aiResult: unknown;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let costMicros = 0;
+  // GEN-005 : coût et jetons mesurés par la passerelle (étapes rattachées à
+  // `opId`), plus déclarés au tracker.
   let opId: number | null = null;
   const businessResult: AiBusinessResult = 'success';
 
@@ -259,20 +258,16 @@ export async function applyAiSuggestionsToAsset({
       environment: 'production',
     });
 
-    const { parsed, inputTokens: i, outputTokens: o, costMicros: c } = await callGeminiWithUsage(prompt, {
+    const { parsed } = await callGeminiWithUsage(prompt, {
       accountId,
       sourceIds: sourceFileId ? [sourceFileId] : undefined,
       parentOperationId: opId ?? undefined,
     });
     aiResult = parsed;
-    inputTokens = i; outputTokens = o; costMicros = c;
 
     await AiUsageTracker.completeOperation({
       operationId: opId,
       businessResult,
-      totalCostMicros: costMicros,
-      totalInputTokens: inputTokens,
-      totalOutputTokens: outputTokens,
     });
   } catch (err) {
     console.error('[apply-ai-suggestions] AI call failed:', err);
@@ -281,9 +276,6 @@ export async function applyAiSuggestionsToAsset({
         await AiUsageTracker.completeOperation({
           operationId: opId,
           businessResult: 'error',
-          totalCostMicros: costMicros,
-          totalInputTokens: inputTokens,
-          totalOutputTokens: outputTokens,
           errorMessage: err instanceof Error ? err.message : 'unknown',
         });
       } catch {}

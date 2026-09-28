@@ -29,11 +29,40 @@ const TEMPLATES: Partial<Record<VerebonaIntent, string>> = {
   TECHNICAL_ISSUE: "Je suis désolé pour la gêne. Vous pouvez réessayer ; si le problème persiste, consultez l’aide ou contactez le support.",
 };
 
+/** Offre et limite du compte, pour les gabarits qui en dépendent (§9.2). */
+export interface DeterministicContext {
+  planType?: string;
+  planLimit?: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | null;
+}
+
+/**
+ * Gabarit PRODUCT_PLAN_LIMIT (§9.2, §14.1) : ce que comprend l'offre du
+ * compte, ce qui relève de Premium, et la limite en cours s'il y en a une.
+ * Contenu fixe, validé, sans modèle ; l'action est « Voir les offres ».
+ */
+export function planLimitTemplate(ctx: DeterministicContext = {}): string {
+  const premium = ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'].includes(String(ctx.planType ?? ''));
+  const base = premium
+    ? 'Votre offre comprend la recherche dans vos biens, documents, échéances et fournisseurs, l’aide Verebona, '
+      + 'ainsi que les fonctions Premium : réponses rédigées (synthèse, comparaison, chronologie), synchronisation de l’agenda et dossiers prêts à l’usage.'
+    : 'Votre offre Standard comprend la recherche dans vos biens, documents, échéances et fournisseurs, les réponses exactes sur vos données et l’aide Verebona. '
+      + 'Les réponses rédigées (synthèse, comparaison, chronologie), la synchronisation de l’agenda et les dossiers prêts à l’usage font partie de Premium et Premium Duo.';
+  const limite = ctx.planLimit === 'TRIAL_EXPIRED'
+    ? ' Votre essai est terminé : votre compte est en consultation seule tant qu’une offre n’est pas choisie.'
+    : ctx.planLimit === 'SUBSCRIPTION_REQUIRED'
+      ? ' Votre compte est en consultation seule : une offre active est nécessaire pour ajouter ou modifier des éléments.'
+      : '';
+  return `${base}${limite}`;
+}
+
 /**
  * Tente une réponse purement déterministe (§14).
  * Renvoie `handled: false` si l'intention nécessite retrieval/IA.
  */
-export function tryDeterministic(intent: VerebonaIntent): DeterministicResult {
+export function tryDeterministic(intent: VerebonaIntent, ctx: DeterministicContext = {}): DeterministicResult {
+  if (intent === 'PRODUCT_PLAN_LIMIT') {
+    return { handled: true, answer: planLimitTemplate(ctx), actionIntents: [{ type: 'OPEN_PRICING' }] };
+  }
   const tpl = TEMPLATES[intent];
   if (tpl) {
     const actionIntents: ActionIntent[] =

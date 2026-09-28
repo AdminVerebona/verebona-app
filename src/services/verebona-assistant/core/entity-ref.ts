@@ -32,7 +32,7 @@ import { drawerHref } from '@/lib/drawers';
 import { SUPPLIERS_ROUTE, supplierHref } from '@/lib/supplier-routes';
 
 /** Familles d'entités référençables par une source (§19.2). */
-export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process';
+export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process' | 'export';
 
 /**
  * Préfixes émis par les adaptateurs de retrieval
@@ -49,6 +49,8 @@ const PREFIXE_VERS_KIND: Readonly<Record<string, EntityKind>> = {
   // Éléments « À traiter » : reconnus pour l'affichage et la disponibilité.
   supplier: 'supplier',
   todo: 'to_process',
+  // Exports et dossiers générés (§12.1) : onglet « Exports » du bien.
+  export: 'export',
 };
 
 export interface EntityRef {
@@ -164,6 +166,12 @@ export function hrefEntite(
     // Fiche fournisseur (page `/fournisseurs/[id]`, droits du compte).
     case 'supplier':
       return supplierHref(ref.id);
+    // Export : ouvert dans l'onglet « Exports » de son bien, seul endroit où
+    // l'application le présente ; sans bien connu, pas de lien deviné.
+    case 'export': {
+      const parent = versEntierPositif(String(meta?.assetId ?? ''));
+      return parent == null ? null : hrefBien(parent, 'exports');
+    }
     default:
       return null;
   }

@@ -2,6 +2,14 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { verifyToken, extractToken } from '@/lib/jwt';
 import { verifyRequestOrigin } from '@/lib/csrf';
+import {
+  ACCOUNT_PENDING_DELETION_CODE,
+  ACCOUNT_PENDING_DELETION_MESSAGE,
+  PENDING_DELETION_PAGE,
+  isApiAllowedWhilePendingDeletion,
+  isPageAllowedWhilePendingDeletion,
+  isPendingDeletion,
+} from '@/lib/auth/account-closure';
 
 // ─── Rate limiting in-memory pour le middleware Edge ────────────────────────
 // Sliding window : 5 tentatives / 15 minutes / IP
@@ -89,6 +97,7 @@ export async function middleware(request: NextRequest) {
     '/dashboard',
     '/mon-compte',
     '/fournisseurs',
+    PENDING_DELETION_PAGE,
   ].some((route) => pathname === route || pathname.startsWith(route + '/'));
 
   if (isProtectedUI) {
@@ -114,6 +123,13 @@ export async function middleware(request: NextRequest) {
       const loginUrl = new URL('/login', request.url);
       loginUrl.searchParams.set('error', 'ACCOUNT_SUSPENDED');
       return NextResponse.redirect(loginUrl);
+    }
+
+    // Compte clôturé, suppression à J+30 (`lib/auth/account-closure`) : la
+    // seule page servie est « Compte en cours de suppression » (annuler,
+    // exporter). Toute autre page protégée y renvoie.
+    if (isPendingDeletion(payload.status) && !isPageAllowedWhilePendingDeletion(pathname)) {
+      return NextResponse.redirect(new URL(PENDING_DELETION_PAGE, request.url));
     }
 
     // Pas de redirection « sans compte actif » vers l'onboarding : voir
@@ -322,6 +338,16 @@ export async function middleware(request: NextRequest) {
         );
       }
 
+      // Compte clôturé en attente de suppression : seules l'annulation,
+      // l'export RGPD et la lecture de l'identité restent possibles. Défense
+      // en profondeur dans `SessionService.getSession`.
+      if (isPendingDeletion(payload.status) && !isApiAllowedWhilePendingDeletion(pathname, request.method)) {
+        return NextResponse.json(
+          { error: 'Forbidden', code: ACCOUNT_PENDING_DELETION_CODE, message: ACCOUNT_PENDING_DELETION_MESSAGE },
+          { status: 403 },
+        );
+      }
+
       // § 3.3 « pas de compte actif » : volontairement NON bloqué ici (voir
       // l'en-tête). Ce blocage, jamais actif jusqu'ici, aurait interdit la
       // consultation et l'export en mode restreint, ainsi que /api/auth/me.
@@ -347,5 +373,6 @@ export const config = {
     '/dashboard/:path*',
     '/mon-compte/:path*',
     '/fournisseurs/:path*',
+    '/compte-en-suppression/:path*',
   ],
 };

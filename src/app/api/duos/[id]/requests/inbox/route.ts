@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
-import { verifyAccessToken } from '@/lib/jwt';
+import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { DuoService } from '@/services/duo.service';
 
 export async function GET(
@@ -13,7 +13,7 @@ export async function GET(
       return NextResponse.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
     }
 
-    const payload = await verifyAccessToken(token);
+    const payload = await verifySessionAccessToken(token, request);
     if (!payload) {
       return NextResponse.json({ error: 'INVALID_TOKEN' }, { status: 401 });
     }

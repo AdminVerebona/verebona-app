@@ -39,7 +39,11 @@ import { getAssistantConfig } from '../config/assistant-config';
 import { assistantCachePrefix } from './assistant-cache-key';
 import { parseEntityRef } from './entity-ref';
 import { INTENT_CATALOG_VERSION } from '../types/intents';
+import { ACTION_CATALOG_VERSION } from '../types/actions';
+import type { VerebonaAction } from '../types/actions';
+import { RESPONSE_SCHEMA_VERSION } from '../types/contracts';
 import type { PresentedEntity, ReferencedType, ThreadContext } from './reference-resolver';
+import { awaitAiRuns } from './usage-tracking.service';
 
 const expiresFromNow = () =>
   new Date(Date.now() + getAssistantConfig().historyDays * 86400_000).toISOString();
@@ -225,8 +229,12 @@ export async function findReplayedAnswer(
                                AND a.request_id = q.request_id AND a.role = 'assistant'
       WHERE q.account_id = $1 AND q.author_user_id = $2 AND q.client_request_id = $3
         AND q.role = 'user' AND c.user_id = $2 AND c.status = 'active'
+        AND q.created_at > now() - ($4::int * interval '1 second')
       LIMIT 1`,
-    [accountId, userId, clientRequestId],
+    // §43 IDEMPOTENCY_TTL_SECONDS : le rejeu n'est servi que dans la fenêtre
+    // d'idempotence (900 s par défaut). Au-delà, l'identifiant est périmé :
+    // la réservation le refuse (« déjà traitée ») sans relancer le pipeline.
+    [accountId, userId, clientRequestId, Math.max(1, Math.floor(getAssistantConfig().idempotencyTtlSeconds))],
   );
   const r = (rows as unknown as Array<{ id: number; conversation_id: number; request_id: string; content: string | null; intent: string | null; mode: string | null }>)[0];
   if (!r) return null;
@@ -257,24 +265,47 @@ export async function findReplayedAnswer(
  * Historique d'UN fil : uniquement s'il appartient à l'utilisateur, est
  * actif et non expiré. C'est aussi la seule mémoire conversationnelle
  * autorisée pour ce fil — rien n'est lu dans les autres.
+ *
+ * §27.6 — pagination par curseur : les `limit` messages les plus récents
+ * (50 au plus), antérieurs au curseur `before` s'il est fourni, rendus dans
+ * l'ordre chronologique. Le curseur est l'identifiant du plus ancien message
+ * déjà affiché (`nextCursor`) : stable même si deux messages partagent la
+ * même date.
  */
+export const HISTORY_PAGE_MAX = 50;
+
+export interface HistoryPageOptions {
+  limit?: number;
+  /** Identifiant de message : seuls les messages plus anciens sont rendus. */
+  before?: number | null;
+}
+
 export async function listActiveMessages(
   accountId: number,
   userId: number,
   conversationId: number,
-  limit = 200,
+  options: HistoryPageOptions = {},
 ) {
-  return pgClient.unsafe(
-    `SELECT m.id, m.role, m.content, m.intent, m.mode, m.created_at, m.result_groups_json,
-            (SELECT count(*)::int FROM verebona_message_sources s WHERE s.message_id = m.id) AS source_count
-       FROM verebona_messages m
-       JOIN verebona_conversations c ON c.id = m.conversation_id
-      WHERE c.id = $3 AND c.account_id = $1 AND c.user_id = $2 AND c.status = 'active'
-        AND m.account_id = $1 AND m.expires_at > now() AND c.expires_at > now()
-      ORDER BY m.created_at ASC, m.id ASC
-      LIMIT $4`,
-    [accountId, userId, conversationId, limit],
-  );
+  const limit = Math.min(Math.max(Math.floor(options.limit ?? HISTORY_PAGE_MAX), 1), HISTORY_PAGE_MAX);
+  const before = options.before != null && Number.isInteger(options.before) && options.before > 0 ? options.before : null;
+  // Un message de plus que la page : il dit s'il reste des messages plus anciens.
+  const rows = (await pgClient.unsafe(
+    `SELECT * FROM (
+       SELECT m.id, m.role, m.content, m.intent, m.mode, m.created_at, m.result_groups_json,
+              (SELECT count(*)::int FROM verebona_message_sources s WHERE s.message_id = m.id) AS source_count
+         FROM verebona_messages m
+         JOIN verebona_conversations c ON c.id = m.conversation_id
+        WHERE c.id = $3 AND c.account_id = $1 AND c.user_id = $2 AND c.status = 'active'
+          AND m.account_id = $1 AND m.expires_at > now() AND c.expires_at > now()
+          AND ($5::int IS NULL OR (m.created_at, m.id) < (SELECT created_at, id FROM verebona_messages WHERE id = $5 AND conversation_id = $3))
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT $4
+     ) page ORDER BY created_at ASC, id ASC`,
+    [accountId, userId, conversationId, limit + 1, before],
+  )) as unknown as Array<{ id: number } & Record<string, unknown>>;
+  const hasMore = rows.length > limit;
+  const messages = hasMore ? rows.slice(1) : rows;
+  return { messages, nextCursor: hasMore && messages[0] ? messages[0].id : null };
 }
 
 /**
@@ -325,6 +356,10 @@ export async function persistResult(
   const expires = new Date(Date.now() + cfg.historyDays * 86400_000).toISOString();
 
   try {
+    // Les traces d'appels modèle s'écrivent en tâche de fond : elles sont
+    // attendues (borné) pour que le rattachement au message (§28.8) et le
+    // cache_hit (§28.7) les voient.
+    await awaitAiRuns(result.requestId);
     // Fil résolu par la route (conversation de l'utilisateur) ; à défaut, la
     // conversation active de l'utilisateur.
     const conversationId = input.conversationId
@@ -374,24 +409,28 @@ export async function persistResult(
       //
       // Enregistrée aussi : sans elle, l'historique montrerait des réponses
       // sans questions, illisible à la reprise.
-      await tx.unsafe(
+      const questionRows = await tx.unsafe(
         `INSERT INTO verebona_messages
            (conversation_id, account_id, author_user_id, role, status, content,
             request_id, client_request_id, response_locale, expires_at)
-         VALUES ($1, $2, $3, 'user', 'ready', $4, $5, $6, $7, $8)`,
+         VALUES ($1, $2, $3, 'user', 'ready', $4, $5, $6, $7, $8)
+         RETURNING id`,
         // Reprise après clarification : l'historique montre le CHOIX de
         // l'utilisateur, pas la demande initiale rejouée une seconde fois.
         [conversationId, input.accountId, input.userId, input.resume?.choiceLabel ?? input.originalMessage ?? input.message,
          result.requestId, input.clientRequestId, input.locale, expires],
       );
+      // §28.2 : la réponse est rattachée à la question qui l'a provoquée.
+      const questionId = (questionRows as unknown as Array<{ id: number }>)[0]?.id ?? null;
 
       // ── 2. Réponse de l'assistant ───────────────────────────────────────
       const messageRows = await tx.unsafe(
         `INSERT INTO verebona_messages
            (conversation_id, account_id, author_user_id, role, status, content,
             intent, mode, support_level, request_id, response_locale, expires_at,
-            result_groups_json)
-         VALUES ($1, $2, NULL, 'assistant', $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            result_groups_json, action_catalog_version,
+            intent_catalog_version, schema_version, parent_message_id)
+         VALUES ($1, $2, NULL, 'assistant', $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15)
          RETURNING id`,
         [conversationId, input.accountId,
          result.error ? 'error' : 'ready',
@@ -401,7 +440,13 @@ export async function persistResult(
          result.supportLevel,
          result.requestId, input.locale, expires,
          // Cartes de résultats (§11.3, migration 0190) : relues à la reprise.
-         result.resultGroups?.length ? JSON.stringify(result.resultGroups) : null],
+         result.resultGroups?.length ? JSON.stringify(result.resultGroups) : null,
+         // §22.11 : version du catalogue d'actions avec laquelle les actions
+         // de CE message ont été résolues (colonne existante, migration 0100).
+         ACTION_CATALOG_VERSION,
+         // §28.2 : catalogue d'intentions et schéma de sortie en vigueur,
+         // et question d'origine (parent_message_id).
+         INTENT_CATALOG_VERSION, RESPONSE_SCHEMA_VERSION, questionId],
       );
       const messageId = (messageRows as unknown as Array<{ id: number }>)[0].id;
 
@@ -457,13 +502,18 @@ export async function persistResult(
 
       // ── 5. Actions proposées ────────────────────────────────────────────
       for (const action of result.actions) {
+        // §28.6 : cible décodée (famille + identifiant numérique) et
+        // paramètres validés côté serveur. Jamais d'URL libre venue du modèle :
+        // le href stocké est celui que le résolveur a construit.
+        const cible = actionTarget(action);
         await tx.unsafe(
           `INSERT INTO verebona_message_actions
              (message_id, action_type, label, resolved_href, requires_confirmation,
-              analytics_code, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+              analytics_code, expires_at, target_type, target_id, payload_json)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
           [messageId, action.type, action.label, action.href,
-           action.requiresConfirmation, action.analyticsCode, action.expiresAt],
+           action.requiresConfirmation, action.analyticsCode, action.expiresAt,
+           cible.targetType, cible.targetId, JSON.stringify(cible.payload)],
         );
       }
 
@@ -548,21 +598,34 @@ export async function persistResult(
         cascade ? JSON.stringify(cascade) : null,
         result.cascade?.sourceCount ?? null,
         result.cascade?.latencyMs ?? null,
-        INTENT_CATALOG_VERSION];
+        INTENT_CATALOG_VERSION,
+        // §28.7 cache_hit : retrieval servi par le cache, OU un appel modèle
+        // de la demande servi par le cache d'idempotence (trace `cached`).
+        Boolean(result.cascade?.cacheHit)];
+      const cacheHit = `($16::boolean OR EXISTS (SELECT 1 FROM verebona_ai_runs x
+                                                  WHERE x.request_id = $1 AND x.status = 'cached'))`;
       await tx.unsafe(
         reservation
           ? `UPDATE verebona_request_runs
                 SET client_request_id = $2, conversation_id = $3, user_id = $5, intent = $6, mode = $7,
                     machine_final_state = $8, source_count = $9, status = $10, error_code = $11,
                     retrieval_methods_json = $12::jsonb, candidate_count = $13, latency_ms = $14,
-                    intent_catalog_version = $15
+                    intent_catalog_version = $15, cache_hit = ${cacheHit}
               WHERE request_id = $1 AND account_id = $4`
           : `INSERT INTO verebona_request_runs
                (request_id, client_request_id, conversation_id, account_id, user_id,
                 intent, mode, machine_final_state, source_count, status, error_code,
-                retrieval_methods_json, candidate_count, latency_ms, intent_catalog_version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)`,
+                retrieval_methods_json, candidate_count, latency_ms, intent_catalog_version, cache_hit)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, ${cacheHit})`,
         traceParams,
+      );
+
+      // §28.8 : chaque appel modèle de la demande est rattaché au message
+      // assistant enregistré (message_id était toujours NULL).
+      await tx.unsafe(
+        `UPDATE verebona_ai_runs SET message_id = $1
+          WHERE request_id = $2 AND account_id = $3 AND message_id IS NULL`,
+        [messageId, result.requestId, input.accountId],
       );
 
       // Mémorise l'état de la machine pour une reprise de conversation (§24),
@@ -586,6 +649,22 @@ export async function persistResult(
     );
     return null;
   }
+}
+
+/**
+ * Cible et paramètres d'une action, tels que persistés (§28.6) : famille et
+ * identifiant décodés par le résolveur (« asset:42 »), paramètres validés.
+ * Une action sans cible (liste, aide) garde `target_type/target_id` nuls.
+ */
+export function actionTarget(action: Pick<VerebonaAction, 'targetRef' | 'payload'>): {
+  targetType: string | null; targetId: string | null; payload: Record<string, unknown>;
+} {
+  const m = typeof action.targetRef === 'string' ? action.targetRef.match(/^([a-z_]+):(\d+)$/) : null;
+  return {
+    targetType: m ? m[1] : null,
+    targetId: m ? m[2] : null,
+    payload: action.payload && typeof action.payload === 'object' ? { ...action.payload } : {},
+  };
 }
 
 /** Identifiants réellement enregistrés (le messageId rendu au client est celui de la base). */

@@ -15,7 +15,7 @@ import { integratedHelpHref } from '@/lib/help-center/open';
 export const TYPE_LABELS: Record<SourceType, string> = {
   asset_field: 'Bien', document: 'Document', document_extraction: 'Donnée extraite',
   agenda_item: 'Échéance', supplier: 'Fournisseur', to_process_item: 'À traiter',
-  help_entry: 'Aide', product_rule: "Règle d'offre",
+  help_entry: 'Aide', product_rule: "Règle d'offre", export_item: 'Export',
 };
 
 /**

@@ -32,6 +32,11 @@ import { findTableIntersection, type TableAnswer, type TableCellRow } from '@/se
 import { parseFrDate } from '@/services/ai/agenda/rules/recurrence';
 import { extractSearchTerms, isInventoryQuery } from './query-terms';
 import {
+  ANALYSIS_STATUS_LABELS, IN_ANALYSIS_MESSAGE, analysisFailedMessage, documentAnalysisStatus,
+} from './document-status';
+import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
+import { EXPORT_TYPE_LABELS } from '@/services/export-manifest.service';
+import {
   daysBetween,
   formatAttributeValue,
   formatConflict,
@@ -109,6 +114,8 @@ export interface DocumentHit {
   assetName: string | null;
   matchedTerms: number;
   snippet?: string;
+  /** `asset_files.analysis_state` (§12.4, §23) — absent si inconnu. */
+  analysisState?: string | null;
 }
 
 export interface AccountDataPort {
@@ -126,6 +133,22 @@ export interface AccountDataPort {
   searchDocuments(accountId: number, terms: string[], assetId?: number | null): Promise<DocumentHit[]>;
   /** Documents rattachés à des biens, les plus récents d'abord. */
   listDocuments?(accountId: number, opts: { assetIds: number[]; limit?: number }): Promise<DocumentHit[]>;
+  /** Un document du compte (non supprimé), pour son statut (§12.2). */
+  findDocument?(accountId: number, fileId: number): Promise<DocumentHit | null>;
+  /** Exports et dossiers générés, les plus récents d'abord (§12.1). */
+  listExports?(accountId: number, opts: { assetIds?: number[]; limit?: number }): Promise<ExportRow[]>;
+}
+
+/** Export ou dossier généré pour un bien (`export_generation`). */
+export interface ExportRow {
+  id: number;
+  assetId: number;
+  assetName: string | null;
+  exportType: string;
+  /** pending | generating | ready | error (les supprimés sont exclus). */
+  status: string;
+  /** Date de génération (ou de demande), ISO. */
+  date: string | null;
 }
 
 // ── Résultat ───────────────────────────────────────────────────────────────
@@ -141,9 +164,12 @@ export type DataAnswerStrategy =
   | 'structured.list_assets'
   | 'structured.sum_amounts'
   | 'structured.list_documents'
+  | 'structured.document_status'
+  | 'structured.exports'
   | 'retrieval.t1_fact'
   | 'retrieval.t1_table'
   | 'retrieval.document'
+  | 'retrieval.document_status'
   | 'none';
 
 export interface CascadeAttempt {
@@ -178,6 +204,12 @@ export interface DataAnswerOutcome {
    * faits — jamais une nouvelle analyse T1 complète.
    */
   revalidation?: { trigger: 'LOW_CONFIDENCE' | 'CONFLICT'; factIds: number[] };
+  /**
+   * Document pertinent trouvé, mais sans la réponse : en cours d'analyse,
+   * analyse en échec, ou information absente (§12.4 — états distincts, jamais
+   * fusionnés dans « aucun résultat »).
+   */
+  documentState?: { kind: 'IN_ANALYSIS' | 'ANALYSIS_FAILED' | 'FOUND_WITHOUT_INFO'; fileId: number; title: string };
 }
 
 // ── Analyse de la question ─────────────────────────────────────────────────
@@ -264,6 +296,21 @@ function assetSource(a: AssetRow): RetrievedSource {
 function agendaSource(r: AgendaRow): RetrievedSource {
   return { id: `agenda_${r.id}`, type: 'agenda_item', title: r.title, content: `${r.date}${r.assetNames.length ? ` · ${r.assetNames.join(', ')}` : ''}`, relevanceScore: 1, meta: { date: r.date } };
 }
+function statusDocSource(d: DocumentHit): RetrievedSource {
+  const st = documentAnalysisStatus(d.analysisState);
+  return {
+    ...docSource(d.fileId, d.title, d.snippet ?? ''),
+    meta: { fileId: d.fileId, date: d.date, assetName: d.assetName, analysisStatus: st, statusLabel: ANALYSIS_STATUS_LABELS[st] },
+  };
+}
+function exportSource(r: ExportRow): RetrievedSource {
+  const lib = EXPORT_TYPE_LABELS[r.exportType as keyof typeof EXPORT_TYPE_LABELS] ?? r.exportType;
+  return {
+    id: `export_${r.id}`, type: 'export_item', title: lib, content: [r.assetName, r.date].filter(Boolean).join(' · '),
+    relevanceScore: 1,
+    meta: { assetId: r.assetId, assetName: r.assetName, date: r.date, exportType: r.exportType, statusLabel: EXPORT_STATUS_LABELS[r.status] ?? null },
+  };
+}
 function claim(key: string, text: string, sources: RetrievedSource[], derivation: Claim['derivation']): Claim {
   return { claimKey: key, text, sourceIds: sources.map((s) => s.id), derivation };
 }
@@ -335,16 +382,105 @@ type Ambiguous = { ambiguous: AssetRow[]; reason: string };
 /** Demande de liste des documents d'un bien (« montre-moi les documents de ma maison »). */
 const LIST_DOCS = /\b(montre|affiche|liste|lister|quels? sont|donne)\b/;
 
+/**
+ * Question DIRECTE sur le statut d'un document (§12.2) : « quel est le
+ * statut de ce document ? », « où en est l'analyse de ma facture EDF ? »,
+ * « ma facture est-elle analysée ? ».
+ */
+export const DOCUMENT_STATUS_QUESTION = /\b(statut|etat)\s+(de|du|d'|des)\b|\bou en est\b|\best-(il|elle) (bien )?analyse|\ba-t-(il|elle) ete analyse|\bdeja ete analyse|\b(analyse|analysee) (est-elle|est elle) terminee/;
+
+/** Liste des exports et dossiers disponibles (§12.1). */
+const EXPORTS_QUESTION = /\b(exports?|dossiers?)\b/;
+const EXPORTS_LIST = /\b(quels?|quelles?|mes|liste|lister|montre|affiche|disponibles?|generes?|prets?|ai-je|j'ai)\b/;
+
+const EXPORT_WORDS = new Set([
+  'export', 'exports', 'dossier', 'dossiers', 'disponible', 'disponibles', 'genere', 'generes', 'generee', 'generees',
+  'pret', 'prets', 'prete', 'pretes', 'liste', 'lister', 'montre', 'affiche', 'deja', 'faits', 'prepare', 'prepares',
+]);
+
+const EXPORT_STATUS_LABELS: Record<string, string> = {
+  ready: 'prêt', pending: 'en attente de génération', generating: 'en cours de génération', error: 'en erreur',
+};
+
+/** Libellé du statut d'analyse, pour une réponse directe (§12.2, §23.1). */
+function statutDocumentPhrase(d: DocumentHit): string {
+  const st = documentAnalysisStatus(d.analysisState);
+  switch (st) {
+    case 'IN_ANALYSIS': return `Statut de « ${d.title} » : en cours d’analyse. Certaines informations peuvent ne pas être disponibles immédiatement.`;
+    case 'ANALYSIS_FAILED': return `Statut de « ${d.title} » : analyse impossible. ${analysisFailedMessage(d.title)}`;
+    case 'TO_VALIDATE': return `Statut de « ${d.title} » : analysé, des informations sont à vérifier (voir « À traiter »).`;
+    case 'ANALYZED': return `Statut de « ${d.title} » : analysé.`;
+    default: return `Statut de « ${d.title} » : enregistré, sans analyse automatique.`;
+  }
+}
+
 async function tryStructured(
   port: AccountDataPort,
   accountId: number,
   message: string,
   pageAssetId: number | null,
   resolvedAssetId: number | null = null,
+  pageDocumentId: number | null = null,
 ): Promise<Level1 | Ambiguous> {
   const m = plain(message);
   const today = port.today();
   const scopeOf = () => resolveAssetScope(port, accountId, message, pageAssetId, resolvedAssetId);
+
+  // ── Statut d'un document, en question directe (§12.2) ──────────────────
+  // Le document de la page (ou désigné par le fil / une clarification) fait
+  // foi ; sinon, le document le plus pertinent pour les termes de la
+  // question — jamais un document choisi au hasard.
+  if (DOCUMENT_STATUS_QUESTION.test(m) && (RE.documents.test(m) || /\b(analyse|ce document|ce fichier)\b/.test(m) || pageDocumentId)) {
+    let doc: DocumentHit | null = null;
+    if (pageDocumentId && port.findDocument) doc = await port.findDocument(accountId, pageDocumentId).catch(() => null);
+    if (!doc) {
+      const terms = knowledgeTerms(message).filter((t) => !['statut', 'etat', 'analyse', 'analysee', 'terminee'].includes(t));
+      if (terms.length) {
+        const hits = await port.searchDocuments(accountId, terms, null).catch(() => [] as DocumentHit[]);
+        const best = Math.max(0, ...hits.map((h) => h.matchedTerms));
+        const top = hits.filter((h) => h.matchedTerms === best && best > 0);
+        // Plusieurs documents également plausibles : pas de statut au hasard,
+        // la liste est donnée avec le statut de chacun.
+        if (top.length > 1) {
+          const answer = formatList('Statut des documents correspondants', top.slice(0, 5).map((d) => {
+            const lib = ANALYSIS_STATUS_LABELS[documentAnalysisStatus(d.analysisState)] ?? 'Analysé ou enregistré';
+            return `« ${d.title} » : ${lib.toLowerCase()}`;
+          }));
+          const sources = top.slice(0, 5).map((d) => statusDocSource(d));
+          return { strategy: 'structured.document_status', answer, sources, claims: [claim('document_status', answer, sources, 'direct')], kind: 'list' };
+        }
+        doc = top[0] ?? null;
+      }
+    }
+    if (doc) {
+      const answer = statutDocumentPhrase(doc);
+      const sources = [statusDocSource(doc)];
+      return { strategy: 'structured.document_status', answer, sources, claims: [claim('document_status', answer, sources, 'direct')], kind: 'exact' };
+    }
+  }
+
+  // ── Exports et dossiers disponibles (§12.1) ────────────────────────────
+  if (EXPORTS_QUESTION.test(m) && EXPORTS_LIST.test(m) && !/\bcomment\b/.test(m) && port.listExports) {
+    // Les mots de la question (« exports disponibles ») ne désignent pas un
+    // bien : sans autre mot, la liste porte sur tout le compte.
+    const autresMots = assetWords(message).filter((w) => !EXPORT_WORDS.has(w));
+    const scope = autresMots.length === 0
+      ? { assets: [] as AssetRow[], ambiguous: false, unresolved: false, label: null as string | null }
+      : await scopeOf();
+    if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'EXPORTS_MULTIPLE_ASSETS' };
+    if (!scope.unresolved) {
+      const rows = await port.listExports(accountId, { assetIds: scope.assets.map((a) => a.id), limit: 10 });
+      const pour = scope.label ? `pour ${scope.label}` : undefined;
+      const answer = rows.length === 0
+        ? formatNoResult('aucun export ni dossier généré', pour) + ' Vous pouvez en préparer un depuis l’onglet « Exports » d’un bien.'
+        : formatList(`Exports et dossiers${scope.label ? ` de ${scope.label}` : ''}`, rows.map((r) => {
+          const lib = EXPORT_TYPE_LABELS[r.exportType as keyof typeof EXPORT_TYPE_LABELS] ?? r.exportType;
+          return `${lib}${r.assetName && !scope.label ? ` (${r.assetName})` : ''}${r.date ? `, ${formatDateFr(r.date)}` : ''} : ${EXPORT_STATUS_LABELS[r.status] ?? r.status}`;
+        }), 10);
+      const sources = rows.length ? rows.map(exportSource) : scope.assets.map(assetSource);
+      return { strategy: 'structured.exports', answer, sources, claims: [claim('exports', answer, sources, 'direct')], kind: rows.length ? 'list' : 'no_result' };
+    }
+  }
 
   // Documents d'un bien : la liste n'a de sens que pour UN bien. Deux biens
   // aussi plausibles → clarification ; aucun terme discriminant autre que le
@@ -399,13 +535,17 @@ async function tryStructured(
       if (scope.unresolved) return null;
       const n = await port.countAgenda(accountId, { assetIds: scope.assets.map((a) => a.id), futureOnly: true });
       const answer = formatCount('échéance', n, `à venir${scope.label ? ` pour ${scope.label}` : ''}`);
-      return { strategy: 'structured.count_agenda', answer, sources: scope.assets.map(assetSource), claims: [], kind: 'count' };
+      // CA-24 : un comptage est une affirmation CALCULÉE, tracée avec ses
+      // sources (le bien visé) ou, à l'échelle du compte, sans source.
+      const sources = scope.assets.map(assetSource);
+      return { strategy: 'structured.count_agenda', answer, sources, claims: [claim('count', answer, sources, 'calculated')], kind: 'count' };
     }
     if (RE.assets.test(m) || words(m).some((w) => FAMILY_WORDS[w])) {
       const family = words(m).map((w) => FAMILY_WORDS[w]).find(Boolean);
       const list = await port.listAssets(accountId, { family });
       const answer = formatCount('bien', list.length, family === 'VEHICULE' ? '(véhicules)' : family === 'IMMOBILIER' ? '(immobilier)' : family === 'OBJECT' ? '(objets)' : undefined);
-      return { strategy: 'structured.count_assets', answer, sources: list.slice(0, 8).map(assetSource), claims: [], kind: 'count' };
+      const sources = list.slice(0, 8).map(assetSource);
+      return { strategy: 'structured.count_assets', answer, sources, claims: [claim('count', answer, sources, 'calculated')], kind: 'count' };
     }
   }
 
@@ -429,7 +569,9 @@ async function tryStructured(
     const rows = await port.upcomingAgenda(accountId, { assetIds: scope.assets.map((a) => a.id), limit: 3 });
     if (rows.length === 0) {
       const answer = formatNoResult('aucune échéance à venir', scope.label ? `pour ${scope.label}` : undefined);
-      return { strategy: 'structured.next_deadline', answer, sources: [], claims: [], kind: 'no_result' };
+      // CA-24 : l'absence d'échéance est elle aussi un résultat calculé.
+      const sources = scope.assets.map(assetSource);
+      return { strategy: 'structured.next_deadline', answer, sources, claims: [claim('next', answer, sources, 'calculated')], kind: 'no_result' };
     }
     const [first, ...others] = rows;
     const bien = first.assetNames.length ? ` (${joinFr(first.assetNames)})` : '';
@@ -470,7 +612,10 @@ async function tryStructured(
         const distinctDates = [...new Set(sameTitle.map((r) => r.date))];
         if (distinctDates.length > 1) {
           const answer = formatConflict(`« ${rows[0].title} »`, sameTitle.map((r) => ({ value: formatDateFr(r.date), source: r.assetNames.join(', ') || 'agenda' })));
-          return { strategy: 'structured.deadline_of', answer, sources: sameTitle.map(agendaSource), claims: [], kind: 'conflict' };
+          const sources = sameTitle.map(agendaSource);
+          // CA-24 : le conflit est tracé comme une affirmation directe citant
+          // chacune des sources en désaccord.
+          return { strategy: 'structured.deadline_of', answer, sources, claims: [claim('conflict', answer, sources, 'direct')], kind: 'conflict' };
         }
         const first = rows[0];
         const label = `votre ${terms.join(' ')}`;
@@ -562,6 +707,8 @@ export async function answerFromData(p: {
   accountId: number;
   message: string;
   pageAssetId?: number | null;
+  /** Document de la page, ou désigné par le fil ou une clarification (§12.2). */
+  pageDocumentId?: number | null;
   /** Bien fixé par une clarification (reprise structurée). */
   resolvedAssetId?: number | null;
   thresholds: CascadeThresholdsLike;
@@ -575,7 +722,9 @@ export async function answerFromData(p: {
   });
 
   // Une demande de synthèse n'est pas « résolue » par une valeur exacte.
-  if (requiresSynthesis(p.message)) {
+  // « Où en est l'analyse de ma facture ? » n'en est pas une : c'est le
+  // statut d'un document (§12.2), lu tel quel.
+  if (requiresSynthesis(p.message) && !DOCUMENT_STATUS_QUESTION.test(plain(p.message))) {
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'SYNTHESIS_REQUIRED' };
     attempts.push({ level: 1, strategy: 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
     // Les données T1 restent utiles au modèle : on les rassemble quand même.
@@ -588,7 +737,7 @@ export async function answerFromData(p: {
   }
 
   // ── Niveau 1 ─────────────────────────────────────────────────────────────
-  const l1r = await tryStructured(p.port, p.accountId, p.message, p.pageAssetId ?? null, p.resolvedAssetId ?? null);
+  const l1r = await tryStructured(p.port, p.accountId, p.message, p.pageAssetId ?? null, p.resolvedAssetId ?? null, p.pageDocumentId ?? null);
   if (l1r && 'ambiguous' in l1r) {
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'AMBIGUOUS_TARGET', detail: `${l1r.ambiguous.length} biens` };
     attempts.push({ level: 1, strategy: 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
@@ -693,7 +842,7 @@ export async function answerFromData(p: {
       const sources = [...byValue.values()].map((f) => docSource(f.fileId, f.documentTitle ?? 'Document', evidenceText(f)));
       // Le conflit est rendu tel quel ; une revalidation ciblée peut le lever.
       return {
-        handled: true, answer, sources, claims: [], decision, strategy: 'retrieval.t1_fact', attempts, contextSources,
+        handled: true, answer, sources, claims: [claim('conflict', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources,
         revalidation: { trigger: 'CONFLICT', factIds: [...byValue.values()].filter((f) => !isVisual(f)).slice(0, 3).map((f) => f.id) },
       };
     }
@@ -712,20 +861,57 @@ export async function answerFromData(p: {
   attempts.push({ level: 2, strategy: 'retrieval.document', status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason });
   for (const d of scored.slice(0, 5)) contextSources.push(docSource(d.fileId, d.title, d.snippet ?? '', d.score));
 
-  if (decision.status === 'SUFFICIENT_RETRIEVAL' && wantsDocument) {
-    const d = [...scored].sort((a, b) => b.score - a.score)[0];
+  const best = decision.status === 'SUFFICIENT_RETRIEVAL' ? [...scored].sort((a, b) => b.score - a.score)[0] : null;
+  const statut = best ? documentAnalysisStatus(best.analysisState) : null;
+  const docSourceAvecStatut = (d: typeof scored[number]) => {
+    const src = docSource(d.fileId, d.title, d.snippet ?? '', d.score);
+    const st = documentAnalysisStatus(d.analysisState);
+    return { ...src, meta: { ...src.meta, date: d.date, assetName: d.assetName, statusLabel: ANALYSIS_STATUS_LABELS[st] } };
+  };
+
+  if (best && wantsDocument) {
+    const d = best;
     const details = [d.date ? formatDateFr(d.date) : null, d.assetName].filter(Boolean).join(', ');
-    const answer = `J’ai trouvé ce document : « ${d.title} »${details ? ` (${details})` : ''}.`;
-    const sources = [docSource(d.fileId, d.title, d.snippet ?? '', d.score)];
+    // §23.1 : un document en analyse peut être un résultat, avec un statut clair.
+    const suite = statut === 'IN_ANALYSIS' ? ` ${IN_ANALYSIS_MESSAGE}`
+      : statut === 'ANALYSIS_FAILED' ? ' Son analyse automatique n’a pas pu aboutir : vous pouvez la relancer, remplacer le fichier ou compléter les informations manuellement.'
+        : '';
+    const answer = `J’ai trouvé ce document : « ${d.title} »${details ? ` (${details})` : ''}.${suite}`;
+    const sources = [docSourceAvecStatut(d)];
     return { handled: true, answer, sources, claims: [claim('document', answer, sources, 'direct')], decision, strategy: 'retrieval.document', attempts, contextSources };
   }
 
-  return noAnswer(
+  // ══════════════════════════════════════════════════════════════════════
+  // DOCUMENT TROUVÉ, VALEUR ABSENTE — TROIS ÉTATS DISTINCTS (§12.4, §23)
+  //
+  //   · en cours d'analyse : le texte du §23.2, sans modèle — rien n'est
+  //     encore lisible, un modèle ne ferait que deviner ;
+  //   · échec d'analyse : explication et orientation (§23.4), sans modèle ;
+  //   · analysé, information absente : l'escalade reste possible (le modèle
+  //     peut la trouver dans l'extrait) ; sinon, la réponse le dit (§19.12).
+  // ══════════════════════════════════════════════════════════════════════
+  if (best && (statut === 'IN_ANALYSIS' || statut === 'ANALYSIS_FAILED')) {
+    const answer = statut === 'IN_ANALYSIS'
+      ? `J’ai trouvé « ${best.title} ». ${IN_ANALYSIS_MESSAGE}`
+      : analysisFailedMessage(best.title);
+    const sources = [docSourceAvecStatut(best)];
+    const d2: SufficiencyDecision = { ...decision, reason: statut === 'IN_ANALYSIS' ? 'DOCUMENT_IN_ANALYSIS' : 'DOCUMENT_ANALYSIS_FAILED' };
+    attempts.push({ level: 2, strategy: 'retrieval.document_status', status: d2.status, score: d2.score, threshold: d2.threshold, reason: d2.reason });
+    return {
+      handled: true, answer, sources, claims: [claim('document_status', answer, sources, 'direct')], decision: d2,
+      strategy: 'retrieval.document_status', attempts, contextSources,
+      documentState: { kind: statut, fileId: best.fileId, title: best.title },
+    };
+  }
+
+  const out = noAnswer(
     decision.status === 'SUFFICIENT_RETRIEVAL'
       // Un document pertinent n'est pas une réponse à une question de valeur.
       ? { ...decision, status: 'INSUFFICIENT', reason: 'LOW_CONFIDENCE', detail: 'document trouvé, valeur non extraite' }
       : decision,
   );
+  if (best) out.documentState = { kind: 'FOUND_WITHOUT_INFO', fileId: best.fileId, title: best.title };
+  return out;
 }
 
 /** Réponse sans modèle quand l'IA est indisponible et que rien n'est suffisant. */
@@ -744,25 +930,52 @@ export function fallbackFromSources(sources: RetrievedSource[]): string {
 const SEARCH_INTENTS = new Set([
   'ACCOUNT_SEARCH_ASSET', 'ACCOUNT_SEARCH_DOCUMENT', 'ACCOUNT_SEARCH_AGENDA', 'ACCOUNT_SEARCH_SUPPLIER',
   'ACCOUNT_FACT_ASSET', 'ACCOUNT_FACT_DOCUMENT', 'ACCOUNT_FACT_AGENDA', 'ACCOUNT_TO_PROCESS',
+  // Informations manquantes : la liste des éléments « À traiter » en attente.
+  'ACCOUNT_MISSING_INFORMATION',
 ]);
 
-const TYPE_LABELS: Record<string, string> = {
-  asset_field: 'bien', document: 'document', document_extraction: 'document', agenda_item: 'échéance',
-  supplier: 'fournisseur', to_process_item: 'élément à traiter',
-};
+/**
+ * Réponse « aucun résultat » (§11.4) : reformuler, filtrer, l'aide — et,
+ * pour une offre sans réponses intelligentes, la mention de la fonction
+ * Premium SEULEMENT si la demande appelait une interprétation.
+ */
+export function noResultAnswer(message: string, aiEligible = true): string {
+  const base = 'Je n’ai rien trouvé de correspondant dans votre compte. '
+    + 'Vous pouvez reformuler avec un autre mot (nom du bien, fournisseur, type de document), '
+    + 'filtrer depuis la page Documents ou consulter l’aide.';
+  return !aiEligible && requiresSynthesis(message)
+    ? `${base} Les réponses qui demandent une interprétation (synthèse, comparaison) font partie de l’offre Premium.`
+    : base;
+}
+
+/**
+ * Aucun résultat exact, mais des résultats proches (§11.4) : ils sont
+ * présentés comme tels, avec les autres pistes (reformuler, filtrer, aide).
+ */
+export function nearResultsAnswer(message: string, proches: RetrievedSource[], aiEligible = true): string {
+  const titres = [...new Set(proches.map((s) => s.title))].slice(0, 3).map((t) => `« ${t} »`);
+  const pistes = noResultAnswer(message, aiEligible).replace(/^Je n’ai rien trouvé de correspondant dans votre compte\. /, '');
+  return `Je n’ai rien trouvé qui corresponde exactement. Résultats proches : ${joinFr(titres)}. ${pistes}`;
+}
 
 /**
  * `tryDeterministicFromRetrieval` — réponse exacte à partir des sources des
  * adaptateurs, avant tout appel modèle. Suffisant pour une intention de
  * recherche dont le meilleur résultat atteint le seuil `text` ; sinon, motif
  * d'escalade explicite.
+ *
+ * Une liste de résultats est rendue en CARTES groupées par type (§11.3,
+ * §22.3), accompagnées d'une phrase de synthèse courte ; `candidates` (tous
+ * les candidats classés, pas seulement les 8 sources) sert aux quotas et au
+ * « Voir tous les résultats ».
  */
 export function answerFromRetrievedSources(
   intent: string,
   message: string,
   sources: RetrievedSource[],
   thresholds: CascadeThresholdsLike,
-): { handled: boolean; answer?: string; decision: SufficiencyDecision } {
+  opts: { candidates?: RetrievedSource[]; aiEligible?: boolean } = {},
+): { handled: boolean; answer?: string; decision: SufficiencyDecision; groups?: ResultGroup[] } {
   const threshold = thresholds.text;
   if (!SEARCH_INTENTS.has(intent) || requiresSynthesis(message)) {
     return { handled: false, decision: { status: 'INSUFFICIENT', level: 2, score: 0, threshold, reason: 'SYNTHESIS_REQUIRED', detail: `intention ${intent}` } };
@@ -770,7 +983,7 @@ export function answerFromRetrievedSources(
   if (sources.length === 0) {
     return {
       handled: true,
-      answer: 'Je n’ai rien trouvé de correspondant dans votre compte. Vous pouvez reformuler ou préciser votre recherche.',
+      answer: noResultAnswer(message, opts.aiEligible ?? true),
       decision: { status: 'SUFFICIENT_RETRIEVAL', level: 2, score: 1, threshold, detail: 'absence de résultat' },
     };
   }
@@ -781,10 +994,16 @@ export function answerFromRetrievedSources(
   if (top < threshold) {
     return { handled: false, decision: { status: 'INSUFFICIENT', level: 2, score: top, threshold, reason: 'LOW_RELEVANCE' } };
   }
-  const retenus = sources.filter((s) => (s.relevanceScore ?? 0) >= threshold);
-  const noms = retenus.map((s) => `« ${s.title} »${TYPE_LABELS[s.type] ? ` (${TYPE_LABELS[s.type]})` : ''}`);
-  const answer = retenus.length === 1
-    ? `J’ai trouvé : ${noms[0]}.`
-    : formatList(`J’ai trouvé ${retenus.length} éléments correspondant à votre recherche`, noms, 8);
-  return { handled: true, answer, decision: { status: 'SUFFICIENT_RETRIEVAL', level: 2, score: top, threshold } };
+  const pool = (opts.candidates && opts.candidates.length >= sources.length ? opts.candidates : sources)
+    .filter((s) => (s.relevanceScore ?? 0) >= threshold);
+  const groups = buildResultGroups(pool);
+  const answer = groups.length ? summarizeGroups(groups) : `J’ai trouvé : « ${pool[0]?.title ?? sources[0].title} ».`;
+  // Document(s) en cours d'analyse parmi les résultats : le dire (§23.1, §23.2).
+  const enAnalyse = pool.some((s) => s.meta?.analysisStatus === 'IN_ANALYSIS');
+  return {
+    handled: true,
+    answer: enAnalyse ? `${answer} Certains documents sont encore en cours d’analyse : certaines informations peuvent ne pas être disponibles immédiatement.` : answer,
+    decision: { status: 'SUFFICIENT_RETRIEVAL', level: 2, score: top, threshold },
+    groups,
+  };
 }

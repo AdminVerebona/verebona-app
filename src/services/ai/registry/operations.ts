@@ -262,7 +262,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     operationCode: 'generate_answer', useCaseCode: 'INTELLIGENT_ASSISTANT',
     label: 'Génération de la réponse sourcée',
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'generate_answer_v3', timeoutMs: 12_000,
+    promptCode: 'generate_answer_v4', timeoutMs: 12_000,
     outputSchema: 'AssistantAnswerOutput', active: true, billable: true,
   },
 

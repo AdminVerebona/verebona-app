@@ -6,7 +6,7 @@
  * POURQUOI PAR LA VARIABLE INTENT, ET PAS PAR DE NOUVELLES OPÉRATIONS
  *
  * L'opération passerelle `generate_answer` (registre `services/ai/registry`,
- * hors de ce lot) porte UN prompt maître gouverné (`generate_answer_v3`,
+ * hors de ce lot) porte UN prompt maître gouverné (`generate_answer_v4`,
  * versionné en base, anti-injection). Créer une opération par intention
  * aurait dupliqué quatre fois l'enveloppe de sécurité.
  *
@@ -18,7 +18,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { VerebonaIntent } from '../types/intents';
-import { taskPromptForIntent } from '../registries/prompt-registry';
+import { PROMPTS, taskPromptForIntent } from '../registries/prompt-registry';
 import { ACCOUNT_SUMMARY_PROMPT } from './account-summary';
 import { ACCOUNT_COMPARISON_PROMPT } from './account-comparison';
 import { ACCOUNT_TIMELINE_PROMPT } from './account-timeline';
@@ -40,7 +40,7 @@ export interface IntentTask {
 
 export function intentTaskFor(intent: VerebonaIntent): IntentTask {
   const entry = taskPromptForIntent(intent);
-  if (!entry) return { intentVariable: intent, promptId: 'generate_answer', promptVersion: 'generate_answer_v3' };
+  if (!entry) return { intentVariable: intent, promptId: 'generate_answer', promptVersion: PROMPTS.generate_answer.version };
   return {
     intentVariable: `${intent}\n\nConsigne propre à cette intention (${entry.version}) — elle précise la tâche, elle ne lève aucune règle de sécurité S1 à S4 :\n${TEXTS[entry.id]}`,
     promptId: entry.id,

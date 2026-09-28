@@ -51,7 +51,7 @@ interface PaymentItem {
   currency: string;
   status: 'paid' | 'failed' | 'pending' | 'void';
   statusLabel: string;
-  accountId: number;
+  accountId: number | null;
   accountName: string;
   plan: string;
   stripeUrl: string | null;
@@ -259,7 +259,9 @@ function SubscriptionsScreen() {
                       <TableCell className="text-right tabular-nums text-sm">{formatMoney(p.amountCents, p.currency)}</TableCell>
                       <TableCell className={`text-sm font-medium ${PAYMENT_CLS[p.status]}`}>{p.statusLabel}</TableCell>
                       <TableCell>
-                        <Link href={`/admin/accounts/${p.accountId}`} className="text-sm hover:underline">{p.accountName}</Link>
+                        {p.accountId == null
+                          ? <span className="text-sm text-muted-foreground">{p.accountName}</span>
+                          : <Link href={`/admin/accounts/${p.accountId}`} className="text-sm hover:underline">{p.accountName}</Link>}
                       </TableCell>
                       <TableCell className="text-sm">{PLAN_LABELS[p.plan] ?? p.plan}</TableCell>
                       <TableCell><StripeLink href={p.stripeUrl} /></TableCell>

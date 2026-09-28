@@ -98,6 +98,20 @@ export function formatExplanation(rows: ExplanationRow[] | null | undefined): Ex
     }));
 }
 
+/**
+ * Règle ou calcul appliqué, et limites (§19.8) — rendus tels que le serveur
+ * les a formulés ; toute valeur inattendue est écartée.
+ */
+export function formatExplanationDetails(data: unknown): { rule: string | null; limits: string[] } {
+  const d = (data ?? {}) as { rule?: unknown; limits?: unknown };
+  return {
+    rule: typeof d.rule === 'string' && d.rule.trim() ? d.rule.trim() : null,
+    limits: Array.isArray(d.limits)
+      ? [...new Set(d.limits.filter((l): l is string => typeof l === 'string' && l.trim() !== '').map((l) => l.trim()))]
+      : [],
+  };
+}
+
 /** Phrase affichée quand aucune affirmation n'est enregistrée pour la réponse. */
 export const EXPLANATION_EMPTY =
   'Cette réponse a été produite par une règle de l’application, à partir des éléments affichés dans les sources.';
@@ -127,4 +141,75 @@ export function currentPlatform(): 'web' | 'mobile' {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'web';
   return window.matchMedia('(max-width: 767px)').matches || window.matchMedia('(display-mode: standalone)').matches
     ? 'mobile' : 'web';
+}
+
+// ── Sources (§19.3, §19.5, §27.8) ─────────────────────────────────────────
+
+/** Ligne renvoyée par GET /api/verebona/messages/{id}/sources. */
+export interface SourceRow {
+  source_type: string;
+  source_id?: string | null;
+  type_label?: string | null;
+  title_snapshot: string | null;
+  excerpt_snapshot: string | null;
+  linked_asset_label?: string | null;
+  useful_date?: string | null;
+  status_label?: string | null;
+  is_available: boolean;
+  /** Construit par le serveur (§22.1) ; `null` si l'objet n'est pas ouvrable. */
+  href: string | null;
+}
+
+/** Libellé du bouton de repli : « Voir les sources » (§19.5). */
+export function sourcesToggleLabel(open: boolean, count: number): string {
+  if (open) return 'Masquer les sources';
+  return count > 1 ? `Voir les sources (${count})` : 'Voir les sources';
+}
+
+/** Bien lié · date utile · statut (§19.5), ou `null` s'il n'y a rien à dire. */
+export function formatSourceMeta(r: Pick<SourceRow, 'linked_asset_label' | 'useful_date' | 'status_label'>): string | null {
+  const date = r.useful_date ? formatIsoDateFr(r.useful_date) : null;
+  const parts = [r.linked_asset_label, date, r.status_label].filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function formatIsoDateFr(iso: string): string {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
+// ── Cartes de résultats (§11.3, §22.3) ────────────────────────────────────
+
+export interface UiResultCard {
+  id: string; typeLabel: string; title: string; subtitle: string | null;
+  date: string | null; status: string | null; excerpt: string | null; href: string | null;
+}
+export interface UiResultGroup {
+  type: string; label: string; items: UiResultCard[]; total: number; hasMore: boolean; moreHref: string | null;
+}
+
+/** Cartes visibles avant « Voir tous les résultats » (§22.3). */
+export const MAX_VISIBLE_RESULT_CARDS = 5;
+
+/**
+ * Groupes à afficher : repliés, 5 cartes au total dans l'ordre des groupes ;
+ * dépliés, tous les groupes (déjà bornés par les quotas du §11.3).
+ * `hiddenCount` : cartes masquées (0 → pas de bouton).
+ */
+export function visibleResultGroups(groups: UiResultGroup[] | null | undefined, all: boolean): { groups: UiResultGroup[]; hiddenCount: number } {
+  const liste = (groups ?? []).filter((g) => g && Array.isArray(g.items) && g.items.length > 0);
+  const totalCartes = liste.reduce((n, g) => n + g.items.length, 0);
+  const plusAilleurs = liste.some((g) => g.hasMore);
+  if (all) return { groups: liste, hiddenCount: 0 };
+  let reste = MAX_VISIBLE_RESULT_CARDS;
+  const out: UiResultGroup[] = [];
+  for (const g of liste) {
+    if (reste <= 0) break;
+    out.push({ ...g, items: g.items.slice(0, reste) });
+    reste -= Math.min(reste, g.items.length);
+  }
+  const visibles = out.reduce((n, g) => n + g.items.length, 0);
+  // Même si toutes les cartes tiennent, un groupe au-delà de son quota
+  // justifie « Voir tous les résultats » (page complète).
+  return { groups: out, hiddenCount: totalCartes - visibles + (plusAilleurs && totalCartes === visibles ? 1 : 0) };
 }

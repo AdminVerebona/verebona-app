@@ -6,8 +6,13 @@ import { db } from '@/db';
 import { users, accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet } from './server-cache';
-import { getUserSessionCutoff, isIssuedBefore } from '@/db';
-import { sessionCutoffCacheKey } from './auth/session-cutoff';
+import { isRevokedByCutoff } from './auth/session-guard';
+import {
+  ACCOUNT_PENDING_DELETION_CODE,
+  ACCOUNT_PENDING_DELETION_MESSAGE,
+  isApiAllowedWhilePendingDeletion,
+  isPendingDeletion,
+} from './auth/account-closure';
 
 /**
  * Session payload extrait du JWT.
@@ -77,6 +82,13 @@ export class SessionService {
       throw new Error('ACCOUNT_SUSPENDED');
     }
 
+    // Compte clôturé (suppression à J+30) : même règle que le middleware,
+    // re-vérifiée ici au cas où une route serait servie sans lui.
+    if (isPendingDeletion(payload.status)
+      && !isApiAllowedWhilePendingDeletion(request.nextUrl?.pathname ?? '', request.method ?? 'GET')) {
+      throw new Error(ACCOUNT_PENDING_DELETION_CODE);
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // SESSIONS RÉVOQUÉES (changement / réinitialisation de mot de passe)
     //
@@ -86,17 +98,9 @@ export class SessionService {
     // local est vidé à la révocation, les autres instances le suivent au plus
     // tard 60 s après.
     // ══════════════════════════════════════════════════════════════════════
-    {
-      const key = sessionCutoffCacheKey(payload.userId);
-      let cutoffMs = serverCacheGet<number>(key);
-      if (cutoffMs == null) {
-        const cutoff = await getUserSessionCutoff(payload.userId).catch(() => null);
-        cutoffMs = cutoff ? cutoff.getTime() : 0;
-        serverCacheSet(key, cutoffMs, 60_000);
-      }
-      if (cutoffMs > 0 && isIssuedBefore(payload, new Date(cutoffMs))) {
-        throw new Error('INVALID_TOKEN');
-      }
+    // Même contrôle que `lib/auth/session-guard` (routes hors SessionService).
+    if (await isRevokedByCutoff(payload)) {
+      throw new Error('INVALID_TOKEN');
     }
 
     // Contrôle de fin de grâce réactive — cache 60s pour éviter une query DB
@@ -223,6 +227,11 @@ export class SessionService {
         return ApiErrors.invalidToken();
       case 'ACCOUNT_SUSPENDED':
         return ApiErrors.accountSuspended();
+      case ACCOUNT_PENDING_DELETION_CODE:
+        return NextResponse.json(
+          { error: 'Forbidden', code: ACCOUNT_PENDING_DELETION_CODE, message: ACCOUNT_PENDING_DELETION_MESSAGE },
+          { status: 403 },
+        );
       case 'INSUFFICIENT_PERMISSIONS':
         return ApiErrors.insufficientPermissions();
       case 'FORBIDDEN':

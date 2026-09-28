@@ -1,7 +1,7 @@
 /**
  * Aide produit — CDC §17.6, §10.5 ; CDC Centre d'aide §5, T2-03, T2-04.
  *
- * Consigne de TÂCHE injectée dans le prompt maître `generate_answer_v3`
+ * Consigne de TÂCHE injectée dans le prompt maître `generate_answer_v4`
  * (variable INTENT, voir `intent-tasks.ts`).
  *
  * v3.0 :

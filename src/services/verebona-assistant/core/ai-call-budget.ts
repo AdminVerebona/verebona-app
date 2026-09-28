@@ -25,8 +25,10 @@ import { AiGatewayError } from '@/services/ai/gateway/errors';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import type { AiGatewayRequest, AiGatewayResponse } from '@/services/ai/gateway/types';
 import { getAssistantConfig } from '../config/assistant-config';
+import { isAssistantFlagOn } from '../config/assistant-flags';
 import { hashPromptVariables, recordAiRun, type AiRunContext } from './usage-tracking.service';
 import { alertIfCostlyResponse } from './budget.service';
+import { aliasForRank, resolveAliases } from '../registries/model-registry';
 
 export class AiCallBudget {
   private consumed = 0;
@@ -68,9 +70,13 @@ export class AiBudgetExhaustedError extends AiGatewayError {
 /**
  * Appel gateway décompté sur le budget du message.
  *
- * - `maxModelAttempts = remaining` : la gateway ne tente jamais plus de
- *   modèles (principal + replis) que ce qu'il reste. Repli désactivé
- *   (`VEREBONA_ASSISTANT_AI_FALLBACK_ENABLED=false`, §43) : 1 tentative.
+ * - `maxModelAttempts` = `policy.modelAttempts` (défaut 1 : modèle par
+ *   défaut SEUL), borné par ce qu'il reste. L'escalade n'est plus implicite :
+ *   elle est demandée explicitement (`firstModelIndex: 1`) pour un motif du
+ *   §15.4 (`model-call-policy.ts`). Repli désactivé (flag §39
+ *   `fallback_model`) : aucune escalade.
+ * - Plafonds §13.9 / §30.1 transmis à la passerelle : 500 jetons de sortie,
+ *   12 s par tentative (y compris `revalidate_fact`, déclarée à 20 s).
  * - Réponse issue du cache d'idempotence : aucun appel émis, rien décompté.
  * - Succès sans repli : 1 tentative. Succès après repli : la gateway ne dit
  *   pas combien de replis ont été essayés ; on décompte tout ce qui était
@@ -87,22 +93,63 @@ export class AiBudgetExhaustedError extends AiGatewayError {
  *
  * Sans budget (`budget` absent), comportement historique inchangé.
  */
+/**
+ * Politique de tentatives d'UN appel (CDC §15.4, §15.5, §18.6).
+ *
+ * - `modelAttempts` : nombre de modèles que la passerelle peut enchaîner
+ *   pour cet appel. Défaut : 1 — le modèle par défaut SEUL. L'ancien
+ *   comportement (tout le budget restant, donc repli automatique sur toute
+ *   erreur, timeout compris) escaladait hors des cas du §15.4 ; l'escalade
+ *   est désormais une décision explicite de l'appelant.
+ * - `firstModelIndex` : 1 = modèle d'escalade seul (§15.4).
+ * - `maxOutputTokens` / `timeoutMs` : plafonds §13.9 (500) et §30.1 (12 s).
+ */
+export interface CallPolicy {
+  modelAttempts?: number;
+  firstModelIndex?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
+}
+
 export async function executeWithinBudget<T>(
   budget: AiCallBudget | undefined,
   req: AiGatewayRequest<T>,
   trace?: AiRunContext,
+  policy: CallPolicy = {},
 ): Promise<AiGatewayResponse<T>> {
-  if (!budget) return AiGateway.execute(req);
-  const permis = getAssistantConfig().aiFallbackEnabled ? budget.remaining : Math.min(1, budget.remaining);
+  const cfg = getAssistantConfig();
+  const plafonds = {
+    maxOutputTokensCap: policy.maxOutputTokens ?? cfg.maxOutputTokens,
+    timeoutMsCap: policy.timeoutMs ?? cfg.aiTimeoutMs,
+    // §43 IDEMPOTENCY_TTL_SECONDS : durée de vie de la réponse mise en cache
+    // par la passerelle pour une même demande (900 s par défaut).
+    idempotencyTtlSeconds: cfg.idempotencyTtlSeconds,
+    ...(policy.firstModelIndex ? { firstModelIndex: policy.firstModelIndex } : {}),
+  };
+  // §15.11 : l'appel est émis sous un ALIAS configuré, résolu ici en rang de
+  // la chaîne de la passerelle (0 = défaut, 1 = escalade).
+  // Modèle attendu = chaîne EFFECTIVE (version BO, sinon code), résolue ici,
+  // au moment de l'appel — et non la configuration statique (§31.3).
+  const chaine = trace ? await resolveAliases(req.operationCode).catch(() => null) : null;
+  const aliasAppel = aliasForRank(policy.firstModelIndex ?? 0, req.operationCode, chaine);
+  if (!budget) return AiGateway.execute({ ...req, ...plafonds });
+  // Escalade demandée alors que le repli est coupé (§43) : aucun appel.
+  if ((policy.firstModelIndex ?? 0) > 0 && !isAssistantFlagOn('fallback_model')) throw new AiBudgetExhaustedError(req.operationCode);
+  const voulu = Math.max(1, Math.floor(policy.modelAttempts ?? 1));
+  const permis = Math.min(isAssistantFlagOn('fallback_model') ? voulu : 1, budget.remaining);
   if (permis <= 0) throw new AiBudgetExhaustedError(req.operationCode);
   const tentative = budget.used + 1;
   const debut = Date.now();
   try {
-    const res = await AiGateway.execute({ ...req, maxModelAttempts: permis });
-    if (!res.fromCache) budget.consume(res.usedFallback ? permis : 1);
+    const res = await AiGateway.execute({ ...req, ...plafonds, maxModelAttempts: permis });
+    if (!res.fromCache) budget.consume(res.usedFallback && !policy.firstModelIndex ? permis : 1);
     if (trace) {
+      // Repli automatique au sein du même appel : c'est l'alias d'escalade
+      // qui a répondu.
+      const aliasReel = res.usedFallback && !policy.firstModelIndex ? aliasForRank(1, req.operationCode, chaine) : aliasAppel;
       void recordAiRun({
         ...trace, accountId: req.accountId, operationCode: req.operationCode,
+        modelAlias: aliasReel.alias, expectedModelId: aliasReel.expectedModel,
         resolvedModelId: res.model, fallbackUsed: res.usedFallback,
         inputTokens: res.inputTokens, outputTokens: res.outputTokens,
         costMicros: res.fromCache ? 0 : res.costMicros, latencyMs: res.durationMs,
@@ -118,7 +165,8 @@ export async function executeWithinBudget<T>(
       const code = isAiGatewayError(e) ? e.code : 'UNKNOWN';
       void recordAiRun({
         ...trace, accountId: req.accountId, operationCode: req.operationCode,
-        resolvedModelId: null, fallbackUsed: permis > 1,
+        modelAlias: aliasAppel.alias, expectedModelId: aliasAppel.expectedModel,
+        resolvedModelId: null, fallbackUsed: permis > 1 || (policy.firstModelIndex ?? 0) > 0,
         inputTokens: 0, outputTokens: 0, costMicros: null, latencyMs: Date.now() - debut,
         attemptNumber: tentative, status: /TIMEOUT/i.test(String(code)) ? 'timeout' : 'error',
         errorCode: String(code), promptHash: hashPromptVariables(req.promptVariables),

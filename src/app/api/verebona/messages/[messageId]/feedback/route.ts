@@ -6,9 +6,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations, pgClient } from '@/db';
 import { MESSAGE_OWNED_BY_USER } from '@/services/verebona-assistant/core/conversation.service';
+import { httpRequestId, mutationRateLimited, parseWith, readJson } from '@/lib/verebona/api-guard';
+import { FeedbackSchema, MessageParamsSchema } from '@/lib/verebona/api-schemas';
 
-const VALUES = new Set(['helpful', 'not_helpful']);
-const REASONS = new Set(['incorrect_answer', 'missing_information', 'wrong_source', 'wrong_action', 'too_long', 'other']);
+// Valeurs et motifs autorisés (§27.10) : `FeedbackSchema` (lib/verebona/api-schemas).
 
 export async function POST(
   req: NextRequest,
@@ -21,12 +22,18 @@ export async function POST(
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
 
   await ensureMigrations();
-  const { messageId } = await params;
-  const body = await req.json().catch(() => ({}));
-  const value = String(body.value ?? '');
-  const reason = body.reason ? String(body.reason) : null;
-  if (!VALUES.has(value)) return NextResponse.json({ error: 'INVALID_VALUE' }, { status: 400 });
-  if (reason && !REASONS.has(reason)) return NextResponse.json({ error: 'INVALID_REASON' }, { status: 400 });
+  // §27 : identifiant et corps validés par schéma ; §31.10 : limiteur des
+  // routes qui écrivent.
+  const httpId = httpRequestId(req);
+  const limite = mutationRateLimited(session.userId, accountId, 'feedback', httpId);
+  if (limite) return limite;
+  const p = parseWith(MessageParamsSchema, await params, httpId);
+  if (!p.ok) return p.response;
+  const { messageId } = p.data;
+  const b = parseWith(FeedbackSchema, await readJson(req), httpId);
+  if (!b.ok) return b.response;
+  const value = b.data.value;
+  const reason = b.data.reason ?? null;
 
   // Propriété : message d'une conversation de L'UTILISATEUR (les fils sont
   // privés en Duo) + upsert (dernière valeur remplace — §27.10).

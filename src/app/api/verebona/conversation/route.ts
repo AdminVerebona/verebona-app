@@ -19,6 +19,10 @@ import {
 } from '@/services/verebona-assistant/core/conversation.service';
 import { chargerClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { isExpired } from '@/services/verebona-assistant/core/clarification-builder';
+import { reverifierCartesDesMessages } from '@/services/verebona-assistant/core/source-availability.service';
+import { listThreadCommandPlans } from '@/services/verebona-assistant/commands/plan.service';
+import { httpRequestId, mutationRateLimited, parseWith, queryObject, withRequestId } from '@/lib/verebona/api-guard';
+import { ConversationQuerySchema } from '@/lib/verebona/api-schemas';
 
 /** `undefined` : absent ; `null` : présent mais invalide. */
 function parseConversationId(req: NextRequest): number | null | undefined {
@@ -31,6 +35,11 @@ function parseConversationId(req: NextRequest): number | null | undefined {
 const notFound = () => NextResponse.json({ error: 'CONVERSATION_NOT_FOUND' }, { status: 404 });
 
 export async function GET(req: NextRequest) {
+  const httpId = httpRequestId(req);
+  return withRequestId(await lire(req, httpId), httpId);
+}
+
+async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }
@@ -38,6 +47,9 @@ export async function GET(req: NextRequest) {
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
 
   await ensureMigrations();
+  // §27.6 : `limit` (≤ 50), `cursor` / `before` validés par schéma.
+  const q = parseWith(ConversationQuerySchema, queryObject(req), httpId);
+  if (!q.ok) return q.response;
   const requested = parseConversationId(req);
   if (requested === null) return notFound();
 
@@ -47,7 +59,16 @@ export async function GET(req: NextRequest) {
   if (requested !== undefined && !conversationId) return notFound();
   if (!conversationId) return NextResponse.json({ conversationId: null, messages: [] });
 
-  const messages = await listActiveMessages(accountId, session.userId, conversationId);
+  // Page la plus récente, ou messages antérieurs au curseur (§27.6).
+  const page = await listActiveMessages(accountId, session.userId, conversationId, {
+    limit: q.data.limit, before: q.data.cursor ?? q.data.before ?? null,
+  });
+  // §19.10 : les cartes relues depuis l'historique sont REVÉRIFIÉES — un
+  // objet supprimé ou devenu inaccessible depuis perd son lien.
+  const messages = await reverifierCartesDesMessages(
+    page.messages as unknown as Array<{ result_groups_json?: unknown }>,
+    accountId,
+  );
 
   // Clarification encore en attente dans ce fil : rendue pour que l'utilisateur
   // puisse y répondre après un rechargement ou une reconnexion. Seuls la
@@ -61,15 +82,34 @@ export async function GET(req: NextRequest) {
         choices: etat.candidates.map((c) => ({ choiceId: c.id, label: c.label, secondaryLabel: c.secondaryLabel })),
       }
     : null;
-  return NextResponse.json({ conversationId, messages, clarification });
+  // Commandes proposées dans ce fil, avec leur état réel (§9.6 : en attente,
+  // annulée, expirée, exécutée) : une proposition encore en attente reste
+  // annulable après un rechargement ; une proposition close n'offre plus de
+  // bouton. Seuls les plans de l'utilisateur sortent.
+  const commandPlans = await listThreadCommandPlans(accountId, session.userId, conversationId).catch((e) => {
+    console.error('[verebona] plans du fil illisibles :', (e as Error).message);
+    return [];
+  });
+  // `nextCursor` : à renvoyer en `cursor` pour charger les messages plus anciens.
+  return NextResponse.json({ conversationId, messages, nextCursor: page.nextCursor, clarification, commandPlans });
 }
 
 export async function DELETE(req: NextRequest) {
+  const httpId = httpRequestId(req);
+  return withRequestId(await effacer(req, httpId), httpId);
+}
+
+async function effacer(req: NextRequest, httpId: string): Promise<NextResponse> {
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
+  // §31.10 : limiteur des routes qui écrivent.
+  const limite = mutationRateLimited(session.userId, accountId, 'conversation', httpId);
+  if (limite) return limite;
+  const q = parseWith(ConversationQuerySchema, queryObject(req), httpId);
+  if (!q.ok) return q.response;
 
   await ensureMigrations();
   const requested = parseConversationId(req);

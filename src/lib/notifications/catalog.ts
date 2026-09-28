@@ -556,6 +556,34 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
         ),
   },
 
+  // Suppression volontaire du compte (décision produit : différée de 30
+  // jours). Obligatoires (cloche + e-mail) : l'utilisateur doit savoir
+  // jusqu'à quand il peut annuler. Le lien mène à l'écran « Compte en cours
+  // de suppression », derrière la connexion (jamais de lien d'annulation
+  // sans authentification). Le push reste générique (§4.3).
+  [T.ACCOUNT_DELETION_SCHEDULED]: {
+    ...accountMandatory(T.ACCOUNT_DELETION_SCHEDULED, 'Suppression de votre compte programmée', 'Votre compte est clôturé.', 'notif_account_deletion'),
+    render: (p) => content(
+      'Suppression de votre compte programmée',
+      accountDeletionNotificationText('SCHEDULED', p?.scheduledAt),
+      { title: 'Compte clôturé', body: 'La suppression de votre compte est programmée.' },
+      'notif_account_deletion',
+    ),
+    deepLink: () => '/compte-en-suppression',
+    payloadSchema: z.object({ scheduledAt: z.string() }),
+  },
+  [T.ACCOUNT_DELETION_REMINDER]: {
+    ...accountMandatory(T.ACCOUNT_DELETION_REMINDER, 'Suppression de votre compte dans 7 jours', 'Votre compte sera bientôt supprimé.', 'notif_account_deletion'),
+    render: (p) => content(
+      'Suppression de votre compte dans 7 jours',
+      accountDeletionNotificationText('REMINDER', p?.scheduledAt),
+      { title: 'Suppression prochaine', body: 'Votre compte sera bientôt supprimé.' },
+      'notif_account_deletion',
+    ),
+    deepLink: () => '/compte-en-suppression',
+    payloadSchema: z.object({ scheduledAt: z.string(), daysLeft: z.number() }),
+  },
+
   // ── Sécurité — obligatoires (§7.7) ─────────────────────────────────────────
   [T.PASSWORD_CHANGED]: security(T.PASSWORD_CHANGED, 'Mot de passe modifié', 'Votre mot de passe a été modifié.'),
   [T.EMAIL_CHANGE_REQUESTED]: security(T.EMAIL_CHANGE_REQUESTED, 'Changement d\'email demandé', 'Une modification de votre adresse email a été demandée.'),
@@ -637,6 +665,19 @@ export function unpaidNotificationText(moment: 'J0' | 'REMINDER', deadlineAt?: s
     ? `Sans régularisation de votre paiement, vos données seront supprimées le ${date}. D'ici là, vous pouvez ` +
       'régulariser, exporter vos données ou transmettre vos biens.'
     : 'Sans régularisation de votre paiement, vos données seront prochainement supprimées.';
+}
+
+/** Texte cloche/e-mail de la suppression volontaire du compte (AID-ACCOUNT-006). */
+export function accountDeletionNotificationText(moment: 'SCHEDULED' | 'REMINDER', scheduledAt?: string | null): string {
+  const date = scheduledAt ? formatUnpaidDeadline(scheduledAt) : '';
+  const quand = date ? `le ${date}` : 'dans 30 jours';
+  if (moment === 'SCHEDULED') {
+    return `Votre compte Verebona est clôturé à votre demande. Il sera définitivement supprimé ${quand}, ` +
+      'avec vos biens, documents, fichiers et échéances. D’ici là, vous pouvez annuler la suppression ou ' +
+      'exporter vos données en vous reconnectant.';
+  }
+  return `Votre compte Verebona sera définitivement supprimé ${quand}. C’est la dernière occasion ` +
+    'd’annuler la suppression ou d’exporter vos données : reconnectez-vous pour le faire.';
 }
 
 function accountMandatory(type: NotificationType, bellTitle: string, body: string, emailTemplateCode: string): CatalogEntry {

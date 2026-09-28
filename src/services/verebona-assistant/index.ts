@@ -16,6 +16,7 @@ export type { OrchestratorPorts } from './core/assistant-orchestrator.service';
 
 import { assertConfigAtStartup } from './config/assistant-config';
 import { AI_OPERATIONS } from '@/services/ai/registry/operations';
+import { currentStartupVerdict, resetModelStartupForTests } from './core/model-startup-check';
 
 /**
  * Contrôle de démarrage — CDC §15.14.
@@ -31,15 +32,18 @@ export function assertAssistantStartup(): void {
 let startupVerdict: { ok: true } | { ok: false; error: string } | null = null;
 
 /**
- * Contrôle de démarrage exécuté UNE fois par processus, au premier message.
+ * Verdict du contrôle de démarrage (§15.14), consulté par la route des
+ * messages.
  *
- * `instrumentation.ts` (hors du périmètre de ce lot) devrait l'appeler au
- * boot ; en attendant, la route des messages l'appelle : une configuration
- * invalide est journalisée bruyamment et l'assistant refuse les demandes
- * (503) plutôt que de tourner hors des limites V1 — le reste de
- * l'application n'est pas affecté.
+ * Le contrôle COMPLET (registre de modèles : alias, autorisation, prix,
+ * sorties structurées) s'exécute au démarrage (`instrumentation-node.ts`) et
+ * à chaque changement de configuration du BO IA (`runAssistantStartupCheck`) :
+ * son verdict fait foi. Sans lui (tests, instance qui n'a pas encore fini de
+ * démarrer), le contrôle statique des limites V1 est appliqué ici, une fois.
  */
 export function ensureAssistantStartupChecked(): { ok: true } | { ok: false; error: string } {
+  const complet = currentStartupVerdict();
+  if (complet) return complet;
   if (startupVerdict) return startupVerdict;
   try {
     assertAssistantStartup();
@@ -51,7 +55,10 @@ export function ensureAssistantStartupChecked(): { ok: true } | { ok: false; err
   return startupVerdict;
 }
 
+export { runAssistantStartupCheck, lastValidRegistry } from './core/model-startup-check';
+
 /** Réservé aux tests. */
 export function resetStartupCheckForTests(): void {
   startupVerdict = null;
+  resetModelStartupForTests();
 }

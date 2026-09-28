@@ -12,9 +12,15 @@
  * interdit.
  *
  * Le discriminant est l'OPÉRATION. La gateway écrit un `operation_type` pris
- * dans le référentiel, catalogue fermé ; le tracker historique écrit des
- * libellés libres (`operation_complete`, `document_analysis`…). Une seule
- * valeur hors catalogue prouve qu'un moteur historique a tourné.
+ * dans le référentiel, catalogue fermé. Deux formes prouvent qu'un moteur
+ * historique a tourné :
+ *   · une valeur hors catalogue (libellés libres des anciennes écritures,
+ *     `operation_complete`, `document_analysis`…, encore présents dans
+ *     l'historique) ;
+ *   · une opération de relais `legacy_*` : depuis GEN-004, les modules
+ *     historiques passent par la passerelle sous ces opérations, et depuis
+ *     GEN-005 le tracker n'écrit plus sa ligne « operation_complete ». Sans
+ *     cette règle, un moteur historique en service serait lu « conforme ».
  *
  * Cette règle est isolée du script pour être testable : c'est elle qui autorise
  * ou refuse la bascule réglementaire, pas la mise en forme du rapport.
@@ -47,18 +53,25 @@ export function knownOperationCodes(): Set<string> {
   return new Set(Object.keys(AI_OPERATIONS));
 }
 
+/** Opération de relais d'un module historique (`legacy_*`, GEN-004). */
+export function isLegacyRelayOperation(code: string): boolean {
+  return code.startsWith('legacy_');
+}
+
 export function concludeExecutionInventory(rows: ObservedOperation[]): InventoryConclusion {
   const connues = knownOperationCodes();
 
   const totalEvents = rows.reduce((s, r) => s + r.events, 0);
 
+  const historique = (code: string) => !connues.has(code) || isLegacyRelayOperation(code);
+
   const foreignOperations = [...new Set(
-    rows.filter((r) => !connues.has(r.operationType)).map((r) => r.operationType),
+    rows.filter((r) => historique(r.operationType)).map((r) => r.operationType),
   )].sort();
 
   const useCasesSeen = [...new Set(
     rows
-      .filter((r) => connues.has(r.operationType) && r.useCaseCode)
+      .filter((r) => !historique(r.operationType) && r.useCaseCode)
       .map((r) => r.useCaseCode as string),
   )].sort();
 

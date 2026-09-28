@@ -274,6 +274,9 @@ export async function candidatToujoursValide(
   candidateType: ClarificationState['candidateType'],
   candidate: ClarificationCandidate,
 ): Promise<boolean> {
+  // Période ou action (§20.1) : aucun objet du compte à revérifier ; le
+  // choix est valable s'il porte bien la reprise construite par le serveur.
+  if (candidateType === 'period' || candidateType === 'action') return Boolean(candidate.resumeMessage);
   if (!candidate.entityId) return false;
   const sql = candidateType === 'asset'
     ? `SELECT 1 FROM assets
@@ -413,7 +416,9 @@ export function inputDeReprise(
   const documentId = etat.candidateType === 'document' ? candidate.entityId ?? null : null;
   return {
     ...base,
-    message: etat.originalMessage ?? '',
+    // Période ou action choisie (§20.1) : la demande rejouée est celle que le
+    // serveur a construite pour ce choix.
+    message: candidate.resumeMessage ?? etat.originalMessage ?? '',
     clientRequestId: `clarif:${etat.clarificationId}:${candidate.id}`,
     conversationId: etat.conversationId,
     // Le bien choisi devient le contexte de la reprise : recherche, actions
@@ -421,7 +426,7 @@ export function inputDeReprise(
     pageContext: assetId ? { assetId: String(assetId) } : documentId ? { documentId: String(documentId) } : undefined,
     resume: {
       clarificationId: etat.clarificationId,
-      intent: etat.originalIntent,
+      intent: candidate.resumeIntent ?? etat.originalIntent,
       assetId,
       documentId,
       chainDepth: etat.chainDepth ?? 1,
