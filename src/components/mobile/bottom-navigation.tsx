@@ -1,142 +1,98 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+/**
+ * Navigation basse flottante — Direction D v2 §4.1.
+ *
+ * Accueil, Biens, « + Ajouter » (bouton central surélevé), Documents,
+ * À traiter (+ pastille au-delà de zéro). Flou, rayon 32.
+ *
+ * Libellés sans possessif : cinq entrées sur 390 px laissent environ 78 px
+ * chacune, « Mes documents » passait à la ligne.
+ *
+ * Le compteur « À traiter » est celui de la coquille (une seule lecture pour
+ * le menu latéral et la barre basse : deux lectures, c'était deux nombres).
+ */
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Package, FileText, CalendarDays, Plus, AlertCircle } from 'lucide-react';
+import { House, Package, FileText, CircleAlert, Plus } from 'lucide-react';
 import { MobileActionsSheet } from './mobile-actions-sheet';
-import { Button } from '@/components/ui/button';
-import { apiClient } from '@/lib/api-client';
+import { badgeLabel } from '@/lib/shell/sidebar-state';
 
-/**
- * ══════════════════════════════════════════════════════════════════════════
- * LIBELLÉS SANS POSSESSIF
- *
- * Cinq entrées sur un écran de 390 px laissent environ 78 px chacune.
- * « Mes documents » en demande 90 : il passait à la ligne, et la barre
- * gagnait une deuxième ligne pour un seul mot.
- *
- * Le possessif n'apprend rien — tout ce que l'application montre appartient
- * à qui la consulte. Le retirer tient sur une ligne et se lit d'un coup.
- *
- * Les mêmes libellés sont employés dans le menu latéral : deux vocabulaires
- * pour les mêmes destinations font douter qu'elles soient les mêmes.
- * ══════════════════════════════════════════════════════════════════════════
- */
 const LEFT_ITEMS = [
+  { id: 'accueil', name: 'Accueil', href: '/accueil', icon: House },
   { id: 'biens', name: 'Biens', href: '/assets', icon: Package },
-  { id: 'agenda', name: 'Agenda', href: '/agenda', icon: CalendarDays },
 ];
 
 const RIGHT_ITEMS = [
   { id: 'documents', name: 'Documents', href: '/documents', icon: FileText },
-  { id: 'a-traiter', name: 'À traiter', href: '/accueil/a-traiter', icon: AlertCircle },
+  { id: 'a-traiter', name: 'À traiter', href: '/accueil/a-traiter', icon: CircleAlert },
 ];
 
-export function BottomNavigation() {
-  const pathname = usePathname();
+function isActive(id: string, href: string, pathname: string): boolean {
+  if (id === 'accueil') return pathname === '/accueil';
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+export function BottomNavigation({ toProcessCount }: { toProcessCount?: number | null }) {
+  const pathname = usePathname() ?? '';
   const [showActionsSheet, setShowActionsSheet] = useState(false);
-  const [aTraiterCount, setATraiterCount] = useState<number>(0);
+  const badge = badgeLabel(toProcessCount);
 
-  // Initial fetch
-  useEffect(() => {
-    apiClient.get<{ total: number } | { items: any[] }>('/api/to-process', { useCache: true })
-      .then(res => {
-        const count = 'total' in res ? res.total : ('items' in res ? (res.items?.length ?? 0) : 0);
-        setATraiterCount(count);
-      })
-      .catch(() => {
-        // Fallback
-        apiClient.get<{ documents: any[]; agendaItems: any[]; equipements: any[] }>('/api/dashboard/a-traiter')
-          .then(res => {
-            const count = (res.documents?.length ?? 0) + (res.agendaItems?.length ?? 0) + (res.equipements?.length ?? 0);
-            setATraiterCount(count);
-          })
-          .catch(() => {});
-      });
-  }, []);
-
-  // Listen for updates dispatched by DashboardLayout / a-traiter page
-  useEffect(() => {
-    const handler = (e: Event) => setATraiterCount((e as CustomEvent<number>).detail ?? 0);
-    window.addEventListener('update-a-traiter-count', handler);
-    return () => window.removeEventListener('update-a-traiter-count', handler);
-  }, []);
+  const item = (it: typeof LEFT_ITEMS[number]) => {
+    const active = isActive(it.id, it.href, pathname);
+    const b = it.id === 'a-traiter' ? badge : null;
+    return (
+      <Link
+        key={it.id}
+        href={it.href}
+        aria-current={active ? 'page' : undefined}
+        aria-label={b ? `${it.name}, ${b}` : undefined}
+        className={`flex min-h-11 flex-1 flex-col items-center gap-1 p-2 text-[10px] font-medium ${active ? 'text-[color:var(--accent)]' : 'text-[color:var(--text-muted)]'}`}
+      >
+        <span className="relative flex">
+          <it.icon className="h-5 w-5" aria-hidden />
+          {b && (
+            <span className="absolute -right-2 -top-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[color:var(--vb-red-500)] px-1 text-[9px] font-bold text-white" aria-hidden>
+              {b}
+            </span>
+          )}
+        </span>
+        <span className="whitespace-nowrap">{it.name}</span>
+      </Link>
+    );
+  };
 
   return (
     <>
-      <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 px-4 pb-2 pt-2 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)] to-transparent">
-        <nav className="flex items-center justify-between bg-[color:var(--bg-card)]/80 backdrop-blur-xl border border-[color:var(--border-subtle)] rounded-2xl px-2 py-2 shadow-relief-lg">
-          {/* Left items */}
-          <div className="flex flex-1 justify-around items-center">
-            {LEFT_ITEMS.map((item) => {
-              const isActive = pathname === item.href || (item.id === 'biens' && pathname.startsWith('/assets')) || (item.id === 'agenda' && pathname.startsWith('/agenda'));
-              return (
-                <Link
-                  key={item.id}
-                  href={item.href}
-                  className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${
-                    isActive ? 'text-[color:var(--accent)]' : 'text-[color:var(--text-muted)]'
-                  }`}
-                >
-                  <item.icon className="w-5 h-5" />
-                  <span className="text-[10px] font-medium whitespace-nowrap">{item.name}</span>
-                </Link>
-              );
-            })}
-          </div>
-
-          {/* Center Plus Button — le + pivote à 90° à l'ouverture (et au survol) */}
-          <div className="flex-shrink-0 flex flex-col items-center gap-1 -mt-10 relative">
-            <Button
-              size="icon"
+      <div className="fixed inset-x-0 bottom-0 z-50 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)]/90 to-transparent px-4 pb-[max(22px,env(safe-area-inset-bottom))] pt-2 md:hidden">
+        <nav
+          aria-label="Navigation principale"
+          className="flex items-center rounded-[32px] border border-[color:var(--border-subtle)] p-2 shadow-relief-lg backdrop-blur-[16px]"
+          style={{ background: 'color-mix(in srgb, var(--bg-card) 80%, transparent)' }}
+        >
+          {LEFT_ITEMS.map(item)}
+          <div className="-mt-10 flex flex-shrink-0 flex-col items-center gap-1 px-1.5">
+            <button
+              type="button"
               onClick={() => setShowActionsSheet(true)}
-              aria-label="Ajouter un bien, un document ou un événement"
-              className="group h-16 w-16 rounded-full shadow-relief-2xl hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] hover:scale-110 transition-all border-4 border-[color:var(--bg-page)]"
+              aria-label="Ajouter un bien, un document ou une échéance"
+              className="group flex h-16 w-16 items-center justify-center rounded-full border-4 border-[color:var(--bg-page)] text-white shadow-relief-2xl"
+              style={{ background: 'linear-gradient(135deg, var(--vb-blue-500), var(--vb-blue-700))' }}
             >
               <Plus
-                className={`w-8 h-8 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90 ${showActionsSheet ? 'rotate-90' : ''}`}
+                className={`h-[30px] w-[30px] transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90 ${showActionsSheet ? 'rotate-90' : ''}`}
+                strokeWidth={2.2}
+                aria-hidden
               />
-            </Button>
-            <span className="text-[10px] font-medium whitespace-nowrap text-[color:var(--accent)]">Ajouter</span>
+            </button>
+            <span className="text-[10px] font-medium text-[color:var(--accent)]">Ajouter</span>
           </div>
-
-          {/* Right items */}
-          <div className="flex flex-1 justify-around items-center">
-            {RIGHT_ITEMS.map((item) => {
-              const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
-              const badge = item.id === 'a-traiter' && aTraiterCount > 0 ? aTraiterCount : null;
-              return (
-                <Link
-                  key={item.id}
-                  href={item.href}
-                  className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${
-                    isActive ? 'text-[color:var(--accent)]' : 'text-[color:var(--text-muted)]'
-                  }`}
-                >
-                  <div className="relative">
-                    <item.icon className="w-5 h-5" />
-                    {badge !== null && (
-                      <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 flex items-center justify-center bg-red-500 text-white text-[9px] font-bold rounded-full px-1">
-                        {badge > 99 ? '99+' : badge}
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[10px] font-medium whitespace-nowrap">{item.name}</span>
-                </Link>
-              );
-            })}
-          </div>
+          {RIGHT_ITEMS.map(item)}
         </nav>
       </div>
 
-      <MobileActionsSheet
-        open={showActionsSheet}
-        onOpenChange={setShowActionsSheet}
-      />
-
-      {/* Spacer to prevent content from being hidden behind the nav */}
-      <div className="md:hidden h-24" />
+      <MobileActionsSheet open={showActionsSheet} onOpenChange={setShowActionsSheet} />
     </>
   );
 }

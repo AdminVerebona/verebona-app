@@ -10,6 +10,7 @@ import type {
   MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject,
 } from './types';
 import { CLEAR_TEXT, DEGRADED_NOTICE } from './types';
+import { parisDay, tileFor } from './bubble';
 
 /** Empreinte du contexte métier affiché : sujets, faits, actions, secondaires. */
 export function contextHashOf(subjects: MascotSubject[], secondaries: MascotSecondary[], degraded: boolean): string {
@@ -26,6 +27,8 @@ export function buildPresentation(p: {
   degraded: boolean;
   messages: T6Message[] | null;
   now?: Date;
+  /** AAAA-MM-JJ (Europe/Paris) : calcul des retards des tuiles. */
+  today?: string;
 }): MascotPresentation {
   const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded);
   const computedAt = (p.now ?? new Date()).toISOString();
@@ -61,6 +64,7 @@ export function buildPresentation(p: {
       text: m ? m.text : s.fallbackText,
       highlight: m ? m.highlight : (s.allowedHighlight && s.fallbackText.includes(s.allowedHighlight) ? s.allowedHighlight : null),
       actions: s.actions,
+      tile: tileFor(s, p.today ?? parisDay(p.now)),
     };
   });
   return {

@@ -1,52 +1,84 @@
 'use client';
 
 /**
- * Documents groupés par Rubrique — CDC V2.0 §4.2, §4.3, §4.4, §4.7, §17.3.
+ * « Mes documents » et onglet Documents d'un bien — CDC V2.0 §4, maquette
+ * « Mes documents » (2026-09), direction 1a « Flux continu ».
  *
  * ══════════════════════════════════════════════════════════════════════════
- * UN SEUL NIVEAU DE REGROUPEMENT VISIBLE
+ * LES RUBRIQUES SONT DES TITRES, PLUS DES BOÎTES
  *
- * §4.2 : « Un seul niveau de regroupement visible : la Rubrique. Le Type ne
- * crée jamais de sous-groupe. » C'est la rupture avec l'arborescence que la V1
- * laissait deviner — catégorie puis type — et qui obligeait à deux clics pour
- * atteindre un document dont on connaissait déjà la nature.
+ * L'écran précédent enfermait chaque Rubrique dans un cadre repliable, avec
+ * son propre « Voir les N autres » : huit boîtes, dont plusieurs vides, et un
+ * tri qui ne valait qu'à l'intérieur de chacune.
  *
- * ── CE COMPOSANT NE TRIE RIEN ─────────────────────────────────────────────
+ * Désormais un seul flux : les Rubriques sont des titres de section (petites
+ * capitales, compteur, filet), jamais des boîtes. Désactiver « Par rubrique »
+ * retire les titres, rien d'autre ne bouge. Les Rubriques vides n'ont pas de
+ * section ; elles sont citées en une ligne à la fin (« Rubriques sans
+ * document : … »), ce qui garde visible la structure du référentiel (§3.3)
+ * sans la faire peser sur la page.
  *
- * L'ordre des groupes vient du serveur : « Sans rubrique » d'abord et
- * seulement s'il contient quelque chose, « Autres documents » en dernier, les
- * Rubriques métier visibles même à 0 (§3.3, §4.4). Les recalculer ici
- * produirait un second jeu de règles, qui divergerait du premier.
+ * ── LE TRI EST GLOBAL ─────────────────────────────────────────────────────
  *
- * ── LE DOCUMENT QUITTE « SANS RUBRIQUE » SANS RECHARGEMENT ────────────────
+ * Le périmètre entier est chargé (`pageSize=all`) puis trié d'un bloc ;
+ * regrouper ne fait que découper la liste triée. Filtres, tri et regroupement
+ * sont calculés dans `documents-view.ts` (fonctions pures, testées).
  *
- * §4.4, dernier alinéa. Le drawer enregistre, la page se recharge en arrière-
- * plan et le drawer reste ouvert (§4.7) : l'utilisateur voit le déplacement
- * s'opérer sans perdre le document des yeux.
+ * ── CE QUI NE CHANGE PAS ──────────────────────────────────────────────────
+ *
+ * Le clic ouvre le tiroir document (le même que partout ailleurs), où l'on
+ * modifie, déplace ou supprime ; l'ajout passe par le dialogue commun, gardé
+ * en lecture seule ; aucun champ de recherche local (§4.2, UX-01).
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ChevronDown, FileText, Grid3x3, Image as ImageIcon, List, Loader2, Plus } from 'lucide-react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { PdfThumbnail } from '@/components/ui/pdf-thumbnail';
 import { apiClient } from '@/lib/api-client';
+import { rubricColors } from '@/lib/referential/v2/rubrics';
+import { MAX_LOADED_DOCUMENTS } from '@/lib/documents/rubric-page';
+import { DocumentDrawer, type DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
+import { ActiveFilterChips, DocumentsFilterPanel } from './DocumentsFilterPanel';
+import { DocumentsToolbar } from './DocumentsToolbar';
 import {
-  DEFAULT_V2_FILTERS,
-  DocumentsFilterDrawer,
-  type DocumentsV2Filters,
-} from './DocumentsFilterDrawer';
+  EMPTY_FILTERS,
+  UNFILED,
+  activeFilterChips,
+  activeFilterCount,
+  buildFilterOptions,
+  countLabel,
+  defaultDirection,
+  displayedDate,
+  documentSubtitle,
+  effectiveSort,
+  emptyRubricsLine,
+  filterDocuments,
+  groupDocuments,
+  hasActiveFilters,
+  isToClassify,
+  limitGroups,
+  sortDocuments,
+  sortOptionsFor,
+  toggleFilter,
+  type DocumentItem,
+  type DocumentsContext,
+  type RubricRef,
+  type SortKey,
+  type ViewFilters,
+} from './documents-view';
+import { DEFAULT_PREFS, loadPrefs, savePrefs, type ViewPrefs } from './view-prefs';
 
 /**
  * Le téléversement RÉUTILISE le dialogue existant, il n'est pas réécrit.
  *
- * Le §4.1 veut des composants communs, et le lot 3B notait que dupliquer
- * l'ajout créerait deux chemins pour la même action. `UnifiedDocumentDialog`
- * porte déjà fichier, lien web, rattachements et analyse : en refaire une
- * version V2 garantirait qu'elles divergent.
+ * Le §4.1 veut des composants communs : `UnifiedDocumentDialog` porte déjà
+ * fichier, lien web, rattachements et analyse.
  */
 const UnifiedDocumentDialog = dynamic(
   () => import('@/components/documents/unified-document-dialog').then(
@@ -54,350 +86,285 @@ const UnifiedDocumentDialog = dynamic(
   ),
   { ssr: false },
 );
-import {
-  ASSET_DOCUMENTS_HEADLINE,
-  MICROCOPY,
-  myDocumentsHeadline,
-} from '@/lib/referential/v2/microcopy';
-import { DocumentDrawer, type DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 
-/** Mode d'affichage des documents, mémorisé d'une visite à l'autre. */
-type ViewMode = 'list' | 'grid';
-const VIEW_MODE_KEY = 'documentsViewMode';
-/** Onglet d'un bien : clé historique de l'ancien onglet, pour garder le choix de l'utilisateur. */
-const ASSET_VIEW_MODE_KEY = 'assetDocumentsViewMode';
-
-interface DocumentView {
-  id: number;
-  publicId: string;
-  /** Nom du fichier d'origine — l'en-tête du tiroir document s'en sert. */
-  originalFilename: string | null;
-  /** Bien rattaché, quand il y en a un. */
-  assetId: number | null;
-  /** Rubrique de classement, `null` pour « Sans rubrique ». */
-  rubricCode: string | null;
-  title: string;
-  documentTypeCode: string | null;
-  documentTypeLabel: string | null;
-  documentDate: string | null;
-  mimeType: string | null;
-  assetNames: string[];
-}
-
-interface GroupView {
+interface GroupResponse {
   code: string;
   label: string;
   count: number;
-  documents: DocumentView[];
+  documents: DocumentItem[];
   hasMore: boolean;
 }
 
 interface PageResponse {
-  groups: GroupView[];
-  typeOptions: Array<{ code: string; label: string }>;
+  groups: GroupResponse[];
   total: number;
   unfiledCount: number;
 }
 
-/**
- * Vignette document — aperçu du document en fond, texte par-dessus.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * UNE VIGNETTE MONTRE LE DOCUMENT
- *
- * La vue « vignettes » affichait une icône générique (PDF ou image) : rien
- * ne distinguait une facture d'un contrat avant de lire le titre. Le fond
- * est désormais un aperçu réel :
- *   - image : le fichier lui-même (`/api/files/:id/proxy`, chargé à la
- *     demande par le navigateur) ;
- *   - PDF : la première page (`PdfThumbnail`, rendue à l'approche de
- *     l'écran puis gardée en mémoire) ;
- *   - autre (lien web, bureautique…) : fond neutre et icône.
- * Titre et sous-titre sont posés sur un dégradé sombre, lisibles quel que
- * soit l'aperçu. Même langage visuel que l'onglet Documents d'un bien.
- * ══════════════════════════════════════════════════════════════════════════
- */
-function DocumentTile({
-  document,
-  sousTitre,
-  onOpen,
-}: {
-  document: DocumentView;
-  sousTitre: React.ReactNode;
-  onOpen: (doc: DocumentView) => void;
-}) {
+/** Nombre de documents rendus d'un coup ; « Afficher plus » ajoute la suite. */
+const RENDER_STEP = 150;
+
+/** Lignes de la mini-page (maquette) : quelques longueurs, choisies par document. */
+const LINES = [[92, 78, 85, 40], [70, 88, 60, 82, 45], [85, 85, 55], [60, 90, 90, 70, 30], [88, 45, 80, 75]];
+
+function kindOf(document: DocumentItem) {
   const mime = document.mimeType ?? '';
   const isImage = mime.startsWith('image/');
   // Type parfois imprécis à l'import (« application/x-pdf », octet-stream) :
-  // l'extension compte aussi, sinon la vignette retombe sur l'icône.
+  // l'extension compte aussi, sinon la vignette retombe sur la mini-page.
   const isPdf = /pdf/i.test(mime) || /\.pdf$/i.test(document.originalFilename ?? '');
-  const [imageKo, setImageKo] = useState(false);
   const extension = (document.originalFilename?.split('.').pop() ?? '').slice(0, 5).toUpperCase();
-  const Icon = isImage ? ImageIcon : FileText;
+  return { isImage, isPdf, extension };
+}
 
+/**
+ * Mini-page stylisée : trait de la couleur de la Rubrique, lignes de texte.
+ * Aperçu des documents qui n'en ont pas de réel (lien web, bureautique), et
+ * miniature de la vue liste.
+ */
+function MiniPage({ document, size }: { document: DocumentItem; size: 'row' | 'tile' }) {
+  const accent = rubricColors(document.rubricCode).accent;
+  const lines = LINES[Math.abs(document.id) % LINES.length];
+  const tile = size === 'tile';
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(document)}
-      className="group relative h-44 w-full overflow-hidden rounded-2xl border border-border text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-ring"
+    <span aria-hidden className={`flex h-full w-full flex-col ${tile ? 'gap-[5px] px-3 py-3.5' : 'gap-[2.5px] px-1 py-[5px]'}`}>
+      <span
+        className={`block ${tile ? 'mb-1 h-[7px] rounded-sm' : 'mb-0.5 h-[3px] rounded-[1px]'} w-[55%]`}
+        style={{ background: accent }}
+      />
+      {lines.map((w, i) => (
+        <span
+          key={i}
+          className={`block bg-[#CBD5E1] ${tile ? 'h-[3px] rounded-sm' : 'h-[1.5px] rounded-[1px]'}`}
+          style={{ width: `${w}%` }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function ToClassifyBadge({ onPreview = false }: { onPreview?: boolean }) {
+  return (
+    <Badge
+      variant="pending"
+      // Sur un aperçu (page blanche, photo), un fond opaque garde le badge lisible.
+      className={`px-2 py-0.5 text-[11px] leading-4 ${onPreview ? 'bg-[#2A1F08] backdrop-blur-sm' : ''}`}
     >
-      {/* Aperçu */}
-      {isImage && !imageKo ? (
-        // eslint-disable-next-line @next/next/no-img-element -- flux authentifié, pas d'optimisation Next
-        <img
-          src={`/api/files/${document.id}/proxy`}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          onError={() => setImageKo(true)}
-          className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-        />
-      ) : isPdf ? (
-        <PdfThumbnail
-          fileId={String(document.id)}
-          className="absolute inset-0 h-full w-full transition-transform duration-300 group-hover:scale-105"
-        />
-      ) : (
-        <span className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-700 to-slate-900">
-          <Icon className="h-10 w-10 text-white/40" aria-hidden />
-        </span>
-      )}
-
-      {/* Dégradé de lisibilité */}
-      <span className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent" aria-hidden />
-
-      {/* Texte par-dessus */}
-      {extension && (
-        <span className="absolute left-2.5 top-2.5 rounded-md border border-white/20 bg-black/30 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/85 backdrop-blur-sm">
-          {extension}
-        </span>
-      )}
-      <span className="absolute inset-x-0 bottom-0 flex flex-col gap-0.5 p-3">
-        <span className="line-clamp-2 text-sm font-semibold leading-snug text-white drop-shadow">
-          {document.title}
-        </span>
-        <span className="line-clamp-1 text-[11px] text-white/75">{sousTitre}</span>
-      </span>
-    </button>
+      À classer
+    </Badge>
   );
 }
 
 /**
- * Carte document — §4.3.
+ * Ligne de la vue liste — maquette 1a.
  *
- * Le tableau du §4.3 énumère ce qui s'affiche ET ce qui ne s'affiche pas. Les
- * absences sont aussi normatives que les présences : pas de Rubrique (portée
- * par le regroupement), pas de fournisseur ni de montant (réservés au drawer),
- * pas de statut d'analyse (« ne pas encombrer le composant »).
+ * Miniature (photo réelle pour une image, mini-page sinon), titre, sous-titre
+ * « Type · date · bien », puis à droite : la Rubrique quand les titres de
+ * section ne la disent pas, « À classer » pour un document sans Rubrique, et
+ * la date du tri.
  */
-function DocumentCardV2({
+function DocumentRow({
   document,
-  showAssets,
-  viewMode,
+  sort,
+  context,
+  showRubric,
+  rubricLabel,
   onOpen,
 }: {
-  document: DocumentView;
-  showAssets: boolean;
-  viewMode: ViewMode;
-  onOpen: (doc: DocumentView) => void;
+  document: DocumentItem;
+  sort: SortKey;
+  context: DocumentsContext;
+  showRubric: boolean;
+  rubricLabel: string;
+  onOpen: (doc: DocumentItem) => void;
 }) {
-  const Icon = document.mimeType?.startsWith('image/') ? ImageIcon : FileText;
-  const sousTitre = (
-    <>
-      {/* §4.3 : Type affiché ; absent et Rubrique présente ⇒ « Type à compléter ». */}
-      {document.documentTypeLabel ?? MICROCOPY.missingType}
-      {document.documentDate && <> · {document.documentDate}</>}
-      {showAssets && document.assetNames.length > 0 && <> · {document.assetNames.join(', ')}</>}
-    </>
-  );
-
-  // ══════════════════════════════════════════════════════════════════════
-  // PLUS DE BOUTON « CLASSER » SUR LA CARTE
-  //
-  // Il ouvrait un tiroir par le bas, dédié à la Rubrique et au Type. Ces deux
-  // champs sont désormais dans le tiroir document (à droite), ouvert par un
-  // clic sur la carte : un seul endroit pour modifier un document.
-  // ══════════════════════════════════════════════════════════════════════
-
-  if (viewMode === 'grid') {
-    return <DocumentTile document={document} sousTitre={sousTitre} onOpen={onOpen} />;
-  }
-
+  const { isImage } = kindOf(document);
+  const [imageKo, setImageKo] = useState(false);
   return (
-    // §4.7 : la carte entière est cliquable et ouvre le drawer.
-    <div className="flex items-start gap-1 rounded-lg border bg-card transition-colors hover:bg-accent/40">
+    <li>
       <button
         type="button"
         onClick={() => onOpen(document)}
-        className="flex min-w-0 flex-1 items-start gap-3 rounded-lg p-3 text-left focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full items-center gap-3.5 rounded-xl border border-transparent px-3 py-[9px] text-left transition-all duration-150 hover:border-[rgba(148,163,184,.3)] hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{document.title}</p>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">{sousTitre}</p>
-        </div>
+        <span className="relative h-[38px] w-[30px] shrink-0 overflow-hidden rounded bg-white shadow-[0_1px_3px_rgba(0,0,0,.5)]">
+          {isImage && !imageKo ? (
+            // eslint-disable-next-line @next/next/no-img-element -- flux authentifié, pas d'optimisation Next
+            <img
+              src={`/api/files/${document.id}/proxy`}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              onError={() => setImageKo(true)}
+              className="block h-full w-full object-cover"
+            />
+          ) : (
+            <MiniPage document={document} size="row" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{document.title}</span>
+          <span className="mt-0.5 block truncate text-xs text-[color:var(--text-muted)]">
+            {documentSubtitle(document, sort, context)}
+          </span>
+        </span>
+        {showRubric && !isToClassify(document) && (
+          <span className="hidden shrink-0 text-xs text-[color:var(--text-muted)] md:block">{rubricLabel}</span>
+        )}
+        {isToClassify(document) && <ToClassifyBadge />}
+        <span className="hidden w-[90px] shrink-0 text-right text-xs text-[color:var(--text-muted)] sm:block">
+          {displayedDate(document, sort)}
+        </span>
       </button>
-    </div>
+    </li>
   );
 }
 
-function RubricSection({
-  group,
-  showAssets,
-  viewMode,
+/**
+ * Vignette — maquette 1a : cadre 4:3, la page posée en bas comme une feuille
+ * sortant d'un classeur, titre et sous-titre SOUS l'aperçu.
+ *
+ * L'aperçu est réel quand il peut l'être :
+ *   - image : le fichier lui-même, plein cadre (`/api/files/:id/proxy`) ;
+ *   - PDF : la première page (`PdfThumbnail`, rendue à l'approche de
+ *     l'écran puis gardée en mémoire) ;
+ *   - autre (lien web, bureautique…) : la mini-page stylisée et l'extension.
+ */
+function DocumentTile({
+  document,
+  sort,
+  context,
   onOpen,
-  onLoadMore,
-  loadingMore,
 }: {
-  group: GroupView;
-  showAssets: boolean;
-  viewMode: ViewMode;
-  onOpen: (doc: DocumentView) => void;
-  onLoadMore: (code: string) => void;
-  loadingMore: boolean;
+  document: DocumentItem;
+  sort: SortKey;
+  context: DocumentsContext;
+  onOpen: (doc: DocumentItem) => void;
 }) {
-  // Ouvert quand la Rubrique contient quelque chose : une Rubrique vide n'a
-  // rien à déplier.
-  const [open, setOpen] = useState(group.count > 0);
-  const empty = group.count === 0;
-
+  const { isImage, isPdf, extension } = kindOf(document);
+  const [imageKo, setImageKo] = useState(false);
   return (
-    <section className="rounded-lg border">
+    <li>
       <button
         type="button"
-        onClick={() => !empty && setOpen((v) => !v)}
-        aria-expanded={open}
-        // §3.3 : une Rubrique métier à 0 reste VISIBLE, mais inerte — la
-        // montrer sans inviter à un clic qui ne mènerait nulle part.
-        disabled={empty}
-        className="flex w-full items-center justify-between px-4 py-3 text-left disabled:cursor-default"
+        onClick={() => onOpen(document)}
+        className="group flex w-full flex-col gap-[9px] rounded-xl text-left transition-transform duration-150 hover:-translate-y-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg-page)]"
       >
-        <span className="flex items-center gap-2 text-sm font-medium">
-          {group.label}
-          <span className="text-xs font-normal text-muted-foreground">{group.count}</span>
-        </span>
-        {!empty && (
-          <ChevronDown
-            className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`}
-            aria-hidden
-          />
-        )}
-      </button>
-
-      {open && !empty && (
-        <div className="px-4 pb-4">
-          <div
-            className={
-              viewMode === 'grid'
-                ? 'grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4'
-                : 'space-y-2'
-            }
-          >
-            {group.documents.map((doc) => (
-              <DocumentCardV2
-                key={doc.publicId}
-                document={doc}
-                showAssets={showAssets}
-                viewMode={viewMode}
-                onOpen={onOpen}
-              />
-            ))}
-          </div>
-          {group.hasMore && (
-            // §16.3 : chargement progressif SANS perdre la structure des
-            // Rubriques. Le bouton ajoute à la suite, il ne remplace pas la
-            // page précédente — l'utilisateur ne doit pas perdre de vue le
-            // document qu'il venait de repérer.
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={loadingMore}
-              onClick={() => onLoadMore(group.code)}
-              className="mt-2 w-full"
-            >
-              {loadingMore
-                ? 'Chargement…'
-                : `Voir les ${group.count - group.documents.length} autres`}
-            </Button>
+        <span className="relative flex aspect-[4/3] w-full items-end justify-center overflow-hidden rounded-xl border border-[rgba(148,163,184,.3)] bg-[color:var(--bg-card)] px-[18px] pt-3.5 [.theme-beige_&]:bg-[#F1F5F9]">
+          {isImage && !imageKo ? (
+            // eslint-disable-next-line @next/next/no-img-element -- flux authentifié, pas d'optimisation Next
+            <img
+              src={`/api/files/${document.id}/proxy`}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              onError={() => setImageKo(true)}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : (
+            <span className="relative block h-full w-full overflow-hidden rounded-t bg-white shadow-[0_-2px_12px_rgba(0,0,0,.4)]">
+              {isPdf ? (
+                <PdfThumbnail
+                  fileId={String(document.id)}
+                  className="absolute inset-0 h-full w-full"
+                  fallback={<MiniPage document={document} size="tile" />}
+                />
+              ) : (
+                <>
+                  <MiniPage document={document} size="tile" />
+                  {extension && (
+                    <span className="absolute bottom-2 right-2.5 text-[9px] font-bold tracking-wider text-slate-400">
+                      {extension}
+                    </span>
+                  )}
+                </>
+              )}
+            </span>
           )}
-        </div>
-      )}
-    </section>
+          {isToClassify(document) && (
+            <span className="absolute left-2 top-2">
+              <ToClassifyBadge onPreview />
+            </span>
+          )}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-[13px] font-medium">{document.title}</span>
+          <span className="mt-0.5 block truncate text-[11.5px] text-[color:var(--text-muted)]">
+            {documentSubtitle(document, sort, context)}
+          </span>
+        </span>
+      </button>
+    </li>
   );
 }
 
-/** Pastille de filtre rapide (bien). */
-function AssetChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      title={label}
-      className={`max-w-[14rem] shrink-0 truncate rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
-        active
-          ? 'border-[#3b82f6]/40 bg-[#3b82f6]/15 text-[color:var(--text-primary)]'
-          : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
-export function DocumentsByRubric({ assetId, assetName }: { assetId?: number; assetName?: string }) {
+export function DocumentsByRubric({
+  assetId,
+  assetName,
+  showEmptyRubrics = true,
+}: {
+  assetId?: number;
+  assetName?: string;
+  /** Maquette : « afficherRubriquesVides », activé par défaut. */
+  showEmptyRubrics?: boolean;
+}) {
+  const context: DocumentsContext = assetId ? 'fiche-bien' : 'mes-documents';
   const { setBreadcrumbs } = useBreadcrumb();
   // Lecture seule / offre : l'ajout est gardé ici, pour les deux écrans.
   const { garder } = useWriteGuard();
   const ajouter = () => garder(() => setUploadOpen(true), 'documents');
-  const viewModeKey = assetId ? ASSET_VIEW_MODE_KEY : VIEW_MODE_KEY;
+  const idBase = useId();
+  const filtersPanelId = `${idBase}-filtres`;
+
   const [page, setPage] = useState<PageResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadingGroup, setLoadingGroup] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [documentOuvert, setDocumentOuvert] = useState<DocumentDrawerItem | null>(null);
   const [documentDrawerOpen, setDocumentDrawerOpen] = useState(false);
-  // Choix d'affichage conservé d'une visite à l'autre, comme dans l'onglet
-  // Documents d'un bien (même clé de lecture pour l'utilisateur, clé de
-  // stockage distincte : les deux écrans ne montrent pas le même périmètre).
-  // Onglet d'un bien : vignettes par défaut, comme l'ancien onglet.
-  const [viewMode, setViewMode] = useState<ViewMode>(assetId ? 'grid' : 'list');
-  useEffect(() => {
-    try {
-      const enregistre = localStorage.getItem(viewModeKey);
-      if (enregistre === 'grid' || enregistre === 'list') setViewMode(enregistre);
-    } catch { /* navigation privée */ }
-  }, [viewModeKey]);
-  const changerAffichage = (mode: ViewMode) => {
-    setViewMode(mode);
-    try { localStorage.setItem(viewModeKey, mode); } catch { /* navigation privée */ }
-  };
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [filters, setFilters] = useState<DocumentsV2Filters>(DEFAULT_V2_FILTERS);
-  // Décalages par groupe : « Voir les N autres » n'affecte que sa Rubrique.
-  const [offsets, setOffsets] = useState<Record<string, number>>({});
   const [assetOptions, setAssetOptions] = useState<Array<{ id: number; name: string }>>([]);
+
+  // ── Préférences d'affichage (mémorisées par contexte) ──────────────────
+  // Lues après le montage : le rendu serveur ne connaît pas le stockage du
+  // navigateur, et les lire pendant le rendu désaccorderait l'hydratation.
+  const [prefs, setPrefs] = useState<ViewPrefs>(DEFAULT_PREFS);
+  useEffect(() => {
+    setPrefs(loadPrefs(context));
+  }, [context]);
+  const updatePrefs = useCallback((patch: Partial<ViewPrefs>) => {
+    setPrefs((current) => {
+      const next = { ...current, ...patch };
+      savePrefs(context, next);
+      return next;
+    });
+  }, [context]);
+
+  // ── Filtres (jamais mémorisés) et état local ───────────────────────────
+  const [filters, setFilters] = useState<ViewFilters>(EMPTY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
+  const [limit, setLimit] = useState(RENDER_STEP);
+  const changeFilters = (next: ViewFilters) => {
+    setFilters(next);
+    setLimit(RENDER_STEP);
+  };
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
-    const assets = assetId ? [assetId] : filters.assetIds;
-    if (assets.length > 0) params.set('assets', assets.join(','));
-    if (filters.typeCodes.length > 0) params.set('types', filters.typeCodes.join(','));
-    params.set('sort', filters.sort);
-    params.set('direction', filters.direction);
-    const pairs = Object.entries(offsets).filter(([, v]) => v > 0);
-    if (pairs.length > 0) {
-      params.set('offsets', pairs.map(([code, value]) => `${code}:${value}`).join(','));
-    }
+    if (assetId) params.set('assets', String(assetId));
+    params.set('pageSize', 'all');
     return params.toString();
-  }, [assetId, filters, offsets]);
+  }, [assetId]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       setPage(await apiClient.get<PageResponse>(`/api/v2/documents?${query}`));
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
     } finally {
       setLoading(false);
-      setLoadingGroup(null);
     }
   }, [query]);
 
@@ -417,8 +384,7 @@ export function DocumentsByRubric({ assetId, assetName }: { assetId?: number; as
     return () => window.removeEventListener('document-added', recharger);
   }, [load]);
 
-  // Liste des biens pour le filtre : inutile dans l'onglet d'un bien, où le
-  // périmètre est déjà fixé.
+  // Biens proposés au dialogue d'ajout : inutile dans l'onglet d'un bien.
   useEffect(() => {
     if (assetId) return;
     apiClient
@@ -427,36 +393,60 @@ export function DocumentsByRubric({ assetId, assetName }: { assetId?: number; as
       .catch(() => setAssetOptions([]));
   }, [assetId]);
 
-  const loadMore = (code: string) => {
-    setLoadingGroup(code);
-    setOffsets((current) => ({ ...current, [code]: (current[code] ?? 0) + 6 }));
-  };
+  // ── Données dérivées ───────────────────────────────────────────────────
+  // Réponse inattendue (session expirée, proxy) : une page vide, pas une erreur d'affichage.
+  const scope = useMemo(() => (page?.groups ?? []).flatMap((g) => g.documents ?? []), [page]);
+  const rubrics = useMemo<RubricRef[]>(
+    () => (page?.groups ?? []).filter((g) => g.code !== UNFILED).map((g) => ({ code: g.code, label: g.label })),
+    [page],
+  );
+  const rubricLabels = useMemo(() => new Map(rubrics.map((r) => [r.code, r.label])), [rubrics]);
+  const sort = effectiveSort(prefs.sort, prefs.grouped, context);
+  const filtered = hasActiveFilters(filters);
+  const options = useMemo(() => buildFilterOptions(scope, filters, rubrics), [scope, filters, rubrics]);
+  const chips = activeFilterChips(filters, options);
+  const visibles = useMemo(
+    () => sortDocuments(filterDocuments(scope, filters), sort, prefs.dir, rubrics),
+    [scope, filters, sort, prefs.dir, rubrics],
+  );
+  const { groups: allGroups, emptyRubrics } = useMemo(
+    () => groupDocuments(visibles, rubrics, prefs.grouped),
+    [visibles, rubrics, prefs.grouped],
+  );
+  // Un groupe replié ne compte pas dans le plafond de rendu.
+  const { groups, hidden } = useMemo(() => {
+    const ouverts = allGroups.map((g) => (closed.has(g.code) ? { ...g, docs: [] } : g));
+    const limited = limitGroups(ouverts, limit);
+    return {
+      groups: allGroups.map((g) => ({
+        ...g,
+        docs: limited.groups.find((l) => l.code === g.code)?.docs ?? [],
+      })).filter((g) => closed.has(g.code) || g.docs.length > 0),
+      hidden: limited.hidden,
+    };
+  }, [allGroups, closed, limit]);
 
-  /**
-   * Application d'un filtre.
-   *
-   * Les décalages sont remis à zéro : conserver « Voir les N autres » d'un
-   * filtrage précédent afficherait une page profonde d'un ensemble qui n'a
-   * plus la même taille — et parfois une Rubrique vide alors qu'elle contient
-   * des documents.
-   */
-  const applyFilters = (next: DocumentsV2Filters) => {
-    setFilters(next);
-    setOffsets({});
-  };
+  // Rubriques vides : seulement sans filtre. Filtré, une Rubrique « sans
+  // document » le serait par l'effet du filtre, et la ligne mentirait.
+  const emptyLine = prefs.grouped && showEmptyRubrics && !filtered && scope.length > 0
+    ? emptyRubricsLine(emptyRubrics)
+    : '';
+
+  const toggleGroup = (code: string) =>
+    setClosed((current) => {
+      const next = new Set(current);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
 
   // ══════════════════════════════════════════════════════════════════════
   // LE CLIC OUVRE LE DOCUMENT, PAS SON CLASSEMENT
   //
-  // La carte ouvrait le tiroir de classement (rubrique et type) : un panneau
-  // par le bas avec deux listes déroulantes, là où l'utilisateur attend son
-  // document — aperçu, informations, échéances liées, modification.
-  //
-  // Le clic ouvre donc le tiroir document, le même que partout ailleurs
-  // (accueil, agenda, onglet Documents d'un bien, fournisseur). La Rubrique
-  // et le Type s'y modifient avec les autres informations.
+  // Le tiroir document est le même que partout ailleurs (accueil, agenda,
+  // fournisseur) : aperçu, informations, échéances liées, Rubrique et Type,
+  // déplacement et suppression.
   // ══════════════════════════════════════════════════════════════════════
-  const openDocument = (doc: DocumentView) => {
+  const openDocument = (doc: DocumentItem) => {
     setDocumentOuvert({
       id: doc.id,
       originalFilename: doc.originalFilename ?? doc.title,
@@ -468,176 +458,158 @@ export function DocumentsByRubric({ assetId, assetName }: { assetId?: number; as
     setDocumentDrawerOpen(true);
   };
 
-  const total = page?.total ?? 0;
+  // Tronquée seulement si le serveur a atteint son plafond de chargement : le
+  // total seul ne suffit pas (il peut différer pour d'autres raisons).
+  const tronque = !!page && scope.length >= MAX_LOADED_DOCUMENTS && page.total > scope.length;
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      {/* En-tête au format des autres pages : titre, décompte, commandes à
-          droite. Masqué dans l'onglet d'un bien, où la page porte déjà son
-          propre titre (§4.1 : mêmes composants, seul le contexte change). */}
+    <div className="w-full max-w-full overflow-x-hidden">
+      {/* Titre de page : « Mes documents » seulement. Dans l'onglet d'un bien,
+          la fiche porte déjà le nom du bien et ses onglets. */}
       {!assetId && (
-        <div className="flex items-center justify-between mb-6">
-          <div className="min-w-0">
-            <h1 className="text-xl md:text-3xl font-bold whitespace-nowrap">Mes documents</h1>
-            <p className="text-muted-foreground mt-1">
-              {loading && !page
-                ? '\u00a0'
-                : total === 0
-                  ? 'Aucun document pour le moment'
-                  : `${total} ${total > 1 ? 'documents' : 'document'}`}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* Choix d'affichage — liste ou vignettes. Il manquait ici, alors
-                qu'il existe dans l'onglet Documents d'un bien : une même
-                collection se consultait de deux façons selon la page. */}
-            <div className="flex items-center overflow-hidden rounded-md border border-border">
-              <button
-                type="button"
-                onClick={() => changerAffichage('grid')}
-                title="Vue vignettes"
-                aria-label="Vue vignettes"
-                aria-pressed={viewMode === 'grid'}
-                className={`p-1.5 transition-colors ${viewMode === 'grid' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                <Grid3x3 className="h-4 w-4" aria-hidden />
-              </button>
-              <button
-                type="button"
-                onClick={() => changerAffichage('list')}
-                title="Vue liste"
-                aria-label="Vue liste"
-                aria-pressed={viewMode === 'list'}
-                className={`p-1.5 transition-colors ${viewMode === 'list' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                <List className="h-4 w-4" aria-hidden />
-              </button>
-            </div>
-            <DocumentsFilterDrawer
-              filters={filters}
-              onApply={applyFilters}
-              assetOptions={assetOptions}
-              typeOptions={page?.typeOptions ?? []}
-              hideAssetFilter={false}
-            />
-            <Button variant="outline" size="sm" onClick={ajouter} className="btn-add">
-              <Plus className="btn-add-plus-icon h-4 w-4" aria-hidden />
-              <span className="hidden sm:inline">Ajouter</span>
-            </Button>
-          </div>
+        <div className="mb-[18px] flex items-center gap-3">
+          <h1 className="m-0 text-2xl font-semibold tracking-[-.02em]">Mes documents</h1>
         </div>
       )}
 
-      {/* Onglet d'un bien : les commandes seules, sans titre ni décompte. */}
-      {assetId && (
-        <div className="flex items-center justify-end gap-2">
-            {/* Choix d'affichage — liste ou vignettes. Il manquait ici, alors
-              qu'il existe dans l'onglet Documents d'un bien : une même
-              collection se consultait de deux façons selon la page. */}
-          <div className="flex items-center overflow-hidden rounded-md border border-border">
-            <button
-              type="button"
-              onClick={() => changerAffichage('grid')}
-              title="Vue vignettes"
-              aria-label="Vue vignettes"
-              aria-pressed={viewMode === 'grid'}
-              className={`p-1.5 transition-colors ${viewMode === 'grid' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              <Grid3x3 className="h-4 w-4" aria-hidden />
-            </button>
-            <button
-              type="button"
-              onClick={() => changerAffichage('list')}
-              title="Vue liste"
-              aria-label="Vue liste"
-              aria-pressed={viewMode === 'list'}
-              className={`p-1.5 transition-colors ${viewMode === 'list' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              <List className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
-          <DocumentsFilterDrawer
-            filters={filters}
-            onApply={applyFilters}
-            assetOptions={assetOptions}
-            typeOptions={page?.typeOptions ?? []}
-            hideAssetFilter
-          />
-          <Button variant="outline" size="sm" onClick={ajouter} className="btn-add">
-            <Plus className="btn-add-plus-icon h-4 w-4" aria-hidden />
-            <span className="hidden sm:inline">Ajouter</span>
-          </Button>
-        </div>
-      )}
+      <DocumentsToolbar
+        countLabel={loading && !page ? ' ' : countLabel(visibles.length, scope.length, filtered, context)}
+        grouped={prefs.grouped}
+        onGroupedChange={(v) => updatePrefs({ grouped: v })}
+        view={prefs.view}
+        onViewChange={(v) => updatePrefs({ view: v })}
+        sort={sort}
+        sortOptions={sortOptionsFor(prefs.grouped, context)}
+        onSortChange={(v) => updatePrefs({ sort: v, dir: defaultDirection(v) })}
+        dir={prefs.dir}
+        onDirToggle={() => updatePrefs({ dir: prefs.dir === 'desc' ? 'asc' : 'desc' })}
+        filterCount={activeFilterCount(filters)}
+        filtersOpen={filtersOpen}
+        filtersPanelId={filtersPanelId}
+        onFiltersToggle={() => setFiltersOpen((v) => !v)}
+        onAdd={ajouter}
+      />
 
-      {/* ══════════════════════════════════════════════════════════════════
-          FILTRES RAPIDES PAR BIEN — « Mes documents » uniquement
-          Le filtre par bien n'existait que dans le tiroir « Tri & filtres ».
-          Les pastilles le rendent accessible en un clic, directement sur la
-          page ; elles pilotent le même état (`filters.assetIds`) que le
-          tiroir, qui reste disponible pour les filtres combinés.
-          ══════════════════════════════════════════════════════════════════ */}
-      {!assetId && assetOptions.length > 0 && (
-        <div
-          role="group"
-          aria-label="Filtrer par bien"
-          className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
-        >
-          <AssetChip
-            label="Tous les biens"
-            active={filters.assetIds.length === 0}
-            onClick={() => applyFilters({ ...filters, assetIds: [] })}
-          />
-          {assetOptions.map((asset) => {
-            const active = filters.assetIds.includes(asset.id);
-            return (
-              <AssetChip
-                key={asset.id}
-                label={asset.name}
-                active={active}
-                onClick={() =>
-                  applyFilters({
-                    ...filters,
-                    assetIds: active
-                      ? filters.assetIds.filter((id) => id !== asset.id)
-                      : [...filters.assetIds, asset.id],
-                  })
-                }
-              />
-            );
-          })}
-        </div>
+      {filtersOpen && (
+        <DocumentsFilterPanel
+          id={filtersPanelId}
+          context={context}
+          options={options}
+          onToggle={(dim, value) => changeFilters(toggleFilter(filters, dim, value))}
+        />
       )}
-
-      {/* §17.3 — un message global, adapté au contexte et au nombre. */}
-      {total > 0 && (
-        <p className="text-sm text-muted-foreground -mt-2">
-          {assetId ? ASSET_DOCUMENTS_HEADLINE : myDocumentsHeadline(page?.unfiledCount ?? 0)}
-        </p>
-      )}
+      <ActiveFilterChips
+        chips={chips}
+        onRemove={(dim, value) => changeFilters(toggleFilter(filters, dim, value))}
+        onClear={() => changeFilters(EMPTY_FILTERS)}
+      />
 
       {loading && !page && (
-        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2 py-8 text-sm text-[color:var(--text-muted)]">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           Chargement des documents…
         </div>
       )}
 
-      <div className="space-y-3">
-        {page?.groups.map((group) => (
-          <RubricSection
-            key={group.code}
-            group={group}
-            // §4.1 : le bien n'est affiché que sur « Mes documents » ; dans
-            // l'onglet d'un bien, le contexte est déjà explicite.
-            showAssets={!assetId}
-            viewMode={viewMode}
-            onOpen={openDocument}
-            onLoadMore={loadMore}
-            loadingMore={loadingGroup === group.code}
-          />
-        ))}
+      {loadError && !page && (
+        <div className="flex flex-col items-center gap-3 py-12 text-center text-sm text-[color:var(--text-muted)]">
+          <p>Vos documents n&apos;ont pas pu être chargés.</p>
+          <Button size="sm" variant="outline" onClick={() => void load()}>Réessayer</Button>
+        </div>
+      )}
+
+      {page && scope.length === 0 && (
+        <div className="py-12 text-center">
+          <p className="text-sm font-medium">
+            {assetId ? 'Aucun document rattaché à ce bien pour le moment.' : 'Aucun document pour le moment.'}
+          </p>
+          <p className="mt-1 text-sm text-[color:var(--text-muted)]">
+            Ajoutez une facture, un contrat ou une notice avec « Ajouter un document ».
+          </p>
+        </div>
+      )}
+
+      {page && scope.length > 0 && visibles.length === 0 && (
+        <p className="py-12 text-center text-sm text-[color:var(--text-muted)]">
+          Aucun document ne correspond à ces filtres.
+        </p>
+      )}
+
+      <div className="flex flex-col gap-[30px]">
+        {groups.map((group) => {
+          const ouvert = !closed.has(group.code);
+          const listId = `${idBase}-groupe-${group.code}`;
+          const total = allGroups.find((g) => g.code === group.code)?.docs.length ?? 0;
+          return (
+            <section key={group.code} className="flex flex-col gap-3" aria-label={group.showHeader ? undefined : 'Tous les documents'}>
+              {group.showHeader && (
+                <h2 className="m-0">
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group.code)}
+                    aria-expanded={ouvert}
+                    aria-controls={listId}
+                    className="flex w-full select-none items-center gap-2.5 rounded py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <ChevronDown
+                      className={`h-3.5 w-3.5 shrink-0 text-[color:var(--text-muted)] transition-transform duration-200 ${ouvert ? '' : '-rotate-90'}`}
+                      aria-hidden
+                    />
+                    <span className="text-[11px] font-semibold uppercase tracking-[.05em] text-[color:var(--text-muted)]">
+                      {group.label}
+                    </span>
+                    <span className="text-[11px] text-[color:var(--text-muted)] opacity-70">
+                      <span className="sr-only">, </span>{total}<span className="sr-only"> document{total > 1 ? 's' : ''}</span>
+                    </span>
+                    <span aria-hidden className="h-px flex-1 bg-[color:var(--border-subtle)]" />
+                  </button>
+                </h2>
+              )}
+              {ouvert && group.docs.length > 0 && (prefs.view === 'list' ? (
+                <ul id={listId} className="m-0 flex list-none flex-col gap-1.5 p-0">
+                  {group.docs.map((doc) => (
+                    <DocumentRow
+                      key={doc.publicId}
+                      document={doc}
+                      sort={sort}
+                      context={context}
+                      showRubric={!prefs.grouped}
+                      rubricLabel={doc.rubricCode ? (rubricLabels.get(doc.rubricCode) ?? '') : ''}
+                      onOpen={openDocument}
+                    />
+                  ))}
+                </ul>
+              ) : (
+                <ul
+                  id={listId}
+                  className="m-0 grid list-none grid-cols-2 gap-4 p-0 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+                >
+                  {group.docs.map((doc) => (
+                    <DocumentTile key={doc.publicId} document={doc} sort={sort} context={context} onOpen={openDocument} />
+                  ))}
+                </ul>
+              ))}
+            </section>
+          );
+        })}
+
+        {hidden > 0 && (
+          <Button variant="outline" size="sm" className="self-center" onClick={() => setLimit((l) => l + RENDER_STEP)}>
+            Afficher {Math.min(hidden, RENDER_STEP)} documents de plus
+          </Button>
+        )}
+
+        {emptyLine && (
+          <p className="border-t border-dashed border-[color:var(--border-subtle)] pt-1.5 text-xs text-[color:var(--text-muted)]">
+            {emptyLine}
+          </p>
+        )}
+
+        {tronque && (
+          <p className="text-xs text-[color:var(--text-muted)]">
+            Seuls les {scope.length.toLocaleString('fr-FR')} documents les plus récents sont affichés ici.
+          </p>
+        )}
       </div>
 
       {/* Tiroir document : le même composant que sur les autres écrans, avec

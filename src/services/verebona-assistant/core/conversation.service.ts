@@ -55,6 +55,11 @@ export interface ConversationThread {
   createdAt: string;
   lastMessageAt: string | null;
   messageCount: number;
+  /**
+   * Début de la dernière réponse de l'assistant (160 caractères), pour le
+   * résumé des « Demandes précédentes » (Direction D v2 §8).
+   */
+  lastAnswer: string | null;
 }
 
 /** Conversation introuvable pour cet utilisateur (inexistante, d'un autre, effacée ou expirée). */
@@ -164,19 +169,24 @@ export async function resolveConversation(
 export async function listConversations(accountId: number, userId: number): Promise<ConversationThread[]> {
   const rows = (await pgClient.unsafe(
     `SELECT c.id, c.title, c.created_at, c.last_message_at,
-            (SELECT count(*)::int FROM verebona_messages m WHERE m.conversation_id = c.id) AS message_count
+            (SELECT count(*)::int FROM verebona_messages m WHERE m.conversation_id = c.id) AS message_count,
+            (SELECT left(m.content, 160) FROM verebona_messages m
+              WHERE m.conversation_id = c.id AND m.account_id = c.account_id
+                AND m.role = 'assistant' AND m.expires_at > now()
+              ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_answer
        FROM verebona_conversations c
       WHERE c.account_id = $1 AND c.user_id = $2 AND c.status = 'active' AND c.expires_at > now()
       ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC
       LIMIT 50`,
     [accountId, userId],
-  )) as unknown as Array<{ id: number; title: string | null; created_at: Date; last_message_at: Date | null; message_count: number }>;
+  )) as unknown as Array<{ id: number; title: string | null; created_at: Date; last_message_at: Date | null; message_count: number; last_answer: string | null }>;
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
     createdAt: new Date(r.created_at).toISOString(),
     lastMessageAt: r.last_message_at ? new Date(r.last_message_at).toISOString() : null,
     messageCount: r.message_count,
+    lastAnswer: r.last_answer ?? null,
   }));
 }
 

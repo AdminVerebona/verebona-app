@@ -16,7 +16,7 @@ describe('le clic sur un document ouvre le document', () => {
   it('ouvre le tiroir document, celui des autres écrans', () => {
     expect(VUE).toMatch(/import \{ DocumentDrawer, type DocumentDrawerItem \}/);
     expect(VUE).toMatch(/<DocumentDrawer/);
-    expect(VUE).toMatch(/const openDocument = \(doc: DocumentView\) => \{[\s\S]*?setDocumentDrawerOpen\(true\)/);
+    expect(VUE).toMatch(/const openDocument = \(doc: DocumentItem\) => \{[\s\S]*?setDocumentDrawerOpen\(true\)/);
   });
 
   it('plus de bouton « Classer » ni de tiroir de classement par le bas', () => {
@@ -50,27 +50,63 @@ describe('le clic sur un document ouvre le document', () => {
   });
 });
 
-describe('choix d’affichage', () => {
-  it('propose la vue vignettes et la vue liste', () => {
-    expect(VUE).toMatch(/aria-label="Vue vignettes"/);
-    expect(VUE).toMatch(/aria-label="Vue liste"/);
-    expect(VUE).toMatch(/grid-cols-2 gap-2 sm:grid-cols-3/);
+describe('choix d’affichage — maquette 1a « Flux continu »', () => {
+  const BARRE = read('src/components/documents/v2/DocumentsToolbar.tsx');
+
+  it('propose liste et vignettes, en contrôle segmenté annonçant son état', () => {
+    expect(BARRE).toMatch(/\{ value: 'list', label: 'Liste' \}, \{ value: 'grid', label: 'Vignettes' \}/);
+    expect(BARRE).toMatch(/aria-pressed=\{on\}/);
+    expect(VUE).toMatch(/grid-cols-2 gap-4 p-0 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5/);
   });
 
-  it('mémorise le choix d’une visite à l’autre', () => {
-    // Clé propre à chaque écran (« Mes documents » / onglet d'un bien).
-    expect(VUE).toMatch(/const viewModeKey = assetId \? ASSET_VIEW_MODE_KEY : VIEW_MODE_KEY/);
-    expect(VUE).toMatch(/localStorage\.setItem\(viewModeKey, mode\)/);
-    expect(VUE).toMatch(/localStorage\.getItem\(viewModeKey\)/);
+  it('regroupement optionnel « Par rubrique », tri global et son sens', () => {
+    expect(BARRE).toMatch(/<Switch checked=\{grouped\} onCheckedChange=\{onGroupedChange\} \/>\s*Par rubrique/);
+    expect(BARRE).toMatch(/aria-label="Trier par"/);
+    expect(BARRE).toMatch(/Ordre décroissant/);
+    expect(VUE).toMatch(/sortDocuments\(filterDocuments\(scope, filters\), sort, prefs\.dir, rubrics\)/);
+    expect(VUE).toMatch(/groupDocuments\(visibles, rubrics, prefs\.grouped\)/);
   });
 
-  it('propose le choix dans les deux contextes de la vue', () => {
-    // « Mes documents » et l'onglet Documents d'un bien partagent ce composant.
-    expect(VUE.match(/aria-label="Vue liste"/g)).toHaveLength(2);
+  it('les rubriques sont des titres de section, plus des boîtes', () => {
+    expect(VUE).toMatch(/<h2 className="m-0">/);
+    expect(VUE).toMatch(/aria-expanded=\{ouvert\}/);
+    expect(VUE).not.toMatch(/function RubricSection/);
+    expect(VUE).not.toMatch(/<section className="rounded-lg border">/);
+  });
+
+  it('mémorise regroupement, affichage et tri par contexte, jamais les filtres', () => {
+    expect(VUE).toMatch(/const context: DocumentsContext = assetId \? 'fiche-bien' : 'mes-documents'/);
+    expect(VUE).toMatch(/setPrefs\(loadPrefs\(context\)\)/);
+    expect(VUE).toMatch(/savePrefs\(context, next\)/);
+    expect(VUE).not.toMatch(/localStorage/);
   });
 
   it('n’ajoute aucune recherche locale (UX-01)', () => {
-    expect(VUE).not.toMatch(/type="search"/);
+    for (const f of [VUE, BARRE, read('src/components/documents/v2/DocumentsFilterPanel.tsx')]) {
+      expect(f).not.toMatch(/type="search"/);
+    }
+  });
+});
+
+describe('filtres — panneau dans la page', () => {
+  const PANNEAU = read('src/components/documents/v2/DocumentsFilterPanel.tsx');
+
+  it('Bien, Rubrique, Type ; pas de filtre Bien dans l’onglet d’un bien', () => {
+    expect(PANNEAU).toMatch(/title="Bien"/);
+    expect(PANNEAU).toMatch(/title="Rubrique"/);
+    expect(PANNEAU).toMatch(/title="Type"/);
+    expect(PANNEAU).toMatch(/const avecBien = context === 'mes-documents'/);
+  });
+
+  it('filtres actifs visibles « Filtré par … », retirables, avec « Tout effacer »', () => {
+    expect(PANNEAU).toMatch(/Filtré par/);
+    expect(PANNEAU).toMatch(/aria-label=\{`Retirer le filtre \$\{c\.label\}`\}/);
+    expect(PANNEAU).toMatch(/Tout effacer/);
+    expect(PANNEAU).toMatch(/aria-pressed=\{option\.active\}/);
+  });
+
+  it('l’ancien tiroir « Tri & filtres » a disparu', () => {
+    expect(() => read('src/components/documents/v2/DocumentsFilterDrawer.tsx')).toThrow();
   });
 });
 
@@ -95,9 +131,15 @@ describe('vignettes avec aperçu du document', () => {
     expect(VUE).toMatch(/<PdfThumbnail\s+fileId=\{String\(document\.id\)\}/);
   });
 
-  it('le texte est posé sur l’aperçu, avec un dégradé de lisibilité', () => {
-    expect(VUE).toMatch(/bg-gradient-to-t from-black\/85/);
-    expect(VUE).toMatch(/absolute inset-x-0 bottom-0/);
+  it('maquette 1a : cadre 4:3, page posée en bas, titre sous l’aperçu', () => {
+    expect(VUE).toMatch(/aspect-\[4\/3\]/);
+    expect(VUE).toMatch(/items-end justify-center/);
+    expect(VUE).toMatch(/text-\[13px\] font-medium">\{document\.title\}/);
+  });
+
+  it('document sans rubrique : badge « À classer »', () => {
+    expect(VUE).toMatch(/isToClassify\(document\) && <ToClassifyBadge \/>/);
+    expect(VUE).toMatch(/<Badge\s+variant="pending"/);
   });
 
   it('l’aperçu PDF est rendu à la demande et mémorisé', () => {

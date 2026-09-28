@@ -18,7 +18,8 @@ describe('onglet Documents d’un bien', () => {
   });
 
   it('même source de données : regroupement par Rubrique filtré sur le bien', () => {
-    expect(VUE).toMatch(/const assets = assetId \? \[assetId\] : filters\.assetIds/);
+    expect(VUE).toMatch(/if \(assetId\) params\.set\('assets', String\(assetId\)\)/);
+    expect(VUE).toMatch(/params\.set\('pageSize', 'all'\)/);
     expect(VUE).toMatch(/\/api\/v2\/documents\?\$\{query\}/);
   });
 
@@ -29,9 +30,16 @@ describe('onglet Documents d’un bien', () => {
     expect(VUE).not.toMatch(/onClick=\{\(\) => setUploadOpen\(true\)\}/);
   });
 
-  it('vignettes par défaut et choix mémorisé dans l’onglet', () => {
-    expect(VUE).toMatch(/useState<ViewMode>\(assetId \? 'grid' : 'list'\)/);
-    expect(VUE).toMatch(/ASSET_VIEW_MODE_KEY = 'assetDocumentsViewMode'/);
+  it('préférences propres à l’onglet, ancien choix liste / vignettes repris', () => {
+    const prefs = read('src/components/documents/v2/view-prefs.ts');
+    expect(prefs).toMatch(/'fiche-bien': 'assetDocumentsViewMode'/);
+    expect(VUE).toMatch(/const context: DocumentsContext = assetId \? 'fiche-bien' : 'mes-documents'/);
+  });
+
+  it('ni titre de page, ni filtre Bien, ni bien dans le sous-titre', () => {
+    expect(VUE).toMatch(/\{!assetId && \(\s*<div className="mb-\[18px\]/);
+    expect(read('src/components/documents/v2/documents-view.ts'))
+      .toMatch(/context === 'mes-documents' \? bienLabel\(d\) : null/);
   });
 
   it('un document ajouté ailleurs rafraîchit la liste', () => {

@@ -34,13 +34,15 @@ describe('tiroirs ouverts à droite', () => {
   });
 });
 
-describe('Mes documents — filtres rapides par bien', () => {
-  const vue = readFileSync(join(ROOT, 'components/documents/v2/DocumentsByRubric.tsx'), 'utf8');
-  it('affiche des pastilles de bien sur la page', () => {
-    expect(vue).toContain('aria-label="Filtrer par bien"');
-    expect(vue).toContain('label="Tous les biens"');
+describe('Mes documents — filtre par bien', () => {
+  // Maquette « Mes documents » (1a) : le filtre Bien est dans le panneau de
+  // filtres de la page, et chaque filtre actif reste visible en pastille.
+  const panneau = readFileSync(join(ROOT, 'components/documents/v2/DocumentsFilterPanel.tsx'), 'utf8');
+  it('le filtre Bien est dans le panneau de la page, pas dans un tiroir', () => {
+    expect(panneau).toContain('title="Bien"');
+    expect(panneau).not.toMatch(/<Drawer/);
   });
-  it('pilotent le même filtre que le tiroir « Tri & filtres »', () => {
-    expect(vue).toMatch(/applyFilters\(\{\s*\.\.\.filters,\s*assetIds: \[\]/);
+  it('les biens filtrés restent visibles en pastilles retirables', () => {
+    expect(panneau).toMatch(/Filtré par/);
   });
 });

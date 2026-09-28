@@ -74,6 +74,22 @@ export interface VerebonaMessage {
   pendingOffline?: boolean;
   /** §27.11 : codes informatifs joints à la réponse (non bloquants). */
   notices?: Array<{ code: string; message: string }>;
+  /**
+   * Échange construit dans l'interface, sans appel au serveur (Direction D
+   * v2 §3.2) : sujet de la mascotte ouvert dans l'espace de réponse, choix
+   * « Que souhaitez-vous ajouter ? ». Jamais enregistré dans le fil.
+   */
+  local?: VerebonaLocalAnswer;
+}
+
+/** Réponse locale : mêmes briques que les autres (phrase, objets, actions). */
+export interface VerebonaLocalAnswer {
+  kind?: import('./space').AnswerKind;
+  tone?: 'neutral' | 'success';
+  summary?: string;
+  objects?: import('./space').SpaceObject[];
+  /** Actions pilules : `id` retrouve le gestionnaire côté interface. */
+  actions?: Array<{ id: string; label: string; primary?: boolean }>;
 }
 
 export interface UseVerebonaState {
@@ -89,6 +105,8 @@ export interface VerebonaThread {
   createdAt: string;
   lastMessageAt: string | null;
   messageCount: number;
+  /** Début de la dernière réponse du fil (« Demandes précédentes », §8). */
+  lastAnswer?: string | null;
 }
 
 /**
@@ -618,6 +636,17 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     void refreshThreads();
   }, [refreshThreads, setConversationId]);
 
+  /**
+   * Efface définitivement UN fil (§24.4), courant ou archivé. Le fil courant
+   * passe par `clear` (l'espace repart vide) ; un autre fil disparaît de la
+   * liste sans toucher à l'échange en cours.
+   */
+  const deleteThread = useCallback(async (id: number) => {
+    if (id === conversationRef.current) { await clear(); return; }
+    await fetch(`/api/verebona/conversation?conversationId=${id}`, { method: 'DELETE' }).catch(() => null);
+    void refreshThreads();
+  }, [clear, refreshThreads]);
+
   /** Efface tout l'historique de l'utilisateur. */
   const clearAll = useCallback(async () => {
     await fetch('/api/verebona/conversation', { method: 'DELETE' }).catch(() => null);
@@ -626,6 +655,22 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     setState({ messages: [], isLoading: false, error: null });
     setThreads([]);
   }, [setConversationId]);
+
+  /**
+   * Ajoute un échange construit par l'interface (question + réponse locale).
+   * Aucune requête : il vit dans l'affichage jusqu'au prochain changement de fil.
+   */
+  const appendLocal = useCallback((question: string, answer: VerebonaLocalAnswer & { content: string }) => {
+    const { content, ...local } = answer;
+    setState((s) => ({
+      ...s,
+      messages: [
+        ...s.messages,
+        { id: newId(), role: 'user', content: question },
+        { id: newId(), role: 'assistant', content, local },
+      ],
+    }));
+  }, []);
 
   const sendFeedback = useCallback(async (messageId: string, value: 'helpful' | 'not_helpful', reason?: string) => {
     await fetch(`/api/verebona/messages/${messageId}/feedback`, {
@@ -650,7 +695,9 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     cancel,
     clear,
     clearAll,
+    deleteThread,
     sendFeedback,
+    appendLocal,
     answerClarification,
     confirmPlan: (planId: string) => decidePlan(planId, 'confirm'),
     cancelPlan: (planId: string) => decidePlan(planId, 'cancel'),

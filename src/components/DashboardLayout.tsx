@@ -1,5 +1,13 @@
 "use client"
 
+/**
+ * Coquille authentifiée — Direction D v2 « La mascotte » §3.1, §4.1.
+ *
+ * Menu latéral 240 px repliable à 64 px, header de 60 px avec le champ
+ * Verebona au centre (sur toutes les pages), barre haute et navigation
+ * basse flottante sur mobile. Le champ et l'espace de réponse remplacent la
+ * loupe de recherche indépendante et le tiroir latéral de l'assistant.
+ */
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
@@ -9,52 +17,20 @@ const DocumentDrawer = dynamic(
   () => import('@/components/assets/DocumentDrawer').then(m => ({ default: m.DocumentDrawer })),
   { ssr: false }
 );
-// Verebona Assistant — drawer monté une seule fois dans la coquille authentifiée (CDC §7.1).
-const VerebonaDrawer = dynamic(
-  () => import('@/components/verebona').then(m => ({ default: m.VerebonaDrawer })),
-  { ssr: false }
-);
-import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { TrialBanner } from '@/components/subscription/TrialBanner';
 import { isUnpaid } from '@/lib/trial-status';
 import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
-import { Sun, Moon } from 'lucide-react';
+import { Sun, Moon, User, LogOut, X, HelpCircle, CalendarDays } from 'lucide-react';
 import { BottomNavigation } from './mobile/bottom-navigation';
-const MobileSearchOverlay = dynamic(() => import('./mobile/MobileSearchOverlay').then(m => ({ default: m.MobileSearchOverlay })), { ssr: false });
-import {
-    House,
-    Package,
-    FileText,
-    CalendarDays,
-    CircleAlert,
-    User,
-    LogOut,
-    Menu,
-    X,
-    Plus,
-    Search,
-  } from 'lucide-react';
 import { TopBar } from './TopBar';
 import { NotificationBell } from './NotificationBell';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { useSession, User as SessionUser } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
 import { unsubscribeCurrentDevice } from '@/lib/push/push-client';
-import { isPremiumPlan } from '@/types/domain';
-const AssetFormDialog = dynamic(() => import('./AssetFormDialog').then(m => ({ default: m.AssetFormDialog })), { ssr: false });
-const UnifiedDocumentDialog = dynamic(() => import('./documents/unified-document-dialog').then(m => ({ default: m.UnifiedDocumentDialog })), { ssr: false });
-const CreateAgendaItemDrawer = dynamic(() => import('./agenda/CreateAgendaItemDrawer').then(m => ({ default: m.CreateAgendaItemDrawer })), { ssr: false });
 import { NavigationProgress } from './NavigationProgress';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
@@ -63,18 +39,13 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { DashboardBreadcrumb } from './DashboardBreadcrumb';
 import { SidebarPlanCard } from './premium/SidebarPlanCard';
 import { useEntitlements } from '@/hooks/useEntitlements';
-import { HelpCircle } from 'lucide-react';
 import { AnalysisBannerProvider } from '@/contexts/AnalysisBannerContext';
 import { MobileAnalysisBanner } from './AnalysisBanner';
-import { useWriteGuard } from '@/contexts/WriteGuardContext';
-
-const navigation = [
-  { name: 'Accueil', href: '/accueil', icon: House, dataGuide: undefined },
-  { name: 'Biens', href: '/assets', icon: Package, dataGuide: undefined },
-  { name: 'Agenda', href: '/agenda', icon: CalendarDays, dataGuide: undefined },
-  { name: 'Documents', href: '/documents', icon: FileText, dataGuide: undefined },
-  { name: 'À traiter', href: '/accueil/a-traiter', icon: CircleAlert, dataGuide: 'treat-incomplete' },
-];
+import { AppSidebar } from './shell/AppSidebar';
+import { readSidebarCollapsed, writeSidebarCollapsed } from '@/lib/shell/sidebar-state';
+import { assetIdFromPath, recordAssetView } from '@/lib/home/recent-assets';
+import { VerebonaSpaceProvider } from './verebona/space/VerebonaSpaceProvider';
+import { VerebonaDesktopPanel, VerebonaMobileField, VerebonaMobileSpace } from './verebona/space/VerebonaField';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -94,20 +65,18 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   const [mounted, setMounted] = useState(true);
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('sidebar-collapsed');
-      // Maquette : sidebar dépliée par défaut
-      return stored === null ? false : stored === 'true';
-    }
-    return false;
-  });
+  // Menu déplié par défaut, état conservé (Direction D v2 §3.1).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  useEffect(() => { setSidebarCollapsed(readSidebarCollapsed()); }, []);
+
+  // « Mes biens · Récemment consultés » (§3.3) : la fiche ouverte est notée
+  // sur cet appareil ; l'accueil la place en tête.
+  useEffect(() => {
+    const id = assetIdFromPath(pathname);
+    if (id) recordAssetView(id);
+  }, [pathname]);
 
   // Dialogs states
-  const [showAssetDialog, setShowAssetDialog] = useState(false);
-  const [showDocumentDialog, setShowDocumentDialog] = useState(false);
-  const [showAgendaDrawer, setShowAgendaDrawer] = useState(false);
   const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [onboardingForceOpen, setOnboardingForceOpen] = useState(false);
 
@@ -258,9 +227,11 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   }, []);
 
 
-  const toggleCollapsed = useCallback((value: boolean) => {
-    setSidebarCollapsed(value);
-    localStorage.setItem('sidebar-collapsed', String(value));
+  const toggleCollapsed = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      writeSidebarCollapsed(!prev);
+      return !prev;
+    });
   }, []);
 
       const handleLogout = useCallback(async () => {
@@ -307,7 +278,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // Le contrôle serveur reste seul juge : ceci évite une saisie inutile,
   // ce n'est pas une autorisation.
   // ══════════════════════════════════════════════════════════════════════════
-  const { entitlements, isRestricted } = useEntitlements();
+  const { entitlements } = useEntitlements();
 
   /**
    * Statut d'abonnement, toujours affiché.
@@ -337,39 +308,16 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     ? ((user as { accountsCount?: number }).accountsCount ?? 1) > 1
     : false;
 
-  /**
-   * Garde déportée dans `WriteGuardContext`.
-   *
-   * La logique était recopiée ici et dans le menu mobile, et n'affichait
-   * qu'un bandeau. Un bandeau disparaît : l'utilisateur qui vient de cliquer
-   * sur « Ajouter » ne comprend pas pourquoi rien ne s'ouvre.
-   */
-  const { garder } = useWriteGuard();
-  const refuserEcriture = useCallback((quota?: 'assets' | 'documents'): boolean => {
-    let bloque = true;
-    garder(() => { bloque = false; }, quota);
-    return bloque;
-  }, [garder]);
-
-  const ouvrirAjoutBien = useCallback(() => {
-    if (refuserEcriture('assets')) return;
-    setShowAssetDialog(true);
-  }, [refuserEcriture]);
-
-  /**
-   * L'agenda manquait : les deux autres entrées du menu « + » passaient par
-   * `refuserEcriture`, celle-ci ouvrait le tiroir directement. Ajouter une
-   * échéance est une écriture que le serveur refuse comme les autres.
-   */
-  const ouvrirAjoutAgenda = useCallback(() => {
-    if (refuserEcriture()) return;
-    setShowAgendaDrawer(true);
-  }, [refuserEcriture]);
-
-  const ouvrirAjoutDocument = useCallback(() => {
-    if (refuserEcriture('documents')) return;
-    setShowDocumentDialog(true);
-  }, [refuserEcriture]);
+  // ══════════════════════════════════════════════════════════════════════
+  // PAS DE « + AJOUTER » GLOBAL SUR ORDINATEUR (Direction D v2 §3.1)
+  //
+  // La spécification ne prévoit ni bouton « + » dans le menu latéral, ni
+  // dans le header : les ajouts se font depuis les pages (« Mes biens »,
+  // « Mes documents », « Mon agenda »), l'accueil (compte vide, tuiles de la
+  // mascotte) et, sur mobile, le « + » central de la barre basse (qui porte
+  // ses propres fenêtres et sa propre garde d'écriture). Les fenêtres d'ajout
+  // que la coquille montait pour l'ancien bouton sont retirées.
+  // ══════════════════════════════════════════════════════════════════════
 
   if (isLoading) {
     return (
@@ -392,464 +340,221 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     );
   }
 
+  const isHome = pathname === '/accueil';
+  const nomAffiche = user ? `${user.firstName} ${user.lastName}`.trim() : '';
+
   return (
     <AnalysisBannerProvider>
     <TooltipProvider delayDuration={300}>
-    <div className="h-screen bg-[color:var(--bg-page)] flex flex-col overflow-hidden">
+    <VerebonaSpaceProvider
+      onOpenHelp={() => setHelpModalOpen(true)}
+    >
+    <div className="flex h-screen overflow-hidden bg-[color:var(--bg-page)]">
       <NavigationProgress />
 
-      {/* TopBar Desktop - pleine largeur, au-dessus de tout */}
-      <TopBar
-        user={user}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-        onLogout={handleLogout}
-        isAdmin={isAdmin}
+      {/* Menu latéral — desktop (§3.1) */}
+      <AppSidebar
+        pathname={pathname}
+        collapsed={sidebarCollapsed}
+        onToggle={toggleCollapsed}
+        toProcessCount={aTraiterCount}
+        userName={nomAffiche}
+        initials={getUserInitials}
+        planLabel={statutAbonnement}
+        footerSlot={<SidebarPlanCard trialDaysLeft={user.subscription?.trialDaysLeft ?? null} />}
       />
 
+      {/* Colonne de la page : header, espace de réponse superposé, contenu */}
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <TopBar
+          user={user}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onLogout={handleLogout}
+          isAdmin={isAdmin}
+          onOpenHelp={() => setHelpModalOpen(true)}
+        />
 
-      <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
-        {/* Sidebar - Desktop */}
-        <aside className={`hidden md:flex md:flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] flex-shrink-0 transition-all duration-300 ease-in-out shadow-relief-sm ${sidebarCollapsed ? 'md:w-16' : 'md:w-64'}`}>
-          <div className="flex flex-col h-full">
+        {/* ══════════════════════════════════════════════════════════════
+            BARRE HAUTE MOBILE (§4.1) : LE CHAMP VEREBONA + L'AVATAR
 
-            {/* Hamburger + logo — le menu porte son propre toggle (maquette) */}
-            <div className={`flex items-center gap-2.5 p-3 pb-1 ${sidebarCollapsed ? 'justify-center' : ''}`}>
-              <button
-                onClick={() => toggleCollapsed(!sidebarCollapsed)}
-                aria-label={sidebarCollapsed ? 'Ouvrir le menu' : 'Réduire le menu'}
-                className="flex items-center justify-center w-9 h-9 rounded-lg hover:bg-[color:var(--accent-soft)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-all flex-shrink-0"
-              >
-                <Menu className="w-5 h-5" />
-              </button>
-              {/* Logo déplacé dans `TopBar` : ici il disparaissait dès que le
-                  menu était replié. Le garder aux deux endroits afficherait
-                  deux logos côte à côte, menu ouvert. */}
+            La loupe, la cloche et le menu à trois barres cèdent la place
+            au champ unique. Les notifications et les réglages sont dans le
+            panneau du compte, ouvert par l'avatar.
+            ══════════════════════════════════════════════════════════════ */}
+        <div className="flex flex-shrink-0 items-center gap-2.5 bg-[color:var(--bg-page)] px-3.5 pb-2 pt-[max(8px,env(safe-area-inset-top))] md:hidden">
+          <VerebonaMobileField />
+          <button
+            onClick={() => setIsMobileMenuOpen(true)}
+            aria-label="Compte et réglages"
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-[12px] font-semibold text-white"
+          >
+            {getUserInitials}
+          </button>
+        </div>
+
+        {/* Bandeau d'analyse mobile, sous la barre haute */}
+        <MobileAnalysisBanner />
+
+        {/* Espace de réponse desktop : superposé sous le champ (§6.2) */}
+        <VerebonaDesktopPanel />
+
+        <div id="main-scroll-container" className="relative flex min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden scroll-smooth">
+          {/* Bandeau d'essai / fin d'essai (CDC §9.2) */}
+          <TrialBanner />
+
+          {/* Fil d'Ariane : rendu une fois ici, jamais sur l'accueil (§3.1). */}
+          {!isHome && <DashboardBreadcrumb items={breadcrumbItems} />}
+          <main className={isHome ? 'w-full flex-1' : 'w-full flex-1 p-4 pb-32 md:p-6 md:pb-6 lg:p-8'}>
+            <div className="max-w-full overflow-x-hidden">
+              {children}
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    {/* ══════════════════════════════════════════════════════════════
+        PANNEAU DU COMPTE — MOBILE
+
+        Ce qui relève du compte seulement : la navigation est dans la barre
+        basse, masquée pendant l'ouverture (deux navigations actives en même
+        temps étaient le défaut).
+        ══════════════════════════════════════════════════════════════ */}
+    {isMobileMenuOpen && (
+      <div className="fixed inset-0 z-[60] md:hidden">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)} />
+        <aside className="fixed inset-y-0 right-0 w-[85%] max-w-sm overflow-y-auto border-l border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] shadow-relief-2xl" aria-label="Compte et réglages">
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] p-5 pt-[max(20px,env(safe-area-inset-top))]">
+              <Link href="/accueil" onClick={() => setIsMobileMenuOpen(false)} className="select-none">
+                <Logo size={26} withText={true} withBaseline={false} />
+              </Link>
+              <div className="flex items-center gap-1">
+                <NotificationBell />
+                <button
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  aria-label="Fermer"
+                  className="rounded-lg p-2 text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)]"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
-            {/* Navigation */}
-            <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-1 p-3">
-              {/* Bouton Ajouter */}
-              <div className={`relative flex mb-4 ${sidebarCollapsed ? 'justify-center' : 'justify-center px-1'}`}>
-                {sidebarCollapsed ? (
-                  <div className="relative">
-                    <DropdownMenu>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <DropdownMenuTrigger asChild>
-                            <button className="w-10 h-10 rounded-full shadow-relief-lg bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] flex items-center justify-center hover:scale-105 transition-all group">
-                              <Plus className="w-5 h-5 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90" />
-                            </button>
-                          </DropdownMenuTrigger>
-                        </TooltipTrigger>
-                        <TooltipContent side="right">Ajouter un bien, un document ou un événement</TooltipContent>
-                      </Tooltip>
-                      <DropdownMenuContent side="right" align="start" className="w-56 shadow-relief-lg">
-                        <DropdownMenuItem onClick={ouvrirAjoutBien} className="cursor-pointer py-2.5">
-                          <Package className="mr-2 h-4 w-4" /><span>Ajouter un bien</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={ouvrirAjoutDocument} className="cursor-pointer py-2.5" data-guide="add-document">
-                          <FileText className="mr-2 h-4 w-4" /><span>Ajouter un document</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={ouvrirAjoutAgenda} className="cursor-pointer py-2.5" data-guide="add-agenda-item">
-                          <CalendarDays className="mr-2 h-4 w-4" /><span>Ajouter à l'agenda</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                ) : (
-                  <div className="relative w-full">
-                    <DropdownMenu>
-                      {/* ══════════════════════════════════════════════════
-                          L'ORDRE D'IMBRICATION DÉCIDE SI LE BOUTON RÉPOND
-
-                          `DropdownMenuTrigger asChild` transmet ses gestionnaires
-                          à son unique enfant. Il enveloppait `<Tooltip>`, qui est
-                          un fournisseur de contexte et non un élément du DOM :
-                          le `onClick` n'atteignait jamais le bouton, et le menu
-                          ne s'ouvrait pas.
-
-                          La branche « menu replié », quinze lignes plus haut,
-                          imbriquait déjà correctement — d'où un bouton qui
-                          fonctionnait d'un côté seulement.
-                          ══════════════════════════════════════════════════ */}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              aria-label="Ajouter"
-                              className="h-11 w-11 rounded-full shadow-relief-lg hover:shadow-relief-glow bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] flex items-center justify-center hover:scale-105 transition-all group"
-                            >
-                              <Plus className="w-5 h-5 text-white transition-transform duration-[250ms] ease-[cubic-bezier(.34,1.56,.64,1)] group-hover:rotate-90" />
-                            </button>
-                          </DropdownMenuTrigger>
-                        </TooltipTrigger>
-                        <TooltipContent side="right">Ajouter un bien, un document ou un événement</TooltipContent>
-                      </Tooltip>
-                      <DropdownMenuContent align="center" className="w-56 shadow-relief-lg">
-                        <DropdownMenuItem onClick={ouvrirAjoutBien} className="cursor-pointer py-2.5">
-                          <Package className="mr-2 h-4 w-4" /><span>Ajouter un bien</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={ouvrirAjoutDocument} className="cursor-pointer py-2.5">
-                          <FileText className="mr-2 h-4 w-4" /><span>Ajouter un document</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={ouvrirAjoutAgenda} className="cursor-pointer py-2.5">
-                          <CalendarDays className="mr-2 h-4 w-4" /><span>Ajouter à l'agenda</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                )}
+            <div className="border-b border-[color:var(--border-subtle)] p-5">
+              <div className="flex items-center gap-3">
+                <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-sm font-semibold text-white">
+                  {getUserInitials}
+                </span>
+                <div className="min-w-0">
+                  {/* Le nom de la personne, non celui du compte. */}
+                  <p className="truncate text-sm font-semibold text-[color:var(--text-primary)]">
+                    {user ? `${user.firstName} ${user.lastName.charAt(0)}.` : ''}
+                  </p>
+                  <span className="mt-1 inline-block rounded-full bg-[color:var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[color:var(--accent)]">
+                    {statutAbonnement}
+                  </span>
+                  {plusieursEspaces && user?.accountName && (
+                    <p className="mt-1 truncate text-xs text-[color:var(--text-muted)]">{user.accountName}</p>
+                  )}
+                </div>
               </div>
+            </div>
 
-              {/* Nav items */}
-              {navigation.map((item) => {
-                const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
-                if (sidebarCollapsed) {
-                  return (
-                    <Tooltip key={item.name}>
-                      <TooltipTrigger asChild>
-                        <Link
-                          href={item.href}
-                          className={`flex items-center justify-center w-10 h-10 mx-auto rounded-xl transition-all ${
-                            isActive
-                              ? 'bg-[color:var(--accent-soft)] text-[color:var(--accent)] shadow-relief-sm'
-                              : 'text-[color:var(--text-primary)] hover:bg-[color:var(--bg-card)] hover:shadow-relief-sm'
-                          }`}
-                        >
-                          <item.icon className="w-5 h-5" />
-                        </Link>
-                      </TooltipTrigger>
-                      <TooltipContent side="right">{item.name}</TooltipContent>
-                    </Tooltip>
-                  );
-                }
-                return (
-                  <Link
-                    key={item.name}
-                    href={item.href}
-                    {...(item.dataGuide ? { 'data-guide': item.dataGuide } : {})}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                      isActive
-                        ? 'bg-[color:var(--accent-soft)] text-[color:var(--accent)] shadow-relief-sm border-l-2 border-[color:var(--accent)]'
-                        : 'text-[color:var(--text-primary)] hover:bg-[color:var(--bg-card)] hover:shadow-relief-sm'
-                    }`}
-                  >
-                    <item.icon className="w-5 h-5 flex-shrink-0" />
-                    {item.href === '/accueil/a-traiter' && aTraiterCount !== null && aTraiterCount > 0
-                      ? <span>{item.name} <span className="text-white">({aTraiterCount})</span></span>
-                      : item.name
-                    }
-                  </Link>
-                );
-              })}
+            <nav className="flex-1 space-y-1 p-3">
+              {/* La barre basse garde ses 5 entrées (§4.1) : l'agenda est ici. */}
+              <Link
+                href="/agenda"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
+              >
+                <CalendarDays className="h-5 w-5 flex-shrink-0" />
+                <span className="text-sm">Mon agenda</span>
+              </Link>
+              <Link
+                href="/mon-compte"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
+              >
+                <User className="h-5 w-5 flex-shrink-0" />
+                <span className="text-sm">Mon compte</span>
+              </Link>
+              <button
+                onClick={() => { setIsMobileMenuOpen(false); setHelpModalOpen(true); }}
+                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
+              >
+                <HelpCircle className="h-5 w-5 flex-shrink-0" />
+                <span className="text-sm">Besoin d&apos;aide ?</span>
+              </button>
+              <button
+                onClick={toggleTheme}
+                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
+              >
+                {theme === 'blue' ? <Sun className="h-5 w-5 flex-shrink-0" /> : <Moon className="h-5 w-5 flex-shrink-0" />}
+                <span className="text-sm">{theme === 'blue' ? 'Thème clair' : 'Thème sombre'}</span>
+              </button>
             </nav>
 
-            {/* Carte d'essai — uniquement pendant la période d'essai, masquée sidebar repliée */}
-            {!sidebarCollapsed && user && (
-              <SidebarPlanCard trialDaysLeft={user.subscription?.trialDaysLeft ?? null} />
-            )}
-
-            {/* Guide + Help — always visible at bottom */}
-            <div className="flex-shrink-0 border-t border-[color:var(--border-subtle)] p-3 space-y-1">
-              {sidebarCollapsed ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={() => setHelpModalOpen(true)}
-                      className="w-full flex items-center justify-center p-2.5 rounded-xl text-[color:var(--text-primary)] hover:bg-[color:var(--bg-card)] hover:shadow-relief-sm transition-all"
-                    >
-                      <HelpCircle className="w-5 h-5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">Besoin d'aide ?</TooltipContent>
-                </Tooltip>
-              ) : (
-                <button
-                  onClick={() => setHelpModalOpen(true)}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--bg-card)] hover:shadow-relief-sm transition-all"
-                >
-                  <HelpCircle className="w-5 h-5 flex-shrink-0" />
-                  <span>Besoin d'aide ?</span>
-                </button>
-              )}
+            {/* Isolé en bas : une déconnexion mêlée aux réglages s'atteint par mégarde. */}
+            <div className="border-t border-[color:var(--border-subtle)] p-3">
+              <button
+                onClick={() => { setIsMobileMenuOpen(false); handleLogout(); }}
+                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]"
+              >
+                <LogOut className="h-5 w-5 flex-shrink-0" />
+                <span className="text-sm">Se déconnecter</span>
+              </button>
             </div>
           </div>
         </aside>
-
-        {/* Mobile Header - Fixed */}
-        <header className="md:hidden fixed top-0 left-0 right-0 z-40 w-full bg-[color:var(--bg-page)]/75 backdrop-blur-xl border-b border-[color:var(--border-subtle)] min-h-16 pt-[env(safe-area-inset-top)]">
-            <div className="relative flex items-center justify-center h-16 px-6">
-              {/* Logo - Centered & Small */}
-              <Link href="/accueil" className="block">
-                <Logo size={24} withText={true} />
-              </Link>
-
-            {/* ══════════════════════════════════════════════════════════
-                RECHERCHE ET NOTIFICATIONS À GAUCHE, MENU À DROITE
-
-                L'inverse du bureau, où la recherche ouvre la barre supérieure
-                à gauche et le compte se trouve à droite. Deux dispositions
-                opposées pour la même application obligent à chercher ses
-                repères à chaque changement d'écran.
-                ══════════════════════════════════════════════════════════ */}
-            <div className="absolute left-4 flex items-center gap-2">
-              <button
-                onClick={() => setMobileSearchOpen(true)}
-                aria-label="Rechercher"
-                className="p-2.5 rounded-xl hover:bg-[color:var(--accent-soft)] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] shadow-relief-md"
-              >
-                <Search className="w-5 h-5 text-[color:var(--text-primary)]" />
-              </button>
-              <NotificationBell />
-            </div>
-
-            <button
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              aria-label={isMobileMenuOpen ? 'Fermer le menu' : 'Compte et réglages'}
-              className="absolute right-4 p-2.5 rounded-xl hover:bg-[color:var(--accent-soft)] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] shadow-relief-md"
-            >
-              {isMobileMenuOpen ? <X className="w-5 h-5 text-[color:var(--text-primary)]" /> : <Menu className="w-5 h-5 text-[color:var(--text-primary)]" />}
-            </button>
-          </div>
-        </header>
-
-        {/* Floating Menu Button - Removed redundant button */}
-
-        {/* Mobile Analysis Banner — thin bar below header */}
-        <MobileAnalysisBanner />
-
-        {/* Mobile Sidebar */}
-        {/* ══════════════════════════════════════════════════════════════
-            PANNEAU DE COMPTE — PLUS UNE SECONDE NAVIGATION
-
-            Il reprenait « Mes biens », « Mon agenda », « Mes documents »,
-            « À traiter » et « Ajouter » — les cinq rubriques de la barre
-            inférieure. Deux systèmes de navigation coexistaient, utilisables
-            en même temps puisque la barre restait au-dessus en z-50.
-
-            Il ne contient plus que ce qui relève du compte. La barre
-            inférieure est masquée pendant l'ouverture : laisser deux
-            navigations actives était le défaut lui-même.
-            ══════════════════════════════════════════════════════════════ */}
-        {isMobileMenuOpen && (
-          <div className="fixed inset-0 z-[60] md:hidden">
-            <div
-              className="fixed inset-0 bg-black/50 backdrop-blur-sm"
-              onClick={() => setIsMobileMenuOpen(false)}
-            />
-            {/* Largeur relative plafonnée : `w-64` fixe tronquait les noms
-                longs sur les petits écrans. */}
-            <aside className="fixed inset-y-0 left-0 w-[85%] max-w-sm bg-[color:var(--sidebar)] border-r border-[color:var(--border-subtle)] shadow-relief-2xl overflow-y-auto">
-              <div className="flex flex-col h-full">
-
-                <div className="flex items-center justify-between p-5 border-b border-[color:var(--border-subtle)]">
-                  {/* Le logo plutôt qu'un titre : « Compte et réglages »
-                      nommait le panneau à qui venait de l'ouvrir. Le logo
-                      situe l'application et ramène à l'accueil. */}
-                  <Link href="/accueil" onClick={() => setIsMobileMenuOpen(false)} className="select-none">
-                    <Logo size={26} withText={true} withBaseline={false} />
-                  </Link>
-                  {/* Fermeture explicite : le panneau n'en offrait aucune,
-                      hors le geste de toucher le fond. */}
-                  <button
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    aria-label="Fermer"
-                    className="p-2 rounded-lg hover:bg-[color:var(--accent-soft)] text-[color:var(--text-muted)]"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="p-5 border-b border-[color:var(--border-subtle)]">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="w-11 h-11 flex-shrink-0">
-                      <AvatarFallback className="bg-[#3b82f6] text-white text-sm font-semibold">
-                        {getUserInitials}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0">
-                      {/* Le nom de la personne, non celui du compte. Celui-ci
-                          vaut « Compte de Prénom Nom » — un identifiant
-                          technique, pas un libellé d'interface. */}
-                      <p className="text-sm font-semibold text-[color:var(--text-primary)] truncate">
-                        {user ? `${user.firstName} ${user.lastName.charAt(0)}.` : ''}
-                      </p>
-                      <span className="inline-block mt-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-[color:var(--accent-soft)] text-[color:var(--accent)]">
-                        {statutAbonnement}
-                      </span>
-                      {/* Le nom de l'espace ne s'affiche qu'avec plusieurs
-                          espaces : seul, il n'a rien à distinguer. */}
-                      {plusieursEspaces && user?.accountName && (
-                        <p className="text-xs text-[color:var(--text-muted)] truncate mt-1">
-                          {user.accountName}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <nav className="flex-1 p-3 space-y-1">
-                  {/* Accès direct aux réglages : la fiche ouvrait jusqu'ici
-                      un sous-menu, soit deux gestes pour une destination. */}
-                  <Link
-                    href="/mon-compte"
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className="flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-primary)] hover:bg-[color:var(--accent-soft)] transition-colors"
-                  >
-                    <User className="w-5 h-5 flex-shrink-0" />
-                    <span className="text-sm">Mon compte</span>
-                  </Link>
-
-                  <button
-                    onClick={() => { setIsMobileMenuOpen(false); setHelpModalOpen(true); }}
-                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-primary)] hover:bg-[color:var(--accent-soft)] transition-colors"
-                  >
-                    <HelpCircle className="w-5 h-5 flex-shrink-0" />
-                    <span className="text-sm">Besoin d&apos;aide ?</span>
-                  </button>
-
-                  <button
-                    onClick={toggleTheme}
-                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-primary)] hover:bg-[color:var(--accent-soft)] transition-colors"
-                  >
-                    {theme === 'blue'
-                      ? <Sun className="w-5 h-5 flex-shrink-0" />
-                      : <Moon className="w-5 h-5 flex-shrink-0" />}
-                    {/* Le libellé annonce ce vers quoi on bascule : « Apparence »
-                        n'indiquait ni l'état courant ni la destination. */}
-                    <span className="text-sm">
-                      {theme === 'blue' ? 'Thème clair' : 'Thème sombre'}
-                    </span>
-                  </button>
-                </nav>
-
-                {/* Isolé en bas : une déconnexion mêlée aux réglages
-                    s'atteint par mégarde. */}
-                <div className="p-3 border-t border-[color:var(--border-subtle)]">
-                  <button
-                    onClick={() => { setIsMobileMenuOpen(false); handleLogout(); }}
-                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] transition-colors"
-                  >
-                    <LogOut className="w-5 h-5 flex-shrink-0" />
-                    <span className="text-sm">Se déconnecter</span>
-                  </button>
-                </div>
-              </div>
-            </aside>
-          </div>
-        )}
-
-          {/* Main Content */}
-          <div id="main-scroll-container" className="flex-1 flex flex-col min-w-0 overflow-x-hidden pt-16 md:pt-0 overflow-y-auto relative scroll-smooth">
-            {/* Bandeau d'essai / fin d'essai (CDC §9.2) */}
-            <TrialBanner />
-
-            {/* ══════════════════════════════════════════════════════════════
-                LE FIL D'ARIANE N'ÉTAIT RENDU NULLE PART
-
-                Onze pages appellent `setBreadcrumbs(...)`, le composant
-                `DashboardBreadcrumb` existe, et `breadcrumbItems` était même
-                lu ici — sans jamais être affiché. Un commentaire annonçait un
-                rendu « dans chaque page, au-dessus du H1 » : aucune page ne
-                l'a jamais fait. Le fil d'ariane a disparu à ce déplacement.
-
-                Il est rendu une fois, ici : c'est le seul endroit qui voie à
-                la fois le contexte et toutes les pages, et il n'y a plus onze
-                occasions d'oublier.
-                ══════════════════════════════════════════════════════════ */}
-            <DashboardBreadcrumb items={breadcrumbItems} />
-            <main className="flex-1 p-4 md:p-6 lg:p-8 w-full">
-              <div className="max-w-full overflow-x-hidden">
-                {children}
-              </div>
-            </main>
-        </div>
       </div>
+    )}
 
-          {/* Mobile Action Button - Bottom Navigation */}
-          {/* Masquée pendant l'ouverture du panneau : elle est en z-50 et
-              restait au-dessus, laissant deux navigations utilisables en même
-              temps. Surenchérir sur le plan du panneau n'aurait pas réglé le
-              fond — c'est la simultanéité qui est le défaut. */}
-          {!isMobileMenuOpen && <BottomNavigation />}
+    {/* Navigation basse flottante — mobile (§4.1) */}
+    {!isMobileMenuOpen && <BottomNavigation toProcessCount={aTraiterCount} />}
 
-          {/* Mobile Search Overlay */}
-          <MobileSearchOverlay
-            open={mobileSearchOpen}
-            onClose={() => setMobileSearchOpen(false)}
-            isPaidPlan={isPremiumPlan(user?.subscription?.plan ?? '')}
-            planCode={user?.subscription?.plan ?? ''}
-          />
+    {/* Espace de réponse mobile, plein écran (§6.3) */}
+    <VerebonaMobileSpace />
 
-          {/* Global document drawer — for search results, no page navigation needed */}
-          {globalDocDrawerId !== null && (
-            <DocumentDrawer
-              open={globalDocDrawerOpen}
-              onOpenChange={v => { setGlobalDocDrawerOpen(v); if (!v) { setGlobalDocDrawerId(null); setGlobalDocDrawerAutoAnalyze(false); setGlobalDocDrawerShowAnalysis(false); } }}
-              document={{
-                id: globalDocDrawerId,
-                originalFilename: '',
-                mimeType: '',
-                documentType: 'AUTRE',
-                documentDate: null,
-                uploadedAt: null,
-                assetId: 0,
-              }}
-              onRefresh={() => {}}
-              autoAnalyze={globalDocDrawerAutoAnalyze}
-              showAnalysisResults={globalDocDrawerShowAnalysis}
-            />
-          )}
+    {/* Tiroir document global — ouvert depuis l'espace de réponse, les notifications… */}
+    {globalDocDrawerId !== null && (
+      <DocumentDrawer
+        open={globalDocDrawerOpen}
+        onOpenChange={v => { setGlobalDocDrawerOpen(v); if (!v) { setGlobalDocDrawerId(null); setGlobalDocDrawerAutoAnalyze(false); setGlobalDocDrawerShowAnalysis(false); } }}
+        document={{
+          id: globalDocDrawerId,
+          originalFilename: '',
+          mimeType: '',
+          documentType: 'AUTRE',
+          documentDate: null,
+          uploadedAt: null,
+          assetId: 0,
+        }}
+        onRefresh={() => {}}
+        autoAnalyze={globalDocDrawerAutoAnalyze}
+        showAnalysisResults={globalDocDrawerShowAnalysis}
+      />
+    )}
 
-          {/* Échéance, équipement, pièce : tiroirs ouverts depuis n'importe quel écran (src/lib/drawers.ts). */}
-          <GlobalDrawerHost />
+    {/* Échéance, équipement, pièce : tiroirs ouverts depuis n'importe quel écran (src/lib/drawers.ts). */}
+    <GlobalDrawerHost />
 
-          {/* Action Dialogs */}
-          {user?.id && (
-            <>
-              <AssetFormDialog
-                open={showAssetDialog}
-                onOpenChange={setShowAssetDialog}
-                userId={user.id}
-                onSuccess={() => setShowAssetDialog(false)}
-              />
-              <UnifiedDocumentDialog
-                open={showDocumentDialog}
-                onOpenChange={setShowDocumentDialog}
-                onSuccess={() => setShowDocumentDialog(false)}
-              />
-              <CreateAgendaItemDrawer
-                open={showAgendaDrawer}
-                onClose={() => setShowAgendaDrawer(false)}
-                onMutated={() => setShowAgendaDrawer(false)}
-              />
-            </>
-          )}
-        </div>
+    {/* Modale "Besoin d'aide ?" */}
+    <HelpModal open={helpModalOpen} onOpenChange={setHelpModalOpen} />
 
-        {/* Modale "Besoin d'aide ?" */}
-        <HelpModal open={helpModalOpen} onOpenChange={setHelpModalOpen} />
-
-        {/* Modal d'accueil / onboarding */}
-        {user?.id && (
-          <WelcomeOnboardingModal
-            userId={user.id}
-            plan={user.subscription.plan}
-            duoRole={user.duoRole}
-            forceOpen={onboardingForceOpen}
-            onClose={() => setOnboardingForceOpen(false)}
-            hasItems={availableAssets.length > 0}
-          />
-        )}
-
-        {/* Assistant Verebona — bouton flottant + drawer (CDC §7). */}
-        <VerebonaDrawer
-          pageContext={{ route: pathname }}
-          suggestions={suggestionsForRoute(pathname).map((s) => ({ id: s.id, label: s.label }))}
-        />
-
-
+    {/* Modal d'accueil / onboarding */}
+    {user?.id && (
+      <WelcomeOnboardingModal
+        userId={user.id}
+        plan={user.subscription.plan}
+        duoRole={user.duoRole}
+        forceOpen={onboardingForceOpen}
+        onClose={() => setOnboardingForceOpen(false)}
+        hasItems={availableAssets.length > 0}
+      />
+    )}
+    </VerebonaSpaceProvider>
     </TooltipProvider>
     </AnalysisBannerProvider>
   );

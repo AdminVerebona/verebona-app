@@ -1,23 +1,21 @@
 "use client"
 
-import { useState, useEffect, useCallback } from 'react';
+/**
+ * Accueil — Direction D v2 « La mascotte » (§2 à §4, §12ter).
+ *
+ * Ordre de lecture identique sur desktop et mobile : la mascotte parle,
+ * Mes biens, Ce que j'ai fait, Documents récents. Plus de cartes
+ * statistiques : le seul chiffre conservé est la pastille « À traiter » de
+ * la navigation. Le champ Verebona est dans le header (coquille).
+ */
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import Link from 'next/link';
-import { Plus, Package, ChevronRight } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { AssetCard } from '@/components/dashboard/AssetCard';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import type { WriteBlockedInfo } from '@/lib/write-blocked';
 import { PendingCheckoutModal } from '@/components/subscription/PendingCheckoutModal';
-import { MascotGreeting } from '@/components/home/MascotGreeting';
-import { HomeStatsGrid } from '@/components/home/HomeStatsGrid';
-import { ATfaireBlock } from '@/components/home/ATfaireBlock';
-import { ProchainsDatesBlock } from '@/components/home/ProchainsDatesBlock';
-import { ASavoirBlock } from '@/components/home/ASavoirBlock';
-import { ActiviteRecenteBlock } from '@/components/home/ActiviteRecenteBlock';
-import { EnrichissementAutomatiqueBlock } from '@/components/home/EnrichissementAutomatiqueBlock';
+import { MascotSpeaks } from '@/components/home/MascotSpeaks';
+import { HomeAssets, RecentDocuments, VerebonaWork } from '@/components/home/HomeBlocks';
 import { useSession } from '@/hooks/useSession';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
@@ -25,7 +23,9 @@ import { apiClient } from '@/lib/api-client';
 import { FRESH_HEADER, markAccountDataMutated, mutatedSince } from '@/lib/data-freshness';
 import { useRouter } from 'next/navigation';
 import { duoJoinErrorMessage, joinDuo, takePendingDuoJoin } from '@/lib/duo/pending-duo-join';
-import type { HomeSummaryPayload, HomeItem } from '@/services/home/HomeSummaryService';
+import type { HomeSummaryPayload } from '@/services/home/HomeSummaryService';
+import { orderByRecentViews, readRecentAssetIds } from '@/lib/home/recent-assets';
+import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 
 // ⚡ Lazy load des dialogs lourds
 const UnifiedDocumentDialog = dynamic(
@@ -37,34 +37,6 @@ const AssetFormDialog = dynamic(
   () => import('@/components/AssetFormDialog').then(mod => ({ default: mod.AssetFormDialog })),
   { ssr: false }
 );
-
-const DocumentDrawer = dynamic(
-  () => import('@/components/assets/DocumentDrawer').then(mod => ({ default: mod.DocumentDrawer })),
-  { ssr: false }
-);
-
-const AgendaItemDrawer = dynamic(
-  () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
-  { ssr: false }
-);
-
-const CreateAgendaItemDrawer = dynamic(
-  () => import('@/components/agenda/CreateAgendaItemDrawer').then(m => ({ default: m.CreateAgendaItemDrawer })),
-  { ssr: false }
-);
-
-// ── Types locaux ──────────────────────────────────────────────────────────────
-
-interface DrawerDocState {
-  id: number;
-  originalFilename: string;
-  mimeType: string;
-  documentType: string;
-  documentDate: string | null;
-  uploadedAt: string | null;
-  size?: number;
-  assetId: number;
-}
 
 /**
  * Instant du dernier chargement du résumé, conservé entre deux visites de
@@ -90,13 +62,10 @@ export default function DashboardPage() {
   // Refus d'ajout d'un bien : même fenêtre que partout ailleurs (motif serveur).
   const { signalerRefus } = useWriteGuard();
 
-  // Drawers
-  const [drawerDoc, setDrawerDoc] = useState<DrawerDocState | null>(null);
-  const [drawerDocOpen, setDrawerDocOpen] = useState(false);
-  const [drawerAgendaItem, setDrawerAgendaItem] = useState<any | null>(null);
-  const [drawerAgendaOpen, setDrawerAgendaOpen] = useState(false);
-  const [drawerAgendaInitialMode, setDrawerAgendaInitialMode] = useState<'view' | 'edit'>('view');
-  const [showCreateAgenda, setShowCreateAgenda] = useState(false);
+  // Biens consultés sur cet appareil (« Récemment consultés », §3.3).
+  const [recentIds, setRecentIds] = useState<number[]>([]);
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => { setRecentIds(readRecentAssetIds()); setHydrated(true); }, []);
 
   // ── Chargement ────────────────────────────────────────────────────────────
 
@@ -252,43 +221,6 @@ export default function DashboardPage() {
       .catch(() => {});
   }, [user, loadSummary]);
 
-  // ── Handlers items ────────────────────────────────────────────────────────
-
-  const handleItemClick = useCallback(async (item: HomeItem) => {
-    if (item.objectType === 'document') {
-      try {
-        const doc = await apiClient.get<any>(`/api/files/${item.objectId}`);
-        setDrawerDoc({
-          id: item.objectId,
-          originalFilename: doc.originalFilename ?? item.title,
-          mimeType: doc.mimeType ?? 'application/octet-stream',
-          documentType: doc.documentType ?? 'AUTRE',
-          documentDate: doc.documentDate ?? null,
-          uploadedAt: doc.uploadedAt ?? null,
-          size: doc.size,
-          assetId: doc.assetId ?? 0,
-        });
-        setDrawerDocOpen(true);
-      } catch {
-        toast.error('Impossible d\'ouvrir le document');
-      }
-    } else if (item.objectType === 'agenda') {
-      try {
-        const data = await apiClient.get<{ item: any }>(`/api/agenda/${item.objectId}`);
-        setDrawerAgendaItem(data.item);
-        setDrawerAgendaInitialMode(item.reason === 'missing_date' ? 'edit' : 'view');
-        setDrawerAgendaOpen(true);
-      } catch {
-        toast.error('Impossible d\'ouvrir l\'élément d\'agenda');
-      }
-    } else if (item.objectType === 'asset' && item.reason === 'coherence_alert') {
-      const params = new URLSearchParams();
-      params.set('tab', 'details');
-      if (item.fieldKey) params.set('highlight', item.fieldKey);
-      router.push(`/assets/${item.objectId}?${params.toString()}`);
-    }
-  }, []);
-
   // ⚠️ L'ancienne fenêtre locale annonçait « limite de 3 biens du plan
   // gratuit » et « Passer à Premium » quel que soit le motif — y compris pour
   // un compte recréé dont l'essai était déjà consommé. Le refus serveur
@@ -298,221 +230,78 @@ export default function DashboardPage() {
     signalerRefus(info);
   }, [signalerRefus]);
 
-  // ── Loading ───────────────────────────────────────────────────────────────
+  const pageSuggestions = useMemo(() => suggestionsForRoute('/accueil').map((x) => x.label), []);
+  const orderedAssets = useMemo(
+    () => orderByRecentViews(summary?.assets.items ?? [], recentIds),
+    [summary, recentIds],
+  );
 
-  if (isSessionLoading || isLoading) {
+  // Premier rendu identique au serveur (squelette) : l'utilisateur en cache
+  // n'est lu qu'après l'hydratation.
+  if (!hydrated || isSessionLoading || !user) {
+    if (hydrated && !isSessionLoading && !user) return null;
     return (
-      <div className="space-y-6 w-full max-w-full pb-12">
-        <div className="flex items-center gap-6">
-          <Skeleton className="h-[124px] w-[124px] rounded-full" />
-          <Skeleton className="h-32 flex-1 rounded-[22px]" />
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4">
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-24" />
-            {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14 w-full rounded-xl" />)}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-20 rounded-xl" />)}
-          </div>
-        </div>
-        <div className="space-y-2">
-          <Skeleton className="h-4 w-20" />
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-56 rounded-2xl" />)}
-          </div>
+      <div className="flex flex-col gap-6 px-4 pt-2.5 md:gap-9 md:px-10 md:pt-8">
+        <div className="flex items-end gap-4">
+          <Skeleton className="h-[88px] w-[96px] rounded-full md:h-[136px] md:w-[136px]" />
+          <Skeleton className="h-40 flex-1 rounded-[28px]" />
         </div>
       </div>
     );
   }
 
-  if (!user) return null;
-
-  const assets = summary?.assets.items ?? [];
-  const totalAssets = summary?.assets.total ?? 0;
-  const isEmpty = summary?.situation.status === 'empty';
-
-  // ══════════════════════════════════════════════════════════════════════
-  // COMPTEURS « EN UN COUP D'ŒIL »
-  //
-  // `statDocuments` lisait `s.documents?.total ?? s.blocks?.documents?.total`.
-  // Aucun de ces deux chemins n'existait dans `HomeSummaryPayload` : les deux
-  // `??` retombaient sur 0, et le compteur restait à zéro quel que soit le
-  // nombre de documents.
-  //
-  // Le `as any` masquait le défaut : sans lui, le compilateur aurait refusé
-  // `s.documents`. Il est retiré — le contrat typé rend désormais impossible
-  // de lire un champ absent.
-  //
-  // `statEvenements` compte volontairement les événements À VENIR seulement ;
-  // les passés n'ont pas leur place dans un aperçu.
-  // ══════════════════════════════════════════════════════════════════════
-  const statDocuments = summary?.documents.total ?? 0;
-  const statEvenements = summary?.blocks.upcoming.total ?? 0;
-  const statATraiter = summary?.blocks.todo.total ?? 0;
+  // Compte vide (§12ter) : aucun bien, aucun document.
+  const isEmpty = !!summary && summary.assets.total === 0 && summary.documents.total === 0;
+  const firstName = user.firstName || user.username || '';
 
   return (
     <>
-      <div className="space-y-6 w-full max-w-full overflow-x-hidden pb-24">
-
-        {/* Mascotte d'accueil : sa prise de parole a son propre chargement
-            (GET /api/home/mascot) et ne retarde pas le reste de la page
-            (CDC Mascotte NFR-001, NFR-002). Le prénom est le nom affiché
-            (UX-003). */}
-        <MascotGreeting
-          firstName={user.firstName || user.username || ''}
+      <div className="vb-home-halo flex min-h-full flex-col gap-[26px] px-4 pb-32 pt-2.5 md:gap-9 md:px-10 md:pb-10 md:pt-8">
+        {/* 1. La mascotte parle — sa prise de parole a son propre chargement
+            (GET /api/home/mascot) et ne retarde pas le reste de la page. */}
+        <MascotSpeaks
+          firstName={firstName}
+          empty={isEmpty}
+          pageSuggestions={pageSuggestions}
           onCreateAsset={() => setShowAssetDialog(true)}
           onUploadDocument={(assetId) => { setUploadAssetId(assetId ?? null); setShowUploadDialog(true); }}
         />
 
-        {/* ══════════════════════════════════════════════════════════════
-            LE BLOC « À FAIRE » DISPARAÎT QUAND IL EST VIDE
-
-            Il occupait la colonne large pour afficher « Aucune action
-            requise » — une carte pleine hauteur pour dire qu'il n'y a rien.
-            La mascotte le dit déjà, et mieux.
-
-            Quand il s'efface, « En un coup d'œil » prend toute la largeur au
-            lieu de laisser une colonne vide à sa gauche : d'où la grille
-            conditionnelle plutôt qu'un simple masquage.
-            ══════════════════════════════════════════════════════════════ */}
-        {summary && !isEmpty && (
-          <div className={
-            statATraiter > 0
-              ? 'grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 items-stretch'
-              : 'grid grid-cols-1 gap-4'
-          }>
-            {statATraiter > 0 && (
-              <ATfaireBlock
-                items={summary.blocks.todo.items}
-                total={summary.blocks.todo.total}
-                onItemClick={handleItemClick}
-              />
-            )}
-            <HomeStatsGrid
-              biens={totalAssets}
-              evenements={statEvenements}
-              documents={statDocuments}
-              aTraiter={statATraiter}
-            />
-          </div>
-        )}
-
-        {/* Mes biens + Prochaines dates (gauche) / Verebona a organisé + À savoir (droite) */}
-        {summary && !isEmpty ? (
-          <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4 items-start">
-            <div className="space-y-6 min-w-0">
-              {/* Bloc Mes biens */}
-              <div className="w-full">
-                <div className="flex items-center justify-between mb-4 h-[18px]">
-                  <span className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
-                    Mes biens
-                  </span>
-                  {totalAssets > 3 && (
-                    <Link
-                      href="/assets"
-                      className="flex items-center gap-1 text-xs text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
-                    >
-                      Tout afficher
-                      <ChevronRight className="w-3 h-3" />
-                    </Link>
-                  )}
-                </div>
-                {/* Le nombre de colonnes suit le nombre de biens affichés :
-                    une grille à trois colonnes pour deux biens laisse un
-                    emplacement vide, que l'œil lit comme une carte manquante. */}
-                <div className={`grid gap-4 w-full ${
-                  assets.length === 1 ? 'grid-cols-1'
-                  : assets.length === 2 ? 'grid-cols-2'
-                  : 'grid-cols-2 xl:grid-cols-3'
-                }`}>
-                  {assets.slice(0, 3).map((asset, idx) => (
-                    <AssetCard
-                      key={asset.id}
-                      id={asset.id}
-                      name={asset.name}
-                      category={asset.category}
-                      subtype={asset.subtype ?? undefined}
-                      status={asset.status ?? undefined}
-                      thumbnailUrl={asset.thumbnailUrl}
-                      signedThumbnailUrl={asset.signedThumbnailUrl}
-                      documentCount={asset.documentCount}
-                      documentLabels={asset.documentLabels}
-                      priority={idx < 2}
-                      todoCount={asset.todoCount}
-                      nextDate={asset.nextDate}
-                      nextDateTitle={asset.nextDateTitle}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <ProchainsDatesBlock
-                items={summary.blocks.upcoming.items}
-                total={summary.blocks.upcoming.total}
-                onItemClick={handleItemClick}
-              />
+        {isLoading || !summary ? (
+          <div className="flex flex-col gap-6 md:grid md:grid-cols-[minmax(0,1fr)_360px] md:gap-8" aria-busy="true">
+            <div className="grid grid-cols-3 gap-3" style={{ gridAutoRows: '132px' }}>
+              <Skeleton className="row-span-2 rounded-[18px]" />
+              {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="rounded-[18px]" />)}
             </div>
-
-            <div className="space-y-6 min-w-0">
-              {summary.blocks.autoEnrichment.events.length > 0 && (
-                <EnrichissementAutomatiqueBlock
-                  events={summary.blocks.autoEnrichment.events}
-                  locked={false}
-                />
-              )}
-              <ASavoirBlock items={summary.blocks.toKnow.items} />
-              {summary.blocks.recentActivity.items.length > 0 && (
-                <ActiviteRecenteBlock
-                  items={summary.blocks.recentActivity.items}
-                  onItemClick={handleItemClick}
-                />
-              )}
+            <div className="space-y-4">
+              {[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 rounded-xl" />)}
             </div>
           </div>
         ) : (
-          /* État vide : carte « Aucun bien pour le moment » */
-          <div className="w-full max-w-2xl">
-            <span className="block text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-4">
-              Mes biens
-            </span>
-            <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
-              <CardContent className="flex flex-col sm:flex-row sm:items-center gap-4 py-4 px-5">
-                <div className="flex items-center gap-4 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
-                    <Package className="w-4 h-4 text-[color:var(--accent)]" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-[color:var(--text-primary)]">
-                      Aucun bien pour le moment
-                    </p>
-                    <p className="text-xs text-[color:var(--text-muted)] mt-0.5">
-                      Ajoutez votre premier bien pour commencer
-                    </p>
-                  </div>
-                </div>
-                <Button
-                  onClick={() => setShowAssetDialog(true)}
-                  className="btn-add px-4 w-full sm:w-auto flex-shrink-0"
-                >
-                  <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
-                  Ajouter mon premier bien
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+          <>
+            {/* 2. Mes biens + 3. Ce que j'ai fait (colonne de 360 px) */}
+            <div className="flex flex-col gap-[26px] md:grid md:grid-cols-[minmax(0,1fr)_360px] md:items-start md:gap-8">
+              <HomeAssets assets={orderedAssets} onAddAsset={() => setShowAssetDialog(true)} />
+              <VerebonaWork items={summary.blocks.verebonaWork?.items ?? []} onNavigate={(href) => router.push(href)} />
+            </div>
 
+            {/* 4. Documents récents */}
+            <RecentDocuments
+              docs={summary.blocks.recentDocuments?.items ?? []}
+              onUpload={() => { setUploadAssetId(null); setShowUploadDialog(true); }}
+            />
+          </>
+        )}
       </div>
 
-      {/* ── Dialogs (inchangés) ─────────────────────────────────────────────── */}
+      {/* ── Parcours existants ─────────────────────────────────────────────── */}
 
       {showUploadDialog && (
         <UnifiedDocumentDialog
           open={showUploadDialog}
           onOpenChange={(open) => { setShowUploadDialog(open); if (!open) setUploadAssetId(null); }}
           preselectedAssetId={uploadAssetId ?? undefined}
-          availableAssets={assets.map(a => ({ id: a.id, name: a.name }))}
+          availableAssets={orderedAssets.map(a => ({ id: a.id, name: a.name }))}
           onSuccess={refreshSummary}
         />
       )}
@@ -536,54 +325,6 @@ export default function DashboardPage() {
           }}
         />
       )}
-
-      {/* Drawer document */}
-      {drawerDoc && (
-        <DocumentDrawer
-          open={drawerDocOpen}
-          onOpenChange={(v) => {
-            setDrawerDocOpen(v);
-            if (!v) {
-              setDrawerDoc(null);
-            }
-          }}
-          document={drawerDoc}
-          onRefresh={refreshSummary}
-        />
-      )}
-
-      {/* Drawer agenda */}
-      {drawerAgendaItem && (
-        <AgendaItemDrawer
-          item={drawerAgendaItem}
-          open={drawerAgendaOpen}
-          initialMode={drawerAgendaInitialMode}
-          onClose={() => {
-            setDrawerAgendaOpen(false);
-            setDrawerAgendaItem(null);
-            loadSummary();
-          }}
-          onMutated={() => {
-            setDrawerAgendaOpen(false);
-            setDrawerAgendaItem(null);
-            refreshSummary();
-          }}
-          onOpenDocument={(fileId) => {
-            setDrawerAgendaOpen(false);
-            setDrawerAgendaItem(null);
-            window.dispatchEvent(new CustomEvent('open-document-drawer', { detail: { docId: fileId } }));
-          }}
-        />
-      )}
-
-      <CreateAgendaItemDrawer
-        open={showCreateAgenda}
-        onClose={() => setShowCreateAgenda(false)}
-        onMutated={() => {
-          setShowCreateAgenda(false);
-          refreshSummary();
-        }}
-      />
     </>
   );
 }

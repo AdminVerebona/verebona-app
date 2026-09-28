@@ -16,7 +16,7 @@
  * la Rubrique d'acquisition.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import type { RubricDefinition } from './types';
+import type { RubricCode, RubricDefinition } from './types';
 
 export const RUBRICS: readonly RubricDefinition[] = [
   {
@@ -115,3 +115,40 @@ export const RUBRICS: readonly RubricDefinition[] = [
     fallback: true,
   },
 ] as const;
+
+/**
+ * Couleurs d'affichage des Rubriques — maquette « Mes documents » (2026-09)
+ * et design system Verebona.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * HORS DE `RUBRICS`, ET C'EST VOULU
+ *
+ * `RUBRICS` fait partie du référentiel versionné : toute modification impose
+ * d'incrémenter `REFERENTIAL_VERSION`, ce qui déclenche le retraitement de
+ * tous les documents (§11.6). Une couleur n'a aucune incidence sur le
+ * classement ; la loger dans `RUBRICS` ferait repasser tout le parc
+ * documentaire pour un changement purement visuel.
+ *
+ * `dot` : pastille (fond sombre) ; `accent` : trait de la mini-page des
+ * vignettes. Les codes de la maquette (PROPERTY, CONTRACTS…) sont des
+ * abréviations des codes réels ci-dessous ; libellés et ordre sont identiques.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export const RUBRIC_COLORS: Readonly<Record<RubricCode, { dot: string; accent: string }>> = {
+  PROPERTY_MANAGEMENT: { dot: '#60A5FA', accent: '#3B82F6' },
+  CONTRACTS_WARRANTIES_DOCS: { dot: '#A78BFA', accent: '#7C3AED' },
+  MAINTENANCE_WORKS: { dot: '#FBBF24', accent: '#D97706' },
+  INSURANCE_CLAIMS: { dot: '#34D399', accent: '#059669' },
+  COMPLIANCE_CONTROLS: { dot: '#F472B6', accent: '#DB2777' },
+  MEDIA: { dot: '#94A3B8', accent: '#475569' },
+  RENTAL_MANAGEMENT: { dot: '#2DD4BF', accent: '#0D9488' },
+  OTHER_DOCUMENTS: { dot: '#64748B', accent: '#64748B' },
+};
+
+/** Zone « Sans rubrique » (documents à classer) : ambre, comme le badge « À classer ». */
+export const UNFILED_COLORS = { dot: '#F59E0B', accent: '#F59E0B' } as const;
+
+/** Couleurs d'un code de Rubrique quelconque ; « Sans rubrique » si inconnu ou absent. */
+export function rubricColors(code: string | null | undefined): { dot: string; accent: string } {
+  return (code && (RUBRIC_COLORS as Record<string, { dot: string; accent: string }>)[code]) || UNFILED_COLORS;
+}

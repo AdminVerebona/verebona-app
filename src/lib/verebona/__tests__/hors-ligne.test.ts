@@ -40,8 +40,10 @@ describe('file des questions en attente de connexion', () => {
 
 describe('branchement dans le client', () => {
   const hook = read('src/lib/verebona/useVerebona.ts');
-  const composer = read('src/components/verebona/VerebonaComposer.tsx');
-  const drawer = read('src/components/verebona/VerebonaDrawer.tsx');
+  // Direction D v2 : le champ Verebona (header et plein écran mobile)
+  // remplace le compositeur du tiroir ; l'espace de réponse remplace le tiroir.
+  const composer = read('src/components/verebona/space/VerebonaField.tsx');
+  const drawer = read('src/components/verebona/space/SpaceContent.tsx');
 
   it('le hook écoute `online` / `offline`, met la question en attente et la renvoie au retour', () => {
     expect(hook).toMatch(/addEventListener\('offline'/);
@@ -58,14 +60,14 @@ describe('branchement dans le client', () => {
     expect(hook).toMatch(/enqueue\(\{ messageId: userMsg\.id, text: message, context: extraContext, clientRequestId \}\)/);
   });
 
-  it('le champ est désactivé hors ligne, le tiroir le lui dit', () => {
-    expect(composer).toMatch(/composerState\(!offline/);
-    expect(composer).toMatch(/disabled=\{!etat\.canSend\}/);
-    expect(drawer).toMatch(/offline=\{!v\.online\}/);
+  it('le champ est désactivé hors ligne, et le dit', () => {
+    expect(composer).toMatch(/composerState\(api\?\.v\.online \?\? true/);
+    expect(composer).toMatch(/if \(!api \|\| !etat\.canSend\) return;/);
+    expect(composer).toMatch(/etat\.notice/);
   });
 
   it('pagination de l’historique branchée (§27.6)', () => {
     expect(hook).toMatch(/cursor=\$\{olderCursor\}/);
-    expect(drawer).toMatch(/onLoadOlder=/);
+    expect(drawer).toMatch(/api\.v\.loadOlder\(\)/);
   });
 });

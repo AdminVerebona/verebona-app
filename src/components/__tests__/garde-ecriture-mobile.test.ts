@@ -40,10 +40,14 @@ describe('les entrées KO sont gardées', () => {
   });
 
   it('l’assistant garde l’envoi et l’ouverture par événement', () => {
-    const src = read('src/components/verebona/VerebonaDrawer.tsx');
-    expect(src).toMatch(/onSend=\{envoyer\}/);
-    expect(src).not.toMatch(/onSend=\{v\.send\}/);
-    expect(src).not.toMatch(/onPick=\{\(label\) => v\.send/);
+    // Direction D v2 : le champ Verebona et l'espace de réponse remplacent
+    // le tiroir ; toute demande passe par `envoyer`, gardé.
+    const src = read('src/components/verebona/space/VerebonaSpaceProvider.tsx');
+    expect(src).toMatch(/ask: envoyer/);
+    expect(src).not.toMatch(/ask: v\.send/);
+    expect(src).toMatch(/const envoyer = useCallback\(\(texte: string, context\?: Record<string, string>\): false \| Promise<boolean> => \{\s*if \(!autorise\(\)\)/);
+    // L'ouverture par événement (`verebona:open`) passe aussi par la garde.
+    expect(src).toMatch(/addEventListener\('verebona:open'/);
   });
 
   it('le tiroir document ne reste jamais en édition sans droit', () => {

@@ -61,8 +61,9 @@ describe('une seule fenêtre pour toute l’application', () => {
   });
 
   it('les deux gardes recopiées passent par le contexte', () => {
+    // Direction D v2 : la coquille ne monte plus de « + » global sur
+    // ordinateur ; le « + » mobile porte ses fenêtres et sa garde.
     for (const chemin of [
-      'src/components/DashboardLayout.tsx',
       'src/components/mobile/mobile-actions-sheet.tsx',
     ]) {
       const source = sansCommentaires(read(chemin));
@@ -89,7 +90,6 @@ describe('la garde ne bloque pas à tort', () => {
 
 describe('les points de déclenchement sont gardés', () => {
   const câblés = [
-    'src/components/DashboardLayout.tsx',
     'src/components/mobile/mobile-actions-sheet.tsx',
     'src/components/assets/asset-substructures-panel.tsx',
     'src/components/assets/asset-equipments-panel.tsx',
@@ -100,7 +100,7 @@ describe('les points de déclenchement sont gardés', () => {
     'src/components/assets/DocumentDrawer.tsx',
     'src/components/assets/EquipmentDrawer.tsx',
     'src/components/assets/RoomDrawer.tsx',
-    'src/components/verebona/VerebonaDrawer.tsx',
+    'src/components/verebona/space/VerebonaSpaceProvider.tsx',
   ];
 
   for (const chemin of câblés) {

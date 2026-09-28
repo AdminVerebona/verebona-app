@@ -105,6 +105,26 @@ export interface MascotParagraph {
   /** Sous-chaîne exacte de `text`, ou null (JSON-002). */
   highlight: string | null;
   actions: MascotAction[];
+  /**
+   * Tuile d'action de la bulle (Direction D v2 §3.2) : sévérité, libellé,
+   * bien et statut. Calculée côté serveur à partir des faits du sujet.
+   */
+  tile?: MascotTile;
+}
+
+/** Tuile d'action d'un sujet (Direction D v2 §3.2). */
+export interface MascotTile {
+  /** amber = à vérifier, red = en retard, blue = information, green = dépôt. */
+  tone: 'amber' | 'red' | 'blue' | 'green';
+  icon: 'circle-alert' | 'clock' | 'calendar-days' | 'file-text' | 'plus' | 'download';
+  /** Libellé de l'action (« Vérifier l'information »). */
+  label: string;
+  /** Bien concerné (ou document), affiché avant le statut. */
+  assetName: string | null;
+  /** « À vérifier », « En retard (2 j) »… */
+  status: string;
+  /** Le sujet mérite l'attention (et non une simple information). */
+  attention: boolean;
 }
 
 export type MascotStatus = 'ok' | 'clear' | 'degraded';

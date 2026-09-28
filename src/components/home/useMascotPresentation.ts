@@ -14,7 +14,7 @@
  *     (LOG-002), « disparu » quand un sujet vu dans la visite s'en va.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { MascotPresentation } from '@/services/home/mascot/types';
+import type { MascotPresentation, MascotSecondary } from '@/services/home/mascot/types';
 
 export const MASCOT_REFRESH_MS = 10 * 60_000;
 
@@ -35,7 +35,14 @@ function newVisitId(): string {
   }
 }
 
-export function useMascotPresentation() {
+/**
+ * `visibleSecondaries` : secondaires réellement affichés par l'écran. La
+ * télémétrie « affiché » (LOG-001) ne compte que ce que l'utilisateur voit ;
+ * par défaut, tous.
+ */
+export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentation) => MascotSecondary[]) {
+  const visibles = useRef(visibleSecondaries);
+  visibles.current = visibleSecondaries;
   const [presentation, setPresentation] = useState<MascotPresentation | null>(null);
   const [failed, setFailed] = useState(false);
   const seq = useRef(0);
@@ -58,7 +65,8 @@ export function useMascotPresentation() {
     const presents = new Map<string, { sourceCode: string; placement: 'subject' | 'secondary' }>();
     p.paragraphs.filter((x) => x.sourceCode !== 'CLEAR')
       .forEach((x) => presents.set(x.occurrenceKey, { sourceCode: x.sourceCode, placement: 'subject' }));
-    p.secondaries.forEach((x) => presents.set(x.occurrenceKey, { sourceCode: x.sourceCode, placement: 'secondary' }));
+    (visibles.current ? visibles.current(p) : p.secondaries)
+      .forEach((x) => presents.set(x.occurrenceKey, { sourceCode: x.sourceCode, placement: 'secondary' }));
 
     const nouveaux = [...presents.entries()].filter(([k]) => !vus.current.has(k));
     const partis = [...vus.current.entries()].filter(([k]) => !presents.has(k));

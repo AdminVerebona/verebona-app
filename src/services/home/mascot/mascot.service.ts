@@ -33,7 +33,7 @@ export async function getMascotPresentation(
   const contextHash = contextHashOf(subjects, secondaries, candidates.degraded);
 
   if (subjects.length === 0) {
-    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null });
+    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today });
   }
 
   const input = buildT6Input(subjects);
@@ -43,7 +43,7 @@ export async function getMascotPresentation(
     void logT6({ accountId, contextHash, mode, outcome, input });
   }
   return buildPresentation({
-    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages,
+    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today,
   });
 }
 

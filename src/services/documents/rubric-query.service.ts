@@ -43,6 +43,10 @@ import {
   type RubricDefinition,
 } from '@/lib/referential/v2';
 
+import { MAX_LOADED_DOCUMENTS, rubricsForPage } from '@/lib/documents/rubric-page';
+
+export { MAX_LOADED_DOCUMENTS };
+
 /** Identifiant de la zone « Sans rubrique ». Jamais un code de Rubrique (§2.1). */
 export const UNFILED_GROUP = '__UNFILED__';
 
@@ -61,6 +65,12 @@ export interface RubricDocumentView {
   /** `null` ⇒ la carte affiche « Type à compléter » (§4.3). */
   documentTypeLabel: string | null;
   documentDate: string | null;
+  /**
+   * Date d'ajout (ISO 8601). Le tri « Date d'ajout » et la date affichée sur
+   * la ligne s'en servent : sans elle, la page ne pourrait trier que dans
+   * l'ordre reçu, pas à travers les Rubriques.
+   */
+  uploadedAt: string | null;
   mimeType: string | null;
   assetNames: string[];
 }
@@ -96,7 +106,13 @@ export interface RubricQuery {
   /** Vide = page globale ; un ou plusieurs identifiants = onglet de bien(s). */
   assetIds?: number[];
   typeCodes?: string[];
-  pageSize?: number;
+  /**
+   * Aperçu par Rubrique, ou `'all'` pour recevoir tout le périmètre (dans la
+   * limite de chargement ci-dessous). « Mes documents » demande `'all'` : le
+   * tri y est global et le regroupement optionnel, ce qui suppose d'avoir
+   * l'ensemble des documents côté page et non six par Rubrique.
+   */
+  pageSize?: number | 'all';
   /** §4.6 — un tri unique s'applique à TOUTES les Rubriques. */
   sort?: DocumentSort;
   direction?: SortDirection;
@@ -154,7 +170,7 @@ export function orderGroups(
 export async function getDocumentsByRubric(
   query: RubricQuery,
 ): Promise<RubricDocumentsPage> {
-  const pageSize = query.pageSize ?? 6;
+  const pageSize = query.pageSize === 'all' ? Number.POSITIVE_INFINITY : (query.pageSize ?? 6);
   const assetIds = query.assetIds ?? [];
 
   const scope = [eq(assetFiles.accountId, query.accountId), isNull(assetFiles.deletedAt)];
@@ -190,6 +206,7 @@ export async function getDocumentsByRubric(
         fallback: assetFiles.filename,
         documentTypeCode: assetFiles.documentTypeCode,
         documentDate: assetFiles.documentDate,
+        uploadedAt: assetFiles.uploadedAt,
         mimeType: assetFiles.mimeType,
         assetId: assetFiles.assetId,
         assetName: assets.name,
@@ -199,7 +216,7 @@ export async function getDocumentsByRubric(
       .where(and(...scope))
       // Tri par défaut : date d'ajout décroissante (§4.6).
       .orderBy(orderClause(query.sort ?? 'uploadedAt', query.direction ?? 'desc'))
-      .limit(2_000),
+      .limit(MAX_LOADED_DOCUMENTS),
     loadVisibilityContext(query.accountId, assetIds),
   ]);
 
@@ -231,6 +248,9 @@ export async function getDocumentsByRubric(
       documentTypeCode: row.documentTypeCode,
       documentTypeLabel: type?.label ?? null,
       documentDate: row.documentDate ?? null,
+      uploadedAt: row.uploadedAt instanceof Date
+        ? row.uploadedAt.toISOString()
+        : (row.uploadedAt ?? null),
       mimeType: row.mimeType,
       assetNames: row.assetName ? [row.assetName] : [],
     });
@@ -247,7 +267,11 @@ export async function getDocumentsByRubric(
     return { documents: all.slice(0, shown), hasMore: count > shown };
   };
 
-  const rubricGroups: RubricGroupView[] = visibleRubrics.map((rubric) => {
+  // Page complète : toute Rubrique contenant un document est rendue, même hors
+  // du périmètre de visibilité — sinon ses documents seraient comptés dans le
+  // total mais inatteignables (voir `rubricsForPage`).
+  const pageRubrics = rubricsForPage(visibleRubrics, countByRubric, query.pageSize === 'all');
+  const rubricGroups: RubricGroupView[] = pageRubrics.map((rubric) => {
     const all = byGroup.get(rubric.code) ?? [];
     const count = countByRubric.get(rubric.code) ?? 0;
     return { code: rubric.code, label: rubric.label, count, ...take(rubric.code, all, count) };
@@ -274,7 +298,10 @@ export async function getDocumentsByRubric(
   ].sort((a, b) => a.label.localeCompare(b.label, 'fr'));
 
   return {
-    groups: orderGroups(rubricGroups, visibleRubrics, unfiled),
+    // L'ordre de `pageRubrics` est déjà celui du référentiel (visibles comprises).
+    groups: query.pageSize === 'all'
+      ? (unfiled.count > 0 ? [unfiled, ...rubricGroups] : rubricGroups)
+      : orderGroups(rubricGroups, visibleRubrics, unfiled),
     typeOptions,
     total: [...countByRubric.values()].reduce((sum, n) => sum + n, 0),
     unfiledCount,

@@ -27,3 +27,19 @@ export function splitHighlight(text: string, highlight: string | null): Array<{ 
     { text: text.slice(i + highlight.length), strong: false },
   ].filter((p) => p.text.length > 0);
 }
+
+const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const JOURS_COURTS = ['Dim.', 'Lun.', 'Mar.', 'Mer.', 'Jeu.', 'Ven.', 'Sam.'];
+const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+const MOIS_COURTS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+
+/** Bulle desktop (Direction D v2 §3.2) : « Mercredi 23 septembre ». */
+export function greetingDateLong(now: Date = new Date()): string {
+  const j = JOURS[now.getDay()];
+  return `${j.charAt(0).toUpperCase()}${j.slice(1)} ${now.getDate() === 1 ? '1er' : now.getDate()} ${MOIS[now.getMonth()]}`;
+}
+
+/** Bulle mobile (Direction D v2 §4.2) : « Mer. 23 sept. ». */
+export function greetingDateShort(now: Date = new Date()): string {
+  return `${JOURS_COURTS[now.getDay()]} ${now.getDate()} ${MOIS_COURTS[now.getMonth()]}`;
+}

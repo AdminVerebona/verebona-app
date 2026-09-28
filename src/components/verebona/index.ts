@@ -1,13 +1,11 @@
-export { VerebonaDrawer } from './VerebonaDrawer';
-export { VerebonaTrigger } from './VerebonaTrigger';
-export { VerebonaHeader } from './VerebonaHeader';
+/**
+ * Verebona — Direction D v2 : un seul champ et un seul espace de réponse
+ * (le tiroir latéral et son déclencheur flottant sont retirés).
+ */
+export { VerebonaSpaceProvider, useVerebonaSpace } from './space/VerebonaSpaceProvider';
+export { VerebonaHeaderField, VerebonaDesktopPanel, VerebonaMobileField, VerebonaMobileSpace } from './space/VerebonaField';
+export { MascotPose } from './space/MascotPose';
 export { VerebonaMascot } from './VerebonaMascot';
-export { VerebonaConversation } from './VerebonaConversation';
-export { VerebonaMessageItem } from './VerebonaMessage';
-export { VerebonaComposer } from './VerebonaComposer';
-export { VerebonaSuggestions } from './VerebonaSuggestions';
-export { VerebonaResultCard } from './VerebonaResultCard';
 export { VerebonaSources } from './VerebonaSources';
-export { VerebonaActions } from './VerebonaActions';
-export { VerebonaFeedback } from './VerebonaFeedback';
 export { VerebonaExplanation } from './VerebonaExplanation';
+export { VerebonaCommandPlan } from './VerebonaCommandPlan';

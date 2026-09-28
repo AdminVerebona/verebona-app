@@ -11,6 +11,8 @@
  *   ?sort=uploadedAt|documentDate|title  &  ?direction=asc|desc
  *   ?offsets=MEDIA:6,OTHER_DOCUMENTS:12  décalage par groupe, pour « Voir les N autres »
  *   ?pageSize=6             aperçu par Rubrique avant repli
+ *   ?pageSize=all           tout le périmètre (« Mes documents » : tri global,
+ *                           regroupement optionnel, filtres appliqués sur la page)
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
@@ -44,7 +46,9 @@ export async function GET(req: NextRequest) {
     .split(',')
     .map((v) => v.trim())
     .filter(Boolean);
-  const pageSize = Math.min(Math.max(Number(p.get('pageSize')) || 6, 1), 50);
+  const pageSize: number | 'all' = p.get('pageSize') === 'all'
+    ? 'all'
+    : Math.min(Math.max(Number(p.get('pageSize')) || 6, 1), 50);
 
   const sortParam = p.get('sort');
   const sort: DocumentSort =

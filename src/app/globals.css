@@ -736,3 +736,99 @@ html[data-theme="beige"] button[class*="Clock"] {
   background-color: #F9FAFB !important;
   border-color: #D1D5DB !important;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   DIRECTION D v2 « LA MASCOTTE » — jetons, polices, mouvement
+   (Verebona - Direction D v2 - Specification §12, §12bis)
+
+   Polices auto-hébergées (`public/fonts`, licence OFL) : la CSP n'autorise
+   que `font-src 'self'`. Inter pour l'interface, Bricolage Grotesque pour
+   « Bonjour, … » et les titres de section de l'accueil.
+   ══════════════════════════════════════════════════════════════════════════ */
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/inter-latin-400-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: swap; src: url('/fonts/inter-latin-500-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/inter-latin-600-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/inter-latin-700-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Bricolage Grotesque'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/bricolage-grotesque-latin-600-normal.woff2') format('woff2'); }
+
+:root {
+  --font-display: 'Bricolage Grotesque', 'Inter', system-ui, sans-serif;
+  /* Surfaces : des lavis sur le fond, jamais des aplats. */
+  --field-bg: rgba(30, 41, 59, 0.6);
+  --row-muted: rgba(15, 23, 42, 0.5);
+  --veil: rgba(2, 6, 23, 0.55);
+  /* Trio sémantique lavis / bordure / texte (§12). */
+  --vb-red-500: #EF4444;
+  --vb-amber-500: #F59E0B;
+  --vb-green-500: #22C55E;
+  --vb-violet-500: #8B5CF6;
+  --vb-blue-500: #3B82F6;
+  --vb-blue-700: #1D4ED8;
+  --wash-red: rgba(239, 68, 68, 0.14);
+  --wash-amber: rgba(245, 158, 11, 0.14);
+  --wash-green: rgba(34, 197, 94, 0.14);
+  --wash-violet: rgba(139, 92, 246, 0.14);
+  --wash-blue: rgba(59, 130, 246, 0.14);
+  --wash-slate: rgba(59, 130, 246, 0.15);
+  --edge-amber: rgba(245, 158, 11, 0.3);
+  --on-red: #FCA5A5;
+  --on-amber: #FCD34D;
+  --on-green: #6EE7A3;
+  --on-violet: #B49BFF;
+  --on-blue: #BFDBFE;
+  --on-slate: #94A3B8;
+  --tile-empty: linear-gradient(135deg, #1E293B, #0B1428);
+  --vb-shadow-panel: 0 40px 100px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(59, 130, 246, 0.06);
+}
+
+html[data-theme="beige"] body, body.theme-beige {
+  --field-bg: #F9FAFB;
+  --row-muted: #F9FAFB;
+  --veil: rgba(15, 23, 42, 0.28);
+  --wash-slate: #F1F5F9;
+  --on-red: #B91C1C;
+  --on-amber: #92400E;
+  --on-green: #15803D;
+  --on-violet: #6D28D9;
+  --on-blue: #1D4ED8;
+  --on-slate: #475569;
+  --tile-empty: linear-gradient(135deg, #334155, #0F172A);
+  --vb-shadow-panel: 0 30px 80px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(59, 130, 246, 0.08);
+}
+
+.font-display { font-family: var(--font-display); }
+
+/* Mascotte : arrivée, puis une seule fois par changement de pose (§12bis). */
+@keyframes vb-pose-a { 0% { opacity: 0; transform: translateY(10px) scale(.9); } 60% { opacity: 1; transform: translateY(-3px) scale(1.03); } 100% { opacity: 1; transform: none; } }
+@keyframes vb-pose-b { 0% { opacity: 0; transform: translateY(10px) scale(.9); } 60% { opacity: 1; transform: translateY(-3px) scale(1.03); } 100% { opacity: 1; transform: none; } }
+/* Traitement en cours : trois points (§6.4). */
+@keyframes vb-dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+/* Apparition du panneau sous le champ (§6.2). */
+@keyframes vb-rise { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes vb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vb-slide-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+
+.vb-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: vb-dot 1.2s infinite; }
+.vb-dot:nth-child(2) { animation-delay: .2s; }
+.vb-dot:nth-child(3) { animation-delay: .4s; }
+
+.vb-no-scrollbar { scrollbar-width: none; }
+.vb-no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Mouvement réduit (obligatoire, §12bis) : animations et transitions quasi
+   nulles, une seule itération, défilement non animé. Suivi en direct. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Accueil Direction D : halo radial très léger en haut à gauche (§3.2). */
+.vb-home-halo { background: radial-gradient(420px 260px at 10% 0%, rgba(59, 130, 246, .12), transparent 70%); }
+@media (min-width: 768px) {
+  .vb-home-halo { background: radial-gradient(900px 420px at 8% -10%, rgba(59, 130, 246, .10), transparent 70%); }
+}

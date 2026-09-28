@@ -30,7 +30,7 @@ import type {
 } from './types';
 
 export * from './types';
-export { RUBRICS } from './rubrics';
+export { RUBRICS, RUBRIC_COLORS, UNFILED_COLORS, rubricColors } from './rubrics';
 export { DOCUMENT_TYPES } from './document-types';
 
 /**

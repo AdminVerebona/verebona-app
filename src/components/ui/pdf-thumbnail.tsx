@@ -1,11 +1,17 @@
 "use client"
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { FileText } from 'lucide-react';
 
 interface PdfThumbnailProps {
   fileId: string;
   className?: string;
+  /**
+   * Rendu à la place de l'icône quand la page ne peut pas être lue (PDF
+   * protégé, fichier absent). « Mes documents » y met sa mini-page, pour
+   * qu'un échec ne se voie pas comme un trou sombre dans une feuille blanche.
+   */
+  fallback?: ReactNode;
 }
 
 /**
@@ -84,7 +90,7 @@ async function ouvrirPdf(fileId: string, forcerWorkerDuPaquet: boolean) {
   throw derniere ?? new Error('PDF illisible');
 }
 
-export function PdfThumbnail({ fileId, className = '' }: PdfThumbnailProps) {
+export function PdfThumbnail({ fileId, className = '', fallback }: PdfThumbnailProps) {
   const conteneurRef = useRef<HTMLDivElement>(null);
   const [image, setImage] = useState<string | null>(() => rendus.get(fileId) ?? null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>(
@@ -159,6 +165,7 @@ export function PdfThumbnail({ fileId, className = '' }: PdfThumbnailProps) {
   }, [visible, image, fileId]);
 
   if (status === 'error') {
+    if (fallback !== undefined) return <div className={`relative overflow-hidden ${className}`}>{fallback}</div>;
     return (
       <div className={`flex items-center justify-center bg-slate-800 ${className}`}>
         <FileText className="w-8 h-8 text-slate-400 opacity-60" aria-hidden />

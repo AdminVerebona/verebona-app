@@ -190,7 +190,11 @@ export async function GET(req: NextRequest) {
     // classique reste ouverte à tous — l'offre Standard en dépend — mais son
     // repli sémantique sort du chemin dès que l'assistant est basculé, sans
     // quoi deux moteurs répondraient à la même requête (§10.4, critère n°15).
-    if (shouldRunLegacy('AI_INTELLIGENT_ASSISTANT') && PREMIUM_PLANS.has(session.planType)) {
+    // `instant=1` : suggestions pendant la frappe (champ Verebona, Direction D
+    // v2) — jamais d'appel modèle à chaque frappe ; « Entrée » interroge
+    // l'assistant avec la question complète.
+    const instant = new URL(req.url).searchParams.get('instant') === '1';
+    if (!instant && shouldRunLegacy('AI_INTELLIGENT_ASSISTANT') && PREMIUM_PLANS.has(session.planType)) {
       try {
         const aiResults = await geminiSearch(q, accountId);
         if (aiResults.length > 0) {
