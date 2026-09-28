@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { FileDown, Send, FileText, Home, Shield, Package, RefreshCw, Download, AlertCircle, CheckCircle2, Clock, XCircle, X, Crown, CalendarDays, Trash2 } from 'lucide-react';
+import { FileDown, Send, FileText, Home, Shield, ShieldAlert, KeyRound, Package, RefreshCw, Download, AlertCircle, CheckCircle2, Clock, XCircle, X, Crown, CalendarDays, Trash2 } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,14 +22,17 @@ import { getPlanTheme } from '@/lib/plan-theme';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { isCilEligible } from '@/lib/asset-capabilities';
+import {
+  DOSSIER_CODES, DOSSIER_DESCRIPTIONS, DOSSIER_LABELS, EXPORT_BRUT_LABEL, exportCodeLabel,
+  isDossierCode, isDossierEligibleForFamily, type DossierCode,
+} from '@/services/exports/catalog';
+import type { CatalogDossier, ExportCatalog } from '@/services/exports/export-catalog.service';
 
-export type ExportType =
-  | 'CIL_REGLEMENTAIRE'
-  | 'DOSSIER_VENTE'
-  | 'DOSSIER_COMPLET'
-  | 'ASSURANCE_ESTIMATION'
-  | 'ASSURANCE_INDEMNISATION'
-  | 'EXPORT_BRUT';
+/**
+ * Codes envoyés à `POST /api/assets/[id]/exports` : les six dossiers V12
+ * (`services/exports/catalog`) et l'export de données brutes.
+ */
+export type ExportType = DossierCode | 'EXPORT_BRUT';
 
 interface ExportUsageDef {
   type: ExportType | 'TRANSMISSION';
@@ -38,59 +41,44 @@ interface ExportUsageDef {
   icon: React.ElementType;
   section: 'dossiers' | 'transfert';
   premiumOnly: boolean;
-  /** Asset categories for which this export type is available. 'ALL' = no restriction. */
-  allowedCategories: string[] | 'ALL';
 }
 
+/** Pictogramme de chaque dossier (Lucide, comme le reste de l'application). */
+const DOSSIER_ICONS: Record<DossierCode, React.ElementType> = {
+  CIL: FileText,
+  DOSSIER_COMPLET: FileText,
+  VENTE: Home,
+  LOCATION: KeyRound,
+  ASSURANCE_SOUSCRIPTION: Shield,
+  ASSURANCE_SINISTRE: ShieldAlert,
+};
+
+/**
+ * Cartes proposées. Les dossiers suivent le catalogue V12 (§1.2) ; leur
+ * éligibilité, leur verrou d'offre et leurs indices de préparation viennent
+ * de `GET /api/assets/[id]/export-catalog` (EXP-001), avec repli local sur la
+ * règle de famille si le catalogue ne répond pas.
+ */
 const EXPORT_USAGES: ExportUsageDef[] = [
-  {
-    type: 'CIL_REGLEMENTAIRE',
-    label: 'Carnet d\'information du logement',
-    description: 'Générez le CIL d\'une maison ou d\'un appartement à partir des données et documents disponibles.',
-    icon: FileText, section: 'dossiers', premiumOnly: true,
-    allowedCategories: ['IMMOBILIER'],
-  },
-  {
-    type: 'DOSSIER_VENTE',
-    label: 'Dossier de vente',
-    description: 'Ensemble des documents requis pour la mise en vente du bien',
-    icon: Home, section: 'dossiers', premiumOnly: true,
-    allowedCategories: 'ALL',
-  },
-  {
-    type: 'ASSURANCE_ESTIMATION',
-    label: 'Assurance — Estimation',
-    description: 'Dossier d\'estimation de valeur pour votre assureur',
-    icon: Shield, section: 'dossiers', premiumOnly: true,
-    allowedCategories: 'ALL',
-  },
-  {
-    type: 'ASSURANCE_INDEMNISATION',
-    label: 'Assurance — Indemnisation',
-    description: 'Dossier de déclaration et justificatifs en cas de sinistre',
-    icon: Shield, section: 'dossiers', premiumOnly: true,
-    allowedCategories: 'ALL',
-  },
-  {
-    type: 'DOSSIER_COMPLET',
-    label: 'Dossier complet du bien',
-    description: 'Document récapitulatif complet de toutes les informations et documents disponibles dans Verebona.',
-    icon: FileText, section: 'dossiers', premiumOnly: true,
-    allowedCategories: 'ALL',
-  },
+  ...DOSSIER_CODES.map((code): ExportUsageDef => ({
+    type: code,
+    label: DOSSIER_LABELS[code],
+    description: DOSSIER_DESCRIPTIONS[code],
+    icon: DOSSIER_ICONS[code],
+    section: 'dossiers',
+    premiumOnly: true,
+  })),
   {
     type: 'EXPORT_BRUT',
-    label: 'Export données brutes',
+    label: EXPORT_BRUT_LABEL,
     description: 'Tous vos fichiers et données en un ZIP téléchargeable',
     icon: Package, section: 'transfert', premiumOnly: false,
-    allowedCategories: 'ALL',
   },
   {
     type: 'TRANSMISSION',
     label: 'Transmission du bien',
     description: 'Transférer votre bien vers un autre compte Verebona.',
     icon: Send, section: 'transfert', premiumOnly: false,
-    allowedCategories: 'ALL',
   },
 ];
 
@@ -161,15 +149,19 @@ function StatusIcon({ status }: { status: string }) {
   return <Clock className="w-4 h-4 text-blue-400 flex-shrink-0 animate-pulse" />;
 }
 
+/**
+ * Libellés de l'historique : codes V12, anciens codes (lignes antérieures à la
+ * migration 0213) et transmission. Lire via `typeLabel`.
+ */
 export const TYPE_LABELS: Record<string, string> = {
-  CIL_REGLEMENTAIRE: 'Carnet d\'information du logement',
-  DOSSIER_VENTE: 'Dossier de vente',
-  DOSSIER_COMPLET: 'Dossier complet du bien',
-  ASSURANCE_ESTIMATION: 'Assurance — Estimation',
-  ASSURANCE_INDEMNISATION: 'Assurance — Indemnisation',
-  EXPORT_BRUT: 'Export données brutes',
+  ...DOSSIER_LABELS,
+  EXPORT_BRUT: EXPORT_BRUT_LABEL,
   TRANSMISSION: 'Transmission du bien',
 };
+
+export function typeLabel(code: string): string {
+  return TYPE_LABELS[code] ?? exportCodeLabel(code);
+}
 
 function formatDate(iso: string | null): string {
   if (!iso) return '';
@@ -238,6 +230,17 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
   const [loadingTransmissions, setLoadingTransmissions] = useState(false);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
 
+  // Catalogue V12 (EXP-001) : éligibilité, verrou d'offre, indices de préparation.
+  const [catalog, setCatalog] = useState<ExportCatalog | null>(null);
+  const loadCatalog = useCallback(async () => {
+    try {
+      setCatalog(await apiClient.get<ExportCatalog>(`/api/assets/${assetId}/export-catalog`));
+    } catch {
+      // Repli : règles de famille locales (isAllowed) et droits du compte.
+      setCatalog(null);
+    }
+  }, [assetId]);
+
   // CIL completeness summary (loaded once for IMMOBILIER assets, refreshed after export created)
   const [cilSummary, setCilSummary] = useState<CilPreparationSummary | null>(null);
   const [cilSummaryLoading, setCilSummaryLoading] = useState(false);
@@ -282,7 +285,8 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
     loadExports();
     loadTransmissions();
     loadCilSummary();
-  }, [loadExports, loadTransmissions, loadCilSummary]);
+    loadCatalog();
+  }, [loadExports, loadTransmissions, loadCilSummary, loadCatalog]);
 
   const transmissionPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -349,8 +353,8 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
 
   const handleExportCreated = useCallback(async () => {
     setDrawerUsage(null);
-    await Promise.all([loadExports(), loadTransmissions(), loadCilSummary()]);
-  }, [loadExports, loadTransmissions, loadCilSummary]);
+    await Promise.all([loadExports(), loadTransmissions(), loadCilSummary(), loadCatalog()]);
+  }, [loadExports, loadTransmissions, loadCilSummary, loadCatalog]);
 
   const handleCancelTransmission = useCallback(async (transmissionId: number) => {
     setCancellingId(transmissionId);
@@ -365,14 +369,23 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
     }
   }, [assetId, loadTransmissions]);
 
-  const isAllowed = (usage: ExportUsageDef) =>
-    (usage.type !== 'CIL_REGLEMENTAIRE' || cilOffert)
-    && (usage.allowedCategories === 'ALL' || usage.allowedCategories.includes(assetCategory));
+  const catalogEntry = (type: ExportUsageDef['type']): CatalogDossier | undefined =>
+    isDossierCode(type) ? catalog?.dossiers.find(d => d.code === type) : undefined;
+
+  // Dossier non applicable à la famille (LOCATION d'un véhicule, CIL d'un
+  // terrain…) : non proposé. Même règle que le serveur, qui refuse aussi.
+  const isAllowed = (usage: ExportUsageDef) => {
+    if (!isDossierCode(usage.type)) return true;
+    const entry = catalogEntry(usage.type);
+    if (entry) return entry.eligible;
+    return isDossierEligibleForFamily(usage.type, assetCategory) && (usage.type !== 'CIL' || cilOffert);
+  };
 
   const dossierUsages = EXPORT_USAGES.filter(u => u.section === 'dossiers' && isAllowed(u));
   const transfertUsages = EXPORT_USAGES.filter(u => u.section === 'transfert' && isAllowed(u));
 
-  const isLocked = (usage: ExportUsageDef) => usage.premiumOnly && premiumRefuse;
+  const isLocked = (usage: ExportUsageDef) =>
+    usage.premiumOnly && (catalogEntry(usage.type)?.locked ?? premiumRefuse);
 
   // CIL completeness derived values
   const cilPct = cilSummary?.completion?.percentage ?? 0;
@@ -393,8 +406,14 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
             const locked = isLocked(usage);
             const Icon = usage.icon;
             const premiumTheme = getPlanTheme('PREMIUM');
-            const isCilRegl = usage.type === 'CIL_REGLEMENTAIRE';
+            const isCilRegl = usage.type === 'CIL';
             const showCilInfo = isCilRegl && cilOffert && !locked;
+            const entry = catalogEntry(usage.type);
+            // Indice de préparation le plus important (bloquant, puis recommandé).
+            const hint = !locked && !isCilRegl
+              ? entry?.readiness.hints.find(h => h.severity === 'blocking') ?? entry?.readiness.hints.find(h => h.severity === 'warning')
+              : undefined;
+            const lastGen = !isCilRegl ? entry?.lastGeneration : null;
 
             return (
               <button
@@ -435,8 +454,24 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
                     </div>
                   )}
 
+                  {hint && (
+                    <p className="mt-2 flex items-start gap-1 text-[11px] leading-snug text-amber-400">
+                      <AlertCircle className="w-3 h-3 mt-px shrink-0" />
+                      {hint.message}
+                    </p>
+                  )}
+                  {lastGen?.status === 'ready' && (
+                    <span className="mt-1.5 inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <CalendarDays className="w-2.5 h-2.5" />
+                      Généré le {formatDateLong(lastGen.createdAt)}
+                    </span>
+                  )}
+
                   {locked && (
-                    <Badge className="mt-1.5 text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 dark:text-blue-300 border border-blue-500/30 dark:border-blue-500/20 hover:bg-blue-500/20">
+                    <Badge
+                      className="mt-1.5 text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 dark:text-blue-300 border border-blue-500/30 dark:border-blue-500/20 hover:bg-blue-500/20"
+                      title={entry?.lockReason?.message}
+                    >
                       Premium
                     </Badge>
                   )}
@@ -566,7 +601,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
               >
                 <StatusIcon status={exp.status} />
                 <div className="flex-1 min-w-0">
-                  <span className="font-medium truncate block">{TYPE_LABELS[exp.exportType] ?? exp.exportType}</span>
+                  <span className="font-medium truncate block">{typeLabel(exp.exportType)}</span>
                   {exp.status === 'error' && exp.errorMessage && (
                     <p className="text-xs text-red-500 truncate mt-0.5">{exp.errorMessage}</p>
                   )}
@@ -639,7 +674,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
           <AlertDialogHeader>
             <AlertDialogTitle>Supprimer le fichier de cet export ?</AlertDialogTitle>
             <AlertDialogDescription>
-              Le fichier de l&apos;export <strong>{TYPE_LABELS[deleteConfirm?.exportType ?? ''] ?? deleteConfirm?.exportType}</strong> sera supprimé définitivement ; l&apos;entrée reste visible dans l&apos;historique. Les fichiers déjà téléchargés restent disponibles localement.
+              Le fichier de l&apos;export <strong>{typeLabel(deleteConfirm?.exportType ?? '')}</strong> sera supprimé définitivement ; l&apos;entrée reste visible dans l&apos;historique. Les fichiers déjà téléchargés restent disponibles localement.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

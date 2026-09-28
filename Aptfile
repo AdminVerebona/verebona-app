@@ -1,0 +1,16 @@
+# Bibliothèques système de Chromium (chromium-headless-shell de Playwright) pour le
+# moteur de dossiers V12 — CDC Exports V12 DEC-003 / MIG-03. Installées par
+# https://github.com/Scalingo/apt-buildpack (premier buildpack de `.buildpacks`).
+# Noms de paquets Ubuntu 24.04 (scalingo-24) et suivants (scalingo-26) : suffixe t64.
+libgtk-3-0t64
+libgbm-dev
+libnotify-dev
+libnss3
+libxss1
+libasound2t64
+libxtst6
+xauth
+xvfb
+# Polices de repli pour les rares glyphes absents des polices embarquées
+# (ᵉ, →, ₂…) ; Inter, Bricolage Grotesque et Space Mono sont servies par l'application.
+fonts-dejavu-core

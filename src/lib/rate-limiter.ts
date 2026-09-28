@@ -13,13 +13,13 @@ class RateLimiter {
   private readonly windowMs: number;
   private readonly maxRequests: number;
 
-  constructor() {
+  constructor(opts: { maxRequests?: number; windowMs?: number } = {}) {
     // Configurable via env var, default 10 requests per minute
-    this.maxRequests = parseInt(process.env.FILE_PRESIGN_RATE_LIMIT || '10', 10);
-    this.windowMs = 60 * 1000; // 1 minute
+    this.maxRequests = opts.maxRequests ?? parseInt(process.env.FILE_PRESIGN_RATE_LIMIT || '10', 10);
+    this.windowMs = opts.windowMs ?? 60 * 1000; // 1 minute
 
     // Cleanup old entries every 5 minutes
-    setInterval(() => this.cleanup(), 5 * 60 * 1000);
+    setInterval(() => this.cleanup(), 5 * 60 * 1000).unref?.();
   }
 
   /**
@@ -86,6 +86,16 @@ class RateLimiter {
 
 // Singleton instance
 export const rateLimiter = new RateLimiter();
+
+/**
+ * Demandes de génération d'exports (POST création / relance) : par
+ * utilisateur, `EXPORTS_POST_RATE_LIMIT` par minute (défaut 6). Complète le
+ * plafond durable de générations actives par compte (exports V12).
+ */
+export const exportGenerationRateLimiter = new RateLimiter({
+  maxRequests: Math.max(1, parseInt(process.env.EXPORTS_POST_RATE_LIMIT || '6', 10) || 6),
+  windowMs: 60 * 1000,
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth rate limiter — sliding window, 5 tentatives / 15 minutes par IP

@@ -1,0 +1,1007 @@
+{
+  "$comment": "Données d'exemple du dossier complet (CDC V12 §9, §19.1). Nominal et riche repris de design-v12/Dossier complet.dc.html ; le riche ajoute du volume ; minimal dérivé. Contrat : dossier-complet/README.md. Personnes, entreprises et numéros fictifs.",
+  "cases": {
+    "minimal": {
+      "caseInfo": {
+        "id": "minimal",
+        "label": "Minimal",
+        "recette": "REC-DOSSIER_COMPLET-MINIMAL / REC-DOSSIER_COMPLET-SANS_PHOTO",
+        "description": "Bien peu renseigné : type, adresse, surface. Aucune photo (couverture graphique sans panneau photo), aucun historique, aucune échéance, aucun document : seules la synthèse, les informations principales et la page Méthode sont rendues."
+      },
+      "export": {
+        "type": "DOSSIER_COMPLET",
+        "label": "Dossier complet du bien",
+        "reference": "VBN-DC-2026-0928-012",
+        "generatedAt": "2026-09-28T13:05:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "dossier_complet · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ"
+        ],
+        "categoryLabel": "Immobilier · Appartement",
+        "fields": {
+          "typeLabel": "Appartement · T3",
+          "livingAreaSqm": 68,
+          "address1": "14 rue des Remparts d'Ainay",
+          "postalCode": "69002",
+          "city": "Lyon"
+        },
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "date": "2026-06-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": {
+        "asset": "Appartement T3 · Lyon 2ᵉ arrondissement",
+        "status": "Actif"
+      },
+      "finance": {
+        "enabled": false
+      },
+      "history": [],
+      "deadlines": [],
+      "contracts": [],
+      "documents": [
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "rib",
+          "title": "RIB du compte de charges",
+          "typeLabel": "Bancaire",
+          "date": "2025-01-10",
+          "pages": 1,
+          "mode": null
+        }
+      ],
+      "photos": [],
+      "mustNotAppear": [
+        "RIB",
+        "342 000",
+        "Estimation Verebona",
+        "Documents clés",
+        "Photos du bien",
+        "Index des annexes"
+      ]
+    },
+    "nominal": {
+      "caseInfo": {
+        "id": "nominal",
+        "label": "Nominal",
+        "recette": "REC-DOSSIER_COMPLET-NOMINAL / REC-DOSSIER_COMPLET-AVEC_SENSIBLE_NON_COCHÉ",
+        "description": "Maquette design-v12, variante nominale : synthèse, informations principales, historique (7 événements) et 3 échéances, 2 contrats, 5 documents clés (3 intégrés, 2 au ZIP), 4 photos. Section financière non retenue (non précochée). RIB et avis de taxe foncière (sensibles) proposés non cochés."
+      },
+      "export": {
+        "type": "DOSSIER_COMPLET",
+        "label": "Dossier complet du bien",
+        "reference": "VBN-DC-2026-0928-014",
+        "generatedAt": "2026-09-28T14:32:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "dossier_complet · v1.0",
+        "zipName": "Verebona_DossierComplet_Appartement-Lyon-2e_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ"
+        ],
+        "categoryLabel": "Immobilier · Appartement",
+        "fields": {
+          "typeLabel": "Appartement · T3",
+          "livingAreaSqm": 68,
+          "address1": "14 rue des Remparts d'Ainay",
+          "roomsLabel": "3 pièces · 2 chambres",
+          "postalCode": "69002",
+          "city": "Lyon",
+          "floorLabel": "3ᵉ sur 5 · ascenseur",
+          "constructionYear": 1962,
+          "conditionLabel": "Bon",
+          "dpe": "C",
+          "ges": "A",
+          "heatingLabel": "Gaz individuel · chaudière condensation",
+          "coproLabel": "Oui · 24 lots",
+          "equipmentSummary": "Cuisine équipée, cave, VMC, fibre",
+          "equipmentChips": [
+            "Cuisine équipée",
+            "Cave 6 m²",
+            "Double vitrage",
+            "VMC simple flux",
+            "Fibre optique",
+            "Interphone"
+          ]
+        },
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "date": "2026-06-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": {
+        "asset": "Appartement T3 · Lyon 2ᵉ arrondissement",
+        "status": "Actif · propriétaire occupant",
+        "condition": "Bon état général"
+      },
+      "finance": {
+        "enabled": false,
+        "acquisition": {
+          "priceCents": 31200000,
+          "deedDate": "2023-09-15"
+        },
+        "retainedValue": {
+          "amountCents": 33500000,
+          "sourceLabel": "Saisie utilisateur",
+          "date": "2026-06"
+        },
+        "lines": [
+          {
+            "id": "l1",
+            "label": "Prix d'achat",
+            "date": "2023-09-15",
+            "amountCents": 31200000,
+            "kind": "acquisition",
+            "selected": true
+          },
+          {
+            "id": "l2",
+            "label": "Frais de notaire",
+            "date": "2023-09-15",
+            "amountCents": 2340000,
+            "kind": "acquisition",
+            "selected": true
+          },
+          {
+            "id": "l3",
+            "label": "Remplacement chaudière",
+            "date": "2024-03-12",
+            "amountCents": 465000,
+            "kind": "works",
+            "selected": true
+          },
+          {
+            "id": "l4",
+            "label": "Peinture séjour et chambres",
+            "date": "2025-05-02",
+            "amountCents": 320000,
+            "kind": "works",
+            "selected": true
+          },
+          {
+            "id": "l5",
+            "label": "Remplacement ballon ECS",
+            "date": "2026-01-18",
+            "amountCents": 199000,
+            "kind": "works",
+            "selected": true
+          }
+        ],
+        "charges": [
+          {
+            "label": "Charges de copropriété",
+            "amountCents": 216000
+          },
+          {
+            "label": "Taxe foncière",
+            "amountCents": 128500
+          },
+          {
+            "label": "Assurance habitation",
+            "amountCents": 31200
+          },
+          {
+            "label": "Contrat entretien chaudière",
+            "amountCents": 14900
+          }
+        ]
+      },
+      "history": [
+        {
+          "id": "e1",
+          "date": "2023-09-15",
+          "title": "Acquisition du bien",
+          "typeLabel": "Acquisition",
+          "provider": "Me Dubois, notaire",
+          "selected": true
+        },
+        {
+          "id": "e2",
+          "date": "2024-03-12",
+          "title": "Remplacement chaudière gaz condensation",
+          "typeLabel": "Travaux",
+          "provider": "Thermiconfort Lyon",
+          "selected": true
+        },
+        {
+          "id": "e3",
+          "date": "2024-11-04",
+          "title": "Entretien annuel chaudière",
+          "typeLabel": "Entretien",
+          "provider": "Thermiconfort Lyon",
+          "selected": true
+        },
+        {
+          "id": "e4",
+          "date": "2025-05-02",
+          "title": "Peinture séjour et chambres",
+          "typeLabel": "Travaux",
+          "provider": "Artisan peintre",
+          "selected": true
+        },
+        {
+          "id": "e5",
+          "date": "2025-11-06",
+          "title": "Entretien annuel chaudière",
+          "typeLabel": "Entretien",
+          "provider": "Thermiconfort Lyon",
+          "selected": true
+        },
+        {
+          "id": "e6",
+          "date": "2026-01-18",
+          "title": "Remplacement ballon d'eau chaude",
+          "typeLabel": "Réparation",
+          "provider": "Plomberie Bellecour",
+          "selected": true
+        },
+        {
+          "id": "e7",
+          "date": "2026-04-21",
+          "title": "Contrôle VMC et bouches d'extraction",
+          "typeLabel": "Contrôle",
+          "provider": "Syndic · prestataire",
+          "selected": true
+        }
+      ],
+      "deadlines": [
+        {
+          "id": "d1",
+          "title": "Entretien annuel chaudière",
+          "date": "2026-11-06",
+          "selected": true
+        },
+        {
+          "id": "d2",
+          "title": "Renouvellement assurance habitation",
+          "date": "2027-01-01",
+          "selected": true
+        },
+        {
+          "id": "d3",
+          "title": "Fin de garantie chaudière (pièces)",
+          "date": "2027-03-12",
+          "selected": true
+        }
+      ],
+      "contracts": [
+        {
+          "id": "k1",
+          "title": "Garantie chaudière · pièces et main-d'œuvre",
+          "detail": "Thermiconfort · jusqu'au 12/03/2027",
+          "selected": true
+        },
+        {
+          "id": "k2",
+          "title": "Assurance habitation multirisque",
+          "detail": "Contrat n° 4471 992 · échéance 01/01/2027",
+          "selected": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "acte",
+          "title": "Acte de vente",
+          "typeLabel": "Acte notarié",
+          "date": "2023-09-15",
+          "pages": 42,
+          "mode": "ZIP",
+          "preselected": false,
+          "fileName": "acte-de-vente.pdf",
+          "sizeBytes": 6800000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "dpe",
+          "title": "Diagnostic de performance énergétique",
+          "typeLabel": "Diagnostic",
+          "date": "2023-09-02",
+          "pages": 6,
+          "detail": "valide jusqu'au 01/09/2033",
+          "mode": "PDF",
+          "tone": "amber",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du PDF source rendue à l'échelle, ratio préservé, sans recadrage. Aucun contenu Verebona n'est superposé au document."
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "attest",
+          "title": "Attestation d'assurance habitation",
+          "typeLabel": "Attestation",
+          "date": "2026-01-01",
+          "pages": 1,
+          "mode": "PDF",
+          "tone": "green",
+          "preview": {
+            "kind": "image"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "fact-chaud",
+          "title": "Facture remplacement chaudière",
+          "typeLabel": "Facture",
+          "date": "2024-03-12",
+          "pages": 2,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "JPG",
+          "section": "docs",
+          "id": "notice",
+          "title": "Notice chaudière",
+          "typeLabel": "Notice technique",
+          "date": "2024-03-12",
+          "pages": 18,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "notice-chaudiere.jpg",
+          "sizeBytes": 11200000
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "rib",
+          "title": "RIB du compte de charges",
+          "typeLabel": "Bancaire",
+          "date": "2025-01-10",
+          "pages": 1,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "taxe",
+          "title": "Avis de taxe foncière 2025",
+          "typeLabel": "Fiscalité",
+          "date": "2025-09-01",
+          "pages": 2,
+          "mode": null
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Séjour · vue depuis l'entrée · 04/2026",
+          "focus": "50% 40%",
+          "selected": true,
+          "sensitive": false,
+          "cover": true
+        },
+        {
+          "id": "p2",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Séjour · côté fenêtres · 04/2026",
+          "focus": "15% 60%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Cuisine ouverte · 04/2026",
+          "focus": "80% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Chambre principale · 04/2026",
+          "focus": "30% 20%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p9",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Dégât des eaux · plafond salle de bain · 08/2026",
+          "focus": "50% 0%",
+          "selected": false,
+          "sensitive": true
+        }
+      ],
+      "mustNotAppear": [
+        "RIB",
+        "Avis de taxe foncière",
+        "342 000",
+        "Estimation Verebona",
+        "Valeur retenue",
+        "Frais de notaire",
+        "Dégât des eaux"
+      ]
+    },
+    "riche": {
+      "caseInfo": {
+        "id": "riche",
+        "label": "Riche",
+        "recette": "REC-DOSSIER_COMPLET-RICHE / REC-DOSSIER_COMPLET-AVEC_DOCS_ZIP",
+        "description": "Maquette design-v12, variante riche (section financière retenue explicitement, 6 photos, archive ZIP, index et annexes) enrichie pour éprouver la pagination : 16 événements d'historique (tableau sur deux pages, en-tête répété), 5 échéances dont 1 en retard, 4 contrats, 8 photos, photos HD au ZIP."
+      },
+      "export": {
+        "type": "DOSSIER_COMPLET",
+        "label": "Dossier complet du bien",
+        "reference": "VBN-DC-2026-0928-015",
+        "generatedAt": "2026-09-28T14:51:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "dossier_complet · v1.0",
+        "zipName": "Verebona_DossierComplet_Appartement-Lyon-2e_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ"
+        ],
+        "categoryLabel": "Immobilier · Appartement",
+        "fields": {
+          "typeLabel": "Appartement · T3",
+          "livingAreaSqm": 68,
+          "address1": "14 rue des Remparts d'Ainay",
+          "roomsLabel": "3 pièces · 2 chambres",
+          "postalCode": "69002",
+          "city": "Lyon",
+          "floorLabel": "3ᵉ sur 5 · ascenseur",
+          "constructionYear": 1962,
+          "conditionLabel": "Bon",
+          "dpe": "C",
+          "ges": "A",
+          "heatingLabel": "Gaz individuel · chaudière condensation",
+          "coproLabel": "Oui · 24 lots",
+          "equipmentSummary": "Cuisine équipée, cave, VMC, fibre",
+          "equipmentChips": [
+            "Cuisine équipée",
+            "Cave 6 m²",
+            "Double vitrage",
+            "VMC simple flux",
+            "Fibre optique",
+            "Interphone"
+          ]
+        },
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "date": "2026-06-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": {
+        "asset": "Appartement T3 · Lyon 2ᵉ arrondissement",
+        "status": "Actif · propriétaire occupant",
+        "condition": "Bon état général"
+      },
+      "finance": {
+        "enabled": true,
+        "acquisition": {
+          "priceCents": 31200000,
+          "deedDate": "2023-09-15"
+        },
+        "retainedValue": {
+          "amountCents": 33500000,
+          "sourceLabel": "Saisie utilisateur",
+          "date": "2026-06"
+        },
+        "lines": [
+          {
+            "id": "l1",
+            "label": "Prix d'achat",
+            "date": "2023-09-15",
+            "amountCents": 31200000,
+            "kind": "acquisition",
+            "selected": true
+          },
+          {
+            "id": "l2",
+            "label": "Frais de notaire",
+            "date": "2023-09-15",
+            "amountCents": 2340000,
+            "kind": "acquisition",
+            "selected": true
+          },
+          {
+            "id": "l3",
+            "label": "Remplacement chaudière",
+            "date": "2024-03-12",
+            "amountCents": 465000,
+            "kind": "works",
+            "selected": true
+          },
+          {
+            "id": "l4",
+            "label": "Peinture séjour et chambres",
+            "date": "2025-05-02",
+            "amountCents": 320000,
+            "kind": "works",
+            "selected": true
+          },
+          {
+            "id": "l5",
+            "label": "Remplacement ballon ECS",
+            "date": "2026-01-18",
+            "amountCents": 199000,
+            "kind": "works",
+            "selected": true
+          }
+        ],
+        "charges": [
+          {
+            "label": "Charges de copropriété",
+            "amountCents": 216000
+          },
+          {
+            "label": "Taxe foncière",
+            "amountCents": 128500
+          },
+          {
+            "label": "Assurance habitation",
+            "amountCents": 31200
+          },
+          {
+            "label": "Contrat entretien chaudière",
+            "amountCents": 14900
+          }
+        ]
+      },
+      "history": [
+        {
+          "id": "e1",
+          "date": "2023-09-15",
+          "title": "Acquisition du bien",
+          "typeLabel": "Acquisition",
+          "provider": "Me Dubois, notaire",
+          "selected": true
+        },
+        {
+          "id": "e2",
+          "date": "2024-03-12",
+          "title": "Remplacement chaudière gaz condensation",
+          "typeLabel": "Travaux",
+          "provider": "Thermiconfort Lyon",
+          "selected": true
+        },
+        {
+          "id": "e3",
+          "date": "2024-11-04",
+          "title": "Entretien annuel chaudière",
+          "typeLabel": "Entretien",
+          "provider": "Thermiconfort Lyon",
+          "selected": true
+        },
+        {
+          "id": "e4",
+          "date": "2025-05-02",
+          "title": "Peinture séjour et chambres",
+          "typeLabel": "Travaux",
+          "provider": "Artisan peintre",
+          "selected": true
+        },
+        {
+          "id": "e5",
+          "date": "2025-11-06",
+          "title": "Entretien annuel chaudière",
+          "typeLabel": "Entretien",
+          "provider": "Thermiconfort Lyon",
+          "selected": true
+        },
+        {
+          "id": "e6",
+          "date": "2026-01-18",
+          "title": "Remplacement ballon d'eau chaude",
+          "typeLabel": "Réparation",
+          "provider": "Plomberie Bellecour",
+          "selected": true
+        },
+        {
+          "id": "e7",
+          "date": "2026-04-21",
+          "title": "Contrôle VMC et bouches d'extraction",
+          "typeLabel": "Contrôle",
+          "provider": "Syndic · prestataire",
+          "selected": true
+        },
+        {
+          "id": "e8",
+          "date": "2023-10-02",
+          "title": "Relevé des compteurs et ouverture des contrats",
+          "typeLabel": "Administratif",
+          "provider": "Propriétaire",
+          "selected": true
+        },
+        {
+          "id": "e9",
+          "date": "2023-11-20",
+          "title": "Remplacement des joints de douche",
+          "typeLabel": "Réparation",
+          "provider": "Plomberie Bellecour",
+          "selected": true
+        },
+        {
+          "id": "e10",
+          "date": "2024-06-14",
+          "title": "Ramonage du conduit de fumée",
+          "typeLabel": "Entretien",
+          "provider": "Ramonage Rhône",
+          "selected": true
+        },
+        {
+          "id": "e11",
+          "date": "2024-09-30",
+          "title": "Assemblée générale · vote ravalement de façade",
+          "typeLabel": "Copropriété",
+          "provider": "Syndic Régie Ainay",
+          "selected": true
+        },
+        {
+          "id": "e12",
+          "date": "2025-02-17",
+          "title": "Remplacement serrure porte palière",
+          "typeLabel": "Réparation",
+          "provider": "Serrurerie Presqu’île",
+          "selected": true
+        },
+        {
+          "id": "e13",
+          "date": "2025-06-10",
+          "title": "Détartrage du ballon et contrôle groupe de sécurité",
+          "typeLabel": "Entretien",
+          "provider": "Plomberie Bellecour",
+          "selected": true
+        },
+        {
+          "id": "e14",
+          "date": "2025-09-22",
+          "title": "Ravalement de façade (copropriété)",
+          "typeLabel": "Travaux",
+          "provider": "Façades Lyonnaises",
+          "selected": true
+        },
+        {
+          "id": "e15",
+          "date": "2026-03-03",
+          "title": "Vérification détecteur de fumée",
+          "typeLabel": "Contrôle",
+          "provider": "Propriétaire",
+          "selected": true
+        },
+        {
+          "id": "e16",
+          "date": "2026-07-08",
+          "title": "Nettoyage des bouches VMC et filtres",
+          "typeLabel": "Entretien",
+          "provider": "Propriétaire",
+          "selected": true
+        },
+        {
+          "id": "e17",
+          "date": "2026-02-11",
+          "title": "Départ du précédent locataire · état des lieux",
+          "typeLabel": "Location",
+          "provider": "M. Laurent Picard",
+          "selected": true,
+          "occupantData": true
+        }
+      ],
+      "deadlines": [
+        {
+          "id": "d0",
+          "title": "Contrôle du détecteur de fumée",
+          "date": "2026-09-03",
+          "selected": true
+        },
+        {
+          "id": "d1",
+          "title": "Entretien annuel chaudière",
+          "date": "2026-11-06",
+          "selected": true
+        },
+        {
+          "id": "d2",
+          "title": "Renouvellement assurance habitation",
+          "date": "2027-01-01",
+          "selected": true
+        },
+        {
+          "id": "d3",
+          "title": "Fin de garantie chaudière (pièces)",
+          "date": "2027-03-12",
+          "selected": true
+        },
+        {
+          "id": "d4",
+          "title": "Ramonage annuel",
+          "date": "2027-06-14",
+          "selected": true
+        }
+      ],
+      "contracts": [
+        {
+          "id": "k1",
+          "title": "Garantie chaudière · pièces et main-d'œuvre",
+          "detail": "Thermiconfort · jusqu'au 12/03/2027",
+          "selected": true
+        },
+        {
+          "id": "k2",
+          "title": "Assurance habitation multirisque",
+          "detail": "Contrat n° 4471 992 · échéance 01/01/2027",
+          "selected": true
+        },
+        {
+          "id": "k3",
+          "title": "Contrat d’entretien chaudière",
+          "detail": "Thermiconfort · 149 € / an · reconduction tacite",
+          "selected": true
+        },
+        {
+          "id": "k4",
+          "title": "Garantie décennale · ravalement",
+          "detail": "Façades Lyonnaises · jusqu’au 22/09/2035",
+          "selected": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "acte",
+          "title": "Acte de vente",
+          "typeLabel": "Acte notarié",
+          "date": "2023-09-15",
+          "pages": 42,
+          "mode": "ZIP",
+          "preselected": false,
+          "fileName": "acte-de-vente.pdf",
+          "sizeBytes": 6800000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "dpe",
+          "title": "Diagnostic de performance énergétique",
+          "typeLabel": "Diagnostic",
+          "date": "2023-09-02",
+          "pages": 6,
+          "detail": "valide jusqu'au 01/09/2033",
+          "mode": "PDF",
+          "tone": "amber",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du PDF source rendue à l'échelle, ratio préservé, sans recadrage. Aucun contenu Verebona n'est superposé au document."
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "attest",
+          "title": "Attestation d'assurance habitation",
+          "typeLabel": "Attestation",
+          "date": "2026-01-01",
+          "pages": 1,
+          "mode": "PDF",
+          "tone": "green",
+          "preview": {
+            "kind": "image"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "fact-chaud",
+          "title": "Facture remplacement chaudière",
+          "typeLabel": "Facture",
+          "date": "2024-03-12",
+          "pages": 2,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "JPG",
+          "section": "docs",
+          "id": "notice",
+          "title": "Notice chaudière",
+          "typeLabel": "Notice technique",
+          "date": "2024-03-12",
+          "pages": 18,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "notice-chaudiere.jpg",
+          "sizeBytes": 11200000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "rcp",
+          "title": "Règlement de copropriété",
+          "typeLabel": "Copropriété",
+          "date": "2023-09-15",
+          "pages": 64,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "reglement-de-copropriete.pdf",
+          "sizeBytes": 4100000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "JPG",
+          "section": "archive",
+          "id": "photos-hd",
+          "title": "Photos haute définition (8)",
+          "typeLabel": "Photos",
+          "date": "2026-04",
+          "pages": null,
+          "mode": "ZIP",
+          "zipPathLabel": "photos/sejour-01.jpg … /photos/cave-01.jpg",
+          "sizeBytes": 27400000
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "rib",
+          "title": "RIB du compte de charges",
+          "typeLabel": "Bancaire",
+          "date": "2025-01-10",
+          "pages": 1,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "taxe",
+          "title": "Avis de taxe foncière 2025",
+          "typeLabel": "Fiscalité",
+          "date": "2025-09-01",
+          "pages": 2,
+          "mode": null
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Séjour · vue depuis l'entrée · 04/2026",
+          "focus": "50% 40%",
+          "selected": true,
+          "sensitive": false,
+          "cover": true
+        },
+        {
+          "id": "p2",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Séjour · côté fenêtres · 04/2026",
+          "focus": "15% 60%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Cuisine ouverte · 04/2026",
+          "focus": "80% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Chambre principale · 04/2026",
+          "focus": "30% 20%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p5",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Chambre 2 · 04/2026",
+          "focus": "60% 80%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p6",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Salle de bain · 04/2026",
+          "focus": "5% 5%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p7",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Entrée et rangements · 04/2026",
+          "focus": "95% 60%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p8",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Cave · 04/2026",
+          "focus": "40% 95%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p9",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Dégât des eaux · plafond salle de bain · 08/2026",
+          "focus": "50% 0%",
+          "selected": false,
+          "sensitive": true
+        }
+      ],
+      "mustNotAppear": [
+        "RIB",
+        "Avis de taxe foncière",
+        "342 000",
+        "Estimation Verebona",
+        "Picard",
+        "précédent locataire",
+        "Dégât des eaux"
+      ]
+    }
+  }
+}

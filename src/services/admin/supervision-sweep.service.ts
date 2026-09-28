@@ -88,20 +88,20 @@ export async function collectExportConditions(): Promise<Condition[]> {
             (array_agg(e.error_payload ORDER BY e.created_at DESC))[1] AS last_error,
             (array_agg(e.id ORDER BY e.created_at DESC))[1] AS last_id
        FROM export_generation e
-      WHERE e.status = 'error'
+      WHERE e.status IN ('error', 'failed')
         AND e.created_at > now() - make_interval(days => $1)
         AND e.created_at < now() - make_interval(mins => $2)
         AND NOT EXISTS (
               SELECT 1 FROM export_generation r
                WHERE r.asset_id = e.asset_id AND r.export_type = e.export_type
-                 AND r.status = 'ready' AND r.created_at > e.created_at)
+                 AND r.status IN ('ready', 'partial') AND r.created_at > e.created_at)
       GROUP BY e.asset_id, e.account_id, e.user_id, e.export_type`,
     [SWEEP_LOOKBACK_DAYS, EXPORT_ERROR_GRACE_MINUTES],
   );
   const stuck = await pgClient.unsafe<Row[]>(
     `SELECT id, asset_id, account_id, user_id, export_type, status, created_at
        FROM export_generation
-      WHERE status IN ('pending', 'generating')
+      WHERE status IN ('pending', 'queued', 'generating')
         AND created_at < now() - make_interval(mins => $1)
         AND created_at > now() - make_interval(days => $2)`,
     [EXPORT_STUCK_MINUTES, SWEEP_LOOKBACK_DAYS],

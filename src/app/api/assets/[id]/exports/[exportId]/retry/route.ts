@@ -1,34 +1,42 @@
 /**
  * POST /api/assets/[id]/exports/[exportId]/retry
- * Relance une génération échouée ou bloquée en 'generating' depuis > 5 min
  *
- * Conditions : status='error' OR (status='generating' AND generation_started_at < now()-5min AND output_payload IS NULL)
- * Idempotence : vérifie output_payload IS NULL avant de relancer
- * Accès par compte (Duo compris) ; CIL bloqué si B1/B3/B8 à compléter
- * (CIL-RULE-002) ; message d'erreur générique, support réellement notifié.
+ * Relance TECHNIQUE d'une génération en échec (ou bloquée : bail expiré sans
+ * reprise) : la génération est remise en file avec la MÊME demande figée
+ * (`snapshot_json.request`) — ce n'est pas une régénération depuis
+ * l'historique au sens de DRH-007 (qui imposerait une nouvelle préparation),
+ * mais la reprise d'un travail qui n'a jamais abouti.
+ *
+ * Accès par compte (Duo compris) ; offre et CIL-RULE-002 contrôlés ici (réponse
+ * immédiate), éligibilité et données refaites par le worker (validate_request).
+ *
+ * Garde-fous : limitation de débit par utilisateur, au plus
+ * `MAX_USER_RETRIES` relances par génération, plafond de générations actives
+ * par compte, et le compteur de tentatives n'est JAMAIS remis à zéro — un
+ * dossier qui fait tomber le worker ne peut pas être relancé indéfiniment
+ * (au-delà de `MAX_ATTEMPTS`, une exécution interrompue est close en échec).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { exportGenerations, accounts } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
-import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
-import { isPremiumPlan } from '@/types/domain';
-import { buildAssetSnapshot } from '@/services/export-snapshot.service';
-import { buildExportManifest } from '@/services/export-manifest.service';
-import type { ExportType, ExportOutput } from '@/services/export-manifest.service';
-import { renderExportToPdf } from '@/services/pdf-renderer.service';
-import { buildExportZip } from '@/services/export-zip.service';
-import { uploadExportFile, buildExportS3Key, getExportSignedUrl } from '@/services/export-upload.service';
+import { exportGenerations } from '@/db/schema';
+import { eq, and, inArray, lt, sql } from 'drizzle-orm';
 import { findAccessibleAssetForExport } from '@/services/exports/export-access';
+import { exportRouteError, EXPORT_ERROR_MESSAGES } from '@/services/exports/export-errors';
+import { normalizeExportCode, EXPORT_BRUT_CODE } from '@/services/exports/catalog';
+import { canUsePremiumFeature } from '@/services/entitlements.service';
 import {
   evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE, CIL_ACTION_REQUIRED_MESSAGE,
 } from '@/services/exports/cil-preparation.service';
-import {
-  EXPORT_ERROR_MESSAGES, technicalErrorMessage, exportRouteError,
-} from '@/services/exports/export-errors';
-import { notifySupportOfExportFailure } from '@/services/exports/export-support-notifier';
+import { toGenerationDto } from '@/services/exports/v12/generation/status';
+import { nudgeExportWorker } from '@/services/exports/v12/generation/worker';
+import { exportRateLimitResponse } from '@/services/exports/v12/generation/rate-limit';
+import { MAX_ACTIVE_PER_ACCOUNT, countActiveGenerations } from '@/services/exports/v12/generation/repository';
+import { TOO_MANY_GENERATIONS_MESSAGE } from '@/services/exports/v12/generation/enqueue';
+
+/** Relances manuelles autorisées par génération. */
+const MAX_USER_RETRIES = 3;
 
 export async function POST(
   request: NextRequest,
@@ -39,205 +47,82 @@ export async function POST(
     const { id, exportId } = await params;
     const assetId = parseInt(id);
     const exportIdNum = parseInt(exportId);
+    if (isNaN(assetId) || isNaN(exportIdNum)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
-    if (isNaN(assetId) || isNaN(exportIdNum)) {
-      return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
-    }
+    const limited = exportRateLimitResponse(session.userId);
+    if (limited) return limited;
 
-    // Accès par compte (Duo compris)
     const asset = await findAccessibleAssetForExport(session, assetId);
-    if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
+    if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND', code: 'ASSET_NOT_FOUND', message: EXPORT_ERROR_MESSAGES.ASSET_NOT_FOUND }, { status: 404 });
 
-    // Load export
-    const [exportRow] = await db
-      .select()
-      .from(exportGenerations)
-      .where(and(
-        eq(exportGenerations.id, exportIdNum),
-        eq(exportGenerations.assetId, assetId),
-      ))
-      .limit(1);
+    const [row] = await db.select().from(exportGenerations)
+      .where(and(eq(exportGenerations.id, exportIdNum), eq(exportGenerations.assetId, assetId))).limit(1);
+    if (!row) return NextResponse.json({ error: 'EXPORT_NOT_FOUND' }, { status: 404 });
 
-    if (!exportRow) return NextResponse.json({ error: 'EXPORT_NOT_FOUND' }, { status: 404 });
-
-    // CIL : même éligibilité qu'à la création (GAP-08) — un CIL créé avant la
-    // restriction pour un Immeuble ou un Mobil-home n'est pas regénéré.
-    if (exportRow.exportType === 'CIL_REGLEMENTAIRE' && !isCilEligible(asset)) {
-      return NextResponse.json({ error: 'INCOMPATIBLE_ASSET_CATEGORY', message: CIL_NOT_ELIGIBLE_MESSAGE }, { status: 400 });
-    }
-
-    // Check if retry is allowed
-    const canRetry = exportRow.status === 'error' ||
-      (exportRow.status === 'generating' &&
-       exportRow.generationStartedAt != null &&
-       new Date(exportRow.generationStartedAt).getTime() < Date.now() - 5 * 60 * 1000 &&
-       !exportRow.outputPayload);
-
+    const code = normalizeExportCode(row.exportType);
+    const stuck = row.status === 'generating' && (
+      row.lockedUntil ? new Date(row.lockedUntil).getTime() < Date.now()
+        : row.generationStartedAt != null && new Date(row.generationStartedAt).getTime() < Date.now() - 5 * 60 * 1000
+    );
+    const canRetry = code !== null && code !== EXPORT_BRUT_CODE
+      && (row.status === 'failed' || row.status === 'error' || row.status === 'pending' || stuck);
     if (!canRetry) {
       return NextResponse.json({
-        error: 'RETRY_NOT_ALLOWED',
-        status: exportRow.status,
-        code: 'RETRY_NOT_ALLOWED',
+        error: 'RETRY_NOT_ALLOWED', status: row.status, code: 'RETRY_NOT_ALLOWED',
         message: 'Cet export ne peut pas être relancé dans son état actuel.',
       }, { status: 400 });
     }
 
+    if ((row.userRetryCount ?? 0) >= MAX_USER_RETRIES) {
+      return NextResponse.json({
+        error: 'RETRY_LIMIT_REACHED', code: 'RETRY_LIMIT_REACHED',
+        message: 'Cet export a déjà été relancé plusieurs fois sans succès. Lancez une nouvelle génération ou contactez le support.',
+      }, { status: 429 });
+    }
+
+    const decision = await canUsePremiumFeature(asset.accountId);
+    if (!decision.allowed) return NextResponse.json({ error: decision.reason, code: decision.reason, message: decision.message }, { status: 403 });
+
     // CIL-RULE-002 : même blocage qu'à la création.
-    if (exportRow.exportType === 'CIL_REGLEMENTAIRE') {
+    if (code === 'CIL') {
       const readiness = await evaluateCilReadiness(asset);
       if (readiness.globalStatus === 'action_required') {
         return NextResponse.json({
-          error: CIL_ACTION_REQUIRED_CODE,
-          code: CIL_ACTION_REQUIRED_CODE,
-          message: CIL_ACTION_REQUIRED_MESSAGE,
-          blockingBlocks: readiness.blockingBlocks.map(b => ({ id: b.id, label: b.label })),
+          error: CIL_ACTION_REQUIRED_CODE, code: CIL_ACTION_REQUIRED_CODE, message: CIL_ACTION_REQUIRED_MESSAGE,
+          blockingBlocks: readiness.blockingBlocks.map((b) => ({ id: b.id, label: b.label })),
         }, { status: 422 });
       }
     }
 
-    // Idempotence guard: if output already exists, return current state
-    if (exportRow.outputPayload) {
-      return NextResponse.json({ exportId: exportIdNum, status: exportRow.status });
+    // Plafond de générations actives du compte (une génération bloquée compte déjà).
+    if (!stuck && (await countActiveGenerations(asset.accountId)) >= MAX_ACTIVE_PER_ACCOUNT) {
+      return NextResponse.json({ error: 'TOO_MANY_GENERATIONS', code: 'TOO_MANY_GENERATIONS', message: TOO_MANY_GENERATIONS_MESSAGE, limit: MAX_ACTIVE_PER_ACCOUNT }, { status: 429 });
     }
 
-    // Compte du bien, vérifié par `findAccessibleAssetForExport`. Pas
-    // `exportRow.accountId` : les exports antérieurs au lot 7 ont reçu un
-    // compte choisi au hasard parmi les adhésions (ancien resolveAccountId),
-    // qui peut différer du compte du bien (snapshot introuvable, clé S3,
-    // offre et notification sur le mauvais compte).
-    const accountId = asset.accountId;
+    // Remise en file atomique (seulement depuis l'état constaté). Le compteur
+    // de tentatives est conservé ; celui des relances manuelles incrémenté.
+    const [updated] = await db.update(exportGenerations).set({
+      status: 'queued',
+      exportType: code,
+      errorCode: null,
+      errorPayload: null,
+      lockedBy: null,
+      lockedUntil: null,
+      nextAttemptAt: null,
+      userRetryCount: sql`${exportGenerations.userRetryCount} + 1`,
+      // Réaligne l'entrée sur le compte du bien (anciennes lignes).
+      accountId: asset.accountId,
+    }).where(and(
+      eq(exportGenerations.id, exportIdNum),
+      inArray(exportGenerations.status, [row.status]),
+      lt(exportGenerations.userRetryCount, MAX_USER_RETRIES),
+    ))
+      .returning();
+    if (!updated) return NextResponse.json({ error: 'LOCK_FAILED' }, { status: 409 });
 
-    const now = new Date();
-    const newAttemptCount = (exportRow.generationAttemptCount ?? 0) + 1;
-
-    // Atomic lock for retry
-    const lockResult = await db
-      .update(exportGenerations)
-      .set({
-        status: 'generating',
-        generationStartedAt: now,
-        generationAttemptCount: newAttemptCount,
-        errorPayload: null,
-        // Réaligne l'entrée sur le compte du bien (anciennes lignes).
-        accountId,
-      })
-      .where(and(
-        eq(exportGenerations.id, exportIdNum),
-        // Only retry if output_payload is still null
-      ))
-      .returning({ id: exportGenerations.id });
-
-    if (lockResult.length === 0) {
-      return NextResponse.json({ error: 'LOCK_FAILED' }, { status: 409 });
-    }
-
-    // Determine plan — source de vérité : accounts.planType
-    const [accountRow] = await db
-      .select({ planType: accounts.planType })
-      .from(accounts)
-      .where(eq(accounts.id, accountId))
-      .limit(1);
-    const isPremium = isPremiumPlan(accountRow?.planType ?? '');
-
-    // Parse options
-    let manifestOptions: { customSections?: string[]; customDocIds?: number[]; includePhotos?: boolean; includeEquipments?: boolean } = {};
-    if (exportRow.manifestPayload) {
-      try { manifestOptions = JSON.parse(exportRow.manifestPayload); } catch {}
-    }
-
-    const outputs: ExportOutput[] = exportRow.requestedOutputs
-      ? JSON.parse(exportRow.requestedOutputs)
-      : ['PDF'];
-
-    const exportType = exportRow.exportType as ExportType;
-
-    try {
-      const snapshot = await buildAssetSnapshot(assetId, session.userId, { accountId });
-      const manifest = buildExportManifest(exportType, snapshot, {
-        ...manifestOptions,
-        requestedOutputs: outputs,
-        variant: exportRow.variant ?? undefined,
-      });
-
-      const outputPayload: Record<string, string | number> = {};
-
-      if (exportType === 'EXPORT_BRUT') {
-        const zipBuffer = await buildExportZip(manifest, snapshot, null, isPremium);
-        const zipKey = buildExportS3Key(accountId, assetId, exportIdNum, 'export_brut.zip');
-        await uploadExportFile(zipBuffer, zipKey, 'application/zip');
-        outputPayload.zipS3Key = zipKey;
-        outputPayload.zipSize = zipBuffer.length;
-      } else {
-        const pdfBuffer = await renderExportToPdf(manifest, snapshot);
-        const pdfKey = buildExportS3Key(accountId, assetId, exportIdNum, `${exportType}.pdf`);
-        await uploadExportFile(pdfBuffer, pdfKey, 'application/pdf');
-        outputPayload.pdfS3Key = pdfKey;
-        outputPayload.pdfSize = pdfBuffer.length;
-
-        if (outputs.includes('ZIP') && isPremium) {
-          const zipBuffer = await buildExportZip(manifest, snapshot, pdfBuffer, isPremium);
-          const zipKey = buildExportS3Key(accountId, assetId, exportIdNum, `${exportType}.zip`);
-          await uploadExportFile(zipBuffer, zipKey, 'application/zip');
-          outputPayload.zipS3Key = zipKey;
-          outputPayload.zipSize = zipBuffer.length;
-        }
-      }
-
-      await db
-        .update(exportGenerations)
-        .set({
-          status: 'ready',
-          snapshotPayload: JSON.stringify(snapshot),
-          outputPayload: JSON.stringify(outputPayload),
-          completedAt: new Date(),
-        })
-        .where(eq(exportGenerations.id, exportIdNum));
-
-      let downloadUrl: string | null = null;
-      let downloadZipUrl: string | null = null;
-      if (outputPayload.pdfS3Key) downloadUrl = await getExportSignedUrl(String(outputPayload.pdfS3Key), 3600);
-      if (outputPayload.zipS3Key) downloadZipUrl = await getExportSignedUrl(String(outputPayload.zipS3Key), 3600);
-
-      return NextResponse.json({ exportId: exportIdNum, status: 'ready', downloadUrl, downloadZipUrl });
-
-    } catch (error) {
-      const technicalMessage = technicalErrorMessage(error);
-      console.error('[ExportRetry] Generation failed after retry:', { exportId: exportIdNum, attemptCount: newAttemptCount, error });
-
-      const supportEmailSent = await notifySupportOfExportFailure({
-        assetId,
-        exportId: exportIdNum,
-        exportType,
-        technicalMessage,
-        attemptCount: newAttemptCount,
-        userId: session.userId,
-        accountId,
-      });
-
-      await db
-        .update(exportGenerations)
-        .set({
-          status: 'error',
-          errorPayload: JSON.stringify({
-            code: 'GENERATION_FAILED',
-            message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
-            technicalMessage, // interne : jamais renvoyé au client
-            supportEmailSent,
-            attemptCount: newAttemptCount,
-          }),
-          completedAt: new Date(),
-        })
-        .where(eq(exportGenerations.id, exportIdNum));
-
-      return NextResponse.json({
-        exportId: exportIdNum,
-        status: 'error',
-        errorCode: 'GENERATION_FAILED',
-        errorMessage: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
-        code: 'GENERATION_FAILED',
-        message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
-      }, { status: 500 });
-    }
+    nudgeExportWorker();
+    const dto = toGenerationDto(updated);
+    return NextResponse.json({ exportId: dto.id, publicId: dto.publicId, status: dto.status, generationStatus: dto.generationStatus, pollUrl: dto.pollUrl }, { status: 202 });
   } catch (error) {
     return exportRouteError(error, '[ExportRetry]');
   }

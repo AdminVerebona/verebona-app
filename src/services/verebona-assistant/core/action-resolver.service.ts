@@ -23,6 +23,7 @@
  * pas une occasion d'essayer ailleurs.
  */
 import { randomUUID } from 'crypto';
+import { DOSSIER_CODES, normalizeExportCode } from '@/services/exports/catalog';
 import type { ActionIntent, VerebonaAction, VerebonaActionType } from '../types/actions';
 import type { VerebonaIntent } from '../types/intents';
 import { getActionDefinition, allowedActionsFor } from '../registries/action-registry';
@@ -214,9 +215,14 @@ export const OFFRES_CONNUES: ReadonlySet<string> = new Set(['STANDARD', 'PREMIUM
 export const TYPES_BIEN_SUPPORTES: ReadonlySet<string> = new Set(['IMMOBILIER', 'VEHICULE', 'MATERIEL_PRO', 'OBJECT']);
 
 /** Dossiers prêts à l'usage : Premium et Premium Duo seulement (EXPORT_BRUT exclu). */
-export const EXPORTS_PREMIUM: ReadonlySet<string> = new Set([
-  'CIL_REGLEMENTAIRE', 'DOSSIER_VENTE', 'DOSSIER_COMPLET', 'ASSURANCE_ESTIMATION', 'ASSURANCE_INDEMNISATION',
-]);
+/** Codes V12 (`services/exports/catalog`) ; un ancien code est ramené au code V12 avant contrôle. */
+export const EXPORTS_PREMIUM: ReadonlySet<string> = new Set<string>(DOSSIER_CODES);
+
+/** Le code d'export (V12 ou ancien) désigne-t-il un dossier Premium ? */
+export function isPremiumExportCode(code: unknown): boolean {
+  const c = normalizeExportCode(code);
+  return c !== null && EXPORTS_PREMIUM.has(c);
+}
 
 /** Actions qui mènent à une création : impossibles sur un compte en lecture seule. */
 const ACTIONS_ECRITURE: ReadonlySet<VerebonaActionType> = new Set<VerebonaActionType>([
@@ -233,7 +239,7 @@ export function offrePermet(
   // Compte en lecture seule (essai échu, abonnement requis) : ni création,
   // ni dossier Premium — la consultation et l'export brut restent ouverts.
   if (planLimit && ACTIONS_ECRITURE.has(type)) return false;
-  if (type === 'OPEN_EXPORT_AREA' && typeof params?.exportType === 'string' && EXPORTS_PREMIUM.has(params.exportType)) {
+  if (type === 'OPEN_EXPORT_AREA' && isPremiumExportCode(params?.exportType)) {
     if (planLimit) return false;
     if (planType !== undefined && !isPlanAiEligible(planType)) return false;
   }

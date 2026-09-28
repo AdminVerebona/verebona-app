@@ -35,9 +35,15 @@ describe('exports — offre Standard', () => {
 
   it('le serveur refuse un dossier Premium à un compte Standard, pas l’export brut', () => {
     const route = read('src/app/api/assets/[id]/exports/route.ts');
-    expect(route).toContain('canUsePremiumFeature(accountId)');
-    const liste = route.slice(route.indexOf('const PREMIUM_EXPORT_TYPES'), route.indexOf('];', route.indexOf('const PREMIUM_EXPORT_TYPES')));
-    expect(liste).toContain("'DOSSIER_VENTE'");
-    expect(liste).not.toContain('EXPORT_BRUT');
+    const enqueue = read('src/services/exports/v12/generation/enqueue.ts');
+    // Moteur V12 : chaque dossier passe par la mise en file, qui contrôle l'offre.
+    expect(enqueue).toContain('canUsePremiumFeature(asset.accountId)');
+    expect(route).toContain('enqueueGeneration(');
+    // L'export brut est traité avant, sans contrôle Premium.
+    expect(route.indexOf('return generateRawExport(')).toBeGreaterThan(-1);
+    expect(route.indexOf('return generateRawExport(')).toBeLessThan(route.indexOf('enqueueGeneration('));
+    expect(route).not.toContain('canUsePremiumFeature');
+    // La relance technique d'un dossier revérifie l'offre.
+    expect(read('src/app/api/assets/[id]/exports/[exportId]/retry/route.ts')).toContain('canUsePremiumFeature(asset.accountId)');
   });
 });

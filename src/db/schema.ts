@@ -1527,14 +1527,72 @@ export const exportGenerations = pgTable('export_generation', {
   generationAttemptCount: integer('generation_attempt_count').notNull().default(0),
   createdAt: tstz('created_at'),
   completedAt: tstzOptional('completed_at'),
+  // ── Dossiers V12 (migration 0212, CDC Exports V12 §16.2) ─────────────────
+  /** PDF | ZIP : format livré. */
+  outputFormat: text('output_format'),
+  /** Fichier principal (ZIP s'il existe, sinon PDF). */
+  fileKey: text('file_key'),
+  fileSizeBytes: bigint('file_size_bytes', { mode: 'number' }),
+  /** Fin de disponibilité du téléchargement (création + 30 j, DRH-005). */
+  expiresAt: tstzOptional('expires_at'),
+  /** Suppression manuelle du fichier (DRH-004). */
+  deletedAt: tstzOptional('deleted_at'),
+  /** Données et choix utilisés (§16.3, IC-GEN-010). */
+  snapshotJson: jsonb('snapshot_json').$type<Record<string, unknown>>(),
+  /** Durée, pages, taille, pièces, exclusions (§21). */
+  metricsJson: jsonb('metrics_json').$type<Record<string, unknown>>(),
+  templateVersion: text('template_version'),
+  errorCode: text('error_code'),
+  /** File d'exécution durable : bail de l'instance qui génère. */
+  lockedBy: text('locked_by'),
+  lockedUntil: tstzOptional('locked_until'),
+  nextAttemptAt: tstzOptional('next_attempt_at'),
+  /** Relances manuelles (plafonnées ; migration 0212). */
+  userRetryCount: integer('user_retry_count').notNull().default(0),
 }, (table) => ({
   assetIdIdx: index('export_generation_asset_id_idx').on(table.assetId),
   accountIdIdx: index('export_generation_account_id_idx').on(table.accountId),
   statusIdx: index('export_generation_status_idx').on(table.status),
   exportTypeIdx: index('export_generation_export_type_idx').on(table.exportType),
   publicIdIdx: index('export_generation_public_id_idx').on(table.publicId),
+  // V12 : queued, generating, ready, partial, failed, expired, deleted ;
+  // pending / error / cancelled : générations antérieures (migration 0212).
   statusCheck: check('export_generation_status_check',
-    sql`${table.status} IN ('pending','generating','ready','error','deleted','cancelled')`),
+    sql`${table.status} IN ('queued','generating','ready','partial','failed','expired','deleted','pending','error','cancelled')`),
+  outputFormatCheck: check('export_generation_output_format_check',
+    sql`${table.outputFormat} IS NULL OR ${table.outputFormat} IN ('PDF','ZIP')`),
+}));
+
+/** Éléments retenus / exclus d'une génération (§16.1) — interne, jamais affiché. */
+export const exportGenerationItems = pgTable('export_generation_items', {
+  id: serial('id').primaryKey(),
+  generationId: integer('generation_id').notNull().references(() => exportGenerations.id, { onDelete: 'cascade' }),
+  sourceType: text('source_type').notNull(),
+  sourceId: integer('source_id'),
+  label: text('label'),
+  mode: text('mode'),
+  status: text('status').notNull(),
+  reason: text('reason'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  generationIdIdx: index('export_generation_items_generation_id_idx').on(table.generationId),
+  modeCheck: check('export_generation_items_mode_check', sql`${table.mode} IS NULL OR ${table.mode} IN ('PDF','ZIP')`),
+  statusCheck: check('export_generation_items_status_check', sql`${table.status} IN ('included','excluded')`),
+}));
+
+/** Journal technique d'une génération (§16.1, §21) — identifiants seulement (LOG-001). */
+export const exportGenerationLogs = pgTable('export_generation_logs', {
+  id: serial('id').primaryKey(),
+  generationId: integer('generation_id').notNull().references(() => exportGenerations.id, { onDelete: 'cascade' }),
+  level: text('level').notNull(),
+  step: text('step'),
+  code: text('code'),
+  message: text('message').notNull(),
+  detailsJson: jsonb('details_json').$type<Record<string, unknown>>(),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  generationIdIdx: index('export_generation_logs_generation_id_idx').on(table.generationId, table.createdAt),
+  levelCheck: check('export_generation_logs_level_check', sql`${table.level} IN ('debug','info','warn','error')`),
 }));
 
 export const assetTransmissions = pgTable('asset_transmissions', {
@@ -1718,6 +1776,29 @@ export const assetCilProfiles = pgTable('asset_cil_profiles', {
   assetIdIdx: index('asset_cil_profiles_asset_id_idx').on(table.assetId),
   triggerTypeCheck: check('asset_cil_profiles_trigger_type_check',
     sql`${table.triggerType} IN ('construction','renovation_energetique','volontaire','inconnu')`),
+}));
+
+// ─── Informations complémentaires de la fiche bien (CDC Exports V12 §4) ──────
+// Migration 0213. Une ligne par bien ; sous-rubriques en JSONB (montants en
+// centimes, dates ISO). Définition des champs : `lib/assets/additional-infos`.
+// Cascade depuis le bien ET depuis le compte : les purges (suppression du
+// bien, suppression du compte) l'emportent sans liste à tenir.
+
+export const assetAdditionalInfos = pgTable('asset_additional_infos', {
+  assetId: integer('asset_id').primaryKey().references(() => assets.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  commercial: jsonb('commercial_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
+  rental: jsonb('rental_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
+  insurance: jsonb('insurance_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
+  claim: jsonb('claim_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
+  version: integer('version').notNull().default(1),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+  updatedBy: integer('updated_by').references(() => users.id, { onDelete: 'set null' }),
+}, (table) => ({
+  accountIdIdx: index('asset_additional_infos_account_id_idx').on(table.accountId),
+  jsonObjectsCheck: check('asset_additional_infos_json_objects_check',
+    sql`jsonb_typeof(${table.commercial}) = 'object' AND jsonb_typeof(${table.rental}) = 'object' AND jsonb_typeof(${table.insurance}) = 'object' AND jsonb_typeof(${table.claim}) = 'object'`),
 }));
 
 export const energyMaterials = pgTable('energy_materials', {

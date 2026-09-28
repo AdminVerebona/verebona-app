@@ -77,7 +77,7 @@ async function readProcessing(accountId: number): Promise<MascotRawData['process
               e.created_at AS at
          FROM export_generation e
          JOIN assets a ON a.id = e.asset_id
-        WHERE e.account_id = $1 AND e.status IN ('pending', 'generating')
+        WHERE e.account_id = $1 AND e.status IN ('pending', 'queued', 'generating')
           AND e.created_at > NOW() - $2::interval AND a.deleted_at IS NULL
         ORDER BY e.created_at DESC LIMIT 5`,
       [accountId, fenetre],

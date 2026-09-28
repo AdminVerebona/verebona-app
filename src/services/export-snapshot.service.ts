@@ -36,6 +36,12 @@ export interface DocumentRef {
   webLinkTitle: string | null;
   substructureId: number | null;
   equipmentId: number | null;
+  /** Type documentaire V2 (référentiel), exports V12. */
+  documentTypeCode?: string | null;
+  /** Émetteur saisi ou extrait (fournisseur). */
+  supplier?: string | null;
+  /** Montant du document (facture, devis), en centimes. */
+  amountCents?: number | null;
 }
 
 export interface PhotoRef {
@@ -49,6 +55,9 @@ export interface PhotoRef {
   displayOrder: number;
   isPrimary: boolean;
   caption: string | null;
+  /** Date du fichier (prise de vue ou import), exports V12. */
+  documentDate?: string | null;
+  createdAt?: string | null;
 }
 
 // Sections structurées extraites de keyCharacteristics — lisibles par le renderer
@@ -495,6 +504,9 @@ export async function buildAssetSnapshot(
       webLinkTitle: assetFiles.webLinkTitle,
       substructureId: assetFiles.substructureId,
       equipmentId: assetFiles.equipmentId,
+      documentTypeCode: assetFiles.documentTypeCode,
+      supplier: assetFiles.supplier,
+      amountCents: assetFiles.amountCents,
     })
     .from(assetFiles)
     .where(and(scopeCondition!, ...docsConditions));
@@ -512,6 +524,8 @@ export async function buildAssetSnapshot(
       mimeType: assetFiles.mimeType,
       originalFilename: assetFiles.originalFilename,
       size: assetFiles.size,
+      documentDate: assetFiles.documentDate,
+      fileCreatedAt: assetFiles.createdAt,
     })
     .from(assetPhotos)
     .leftJoin(assetFiles, eq(assetFiles.id, assetPhotos.fileId))
@@ -577,6 +591,8 @@ export async function buildAssetSnapshot(
       displayOrder: p.displayOrder,
       isPrimary: p.isPrimary,
       caption: p.caption,
+      documentDate: p.documentDate ?? null,
+      createdAt: p.fileCreatedAt ? new Date(p.fileCreatedAt).toISOString() : null,
     })),
     substructures: subs.map(s => ({ id: s.id, name: s.name, area: null })),
     equipments: equipMapped,

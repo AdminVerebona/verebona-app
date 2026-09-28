@@ -39,6 +39,9 @@
  *   · supervision-sweep   — domaines Exports / IA de la Supervision (SUP-004) ;
  *   · admin-audit-purge   — rétention du journal admin (AUD-004,
  *                           ADMIN_AUDIT_RETENTION_DAYS, désactivée sans valeur) ;
+ *   · exports-expiry      — dossiers V12 générés depuis plus de 30 jours :
+ *                           statut « Expiré », objets S3 mis en file de purge
+ *                           (DRH-005/006) ; EXPORTS_EXPIRY=off la retire ;
  *   · blob-purge          — file `pending_blob_deletions` (objets S3 à
  *                           supprimer : exports, fichiers de biens
  *                           supprimés…) ; même traitement que
@@ -241,6 +244,23 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
         const { purgeAdminAuditLog } = await import('@/services/admin/audit-retention.service');
         const r = await purgeAdminAuditLog(auditRetentionDays);
         if (r.deleted > 0) console.info(`[daily-jobs] admin-audit-purge : ${r.deleted} ligne(s) antérieure(s) au ${r.cutoff}.`);
+      },
+    });
+  }
+
+  // Expiration des dossiers générés (CDC Exports V12 DRH-005/006) : au-delà
+  // de 30 jours, statut « Expiré », téléchargement impossible, objets confiés
+  // à la file de purge — traitée juste après, dans le même tour, par
+  // `daily-blob-purge` (même fenêtre, tâche suivante). Désactivable par
+  // EXPORTS_EXPIRY=off.
+  if (!['off', 'false', '0'].includes((env.EXPORTS_EXPIRY ?? '').trim().toLowerCase())) {
+    tasks.push({
+      lock: 'daily-exports-expiry',
+      window: [5, 8],
+      run: async () => {
+        const { expireExportGenerations } = await import('@/services/exports/v12/generation/files');
+        const r = await expireExportGenerations();
+        if (r.expired > 0) console.info(`[daily-jobs] exports-expiry : ${r.expired} dossier(s) expiré(s), ${r.blobsQueued} objet(s) à purger.`);
       },
     });
   }

@@ -1,15 +1,18 @@
 /**
- * Exports — corrections P1/P2 de l'audit CDC 16 (V12) sur le système actuel :
- *   1. DOSSIER_COMPLET générable ;
- *   2. dossier de vente ouvert aux objets ;
+ * Exports — corrections P1/P2 de l'audit CDC 16 (V12), adaptées au moteur V12
+ * asynchrone (HTML/CSS + Chromium, file `export_generation`) :
+ *   1. DOSSIER_COMPLET générable (mis en file, 202) ;
+ *   2. kit de vente ouvert aux trois familles ;
  *   3. accès par compte (co-titulaire Duo admis, autre compte refusé) ;
  *   4. suppression : fichier purgé, entrée d'historique conservée (DRH-004) ;
  *   5. CIL « action requise » bloqué côté serveur (CIL-RULE-002) ;
- *   6. notification support réelle, `supportEmailSent` jamais forcé ;
- *   7. messages d'erreur génériques (détail technique en journal seulement) ;
- *   8. dialogues d'export : signal `verebona:data-mutated` après succès.
+ *   6. échec : message générique dans l'historique, détail technique jamais exposé ;
+ *   7. anciens codes acceptés, liens de téléchargement revérifiés (DRH-010) ;
+ *   8. dialogues d'export historiques retirés.
+ * Le rendu lui-même (échec, notification support) est couvert par
+ * `services/exports/v12/__tests__/v12-job.test.ts`.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -37,13 +40,17 @@ function makeChain(kind: 'select' | 'insert' | 'update' | 'delete') {
   let table = '?';
   let limited = false;
   let returning = false;
+  let lastValues: Row = {};
+  let lastSet: Row = {};
   const chain: Record<string, unknown> = {};
   chain.from = (t: unknown) => { table = tableOf(t); return chain; };
   chain.where = (w: unknown) => { state.lastWhere = w; return chain; };
+  chain.innerJoin = () => chain;
+  chain.leftJoin = () => chain;
   chain.orderBy = () => chain;
   chain.limit = (n: number) => { limited = n === 1; return chain; };
-  chain.set = (v: Row) => { state.updates.push({ table, set: v }); return chain; };
-  chain.values = (v: unknown) => { state.inserts.push({ table, values: v }); return chain; };
+  chain.set = (v: Row) => { lastSet = v; state.updates.push({ table, set: v }); return chain; };
+  chain.values = (v: unknown) => { lastValues = v as Row; state.inserts.push({ table, values: v }); return chain; };
   chain.returning = () => { returning = true; return chain; };
   chain.__setTable = (t: unknown) => { table = tableOf(t); };
   chain.then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) => {
@@ -54,8 +61,11 @@ function makeChain(kind: 'select' | 'insert' | 'update' | 'delete') {
         else if (table === 'accounts') out = [{ planType: 'PREMIUM' }];
         else if (table === 'asset_files') out = state.files;
         else out = [];
-      } else if (kind === 'insert' && returning) out = [{ id: 99, publicId: 'pub-99' }];
-      else if (kind === 'update' && returning) out = [{ id: 99 }];
+      } else if (kind === 'insert' && returning) {
+        out = [{ id: 99, publicId: '00000000-0000-4000-8000-000000000099', createdAt: new Date(), ...lastValues }];
+      } else if (kind === 'update' && returning) {
+        out = state.exportRow ? [{ ...state.exportRow, ...lastSet }] : [{ id: 99, ...lastSet }];
+      }
       resolve(out);
     } catch (e) { reject(e); }
   };
@@ -70,8 +80,12 @@ vi.mock('@/db', () => {
     delete: (t: unknown) => { const c = makeChain('delete'); (c.__setTable as (t: unknown) => void)(t); return c; },
   };
   db.transaction = async (fn: (tx: unknown) => unknown) => fn(db);
+  // Verrou consultatif de la mise en file, comptage des générations actives.
+  db.execute = async () => [];
   return { db };
 });
+// Débit par utilisateur : couvert par v12-units ; neutralisé ici (nombreuses requêtes du même utilisateur).
+vi.mock('@/services/exports/v12/generation/rate-limit', () => ({ exportRateLimitResponse: () => null }));
 
 vi.mock('@/lib/session-service', () => ({
   SessionService: {
@@ -92,18 +106,25 @@ vi.mock('@/services/exports/export-access', () => ({
   },
 }));
 
-const renderMock = vi.fn(async () => Buffer.from('%PDF'));
-const snapshotMock = vi.fn(async (..._args: unknown[]) => ({ address: '1 rue', postalCode: '75001', city: 'Paris', category: 'OBJET' }));
+const sourceMock = vi.fn(async (p: { assetId: number; accountId: number; userId: number; exportType: string }) => ({
+  exportType: p.exportType, family: 'IMMOBILIER',
+  asset: { id: p.assetId, name: 'Maison', category: 'IMMOBILIER', characteristics: {}, equipmentList: [] },
+  documents: [], photos: [], events: [], equipments: [], rooms: [],
+  additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null },
+  cil: null, preparedBy: null,
+}));
+const nudgeMock = vi.fn();
 const notifyMock = vi.fn(async (..._args: unknown[]) => false);
 
+vi.mock('@/services/exports/v12/data/source', () => ({ loadExportSource: (p: never) => sourceMock(p) }));
+vi.mock('@/services/exports/v12/generation/worker', () => ({ nudgeExportWorker: () => nudgeMock() }));
 vi.mock('@/services/export-upload.service', () => ({
   getExportSignedUrl: async (k: string) => `https://signed/${k}`,
   uploadExportFile: async (_b: unknown, k: string) => k,
   buildExportS3Key: (acc: number, asset: number, exp: number, f: string) => `exports/${acc}/${asset}/${exp}/${f}`,
 }));
-vi.mock('@/services/export-snapshot.service', () => ({ buildAssetSnapshot: (...a: unknown[]) => snapshotMock(...a) }));
+vi.mock('@/services/export-snapshot.service', () => ({ buildAssetSnapshot: async () => ({}) }));
 vi.mock('@/services/export-manifest.service', () => ({ buildExportManifest: () => ({}) }));
-vi.mock('@/services/pdf-renderer.service', () => ({ renderExportToPdf: () => renderMock() }));
 vi.mock('@/services/export-zip.service', () => ({ buildExportZip: async () => Buffer.from('zip') }));
 vi.mock('@/services/entitlements.service', () => ({ canUsePremiumFeature: async () => ({ allowed: true }) }));
 // Suppression S3 directe : clés en échec simulées via `failingKeys`.
@@ -135,10 +156,17 @@ const post = (body: unknown) => createExport(
 const TITULAIRE = { userId: 1, currentAccountId: 10 };
 const DUO_MEMBRE = { userId: 2, currentAccountId: 10 };
 const AUTRE_COMPTE = { userId: 3, currentAccountId: 20 };
+const PUB = '00000000-0000-4000-8000-000000000007';
 
 const baseAsset = (over: Row = {}): Row => ({
   id: 5, userId: 1, accountId: 10, deletedAt: null, category: 'IMMOBILIER', subtype: 'Maison',
   name: 'Maison', address: '1 rue', postalCode: '75001', city: 'Paris', ...over,
+});
+
+const genRow = (over: Row = {}): Row => ({
+  id: 7, publicId: PUB, assetId: 5, accountId: 10, userId: 1, exportType: 'DOSSIER_COMPLET', status: 'ready',
+  outputPayload: JSON.stringify({ pdfS3Key: 'k.pdf' }), requestedOutputs: null, errorPayload: null, errorCode: null,
+  createdAt: new Date(), expiresAt: new Date(Date.now() + 86_400_000), ...over,
 });
 
 beforeEach(() => {
@@ -151,19 +179,45 @@ beforeEach(() => {
   state.updates = [];
   failingKeys.clear();
   deletedKeys.length = 0;
-  renderMock.mockReset().mockResolvedValue(Buffer.from('%PDF'));
-  snapshotMock.mockClear();
+  sourceMock.mockClear();
+  nudgeMock.mockClear();
   notifyMock.mockReset().mockResolvedValue(false);
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 describe('1. Dossier complet', () => {
-  it('POST DOSSIER_COMPLET est accepté et génère le PDF', async () => {
+  it('POST DOSSIER_COMPLET est accepté et mis en file (202, suivi par pollUrl)', async () => {
     const res = await post({ exportType: 'DOSSIER_COMPLET', requestedOutputs: ['PDF'] });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const body = await res.json();
-    expect(body.status).toBe('ready');
-    expect(body.downloadUrl).toContain('exports/10/5/99/');
+    expect(body).toMatchObject({ status: 'pending', generationStatus: 'queued', downloadUrl: null });
+    expect(body.pollUrl).toMatch(/^\/api\/export-generations\//);
+    expect(state.inserts.find(i => i.table === 'export_generation')?.values).toMatchObject({ status: 'queued', exportType: 'DOSSIER_COMPLET', outputFormat: 'PDF' });
+    expect(nudgeMock).toHaveBeenCalled();
+  });
+
+  it('plafond par compte : 3 générations actives → 429 en français, rien n’est inséré', async () => {
+    state.exportRows = [{ n: 3 }]; // comptage des générations queued / generating du compte
+    const res = await post({ exportType: 'DOSSIER_COMPLET', requestedOutputs: ['PDF'] });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.code).toBe('TOO_MANY_GENERATIONS');
+    expect(body.message).toMatch(/déjà 3 dossiers en cours de préparation/);
+    expect(state.inserts.find(i => i.table === 'export_generation')).toBeUndefined();
+  });
+
+  it('la demande est empreinte (dédoublonnage) : options du tiroir comprises', async () => {
+    await post({ exportType: 'DOSSIER_COMPLET', requestedOutputs: ['PDF'], options: { includePhotos: false } });
+    const values = state.inserts.find(i => i.table === 'export_generation')?.values as Row;
+    const hash = ((values.snapshotJson as Row).request as Row).requestHash;
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    const { requestHash } = await import('@/services/exports/v12/generation/enqueue');
+    const a = requestHash('DOSSIER_COMPLET', { outputFormat: 'PDF', legacyOptions: { includePhotos: true, customDocIds: [1, 2] } }, null);
+    expect(requestHash('DOSSIER_COMPLET', { outputFormat: 'PDF', legacyOptions: { customDocIds: [1, 2], includePhotos: true } }, null)).toBe(a);
+    expect(requestHash('DOSSIER_COMPLET', { outputFormat: 'PDF', legacyOptions: { includePhotos: false, customDocIds: [1, 2] } }, null)).not.toBe(a);
+    expect(requestHash('DOSSIER_COMPLET', { outputFormat: 'PDF', legacyOptions: { includePhotos: true, customDocIds: [1, 3] } }, null)).not.toBe(a);
+    expect(requestHash('DOSSIER_COMPLET', { outputFormat: 'ZIP', legacyOptions: { includePhotos: true, customDocIds: [1, 2] } }, null)).not.toBe(a);
+    expect(requestHash('VENTE', { outputFormat: 'PDF', legacyOptions: { includePhotos: true, customDocIds: [1, 2] } }, null)).not.toBe(a);
   });
 
   it('un type inconnu reste refusé (400) avec un message en français', async () => {
@@ -171,21 +225,24 @@ describe('1. Dossier complet', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe('INVALID_EXPORT_TYPE');
-    expect(body.message).toMatch(/Type de dossier/);
+    expect(body.message).toMatch(/type de dossier/i);
   });
 });
 
-describe('2. Dossier de vente — trois familles', () => {
-  it.each(['OBJET', 'VEHICULE', 'IMMOBILIER'])('accepte un bien de la famille %s', async (category) => {
+describe('2. Kit de vente — trois familles', () => {
+  it.each(['OBJECT', 'VEHICULE', 'IMMOBILIER'])('accepte un bien de la famille %s', async (category) => {
     state.asset = baseAsset({ category, subtype: 'Autre' });
     const res = await post({ exportType: 'DOSSIER_VENTE' });
-    expect(res.status).toBe(200);
-    expect((await res.json()).status).toBe('ready');
+    expect(res.status).toBe(202);
+    // Ancien code accepté, enregistré sous le code V12.
+    expect(state.inserts.find(i => i.table === 'export_generation')?.values).toMatchObject({ exportType: 'VENTE' });
   });
 
-  it('le manifeste n’exclut plus les objets', () => {
-    const src = readFileSync(join(process.cwd(), 'src/services/export-manifest.service.ts'), 'utf8');
-    expect(src).not.toMatch(/DOSSIER_VENTE is only available/);
+  it('LOCATION : immobilier seulement (422 NOT_ELIGIBLE)', async () => {
+    state.asset = baseAsset({ category: 'VEHICULE', subtype: 'Voiture' });
+    const res = await post({ exportType: 'LOCATION' });
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe('NOT_ELIGIBLE');
   });
 });
 
@@ -195,24 +252,25 @@ describe('3. Accès par compte (Duo)', () => {
     expect((await listExports(new NextRequest('http://x'), params)).status).toBe(200);
 
     const created = await post({ exportType: 'DOSSIER_COMPLET' });
-    expect(created.status).toBe(200);
-    // L'export est rattaché au compte du bien et au co-titulaire qui l'a généré.
+    expect(created.status).toBe(202);
+    // La génération est rattachée au compte du bien et au co-titulaire qui l'a demandée.
     const insert = state.inserts.find(i => i.table === 'export_generation');
     expect(insert?.values).toMatchObject({ accountId: 10, userId: 2 });
-    // Le snapshot est lu par compte, pas par propriétaire.
-    expect(snapshotMock).toHaveBeenCalledWith(5, 2, { accountId: 10 });
+    // Les données sont lues par compte, pas par propriétaire.
+    expect(sourceMock).toHaveBeenCalledWith(expect.objectContaining({ assetId: 5, accountId: 10, userId: 2 }));
 
-    state.exportRow = { id: 7, assetId: 5, status: 'ready', outputPayload: JSON.stringify({ pdfS3Key: 'k.pdf' }) };
+    state.exportRow = genRow();
     const one = await getExport(new NextRequest('http://x'), exportParams);
     expect(one.status).toBe(200);
-    expect((await one.json()).downloadUrl).toBe('https://signed/k.pdf');
+    // DRH-010 : lien vers l'endpoint qui revérifie les droits, jamais une URL signée pré-émise.
+    expect((await one.json()).downloadUrl).toBe(`/api/export-generations/${PUB}/download?file=pdf`);
 
     expect((await deleteExport(new NextRequest('http://x'), exportParams)).status).toBe(200);
   });
 
-  it('un autre compte reçoit 404 partout (liste, création, téléchargement, suppression, relance)', async () => {
+  it('un autre compte reçoit 404 partout (liste, création, consultation, suppression, relance)', async () => {
     state.session = { ...AUTRE_COMPTE };
-    state.exportRow = { id: 7, assetId: 5, status: 'ready', outputPayload: JSON.stringify({ pdfS3Key: 'k.pdf' }) };
+    state.exportRow = genRow();
     expect((await listExports(new NextRequest('http://x'), params)).status).toBe(404);
     expect((await post({ exportType: 'DOSSIER_COMPLET' })).status).toBe(404);
     expect((await getExport(new NextRequest('http://x'), exportParams)).status).toBe(404);
@@ -238,8 +296,7 @@ describe('3. Accès par compte (Duo)', () => {
 });
 
 describe('4. Suppression (DRH-004)', () => {
-  const readyRow = () => ({
-    id: 7, assetId: 5, status: 'ready',
+  const readyRow = () => genRow({
     outputPayload: JSON.stringify({ pdfS3Key: 'exports/10/5/7/a.pdf', zipS3Key: 'exports/10/5/7/a.zip', pdfSize: 3 }),
   });
 
@@ -250,7 +307,10 @@ describe('4. Suppression (DRH-004)', () => {
     expect(await res.json()).toMatchObject({ success: true, fileDeleted: true, blobsDeleted: 2, blobsScheduled: 0 });
     expect(deletedKeys).toEqual(['exports/10/5/7/a.pdf', 'exports/10/5/7/a.zip']);
     expect(state.inserts.find(i => i.table === 'pending_blob_deletions')).toBeUndefined();
-    expect(state.updates.find(u => u.table === 'export_generation')?.set.status).toBe('deleted');
+    const upd = state.updates.find(u => u.table === 'export_generation');
+    expect(upd?.set.status).toBe('deleted');
+    expect(upd?.set.deletedAt).toBeInstanceOf(Date);
+    expect(upd?.set.fileKey).toBeNull();
   });
 
   it('confie à la file seulement les objets en échec, et conserve l’entrée au statut deleted', async () => {
@@ -267,24 +327,28 @@ describe('4. Suppression (DRH-004)', () => {
     expect(upd?.set.status).toBe('deleted');
     // Plus aucune clé de stockage : aucun lien ne peut viser l'objet purgé.
     expect(String(upd?.set.outputPayload)).not.toMatch(/S3Key/);
-    // Pas de DELETE de ligne : l'entrée reste.
   });
 
-  it('refuse pendant la génération (409, message français)', async () => {
-    state.exportRow = { id: 7, assetId: 5, status: 'generating', outputPayload: null };
-    const res = await deleteExport(new NextRequest('http://x'), exportParams);
-    expect(res.status).toBe(409);
-    expect((await res.json()).message).toMatch(/en cours de génération/);
+  it('refuse pendant la génération ou la mise en file (409, message français)', async () => {
+    for (const status of ['generating', 'queued']) {
+      state.exportRow = genRow({ status, outputPayload: null });
+      const res = await deleteExport(new NextRequest('http://x'), exportParams);
+      expect(res.status).toBe(409);
+      expect((await res.json()).message).toMatch(/en cours de génération/);
+    }
   });
 
-  it('l’historique affiche les entrées supprimées, sans lien', async () => {
+  it('l’historique affiche les entrées supprimées ou expirées, sans lien', async () => {
     state.exportRows = [
-      { id: 7, publicId: 'a', exportType: 'DOSSIER_COMPLET', status: 'deleted', outputPayload: JSON.stringify({ fileDeletedAt: 'x' }), requestedOutputs: null, errorPayload: null },
+      genRow({ id: 7, status: 'deleted', outputPayload: JSON.stringify({ fileDeletedAt: 'x' }) }),
+      genRow({ id: 8, status: 'ready', expiresAt: new Date(Date.now() - 1000) }),
     ];
     const res = await listExports(new NextRequest('http://x'), params);
     const { exports } = await res.json();
-    expect(exports).toHaveLength(1);
-    expect(exports[0]).toMatchObject({ status: 'deleted', downloadUrl: null, downloadZipUrl: null });
+    expect(exports).toHaveLength(2);
+    expect(exports[0]).toMatchObject({ status: 'deleted', generationStatus: 'deleted', downloadUrl: null, downloadZipUrl: null });
+    // DRH-006 : au-delà de 30 jours, « Expiré » même avant le passage de la purge.
+    expect(exports[1]).toMatchObject({ generationStatus: 'expired', downloadUrl: null });
   });
 });
 
@@ -305,113 +369,95 @@ describe('5. CIL « action requise » bloqué', () => {
       { id: 1, retainedFunctionCode: 'PLAN_CONSTRUCTION', documentType: null, cilRubricCodes: null },
       { id: 2, retainedFunctionCode: 'DPE', documentType: null, cilRubricCodes: null },
     ];
-    const res = await post({ exportType: 'CIL_REGLEMENTAIRE' });
+    const res = await post({ exportType: 'CIL' });
     expect(res.status).toBe(422);
     expect((await res.json()).blockingBlocks.map((b: Row) => b.id)).toEqual(['B1']);
   });
 
-  it('génère quand B1, B3 et B8 sont complets', async () => {
+  it('met en file quand B1, B3 et B8 sont complets', async () => {
     state.files = [
       { id: 1, retainedFunctionCode: 'PLAN_CONSTRUCTION', documentType: null, cilRubricCodes: null },
       { id: 2, retainedFunctionCode: null, documentType: 'DPE', cilRubricCodes: null },
     ];
-    const res = await post({ exportType: 'CIL_REGLEMENTAIRE' });
-    expect(res.status).toBe(200);
+    const res = await post({ exportType: 'CIL' });
+    expect(res.status).toBe(202);
   });
 
   it('la relance d’un CIL est bloquée de la même façon', async () => {
-    state.exportRow = { id: 7, assetId: 5, accountId: 10, exportType: 'CIL_REGLEMENTAIRE', status: 'error', outputPayload: null };
+    state.exportRow = genRow({ exportType: 'CIL_REGLEMENTAIRE', status: 'failed', outputPayload: null });
     const res = await retryExport(new NextRequest('http://x', { method: 'POST' }), exportParams);
     expect(res.status).toBe(422);
     expect((await res.json()).code).toBe('CIL_ACTION_REQUIRED');
   });
 });
 
-describe('6-7. Échec de génération : support notifié, message générique', () => {
+describe('6-7. Échec, relance et messages génériques', () => {
   const SECRET = 'S3 AccessDenied: bucket verebona-prod key=exports/10/5/99 at /srv/app/node_modules/x.js:12';
 
-  it('POST : message générique + code, détail seulement côté serveur, supportEmailSent réel', async () => {
-    renderMock.mockRejectedValueOnce(new Error(SECRET));
-    notifyMock.mockResolvedValueOnce(false);
-    const res = await post({ exportType: 'DOSSIER_COMPLET' });
-    expect(res.status).toBe(500);
-    const text = await res.text();
-    expect(text).not.toContain('AccessDenied');
-    const body = JSON.parse(text);
-    expect(body).toMatchObject({ status: 'error', code: 'GENERATION_FAILED', errorCode: 'GENERATION_FAILED' });
-    expect(body.message).toMatch(/La génération du dossier a échoué/);
-
-    expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ exportId: 99, technicalMessage: SECRET, accountId: 10 }));
-    const stored = JSON.parse(String(state.updates.find(u => u.set.status === 'error')?.set.errorPayload));
-    expect(stored.supportEmailSent).toBe(false);
-    expect(stored.technicalMessage).toBe(SECRET);
-    expect(stored.message).not.toContain('AccessDenied');
-  });
-
-  it('supportEmailSent vaut true seulement si l’envoi a réussi', async () => {
-    renderMock.mockRejectedValueOnce(new Error('boom'));
-    notifyMock.mockResolvedValueOnce(true);
-    await post({ exportType: 'DOSSIER_COMPLET' });
-    const stored = JSON.parse(String(state.updates.find(u => u.set.status === 'error')?.set.errorPayload));
-    expect(stored.supportEmailSent).toBe(true);
-  });
-
-  it('relance : compte du bien, pas celui (ancien, aléatoire) de la ligne d’export', async () => {
-    state.exportRow = { id: 7, assetId: 5, accountId: 77, exportType: 'DOSSIER_COMPLET', status: 'error', outputPayload: null, generationAttemptCount: 1 };
+  it('relance : remise en file sur le compte du bien, pas celui (ancien, aléatoire) de la ligne', async () => {
+    state.exportRow = genRow({ accountId: 77, status: 'failed', outputPayload: null, generationAttemptCount: 3 });
     const res = await retryExport(new NextRequest('http://x', { method: 'POST' }), exportParams);
-    expect(res.status).toBe(200);
-    expect(snapshotMock).toHaveBeenCalledWith(5, 1, { accountId: 10 });
-    expect((await res.json()).downloadUrl).toContain('exports/10/5/7/');
-    // La ligne est réalignée sur le compte du bien.
-    expect(state.updates.find(u => u.set.status === 'generating')?.set.accountId).toBe(10);
-
-    state.exportRow = { ...state.exportRow, status: 'error' };
-    renderMock.mockRejectedValueOnce(new Error('boom'));
-    await retryExport(new NextRequest('http://x', { method: 'POST' }), exportParams);
-    expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ accountId: 10 }));
+    expect(res.status).toBe(202);
+    const upd = state.updates.find(u => u.set.status === 'queued');
+    expect(upd?.set).toMatchObject({ accountId: 10, errorCode: null });
+    // Le compteur de tentatives n'est jamais remis à zéro ; la relance est comptée.
+    expect(upd?.set).not.toHaveProperty('generationAttemptCount');
+    expect(upd?.set).toHaveProperty('userRetryCount');
+    expect(nudgeMock).toHaveBeenCalled();
   });
 
-  it('relance : même traitement', async () => {
-    state.exportRow = { id: 7, assetId: 5, accountId: 10, exportType: 'DOSSIER_COMPLET', status: 'error', outputPayload: null, generationAttemptCount: 1 };
-    renderMock.mockRejectedValueOnce(new Error(SECRET));
+  it('relance plafonnée : 429 au-delà de 3 relances manuelles', async () => {
+    state.exportRow = genRow({ status: 'failed', outputPayload: null, generationAttemptCount: 6, userRetryCount: 3 });
     const res = await retryExport(new NextRequest('http://x', { method: 'POST' }), exportParams);
-    expect(res.status).toBe(500);
-    const text = await res.text();
-    expect(text).not.toContain('AccessDenied');
-    expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ attemptCount: 2 }));
-    const stored = JSON.parse(String(state.updates.find(u => u.set.status === 'error')?.set.errorPayload));
-    expect(stored.supportEmailSent).toBe(false);
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.code).toBe('RETRY_LIMIT_REACHED');
+    expect(body.message).toMatch(/relancé/);
+    expect(state.updates.find(u => u.set.status === 'queued')).toBeUndefined();
+  });
+
+  it('relance refusée pour une génération prête', async () => {
+    state.exportRow = genRow();
+    const res = await retryExport(new NextRequest('http://x', { method: 'POST' }), exportParams);
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('RETRY_NOT_ALLOWED');
   });
 
   it('l’historique ne renvoie jamais le message technique (anciens payloads compris)', async () => {
     state.exportRows = [
-      { id: 7, publicId: 'a', exportType: 'DOSSIER_VENTE', status: 'error', outputPayload: null, requestedOutputs: null,
-        errorPayload: JSON.stringify({ code: 'GENERATION_FAILED', message: SECRET, supportEmailSent: true }) },
+      genRow({ exportType: 'DOSSIER_VENTE', status: 'error', outputPayload: null,
+        errorPayload: JSON.stringify({ code: 'GENERATION_FAILED', message: SECRET, supportEmailSent: true }) }),
+      genRow({ id: 8, status: 'failed', outputPayload: null, errorCode: 'RENDER_TIMEOUT',
+        errorPayload: JSON.stringify({ code: 'RENDER_TIMEOUT', technicalMessage: SECRET }) }),
     ];
     const res = await listExports(new NextRequest('http://x'), params);
     const text = await res.text();
     expect(text).not.toContain('AccessDenied');
-    expect(JSON.parse(text).exports[0].errorMessage).toMatch(/La génération du dossier a échoué/);
+    const { exports } = JSON.parse(text);
+    expect(exports[0]).toMatchObject({ exportType: 'VENTE', status: 'error', generationStatus: 'failed' });
+    expect(exports[0].errorMessage).toMatch(/La génération du dossier a échoué/);
+    // Code distinct (§21) et message propre au code (§17.3).
+    expect(exports[1]).toMatchObject({ errorCode: 'RENDER_TIMEOUT' });
+    expect(exports[1].errorMessage).toMatch(/Réessayez avec moins de contenu/);
 
-    state.exportRow = state.exportRows[0];
+    state.exportRow = state.exportRows[0] ?? null;
     const one = await (await getExport(new NextRequest('http://x'), exportParams)).text();
     expect(one).not.toContain('AccessDenied');
   });
 
-  it('erreur inattendue hors génération : 500 générique en français', async () => {
+  it('corps JSON invalide : 400 générique en français', async () => {
     const res = await createExport(
       new NextRequest('http://x', { method: 'POST', body: '{pas du json', headers: { 'content-type': 'application/json' } }),
       params,
     );
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.code).toBe('EXPORT_INTERNAL_ERROR');
-    expect(body.message).toMatch(/Une erreur est survenue/);
+    expect(body.code).toBe('INVALID_PAYLOAD');
     expect(JSON.stringify(body)).not.toMatch(/JSON|Unexpected/);
   });
 
   it('plus de TODO ni de supportEmailSent: true codé en dur', () => {
-    for (const f of ['src/app/api/assets/[id]/exports/route.ts', 'src/app/api/assets/[id]/exports/[exportId]/retry/route.ts']) {
+    for (const f of ['src/app/api/assets/[id]/exports/route.ts', 'src/app/api/assets/[id]/exports/[exportId]/retry/route.ts', 'src/services/exports/v12/generation/job.ts']) {
       const src = readFileSync(join(process.cwd(), f), 'utf8');
       expect(src, f).not.toMatch(/supportEmailSent:\s*true/);
       expect(src, f).not.toMatch(/sendSupportEmail/);
@@ -419,14 +465,15 @@ describe('6-7. Échec de génération : support notifié, message générique', 
   });
 });
 
-describe('8. Dialogues d’export : signal de mutation', () => {
-  it('chaque génération réussie émet verebona:data-mutated', () => {
-    const src = readFileSync(join(process.cwd(), 'src/components/export-preset-dialogs.tsx'), 'utf8');
-    expect(src).toContain("new CustomEvent('verebona:data-mutated')");
-    const okChecks = src.match(/if \(!response\.ok\) throw new Error\('Erreur lors de la génération'\);\n\s*signalerExportCree\(\);/g) ?? [];
-    const fetches = src.match(/await fetch\('\/api\/exports\//g) ?? [];
-    expect(fetches.length).toBeGreaterThanOrEqual(4);
-    expect(okChecks.length).toBe(fetches.length);
+describe('8. Dialogues d’export historiques retirés', () => {
+  // `export-preset-dialogs.tsx` (1 800 lignes, importé nulle part) appelait
+  // cinq routes `/api/exports/*` inexistantes et assemblait un ZIP côté
+  // navigateur : retiré. Les dossiers passent par POST /api/assets/[id]/exports.
+  it('plus aucun appel client vers /api/exports/*', () => {
+    expect(existsSync(join(process.cwd(), 'src/components/export-preset-dialogs.tsx'))).toBe(false);
+    const drawer = readFileSync(join(process.cwd(), 'src/components/assets/ExportPrepareDrawer.tsx'), 'utf8');
+    expect(drawer).not.toMatch(/['`]\/api\/exports\//);
+    expect(drawer).toContain('`/api/assets/${assetId}/exports`');
   });
 });
 
@@ -434,11 +481,12 @@ describe('Interface', () => {
   const tab = readFileSync(join(process.cwd(), 'src/components/assets/AssetExportsTab.tsx'), 'utf8');
   const drawer = readFileSync(join(process.cwd(), 'src/components/assets/ExportPrepareDrawer.tsx'), 'utf8');
 
-  it('le dossier de vente et le dossier complet restent proposés à toutes les familles', () => {
-    for (const type of ['DOSSIER_VENTE', 'DOSSIER_COMPLET']) {
-      const bloc = tab.slice(tab.indexOf(`type: '${type}'`), tab.indexOf('}', tab.indexOf(`type: '${type}'`)));
-      expect(bloc).toContain("allowedCategories: 'ALL'");
+  it('le kit de vente et le dossier complet restent proposés à toutes les familles (catalogue V12)', async () => {
+    const { isDossierEligibleForFamily } = await import('@/services/exports/catalog');
+    for (const code of ['VENTE', 'DOSSIER_COMPLET']) {
+      for (const family of ['IMMOBILIER', 'VEHICULE', 'OBJECT']) expect(isDossierEligibleForFamily(code, family)).toBe(true);
     }
+    expect(tab).toContain('isDossierEligibleForFamily(usage.type, assetCategory)');
   });
 
   it('historique : « Fichier supprimé », sans bouton de suppression', () => {
@@ -447,7 +495,7 @@ describe('Interface', () => {
   });
 
   it('tiroir CIL : génération désactivée et message « Action requise »', () => {
-    expect(drawer).toMatch(/const cilBlocked = usage === 'CIL_REGLEMENTAIRE'[^\n]*action_required/);
+    expect(drawer).toMatch(/const cilBlocked = usage === 'CIL'[^\n]*action_required/);
     expect(drawer).toMatch(/isDisabled = generating \|\| loadingData \|\| cilLoading \|\| cilBlocked/);
     expect(drawer).toContain('Action requise : le CIL ne peut pas être généré');
   });

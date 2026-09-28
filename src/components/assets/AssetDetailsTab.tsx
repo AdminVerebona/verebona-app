@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { AssetDetailSection, type AiSuggestion, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
+import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
 import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
@@ -562,6 +563,16 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
           </div>
         );
       })}
+
+      {/* ── Informations complémentaires (CDC Exports V12 §4, DEC-007) ─────────
+          Vente, location (immobilier), assurance, sinistre : reprises dans les
+          dossiers prêts à l'emploi. Enregistrement automatique. */}
+      <AssetAdditionalInfosSection
+        assetId={asset.id}
+        category={asset.category}
+        readOnly={readOnly}
+        defaultOpen={highlightField === 'additional_infos'}
+      />
 
       {/* ── CIL Checklist — after insurance section, IMMOBILIER only ─────────── */}
       {asset.category === 'IMMOBILIER' && (() => {

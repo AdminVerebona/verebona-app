@@ -1,0 +1,1015 @@
+{
+  "$comment": "Données d'exemple — assurance sinistre / indemnisation (CDC V12 §13, §19.1). Nominal et riche repris de design-v12/Assurance sinistre.dc.html ; le riche ajoute du volume ; minimal dérivé. Contrat : assurance-sinistre/README.md. Personnes, entreprises et numéros fictifs.",
+  "cases": {
+    "minimal": {
+      "caseInfo": {
+        "id": "minimal",
+        "label": "Minimal",
+        "recette": "REC-ASSURANCE_SINISTRE-MINIMAL / REC-ASSURANCE_SINISTRE-SANS_AGENDA",
+        "description": "Sinistre saisi temporairement pour la génération (RULE-002) : type, date et circonstances ; deux événements de chronologie, aucune photo, aucun document : ni annexe ni ZIP."
+      },
+      "export": {
+        "type": "ASSURANCE_SINISTRE",
+        "label": "Assurance — sinistre / indemnisation",
+        "reference": "VBN-SIN-2026-0928-001",
+        "generatedAt": "2026-09-28T09:40:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "assurance_sinistre · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "categoryLabel": "Immobilier · Appartement",
+        "addressLabel": "14 rue des Remparts d'Ainay, 69002 Lyon",
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "claim": {
+        "typeLabel": "Dégât des eaux",
+        "date": "2026-08-03",
+        "circumstances": "Infiltration d'eau constatée au plafond de la salle de bain.",
+        "statusDetail": "Déclaration à effectuer"
+      },
+      "timeline": [
+        {
+          "id": "t1",
+          "date": "2026-08-03",
+          "tone": "key",
+          "title": "Sinistre · infiltration constatée",
+          "selected": true
+        },
+        {
+          "id": "t2",
+          "date": "2026-08-04",
+          "tone": "open",
+          "title": "Coupure du circuit électrique de la salle de bain",
+          "selected": true
+        }
+      ],
+      "damages": [],
+      "photos": [],
+      "actions": [],
+      "exchanges": [],
+      "documents": [],
+      "mustNotAppear": [
+        "342 000",
+        "Estimation Verebona",
+        "Photos du sinistre",
+        "Index des annexes",
+        "Référence assureur"
+      ]
+    },
+    "nominal": {
+      "caseInfo": {
+        "id": "nominal",
+        "label": "Nominal",
+        "recette": "REC-ASSURANCE_SINISTRE-NOMINAL",
+        "description": "Maquette design-v12 : dégât des eaux du 03/08/2026, synthèse, chronologie de 9 événements, 4 dommages, 6 photos horodatées (P1–P6), 4 actions, 5 pièces + échanges (6 annexes intégrées, 12 pages), 3 échanges avec l'assureur. RIB et coordonnées du voisin non cochés."
+      },
+      "export": {
+        "type": "ASSURANCE_SINISTRE",
+        "label": "Assurance — sinistre / indemnisation",
+        "reference": "VBN-SIN-2026-0928-002",
+        "generatedAt": "2026-09-28T10:02:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "assurance_sinistre · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "categoryLabel": "Immobilier · Appartement",
+        "addressLabel": "14 rue des Remparts d'Ainay, 69002 Lyon",
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "claim": {
+        "typeLabel": "Dégât des eaux",
+        "date": "2026-08-03",
+        "declaredAt": "2026-08-04",
+        "contractLabel": "MRH n° 4471 992",
+        "insurerRef": "SIN-2026-08-77412",
+        "statusLabel": "Expertise réalisée · en attente d'accord",
+        "circumstances": "Infiltration d'eau constatée le 03/08/2026 au plafond de la salle de bain et de la chambre 2, en provenance de l'appartement du 4ᵉ étage (fuite sur alimentation de baignoire, confirmée par recherche de fuite du 07/08/2026).",
+        "consequences": "Plafonds et murs tachés et cloqués sur 11 m² environ, luminaire de salle de bain hors service, parquet de la chambre 2 gonflé sur 2 m².",
+        "measures": "Coupure du circuit électrique concerné, bâchage, séchage par déshumidificateur, déclaration sous 24 h, constat amiable signé avec le voisin.",
+        "statusDetail": "Expertise réalisée le 26/08/2026 · en attente de l'accord d'indemnisation"
+      },
+      "timeline": [
+        {
+          "id": "t1",
+          "date": "2026-04-21",
+          "tone": "past",
+          "title": "Avant sinistre · contrôle VMC, aucun désordre constaté",
+          "text": "Photo de référence du plafond de la salle de bain (annexe photos P1)",
+          "selected": true
+        },
+        {
+          "id": "t2",
+          "date": "2026-08-03",
+          "tone": "key",
+          "title": "Sinistre · infiltration constatée à 19 h 40",
+          "text": "Coupure du disjoncteur salle de bain, bâchage du parquet · 5 photos horodatées (P2–P6)",
+          "selected": true
+        },
+        {
+          "id": "t3",
+          "date": "2026-08-04",
+          "title": "Déclaration à l'assureur · référence SIN-2026-08-77412",
+          "text": "Espace client, accusé de réception par e-mail (annexe A4)",
+          "selected": true
+        },
+        {
+          "id": "t4",
+          "date": "2026-08-05",
+          "title": "Constat amiable dégât des eaux signé avec l'occupant du 4ᵉ",
+          "text": "Transmis à l'assureur le jour même (annexe A1)",
+          "selected": true
+        },
+        {
+          "id": "t5",
+          "date": "2026-08-07",
+          "title": "Recherche de fuite · origine confirmée au 4ᵉ étage",
+          "text": "Plomberie Bellecour · rapport (annexe A2) · fuite réparée le même jour",
+          "selected": true
+        },
+        {
+          "id": "t6",
+          "date": "2026-08-08",
+          "title": "Mise en place d'un déshumidificateur · séchage 14 jours",
+          "text": "Location matériel · facture 186 € (annexe A3)",
+          "selected": true
+        },
+        {
+          "id": "t7",
+          "date": "2026-08-19",
+          "title": "Devis de remise en état reçus",
+          "text": "Peinture et plâtrerie 2 840 € · parquet 1 120 € (annexes A5, A6)",
+          "selected": true
+        },
+        {
+          "id": "t8",
+          "date": "2026-08-26",
+          "title": "Visite de l'expert mandaté par l'assureur",
+          "text": "Cabinet Expertises Rhône · photos après séchage (P7–P8)",
+          "selected": true
+        },
+        {
+          "id": "t9",
+          "date": "2026-09-15",
+          "tone": "open",
+          "title": "Relance de l'assureur · en attente d'accord",
+          "text": "E-mail de relance, sans réponse à la date de génération (annexe A4)",
+          "selected": true
+        }
+      ],
+      "damages": [
+        {
+          "id": "d1",
+          "zone": "Salle de bain",
+          "element": "Plafond · 5 m²",
+          "finding": "Auréoles, peinture cloquée, plâtre friable en angle",
+          "photoRefs": "P2, P3, P7",
+          "selected": true
+        },
+        {
+          "id": "d2",
+          "zone": "Salle de bain",
+          "element": "Luminaire plafonnier",
+          "finding": "Eau dans le boîtier, hors service depuis le 03/08",
+          "photoRefs": "P4",
+          "selected": true
+        },
+        {
+          "id": "d3",
+          "zone": "Chambre 2",
+          "element": "Plafond et mur mitoyen · 6 m²",
+          "finding": "Traces d'humidité, décollement du papier peint",
+          "photoRefs": "P5, P8",
+          "selected": true
+        },
+        {
+          "id": "d4",
+          "zone": "Chambre 2",
+          "element": "Parquet stratifié · 2 m²",
+          "finding": "Lames gonflées le long du mur mitoyen",
+          "photoRefs": "P6",
+          "selected": true
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "ref": "P1",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "21/04/2026 · plafond SDB avant sinistre",
+          "focus": "50% 0%",
+          "phase": "before",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "ref": "P2",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:42 · auréoles plafond SDB",
+          "focus": "20% 10%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "ref": "P3",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:44 · angle plâtre cloqué",
+          "focus": "80% 10%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "ref": "P4",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:47 · plafonnier",
+          "focus": "50% 100%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p5",
+          "ref": "P5",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:51 · mur chambre 2",
+          "focus": "10% 60%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p6",
+          "ref": "P6",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:53 · parquet gonflé",
+          "focus": "90% 90%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "actions": [
+        {
+          "id": "a1",
+          "date": "2026-08-03",
+          "title": "Mesures conservatoires",
+          "text": "Coupure électrique du circuit SDB, bâchage, déplacement du mobilier de la chambre 2",
+          "selected": true
+        },
+        {
+          "id": "a2",
+          "date": "2026-08-07",
+          "title": "Recherche et réparation de la fuite",
+          "text": "Plomberie Bellecour, à la charge de l'occupant du 4ᵉ",
+          "selected": true
+        },
+        {
+          "id": "a3",
+          "whenLabel": "08/08 → 22/08/2026",
+          "title": "Séchage",
+          "text": "Déshumidificateur en location, 14 jours · 186 € TTC avancés par l'assuré",
+          "selected": true
+        },
+        {
+          "id": "a4",
+          "whenLabel": "Non réalisé",
+          "title": "Remise en état",
+          "text": "En attente de l'accord d'indemnisation · devis joints",
+          "selected": true
+        }
+      ],
+      "exchanges": [
+        {
+          "id": "x1",
+          "date": "2026-08-04",
+          "title": "Accusé de réception de la déclaration · SIN-2026-08-77412",
+          "channel": "E-mail",
+          "docId": "echanges",
+          "selected": true
+        },
+        {
+          "id": "x2",
+          "date": "2026-08-18",
+          "title": "Convocation à l'expertise du 26/08/2026",
+          "channel": "Courrier",
+          "docId": "echanges",
+          "selected": true
+        },
+        {
+          "id": "x3",
+          "date": "2026-09-15",
+          "title": "Relance de l'assuré · sans réponse à ce jour",
+          "channel": "E-mail",
+          "docId": "echanges",
+          "selected": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "constat",
+          "kind": "statement",
+          "title": "Constat amiable dégât des eaux",
+          "issuer": "Assurés",
+          "typeLabel": "Constat",
+          "date": "2026-08-05",
+          "pages": 2
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "rapport",
+          "kind": "leak-report",
+          "title": "Rapport de recherche de fuite",
+          "issuer": "Plomberie Bellecour",
+          "typeLabel": "Rapport",
+          "date": "2026-08-07",
+          "pages": 3
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "fact-desh",
+          "kind": "invoice",
+          "title": "Facture location déshumidificateur",
+          "issuer": "Loxam Lyon",
+          "typeLabel": "Facture",
+          "date": "2026-08-22",
+          "pages": 1,
+          "amountCents": 18600
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "echanges",
+          "kind": "exchanges",
+          "title": "Échanges assureur (3 messages)",
+          "typeLabel": "Correspondance",
+          "date": "2026-08-04",
+          "dateLabel": "04/08 → 15/09/2026",
+          "pages": 3
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "devis-peint",
+          "kind": "quote",
+          "title": "Devis peinture et plâtrerie",
+          "issuer": "Artisan peintre",
+          "typeLabel": "Devis",
+          "date": "2026-08-19",
+          "pages": 2,
+          "amountCents": 284000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "devis-parq",
+          "kind": "quote",
+          "title": "Devis remplacement parquet",
+          "issuer": "Parquets Presqu'île",
+          "typeLabel": "Devis",
+          "date": "2026-08-19",
+          "pages": 1,
+          "amountCents": 112000
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": null,
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "rib",
+          "title": "RIB de l'assuré",
+          "typeLabel": "Bancaire",
+          "date": "2024-01-05",
+          "pages": 1
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": null,
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "voisin",
+          "title": "Coordonnées du voisin · M. Ferrand",
+          "typeLabel": "Contact",
+          "date": "2026-08-05",
+          "pages": 1
+        }
+      ],
+      "mustNotAppear": [
+        "RIB",
+        "Ferrand",
+        "342 000",
+        "Estimation Verebona",
+        "Photos après séchage"
+      ]
+    },
+    "riche": {
+      "caseInfo": {
+        "id": "riche",
+        "label": "Riche",
+        "recette": "REC-ASSURANCE_SINISTRE-RICHE / REC-ASSURANCE_SINISTRE-AVEC_DOCS_ZIP",
+        "description": "Maquette design-v12, variante riche (photos après séchage P7–P8, photos HD au ZIP, index et annexes) enrichie : 12 événements, 6 dommages, 6 actions, rapport d'expertise intégré (5 pages), 5 échanges dont un non lié au sinistre filtré (RULE-004)."
+      },
+      "export": {
+        "type": "ASSURANCE_SINISTRE",
+        "label": "Assurance — sinistre / indemnisation",
+        "reference": "VBN-SIN-2026-0928-003",
+        "generatedAt": "2026-09-28T10:24:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "assurance_sinistre · v1.0",
+        "zipName": "Verebona_AssuranceSinistre_Appartement-Lyon-2e_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "categoryLabel": "Immobilier · Appartement",
+        "addressLabel": "14 rue des Remparts d'Ainay, 69002 Lyon",
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "claim": {
+        "typeLabel": "Dégât des eaux",
+        "date": "2026-08-03",
+        "declaredAt": "2026-08-04",
+        "contractLabel": "MRH n° 4471 992",
+        "insurerRef": "SIN-2026-08-77412",
+        "statusLabel": "Expertise réalisée · en attente d'accord",
+        "circumstances": "Infiltration d'eau constatée le 03/08/2026 au plafond de la salle de bain et de la chambre 2, en provenance de l'appartement du 4ᵉ étage (fuite sur alimentation de baignoire, confirmée par recherche de fuite du 07/08/2026).",
+        "consequences": "Plafonds et murs tachés et cloqués sur 11 m² environ, luminaire de salle de bain hors service, parquet de la chambre 2 gonflé sur 2 m².",
+        "measures": "Coupure du circuit électrique concerné, bâchage, séchage par déshumidificateur, déclaration sous 24 h, constat amiable signé avec le voisin.",
+        "statusDetail": "Expertise réalisée le 26/08/2026 · en attente de l'accord d'indemnisation"
+      },
+      "timeline": [
+        {
+          "id": "t1",
+          "date": "2026-04-21",
+          "tone": "past",
+          "title": "Avant sinistre · contrôle VMC, aucun désordre constaté",
+          "text": "Photo de référence du plafond de la salle de bain (annexe photos P1)",
+          "selected": true
+        },
+        {
+          "id": "t2",
+          "date": "2026-08-03",
+          "tone": "key",
+          "title": "Sinistre · infiltration constatée à 19 h 40",
+          "text": "Coupure du disjoncteur salle de bain, bâchage du parquet · 5 photos horodatées (P2–P6)",
+          "selected": true
+        },
+        {
+          "id": "t3",
+          "date": "2026-08-04",
+          "title": "Déclaration à l'assureur · référence SIN-2026-08-77412",
+          "text": "Espace client, accusé de réception par e-mail (annexe A4)",
+          "selected": true
+        },
+        {
+          "id": "t4",
+          "date": "2026-08-05",
+          "title": "Constat amiable dégât des eaux signé avec l'occupant du 4ᵉ",
+          "text": "Transmis à l'assureur le jour même (annexe A1)",
+          "selected": true
+        },
+        {
+          "id": "t5",
+          "date": "2026-08-07",
+          "title": "Recherche de fuite · origine confirmée au 4ᵉ étage",
+          "text": "Plomberie Bellecour · rapport (annexe A2) · fuite réparée le même jour",
+          "selected": true
+        },
+        {
+          "id": "t6",
+          "date": "2026-08-08",
+          "title": "Mise en place d'un déshumidificateur · séchage 14 jours",
+          "text": "Location matériel · facture 186 € (annexe A3)",
+          "selected": true
+        },
+        {
+          "id": "t7",
+          "date": "2026-08-19",
+          "title": "Devis de remise en état reçus",
+          "text": "Peinture et plâtrerie 2 840 € · parquet 1 120 € (annexes A5, A6)",
+          "selected": true
+        },
+        {
+          "id": "t8",
+          "date": "2026-08-26",
+          "title": "Visite de l'expert mandaté par l'assureur",
+          "text": "Cabinet Expertises Rhône · photos après séchage (P7–P8)",
+          "selected": true
+        },
+        {
+          "id": "t9",
+          "date": "2026-09-15",
+          "tone": "open",
+          "title": "Relance de l'assureur · en attente d'accord",
+          "text": "E-mail de relance, sans réponse à la date de génération (annexe A4)",
+          "selected": true
+        },
+        {
+          "id": "t10",
+          "date": "2026-08-10",
+          "title": "Contrôle du circuit électrique de la salle de bain",
+          "text": "Électricien Presqu’île · remise sous tension partielle, plafonnier condamné",
+          "selected": true
+        },
+        {
+          "id": "t11",
+          "date": "2026-08-22",
+          "title": "Fin du séchage · retrait du déshumidificateur",
+          "text": "Taux d’humidité mesuré 14 % (mur chambre 2)",
+          "selected": true
+        },
+        {
+          "id": "t12",
+          "date": "2026-09-09",
+          "title": "Réception du rapport d'expertise",
+          "text": "Cabinet Expertises Rhône · 5 pages (annexe A7)",
+          "selected": true
+        }
+      ],
+      "damages": [
+        {
+          "id": "d1",
+          "zone": "Salle de bain",
+          "element": "Plafond · 5 m²",
+          "finding": "Auréoles, peinture cloquée, plâtre friable en angle",
+          "photoRefs": "P2, P3, P7",
+          "selected": true
+        },
+        {
+          "id": "d2",
+          "zone": "Salle de bain",
+          "element": "Luminaire plafonnier",
+          "finding": "Eau dans le boîtier, hors service depuis le 03/08",
+          "photoRefs": "P4",
+          "selected": true
+        },
+        {
+          "id": "d3",
+          "zone": "Chambre 2",
+          "element": "Plafond et mur mitoyen · 6 m²",
+          "finding": "Traces d'humidité, décollement du papier peint",
+          "photoRefs": "P5, P8",
+          "selected": true
+        },
+        {
+          "id": "d4",
+          "zone": "Chambre 2",
+          "element": "Parquet stratifié · 2 m²",
+          "finding": "Lames gonflées le long du mur mitoyen",
+          "photoRefs": "P6",
+          "selected": true
+        },
+        {
+          "id": "d5",
+          "zone": "Chambre 2",
+          "element": "Rideaux et tringle",
+          "finding": "Rideaux tachés par les coulures, tringle oxydée",
+          "photoRefs": "P5",
+          "selected": true
+        },
+        {
+          "id": "d6",
+          "zone": "Couloir",
+          "element": "Plinthe bois · 1,5 m",
+          "finding": "Plinthe gondolée au droit de la chambre 2",
+          "photoRefs": "P6",
+          "selected": true
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "ref": "P1",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "21/04/2026 · plafond SDB avant sinistre",
+          "focus": "50% 0%",
+          "phase": "before",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "ref": "P2",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:42 · auréoles plafond SDB",
+          "focus": "20% 10%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "ref": "P3",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:44 · angle plâtre cloqué",
+          "focus": "80% 10%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "ref": "P4",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:47 · plafonnier",
+          "focus": "50% 100%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p5",
+          "ref": "P5",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:51 · mur chambre 2",
+          "focus": "10% 60%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p6",
+          "ref": "P6",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "03/08/2026 19:53 · parquet gonflé",
+          "focus": "90% 90%",
+          "phase": "claim",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p7",
+          "ref": "P7",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "26/08/2026 · plafond SDB après séchage",
+          "focus": "30% 0%",
+          "phase": "after",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p8",
+          "ref": "P8",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "26/08/2026 · mur chambre 2 après séchage",
+          "focus": "0% 50%",
+          "phase": "after",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "actions": [
+        {
+          "id": "a1",
+          "date": "2026-08-03",
+          "title": "Mesures conservatoires",
+          "text": "Coupure électrique du circuit SDB, bâchage, déplacement du mobilier de la chambre 2",
+          "selected": true
+        },
+        {
+          "id": "a2",
+          "date": "2026-08-07",
+          "title": "Recherche et réparation de la fuite",
+          "text": "Plomberie Bellecour, à la charge de l'occupant du 4ᵉ",
+          "selected": true
+        },
+        {
+          "id": "a3",
+          "whenLabel": "08/08 → 22/08/2026",
+          "title": "Séchage",
+          "text": "Déshumidificateur en location, 14 jours · 186 € TTC avancés par l'assuré",
+          "selected": true
+        },
+        {
+          "id": "a4",
+          "whenLabel": "Non réalisé",
+          "title": "Remise en état",
+          "text": "En attente de l'accord d'indemnisation · devis joints",
+          "selected": true
+        },
+        {
+          "id": "a5",
+          "date": "2026-08-10",
+          "title": "Mise en sécurité électrique",
+          "text": "Contrôle du circuit, plafonnier condamné en attente de remplacement",
+          "selected": true
+        },
+        {
+          "id": "a6",
+          "date": "2026-08-26",
+          "title": "Présence à l'expertise",
+          "text": "Assurée présente, remise des devis et des photos à l'expert",
+          "selected": true
+        }
+      ],
+      "exchanges": [
+        {
+          "id": "x1",
+          "date": "2026-08-04",
+          "title": "Accusé de réception de la déclaration · SIN-2026-08-77412",
+          "channel": "E-mail",
+          "docId": "echanges",
+          "selected": true
+        },
+        {
+          "id": "x2",
+          "date": "2026-08-18",
+          "title": "Convocation à l'expertise du 26/08/2026",
+          "channel": "Courrier",
+          "docId": "echanges",
+          "selected": true
+        },
+        {
+          "id": "x4",
+          "date": "2026-09-09",
+          "title": "Transmission du rapport d'expertise",
+          "channel": "E-mail",
+          "docId": "echanges",
+          "selected": true
+        },
+        {
+          "id": "x5",
+          "date": "2026-09-01",
+          "title": "Échéance annuelle MRH · avis de cotisation",
+          "channel": "Courrier",
+          "selected": true,
+          "linkedToClaim": false
+        },
+        {
+          "id": "x3",
+          "date": "2026-09-15",
+          "title": "Relance de l'assuré · sans réponse à ce jour",
+          "channel": "E-mail",
+          "docId": "echanges",
+          "selected": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "constat",
+          "kind": "statement",
+          "title": "Constat amiable dégât des eaux",
+          "issuer": "Assurés",
+          "typeLabel": "Constat",
+          "date": "2026-08-05",
+          "pages": 2
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "rapport",
+          "kind": "leak-report",
+          "title": "Rapport de recherche de fuite",
+          "issuer": "Plomberie Bellecour",
+          "typeLabel": "Rapport",
+          "date": "2026-08-07",
+          "pages": 3
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "fact-desh",
+          "kind": "invoice",
+          "title": "Facture location déshumidificateur",
+          "issuer": "Loxam Lyon",
+          "typeLabel": "Facture",
+          "date": "2026-08-22",
+          "pages": 1,
+          "amountCents": 18600
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "echanges",
+          "kind": "exchanges",
+          "title": "Échanges assureur (4 messages)",
+          "typeLabel": "Correspondance",
+          "date": "2026-08-04",
+          "dateLabel": "04/08 → 15/09/2026",
+          "pages": 4
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "devis-peint",
+          "kind": "quote",
+          "title": "Devis peinture et plâtrerie",
+          "issuer": "Artisan peintre",
+          "typeLabel": "Devis",
+          "date": "2026-08-19",
+          "pages": 2,
+          "amountCents": 284000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "devis-parq",
+          "kind": "quote",
+          "title": "Devis remplacement parquet",
+          "issuer": "Parquets Presqu'île",
+          "typeLabel": "Devis",
+          "date": "2026-08-19",
+          "pages": 1,
+          "amountCents": 112000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "expertise",
+          "kind": "expert-report",
+          "title": "Rapport d'expertise",
+          "issuer": "Cabinet Expertises Rhône",
+          "typeLabel": "Rapport",
+          "date": "2026-09-09",
+          "pages": 5
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "JPG",
+          "section": "photos-hd",
+          "mode": "ZIP",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "photos-hd",
+          "count": 8,
+          "title": "Photos haute définition (8)",
+          "typeLabel": "Photos",
+          "date": "2026-08-26",
+          "zipPath": "photos/",
+          "sizeBytes": 31200000
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": null,
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "rib",
+          "title": "RIB de l'assuré",
+          "typeLabel": "Bancaire",
+          "date": "2024-01-05",
+          "pages": 1
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "claim-docs",
+          "mode": null,
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du document source rendue à l'échelle, ratio préservé."
+          },
+          "id": "voisin",
+          "title": "Coordonnées du voisin · M. Ferrand",
+          "typeLabel": "Contact",
+          "date": "2026-08-05",
+          "pages": 1
+        }
+      ],
+      "mustNotAppear": [
+        "RIB",
+        "Ferrand",
+        "342 000",
+        "Estimation Verebona",
+        "Échéance annuelle",
+        "avis de cotisation"
+      ]
+    }
+  }
+}

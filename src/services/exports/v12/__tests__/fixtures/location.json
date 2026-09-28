@@ -1,0 +1,533 @@
+{
+  "$comment": "Données d'exemple du dossier de mise en location (CDC V12 §11, §19.1). Nominal et riche repris de design-v12/Mise en location.dc.html ; le riche ajoute du volume ; minimal dérivé. Contrat : location/README.md. Personnes, entreprises et numéros fictifs.",
+  "cases": {
+    "minimal": {
+      "caseInfo": {
+        "id": "minimal",
+        "label": "Minimal",
+        "recette": "REC-LOCATION-MINIMAL / REC-LOCATION-SANS_PHOTO",
+        "description": "Aucune photo (couverture de repli graphique), loyer seul saisi (charges, dépôt et bail inconnus : cartes et lignes masquées), aucun équipement, aucun document. Estimation de loyer jamais affichée (LOCATION-RULE-001)."
+      },
+      "export": {
+        "type": "LOCATION",
+        "label": "Dossier de mise en location",
+        "reference": "VBN-LOC-2026-0928-005",
+        "generatedAt": "2026-09-28T11:02:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "location · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ · Ainay",
+        "shortName": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ · Ainay"
+        ],
+        "categoryLabel": "Immobilier · Appartement T3",
+        "fields": {
+          "livingAreaSqm": 68,
+          "locationLabel": "Lyon 2ᵉ · Ainay",
+          "roomsLabel": "3 · 2 chambres"
+        },
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "source": "Estimation Verebona"
+        },
+        "rentalEstimate": {
+          "monthlyRentCents": 124000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": "Appartement de 3 pièces, 68 m² habitables, quartier d'Ainay (Lyon 2ᵉ).",
+      "rental": {
+        "monthlyRentCents": 115000
+      },
+      "equipments": [],
+      "energy": {},
+      "photos": [],
+      "followUp": [],
+      "documents": [],
+      "mustNotAppear": [
+        "1 240",
+        "Estimation Verebona",
+        "Dépôt de garantie",
+        "Équipements et diagnostics",
+        "Photos"
+      ]
+    },
+    "nominal": {
+      "caseInfo": {
+        "id": "nominal",
+        "label": "Nominal",
+        "recette": "REC-LOCATION-NOMINAL",
+        "description": "Maquette design-v12, variante nominale : loyer, charges et dépôt saisis, bail non meublé 3 ans, 8 informations, 8 équipements, énergie et confort, 3 photos. Suivi et documents proposés non précochés, non retenus. Bail et état des lieux de l'ancien locataire (données d'occupant) jamais rendus. Estimations de valeur et de loyer jamais affichées."
+      },
+      "export": {
+        "type": "LOCATION",
+        "label": "Dossier de mise en location",
+        "reference": "VBN-LOC-2026-0928-007",
+        "generatedAt": "2026-09-28T11:47:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "location · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ · Ainay",
+        "shortName": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ · Ainay"
+        ],
+        "categoryLabel": "Immobilier · Appartement T3",
+        "fields": {
+          "livingAreaSqm": 68,
+          "roomsLabel": "3 · 2 chambres",
+          "locationLabel": "Lyon 2ᵉ · Ainay",
+          "floorLabel": "3ᵉ sur 5 · ascenseur",
+          "conditionLabel": "Bon · peintures 2025",
+          "dpe": "C",
+          "ges": "A",
+          "exposure": "Ouest",
+          "transport": "Métro A Ampère · 4 min",
+          "address1": "14 rue des Remparts d'Ainay"
+        },
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "source": "Estimation Verebona"
+        },
+        "rentalEstimate": {
+          "monthlyRentCents": 124000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": "Appartement de 3 pièces, 68 m² habitables, au 3ᵉ étage d'un immeuble de 1962 avec ascenseur, quartier d'Ainay (Lyon 2ᵉ). Séjour orienté ouest, deux chambres, cuisine équipée ouverte, salle de bain, cave de 6 m².\n\nChauffage individuel au gaz (chaudière à condensation de 2024), double vitrage, fibre optique. DPE C, GES A. Proposé non meublé, disponible le 01/12/2026.",
+      "rental": {
+        "pitch": "T3 de 68 m² au 3ᵉ étage avec ascenseur, cuisine équipée, cave.",
+        "monthlyRentCents": 115000,
+        "monthlyChargesCents": 14000,
+        "depositCents": 115000,
+        "leaseType": "NON_MEUBLE",
+        "leaseDurationLabel": "3 ans",
+        "leaseUsageLabel": "résidence principale",
+        "rentalAreaSqm": null,
+        "availabilityDate": "2026-12-01",
+        "rentalConditions": "Garant ou garantie Visale acceptés · animaux de petite taille tolérés",
+        "contactInstructions": "Visites groupées les samedis matin · contact par la plateforme d'annonce"
+      },
+      "equipments": [
+        "Cuisine équipée",
+        "Plaques induction",
+        "Four · hotte",
+        "Cave 6 m²",
+        "Fibre optique",
+        "Interphone",
+        "Local vélos",
+        "Double vitrage"
+      ],
+      "energy": {
+        "dpe": "C",
+        "consumption": "142 kWh/m²/an",
+        "ges": "A",
+        "heating": "Gaz individuel · condensation 2024",
+        "hotWater": "Ballon électrique 150 L · 2026",
+        "ventilation": "VMC · contrôlée 04/2026",
+        "parking": "Non inclus"
+      },
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Séjour · exposition ouest",
+          "focus": "50% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Cuisine équipée",
+          "focus": "80% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Chambre principale",
+          "focus": "20% 20%",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "followUp": [
+        {
+          "id": "f1",
+          "date": "2026-01-18",
+          "title": "Remplacement du ballon d'eau chaude",
+          "provider": "Plomberie Bellecour",
+          "selected": false
+        },
+        {
+          "id": "f9",
+          "date": "2026-02-11",
+          "title": "Départ de Mme Sophie Garnier · état des lieux de sortie",
+          "provider": "Propriétaire",
+          "selected": false,
+          "occupantData": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": false,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "dpe",
+          "title": "Diagnostic de performance énergétique",
+          "typeLabel": "Diagnostic",
+          "date": "2023-09-02",
+          "pages": 6,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "bail-prec",
+          "title": "Bail précédent · Mme Sophie Garnier",
+          "typeLabel": "Bail",
+          "date": "2022-12-01",
+          "pages": 14,
+          "mode": null,
+          "occupantData": true
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "edl",
+          "title": "État des lieux de sortie 2026",
+          "typeLabel": "État des lieux",
+          "date": "2026-02-11",
+          "pages": 9,
+          "mode": null,
+          "occupantData": true
+        }
+      ],
+      "mustNotAppear": [
+        "Garnier",
+        "État des lieux de sortie",
+        "342 000",
+        "1 240",
+        "Estimation Verebona",
+        "Éléments de suivi"
+      ]
+    },
+    "riche": {
+      "caseInfo": {
+        "id": "riche",
+        "label": "Riche",
+        "recette": "REC-LOCATION-RICHE / REC-LOCATION-AVEC_DOCS_ZIP / REC-LOCATION-AVEC_SENSIBLE_NON_COCHÉ",
+        "description": "Maquette design-v12, variante riche (suivi rassurant, documents, index et annexes, ZIP) enrichie : surface locative 67,4 m² prioritaire (LOCATION-RULE-003), 4 photos, 6 éléments de suivi (ceux de l'ancienne occupante filtrés même cochés), 6 documents dont 3 intégrés (12 pages) et 3 au ZIP."
+      },
+      "export": {
+        "type": "LOCATION",
+        "label": "Dossier de mise en location",
+        "reference": "VBN-LOC-2026-0928-008",
+        "generatedAt": "2026-09-28T12:03:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "location · v1.0",
+        "zipName": "Verebona_Location_Appartement-Lyon-2e_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ · Ainay",
+        "shortName": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ · Ainay"
+        ],
+        "categoryLabel": "Immobilier · Appartement T3",
+        "fields": {
+          "livingAreaSqm": 68,
+          "roomsLabel": "3 · 2 chambres",
+          "locationLabel": "Lyon 2ᵉ · Ainay",
+          "floorLabel": "3ᵉ sur 5 · ascenseur",
+          "conditionLabel": "Bon · peintures 2025",
+          "dpe": "C",
+          "ges": "A",
+          "exposure": "Ouest",
+          "transport": "Métro A Ampère · 4 min",
+          "address1": "14 rue des Remparts d'Ainay"
+        },
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "source": "Estimation Verebona"
+        },
+        "rentalEstimate": {
+          "monthlyRentCents": 124000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": "Appartement de 3 pièces, 67,4 m² habitables (surface locative mesurée), au 3ᵉ étage d'un immeuble de 1962 avec ascenseur, quartier d'Ainay (Lyon 2ᵉ). Séjour orienté ouest, deux chambres, cuisine équipée ouverte, salle de bain, cave de 6 m².\n\nChauffage individuel au gaz (chaudière à condensation de 2024), double vitrage, fibre optique. DPE C, GES A. Proposé non meublé, disponible le 01/12/2026.",
+      "rental": {
+        "pitch": "T3 de 67,4 m² au 3ᵉ étage avec ascenseur, cuisine équipée, cave.",
+        "monthlyRentCents": 115000,
+        "monthlyChargesCents": 14000,
+        "depositCents": 115000,
+        "leaseType": "NON_MEUBLE",
+        "leaseDurationLabel": "3 ans",
+        "leaseUsageLabel": "résidence principale",
+        "rentalAreaSqm": 67.4,
+        "availabilityDate": "2026-12-01",
+        "rentalConditions": "Garant ou garantie Visale acceptés · animaux de petite taille tolérés",
+        "contactInstructions": "Visites groupées les samedis matin · contact par la plateforme d'annonce"
+      },
+      "equipments": [
+        "Cuisine équipée",
+        "Plaques induction",
+        "Four · hotte",
+        "Cave 6 m²",
+        "Fibre optique",
+        "Interphone",
+        "Local vélos",
+        "Double vitrage"
+      ],
+      "energy": {
+        "dpe": "C",
+        "consumption": "142 kWh/m²/an",
+        "ges": "A",
+        "heating": "Gaz individuel · condensation 2024",
+        "hotWater": "Ballon électrique 150 L · 2026",
+        "ventilation": "VMC · contrôlée 04/2026",
+        "parking": "Non inclus"
+      },
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Séjour · exposition ouest",
+          "focus": "50% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Cuisine équipée",
+          "focus": "80% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Chambre principale",
+          "focus": "20% 20%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "file": "photos/appartement-lyon.webp",
+          "caption": "Salle de bain",
+          "focus": "5% 5%",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "followUp": [
+        {
+          "id": "f1",
+          "date": "2026-01-18",
+          "title": "Remplacement du ballon d'eau chaude",
+          "provider": "Plomberie Bellecour",
+          "costCents": 199000,
+          "selected": true
+        },
+        {
+          "id": "f2",
+          "date": "2025-11-06",
+          "title": "Entretien annuel de la chaudière",
+          "provider": "Thermiconfort Lyon",
+          "costCents": 14900,
+          "selected": true
+        },
+        {
+          "id": "f3",
+          "date": "2025-05-02",
+          "title": "Peintures séjour et chambres refaites",
+          "provider": "Artisan peintre",
+          "costCents": 320000,
+          "selected": true
+        },
+        {
+          "id": "f4",
+          "date": "2026-04-21",
+          "title": "Contrôle VMC et bouches d'extraction",
+          "provider": "Syndic",
+          "selected": true
+        },
+        {
+          "id": "f5",
+          "date": "2026-07-08",
+          "title": "Vérification du détecteur de fumée",
+          "provider": "Propriétaire",
+          "selected": true
+        },
+        {
+          "id": "f6",
+          "date": "2025-09-22",
+          "title": "Ravalement de façade (copropriété)",
+          "provider": "Façades Lyonnaises",
+          "selected": true
+        },
+        {
+          "id": "f9",
+          "date": "2026-02-11",
+          "title": "Départ de Mme Sophie Garnier · état des lieux de sortie",
+          "provider": "Propriétaire",
+          "selected": true,
+          "occupantData": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "dpe",
+          "title": "Diagnostic de performance énergétique",
+          "typeLabel": "Diagnostic",
+          "date": "2023-09-02",
+          "pages": 6,
+          "detail": "valide jusqu'au 01/09/2033",
+          "mode": "PDF",
+          "tone": "amber",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "erp",
+          "title": "État des risques et pollutions (ERP)",
+          "annexTitle": "État des risques et pollutions",
+          "typeLabel": "Diagnostic",
+          "date": "2023-08-20",
+          "pages": 4,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "surf",
+          "title": "Attestation de surface habitable",
+          "typeLabel": "Mesurage",
+          "date": "2023-09-15",
+          "pages": 2,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "rcp",
+          "title": "Règlement de copropriété · extrait",
+          "typeLabel": "Copropriété",
+          "date": "1962",
+          "pages": 38,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "reglement-copropriete-extrait.pdf",
+          "sizeBytes": 3400000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "elec",
+          "title": "Diagnostic électricité",
+          "typeLabel": "Diagnostic",
+          "date": "2023-08-20",
+          "pages": 8,
+          "mode": "ZIP",
+          "fileName": "diagnostic-electricite.pdf",
+          "sizeBytes": 2300000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "notice",
+          "title": "Notice chaudière ThemaPlus 25",
+          "typeLabel": "Notice technique",
+          "date": "2024-03-12",
+          "pages": 48,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "notice-chaudiere.pdf",
+          "sizeBytes": 11200000
+        },
+        {
+          "selected": true,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "bail-prec",
+          "title": "Bail précédent · Mme Sophie Garnier",
+          "typeLabel": "Bail",
+          "date": "2022-12-01",
+          "pages": 14,
+          "mode": "ZIP",
+          "occupantData": true
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "edl",
+          "title": "État des lieux de sortie 2026",
+          "typeLabel": "État des lieux",
+          "date": "2026-02-11",
+          "pages": 9,
+          "mode": null,
+          "occupantData": true
+        }
+      ],
+      "mustNotAppear": [
+        "Garnier",
+        "État des lieux de sortie",
+        "342 000",
+        "1 240",
+        "Estimation Verebona",
+        "1 990",
+        "3 200"
+      ]
+    }
+  }
+}

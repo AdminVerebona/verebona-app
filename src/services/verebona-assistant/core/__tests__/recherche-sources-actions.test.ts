@@ -372,13 +372,14 @@ describe('§12.1 — exports et dossiers disponibles', () => {
   it('liste lue dans le compte, avec statut, et lien vers l’onglet Exports du bien', async () => {
     const out = await answerFromData({
       port: port({ listExports: async () => [
-        { id: 2, assetId: 3, assetName: 'Maison', exportType: 'DOSSIER_VENTE', status: 'ready', date: '2026-09-01' },
+        // Code V12 ; un ancien code (ligne antérieure à la migration 0213) a le même libellé.
+        { id: 2, assetId: 3, assetName: 'Maison', exportType: 'VENTE', status: 'ready', date: '2026-09-01' },
         { id: 4, assetId: 3, assetName: 'Maison', exportType: 'EXPORT_BRUT', status: 'generating', date: null },
       ] }),
       accountId: 7, message: 'Quels exports sont disponibles ?', thresholds: DEFAULT_THRESHOLDS,
     });
     expect(out.strategy).toBe('structured.exports');
-    expect(out.answer).toMatch(/Dossier de vente \(Maison\), 1(er)? septembre 2026 : prêt/);
+    expect(out.answer).toMatch(/Kit de mise en vente \(Maison\), 1(er)? septembre 2026 : prêt/);
     expect(out.answer).toMatch(/en cours de génération/);
     expect(out.sources[0]).toMatchObject({ id: 'export_2', type: 'export_item' });
     expect(hrefSource('export_2', { assetId: 3 })).toBe('/assets/3?tab=exports');

@@ -3,6 +3,7 @@
  * REFD-006 : consultation seule ; PUT et DELETE supprimés.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeExportCode } from '@/services/exports/catalog';
 import { db } from '@/db';
 import { documentTypes, documentTypeAssetAssociations, documentTypeExportAssociations, assetTypes, assetTypeSubcategories } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -83,7 +84,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const exportAssociations = exportAssociationsRaw.map(assoc => ({
       id: assoc.id,
       documentTypeId: assoc.documentTypeId,
-      exportType: assoc.exportType,
+      // Code V12 (anciens codes antérieurs à la migration 0213 ramenés au catalogue).
+            exportType: normalizeExportCode(assoc.exportType) ?? assoc.exportType,
       includeByDefault: assoc.includeByDefault,
       displayOrder: assoc.displayOrder,
       createdAt: assoc.createdAt,

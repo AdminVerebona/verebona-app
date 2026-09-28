@@ -3,9 +3,10 @@
 /**
  * Modèle d'export — consultation (CDC Back-Office V1 §11.1).
  *
- * EXP-007 / REC-MOD-06 : la structure du modèle (libellé, identifiant
- * PDFMonkey, catégorie, type d'export, variables…) n'est plus éditable depuis
- * le BO ; le formulaire et le handler PUT ont été retirés. EXP-003 / EXP-004 :
+ * EXP-007 / REC-MOD-06 : la structure du modèle (libellé, catégorie, type
+ * d'export, variables…) n'est plus éditable depuis le BO ; le formulaire et le
+ * handler PUT ont été retirés. CDC Exports V12 MIG-06 / DEC-001 : l'identifiant
+ * PDFMonkey n'est ni affiché ni lu (colonne conservée en base, inutilisée). EXP-003 / EXP-004 :
  * seule l'activation reste, avec confirmation. EXP-002 : pas de numéro de
  * version affiché.
  */
@@ -20,6 +21,7 @@ import { ExportTemplateActiveToggle } from '../_components/ExportTemplateActiveT
 import { formatDateTime } from '@/lib/admin/format';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { ExportTemplatePreview } from '../_components/ExportTemplatePreview';
+import { exportCodeLabel } from '@/services/exports/catalog';
 
 interface ExportTemplate {
   id: number;
@@ -41,16 +43,9 @@ const CATEGORIES: Record<string, string> = {
   MATERIEL_PRO: 'Matériel Pro',
 };
 
-const EXPORT_TYPES: Record<string, string> = {
-  DOSSIER_VENTE: 'Dossier de vente',
-  ASSURANCE_DEVIS: 'Assurance - Devis',
-  ASSURANCE_SINISTRE: 'Assurance - Sinistre',
-  CIL: 'CIL',
-  DOSSIER_COMPLET: 'Dossier complet',
-  REVENTE: 'Revente',
-  SAV_GARANTIE: 'SAV / Garantie',
-  AUTRE: 'Autre',
-};
+/** Type d'export : codes V12 du catalogue (anciens codes compris, SAV / Autre hors catalogue). */
+const LEGACY_ONLY_TYPES: Record<string, string> = { SAV_GARANTIE: 'SAV / Garantie', AUTRE: 'Autre' };
+const exportTypeLabel = (code: string) => LEGACY_ONLY_TYPES[code] ?? exportCodeLabel(code);
 
 function parseVariables(raw: string | undefined): string[] | null {
   if (!raw?.trim()) return [];
@@ -159,7 +154,7 @@ export default function ExportTemplateDetailPage() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1">Type d’export</p>
-              <p className="text-sm">{template.exportType ? (EXPORT_TYPES[template.exportType] ?? template.exportType) : '—'}</p>
+              <p className="text-sm">{template.exportType ? exportTypeLabel(template.exportType) : '—'}</p>
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1">Créé le</p>

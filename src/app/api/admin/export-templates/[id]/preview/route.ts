@@ -64,7 +64,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       id: a.id,
       name: a.name,
       category: a.category,
-      ineligibleReason: assetIneligibilityReason(exportType, template.category, a.category),
+      ineligibleReason: assetIneligibilityReason(exportType, template.category, a.category, a.subtype),
     }));
 
     const assetIdRaw = new URL(request.url).searchParams.get('assetId');
@@ -75,7 +75,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       if (!asset) {
         return NextResponse.json({ code: 'ASSET_NOT_OWN', message: 'Ce bien n’appartient pas à votre compte.' }, { status: 404 });
       }
-      const reason = assetIneligibilityReason(exportType, template.category, asset.category);
+      const reason = assetIneligibilityReason(exportType, template.category, asset.category, asset.subtype);
       if (reason) return NextResponse.json({ code: 'ASSET_INELIGIBLE', message: reason }, { status: 400 });
       const a = await analysePreview(exportType, asset);
       analysis = { assetId: asset.id, missing: a.missing, documentCount: a.manifest.includedDocuments.length };
@@ -118,7 +118,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // SEC-005 : jamais le bien d'un autre compte.
       return NextResponse.json({ code: 'ASSET_NOT_OWN', message: 'Ce bien n’appartient pas à votre compte.' }, { status: 404 });
     }
-    const reason = assetIneligibilityReason(exportType, template.category, asset.category);
+    const reason = assetIneligibilityReason(exportType, template.category, asset.category, asset.subtype);
     if (reason) return NextResponse.json({ code: 'ASSET_INELIGIBLE', message: reason }, { status: 400 });
 
     const analysis = await analysePreview(exportType, asset);

@@ -149,7 +149,7 @@ async function main() {
         {
             documentTypeId: factureType!.id,
             exportTemplateId: null,
-            exportType: 'REVENTE',
+            exportType: 'VENTE',
             includeByDefault: true,
             displayOrder: 1,
             createdAt: new Date(),
@@ -157,7 +157,7 @@ async function main() {
         {
             documentTypeId: factureType!.id,
             exportTemplateId: null,
-            exportType: 'ASSURANCE_DEVIS',
+            exportType: 'ASSURANCE_SOUSCRIPTION',
             includeByDefault: true,
             displayOrder: 1,
             createdAt: new Date(),
@@ -174,7 +174,7 @@ async function main() {
         {
             documentTypeId: garantieType!.id,
             exportTemplateId: null,
-            exportType: 'REVENTE',
+            exportType: 'VENTE',
             includeByDefault: true,
             displayOrder: 2,
             createdAt: new Date(),
@@ -199,7 +199,7 @@ async function main() {
         {
             documentTypeId: manuelType!.id,
             exportTemplateId: null,
-            exportType: 'REVENTE',
+            exportType: 'VENTE',
             includeByDefault: true,
             displayOrder: 3,
             createdAt: new Date(),
@@ -224,7 +224,7 @@ async function main() {
         {
             documentTypeId: contratType!.id,
             exportTemplateId: null,
-            exportType: 'REVENTE',
+            exportType: 'VENTE',
             includeByDefault: false,
             displayOrder: 10,
             createdAt: new Date(),
@@ -241,7 +241,7 @@ async function main() {
         {
             documentTypeId: attestationAssuranceType!.id,
             exportTemplateId: null,
-            exportType: 'ASSURANCE_DEVIS',
+            exportType: 'ASSURANCE_SOUSCRIPTION',
             includeByDefault: true,
             displayOrder: 2,
             createdAt: new Date(),
@@ -266,7 +266,7 @@ async function main() {
         {
             documentTypeId: certificatType!.id,
             exportTemplateId: null,
-            exportType: 'REVENTE',
+            exportType: 'VENTE',
             includeByDefault: true,
             displayOrder: 4,
             createdAt: new Date(),

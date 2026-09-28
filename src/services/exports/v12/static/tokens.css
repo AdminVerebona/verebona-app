@@ -1,0 +1,107 @@
+/*
+ * Verebona — jetons des dossiers PDF (CDC Exports V12 §19).
+ *
+ * Source : maquettes Claude Design « design-v12 » (*.dc.html), valeurs relevées
+ * telles quelles dans les feuilles 794 × 1123 px (A4 à 96 dpi). Les noms suivent
+ * le design system Verebona (_ds/tokens/colors.css) quand la valeur y existe.
+ *
+ * Unités : px CSS (1 px = 1/96 in). La page A4 fait 794 × 1123 px.
+ */
+
+/* ── Polices auto-hébergées (licence OFL, voir fonts/LICENSE*.txt) : instances statiques fusionnées (latin + latin-ext) tirées des paquets Fontsource
+   5.3.0 — une seule face par graisse, nom PostScript unique. Avec les sous-ensembles séparés
+   (même nom « Inter-Regular »), Skia confondait les faces et omettait du texte dans le PDF.
+   Bricolage Grotesque reste variable (axe opsz automatique selon la taille). */
+@font-face { font-family: 'Inter'; src: url('fonts/inter-400.woff2') format('woff2'); font-weight: 400; }
+@font-face { font-family: 'Inter'; src: url('fonts/inter-500.woff2') format('woff2'); font-weight: 500; }
+@font-face { font-family: 'Inter'; src: url('fonts/inter-600.woff2') format('woff2'); font-weight: 600; }
+@font-face { font-family: 'Inter'; src: url('fonts/inter-700.woff2') format('woff2'); font-weight: 700; }
+@font-face { font-family: 'Bricolage Grotesque'; src: url('fonts/bricolage-grotesque-latin-opsz-5.3.0.woff2') format('woff2'); font-weight: 200 800; }
+@font-face { font-family: 'Space Mono'; src: url('fonts/space-mono-400.woff2') format('woff2'); font-weight: 400; }
+@font-face { font-family: 'Space Mono'; src: url('fonts/space-mono-700.woff2') format('woff2'); font-weight: 700; }
+
+:root {
+  /* ── Familles ─────────────────────────────────────────────────────────── */
+  --font-body: 'Inter', system-ui, sans-serif;          /* texte courant, valeurs, tableaux */
+  --font-display: 'Bricolage Grotesque', sans-serif;    /* h1 couverture, h2 sections, chiffres clés */
+  --font-mono: 'Space Mono', monospace;                 /* sur-titres, libellés de colonnes, codes B1/A1 */
+
+  /* ── Encre (texte sur papier) ─────────────────────────────────────────── */
+  --ink: #0F1B33;          /* --vb-ink-light : texte principal, titres, valeurs */
+  --ink-2: #5B6577;        /* --vb-ink-light-2 : libellés, texte secondaire */
+  --ink-3: #8A93A6;        /* --vb-ink-light-3 : sur-titres, en-tête/pied, méta */
+  --line: #E6EBF3;         /* --vb-paper-300 : filets, bordures de cartes */
+  --line-strong: #0F1B33;  /* filet 2 px sous les en-têtes de tableau */
+  --line-dashed: #C9D3E3;  /* cadre des pages intégrées */
+  --paper: #FFFFFF;
+  --panel: #F5F8FD;        /* --vb-paper-100 : encadrés (synthèse, notes, bannière annexe) */
+  --card: #F9FBFE;         /* cartes document / chiffres / points forts */
+  --frame: #FAFBFD;        /* fond du cadre « contenu source » */
+  --frame-rule: #F3F6FB;   /* réglure du cadre (pages PDF) */
+
+  /* ── Marine (couvertures, carte « chiffre principal ») ────────────────── */
+  --navy: #020B1A;         /* --vb-ink-850 */
+  --on-navy: #FFFFFF;
+  --on-navy-lead: #B9C4D8; /* chapô de couverture */
+  --on-navy-body: #C7D0E0; /* --vb-text-mid : texte de carte sur marine */
+  --on-navy-addr: #D5DDEB; /* adresse / chapô sur photo */
+  --on-navy-kicker: #94A3B8; /* --vb-slate-400 : sur-titre de couverture */
+  --on-navy-label: #7C8AA5; /* libellés méta + pied de couverture documentaire */
+  --on-navy-muted: #9BA6BC; /* --vb-text-muted : méta + pied sur couverture photo */
+  --on-navy-accent: #7EB0FF; /* --vb-blue-nav : sur-titres accent sur marine */
+  --on-photo-accent: #BFDBFE; /* --vb-blue-200 : sur-titres sur photo */
+  --navy-card: rgba(15, 23, 42, .5);
+  --navy-card-line: rgba(148, 163, 184, .14);
+  --navy-halo: rgba(59, 130, 246, .22);
+  --navy-halo-strong: rgba(59, 130, 246, .28);
+  --navy-halo-teal: rgba(35, 196, 168, .12);
+  --navy-dot: rgba(148, 163, 184, .09);
+
+  /* ── Accent unique ────────────────────────────────────────────────────── */
+  --blue: #3B82F6;         /* --vb-blue-500 */
+  --blue-600: #2563EB;     /* codes B1/A1, liens */
+  --blue-700: #1D4ED8;     /* texte des pastilles bleues */
+  --blue-wash: rgba(59, 130, 246, .10);
+  --blue-wash-line: rgba(59, 130, 246, .30);
+
+  /* ── Statuts (pastilles, compteurs, badges de format) ─────────────────── */
+  --ok: #15803D;    --ok-wash: rgba(34, 197, 94, .12);   --ok-card: rgba(34, 197, 94, .08);  --ok-line: rgba(34, 197, 94, .30);  --ok-icon: #16A34A; --ok-badge: rgba(34, 197, 94, .10);
+  --warn: #B45309;  --warn-wash: rgba(245, 158, 11, .14); --warn-card: rgba(245, 158, 11, .10); --warn-line: rgba(245, 158, 11, .35); --warn-badge: rgba(245, 158, 11, .10);
+  --bad: #B91C1C;   --bad-wash: rgba(239, 68, 68, .12);  --bad-card: rgba(239, 68, 68, .08);  --bad-line: rgba(239, 68, 68, .30);
+  --neutral: #5B6577; --neutral-wash: rgba(148, 163, 184, .14);
+  --dot-past: #94A3B8; --dot-event: #3B82F6; --dot-key: #EF4444; --dot-open: #F59E0B;
+
+  /* ── Échelle typographique (px) ───────────────────────────────────────── */
+  --fs-h1-cover: 52px;     /* CIL ; 56 px dossier complet / marketing ; 50 px bandeau assurance */
+  --fs-h2: 26px;           /* titre de section */
+  --fs-h2-sm: 22px;        /* titre de bloc CIL, « suite », sous-section */
+  --fs-figure: 26px;       /* chiffres clés (28 px compteurs CIL / location, 32 px prix vente) */
+  --fs-lead-cover: 15px;
+  --fs-kv: 13.5px;         /* grille libellé / valeur, synthèse */
+  --fs-table: 13px;        /* tableaux, cartes, titres de documents */
+  --fs-body: 12.5px;       /* chapô de section, note */
+  --fs-meta: 11.5px;       /* méta document, légendes, sous-libellés */
+  --fs-pill: 11px;
+  --fs-chrome: 10.5px;     /* en-tête et pied de page */
+  --fs-eyebrow: 10px;      /* Space Mono capitales */
+  --ls-eyebrow: .09em;
+  --ls-display: -.02em;
+  --ls-cover: -.03em;
+
+  /* ── Rayons ───────────────────────────────────────────────────────────── */
+  --r-pill: 999px;
+  --r-panel: 14px;         /* synthèse, note de couverture, carte mascotte */
+  --r-card: 12px;          /* chiffres clés, points forts, photos */
+  --r-row: 10px;           /* cartes document, lignes de suivi, petites photos */
+  --r-badge: 8px;          /* badge de format 34 × 34, cadre annexe */
+
+  /* ── Mise en page A4 (px CSS) ─────────────────────────────────────────── */
+  --page-w: 794px;
+  --page-h: 1123px;
+  --margin-x: 44px;        /* pages intérieures */
+  --margin-top: 70px;      /* 22 (en-tête) + 14 (ligne) + 34 (respiration) */
+  --margin-bottom: 64px;   /* pied à 26 px du bord + respiration */
+  --cover-x: 56px;         /* couvertures */
+  --gap-section: 38px;     /* entre deux sections d'une même page */
+  --gap-col: 36px;         /* gouttière des grilles libellé / valeur */
+}

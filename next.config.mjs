@@ -21,6 +21,10 @@ const LOADER = path.resolve(
 /** @type {import("next").NextConfig} */
 const nextConfig = {
   transpilePackages: ["@verebona/ui"],
+  // Moteur PDF des dossiers V12 (CDC Exports V12 DEC-003) : Playwright est
+  // chargé tel quel par Node côté serveur, jamais empaqueté (binaires,
+  // `require` dynamiques) ni exposé au navigateur.
+  serverExternalPackages: ["playwright-core"],
   allowedDevOrigins: ["*.orchids.cloud", "orchids.cloud"],
   async headers () {
     return [

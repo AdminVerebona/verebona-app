@@ -197,6 +197,13 @@ export async function registerNode(): Promise<void> {
   );
   startDailyMaintenanceScheduler();
 
+  // 9. Dossiers prêts à l'emploi V12 (CDC Exports V12 §15.3) : worker de la
+  //    file durable `export_generation` (rendu HTML/CSS + Chromium, une
+  //    génération à la fois par instance). EXPORTS_WORKER_DISABLED=true le
+  //    retire de cette instance.
+  const { startExportWorker } = await import('@/services/exports/v12/generation/worker');
+  startExportWorker();
+
   const { listRunningUseCases } = await import('@/services/ai/flags/use-case-flags');
   const running = listRunningUseCases();
   console.info(

@@ -11,11 +11,35 @@
 import { NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 
+const GENERIC_FAILURE =
+  'La génération du dossier a échoué. Vous pouvez réessayer dans quelques instants ; si le problème persiste, contactez le support.';
+
+/**
+ * Messages affichables (error.safe_message, §21) par code d'erreur. Codes du
+ * CDC V12 §17.3 (INVALID_EXPORT_TYPE … STORAGE_ERROR) et codes internes du
+ * moteur V12 (§15.3 : TEMPLATE_ERROR, RENDER_ERROR, ZIP_ERROR, DB_ERROR),
+ * qui restent distincts dans l'historique et les journaux (LOG-003) mais
+ * partagent un message générique.
+ */
 export const EXPORT_ERROR_MESSAGES = {
-  GENERATION_FAILED:
-    'La génération du dossier a échoué. Vous pouvez réessayer dans quelques instants ; si le problème persiste, contactez le support.',
+  GENERATION_FAILED: GENERIC_FAILURE,
   EXPORT_INTERNAL_ERROR:
     'Une erreur est survenue. Veuillez réessayer dans quelques instants.',
+  INVALID_EXPORT_TYPE: 'Ce type de dossier n’est pas disponible.',
+  ASSET_NOT_FOUND: 'Bien introuvable.',
+  FORBIDDEN: 'Vous n’avez pas accès à ce bien.',
+  NOT_ELIGIBLE: 'Ce dossier n’est pas disponible pour ce bien.',
+  THRESHOLD_BLOCKED: 'Réduisez le contenu sélectionné.',
+  FILE_UNAVAILABLE: 'Un fichier sélectionné n’est plus disponible.',
+  RENDER_TIMEOUT: 'La génération a échoué. Réessayez avec moins de contenu.',
+  STORAGE_ERROR: 'La génération a échoué lors du stockage.',
+  TEMPLATE_ERROR: GENERIC_FAILURE,
+  RENDER_ERROR: GENERIC_FAILURE,
+  ZIP_ERROR: GENERIC_FAILURE,
+  DB_ERROR: GENERIC_FAILURE,
+  EXPORT_EXPIRED: 'Ce fichier a expiré. Relancez une préparation pour générer un nouveau dossier.',
+  EXPORT_FILE_DELETED: 'Le fichier de ce dossier a été supprimé.',
+  EXPORT_NOT_READY: 'Ce dossier n’est pas encore prêt.',
 } as const;
 
 export type ExportErrorCode = keyof typeof EXPORT_ERROR_MESSAGES;

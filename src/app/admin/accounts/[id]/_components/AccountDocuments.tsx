@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { FileText, Send } from 'lucide-react';
 import { formatBytes, formatDate, formatDateTime } from '@/lib/admin/format';
 import { AdminPagination, SortHeader, nextSort } from '../../../subscriptions/_components/list-controls';
+import { exportCodeLabel } from '@/services/exports/catalog';
 
 type Sort = 'uploaded' | 'size' | 'type' | 'asset' | 'status';
 
@@ -43,14 +44,8 @@ interface Payload {
   exports: ExportMeta[];
 }
 
-const EXPORT_TYPE_LABELS: Record<string, string> = {
-  CIL_REGLEMENTAIRE: 'CIL',
-  DOSSIER_VENTE: 'Dossier de vente',
-  DOSSIER_COMPLET: 'Dossier complet',
-  ASSURANCE_ESTIMATION: 'Assurance — estimation',
-  ASSURANCE_INDEMNISATION: 'Assurance — indemnisation',
-  EXPORT_BRUT: 'Données brutes',
-};
+// Libellés des dossiers : catalogue V12 (anciens codes compris), forme courte.
+const exportLabel = (code: string) => exportCodeLabel(code, true);
 
 const ERROR_STATUSES = new Set(['analysis_failed', 'upload_failed', 'conflict']);
 
@@ -185,7 +180,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
                 {data.exports.map((e, i) => (
                   <tr key={i}>
                     <td className="px-4 py-2 whitespace-nowrap">{formatDateTime(e.at)}</td>
-                    <td className="px-4 py-2">{e.kind === 'export' ? `Export — ${EXPORT_TYPE_LABELS[e.type] ?? e.type}` : e.type}</td>
+                    <td className="px-4 py-2">{e.kind === 'export' ? `Export — ${exportLabel(e.type)}` : e.type}</td>
                     <td className="px-4 py-2">{e.assetName ?? '—'}</td>
                     <td className="px-4 py-2">
                       <span className={e.error ? 'text-red-500 font-medium' : ''}>{e.status}</span>

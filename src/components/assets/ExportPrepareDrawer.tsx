@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
-  Lock, Loader2, FileText, Home, Shield, Package, Send, Crown,
+  Lock, Loader2, FileText, Home, Shield, ShieldAlert, KeyRound, Package, Send, Crown,
   ChevronDown, ChevronRight, Image, Wrench,
   X, Download, FileDown, Check, Link, CalendarDays, AlertCircle,
   CheckCircle2, HelpCircle, MinusCircle, XCircle, ChevronUp, ArrowRight,
@@ -23,6 +23,9 @@ import { toast } from 'sonner';
 import type { ExportType } from './AssetExportsTab';
 import { DOCUMENT_TYPE_LABELS, CIL_RUBRIC_CODES } from '@/lib/document-type-constants';
 import { getPlanTheme } from '@/lib/plan-theme';
+import { DOSSIER_ADDITIONAL_SECTIONS, DOSSIER_LABELS, isDossierCode } from '@/services/exports/catalog';
+import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
+import { defaultSelectedDocIds, defaultSelectedPhotoIds } from '@/lib/exports/preparation-defaults';
 
 type Usage = ExportType | 'TRANSMISSION';
 
@@ -42,19 +45,20 @@ interface Props {
 }
 
 const USAGE_META: Record<Usage, { label: string; icon: React.ElementType; premiumOnly: boolean }> = {
-  CIL_REGLEMENTAIRE:       { label: 'CIL Réglementaire',         icon: FileText, premiumOnly: true },
-  DOSSIER_VENTE:           { label: 'Dossier de vente',          icon: Home,     premiumOnly: true },
-  DOSSIER_COMPLET:         { label: 'Dossier complet du bien',   icon: FileText, premiumOnly: true },
-  ASSURANCE_ESTIMATION:    { label: 'Assurance — Estimation',    icon: Shield,   premiumOnly: true },
-  ASSURANCE_INDEMNISATION: { label: 'Assurance — Indemnisation', icon: Shield,   premiumOnly: true },
-  EXPORT_BRUT:             { label: 'Export données brutes',     icon: Package,  premiumOnly: false },
-  TRANSMISSION:            { label: 'Transmission du bien',      icon: Send,     premiumOnly: false },
+  CIL:                    { label: DOSSIER_LABELS.CIL,                    icon: FileText,    premiumOnly: true },
+  DOSSIER_COMPLET:        { label: DOSSIER_LABELS.DOSSIER_COMPLET,        icon: FileText,    premiumOnly: true },
+  VENTE:                  { label: DOSSIER_LABELS.VENTE,                  icon: Home,        premiumOnly: true },
+  LOCATION:               { label: DOSSIER_LABELS.LOCATION,               icon: KeyRound,    premiumOnly: true },
+  ASSURANCE_SOUSCRIPTION: { label: DOSSIER_LABELS.ASSURANCE_SOUSCRIPTION, icon: Shield,      premiumOnly: true },
+  ASSURANCE_SINISTRE:     { label: DOSSIER_LABELS.ASSURANCE_SINISTRE,     icon: ShieldAlert, premiumOnly: true },
+  EXPORT_BRUT:            { label: 'Export données brutes',               icon: Package,     premiumOnly: false },
+  TRANSMISSION:           { label: 'Transmission du bien',                icon: Send,        premiumOnly: false },
 };
 
 // Which categories get docs/photos/equips selection per usage
-const USAGE_HAS_DOCS: Record<Usage, boolean>   = { CIL_REGLEMENTAIRE: true, DOSSIER_VENTE: true, DOSSIER_COMPLET: true, ASSURANCE_ESTIMATION: true, ASSURANCE_INDEMNISATION: true, EXPORT_BRUT: true, TRANSMISSION: true };
-const USAGE_HAS_PHOTOS: Record<Usage, boolean> = { CIL_REGLEMENTAIRE: false, DOSSIER_VENTE: true, DOSSIER_COMPLET: true, ASSURANCE_ESTIMATION: true, ASSURANCE_INDEMNISATION: true, EXPORT_BRUT: true, TRANSMISSION: true };
-const USAGE_HAS_EQUIPS: Record<Usage, boolean> = { CIL_REGLEMENTAIRE: false, DOSSIER_VENTE: true, DOSSIER_COMPLET: true, ASSURANCE_ESTIMATION: false, ASSURANCE_INDEMNISATION: false, EXPORT_BRUT: true, TRANSMISSION: true };
+const USAGE_HAS_DOCS: Record<Usage, boolean>   = { CIL: true,  DOSSIER_COMPLET: true, VENTE: true, LOCATION: true, ASSURANCE_SOUSCRIPTION: true,  ASSURANCE_SINISTRE: true,  EXPORT_BRUT: true, TRANSMISSION: true };
+const USAGE_HAS_PHOTOS: Record<Usage, boolean> = { CIL: false, DOSSIER_COMPLET: true, VENTE: true, LOCATION: true, ASSURANCE_SOUSCRIPTION: true,  ASSURANCE_SINISTRE: true,  EXPORT_BRUT: true, TRANSMISSION: true };
+const USAGE_HAS_EQUIPS: Record<Usage, boolean> = { CIL: false, DOSSIER_COMPLET: true, VENTE: true, LOCATION: true, ASSURANCE_SOUSCRIPTION: false, ASSURANCE_SINISTRE: false, EXPORT_BRUT: true, TRANSMISSION: true };
 
 function SectionHeader({
   icon: Icon, label, count, open, onToggle, allChecked, someChecked, onToggleAll, disabled,
@@ -139,7 +143,7 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
   const isLocked = meta.premiumOnly && planType === 'STANDARD';
   const Icon = meta.icon;
 
-  // CIL preparation state (only for CIL_REGLEMENTAIRE)
+  // CIL preparation state (only for CIL)
   const [cilPrep, setCilPrep] = useState<CilPreparation | null>(null);
   const [cilLoading, setCilLoading] = useState(false);
   const [expandedBlock, setExpandedBlock] = useState<string | null>(null);
@@ -152,7 +156,7 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
   const [savingMaterial, setSavingMaterial] = useState(false);
 
   const loadCilPrep = useCallback(async () => {
-    if (usage !== 'CIL_REGLEMENTAIRE' || isLocked) return;
+    if (usage !== 'CIL' || isLocked) return;
     setCilLoading(true);
     try {
       const res = await apiClient.get<CilPreparation>(`/api/assets/${assetId}/exports/cil/preparation`);
@@ -165,11 +169,11 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
   }, [assetId, usage, isLocked]);
 
   useEffect(() => {
-    if (usage === 'CIL_REGLEMENTAIRE') loadCilPrep();
+    if (usage === 'CIL') loadCilPrep();
   }, [usage, loadCilPrep]);
 
   // Génération du CIL impossible tant que des blocs bloquants sont à compléter.
-  const cilBlocked = usage === 'CIL_REGLEMENTAIRE' && cilPrep?.eligible === true && cilPrep.globalStatus === 'action_required';
+  const cilBlocked = usage === 'CIL' && cilPrep?.eligible === true && cilPrep.globalStatus === 'action_required';
 
   const handleSetResolution = async (blockId: string, resolution: 'not_applicable' | 'unknown_confirmed') => {
     try {
@@ -299,7 +303,7 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
                   const allFiles: any[] = Array.isArray(res) ? res : (res?.data ?? []);
                   if (showDocs) {
                     let realDocs = allFiles.filter((f: any) => !f.mimeType?.startsWith('image/'));
-                    if (usage === 'CIL_REGLEMENTAIRE') {
+                    if (usage === 'CIL') {
                       realDocs = realDocs.filter((f: any) =>
                         CIL_RUBRIC_CODES.has(f.retainedFunctionCode) ||
                         CIL_RUBRIC_CODES.has(f.documentType) ||
@@ -318,7 +322,7 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
                         : null,
                     }));
                     setDocs(mappedDocs);
-                    setSelectedDocIds(new Set(mappedDocs.map(d => d.id)));
+                    setSelectedDocIds(new Set(defaultSelectedDocIds(usage, mappedDocs.map(d => d.id))));
                   }
                   if (showPhotos) {
                     const photoFiles = allFiles.filter((f: any) => f.mimeType?.startsWith('image/') && !f.isWebLink);
@@ -327,7 +331,7 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
                       name: p.retainedTitle || p.originalFilename || `Photo ${p.id}`,
                     }));
                     setPhotos(mappedPhotos);
-                    setSelectedPhotoIds(new Set(mappedPhotos.map(p => p.id)));
+                    setSelectedPhotoIds(new Set(defaultSelectedPhotoIds(usage, mappedPhotos.map(p => p.id))));
                   }
                 })
             : Promise.resolve(),
@@ -442,7 +446,11 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
         if (res.status === 'error') {
           toast.error(res.errorMessage ?? 'Erreur lors de la génération');
         } else {
-          toast.success('Export généré avec succès');
+          // Dossiers V12 : génération asynchrone (202, `queued`) — seul
+          // l'export brut, synchrone, est déjà prêt au retour de la requête.
+          toast.success(res.downloadUrl
+            ? 'Export généré avec succès'
+            : 'Génération lancée… Le dossier apparaîtra dans l’historique des exports dès qu’il sera prêt.');
           // Open download(s) in new tab
           if (res.downloadUrl) {
             window.open(res.downloadUrl, '_blank', 'noopener,noreferrer');
@@ -475,9 +483,9 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
           </div>
           <div className="flex-1 min-w-0">
             <h2 className="font-semibold text-base leading-tight">
-              {usage === 'CIL_REGLEMENTAIRE' ? 'Préparer le Carnet d\'information du logement' : usage === 'DOSSIER_COMPLET' ? 'Préparer le Dossier complet du bien' : meta.label}
+              {usage === 'CIL' ? 'Préparer le Carnet d\'information du logement' : usage === 'DOSSIER_COMPLET' ? 'Préparer le Dossier complet du bien' : meta.label}
             </h2>
-            {usage === 'CIL_REGLEMENTAIRE' && (
+            {usage === 'CIL' && (
               <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
                 Verebona vérifie les données nécessaires pour générer un CIL complet pour ce logement.
               </p>
@@ -485,6 +493,11 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
             {usage === 'DOSSIER_COMPLET' && (
               <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
                 Document récapitulatif de toutes les informations et documents du bien dans Verebona.
+              </p>
+            )}
+            {usage === 'LOCATION' && (
+              <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                Fiche locative, conditions, équipements, diagnostics et photos. Les documents sont proposés sans être cochés.
               </p>
             )}
           </div>
@@ -550,6 +563,20 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
                 </div>
               );
             })()}
+
+            {/* ── Informations complémentaires du dossier (IC-GEN-001/003) ──────
+                Mêmes champs que la fiche bien, enregistrés dans la fiche : il
+                n'existe pas de valeur « temporaire » de préparation. */}
+            {!isLocked && isDossierCode(usage) && DOSSIER_ADDITIONAL_SECTIONS[usage].length > 0 && (
+              <div className="rounded-xl border bg-card p-4">
+                <AssetAdditionalInfosSection
+                  assetId={assetId}
+                  category={assetCategory}
+                  sections={DOSSIER_ADDITIONAL_SECTIONS[usage]}
+                  variant="embedded"
+                />
+              </div>
+            )}
 
             {/* ── Selection sections ───────────────────────────────────────── */}
             {!loadingData && (
@@ -738,7 +765,7 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
             )}
 
             {/* ── CIL Réglementaire : Blocs de complétude B1-B9 ───────────── */}
-            {usage === 'CIL_REGLEMENTAIRE' && !isLocked && (() => {
+            {usage === 'CIL' && !isLocked && (() => {
               if (cilLoading) {
                 return (
                   <div className="py-6 flex flex-col items-center gap-3 text-muted-foreground">
@@ -1013,14 +1040,14 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
 
             {/* ── Format ZIP ───────────────────────────────────────────────── */}
             {/* CIL+DCB premium: ZIP always included automatically */}
-            {planType !== 'STANDARD' && !isLocked && (usage === 'CIL_REGLEMENTAIRE' || usage === 'DOSSIER_COMPLET') && (
+            {planType !== 'STANDARD' && !isLocked && (usage === 'CIL' || usage === 'DOSSIER_COMPLET') && (
               <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground">
                 <Package className="w-3.5 h-3.5 shrink-0" />
                 PDF + ZIP inclus automatiquement (dossier complet + documents joints)
               </div>
             )}
             {/* Other premium types: optional ZIP checkbox */}
-            {usage !== 'EXPORT_BRUT' && usage !== 'TRANSMISSION' && usage !== 'CIL_REGLEMENTAIRE' && usage !== 'DOSSIER_COMPLET' && planType !== 'STANDARD' && !isLocked && (
+            {usage !== 'EXPORT_BRUT' && usage !== 'TRANSMISSION' && usage !== 'CIL' && usage !== 'DOSSIER_COMPLET' && planType !== 'STANDARD' && !isLocked && (
               <div className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5">
                 <Checkbox id="zip" checked={requestZip} onCheckedChange={(v) => setRequestZip(!!v)} />
                 <Label htmlFor="zip" className="text-sm font-normal cursor-pointer flex-1">
@@ -1033,8 +1060,8 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
             {usage === 'EXPORT_BRUT' && !isLocked && (
               <div className="rounded-lg bg-muted/50 px-4 py-3 text-xs text-muted-foreground">
                 {planType !== 'STANDARD'
-                  ? '📦 ZIP structuré par catégorie documentaire, avec récapitulatif des données du bien.'
-                  : '📦 ZIP brut à plat — tous vos fichiers en un seul téléchargement.'}
+                  ? 'ZIP structuré par catégorie documentaire, avec récapitulatif des données du bien.'
+                  : 'ZIP brut à plat — tous vos fichiers en un seul téléchargement.'}
               </div>
             )}
 
@@ -1077,7 +1104,7 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
             {!isLocked && (
               <>
                 <div className="w-px bg-border" />
-                {(usage === 'CIL_REGLEMENTAIRE' || usage === 'DOSSIER_COMPLET') ? (() => {
+                {(usage === 'CIL' || usage === 'DOSSIER_COMPLET') ? (() => {
                   // CIL-RULE-002 : B1/B3/B8 à compléter → génération bloquée
                   // (le serveur refuse aussi, code CIL_ACTION_REQUIRED).
                   const isDisabled = generating || loadingData || cilLoading || cilBlocked;

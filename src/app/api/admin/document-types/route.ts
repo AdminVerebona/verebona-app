@@ -4,6 +4,7 @@
  * POST supprimé, ainsi que PUT/DELETE de `[id]` et les associations bien/export.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { normalizeExportCode } from '@/services/exports/catalog';
 import { db } from '@/db';
 import { documentTypes, documentTypeAssetAssociations, documentTypeExportAssociations, assetTypes, assetTypeSubcategories } from '@/db/schema';
 import { eq, like, or, and } from 'drizzle-orm';
@@ -94,7 +95,8 @@ export async function GET(request: NextRequest) {
           })),
           exportAssociations: exportAssocs.map(assoc => ({
             id: assoc.id,
-            exportType: assoc.exportType,
+            // Code V12 (anciens codes antérieurs à la migration 0213 ramenés au catalogue).
+            exportType: normalizeExportCode(assoc.exportType) ?? assoc.exportType,
             includeByDefault: assoc.includeByDefault,
             displayOrder: assoc.displayOrder,
           })),

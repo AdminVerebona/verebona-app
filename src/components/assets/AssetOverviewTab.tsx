@@ -16,6 +16,7 @@ import { apiClient } from '@/lib/api-client';
 import dynamic from 'next/dynamic';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { DOCUMENT_TYPE_LABELS as DOC_TYPE_LABELS } from '@/lib/document-type-constants';
+import { exportCodeLabel } from '@/services/exports/catalog';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -256,13 +257,8 @@ interface RecentExport {
   downloadZipUrl: string | null;
 }
 
-const EXPORT_TYPE_LABELS_OVERVIEW: Record<string, string> = {
-  CIL_REGLEMENTAIRE: 'CIL Réglementaire',
-  DOSSIER_VENTE: 'Dossier de vente',
-  ASSURANCE_ESTIMATION: 'Assurance — Estimation',
-  ASSURANCE_INDEMNISATION: 'Assurance — Indemnisation',
-  EXPORT_BRUT: 'Export données brutes',
-};
+// Libellés des dossiers : catalogue V12 (anciens codes compris).
+
 
 export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Props) {
   const [data, setData] = useState<OverviewData | null>(null);
@@ -612,7 +608,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                     ? <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
                     : <Clock className="w-3.5 h-3.5 text-blue-400 flex-shrink-0 animate-pulse" />}
                   <span className="flex-1 truncate text-xs">
-                    {EXPORT_TYPE_LABELS_OVERVIEW[exp.exportType] ?? exp.exportType}
+                    {exportCodeLabel(exp.exportType)}
                   </span>
                   {exp.completedAt && (
                     <span className="text-xs text-muted-foreground flex-shrink-0">

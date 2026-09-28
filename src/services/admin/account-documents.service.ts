@@ -146,10 +146,14 @@ export interface AccountExportMeta {
 }
 
 const EXPORT_STATUS: Record<string, string> = {
+  queued: 'En attente',
   pending: 'En attente',
   generating: 'En cours',
   ready: 'Prêt',
+  partial: 'Prêt (partiel)',
+  failed: 'En erreur',
   error: 'En erreur',
+  expired: 'Expiré',
   deleted: 'Supprimé',
   cancelled: 'Annulé',
 };

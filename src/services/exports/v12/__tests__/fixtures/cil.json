@@ -1,0 +1,918 @@
+{
+  "$comment": "Données d'exemple de la maquette CIL (CDC V12 §8, §19.1). Cas nominal et riche repris de design-v12/CIL.dc.html ; le cas riche ajoute du volume pour éprouver la pagination ; minimal dérivé. Contrat : voir cil/README.md. Personnes, entreprises et numéros fictifs.",
+  "cases": {
+    "minimal": {
+      "caseInfo": {
+        "id": "minimal",
+        "label": "Minimal",
+        "recette": "REC-CIL-MINIMAL",
+        "description": "Bien peu renseigné : adresse, type et classe DPE. B2, B4 à B7 à compléter, B3 déclaré non applicable (aucun plan détenu), B9 non affiché (ni document ni statut utile). Aucune pièce : ni ZIP, ni annexe."
+      },
+      "export": {
+        "type": "CIL",
+        "label": "CIL — Carnet d'information du logement",
+        "reference": "VBN-CIL-2026-0928-001",
+        "generatedAt": "2026-09-28T08:40:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "cil · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ"
+        ],
+        "categoryLabel": "Immobilier · Appartement",
+        "typeLabel": "Appartement · T3",
+        "location": {
+          "address1": "14 rue des Remparts d'Ainay",
+          "postalCode": "69002",
+          "city": "Lyon"
+        },
+        "livingAreaSqm": null,
+        "floorLotLabel": null,
+        "constructionYear": null,
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "date": "2026-06-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "cil": {
+        "blocks": [
+          {
+            "code": "B1",
+            "status": "complete",
+            "source": "Fiche bien"
+          },
+          {
+            "code": "B2",
+            "status": "unknown",
+            "source": "Profil CIL non renseigné"
+          },
+          {
+            "code": "B3",
+            "status": "not_applicable",
+            "source": "Déclaré sans plan",
+            "resolution": "Le propriétaire déclare ne détenir aucun plan ni aucune coupe du logement (résolution du 21/09/2026)."
+          },
+          {
+            "code": "B4",
+            "status": "unknown",
+            "source": "Aucun élément"
+          },
+          {
+            "code": "B5",
+            "status": "unknown",
+            "source": "Aucun élément"
+          },
+          {
+            "code": "B6",
+            "status": "unknown",
+            "source": "Aucun équipement lié"
+          },
+          {
+            "code": "B7",
+            "status": "unknown",
+            "source": "Aucun travaux énergie"
+          },
+          {
+            "code": "B8",
+            "status": "complete",
+            "source": "Classe DPE saisie"
+          },
+          {
+            "code": "B9",
+            "status": "unknown",
+            "source": null
+          }
+        ],
+        "notApplicableNote": "plans et coupes non détenus",
+        "profile": {},
+        "networks": [],
+        "materials": [],
+        "equipments": [],
+        "works": [],
+        "energy": {
+          "dpe": "D",
+          "ges": null,
+          "consumption": null,
+          "emissions": null,
+          "date": "2024-03-12",
+          "validUntil": null
+        }
+      },
+      "documents": [
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "id": "doc-acte",
+          "section": "B9",
+          "title": "Acte de vente",
+          "typeLabel": "Acte notarié",
+          "date": "2023-09-15",
+          "pages": 42,
+          "mode": null
+        }
+      ],
+      "mustNotAppear": [
+        "Acte de vente",
+        "342 000",
+        "Estimation Verebona",
+        "Surface habitable",
+        "Archive",
+        "Index des annexes"
+      ]
+    },
+    "nominal": {
+      "caseInfo": {
+        "id": "nominal",
+        "label": "Nominal",
+        "recette": "REC-CIL-NOMINAL / REC-CIL-AVEC_SENSIBLE_NON_COCHÉ",
+        "description": "Maquette design-v12 : 6 blocs renseignés, B4 et B7 à compléter, B9 non applicable (gaz absent confirmé). 3 pièces intégrées (A1 plan, A2 schéma d'eau, A3 DPE) et 3 pièces jointes au ZIP. Acte de vente et avis de taxe foncière (sensibles) proposés non cochés."
+      },
+      "export": {
+        "type": "CIL",
+        "label": "CIL — Carnet d'information du logement",
+        "reference": "VBN-CIL-2026-0928-003",
+        "generatedAt": "2026-09-28T09:14:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "cil · v1.0",
+        "zipName": "Verebona_CIL_Appartement-Lyon-2e_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ"
+        ],
+        "categoryLabel": "Immobilier · Appartement",
+        "typeLabel": "Appartement · T3",
+        "location": {
+          "address1": "14 rue des Remparts d'Ainay",
+          "postalCode": "69002",
+          "city": "Lyon"
+        },
+        "livingAreaSqm": 68,
+        "floorLotLabel": "3ᵉ · lot n° 14",
+        "constructionYear": 1962,
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "date": "2026-06-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "cil": {
+        "blocks": [
+          {
+            "code": "B1",
+            "status": "complete",
+            "source": "Fiche bien"
+          },
+          {
+            "code": "B2",
+            "status": "complete",
+            "source": "Profil CIL"
+          },
+          {
+            "code": "B3",
+            "status": "complete",
+            "source": "Document PLAN_CONSTRUCTION"
+          },
+          {
+            "code": "B4",
+            "status": "unknown",
+            "source": "Eau, électricité, aération"
+          },
+          {
+            "code": "B5",
+            "status": "complete",
+            "source": "Matériaux énergie"
+          },
+          {
+            "code": "B6",
+            "status": "complete",
+            "source": "Équipements du bien"
+          },
+          {
+            "code": "B7",
+            "status": "invalid",
+            "source": "Travaux énergie"
+          },
+          {
+            "code": "B8",
+            "status": "complete",
+            "source": "Document DPE"
+          },
+          {
+            "code": "B9",
+            "status": "not_applicable",
+            "source": "Gaz · absent, confirmé"
+          }
+        ],
+        "notApplicableNote": "éléments gaz absents",
+        "profile": {
+          "triggerLabel": "Travaux de rénovation énergétique",
+          "triggerDate": "2024-03-12",
+          "authorization": "Non requise · travaux intérieurs",
+          "reason": "Remplacement chaudière"
+        },
+        "networks": [
+          {
+            "network": "Eau",
+            "element": "Schéma d'arrivée d'eau · 18/01/2026",
+            "docId": "doc-schema-eau",
+            "status": "complete"
+          },
+          {
+            "network": "Électricité",
+            "element": "Attestation Consuel · 03/2025",
+            "status": "complete"
+          },
+          {
+            "network": "Gaz",
+            "element": "Alimentation gaz individuelle · aucun schéma",
+            "status": "unknown"
+          },
+          {
+            "network": "Aération",
+            "element": "Contrôle VMC · 21/04/2026",
+            "status": "complete"
+          }
+        ],
+        "materials": [
+          {
+            "post": "Vitrages",
+            "material": "Double vitrage PVC 4/16/4",
+            "spec": "Uw 1,3 W/m²K",
+            "source": "Facture 2019"
+          },
+          {
+            "post": "Murs",
+            "material": "Pierre · doublage plaque de plâtre",
+            "spec": "Isolant 60 mm",
+            "source": "Déclaratif"
+          },
+          {
+            "post": "Planchers",
+            "material": "Plancher bois sur cave",
+            "spec": "Non isolé",
+            "source": "DPE 2023"
+          }
+        ],
+        "equipments": [
+          {
+            "usage": "Chauffage",
+            "equipment": "Chaudière gaz à condensation",
+            "model": "Saunier Duval ThemaPlus 25",
+            "installed": "2024-03-12"
+          },
+          {
+            "usage": "Eau chaude sanitaire",
+            "equipment": "Ballon électrique 150 L",
+            "model": "Atlantic Zénéo",
+            "installed": "2026-01-18"
+          },
+          {
+            "usage": "Ventilation",
+            "equipment": "VMC simple flux collective",
+            "model": null,
+            "installed": "1998"
+          },
+          {
+            "usage": "Refroidissement",
+            "equipment": "Aucun équipement déclaré",
+            "model": null,
+            "installed": null
+          }
+        ],
+        "works": [
+          {
+            "date": "2024-03-12",
+            "title": "Remplacement chaudière gaz condensation",
+            "description": "Dépose ancienne chaudière, pose ThemaPlus 25, mise en service",
+            "company": "Thermiconfort Lyon",
+            "status": {
+              "label": "Complet",
+              "tone": "ok"
+            }
+          },
+          {
+            "date": null,
+            "title": "Remplacement fenêtres double vitrage",
+            "description": "Déclaré par le propriétaire · facture 2019 non datée précisément",
+            "company": null
+          }
+        ],
+        "energy": {
+          "dpe": "C",
+          "ges": "A",
+          "consumption": "142 kWh/m²/an",
+          "emissions": "4 kg CO₂/m²/an",
+          "date": "2023-09-02",
+          "validUntil": "2033-09-01"
+        }
+      },
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-plan",
+          "section": "B3",
+          "title": "Plan de l'appartement · état des lieux 2023",
+          "typeLabel": "Plan de construction",
+          "date": "2023-09-15",
+          "pages": 1,
+          "detail": "échelle 1/100",
+          "mode": "PDF",
+          "preview": {
+            "kind": "plan"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-plans-immeuble",
+          "section": "B3",
+          "title": "Plans de l'immeuble · copropriété",
+          "typeLabel": "Plan de construction",
+          "date": "1962",
+          "pages": 12,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "plans-immeuble-copropriete.pdf",
+          "sizeBytes": 18600000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-schema-eau",
+          "section": "B4",
+          "title": "Schéma d'arrivée d'eau",
+          "typeLabel": "Schéma technique",
+          "date": "2026-01-18",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "plan"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-dpe",
+          "section": "B8",
+          "title": "Diagnostic de performance énergétique",
+          "typeLabel": "Diagnostic",
+          "date": "2023-09-02",
+          "pages": 6,
+          "detail": "n° 2369E1234567A",
+          "mode": "PDF",
+          "tone": "amber",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du PDF source rendue à l'échelle, ratio préservé, sans recadrage. Aucun contenu Verebona n'est superposé au document."
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-elec",
+          "section": "B9",
+          "title": "Diagnostic électricité",
+          "typeLabel": "Diagnostic",
+          "date": "2023-08-20",
+          "pages": 8,
+          "mode": "ZIP",
+          "fileName": "diagnostic-electricite.pdf",
+          "sizeBytes": 2300000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-erp",
+          "section": "B9",
+          "title": "État des risques et pollutions (ERP)",
+          "zipTitle": "État des risques et pollutions",
+          "typeLabel": "Diagnostic",
+          "date": "2023-08-20",
+          "pages": 4,
+          "mode": "ZIP",
+          "fileName": "erp.pdf",
+          "sizeBytes": 1100000
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "id": "doc-acte",
+          "section": "B9",
+          "title": "Acte de vente",
+          "typeLabel": "Acte notarié",
+          "date": "2023-09-15",
+          "pages": 42,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "id": "doc-taxe",
+          "section": "B9",
+          "title": "Avis de taxe foncière 2025",
+          "typeLabel": "Fiscalité",
+          "date": "2025-09-01",
+          "pages": 2,
+          "mode": null
+        }
+      ],
+      "mustNotAppear": [
+        "Acte de vente",
+        "Avis de taxe foncière",
+        "342 000",
+        "Estimation Verebona",
+        "certifié conforme"
+      ]
+    },
+    "riche": {
+      "caseInfo": {
+        "id": "riche",
+        "label": "Riche",
+        "recette": "REC-CIL-RICHE / REC-CIL-AVEC_DOCS_ZIP / REC-CIL-AVEC_SENSIBLE_NON_COCHÉ",
+        "description": "Maquette design-v12 (variante riche : archive ZIP, index et annexes) enrichie pour éprouver la pagination : 6 matériaux, 6 équipements, 5 travaux dont 1 sans date, 5 pièces intégrées (22 pages), 5 pièces au ZIP. Pièces sensibles et facture non retenue absentes."
+      },
+      "export": {
+        "type": "CIL",
+        "label": "CIL — Carnet d'information du logement",
+        "reference": "VBN-CIL-2026-0928-004",
+        "generatedAt": "2026-09-28T09:31:00+02:00",
+        "preparedBy": "Claire Martin",
+        "templateVersion": "cil · v1.0",
+        "zipName": "Verebona_CIL_Appartement-Lyon-2e_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 4127,
+        "family": "IMMOBILIER",
+        "name": "Appartement Lyon 2ᵉ",
+        "titleLines": [
+          "Appartement",
+          "Lyon 2ᵉ"
+        ],
+        "categoryLabel": "Immobilier · Appartement",
+        "typeLabel": "Appartement · T3",
+        "location": {
+          "address1": "14 rue des Remparts d'Ainay",
+          "postalCode": "69002",
+          "city": "Lyon"
+        },
+        "livingAreaSqm": 68,
+        "floorLotLabel": "3ᵉ · lot n° 14",
+        "constructionYear": 1962,
+        "valuation": {
+          "estimatedValueCents": 34200000,
+          "date": "2026-06-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "cil": {
+        "blocks": [
+          {
+            "code": "B1",
+            "status": "complete",
+            "source": "Fiche bien"
+          },
+          {
+            "code": "B2",
+            "status": "complete",
+            "source": "Profil CIL"
+          },
+          {
+            "code": "B3",
+            "status": "complete",
+            "source": "Document PLAN_CONSTRUCTION"
+          },
+          {
+            "code": "B4",
+            "status": "unknown",
+            "source": "Eau, électricité, aération"
+          },
+          {
+            "code": "B5",
+            "status": "complete",
+            "source": "Matériaux énergie"
+          },
+          {
+            "code": "B6",
+            "status": "complete",
+            "source": "Équipements du bien"
+          },
+          {
+            "code": "B7",
+            "status": "invalid",
+            "source": "Travaux énergie"
+          },
+          {
+            "code": "B8",
+            "status": "complete",
+            "source": "Document DPE"
+          },
+          {
+            "code": "B9",
+            "status": "not_applicable",
+            "source": "Gaz · absent, confirmé"
+          }
+        ],
+        "notApplicableNote": "éléments gaz absents",
+        "profile": {
+          "triggerLabel": "Travaux de rénovation énergétique",
+          "triggerDate": "2024-03-12",
+          "authorization": "Non requise · travaux intérieurs",
+          "reason": "Remplacement chaudière"
+        },
+        "networks": [
+          {
+            "network": "Eau",
+            "element": "Schéma d'arrivée d'eau · 18/01/2026",
+            "docId": "doc-schema-eau",
+            "status": "complete"
+          },
+          {
+            "network": "Électricité",
+            "element": "Attestation Consuel · 03/2025",
+            "status": "complete"
+          },
+          {
+            "network": "Gaz",
+            "element": "Alimentation gaz individuelle · certificat de conformité 2011 introuvable, schéma à produire",
+            "status": "unknown"
+          },
+          {
+            "network": "Aération",
+            "element": "Contrôle VMC · 21/04/2026",
+            "status": "complete"
+          }
+        ],
+        "materials": [
+          {
+            "post": "Vitrages",
+            "material": "Double vitrage PVC 4/16/4",
+            "spec": "Uw 1,3 W/m²K",
+            "source": "Facture 2019"
+          },
+          {
+            "post": "Murs",
+            "material": "Pierre · doublage plaque de plâtre",
+            "spec": "Isolant 60 mm",
+            "source": "Déclaratif"
+          },
+          {
+            "post": "Planchers",
+            "material": "Plancher bois sur cave",
+            "spec": "Non isolé",
+            "source": "DPE 2023"
+          },
+          {
+            "post": "Toiture",
+            "material": "Terrasse copropriété · étanchéité bitume",
+            "spec": "Isolant PU 80 mm (2019)",
+            "source": "PV AG 2019"
+          },
+          {
+            "post": "Porte palière",
+            "material": "Bloc-porte blindé bois",
+            "spec": "Ud 1,8 W/m²K",
+            "source": "Facture 2021"
+          },
+          {
+            "post": "Plafonds",
+            "material": "Plâtre sur lattis bois",
+            "spec": "Non isolé",
+            "source": "Déclaratif"
+          }
+        ],
+        "equipments": [
+          {
+            "usage": "Chauffage",
+            "equipment": "Chaudière gaz à condensation",
+            "model": "Saunier Duval ThemaPlus 25",
+            "installed": "2024-03-12"
+          },
+          {
+            "usage": "Eau chaude sanitaire",
+            "equipment": "Ballon électrique 150 L",
+            "model": "Atlantic Zénéo",
+            "installed": "2026-01-18"
+          },
+          {
+            "usage": "Ventilation",
+            "equipment": "VMC simple flux collective",
+            "model": null,
+            "installed": "1998"
+          },
+          {
+            "usage": "Régulation",
+            "equipment": "Thermostat connecté · robinets thermostatiques",
+            "model": "Netatmo Smart Thermostat",
+            "installed": "2024-03-12"
+          },
+          {
+            "usage": "Émetteurs",
+            "equipment": "Radiateurs acier à eau chaude (6)",
+            "model": "Finimetal Reggane 3010",
+            "installed": "2011"
+          },
+          {
+            "usage": "Refroidissement",
+            "equipment": "Aucun équipement déclaré",
+            "model": null,
+            "installed": null
+          }
+        ],
+        "works": [
+          {
+            "date": "2019-05-14",
+            "title": "Remplacement fenêtres double vitrage",
+            "description": "Cinq fenêtres PVC 4/16/4 argon, pose en rénovation sur dormant existant",
+            "company": "Menuiseries du Rhône",
+            "status": {
+              "label": "Complet",
+              "tone": "ok"
+            }
+          },
+          {
+            "date": "2019-10-02",
+            "title": "Isolation de la toiture-terrasse (copropriété)",
+            "description": "Travaux votés en AG · isolant polyuréthane 80 mm, reprise de l’étanchéité",
+            "company": "Étanchéité Lyonnaise",
+            "status": {
+              "label": "Complet",
+              "tone": "ok"
+            }
+          },
+          {
+            "date": "2024-03-12",
+            "title": "Remplacement chaudière gaz condensation",
+            "description": "Dépose ancienne chaudière, pose ThemaPlus 25, mise en service",
+            "company": "Thermiconfort Lyon",
+            "status": {
+              "label": "Complet",
+              "tone": "ok"
+            }
+          },
+          {
+            "date": "2026-01-18",
+            "title": "Remplacement ballon d’eau chaude",
+            "description": "Ballon électrique 150 L Atlantic Zénéo, groupe de sécurité neuf",
+            "company": "Plomberie Bellecour",
+            "status": {
+              "label": "Complet",
+              "tone": "ok"
+            }
+          },
+          {
+            "date": null,
+            "title": "Doublage isolant du mur nord",
+            "description": "Déclaré par le propriétaire · aucune facture importée",
+            "company": null
+          }
+        ],
+        "energy": {
+          "dpe": "C",
+          "ges": "A",
+          "consumption": "142 kWh/m²/an",
+          "emissions": "4 kg CO₂/m²/an",
+          "date": "2023-09-02",
+          "validUntil": "2033-09-01"
+        }
+      },
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-plan",
+          "section": "B3",
+          "title": "Plan de l'appartement · état des lieux 2023",
+          "typeLabel": "Plan de construction",
+          "date": "2023-09-15",
+          "pages": 1,
+          "detail": "échelle 1/100",
+          "mode": "PDF",
+          "preview": {
+            "kind": "plan"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-coupe",
+          "section": "B3",
+          "title": "Coupe longitudinale · projet de rénovation 2024",
+          "typeLabel": "Plan de construction",
+          "date": "2024-01-22",
+          "pages": 2,
+          "detail": "échelle 1/50",
+          "mode": "PDF",
+          "preview": {
+            "kind": "plan"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-plans-immeuble",
+          "section": "B3",
+          "title": "Plans de l'immeuble · copropriété",
+          "typeLabel": "Plan de construction",
+          "date": "1962",
+          "pages": 12,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "plans-immeuble-copropriete.pdf",
+          "sizeBytes": 18600000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-schema-eau",
+          "section": "B4",
+          "title": "Schéma d'arrivée d'eau",
+          "typeLabel": "Schéma technique",
+          "date": "2026-01-18",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "plan"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-dpe",
+          "section": "B8",
+          "title": "Diagnostic de performance énergétique",
+          "typeLabel": "Diagnostic",
+          "date": "2023-09-02",
+          "pages": 6,
+          "detail": "n° 2369E1234567A",
+          "mode": "PDF",
+          "tone": "amber",
+          "preview": {
+            "kind": "pdf",
+            "note": "Page du PDF source rendue à l'échelle, ratio préservé, sans recadrage. Aucun contenu Verebona n'est superposé au document."
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-elec",
+          "section": "B9",
+          "title": "Diagnostic électricité",
+          "typeLabel": "Diagnostic",
+          "date": "2023-08-20",
+          "pages": 8,
+          "mode": "ZIP",
+          "fileName": "diagnostic-electricite.pdf",
+          "sizeBytes": 2300000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-erp",
+          "section": "B9",
+          "title": "État des risques et pollutions (ERP)",
+          "zipTitle": "État des risques et pollutions",
+          "typeLabel": "Diagnostic",
+          "date": "2023-08-20",
+          "pages": 4,
+          "mode": "ZIP",
+          "fileName": "erp.pdf",
+          "sizeBytes": 1100000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-audit",
+          "section": "B9",
+          "title": "Audit énergétique de la copropriété",
+          "typeLabel": "Audit énergétique",
+          "date": "2025-06-30",
+          "pages": 12,
+          "mode": "PDF",
+          "tone": "amber",
+          "detail": "synthèse et scénarios",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-consuel",
+          "section": "B9",
+          "title": "Attestation de conformité électrique Consuel",
+          "typeLabel": "Attestation",
+          "date": "2025-03",
+          "pages": 1,
+          "mode": "ZIP",
+          "tone": "green",
+          "fileName": "attestation-consuel.pdf",
+          "sizeBytes": 420000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-vmc",
+          "section": "B9",
+          "title": "Rapport de contrôle VMC",
+          "typeLabel": "Rapport",
+          "date": "2026-04-21",
+          "pages": 3,
+          "mode": "ZIP",
+          "fileName": "controle-vmc.pdf",
+          "sizeBytes": 880000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "DOCX",
+          "id": "doc-notice",
+          "section": "B9",
+          "title": "Notice chaudière ThemaPlus 25",
+          "typeLabel": "Notice technique",
+          "date": "2024-03-12",
+          "pages": 48,
+          "mode": "PDF",
+          "tone": "neutral",
+          "fileName": "Notice ThemaPlus 25.docx",
+          "sizeBytes": 5400000
+        },
+        {
+          "selected": false,
+          "sensitive": false,
+          "format": "PDF",
+          "id": "doc-facture-fenetres",
+          "section": "B9",
+          "title": "Facture fenêtres 2019",
+          "typeLabel": "Facture",
+          "date": "2019-05-14",
+          "pages": 1,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "id": "doc-acte",
+          "section": "B9",
+          "title": "Acte de vente",
+          "typeLabel": "Acte notarié",
+          "date": "2023-09-15",
+          "pages": 42,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "id": "doc-taxe",
+          "section": "B9",
+          "title": "Avis de taxe foncière 2025",
+          "typeLabel": "Fiscalité",
+          "date": "2025-09-01",
+          "pages": 2,
+          "mode": null
+        }
+      ],
+      "mustNotAppear": [
+        "Acte de vente",
+        "Avis de taxe foncière",
+        "342 000",
+        "Estimation Verebona",
+        "certifié conforme",
+        "Facture fenêtres 2019"
+      ]
+    }
+  }
+}

@@ -2,6 +2,8 @@
  * CDC Back-Office V1 — LECTURE SEULE.
  * EXP-007 / REC-MOD-06 : la structure des modèles d'export n'est pas éditable
  * depuis le BO. POST supprimé ; seule l'activation reste (`[id]` PATCH `isActive`).
+ * CDC Exports V12 MIG-06 : `pdfmonkey_template_id` n'est ni lu ni renvoyé
+ * (colonne conservée en base) ; `exportType` porte le code V12.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
@@ -9,6 +11,7 @@ import { exportTemplates, users } from '@/db/schema';
 import { eq, like, and, or, desc, gt, isNull } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { requireAdmin } from '@/lib/auth-guards';
+import { normalizeExportCode } from '@/services/exports/catalog';
 
 const VALID_CATEGORIES = ['IMMOBILIER', 'VEHICULE', 'MATERIEL_PRO', 'GENERAL'];
 
@@ -106,7 +109,8 @@ export async function GET(request: NextRequest) {
 
     // ✅ NEW: Filter by export type
     if (exportType && exportType !== 'none') {
-      conditions.push(eq(exportTemplates.exportType, exportType as any));
+      // Filtre par code V12 ; un ancien code est accepté et ramené au catalogue.
+      conditions.push(eq(exportTemplates.exportType, normalizeExportCode(exportType) ?? exportType));
     }
 
     if (paginationParams.cursor) {

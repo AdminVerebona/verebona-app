@@ -17,7 +17,7 @@ export async function loadAccountSuggestionState(accountId: number): Promise<Acc
          WHERE account_id = $1 AND deleted_at IS NULL AND analysis_state IN ('UPLOADING', 'UPLOADED', 'ANALYZING')) AS "documentsInAnalysis",
        (SELECT count(*)::int FROM asset_files
          WHERE account_id = $1 AND deleted_at IS NULL AND analysis_state = 'ANALYSIS_FAILED') AS "documentsFailed",
-       (SELECT count(*)::int FROM export_generation WHERE account_id = $1 AND status = 'ready') AS "exportsReady"`,
+       (SELECT count(*)::int FROM export_generation WHERE account_id = $1 AND status IN ('ready', 'partial')) AS "exportsReady"`,
     [accountId] as never[],
   )) as unknown as AccountSuggestionState[];
   const r = rows[0];

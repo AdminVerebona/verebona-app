@@ -1,0 +1,142 @@
+/**
+ * GET   /api/assets/[id]/additional-infos — Informations complémentaires du bien
+ * PATCH /api/assets/[id]/additional-infos — Correctif fusionné champ par champ
+ *
+ * CDC Exports V12 §4.3, §17, §26 ; DEC-007, IC-GEN-001..010, EXP-002.
+ *
+ * Accès : celui des autres routes `/api/assets/[id]/*` — le bien appartient au
+ * compte courant de la session (titulaire ou co-titulaire Duo). Un bien d'un
+ * autre compte répond 404 sans révéler son existence.
+ *
+ * Écriture : mêmes règles que la fiche bien (`loadWritableAsset`) — bien
+ * archivé ou verrouillé refusé, compte restreint (essai terminé, impayé,
+ * résiliation) ou au-dessus de son quota refusé via `entitlements.service`
+ * (corps lu par `parseWriteBlocked` côté client).
+ *
+ * Corps du PATCH : `{ commercial?: {...}, rental?: {...}, insurance?: {...},
+ * claim?: {...} }`. Une valeur `null` ou vide retire le champ ; `0` est une
+ * valeur (IC-GEN-008). Montants en centimes entiers, dates `AAAA-MM-JJ`.
+ * Réponse : l'état complet `{ assetId, commercial, rental, insurance, claim,
+ * updatedAt, updatedBy, version }`.
+ */
+import { NextRequest, NextResponse } from 'next/server';
+import { SessionService } from '@/lib/session-service';
+import { findAccessibleAssetForExport } from '@/services/exports/export-access';
+import { AssetDetailsError, loadWritableAsset } from '@/services/asset-details-write.service';
+import { getAssetAdditionalInfos, updateAssetAdditionalInfos } from '@/services/exports/additional-infos.service';
+import { validateAdditionalInfosPatch, sectionsForCategory } from '@/lib/assets/additional-infos';
+import { toExportFamily } from '@/services/exports/catalog';
+import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
+
+type Ctx = { params: Promise<{ id: string }> };
+
+function parseAssetId(raw: string): number | null {
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+const notFound = () => NextResponse.json(
+  { error: 'ASSET_NOT_FOUND', code: 'INVALID_ASSET', message: 'Bien introuvable.' },
+  { status: 404 },
+);
+
+function internalError(context: string, error: unknown): NextResponse {
+  const res = SessionService.handleSessionError(error);
+  if (res.status < 500) return res;
+  console.error(`[additional-infos ${context}]`, error);
+  return NextResponse.json(
+    { error: 'INTERNAL_ERROR', code: 'INTERNAL_ERROR', message: 'Les informations complémentaires sont momentanément indisponibles.' },
+    { status: 500 },
+  );
+}
+
+export async function GET(request: NextRequest, { params }: Ctx) {
+  try {
+    const session = await SessionService.getSession(request);
+    const assetId = parseAssetId((await params).id);
+    if (!assetId) return NextResponse.json({ error: 'INVALID_ID', code: 'INVALID_ASSET' }, { status: 400 });
+
+    const asset = await findAccessibleAssetForExport(session, assetId);
+    if (!asset) return notFound();
+
+    const infos = await getAssetAdditionalInfos(assetId, asset.accountId);
+    return NextResponse.json({
+      ...infos,
+      family: toExportFamily(asset.category),
+      sections: sectionsForCategory(asset.category),
+    });
+  } catch (error) {
+    return internalError('GET', error);
+  }
+}
+
+export async function PATCH(request: NextRequest, { params }: Ctx) {
+  try {
+    const session = await SessionService.getSession(request);
+    const assetId = parseAssetId((await params).id);
+    if (!assetId) return NextResponse.json({ error: 'INVALID_ID', code: 'INVALID_ASSET' }, { status: 400 });
+    if (!session.currentAccountId) return notFound();
+    const accountId = session.currentAccountId;
+
+    let asset;
+    try {
+      asset = await loadWritableAsset(assetId, accountId);
+    } catch (e) {
+      if (!(e instanceof AssetDetailsError)) throw e;
+      if (e.code === 'NOT_FOUND') return notFound();
+      if (e.code === 'WRITE_BLOCKED') {
+        const code = e.details.writeBlocked?.code ?? 'ASSET_QUOTA_EXCEEDED';
+        return NextResponse.json(
+          { error: code, code, message: e.message, limit: e.details.writeBlocked?.limit },
+          { status: 403 },
+        );
+      }
+      if (e.code === 'ASSET_UNAVAILABLE') {
+        return NextResponse.json(
+          { error: 'ASSET_UNAVAILABLE', code: 'FORBIDDEN', reason: e.details.reason, message: e.message },
+          { status: 403 },
+        );
+      }
+      throw e;
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'VALIDATION_ERROR', code: 'VALIDATION_ERROR', message: 'Corps JSON invalide.', fields: [] },
+        { status: 400 },
+      );
+    }
+
+    const result = validateAdditionalInfosPatch(body, toExportFamily(asset.category));
+    if (!result.ok) {
+      return NextResponse.json(
+        {
+          error: 'VALIDATION_ERROR',
+          code: 'VALIDATION_ERROR',
+          message: result.issues.length === 1 ? result.issues[0].message : 'Certains champs sont invalides.',
+          fields: result.issues,
+          // `details` : seul champ que `apiClient` transmet à l'appelant.
+          details: { fields: result.issues },
+        },
+        { status: 422 },
+      );
+    }
+
+    const infos = await updateAssetAdditionalInfos(assetId, accountId, session.userId, result.patch);
+
+    // CDC Assistant §25.7, §31.7 : la fiche du bien a changé — les caches de
+    // l'assistant qui la recopient sont invalidés.
+    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId, entityId: assetId });
+
+    return NextResponse.json({
+      ...infos,
+      family: toExportFamily(asset.category),
+      sections: sectionsForCategory(asset.category),
+    });
+  } catch (error) {
+    return internalError('PATCH', error);
+  }
+}

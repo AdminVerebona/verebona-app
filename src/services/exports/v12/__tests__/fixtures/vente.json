@@ -1,0 +1,505 @@
+{
+  "$comment": "Données d'exemple du kit de vente (CDC V12 §10, §19.1). Nominal et riche repris de design-v12/Kit de vente.dc.html (vélo cargo, famille véhicule) ; le riche ajoute du volume ; minimal dérivé. Contrat : vente/README.md. Personnes, entreprises et numéros fictifs.",
+  "cases": {
+    "minimal": {
+      "caseInfo": {
+        "id": "minimal",
+        "label": "Minimal",
+        "recette": "REC-VENTE-MINIMAL / REC-VENTE-SANS_PHOTO",
+        "description": "Aucune photo (couverture de repli graphique), aucun prix ni condition saisis (bloc prix et section conditions masqués), aucun point fort ni document. Une estimation existe dans le bien mais n'est jamais affichée (VENTE-RULE-001)."
+      },
+      "export": {
+        "type": "VENTE",
+        "label": "Kit de mise en vente",
+        "reference": "VBN-VT-2026-0928-019",
+        "generatedAt": "2026-09-28T17:40:00+02:00",
+        "preparedBy": "Julien Roux",
+        "templateVersion": "vente · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 5310,
+        "family": "VEHICULE",
+        "name": "Vélo cargo Urban Arrow Family",
+        "titleLines": [
+          "Vélo cargo",
+          "Urban Arrow Family"
+        ],
+        "categoryLabel": "Véhicule · Vélo cargo électrique",
+        "fields": {
+          "brand": "Urban Arrow",
+          "model": "Family",
+          "modelYear": 2022,
+          "conditionLabel": "Très bon",
+          "locationLabel": "Lyon 7ᵉ"
+        },
+        "valuation": {
+          "estimatedValueCents": 345000,
+          "date": "2026-09-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": "Vélo cargo biporteur électrique Urban Arrow Family, modèle 2022.",
+      "sale": {},
+      "highlights": [],
+      "photos": [],
+      "followUp": [],
+      "documents": [],
+      "mustNotAppear": [
+        "3 450",
+        "Estimation Verebona",
+        "Prix souhaité",
+        "Conditions de vente",
+        "Photos"
+      ]
+    },
+    "nominal": {
+      "caseInfo": {
+        "id": "nominal",
+        "label": "Nominal",
+        "recette": "REC-VENTE-NOMINAL",
+        "description": "Maquette design-v12, variante nominale : synthèse, 12 informations, prix et conditions saisis, 4 points forts documentés, 3 photos (couverture = première photo). Suivi et documents non précochés et non retenus (VENTE-PDF-07/08, VENTE-RULE-004) : ni annexe ni ZIP. Estimation Verebona présente dans le bien mais jamais affichée."
+      },
+      "export": {
+        "type": "VENTE",
+        "label": "Kit de mise en vente",
+        "reference": "VBN-VT-2026-0928-021",
+        "generatedAt": "2026-09-28T18:05:00+02:00",
+        "preparedBy": "Julien Roux",
+        "templateVersion": "vente · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 5310,
+        "family": "VEHICULE",
+        "name": "Vélo cargo Urban Arrow Family",
+        "titleLines": [
+          "Vélo cargo",
+          "Urban Arrow Family"
+        ],
+        "categoryLabel": "Véhicule · Vélo cargo électrique",
+        "fields": {
+          "brand": "Urban Arrow",
+          "model": "Family",
+          "modelYear": 2022,
+          "purchaseDate": "2022-06-04",
+          "purchaseCondition": "neuf",
+          "frameNumber": "UA22F83920374871",
+          "color": "Blanc",
+          "markingLabel": "Bicycode enregistré",
+          "mileageKm": 3480,
+          "mileageDate": "2026-09-20",
+          "motorLabel": "Bosch Cargo Line · 85 Nm",
+          "batteryLabel": "Bosch PowerPack 500 Wh · d'origine",
+          "transmissionLabel": "Enviolo · variation continue",
+          "conditionLabel": "Très bon",
+          "parkingLabel": "Garage fermé",
+          "locationLabel": "Lyon 7ᵉ"
+        },
+        "valuation": {
+          "estimatedValueCents": 345000,
+          "date": "2026-09-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": "Vélo cargo biporteur électrique Urban Arrow Family, acheté neuf le 04/06/2022 chez un revendeur agréé. Moteur Bosch Cargo Line, batterie 500 Wh d'origine, 3 480 km au compteur au 20/09/2026.\n\nDeux révisions réalisées en atelier (2023, 2025), remplacement des plaquettes et de la chaîne en 2025. Vendu avec tente de pluie, banc enfant deux places et antivol de cadre. Facture d'achat et carnet d'entretien disponibles.",
+      "sale": {
+        "pitch": "Modèle 2022 · moteur Bosch Cargo Line · 3 480 km · entretien suivi.",
+        "desiredPriceCents": 390000,
+        "newPriceCents": 549000,
+        "availabilityDate": "2026-10-15",
+        "availabilityComment": "remise en main propre",
+        "includedAccessories": "Tente de pluie, banc enfant 2 places, antivol de cadre Abus, chargeur 4 A",
+        "saleConditions": "Vente entre particuliers, essai possible sur rendez-vous, paiement par virement",
+        "contactInstructions": "Par message via l'annonce · visites en semaine après 18 h, Lyon 7ᵉ"
+      },
+      "highlights": [
+        {
+          "id": "h1",
+          "title": "Entretien en atelier agréé",
+          "text": "Révisions complètes le 12/06/2023 et le 03/07/2025 chez Cyclable Lyon. Factures disponibles.",
+          "selected": true
+        },
+        {
+          "id": "h2",
+          "title": "Pièces d'usure récentes",
+          "text": "Plaquettes de frein et chaîne remplacées le 03/07/2025 (1 240 km avant la date du dossier).",
+          "selected": true
+        },
+        {
+          "id": "h3",
+          "title": "Batterie d'origine, garantie constructeur",
+          "text": "Garantie Bosch 2 ans / 500 cycles échue ; 112 cycles de charge relevés à la révision 2025.",
+          "selected": true
+        },
+        {
+          "id": "h4",
+          "title": "Stationnement abrité",
+          "text": "Garage fermé déclaré comme lieu de stationnement depuis l'achat.",
+          "selected": true
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/velo-cargo.webp",
+          "caption": "Vue d'ensemble · 09/2026",
+          "focus": "50% 45%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "file": "photos/velo-cargo.webp",
+          "caption": "Caisse et banc enfant",
+          "focus": "20% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/velo-cargo.webp",
+          "caption": "Moteur et transmission",
+          "focus": "85% 60%",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "followUp": [
+        {
+          "id": "f1",
+          "date": "2022-06-04",
+          "title": "Achat neuf · mise en route",
+          "mileageKm": 0,
+          "provider": "Cyclable Lyon",
+          "selected": false
+        },
+        {
+          "id": "f2",
+          "date": "2023-06-12",
+          "title": "Révision complète · mise à jour logiciel moteur",
+          "mileageKm": 1120,
+          "provider": "Cyclable Lyon",
+          "selected": false
+        }
+      ],
+      "documentsNote": "Documents sélectionnés par le vendeur. Les données personnelles (adresse, IBAN) ont été retirées de la facture intégrée.",
+      "documents": [
+        {
+          "selected": false,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "fa",
+          "title": "Facture d'achat",
+          "typeLabel": "Facture",
+          "date": "2022-06-04",
+          "pages": 1,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "cni",
+          "title": "Pièce d'identité du vendeur",
+          "typeLabel": "Identité",
+          "date": "2021-02-10",
+          "pages": 2,
+          "mode": null
+        }
+      ],
+      "mustNotAppear": [
+        "3 450",
+        "Estimation Verebona",
+        "UA22F83920374871",
+        "Pièce d'identité",
+        "Éléments de suivi",
+        "Index des annexes"
+      ]
+    },
+    "riche": {
+      "caseInfo": {
+        "id": "riche",
+        "label": "Riche",
+        "recette": "REC-VENTE-RICHE / REC-VENTE-AVEC_DOCS_ZIP / REC-VENTE-AVEC_SENSIBLE_NON_COCHÉ",
+        "description": "Maquette design-v12, variante riche (suivi valorisant, documents utiles, index et annexe) enrichie : 4 photos, 6 éléments de suivi, 5 documents dont 3 intégrés, 1 notice au ZIP et 1 DOCX demandé en PDF basculé au ZIP (SEL-GEN-005). Pièce d'identité et RIB (sensibles) non cochés."
+      },
+      "export": {
+        "type": "VENTE",
+        "label": "Kit de mise en vente",
+        "reference": "VBN-VT-2026-0928-022",
+        "generatedAt": "2026-09-28T18:22:00+02:00",
+        "preparedBy": "Julien Roux",
+        "templateVersion": "vente · v1.0",
+        "zipName": "Verebona_Vente_Velo-cargo-Urban-Arrow-Family_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 5310,
+        "family": "VEHICULE",
+        "name": "Vélo cargo Urban Arrow Family",
+        "titleLines": [
+          "Vélo cargo",
+          "Urban Arrow Family"
+        ],
+        "categoryLabel": "Véhicule · Vélo cargo électrique",
+        "fields": {
+          "brand": "Urban Arrow",
+          "model": "Family",
+          "modelYear": 2022,
+          "purchaseDate": "2022-06-04",
+          "purchaseCondition": "neuf",
+          "frameNumber": "UA22F83920374871",
+          "color": "Blanc",
+          "markingLabel": "Bicycode enregistré",
+          "mileageKm": 3480,
+          "mileageDate": "2026-09-20",
+          "motorLabel": "Bosch Cargo Line · 85 Nm",
+          "batteryLabel": "Bosch PowerPack 500 Wh · d'origine",
+          "transmissionLabel": "Enviolo · variation continue",
+          "conditionLabel": "Très bon",
+          "parkingLabel": "Garage fermé",
+          "locationLabel": "Lyon 7ᵉ"
+        },
+        "valuation": {
+          "estimatedValueCents": 345000,
+          "date": "2026-09-01",
+          "source": "Estimation Verebona"
+        }
+      },
+      "summary": "Vélo cargo biporteur électrique Urban Arrow Family, acheté neuf le 04/06/2022 chez un revendeur agréé. Moteur Bosch Cargo Line, batterie 500 Wh d'origine, 3 480 km au compteur au 20/09/2026.\n\nDeux révisions réalisées en atelier (2023, 2025), remplacement des plaquettes et de la chaîne en 2025. Vendu avec tente de pluie, banc enfant deux places et antivol de cadre. Facture d'achat et carnet d'entretien disponibles.",
+      "sale": {
+        "pitch": "Modèle 2022 · moteur Bosch Cargo Line · 3 480 km · entretien suivi.",
+        "desiredPriceCents": 390000,
+        "newPriceCents": 549000,
+        "availabilityDate": "2026-10-15",
+        "availabilityComment": "remise en main propre",
+        "includedAccessories": "Tente de pluie, banc enfant 2 places, antivol de cadre Abus, chargeur 4 A",
+        "saleConditions": "Vente entre particuliers, essai possible sur rendez-vous, paiement par virement",
+        "contactInstructions": "Par message via l'annonce · visites en semaine après 18 h, Lyon 7ᵉ"
+      },
+      "highlights": [
+        {
+          "id": "h1",
+          "title": "Entretien en atelier agréé",
+          "text": "Révisions complètes le 12/06/2023 et le 03/07/2025 chez Cyclable Lyon. Factures disponibles.",
+          "selected": true
+        },
+        {
+          "id": "h2",
+          "title": "Pièces d'usure récentes",
+          "text": "Plaquettes de frein et chaîne remplacées le 03/07/2025 (1 240 km avant la date du dossier).",
+          "selected": true
+        },
+        {
+          "id": "h3",
+          "title": "Batterie d'origine, garantie constructeur",
+          "text": "Garantie Bosch 2 ans / 500 cycles échue ; 112 cycles de charge relevés à la révision 2025.",
+          "selected": true
+        },
+        {
+          "id": "h4",
+          "title": "Stationnement abrité",
+          "text": "Garage fermé déclaré comme lieu de stationnement depuis l'achat.",
+          "selected": true
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/velo-cargo.webp",
+          "caption": "Vue d'ensemble · 09/2026",
+          "focus": "50% 45%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "file": "photos/velo-cargo.webp",
+          "caption": "Caisse et banc enfant",
+          "focus": "20% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/velo-cargo.webp",
+          "caption": "Moteur et transmission",
+          "focus": "85% 60%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "file": "photos/velo-cargo.webp",
+          "caption": "Tente de pluie montée",
+          "focus": "60% 30%",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "followUp": [
+        {
+          "id": "f1",
+          "date": "2022-06-04",
+          "title": "Achat neuf · mise en route",
+          "mileageKm": 0,
+          "provider": "Cyclable Lyon",
+          "selected": true
+        },
+        {
+          "id": "f2",
+          "date": "2023-06-12",
+          "title": "Révision complète · mise à jour logiciel moteur",
+          "mileageKm": 1120,
+          "provider": "Cyclable Lyon",
+          "selected": true
+        },
+        {
+          "id": "f5",
+          "date": "2024-04-08",
+          "title": "Remplacement pneu avant 20 pouces",
+          "mileageKm": 1780,
+          "provider": "Cyclable Lyon",
+          "selected": true
+        },
+        {
+          "id": "f3",
+          "date": "2025-07-03",
+          "title": "Révision · plaquettes et chaîne remplacées",
+          "mileageKm": 2240,
+          "provider": "Cyclable Lyon",
+          "selected": true
+        },
+        {
+          "id": "f6",
+          "date": "2026-03-15",
+          "title": "Diagnostic batterie · capacité mesurée 91 %",
+          "mileageKm": 2960,
+          "provider": "Cyclable Lyon",
+          "selected": true
+        },
+        {
+          "id": "f4",
+          "date": "2026-09-20",
+          "title": "Relevé kilométrique · préparation vente",
+          "mileageKm": 3480,
+          "provider": "Propriétaire",
+          "selected": true
+        }
+      ],
+      "documentsNote": "Documents sélectionnés par le vendeur. Les données personnelles (adresse, IBAN) ont été retirées de la facture intégrée.",
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "fa",
+          "title": "Facture d'achat",
+          "typeLabel": "Facture",
+          "date": "2022-06-04",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "fr",
+          "title": "Facture révision 2025",
+          "typeLabel": "Facture",
+          "date": "2025-07-03",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "notice",
+          "title": "Notice Urban Arrow Family · manuel Bosch",
+          "typeLabel": "Notice technique",
+          "date": "2022",
+          "pages": 64,
+          "mode": "ZIP",
+          "tone": "neutral",
+          "fileName": "notice-urban-arrow-family.pdf",
+          "sizeBytes": 8900000
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "docs",
+          "id": "bicy",
+          "title": "Certificat de marquage Bicycode",
+          "typeLabel": "Certificat",
+          "date": "2022-06-04",
+          "pages": 1,
+          "mode": "PDF",
+          "tone": "green",
+          "preview": {
+            "kind": "image",
+            "note": "Image ou scan intégré en pleine page, centré, sans déformation."
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "XLSX",
+          "section": "docs",
+          "id": "carnet",
+          "title": "Carnet d'entretien (tableur)",
+          "typeLabel": "Carnet",
+          "date": "2026-09-20",
+          "pages": 2,
+          "mode": "PDF",
+          "tone": "neutral",
+          "fileName": "Carnet d'entretien.xlsx",
+          "sizeBytes": 64000
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "cni",
+          "title": "Pièce d'identité du vendeur",
+          "typeLabel": "Identité",
+          "date": "2021-02-10",
+          "pages": 2,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "docs",
+          "id": "rib",
+          "title": "RIB du vendeur",
+          "typeLabel": "Bancaire",
+          "date": "2024-01-05",
+          "pages": 1,
+          "mode": null
+        }
+      ],
+      "mustNotAppear": [
+        "3 450",
+        "Estimation Verebona",
+        "UA22F83920374871",
+        "Pièce d'identité",
+        "RIB"
+      ]
+    }
+  }
+}

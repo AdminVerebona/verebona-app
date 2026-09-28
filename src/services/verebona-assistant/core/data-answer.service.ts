@@ -35,7 +35,7 @@ import {
   ANALYSIS_STATUS_LABELS, IN_ANALYSIS_MESSAGE, analysisFailedMessage, documentAnalysisStatus,
 } from './document-status';
 import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
-import { EXPORT_TYPE_LABELS } from '@/services/export-manifest.service';
+import { exportCodeLabel } from '@/services/exports/catalog';
 import {
   daysBetween,
   formatAttributeValue,
@@ -304,7 +304,7 @@ function statusDocSource(d: DocumentHit): RetrievedSource {
   };
 }
 function exportSource(r: ExportRow): RetrievedSource {
-  const lib = EXPORT_TYPE_LABELS[r.exportType as keyof typeof EXPORT_TYPE_LABELS] ?? r.exportType;
+  const lib = exportCodeLabel(r.exportType);
   return {
     id: `export_${r.id}`, type: 'export_item', title: lib, content: [r.assetName, r.date].filter(Boolean).join(' · '),
     relevanceScore: 1,
@@ -474,7 +474,7 @@ async function tryStructured(
       const answer = rows.length === 0
         ? formatNoResult('aucun export ni dossier généré', pour) + ' Vous pouvez en préparer un depuis l’onglet « Exports » d’un bien.'
         : formatList(`Exports et dossiers${scope.label ? ` de ${scope.label}` : ''}`, rows.map((r) => {
-          const lib = EXPORT_TYPE_LABELS[r.exportType as keyof typeof EXPORT_TYPE_LABELS] ?? r.exportType;
+          const lib = exportCodeLabel(r.exportType);
           return `${lib}${r.assetName && !scope.label ? ` (${r.assetName})` : ''}${r.date ? `, ${formatDateFr(r.date)}` : ''} : ${EXPORT_STATUS_LABELS[r.status] ?? r.status}`;
         }), 10);
       const sources = rows.length ? rows.map(exportSource) : scope.assets.map(assetSource);

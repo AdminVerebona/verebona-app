@@ -11,11 +11,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { exportGenerations } from '@/db/schema';
-import { eq, and, ne, desc } from 'drizzle-orm';
+import { eq, and, notInArray, inArray, desc } from 'drizzle-orm';
 import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 import { findAccessibleAssetForExport } from '@/services/exports/export-access';
 import { evaluateCilReadiness } from '@/services/exports/cil-preparation.service';
 import { exportRouteError } from '@/services/exports/export-errors';
+import { legacyStatus, normalizeGenerationStatus, toGenerationDto } from '@/services/exports/v12/generation/status';
 
 export async function GET(
   request: NextRequest,
@@ -46,14 +47,14 @@ export async function GET(
     const { globalStatus, completion, blocks } = await evaluateCilReadiness(asset);
 
     // Last export_generation CIL
+    // Code V12 « CIL » (migration 0213) et ancien code encore possible.
     const [lastGen] = await db
-      .select({ id: exportGenerations.id, publicId: exportGenerations.publicId, createdAt: exportGenerations.createdAt, status: exportGenerations.status })
+      .select()
       .from(exportGenerations)
       .where(and(
         eq(exportGenerations.assetId, assetId),
-        eq(exportGenerations.exportType, 'CIL_REGLEMENTAIRE'),
-        ne(exportGenerations.status, 'deleted'),
-        ne(exportGenerations.status, 'cancelled'),
+        inArray(exportGenerations.exportType, ['CIL', 'CIL_REGLEMENTAIRE']),
+        notInArray(exportGenerations.status, ['deleted', 'cancelled']),
       ))
       .orderBy(desc(exportGenerations.createdAt))
       .limit(1);
@@ -70,8 +71,10 @@ export async function GET(
             id: lastGen.id,
             publicId: lastGen.publicId,
             createdAt: lastGen.createdAt,
-            status: lastGen.status,
-            downloadUrl: null,
+            status: legacyStatus(normalizeGenerationStatus(lastGen.status, lastGen.expiresAt)),
+            generationStatus: normalizeGenerationStatus(lastGen.status, lastGen.expiresAt),
+            // Lien vers l'endpoint qui revérifie les droits (DRH-010).
+            downloadUrl: toGenerationDto(lastGen).downloadUrl,
           }
         : null,
       assetName: asset.name,

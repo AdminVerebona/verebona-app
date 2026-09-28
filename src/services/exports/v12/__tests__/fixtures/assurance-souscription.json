@@ -1,0 +1,684 @@
+{
+  "$comment": "Données d'exemple — assurance souscription / mise à jour (CDC V12 §12, §19.1). Nominal et riche repris de design-v12/Assurance souscription.dc.html (famille objet) ; le riche ajoute du volume ; minimal dérivé. Contrat : assurance-souscription/README.md. Personnes, entreprises et numéros fictifs.",
+  "cases": {
+    "minimal": {
+      "caseInfo": {
+        "id": "minimal",
+        "label": "Minimal",
+        "recette": "REC-ASSURANCE_SOUSCRIPTION-MINIMAL",
+        "description": "Objectif non renseigné (recommandé non bloquant : « Objet de la demande » masqué), aucun montant saisi, aucune protection, aucun justificatif ni photo : couverture, synthèse, informations principales et page Sources."
+      },
+      "export": {
+        "type": "ASSURANCE_SOUSCRIPTION",
+        "label": "Assurance — souscription / mise à jour",
+        "reference": "VBN-AS-2026-0928-007",
+        "generatedAt": "2026-09-28T15:58:00+02:00",
+        "preparedBy": "Julien Roux",
+        "templateVersion": "assurance_souscription · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 7802,
+        "family": "OBJET",
+        "name": "Planche de surf Firewire Seaside 5'8",
+        "shortName": "Planche Firewire Seaside",
+        "titleLines": [
+          "Planche de surf",
+          "Firewire Seaside 5'8"
+        ],
+        "categoryLabel": "Objet · Équipement de sport",
+        "fields": {
+          "categoryLabel": "Objet · équipement de sport",
+          "brand": "Firewire",
+          "model": "Seaside 5'8",
+          "conditionLabel": "Très bon"
+        },
+        "valuation": {
+          "estimatedValueCents": 98000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "insurance": {
+        "insuredName": "Julien Roux"
+      },
+      "summary": [
+        {
+          "label": "Bien",
+          "value": "Planche de surf Firewire Seaside 5'8"
+        },
+        {
+          "label": "État",
+          "value": "Très bon"
+        }
+      ],
+      "items": [],
+      "protections": [],
+      "condition": [],
+      "documents": [],
+      "photos": [],
+      "mustNotAppear": [
+        "Estimation Verebona",
+        "980",
+        "Objet de la demande",
+        "Valeur et éléments",
+        "Index des annexes"
+      ]
+    },
+    "nominal": {
+      "caseInfo": {
+        "id": "nominal",
+        "label": "Nominal",
+        "recette": "REC-ASSURANCE_SOUSCRIPTION-NOMINAL / REC-ASSURANCE_SOUSCRIPTION-AVEC_SENSIBLE_NON_COCHÉ",
+        "description": "Maquette design-v12 : objectif renseigné (ajout d'un objet de valeur au contrat MRH), 10 informations, valeur à assurer (1 190 € + 160 € d'accessoires, montant souhaité 1 250 €), 4 protections, 2 éléments d'état, 2 factures intégrées, 4 photos d'identification. Pièce d'identité et RIB (sensibles) non cochés ; estimation jamais affichée."
+      },
+      "export": {
+        "type": "ASSURANCE_SOUSCRIPTION",
+        "label": "Assurance — souscription / mise à jour",
+        "reference": "VBN-AS-2026-0928-009",
+        "generatedAt": "2026-09-28T16:20:00+02:00",
+        "preparedBy": "Julien Roux",
+        "templateVersion": "assurance_souscription · v1.0",
+        "zipName": null
+      },
+      "asset": {
+        "id": 7802,
+        "family": "OBJET",
+        "name": "Planche de surf Firewire Seaside 5'8",
+        "shortName": "Planche Firewire Seaside",
+        "titleLines": [
+          "Planche de surf",
+          "Firewire Seaside 5'8"
+        ],
+        "categoryLabel": "Objet · Équipement de sport",
+        "fields": {
+          "categoryLabel": "Objet · équipement de sport",
+          "serialNumber": "FW-SS58-H-25004318",
+          "brand": "Firewire",
+          "model": "Seaside 5'8 Helium",
+          "purchaseDate": "2025-03-22",
+          "purchaseCondition": "neuf",
+          "dimensions": "5'8 × 21 1/4 × 2 1/2 · 32,4 L",
+          "seller": "Surf Shop Hossegor",
+          "usageLabel": "Loisir personnel",
+          "storageLabel": "Garage · 14 rue des Remparts d'Ainay, Lyon",
+          "conditionLabel": "Très bon",
+          "transportLabel": "Housse rembourrée · véhicule personnel"
+        },
+        "valuation": {
+          "estimatedValueCents": 98000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "insurance": {
+        "objective": {
+          "code": "AJOUT_OBJET",
+          "headline": "Ajout d'un objet de valeur au contrat multirisque habitation",
+          "detail": "n° 4471 992, avec transmission des justificatifs d'achat et des conditions de stockage."
+        },
+        "desiredInsuredAmountCents": 125000,
+        "insuredName": "Julien Roux",
+        "contractLabel": "MRH n° 4471 992",
+        "accessoriesLabel": "Dérives FCS II · housse"
+      },
+      "summary": [
+        {
+          "label": "Bien",
+          "value": "Planche de surf Firewire Seaside 5'8, construction Helium, achetée neuve le 22/03/2025"
+        },
+        {
+          "label": "Valeur",
+          "value": "Prix d'achat 1 190 € · valeur à assurer déclarée 1 250 € (avec housse et dérives)"
+        },
+        {
+          "label": "État",
+          "value": "Très bon · aucune réparation"
+        },
+        {
+          "label": "Protections",
+          "value": "Garage fermé à clé, housse rembourrée, rack mural"
+        },
+        {
+          "label": "Justificatifs",
+          "value": "Facture d’achat, facture dérives, 4 photos datées, numéro de série",
+          "strong": false
+        }
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "kind": "main",
+          "label": "Planche Firewire Seaside 5'8",
+          "valueCents": 119000,
+          "docId": "fa",
+          "proofLabel": "Facture",
+          "proofDate": "2025-03-22",
+          "selected": true
+        },
+        {
+          "id": "i2",
+          "kind": "accessory",
+          "label": "Dérives FCS II Performer · tri",
+          "valueCents": 10900,
+          "docId": "fd",
+          "proofLabel": "Facture",
+          "selected": true
+        },
+        {
+          "id": "i3",
+          "kind": "accessory",
+          "label": "Housse rembourrée 6'0",
+          "valueCents": 5100,
+          "proofLabel": "Déclaratif · sans facture",
+          "selected": true
+        }
+      ],
+      "protections": [
+        {
+          "id": "pr1",
+          "title": "Garage fermé à clé",
+          "text": "Porte sectionnelle motorisée · accès résidents uniquement",
+          "selected": true
+        },
+        {
+          "id": "pr2",
+          "title": "Rack mural verrouillable",
+          "text": "Fixé au mur · câble antivol",
+          "selected": true
+        },
+        {
+          "id": "pr3",
+          "title": "Housse rembourrée",
+          "text": "Utilisée pour tout transport",
+          "selected": true
+        },
+        {
+          "id": "pr4",
+          "title": "Marquage",
+          "text": "Numéro de série gravé · photographié (annexe photos)",
+          "selected": true
+        }
+      ],
+      "condition": [
+        {
+          "id": "c1",
+          "date": "2025-03-22",
+          "title": "Achat neuf · enregistrement du numéro de série",
+          "selected": true
+        },
+        {
+          "id": "c2",
+          "date": "2026-09-14",
+          "title": "Inspection visuelle · aucun impact, aucune réparation",
+          "aside": "4 photos datées",
+          "selected": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "fa",
+          "title": "Facture d'achat · Surf Shop Hossegor",
+          "typeLabel": "Facture",
+          "date": "2025-03-22",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "fd",
+          "title": "Facture dérives FCS II",
+          "typeLabel": "Facture",
+          "date": "2025-03-22",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "cni",
+          "title": "Pièce d'identité de l'assuré",
+          "typeLabel": "Identité",
+          "date": "2021-02-10",
+          "pages": 2,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "rib",
+          "title": "RIB de l'assuré",
+          "typeLabel": "Bancaire",
+          "date": "2024-01-05",
+          "pages": 1,
+          "mode": null
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/surf-personal.webp",
+          "caption": "Vue d'ensemble · 14/09/2026",
+          "focus": "50% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "file": "photos/surf-personal.webp",
+          "caption": "Numéro de série",
+          "focus": "20% 30%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/surf-personal.webp",
+          "caption": "Dérives montées",
+          "focus": "80% 70%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "file": "photos/surf-personal.webp",
+          "caption": "Rack et garage",
+          "focus": "50% 90%",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "mustNotAppear": [
+        "FW-SS58-H-25004318",
+        "Pièce d'identité",
+        "RIB",
+        "Estimation Verebona",
+        "980"
+      ]
+    },
+    "riche": {
+      "caseInfo": {
+        "id": "riche",
+        "label": "Riche",
+        "recette": "REC-ASSURANCE_SOUSCRIPTION-RICHE",
+        "description": "Maquette design-v12, variante riche (index et annexes, photos HD intégrées) enrichie : 5 éléments à assurer, 6 protections, 4 éléments d'état, 4 justificatifs dont l'attestation MRH existante cochée explicitement (non précochée, RULE-002), 8 photos."
+      },
+      "export": {
+        "type": "ASSURANCE_SOUSCRIPTION",
+        "label": "Assurance — souscription / mise à jour",
+        "reference": "VBN-AS-2026-0928-010",
+        "generatedAt": "2026-09-28T16:41:00+02:00",
+        "preparedBy": "Julien Roux",
+        "templateVersion": "assurance_souscription · v1.0",
+        "zipName": "Verebona_AssuranceSouscription_Planche-Firewire-Seaside_2026-09-28.zip"
+      },
+      "asset": {
+        "id": 7802,
+        "family": "OBJET",
+        "name": "Planche de surf Firewire Seaside 5'8",
+        "shortName": "Planche Firewire Seaside",
+        "titleLines": [
+          "Planche de surf",
+          "Firewire Seaside 5'8"
+        ],
+        "categoryLabel": "Objet · Équipement de sport",
+        "fields": {
+          "categoryLabel": "Objet · équipement de sport",
+          "serialNumber": "FW-SS58-H-25004318",
+          "brand": "Firewire",
+          "model": "Seaside 5'8 Helium",
+          "purchaseDate": "2025-03-22",
+          "purchaseCondition": "neuf",
+          "dimensions": "5'8 × 21 1/4 × 2 1/2 · 32,4 L",
+          "seller": "Surf Shop Hossegor",
+          "usageLabel": "Loisir personnel",
+          "storageLabel": "Garage · 14 rue des Remparts d'Ainay, Lyon",
+          "conditionLabel": "Très bon",
+          "transportLabel": "Housse rembourrée · véhicule personnel"
+        },
+        "valuation": {
+          "estimatedValueCents": 98000,
+          "source": "Estimation Verebona"
+        }
+      },
+      "insurance": {
+        "objective": {
+          "code": "AJOUT_OBJET",
+          "headline": "Ajout d'un objet de valeur au contrat multirisque habitation",
+          "detail": "n° 4471 992, avec transmission des justificatifs d'achat et des conditions de stockage."
+        },
+        "desiredInsuredAmountCents": 145000,
+        "insuredName": "Julien Roux",
+        "contractLabel": "MRH n° 4471 992",
+        "accessoriesLabel": "Dérives, housse, leash, pad"
+      },
+      "summary": [
+        {
+          "label": "Bien",
+          "value": "Planche de surf Firewire Seaside 5'8, construction Helium, achetée neuve le 22/03/2025"
+        },
+        {
+          "label": "Valeur",
+          "value": "Prix d'achat 1 190 € · valeur à assurer déclarée 1 450 € (avec accessoires)"
+        },
+        {
+          "label": "État",
+          "value": "Très bon · aucune réparation"
+        },
+        {
+          "label": "Protections",
+          "value": "Garage fermé à clé, housse rembourrée, rack mural"
+        },
+        {
+          "label": "Justificatifs",
+          "value": "Facture d'achat, factures accessoires, attestation MRH, 8 photos datées, numéro de série",
+          "strong": false
+        }
+      ],
+      "items": [
+        {
+          "id": "i1",
+          "kind": "main",
+          "label": "Planche Firewire Seaside 5'8",
+          "valueCents": 119000,
+          "docId": "fa",
+          "proofLabel": "Facture",
+          "proofDate": "2025-03-22",
+          "selected": true
+        },
+        {
+          "id": "i2",
+          "kind": "accessory",
+          "label": "Dérives FCS II Performer · tri",
+          "valueCents": 10900,
+          "docId": "fd",
+          "proofLabel": "Facture",
+          "selected": true
+        },
+        {
+          "id": "i3",
+          "kind": "accessory",
+          "label": "Housse rembourrée 6'0",
+          "valueCents": 5100,
+          "proofLabel": "Déclaratif · sans facture",
+          "selected": true
+        },
+        {
+          "id": "i4",
+          "kind": "accessory",
+          "label": "Leash FCS Freedom 6’",
+          "valueCents": 5900,
+          "docId": "fl",
+          "proofLabel": "Facture",
+          "selected": true
+        },
+        {
+          "id": "i5",
+          "kind": "accessory",
+          "label": "Pad arrière Octopus · wax",
+          "valueCents": 4200,
+          "proofLabel": "Déclaratif · sans facture",
+          "selected": true
+        }
+      ],
+      "protections": [
+        {
+          "id": "pr1",
+          "title": "Garage fermé à clé",
+          "text": "Porte sectionnelle motorisée · accès résidents uniquement",
+          "selected": true
+        },
+        {
+          "id": "pr2",
+          "title": "Rack mural verrouillable",
+          "text": "Fixé au mur · câble antivol",
+          "selected": true
+        },
+        {
+          "id": "pr3",
+          "title": "Housse rembourrée",
+          "text": "Utilisée pour tout transport",
+          "selected": true
+        },
+        {
+          "id": "pr4",
+          "title": "Marquage",
+          "text": "Numéro de série gravé · photographié (annexe photos)",
+          "selected": true
+        },
+        {
+          "id": "pr5",
+          "title": "Alarme du logement",
+          "text": "Centrale reliée à une télésurveillance · garage couvert",
+          "selected": true
+        },
+        {
+          "id": "pr6",
+          "title": "Stockage hors saison",
+          "text": "Housse et rack, à l’abri de la chaleur et des UV",
+          "selected": true
+        }
+      ],
+      "condition": [
+        {
+          "id": "c1",
+          "date": "2025-03-22",
+          "title": "Achat neuf · enregistrement du numéro de série",
+          "selected": true
+        },
+        {
+          "id": "c3",
+          "date": "2025-08-30",
+          "title": "Rinçage et contrôle après la saison",
+          "aside": "Propriétaire",
+          "selected": true
+        },
+        {
+          "id": "c4",
+          "date": "2026-06-02",
+          "title": "Remplacement du leash",
+          "aside": "Facture",
+          "selected": true
+        },
+        {
+          "id": "c2",
+          "date": "2026-09-14",
+          "title": "Inspection visuelle · aucun impact, aucune réparation",
+          "aside": "8 photos datées",
+          "selected": true
+        }
+      ],
+      "documents": [
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "fa",
+          "title": "Facture d'achat · Surf Shop Hossegor",
+          "typeLabel": "Facture",
+          "date": "2025-03-22",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "fd",
+          "title": "Facture dérives FCS II",
+          "typeLabel": "Facture",
+          "date": "2025-03-22",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "fl",
+          "title": "Facture leash FCS",
+          "typeLabel": "Facture",
+          "date": "2026-06-02",
+          "pages": 1,
+          "mode": "PDF",
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "mrh",
+          "title": "Attestation MRH en vigueur",
+          "typeLabel": "Attestation",
+          "date": "2026-01-01",
+          "pages": 2,
+          "mode": "PDF",
+          "tone": "green",
+          "preselected": false,
+          "preview": {
+            "kind": "pdf"
+          }
+        },
+        {
+          "selected": true,
+          "sensitive": false,
+          "format": "JPG",
+          "section": "photos",
+          "id": "photos-hd",
+          "title": "Photos d'identification haute définition (8)",
+          "typeLabel": "Photos",
+          "date": "2026-09-14",
+          "pages": 2,
+          "mode": "PDF",
+          "preview": {
+            "kind": "image"
+          }
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "cni",
+          "title": "Pièce d'identité de l'assuré",
+          "typeLabel": "Identité",
+          "date": "2021-02-10",
+          "pages": 2,
+          "mode": null
+        },
+        {
+          "selected": false,
+          "sensitive": true,
+          "format": "PDF",
+          "section": "proofs",
+          "id": "rib",
+          "title": "RIB de l'assuré",
+          "typeLabel": "Bancaire",
+          "date": "2024-01-05",
+          "pages": 1,
+          "mode": null
+        }
+      ],
+      "photos": [
+        {
+          "id": "p1",
+          "file": "photos/surf-personal.webp",
+          "caption": "Vue d'ensemble · 14/09/2026",
+          "focus": "50% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p2",
+          "file": "photos/surf-personal.webp",
+          "caption": "Numéro de série",
+          "focus": "20% 30%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p3",
+          "file": "photos/surf-personal.webp",
+          "caption": "Dérives montées",
+          "focus": "80% 70%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p4",
+          "file": "photos/surf-personal.webp",
+          "caption": "Rack et garage",
+          "focus": "50% 90%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p5",
+          "file": "photos/surf-personal.webp",
+          "caption": "Nose · vue de dessus",
+          "focus": "50% 20%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p6",
+          "file": "photos/surf-personal.webp",
+          "caption": "Tail · dérives démontées",
+          "focus": "60% 85%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p7",
+          "file": "photos/surf-personal.webp",
+          "caption": "Housse rembourrée",
+          "focus": "10% 50%",
+          "selected": true,
+          "sensitive": false
+        },
+        {
+          "id": "p8",
+          "file": "photos/surf-personal.webp",
+          "caption": "Leash et pad",
+          "focus": "90% 40%",
+          "selected": true,
+          "sensitive": false
+        }
+      ],
+      "mustNotAppear": [
+        "FW-SS58-H-25004318",
+        "Pièce d'identité",
+        "RIB",
+        "Estimation Verebona",
+        "980"
+      ]
+    }
+  }
+}

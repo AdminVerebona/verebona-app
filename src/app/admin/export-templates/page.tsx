@@ -6,6 +6,8 @@
  * EXP-007 / REC-MOD-06 : structure non éditable ; création, édition et
  * suppression retirées (UI et API). EXP-003 / EXP-004 : seule l'activation
  * globale reste, avec confirmation. EXP-002 : pas de numéro de version.
+ * CDC Exports V12 MIG-06 : type d'export (code V12) et statut affichés ;
+ * aucun identifiant PDFMonkey (ni lu ni affiché, colonne conservée en base).
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -30,6 +32,10 @@ import {
 } from '@/components/ui/select';
 import { ExportTemplateActiveToggle } from './_components/ExportTemplateActiveToggle';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
+import { exportCodeLabel } from '@/services/exports/catalog';
+
+/** Type d'export (MIG-06) : codes V12 du catalogue ; SAV / Autre hors catalogue. */
+const exportTypeLabel = (code: string) => ({ SAV_GARANTIE: 'SAV / Garantie', AUTRE: 'Autre' } as Record<string, string>)[code] ?? exportCodeLabel(code);
 
 interface ExportTemplate {
   id: number;
@@ -39,6 +45,7 @@ interface ExportTemplate {
   templateContent: string;
   variables?: string;
   category: 'IMMOBILIER' | 'VEHICULE' | 'MATERIEL_PRO' | 'GENERAL';
+  exportType?: string | null;
   isActive: boolean;
   version: number;
   createdAt: string;
@@ -221,6 +228,9 @@ export default function ExportTemplatesPage() {
                       <Badge variant="outline">
                         {getCategoryLabel(template.category)}
                       </Badge>
+                      {template.exportType && (
+                        <Badge variant="secondary">{exportTypeLabel(template.exportType)}</Badge>
+                      )}
                     </div>
                     <p className="text-sm text-muted-foreground mb-3">
                       Code: <span className="font-mono font-semibold">{template.code}</span>

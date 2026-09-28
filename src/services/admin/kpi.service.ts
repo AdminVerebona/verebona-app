@@ -656,7 +656,7 @@ export async function getActivity(p: ResolvedPeriod): Promise<ActivityData> {
     storageRowsAt(points),
     sumSizeIn(windows),
     // DACT-006 : exports générés avec succès, tous modèles confondus.
-    countIn('export_generation', 'completed_at', `x.status IN ('ready', 'deleted')`, windows),
+    countIn('export_generation', 'completed_at', `x.status IN ('ready', 'partial', 'expired', 'deleted')`, windows),
     // Transmissions envoyées (un seul type, aucune ventilation).
     countIn('asset_transmissions', 'sent_at', '', windows),
     countIn('agenda_items', 'created_at', `x.origin_type = 'manual'`, windows),
