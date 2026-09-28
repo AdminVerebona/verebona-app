@@ -48,6 +48,8 @@ export type AdminActionType =
   | 'USER_FORCE_LOGOUT'
   | 'USER_PASSWORD_RESET'
   | 'USER_ADMIN_ROLE_CHANGE'
+  // Renvoi d'une invitation réémissible (CDC BO USR-A01).
+  | 'USER_INVITATION_RESEND'
   | 'EXPORT_TEMPLATE_TOGGLE'
   | 'COMMUNICATION_CHANNEL_TOGGLE'
   // Résolution manuelle d'une anomalie de supervision (CDC BO AUD-003, SUP-007).

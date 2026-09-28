@@ -8,6 +8,7 @@ import { LegalInformationCard } from '@/components/account/LegalInformationCard'
 import { WithdrawalCard } from '@/components/account/WithdrawalCard';
 import { SubscriptionSummary } from '@/components/subscription/SubscriptionSummary';
 import { MyDataCard } from './mes-donnees/MyDataCard';
+import { StorageUsageCard } from '@/components/account/StorageUsageCard';
 
 export default function MonComptePage() {
   const { setBreadcrumbs } = useBreadcrumb();
@@ -27,6 +28,8 @@ export default function MonComptePage() {
           personnelles et votre abonnement ». La page des offres sert à en
           choisir une, pas à consulter la sienne. */}
       <SubscriptionSummary />
+      {/* Stockage : garde-fou secondaire, visible dans Mon compte (CDC BO STO-002). */}
+      <StorageUsageCard />
       <InformationsTab />
       <NotificationsCard />
       <WithdrawalCard />

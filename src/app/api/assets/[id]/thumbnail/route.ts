@@ -7,6 +7,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SessionService } from '@/lib/session-service';
 import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 import sharp from 'sharp';
+import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 
 // Server-side signed URL cache — 55 min TTL (S3 URLs expire after 60 min)
 const THUMB_CACHE = new Map<string, { url: string; exp: number }>();
@@ -143,6 +144,10 @@ export async function PUT(
     if (!asset) {
       return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
     }
+
+    // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
+    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId);
+    if (refusQuota) return refusQuota;
 
     const bucket = S3_BUCKET!;
     const contentType = request.headers.get('content-type') ?? '';

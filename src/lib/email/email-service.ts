@@ -464,54 +464,16 @@ class EmailService {
   }
   
   /**
-   * Envoi de test. `variables`, lorsqu'il est fourni, REMPLACE le jeu fictif
-   * ci-dessous : l'écran Communications transmet les données du propre compte
-   * de l'administrateur connecté (CDC BO COM-007, SEC-005).
+   * Envoi de test. Les variables sont OBLIGATOIRES : elles proviennent du
+   * propre compte de l'administrateur connecté (CDC BO COM-007, SEC-005). Le
+   * jeu de données fictives codé en dur a été retiré.
    */
   async sendTest(
     templateCode: string,
     testEmail: string,
-    variables?: Record<string, string>,
+    variables: Record<string, string>,
   ): Promise<{success: boolean, error?: string}> {
-    if (variables) {
-      return this.send({ templateCode, to: testEmail, variables, skipChannelCheck: true });
-    }
-    const mockVariables: Record<string, string> = {
-      // Generic
-      firstName: 'John',
-      lastName: 'Doe',
-      email: testEmail,
-      // Auth
-      verificationUrl: 'https://verebona.app/verify-email?token=abc123xyz',
-      resetUrl: 'https://verebona.app/reset-password?token=def456uvw',
-      expiresAt: '1 heure',
-      loginUrl: 'https://verebona.app/login',
-      // Assets / agenda
-      assetName: 'Appartement Paris 15',
-      deadlineLabel: 'Assurance habitation',
-      deadlineDate: '15 janvier 2025',
-      // DUO invitation
-      ownerFirstName: 'Geoffroy',
-      ownerLastName: 'Maupilier',
-      ownerFullName: 'Geoffroy Maupilier',
-      inviteUrl: 'https://verebona.app/duo/join/test-token-preview',
-      expiresIn: '7 jours',
-      // Premium confirmation
-      nextBillingDate: '7 avril 2027',
-      planType: 'Premium',
-      expiryDate: '7 avril 2027',
-      renewUrl: 'https://verebona.app/abonnement',
-      feature1: 'Biens illimités',
-      feature2: 'Documents illimités',
-      feature3: 'Partage multi-utilisateurs',
-    };
-    
-    return this.send({
-      templateCode,
-      to: testEmail,
-      variables: mockVariables,
-      skipChannelCheck: true,
-    });
+    return this.send({ templateCode, to: testEmail, variables, skipChannelCheck: true });
   }
 }
 

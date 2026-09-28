@@ -34,7 +34,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { z } from 'zod';
-import { executeWithinBudget } from './ai-call-budget';
+import { callWithRepairOrEscalation, repairInstruction } from './model-call-policy';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import { assistantIdempotencyKey } from './assistant-cache-key';
 import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
@@ -75,24 +75,36 @@ export async function classifyAssistantIntent(
   try {
     // Décompté sur le budget du message (§15.5, CA-07) : épuisé, aucun appel
     // n'est émis et l'intention reste inconnue (repli déterministe).
-    const res = await executeWithinBudget(input.aiBudget, {
-      useCaseCode: 'INTELLIGENT_ASSISTANT',
-      operationCode: 'understand_request',
-      accountId: input.accountId,
-      userId: input.userId,
-      promptVariables: {
-        QUESTION: message,
-        INTENTS: describeCatalog(),
+    // Premier appel au modèle par défaut seul ; sortie invalide → une
+    // réparation (§18.6), sortie vide → escalade (§15.4). Rien d'autre.
+    const variables = { QUESTION: message, INTENTS: describeCatalog() };
+    const { res, events } = await callWithRepairOrEscalation({
+      budget: input.aiBudget,
+      schemaDescription: '{"intent":"<intention du catalogue>","confidence":"exact"|"probable"|"ambiguous","entityHints":[],"reason":"…"}',
+      build: (v) => {
+        const promptVariables = v.repair
+          ? { ...variables, INTENTS: `${variables.INTENTS}\n\n${repairInstruction('{"intent":"<intention du catalogue>","confidence":"exact"|"probable"|"ambiguous","entityHints":[],"reason":"…"}', v.repair)}` }
+          : variables;
+        const cle = assistantIdempotencyKey(input, 'understand_request', promptVariables);
+        return {
+          useCaseCode: 'INTELLIGENT_ASSISTANT' as const,
+          operationCode: 'understand_request',
+          accountId: input.accountId,
+          userId: input.userId,
+          promptVariables,
+          outputSchema: ToolPlanOutput,
+          // Rattachée au fil : purgée à l'effacement de l'historique.
+          idempotencyKey: cle && v.escalation ? `${cle}:escalation` : cle,
+        };
       },
-      outputSchema: ToolPlanOutput,
-      // Rattachée au fil : purgée à l'effacement de l'historique.
-      idempotencyKey: assistantIdempotencyKey(input, 'understand_request', { QUESTION: message, INTENTS: describeCatalog() }),
-    }, {
-      // Trace §28.8 : rattachée à la demande, prompt maître de classification.
-      requestId: input.requestId ?? input.clientRequestId,
-      routeReason: 'classification : aucune règle déterministe',
-      promptId: 'understand_request', promptVersion: 'understand_request_v1',
+      trace: {
+        // Trace §28.8 : rattachée à la demande, prompt maître de classification.
+        requestId: input.requestId ?? input.clientRequestId,
+        routeReason: 'classification : aucune règle déterministe',
+        promptId: 'understand_request', promptVersion: 'understand_request_v1',
+      },
     });
+    input.aiReport?.events.push(...events.map((e) => `CLASSIFICATION:${e}`));
 
     return toIntentRoute(res.data as ToolPlan, input.planType);
   } catch (e) {

@@ -99,7 +99,7 @@ describe('secret de signature', () => {
   });
 
   it('le démarrage vérifie les secrets avant toute autre étape', () => {
-    const src = read('src/instrumentation.ts');
+    const src = read('src/instrumentation-node.ts');
     const check = src.indexOf('emailVerificationSecret();');
     expect(check).toBeGreaterThan(0);
     expect(src).toMatch(/resetSecret\(\);/);

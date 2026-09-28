@@ -1,290 +1,218 @@
 "use client"
 
-import { useEffect, useState } from 'react';
+/**
+ * Utilisateurs — CDC Back-Office V1 §6.1.
+ *
+ * USR-L01 : compteurs total / actifs / désactivés. Colonnes : identité,
+ * e-mail, compte, offre, statut. USR-L02 : recherche unique (nom, prénom,
+ * e-mail, nom du compte). USR-L03 / USR-L04 : aucun filtre ni colonne statut
+ * administrateur, rôle, dernière connexion, date de création. USR-L05 :
+ * pagination classique et tri. UX-004 : état porté par l'URL. UX-005 : deux
+ * états vides distincts. ERR-001 : écran d'erreur avec « Réessayer ».
+ */
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
-import { apiClient } from '@/lib/api-client';
+import { Loader2, Search, Users } from 'lucide-react';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
+import { AdminPagination, SortHeader, nextSort } from '../subscriptions/_components/list-controls';
 
-interface User {
+type Sort = 'name' | 'email' | 'account' | 'plan' | 'status';
+
+interface UserRow {
   id: number;
-  email: string;
   firstName: string;
   lastName: string;
-  username: string | null;
-  company: string | null;
-  planType: string;
+  email: string;
   accountId: number | null;
   accountName: string | null;
-  role: string;
-  status: string;
-  createdAt: string;
-  assetCount: number;
+  planType: string | null;
+  status: 'active' | 'disabled';
 }
 
-interface PaginatedResponse {
-  data: User[];
-  hasMore: boolean;
-  nextCursor: string | null;
+interface Payload {
+  summary: { total: number; active: number; disabled: number };
+  items: UserRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 }
 
-export default function AdminUsersPage() {
-  const [users, setUsers] = useState<User[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+const PLAN_LABELS: Record<string, string> = {
+  STANDARD: 'Standard',
+  PREMIUM: 'Premium',
+  PREMIUM_DUO: 'Premium Duo',
+  DUO: 'Premium Duo',
+};
+
+function SummaryTile({ label, value }: { label: string; value: number | undefined }) {
+  return (
+    <Card>
+      <CardContent className="pt-6">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-2xl font-semibold">{value ?? '—'}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function UsersScreen() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const q = params.get('q') ?? '';
+  const sort = (params.get('sort') as Sort) || 'name';
+  const dir = params.get('dir') === 'desc' ? 'desc' : 'asc';
+  const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
+
+  const [search, setSearch] = useState(q);
+  const [data, setData] = useState<Payload | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
-  // Filters
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [roleFilter, setRoleFilter] = useState<string>('all');
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const limit = 20;
 
-  useEffect(() => {
-    loadUsers();
-  }, [search, statusFilter, roleFilter, cursor]);
-
-    const loadUsers = async () => {
-      try {
-        setIsLoading(true);
-        setError(null);
-  
-        // Build query params
-        const params = new URLSearchParams({
-          limit: limit.toString(),
-        });
-  
-        if (cursor) params.append('cursor', cursor);
-        if (search) params.append('search', search);
-        if (statusFilter && statusFilter !== 'all') params.append('status', statusFilter);
-        if (roleFilter && roleFilter !== 'all') params.append('role', roleFilter);
-  
-        const result = await apiClient.get<PaginatedResponse>(`/api/admin/users?${params.toString()}`);
-        setUsers(result.data);
-        setHasMore(result.hasMore);
-        setNextCursor(result.nextCursor);
-      } catch (err) {
-        console.error('Error loading users:', err);
-        setError(err instanceof Error ? err.message : 'Erreur inconnue');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-
-  const handleSearchChange = (value: string) => {
-    setSearch(value);
-    setCursor(null); // Reset cursor on search
-  };
-
-  const handleNextPage = () => {
-    if (hasMore && nextCursor) {
-      setCursor(nextCursor);
+  const setQuery = useCallback((next: Record<string, string>) => {
+    const qs = new URLSearchParams(params.toString());
+    for (const [k, v] of Object.entries(next)) {
+      if (v) qs.set(k, v);
+      else qs.delete(k);
     }
-  };
+    router.replace(`${pathname}?${qs}`);
+  }, [params, pathname, router]);
 
-  const handlePreviousPage = () => {
-    setCursor(null); // Reset to first page
-  };
+  // Recherche différée : l'URL n'est mise à jour qu'après la saisie.
+  useEffect(() => {
+    if (search === q) return;
+    const t = setTimeout(() => setQuery({ q: search.trim(), page: '1' }), 300);
+    return () => clearTimeout(t);
+  }, [search, q, setQuery]);
 
-  const formatDate = (dateStr: string | null) => {
-    if (!dateStr) return '—';
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
-      // Handle epoch-as-string (legacy data) and ISO strings
-      const n = Number(dateStr);
-      const d = !isNaN(n) && String(n) === String(dateStr).trim()
-        ? new Date(n > 1e12 ? n : n * 1000)
-        : new Date(dateStr);
-      if (isNaN(d.getTime())) return '—';
-      return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
-    } catch { return '—'; }
-  };
+      const qs = new URLSearchParams({ sort, dir, page: String(page) });
+      if (q) qs.set('q', q);
+      const res = await fetch(`/api/admin/users?${qs}`, { credentials: 'include' });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.message || `Erreur ${res.status}`);
+      setData(payload as Payload);
+    } catch (err) {
+      setData(null);
+      setError(err instanceof Error ? err.message : 'Erreur inconnue');
+    } finally {
+      setLoading(false);
+    }
+  }, [q, sort, dir, page]);
 
-  const getStatusBadge = (status: string) => {
-    return status === 'ACTIVE' ? (
-      <Badge variant="active">Actif</Badge>
-    ) : status === 'SUSPENDED' ? (
-      <Badge variant="inactive">Suspendu</Badge>
-    ) : (
-      <Badge variant="destructive">Supprimé</Badge>
-    );
-  };
+  useEffect(() => { void load(); }, [load]);
 
-  const getRoleBadge = (role: string) => {
-    return role === 'ADMIN' ? (
-      <Badge variant="default">Admin</Badge>
-    ) : (
-      <Badge variant="outline">Utilisateur</Badge>
-    );
+  const onSort = (key: Sort) => {
+    const n = nextSort(sort, dir, key);
+    setQuery({ sort: n.sort, dir: n.dir, page: '1' });
   };
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6">
-            <p className="text-center text-destructive">{error}</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
-        <h1 className="text-2xl md:text-3xl font-bold">Gestion des utilisateurs</h1>
-        <p className="text-muted-foreground mt-1">
-          Liste complète de tous les utilisateurs de la plateforme
-        </p>
+        <h1 className="text-2xl md:text-3xl font-bold">Utilisateurs</h1>
+        <p className="text-muted-foreground mt-1">Administration et support au niveau utilisateur</p>
       </div>
 
-      {/* Filters */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Filtres</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 grid-cols-1 sm:grid-cols-3">
-            <div className="relative">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Rechercher (email, nom)..."
-                value={search}
-                onChange={(e) => handleSearchChange(e.target.value)}
-                className="pl-9"
-              />
-            </div>
-
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Tous les statuts" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les statuts</SelectItem>
-                <SelectItem value="ACTIVE">Actif</SelectItem>
-                <SelectItem value="SUSPENDED">Suspendu</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Select value={roleFilter} onValueChange={setRoleFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Tous les rôles" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les rôles</SelectItem>
-                <SelectItem value="USER">Utilisateur</SelectItem>
-                <SelectItem value="ADMIN">Admin</SelectItem>
-              </SelectContent>
-            </Select>
+      {error ? (
+        <EcranEnErreur titre="Chargement des utilisateurs impossible" message={error} onRetry={load} />
+      ) : (
+        <>
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
+            <SummaryTile label="Utilisateurs" value={data?.summary.total} />
+            <SummaryTile label="Actifs" value={data?.summary.active} />
+            <SummaryTile label="Désactivés" value={data?.summary.disabled} />
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Users Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Utilisateurs ({users.length})
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-3">
-              {[...Array(5)].map((_, i) => (
-                <Skeleton key={i} className="h-20" />
-              ))}
-            </div>
-          ) : users.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              Aucun utilisateur trouvé
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {users.map((user) => (
-                <Link
-                  key={user.id}
-                  href={`/admin/users/${user.id}`}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-lg border hover:bg-accent transition-colors gap-2"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium truncate">
-                        {user.firstName} {user.lastName}
-                      </span>
-                      {getRoleBadge(user.role)}
-                      {getStatusBadge(user.status)}
-                    </div>
-                    <div className="text-sm text-muted-foreground mt-1 truncate">
-                      {user.email}
-                    </div>
-                    {user.company && (
-                      <div className="text-xs text-muted-foreground truncate">
-                        {user.company}
-                      </div>
-                    )}
-                  </div>
-                  <div className="sm:text-right flex sm:flex-col flex-wrap gap-x-3 gap-y-0.5 flex-shrink-0">
-                    <div className="text-sm font-medium">
-                      {user.assetCount} bien{user.assetCount > 1 ? 's' : ''}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {user.planType}
-                      {user.accountName && (
-                        <span className="ml-1 opacity-60">· {user.accountName}</span>
-                      )}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {formatDate(user.createdAt)}
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
+          <div className="relative max-w-md">
+            <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Rechercher par nom, prénom, e-mail ou compte…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
 
-          {/* Pagination */}
-          {!isLoading && users.length > 0 && (
-            <div className="flex items-center justify-between mt-4 pt-4 border-t">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handlePreviousPage}
-                disabled={!cursor}
-              >
-                <ChevronLeft className="h-4 w-4 mr-1" />
-                Précédent
-              </Button>
-              <span className="text-sm text-muted-foreground">
-                {users.length} utilisateur{users.length > 1 ? 's' : ''}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleNextPage}
-                disabled={!hasMore}
-              >
-                Suivant
-                <ChevronRight className="h-4 w-4 ml-1" />
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          <Card>
+            <CardContent className="pt-6 space-y-4">
+              {loading && !data ? (
+                <div className="space-y-2">
+                  {[...Array(6)].map((_, i) => <Skeleton key={i} className="h-10" />)}
+                </div>
+              ) : data && data.items.length === 0 ? (
+                <div className="text-center py-10 text-muted-foreground space-y-2">
+                  <Users className="h-10 w-10 mx-auto opacity-50" />
+                  <p>{q ? 'Aucun utilisateur ne correspond à votre recherche.' : 'Aucun utilisateur.'}</p>
+                </div>
+              ) : data ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-muted-foreground border-b">
+                      <tr>
+                        <th className="py-2 pr-3"><SortHeader label="Identité" sortKey="name" current={sort} dir={dir} onSort={onSort} /></th>
+                        <th className="py-2 pr-3"><SortHeader label="E-mail" sortKey="email" current={sort} dir={dir} onSort={onSort} /></th>
+                        <th className="py-2 pr-3"><SortHeader label="Compte" sortKey="account" current={sort} dir={dir} onSort={onSort} /></th>
+                        <th className="py-2 pr-3"><SortHeader label="Offre" sortKey="plan" current={sort} dir={dir} onSort={onSort} /></th>
+                        <th className="py-2"><SortHeader label="Statut" sortKey="status" current={sort} dir={dir} onSort={onSort} /></th>
+                      </tr>
+                    </thead>
+                    <tbody className={loading ? 'opacity-60' : ''}>
+                      {data.items.map((u) => (
+                        <tr key={u.id} className="border-b last:border-0 hover:bg-accent/50">
+                          <td className="py-2 pr-3">
+                            <Link href={`/admin/users/${u.id}`} className="font-medium hover:underline">
+                              {`${u.firstName} ${u.lastName}`.trim() || '—'}
+                            </Link>
+                          </td>
+                          <td className="py-2 pr-3 text-muted-foreground">{u.email}</td>
+                          <td className="py-2 pr-3">
+                            {u.accountId ? (
+                              <Link href={`/admin/accounts/${u.accountId}`} className="hover:underline">{u.accountName ?? `Compte #${u.accountId}`}</Link>
+                            ) : '—'}
+                          </td>
+                          <td className="py-2 pr-3">{u.planType ? (PLAN_LABELS[u.planType] ?? u.planType) : '—'}</td>
+                          <td className="py-2">
+                            <Badge variant={u.status === 'active' ? 'active' : 'inactive'}>
+                              {u.status === 'active' ? 'Actif' : 'Désactivé'}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+              {data && (
+                <AdminPagination
+                  page={data.page}
+                  totalPages={data.totalPages}
+                  total={data.total}
+                  disabled={loading}
+                  onPage={(p) => setQuery({ page: String(p) })}
+                />
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
+  );
+}
+
+export default function AdminUsersPage() {
+  return (
+    <Suspense fallback={<div className="flex justify-center py-12"><Loader2 className="h-7 w-7 animate-spin text-muted-foreground" /></div>}>
+      <UsersScreen />
+    </Suspense>
   );
 }

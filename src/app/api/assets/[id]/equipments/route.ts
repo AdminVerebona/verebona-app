@@ -7,6 +7,7 @@ import { SessionService } from '@/lib/session-service';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { runEquipmentAutoLink } from '@/services/equipment/equipment-auto-link.service';
 import { isValidEquipmentStatus, assetSupportsStructuralFeatures } from '@/types/domain';
+import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 
 export async function GET(
   request: NextRequest,
@@ -100,6 +101,10 @@ export async function POST(
     if (!supportsFeatures) {
       return apiError(400, 'FORBIDDEN', 'Ce type de bien ne supporte pas la gestion des équipements');
     }
+
+    // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
+    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId);
+    if (refusQuota) return refusQuota;
 
     // Gestion des équipements : Premium et Premium Duo (essai compris). Le client
     // ouvre la fenêtre d'offre avant la saisie ; ce contrôle en est la

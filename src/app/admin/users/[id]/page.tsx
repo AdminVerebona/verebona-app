@@ -3,20 +3,22 @@
 /**
  * Fiche utilisateur — CDC Back-Office V1 §6.2 et §6.3.
  *
- * Identité et e-mail en LECTURE SEULE (SEC-004, USR-A10) : le formulaire
- * « Modifier » (nom, prénom, société, offre, statut, langue) est supprimé.
- * Suppression d'utilisateur et suppression de bien retirées (GEN-001,
- * SEC-003) : la suppression passe par la fiche Compte (ACC-A14).
+ * Lecture seule (SEC-004, USR-A10) : identité, e-mail, compte rattaché, statut,
+ * rôle titulaire / second utilisateur, statut administrateur, dates de
+ * création et de rattachement, dates de désactivation / réactivation,
+ * dernière connexion, préférences de notifications, invitations liées,
+ * historique des communications (COM-014) et des connexions sur 90 jours
+ * (USR-D01, USR-D02, REC-USR-05). Les sessions actives ne sont pas listées
+ * (USR-D03).
  *
- * Actions (matrice §20) : désactiver / réactiver (USR-A02..A05), déconnecter
- * toutes les sessions (USR-A06), réinitialisation du mot de passe par le
- * parcours « Mot de passe oublié » (USR-A07), statut administrateur
- * (USR-A08). Le dernier administrateur actif ne peut être ni rétrogradé ni
- * désactivé (USR-A09) : bouton désactivé avec son motif (UX-003), refus 409
- * côté serveur.
+ * Actions (matrice §20) : renvoyer une invitation (USR-A01), désactiver /
+ * réactiver (USR-A02..A05), déconnecter toutes les sessions (USR-A06),
+ * réinitialisation du mot de passe par le parcours « Mot de passe oublié »
+ * (USR-A07), statut administrateur (USR-A08). Le dernier administrateur actif
+ * ne peut être ni rétrogradé ni désactivé (USR-A09).
  */
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -35,70 +37,27 @@ import {
 import { toast } from 'sonner';
 import {
   ArrowLeft,
-  User,
-  Mail,
-  Building,
-  Building2,
-  Calendar,
-  Package,
-  FileText,
   Ban,
   CheckCircle,
   MailIcon,
   LogOut,
-  ExternalLink,
   Shield,
   ShieldOff,
+  Send,
 } from 'lucide-react';
-
-interface UserDetailPageProps {
-  params: { id: string };
-}
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
+import { formatDateTime } from '@/lib/admin/format';
 
 interface UserDetails {
   id: number;
   email: string;
   firstName: string;
   lastName: string;
-  username: string | null;
   company: string | null;
-  planType: string;
   role: string;
   status: string;
-  locale: string;
   createdAt: string;
   lastLoginAt: string | null;
-  subscriptionTier: 'free' | 'premium' | 'pro';
-  stripeCustomerId: string | null;
-  stripeSubscriptionId: string | null;
-  premiumUntil: number | null;
-  proUntil: number | null;
-}
-
-interface Asset {
-  id: number;
-  name: string;
-  category: string;
-  createdAt: string;
-}
-
-interface UserStats {
-  documentsCount: number;
-  eventsCount: number;
-  deadlinesCount: number;
-}
-
-interface SubscriptionHistoryEntry {
-  id: number;
-  oldTier: string | null;
-  newTier: string;
-  oldPremiumUntil: number | null;
-  newPremiumUntil: number | null;
-  oldProUntil: number | null;
-  newProUntil: number | null;
-  source: string;
-  stripeEventId: string | null;
-  createdAt: number;
 }
 
 interface LinkedAccount {
@@ -107,18 +66,86 @@ interface LinkedAccount {
   planType: string;
 }
 
+interface Membership {
+  accountId: number;
+  accountName: string;
+  role: 'holder' | 'second' | 'member';
+  joinedAt: string | null;
+}
+
+interface StatusChange {
+  at: string;
+  action: 'deactivated' | 'reactivated';
+  adminEmail: string | null;
+}
+
+interface ChannelState { enabled: boolean; locked: boolean }
+interface CategoryPreference {
+  key: string;
+  label: string;
+  immediate: { push: ChannelState; email: ChannelState };
+  digest?: { push: ChannelState; email: ChannelState };
+}
+
+interface Invitation {
+  kind: 'duo' | 'account';
+  direction: 'sent' | 'received';
+  email: string;
+  sentAt: string | null;
+  expiresAt: string | null;
+  expired: boolean;
+  status: 'pending' | 'accepted' | 'declined' | 'removed';
+  reissuable: boolean;
+  blockReason: string | null;
+}
+
+interface Communication {
+  at: string;
+  channel: 'email' | 'push' | 'in_app';
+  type: string;
+  status: 'sent' | 'failed' | 'pending' | 'skipped';
+}
+
+interface LoginEntry { at: string; device: string | null; ip: string | null }
+
 interface UserData {
   user: UserDetails;
   account: LinkedAccount | null;
-  /** USR-A08 / USR-A09 : statut admin et protection du dernier admin actif. */
   adminStatus: { isAdmin: boolean; isLastActiveAdmin: boolean };
-  assets: Asset[];
-  stats: UserStats;
-  subscriptionHistory: SubscriptionHistoryEntry[];
+  memberships: Membership[];
+  statusChanges: StatusChange[];
+  notificationPreferences: {
+    categories: CategoryPreference[];
+    pushDeviceCount: number;
+    newsConsent: { consented: boolean; consentedAt: string | null };
+  };
+  invitations: Invitation[];
+  communications: Communication[];
+  loginHistory: { days: number; entries: LoginEntry[] };
 }
 
 /** Motif affiché quand une action est impossible sur le dernier admin (UX-003). */
 const LAST_ADMIN_REASON = "Dernier administrateur actif : accordez d'abord le statut administrateur à un autre utilisateur.";
+
+const ROLE_LABELS: Record<Membership['role'], string> = {
+  holder: 'Titulaire',
+  second: 'Second utilisateur',
+  member: 'Membre',
+};
+const PLAN_LABELS: Record<string, string> = { STANDARD: 'Standard', PREMIUM: 'Premium', PREMIUM_DUO: 'Premium Duo' };
+const CHANNEL_LABELS: Record<Communication['channel'], string> = { email: 'E-mail', push: 'Push', in_app: 'In-app' };
+const COMM_STATUS: Record<Communication['status'], { label: string; variant: 'active' | 'destructive' | 'secondary' | 'outline' }> = {
+  sent: { label: 'Envoyé', variant: 'active' },
+  failed: { label: 'Échec', variant: 'destructive' },
+  pending: { label: 'En attente', variant: 'outline' },
+  skipped: { label: 'Non envoyé', variant: 'secondary' },
+};
+const INVITATION_STATUS: Record<Invitation['status'], string> = {
+  pending: 'En attente',
+  accepted: 'Acceptée',
+  declined: 'Refusée',
+  removed: 'Retirée',
+};
 
 /**
  * Appel d'une action administrateur. Rend le message du serveur en cas
@@ -138,176 +165,101 @@ async function callAdminAction<T = Record<string, unknown>>(url: string, method:
   return payload as T;
 }
 
-export default function UserDetailPage({ params }: UserDetailPageProps) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="font-medium text-sm">{children}</div>
+    </div>
+  );
+}
+
+function PrefCell({ state }: { state: ChannelState | undefined }) {
+  if (!state) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className={state.enabled ? '' : 'text-muted-foreground'}>
+      {state.enabled ? 'Activé' : 'Désactivé'}
+      {state.locked && <span className="text-xs text-muted-foreground"> (obligatoire)</span>}
+    </span>
+  );
+}
+
+export default function UserDetailPage() {
   const router = useRouter();
+  const params = useParams();
   const userId = params.id as string;
 
   const [data, setData] = useState<UserData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
-  const [showSubscriptionHistory, setShowSubscriptionHistory] = useState(false);
-  const [isSyncingStripe, setIsSyncingStripe] = useState(false);
 
-  // Dialog states
   const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
   const [reactivateDialogOpen, setReactivateDialogOpen] = useState(false);
   const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
   const [forceLogoutDialogOpen, setForceLogoutDialogOpen] = useState(false);
   const [adminRoleDialogOpen, setAdminRoleDialogOpen] = useState(false);
+  const [resendDialogOpen, setResendDialogOpen] = useState(false);
 
-  useEffect(() => {
-    loadUserData();
-  }, [userId]);
-
-  const loadUserData = async () => {
+  const loadUserData = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
-
-
-      const response = await fetch(`/api/admin/users/${userId}`, {
-      credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
+      const response = await fetch(`/api/admin/users/${userId}`, { credentials: 'include' });
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error('Erreur lors du chargement de l\'utilisateur');
+        throw new Error(payload.message || (response.status === 404 ? 'Utilisateur introuvable.' : 'Erreur lors du chargement de l’utilisateur.'));
       }
-
-      const userData = await response.json();
-      setData(userData);
+      setData(payload as UserData);
     } catch (err) {
-      console.error('Error loading user:', err);
+      setData(null);
       setError(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [userId]);
 
-  /** USR-A02 / USR-A03 : désactivation sans motif ; sessions révoquées par le serveur. */
-  const handleSuspend = async () => {
+  useEffect(() => { void loadUserData(); }, [loadUserData]);
+
+  /** Exécute une action puis relit l'état depuis le serveur (ERR-003). */
+  const runAction = async (fn: () => Promise<unknown>, success: string, close: () => void, reload = true) => {
+    if (actionLoading) return; // ERR-002 : pas de double soumission.
     try {
       setActionLoading(true);
-      await callAdminAction(`/api/admin/users/${userId}/suspend`, 'POST', {});
-      toast.success('Utilisateur désactivé — toutes ses sessions ont été révoquées');
-      setSuspendDialogOpen(false);
+      await fn();
+      toast.success(success);
+      close();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setActionLoading(false);
-      loadUserData();
+      if (reload) void loadUserData();
     }
   };
 
-  /** USR-A04 : accès restauré avec les identifiants existants. */
-  const handleReactivate = async () => {
-    try {
-      setActionLoading(true);
-      await callAdminAction(`/api/admin/users/${userId}/reactivate`, 'POST', {});
-      toast.success('Utilisateur réactivé');
-      setReactivateDialogOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setActionLoading(false);
-      loadUserData();
-    }
-  };
-
-  /** USR-A07 : même parcours que « Mot de passe oublié ». */
-  const handleSendPasswordReset = async () => {
-    try {
-      setActionLoading(true);
-      await callAdminAction(`/api/admin/users/${userId}/send-password-reset`, 'POST', {});
-      toast.success("E-mail de réinitialisation envoyé à l'utilisateur");
-      setResetPasswordDialogOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  /** USR-A06 : révocation globale, sans détail des sessions. */
-  const handleForceLogout = async () => {
-    try {
-      setActionLoading(true);
-      await callAdminAction(`/api/admin/users/${userId}/force-logout`, 'POST', {});
-      toast.success('Toutes les sessions de l’utilisateur ont été révoquées');
-      setForceLogoutDialogOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  /** USR-A08 / USR-A09 : accorder ou retirer le statut administrateur. */
-  const handleToggleAdmin = async () => {
+  const handleSuspend = () =>
+    runAction(() => callAdminAction(`/api/admin/users/${userId}/suspend`, 'POST', {}),
+      'Utilisateur désactivé — toutes ses sessions ont été révoquées', () => setSuspendDialogOpen(false));
+  const handleReactivate = () =>
+    runAction(() => callAdminAction(`/api/admin/users/${userId}/reactivate`, 'POST', {}),
+      'Utilisateur réactivé', () => setReactivateDialogOpen(false));
+  const handleSendPasswordReset = () =>
+    runAction(() => callAdminAction(`/api/admin/users/${userId}/send-password-reset`, 'POST', {}),
+      "E-mail de réinitialisation envoyé à l'utilisateur", () => setResetPasswordDialogOpen(false), false);
+  const handleForceLogout = () =>
+    runAction(() => callAdminAction(`/api/admin/users/${userId}/force-logout`, 'POST', {}),
+      'Toutes les sessions de l’utilisateur ont été révoquées', () => setForceLogoutDialogOpen(false), false);
+  const handleToggleAdmin = () => {
     if (!data) return;
-    try {
-      setActionLoading(true);
-      const makeAdmin = !data.adminStatus.isAdmin;
-      await callAdminAction(`/api/admin/users/${userId}`, 'PUT', { isAdmin: makeAdmin });
-      toast.success(makeAdmin ? 'Statut administrateur accordé' : 'Statut administrateur retiré');
-      setAdminRoleDialogOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setActionLoading(false);
-      loadUserData();
-    }
+    const makeAdmin = !data.adminStatus.isAdmin;
+    return runAction(() => callAdminAction(`/api/admin/users/${userId}`, 'PUT', { isAdmin: makeAdmin }),
+      makeAdmin ? 'Statut administrateur accordé' : 'Statut administrateur retiré', () => setAdminRoleDialogOpen(false));
   };
+  const handleResendInvitation = () =>
+    runAction(() => callAdminAction(`/api/admin/users/${userId}/resend-invitation`, 'POST', {}),
+      'Invitation renvoyée', () => setResendDialogOpen(false));
 
-  const handleSyncStripe = async () => {
-    try {
-      setIsSyncingStripe(true);
-
-      const response = await fetch(`/api/admin/users/${userId}/sync-stripe`, {
-      credentials: 'include',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur lors de la synchronisation');
-      }
-
-      const result = await response.json();
-      
-      if (result.changes.tierChanged) {
-        toast.success(`Abonnement synchronisé : ${result.changes.oldTier} → ${result.changes.newTier}`);
-      } else {
-        toast.success('Abonnement déjà à jour avec Stripe');
-      }
-      
-      loadUserData();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur inconnue');
-    } finally {
-      setIsSyncingStripe(false);
-    }
-  };
-
-  const formatDate = (dateStr: string | number) => {
-    const date = typeof dateStr === 'string' ? new Date(dateStr) : new Date(dateStr);
-    return date.toLocaleDateString('fr-FR', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
-
-
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-10 w-64" />
@@ -324,26 +276,26 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
           <ArrowLeft className="h-4 w-4 mr-2" />
           Retour
         </Button>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-center text-destructive">
-              {error || 'Utilisateur non trouvé'}
-            </p>
-          </CardContent>
-        </Card>
+        <EcranEnErreur titre="Chargement de la fiche utilisateur impossible" message={error} onRetry={loadUserData} />
       </div>
     );
   }
 
-  const { user, account: linkedAccount, assets, stats, adminStatus } = data;
+  const { user, account: linkedAccount, adminStatus, memberships, statusChanges, notificationPreferences, invitations, communications, loginHistory } = data;
   const lastAdmin = adminStatus?.isLastActiveAdmin ?? false;
+  const mainMembership = memberships[0] ?? null;
+  const reissuable = invitations.find((i) => i.reissuable) ?? null;
+  const resendReason = reissuable
+    ? null
+    : invitations.length === 0
+      ? 'Aucune invitation liée à cet utilisateur.'
+      : invitations[0].blockReason ?? 'Aucune invitation réémissible.';
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <Button variant="ghost" size="sm" onClick={() => router.push('/admin/users')}>
+          <Button variant="ghost" size="sm" onClick={() => router.back()}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Retour
           </Button>
@@ -355,91 +307,60 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {user.status === 'ACTIVE' ? (
-            <Badge variant="active">Actif</Badge>
-          ) : (
-            <Badge variant="destructive">Suspendu</Badge>
-          )}
-          {adminStatus?.isAdmin && (
-            <Badge variant="default">Administrateur</Badge>
-          )}
+          {user.status === 'ACTIVE' ? <Badge variant="active">Actif</Badge> : <Badge variant="destructive">Désactivé</Badge>}
+          {adminStatus?.isAdmin && <Badge variant="default">Administrateur</Badge>}
         </div>
       </div>
 
-      {/* User Info Card - Single card without subscription */}
       <Card>
         <CardHeader>
           <CardTitle>Informations utilisateur</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-          <div className="flex items-center gap-3">
-            <User className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Nom complet</div>
-              <div className="font-medium">{user.firstName} {user.lastName}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <User className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Nom d'utilisateur</div>
-              <div className="font-medium">{user.username || 'Non défini'}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Mail className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Email</div>
-              <div className="font-medium">{user.email}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Building className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Entreprise</div>
-              <div className="font-medium">{user.company || 'Non définie'}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Package className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Plan</div>
-              <div className="font-medium">{user.planType}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <User className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Rôle</div>
-              <div className="font-medium">{user.role}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Calendar className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Inscription</div>
-              <div className="font-medium">{formatDate(user.createdAt)}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Calendar className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <div className="text-sm text-muted-foreground">Dernière connexion</div>
-              <div className="font-medium">
-                {user.lastLoginAt ? formatDate(user.lastLoginAt) : 'Jamais'}
-              </div>
-            </div>
-          </div>
+        <CardContent className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+          <Field label="Identité">{`${user.firstName} ${user.lastName}`.trim() || '—'}</Field>
+          <Field label="E-mail (non modifiable)">{user.email}</Field>
+          <Field label="Statut">{user.status === 'ACTIVE' ? 'Actif' : 'Désactivé'}</Field>
+          <Field label="Compte rattaché">
+            {linkedAccount ? (
+              <Link href={`/admin/accounts/${linkedAccount.id}`} className="hover:underline">
+                {linkedAccount.name}
+              </Link>
+            ) : 'Aucun'}
+          </Field>
+          <Field label="Offre du compte">{linkedAccount ? (PLAN_LABELS[linkedAccount.planType?.toUpperCase()] ?? linkedAccount.planType) : '—'}</Field>
+          <Field label="Rôle dans le compte">{mainMembership ? ROLE_LABELS[mainMembership.role] : '—'}</Field>
+          <Field label="Statut administrateur">{adminStatus?.isAdmin ? 'Administrateur' : 'Non'}</Field>
+          <Field label="Création">{formatDateTime(user.createdAt)}</Field>
+          <Field label="Rattachement au compte">{formatDateTime(mainMembership?.joinedAt)}</Field>
+          <Field label="Dernière connexion">{user.lastLoginAt ? formatDateTime(user.lastLoginAt) : 'Jamais'}</Field>
+          {user.company && <Field label="Société">{user.company}</Field>}
         </CardContent>
+        {memberships.length > 1 && (
+          <CardContent className="pt-0 text-xs text-muted-foreground">
+            Autres comptes : {memberships.slice(1).map((m) => (
+              <Link key={m.accountId} href={`/admin/accounts/${m.accountId}`} className="underline mr-2">
+                {m.accountName} ({ROLE_LABELS[m.role]})
+              </Link>
+            ))}
+          </CardContent>
+        )}
       </Card>
 
-      {/* Actions principales */}
       <Card>
         <CardHeader>
           <CardTitle>Actions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setResendDialogOpen(true)}
+              disabled={!reissuable}
+              title={resendReason ?? undefined}
+            >
+              <Send className="h-4 w-4 mr-2" />
+              Renvoyer l’invitation
+            </Button>
             {user.status === 'ACTIVE' ? (
               <Button
                 variant="outline"
@@ -451,31 +372,19 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
                 Désactiver
               </Button>
             ) : (
-              <Button
-                variant="outline"
-                onClick={() => setReactivateDialogOpen(true)}
-              >
+              <Button variant="outline" onClick={() => setReactivateDialogOpen(true)}>
                 <CheckCircle className="h-4 w-4 mr-2" />
                 Réactiver
               </Button>
             )}
-
-            <Button
-              variant="outline"
-              onClick={() => setResetPasswordDialogOpen(true)}
-            >
+            <Button variant="outline" onClick={() => setResetPasswordDialogOpen(true)}>
               <MailIcon className="h-4 w-4 mr-2" />
               Réinitialiser le mot de passe
             </Button>
-
-            <Button
-              variant="outline"
-              onClick={() => setForceLogoutDialogOpen(true)}
-            >
+            <Button variant="outline" onClick={() => setForceLogoutDialogOpen(true)}>
               <LogOut className="h-4 w-4 mr-2" />
               Déconnecter toutes les sessions
             </Button>
-
             <Button
               variant="outline"
               onClick={() => setAdminRoleDialogOpen(true)}
@@ -486,99 +395,178 @@ export default function UserDetailPage({ params }: UserDetailPageProps) {
               {adminStatus?.isAdmin ? 'Retirer le statut administrateur' : 'Accorder le statut administrateur'}
             </Button>
           </div>
-          {lastAdmin && (
-            <p className="text-xs text-muted-foreground">{LAST_ADMIN_REASON}</p>
-          )}
+          {resendReason && <p className="text-xs text-muted-foreground">Renvoi d’invitation indisponible : {resendReason}</p>}
+          {lastAdmin && <p className="text-xs text-muted-foreground">{LAST_ADMIN_REASON}</p>}
         </CardContent>
       </Card>
 
-      {/* Compte rattaché */}
-      {linkedAccount && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
-              Compte rattaché
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">{linkedAccount.name}</p>
-                <p className="text-sm text-muted-foreground">ID #{linkedAccount.id} · Plan {linkedAccount.planType}</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5"
-                onClick={() => router.push(`/admin/accounts/${linkedAccount.id}`)}
-              >
-                <ExternalLink className="h-3.5 w-3.5" />
-                Voir le compte
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Stats */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground">Biens</p>
-                <p className="text-2xl font-bold">{assets.length}</p>
-              </div>
-              <Building className="h-8 w-8 text-muted-foreground" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground">Documents</p>
-                <p className="text-2xl font-bold">{stats.documentsCount}</p>
-              </div>
-              <FileText className="h-8 w-8 text-muted-foreground" />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Assets with management */}
       <Card>
         <CardHeader>
-          <CardTitle>Biens ({assets.length})</CardTitle>
+          <CardTitle className="text-base">Désactivations et réactivations</CardTitle>
         </CardHeader>
         <CardContent>
-          {assets.length === 0 ? (
-            <p className="text-center text-muted-foreground py-8">
-              Aucun bien enregistré
-            </p>
+          {statusChanges.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Aucune désactivation enregistrée.</p>
           ) : (
-            <div className="space-y-3">
-              {assets.map((asset) => (
-                <div
-                  key={asset.id}
-                  className="flex items-center justify-between p-3 rounded-lg border"
-                >
-                  <Link
-                    href={`/admin/assets/${asset.id}`}
-                    className="flex-1 hover:text-primary transition-colors"
-                  >
-                    <div className="font-medium">{asset.name}</div>
-                    <div className="text-sm text-muted-foreground">
-                      {asset.category} • Créé le {formatDate(asset.createdAt)}
-                    </div>
-                  </Link>
-                </div>
-              ))}
+            <table className="w-full text-sm">
+              <thead className="text-left text-muted-foreground border-b">
+                <tr><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Événement</th><th className="py-2">Administrateur</th></tr>
+              </thead>
+              <tbody>
+                {statusChanges.map((c, i) => (
+                  <tr key={i} className="border-b last:border-0">
+                    <td className="py-2 pr-3">{formatDateTime(c.at)}</td>
+                    <td className="py-2 pr-3">{c.action === 'deactivated' ? 'Désactivation' : 'Réactivation'}</td>
+                    <td className="py-2 text-muted-foreground">{c.adminEmail ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Préférences de notifications (lecture seule)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-muted-foreground border-b">
+                <tr><th className="py-2 pr-3">Catégorie</th><th className="py-2 pr-3">Push</th><th className="py-2 pr-3">E-mail</th><th className="py-2">Récapitulatif quotidien</th></tr>
+              </thead>
+              <tbody>
+                {notificationPreferences.categories.map((c) => (
+                  <tr key={c.key} className="border-b last:border-0">
+                    <td className="py-2 pr-3">{c.label}</td>
+                    <td className="py-2 pr-3"><PrefCell state={c.immediate.push} /></td>
+                    <td className="py-2 pr-3"><PrefCell state={c.immediate.email} /></td>
+                    <td className="py-2">
+                      {c.digest ? <>Push <PrefCell state={c.digest.push} /> · E-mail <PrefCell state={c.digest.email} /></> : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Appareils push actifs : {notificationPreferences.pushDeviceCount} · Actualités Verebona :{' '}
+            {notificationPreferences.newsConsent.consented
+              ? `acceptées le ${formatDateTime(notificationPreferences.newsConsent.consentedAt)}`
+              : 'non acceptées'}
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Invitations liées</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {invitations.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Aucune invitation liée à cet utilisateur.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground border-b">
+                  <tr><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Sens</th><th className="py-2 pr-3">Destinataire</th><th className="py-2 pr-3">Envoyée le</th><th className="py-2 pr-3">Expiration</th><th className="py-2">Statut</th></tr>
+                </thead>
+                <tbody>
+                  {invitations.map((inv, i) => (
+                    <tr key={i} className="border-b last:border-0">
+                      <td className="py-2 pr-3">{inv.kind === 'duo' ? 'Premium Duo' : 'Partage de compte'}</td>
+                      <td className="py-2 pr-3">{inv.direction === 'sent' ? 'Émise' : 'Reçue'}</td>
+                      <td className="py-2 pr-3">{inv.email}</td>
+                      <td className="py-2 pr-3">{formatDateTime(inv.sentAt)}</td>
+                      <td className="py-2 pr-3">{formatDateTime(inv.expiresAt)}{inv.expired && inv.status === 'pending' ? ' (expirée)' : ''}</td>
+                      <td className="py-2">{INVITATION_STATUS[inv.status]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Historique des communications</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {communications.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Aucune communication envoyée à cet utilisateur.</p>
+          ) : (
+            <div className="overflow-x-auto max-h-96 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground border-b">
+                  <tr><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Canal</th><th className="py-2 pr-3">Type</th><th className="py-2">Statut</th></tr>
+                </thead>
+                <tbody>
+                  {communications.map((c, i) => (
+                    <tr key={i} className="border-b last:border-0">
+                      <td className="py-2 pr-3 whitespace-nowrap">{formatDateTime(c.at)}</td>
+                      <td className="py-2 pr-3">{CHANNEL_LABELS[c.channel]}</td>
+                      <td className="py-2 pr-3">{c.type}</td>
+                      <td className="py-2"><Badge variant={COMM_STATUS[c.status].variant}>{COMM_STATUS[c.status].label}</Badge></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground mt-2">Les anomalies de communication sont suivies dans Supervision.</p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Connexions des {loginHistory.days} derniers jours</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loginHistory.entries.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Aucune connexion sur les {loginHistory.days} derniers jours.</p>
+          ) : (
+            <div className="overflow-x-auto max-h-96 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground border-b">
+                  <tr><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Appareil / navigateur</th><th className="py-2">IP (tronquée)</th></tr>
+                </thead>
+                <tbody>
+                  {loginHistory.entries.map((l, i) => (
+                    <tr key={i} className="border-b last:border-0">
+                      <td className="py-2 pr-3 whitespace-nowrap">{formatDateTime(l.at)}</td>
+                      <td className="py-2 pr-3">{l.device ?? '—'}</td>
+                      <td className="py-2 font-mono text-xs">{l.ip ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Resend invitation Dialog (USR-A01) */}
+      <AlertDialog open={resendDialogOpen} onOpenChange={setResendDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Renvoyer l’invitation ?</AlertDialogTitle>
+            <AlertDialogDescription>
+              L’invitation Premium Duo est renvoyée à {reissuable?.email ?? 'son destinataire'} avec le même e-mail que
+              le parcours utilisateur. Le destinataire n’est pas modifiable. Si le lien a expiré, un nouveau lien valable
+              7 jours est émis. Action journalisée.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={actionLoading}>Annuler</AlertDialogCancel>
+            <AlertDialogAction onClick={handleResendInvitation} disabled={actionLoading}>
+              {actionLoading ? 'Envoi…' : 'Renvoyer'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Suspend Dialog */}
       <AlertDialog open={suspendDialogOpen} onOpenChange={setSuspendDialogOpen}>

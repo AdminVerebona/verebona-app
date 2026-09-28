@@ -15,9 +15,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, AlertCircle, FileType } from 'lucide-react';
+import { ArrowLeft, FileType } from 'lucide-react';
 import { ExportTemplateActiveToggle } from '../_components/ExportTemplateActiveToggle';
 import { formatDateTime } from '@/lib/admin/format';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
+import { ExportTemplatePreview } from '../_components/ExportTemplatePreview';
 
 interface ExportTemplate {
   id: number;
@@ -102,19 +104,16 @@ export default function ExportTemplateDetailPage() {
 
   if (error || !template) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-destructive">
-              <AlertCircle className="h-5 w-5" />
-              <p>{error || 'Modèle non trouvé'}</p>
-            </div>
-            <Button variant="outline" className="mt-4" onClick={() => router.push('/admin/export-templates')}>
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Retour à la liste
-            </Button>
-          </CardContent>
-        </Card>
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => router.push('/admin/export-templates')}>
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Retour à la liste
+        </Button>
+        <EcranEnErreur
+          titre="Chargement du modèle impossible"
+          message={error ?? 'Modèle introuvable.'}
+          onRetry={loadTemplate}
+        />
       </div>
     );
   }
@@ -186,6 +185,8 @@ export default function ExportTemplateDetailPage() {
           </p>
         </CardContent>
       </Card>
+
+      <ExportTemplatePreview templateId={template.id} />
     </div>
   );
 }

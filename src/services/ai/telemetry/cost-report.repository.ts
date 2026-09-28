@@ -117,13 +117,31 @@ function params(f: CostFilters, since: Date, until: Date): unknown[] {
  * tarif manquant — les confondre ferait croire à une grille incomplète à chaque
  * panne fournisseur.
  */
-const UNPRICED = `(e.cost_micros IS NULL OR (e.cost_micros = 0 AND COALESCE(e.input_tokens, 0) > 0))`;
+const UNPRICED = `(cost_micros IS NULL OR (cost_micros = 0 AND COALESCE(input_tokens, 0) > 0))`;
+
+/**
+ * Source normalisée : appels en base (≤ 90 jours) + agrégats journaliers des
+ * appels archivés sur S3 (`ai_usage_daily_rollup`, WF-25). Chaque ligne porte
+ * son nombre d'appels (`n`) : les agrégats se somment, ils ne se comptent pas.
+ * Sans elle, l'écran Coûts perdrait tout ce qui a plus de 90 jours.
+ */
+const SOURCE = `(
+    SELECT created_at, use_case_code, account_id, config_version_id, model, model_rank, is_billable,
+           cost_micros, input_tokens, output_tokens, 1 AS n,
+           (status = 'error')::int AS failed_n, (${UNPRICED})::int AS unpriced_n
+      FROM ai_usage_event
+    UNION ALL
+    SELECT (day::timestamp AT TIME ZONE 'UTC') AS created_at, use_case_code, account_id, config_version_id, model,
+           model_rank, is_billable, cost_micros, input_tokens, output_tokens, calls AS n,
+           failed_calls AS failed_n, unpriced_calls AS unpriced_n
+      FROM ai_usage_daily_rollup
+  ) e`;
 
 const AGG = `
   COALESCE(SUM(e.cost_micros) FILTER (WHERE e.is_billable), 0)::bigint      AS functional,
   COALESCE(SUM(e.cost_micros) FILTER (WHERE NOT e.is_billable), 0)::bigint  AS technical,
-  COUNT(*)::int                                                            AS calls,
-  COUNT(*) FILTER (WHERE ${UNPRICED})::int                                 AS unpriced`;
+  COALESCE(SUM(e.n), 0)::int                                               AS calls,
+  COALESCE(SUM(e.unpriced_n), 0)::int                                      AS unpriced`;
 
 function toBreakdown(r: Row, label?: string): CostBreakdownRow {
   const key = r.key == null ? '—' : String(r.key);
@@ -152,33 +170,33 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
   const [totalsRows, treatmentRows, modelRows, rankRows, versionRows, accountRows] = await Promise.all([
     pgClient.unsafe(
       `SELECT ${AGG},
-              COUNT(*) FILTER (WHERE e.status = 'error')::int AS failed,
+              COALESCE(SUM(e.failed_n), 0)::int               AS failed,
               COALESCE(SUM(e.input_tokens), 0)::bigint        AS input_tokens,
               COALESCE(SUM(e.output_tokens), 0)::bigint       AS output_tokens
-         FROM ai_usage_event e ${where}`,
+         FROM ${SOURCE} ${where}`,
       p as never[],
     ),
     pgClient.unsafe(
       `SELECT e.use_case_code AS key, ${AGG}
-         FROM ai_usage_event e ${where}
+         FROM ${SOURCE} ${where}
         GROUP BY e.use_case_code ORDER BY functional DESC`,
       p as never[],
     ),
     pgClient.unsafe(
       `SELECT e.model AS key, ${AGG}
-         FROM ai_usage_event e ${where}
+         FROM ${SOURCE} ${where}
         GROUP BY e.model ORDER BY functional DESC LIMIT 20`,
       p as never[],
     ),
     pgClient.unsafe(
       `SELECT COALESCE(e.model_rank, 'inconnu') AS key, ${AGG}
-         FROM ai_usage_event e ${where}
+         FROM ${SOURCE} ${where}
         GROUP BY e.model_rank ORDER BY functional DESC`,
       p as never[],
     ),
     pgClient.unsafe(
       `SELECT COALESCE(v.visible_number::text, 'sans version') AS key, ${AGG}
-         FROM ai_usage_event e
+         FROM ${SOURCE}
          LEFT JOIN ai_config_versions v ON v.id = e.config_version_id
          ${where}
         GROUP BY v.visible_number ORDER BY functional DESC LIMIT 20`,
@@ -186,7 +204,7 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
     ),
     pgClient.unsafe(
       `SELECT e.account_id::text AS key, ${AGG}
-         FROM ai_usage_event e ${where}
+         FROM ${SOURCE} ${where} AND e.account_id IS NOT NULL
         GROUP BY e.account_id ORDER BY functional DESC LIMIT 20`,
       p as never[],
     ),

@@ -223,30 +223,81 @@ export function noteGatewayOutcome(o: GatewayOutcome): void {
 
 // ── Sondes (WF-09 étapes 54 à 57) ───────────────────────────────────────────
 
-export type ProbeFn = (model: string) => Promise<boolean>;
+export type ProbeFn = (model: string, treatment?: Treatment, rank?: number) => Promise<boolean>;
+
+const PROBE_RANKS = ['primary', 'fallback_1', 'fallback_2'] as const;
+
+/**
+ * Trace d'une sonde (MOD-013, OPS-026) : `ai_usage_event` SANS compte
+ * (migration 0200), `is_billable = FALSE`, opération `circuit_breaker_probe`.
+ * Le coût réel (jetons × tarif figé) entre donc dans le coût TECHNIQUE du
+ * traitement sondé, jamais dans la dépense métier ni dans les budgets
+ * (`cost-evaluator` ne somme que `is_billable`), et les garde-fous l'ignorent.
+ */
+export async function recordProbeTrace(p: {
+  treatment: Treatment; model: string; rank: number; ok: boolean;
+  inputTokens: number; outputTokens: number; durationMs: number; error?: string;
+}): Promise<void> {
+  const [{ recordCallTrace }, { calcCostMicros }, { getTreatment }] = await Promise.all([
+    import('../telemetry/ai-trace.service'),
+    import('../gateway/cost-catalog'),
+    import('../config/treatments'),
+  ]);
+  await recordCallTrace({
+    traceId: crypto.randomUUID(),
+    useCaseCode: getTreatment(p.treatment).useCaseCode,
+    operationCode: 'circuit_breaker_probe',
+    accountId: null,
+    provider: 'gemini',
+    model: p.model,
+    promptVersion: 'probe-v1',
+    usedFallback: p.rank > 0,
+    modelRank: PROBE_RANKS[p.rank] ?? null,
+    inputTokens: p.inputTokens,
+    outputTokens: p.outputTokens,
+    costMicros: p.inputTokens + p.outputTokens > 0
+      ? calcCostMicros(p.model, p.inputTokens, p.outputTokens, 'gemini')
+      : 0,
+    durationMs: p.durationMs,
+    status: p.ok ? 'success' : 'error',
+    errorMessage: p.error?.slice(0, 500),
+    billable: false,
+    shadow: false,
+  });
+}
 
 /**
  * Sonde par défaut : un appel minimal, sans donnée utilisateur, via le port
  * fournisseur (la gateway n'est pas utilisée : sa garde refuserait justement
  * l'appel d'un traitement suspendu, et une sonde n'appartient à aucun compte).
  *
- * OPS-026 : la sonde n'est rattachée à aucun compte, elle n'est donc PAS
- * écrite dans `ai_usage_event` (compte obligatoire) et n'entre jamais dans le
- * coût métier ; elle est journalisée en log technique.
+ * OPS-026 : chaque sonde est tracée en appel TECHNIQUE sans compte
+ * (`recordProbeTrace`) — son coût est visible, séparé du coût métier.
  */
-async function defaultProbe(model: string): Promise<boolean> {
+async function defaultProbe(model: string, treatment?: Treatment, rank = 0): Promise<boolean> {
   const { getAiProvider } = await import('../gateway/providers');
   const provider = getAiProvider();
+  const started = Date.now();
+  let ok = false;
+  let tokens = { inputTokens: 0, outputTokens: 0 };
+  let error: string | undefined;
   try {
     const out = await provider.call({
       model, prompt: PROBE_PROMPT, attachments: [],
       timeoutMs: PROBE_TIMEOUT_MS, maxOutputTokens: 16,
     });
-    return out.rawText.trim().length > 0;
+    tokens = { inputTokens: out.inputTokens ?? 0, outputTokens: out.outputTokens ?? 0 };
+    ok = out.rawText.trim().length > 0;
+    if (!ok) error = 'réponse vide';
   } catch (e) {
-    console.warn(`[circuit-breaker] sonde ${model} en échec :`, (e as Error).message);
-    return false;
+    error = (e as Error).message;
+    console.warn(`[circuit-breaker] sonde ${model} en échec :`, error);
   }
+  if (treatment) {
+    await recordProbeTrace({ treatment, model, rank, ok, ...tokens, durationMs: Date.now() - started, error })
+      .catch((e) => console.warn('[circuit-breaker] trace de sonde impossible :', (e as Error).message));
+  }
+  return ok;
 }
 
 /** Modèles à sonder pour un traitement : configuration effective, sinon le code. */
@@ -298,8 +349,9 @@ export async function runDueProbes(probe: ProbeFn = defaultProbe): Promise<Probe
     const attempts = Number(r.probe_attempts ?? 0);
 
     const results: ModelAttempt[] = [];
-    for (const model of await modelsForTreatment(treatment)) {
-      const succeeded = await probe(model);
+    const models = await modelsForTreatment(treatment);
+    for (const [rank, model] of models.entries()) {
+      const succeeded = await probe(model, treatment, rank);
       results.push({ model, succeeded });
       if (succeeded) break;
     }

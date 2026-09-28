@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { useSession } from '@/hooks/useSession';
 import { ReferralBlock } from '@/components/account/ReferralBlock';
 import { DuoInvitationPanel } from './DuoInvitationPanel';
+import { DuoLeaveButton } from './DuoLeaveButton';
 import { libelleEssai } from './trial-label';
 import { openBillingPortal } from '@/lib/billing/open-billing-portal';
 import { isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-status';
@@ -191,9 +192,13 @@ export function SubscriptionSummary() {
   // pas pu être chargé — ce bloc est désormais le SEUL accès à la gestion de
   // l'offre et des factures (l'ancien bloc « Abonnement » a été retiré).
   const actions = isDuoMember ? (
-    <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2.5 text-sm text-[color:var(--text-warning-soft)]">
-      <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
-      <p>Seul le titulaire de l&apos;abonnement peut modifier l&apos;offre et gérer le paiement.</p>
+    <div className="space-y-3">
+      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2.5 text-sm text-[color:var(--text-warning-soft)]">
+        <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
+        <p>Seul le titulaire de l&apos;abonnement peut modifier l&apos;offre et gérer le paiement.</p>
+      </div>
+      {/* Départ volontaire du second utilisateur (AID-DUO-006). */}
+      <DuoLeaveButton />
     </div>
   ) : (
     <div className="flex flex-wrap gap-2">

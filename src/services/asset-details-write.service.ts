@@ -13,6 +13,7 @@ import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { validateDetailChanges, type DetailFieldError } from '@/lib/asset-detail-rules';
+import { assetModificationDecision } from '@/lib/asset-quota-guard';
 
 export const ALL_DETAIL_SECTIONS = [
   'common',
@@ -44,13 +45,18 @@ const ATOMIC_FIELDS: Record<string, string> = {
 const VALID_STATUSES = ['EN_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'VENDU', 'DETRUIT', 'INACTIF', 'TRANSMIS'];
 
 export type AssetDetailsErrorCode =
-  | 'NOT_FOUND' | 'ASSET_UNAVAILABLE' | 'SECTION_NOT_APPLICABLE' | 'VALIDATION_ERROR';
+  | 'NOT_FOUND' | 'ASSET_UNAVAILABLE' | 'SECTION_NOT_APPLICABLE' | 'VALIDATION_ERROR' | 'WRITE_BLOCKED';
 
 export class AssetDetailsError extends Error {
   constructor(
     public code: AssetDetailsErrorCode,
     message: string,
-    public details: { reason?: 'ARCHIVED' | 'LOCKED_BY_PLAN'; fields?: DetailFieldError[] } = {},
+    public details: {
+      reason?: 'ARCHIVED' | 'LOCKED_BY_PLAN';
+      fields?: DetailFieldError[];
+      /** Refus des droits (quota dépassé, compte restreint) — GAP-11. */
+      writeBlocked?: { code: string; limit?: number };
+    } = {},
   ) {
     super(message);
     this.name = 'AssetDetailsError';
@@ -83,6 +89,14 @@ export async function loadWritableAsset(assetId: number, accountId: number) {
     throw new AssetDetailsError('ASSET_UNAVAILABLE', reason === 'ARCHIVED'
       ? 'Ce bien est archivé.'
       : 'Ce bien est verrouillé par votre offre actuelle.', { reason });
+  }
+  // Au-dessus du quota (changement d'offre) : consultation et export
+  // conservés, modification suspendue — règle unique `lib/asset-quota-guard`.
+  const decision = await assetModificationDecision(accountId);
+  if (!decision.allowed) {
+    throw new AssetDetailsError('WRITE_BLOCKED', decision.message ?? 'Modification non autorisée', {
+      writeBlocked: { code: decision.reason ?? 'ASSET_QUOTA_EXCEEDED', limit: decision.limit },
+    });
   }
   return assetRow;
 }
@@ -203,9 +217,13 @@ export async function updateAssetDetails(p: {
     .where(eq(assets.id, assetId));
 
   // Modification d'un bien : la cohérence globale du compte est recontrôlée
-  // (T3), en différé et fusionnée avec les autres événements rapprochés.
-  const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
-  notifyCoherenceEvent(accountId, { event: 'asset_updated', objectType: 'asset', objectId: assetId });
+  // (T3), en différé et fusionnée avec les autres événements rapprochés —
+  // SEULEMENT si un champ à impact de cohérence a changé (T3-004).
+  const { hasCoherenceImpact } = await import('@/services/ai/reconciliation/coherence-impact');
+  if (await hasCoherenceImpact(accountId, assetId, Object.keys(fields))) {
+    const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
+    notifyCoherenceEvent(accountId, { event: 'asset_updated', objectType: 'asset', objectId: assetId });
+  }
 
   return { updated: true, section };
 }

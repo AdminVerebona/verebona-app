@@ -357,6 +357,25 @@ export class AccountService {
     memberUserId: number,
     removedBy: number
   ): Promise<{ success: boolean; error?: string; removedUserId?: number; shouldRedirect?: boolean }> {
+    // Seul le propriétaire actif du compte retire un membre (AID-DUO-006 :
+    // « retiré par un utilisateur autorisé »). Ce contrôle manquait : tout
+    // utilisateur connecté pouvait retirer n'importe quel membre.
+    const [ownerMembership] = await db
+      .select({ id: accountMemberships.id })
+      .from(accountMemberships)
+      .where(
+        and(
+          eq(accountMemberships.accountId, accountId),
+          eq(accountMemberships.userId, removedBy),
+          eq(accountMemberships.role, 'owner'),
+          eq(accountMemberships.status, 'active')
+        )
+      )
+      .limit(1);
+    if (!ownerMembership) {
+      return { success: false, error: 'Only the account owner can remove a member' };
+    }
+
     const [membership] = await db
       .select()
       .from(accountMemberships)

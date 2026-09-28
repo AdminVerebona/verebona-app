@@ -37,3 +37,24 @@ export function assistantPlanFromEntitlements(
     default: return 'PREMIUM';
   }
 }
+
+/**
+ * Accès de l'assistant quand le compte ne peut plus écrire — CDC §6.5.
+ *
+ * À l'expiration de l'essai, « les nouveaux appels intelligents sont
+ * désactivés » et « l'assistant explique la limite et propose d'ouvrir la
+ * page des offres » — mais la recherche classique et l'aide RESTENT
+ * disponibles. La route refusait tout l'assistant (403) : elle ne refuse plus
+ * que si le compte n'est même plus consultable.
+ *
+ *   · peut écrire                      → `null` (aucune limite) ;
+ *   · lecture seule (essai échu…)      → limite : assistant sans IA ;
+ *   · ni lecture ni écriture           → `NO_ACCESS` (refus, comme avant).
+ */
+export function assistantPlanLimit(
+  entitlements: Pick<Entitlements, 'canWrite' | 'status'> & { canRead?: boolean },
+): 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | 'NO_ACCESS' | null {
+  if (entitlements.canWrite) return null;
+  if (entitlements.canRead === false) return 'NO_ACCESS';
+  return entitlements.status === 'readonly' ? 'TRIAL_EXPIRED' : 'SUBSCRIPTION_REQUIRED';
+}

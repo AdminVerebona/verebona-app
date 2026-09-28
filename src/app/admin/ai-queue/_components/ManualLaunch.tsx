@@ -7,7 +7,8 @@
  * Trois temps, comme le WF-11 : choisir le périmètre (comptes ou tout),
  * afficher l'estimation, confirmer. La confirmation reprend l'estimation : on
  * ne lance pas « à l'aveugle » une réanalyse de milliers de documents.
- * T4 n'est pas proposé seul (ses entrées viennent de T1) : l'écran le dit.
+ * T4 force un nouveau passage sur les échéances candidates des analyses T1
+ * de référence (T4-016, T4-UI-07), sans réanalyser les documents.
  */
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -19,7 +20,7 @@ import { Play } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 
-type Launchable = 'T1' | 'T3';
+type Launchable = 'T1' | 'T3' | 'T4';
 
 interface Estimate {
   objects: number;
@@ -30,6 +31,7 @@ interface Estimate {
 const LIBELLES: Record<Launchable, string> = {
   T1: 'T1 — réanalyse des documents (non facturée au compte)',
   T3: 'T3 — contrôle complet de cohérence des comptes',
+  T4: 'T4 — nouveau passage sur les échéances candidates (sans réanalyse)',
 };
 
 export function ManualLaunch({ onLaunched }: { onLaunched: () => void | Promise<void> }) {
@@ -94,7 +96,8 @@ export function ManualLaunch({ onLaunched }: { onLaunched: () => void | Promise<
       </div>
       <p className="text-xs text-[color:var(--text-muted)]">
         Chaque lancement crée une nouvelle exécution, identifiée « manuelle », même si une exécution
-        automatique équivalente attend. T4 se relance par une réanalyse T1 du même périmètre.
+        automatique équivalente attend. T4 repasse sur les échéances candidates des dernières
+        analyses T1 des documents du périmètre, sans les réanalyser.
       </p>
 
       <Dialog open={estimate !== null} onOpenChange={(o) => !o && setEstimate(null)}>
@@ -104,7 +107,7 @@ export function ManualLaunch({ onLaunched }: { onLaunched: () => void | Promise<
             <DialogDescription>
               {estimate && (
                 <>
-                  {estimate.objects} {treatment === 'T1' ? 'document(s)' : 'compte(s)'} sur {estimate.accounts} compte(s).
+                  {estimate.objects} {treatment === 'T3' ? 'compte(s)' : 'document(s)'} sur {estimate.accounts} compte(s).
                   {estimate.waitsForReactivation && ` ${treatment} est actuellement coupé : les exécutions attendront sa réactivation.`}
                 </>
               )}

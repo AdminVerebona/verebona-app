@@ -8,7 +8,8 @@
  * n'est pas une politique, c'est une intention.
  *
  * Durées imposées par le §29.7 :
- *   · conversations et messages ........  7 jours
+ *   · conversations et messages ........  90 jours (décision produit
+ *                                         « 3 mois », GAP-16 ; §24.1 : 7 j)
  *   · traces détaillées expurgées ......  30 jours
  *   · logs techniques sans contenu .....  90 jours
  *   · agrégats coût et performance .....  13 mois
@@ -20,15 +21,50 @@ import {
   purgeMessagesWhere,
   type SqlRunner,
 } from '@/services/verebona-assistant/core/conversation.service';
+import { loadAssistantConfig } from '@/services/verebona-assistant/config/assistant-config';
 
-export const RETENTION = {
-  // 3 mois : même valeur par défaut que l'assistant (assistant-config.ts, CDC Centre d'aide GAP-16).
-  conversationDays: Number(process.env.VEREBONA_ASSISTANT_HISTORY_DAYS ?? 90),
-  detailedTraceDays: Number(process.env.AI_TRACE_DETAILED_RETENTION_DAYS ?? 30),
-  technicalLogDays: Number(process.env.AI_TRACE_TECHNICAL_RETENTION_DAYS ?? 90),
-  aggregateMonths: Number(process.env.AI_AGGREGATE_RETENTION_MONTHS ?? 13),
-  feedbackMonths: Number(process.env.AI_FEEDBACK_RETENTION_MONTHS ?? 13),
-} as const;
+/** Entier positif lu dans l'environnement ; sinon la valeur du CDC. */
+function jours(name: string, def: number): number {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n > 0 ? n : def;
+}
+
+export interface RetentionPolicy {
+  /** Historique conversationnel — 90 jours (décision produit GAP-16). */
+  conversationDays: number;
+  /** Traces détaillées expurgées — §29.7 : 30 jours. */
+  detailedTraceDays: number;
+  /** Logs techniques sans contenu — §29.7 : 90 jours. */
+  technicalLogDays: number;
+  /** Agrégats de coût et performance — §29.7 : 13 mois. */
+  aggregateMonths: number;
+  /** Feedback — §29.7 : 13 mois. */
+  feedbackMonths: number;
+}
+
+/**
+ * Durées lues À CHAQUE purge (et non figées au chargement du module) : un
+ * changement de variable prend effet à la purge suivante. L'historique lit
+ * EXACTEMENT la même valeur que l'assistant (`historyDays`, défaut 90 j) :
+ * l'expiration posée à l'écriture et la purge ne peuvent pas diverger.
+ */
+/** Archivage S3 des logs IA actif ? Même lecture que le planificateur quotidien. */
+export function logArchiveEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return !['off', 'false', '0'].includes((env.AI_LOG_ARCHIVE ?? '').trim().toLowerCase());
+}
+
+export function retentionPolicy(): RetentionPolicy {
+  return {
+    conversationDays: loadAssistantConfig().historyDays > 0 ? loadAssistantConfig().historyDays : 90,
+    detailedTraceDays: jours('AI_TRACE_DETAILED_RETENTION_DAYS', 30),
+    technicalLogDays: jours('AI_TRACE_TECHNICAL_RETENTION_DAYS', 90),
+    aggregateMonths: jours('AI_AGGREGATE_RETENTION_MONTHS', 13),
+    feedbackMonths: jours('AI_FEEDBACK_RETENTION_MONTHS', 13),
+  };
+}
+
+/** Instantané au chargement (compatibilité) ; la purge relit `retentionPolicy()`. */
+export const RETENTION: Readonly<RetentionPolicy> = retentionPolicy();
 
 export interface PurgeReport {
   messagesDeleted: number;
@@ -43,6 +79,7 @@ export interface PurgeReport {
 
 export async function purgeAssistantData(now = new Date()): Promise<PurgeReport> {
   const startedAt = Date.now();
+  const RETENTION = retentionPolicy();
 
   // 1. Conversations expirées : purge complète (messages, citations,
   //    sources, actions, avis, réponses modèle en cache), sans compter sur
@@ -73,10 +110,18 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
   );
 
   // 4. Logs techniques sans contenu.
-  const technical = await deleteWhere(
-    'ai_pipeline_step',
-    `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`,
-  );
+  //    Quand l'archivage S3 est actif (défaut), c'est LUI qui supprime les
+  //    étapes, une fois l'archive déposée et enregistrée (`log-archive.job`).
+  //    La purge ne supprime donc rien ici : si l'archivage échoue (S3 absent,
+  //    erreur réseau, retard de plus de 14 jours), les lignes restent en base
+  //    au lieu d'être perdues. Avec AI_LOG_ARCHIVE=off, l'exploitation a
+  //    renoncé à l'archive : la purge applique alors la rétention seule.
+  const technical = logArchiveEnabled()
+    ? 0
+    : await deleteWhere(
+      'ai_pipeline_step',
+      `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`,
+    );
 
   // 5. Feedback.
   const feedback = await deleteWhere(

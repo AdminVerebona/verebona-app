@@ -34,6 +34,11 @@ function endOfDay(v: string | null): Date | undefined {
   return d;
 }
 
+/** Identifiant court (type d'objet, id, code de déclencheur) ; sinon ignoré. */
+function token(v: string | null): string | undefined {
+  return v && /^[A-Za-z0-9_.:-]{1,80}$/.test(v) ? v : undefined;
+}
+
 const RANKS = ['primary', 'fallback_1', 'fallback_2', 'fallback'] as const;
 function rank(v: string | null): (typeof RANKS)[number] | undefined {
   return (RANKS as readonly string[]).includes(v ?? '') ? (v as (typeof RANKS)[number]) : undefined;
@@ -64,6 +69,10 @@ export async function GET(req: NextRequest) {
       userId: entier(p.get('userId')),
       rank: rank(p.get('rank')),
       jobId: entier(p.get('jobId')),
+      // LOG-UI-02 : objet et déclencheur.
+      objectType: token(p.get('objectType')),
+      objectId: token(p.get('objectId')),
+      trigger: token(p.get('trigger')),
       limit: entier(p.get('limit')),
       offset: entier(p.get('offset')),
     });

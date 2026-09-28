@@ -416,12 +416,19 @@ export function ExportPrepareDrawer({ assetId, usage, planType, assetCategory, t
           if (requestZip && planType !== 'STANDARD') outputs.push('ZIP');
         }
 
+        // Export brut : les images sont des fichiers du bien comme les
+        // documents — une sélection partielle transmet les deux listes, pour
+        // que le ZIP contienne exactement ce qui est coché.
+        const partialBrut = usage === 'EXPORT_BRUT'
+          && (selectedDocIds.size < docs.length || selectedPhotoIds.size < photos.length);
         const options: Record<string, unknown> = {
           includePhotos: selectedPhotoIds.size > 0,
           includeEquipments: selectedEquipIds.size > 0,
-          customDocIds: selectedDocIds.size > 0 && selectedDocIds.size < docs.length
-            ? Array.from(selectedDocIds)
-            : undefined,
+          customDocIds: partialBrut
+            ? [...Array.from(selectedDocIds), ...Array.from(selectedPhotoIds)]
+            : selectedDocIds.size > 0 && selectedDocIds.size < docs.length
+              ? Array.from(selectedDocIds)
+              : undefined,
         };
 
         const res = await apiClient.post<{ exportId: number; status: string; errorMessage?: string; downloadUrl?: string; downloadZipUrl?: string }>(

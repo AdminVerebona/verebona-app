@@ -121,7 +121,8 @@ async function measureFromDb(t: Treatment): Promise<GuardrailMetrics> {
                           AND (model_rank IN ('fallback_1', 'fallback_2') OR is_fallback))::int AS fallbacks,
        COALESCE(SUM(cost_micros) FILTER (WHERE created_at >= date_trunc('day', NOW())), 0)::bigint AS cost
      FROM ai_usage_event
-    WHERE use_case_code = $1 AND created_at > LEAST(NOW() - interval '1 hour', date_trunc('day', NOW()))`,
+    WHERE use_case_code = $1 AND operation_type <> 'circuit_breaker_probe'
+      AND created_at > LEAST(NOW() - interval '1 hour', date_trunc('day', NOW()))`,
     [useCase] as never[],
   )) as unknown as Array<Record<string, unknown>>;
 
@@ -129,7 +130,7 @@ async function measureFromDb(t: Treatment): Promise<GuardrailMetrics> {
   const [consec] = (await pgClient.unsafe(
     `WITH derniers AS (
        SELECT status, ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS rn
-         FROM ai_usage_event WHERE use_case_code = $1
+         FROM ai_usage_event WHERE use_case_code = $1 AND operation_type <> 'circuit_breaker_probe'
         ORDER BY created_at DESC, id DESC LIMIT 200)
      SELECT COALESCE(MIN(rn) FILTER (WHERE status = 'success') - 1,
                      (SELECT COUNT(*) FROM derniers))::int AS n

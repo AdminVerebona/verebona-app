@@ -1,16 +1,10 @@
-import { SystemLogosClient } from "./_components/system-logos-client";
+import { redirect } from 'next/navigation';
 
-export default function SystemLogosPage() {
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Logos Système</h1>
-        <p className="text-sm text-[color:var(--text-muted)] mt-1">
-          Gérez les logos du système et prévisualisez-les sans débordements.
-        </p>
-      </div>
-
-      <SystemLogosClient />
-    </div>
-  );
+/**
+ * Ancien écran « Logos système » — supprimé par le CDC Back-Office V1 §15 (hors BO, gérés dans le code).
+ * L'URL historique renvoie vers l'écran cible ; aucune donnée ni action n'est
+ * plus servie ici.
+ */
+export default function LegacyRedirect() {
+  redirect('/admin');
 }

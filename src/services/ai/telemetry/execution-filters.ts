@@ -15,6 +15,7 @@ const TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6'];
 const RANKS = ['primary', 'fallback_1', 'fallback_2', 'fallback'];
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const INT = /^\d+$/;
+const TOKEN = /^[A-Za-z0-9_.:-]{1,80}$/;
 
 export interface ExecutionScreenFilters {
   treatment: string;
@@ -28,12 +29,18 @@ export interface ExecutionScreenFilters {
   from: string;
   to: string;
   minDurationMs: string;
+  /** LOG-UI-02 : statut, objet (type + id) et déclencheur. */
+  status: string;
+  objectType: string;
+  objectId: string;
+  trigger: string;
   errorsOnly: boolean;
 }
 
 export const EMPTY_EXECUTION_FILTERS: ExecutionScreenFilters = {
   treatment: '', accountId: '', userId: '', model: '', rank: '', configVersionId: '',
-  operationCode: '', jobId: '', from: '', to: '', minDurationMs: '', errorsOnly: false,
+  operationCode: '', jobId: '', from: '', to: '', minDurationMs: '',
+  status: '', objectType: '', objectId: '', trigger: '', errorsOnly: false,
 };
 
 type Params = { get(name: string): string | null };
@@ -55,6 +62,10 @@ export function readExecutionFilters(p: Params): ExecutionScreenFilters {
     from: pick('from', (v) => DAY.test(v)),
     to: pick('to', (v) => DAY.test(v)),
     minDurationMs: pick('minDurationMs', (v) => INT.test(v)),
+    status: pick('status', (v) => v === 'success' || v === 'error'),
+    objectType: pick('objectType', (v) => TOKEN.test(v)),
+    objectId: pick('objectId', (v) => TOKEN.test(v)),
+    trigger: pick('trigger', (v) => TOKEN.test(v)),
     errorsOnly: p.get('errorsOnly') === '1',
   };
 }

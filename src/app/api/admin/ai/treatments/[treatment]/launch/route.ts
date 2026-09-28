@@ -7,8 +7,8 @@
  *   · sinon : un job `origin = manual` par objet, sans déduplication.
  *
  * 409 EMERGENCY_STOP si l'arrêt d'urgence est engagé (précondition WF-11) ;
- * 422 pour T4 (non lançable seul, voir manual-launch.ts), périmètre vide ou
- * trop large. Un traitement désactivé ou suspendu accepte la demande, qui
+ * 422 pour un traitement non batch, un périmètre vide ou trop large. T4 force
+ * un nouveau passage sur les échéances candidates T1 persistées (T4-016). Un traitement désactivé ou suspendu accepte la demande, qui
  * attend sa réactivation (`waitsForReactivation`).
  */
 import { NextRequest, NextResponse } from 'next/server';

@@ -59,6 +59,13 @@ export async function PATCH(
       switch (error.code) {
         case 'NOT_FOUND':
           return apiError(404, 'NOT_FOUND', error.message);
+        case 'WRITE_BLOCKED': {
+          const code = error.details.writeBlocked?.code ?? 'ASSET_QUOTA_EXCEEDED';
+          return NextResponse.json(
+            { error: error.message, code, message: error.message, details: { max_assets: error.details.writeBlocked?.limit } },
+            { status: 403 },
+          );
+        }
         case 'ASSET_UNAVAILABLE':
           return NextResponse.json({ error: 'ASSET_UNAVAILABLE', reason: error.details.reason }, { status: 403 });
         case 'SECTION_NOT_APPLICABLE':

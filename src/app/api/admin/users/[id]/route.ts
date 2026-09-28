@@ -13,6 +13,16 @@ import {
   UserAdminError,
 } from '@/services/admin/user-admin.service';
 import { parseUserId, invalidUserId, userAdminErrorResponse } from './_shared';
+import {
+  loadCommunications,
+  loadInvitations,
+  loadLoginHistory,
+  loadStatusChanges,
+  loadUserMemberships,
+  LOGIN_HISTORY_DAYS,
+} from '@/services/admin/user-detail.service';
+import { communicationTypeLabel } from '@/services/admin/communications.service';
+import { buildPreferenceMatrix } from '@/lib/notifications/preference-matrix';
 
 export async function GET(
   request: NextRequest,
@@ -158,16 +168,37 @@ export async function GET(
       isLastActiveAdmin: isActiveAdmin(user) && activeAdminRows.length <= 1,
     };
 
+    // §6.2 / COM-014 / USR-D01 : données de support (lecture seule). Un échec
+    // de l'une d'elles fait échouer la fiche (ERR-001 : pas de fiche partielle
+    // présentée comme complète).
+    const [memberships, statusChanges, preferences, invitations, communications, logins] = await Promise.all([
+      loadUserMemberships(userIdParam),
+      loadStatusChanges(userIdParam),
+      buildPreferenceMatrix(userIdParam),
+      loadInvitations(userIdParam, user.email),
+      loadCommunications(userIdParam, communicationTypeLabel),
+      loadLoginHistory(userIdParam),
+    ]);
+
+    // SUB-012 : aucun identifiant Stripe renvoyé.
     return NextResponse.json({
       user: {
         ...user,
-        stripeCustomerId: account?.stripeCustomerId || null,
-        stripeSubscriptionId: account?.stripeSubscriptionId || null,
         subscriptionTier: account?.subscriptionTier || 'free',
         premiumUntil: account?.premiumUntil || null,
         proUntil: account?.proUntil || null,
       },
       account: linkedAccount,
+      memberships,
+      statusChanges,
+      notificationPreferences: {
+        categories: preferences.categories,
+        pushDeviceCount: preferences.push.activeDeviceCount,
+        newsConsent: preferences.newsConsent,
+      },
+      invitations,
+      communications,
+      loginHistory: { days: LOGIN_HISTORY_DAYS, entries: logins },
       adminStatus,
       assets: userAssets,
       stats: {

@@ -1554,3 +1554,36 @@ export async function renderExportToPdf(
 
 // Kept for backward compat
 export { renderViaJsPdf as buildExportHtml };
+
+// ─── Prévisualisation administrateur (CDC Back-Office V1 EXP-008 à EXP-012) ────
+
+/**
+ * Rend un export avec le modèle PRÉCISÉ, même inactif, pour la
+ * prévisualisation du back-office : l'administrateur doit pouvoir contrôler un
+ * modèle avant de le réactiver. Le rendu suit la même hiérarchie que
+ * `renderExportToPdf` (PDFMonkey puis jsPDF de secours) ; `renderer` indique
+ * lequel a effectivement produit le fichier.
+ */
+export async function renderExportPreviewPdf(
+  manifest: ExportManifest,
+  snapshot: AssetSnapshot,
+  pdfMonkeyTemplateId: string | null,
+): Promise<{ buffer: Buffer; renderer: 'pdfmonkey' | 'jspdf'; fallbackReason: string | null }> {
+  if (manifest.exportType !== 'EXPORT_BRUT' && pdfMonkeyTemplateId) {
+    try {
+      return { buffer: await renderViaPdfMonkey(pdfMonkeyTemplateId, manifest, snapshot), renderer: 'pdfmonkey', fallbackReason: null };
+    } catch (err) {
+      console.error(`[PdfRenderer] Preview: PDFMonkey failed for ${manifest.exportType}, jsPDF fallback:`, err);
+      return {
+        buffer: await renderViaJsPdf(manifest, snapshot),
+        renderer: 'jspdf',
+        fallbackReason: 'Le moteur de rendu principal a échoué : rendu de secours affiché.',
+      };
+    }
+  }
+  return {
+    buffer: await renderViaJsPdf(manifest, snapshot),
+    renderer: 'jspdf',
+    fallbackReason: manifest.exportType === 'EXPORT_BRUT' ? null : 'Aucun gabarit PDFMonkey configuré : rendu de secours, identique à celui des exports réels.',
+  };
+}

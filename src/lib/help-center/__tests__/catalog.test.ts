@@ -7,7 +7,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import {
   HELP_SHORTCUT_IDS, parseCatalog, resolveShortcuts, unresolvedShortcuts,
-  fetchHelpCatalog, resetHelpCatalogCache, type HelpCatalog,
+  fetchHelpCatalog, resetHelpCatalogCache, catalogMatchesEnvironment, type HelpCatalog,
 } from '../catalog';
 import { helpPageUrl, integratedHelpHref, isHelpPath, safeReturnPath } from '../open';
 
@@ -134,5 +134,26 @@ describe('aucune rédaction d’aide dans l’application (ARCH-02, GAP-01)', ()
     walk(join(root, 'src'));
     const offenders = files.filter((f) => /\bHELP_ARTICLES\b|\bHELP_QUICK_LINKS\b|\b(shortAnswer|detailedAnswer|questionPatterns)\s*:\s*['"`\[]/.test(readFileSync(f, 'utf-8')));
     expect(offenders.map((f) => f.slice(root.length + 1))).toEqual([]);
+  });
+});
+
+describe('isolation par environnement (§2, ENV-02)', () => {
+  beforeEach(() => { resetHelpCatalogCache(); vi.restoreAllMocks(); });
+
+  it('production et préproduction n’acceptent que leur propre catalogue', () => {
+    expect(catalogMatchesEnvironment('preprod', 'production')).toBe(false);
+    expect(catalogMatchesEnvironment('production', 'production')).toBe(true);
+    expect(catalogMatchesEnvironment('production', 'preprod')).toBe(false);
+    expect(catalogMatchesEnvironment('preprod', 'preprod')).toBe(true);
+    expect(catalogMatchesEnvironment('preprod', undefined)).toBe(true);
+    expect(catalogMatchesEnvironment('production', 'local')).toBe(true);
+  });
+
+  it('un catalogue d’un autre environnement est ignoré : pas de raccourci incertain', async () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_ENV', 'production');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(catalog())));
+    await expect(fetchHelpCatalog()).resolves.toBeNull();
+    vi.unstubAllEnvs();
   });
 });

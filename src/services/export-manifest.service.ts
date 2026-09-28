@@ -143,7 +143,12 @@ function selectDocuments(
   let unqualifiedCount = 0;
 
   if (rule === 'ALL') {
-    included = realDocs;
+    // Export brut : la sélection faite dans le tiroir est respectée
+    // (elle était ignorée, et le ZIP contenait toujours tous les fichiers).
+    // Une liste vide transmise explicitement signifie « aucun fichier ».
+    included = exportType === 'EXPORT_BRUT' && Array.isArray(customDocIds)
+      ? realDocs.filter(d => customDocIds.includes(d.id))
+      : realDocs;
   } else if (customDocIds && customDocIds.length > 0) {
     included = realDocs.filter(d => customDocIds.includes(d.id));
   } else {

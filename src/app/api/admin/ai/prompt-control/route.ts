@@ -36,6 +36,12 @@ function gatewayMessage(code: string, detail: string): string {
 const Demande = {
   versionId: z.number().int().positive(),
   instruction: z.string().trim().min(5).max(5000),
+  // T5-010 : comparer avec une autre version (Active, À tester, anciennes, Brouillons).
+  compareWithVersionId: z.number().int().positive().optional(),
+  // T5-009 : journaux lus seulement sur demande, en synthèse bornée.
+  includeLogs: z.boolean().optional(),
+  logsTreatment: z.enum(['T1', 'T2', 'T3', 'T4', 'T6']).optional(),
+  logsDays: z.number().int().min(1).max(30).optional(),
 };
 
 const Analyze = z.object({ action: z.literal('analyze'), ...Demande });
@@ -85,15 +91,22 @@ export async function POST(req: NextRequest) {
   }
 
   const d = parsed.data;
+  const options = {
+    compareWithVersionId: d.compareWithVersionId,
+    includeLogs: d.includeLogs,
+    logsTreatment: d.logsTreatment,
+    logsDays: d.logsDays,
+  };
   try {
     const result = d.action === 'analyze'
-      ? await analyze(d.versionId, d.instruction, compte, guard.ctx.adminUserId)
+      ? await analyze(d.versionId, d.instruction, compte, guard.ctx.adminUserId, options)
       : await modify({
         versionId: d.versionId,
         instruction: d.instruction,
         createDraft: d.createDraft,
         accountId: compte,
         userId: guard.ctx.adminUserId,
+        options,
       });
     return NextResponse.json(result);
   } catch (e) {

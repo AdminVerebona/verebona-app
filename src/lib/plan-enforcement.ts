@@ -4,12 +4,13 @@
  */
 
 import { db } from '@/db';
-import { accounts, users, accountMemberships, assets, duoAccounts, duoMemberships, subscriptionHistory } from '@/db/schema';
-import { eq, and, asc } from 'drizzle-orm';
+import { accounts, users, accountMemberships, duoAccounts, duoMemberships, subscriptionHistory } from '@/db/schema';
+import { eq, and } from 'drizzle-orm';
 import {
   sendDowngradeToStandardEmail,
   sendMemberRemovedDueToDowngradeEmail,
 } from '@/lib/email/billing-emails';
+import { endMembership, isDuoUnpaid } from '@/services/duo/duo-exit.service';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,7 +42,8 @@ interface PlanChangeOptions {
  *  - users.planType for the owner
  *  - duo_accounts status when relevant
  *  - subscription_history audit entry
- *  - standard limits enforcement (member removal, asset deactivation)
+ *  - standard limits enforcement (member removal, pending invitations) —
+ *    assets over quota are kept, read-only (GAP-11, lib/asset-quota-guard)
  */
 export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
   const {
@@ -126,19 +128,10 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
         .where(eq(accounts.id, accountId));
     }
   } else if (oldPlanType === 'PREMIUM_DUO' && duo) {
-    // Leaving PREMIUM_DUO: cancel duo_accounts
+    // Leaving PREMIUM_DUO: cancel duo_accounts, puis fin du partage.
     await db.update(duoAccounts).set({ subscriptionStatus: 'CANCELED', updatedAt: new Date() })
       .where(eq(duoAccounts.id, duo.id));
-    // Also reset users.planType for all active duo members (slot 1)
-    const duoMembers = await db.select({ userId: duoMemberships.userId })
-      .from(duoMemberships)
-      .where(and(eq(duoMemberships.duoId, duo.id), eq(duoMemberships.status, 'ACTIVE')));
-    for (const m of duoMembers) {
-      if (m.userId !== ownerUserId) {
-        await db.update(users).set({ planType: 'STANDARD', updatedAt: new Date() })
-          .where(eq(users.id, m.userId));
-      }
-    }
+    await endDuoSharing(ownerUserId);
   }
 
   // 4. Subscription history audit
@@ -153,7 +146,7 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
     createdAt: new Date(),
   });
 
-  // 5. Standard enforcement: remove excess members, deactivate excess assets
+  // 5. Standard enforcement: remove excess members (assets are never deactivated)
   if (newPlanType === 'STANDARD') {
     await enforceStandardLimits(accountId, ownerUserId, sendEmails);
     if (sendEmails && oldPlanType !== 'STANDARD') {
@@ -200,13 +193,63 @@ export async function enforceStandardLimits(
       eq(accountMemberships.status, 'pending'),
     ));
 
-  // Deactivate assets beyond Standard limit (2)
-  const allAssets = await db.select({ id: assets.id }).from(assets)
-    .where(eq(assets.accountId, accountId))
-    .orderBy(asc(assets.createdAt));
+  // Standard n'a pas de second utilisateur Duo (AID-DUO-005).
+  await endDuoSharing(ownerUserId);
 
-  for (const asset of allAssets.slice(2)) {
-    await db.update(assets).set({ status: 'INACTIF', updatedAt: new Date() })
-      .where(eq(assets.id, asset.id));
+  // ══════════════════════════════════════════════════════════════════════
+  // BIENS AU-DELÀ DU QUOTA : AUCUN N'EST DÉSACTIVÉ (Centre d'aide GAP-11)
+  //
+  // Les biens au-delà du 2e passaient ici en INACTIF — pendant que
+  // `entitlements.canModifyAssets` promettait de tout conserver. Règle
+  // unique désormais : rien n'est modifié en base. Tant que le compte
+  // dépasse son quota, ses biens restent consultables, exportables,
+  // transmissibles et supprimables, et leur modification est refusée
+  // (`lib/asset-quota-guard`, 403 ASSET_QUOTA_EXCEEDED). L'utilisateur
+  // choisit lui-même quoi supprimer, ou reprend une offre suffisante.
+  // ══════════════════════════════════════════════════════════════════════
+}
+
+// ─── endDuoSharing ────────────────────────────────────────────────────────────
+
+/**
+ * Fin du partage Duo quand l'offre ne le permet plus — AID-DUO-005.
+ *
+ *   - l'invitation en attente est annulée ;
+ *   - le second utilisateur perd l'accès partagé : membership REMOVED
+ *     (`left_at`) et offre affichée ramenée à celle de son propre compte ;
+ *   - aucun bien n'est supprimé.
+ *
+ * Sans effet pendant un impayé Duo (PAST_DUE_GRACE, UNPAID_RECOVERY) : le
+ * membre doit alors pouvoir récupérer des biens vers son propre espace
+ * (mode récupération), ce qui suppose qu'il reste membre.
+ */
+export async function endDuoSharing(ownerUserId: number): Promise<void> {
+  const [duo] = await db.select({ id: duoAccounts.id, status: duoAccounts.subscriptionStatus })
+    .from(duoAccounts)
+    .where(eq(duoAccounts.billingOwnerUserId, ownerUserId))
+    .limit(1);
+  if (!duo) return;
+  if (isDuoUnpaid(duo.status)) return;
+
+  const now = new Date();
+  await db.update(duoAccounts).set({
+    pendingInviteEmail: null,
+    pendingInviteToken: null,
+    pendingInviteTokenExpiresAt: null,
+    pendingInviteSentAt: null,
+    activatedAt: null,
+    updatedAt: now,
+  }).where(eq(duoAccounts.id, duo.id));
+
+  const members = await db.select({ id: duoMemberships.id, userId: duoMemberships.userId })
+    .from(duoMemberships)
+    .where(and(eq(duoMemberships.duoId, duo.id), eq(duoMemberships.status, 'ACTIVE')));
+  // Même sortie que « Retirer » : membership REMOVED, offre ramenée à celle du
+  // compte du membre, demandes de déplacement/suppression en attente annulées
+  // et biens déverrouillés — sinon un bien resterait verrouillé sans personne
+  // pour valider la demande.
+  for (const m of members) {
+    if (m.userId === ownerUserId) continue;
+    await endMembership({ duoId: duo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED' });
   }
 }

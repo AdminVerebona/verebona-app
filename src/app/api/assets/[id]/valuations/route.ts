@@ -4,6 +4,7 @@ import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 
 export type ValuationEntry = {
   id: string;
@@ -89,6 +90,10 @@ export async function POST(
       .limit(1);
 
     if (!assetRow) return apiError(404, 'NOT_FOUND', 'Asset not found');
+
+    // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
+    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId);
+    if (refusQuota) return refusQuota;
 
     let body: { value?: number | null; date?: string | null; mode?: string | null; source?: 'USER' | 'AI' };
     try { body = await request.json(); }

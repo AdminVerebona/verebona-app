@@ -19,6 +19,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { PUBLIC_SITE_URL } from '@/lib/external-urls';
+import { parseEnvironment } from '@/services/ai/config/environment';
 
 /**
  * Accès rapides de « Besoin d'aide », dans l'ordre d'affichage (§13).
@@ -115,6 +116,21 @@ const TIMEOUT_MS = 5_000;
 let cache: { at: number; value: HelpCatalog | null } | null = null;
 let pending: Promise<HelpCatalog | null> | null = null;
 
+/**
+ * Le catalogue décrit-il l'environnement de l'application ? — CDC Centre
+ * d'aide §2, ENV-02 (même règle que le corpus de l'assistant).
+ *
+ * En production et en préproduction, un catalogue d'un autre environnement
+ * est refusé : ses statuts de publication ne sont pas ceux de l'application
+ * (un article bloqué en production est publié en préproduction). En local,
+ * ou sans `NEXT_PUBLIC_APP_ENV`, aucun contrôle.
+ */
+export function catalogMatchesEnvironment(catalogEnv: string | undefined, appEnvRaw: string | undefined): boolean {
+  const app = parseEnvironment(appEnvRaw);
+  if (app !== 'production' && app !== 'preprod') return true;
+  return parseEnvironment(catalogEnv) === app;
+}
+
 /** URL du catalogue sur le site public de l'environnement. */
 export function helpCatalogUrl(base: string = PUBLIC_SITE_URL): string {
   return `${base.replace(/\/+$/, '')}${HELP_CATALOG_PATH}`;
@@ -135,7 +151,11 @@ export async function fetchHelpCatalog(): Promise<HelpCatalog | null> {
       const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
       const res = await fetch(helpCatalogUrl(), { signal: ctrl.signal, credentials: 'omit' })
         .finally(() => clearTimeout(timer));
-      const value = res.ok ? parseCatalog(await res.json()) : null;
+      let value = res.ok ? parseCatalog(await res.json()) : null;
+      if (value && !catalogMatchesEnvironment(value.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
+        console.error(`[aide] Catalogue refusé : environnement « ${value.environment} » ≠ application « ${process.env.NEXT_PUBLIC_APP_ENV} » (ENV-02).`);
+        value = null;
+      }
       cache = { at: Date.now(), value };
       return value;
     } catch {

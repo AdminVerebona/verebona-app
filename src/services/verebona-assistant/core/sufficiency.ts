@@ -41,7 +41,10 @@ export type EscalationReason =
   | 'AMBIGUOUS_TARGET'
   | 'SYNTHESIS_REQUIRED'
   | 'CONFLICTING_VALUES'
-  | 'THRESHOLD_FORCES_ESCALATION';
+  | 'THRESHOLD_FORCES_ESCALATION'
+  // Document pertinent sans réponse lisible (§12.4, §23) : pas d'escalade.
+  | 'DOCUMENT_IN_ANALYSIS'
+  | 'DOCUMENT_ANALYSIS_FAILED';
 
 export interface SufficiencyDecision {
   status: SufficiencyStatus;

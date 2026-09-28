@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { accounts, accountSubscriptions, users, accountMemberships, assets, assetFiles, accountAuditLog, duoAccounts, duoMemberships, invoices, planLimits, subscriptionHistory } from '@/db/schema';
+import { accounts, accountSubscriptions, users, accountMemberships, assets, assetFiles, duoAccounts, duoMemberships, invoices, planLimits, subscriptionHistory } from '@/db/schema';
 import { and, eq, sql, desc, asc, isNull } from 'drizzle-orm';
 import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { SessionService } from '@/lib/session-service';
@@ -15,6 +15,8 @@ import {
 } from '@/services/billing/admin-plan-change.service';
 import { deleteAccountAsAdmin } from '@/services/account/admin-account-deletion.service';
 import { planAtDate } from '@/lib/admin/plan-at-date';
+import { loadAccountHistory } from '@/services/admin/account-history.service';
+import { pgClient } from '@/db';
 
 
 export async function GET(
@@ -117,13 +119,19 @@ export async function GET(
       .where(eq(assets.accountId, accountId))
       .orderBy(desc(assets.createdAt));
 
-    // Fetch audit logs
-    const auditLogs = await db
-      .select()
-      .from(accountAuditLog)
-      .where(eq(accountAuditLog.accountId, accountId))
-      .orderBy(desc(accountAuditLog.timestamp))
-      .limit(50);
+    // Historique consolidé (ACC-D09 à ACC-D11) : date, événement, origine.
+    const accountHistory = await loadAccountHistory(accountId);
+
+    // LEG-003 : dernière acceptation des CGSU par un membre du compte.
+    const legalAcceptances = await pgClient.unsafe<{ accepted_at: string; version_code: string; acceptance_context: string; email: string | null }[]>(
+      `SELECT la.accepted_at, v.version_code, la.acceptance_context, u.email
+         FROM legal_acceptances la
+         JOIN legal_document_versions v ON v.id = la.legal_document_version_id
+         LEFT JOIN users u ON u.id = la.user_id
+        WHERE la.user_id IN (SELECT user_id FROM account_memberships WHERE account_id = $1 AND user_id IS NOT NULL)
+        ORDER BY la.accepted_at DESC LIMIT 5`,
+      [accountId],
+    );
 
     // Fetch duo account for the owner of this account
     const [duoAccount] = await db
@@ -237,7 +245,13 @@ export async function GET(
       assignablePlans: ADMIN_ASSIGNABLE_PLANS,
       members,
       assets: accountAssets,
-      auditLogs,
+      history: accountHistory,
+      legalAcceptances: legalAcceptances.map((l) => ({
+        acceptedAt: l.accepted_at,
+        versionCode: l.version_code,
+        context: l.acceptance_context,
+        email: l.email,
+      })),
       duoAccount: duoAccountData,
     });
   } catch (error) {

@@ -22,6 +22,7 @@ import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { renderExportToPdf } from '@/services/pdf-renderer.service';
 import { buildExportZip } from '@/services/export-zip.service';
 import { uploadExportFile, buildExportS3Key } from '@/services/export-upload.service';
+import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 
 const VALID_EXPORT_TYPES: ExportType[] = [
   'CIL_REGLEMENTAIRE', 'DOSSIER_VENTE',
@@ -143,7 +144,7 @@ export async function POST(
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
     const [asset] = await db
-      .select({ id: assets.id, userId: assets.userId, category: assets.category })
+      .select({ id: assets.id, userId: assets.userId, category: assets.category, subtype: assets.subtype })
       .from(assets)
       .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
       .limit(1);
@@ -163,8 +164,9 @@ export async function POST(
 
     // Validate asset category compatibility with export type
     const IMMO_VEHICLE_TYPES: ExportType[] = ['DOSSIER_VENTE'];
-    if (exportType === 'CIL_REGLEMENTAIRE' && asset.category !== 'IMMOBILIER') {
-      return NextResponse.json({ error: 'INCOMPATIBLE_ASSET_CATEGORY', message: 'Ce type d\'export est réservé aux biens immobiliers.' }, { status: 400 });
+    // CIL : maisons et appartements uniquement (GAP-08, `lib/asset-capabilities`).
+    if (exportType === 'CIL_REGLEMENTAIRE' && !isCilEligible(asset)) {
+      return NextResponse.json({ error: 'INCOMPATIBLE_ASSET_CATEGORY', message: CIL_NOT_ELIGIBLE_MESSAGE }, { status: 400 });
     }
     if (IMMO_VEHICLE_TYPES.includes(exportType) && !['IMMOBILIER', 'VEHICULE'].includes(asset.category)) {
       return NextResponse.json({ error: 'INCOMPATIBLE_ASSET_CATEGORY', message: 'Ce type d\'export est réservé aux biens immobiliers et aux véhicules.' }, { status: 400 });

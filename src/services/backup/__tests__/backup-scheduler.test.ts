@@ -2,7 +2,7 @@
  * Sauvegarde quotidienne — fenêtre de nuit et câblage.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { dansLaFenetreDeNuit, heureDeParis } from '@/services/backup/database-backup-scheduler';
 
@@ -25,7 +25,9 @@ describe('fenêtre de nuit (heure de Paris)', () => {
 
 describe('la sauvegarde est réellement branchée', () => {
   it('le planificateur est démarré au lancement du serveur', () => {
-    expect(read('src/instrumentation.ts')).toMatch(/startDatabaseBackupScheduler\(\)/);
+    // L'amorçage Node vit dans `instrumentation-node.ts`, chargé par `instrumentation.ts`.
+    expect(read('src/instrumentation.ts')).toMatch(/instrumentation-node/);
+    expect(read('src/instrumentation-node.ts')).toMatch(/startDatabaseBackupScheduler\(\)/);
   });
 
   it('le manifeste, lu par le tableau de bord, est écrit en dernier sous backups/', () => {
@@ -38,13 +40,13 @@ describe('la sauvegarde est réellement branchée', () => {
     expect(read('src/app/api/admin/dashboard/route.ts')).toMatch(/checkBackupFreshness\(await latestBackupAt\(\)\)/);
   });
 
-  it('la page d’administration existe (hors navigation : absorbée par la Supervision, CDC BO §15)', () => {
+  it('l’écran Backups est absorbé par la Supervision (CDC BO §15, GEN-001) : plus de page ni de déclenchement BO', () => {
     expect(read('src/components/AdminSidebar.tsx')).not.toMatch(/href: '\/admin\/backups'/);
-    expect(read('src/app/admin/backups/page.tsx')).toMatch(/\/api\/admin\/backups/);
+    expect(read('src/app/admin/backups/page.tsx')).toMatch(/redirect\('\/admin\?tab=supervision'\)/);
+    expect(existsSync(join(process.cwd(), 'src/app/api/admin/backups/route.ts'))).toBe(false);
   });
 
-  it('les déclenchements manuels sont protégés', () => {
+  it('le déclenchement planifié reste protégé', () => {
     expect(read('src/app/api/cron/backup/route.ts')).toMatch(/CRON_SECRET/);
-    expect(read('src/app/api/admin/backups/route.ts')).toMatch(/requireAdmin\(request\)/);
   });
 });

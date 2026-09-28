@@ -27,6 +27,11 @@
  * · T5-011 — verdict autre que « prompt » : rien n'est écrit ;
  * · T5-015 — IA bloquée : T5 n'opère pas ;
  * · T5-001 — seul le prompt change : modèles, replis et garde-fous restent.
+ * · T5-009 — journaux lus SEULEMENT sur demande (`includeLogs`), en synthèse
+ *   bornée (répartition des erreurs, indicateurs), jamais en masse ;
+ * · T5-010 — comparaison avec une autre version (Active, À tester, anciennes,
+ *   Brouillons) sur demande (`compareWithVersionId`) : diff déterministe rendu
+ *   avec la réponse, et transmis au modèle pour l'analyse.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * POURQUOI UNE NOUVELLE OPÉRATION (`control_prompts`, prompt `prompt_control_v2`)
@@ -48,6 +53,7 @@ import {
 } from '../config/config-version.repository';
 import type { ConfigVersionWithEntries } from '../config/config-types';
 import { recordT5Modification } from './prompt-control.audit';
+import { diffVersions, renderDiff, type ConfigDiff } from '../config/config-diff.service';
 
 export const VERDICTS = ['prompt', 'code', 'donnees', 'configuration'] as const;
 export type Verdict = (typeof VERDICTS)[number];
@@ -113,6 +119,94 @@ export interface T5Result {
   draftId: number | null;
   draftCreated: boolean;
   traceId: string;
+  /** T5-010 : comparaison demandée — version de référence et diff déterministe. */
+  comparison?: { versionId: number; label: string; status: string; diff: ConfigDiff } | null;
+  /** T5-009 : synthèse des journaux effectivement transmise à T5 (sur demande). */
+  logsDigest?: string | null;
+}
+
+/** Contexte complémentaire demandé par l'administrateur (T5-009, T5-010). */
+export interface T5Options {
+  compareWithVersionId?: number;
+  includeLogs?: boolean;
+  /** Traitement dont lire les journaux ; absent : T1 à T4. */
+  logsTreatment?: Treatment;
+  /** Fenêtre des journaux, 1 à 30 jours (7 par défaut). */
+  logsDays?: number;
+}
+
+const MAX_CONTEXT_CHARS = 12_000;
+
+function versionLabel(v: ConfigVersionWithEntries): string {
+  return v.visibleNumber ? `v${v.visibleNumber}${v.label ? ` — ${v.label}` : ''}` : (v.label ?? `Brouillon ${v.id}`);
+}
+
+/**
+ * T5-010 : diff entre la version analysée et une autre version du même
+ * environnement. `base` = version de comparaison, `candidate` = version
+ * affichée : le diff se lit « ce que la version affichée change ».
+ */
+export async function buildComparison(
+  version: ConfigVersionWithEntries, otherId: number,
+): Promise<{ versionId: number; label: string; status: string; diff: ConfigDiff; text: string }> {
+  const other = await loadVersion(otherId);
+  if (other.environment !== version.environment) {
+    throw new T5Refused('VERSION_NOT_FOUND', `La version ${otherId} n'appartient pas au même environnement.`);
+  }
+  const diff = diffVersions(other.entries, version.entries);
+  const text = `Comparaison demandée : version affichée (${versionLabel(version)}, ${version.status}) `
+    + `par rapport à ${versionLabel(other)} (${other.status}).\n`
+    + (diff.identical ? 'Aucune différence.' : renderDiff(diff));
+  return { versionId: other.id, label: versionLabel(other), status: other.status, diff, text: text.slice(0, MAX_CONTEXT_CHARS) };
+}
+
+/**
+ * T5-009 : synthèse BORNÉE des journaux, sur demande seulement — erreurs les
+ * plus fréquentes et indicateurs du traitement. Aucun contenu utilisateur.
+ */
+export async function buildLogsDigest(treatment: Treatment | undefined, days: number): Promise<string> {
+  const d = Math.min(Math.max(Math.round(days), 1), 30);
+  const [{ getErrorBreakdown }, { getTreatmentMetrics }] = await Promise.all([
+    import('../telemetry/execution-log.repository'),
+    import('../config/treatment-metrics.repository'),
+  ]);
+  const cibles: Treatment[] = treatment ? [treatment] : ['T1', 'T2', 'T3', 'T4'];
+  const erreurs = (await getErrorBreakdown(d))
+    .filter((e) => e.treatment && cibles.includes(e.treatment))
+    .slice(0, 15)
+    .map((e) => `· ${e.treatment} ${e.errorCode ?? 'erreur'} — ${e.model ?? 'modèle ?'} : ${e.count} fois (dernière ${e.lastSeen.toISOString().slice(0, 10)})`);
+  const indicateurs: string[] = [];
+  for (const t of cibles) {
+    const m = await getTreatmentMetrics(t, d);
+    indicateurs.push(`${t} : ` + m.metrics
+      .filter((x) => x.value !== null)
+      .slice(0, 12)
+      .map((x) => `${x.label} = ${x.value}${x.unit === 'percent' ? ' %' : ''}`)
+      .join(' ; '));
+  }
+  return [
+    `Journaux des ${d} derniers jours (synthèse, sur demande de l'administrateur) :`,
+    'Erreurs les plus fréquentes :', ...(erreurs.length ? erreurs : ['· aucune']),
+    'Indicateurs :', ...indicateurs,
+  ].join('\n').slice(0, MAX_CONTEXT_CHARS);
+}
+
+async function extraContext(version: ConfigVersionWithEntries | null, o: T5Options): Promise<{
+  text: string; comparison: T5Result['comparison']; logsDigest: string | null;
+}> {
+  const parts: string[] = [];
+  let comparison: T5Result['comparison'] = null;
+  let logsDigest: string | null = null;
+  if (o.compareWithVersionId && version) {
+    const c = await buildComparison(version, o.compareWithVersionId);
+    comparison = { versionId: c.versionId, label: c.label, status: c.status, diff: c.diff };
+    parts.push(c.text);
+  }
+  if (o.includeLogs) {
+    logsDigest = await buildLogsDigest(o.logsTreatment, o.logsDays ?? 7);
+    parts.push(logsDigest);
+  }
+  return { text: parts.length ? parts.join('\n\n') : '(aucun)', comparison, logsDigest };
 }
 
 export interface DraftChoice { id: number; label: string | null; isStale: boolean; createdAt: string }
@@ -219,7 +313,10 @@ export function interpret(
   return { verdict: d.verdict, analysis: d.analysis, changes, risks: d.risks, recommendations: d.recommendations };
 }
 
-async function callModel(mode: T5Mode, version: ConfigVersionWithEntries | null, instruction: string, accountId: number, userId: number) {
+async function callModel(
+  mode: T5Mode, version: ConfigVersionWithEntries | null, instruction: string, accountId: number, userId: number,
+  extra = '(aucun)',
+) {
   const res = await AiGateway.execute({
     useCaseCode: 'AI_GOVERNANCE',
     operationCode: 'control_prompts',
@@ -229,6 +326,7 @@ async function callModel(mode: T5Mode, version: ConfigVersionWithEntries | null,
       MODE: MODE_PROMPT[mode],
       CURRENT_PROMPTS: formatCurrentPrompts(version),
       INSTRUCTION: instruction,
+      EXTRA_CONTEXT: extra,
     },
     outputSchema: PromptControlOutput,
   });
@@ -237,15 +335,19 @@ async function callModel(mode: T5Mode, version: ConfigVersionWithEntries | null,
 
 // ── Analyse ─────────────────────────────────────────────────────────────────
 
-export async function analyze(versionId: number, instruction: string, accountId: number, userId: number): Promise<T5Result> {
+export async function analyze(
+  versionId: number, instruction: string, accountId: number, userId: number, options: T5Options = {},
+): Promise<T5Result> {
   await assertAiAvailable();
   const version = await loadVersion(versionId);
-  const { output, traceId } = await callModel('analyze', version, instruction, accountId, userId);
+  const extra = await extraContext(version, options);
+  const { output, traceId } = await callModel('analyze', version, instruction, accountId, userId, extra.text);
   const r = interpret('analyze', output, (t) => promptOf(version, t));
   return {
     mode: 'analyze', ...r,
     changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
     applied: false, draftId: null, draftCreated: false, traceId,
+    comparison: extra.comparison, logsDigest: extra.logsDigest,
   };
 }
 
@@ -289,6 +391,7 @@ export interface ModifyRequest {
   createDraft?: boolean;
   accountId: number;
   userId: number;
+  options?: T5Options;
 }
 
 export async function modify(req: ModifyRequest): Promise<T5Result> {
@@ -296,7 +399,8 @@ export async function modify(req: ModifyRequest): Promise<T5Result> {
   const target = await resolveWriteTarget(req.versionId, Boolean(req.createDraft));
   const source = target.kind === 'existing' ? target.draft : target.base;
 
-  const { output, traceId } = await callModel('modify', source, req.instruction, req.accountId, req.userId);
+  const extra = await extraContext(source, req.options ?? {});
+  const { output, traceId } = await callModel('modify', source, req.instruction, req.accountId, req.userId, extra.text);
   const r = interpret('modify', output, (t) => promptOf(source, t));
   const writable = r.changes.filter((c) => c.proposedContent);
 
@@ -304,6 +408,7 @@ export async function modify(req: ModifyRequest): Promise<T5Result> {
     mode: 'modify', verdict: r.verdict, analysis: r.analysis, risks: r.risks, recommendations: r.recommendations,
     changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
     applied: false, draftId: null, draftCreated: false, traceId,
+    comparison: extra.comparison, logsDigest: extra.logsDigest,
   };
   if (writable.length === 0) return result;
 

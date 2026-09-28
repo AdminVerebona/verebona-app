@@ -11,6 +11,7 @@ import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { assets, exportGenerations, accounts } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 import { isPremiumPlan } from '@/types/domain';
 import { buildAssetSnapshot } from '@/services/export-snapshot.service';
 import { buildExportManifest } from '@/services/export-manifest.service';
@@ -35,7 +36,7 @@ export async function POST(
 
     // Verify asset ownership
     const [asset] = await db
-      .select({ id: assets.id })
+      .select({ id: assets.id, category: assets.category, subtype: assets.subtype })
       .from(assets)
       .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
       .limit(1);
@@ -52,6 +53,12 @@ export async function POST(
       .limit(1);
 
     if (!exportRow) return NextResponse.json({ error: 'EXPORT_NOT_FOUND' }, { status: 404 });
+
+    // CIL : même éligibilité qu'à la création (GAP-08) — un CIL créé avant la
+    // restriction pour un Immeuble ou un Mobil-home n'est pas regénéré.
+    if (exportRow.exportType === 'CIL_REGLEMENTAIRE' && !isCilEligible(asset)) {
+      return NextResponse.json({ error: 'INCOMPATIBLE_ASSET_CATEGORY', message: CIL_NOT_ELIGIBLE_MESSAGE }, { status: 400 });
+    }
 
     // Check if retry is allowed
     const canRetry = exportRow.status === 'error' ||

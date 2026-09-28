@@ -9,6 +9,7 @@ import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { assets, energyMaterials } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 
 export async function GET(
   request: NextRequest,
@@ -49,11 +50,15 @@ export async function POST(
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
     const [asset] = await db
-      .select({ id: assets.id })
+      .select({ id: assets.id, accountId: assets.accountId })
       .from(assets)
       .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
       .limit(1);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
+
+    // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
+    const refusQuota = asset.accountId != null ? await refuserSiModificationBiensSuspendue(asset.accountId) : null;
+    if (refusQuota) return refusQuota;
 
     const body = await request.json();
     const { category, materialNature, brand, reference, thermalResistanceR, lambda, thicknessMm, surfaceSqm, interfaceTreatment } = body;

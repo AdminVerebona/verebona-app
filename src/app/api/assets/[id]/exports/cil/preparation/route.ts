@@ -11,6 +11,7 @@ import {
   cilBlockResolutions, assetFiles, exportGenerations, equipments,
 } from '@/db/schema';
 import { eq, and, ne, desc } from 'drizzle-orm';
+import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 
 type BlockStatus = 'complete' | 'not_applicable' | 'missing' | 'invalid' | 'unknown';
 
@@ -28,13 +29,6 @@ interface CilBlock {
   blocking: boolean;
   missingItems: MissingItem[];
 }
-
-const ELIGIBLE_SUBTYPES = [
-  'Maison', 'maison', 'MAISON',
-  'Appartement', 'appartement', 'APPARTEMENT',
-  'Immeuble', 'immeuble', 'IMMEUBLE',
-  'Mobil-home', 'mobil-home', 'MOBIL-HOME', 'Mobilhome', 'mobilhome',
-];
 
 export async function GET(
   request: NextRequest,
@@ -54,17 +48,14 @@ export async function GET(
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
     // Eligibility check
-    const isImmobilier = asset.category === 'IMMOBILIER';
-    const subtypeLabel = asset.subtype ?? '';
-    const isEligible = isImmobilier && ELIGIBLE_SUBTYPES.some(s =>
-      subtypeLabel.toLowerCase().includes(s.toLowerCase())
-    );
-
-    if (!isEligible) {
+    // Maison + Appartement uniquement (GAP-08) — liste unique partagée avec
+    // la génération (`exports/route.ts`) et l'interface.
+    if (!isCilEligible(asset)) {
       return NextResponse.json({
         assetId,
         eligible: false,
         eligibilityReason: 'not_eligible_asset_subtype',
+        message: CIL_NOT_ELIGIBLE_MESSAGE,
       });
     }
 

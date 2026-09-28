@@ -1,5 +1,6 @@
 "use client"
 
+import { assetSupportsRooms } from '@/lib/asset-capabilities';
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
@@ -198,13 +199,8 @@ const STATUS_VARIANTS: Record<string, 'active' | 'sold' | 'inactive' | 'pending'
 };
 
 // Subtypes that support rooms + equipments
-const SUBTYPES_WITH_ROOMS = ['maison', 'appartement', 'immeuble', 'villa', 'propriété', 'studio', 'local commercial'];
-
-function assetSupportsRooms(asset: AssetDetail) {
-  if (asset.category !== 'IMMOBILIER') return false;
-  if (!asset.subtype) return false;
-  return SUBTYPES_WITH_ROOMS.includes(asset.subtype.toLowerCase());
-}
+// Pièces / équipements : liste unique `lib/asset-capabilities` (GAP-04),
+// la même que celle des routes API.
 
 export default function AssetDetailPage() {
   const params = useParams();
@@ -472,6 +468,7 @@ export default function AssetDetailPage() {
             <AssetExportsTab
               assetId={asset.id}
               assetCategory={asset.category}
+              assetSubtype={asset.subtype}
               assetTypeId={asset.assetTypeId ?? undefined}
               planType={planType}
               thumbnailUrl={asset.thumbnailUrl}

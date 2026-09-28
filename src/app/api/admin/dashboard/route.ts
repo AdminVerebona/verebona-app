@@ -4,6 +4,7 @@ import { parsePeriodKind, parseRef, resolvePeriod } from '@/lib/admin/periods';
 import { getActivity, getCommercial, getOverview } from '@/services/admin/kpi.service';
 import { checkBackupFreshness, getSupervisionCounters } from '@/services/admin/anomaly.service';
 import { latestBackupAt } from '@/services/backup/database-backup.service';
+import { runSupervisionSweepThrottled } from '@/services/admin/supervision-sweep.service';
 
 /**
  * GET /api/admin/dashboard?view=overview|activity|commercial|supervision
@@ -33,6 +34,9 @@ export async function GET(request: NextRequest) {
       // Contrôle de fraîcheur des sauvegardes (absorbées dans la
       // Supervision, CDC BO §15) avant de compter.
       await checkBackupFreshness(await latestBackupAt());
+      // Domaines « Exports / transmissions » et « IA » (SUP-004, AI-001) :
+      // balayage en lecture des tables sources, au plus toutes les 5 min.
+      await runSupervisionSweepThrottled();
       return NextResponse.json(await getSupervisionCounters());
     }
 

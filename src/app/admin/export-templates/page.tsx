@@ -18,7 +18,6 @@ import {
   FileType,
   Search,
   Eye,
-  AlertCircle,
   CheckCircle,
   XCircle,
 } from 'lucide-react';
@@ -30,6 +29,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ExportTemplateActiveToggle } from './_components/ExportTemplateActiveToggle';
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 
 interface ExportTemplate {
   id: number;
@@ -114,16 +114,6 @@ export default function ExportTemplatesPage() {
     return CATEGORIES.find(c => c.value === category)?.label || category;
   };
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('fr-FR', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
-
   if (isLoading) {
     return (
       <div className="space-y-6">
@@ -139,18 +129,7 @@ export default function ExportTemplatesPage() {
   }
 
   if (error) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-destructive">
-              <AlertCircle className="h-5 w-5" />
-              <p>{error}</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
+    return <EcranEnErreur titre="Chargement des modèles impossible" message={error} onRetry={loadTemplates} />;
   }
 
   return (
@@ -251,26 +230,6 @@ export default function ExportTemplatesPage() {
                         {template.description}
                       </p>
                     )}
-                    {template.variables && (
-                      <div className="mb-3">
-                        <p className="text-xs text-muted-foreground mb-1">Variables disponibles:</p>
-                        <div className="flex flex-wrap gap-1">
-                          {JSON.parse(template.variables).map((v: string) => (
-                            <Badge key={v} variant="secondary" className="text-xs">
-                              {'{{'}{v}{'}}'}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                      <span>Créé le {formatDate(template.createdAt)}</span>
-                      {template.updatedByUser && (
-                        <span>
-                          Modifié par {template.updatedByUser.firstName} {template.updatedByUser.lastName}
-                        </span>
-                      )}
-                    </div>
                   </div>
                   <div className="flex flex-col items-end gap-3">
                     <ExportTemplateActiveToggle
@@ -285,7 +244,7 @@ export default function ExportTemplatesPage() {
                       onClick={() => router.push(`/admin/export-templates/${template.id}`)}
                     >
                       <Eye className="h-4 w-4 mr-1" />
-                      Consulter
+                      Consulter et prévisualiser
                     </Button>
                   </div>
                 </div>

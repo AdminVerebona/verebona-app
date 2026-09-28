@@ -43,8 +43,16 @@ import { getPlanTheme } from '@/lib/plan-theme';
 import { formatBytes, formatDate, formatDateTime, formatMoney } from '@/lib/admin/format';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { AccountWithdrawals } from './_components/AccountWithdrawals';
+import { AccountDocuments } from './_components/AccountDocuments';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+const ORIGIN_LABELS: Record<'user' | 'admin' | 'system' | 'stripe', string> = {
+  user: 'Utilisateur',
+  admin: 'Administrateur',
+  system: 'Système',
+  stripe: 'Stripe',
+};
 
 interface DuoMember {
   id: number;
@@ -125,7 +133,8 @@ interface AccountDetail {
   assignablePlans: string[];
   members: AccountMember[];
   assets: Array<{ id: number; name: string; category: string; status: string; createdAt: string }>;
-  auditLogs: Array<{ id: number; actionType: string; userEmail: string; details: string | null; timestamp: string }>;
+  history: Array<{ at: string; event: string; origin: 'user' | 'admin' | 'system' | 'stripe'; detail: string | null; scheduled?: boolean }>;
+  legalAcceptances: Array<{ acceptedAt: string; versionCode: string; context: string; email: string | null }>;
   duoAccount: DuoAccountData | null;
 }
 
@@ -304,7 +313,7 @@ export default function AccountDetailPage() {
     );
   }
 
-  const { account, assets, auditLogs, duoAccount, subscription, quotas, payments, stripeLinks } = data;
+  const { account, assets, history, legalAcceptances, duoAccount, subscription, quotas, payments, stripeLinks } = data;
   const periodLabel =
     subscription?.billingPeriod === 'monthly' ? 'Mensuel'
     : subscription?.billingPeriod === 'yearly' ? 'Annuel'
@@ -564,42 +573,69 @@ export default function AccountDetailPage() {
             </div>
           </section>
 
-          {/* ── Activité récente ── */}
+          {/* ── Documents, exports et transmissions (ACC-D07, ACC-D08) ── */}
+          <AccountDocuments accountId={account.id} />
+
+          {/* ── Historique du compte (ACC-D09 à ACC-D11) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b">
               <h2 className="font-semibold flex items-center gap-2">
                 <Activity className="h-4 w-4 text-muted-foreground" />
-                Activité récente
+                Historique du compte
               </h2>
             </div>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
               <table className="w-full text-sm">
                 <thead className="text-[11px] text-muted-foreground uppercase bg-muted/30">
                   <tr>
-                    <th className="px-5 py-2.5 font-medium text-left">Action</th>
-                    <th className="px-5 py-2.5 font-medium text-left">Utilisateur</th>
                     <th className="px-5 py-2.5 font-medium text-left">Date</th>
+                    <th className="px-5 py-2.5 font-medium text-left">Événement</th>
+                    <th className="px-5 py-2.5 font-medium text-left">Origine</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {auditLogs.length === 0 ? (
+                  {history.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="px-5 py-6 text-center text-muted-foreground italic text-xs">
-                        Aucune activité enregistrée
+                        Aucun événement enregistré
                       </td>
                     </tr>
                   ) : (
-                    auditLogs.map(log => (
-                      <tr key={log.id} className="hover:bg-muted/20">
-                        <td className="px-5 py-3"><span className="font-medium text-xs">{log.actionType}</span></td>
-                        <td className="px-5 py-3 text-xs text-muted-foreground">{log.userEmail}</td>
-                        <td className="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{formatDateTime(log.timestamp)}</td>
+                    history.map((h, i) => (
+                      <tr key={i} className="hover:bg-muted/20">
+                        <td className="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                          {formatDateTime(h.at)}{h.scheduled ? ' (prévue)' : ''}
+                        </td>
+                        <td className="px-5 py-3 text-xs">
+                          <span className="font-medium">{h.event}</span>
+                          {h.detail && <span className="text-muted-foreground"> — {h.detail}</span>}
+                        </td>
+                        <td className="px-5 py-3 text-xs text-muted-foreground">{ORIGIN_LABELS[h.origin]}</td>
                       </tr>
                     ))
                   )}
                 </tbody>
               </table>
             </div>
+          </section>
+
+          {/* ── CGSU acceptées (LEG-003) ── */}
+          <section className="rounded-xl border bg-card overflow-hidden">
+            <div className="px-5 py-4 border-b">
+              <h2 className="font-semibold text-sm">Conditions générales acceptées</h2>
+            </div>
+            {legalAcceptances.length === 0 ? (
+              <p className="px-5 py-4 text-xs text-muted-foreground italic">Aucune acceptation enregistrée</p>
+            ) : (
+              <ul className="px-5 py-3 space-y-1 text-xs">
+                {legalAcceptances.map((l, i) => (
+                  <li key={i}>
+                    Version <span className="font-mono">{l.versionCode}</span> acceptée le {formatDateTime(l.acceptedAt)}
+                    {l.email && <span className="text-muted-foreground"> par {l.email}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         </div>
 
@@ -663,17 +699,16 @@ export default function AccountDetailPage() {
                 <p className="px-5 py-4 text-xs text-muted-foreground italic text-center">Aucun bien</p>
               ) : (
                 assets.map(asset => (
-                  <button
+                  <div
                     key={asset.id}
-                    className="w-full text-left px-5 py-2.5 hover:bg-muted/30 transition-colors"
-                    onClick={() => router.push(`/admin/assets/${asset.id}`)}
+                    className="w-full text-left px-5 py-2.5"
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-medium truncate">{asset.name}</span>
                       <span className="text-[10px] text-muted-foreground shrink-0 ml-2">{asset.category}</span>
                     </div>
                     <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(asset.createdAt)}</p>
-                  </button>
+                  </div>
                 ))
               )}
             </div>

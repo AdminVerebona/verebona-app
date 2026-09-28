@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, UserPlus, Copy, RefreshCw, Trash2, Check, Clock, UserCheck } from 'lucide-react';
+import { Loader2, UserPlus, Copy, RefreshCw, Trash2, Check, Clock, UserCheck, UserMinus } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import {
@@ -37,6 +37,8 @@ export function DuoInvitationPanel() {
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showRemoveDialog, setShowRemoveDialog] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   const fetchStatus = async () => {
     setLoading(true);
@@ -111,6 +113,22 @@ export function DuoInvitationPanel() {
     }
   };
 
+  // Retrait du second utilisateur (AID-DUO-006, GAP-13) : son accès cesse,
+  // aucun bien n'est supprimé, la place redevient libre pour une invitation.
+  const handleRemove = async () => {
+    setRemoving(true);
+    try {
+      await apiClient.delete('/api/duo/member');
+      toast.success('Le second utilisateur a été retiré du Duo.');
+      setShowRemoveDialog(false);
+      await fetchStatus();
+    } catch (error: any) {
+      toast.error(error?.message || 'Une erreur est survenue.');
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-sm text-[color:var(--text-muted)]">
@@ -123,14 +141,49 @@ export function DuoInvitationPanel() {
   // Slot already active
   if (data.status === 'ACTIVE_MEMBER') {
     return (
-      <div className="flex items-center gap-3 bg-green-950/30 border border-green-500/30 rounded-lg px-4 py-3">
-        <UserCheck className="w-4 h-4 text-green-400 flex-shrink-0" />
-        <div className="text-sm">
-          <p className="text-[color:var(--text-success)] font-medium">2e utilisateur actif</p>
-          {data.memberEmail && (
-            <p className="text-[color:var(--text-muted)] text-xs mt-0.5">{data.memberEmail}</p>
-          )}
+      <div className="space-y-3">
+        <div className="flex items-center gap-3 bg-green-950/30 border border-green-500/30 rounded-lg px-4 py-3">
+          <UserCheck className="w-4 h-4 text-green-400 flex-shrink-0" />
+          <div className="text-sm flex-1 min-w-0">
+            <p className="text-[color:var(--text-success)] font-medium">2e utilisateur actif</p>
+            {data.memberEmail && (
+              <p className="text-[color:var(--text-muted)] text-xs mt-0.5">{data.memberEmail}</p>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setShowRemoveDialog(true)}
+            className="gap-1 text-destructive hover:text-destructive flex-shrink-0"
+          >
+            <UserMinus className="w-3.5 h-3.5" />
+            Retirer
+          </Button>
         </div>
+
+        <AlertDialog open={showRemoveDialog} onOpenChange={setShowRemoveDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Retirer le second utilisateur ?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {data.memberName || data.memberEmail || 'Cette personne'} n&apos;aura plus accès à votre espace
+                partagé. Vos biens, documents et échéances ne sont pas supprimés. Ses demandes de déplacement ou de
+                suppression en attente sont annulées. Vous pourrez inviter une personne à nouveau.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={removing}>Annuler</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => { e.preventDefault(); void handleRemove(); }}
+                disabled={removing}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {removing ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+                Retirer
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     );
   }

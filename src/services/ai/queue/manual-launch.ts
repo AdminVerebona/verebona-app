@@ -22,18 +22,30 @@
  *     l'utilisateur ni être refusée parce qu'il les a épuisés.
  *   · T3 — un contrôle compte complet par compte (même chemin que la route
  *     `reconciliation/accounts/[accountId]`).
- *   · T4 — NON lançable seul : ses entrées sont les candidats d'échéance
- *     produits par T1 et portés par le job (voir agenda/index.ts) ; les
- *     reconstruire depuis la base dégraderait T4. Un nouveau passage T4 se
- *     force par une réanalyse T1 du même périmètre, qui le met en file.
- *     Refus explicite plutôt qu'un bouton qui ne ferait rien.
+ *   · T4 — un NOUVEAU passage par document dont l'analyse T1 de référence a
+ *     produit des échéances candidates (T4-016, T4-UI-07 « force un nouveau
+ *     passage », WF-11). Les candidats sont relus dans le résultat T1 COMPLET
+ *     persisté (`document_analysis_runs.raw_response_json`, run de
+ *     référence) — pas reconstruits depuis les propositions, qui n'ont ni la
+ *     récurrence ni le champ d'origine (agenda/index.ts). Aucun appel T1 :
+ *     seul T4 repasse.
  *
  * La configuration utilisée est celle de l'environnement au DÉMARRAGE du job
  * (WF-11 étape 67, VER-016) : rien n'est figé à la mise en file.
  */
 import type { Treatment } from '../config/treatments';
 
-export type ManualTreatment = 'T1' | 'T3';
+export type ManualTreatment = 'T1' | 'T3' | 'T4';
+
+/** Document portant des échéances candidates T1 (entrée d'un passage T4 manuel). */
+export interface T4Source {
+  fileId: number;
+  accountId: number;
+  assetId: number;
+  userId: number;
+  /** Absent en estimation : seul le nombre compte. */
+  candidates?: unknown[];
+}
 
 export class ManualLaunchRefused extends Error {
   constructor(readonly code: 'EMERGENCY_STOP' | 'NOT_LAUNCHABLE' | 'EMPTY_SCOPE' | 'SCOPE_TOO_LARGE', message: string) {
@@ -59,6 +71,8 @@ export interface ManualLaunchDeps {
   listFiles(accountIds: number[] | null, limit: number): Promise<Array<{ id: number; accountId: number }>>;
   /** T3 : comptes pertinents (au moins un bien actif). */
   listAccounts(accountIds: number[] | null, limit: number): Promise<number[]>;
+  /** T4 : documents dont l'analyse de référence porte des échéances candidates. */
+  listT4Sources(accountIds: number[] | null, limit: number, withCandidates: boolean): Promise<T4Source[]>;
   enqueue: typeof import('./job-queue.repository').enqueue;
 }
 
@@ -74,14 +88,7 @@ export interface ManualLaunchResult {
 }
 
 export function assertLaunchable(treatment: string): asserts treatment is ManualTreatment {
-  if (treatment === 'T4') {
-    throw new ManualLaunchRefused(
-      'NOT_LAUNCHABLE',
-      'T4 ne se lance pas seul : ses entrées sont les échéances candidates produites par T1. '
-      + 'Lancez une réanalyse T1 du même périmètre : chaque document réanalysé remet T4 en file.',
-    );
-  }
-  if (treatment !== 'T1' && treatment !== 'T3') {
+  if (treatment !== 'T1' && treatment !== 'T3' && treatment !== 'T4') {
     throw new ManualLaunchRefused('NOT_LAUNCHABLE', `${treatment} n'est pas un traitement batch lançable.`);
   }
 }
@@ -114,9 +121,12 @@ export async function launchManual(
 
   // Un de plus que le plafond : savoir qu'on le dépasse sans tout charger.
   const probeLimit = MANUAL_LAUNCH_MAX_JOBS + 1;
-  const objets: Array<{ accountId: number; fileId?: number }> = treatment === 'T1'
+  const objets: Array<{ accountId: number; fileId?: number; t4?: T4Source }> = treatment === 'T1'
     ? (await deps.listFiles(accountIds, probeLimit)).map((f) => ({ accountId: f.accountId, fileId: f.id }))
-    : (await deps.listAccounts(accountIds, probeLimit)).map((a) => ({ accountId: a }));
+    : treatment === 'T4'
+      ? (await deps.listT4Sources(accountIds, probeLimit, !options.dryRun))
+        .map((t4) => ({ accountId: t4.accountId, fileId: t4.fileId, t4 }))
+      : (await deps.listAccounts(accountIds, probeLimit)).map((a) => ({ accountId: a }));
 
   if (objets.length > MANUAL_LAUNCH_MAX_JOBS) {
     throw new ManualLaunchRefused(
@@ -137,6 +147,24 @@ export async function launchManual(
     // `origin: 'manual'` : hors de l'index de déduplication (queue-policy) —
     // une nouvelle exécution même si un job automatique équivalent attend
     // (OPS-016 : « deux manuels possibles sur même périmètre »).
+    if (treatment === 'T4') {
+      const t4 = o.t4!;
+      if (!Array.isArray(t4.candidates) || t4.candidates.length === 0) continue;
+      // Même forme que le déclencheur `source_analyzed` (agenda/index.ts,
+      // T4Payload), mais origine manuelle : hors déduplication.
+      const { jobId } = await deps.enqueue({
+        treatment: 'T4',
+        scope: { accountId: t4.accountId, targetType: 'asset_file', targetId: t4.fileId },
+        origin: 'manual',
+        triggerCode: 'manual',
+        payload: {
+          assetId: t4.assetId, userId: t4.userId, leadSourceId: t4.fileId,
+          candidates: t4.candidates, requestedByUserId: adminUserId,
+        },
+      });
+      if (jobId !== null) jobIds.push(jobId);
+      continue;
+    }
     const { jobId } = treatment === 'T1'
       ? await deps.enqueue({
         treatment: 'T1',
@@ -186,6 +214,32 @@ export async function defaultManualLaunchDeps(): Promise<ManualLaunchDeps> {
         [accountIds, limit] as never[],
       )) as unknown as Array<{ id: number }>;
       return rows.map((r) => Number(r.id));
+    },
+    async listT4Sources(accountIds, limit, withCandidates) {
+      // Filtre textuel AVANT toute conversion : seules les lignes au format
+      // du pipeline actuel (JSON.stringify du résultat T1) avec au moins un
+      // candidat sont converties en jsonb — la liste de sélection n'est
+      // évaluée que pour les lignes retenues.
+      const rows = (await pgClient.unsafe(
+        `SELECT f.id, f.account_id, COALESCE(f.asset_id, f.linked_asset_id) AS asset_id, f.user_id
+                ${withCandidates ? `, (r.raw_response_json::jsonb) -> 'agendaCandidates' AS candidates` : ''}
+           FROM asset_files f
+           JOIN document_analysis_runs r
+             ON r.asset_file_id = f.id AND r.is_current_reference AND r.status = 'completed'
+          WHERE f.deleted_at IS NULL
+            AND COALESCE(f.asset_id, f.linked_asset_id) IS NOT NULL
+            AND r.raw_response_json LIKE '%"agendaCandidates":[{%'
+            AND ($1::int[] IS NULL OR f.account_id = ANY($1::int[]))
+          ORDER BY f.account_id, f.id LIMIT $2`,
+        [accountIds, limit] as never[],
+      )) as unknown as Array<Record<string, unknown>>;
+      return rows.map((r) => ({
+        fileId: Number(r.id),
+        accountId: Number(r.account_id),
+        assetId: Number(r.asset_id),
+        userId: Number(r.user_id),
+        ...(withCandidates ? { candidates: Array.isArray(r.candidates) ? r.candidates as unknown[] : [] } : {}),
+      }));
     },
   };
 }

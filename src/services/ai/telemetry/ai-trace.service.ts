@@ -20,7 +20,8 @@ export interface CallTrace {
   traceId: string;
   useCaseCode: AiUseCaseCode;
   operationCode: string;
-  accountId: number;
+  /** `null` : appel technique sans compte (sonde du disjoncteur, MOD-013). */
+  accountId: number | null;
   userId?: number;
   parentOperationId?: number;
   provider: string;

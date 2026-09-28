@@ -1,12 +1,18 @@
 /**
  * Service d'assemblage ZIP pour les exports
  *
- * STANDARD — ZIP brut à plat :
+ * Export brut — `isPremium` vaut `isPremiumPlan(accounts.plan_type)`, vrai pour
+ * toute offre (Standard, Premium, Premium Duo) : le ZIP structuré est donc
+ * celui de tous les abonnés ; le ZIP à plat ne sert qu'à un compte sans offre
+ * connue. Les deux ne contiennent que la sélection du tiroir (documents
+ * choisis ; photos si demandées).
+ *
+ * SANS OFFRE CONNUE — ZIP brut à plat :
  *   - Fichiers à la racine uniquement (pas de dossiers)
  *   - Aucun récapitulatif, aucun JSON
  *   - Collision de noms : suffixe numérique
  *
- * PREMIUM — ZIP structuré :
+ * AVEC OFFRE — ZIP structuré :
  *   - Dossiers par catégorie documentaire
  *   - recap_donnees.txt : résumé lisible des données du bien
  *   - Aucun JSON (interne uniquement)
@@ -287,8 +293,22 @@ async function buildFlatZip(snapshot: AssetSnapshot): Promise<Buffer> {
 
 // ─── Export brut PREMIUM : ZIP structuré + recap_donnees.txt ──────────────────
 
-async function buildStructuredZip(manifest: ExportManifest, snapshot: AssetSnapshot): Promise<Buffer> {
+/**
+ * Contenu retenu pour l'export brut : documents choisis (manifeste), liens
+ * web, photos seulement si elles sont demandées. Le ZIP partait de tout le
+ * bien, quelle que soit la sélection du tiroir.
+ */
+function brutView(manifest: ExportManifest, snapshot: AssetSnapshot): AssetSnapshot {
+  return {
+    ...snapshot,
+    documents: [...manifest.includedDocuments, ...manifest.includedWebLinks],
+    photos: manifest.includedPhotos ? snapshot.photos : [],
+  };
+}
+
+async function buildStructuredZip(manifest: ExportManifest, fullSnapshot: AssetSnapshot): Promise<Buffer> {
   const zip = new JSZip();
+  const snapshot = brutView(manifest, fullSnapshot);
 
   // recap_donnees.txt en racine
   zip.file('recap_donnees.txt', buildRecapTxt(snapshot));
@@ -346,7 +366,7 @@ export async function buildExportZip(
     if (isPremium) {
       return buildStructuredZip(manifest, snapshot);
     } else {
-      return buildFlatZip(snapshot);
+      return buildFlatZip(brutView(manifest, snapshot));
     }
   }
 

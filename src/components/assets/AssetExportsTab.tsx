@@ -21,6 +21,7 @@ import { ExportPrepareDrawer } from './ExportPrepareDrawer';
 import { getPlanTheme } from '@/lib/plan-theme';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { useEntitlements } from '@/hooks/useEntitlements';
+import { isCilEligible } from '@/lib/asset-capabilities';
 
 export type ExportType =
   | 'CIL_REGLEMENTAIRE'
@@ -45,7 +46,7 @@ const EXPORT_USAGES: ExportUsageDef[] = [
   {
     type: 'CIL_REGLEMENTAIRE',
     label: 'Carnet d\'information du logement',
-    description: 'Générez le CIL réglementaire du logement à partir des données et documents disponibles.',
+    description: 'Générez le CIL d\'une maison ou d\'un appartement à partir des données et documents disponibles.',
     icon: FileText, section: 'dossiers', premiumOnly: true,
     allowedCategories: ['IMMOBILIER'],
   },
@@ -148,6 +149,8 @@ interface Props {
   assetTypeId?: number;
   planType: string;
   thumbnailUrl?: string | null;
+  /** Catégorie Immobilier (« Maison »…) — éligibilité CIL (GAP-08). */
+  assetSubtype?: string | null;
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -175,7 +178,9 @@ function formatDateLong(iso: string): string {
   return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(iso));
 }
 
-export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType, thumbnailUrl }: Props) {
+export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType, thumbnailUrl, assetSubtype }: Props) {
+  // CIL : maisons et appartements uniquement — même règle que l'API.
+  const cilOffert = isCilEligible({ category: assetCategory, subtype: assetSubtype });
   const [exports, setExports] = useState<ExportRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [drawerUsage, setDrawerUsage] = useState<ExportType | 'TRANSMISSION' | null>(null);
@@ -259,7 +264,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
   }, [assetId]);
 
   const loadCilSummary = useCallback(async () => {
-    if (assetCategory !== 'IMMOBILIER') return;
+    if (!cilOffert) return;
     setCilSummaryLoading(true);
     try {
       const res = await apiClient.get<CilPreparationSummary>(`/api/assets/${assetId}/exports/cil/preparation`);
@@ -269,7 +274,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
     } finally {
       setCilSummaryLoading(false);
     }
-  }, [assetId, assetCategory]);
+  }, [assetId, cilOffert]);
 
   useEffect(() => {
     loadExports();
@@ -359,7 +364,8 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
   }, [assetId, loadTransmissions]);
 
   const isAllowed = (usage: ExportUsageDef) =>
-    usage.allowedCategories === 'ALL' || usage.allowedCategories.includes(assetCategory);
+    (usage.type !== 'CIL_REGLEMENTAIRE' || cilOffert)
+    && (usage.allowedCategories === 'ALL' || usage.allowedCategories.includes(assetCategory));
 
   const dossierUsages = EXPORT_USAGES.filter(u => u.section === 'dossiers' && isAllowed(u));
   const transfertUsages = EXPORT_USAGES.filter(u => u.section === 'transfert' && isAllowed(u));
@@ -386,7 +392,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
             const Icon = usage.icon;
             const premiumTheme = getPlanTheme('PREMIUM');
             const isCilRegl = usage.type === 'CIL_REGLEMENTAIRE';
-            const showCilInfo = isCilRegl && assetCategory === 'IMMOBILIER' && !locked;
+            const showCilInfo = isCilRegl && cilOffert && !locked;
 
             return (
               <button
