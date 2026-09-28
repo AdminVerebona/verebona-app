@@ -3,8 +3,9 @@
 /**
  * Accueil — Direction D v2 « La mascotte » (§2 à §4, §12ter).
  *
- * Ordre de lecture identique sur desktop et mobile : la mascotte parle,
- * Mes biens, Ce que j'ai fait, Documents récents. Plus de cartes
+ * Ordre (décision produit) : la mascotte parle, Mes biens, puis
+ * [Ce que j'ai fait | Prochaines échéances] côte à côte si la place le
+ * permet (empilés sinon, échéances d'abord), et Documents récents. Plus de cartes
  * statistiques : le seul chiffre conservé est la pastille « À traiter » de
  * la navigation. Le champ Verebona est dans le header (coquille).
  */
@@ -15,7 +16,7 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import type { WriteBlockedInfo } from '@/lib/write-blocked';
 import { PendingCheckoutModal } from '@/components/subscription/PendingCheckoutModal';
 import { MascotSpeaks } from '@/components/home/MascotSpeaks';
-import { HomeAssets, RecentDocuments, VerebonaWork } from '@/components/home/HomeBlocks';
+import { HomeAssets, RecentDocuments, UpcomingEvents, VerebonaWork } from '@/components/home/HomeBlocks';
 import { useSession } from '@/hooks/useSession';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
@@ -268,29 +269,35 @@ export default function DashboardPage() {
         />
 
         {isLoading || !summary ? (
-          <div className="flex flex-col gap-6 md:grid md:grid-cols-[minmax(0,1fr)_360px] md:gap-8" aria-busy="true">
+          <div className="flex flex-col gap-6 md:gap-8" aria-busy="true">
             <div className="grid grid-cols-3 gap-3" style={{ gridAutoRows: '132px' }}>
               <Skeleton className="row-span-2 rounded-[18px]" />
               {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="rounded-[18px]" />)}
             </div>
-            <div className="space-y-4">
-              {[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 rounded-xl" />)}
-            </div>
+            <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 rounded-2xl" />)}</div>
           </div>
         ) : (
-          <>
-            {/* 2. Mes biens + 3. Ce que j'ai fait (colonne de 360 px) */}
-            <div className="flex flex-col gap-[26px] md:grid md:grid-cols-[minmax(0,1fr)_360px] md:items-start md:gap-8">
-              <HomeAssets assets={orderedAssets} onAddAsset={() => setShowAssetDialog(true)} />
-              <VerebonaWork items={summary.blocks.verebonaWork?.items ?? []} onNavigate={(href) => router.push(href)} />
+          /* ══════════════════════════════════════════════════════════════
+             ORDRE (décision produit, lot 8c)
+             Mascotte → Mes biens (bento du lot 8) → [Ce que j'ai fait |
+             Prochaines échéances] → Documents récents.
+             La paire se place côte à côte selon la largeur DISPONIBLE du
+             contenu (requête de conteneur, ≥ 1040 px), et non selon l'écran :
+             menu déplié ou replié, la décision suit la place réelle. En
+             dessous (tablette, bureau étroit, mobile), elle s'empile, les
+             échéances d'abord, comme sur mobile.
+             ══════════════════════════════════════════════════════════════ */
+          <div className="@container flex flex-col gap-[26px] md:gap-9">
+            <HomeAssets assets={orderedAssets} onAddAsset={() => setShowAssetDialog(true)} />
+            <div className="flex flex-col gap-[26px] md:gap-9 @min-[1040px]:grid @min-[1040px]:grid-cols-2 @min-[1040px]:items-start @min-[1040px]:gap-8">
+              <VerebonaWork className="order-2 @min-[1040px]:order-none" items={summary.blocks.verebonaWork?.items ?? []} onNavigate={(href) => router.push(href)} />
+              <UpcomingEvents className="order-1 @min-[1040px]:order-none" items={summary.blocks.upcoming?.items ?? []} />
             </div>
-
-            {/* 4. Documents récents */}
             <RecentDocuments
               docs={summary.blocks.recentDocuments?.items ?? []}
               onUpload={() => { setUploadAssetId(null); setShowUploadDialog(true); }}
             />
-          </>
+          </div>
         )}
       </div>
 

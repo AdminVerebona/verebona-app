@@ -43,17 +43,18 @@ export function tileFor(s: MascotSubject, today: string): MascotTile {
       tone: 'amber', icon: 'circle-alert', attention: true, assetName: asset,
       label: arbitrage ? 'Vérifier l’information' : 'Compléter l’information',
       status: arbitrage ? 'À vérifier' : 'À compléter',
+      kind: arbitrage ? 'verify' : 'action',
     };
   }
   if (code === 'MASC-EXT-ACTION') {
     const date = str(f.date);
     const retard = date ? daysBetween(date, today) : 0;
     return retard > 0
-      ? { tone: 'red', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: `En retard (${retard} j)` }
-      : { tone: 'amber', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: 'Aujourd’hui' };
+      ? { tone: 'red', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: `En retard (${retard} j)`, kind: 'overdue' }
+      : { tone: 'amber', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: 'Aujourd’hui', kind: 'action' };
   }
   if (code === 'MASC-BLOCKED') {
-    return { tone: 'amber', icon: 'circle-alert', attention: true, assetName: asset, label: 'Préciser l’échéance', status: 'À préciser' };
+    return { tone: 'amber', icon: 'circle-alert', attention: true, assetName: asset, label: 'Préciser l’échéance', status: 'À préciser', kind: 'action' };
   }
   if (code === 'DATE-NEXT' || code === 'DATE-NEXT-2') {
     const label = str(f.dateLabel);
@@ -63,24 +64,25 @@ export function tileFor(s: MascotSubject, today: string): MascotTile {
       assetName: asset ?? str(f.firstAssetName),
       label: code === 'DATE-NEXT-2' ? 'Voir les échéances' : 'Voir l’échéance',
       status: label ? `Le ${label}${estimee}` : 'À venir',
+      kind: 'info',
     };
   }
   if (code === 'PROC-DOC-UPLOAD' || code === 'PROC-DOC-ANALYSIS') {
     return {
       tone: 'blue', icon: 'file-text', attention: false, assetName: str(f.documentTitle),
-      label: 'Voir le document', status: code === 'PROC-DOC-UPLOAD' ? 'En cours d’envoi' : 'En analyse',
+      label: 'Voir le document', status: code === 'PROC-DOC-UPLOAD' ? 'En cours d’envoi' : 'En analyse', kind: 'info',
     };
   }
   if (code === 'PROC-EXPORT') {
-    return { tone: 'blue', icon: 'file-text', attention: false, assetName: asset, label: 'Voir les exports', status: 'En préparation' };
+    return { tone: 'blue', icon: 'file-text', attention: false, assetName: asset, label: 'Voir les exports', status: 'En préparation', kind: 'info' };
   }
   if (code === 'ONB-ASSET') {
-    return { tone: 'blue', icon: 'plus', attention: true, assetName: null, label: 'Ajouter un premier bien', status: 'Maison, véhicule, objet…' };
+    return { tone: 'blue', icon: 'plus', attention: true, assetName: null, label: 'Ajouter un premier bien', status: 'Maison, véhicule, objet…', kind: 'action' };
   }
   if (code === 'ONB-DOC') {
-    return { tone: 'green', icon: 'download', attention: true, assetName: asset, label: 'Déposer un document', status: 'Je le lis et le range pour vous' };
+    return { tone: 'green', icon: 'download', attention: true, assetName: asset, label: 'Déposer un document', status: 'Je le lis et le range pour vous', kind: 'action' };
   }
-  return { tone: 'blue', icon: 'circle-alert', attention: s.requiresAttention, assetName: asset, label: s.actions[0]?.label ?? 'Voir', status: 'À voir' };
+  return { tone: 'blue', icon: 'circle-alert', attention: s.requiresAttention, assetName: asset, label: s.actions[0]?.label ?? 'Voir', status: 'À voir', kind: s.requiresAttention ? 'action' : 'info' };
 }
 
 /** AAAA-MM-JJ, Europe/Paris (même référence que le collecteur). */
@@ -240,20 +242,46 @@ export function actionTiles(p: MascotPresentation | null): ActionTile[] {
 
 // ── Pose (§3.2) ─────────────────────────────────────────────────────────────
 
-export type HomePose = 'welcome-wave' | 'reminder-bell' | 'success-check' | 'neutral';
+export type HomePose =
+  | 'welcome-wave' | 'alert-folder' | 'questioning' | 'reminder-bell' | 'success-check' | 'neutral';
+
+/** Nature d'un sujet, y compris sans métadonnées de tuile (présentation ancienne). */
+function kindOf(x: MascotParagraph): NonNullable<MascotTile['kind']> {
+  if (x.tile?.kind) return x.tile.kind;
+  if (x.tile?.tone === 'red') return 'overdue';
+  return (x.tile?.attention ?? true) ? 'action' : 'info';
+}
 
 /**
- * `welcome-wave` sur un compte vide, `reminder-bell` s'il y a des sujets qui
- * méritent l'attention, `success-check` sinon. Discours indisponible : pose
- * neutre (jamais « tout est à jour » sur une panne).
+ * Pose de la grande mascotte, graduée selon ce qu'il y a à traiter :
+ *   compte vide → `welcome-wave` ;
+ *   au moins une action en retard → `alert-folder` ;
+ *   sinon une information à vérifier (incohérence) → `questioning` ;
+ *   sinon un autre sujet d'attention (rappel, à compléter) → `reminder-bell` ;
+ *   rien à traiter → `success-check` ;
+ *   discours indisponible → `neutral` (jamais « tout est à jour » sur une panne).
  */
 export function homePose(p: MascotPresentation | null, empty: boolean, failed = false): HomePose {
   if (empty) return 'welcome-wave';
   if (!p) return failed ? 'neutral' : 'success-check';
-  const paras = realParagraphs(p);
-  if (paras.some((x) => x.tile?.attention ?? true)) return 'reminder-bell';
-  if (p.status === 'degraded' && paras.length === 0) return 'neutral';
+  const kinds = realParagraphs(p).map(kindOf);
+  if (kinds.includes('overdue')) return 'alert-folder';
+  if (kinds.includes('verify')) return 'questioning';
+  if (kinds.includes('action')) return 'reminder-bell';
+  if (p.status === 'degraded' && kinds.length === 0) return 'neutral';
   return 'success-check';
+}
+
+/** Texte alternatif de la mascotte d'accueil, selon sa pose. */
+export function homePoseLabel(pose: HomePose): string {
+  switch (pose) {
+    case 'welcome-wave': return 'Verebona vous souhaite la bienvenue';
+    case 'alert-folder': return 'Verebona vous signale une échéance en retard';
+    case 'questioning': return 'Verebona vous demande de vérifier une information';
+    case 'reminder-bell': return 'Verebona vous rappelle un sujet à traiter';
+    case 'success-check': return 'Verebona : tout est à jour';
+    default: return 'Verebona';
+  }
 }
 
 // ── Suggestions « Ou demandez-moi : » ───────────────────────────────────────

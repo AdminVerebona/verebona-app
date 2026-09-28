@@ -14,7 +14,7 @@ vi.mock('next/navigation', () => ({
 import * as React from 'react';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { HomeAssets, RecentDocuments, VerebonaWork } from '../HomeBlocks';
+import { HomeAssets, RecentDocuments, UpcomingEvents, VerebonaWork } from '../HomeBlocks';
 import { AppSidebar } from '@/components/shell/AppSidebar';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { VerebonaSpaceProvider } from '@/components/verebona/space/VerebonaSpaceProvider';
@@ -31,7 +31,7 @@ const asset = (id: number, name: string, extra: Partial<HomeAsset> = {}): HomeAs
 const noop = () => {};
 
 describe('Mes biens', () => {
-  it('bento : 1 grande carte, 3 tuiles, « Tous les biens » ; pastille d’action', () => {
+  it('bento (lot 8) : 1 grande carte, 3 tuiles, « Tous les biens » ; pastille d’action', () => {
     const html = renderToStaticMarkup(h(HomeAssets, {
       onAddAsset: noop,
       assets: [
@@ -42,6 +42,7 @@ describe('Mes biens', () => {
     }));
     expect(html).toContain('Récemment consultés');
     expect(html).toContain('row-span-2');
+    expect(html).toContain('grid-cols-3');
     expect(html.indexOf('Appartement Lyon')).toBeLessThan(html.indexOf('Ferrari Testarossa'));
     expect(html).toContain('Tous les biens');
     expect(html).toContain('1 action à faire');
@@ -74,6 +75,23 @@ describe('Ce que j’ai fait', () => {
   it('rien encore : encadré en pointillés', () => {
     const html = renderToStaticMarkup(h(VerebonaWork, { items: [], onNavigate: noop }));
     expect(html).toContain('Rien pour l’instant. Dès votre premier document');
+  });
+});
+
+describe('Prochaines échéances', () => {
+  it('lignes : pastille de date, titre, bien, délai ; lien « Mon agenda » ; 3 au plus', () => {
+    const e = (id: number, title: string, tone: 'red' | 'amber' | 'green', rel: string) =>
+      ({ id, title, assetName: 'Ferrari Testarossa', date: '2026-10-12', day: '12', month: 'oct.', rel, tone, forecast: false });
+    const html = renderToStaticMarkup(h(UpcomingEvents, { items: [e(1, 'Révision annuelle', 'red', 'En retard (2 j)'), e(2, 'Contrôle technique', 'amber', 'Dans 2 semaines'), e(3, 'Bail', 'green', 'Dans 3 mois'), e(4, 'Quatrième', 'green', 'Dans 1 an')] }));
+    expect(html).toContain('Prochaines échéances');
+    expect(html).toContain('href="/agenda"');
+    expect(html).toContain('En retard (2 j)');
+    expect(html).toContain('oct.');
+    expect(html).not.toContain('Quatrième');
+  });
+
+  it('vide : message d’amorce', () => {
+    expect(renderToStaticMarkup(h(UpcomingEvents, { items: [] }))).toContain('Aucune échéance pour l’instant. Elles apparaîtront ici dès que je les aurai lues dans vos documents.');
   });
 });
 

@@ -27,7 +27,7 @@ import { greetingDateLong, greetingDateShort, greetingWord } from '@/lib/mascot-
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import type { MascotAction, MascotParagraph, MascotTile } from '@/services/home/mascot/types';
 import {
-  actionTiles, composeSpeech, displayedSecondaries, homePose, homeSuggestions, secondaryActions, splitHighlights, type ActionTile,
+  actionTiles, composeSpeech, displayedSecondaries, homePose, homePoseLabel, homeSuggestions, secondaryActions, splitHighlights, type ActionTile,
 } from '@/services/home/mascot/bubble';
 import type { AnswerKind } from '@/lib/verebona/space';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
@@ -197,8 +197,8 @@ export function MascotSpeaks({ firstName, empty, onCreateAsset, onUploadDocument
       <div className="relative ml-1 flex h-[88px] w-[96px] flex-shrink-0 items-end justify-center md:ml-0 md:h-[156px] md:w-[156px]">
         <span className="absolute -inset-1.5 rounded-full md:-inset-2.5" style={{ background: 'radial-gradient(closest-side, rgba(59,130,246,.32), rgba(59,130,246,0))' }} aria-hidden />
         <span className="absolute bottom-0.5 left-[38px] right-[38px] hidden h-3 rounded-full bg-black/50 blur-[6px] md:block" aria-hidden />
-        <MascotPose pose={pose} size={136} priority className="relative hidden md:block" style={{ filter: 'drop-shadow(0 24px 34px rgba(4,10,26,.6))' }} />
-        <MascotPose pose={pose} size={86} priority className="relative md:hidden" style={{ filter: 'drop-shadow(0 14px 20px rgba(4,10,26,.6))' }} />
+        <MascotPose pose={pose} size={136} alt={homePoseLabel(pose)} priority className="relative hidden md:block" style={{ filter: 'drop-shadow(0 24px 34px rgba(4,10,26,.6))' }} />
+        <MascotPose pose={pose} size={86} alt={homePoseLabel(pose)} priority className="relative md:hidden" style={{ filter: 'drop-shadow(0 14px 20px rgba(4,10,26,.6))' }} />
       </div>
 
       {/* Bulle : coin resserré vers la mascotte (inférieur gauche desktop, supérieur gauche mobile) */}

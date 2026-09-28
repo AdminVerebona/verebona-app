@@ -125,6 +125,12 @@ export interface MascotTile {
   status: string;
   /** Le sujet mérite l'attention (et non une simple information). */
   attention: boolean;
+  /**
+   * Nature du sujet, pour la pose de la mascotte (gradation) : en retard,
+   * information à vérifier (incohérence, arbitrage), autre action (compléter,
+   * préciser, échéance du jour, premier pas), information.
+   */
+  kind?: 'overdue' | 'verify' | 'action' | 'info';
 }
 
 export type MascotStatus = 'ok' | 'clear' | 'degraded';

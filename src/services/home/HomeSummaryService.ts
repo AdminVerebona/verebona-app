@@ -14,9 +14,10 @@ import {
 import { eq, and, or, isNull, isNotNull, gte, lte, sql, inArray, notInArray, desc, asc } from 'drizzle-orm';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import {
-  deriveVerebonaWork, docStatus, docTone,
-  type HomeRecentDocument, type VerebonaWorkItem,
+  deriveUpcoming, deriveVerebonaWork, docStatus, docTone,
+  type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem,
 } from '@/services/home/home-blocks';
+import { isAgendaActionItem } from '@/services/home/mascot/collector';
 import { getRubric } from '@/lib/referential/v2';
 
 // Champs visibles par l'utilisateur dans l'UI — les autres champs (techniques)
@@ -72,6 +73,8 @@ export interface HomeSummaryPayload {
     verebonaWork: { items: VerebonaWorkItem[] };
     /** « Documents récents » — Direction D v2 §3.5 (4 tuiles). */
     recentDocuments: { items: HomeRecentDocument[] };
+    /** « Prochaines échéances » — prototype D v2 (décision produit), 5 au plus. */
+    upcoming: { items: HomeUpcomingItem[] };
   };
   assets: { items: HomeAsset[]; total: number };
   /** Total des documents du compte (compte vide, §12ter). */
@@ -122,6 +125,9 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       id: agendaItems.id,
       title: agendaItems.title,
       startDate: agendaItems.startDate,
+      originType: agendaItems.originType,
+      homeCategory: agendaItems.homeCategory,
+      occurrenceNature: agendaItems.occurrenceNature,
     })
       .from(agendaItems)
       .where(and(
@@ -442,6 +448,22 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     if (id && assetIds.includes(id)) assetTodoCount[id] = (assetTodoCount[id] ?? 0) + 1;
   }
 
+  // « Prochaines échéances » : échéances actives du compte (ni réalisées, ni
+  // annulées — filtre de la requête), bornées par l'horizon de la requête.
+  const upcoming = deriveUpcoming(
+    agendaRows
+      .filter((i) => !!i.startDate)
+      .map((i) => ({
+        id: i.id,
+        title: i.title,
+        date: String(i.startDate),
+        assetName: agendaAssetMap[i.id]?.[0]?.assetName ?? null,
+        forecast: i.occurrenceNature === 'FORECAST',
+        action: isAgendaActionItem({ homeCategory: i.homeCategory, originType: i.originType, title: i.title }),
+      })),
+    today,
+  );
+
   const isEmpty = assetRows.length === 0 && agendaRows.length === 0;
 
   // Les signed URLs S3 sont intentionnellement absentes ici pour ne pas bloquer
@@ -474,6 +496,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     blocks: {
       verebonaWork: { items: verebonaWork },
       recentDocuments: { items: recentDocuments },
+      upcoming: { items: upcoming },
     },
     assets: {
       items: enrichedAssets,

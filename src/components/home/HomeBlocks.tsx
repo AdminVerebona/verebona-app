@@ -10,7 +10,7 @@ import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
 import { openDrawer } from '@/lib/drawers';
 import { pickBento } from '@/lib/home/recent-assets';
-import { relativeAgo, type HomeRecentDocument, type VerebonaWorkItem } from '@/services/home/home-blocks';
+import { relativeAgo, type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem } from '@/services/home/home-blocks';
 import type { HomeAsset } from '@/services/home/HomeSummaryService';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
 
@@ -93,12 +93,12 @@ const EMPTY_ASSET_KINDS = [
   { key: 'objet', label: 'Un objet de valeur', short: 'Objet', icon: Folder },
 ];
 
-export function HomeAssets({ assets, onAddAsset }: { assets: HomeAsset[]; onAddAsset: () => void }) {
+export function HomeAssets({ assets, onAddAsset, className = '' }: { assets: HomeAsset[]; onAddAsset: () => void; className?: string }) {
   const empty = assets.length === 0;
   const { big, small } = pickBento(assets);
 
   return (
-    <section aria-labelledby="home-biens" className="flex min-w-0 flex-col gap-2.5 md:gap-3">
+    <section aria-labelledby="home-biens" className={`flex min-w-0 flex-col gap-2.5 md:gap-3 ${className}`}>
       <div className="flex items-center gap-2.5">
         <h2 id="home-biens" className={`m-0 ${SECTION_TITLE}`}>Mes biens</h2>
         {!empty && <span className="hidden text-[12.5px] text-[color:var(--text-muted)] md:inline">Récemment consultés</span>}
@@ -166,10 +166,10 @@ function openWork(w: VerebonaWorkItem, push: (href: string) => void) {
   else push(`/assets/${t.assetId}?tab=details${t.fieldKey ? `&highlight=${encodeURIComponent(t.fieldKey)}` : ''}`);
 }
 
-export function VerebonaWork({ items, onNavigate }: { items: VerebonaWorkItem[]; onNavigate: (href: string) => void }) {
+export function VerebonaWork({ items, onNavigate, className = '' }: { items: VerebonaWorkItem[]; onNavigate: (href: string) => void; className?: string }) {
   const now = new Date();
   return (
-    <section aria-labelledby="home-fait" className="flex min-w-0 flex-col gap-2.5 md:gap-3">
+    <section aria-labelledby="home-fait" className={`flex min-w-0 flex-col gap-2.5 md:gap-3 ${className}`}>
       <div className="flex items-center gap-2 md:gap-2.5">
         <MascotPose pose="document-analysis-pdf" size={26} still className="hidden md:block" />
         <MascotPose pose="document-analysis-pdf" size={24} still className="md:hidden" />
@@ -234,10 +234,10 @@ function StatusBadge({ label }: { label: string }) {
   );
 }
 
-export function RecentDocuments({ docs, onUpload }: { docs: HomeRecentDocument[]; onUpload: () => void }) {
+export function RecentDocuments({ docs, onUpload, className = '' }: { docs: HomeRecentDocument[]; onUpload: () => void; className?: string }) {
   const open = (d: HomeRecentDocument) => openDrawer({ kind: 'document', id: d.id });
   return (
-    <section aria-labelledby="home-docs" className="flex min-w-0 flex-col gap-2.5 md:gap-3">
+    <section aria-labelledby="home-docs" className={`flex min-w-0 flex-col gap-2.5 md:gap-3 ${className}`}>
       <div className="flex items-center gap-2.5">
         <h2 id="home-docs" className={`m-0 ${SECTION_TITLE}`}>Documents récents</h2>
         {docs.length > 0 && (
@@ -331,3 +331,57 @@ export function RecentDocuments({ docs, onUpload }: { docs: HomeRecentDocument[]
   );
 }
 
+
+// ── Prochaines échéances (prototype D v2, décision produit) ─────────────────
+
+const UPCOMING_TONES: Record<HomeUpcomingItem['tone'], { bg: string; fg: string }> = {
+  red: { bg: 'var(--wash-red)', fg: 'var(--on-red)' },
+  amber: { bg: 'var(--wash-amber)', fg: 'var(--on-amber)' },
+  green: { bg: 'var(--wash-green)', fg: 'var(--on-green)' },
+};
+
+/**
+ * Lignes d'échéance : pastille de date colorée (rouge en retard, amber
+ * proche, vert plus tard), titre, bien, délai. Un clic ouvre la fiche de
+ * l'échéance en tiroir. Desktop : 3 lignes ; mobile : 2.
+ */
+export function UpcomingEvents({ items, className = '' }: { items: HomeUpcomingItem[]; className?: string }) {
+  return (
+    <section aria-labelledby="home-echeances" className={`flex min-w-0 flex-col gap-2.5 md:gap-3 ${className}`}>
+      <div className="flex items-center gap-2.5">
+        <h2 id="home-echeances" className={`m-0 ${SECTION_TITLE}`}>Prochaines échéances</h2>
+        <Link href="/agenda" className={SECTION_LINK}>Mon agenda</Link>
+      </div>
+      {items.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-[color:var(--border)] px-4 py-3.5 text-[13px] leading-normal text-[color:var(--muted-foreground)] md:rounded-[18px] md:px-[18px] md:py-4 md:text-[13.5px]">
+          Aucune échéance pour l’instant. Elles apparaîtront ici dès que je les aurai lues dans vos documents.
+        </div>
+      ) : (
+        <ul className="m-0 flex list-none flex-col gap-2 p-0">
+          {items.slice(0, 3).map((e, i) => {
+            const tone = UPCOMING_TONES[e.tone];
+            return (
+              <li key={e.id} className={i >= 2 ? 'hidden md:block' : ''}>
+                <button
+                  type="button"
+                  onClick={() => openDrawer({ kind: 'echeance', id: e.id })}
+                  className="flex min-h-[60px] w-full items-center gap-3 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-3 py-2.5 text-left transition-all duration-150 hover:border-[color:var(--border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] md:min-h-14 md:px-2.5 md:py-2"
+                >
+                  <span className="flex h-11 w-11 flex-shrink-0 flex-col items-center justify-center rounded-xl leading-none" style={{ background: tone.bg, color: tone.fg }} aria-hidden>
+                    <span className="text-[16px] font-bold">{e.day}</span>
+                    <span className="text-[9.5px] font-semibold uppercase tracking-[.04em]">{e.month}</span>
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-[14px] font-semibold text-[color:var(--text-primary)]">{e.title}</span>
+                    {e.assetName && <span className="truncate text-[12px] text-[color:var(--muted-foreground)]">{e.assetName}</span>}
+                  </span>
+                  <span className="whitespace-nowrap text-[12px] font-semibold" style={{ color: tone.fg }}>{e.rel}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}

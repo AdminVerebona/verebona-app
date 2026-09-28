@@ -13,7 +13,7 @@ import { buildSecondaries, selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
 import type { MascotParagraph, MascotPresentation, MascotSubject } from '../types';
 import {
-  CLEAR_SPEECH, EMPTY_ACCOUNT_SPEECH, EMPTY_ACCOUNT_SUGGESTIONS, actionTiles, composeSpeech, displayedSecondaries, homePose,
+  CLEAR_SPEECH, EMPTY_ACCOUNT_SPEECH, homePoseLabel, EMPTY_ACCOUNT_SUGGESTIONS, actionTiles, composeSpeech, displayedSecondaries, homePose,
   homeSuggestions, lowerFirst, secondaryActions, splitHighlights, tileFor,
 } from '../bubble';
 
@@ -93,6 +93,14 @@ describe('tuiles d’action (§3.2)', () => {
     secondaryLabel: '', ...s,
   });
 
+  it('nature du sujet pour la pose : vérifier, compléter, retard, échéance', () => {
+    expect(tileFor(subject({ sourceCode: 'ATP-CONFLICT', facts: { actionKind: 'arbitrage' } }), TODAY).kind).toBe('verify');
+    expect(tileFor(subject({ sourceCode: 'ATP-MISSING', facts: { actionKind: 'complément' } }), TODAY).kind).toBe('action');
+    expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: '2026-09-19' } }), TODAY).kind).toBe('overdue');
+    expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: TODAY } }), TODAY).kind).toBe('action');
+    expect(tileFor(subject({ sourceCode: 'DATE-NEXT', requiresAttention: false, facts: {} }), TODAY).kind).toBe('info');
+  });
+
   it('sévérité : amber à vérifier, rouge en retard (jours), bleu pour une échéance', () => {
     expect(tileFor(subject({ sourceCode: 'ATP-CONFLICT', facts: { actionKind: 'arbitrage' }, assetName: 'Ferrari Testarossa' }), TODAY))
       .toMatchObject({ tone: 'amber', label: 'Vérifier l’information', status: 'À vérifier', assetName: 'Ferrari Testarossa', attention: true });
@@ -132,18 +140,37 @@ describe('tuiles d’action (§3.2)', () => {
     const p = buildPresentation({ subjects, secondaries: buildSecondaries(c, subjects), degraded: false, messages: null, today: TODAY });
     const [tile] = actionTiles(p);
     expect(tile).toMatchObject({ tone: 'red', label: 'Reporter ou marquer fait', sub: 'Vélo Cargo · En retard (2 j)' });
-    expect(homePose(p, false)).toBe('reminder-bell');
+    expect(homePose(p, false)).toBe('alert-folder'); // révision en retard réelle
     expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Un sujet mérite votre attention aujourd’hui/);
   });
 });
 
 describe('pose et suggestions', () => {
-  it('reminder-bell s’il y a des sujets, success-check sinon, welcome-wave sur un compte vide', () => {
+  it('gradation : vide → welcome-wave ; en retard → alert-folder ; à vérifier → questioning ; autre sujet → reminder-bell ; rien → success-check ; panne → neutral', () => {
+    const verifier = { ...ambre, kind: 'verify' as const };
+    const completer = { ...ambre, label: 'Compléter l’information', status: 'À compléter', kind: 'action' as const };
+    const retard = { ...rouge, kind: 'overdue' as const };
+    const echeance = { ...info, kind: 'info' as const };
+    expect(homePose(presentationOf({ paragraphs: [para('a.', verifier), para('b.', retard)] }), false)).toBe('alert-folder');
+    expect(homePose(presentationOf({ paragraphs: [para('a.', completer), para('b.', verifier)] }), false)).toBe('questioning');
+    expect(homePose(presentationOf({ paragraphs: [para('a.', completer), para('b.', echeance)] }), false)).toBe('reminder-bell');
+    expect(homePose(presentationOf({ paragraphs: [para('a.', echeance)] }), false)).toBe('success-check');
+    expect(homePose(presentationOf({ status: 'degraded', paragraphs: [] }), false)).toBe('neutral');
+    expect(homePose(presentationOf({ paragraphs: [para('a.', verifier)] }), true)).toBe('welcome-wave');
+    // Présentation sans « kind » (cache ancien) : la couleur suffit.
+    expect(homePose(presentationOf({ paragraphs: [para('a.', rouge)] }), false)).toBe('alert-folder');
     expect(homePose(presentationOf({ paragraphs: [para('a.', ambre)] }), false)).toBe('reminder-bell');
     expect(homePose(presentationOf({ paragraphs: [para('a.', info)] }), false)).toBe('success-check');
     expect(homePose(presentationOf({ status: 'clear', paragraphs: [] }), false)).toBe('success-check');
     expect(homePose(null, true)).toBe('welcome-wave');
     expect(homePose(null, false, true)).toBe('neutral');
+  });
+
+  it('chaque pose a un texte alternatif et une image', () => {
+    for (const pose of ['welcome-wave', 'alert-folder', 'questioning', 'reminder-bell', 'success-check', 'neutral'] as const) {
+      expect(homePoseLabel(pose)).toMatch(/^Verebona/);
+      expect(() => readFileSync(join(process.cwd(), 'public/mascot', `${pose}.webp`))).not.toThrow();
+    }
   });
 
   it('3 pastilles : questions du moteur, puis catalogue de la page ; compte vide : questions d’amorce', () => {
