@@ -79,7 +79,7 @@ export async function POST(
     const retained = resolution === 'use_detected' ? conflict.proposed_value : conflict.current_value;
 
     if (resolution !== 'ignored') {
-      await applyUserDecision(conflict.asset_id, conflict.field_key, retained, session.userId);
+      await applyUserDecision(accountId, conflict.asset_id, conflict.field_key, retained, session.userId);
     }
 
     await pgClient.unsafe(
@@ -110,24 +110,46 @@ export async function POST(
  * L'origine est portée par `assets.key_characteristics`, au format
  * `<champ>__origin` établi par la migration 0107. C'est ce marqueur que la
  * réconciliation consulte avant toute écriture automatique.
+ *
+ * CDC 15 T3-02 (lot 13) :
+ *   · `<champ>__updatedAt` est posé (la matrice compare des dates), et
+ *     l'autorité de la preuve précédente retirée ;
+ *   · `CANONICAL_WRITE_MODE=enabled` et clé du registre : écriture par
+ *     `writeCanonicalAssetField` (origine USER, colonnes miroirs, journal) ;
+ *   · correction d'un défaut : `key_characteristics` est une colonne TEXT —
+ *     l'ancienne requête combinait TEXT et JSONB (`COALESCE(text, jsonb)`) et
+ *     échouait ; la conversion est désormais explicite.
  */
 async function applyUserDecision(
+  accountId: number,
   assetId: number,
   fieldKey: string,
   value: string | null,
   userId: number,
 ): Promise<void> {
+  const { canonicalWriteMode } = await import('@/services/canonical/rollout');
+  const { isRegistryKey } = await import('@/services/ai/reconciliation/apply-decision');
+  if (canonicalWriteMode() === 'enabled' && isRegistryKey(fieldKey)) {
+    const { writeCanonicalAssetField } = await import('@/services/canonical/asset-state');
+    await writeCanonicalAssetField({
+      assetId, accountId, key: fieldKey, value, origin: 'USER', actorUserId: userId,
+      source: { type: 'to_process_conflict', id: null }, mode: 'enabled',
+    });
+    return;
+  }
   await pgClient.unsafe(
     `UPDATE assets
-        SET key_characteristics = COALESCE(key_characteristics, '{}'::jsonb)
+        SET key_characteristics = ((COALESCE(NULLIF(key_characteristics, ''), '{}')::jsonb
               || jsonb_build_object(
                    $2::text, to_jsonb($3::text),
                    $2::text || '__origin', to_jsonb('USER'::text),
                    $2::text || '__origin_user_id', to_jsonb($4::int),
-                   $2::text || '__origin_at', to_jsonb(NOW()::text)
-                 ),
+                   $2::text || '__origin_at', to_jsonb(NOW()::text),
+                   $2::text || '__updatedAt', to_jsonb(to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+                 ))
+              - ($2::text || '__authority') - ($2::text || '__sourceDate') - ($2::text || '_origin'))::text,
             updated_at = NOW()
-      WHERE id = $1 AND deleted_at IS NULL`,
-    [assetId, fieldKey, value, userId] as never[],
+      WHERE id = $1 AND account_id = $5 AND deleted_at IS NULL`,
+    [assetId, fieldKey, value, userId, accountId] as never[],
   );
 }

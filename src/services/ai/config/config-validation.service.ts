@@ -32,11 +32,12 @@
  * faire échouer le démarrage de la production.
  */
 import { TREATMENTS, getTreatment, isPromptAdministrable, type Treatment } from './treatments';
-import { TRIGGER_CATALOG } from './catalogs';
+import { TRIGGER_CATALOG, activeUnlessDeclaredCodes } from './catalogs';
 import {
   REASONING_LEVELS, GUARDRAIL_REACTIONS, FIELD_LABELS,
   type TreatmentConfig, type ConfigFieldKey,
 } from './config-types';
+import { masterConfigIssues } from './prompt-architecture';
 
 export interface ValidationIssue {
   treatment: Treatment;
@@ -183,6 +184,12 @@ function validateTokens(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssu
   if (borne !== undefined && c.maxOutputTokens > borne) {
     out.push(issue(t, 'maxOutputTokens', `Au-delà de la borne du modèle principal (${borne}).`));
   }
+  // CDC 15 T2-43 : cette valeur est la source du plafond de l'assistant,
+  // bornée au budget V1 (CDC Assistant §31.2 : 500) jusqu'à l'arbitrage PO.
+  // Signalé, sans bloquer.
+  if (t === 'T2' && c.maxOutputTokens > 500) {
+    out.push(issue(t, 'maxOutputTokens', 'Au-delà du budget V1 de l\'assistant (500, CDC Assistant §31.2) : plafonné à 500 à l\'exécution.', false));
+  }
   return out;
 }
 
@@ -241,6 +248,11 @@ function validateTriggers(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIs
       out.push(issue(t, 'triggers', `Déclencheur « ${tr.code} » déclaré deux fois.`));
     }
     vus.add(tr.code);
+    // CDC 15 CFG-04, DOD-19 : code retiré, sans effet — signalé, pas bloquant
+    // (versions existantes).
+    if (TRIGGER_CATALOG.find((d) => d.code === tr.code)?.retired) {
+      out.push(issue(t, 'triggers', `Le déclencheur « ${tr.code} » est retiré : il est ignoré à l'exécution.`, false));
+    }
   }
 
   if (c.triggers.length === 0) {
@@ -252,7 +264,9 @@ function validateTriggers(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIs
       'Aucun déclencheur renseigné : les déclencheurs par défaut du code s\'appliquent.',
       cat.requireActiveTrigger === true,
     ));
-  } else if (!c.triggers.some((x) => x.active)) {
+  } else if (!c.triggers.some((x) => x.active)
+    // CDC 15 CFG-04 : un code introduit après la version et non déclaré reste actif.
+    && !activeUnlessDeclaredCodes(t).some((code) => !c.triggers.some((x) => x.code === code))) {
     out.push(issue(
       t, 'triggers',
       "Aucun déclencheur actif : ce traitement ne partira que manuellement.",
@@ -373,6 +387,11 @@ export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): Vali
     }
   } else if (!c.prompt || c.prompt.trim() === '') {
     out.push(issue(c.treatment, 'prompt', 'Le prompt est obligatoire.'));
+  }
+  // CDC 15 D-03, D-04, §29.1 : préambule sans master, texte master complet,
+  // architecture master cohérente.
+  if (isPromptAdministrable(c.treatment)) {
+    for (const m of masterConfigIssues(c)) out.push(issue(c.treatment, m.field, m.message, m.blocking));
   }
   out.push(...validateModels(c, cat));
   out.push(...validateReasoning(c));

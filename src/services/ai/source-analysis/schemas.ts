@@ -250,3 +250,29 @@ export const AgendaCandidatesOutput = z.object({
   })).max(50).default([]),
 });
 export type AgendaCandidatesOutput = z.infer<typeof AgendaCandidatesOutput>;
+
+// ── Prompt maître T1 (CDC 15 §23, PM-T1, lot 12) ────────────────────────────
+//
+// Point d'entrée unique pour les consommateurs : les schémas des deux branches
+// (GROUP_UPLOAD / ANALYZE_DOCUMENT) sont DÉFINIS dans `master/t1-contract.ts`
+// et seulement réexportés ici — jamais dupliqués (une seconde définition
+// finirait par diverger du prompt).
+export {
+  T1_MASTER_PROMPT_CODE,
+  T1_TASKS,
+  T1_PROVENANCES,
+  T1_TARGET_TYPES,
+  T1_EVENT_NATURES,
+  T1_VALUE_TYPES,
+  t1Evidence,
+  t1VisualEvidence,
+  t1Target,
+  t1Recurrence,
+  t1SemanticEvent,
+  t1Fact,
+  t1Table,
+  T1GroupUploadOutput,
+  T1AnalyzeDocumentOutput,
+  T1MasterOutput,
+  t1OutputSchemaFor,
+} from './master/t1-contract';

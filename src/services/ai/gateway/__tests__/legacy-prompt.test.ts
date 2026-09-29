@@ -5,7 +5,7 @@
  * mémoire et URI natives, et garde d'exploitation (`AI_BLOCKED`).
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const traces: Array<Record<string, unknown>> = [];
@@ -312,7 +312,9 @@ describe('régressions', () => {
     if (statSync(p).isDirectory()) return n === '__tests__' || n === 'node_modules' ? [] : walk(p);
     return /\.(ts|tsx)$/.test(n) ? [p] : [];
   });
-  const fichiers = () => walk(join(racine, 'src')).map((p) => p.slice(racine.length + 1));
+  // Chemins relatifs normalisés en « / » : sous Windows, `join` produit des « \ »
+  // et les préfixes autorisés ne correspondraient plus.
+  const fichiers = () => walk(join(racine, 'src')).map((p) => relative(racine, p).split(sep).join('/'));
 
   it('aucun module applicatif ne lit process.env.GEMINI_API_KEY', () => {
     // Seuls la résolution de la clé (provider/) et l'adaptateur peuvent nommer

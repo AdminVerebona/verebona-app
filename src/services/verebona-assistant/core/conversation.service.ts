@@ -640,7 +640,9 @@ export async function persistResult(
 
       // Mémorise l'état de la machine pour une reprise de conversation (§24),
       // intitule le fil à sa première question et prolonge sa conservation :
-      // un fil reste consultable sept jours après sa dernière activité.
+      // un fil reste consultable `historyDays` jours après sa dernière
+      // activité (90 jours, soit 3 mois — `assistant-config.ts`, variable
+      // unique lue aussi par la purge ; CDC 15 T2-46).
       await tx.unsafe(
         `UPDATE verebona_conversations
             SET machine_state = $2, updated_at = now(), last_message_at = now(),

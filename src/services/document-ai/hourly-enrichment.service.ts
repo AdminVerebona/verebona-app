@@ -47,7 +47,16 @@ export interface HourlyEnrichmentResult {
   durationMs: number;
 }
 
-export async function runHourlyEnrichment(): Promise<HourlyEnrichmentResult> {
+export interface HourlyEnrichmentOptions {
+  /**
+   * CDC 15 CFG-04 : phase 3 (revue IA) autorisée par le déclencheur T3
+   * `coherence_ai_review` de la version effective. `false` : les éléments
+   * `requires_ai_review` restent en file, intacts. Absent : autorisée.
+   */
+  aiReview?: boolean;
+}
+
+export async function runHourlyEnrichment(options: HourlyEnrichmentOptions = {}): Promise<HourlyEnrichmentResult> {
   const startAt = Date.now();
   const result: HourlyEnrichmentResult = {
     staleRecovered: 0,
@@ -106,7 +115,10 @@ export async function runHourlyEnrichment(): Promise<HourlyEnrichmentResult> {
   // ── Phase 3: [EXCEPTIONNEL] Process requires_ai_review items ──────────────
   // Only called when items are explicitly flagged. Max 5 per run.
   try {
-    const hasAiItems = await hasAiReviewItems();
+    const hasAiItems = options.aiReview === false ? false : await hasAiReviewItems();
+    if (options.aiReview === false) {
+      console.log('[hourly-enrichment] Phase 3 ignorée : déclencheur T3 « coherence_ai_review » inactif.');
+    }
     if (hasAiItems) {
       const aiItems = await dequeueAiReviewItems(5);
       console.log(`[hourly-enrichment] Phase 3: ${aiItems.length} items requires_ai_review à traiter`);

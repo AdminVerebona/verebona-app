@@ -229,9 +229,17 @@ export async function resolveArbitration(
       return resolveAgendaDuplicate(tx, action, value, accountId, options);
     }
 
-    const writer = findFieldWriter(action.targetType as TargetType, action.fieldKey);
+    // Relation (T3-07, LINK-ELT) : écrivain de relation de la liste blanche,
+    // contrôle d'appartenance EN BASE dans la transaction.
+    const relation = action.relationKey
+      ? (await import('./document-equipment-link')).findRelationWriter(action.targetType, action.relationKey)
+      : null;
+    const writer = relation ?? findFieldWriter(action.targetType as TargetType, action.fieldKey);
     if (!writer) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' as const };
     if (!writer.validate(value)) {
+      return { ok: false, previousValue: null, error: 'INVALID_VALUE' as const };
+    }
+    if (relation && !(await relation.check(tx, action.targetId, accountId, value))) {
       return { ok: false, previousValue: null, error: 'INVALID_VALUE' as const };
     }
 
@@ -261,14 +269,21 @@ export async function resolveArbitration(
       actorUserId: options.userId ?? null,
       targetType: action.targetType,
       targetId: action.targetId,
-      fieldKey: action.fieldKey,
+      fieldKey: action.fieldKey ?? action.relationKey,
       previousValue: (previousValue ?? null) as never,
       newValue: (value ?? null) as never,
       details: { ruleCode: action.ruleCode, cycleNumber: action.cycleNumber },
       createdAt: now,
     });
 
-    return { ok: true, previousValue };
+    return { ok: true, previousValue, afterCommit: relation?.afterCommit
+      ? () => relation.afterCommit!({ accountId, targetId: action.targetId, value, previousValue, undo: false })
+      : undefined };
+  }).then(async (r) => {
+    // Effet hors transaction (lien N-N), seulement une fois la résolution validée.
+    const { afterCommit, ...res } = r as ResolveResult & { afterCommit?: () => Promise<void> };
+    await afterCommit?.();
+    return res;
   });
 }
 
@@ -301,15 +316,27 @@ export async function undoArbitration(
 
   if (!action) return { ok: false, previousValue: null, error: 'NOT_FOUND' };
 
-  const writer = findFieldWriter(action.targetType as TargetType, action.fieldKey);
+  const relation = action.relationKey
+    ? (await import('./document-equipment-link')).findRelationWriter(action.targetType, action.relationKey)
+    : null;
+  const writer = relation ?? findFieldWriter(action.targetType as TargetType, action.fieldKey);
   if (!writer) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
 
+  let applied: unknown = null;
   // (Annulation hors périmètre produit ; même client transactionnel par cohérence.)
   await db.transaction(async (tx) => {
-    // Une valeur précédente nulle n'est pas restaurable par l'écrivain, qui
-    // écrit des valeurs valides : seule l'action est rouverte, et la donnée
-    // reste telle quelle. Le problème redevient visible, ce qui est l'essentiel.
-    if (previousValue !== null && previousValue !== undefined && writer.validate(previousValue)) {
+    if (relation) {
+      // Relation : la valeur précédente est restaurée telle quelle, y compris
+      // « aucun équipement » (null) ; un équipement qui n'appartient plus au
+      // bien du document n'est jamais réécrit.
+      applied = await relation.read(tx, action.targetId, accountId);
+      const restaurable = previousValue === null || previousValue === undefined
+        || (relation.validate(previousValue) && await relation.check(tx, action.targetId, accountId, previousValue));
+      if (restaurable) await relation.write(tx, action.targetId, accountId, previousValue ?? null);
+    } else if (previousValue !== null && previousValue !== undefined && writer.validate(previousValue)) {
+      // Une valeur précédente nulle n'est pas restaurable par l'écrivain, qui
+      // écrit des valeurs valides : seule l'action est rouverte, et la donnée
+      // reste telle quelle. Le problème redevient visible, ce qui est l'essentiel.
       await writer.write(tx, action.targetId, accountId, previousValue);
     }
     await tx
@@ -322,6 +349,9 @@ export async function undoArbitration(
       })
       .where(eq(toProcessActions.id, action.id));
   });
+
+  // Lien N-N : le lien USER posé par la résolution est retiré (hors transaction).
+  await relation?.afterCommit?.({ accountId, targetId: action.targetId, value: previousValue ?? null, previousValue: applied, undo: true });
 
   return { ok: true, previousValue };
 }

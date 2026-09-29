@@ -1,0 +1,147 @@
+{
+  "case": "T1-02",
+  "description": "Achat de pneus pour la Clio : achat de la pièce, pas d'acquisition du véhicule (acquisitionPrice proposé à tort sur le bien, retiré).",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      },
+      {
+        "id": 13,
+        "name": "Tesla Model 3",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12,
+        13
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Pneus Clio",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "PNEUS 205/55 R16 x4",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": "2026-07-01",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "01/07/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 38000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL 380,00 €",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "PROPERTY_MANAGEMENT",
+          "documentTypeCode": "ACQUISITION_INVOICE",
+          "confidence": 0.7,
+          "evidence": {
+            "excerpt": "FACTURE"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "AB-123-CD"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawValue": "PNEUS 205/55 R16 x4",
+          "normalizedValue": "4 pneus 205/55 R16",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "GENERIC",
+            "entityId": null,
+            "rawLabel": "Pneus",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Pneus"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "PNEUS 205/55 R16 x4",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          },
+          "rawKey": "article",
+          "subject": "Pneus",
+          "attribute": "achat"
+        },
+        {
+          "canonicalKey": "acquisitionPrice",
+          "rawValue": "380,00 €",
+          "normalizedValue": 380,
+          "valueType": "money_eur",
+          "canonicalUnit": "EUR",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "probable",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL 380,00 €",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

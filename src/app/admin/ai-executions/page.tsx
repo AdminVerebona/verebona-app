@@ -83,6 +83,14 @@ interface Execution {
   origin: string | null;
   /** BO-009 : mode déclaré par la mascotte (`displayed` / `pregeneration`). */
   callerMode?: string | null;
+  /** CDC 15 DP-05, CFG-02, CFG-05, OBS-CFG : configuration réellement appliquée. */
+  task?: string | null;
+  masterPromptCode?: string | null;
+  masterPromptVersion?: string | null;
+  reasoning?: string | null;
+  maxOutputTokens?: number | null;
+  engine?: string | null;
+  callTrigger?: string | null;
 }
 
 interface Page { rows: Execution[]; total: number; limit: number; offset: number }
@@ -474,6 +482,31 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           {detail.call.promptVersion && ` · prompt ${detail.call.promptVersion}`}
           {detail.call.appVersion && ` · code ${detail.call.appVersion.slice(0, 8)}`}
         </p>
+
+        {/* CDC 15 CFG-02, CFG-05, DP-05, OBS-CFG : ce qui a réellement été appliqué. */}
+        <section className="space-y-1" data-testid="execution-applied-config">
+          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Configuration appliquée</h3>
+          <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs">
+            <dt className="text-[color:var(--text-muted)]">Moteur</dt>
+            <dd className="text-[color:var(--text-secondary)]">
+              {detail.call.engine === 'legacy' ? 'legacy (relais historique)' : detail.call.engine === 'new' ? 'nouveau moteur' : 'non tracé'}
+            </dd>
+            <dt className="text-[color:var(--text-muted)]">Déclencheur</dt>
+            <dd className="text-[color:var(--text-secondary)]">{detail.call.callTrigger ?? job?.triggerCode ?? '—'}</dd>
+            <dt className="text-[color:var(--text-muted)]">TASK</dt>
+            <dd className="text-[color:var(--text-secondary)]">{detail.call.task ?? '—'}</dd>
+            <dt className="text-[color:var(--text-muted)]">Prompt maître</dt>
+            <dd className="text-[color:var(--text-secondary)]">
+              {detail.call.masterPromptCode
+                ? `${detail.call.masterPromptCode}${detail.call.masterPromptVersion ? ` v${detail.call.masterPromptVersion}` : ''}`
+                : '—'}
+            </dd>
+            <dt className="text-[color:var(--text-muted)]">Raisonnement</dt>
+            <dd className="text-[color:var(--text-secondary)]">{detail.call.reasoning ?? (detail.call.engine ? 'défaut du modèle' : 'non tracé')}</dd>
+            <dt className="text-[color:var(--text-muted)]">Jetons de sortie max</dt>
+            <dd className="text-[color:var(--text-secondary)]">{detail.call.maxOutputTokens ?? (detail.call.engine ? 'défaut du modèle' : 'non tracé')}</dd>
+          </dl>
+        </section>
 
         <section className="space-y-1">
           <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Appels de la chaîne de modèles</h3>

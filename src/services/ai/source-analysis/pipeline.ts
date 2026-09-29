@@ -58,7 +58,7 @@ function confidenceToScore(c?: 'certain' | 'probable' | 'conflictual'): number |
 }
 import { identifyEntities } from './steps/identify-entities.step';
 import { buildAgendaCandidates } from './steps/build-agenda-candidates.step';
-import { persistEvidence } from './steps/persist-evidence.step';
+import { persistEvidence, persistProjectedFacts } from './steps/persist-evidence.step';
 import { persistAnalysisResult } from './persistence/analysis-result.repository';
 import { notifyLotCompleted } from './lot-notification';
 import { broadcast } from './stream/broadcast';
@@ -69,6 +69,14 @@ import type {
 } from './types';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
 import { markSourcesGrouped } from '@/services/documents/grouped-sources';
+// CDC 15 lot 12 — prompt maître T1 derrière `AI_T1_ANALYSIS_MODE` (legacy par défaut).
+import { resolveT1Route } from './master/analysis-mode';
+import { analyseGroupWithMaster, type MasterGroupAnalysis } from './master/analyse-group-master';
+import { enqueueT3ForAffectedAssets } from './master/reconciliation-fanout';
+import { t3NegativeMode } from '@/services/canonical/rollout';
+import { computeMasterDocumentLinks, writeMasterDocumentLinks } from './master/document-links';
+import { scheduleT1Shadow } from './master/shadow';
+import { groupUpload } from './steps/group-upload.step';
 
 export interface RunSourceAnalysisInput {
   sourceType: SourceType;
@@ -142,8 +150,23 @@ export async function runSourceAnalysis(
     return { results: [], analysedCount: 0, skippedReason: 'no_valid_source' };
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // AIGUILLAGE T1 — CDC 15 §29, D-04, D-18 (`master/analysis-mode.ts`)
+  //
+  //   · `steps`        : chemin historique, strictement inchangé (défaut) ;
+  //   · `steps+shadow` : chemin historique + master en observation sur
+  //                      échantillon, sans écriture (préproduction, D-18) ;
+  //   · `master`       : GROUP_UPLOAD / ANALYZE_DOCUMENT, projection
+  //                      déterministe, faits écrits sur LEUR cible.
+  // Crédits, lot, notifications, événements aval, suppression différée des
+  // secondaires et diffusion restent communs aux trois chemins.
+  // ══════════════════════════════════════════════════════════════════════
+  const route = await resolveT1Route();
+
   // ── Étape 4 : regroupement (interne, jamais un usage) ───────────────────
-  const { groups, trace: groupTrace } = await groupSources(input);
+  const { groups, trace: groupTrace } = route === 'master'
+    ? await groupUpload(input)
+    : await groupSources(input);
 
   const ctx = await loadAnalysisContext(req.accountId, input.linkedAssetId ?? null);
 
@@ -158,17 +181,44 @@ export async function runSourceAnalysis(
     broadcast(leadSourceId, { type: 'progress', stage: 'extraction' });
 
     try {
-      const result = await analyseGroup(input, groupIndices, ctx, groupTrace);
+      // Chemin master ; en cas d'échec TOTAL du master (toute la chaîne de
+      // modèles, sortie inexploitable), repli sur les étapes pour ce groupe :
+      // le document est analysé quand même, l'échec est signalé et journalisé.
+      let master: MasterGroupAnalysis | null = null;
+      let repliMaster: string | null = null;
+      if (route === 'master') {
+        try {
+          master = await analyseGroupWithMaster(input, groupIndices, ctx, groupTrace);
+        } catch (e) {
+          if (isExecutionCancelled(e)) throw e;
+          repliMaster = (e as Error).message;
+          console.warn(`[source-analysis] master T1 en échec pour la source ${leadSourceId}, repli sur les étapes :`, repliMaster);
+        }
+      }
+      const result = master?.result ?? await analyseGroup(input, groupIndices, ctx, groupTrace);
+      if (repliMaster) {
+        result.warnings.push({
+          code: 'MASTER_FALLBACK_STEPS',
+          message: `Analyse par le prompt maître impossible (${repliMaster.slice(0, 300)}) : analyse par étapes utilisée.`,
+          target: 't1-master:fallback-steps',
+        });
+      }
 
       // ⚠️ Point de contrôle essentiel : l'appel IA a pu répondre APRÈS un
       // rollback. Aucun de ses résultats n'est alors écrit.
       await guard?.assertActive('persistance du résultat');
+
+      // Observation (D-18) : APRÈS le point de contrôle — un job annulé
+      // n'appelle pas le modèle ; lancée sans être attendue, jamais d'erreur.
+      if (route === 'steps+shadow') scheduleT1Shadow({ input, groupIndices, ctx, legacy: result });
 
       broadcast(leadSourceId, { type: 'progress', stage: 'persistance' });
 
       // Étape 12 — persistance, idempotente.
       const persisted = await persistAnalysisResult({
         input, leadSourceId, groupSourceIds, lotId, result,
+        // Chemin master : route et version résolue dans l'empreinte du run.
+        ...(master ? { master: { masterPromptVersion: master.promptVersion } } : {}),
       });
 
       // ══════════════════════════════════════════════════════════════════
@@ -189,6 +239,9 @@ export async function runSourceAnalysis(
         assetIdAtAnalysis: resolveAssetId(result, input),
         sourceType: input.sourceType === 'web_link' ? 'web_link' : 'asset_file',
         sourceVersion: input.sourceVersion ?? null,
+        // Chemin master seulement : multi-biens déclaré par le modèle ou
+        // constaté sur les cibles des faits (U8). Rien en legacy.
+        ...(master ? { multiAsset: master.projection.multiAsset } : {}),
       })).catch((e: Error) => {
         console.error(`[source-analysis] base de connaissance du fichier ${leadSourceId} non écrite :`, e.message);
       });
@@ -232,10 +285,55 @@ export async function runSourceAnalysis(
         );
       });
 
-      // Étape 9 (suite) — preuves, uniquement si un bien est déterminé.
+      // Étape 9 (suite) — preuves.
       const assetId = resolveAssetId(result, input);
-      if (assetId) {
+      if (master) {
+        // Chemin master (T1-04, T1-05) : chaque fait projeté est écrit sur SA
+        // cible, anciennes preuves du document remplacées — plus jamais tous
+        // les champs sur un seul bien. Appelé MÊME sans fait : c'est ce qui
+        // retire (supersede) les preuves d'une analyse antérieure.
         await guard?.assertActive('preuves');
+        const ecrites = await persistProjectedFacts({
+          input,
+          leadSourceId,
+          facts: master.facts,
+          documentType: result.document.type?.value,
+          documentDate: result.document.date?.value,
+          trace: result.operationTrace,
+          analysisRunId: persisted.runId,
+          promptVersion: master.promptVersion,
+        });
+        // Chaque bien touché est réconcilié, pas seulement celui du document
+        // (multi-biens, preuves remplacées sur un autre bien).
+        await enqueueT3ForAffectedAssets({
+          accountId: req.accountId,
+          userId: req.userId,
+          leadSourceId,
+          affectedAssetIds: ecrites?.affectedAssetIds ?? [],
+          documentAssetId: assetId,
+        });
+        // Relation N-N (X-01, T1-05) : chaque bien vérifié d'un document
+        // multi-biens est relié (PRIMARY / SECONDARY / MENTIONED, origine AI).
+        // Non bloquant : les preuves sont écrites, le lien se rattrape.
+        await writeMasterDocumentLinks({
+          accountId: input.accountId,
+          fileId: leadSourceId,
+          links: computeMasterDocumentLinks({
+            facts: master.facts,
+            assetCandidates: result.assetCandidates,
+            documentAssetId: master.documentAssetId,
+            knownAssetId: input.linkedAssetId ?? null,
+          }),
+        }).catch((e: Error) => {
+          console.error(`[source-analysis] liens document ↔ biens du fichier ${leadSourceId} non écrits :`, e.message);
+        });
+      } else if (assetId) {
+        await guard?.assertActive('preuves');
+        // CDC 15 T3-03 (lot 13) : réanalyse en mode « étapes » — les preuves
+        // antérieures du document sont remplacées sous T3_NEGATIVE_RECONCILIATION
+        // (enabled : écrit ; shadow : journalisé ; legacy : rien).
+        const negMode = t3NegativeMode();
+        let remplacees: { assetIds: number[] } | null = null;
         await persistEvidence({
           input,
           leadSourceId,
@@ -244,7 +342,17 @@ export async function runSourceAnalysis(
           documentType: result.document.type?.value,
           documentDate: result.document.date?.value,
           trace: result.operationTrace,
+          supersede: negMode === 'legacy' ? undefined : { mode: negMode, onResult: (r) => { remplacees = r; } },
         });
+        // Preuves remplacées sur un AUTRE bien (document déplacé puis
+        // réanalysé) : ce bien est réconcilié aussi.
+        const autres = (remplacees as { assetIds: number[] } | null)?.assetIds ?? [];
+        if (negMode === 'enabled' && autres.length) {
+          await enqueueT3ForAffectedAssets({
+            accountId: req.accountId, userId: req.userId, leadSourceId,
+            affectedAssetIds: autres, documentAssetId: assetId,
+          });
+        }
       }
 
       // ⚠️ CORRECTION §4.1.7 — la suppression des fichiers secondaires

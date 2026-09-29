@@ -1,0 +1,220 @@
+{
+  "case": "P-T1-03",
+  "description": "Facture de réparation : événement repair, kilométrage ; jamais acquisitionPrice ni acquisitionDate (proposés à tort par le modèle, retirés), ni événement d'achat du bien.",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      },
+      {
+        "id": 13,
+        "name": "Tesla Model 3",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12,
+        13
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Réparation embrayage Clio",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "REMPLACEMENT KIT EMBRAYAGE",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": "2026-06-02",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 02/06/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 74900,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Total TTC : 749,00 €",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "REPAIR_INVOICE",
+          "confidence": 0.93,
+          "evidence": {
+            "excerpt": "FACTURE — RÉPARATION"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "AB-123-CD"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "GARAGE EXEMPLE\nFACTURE — RÉPARATION\nVéhicule : Renault Clio AB-123-CD\nKilométrage : 78 000 km\nREMPLACEMENT KIT EMBRAYAGE\nTotal TTC : 749,00 €\nVéhicule acheté le 10/01/2020",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawValue": "REMPLACEMENT KIT EMBRAYAGE",
+          "normalizedValue": "Remplacement kit embrayage",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "REMPLACEMENT KIT EMBRAYAGE",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "repair",
+            "nature": "HISTORICAL"
+          },
+          "rawKey": "prestation",
+          "label": "Réparation",
+          "subject": "Clio",
+          "attribute": "réparation"
+        },
+        {
+          "canonicalKey": "mileage",
+          "rawValue": "78 000 km",
+          "normalizedValue": 78000,
+          "valueType": "number",
+          "canonicalUnit": "km",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Kilométrage : 78 000 km",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": "acquisitionPrice",
+          "rawValue": "749,00 €",
+          "normalizedValue": 749,
+          "valueType": "money_eur",
+          "canonicalUnit": "EUR",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "probable",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Total TTC : 749,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": "acquisitionDate",
+          "rawValue": "10/01/2020",
+          "normalizedValue": "2020-01-10",
+          "valueType": "date",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "probable",
+            "evidenceSignals": []
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "probable",
+          "evidence": {
+            "excerpt": "Véhicule acheté le 10/01/2020",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "garage",
+          "label": "Garage",
+          "subject": "Clio",
+          "attribute": "garage",
+          "normalizedValue": "Garage Exemple",
+          "valueType": "string",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": []
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "GARAGE EXEMPLE",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

@@ -195,6 +195,13 @@ export async function DELETE(
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
     if (file.accountId) await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId: file.accountId, entityId: fileId });
 
+    // CDC 15 T3-03 : preuves du document retirées, biens touchés réconciliés
+    // (T3_NEGATIVE_RECONCILIATION ; ne lève jamais).
+    if (file.accountId) {
+      const { onDocumentsDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
+      await onDocumentsDeleted({ accountId: file.accountId, userId, fileIds: [fileId] });
+    }
+
     return NextResponse.json(
       {
         success: true,

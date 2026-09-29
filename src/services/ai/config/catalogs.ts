@@ -102,6 +102,20 @@ export interface TriggerDefinition {
   kind: 'event' | 'schedule';
   /** Traitements auxquels le déclencheur s'applique. Vide = tous les batch. */
   treatments?: readonly string[];
+  /**
+   * Retiré de l'écran (CDC 15 CFG-04, DOD-19 : « paramètre BO = effet runtime
+   * ou retrait ») : plus proposé ni appliqué, mais toujours reconnu pour que
+   * les versions existantes qui le portent restent valides (avertissement).
+   */
+  retired?: boolean;
+  /**
+   * Code introduit APRÈS des versions existantes (CDC 15 CFG-04, lot 11) :
+   * absent d'une liste renseignée, il reste ACTIF — la version ne pouvait pas
+   * le connaître. Seul un `active: false` explicite le désactive. Sans cette
+   * règle, le déploiement aurait coupé en silence un comportement historique
+   * sur toute version dont la liste était déjà renseignée.
+   */
+  activeUnlessDeclared?: boolean;
 }
 
 /**
@@ -143,14 +157,24 @@ export const TRIGGER_CATALOG: readonly TriggerDefinition[] = [
   { code: 'schedule_monthly', label: 'Mensuel', kind: 'schedule', treatments: SCHEDULABLE },
 
   { code: 'source_uploaded', label: 'Dépôt d\'une source', kind: 'event', treatments: ['T1'] },
-  // Conservé (versions existantes) mais NON conditionnant : l'analyse d'un
-  // lien web est l'action synchrone de l'utilisateur qui l'ajoute, pas un
-  // traitement de fond — la refuser silencieusement serait pire.
-  { code: 'web_link_added', label: 'Ajout d\'un lien web', kind: 'event', treatments: ['T1'] },
+  // CDC 15 CFG-04 : reprise automatique des analyses jamais faites, en échec
+  // récupérable ou bloquées (`analysis-recovery-scheduler`, toutes les 5 min).
+  // Partait en dur ; désormais soumise à la version effective.
+  { code: 'analysis_recovery', label: 'Reprise automatique des analyses (toutes les 5 min)', kind: 'event', treatments: ['T1'], activeUnlessDeclared: true },
+  // CDC 15 CFG-04 : RETIRÉ de l'écran. L'analyse d'un lien web est l'action
+  // synchrone de l'utilisateur qui l'ajoute, pas un traitement de fond — la
+  // refuser silencieusement serait pire ; le code n'était donc pas lu. Un
+  // paramètre du BO sans effet est retiré (DOD-19). Reconnu pour les versions
+  // existantes, jamais appliqué.
+  { code: 'web_link_added', label: 'Ajout d\'un lien web (retiré, sans effet)', kind: 'event', treatments: ['T1'], retired: true },
   { code: 'source_analyzed', label: 'Analyse de source terminée', kind: 'event', treatments: ['T3', 'T4'] },
   { code: 'document_linked', label: 'Rattachement d\'un document à un bien', kind: 'event', treatments: ['T3'] },
   { code: 'asset_updated', label: 'Modification d\'un bien', kind: 'event', treatments: ['T3'] },
   { code: 'arbitration_resolved', label: 'Arbitrage « À traiter » résolu', kind: 'event', treatments: ['T3'] },
+  // CDC 15 CFG-04 : revue IA exceptionnelle du cron `/api/cron/hourly-enrichment`
+  // (phase 3, éléments `requires_ai_review`, moteur historique T3). Les phases
+  // déterministes du cron ne sont pas concernées.
+  { code: 'coherence_ai_review', label: 'Revue IA du cron de cohérence (legacy)', kind: 'event', treatments: ['T3'], activeUnlessDeclared: true },
 ];
 
 /**
@@ -167,10 +191,23 @@ export const SCHEDULE_PERIOD_HOURS: Readonly<Record<string, number>> = {
   schedule_monthly: 24 * 30,
 };
 
+/** Déclencheurs proposés à l'écran — jamais les retirés (CDC 15 CFG-04). */
 export function listTriggers(treatment?: string): TriggerDefinition[] {
   return TRIGGER_CATALOG.filter(
-    (t) => !t.treatments || !treatment || t.treatments.includes(treatment),
+    (t) => !t.retired && (!t.treatments || !treatment || t.treatments.includes(treatment)),
   );
+}
+
+/** Codes actifs tant qu'une version ne les déclare pas (CDC 15 CFG-04). */
+export function activeUnlessDeclaredCodes(treatment: string): string[] {
+  return TRIGGER_CATALOG
+    .filter((t) => t.activeUnlessDeclared && !t.retired && (!t.treatments || t.treatments.includes(treatment)))
+    .map((t) => t.code);
+}
+
+/** Codes retirés : reconnus (versions existantes), jamais appliqués. */
+export function retiredTriggerCodes(): Set<string> {
+  return new Set(TRIGGER_CATALOG.filter((t) => t.retired).map((t) => t.code));
 }
 
 export function triggerCodes(): Set<string> {

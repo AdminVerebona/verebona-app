@@ -10,16 +10,23 @@
 import { db, pgClient } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { getActiveEvidence } from '../evidence/field-evidence.service';
+import { getActiveEvidence, evidenceReadFilter } from '../evidence/field-evidence.service';
 import { resolveAuthority } from './decision/authority-matrix';
 import { normalize } from './decision/normalizers';
 import { readOrigin } from './field-origin';
 import { isCriticalField } from './decision/critical-fields';
+import { EVIDENCE_BASED_ORIGINS } from './negative-reconciliation';
 import type { DecisionInput, EvidenceCandidate, CurrentValue } from './types';
 
 export interface CollectedField {
   fieldKey: string;
   input: DecisionInput;
+  /**
+   * Valeur en place AUTOMATIQUE qu'aucune preuve active ne soutient plus
+   * (sa preuve a été retirée ou remplacée) — CDC 15 T3-04 : l'autorité
+   * mémorisée de la preuve disparue ne doit plus la protéger.
+   */
+  unproven: boolean;
 }
 
 /** Rassemble, pour chaque champ disposant d'au moins une preuve, l'entrée du moteur. */
@@ -27,13 +34,26 @@ export async function collectFields(
   accountId: number,
   assetId: number,
 ): Promise<CollectedField[]> {
+  return (await collectAssetEvidenceState(accountId, assetId)).fields;
+}
+
+/**
+ * Fiche du bien et champs à décider. `kc` sert la phase négative (T3-04) :
+ * les valeurs automatiques SANS aucune preuve active n'apparaissent pas dans
+ * `fields`. Preuves retenues : ACTIVE, du bien lui-même (cible nulle ou ce
+ * bien — T1-04) ; un fait ciblé ailleurs ne produit rien ici.
+ */
+export async function collectAssetEvidenceState(
+  accountId: number,
+  assetId: number,
+): Promise<{ kc: Record<string, unknown> | null; fields: CollectedField[] }> {
   const [asset] = await db
     .select({ keyCharacteristics: assets.keyCharacteristics })
     .from(assets)
     .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId)))
     .limit(1);
 
-  if (!asset) return [];
+  if (!asset) return { kc: null, fields: [] };
 
   const kc = parseKeyCharacteristics(asset.keyCharacteristics);
   const fieldKeys = await listFieldsWithEvidence(accountId, assetId);
@@ -73,18 +93,36 @@ export async function collectFields(
       excerpt: e.excerpt ?? '',
     }));
 
+    const current = buildCurrentValue(fieldKey, kc);
     collected.push({
       fieldKey,
       input: {
         fieldKey,
-        current: buildCurrentValue(fieldKey, kc),
+        current,
         candidates,
         isCritical: isCriticalField(fieldKey),
       },
+      unproven: isUnprovenAutomaticValue(current, candidates),
     });
   }
 
-  return collected;
+  return { kc, fields: collected };
+}
+
+/**
+ * Valeur automatique (extraction ou réconciliation) renseignée qu'aucune
+ * preuve candidate (normalisée) ne reproduit : elle ne tient plus que par
+ * l'autorité mémorisée d'une preuve retirée ou remplacée (T3-04).
+ */
+export function isUnprovenAutomaticValue(current: CurrentValue | null, candidates: EvidenceCandidate[]): boolean {
+  if (!current || current.normalized === null || current.normalized === '') return false;
+  // Seules les origines fondées sur une preuve documentaire (comme
+  // `planRetractions`) : USER/ADMIN, IMPORT et SYSTEM_RULE ne perdent jamais
+  // leur autorité (relecture lot 13).
+  if (!EVIDENCE_BASED_ORIGINS.includes(current.origin)) return false;
+  const utilisables = candidates.filter((c) => c.normalized !== null && c.normalized !== '');
+  if (utilisables.length === 0) return false;
+  return !utilisables.some((c) => c.normalized === current.normalized);
 }
 
 function buildCurrentValue(
@@ -109,9 +147,13 @@ function buildCurrentValue(
 }
 
 async function listFieldsWithEvidence(accountId: number, assetId: number): Promise<string[]> {
+  // CDC 15 §14.4, T1-04 : preuves ACTIVE du bien lui-même (même filtre que
+  // `getActiveEvidence`) — ni les preuves remplacées, ni celles d'un
+  // équipement ou d'une pièce portés par le bien.
+  const filtre = await evidenceReadFilter({ assetLevel: true });
   const rows = await pgClient.unsafe(
     `SELECT DISTINCT field_key FROM field_evidence
-      WHERE account_id = $1 AND asset_id = $2 AND status = 'active'`,
+      WHERE account_id = $1 AND asset_id = $2 AND status = 'active'${filtre}`,
     [accountId, assetId] as never[],
   );
   return (rows as unknown as Array<{ field_key: string }>).map((r) => r.field_key);

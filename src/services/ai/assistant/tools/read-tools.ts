@@ -151,9 +151,12 @@ export const getDocumentEvidence: AssistantTool<{ documentId: number; fieldKey?:
   async execute(params, ctx): Promise<ToolResult<unknown>> {
     assertValidContext('getDocumentEvidence', ctx);
 
+    // CDC 15 §14.4 : une preuve remplacée par une réanalyse n'est plus citée.
+    const { evidenceReadFilter } = await import('../../evidence/field-evidence.service');
+    const cycleDeVie = await evidenceReadFilter();
     const sql = `SELECT id, field_key, value_json, evidence_excerpt, source_location, confidence
                    FROM field_evidence
-                  WHERE account_id = $1 AND source_id = $2 AND status = 'active'
+                  WHERE account_id = $1 AND source_id = $2 AND status = 'active'${cycleDeVie}
                     ${params.fieldKey ? 'AND field_key = $3' : ''}
                   ORDER BY authority_score DESC
                   LIMIT ${ctx.maxResults}`;

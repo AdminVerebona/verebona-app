@@ -36,7 +36,10 @@ afterEach(() => {
 
 describe('timeout global : les résultats déjà trouvés sont rendus (§9.6, §30.1)', () => {
   it('recherche trop lente après le niveau 2 : ERROR_RECOVERABLE, sources conservées, pas d’erreur finale', async () => {
-    vi.stubEnv('VEREBONA_ASSISTANT_TOTAL_TIMEOUT_MS', '60');
+    // Délai assez large pour que le niveau 2 aboutisse avant le timeout même
+    // sur un poste chargé (60 ms échouait sous Windows en suite complète) ;
+    // `retrieve` ne répondant jamais, c'est bien le timeout qui conclut.
+    vi.stubEnv('VEREBONA_ASSISTANT_TOTAL_TIMEOUT_MS', '1500');
     resetAssistantConfigForTests();
     const out = await runAssistant(INPUT, base({
       answerFromData: async () => ({

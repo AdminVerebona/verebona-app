@@ -60,6 +60,12 @@ export async function POST(request: NextRequest) {
     // CDC Assistant §25.7, §31.7 : un événement par document supprimé, une
     // seule invalidation pour la demande (bus en lot).
     await emitBusinessEvents(deleted.map((d) => ({ type: 'DOCUMENT_DELETED' as const, accountId, entityId: d.id })));
+
+    // CDC 15 T3-03 : preuves des documents retirées, biens touchés réconciliés.
+    if (deleted.length) {
+      const { onDocumentsDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
+      await onDocumentsDeleted({ accountId, userId, fileIds: deleted.map((d) => d.id) });
+    }
     return NextResponse.json({
       success: true,
       deleted: deleted.length,

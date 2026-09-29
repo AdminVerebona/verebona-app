@@ -52,7 +52,7 @@ export async function PATCH(
     const fields: Record<string, unknown> = (body.fields as Record<string, unknown> | undefined) ?? body;
 
     const result = await updateAssetDetails({
-      assetId, accountId: session.currentAccountId, section, fields,
+      assetId, accountId: session.currentAccountId, section, fields, actorUserId: session.userId,
     });
     // CDC Assistant §25.7, §31.7 : fiche du bien modifiée.
     await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId });
@@ -73,6 +73,8 @@ export async function PATCH(
           return NextResponse.json({ error: 'ASSET_UNAVAILABLE', reason: error.details.reason }, { status: 403 });
         case 'SECTION_NOT_APPLICABLE':
           return NextResponse.json({ error: 'SECTION_NOT_APPLICABLE' }, { status: 400 });
+        case 'CONFLICT':
+          return NextResponse.json({ error: 'CONFLICT', message: error.message }, { status: 409 });
         case 'VALIDATION_ERROR':
           // `message` : lu tel quel par le toast de la fiche bien.
           return NextResponse.json(

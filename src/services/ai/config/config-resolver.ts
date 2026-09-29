@@ -43,8 +43,12 @@
  */
 import { getOperation, type AiOperationDefinition } from '../registry/operations';
 import { isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
-import type { ReasoningLevel, TreatmentConfig } from './config-types';
+import {
+  DEFAULT_PROMPT_ARCHITECTURE, promptArchitectureOf, masterPromptOf,
+  type PromptArchitecture, type ReasoningLevel, type TreatmentConfig,
+} from './config-types';
 import { currentJobContext } from '../queue/job-context';
+import { hasTestCounterStore, readConfigVersionCounter } from './config-cache-version';
 
 /** Configuration réellement appliquée à un appel. */
 export interface ResolvedOperationConfig {
@@ -58,8 +62,20 @@ export interface ResolvedOperationConfig {
    * modèle. Jusqu'ici saisi et versionné mais jamais transmis au fournisseur.
    */
   reasoningByRank: Array<ReasoningLevel | null>;
-  /** Préambule administrable, à placer devant le prompt technique. */
+  /**
+   * Préambule administrable, placé devant le prompt technique des ÉTAPES,
+   * quelle que soit l'architecture (les opérations master ne le reçoivent
+   * jamais — CDC 15 §22.3).
+   */
   promptPreamble: string | null;
+  /** Architecture des prompts du traitement (CDC 15 D-04). `steps` sans version. */
+  promptArchitecture: PromptArchitecture;
+  /**
+   * Master complet porté par la version (D-03, colonne `master_prompt`),
+   * en architecture `master` et s'il est renseigné ; `null` : le fichier du
+   * dépôt s'applique.
+   */
+  masterPromptText: string | null;
   /** Version dont vient cette configuration. `null` = configuration du code. */
   configVersionId: number | null;
   visibleNumber: number | null;
@@ -70,6 +86,11 @@ const LOOKUP_TIMEOUT_MS = 1_500;
 
 let cache: {
   expiresAt: number;
+  /**
+   * Clé de version partagée lue au chargement (CFG-01). `null` : illisible,
+   * seul le TTL borne alors la fraîcheur. Absente : cache posé par un test.
+   */
+  counter?: number | null;
   versionId: number | null;
   visibleNumber: number | null;
   byTreatment: Map<string, TreatmentConfig>;
@@ -171,20 +192,39 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   ]);
 }
 
+/**
+ * Version effective, avec cache.
+ *
+ * CFG-01 (CDC 15) : la clé de version partagée (`config-cache-version.ts`) est
+ * relue à CHAQUE résolution. Si elle a bougé depuis le chargement — promotion,
+ * retour en Brouillon, validation, activation ou rollback sur N'IMPORTE
+ * QUELLE instance —, la configuration est rechargée immédiatement. Le TTL de
+ * 30 s reste le filet : clé illisible, ou changement fait hors application.
+ */
 async function loadEffective(): Promise<NonNullable<typeof cache>> {
-  if (cache && cache.expiresAt > Date.now()) return cache;
+  // Tests unitaires sans stockage de clé : aucune connexion, comportement
+  // historique (cache posé par `__setConfigForTests`, sinon code).
+  if (process.env.NODE_ENV === 'test' && !hasTestCounterStore()) {
+    if (cache && cache.expiresAt > Date.now()) return cache;
+    cache = {
+      expiresAt: Date.now() + CACHE_TTL_MS, versionId: null, visibleNumber: null,
+      byTreatment: new Map<string, TreatmentConfig>(),
+    };
+    return cache;
+  }
+
+  const counter = await readConfigVersionCounter();
+  if (cache && cache.expiresAt > Date.now() && (counter === null || cache.counter === counter)) {
+    return cache;
+  }
 
   const vide = {
     expiresAt: Date.now() + CACHE_TTL_MS,
+    counter,
     versionId: null,
     visibleNumber: null,
     byTreatment: new Map<string, TreatmentConfig>(),
   };
-
-  if (process.env.NODE_ENV === 'test') {
-    cache = vide;
-    return cache;
-  }
 
   try {
     const { getEffectiveVersion } = await import('./config-version.repository');
@@ -192,6 +232,7 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
     cache = version
       ? {
         expiresAt: Date.now() + CACHE_TTL_MS,
+        counter,
         versionId: version.id,
         visibleNumber: version.visibleNumber,
         byTreatment: new Map(version.entries.map((e) => [e.treatment, e])),
@@ -220,10 +261,13 @@ export async function resolveOperationConfig(
   const duCode: ResolvedOperationConfig = {
     primaryModel: op.primaryModel,
     fallbackModels: [...op.fallbackModels],
-    maxOutputTokens: null,
+    // CDC 15 T2-43 : valeur initiale du code, remplacée par la version.
+    maxOutputTokens: op.defaultMaxOutputTokens ?? null,
     reasoningPrimary: null,
     reasoningByRank: [],
     promptPreamble: null,
+    promptArchitecture: DEFAULT_PROMPT_ARCHITECTURE,
+    masterPromptText: null,
     configVersionId: null,
     visibleNumber: null,
   };
@@ -258,17 +302,53 @@ export async function resolveOperationConfig(
     // d'administration, pas une valeur manquante. Le principal, lui, ne peut
     // pas être vide sans laisser l'opération sans modèle du tout.
     fallbackModels: entry.primaryModel ? fallbacks : duCode.fallbackModels,
-    maxOutputTokens: entry.maxOutputTokens,
+    // CDC 15 T2-43 : SEULE source de vérité du plafond de sortie — plus
+    // aucun plafond parallèle côté appelant (ancien
+    // `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS`).
+    maxOutputTokens: entry.maxOutputTokens ?? duCode.maxOutputTokens,
     reasoningPrimary: entry.reasoningPrimary,
     // Principal du code conservé (version sans principal) : aucun niveau
     // administré ne s'applique à un modèle que l'administrateur n'a pas choisi.
     reasoningByRank: entry.primaryModel
       ? [entry.reasoningPrimary ?? null, ...reasoningFallbacks]
       : [],
-    promptPreamble: preambleFor(entry.treatment, entry.prompt),
+    ...promptOf(entry),
     configVersionId: effective.versionId,
     visibleNumber: effective.visibleNumber,
   };
+}
+
+/**
+ * Textes administrables d'une ligne (CDC 15 D-03, D-04) : le préambule sert
+ * TOUJOURS aux étapes ; le master n'est exposé qu'en architecture `master`.
+ */
+function promptOf(entry: TreatmentConfig): Pick<ResolvedOperationConfig, 'promptPreamble' | 'promptArchitecture' | 'masterPromptText'> {
+  const promptArchitecture = promptArchitectureOf(entry);
+  return {
+    promptArchitecture,
+    promptPreamble: preambleFor(entry.treatment, entry.prompt),
+    masterPromptText: promptArchitecture === 'master' && isPromptAdministrable(entry.treatment)
+      ? masterPromptOf(entry)
+      : null,
+  };
+}
+
+/**
+ * Architecture des prompts d'un traitement pour l'appel courant — CDC 15
+ * D-04, §29 étape 14.
+ *
+ * `master` seulement si la version sous laquelle tourne l'appel (version figée
+ * du job — VER-015 —, sinon version effective : TO_TEST en préproduction,
+ * ACTIVE sinon) le déclare pour ce traitement. Sans version, ligne absente ou
+ * base illisible : `steps`, le comportement historique. Ne lève jamais.
+ */
+export async function getPromptArchitecture(treatment: Treatment): Promise<PromptArchitecture> {
+  try {
+    const effective = await entriesForCurrentExecution();
+    return promptArchitectureOf(effective.byTreatment.get(treatment));
+  } catch {
+    return DEFAULT_PROMPT_ARCHITECTURE;
+  }
 }
 
 /**

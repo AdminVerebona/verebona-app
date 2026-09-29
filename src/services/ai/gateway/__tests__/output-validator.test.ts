@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { extractJson, validateOutput } from '../output-validator';
+import { AiOutputTaskMismatchError } from '../errors';
 
 describe('extraction du JSON', () => {
   it('lit un objet nu', () => {
@@ -40,5 +41,32 @@ describe('validation de schéma', () => {
 
   it('rejette un enum hors domaine avec un message exploitable', () => {
     expect(() => validateOutput('{"n":3,"tag":"z"}', S, 'op')).toThrow(/tag/);
+  });
+});
+
+describe('validation discriminée par task — CDC 15 §22.2', () => {
+  const Union = z.discriminatedUnion('task', [
+    z.object({ task: z.literal('A'), a: z.number() }),
+    z.object({ task: z.literal('B') }),
+  ]);
+
+  it('accepte la branche attendue', () => {
+    expect(validateOutput('{"task":"A","a":1}', Union, 'op', 'json', { expectedTask: 'A' })).toEqual({ task: 'A', a: 1 });
+  });
+
+  it('refuse une autre branche, même valide pour le schéma : INVALID_OUTPUT récupérable et typée', () => {
+    let err: unknown;
+    try { validateOutput('{"task":"B"}', Union, 'op', 'json', { expectedTask: 'A' }); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(AiOutputTaskMismatchError);
+    expect(err).toMatchObject({ code: 'INVALID_OUTPUT', recoverable: true, expectedTask: 'A', receivedTask: 'B' });
+  });
+
+  it('refuse une sortie sans task ou qui n’est pas un objet', () => {
+    expect(() => validateOutput('{"a":1}', Union, 'op', 'json', { expectedTask: 'A' })).toThrow(AiOutputTaskMismatchError);
+    expect(() => validateOutput('[{"task":"A"}]', z.unknown(), 'op', 'json', { expectedTask: 'A' })).toThrow(AiOutputTaskMismatchError);
+  });
+
+  it('sans expectedTask : comportement historique', () => {
+    expect(validateOutput('{"task":"B"}', Union, 'op')).toEqual({ task: 'B' });
   });
 });

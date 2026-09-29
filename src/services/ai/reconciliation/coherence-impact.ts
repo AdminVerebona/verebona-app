@@ -38,9 +38,12 @@ export function structuralFieldsIn(fields: string[]): string[] {
 
 async function evidenceFields(accountId: number, assetId: number): Promise<string[]> {
   const { pgClient } = await import('@/db');
+  // CDC 15 §14.4, T1-04 : preuves ACTIVE du bien lui-même seulement.
+  const { evidenceReadFilter } = await import('../evidence/field-evidence.service');
+  const filtre = await evidenceReadFilter({ assetLevel: true });
   const rows = await pgClient.unsafe(
     `SELECT DISTINCT field_key FROM field_evidence
-      WHERE account_id = $1 AND asset_id = $2 AND status = 'active'`,
+      WHERE account_id = $1 AND asset_id = $2 AND status = 'active'${filtre}`,
     [accountId, assetId] as never[],
   );
   return (rows as unknown as Array<{ field_key: string }>).map((r) => r.field_key);

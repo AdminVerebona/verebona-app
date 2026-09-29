@@ -1,0 +1,25 @@
+{
+  "case": "P-T3-02",
+  "description": "LINK_AMBIGUITY — deux équipements équivalents pour un même document : aucun choix arbitraire, aucune liaison automatique.",
+  "context": {
+    "variables": {
+      "SUBJECT_CONTEXT": "Document — Titre: \"Facture entretien chaudière\" | Fournisseur: \"Chauffage Martin\"",
+      "DOCUMENTS_LIST": "(sans objet)",
+      "AGENDA_LIST": "(sans objet)",
+      "SUPPLIERS_LIST": "(sans objet)",
+      "EQUIPMENTS_LIST": "[id:12] \"Chaudière gaz\" (type: chaudiere)\n[id:9] \"Chaudière fioul\" (type: chaudiere)"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_link_ambiguity",
+    "task": "LINK_AMBIGUITY",
+    "output": {
+      "task": "LINK_AMBIGUITY",
+      "matches": [
+        { "candidateId": 9, "score": 0.74, "confidence": "probable", "reason": "type chaudière commun" },
+        { "candidateId": 12, "score": 0.7, "confidence": "probable", "reason": "type chaudière commun" }
+      ]
+    }
+  },
+  "expected": { "matches": [], "ambiguity": { "section": "matches", "candidateIds": [9, 12] } }
+}

@@ -572,7 +572,13 @@ export async function DELETE(request: NextRequest) {
       return apiError(403, 'FORBIDDEN', 'Access denied');
     }
 
-    const { blobsScheduled } = await deleteAssetCompletely(existingAsset[0]);
+    const { blobsScheduled, fileIds } = await deleteAssetCompletely(existingAsset[0]);
+    // CDC 15 T3-03 : preuves des documents emportés retirées sur les AUTRES
+    // biens (documents multi-biens), qui sont réconciliés (ne lève jamais).
+    {
+      const { onAssetDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
+      await onAssetDeleted({ accountId: existingAsset[0].accountId!, userId: session.userId, assetId, fileIds: fileIds ?? [] });
+    }
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
     await emitBusinessEvent({ type: 'ASSET_DELETED', accountId: existingAsset[0].accountId, entityId: existingAsset[0].id });
 

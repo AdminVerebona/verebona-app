@@ -121,6 +121,18 @@ export async function POST(
     if (newEntry.value != null) kc['estimatedValue'] = newEntry.value;
     if (newEntry.date != null) kc['estimatedValueDate'] = newEntry.date;
     if (newEntry.mode != null) kc['estimatedValueMode'] = newEntry.mode;
+    // CDC 15 T3-02 (lot 13, protection hors commutateur) : la valorisation
+    // est saisie ou validée par l'utilisateur (même une estimation proposée
+    // par l'IA, `source: 'AI'`, n'entre qu'à son geste) — origine USER et
+    // date, pour qu'aucune réconciliation ne la remplace en silence.
+    const { writeOrigin } = await import('@/services/ai/reconciliation/field-origin');
+    const maintenant = new Date().toISOString();
+    for (const k of ['estimatedValue', 'estimatedValueDate', 'estimatedValueMode'] as const) {
+      if (kc[k] != null && ((k === 'estimatedValue' && newEntry.value != null) || (k === 'estimatedValueDate' && newEntry.date != null)
+        || (k === 'estimatedValueMode' && newEntry.mode != null))) {
+        kc = writeOrigin(kc, k, 'USER', { updatedAt: maintenant });
+      }
+    }
 
     await db.update(assets)
       .set({ keyCharacteristics: JSON.stringify(kc), updatedAt: new Date() } as any)

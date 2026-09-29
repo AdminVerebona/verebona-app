@@ -56,13 +56,68 @@ export function readOrigin(
   return 'USER';
 }
 
-/** Écrit l'origine au format cible, en retirant l'ancienne clé. */
+/** Origine lisible dans une valeur quelconque (journal, paramètre d'API). */
+export function isFieldOrigin(v: unknown): v is FieldOrigin {
+  return typeof v === 'string' && (FIELD_ORIGINS as string[]).includes(v);
+}
+
+export interface WriteOriginOptions {
+  /**
+   * Date de l'écriture (ISO) : posée dans `<champ>__updatedAt`. Absente, la
+   * clé n'est pas touchée (comportement historique de `applyDecision`).
+   */
+  updatedAt?: string;
+}
+
+/**
+ * Écrit l'origine au format cible, en retirant l'ancienne clé.
+ *
+ * Écriture HUMAINE (USER, ADMIN) : l'autorité et la date de la preuve qui
+ * justifiaient la valeur automatique précédente (`__authority`,
+ * `__sourceDate`) sont retirées — elles décriraient une valeur qui n'est plus
+ * là, et une prochaine réconciliation les lirait à tort (T3-02).
+ */
 export function writeOrigin(
   keyCharacteristics: Record<string, unknown>,
   fieldKey: string,
   origin: FieldOrigin,
+  opts: WriteOriginOptions = {},
 ): Record<string, unknown> {
   const next = { ...keyCharacteristics, [`${fieldKey}__origin`]: origin };
   delete next[`${fieldKey}_origin`];
+  if (opts.updatedAt) next[`${fieldKey}__updatedAt`] = opts.updatedAt;
+  if (isHumanOrigin(origin)) {
+    delete next[`${fieldKey}__authority`];
+    delete next[`${fieldKey}__sourceDate`];
+  }
   return next;
+}
+
+export type OverwriteDecision =
+  | { allowed: true }
+  | { allowed: false; reason: 'HUMAN_VALUE_PROTECTED' };
+
+/**
+ * Préséance des origines — règle unique de `writeCanonicalAssetField()`
+ * (CDC 15 T3-02, DOD-02, critère d'acceptation n°11).
+ *
+ *   · une écriture humaine (USER, ADMIN) passe toujours : la dernière
+ *     intervention humaine l'emporte ;
+ *   · une écriture automatique ne remplace JAMAIS une valeur humaine
+ *     renseignée — elle devient un conflit à arbitrer (décision T3) ;
+ *   · une écriture automatique peut remplir un champ vide, ou remplacer une
+ *     valeur automatique (l'arbitrage d'autorité appartient à la décision T3,
+ *     pas à la primitive d'écriture).
+ *
+ * L'origine d'une valeur sans information est lue `USER` (`readOrigin`) :
+ * une valeur historique non tracée est protégée.
+ */
+export function canOverwrite(
+  current: { origin: FieldOrigin; empty: boolean },
+  incoming: FieldOrigin,
+): OverwriteDecision {
+  if (isHumanOrigin(incoming)) return { allowed: true };
+  if (current.empty) return { allowed: true };
+  if (isHumanOrigin(current.origin)) return { allowed: false, reason: 'HUMAN_VALUE_PROTECTED' };
+  return { allowed: true };
 }

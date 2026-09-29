@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "@/db/schema";
+import { runMigrationSql, repairInvalidMigrationIndexes, type SqlRunner } from "@/db/migration-index";
 
 const connectionString = process.env.DATABASE_URL!;
 
@@ -89,7 +90,15 @@ export async function ensureMigrations() {
       if (appliedSet.has(file)) continue;
       const sql = await readFile(join(migrationsDir, file), 'utf-8');
       try {
-        await client.unsafe(sql);
+        // Index CONCURRENTLY : reprise d'un index invalide et contrôle de
+        // validité avant de marquer le fichier appliqué (`migration-index.ts`).
+        const r = await runMigrationSql(client as unknown as SqlRunner, sql);
+        if (r.status === 'deferred') {
+          // Index en cours de construction par une autre instance : rien
+          // n'est fait, le fichier sera repris au prochain démarrage.
+          console.warn(`[db] Migration ${file} differee (index ${r.index} en construction ailleurs).`);
+          continue;
+        }
         await client`INSERT INTO _migrations (filename) VALUES (${file}) ON CONFLICT DO NOTHING`;
         console.log(`[db] Applied migration: ${file}`);
       } catch (e) {
@@ -104,6 +113,25 @@ export async function ensureMigrations() {
           '     La chaine se poursuit. Ce fichier sera retente au prochain demarrage.',
         );
       }
+    }
+
+    // Index invalides (construction CONCURRENTLY interrompue) : jamais
+    // utilisés, toujours maintenus. Ceux d'un fichier de migration connu —
+    // même déjà marqué appliqué (0217…) — sont reconstruits tout de suite ;
+    // sinon leur fichier est remis en file (`migration-index.ts`).
+    const fichiers = await Promise.all(
+      sqlFiles.map(async (f) => ({ filename: f, sql: await readFile(join(migrationsDir, f), 'utf-8') })),
+    );
+    const rep = await repairInvalidMigrationIndexes(client as unknown as SqlRunner, fichiers);
+    for (const i of rep.repaired) console.warn(`[db] index invalide ${i} reconstruit.`);
+    for (const q of rep.requeued) {
+      console.error(`[db] index INVALIDE ${q.index} non reconstruit (${q.reason}) : ${q.filename} sera rejoue au prochain demarrage.`);
+    }
+    if (rep.unknown.length > 0) {
+      console.error(
+        `[db] ${rep.unknown.length} index INVALIDE(S) hors migrations connues : ${rep.unknown.join(', ')}. ` +
+        'A supprimer (DROP INDEX CONCURRENTLY <nom>) puis recreer a la main.',
+      );
     }
 
     if (_migrationFailures.length > 0) {

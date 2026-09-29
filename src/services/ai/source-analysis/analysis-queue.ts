@@ -315,7 +315,12 @@ async function executer(t: QueuedAnalysis): Promise<{ remisEnFile: boolean; touj
 
     // Un seul fichier : aucun regroupement, aucune suppression de source.
     execution = runInJobContext(
-      { jobId: null, treatment: 'T1', configVersionId, startedAt: Date.now(), signal: controller.signal },
+      {
+        jobId: null, treatment: 'T1', configVersionId, startedAt: Date.now(), signal: controller.signal,
+        // CDC 15 OBS-CFG : seul un dépôt est un déclencheur du catalogue ;
+        // reprise et relance utilisateur restent sans déclencheur.
+        triggerCode: t.origin === UPLOAD_ORIGIN ? 'source_uploaded' : null,
+      },
       () => analyzeFileSources([t.fileId], t.accountId, {
         userId: t.userId,
         origin: `${t.origin} (file)`,

@@ -9,7 +9,8 @@
  * `use_case_code`, `operation_code` et `trace_id`. Les tables de suivi
  * existantes sont conservées et renforcées, jamais remplacées.
  */
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
+import { traceMasterColumnsReady } from './trace-schema';
 import { aiPipelineStep, aiUsageEvent } from '@/db/schema';
 import type { AiUseCaseCode } from '../registry/use-cases';
 import { getExecutionContext, type ModelRank } from './execution-context';
@@ -55,16 +56,58 @@ export interface CallTrace {
   configVersionId?: number | null;
   /** Mode d'appel déclaré par l'appelant (CDC Mascotte BO-009), figé en métadonnée. */
   callerMode?: 'displayed' | 'pregeneration';
+  /**
+   * CDC 15 DP-05, ARCH-03 : branche TASK/MODE et prompt maître — colonnes
+   * `task`, `master_prompt_code`, `master_prompt_version` (migration 0217).
+   */
+  task?: string | null;
+  masterPromptCode?: string | null;
+  masterPromptVersion?: string | null;
+  /**
+   * CDC 15 CFG-02, OBS-CFG : paramètres RÉSOLUS réellement envoyés au
+   * fournisseur, figés en métadonnée — niveau de raisonnement du rang
+   * sollicité, plafond de jetons de sortie (`null` = défaut du modèle).
+   */
+  reasoning?: string | null;
+  maxOutputTokens?: number | null;
+  /** CDC 15 CFG-05 : moteur réellement utilisé (`legacy` = relais historique). */
+  engine?: 'legacy' | 'new';
+  /** CDC 15 OBS-CFG : déclencheur effectif (absent : celui du job courant). */
+  triggerCode?: string | null;
+}
+
+/**
+ * Métadonnées de configuration d'un appel (CDC 15 CFG-02, CFG-05, OBS-CFG).
+ * Pur, exporté pour les tests. Seules les valeurs connues sont écrites : une
+ * clé absente veut dire « non transmis par l'appelant », jamais « défaut ».
+ */
+export function configMetadata(t: CallTrace): Record<string, unknown> {
+  const trigger = t.triggerCode !== undefined ? t.triggerCode : currentJobContext()?.triggerCode ?? null;
+  return {
+    ...(t.reasoning !== undefined ? { reasoning: t.reasoning } : {}),
+    ...(t.maxOutputTokens !== undefined ? { maxOutputTokens: t.maxOutputTokens } : {}),
+    ...(t.engine ? { engine: t.engine } : {}),
+    ...(trigger ? { trigger } : {}),
+  };
 }
 
 export async function recordCallTrace(t: CallTrace): Promise<void> {
-  try {
-    // Version IA effective et commit déployé (§9.1, GEN-008). Lus ici plutôt
-    // que demandés à chaque appelant : une information de traçabilité qu'il
-    // faut penser à passer finit par manquer là où elle compte le plus.
-    const ctx = await getExecutionContext();
-    if (t.parentOperationId) {
-      await db.insert(aiPipelineStep).values({
+  // Version IA effective et commit déployé (§9.1, GEN-008). Lus ici plutôt
+  // que demandés à chaque appelant : une information de traçabilité qu'il
+  // faut penser à passer finit par manquer là où elle compte le plus.
+  const ctx = await getExecutionContext().catch(() => ({ configVersionId: null, appVersion: null, environment: null }));
+  const master = {
+    task: t.task ?? null,
+    masterPromptCode: t.masterPromptCode ?? null,
+    masterPromptVersion: t.masterPromptVersion ?? null,
+  };
+
+  // Les deux écritures sont ISOLÉES : l'échec de l'étape de pipeline ne doit
+  // pas faire perdre l'événement d'usage (coût, quota), ni l'inverse.
+  // La télémétrie ne fait jamais échouer un traitement métier.
+  if (t.parentOperationId) {
+    try {
+      const rows = await avecId(db.insert(aiPipelineStep).values({
         operationId: t.parentOperationId,
         stepName: t.operationCode,
         stepOrder: 0,
@@ -84,10 +127,15 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
         useCaseCode: t.useCaseCode,
         operationCode: t.operationCode,
         traceId: t.traceId,
-      } as never);
+      } as never), aiPipelineStep.id);
+      await writeMasterFields('ai_pipeline_step', rows?.[0]?.id, master);
+    } catch (e) {
+      console.error('[ai-trace] étape de pipeline non écrite (non bloquant) :', (e as Error).message);
     }
+  }
 
-    await db.insert(aiUsageEvent).values({
+  try {
+    const rows = await avecId(db.insert(aiUsageEvent).values({
       accountId: t.accountId,
       userId: t.userId,
       operationType: t.operationCode,
@@ -109,6 +157,7 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
         // `null` = aucun tarif connu (coût non calculable, COST-008).
         pricing: pricingRef(t.provider, t.model),
         ...(t.callerMode ? { callerMode: t.callerMode } : {}),
+        ...configMetadata(t),
       },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,
@@ -116,10 +165,41 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
       appVersion: ctx.appVersion,
       modelRank: t.modelRank ?? (t.usedFallback ? null : 'primary'),
       jobId: t.jobId ?? currentJobContext()?.jobId ?? null,
-    } as never);
+    } as never), aiUsageEvent.id);
+    await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
   } catch (e) {
-    // La télémétrie ne doit jamais faire échouer un traitement métier.
-    console.error('[ai-trace] écriture impossible (non bloquant) :', (e as Error).message);
+    console.error('[ai-trace] événement d\'usage non écrit (non bloquant) :', (e as Error).message);
+  }
+}
+
+/** INSERT avec identifiant rendu ; tolère un double de test sans `returning`. */
+async function avecId(q: unknown, col: unknown): Promise<Array<{ id: number }>> {
+  const r = q as { returning?: (c: unknown) => Promise<Array<{ id: number }>> } & PromiseLike<unknown>;
+  if (typeof r.returning === 'function') return r.returning({ id: col });
+  await r;
+  return [];
+}
+
+/**
+ * TASK et prompt maître (migration 0217, CDC 15 DP-05), écrits à part : ces
+ * colonnes ne sont pas déclarées dans Drizzle (voir `trace-schema.ts`).
+ * Aucune écriture tant que les trois valeurs sont nulles — le cas de tous les
+ * appels hors master aujourd'hui — ni si la migration est absente.
+ */
+async function writeMasterFields(
+  table: 'ai_usage_event' | 'ai_pipeline_step',
+  id: number | undefined,
+  m: { task: string | null; masterPromptCode: string | null; masterPromptVersion: string | null },
+): Promise<void> {
+  if (!id || (m.task === null && m.masterPromptCode === null && m.masterPromptVersion === null)) return;
+  try {
+    if (!(await traceMasterColumnsReady())) return;
+    await pgClient.unsafe(
+      `UPDATE ${table} SET task = $2, master_prompt_code = $3, master_prompt_version = $4 WHERE id = $1`,
+      [id, m.task, m.masterPromptCode, m.masterPromptVersion] as never[],
+    );
+  } catch (e) {
+    console.error(`[ai-trace] TASK / prompt maître non écrits sur ${table} (non bloquant) :`, (e as Error).message);
   }
 }
 

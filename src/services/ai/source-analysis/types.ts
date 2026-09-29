@@ -7,6 +7,20 @@
  * `SourceAnalysisResult` — sans exception et sans variante.
  */
 import type { EvidenceValue, EvidenceConfidence } from '../evidence/evidence.types';
+import type {
+  PersistedFactTarget, ProjectionOrigin, T1SemanticEvent,
+} from './master/t1-contract';
+
+/**
+ * Branche « prompt maître T1 » (CDC 15 §23, lot 12) : types du contrat
+ * partagé, réexportés pour que les consommateurs n'aient qu'un point d'entrée
+ * (`source-analysis/types`). La source de vérité reste `master/t1-contract.ts`.
+ */
+export type {
+  T1Task, T1Confidence, T1Evidence, T1TargetType, T1Target, T1Recurrence, T1EventNature,
+  T1SemanticEvent, T1Fact, T1GroupUploadOutput, T1AnalyzeDocumentOutput, T1MasterOutput,
+  PersistedFactTarget, ProjectionOrigin, ProjectedFact,
+} from './master/t1-contract';
 
 /**
  * Types de source pris en charge. L'ajout d'une source (email, import externe)
@@ -133,6 +147,39 @@ export interface ExtractedField {
    * (jamais déduite de connaissances générales).
    */
   recurrence?: ExtractedRecurrence;
+
+  // ── Contrat T1 enrichi — CDC 15 PM-T1-PRE, T1-01, T1-03, T1-04 ──────────
+  //
+  // Tous OPTIONNELS : le mode « étapes » historique ne les renseigne pas et
+  // continue de fonctionner à l'identique. Renseignés par la projection
+  // déterministe (`ProjectedFact`) de la branche maître.
+
+  /**
+   * Clé EXISTANTE du registre canonique (`getField(key)` défini), ou `null`
+   * pour une connaissance générique (T1-01). Absente = contrat historique :
+   * `fieldKey` fait foi.
+   */
+  canonicalKey?: string | null;
+  /** Libellé/clé tel que lu dans la source, avant canonicalisation. */
+  rawKey?: string | null;
+  /** Valeur telle que lue, avant normalisation (jamais convertie). */
+  rawValue?: string | number | boolean | null;
+  /** Type de valeur du registre (`money_eur`, `money_cents`, `date`…). */
+  valueType?: string | null;
+  /** Unité canonique du registre (T1-03 : `EUR` pour la fiche, `cents` pour `*Cents`). */
+  canonicalUnit?: string | null;
+  /**
+   * Cible du fait (T1-04, T1-05) : bien, équipement, pièce, document… avec
+   * un identifiant VÉRIFIÉ en base, ou `null`. Absente = contrat historique
+   * (un seul bien déterminé par le pipeline).
+   */
+  target?: PersistedFactTarget;
+  /** Événement métier énoncé (U13) : type du catalogue et nature temporelle. */
+  semanticEvent?: T1SemanticEvent | null;
+  /** Origine du fait après projection (modèle, règle déterministe, générique). */
+  origin?: ProjectionOrigin;
+  /** Règle déterministe appliquée (ex. `PURCHASE_RECEIPT_ACQUISITION`). */
+  ruleCode?: string | null;
 }
 
 /** Récurrence telle que la source l'énonce (T1) — le calcul des dates relève de T4. */
@@ -171,7 +218,23 @@ export type AnalysisWarningCode =
   /** Information écartée : lue sans extrait, ou observée sans preuve visuelle. */
   | 'FIELD_WITHOUT_EVIDENCE'
   /** Tableau dont la structure (associations ligne/colonne) est douteuse. */
-  | 'TABLE_STRUCTURE_UNCERTAIN';
+  | 'TABLE_STRUCTURE_UNCERTAIN'
+  /** Fait annoncé canonique, requalifié en connaissance générique (clé hors registre ou inapplicable) — CDC 15 T1-01. */
+  | 'FACT_REQUALIFIED_GENERIC'
+  /** Fait retiré par une règle déterministe de projection (ex. futur non explicite) — CDC 15 T1-06, T1-07. */
+  | 'FACT_REJECTED_BY_RULE'
+  /** Unité annoncée incohérente avec l'unité canonique du registre — CDC 15 T1-03. */
+  | 'UNIT_MISMATCH'
+  /** Sortie master limitée à 300 faits : faits au-delà non retenus — CDC 15 D-06. */
+  | 'FACTS_TRUNCATED'
+  /** Fait mal formé ou à valeur trop longue écarté seul (sortie tolérante) — CDC 15 D-06. */
+  | 'FACT_INVALID_DROPPED'
+  /** Extrait « lu » introuvable dans le texte lisible : confiance ramenée à probable — U2, U11. */
+  | 'EXCERPT_NOT_FOUND'
+  /** Échec total du prompt maître : groupe analysé par les étapes historiques — §29. */
+  | 'MASTER_FALLBACK_STEPS'
+  /** Nombre d'articles d'un ticket non établi : prix d'acquisition gardé en proposition — T1-02. */
+  | 'LINE_COUNT_UNKNOWN';
 
 export interface AnalysisWarning {
   code: AnalysisWarningCode;

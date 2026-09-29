@@ -14,7 +14,9 @@
  *
  * Aucun accès base ici : ces fonctions sont testées sans infrastructure.
  */
-import type { SourceAnalysisResult, ExtractedField, ExtractedTable, FactProvenance, VisualEvidence, VisualObservation } from '../source-analysis/types';
+import type {
+  SourceAnalysisResult, ExtractedField, ExtractedTable, ExtractedRecurrence, FactProvenance, VisualEvidence, VisualObservation,
+} from '../source-analysis/types';
 import { cellContext } from './document-tables';
 import { EXTRACT_SOURCE_PROMPT_VERSION } from '../source-analysis/prompt-version';
 
@@ -43,6 +45,12 @@ export interface DocumentExtractionRecord {
   documentTypeCode: string | null;
   rubricCode: string | null;
   hasExploitableContent: boolean;
+  /**
+   * Le document concerne-t-il plusieurs biens (0218, CDC 15 T1-05) ? `null`
+   * ou absent = inconnu (moteur historique). Au rattachement tardif, un fait
+   * ASSET sans identifiant n'est réattribué au bien choisi que s'il vaut `false`.
+   */
+  multiAsset?: boolean | null;
   structuralEvidence: Record<string, { confidence: string; excerpt: string; location?: Record<string, unknown> }>;
   metadata: Record<string, unknown>;
   provider: string | null;
@@ -70,6 +78,28 @@ export interface DocumentFactRecord {
   /** TEXT_EXTRACTION (lu) | VISUAL_ANALYSIS (observé) — 0161. */
   evidenceOrigin: FactProvenance;
   visualEvidence: VisualEvidence | null;
+
+  // ── Migration 0218 — contrat T1 enrichi (CDC 15 T1-01, T1-03, T1-04,
+  //    T4-06, PM-T1-PRE). Optionnels : absents pour un fait historique ou
+  //    une observation visuelle de niveau document ; écrits en base dès que
+  //    la 0218 est appliquée. ───────────────────────────────────────────────
+  /** Clé du registre canonique ; `null` = connaissance générique. */
+  canonicalKey?: string | null;
+  rawKey?: string | null;
+  rawValue?: string | null;
+  valueType?: string | null;
+  canonicalUnit?: string | null;
+  /** Cible (T1-04) ; identifiant VÉRIFIÉ ou null — jamais rattaché arbitrairement. */
+  targetType?: string | null;
+  targetEntityId?: number | null;
+  targetEntityLabel?: string | null;
+  targetConfidence?: string | null;
+  semanticEventType?: string | null;
+  semanticEventNature?: string | null;
+  /** Récurrence énoncée par la source (T4-06) — restaurée par `factsToExtractedFields`. */
+  recurrence?: ExtractedRecurrence | null;
+  projectionOrigin?: string | null;
+  projectionRule?: string | null;
 }
 
 export interface DocumentKnowledge {
@@ -176,6 +206,7 @@ export function toFact(field: ExtractedField): DocumentFactRecord {
   if (field.section) location.section = field.section;
 
   return {
+    ...canonicalFactColumns(field),
     factKey: field.fieldKey,
     subject: field.subject?.trim() || derived.subject,
     attribute: field.attribute?.trim() || derived.attribute,
@@ -193,6 +224,35 @@ export function toFact(field: ExtractedField): DocumentFactRecord {
     evidenceOrigin: visual ? 'VISUAL_ANALYSIS' : 'TEXT_EXTRACTION',
     visualEvidence: visual ? (field.visualEvidence ?? null) : null,
   };
+}
+
+/**
+ * Colonnes 0218 d'un champ extrait (CDC 15 PM-T1-PRE) : n'émet que ce que le
+ * champ porte réellement — un champ historique n'en émet aucune et son fait
+ * est strictement identique à celui d'avant le lot 12.
+ */
+function canonicalFactColumns(field: ExtractedField): Partial<DocumentFactRecord> {
+  const out: Partial<DocumentFactRecord> = {};
+  if (field.canonicalKey !== undefined) out.canonicalKey = field.canonicalKey;
+  if (field.rawKey !== undefined) out.rawKey = field.rawKey;
+  if (field.rawValue !== undefined) out.rawValue = field.rawValue === null ? null : String(field.rawValue);
+  if (field.valueType !== undefined) out.valueType = field.valueType;
+  if (field.canonicalUnit !== undefined) out.canonicalUnit = field.canonicalUnit;
+  if (field.target) {
+    out.targetType = field.target.targetType;
+    out.targetEntityId = field.target.targetEntityId;
+    out.targetEntityLabel = field.target.targetEntityLabel;
+    out.targetConfidence = field.target.targetConfidence;
+  }
+  if (field.semanticEvent) {
+    out.semanticEventType = field.semanticEvent.type;
+    out.semanticEventNature = field.semanticEvent.nature;
+  }
+  // T4-06 : la récurrence énoncée survit à la persistance (reprojection tardive).
+  if (field.recurrence) out.recurrence = field.recurrence;
+  if (field.origin) out.projectionOrigin = field.origin;
+  if (field.ruleCode !== undefined) out.projectionRule = field.ruleCode;
+  return out;
 }
 
 /**
@@ -247,6 +307,25 @@ function hasEvidence(f: DocumentFactRecord): boolean {
     : !!f.excerpt && f.excerpt.trim().length > 0;
 }
 
+/** Identité d'un candidat bien : identifiant vérifié, sinon libellé brut. */
+const candidateIdentity = (c: { entityId: number | null; rawLabel?: string | null }) =>
+  (c.entityId != null ? `#${c.entityId}` : c.rawLabel?.trim().toLowerCase() || null);
+
+/**
+ * Le résultat désigne-t-il plusieurs biens (CDC 15 T1-05) ? Avertissement
+ * MULTI_ASSET_DOCUMENT, plusieurs candidats biens distincts, ou faits ciblés
+ * sur plusieurs biens distincts.
+ */
+export function isMultiAssetResult(result: Pick<SourceAnalysisResult, 'warnings' | 'assetCandidates' | 'extractedFields'>): boolean {
+  if (result.warnings.some((w) => w.code === 'MULTI_ASSET_DOCUMENT')) return true;
+  const candidats = new Set(result.assetCandidates.map(candidateIdentity).filter(Boolean));
+  if (candidats.size > 1) return true;
+  const cibles = new Set(result.extractedFields
+    .filter((f) => f.target?.targetType === 'ASSET' && f.target.targetEntityId != null)
+    .map((f) => f.target!.targetEntityId));
+  return cibles.size > 1;
+}
+
 /**
  * Représentation durable issue du moteur d'analyse unifié (T1).
  */
@@ -260,6 +339,12 @@ export function buildKnowledgeFromSourceAnalysis(
     sourceType: 'asset_file' | 'web_link';
     sourceVersion?: number | null;
     promptVersion?: string;
+    /**
+     * Indicateur multi-biens — branche maître uniquement :
+     * `output.entities.multiAsset === true || isMultiAssetResult(result)`.
+     * Absent (moteur « étapes ») : NULL en base, rien n'est écrit.
+     */
+    multiAsset?: boolean;
   },
 ): DocumentKnowledge {
   const d = result.document;
@@ -298,6 +383,10 @@ export function buildKnowledgeFromSourceAnalysis(
       documentTypeCode: d.rubric?.documentTypeCode ?? null,
       rubricCode: d.rubric?.rubricCode ?? null,
       hasExploitableContent,
+      // Renseigné SEULEMENT par la branche maître (`ctx.multiAsset` explicite).
+      // Moteur « étapes » : NULL = inconnu, aucune écriture ; le rattachement
+      // tardif se replie sur `metadata` (lateLinkAllowsReassignment).
+      ...(ctx.multiAsset !== undefined ? { multiAsset: ctx.multiAsset } : {}),
       structuralEvidence: evidence,
       metadata: {
         sourceIds: result.sourceGroup.sourceIds,
@@ -329,22 +418,57 @@ export function buildKnowledgeFromSourceAnalysis(
   };
 }
 
-/** Faits → champs extraits, pour produire des projections sans relire le fichier. */
+const TARGET_TYPES = ['ASSET', 'EQUIPMENT', 'ROOM', 'DOCUMENT', 'SUPPLIER', 'GENERIC'] as const;
+const CONFIDENCES = ['certain', 'probable', 'conflictual'] as const;
+const ORIGINS = ['MODEL_CANONICAL', 'DETERMINISTIC_RULE', 'GENERIC'] as const;
+const EVENT_NATURES = ['HISTORICAL', 'DEADLINE', 'FACT_ONLY'] as const;
+const oneOf = <T extends string>(list: readonly T[], v: unknown): T | undefined =>
+  (typeof v === 'string' && (list as readonly string[]).includes(v) ? (v as T) : undefined);
+
+/**
+ * Faits → champs extraits, pour produire des projections sans relire le
+ * fichier. Restitue le contrat enrichi quand il a été persisté (0218) : clé
+ * canonique, cible, événement et RÉCURRENCE (T4-06 : « document "tous les 12
+ * mois" rattaché plus tard → récurrence intacte »).
+ */
 export function factsToExtractedFields(facts: Array<Pick<DocumentFactRecord,
   'factKey' | 'valueJson' | 'normalizedValue' | 'confidence' | 'excerpt' | 'location'>
-  & Partial<Pick<DocumentFactRecord, 'evidenceOrigin' | 'visualEvidence'>>>): ExtractedField[] {
+  & Partial<Omit<DocumentFactRecord, 'factKey' | 'valueJson' | 'normalizedValue' | 'confidence' | 'excerpt' | 'location'>>>): ExtractedField[] {
   return facts
     // Les observations de niveau document décrivent la source, pas un champ du bien.
     .filter((f) => !f.factKey.startsWith('visual.'))
-    .map((f) => ({
-    fieldKey: f.factKey,
-    value: f.valueJson,
-    normalizedValue: f.normalizedValue ?? undefined,
-    confidence: f.confidence,
-    excerpt: f.excerpt ?? undefined,
-    provenance: f.evidenceOrigin ?? 'TEXT_EXTRACTION',
-    visualEvidence: f.visualEvidence ?? undefined,
-    page: typeof f.location.page === 'number' ? f.location.page : undefined,
-    selector: typeof f.location.selector === 'string' ? f.location.selector : undefined,
-  }));
+    .map((f) => {
+      const field: ExtractedField = {
+        fieldKey: f.factKey,
+        value: f.valueJson,
+        normalizedValue: f.normalizedValue ?? undefined,
+        confidence: f.confidence,
+        excerpt: f.excerpt ?? undefined,
+        provenance: f.evidenceOrigin ?? 'TEXT_EXTRACTION',
+        visualEvidence: f.visualEvidence ?? undefined,
+        page: typeof f.location.page === 'number' ? f.location.page : undefined,
+        selector: typeof f.location.selector === 'string' ? f.location.selector : undefined,
+      };
+      if (f.canonicalKey !== undefined && f.canonicalKey !== null) field.canonicalKey = f.canonicalKey;
+      if (f.rawKey) field.rawKey = f.rawKey;
+      if (f.rawValue !== undefined && f.rawValue !== null) field.rawValue = f.rawValue;
+      if (f.valueType) field.valueType = f.valueType;
+      if (f.canonicalUnit) field.canonicalUnit = f.canonicalUnit;
+      const targetType = oneOf(TARGET_TYPES, f.targetType);
+      if (targetType) {
+        field.target = {
+          targetType,
+          targetEntityId: typeof f.targetEntityId === 'number' ? f.targetEntityId : null,
+          targetEntityLabel: f.targetEntityLabel ?? null,
+          targetConfidence: oneOf(CONFIDENCES, f.targetConfidence) ?? 'probable',
+        };
+      }
+      const nature = oneOf(EVENT_NATURES, f.semanticEventNature);
+      if (f.semanticEventType && nature) field.semanticEvent = { type: f.semanticEventType, nature };
+      if (f.recurrence) field.recurrence = f.recurrence;
+      const origin = oneOf(ORIGINS, f.projectionOrigin);
+      if (origin) field.origin = origin;
+      if (f.projectionRule) field.ruleCode = f.projectionRule;
+      return field;
+    });
 }

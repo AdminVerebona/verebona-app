@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint } from 'drizzle-orm/pg-core';
+import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint, bigserial } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 // ── Timestamp helpers ────────────────────────────────────────────────────────
@@ -1944,6 +1944,10 @@ export const aiUsageEvent = pgTable('ai_usage_event', {
   // mais n'était pas déclarée ici : Drizzle ne pouvait donc pas l'écrire, et
   // tout événement produit après la 0110 repartait non rattaché.
   useCaseCode: text('use_case_code'),
+  // Même défaut que `use_case_code` ci-dessus, découvert par le harnais E2E
+  // (lot 11) : colonne créée par la 0101 mais non déclarée — `recordCallTrace`
+  // la passait, Drizzle l'ignorait, et l'écran Exécutions filtrait sur NULL.
+  operationCode: text('operation_code'),
   provider: text('provider'),
   model: text('model'),
   isBillable: boolean('is_billable').notNull().default(true),
@@ -1966,6 +1970,13 @@ export const aiUsageEvent = pgTable('ai_usage_event', {
   /** `primary` | `fallback_1` | `fallback_2` — plus précis qu'`isFallback`. */
   modelRank: text('model_rank'),
   jobId: integer('job_id'),
+  // CDC 15 DP-05 (migration 0217) : `task`, `master_prompt_code`,
+  // `master_prompt_version` existent en base mais ne sont VOLONTAIREMENT pas
+  // déclarées ici. Drizzle cite toutes les colonnes déclarées dans chaque
+  // INSERT : si la 0217 n'était pas appliquée (`ensureMigrations` poursuit
+  // après un échec), toutes les traces IA échoueraient. Elles sont écrites à
+  // part, en SQL, seulement si la migration est en place
+  // (`telemetry/trace-schema.ts`).
   createdAt: tstz('created_at'),
 }, (table) => ({
   accountIdIdx: index('ai_usage_event_account_id_idx').on(table.accountId),
@@ -2039,6 +2050,13 @@ export const aiPipelineStep = pgTable('ai_pipeline_step', {
   promptVersion: text('prompt_version'),
   inputHash: text('input_hash'),
   outputPreview: text('output_preview'),
+  // Colonnes de la migration 0101, jusqu'ici non déclarées : Drizzle ignorait
+  // silencieusement `useCaseCode`, `operationCode` et `traceId` passés par
+  // `recordCallTrace` — les étapes partaient sans trace ni usage.
+  useCaseCode: text('use_case_code'),
+  operationCode: text('operation_code'),
+  traceId: uuid('trace_id'),
+  // CDC 15 DP-05 (migration 0217) : non déclarées, voir `aiUsageEvent`.
   createdAt: tstz('created_at'),
 }, (table) => ({
   operationIdIdx: index('ai_pipeline_step_operation_id_idx').on(table.operationId),
@@ -2181,6 +2199,39 @@ export const aiFieldUpdates = pgTable('ai_field_updates', {
   newValue:    text('new_value').notNull(),
   createdAt:   pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Migration 0216 — journal de writeCanonicalAssetField (CDC 15 SVC-05).
+// Écrit en SQL brut par `services/canonical/asset-state` ; déclaré ici pour
+// qu'un `drizzle-kit push` ne supprime pas la table.
+export const canonicalFieldWrites = pgTable('canonical_field_writes', {
+  id:            bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId:     integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  assetId:       integer('asset_id').notNull().references(() => assets.id, { onDelete: 'cascade' }),
+  canonicalKey:  text('canonical_key').notNull(),
+  oldValue:      jsonb('old_value'),
+  newValue:      jsonb('new_value'),
+  origin:        text('origin').notNull(),
+  actorUserId:   integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  sourceType:    text('source_type'),
+  sourceId:      text('source_id'),
+  traceId:       text('trace_id'),
+  outcome:       text('outcome').notNull().default('written'),
+  dryRun:        boolean('dry_run').notNull().default(false),
+  divergence:    jsonb('divergence'),
+  mirrorColumns: jsonb('mirror_columns'),
+  createdAt:     pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  // Mêmes index et contraintes que 0216 : un `drizzle-kit push` ne les supprime pas.
+  assetKeyIdx:   index('canonical_field_writes_asset_key_idx').on(t.assetId, t.canonicalKey, t.createdAt.desc()),
+  accountIdx:    index('canonical_field_writes_account_idx').on(t.accountId, t.createdAt.desc()),
+  divergenceIdx: index('canonical_field_writes_divergence_idx').on(t.createdAt.desc())
+    .where(sql`${t.dryRun} AND ${t.divergence} IS NOT NULL`),
+  traceIdx:      index('canonical_field_writes_trace_idx').on(t.traceId).where(sql`${t.traceId} IS NOT NULL`),
+  originCheck:   check('canonical_field_writes_origin_check',
+    sql`${t.origin} IN ('USER', 'ADMIN', 'DOCUMENT_EXTRACTION', 'RECONCILIATION', 'IMPORT', 'SYSTEM_RULE')`),
+  outcomeCheck:  check('canonical_field_writes_outcome_check',
+    sql`${t.outcome} IN ('written', 'unchanged', 'protected', 'invalid', 'conflict')`),
+}));
 
 // ── Impact Propagation Engine V1 ───────────────────────────────────────────
 // Tables for event-driven impact propagation (replaces heavy nightly AI batch).
@@ -2888,4 +2939,40 @@ export const agendaOccurrenceEvents = pgTable('agenda_occurrence_events', {
   createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   itemIdx: index('agenda_occurrence_events_item_idx').on(t.agendaItemId, t.createdAt),
+}));
+
+// Migration 0221 — relation N-N canonique document ↔ bien (CDC 15 X-01, D-11).
+// Liens LEGACY_COLUMN tenus par déclencheur SQL depuis asset_files (0221_*_trigger.sql,
+// absent du schéma Drizzle) ; USER / AI / MIGRATION écrits par
+// `services/documents/document-asset-links`. Mêmes index et contraintes que la
+// migration : un `drizzle-kit push` ne les supprime pas.
+export const documentAssetLinks = pgTable('document_asset_links', {
+  id:          bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId:   integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  fileId:      integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  assetId:     integer('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+  roomId:      integer('room_id').references(() => rooms.id, { onDelete: 'cascade' }),
+  equipmentId: integer('equipment_id').references(() => equipments.id, { onDelete: 'cascade' }),
+  /** PRIMARY | SECONDARY | MENTIONED */
+  linkRole:    text('link_role').notNull(),
+  /** USER | AI | MIGRATION | LEGACY_COLUMN */
+  origin:      text('origin').notNull(),
+  confidence:  numeric('confidence', { precision: 4, scale: 3 }),
+  /** ACTIVE | PROPOSED | REJECTED | REMOVED */
+  status:      text('status').notNull().default('ACTIVE'),
+  createdAt:   pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:   pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  removedAt:   pgTimestamp('removed_at', { withTimezone: true }),
+}, (t) => ({
+  activeUniq: uniqueIndex('document_asset_links_active_uniq')
+    .on(t.fileId, sql`COALESCE(${t.assetId}, 0)`, sql`COALESCE(${t.roomId}, 0)`, sql`COALESCE(${t.equipmentId}, 0)`)
+    .where(sql`status = 'ACTIVE'`),
+  assetIdx:    index('document_asset_links_asset_idx').on(t.assetId, t.fileId)
+    .where(sql`status = 'ACTIVE' AND asset_id IS NOT NULL`),
+  accountIdx:  index('document_asset_links_account_idx').on(t.accountId, t.status),
+  roleCheck:   check('document_asset_links_role_check', sql`${t.linkRole} IN ('PRIMARY', 'SECONDARY', 'MENTIONED')`),
+  originCheck: check('document_asset_links_origin_check', sql`${t.origin} IN ('USER', 'AI', 'MIGRATION', 'LEGACY_COLUMN')`),
+  statusCheck: check('document_asset_links_status_check', sql`${t.status} IN ('ACTIVE', 'PROPOSED', 'REJECTED', 'REMOVED')`),
+  confidenceCheck: check('document_asset_links_confidence_check', sql`${t.confidence} IS NULL OR (${t.confidence} >= 0 AND ${t.confidence} <= 1)`),
+  targetCheck: check('document_asset_links_target_check', sql`${t.assetId} IS NOT NULL OR ${t.roomId} IS NOT NULL OR ${t.equipmentId} IS NOT NULL`),
 }));

@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { saveTreatmentConfig } from '@/services/ai/config/config-version.service';
 import { isTreatment, type Treatment } from '@/services/ai/config/treatments';
-import { REASONING_LEVELS, GUARDRAIL_REACTIONS } from '@/services/ai/config/config-types';
+import { REASONING_LEVELS, GUARDRAIL_REACTIONS, PROMPT_ARCHITECTURES } from '@/services/ai/config/config-types';
 import { requireAdminContext, parseVersionId, invalidId, toErrorResponse } from '../../../_shared';
 
 const Guardrail = z.object({
@@ -52,6 +52,13 @@ const Payload = z.object({
     semantic: z.number().min(0).max(1),
     semanticEnabled: z.boolean(),
   }).nullable().default(null),
+  // CDC 15 D-04 : architecture des prompts du traitement. Omise : celle en
+  // place est conservée. La règle §29.1 (Brouillon seulement, master déclaré)
+  // est appliquée par le service.
+  promptArchitecture: z.enum(PROMPT_ARCHITECTURES).optional(),
+  // CDC 15 D-03 : texte COMPLET du prompt maître, distinct du préambule.
+  // Omis : celui en place est conservé ; `null`/vide : fichier du dépôt.
+  masterPrompt: z.string().nullable().optional(),
 });
 
 export async function PUT(

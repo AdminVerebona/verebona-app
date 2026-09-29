@@ -24,7 +24,7 @@
  */
 import { TREATMENTS, type Treatment } from './treatments';
 import {
-  FIELD_LABELS,
+  FIELD_LABELS, promptArchitectureOf, masterPromptOf,
   type ConfigFieldKey, type TreatmentConfig,
   type GuardrailSetting, type TriggerSetting,
 } from './config-types';
@@ -138,8 +138,36 @@ export function diffTreatment(base: TreatmentConfig, candidate: TreatmentConfig)
       ...diffByCode('guardrails', base.guardrails, candidate.guardrails, renderGuardrail),
       ...diffByCode('triggers', base.triggers, candidate.triggers, renderTrigger),
       ...diffCascade(base, candidate),
+      ...diffArchitecture(base, candidate),
     ],
   };
+}
+
+/**
+ * CDC 15 D-04 : la bascule `steps` ↔ `master` est un changement de premier
+ * ordre (autre prompt, autre contrat de sortie). Absente d'une version
+ * antérieure au lot 12, elle vaut `steps` : pas de faux changement.
+ */
+function diffArchitecture(base: TreatmentConfig, candidate: TreatmentConfig): FieldChange[] {
+  const avant = promptArchitectureOf(base);
+  const apres = promptArchitectureOf(candidate);
+  const out: FieldChange[] = [];
+  if (avant !== apres) {
+    out.push({
+      field: 'promptArchitecture', label: FIELD_LABELS.promptArchitecture,
+      kind: 'modified', before: avant, after: apres,
+    });
+  }
+  // D-03 : texte master, champ distinct du préambule ; absent ≡ vide.
+  const ma = masterPromptOf(base);
+  const mb = masterPromptOf(candidate);
+  if (ma !== mb) {
+    out.push({
+      field: 'masterPrompt', label: FIELD_LABELS.masterPrompt,
+      kind: kindOf(ma, mb), before: ma, after: mb,
+    });
+  }
+  return out;
 }
 
 /**

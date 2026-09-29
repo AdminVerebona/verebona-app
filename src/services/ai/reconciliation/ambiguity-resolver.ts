@@ -14,6 +14,8 @@ import { z } from 'zod';
 import { AiGateway } from '../gateway/ai-gateway';
 import type { ReconciliationDecision, EvidenceCandidate } from './types';
 import { isExecutionCancelled } from '../queue/execution-control';
+import { getPromptArchitecture } from '../config/config-resolver';
+import { resolveValueConflictMaster } from './master/value-conflict';
 
 const ResolveAmbiguityOutput = z.object({
   /** Identifiant de la preuve retenue, ou null si le modèle s'abstient. */
@@ -39,6 +41,11 @@ export interface ResolveAmbiguityInput {
 export async function resolveAmbiguity(
   input: ResolveAmbiguityInput,
 ): Promise<ReconciliationDecision> {
+  // CDC 15 §25, D-04 : version de configuration T3 en architecture `master`
+  // ⇒ prompt maître t3_master_v1 (TASK=VALUE_CONFLICT). Sinon, chemin
+  // historique ci-dessous, strictement inchangé.
+  if (await getPromptArchitecture('T3') === 'master') return resolveValueConflictMaster(input);
+
   const { decision, candidates } = input;
   const allowedIds = new Set(candidates.map((c) => c.evidenceId));
 

@@ -1,0 +1,159 @@
+{
+  "case": "T1-01",
+  "description": "Alias libre et clé inventée : « prixAchat » ramené à acquisitionPrice ; « boilerPower » (hors registre) conservé comme connaissance générique ; identifiant halluciné neutralisé.",
+  "context": {
+    "linkedAssetId": 184,
+    "assets": [
+      {
+        "id": 184,
+        "name": "Draisienne",
+        "category": "OBJECT",
+        "subtype": "jouet"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [
+      "Facture Vélo"
+    ],
+    "verified": {
+      "ASSET": [
+        184
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Draisienne",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DRAISIENNE",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "PROPERTY_MANAGEMENT",
+          "documentTypeCode": "ACQUISITION_INVOICE",
+          "confidence": 0.95,
+          "evidence": {
+            "excerpt": "FACTURE D'ACHAT"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "DRAISIENNE"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": "prixAchat",
+          "rawValue": "129,00 €",
+          "normalizedValue": 129,
+          "valueType": "money_eur",
+          "canonicalUnit": "EUR",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Prix : 129,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": "boilerPower",
+          "rawValue": "24 kW",
+          "normalizedValue": 24,
+          "valueType": "quantity",
+          "canonicalUnit": "kW",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Puissance : 24 kW",
+            "page": 1
+          },
+          "rawKey": "puissance"
+        },
+        {
+          "canonicalKey": "serialNumber",
+          "rawValue": "SN-77",
+          "normalizedValue": "SN-77",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 999,
+            "rawLabel": "Autre draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Autre draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "N° série SN-77",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": "condition",
+          "normalizedValue": "BON",
+          "valueType": "enum",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {}
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

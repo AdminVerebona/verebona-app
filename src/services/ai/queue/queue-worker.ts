@@ -226,6 +226,8 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
     execution = runInJobContext(
       {
         jobId: job.id, treatment, configVersionId: job.configVersionId ?? configVersionId,
+        // CDC 15 OBS-CFG : déclencheur effectif, tracé avec chaque appel.
+        triggerCode: job.triggerCode ?? null,
         signal: controller.signal,
         // MOD-011 : jeton de démarrage, comparé à l'ouverture du disjoncteur
         // par la garde de la passerelle (runnable-guard).

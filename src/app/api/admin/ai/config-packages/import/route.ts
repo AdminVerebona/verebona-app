@@ -41,6 +41,9 @@ const Entry = z.object({
     semantic: z.number().min(0).max(1),
     semanticEnabled: z.boolean(),
   }).nullable().default(null),
+  // CDC 15 D-04 (lot 12). Absente d'un package antérieur : `steps`.
+  promptArchitecture: z.enum(['steps', 'master']).optional(),
+  masterPrompt: z.string().nullable().optional(),
 });
 
 const Body = z.object({

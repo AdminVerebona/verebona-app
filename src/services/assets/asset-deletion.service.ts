@@ -171,7 +171,7 @@ export async function getAssetDeletionSummary(assetId: number): Promise<AssetDel
 export async function deleteAssetCompletely(asset: {
   id: number;
   thumbnailUrl?: string | null;
-}): Promise<{ blobsScheduled: number }> {
+}): Promise<{ blobsScheduled: number; fileIds: number[] }> {
   const assetId = asset.id;
   const bucket = process.env.OVH_S3_BUCKET ?? null;
 
@@ -251,6 +251,8 @@ export async function deleteAssetCompletely(asset: {
     // 3. Le bien ; la cascade emporte tout le reste.
     await tx.delete(assets).where(eq(assets.id, assetId));
 
-    return { blobsScheduled: keys.length };
+    // `fileIds` : documents emportés — leurs preuves portées par d'AUTRES
+    // biens sont retirées par l'appelant (CDC 15 T3-03, `onAssetDeleted`).
+    return { blobsScheduled: keys.length, fileIds };
   });
 }

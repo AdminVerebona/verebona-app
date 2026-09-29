@@ -63,7 +63,6 @@ export interface AssistantConfig {
   writeCommandsEnabled: boolean;
   maxAiCallsPerRequest: number;
   maxInputTokens: number;
-  maxOutputTokens: number;
   maxSources: number;
   maxVisibleSources: number;
   maxExcerptChars: number;
@@ -114,7 +113,8 @@ export function loadAssistantConfig(): AssistantConfig {
     writeCommandsEnabled: flagOnByDefault(process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS),
     maxAiCallsPerRequest: num('VEREBONA_ASSISTANT_MAX_AI_CALLS_PER_REQUEST', 2),
     maxInputTokens: num('VEREBONA_ASSISTANT_MAX_INPUT_TOKENS', 12000),
-    maxOutputTokens: num('VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', 500),
+    // `maxOutputTokens` retiré (CDC 15 T2-43) : la configuration IA effective
+    // de l'opération le fixe, bornée par `assistantMaxOutputTokensCap()`.
     maxSources: num('VEREBONA_ASSISTANT_MAX_SOURCES', 8),
     maxVisibleSources: num('VEREBONA_ASSISTANT_MAX_VISIBLE_SOURCES', 5),
     maxExcerptChars: num('VEREBONA_ASSISTANT_MAX_EXCERPT_CHARS', 1500),
@@ -170,17 +170,53 @@ export interface OperationModels { primaryModel: string; fallbackModels: string[
  * Les modèles contrôlés sont ceux que la passerelle appelle RÉELLEMENT
  * (`AI_OPERATIONS`), et non plus un registre parallèle jamais lu.
  */
+/** Budget V1 de sortie de l'assistant (CDC Assistant §31.2). */
+export const ASSISTANT_OUTPUT_TOKENS_BUDGET = 500;
+
+let varRetireeSignalee = false;
+
+/**
+ * Plafond de jetons de sortie de l'assistant, appliqué PAR-DESSUS la
+ * configuration IA effective (CDC 15 T2-43, arbitrage PO en attente) :
+ * `min(valeur BO, 500)` — une version BO au-delà de 500 est signalée à la
+ * validation et plafonnée ici.
+ *
+ * Compatibilité : `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` n'est plus une
+ * source de vérité, mais si elle est encore posée elle est honorée comme
+ * plafond INFÉRIEUR (jamais pour relever 500), et signalée une fois.
+ */
+export function assistantMaxOutputTokensCap(env: NodeJS.ProcessEnv = process.env): number {
+  const brut = env.VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS;
+  if (brut === undefined || brut.trim() === '') return ASSISTANT_OUTPUT_TOKENS_BUDGET;
+  const n = Number(brut);
+  if (!varRetireeSignalee) {
+    varRetireeSignalee = true;
+    console.warn(
+      `[verebona-assistant] VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS=${brut} : variable RETIRÉE (CDC 15 T2-43). `
+      + 'Le plafond de sortie vient de la configuration IA (BO, traitement T2), borné à 500 ; '
+      + 'la variable n\'est plus honorée que comme plafond inférieur. À supprimer de l\'environnement.',
+    );
+  }
+  return Number.isInteger(n) && n > 0 ? Math.min(n, ASSISTANT_OUTPUT_TOKENS_BUDGET) : ASSISTANT_OUTPUT_TOKENS_BUDGET;
+}
+
+/** Réservé aux tests. */
+export function __resetOutputTokensWarningForTests(): void {
+  varRetireeSignalee = false;
+}
+
 export function assertConfigAtStartup(
   cfg: AssistantConfig = getAssistantConfig(),
   operations: Record<string, OperationModels | undefined> = {},
 ): void {
   const errors: string[] = [];
+  // CDC 15 T2-43 : signale au démarrage une variable retirée encore posée.
+  assistantMaxOutputTokensCap();
 
   if (cfg.webGroundingEnabled) errors.push('Recherche web interdite en V1 (§15.7)');
   if (cfg.maxAiCallsPerRequest > 2) errors.push('MAX_AI_CALLS_PER_REQUEST > 2 interdit (§15.5)');
   if (cfg.geminiStore) errors.push('GEMINI_STORE doit rester false en V1 (§25.4)');
   if (cfg.maxSources > 8) errors.push('MAX_SOURCES > 8 interdit (§13.9)');
-  if (cfg.maxOutputTokens > 500) errors.push('MAX_OUTPUT_TOKENS > 500 hors budget V1 (§31.2)');
   if (cfg.monthlyBudgetMicros < 0) errors.push('MONTHLY_BUDGET_MICROS négatif');
 
   for (const code of ASSISTANT_OPERATIONS) {

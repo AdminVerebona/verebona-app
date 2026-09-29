@@ -13,12 +13,12 @@
 import { randomUUID } from 'crypto';
 import type { AiGatewayRequest, AiGatewayResponse } from './types';
 import { AiGatewayError, isAiGatewayError, type AiErrorCode } from './errors';
-import { getOperation } from '../registry/operations';
+import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
 import { validateOutput } from './output-validator';
 import { redactVariables, previewForLog, outputDigestForLog, stripRawExcerpt } from './redaction';
 import { getAiProvider } from './providers';
-import { resolvePrompt } from '../prompts/prompt-loader';
+import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, MasterPromptError } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
@@ -56,6 +56,19 @@ export class AiGateway {
       throw new AiGatewayError('OPERATION_UNKNOWN', req.operationCode,
         `L'opération « ${op.operationCode} » est déterministe : elle ne doit pas passer par la gateway.`);
     }
+    // CDC 15 §22.2, DP-05 : la branche d'une opération master est imposée par
+    // le référentiel. Une requête qui en demande une autre, ou un autre master,
+    // est refusée avant tout appel (non récupérable : erreur d'appelant).
+    if (isMasterOperation(op)) {
+      if (req.task !== undefined && req.task !== op.task) {
+        throw new AiGatewayError('TASK_MISMATCH', req.operationCode,
+          `L'opération « ${op.operationCode} » exécute TASK=${op.task}, pas TASK=${req.task}.`);
+      }
+      if (req.masterPromptCode !== undefined && req.masterPromptCode !== op.masterPromptCode) {
+        throw new AiGatewayError('TASK_MISMATCH', req.operationCode,
+          `L'opération « ${op.operationCode} » utilise le master ${op.masterPromptCode}, pas ${req.masterPromptCode}.`);
+      }
+    }
 
     // ── Arrêt d'urgence et état du traitement (CDC BO IA OPS-011, OPS-008,
     //    OPS-024, WF-07, WF-08, MOD-012) ──────────────────────────────────────
@@ -68,13 +81,27 @@ export class AiGateway {
     await assertTreatmentRunnable(treatmentForUseCase(op.useCaseCode), op.operationCode);
 
     // ── Idempotence (CDC §5.7) ─────────────────────────────────────────────
-    const key = req.idempotencyKey ?? buildIdempotencyKey({
-      accountId: req.accountId,
-      operationCode: op.operationCode,
-      sourceIds: req.sourceIds ?? [],
-      sourceVersion: req.sourceVersion,
-      variables: req.promptVariables,
-    });
+    // Opération master : la version résolue du master entre dans la clé
+    // (`t1_master_v1@file` ou `@cfg<id>:<empreinte>`) — un nouveau master ne
+    // sert jamais une sortie mise en cache sous l'ancien (revue lot 12).
+    let masterVersion: string | null = null;
+    if (isMasterOperation(op)) {
+      const cfg = await resolveOperationConfig(op.operationCode);
+      masterVersion = masterPromptVersionOf({
+        masterPromptCode: op.masterPromptCode,
+        configuredText: cfg.promptArchitecture === 'master' ? cfg.masterPromptText : null,
+        configVersionId: cfg.configVersionId,
+      });
+    }
+    const key = req.idempotencyKey
+      ? (masterVersion ? `${req.idempotencyKey}:${masterVersion}` : req.idempotencyKey)
+      : buildIdempotencyKey({
+        accountId: req.accountId,
+        operationCode: op.operationCode,
+        sourceIds: req.sourceIds ?? [],
+        sourceVersion: req.sourceVersion,
+        variables: masterVersion ? { ...req.promptVariables, __masterPromptVersion: masterVersion } : req.promptVariables,
+      });
 
     return withIdempotency<AiGatewayResponse<T>>(
       key,
@@ -109,9 +136,6 @@ export class AiGateway {
       throw new AiGatewayError('OPERATION_UNKNOWN', operationCode,
         `L'opération « ${operationCode} » attend un prompt fourni à l'appel (promptOverride).`);
     }
-    const { text: promptTechnique, version: promptVersion } = op.dynamicPrompt
-      ? { text: substituteOverride(req.promptOverride!, safeVariables), version: 'candidate' }
-      : await resolvePrompt(op.promptCode, safeVariables, op.useCaseCode);
 
     // ══════════════════════════════════════════════════════════════════════
     // CONFIGURATION ADMINISTRABLE (CDC BO IA GEN-001, §2.1)
@@ -131,11 +155,54 @@ export class AiGateway {
     // autre chose que ce qui est soumis.
     // ══════════════════════════════════════════════════════════════════════
     const configuration = await resolveOperationConfig(operationCode);
-    // Prompt historique relayé tel quel (`legacyPrompt`, plan de retrait
-    // WF-41) : pas de préambule, rédigé pour un autre contrat de sortie.
-    const prompt = op.dynamicPrompt || op.legacyPrompt
-      ? promptTechnique
-      : composePrompt(configuration.promptPreamble, promptTechnique);
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PROMPT MAÎTRE (CDC 15 §22.3, §29.1, D-03, ARCH-03, DP-05)
+    //
+    // Opération master : le texte est le master du traitement — celui de la
+    // version de configuration si elle le porte (architecture `master`), le
+    // fichier du dépôt sinon —, avec `{{TASK}}` fixé ici. AUCUN préambule
+    // n'y est ajouté : le master contient déjà les règles du traitement, et
+    // le préfixer reviendrait à recréer un second prompt caché. TASK, master
+    // et version du master sont tracés sans que l'appelant ait à les fournir.
+    // ══════════════════════════════════════════════════════════════════════
+    let promptVersion: string;
+    let prompt: string;
+    let master: { task: string; masterPromptCode: string; masterPromptVersion: string } | null = null;
+    if (isMasterOperation(op)) {
+      let resolved;
+      try {
+        resolved = await resolveMasterPrompt({
+          masterPromptCode: op.masterPromptCode,
+          task: op.task,
+          variables: safeVariables,
+          useCaseCode: op.useCaseCode,
+          configuredText: configuration.promptArchitecture === 'master' ? configuration.masterPromptText : null,
+          configVersionId: configuration.configVersionId,
+        });
+      } catch (e) {
+        // Master absent, incomplet ou variable non déclarée : erreur de
+        // configuration, identique sur tous les modèles — non récupérable.
+        if (e instanceof MasterPromptError) {
+          throw new AiGatewayError('MASTER_PROMPT_INVALID', operationCode, e.message, { cause: e });
+        }
+        throw e;
+      }
+      prompt = resolved.text;
+      promptVersion = resolved.version;
+      master = { task: resolved.task, masterPromptCode: resolved.masterPromptCode, masterPromptVersion: resolved.version };
+    } else {
+      const technique = op.dynamicPrompt
+        ? { text: substituteOverride(req.promptOverride!, safeVariables), version: 'candidate' }
+        : await resolvePrompt(op.promptCode, safeVariables, op.useCaseCode);
+      promptVersion = technique.version;
+      // Prompt historique relayé tel quel (`legacyPrompt`, plan de retrait
+      // WF-41) : pas de préambule, rédigé pour un autre contrat de sortie.
+      prompt = op.dynamicPrompt || op.legacyPrompt
+        ? technique.text
+        : composePrompt(configuration.promptPreamble, technique.text);
+    }
+
     // Mode JSON natif : choix de l'appel, sinon déclaration de l'opération.
     const jsonResponse = req.jsonResponse ?? op.jsonResponse ?? false;
 
@@ -165,6 +232,27 @@ export class AiGateway {
     // Exécution de file : job parent tracé à chaque appel (§9.1).
     const jobId = currentJobContext()?.jobId ?? null;
 
+    // CDC 15 CFG-02, CFG-05, OBS-CFG, DP-05 : ce qui a réellement été appliqué,
+    // tracé avec chaque tentative. Le moteur se déduit de l'opération : un
+    // prompt historique relayé (`legacyPrompt`) EST le moteur legacy.
+    const traceConfig = {
+      task: master?.task ?? req.task ?? null,
+      masterPromptCode: master?.masterPromptCode ?? req.masterPromptCode ?? null,
+      masterPromptVersion: master?.masterPromptVersion ?? req.masterPromptVersion ?? null,
+      engine: req.engine ?? (op.legacyPrompt ? 'legacy' as const : 'new' as const),
+      triggerCode: req.triggerCode ?? currentJobContext()?.triggerCode ?? null,
+    };
+    // §2.1 : le plafond ne vaut que pour le modèle principal ; les replis
+    // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
+    // c'est aussi le comportement le plus sûr — un repli sollicité parce
+    // que le principal a échoué ne doit pas en plus changer de format.
+    const maxOutputTokens = plafonnerSortie(
+      op.minOutputTokens
+        ? Math.max(configuration.maxOutputTokens ?? 0, op.minOutputTokens)
+        : configuration.maxOutputTokens ?? undefined,
+      req.maxOutputTokensCap,
+    );
+
     // Pièces jointes préparées une fois pour toute la chaîne (upload Files API
     // unique, réutilisé par les replis), libérées en fin de chaîne quelle que
     // soit l'issue.
@@ -177,6 +265,10 @@ export class AiGateway {
         const model = models[i];
         const usedFallback = i + premierRang > 0;
         const modelRank = rankAt(i + premierRang);
+        // T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03 : niveau du rang RÉELLEMENT
+        // sollicité. Indexé sur le rang dans la chaîne complète : une escalade
+        // (`firstModelIndex`) ne doit pas recevoir le niveau du principal.
+        const reasoning = configuration.reasoningByRank[i + premierRang] ?? null;
         // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
         // les jetons ont été consommés et facturés — COST-005 exige de garder
         // le coût réel de l'appel échoué.
@@ -188,24 +280,21 @@ export class AiGateway {
             prompt,
             attachments: req.attachments ?? [],
             timeoutMs: req.timeoutMsCap && req.timeoutMsCap > 0 ? Math.min(op.timeoutMs, req.timeoutMsCap) : op.timeoutMs,
-            // §2.1 : le plafond ne vaut que pour le modèle principal ; les replis
-            // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
-            // c'est aussi le comportement le plus sûr — un repli sollicité parce
-            // que le principal a échoué ne doit pas en plus changer de format.
-            maxOutputTokens: plafonnerSortie(
-              op.minOutputTokens
-                ? Math.max(configuration.maxOutputTokens ?? 0, op.minOutputTokens)
-                : configuration.maxOutputTokens ?? undefined,
-              req.maxOutputTokensCap,
-            ),
-            // T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03 : niveau du rang sollicité.
-            reasoning: configuration.reasoningByRank[i] ?? null,
+            maxOutputTokens,
+            reasoning,
+            operationCode,
+            ...(traceConfig.task ? { task: traceConfig.task } : {}),
             ...(jsonResponse ? { jsonResponse: true } : {}),
             ...(attachmentSession ? { attachmentSession } : {}),
           });
 
           // Aucune persistance d'une sortie brute invalide (CDC §5.3).
-          const data = validateOutput<T>(out.rawText, req.outputSchema, operationCode, op.outputFormat ?? 'json');
+          // Validation discriminée (CDC 15 §22.2) : une sortie master doit
+          // porter la branche demandée, sinon erreur récupérable (modèle suivant).
+          const data = validateOutput<T>(
+            out.rawText, req.outputSchema, operationCode, op.outputFormat ?? 'json',
+            master ? { expectedTask: master.task } : undefined,
+          );
 
           const durationMs = Date.now() - startedAt;
           // Le tarif est indexé sur le fournisseur DÉCLARÉ dans le référentiel,
@@ -241,6 +330,7 @@ export class AiGateway {
             jobId,
             configVersionId: configuration.configVersionId,
             callerMode: req.callerMode,
+            ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
           });
 
           attempts.push({ model, succeeded: true });
@@ -287,6 +377,7 @@ export class AiGateway {
             jobId,
             configVersionId: configuration.configVersionId,
             callerMode: req.callerMode,
+            ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
           }).catch(() => { /* la trace ne doit jamais masquer l'erreur d'origine */ });
 
           // Une erreur non récupérable arrête immédiatement la chaîne de repli.

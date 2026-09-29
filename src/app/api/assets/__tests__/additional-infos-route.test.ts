@@ -6,6 +6,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ── Données simulées ────────────────────────────────────────────────────────
 // Compte 10 : titulaire (user 1) et co-titulaire Duo (user 2). Compte 20 : autre.
@@ -154,9 +156,17 @@ describe('GET /additional-infos', () => {
     expect(body.sections).toEqual(['commercial', 'insurance', 'claim', 'finance']);
   });
 
-  it('alias CDC /additional-info : même implémentation', () => {
-    expect(alias.GET).toBe(GET);
-    expect(alias.PATCH).toBe(PATCH);
+  it('alias CDC /additional-info : même implémentation', async () => {
+    // Contrôle par le source ET par le comportement, pas par l'identité des
+    // fonctions : sous Windows, vitest peut charger deux fois le même module
+    // (chemins `[id]` résolus différemment), ce qui rendait `toBe` faux.
+    const source = readFileSync(join(__dirname, '..', '[id]', 'additional-info', 'route.ts'), 'utf8');
+    expect(source).toMatch(/export\s*\{\s*GET,\s*PATCH\s*\}\s*from\s*'\.\.\/additional-infos\/route'/);
+    expect(typeof alias.GET).toBe('function');
+    expect(typeof alias.PATCH).toBe('function');
+    const viaAlias = await alias.GET(new NextRequest('http://x/'), ctx(5));
+    const direct = await GET(new NextRequest('http://x/'), ctx(5));
+    expect(viaAlias.status).toBe(direct.status);
   });
 });
 

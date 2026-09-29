@@ -34,6 +34,13 @@ export interface ProviderCallInput {
    */
   jsonResponse?: boolean;
   /**
+   * Opération et branche TASK de l'appel — information seulement : les
+   * fournisseurs réels l'ignorent. Sert au rejeu des sorties enregistrées du
+   * harnais E2E (CDC 15 T2-41, `src/test/e2e/replay-gateway.ts`).
+   */
+  operationCode?: string;
+  task?: string;
+  /**
    * Pièces jointes préparées UNE fois pour toute la chaîne de modèles d'une
    * exécution (`openAttachmentSession`). Absent : l'adaptateur prépare et
    * nettoie lui-même, à chaque appel.

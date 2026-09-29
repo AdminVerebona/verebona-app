@@ -1,0 +1,110 @@
+{
+  "case": "T1-06",
+  "description": "« Dernier entretien » seul, annoncé comme prochaine échéance avec une récurrence non écrite : requalifié en lastRevision, aucune date future, aucune récurrence.",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      },
+      {
+        "id": 13,
+        "name": "Tesla Model 3",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12,
+        13
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Carnet d'entretien Clio",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "CARNET D'ENTRETIEN",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "RAPPORT_ENTRETIEN",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": null,
+          "confidence": 0.8,
+          "evidence": {
+            "excerpt": "CARNET D'ENTRETIEN"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "AB-123-CD"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": "maintenanceDueDate",
+          "rawValue": "15/11/2026",
+          "normalizedValue": "2026-11-15",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Dernier entretien : 15/11/2026",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "maintenance",
+            "nature": "DEADLINE"
+          },
+          "recurrence": {
+            "frequency": "yearly",
+            "interval": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

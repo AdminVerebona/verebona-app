@@ -98,3 +98,24 @@ describe('exécutant', () => {
     await expect(runT3Job(job({}), NO_GUARD, d)).rejects.toThrow(/déjà en cours/);
   });
 });
+
+describe('cycle de vie d’un document (CDC 15 T3-03)', () => {
+  it('un travail « bien » par bien touché, déclencheur tracé document_linked', async () => {
+    const { enqueueT3ForAssets } = await import('../t3-queue');
+    const ids = await enqueueT3ForAssets({ accountId: 5, userId: 3, assetIds: [10, 10, 11, 0], sourceFileId: 55, reason: 'DOCUMENT_MOVED' }, deps());
+    expect(ids).toEqual([99, 99]);
+    expect(enqueue.mock.calls.map((c) => (c[0] as { scope: { targetId: number } }).scope.targetId)).toEqual([10, 11]);
+    expect(enqueue.mock.calls[0][0]).toMatchObject({
+      triggerCode: 'source_analyzed', payload: { kind: 'asset', userId: 3, sourceFileId: 55, triggeredBy: 'document_linked', lifecycleReason: 'DOCUMENT_MOVED' },
+    });
+    expect(await enqueueT3ForAssets({ accountId: 5, userId: 3, assetIds: [10], reason: 'x' }, deps(false))).toEqual([]);
+  });
+
+  it('exécutant : triggeredBy du cycle de vie transmis au run local', async () => {
+    const reconcileAsset = vi.fn(async () => ({}));
+    await runT3Job(job({ targetType: 'asset', targetId: '10', payload: { kind: 'asset', userId: 3, triggeredBy: 'document_linked' } }), NO_GUARD, {
+      reconcileAsset, reconcileAccount: vi.fn() as never, listSweepAccounts: async () => [], enqueue: enqueue as never,
+    });
+    expect(reconcileAsset).toHaveBeenCalledWith(expect.objectContaining({ assetId: 10, triggeredBy: 'document_linked' }));
+  });
+});

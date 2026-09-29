@@ -1,0 +1,180 @@
+{
+  "case": "T1-04",
+  "description": "Fin de garantie et numéro de série d'une chaudière : restent sur l'équipement, jamais rabattus sur l'appartement ; observation visuelle sans faux extrait.",
+  "context": {
+    "linkedAssetId": 30,
+    "assets": [
+      {
+        "id": 30,
+        "name": "Appartement Lyon",
+        "category": "IMMOBILIER",
+        "subtype": "appartement"
+      }
+    ],
+    "rooms": [
+      {
+        "id": 301,
+        "name": "Cuisine",
+        "assetId": 30
+      }
+    ],
+    "equipments": [
+      {
+        "id": 501,
+        "name": "Chaudière Frisquet",
+        "type": "chaudiere",
+        "assetId": 30
+      }
+    ],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        30
+      ],
+      "EQUIPMENT": [
+        501
+      ],
+      "ROOM": [
+        301
+      ],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Certificat de garantie Chaudière Frisquet",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "CERTIFICAT DE GARANTIE",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "CERTIFICAT_GARANTIE",
+          "rubricCode": "CONTRACTS_WARRANTIES_DOCS",
+          "documentTypeCode": null,
+          "confidence": 0.9,
+          "evidence": {
+            "excerpt": "CERTIFICAT DE GARANTIE"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 30,
+            "rawLabel": "Appartement Lyon",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "12 rue Exemple"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [
+          {
+            "entityId": 501,
+            "rawLabel": "Chaudière Frisquet",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "FRISQUET"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": "warrantyEndDate",
+          "rawValue": "31/12/2028",
+          "normalizedValue": "2028-12-31",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "EQUIPMENT",
+            "entityId": 501,
+            "rawLabel": "Chaudière Frisquet",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Chaudière Frisquet"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Garantie jusqu'au 31/12/2028",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "warranty",
+            "nature": "DEADLINE"
+          },
+          "subject": "Chaudière",
+          "attribute": "fin de garantie"
+        },
+        {
+          "canonicalKey": "serialNumber",
+          "rawValue": "FR-2026-001",
+          "normalizedValue": "FR-2026-001",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "EQUIPMENT",
+            "entityId": 501,
+            "rawLabel": "Chaudière Frisquet",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Chaudière Frisquet"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "N° de série : FR-2026-001",
+            "page": 1
+          },
+          "subject": "Chaudière"
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "installation",
+          "label": "Installation",
+          "subject": "Chaudière",
+          "attribute": "installation",
+          "normalizedValue": "murale",
+          "valueType": "string",
+          "target": {
+            "type": "EQUIPMENT",
+            "entityId": 501,
+            "rawLabel": "Chaudière Frisquet",
+            "confidence": "probable",
+            "evidenceSignals": [
+              "Chaudière Frisquet"
+            ]
+          },
+          "provenance": "VISUAL_ANALYSIS",
+          "confidence": "probable",
+          "evidence": {
+            "excerpt": "chaudière murale"
+          },
+          "visualEvidence": {
+            "description": "Appareil fixé au mur",
+            "page": 1,
+            "imageIndex": 0
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

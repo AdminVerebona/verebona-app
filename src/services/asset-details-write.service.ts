@@ -7,13 +7,30 @@
  * applicable à la famille, nom obligatoire, famille non modifiable, dates
  * valides, prochain contrôle technique non passé, colonnes atomiques,
  * alertes de cohérence levées, historique de valorisation, recontrôle T3.
+ *
+ * CDC 15 (lot 11, T3-01, T3-02, T3-05, T2-38) — FAÇADE de
+ * `writeCanonicalAssetField`, selon `CANONICAL_WRITE_MODE` :
+ *   legacy   chemin historique inchangé ;
+ *   shadow   chemin historique, puis observation : la primitive calcule ce
+ *            qu'elle aurait écrit et journalise l'écart (`dry_run`) ;
+ *   enabled  les champs canoniques passent par la primitive (origine USER ou
+ *            ADMIN, `__updatedAt`, colonnes miroirs, journal), dans la même
+ *            transaction et sous le même verrou que le reste de la section
+ *            (nom, statut, catégorie, alertes, historique de valorisation).
  */
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { validateDetailChanges, type DetailFieldError } from '@/lib/asset-detail-rules';
 import { assetModificationDecision } from '@/lib/asset-quota-guard';
+import { writeOrigin } from '@/services/ai/reconciliation/field-origin';
+import { isExcludedKey, toAssetFamily, type AssetFamily } from '@/services/canonical/registry';
+import { canonicalWriteMode } from '@/services/canonical/rollout';
+import {
+  loadAssetRow, observeLegacyWrite, resolveDefForFamily, sameCanonicalValue, writeCanonicalAssetFields,
+  type AssetRowJson, type CanonicalFieldWrite, type CanonicalWriteSource, type SqlRunner,
+} from '@/services/canonical/asset-state';
 
 export const ALL_DETAIL_SECTIONS = [
   'common',
@@ -45,7 +62,9 @@ const ATOMIC_FIELDS: Record<string, string> = {
 const VALID_STATUSES = ['EN_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'VENDU', 'DETRUIT', 'INACTIF', 'TRANSMIS'];
 
 export type AssetDetailsErrorCode =
-  | 'NOT_FOUND' | 'ASSET_UNAVAILABLE' | 'SECTION_NOT_APPLICABLE' | 'VALIDATION_ERROR' | 'WRITE_BLOCKED';
+  | 'NOT_FOUND' | 'ASSET_UNAVAILABLE' | 'SECTION_NOT_APPLICABLE' | 'VALIDATION_ERROR' | 'WRITE_BLOCKED'
+  /** Mode enabled : la valeur en place n'est plus celle attendue (`expectedCurrent`). */
+  | 'CONFLICT';
 
 export class AssetDetailsError extends Error {
   constructor(
@@ -101,12 +120,153 @@ export async function loadWritableAsset(assetId: number, accountId: number) {
   return assetRow;
 }
 
-export async function updateAssetDetails(p: {
+/** Origine d'une écriture de la fiche : toujours humaine (T3-02). */
+export type AssetDetailsOrigin = 'USER' | 'ADMIN';
+
+export interface UpdateAssetDetailsInput {
   assetId: number;
   accountId: number;
   section: string;
   fields: Record<string, unknown>;
-}): Promise<{ updated: true; section: string }> {
+  /** USER par défaut ; ADMIN pour une correction du back-office. */
+  origin?: AssetDetailsOrigin;
+  actorUserId?: number | null;
+  /** Provenance journalisée (défaut : `asset_details` / section). */
+  source?: CanonicalWriteSource;
+  traceId?: string | null;
+  /**
+   * Mode enabled : valeur attendue en place par champ, vérifiée SOUS VERROU
+   * (`FOR UPDATE`) — écart → AssetDetailsError('CONFLICT'), rien n'est écrit.
+   */
+  expectedCurrent?: Record<string, unknown>;
+  /**
+   * Mode enabled : publier ASSET_UPDATED depuis la primitive. Faux par
+   * défaut — la route PATCH publie déjà l'événement.
+   */
+  emitEvent?: boolean;
+}
+
+/** Champs portés par des colonnes d'identité, jamais par la fiche. */
+const IDENTITY_KEYS = new Set(['name', 'subCategory', 'status']);
+
+/** Clés de la section qui sont des champs canoniques applicables à la famille. */
+export function canonicalWritesOf(fields: Record<string, unknown>, family: AssetFamily): CanonicalFieldWrite[] {
+  const out: CanonicalFieldWrite[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (IDENTITY_KEYS.has(key) || isExcludedKey(key)) continue;
+    const def = resolveDefForFamily(key, family);
+    if (def && def.families.includes(family)) out.push({ key, value });
+  }
+  return out;
+}
+
+/**
+ * Effets d'une modification manuelle sur la fiche : alertes de cohérence
+ * levées pour les champs modifiés, historique de valorisation.
+ */
+function applyEditSideEffects(kc: Record<string, unknown>, fields: Record<string, unknown>, source: string): void {
+  // If any field was manually edited, clear its dismissedCoherenceAlerts entry
+  // and remove the corresponding coherence alert
+  const editedFields = Object.keys(fields);
+  const dismissedFields: string[] = Array.isArray(kc.dismissedCoherenceAlerts)
+    ? kc.dismissedCoherenceAlerts as string[]
+    : [];
+  const remainingDismissed = dismissedFields.filter(f => !editedFields.includes(f));
+  if (remainingDismissed.length !== dismissedFields.length) {
+    kc.dismissedCoherenceAlerts = remainingDismissed;
+  }
+  // Also remove coherence alerts for the edited fields
+  const alerts = Array.isArray(kc.coherenceAlerts)
+    ? (kc.coherenceAlerts as Array<{ field: string }>).filter(a => !editedFields.includes(a.field))
+    : [];
+  if (alerts.length !== (Array.isArray(kc.coherenceAlerts) ? kc.coherenceAlerts.length : 0)) {
+    kc.coherenceAlerts = alerts;
+  }
+
+  // If any valuation fields changed, push a new entry to valuationHistory
+  const VALUATION_FIELDS = ['estimatedValue', 'estimatedValueDate', 'estimatedValueMode'] as const;
+  const valuationChanged = VALUATION_FIELDS.some(f => f in fields);
+  if (valuationChanged && (kc['estimatedValue'] != null || kc['estimatedValueDate'] != null)) {
+    const history: unknown[] = Array.isArray(kc['valuationHistory']) ? kc['valuationHistory'] as unknown[] : [];
+    history.push({
+      id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      value: kc['estimatedValue'] ?? null,
+      date: kc['estimatedValueDate'] ?? null,
+      mode: kc['estimatedValueMode'] ?? null,
+      source,
+      addedAt: new Date().toISOString(),
+    });
+    kc['valuationHistory'] = history;
+  }
+}
+
+/**
+ * Clés dont la valeur change RÉELLEMENT (relecture lot 13) : le client
+ * renvoie la section entière, et une valeur identique (même normalisation que
+ * `sameCanonicalValue` pour une clé du registre, texte sinon) ne doit pas
+ * changer d'origine. Seules les clés modifiées deviennent USER/ADMIN.
+ */
+export function changedFields(
+  fields: Record<string, unknown>,
+  before: Record<string, unknown>,
+  family: AssetFamily,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    const def = IDENTITY_KEYS.has(key) ? undefined : resolveDefForFamily(key, family);
+    const avant = before[key] !== undefined ? before[key] : (def && def.key !== key ? before[def.key] : undefined);
+    const identique = def && def.families.includes(family)
+      ? sameCanonicalValue(def.key, avant ?? null, value)
+      : texteDe(avant) === texteDe(value);
+    if (!identique) out[key] = value;
+  }
+  return out;
+}
+
+const texteDe = (v: unknown): string | null =>
+  (v === null || v === undefined || v === '' ? null : typeof v === 'string' ? v : JSON.stringify(v));
+
+/**
+ * Pose l'origine humaine et la date sur chaque clé de fiche écrite (T3-02).
+ * Les colonnes d'identité (nom, statut, sous-catégorie) et les clés
+ * techniques ne portent pas d'origine.
+ */
+export function markHumanOrigins(
+  kc: Record<string, unknown>,
+  fields: Record<string, unknown>,
+  origin: AssetDetailsOrigin,
+  now: string = new Date().toISOString(),
+): void {
+  for (const key of Object.keys(fields)) {
+    if (IDENTITY_KEYS.has(key) || isExcludedKey(key) || key.includes('__') || /_origin$/.test(key)) continue;
+    const next = writeOrigin(kc, key, origin, { updatedAt: now });
+    for (const k of Object.keys(kc)) delete kc[k];
+    Object.assign(kc, next);
+  }
+}
+
+/** Délai maximal de la lecture préalable à l'observation (mode shadow). */
+const SHADOW_READ_TIMEOUT_MS = 250;
+
+/** Résultat de la promesse, ou null si elle échoue ou dépasse le délai. */
+async function avecDelai<T>(pr: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pr.catch(() => null),
+      new Promise<null>((r) => { timer = setTimeout(() => r(null), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Colonnes SQL des champs atomiques hors registre (ex. immatriculation d'un objet). */
+const ATOMIC_SQL_COLUMNS: Record<string, string> = {
+  address: 'address', city: 'city', postalCode: 'postal_code', registrationNumber: 'registration_number',
+};
+
+export async function updateAssetDetails(p: UpdateAssetDetailsInput): Promise<{ updated: true; section: string }> {
   const { assetId, accountId, section, fields } = p;
   if (!ALL_DETAIL_SECTIONS.includes(section)) {
     throw new AssetDetailsError('NOT_FOUND', `Section unknown: ${section}`);
@@ -142,6 +302,24 @@ export async function updateAssetDetails(p: {
     throw new AssetDetailsError('VALIDATION_ERROR', invalid.map((e) => e.message).join(' '), { fields: invalid });
   }
 
+  const mode = canonicalWriteMode();
+  const family: AssetFamily = toAssetFamily(assetRow.category) ?? 'OBJECT';
+  const origin: AssetDetailsOrigin = p.origin ?? 'USER';
+  const source: CanonicalWriteSource = p.source ?? { type: 'asset_details', id: section };
+
+  if (mode === 'enabled') {
+    await writeSectionCanonical({ ...p, origin, source }, family);
+    await recontroleCoherence(accountId, assetId, fields);
+    return { updated: true, section };
+  }
+
+  // Mode shadow : état AVANT le chemin historique, pour l'observation.
+  // Lecture bornée : au-delà de SHADOW_READ_TIMEOUT_MS, pas d'observation.
+  let before: AssetRowJson | null = null;
+  if (mode === 'shadow') {
+    before = await avecDelai(loadAssetRow(pgClient as unknown as SqlRunner, assetId, accountId), SHADOW_READ_TIMEOUT_MS);
+  }
+
   // Deep merge fields into kc
   const atomicUpdates: Record<string, unknown> = {};
   let nameUpdate: string | undefined;
@@ -166,39 +344,17 @@ export async function updateAssetDetails(p: {
     }
   }
 
-  // If any field was manually edited, clear its dismissedCoherenceAlerts entry
-  // and remove the corresponding coherence alert
-  const editedFields = Object.keys(fields);
-  const dismissedFields: string[] = Array.isArray(kc.dismissedCoherenceAlerts)
-    ? kc.dismissedCoherenceAlerts as string[]
-    : [];
-  const remainingDismissed = dismissedFields.filter(f => !editedFields.includes(f));
-  if (remainingDismissed.length !== dismissedFields.length) {
-    kc.dismissedCoherenceAlerts = remainingDismissed;
-  }
-  // Also remove coherence alerts for the edited fields
-  const alerts = Array.isArray(kc.coherenceAlerts)
-    ? (kc.coherenceAlerts as Array<{ field: string }>).filter(a => !editedFields.includes(a.field))
-    : [];
-  if (alerts.length !== (Array.isArray(kc.coherenceAlerts) ? kc.coherenceAlerts.length : 0)) {
-    kc.coherenceAlerts = alerts;
-  }
-
-  // If any valuation fields changed, push a new entry to valuationHistory
-  const VALUATION_FIELDS = ['estimatedValue', 'estimatedValueDate', 'estimatedValueMode'] as const;
-  const valuationChanged = VALUATION_FIELDS.some(f => f in fields);
-  if (valuationChanged && (kc['estimatedValue'] != null || kc['estimatedValueDate'] != null)) {
-    const history: unknown[] = Array.isArray(kc['valuationHistory']) ? kc['valuationHistory'] as unknown[] : [];
-    history.push({
-      id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      value: kc['estimatedValue'] ?? null,
-      date: kc['estimatedValueDate'] ?? null,
-      mode: kc['estimatedValueMode'] ?? null,
-      source: 'USER',
-      addedAt: new Date().toISOString(),
-    });
-    kc['valuationHistory'] = history;
-  }
+  // ══════════════════════════════════════════════════════════════════════
+  // CDC 15 T3-02 — ORIGINE HUMAINE AUSSI EN MODE LEGACY (changement de
+  // production assumé, lot 13) : toute clé écrite par la fiche, l'assistant
+  // ou l'administration pose `<clé>__origin` = USER/ADMIN et
+  // `<clé>__updatedAt`, et retire l'autorité de la preuve précédente. Sans
+  // cela, une valeur corrigée par l'utilisateur gardait l'origine
+  // RECONCILIATION de la valeur remplacée — et un nouveau document pouvait
+  // l'écraser. Protection pure : aucune valeur n'est modifiée.
+  // ══════════════════════════════════════════════════════════════════════
+  markHumanOrigins(kc, changedFields(fields, parseKeyCharacteristics(assetRow.keyCharacteristics), family), origin);
+  applyEditSideEffects(kc, fields, origin);
 
   const updatePayload: Record<string, unknown> = {
     keyCharacteristics: JSON.stringify(kc),
@@ -216,14 +372,111 @@ export async function updateAssetDetails(p: {
     .set(updatePayload as never)
     .where(eq(assets.id, assetId));
 
-  // Modification d'un bien : la cohérence globale du compte est recontrôlée
-  // (T3), en différé et fusionnée avec les autres événements rapprochés —
-  // SEULEMENT si un champ à impact de cohérence a changé (T3-004).
+  // Mode shadow : ce que la primitive aurait écrit, et l'écart constaté —
+  // HORS du chemin de la requête (non attendu, ne lève jamais).
+  if (mode === 'shadow' && before) {
+    const avant = before;
+    void (async () => {
+      try {
+        const after = await loadAssetRow(pgClient as unknown as SqlRunner, assetId, accountId);
+        if (after) {
+          await observeLegacyWrite({
+            assetId, accountId, origin, actorUserId: p.actorUserId, source, traceId: p.traceId,
+            writes: canonicalWritesOf(fields, family), before: avant, after, keepRequestedKey: true,
+          });
+        }
+      } catch (e) {
+        console.warn('[asset-details][shadow] observation impossible (non bloquant) :', (e as Error).message);
+      }
+    })();
+  }
+
+  await recontroleCoherence(accountId, assetId, fields);
+  return { updated: true, section };
+}
+
+/**
+ * Modification d'un bien : la cohérence globale du compte est recontrôlée
+ * (T3), en différé et fusionnée avec les autres événements rapprochés —
+ * SEULEMENT si un champ à impact de cohérence a changé (T3-004).
+ */
+async function recontroleCoherence(accountId: number, assetId: number, fields: Record<string, unknown>): Promise<void> {
   const { hasCoherenceImpact } = await import('@/services/ai/reconciliation/coherence-impact');
   if (await hasCoherenceImpact(accountId, assetId, Object.keys(fields))) {
     const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
     notifyCoherenceEvent(accountId, { event: 'asset_updated', objectType: 'asset', objectId: assetId });
   }
+}
 
-  return { updated: true, section };
+/**
+ * Mode enabled : UNE transaction, ligne du bien verrouillée. Les champs
+ * canoniques passent par la primitive ; le reste de la section (nom,
+ * statut, catégorie, clés hors registre, alertes levées, historique de
+ * valorisation) est appliqué dans le même `UPDATE` par le hook.
+ */
+async function writeSectionCanonical(
+  p: UpdateAssetDetailsInput & { origin: AssetDetailsOrigin; source: CanonicalWriteSource },
+  family: AssetFamily,
+): Promise<void> {
+  const { assetId, accountId, fields, origin } = p;
+  const writes = canonicalWritesOf(fields, family).map((w) =>
+    (p.expectedCurrent && w.key in p.expectedCurrent ? { ...w, expectedCurrent: p.expectedCurrent[w.key] } : w));
+  const canoniques = new Set(writes.map((w) => w.key));
+  const now = new Date().toISOString();
+
+  const res = await writeCanonicalAssetFields({
+    assetId, accountId, origin, actorUserId: p.actorUserId, source: p.source, traceId: p.traceId,
+    writes, mode: 'enabled', emitEvent: p.emitEvent ?? false,
+  }, {
+    keepRequestedKey: true,
+    // Section entière : une valeur inchangée garde son origine (lot 13).
+    confirmUnchanged: false,
+    mutate: ({ row, kc, results }) => {
+      // Relecture sous verrou : le bien a pu être archivé ou verrouillé.
+      const lockState = row.lock_state as string | null | undefined;
+      if (row.status === 'ARCHIVED' || (lockState && lockState !== 'NONE')) {
+        const reason = row.status === 'ARCHIVED' ? 'ARCHIVED' : 'LOCKED_BY_PLAN';
+        throw new AssetDetailsError('ASSET_UNAVAILABLE', reason === 'ARCHIVED'
+          ? 'Ce bien est archivé.'
+          : 'Ce bien est verrouillé par votre offre actuelle.', { reason });
+      }
+      const conflit = results.find((r) => r.outcome === 'conflict');
+      if (conflit) {
+        throw new AssetDetailsError('CONFLICT', `« ${conflit.requestedKey} » a été modifié entre-temps.`);
+      }
+      const invalid = results.filter((r) => r.outcome === 'invalid');
+      if (invalid.length) {
+        const errs = invalid.map((r) => ({ field: r.requestedKey, message: `Valeur invalide : ${r.reason ?? r.key}` }));
+        throw new AssetDetailsError('VALIDATION_ERROR', errs.map((e) => e.message).join(' '), { fields: errs });
+      }
+
+      const columns: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(fields)) {
+        if (canoniques.has(key)) continue;
+        if (key === 'name') {
+          columns.name = String(value).trim();
+        } else if (key === 'subCategory') {
+          columns.subtype = value === '' || value === null ? null : normalizeAssetCategory(String(value));
+        } else if (key === 'status') {
+          if (typeof value === 'string' && VALID_STATUSES.includes(value)) columns.status = value;
+        } else {
+          // Clé hors registre : écrite telle quelle ; l'origine humaine n'est
+          // posée que si la valeur change (section entière, lot 13).
+          const inchangee = texteDe(kc[key]) === texteDe(value);
+          kc[key] = value;
+          if (!inchangee && !isExcludedKey(key) && !key.includes('__')) {
+            // Remplacement complet : writeOrigin RETIRE des clés
+            // (`_origin`, `__authority`, `__sourceDate`) qu'un Object.assign garderait.
+            const next = writeOrigin(kc, key, origin, { updatedAt: now });
+            for (const k of Object.keys(kc)) delete kc[k];
+            Object.assign(kc, next);
+          }
+          if (key in ATOMIC_FIELDS) columns[ATOMIC_SQL_COLUMNS[ATOMIC_FIELDS[key]]] = value;
+        }
+      }
+      applyEditSideEffects(kc, fields, origin);
+      return columns;
+    },
+  });
+  if (res.notFound) throw new AssetDetailsError('NOT_FOUND', 'Asset not found');
 }

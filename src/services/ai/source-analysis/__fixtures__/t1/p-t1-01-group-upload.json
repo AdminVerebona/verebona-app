@@ -1,0 +1,33 @@
+{
+  "case": "P-T1-01",
+  "description": "Contrat 2 pages + facture distincte : [[0,1],[2]], aucun mélange.",
+  "context": {
+    "displayNames": [
+      "contrat-assurance-p1.jpg",
+      "contrat-assurance-p2.jpg",
+      "facture-garage.pdf"
+    ],
+    "mimeTypes": [
+      "image/jpeg",
+      "image/jpeg",
+      "application/pdf"
+    ]
+  },
+  "recording": {
+    "operationCode": "t1_group_upload",
+    "task": "GROUP_UPLOAD",
+    "output": {
+      "task": "GROUP_UPLOAD",
+      "groups": [
+        [
+          0,
+          1
+        ],
+        [
+          2
+        ]
+      ],
+      "reason": "Pages 1 et 2 du même contrat (pagination 1/2, 2/2) ; facture distincte."
+    }
+  }
+}

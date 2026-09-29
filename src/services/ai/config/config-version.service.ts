@@ -32,7 +32,8 @@ import {
   promoteToTest, demoteToDraft, validateVersion as commitValidation,
   switchActive, archiveVersion, listVersions, markStaleDrafts,
 } from './config-version.repository';
-import type { ConfigVersionWithEntries, TreatmentConfig } from './config-types';
+import { promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
+import { checkPromptArchitectureChange } from './prompt-architecture';
 
 /** Refus fonctionnel — distinct d'une erreur technique. */
 export class ConfigOperationRefused extends Error {
@@ -99,7 +100,33 @@ export async function saveTreatmentConfig(
   config: TreatmentConfig,
   userId: number,
 ): Promise<void> {
-  await saveEntry(versionId, config, userId);
+  // CDC 15 §29.1, D-04 : bascule d'architecture seulement dans un Brouillon,
+  // et seulement vers un master déclaré. `saveEntry` refuse déjà toute
+  // édition hors Brouillon ; ce contrôle rend le motif explicite.
+  // Champ omis (client antérieur au lot 12) : l'architecture en place est
+  // conservée, jamais remise à `steps` en silence.
+  const version = await getVersion(versionId);
+  const current = version?.entries.find((e) => e.treatment === config.treatment);
+  const next = config.promptArchitecture === undefined && current
+    ? promptArchitectureOf(current)
+    : promptArchitectureOf(config);
+  if (version) {
+    const decision = checkPromptArchitectureChange({
+      status: version.status, treatment: config.treatment,
+      from: current ? promptArchitectureOf(current) : null, to: next,
+    });
+    if (!decision.allowed) throw new ConfigOperationRefused(decision.code, decision.message);
+  }
+  // Même règle pour le texte master (D-03) : omis ⇒ celui en place.
+  const masterPrompt = config.masterPrompt === undefined ? (current?.masterPrompt ?? null) : config.masterPrompt;
+  await saveEntry(versionId, { ...config, promptArchitecture: next, masterPrompt }, userId);
+  // CFG-01 (CDC 15) : une édition ne touche qu'un Brouillon (`saveEntry`
+  // refuse tout autre statut), jamais la version effective. La clé partagée
+  // est tout de même incrémentée : le coût est un rechargement par instance,
+  // et la règle « toute écriture de configuration invalide partout » ne
+  // dépend plus de ce que la machine à états autorise aujourd'hui.
+  const { bumpConfigVersionCounter } = await import('./config-cache-version');
+  await bumpConfigVersionCounter(`edit:${versionId}:${config.treatment}`);
 }
 
 // ── Diff et contrôles, sans transition ──────────────────────────────────────
@@ -160,11 +187,16 @@ export interface PromotionResult {
  * pour une lecture opportuniste ; il ne l'est pas juste après un geste
  * délibéré, et encore moins après un rollback fait pendant un incident.
  */
-async function invalidateCaches(): Promise<void> {
-  const [{ invalidateConfigCache }, { invalidateConfigVersionCache }] = await Promise.all([
+async function invalidateCaches(reason: string): Promise<void> {
+  const [{ invalidateConfigCache }, { invalidateConfigVersionCache }, { bumpConfigVersionCounter }] = await Promise.all([
     import('./config-resolver'),
     import('../telemetry/execution-context'),
+    import('./config-cache-version'),
   ]);
+  // CFG-01 (CDC 15) : la clé partagée d'abord, pour TOUTES les instances
+  // (relue à chaque résolution) ; puis le cache local, pour celle-ci. Échec
+  // de l'incrément : journalisé, les autres instances suivent au TTL.
+  await bumpConfigVersionCounter(reason);
   invalidateConfigCache();
   invalidateConfigVersionCache();
   // CDC Assistant §15.14 : tout changement de la version effective refait le
@@ -224,7 +256,7 @@ export async function promote(
   await promoteToTest(versionId);
   // La version « À tester » devient effective en préproduction (VER-004) :
   // même raison que pour une bascule d'Active, elle doit s'appliquer tout de suite.
-  await invalidateCaches();
+  await invalidateCaches(`promote:${versionId}`);
   return { diff, validation, promoted: true };
 }
 
@@ -239,7 +271,7 @@ export async function promote(
  */
 export async function backToDraft(versionId: number): Promise<void> {
   await demoteToDraft(versionId);
-  await invalidateCaches();
+  await invalidateCaches(`demote:${versionId}`);
 }
 
 // ── WF-03 — Validation ──────────────────────────────────────────────────────
@@ -266,7 +298,7 @@ export async function validate(
     );
   }
   const { visibleNumber } = await commitValidation(versionId, userId);
-  await invalidateCaches();
+  await invalidateCaches(`validate:${versionId}`);
   return { visibleNumber };
 }
 
@@ -283,7 +315,7 @@ export interface SwitchResult {
 /** WF-05 — activation normale : n'interrompt aucune exécution en cours. */
 export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
   const r = await switchActive(versionId, userId, 'activate');
-  await invalidateCaches();
+  await invalidateCaches(`activate:${versionId}`);
   // WF-27 : les Brouillons dérivés de l'Active remplacée deviennent obsolètes
   // (jusqu'ici seul `validateVersion` les marquait).
   if (r.previousId) await markStaleDrafts(r.previousId);
@@ -314,7 +346,7 @@ export async function rollback(versionId: number, userId: number): Promise<Switc
   }
 
   const r = await switchActive(versionId, userId, 'rollback');
-  await invalidateCaches();
+  await invalidateCaches(`rollback:${versionId}`);
   if (r.previousId) await markStaleDrafts(r.previousId);
 
   const { requeueRunning } = await import('../queue/job-queue.repository');

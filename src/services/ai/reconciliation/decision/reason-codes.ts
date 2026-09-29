@@ -13,6 +13,9 @@ export const REASON_CODES = {
   EMPTY_FIELD_CONVERGING: 'Champ vide, plusieurs preuves concordantes',
   AUTO_VALUE_BETTER_AUTHORITY: 'Preuve plus autoritaire que la source actuelle',
   AUTO_VALUE_MORE_RECENT: 'Preuve plus récente, autorité équivalente',
+  // CDC 15 T3-04 — réconciliation négative.
+  STALE_AUTO_VALUE_REPLACED: 'Valeur automatique sans preuve active remplacée par la meilleure preuve restante',
+  NO_REMAINING_EVIDENCE: 'Valeur automatique retirée : plus aucune preuve active',
 
   // ── Conservations ───────────────────────────────────────────────────────
   MANUAL_VALUE_CONFIRMED: 'Valeur saisie confirmée par un document',
@@ -35,6 +38,9 @@ export const REASON_CODES = {
   NO_EVIDENCE: 'Aucune preuve exploitable',
   UNNORMALIZABLE_VALUE: 'Valeur non normalisable, ignorée',
   ALREADY_DECIDED: 'Décision identique déjà prise sur cette version',
+  // Observation (T3_NEGATIVE_RECONCILIATION=shadow) : rien n'est écrit.
+  SHADOW_WOULD_RETRACT: 'Observation : cette valeur automatique serait retirée',
+  SHADOW_WOULD_REPLACE_STALE: 'Observation : cette valeur automatique serait remplacée',
 } as const;
 
 export type ReasonCode = keyof typeof REASON_CODES;

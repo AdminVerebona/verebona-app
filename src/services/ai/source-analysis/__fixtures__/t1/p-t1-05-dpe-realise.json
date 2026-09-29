@@ -1,0 +1,172 @@
+{
+  "case": "P-T1-05",
+  "description": "DPE réalisé : dpeDate, classe ; la date de réalisation annoncée à tort comme expiration est requalifiée ; aucune expiration, aucune échéance.",
+  "context": {
+    "linkedAssetId": 30,
+    "assets": [
+      {
+        "id": 30,
+        "name": "Appartement Lyon",
+        "category": "IMMOBILIER",
+        "subtype": "appartement"
+      }
+    ],
+    "rooms": [
+      {
+        "id": 301,
+        "name": "Cuisine",
+        "assetId": 30
+      }
+    ],
+    "equipments": [
+      {
+        "id": 501,
+        "name": "Chaudière Frisquet",
+        "type": "chaudiere",
+        "assetId": 30
+      }
+    ],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        30
+      ],
+      "EQUIPMENT": [
+        501
+      ],
+      "ROOM": [
+        301
+      ],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Diagnostic DPE Appartement Lyon",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DIAGNOSTIC DE PERFORMANCE ÉNERGÉTIQUE",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": "2026-03-12",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Établi le : 12/03/2026",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "DPE",
+          "rubricCode": "COMPLIANCE_CONTROLS",
+          "documentTypeCode": "DPE",
+          "confidence": 0.98,
+          "evidence": {
+            "excerpt": "DIAGNOSTIC DE PERFORMANCE ÉNERGÉTIQUE"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 30,
+            "rawLabel": "Appartement Lyon",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "12 rue Exemple 69003 Lyon"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": "dpeDate",
+          "rawValue": "12/03/2026",
+          "normalizedValue": "2026-03-12",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 30,
+            "rawLabel": "Appartement Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Appartement Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Établi le : 12/03/2026",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "dpe",
+            "nature": "DEADLINE"
+          }
+        },
+        {
+          "canonicalKey": "dpeExpiryDate",
+          "rawValue": "12/03/2026",
+          "normalizedValue": "2026-03-12",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 30,
+            "rawLabel": "Appartement Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Appartement Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DPE réalisé le 12/03/2026",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "dpe",
+            "nature": "DEADLINE"
+          }
+        },
+        {
+          "canonicalKey": "dpeClass",
+          "rawValue": "D",
+          "normalizedValue": "D",
+          "valueType": "enum",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 30,
+            "rawLabel": "Appartement Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Appartement Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Classe énergie : D",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

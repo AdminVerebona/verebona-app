@@ -1,0 +1,117 @@
+{
+  "case": "T1-03",
+  "description": "Montant 749 € : 749 EUR dans la fiche (acquisitionPrice), 74 900 cents au niveau document (amountCents).",
+  "context": {
+    "linkedAssetId": 184,
+    "assets": [
+      {
+        "id": 184,
+        "name": "Draisienne",
+        "category": "OBJECT",
+        "subtype": "jouet"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [
+      "Facture Vélo"
+    ],
+    "verified": {
+      "ASSET": [
+        184
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Draisienne",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DRAISIENNE PREMIUM",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": "2026-05-10",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "10/05/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 74900,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL TTC 749,00 €",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "PROPERTY_MANAGEMENT",
+          "documentTypeCode": "ACQUISITION_INVOICE",
+          "confidence": 0.96,
+          "evidence": {
+            "excerpt": "FACTURE D'ACHAT"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "DRAISIENNE PREMIUM"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": "acquisitionPrice",
+          "rawValue": "749,00 €",
+          "normalizedValue": 749,
+          "valueType": "money_eur",
+          "canonicalUnit": "EUR",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DRAISIENNE PREMIUM 749,00 €",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

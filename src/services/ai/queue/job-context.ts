@@ -42,6 +42,11 @@ export interface AiJobContext {
    * elle ne change pas non plus en cours d'exécution.
    */
   configVersionId: number | null;
+  /**
+   * Déclencheur du job (`ai_job_queue.trigger_code`), tracé avec chaque appel
+   * modèle de l'exécution (CDC 15 OBS-CFG). Absent : inconnu.
+   */
+  triggerCode?: string | null;
   /** Signal d'interruption de l'exécution (timeout global, annulation). */
   signal?: AbortSignal;
   /**

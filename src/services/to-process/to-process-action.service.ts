@@ -24,6 +24,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { getField, resolveAlias } from '@/services/canonical/registry';
 import { createHash } from 'node:crypto';
 import { db } from '@/db';
 import { toProcessActionEvents, toProcessActions } from '@/db/schema';
@@ -426,6 +427,9 @@ export async function resolveActionsForData(
   reason: ResolutionReason = 'USER_COMPLETED',
 ): Promise<number> {
   const now = new Date();
+  // CDC 15 X-03 : une donnée de BIEN est fermée sous sa clé canonique ET ses
+  // alias (cartes antérieures à l'alignement, ex. `purchasePriceCents`).
+  const cles = targetType === 'ASSET' ? assetKeyVariants(dataKey) : [dataKey];
   const updated = await db
     .update(toProcessActions)
     .set({ resolvedAt: now, resolutionReason: reason, updatedAt: now })
@@ -434,13 +438,20 @@ export async function resolveActionsForData(
         eq(toProcessActions.accountId, accountId),
         eq(toProcessActions.targetType, targetType),
         eq(toProcessActions.targetId, targetId),
-        sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`,
+        sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) IN (${sql.join(cles.map((k) => sql`${k}`), sql`, `)})`,
         isNull(toProcessActions.resolvedAt),
       ),
     )
     .returning({ id: toProcessActions.id });
 
   return updated.length;
+}
+
+/** Clé d'une donnée de bien, sa clé canonique et tous ses alias (registre). */
+export function assetKeyVariants(dataKey: string): string[] {
+  const canonique = resolveAlias(dataKey) ?? dataKey;
+  const def = getField(canonique);
+  return [...new Set([dataKey, canonique, ...(def?.aliases ?? [])])];
 }
 
 /**

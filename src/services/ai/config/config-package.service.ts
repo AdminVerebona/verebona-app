@@ -36,8 +36,8 @@ import { pgClient } from '@/db';
 import { getAiEnvironment, type AiEnvironment } from './environment';
 import { ConfigOperationRefused } from './config-version.service';
 import { diffVersions, type ConfigDiff } from './config-diff.service';
-import { getVersion, getActiveVersion } from './config-version.repository';
-import { normalizeTreatmentConfig, type TreatmentConfig } from './config-types';
+import { getVersion, getActiveVersion, promptArchitectureInsert } from './config-version.repository';
+import { normalizeTreatmentConfig, promptArchitectureOf, masterPromptOf, type TreatmentConfig } from './config-types';
 
 type Row = Record<string, unknown>;
 
@@ -113,6 +113,12 @@ export function buildPayload(
       // elle doit donc voyager avec le reste. Le test qui fige les clés du
       // package a signalé cet ajout — c'est précisément son rôle.
       cascade: e.cascade,
+      // CDC 15 D-04 (lot 12) : la bascule vers le prompt maître voyage avec
+      // la version — une version validée en préproduction en `master` doit
+      // l'être aussi à l'import en production.
+      promptArchitecture: promptArchitectureOf(e),
+      // D-03 : texte master distinct du préambule ; vide pour T5.
+      masterPrompt: masterPromptOf(normalizeTreatmentConfig(e)),
     })),
   };
 }
@@ -298,17 +304,24 @@ export async function importPackage(
     for (const e of payload.entries) {
       // `cascade` était omise : la cascade T2 (seuils BDD / texte / sémantique)
       // était perdue à l'import, alors que `buildPayload` la transporte.
+      // CDC 15 D-04 (0220) : architecture de la ligne ; package antérieur au
+      // lot 12 ⇒ `steps`. `master` sans colonne : import refusé (transaction
+      // annulée), jamais une bascule perdue.
+      const architecture = promptArchitectureOf(e);
+      const masterPrompt = masterPromptOf(normalizeTreatmentConfig(e));
+      const { column } = await promptArchitectureInsert(architecture, masterPrompt, t);
       await t.unsafe(
         `INSERT INTO ai_config_entries (
            version_id, treatment, prompt, primary_model, fallback_1, fallback_2,
            reasoning_primary, reasoning_fallback_1, reasoning_fallback_2,
-           max_output_tokens, guardrails, triggers, cascade, updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14)`,
+           max_output_tokens, guardrails, triggers, cascade, updated_by${column ? ', prompt_architecture, master_prompt' : ''})
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14${column ? ',$15,$16' : ''})`,
         [
           versionId, e.treatment, normalizeTreatmentConfig(e).prompt, e.primaryModel, e.fallback1, e.fallback2,
           e.reasoningPrimary, e.reasoningFallback1, e.reasoningFallback2,
           e.maxOutputTokens, JSON.stringify(e.guardrails), JSON.stringify(e.triggers),
           e.cascade == null ? null : JSON.stringify(e.cascade), userId,
+          ...(column ? [architecture, masterPrompt] : []),
         ] as never[],
       );
     }

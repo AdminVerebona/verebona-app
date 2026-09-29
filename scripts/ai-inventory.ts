@@ -104,7 +104,12 @@ function afficher(report: InventoryReport): void {
     console.log(`     absorbe       : usages historiques ${uc.replacesLegacyUsages.join(', ')}`);
     console.log(`     opérations    : ${uc.operationCount} dont ${uc.llmOperationCount} avec appel modèle`);
     for (const op of uc.operations) {
-      console.log(`       · ${op.code.padEnd(22)} ${op.deterministic ? 'déterministe' : op.model}`);
+      // CDC 15 §22.3 : master exécuté, ou master cible d'une étape historique.
+      const master = op.masterPromptCode
+        ? `  [master ${op.masterPromptCode} · TASK=${op.task}]`
+        : op.migratesTo ? `  [→ ${op.migratesTo}]` : '';
+      const inactive = op.active ? '' : '  (inactive)';
+      console.log(`       · ${op.code.padEnd(22)} ${op.deterministic ? 'déterministe' : op.model}${master}${inactive}`);
     }
     console.log('');
   }

@@ -28,8 +28,9 @@ import { transition, type ConfigVersionEvent, type ConfigVersionStatus } from '.
 import { getAiEnvironment, type AiEnvironment } from './environment';
 import { TREATMENTS, type Treatment } from './treatments';
 import {
-  emptyTreatmentConfig, normalizeTreatmentConfig,
-  type ConfigVersion, type ConfigVersionWithEntries, type TreatmentConfig,
+  emptyTreatmentConfig, normalizeTreatmentConfig, promptArchitectureOf, isPromptArchitecture, masterPromptOf,
+  DEFAULT_PROMPT_ARCHITECTURE,
+  type ConfigVersion, type ConfigVersionWithEntries, type PromptArchitecture, type TreatmentConfig,
 } from './config-types';
 
 type Row = Record<string, unknown>;
@@ -69,6 +70,13 @@ function toEntry(r: Row): TreatmentConfig {
     // cascade laisse le code décider, plutôt que d'affirmer un arbitrage que
     // personne n'a rendu.
     cascade: (r.cascade ?? null) as TreatmentConfig['cascade'],
+    // CDC 15 D-04 : colonne absente (migration non passée) ou valeur
+    // inconnue ⇒ `steps`, le comportement historique.
+    promptArchitecture: isPromptArchitecture(r.prompt_architecture)
+      ? r.prompt_architecture
+      : DEFAULT_PROMPT_ARCHITECTURE,
+    // CDC 15 D-03 : texte master distinct du préambule (0220).
+    masterPrompt: r.master_prompt == null || String(r.master_prompt).trim() === '' ? null : String(r.master_prompt),
   };
 }
 
@@ -88,10 +96,16 @@ export async function getVersion(id: number): Promise<ConfigVersionWithEntries |
 }
 
 export async function getEntries(versionId: number): Promise<TreatmentConfig[]> {
+  // Colonnes 0220 lues seulement si elles existent (migration en échec :
+  // `steps` sans master, la lecture de la configuration ne doit jamais
+  // échouer pour autant).
+  const architecture = (await hasPromptArchitectureColumn())
+    ? 'prompt_architecture, master_prompt'
+    : 'NULL::text AS prompt_architecture, NULL::text AS master_prompt';
   const rows = await pgClient.unsafe(
     `SELECT treatment, prompt, primary_model, fallback_1, fallback_2,
             reasoning_primary, reasoning_fallback_1, reasoning_fallback_2,
-            max_output_tokens, guardrails, triggers, cascade
+            max_output_tokens, guardrails, triggers, cascade, ${architecture}
        FROM ai_config_entries WHERE version_id = $1 ORDER BY treatment`,
     [versionId] as never[],
   );
@@ -206,16 +220,90 @@ export async function saveEntry(
   await upsertEntry(versionId, config, userId);
 }
 
+// ── Architecture et texte master (CDC 15 D-03, D-04, migration 0220) ────────
+//
+// `ensureMigrations()` poursuit après une migration en échec : les colonnes
+// `ai_config_entries.prompt_architecture` et `master_prompt` peuvent manquer. Même parti que 0217
+// (`telemetry/trace-schema.ts`) : contrôle au premier usage, résultat positif
+// gardé, négatif relu toutes les 5 min, absence signalée une fois. Sans
+// colonnes : lecture ⇒ `steps` sans master, écriture de `steps` sans elles,
+// écriture de `master` ou d'un texte master REFUSÉE — jamais perdue en silence.
+
+/** Colonnes de la migration 0220. */
+export const CONFIG_MASTER_COLUMNS = ['prompt_architecture', 'master_prompt'] as const;
+
+/** Sous-ensemble du client `postgres` suffisant pour ces écritures. */
+type SqlLike = { unsafe: (query: string, params?: never[]) => Promise<unknown> };
+
+const RECONTROLE_MS = 5 * 60_000;
+let architectureColumn: { ready: boolean; checkedAt: number } | null = null;
+let absenceSignalee = false;
+
+/** Les colonnes 0220 existent-elles (toutes) ? Ne lève jamais : illisible = absentes. */
+export async function hasPromptArchitectureColumn(sql: SqlLike = pgClient as unknown as SqlLike): Promise<boolean> {
+  const e = architectureColumn;
+  if (e && (e.ready || Date.now() - e.checkedAt < RECONTROLE_MS)) return e.ready;
+  let ready = false;
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT COUNT(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'ai_config_entries' AND column_name = ANY($1::text[])`,
+      [[...CONFIG_MASTER_COLUMNS]] as never[],
+    )) as Array<{ n: number }>;
+    ready = Number(rows[0]?.n ?? 0) === CONFIG_MASTER_COLUMNS.length;
+  } catch {
+    ready = false;
+  }
+  architectureColumn = { ready, checkedAt: Date.now() };
+  if (!ready && !absenceSignalee) {
+    absenceSignalee = true;
+    console.error(
+      '[config] ⚠️ MIGRATION 0220 NON APPLIQUÉE : colonnes ai_config_entries.prompt_architecture / master_prompt absentes. '
+      + 'Toutes les lignes sont lues en « steps » sans texte master ; bascule et texte master refusés (CDC 15 D-03, D-04). '
+      + 'Voir /api/health (migrations) et appliquer src/db/migrations/0220_*.sql.',
+    );
+  }
+  return ready;
+}
+
+/** Réservé aux tests. */
+export function __resetPromptArchitectureColumnForTests(): void {
+  architectureColumn = null;
+  absenceSignalee = false;
+}
+
+/**
+ * Les colonnes 0220 doivent-elles figurer dans l'INSERT ? Refuse `master` ou
+ * un texte master si elles manquent — AVANT toute écriture.
+ */
+export async function promptArchitectureInsert(
+  arch: PromptArchitecture, masterPrompt: string | null, sql: SqlLike = pgClient as unknown as SqlLike,
+): Promise<{ column: boolean }> {
+  const column = await hasPromptArchitectureColumn(sql);
+  if (!column && (arch !== DEFAULT_PROMPT_ARCHITECTURE || masterPrompt !== null)) {
+    throw new Error(
+      '[config] Architecture « master » ou texte master impossible à enregistrer : les colonnes '
+      + '`ai_config_entries.prompt_architecture` / `master_prompt` n\'existent pas (migration 0220 non appliquée, CDC 15 D-04).',
+    );
+  }
+  return { column };
+}
+
 async function upsertEntry(versionId: number, config: TreatmentConfig, userId: number): Promise<void> {
   // Point de passage unique de createDraft et saveEntry : un prompt T5 hérité
   // de l'Active, ou envoyé par un client, n'entre jamais en base (E-02).
   const c = normalizeTreatmentConfig(config);
+  const architecture = promptArchitectureOf(c);
+  // Avant l'écriture : une bascule refusée ne laisse pas une ligne à moitié écrite.
+  const masterPrompt = masterPromptOf(c);
+  const { column } = await promptArchitectureInsert(architecture, masterPrompt);
   await pgClient.unsafe(
     `INSERT INTO ai_config_entries (
        version_id, treatment, prompt, primary_model, fallback_1, fallback_2,
        reasoning_primary, reasoning_fallback_1, reasoning_fallback_2,
-       max_output_tokens, guardrails, triggers, cascade, updated_by, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14, NOW())
+       max_output_tokens, guardrails, triggers, cascade, updated_by, updated_at${column ? ', prompt_architecture, master_prompt' : ''})
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14, NOW()${column ? ', $15, $16' : ''})
      ON CONFLICT (version_id, treatment) DO UPDATE SET
        prompt = EXCLUDED.prompt,
        primary_model = EXCLUDED.primary_model,
@@ -227,7 +315,7 @@ async function upsertEntry(versionId: number, config: TreatmentConfig, userId: n
        max_output_tokens = EXCLUDED.max_output_tokens,
        guardrails = EXCLUDED.guardrails,
        triggers = EXCLUDED.triggers,
-       cascade = EXCLUDED.cascade,
+       cascade = EXCLUDED.cascade,${column ? '\n       prompt_architecture = EXCLUDED.prompt_architecture,\n       master_prompt = EXCLUDED.master_prompt,' : ''}
        updated_by = EXCLUDED.updated_by,
        updated_at = NOW()`,
     [
@@ -235,6 +323,7 @@ async function upsertEntry(versionId: number, config: TreatmentConfig, userId: n
       c.reasoningPrimary, c.reasoningFallback1, c.reasoningFallback2,
       c.maxOutputTokens, JSON.stringify(c.guardrails), JSON.stringify(c.triggers),
       c.cascade === null ? null : JSON.stringify(c.cascade), userId,
+      ...(column ? [architecture, masterPrompt] : []),
     ] as never[],
   );
 }

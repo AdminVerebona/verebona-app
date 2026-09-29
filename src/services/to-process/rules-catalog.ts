@@ -173,7 +173,10 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
   {
     code: 'DATA-ACQUISITION-PRICE',
     targetType: 'ASSET',
-    fieldKey: 'purchasePriceCents',
+    // CDC 15 X-03 : clé CANONIQUE du registre (T3 travaille en
+    // `acquisitionPrice`, euros) — l'ancienne clé `purchasePriceCents` n'en
+    // est plus qu'un alias, résolu par `findRule`.
+    fieldKey: 'acquisitionPrice',
     arbitratePriority: 'DO_NEXT',
     // §10.5 : « absence seule ne déclenche pas systématiquement une action ».
     completePriority: null,
@@ -226,6 +229,8 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
   // l'attribut : l'usage « Mis en location » de la fiche porte seul l'information.
 ] as const;
 
+import { resolveAlias } from '@/services/canonical/registry';
+
 const RULE_BY_CODE = new Map<string, ProcessingRule>(
   PROCESSING_RULES.map((r) => [r.code, r]),
 );
@@ -234,14 +239,27 @@ export function getRule(code: string): ProcessingRule | undefined {
   return RULE_BY_CODE.get(code);
 }
 
-/** Règle couvrant une donnée ou une relation donnée. */
+/**
+ * Règle couvrant une donnée ou une relation donnée.
+ *
+ * CDC 15 X-03 : pour une donnée de BIEN, la clé est d'abord ramenée à sa clé
+ * canonique du registre (`purchasePriceCents`, `prixAchat` →
+ * `acquisitionPrice`) — les règles « À traiter » et T3 parlent la même
+ * langue, et un alias ne crée jamais une seconde carte.
+ */
 export function findRule(
   targetType: TargetType,
   key: string,
 ): ProcessingRule | undefined {
+  const cle = targetType === 'ASSET' ? canonicalAssetKey(key) : key;
   return PROCESSING_RULES.find(
-    (r) => r.targetType === targetType && (r.fieldKey === key || r.relationKey === key),
+    (r) => r.targetType === targetType && (r.fieldKey === cle || r.relationKey === cle || r.fieldKey === key),
   );
+}
+
+/** Clé canonique d'une donnée de bien (alias résolu), sinon la clé telle quelle. */
+export function canonicalAssetKey(key: string): string {
+  return resolveAlias(key) ?? key;
 }
 
 /**

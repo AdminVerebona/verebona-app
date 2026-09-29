@@ -22,9 +22,15 @@ vi.mock('@/db', () => ({
 
 const getVersion = vi.fn();
 const getActiveVersion = vi.fn(async () => null);
+let colonne0220 = true;
+const promptArchitectureInsert = vi.fn(async (arch: unknown, masterPrompt: unknown, _sql?: unknown) => {
+  if (!colonne0220 && (arch === 'master' || masterPrompt !== null)) throw new Error('migration 0220 non appliquée');
+  return { column: colonne0220 };
+});
 vi.mock('../config-version.repository', () => ({
   getVersion: (id: number) => getVersion(id),
   getActiveVersion: () => getActiveVersion(),
+  promptArchitectureInsert: (a: unknown, b: unknown, c?: unknown) => promptArchitectureInsert(a, b, c),
 }));
 vi.mock('../environment', async (orig) => ({
   ...(await orig<typeof import('../environment')>()),
@@ -110,6 +116,50 @@ describe('importPackage', () => {
     expect(t1.params[12]).toBeNull();
     // Aucune écriture hors transaction.
     expect(unsafe).not.toHaveBeenCalled();
+    // CDC 15 D-04 (0220) : l'architecture de chaque ligne est écrite dans le
+    // même INSERT (package sans champ ⇒ `steps`).
+    for (const l of lignes) {
+      expect(l.sql).toMatch(/prompt_architecture, master_prompt/);
+      expect(l.params[14]).toBe('steps');
+      expect(l.params[15]).toBeNull();
+    }
+  });
+
+  it('transporte l’architecture « master » et le texte master, distinct du préambule (CDC 15 D-03, D-04)', async () => {
+    env = 'production';
+    txAnswers = [[], [], [{ id: 43 }]];
+    const avecMaster = buildPayload('preprod', 4, 'Printemps', entries.map((e) =>
+      e.treatment === 'T1' ? { ...e, promptArchitecture: 'master' as const, masterPrompt: 'MASTER T1' } : e));
+    expect(avecMaster.entries.find((e) => e.treatment === 'T1')).toMatchObject({
+      prompt: 'prompt T1', promptArchitecture: 'master', masterPrompt: 'MASTER T1',
+    });
+    await importPackage(avecMaster, PKG_ROW.uid, 1);
+    const t1 = txQueries.find((q) => /INSERT INTO ai_config_entries/.test(q.sql) && q.params[1] === 'T1')!;
+    expect(t1.params[0]).toBe(43);
+    expect(t1.params[2]).toBe('prompt T1');
+    expect(t1.params[14]).toBe('master');
+    expect(t1.params[15]).toBe('MASTER T1');
+  });
+
+  it('migration 0220 absente : lignes steps sans la colonne, master refusé', async () => {
+    env = 'production';
+    colonne0220 = false;
+    try {
+      txAnswers = [[], [], [{ id: 44 }]];
+      await importPackage(payload, PKG_ROW.uid, 1);
+      const lignes = txQueries.filter((q) => /INSERT INTO ai_config_entries/.test(q.sql));
+      for (const l of lignes) {
+        expect(l.sql).not.toMatch(/prompt_architecture/);
+        expect(l.params).toHaveLength(14);
+      }
+      txQueries.length = 0;
+      txAnswers = [[], [], [{ id: 45 }]];
+      const avecMaster = buildPayload('preprod', 4, 'Printemps', entries.map((e) =>
+        e.treatment === 'T1' ? { ...e, promptArchitecture: 'master' as const } : e));
+      await expect(importPackage(avecMaster, PKG_ROW.uid, 1)).rejects.toThrow(/0220/);
+    } finally {
+      colonne0220 = true;
+    }
   });
 
   it('reconnaît un package déjà importé sans rien écrire', async () => {

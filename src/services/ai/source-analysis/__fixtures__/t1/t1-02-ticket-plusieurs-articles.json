@@ -1,0 +1,198 @@
+{
+  "case": "T1-02",
+  "description": "Ticket à deux articles (draisienne 99 € + casque 30 €) : le total de 129 € n'est pas le prix du bien ; acquisitionPrice = 99 € tiré de la ligne d'achat du bien.",
+  "context": {
+    "linkedAssetId": 184,
+    "assets": [
+      {
+        "id": 184,
+        "name": "Draisienne",
+        "category": "OBJECT",
+        "subtype": "jouet"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [
+      "Facture Vélo"
+    ],
+    "verified": {
+      "ASSET": [
+        184
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Ticket Draisienne et casque",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DRAISIENNE BOIS",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": "2026-04-24",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "24/04/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 12900,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL TTC 129,00 €",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "TICKET_CAISSE",
+          "rubricCode": "PROPERTY_MANAGEMENT",
+          "documentTypeCode": "ACQUISITION_INVOICE",
+          "confidence": 0.95,
+          "evidence": {
+            "excerpt": "TICKET DE CAISSE"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "DRAISIENNE BOIS"
+            ]
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "TICKET DE CAISSE\n24/04/2026\nDRAISIENNE BOIS 99,00\nCASQUE ENFANT 30,00\nTOTAL TTC 129,00 €",
+      "tables": [
+        {
+          "title": "Articles",
+          "columns": [
+            {
+              "header": "Désignation"
+            },
+            {
+              "header": "Montant"
+            }
+          ],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "column": 0,
+                  "value": "DRAISIENNE BOIS"
+                },
+                {
+                  "column": 1,
+                  "value": "99,00"
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "column": 0,
+                  "value": "CASQUE ENFANT"
+                },
+                {
+                  "column": 1,
+                  "value": "30,00"
+                }
+              ]
+            }
+          ],
+          "confidence": "certain",
+          "uncertain": false
+        }
+      ],
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "ligne article",
+          "label": "Draisienne",
+          "subject": "Draisienne",
+          "attribute": "prix",
+          "rawValue": "99,00",
+          "normalizedValue": 99,
+          "valueType": "money_eur",
+          "canonicalUnit": "EUR",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DRAISIENNE BOIS 99,00",
+            "table": {
+              "index": 0,
+              "row": 0,
+              "column": 1
+            }
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "ligne article",
+          "label": "Casque",
+          "subject": "Casque",
+          "attribute": "prix",
+          "rawValue": "30,00",
+          "normalizedValue": 30,
+          "valueType": "money_eur",
+          "canonicalUnit": "EUR",
+          "target": {
+            "type": "GENERIC",
+            "entityId": null,
+            "rawLabel": "Casque",
+            "confidence": "certain",
+            "evidenceSignals": []
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "CASQUE ENFANT 30,00",
+            "table": {
+              "index": 0,
+              "row": 1,
+              "column": 1
+            }
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

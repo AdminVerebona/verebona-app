@@ -17,6 +17,8 @@
 // gateway (usage 2), qui porte le modèle, le prompt versionné, le schéma de
 // sortie, le coût et l'idempotence.
 import { reconcileLinks, retainAbove, LINK_SCORE_THRESHOLDS } from '@/services/ai/reconciliation/link-reconciler';
+import type { LinkAmbiguity } from '@/services/ai/reconciliation/master/link-ambiguity';
+import { proposeDocumentEquipmentLink } from '@/services/to-process/document-equipment-link';
 import { db } from '@/db';
 import {
   equipments, assetFiles, agendaItems, agendaAssetLinks, agendaEquipmentLinks,
@@ -61,6 +63,50 @@ interface CandidateSupplier {
   name: string;
   email: string | null;
   phone: string | null;
+}
+
+// ── Ambiguïtés de rattachement (CDC 15 T3-07, architecture T3 `master`) ─────
+
+/**
+ * Abstentions explicites du départage T3 (marge insuffisante, égalité,
+ * identifiant hors liste) : aucun rattachement automatique n'est fait pour
+ * ces candidats, et chacune est journalisée.
+ *
+ * Document → équipement (`document` fourni, section `matches`) : une marge
+ * insuffisante ou une égalité devient en plus une carte « À traiter »
+ * `LINK-ELT` (`proposeDocumentEquipmentLink`, idempotente, résoluble et
+ * annulable), avec les équipements en concurrence — tous au-dessus du seuil.
+ * Équipement → objets : journal seul (relations non exclusives, arbitrage
+ * lead). Un échec de proposition ne bloque jamais le rattachement.
+ *
+ * Renvoie le nombre d'ambiguïtés traitées.
+ */
+export async function reportLinkAmbiguities(
+  context: { accountId: number; subject: string; document?: { fileId: number; assetId: number } },
+  ambiguities: LinkAmbiguity[] | undefined,
+): Promise<number> {
+  for (const a of ambiguities ?? []) {
+    console.warn(
+      `[equipment-auto-link] rattachement ambigu, aucune liaison automatique — ${context.subject} `
+      + `(compte ${context.accountId}) : ${a.section} ${a.reasonCode} candidats [${a.candidateIds.join(', ')}]`,
+    );
+    if (!context.document || a.section !== 'matches' || !a.candidates || a.candidates.length < 2) continue;
+    try {
+      const r = await proposeDocumentEquipmentLink({
+        accountId: context.accountId,
+        fileId: context.document.fileId,
+        assetId: context.document.assetId,
+        candidates: a.candidates.map((c) => ({ equipmentId: c.candidateId, score: c.score, reason: c.reason })),
+      });
+      if (r.status === 'SKIPPED' || r.rejected.length > 0) {
+        console.warn(`[equipment-auto-link] proposition LINK-ELT ${r.status} — ${r.reason}`
+          + (r.rejected.length > 0 ? ` (rejetés : ${r.rejected.join(', ')})` : ''));
+      }
+    } catch (e) {
+      console.error('[equipment-auto-link] proposition LINK-ELT impossible (non bloquant) :', (e as Error).message);
+    }
+  }
+  return ambiguities?.length ?? 0;
 }
 
 // ── Deterministic matcher ───────────────────────────────────────────────────
@@ -426,6 +472,8 @@ export async function runEquipmentAutoLink(
       sourceIds: ambiguous.documents.map(d => d.id),
     });
 
+    await reportLinkAmbiguities({ accountId, subject: `équipement #${equipmentId}` }, linked.ambiguities);
+
     const threshold = LINK_SCORE_THRESHOLDS.equipmentToObjects;
     aiMatchedDocs = retainAbove(linked.documents, threshold);
     aiMatchedAgenda = retainAbove(linked.agendaItems, threshold);
@@ -679,6 +727,11 @@ export async function linkDocumentToEquipments(
     },
     sourceIds: [assetFileId],
   });
+
+  await reportLinkAmbiguities(
+    { accountId, subject: `document #${assetFileId}`, document: { fileId: assetFileId, assetId: doc.assetId } },
+    linked.ambiguities,
+  );
 
   try {
     const matches = retainAbove(linked.matches, LINK_SCORE_THRESHOLDS.documentToEquipment);

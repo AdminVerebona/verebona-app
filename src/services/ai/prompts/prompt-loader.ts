@@ -13,8 +13,10 @@
  * parallèle est retirée (lot IA 2) : voir `loadActiveVersion`.
  */
 import { readFile, readdir } from 'fs/promises';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import type { AiUseCaseCode } from '../registry/use-cases';
+import { listMasterTasks } from '../registry/operations';
 
 interface ResolvedPrompt {
   text: string;
@@ -52,11 +54,12 @@ async function loadActiveVersion(
   promptCode: string,
   useCaseCode?: AiUseCaseCode,
 ): Promise<ResolvedPrompt> {
-  const hit = cache.get(promptCode);
+  const key = `${promptsRoot()}::${promptCode}`;
+  const hit = cache.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.value;
 
   const resolved = await loadFromFile(promptCode, useCaseCode);
-  cache.set(promptCode, { value: resolved, expiresAt: Date.now() + CACHE_TTL_MS });
+  cache.set(key, { value: resolved, expiresAt: Date.now() + CACHE_TTL_MS });
   return resolved;
 }
 
@@ -82,21 +85,38 @@ const USE_CASE_DIRECTORY: Record<AiUseCaseCode, string> = {
 
 const PROMPTS_ROOT = 'src/services/ai/prompts';
 
+/** Racine des prompts ; remplaçable par les tests (répertoire de fixtures). */
+let rootOverride: string | null = null;
+function promptsRoot(): string {
+  return rootOverride ?? join(process.cwd(), PROMPTS_ROOT);
+}
+
+/** Réservé aux tests : lit les prompts dans `root` (`null` : dépôt). Vide le cache. */
+export function __setPromptsRootForTests(root: string | null): void {
+  rootOverride = root;
+  cache.clear();
+}
+
+/** Chemins candidats d'un prompt, du plus probable au moins probable. */
+export function promptFileCandidates(promptCode: string, useCaseCode?: AiUseCaseCode, root = promptsRoot()): string[] {
+  const candidates: string[] = [];
+  if (useCaseCode) candidates.push(join(root, USE_CASE_DIRECTORY[useCaseCode], `${promptCode}.txt`));
+  candidates.push(join(root, `${promptCode}.txt`));
+  for (const dir of Object.values(USE_CASE_DIRECTORY)) {
+    const c = join(root, dir, `${promptCode}.txt`);
+    if (!candidates.includes(c)) candidates.push(c);
+  }
+  return candidates;
+}
+
 async function loadFromFile(
   promptCode: string,
   useCaseCode?: AiUseCaseCode,
 ): Promise<ResolvedPrompt> {
-  const root = join(process.cwd(), PROMPTS_ROOT);
-  const candidates: string[] = [];
-
-  // 1. Répertoire de l'usage, lorsqu'il est connu — le cas nominal.
-  if (useCaseCode) candidates.push(join(root, USE_CASE_DIRECTORY[useCaseCode], `${promptCode}.txt`));
-  // 2. Racine des prompts.
-  candidates.push(join(root, `${promptCode}.txt`));
-  // 3. Tous les répertoires d'usage, au cas où un prompt aurait été déplacé.
-  for (const dir of Object.values(USE_CASE_DIRECTORY)) {
-    candidates.push(join(root, dir, `${promptCode}.txt`));
-  }
+  // 1. Répertoire de l'usage, lorsqu'il est connu — le cas nominal ;
+  // 2. racine des prompts ; 3. tous les répertoires d'usage, au cas où un
+  // prompt aurait été déplacé.
+  const candidates = promptFileCandidates(promptCode, useCaseCode);
 
   for (const path of candidates) {
     try {
@@ -115,7 +135,7 @@ async function loadFromFile(
 
 /** Répertoires de prompts existants — utilisé par le seed du lot 6. */
 export async function listPromptFiles(): Promise<Array<{ promptCode: string; path: string }>> {
-  const root = join(process.cwd(), PROMPTS_ROOT);
+  const root = promptsRoot();
   const found: Array<{ promptCode: string; path: string }> = [];
   for (const dir of Object.values(USE_CASE_DIRECTORY)) {
     try {
@@ -140,6 +160,200 @@ function substitute(template: string, variables: Record<string, unknown>): strin
 
 /** Invalide le cache après activation d'une nouvelle version (lot 6). */
 export function invalidatePromptCache(promptCode?: string): void {
-  if (promptCode) cache.delete(promptCode);
-  else cache.clear();
+  if (!promptCode) { cache.clear(); return; }
+  for (const key of cache.keys()) if (key.endsWith(`::${promptCode}`)) cache.delete(key);
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// PROMPTS MAÎTRES — CDC 15 §22, §22.2, §22.3, §29.1 ; D-03 ; ARCH-03, DP-05
+//
+// Un traitement = UN prompt maître ; chaque appel choisit une branche TASK
+// imposée par le serveur. Le texte vient :
+//   1. de la version de configuration IA quand elle en porte un (D-03 : « la
+//      version de configuration porte le master complet par traitement ») ;
+//   2. sinon du fichier `tN_master_vK.txt` du dépôt, sa valeur initiale.
+// Rien d'autre n'y est ajouté : ni préambule, ni consigne composée par le
+// code (§22.3, « interdire la concaténation de règles naturelles cachées »).
+// Le code ne fournit que `{{TASK}}` et des données structurées, et seulement
+// dans les emplacements `{{X}}` que le master déclare lui-même.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Emplacement réservé à la branche, fixé par le serveur. */
+export const MASTER_TASK_PLACEHOLDER = 'TASK';
+
+/** Marqueur de section d'une branche dans un master (`BRANCHE TASK = X`). */
+export function masterBranchMarker(task: string): string {
+  return `BRANCHE TASK = ${task}`;
+}
+
+const PLACEHOLDER_RE = /\{\{([A-Z0-9_]+)\}\}/g;
+const BRANCH_RE = /BRANCHE\s+TASK\s*=\s*([A-Z0-9_]+)/g;
+
+export type MasterPromptErrorCode =
+  | 'MASTER_NOT_FOUND'
+  | 'TASK_NOT_ALLOWED'
+  | 'TASK_PLACEHOLDER_MISSING'
+  | 'TASK_BRANCH_MISSING'
+  | 'RESERVED_VARIABLE'
+  | 'UNDECLARED_VARIABLE'
+  | 'UNRESOLVED_PLACEHOLDER';
+
+/** Refus explicite : aucun texte partiel ou non substitué n'est envoyé au modèle. */
+export class MasterPromptError extends Error {
+  constructor(
+    readonly code: MasterPromptErrorCode,
+    readonly masterPromptCode: string,
+    message: string,
+  ) {
+    super(`[prompt-loader] ${masterPromptCode} : ${message}`);
+    this.name = 'MasterPromptError';
+  }
+}
+
+/** Anatomie d'un master : emplacements `{{X}}` et branches déclarées. */
+export interface MasterTemplateInfo {
+  placeholders: string[];
+  branches: string[];
+  hasTaskPlaceholder: boolean;
+}
+
+export function inspectMasterTemplate(text: string): MasterTemplateInfo {
+  const placeholders = [...new Set([...text.matchAll(PLACEHOLDER_RE)].map((m) => m[1]))];
+  const branches = [...new Set([...text.matchAll(BRANCH_RE)].map((m) => m[1]))];
+  return { placeholders, branches, hasTaskPlaceholder: placeholders.includes(MASTER_TASK_PLACEHOLDER) };
+}
+
+/**
+ * Contrôle de structure d'un master pour un jeu de branches (chargement,
+ * promotion d'une version, `prompts:check`). Renvoie les anomalies, vide si
+ * conforme.
+ */
+export function checkMasterTemplate(text: string, tasks: readonly string[]): string[] {
+  const info = inspectMasterTemplate(text);
+  const out: string[] = [];
+  if (!info.hasTaskPlaceholder) out.push('emplacement {{TASK}} absent');
+  for (const t of tasks) {
+    if (!info.branches.includes(t)) out.push(`section « ${masterBranchMarker(t)} » absente`);
+  }
+  return out;
+}
+
+/**
+ * Rendu PUR d'un master : injecte `{{TASK}}` et les variables structurées.
+ *
+ * Refuse :
+ *   · une TASK hors des branches autorisées ou sans section dans le texte ;
+ *   · une variable `TASK` fournie par l'appelant (elle est fixée ici) ;
+ *   · une variable qui ne correspond à aucun emplacement du master — seul
+ *     moyen de glisser des consignes hors du texte administré (§22.3) ;
+ *   · un emplacement sans valeur (`undefined`) — jamais de `{{X}}` au modèle.
+ * `null` est une valeur (JSON `null`) ; une chaîne est insérée telle quelle,
+ * tout autre valeur sérialisée en JSON. Substitution en une passe : une
+ * valeur contenant `{{Y}}` n'est jamais réinterprétée.
+ */
+export function renderMasterPrompt(
+  template: string,
+  opts: { masterPromptCode: string; task: string; variables: Record<string, unknown>; allowedTasks: readonly string[] },
+): string {
+  const { masterPromptCode: code, task, variables, allowedTasks } = opts;
+  if (!allowedTasks.includes(task)) {
+    throw new MasterPromptError('TASK_NOT_ALLOWED', code,
+      `TASK « ${task} » non autorisée (branches déclarées : ${allowedTasks.join(', ') || 'aucune'}).`);
+  }
+  if (Object.prototype.hasOwnProperty.call(variables, MASTER_TASK_PLACEHOLDER)) {
+    throw new MasterPromptError('RESERVED_VARIABLE', code,
+      'la variable TASK est fixée par le serveur, jamais par l’appelant (CDC 15 §22.2).');
+  }
+  const info = inspectMasterTemplate(template);
+  if (!info.hasTaskPlaceholder) {
+    throw new MasterPromptError('TASK_PLACEHOLDER_MISSING', code, 'le master ne contient pas {{TASK}}.');
+  }
+  if (!info.branches.includes(task)) {
+    throw new MasterPromptError('TASK_BRANCH_MISSING', code,
+      `section « ${masterBranchMarker(task)} » absente du master.`);
+  }
+  const undeclared = Object.keys(variables).filter((k) => variables[k] !== undefined && !info.placeholders.includes(k));
+  if (undeclared.length > 0) {
+    throw new MasterPromptError('UNDECLARED_VARIABLE', code,
+      `variable(s) sans emplacement dans le master : ${undeclared.join(', ')} — concaténation de consignes interdite (CDC 15 §22.3).`);
+  }
+  const missing = info.placeholders.filter((p) => p !== MASTER_TASK_PLACEHOLDER && variables[p] === undefined);
+  if (missing.length > 0) {
+    throw new MasterPromptError('UNRESOLVED_PLACEHOLDER', code,
+      `emplacement(s) sans valeur : ${missing.map((m) => `{{${m}}}`).join(', ')}.`);
+  }
+  const values: Record<string, unknown> = { ...variables, [MASTER_TASK_PLACEHOLDER]: task };
+  return template.replace(PLACEHOLDER_RE, (_m, key: string) => {
+    const v = values[key];
+    return typeof v === 'string' ? v : JSON.stringify(v);
+  });
+}
+
+export interface ResolveMasterPromptInput {
+  masterPromptCode: string;
+  /** Branche imposée par le serveur. */
+  task: string;
+  /** Données structurées, une par emplacement `{{X}}` du master (hors TASK). */
+  variables: Record<string, unknown>;
+  useCaseCode?: AiUseCaseCode;
+  /**
+   * D-03 : master complet porté par la version de configuration. Vide ou
+   * absent : fichier du dépôt.
+   */
+  configuredText?: string | null;
+  /** Version de configuration d'où vient `configuredText` (trace). */
+  configVersionId?: number | null;
+  /** Branches autorisées ; défaut : celles déclarées au registre pour ce master. */
+  allowedTasks?: readonly string[];
+}
+
+export interface ResolvedMasterPrompt {
+  text: string;
+  /** `t1_master_v1@file`, ou `t1_master_v1@cfg<id>:<empreinte>` (texte de la version). */
+  version: string;
+  masterPromptCode: string;
+  task: string;
+  source: 'file' | 'config';
+}
+
+/**
+ * Version d'un master, SANS le charger : `code@file`, ou
+ * `code@cfg<id>:<empreinte>` pour le texte d'une version de configuration.
+ * Sert aussi à la clé d'idempotence (un nouveau master ne doit jamais servir
+ * une sortie mise en cache sous l'ancien).
+ */
+export function masterPromptVersionOf(input: {
+  masterPromptCode: string; configuredText?: string | null; configVersionId?: number | null;
+}): string {
+  const configured = input.configuredText?.trim() ? input.configuredText : null;
+  if (!configured) return `${input.masterPromptCode}@file`;
+  const digest = createHash('sha256').update(configured).digest('hex').slice(0, 12);
+  return `${input.masterPromptCode}@cfg${input.configVersionId ?? ''}:${digest}`;
+}
+
+/** Charge, contrôle et rend le prompt maître d'une branche. Lève `MasterPromptError`. */
+export async function resolveMasterPrompt(input: ResolveMasterPromptInput): Promise<ResolvedMasterPrompt> {
+  const { masterPromptCode, task } = input;
+  const allowedTasks = input.allowedTasks ?? listMasterTasks(masterPromptCode);
+  const configured = input.configuredText?.trim() ? input.configuredText : null;
+
+  let base: { text: string; version: string; source: 'file' | 'config' };
+  if (configured) {
+    base = {
+      text: configured,
+      version: masterPromptVersionOf({ masterPromptCode, configuredText: configured, configVersionId: input.configVersionId }),
+      source: 'config',
+    };
+  } else {
+    try {
+      const f = await loadActiveVersion(masterPromptCode, input.useCaseCode);
+      base = { ...f, source: 'file' };
+    } catch (e) {
+      throw new MasterPromptError('MASTER_NOT_FOUND', masterPromptCode, (e as Error).message);
+    }
+  }
+
+  const text = renderMasterPrompt(base.text, { masterPromptCode, task, variables: input.variables, allowedTasks });
+  return { text, version: base.version, masterPromptCode, task, source: base.source };
 }

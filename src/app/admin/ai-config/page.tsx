@@ -62,7 +62,12 @@ interface TreatmentCatalog {
   batch: boolean;
   guardrails: GuardrailDef[];
   triggers: TriggerDef[];
+  /** CDC 15 D-04 : prompt maître déclaré pour ce traitement, sinon `null`. */
+  master?: { masterPromptCode: string; tasks: string[]; rolloutSwitch?: string | null } | null;
 }
+
+/** CDC 15 D-04 : étapes historiques ou prompt maître unique. */
+type PromptArchitecture = 'steps' | 'master';
 
 interface Catalogs {
   models: Array<{ model: string; available: boolean; priced: boolean; verified: boolean }>;
@@ -88,6 +93,10 @@ interface Entry {
   guardrails: Array<{ code: string; threshold: number; reaction: string }>;
   triggers: Array<{ kind: 'event' | 'schedule'; code: string; active: boolean }>;
   cascade: Cascade | null;
+  /** Absent (version antérieure au lot 12) : `steps`. */
+  promptArchitecture?: PromptArchitecture;
+  /** CDC 15 D-03 : texte complet du prompt maître, distinct du préambule. */
+  masterPrompt?: string | null;
 }
 
 interface Version {
@@ -667,6 +676,65 @@ function TreatmentEditor({
         comportement est dans le code. Le serveur vide de toute façon ce champ
         à l'écriture et l'ignore à l'exécution.
       */}
+      {/*
+        CDC 15 D-04, §29.1 : architecture des prompts du traitement. Proposée
+        seulement si un prompt maître est déclaré (lot 12 : T1). Modifiable
+        dans un Brouillon uniquement ; la bascule prend effet en préproduction
+        par la promotion « À tester », en production par l'activation. En
+        « master », le prompt ci-dessous est le MASTER COMPLET (D-03) ; vide,
+        le fichier du dépôt s'applique.
+      */}
+      {catalog.master ? (
+        <Field
+          label="Architecture des prompts"
+          hint={
+            (entry.promptArchitecture ?? 'steps') === 'master'
+              ? `Prompt maître ${catalog.master.masterPromptCode} (branches ${catalog.master.tasks.join(', ')}), `
+                + (catalog.master.rolloutSwitch
+                  ? `texte ci-dessous. Appliqué seulement si ${catalog.master.rolloutSwitch} vaut « enabled » ; `
+                    + 'sinon les étapes historiques continuent, avec le prompt (préambule).'
+                  : 'texte ci-dessous. Appliqué dès que cette version est effective (aucun commutateur d’environnement).')
+              : 'Étapes historiques : un prompt technique par étape, précédé du prompt (préambule).'
+          }
+        >
+          <select
+            className={selectClass}
+            value={entry.promptArchitecture ?? 'steps'}
+            disabled={readOnly}
+            onChange={(e) => set('promptArchitecture', e.target.value as PromptArchitecture)}
+          >
+            <option value="steps">Étapes historiques (steps)</option>
+            <option value="master">Prompt maître unique (master)</option>
+          </select>
+        </Field>
+      ) : null}
+
+      {/*
+        CDC 15 D-03 : zone DISTINCTE du préambule. Le préambule sert toujours
+        aux étapes ; ce texte ne sert qu'au prompt maître. Vide : fichier du
+        dépôt (valeur initiale). Peut être préparé avant la bascule.
+      */}
+      {catalog.master ? (
+        <details className="rounded-lg border border-[color:var(--border-subtle)] p-3"
+          open={(entry.promptArchitecture ?? 'steps') === 'master'}>
+          <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
+            Texte master ({catalog.master.masterPromptCode})
+          </summary>
+          <div className="pt-3 space-y-2">
+            <p className="text-xs text-[color:var(--text-muted)]">
+              Master complet : doit contenir {'{{TASK}}'} et une section « BRANCHE TASK = … » par branche
+              ({catalog.master.tasks.join(', ')}). Laissé vide, le fichier du dépôt s’applique.
+            </p>
+            <Textarea
+              value={entry.masterPrompt ?? ''}
+              disabled={readOnly}
+              onChange={(e) => set('masterPrompt', e.target.value === '' ? null : e.target.value)}
+              className="min-h-[220px] font-mono text-xs bg-[color:var(--bg-input)]"
+            />
+          </div>
+        </details>
+      ) : null}
+
       {isPromptAdministrable(entry.treatment) ? (
         <details className="rounded-lg border border-[color:var(--border-subtle)] p-3">
           <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">

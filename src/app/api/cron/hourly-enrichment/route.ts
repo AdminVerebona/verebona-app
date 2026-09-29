@@ -26,8 +26,13 @@ export async function GET(request: NextRequest) {
 
   try {
     console.log('[cron/hourly-enrichment] Démarrage...');
-    const result = await runHourlyEnrichment();
-    return NextResponse.json({ ok: true, ...result });
+    // CDC 15 CFG-04 : la revue IA (phase 3, moteur historique T3) est soumise
+    // au déclencheur `coherence_ai_review` de la version effective ; les
+    // phases déterministes tournent toujours. Actif par défaut (liste vide).
+    const { isTriggerActive } = await import('@/services/ai/queue/triggers');
+    const aiReview = await isTriggerActive('T3', 'coherence_ai_review');
+    const result = await runHourlyEnrichment({ aiReview });
+    return NextResponse.json({ ok: true, aiReviewTrigger: aiReview ? 'active' : 'inactive', ...result });
   } catch (error) {
     console.error('[cron/hourly-enrichment] Erreur fatale:', error);
     return NextResponse.json(

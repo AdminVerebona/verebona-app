@@ -1,0 +1,342 @@
+{
+  "case": "P-T1-04",
+  "description": "Facture d'entretien couvrant deux véhicules (déposée depuis la Clio) : chaque fait sur sa cible, rien de la Tesla sur la Clio, fait ambigu conservé sans cible.",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      },
+      {
+        "id": 13,
+        "name": "Tesla Model 3",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12,
+        13
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Entretien Clio et Tesla",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "ENTRETIEN FLOTTE",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": "2026-09-03",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Le 03/09/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 51000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL 510,00 €",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "MAINTENANCE_INVOICE",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "ENTRETIEN FLOTTE"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "AB-123-CD"
+            ],
+            "reason": "désignation lue"
+          },
+          {
+            "entityId": 13,
+            "rawLabel": "Tesla Model 3",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "EF-456-GH"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": true
+      },
+      "tables": [
+        {
+          "title": "Véhicules",
+          "pageStart": 1,
+          "pageEnd": 1,
+          "columns": [
+            {
+              "header": "Véhicule"
+            },
+            {
+              "header": "Kilométrage"
+            },
+            {
+              "header": "Prochain entretien"
+            }
+          ],
+          "rows": [
+            {
+              "page": 1,
+              "cells": [
+                {
+                  "column": 0,
+                  "value": "Clio AB-123-CD"
+                },
+                {
+                  "column": 1,
+                  "value": "78 000 km"
+                },
+                {
+                  "column": 2,
+                  "value": "15/11/2027"
+                }
+              ]
+            },
+            {
+              "page": 1,
+              "cells": [
+                {
+                  "column": 0,
+                  "value": "Tesla EF-456-GH"
+                },
+                {
+                  "column": 1,
+                  "value": "42 000 km"
+                },
+                {
+                  "column": 2,
+                  "value": "01/03/2027"
+                }
+              ]
+            }
+          ],
+          "confidence": "certain",
+          "uncertain": false
+        }
+      ],
+      "facts": [
+        {
+          "canonicalKey": "mileage",
+          "rawValue": "78 000 km",
+          "normalizedValue": 78000,
+          "valueType": "number",
+          "canonicalUnit": "km",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "AB-123-CD"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "78 000 km",
+            "page": 1,
+            "table": {
+              "index": 0,
+              "row": 0,
+              "column": 1
+            }
+          }
+        },
+        {
+          "canonicalKey": "mileage",
+          "rawValue": "42 000 km",
+          "normalizedValue": 42000,
+          "valueType": "number",
+          "canonicalUnit": "km",
+          "target": {
+            "type": "ASSET",
+            "entityId": 13,
+            "rawLabel": "Tesla",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "EF-456-GH"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "42 000 km",
+            "page": 1,
+            "table": {
+              "index": 0,
+              "row": 1,
+              "column": 1
+            }
+          }
+        },
+        {
+          "canonicalKey": "lastRevision",
+          "rawValue": "03/09/2026",
+          "normalizedValue": "2026-09-03",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Entretien réalisé le 03/09/2026 — Clio AB-123-CD",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "maintenance",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": "lastRevision",
+          "rawValue": "03/09/2026",
+          "normalizedValue": "2026-09-03",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 13,
+            "rawLabel": "Tesla",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Tesla"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Entretien réalisé le 03/09/2026 — Tesla EF-456-GH",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "maintenance",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": "maintenanceDueDate",
+          "rawValue": "15/11/2027",
+          "normalizedValue": "2027-11-15",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Prochain entretien : 15/11/2027",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "maintenance",
+            "nature": "DEADLINE"
+          }
+        },
+        {
+          "canonicalKey": "maintenanceDueDate",
+          "rawValue": "01/03/2027",
+          "normalizedValue": "2027-03-01",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 13,
+            "rawLabel": "Tesla",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Tesla"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Prochain entretien : 01/03/2027",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "maintenance",
+            "nature": "DEADLINE"
+          }
+        },
+        {
+          "canonicalKey": "registrationNumber",
+          "rawValue": "GH-789-IJ",
+          "normalizedValue": "GH-789-IJ",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": null,
+            "rawLabel": "véhicule de prêt",
+            "confidence": "probable",
+            "evidenceSignals": [
+              "véhicule de prêt"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Véhicule de prêt : GH-789-IJ",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

@@ -9,6 +9,7 @@
  *    répertoire statique ou le répertoire de travail, sont servies à Chromium.
  */
 import path from 'node:path';
+import os from 'node:os';
 import { describe, it, expect } from 'vitest';
 import { cssString, pageSetup, clip, TEXT_BOUNDS } from '../html/components';
 import { RENDER_ORIGIN, renderUrlToPath, staticDir, workFileUrl } from '../static-assets';
@@ -92,7 +93,9 @@ describe('cssString — échappement des chaînes CSS', () => {
 });
 
 describe('renderUrlToPath — ressources servies à Chromium', () => {
-  const workDir = path.join('/tmp', 'v12-work-test');
+  // Chemin absolu de la plateforme (sous Windows, « \tmp\… » n'est pas absolu :
+  // `renderUrlToPath` le résout alors avec la lettre de lecteur).
+  const workDir = path.resolve(os.tmpdir(), 'v12-work-test');
 
   it('sert le répertoire statique et le répertoire de travail', () => {
     expect(renderUrlToPath(`${RENDER_ORIGIN}/static/tokens.css`, workDir)).toBe(path.join(staticDir(), 'tokens.css'));

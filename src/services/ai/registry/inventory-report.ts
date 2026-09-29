@@ -47,6 +47,12 @@ export interface DeclaredSection {
       deterministic: boolean;
       model: string | null;
       promptCode: string | null;
+      /** CDC 15 §22.3, DP-05 : prompt maître exécuté (opération master). */
+      masterPromptCode: string | null;
+      /** Branche TASK : exécutée (master) ou cible (étape historique). */
+      task: string | null;
+      /** Étape historique : opération master qui la remplace. */
+      migratesTo: string | null;
       active: boolean;
     }>;
   }>;
@@ -108,6 +114,9 @@ export function buildDeclaredSection(): DeclaredSection {
           deterministic: o.provider === 'none',
           model: o.provider === 'none' ? null : o.primaryModel,
           promptCode: o.promptCode ?? null,
+          masterPromptCode: o.masterPromptCode ?? null,
+          task: o.task ?? o.migratesTo?.task ?? null,
+          migratesTo: o.migratesTo ? `${o.migratesTo.masterPromptCode}/${o.migratesTo.task}` : null,
           active: o.active,
         })),
       };

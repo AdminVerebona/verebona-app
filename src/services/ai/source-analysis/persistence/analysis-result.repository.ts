@@ -23,6 +23,12 @@ export interface PersistResultInput {
   groupSourceIds: number[];
   lotId: number | null;
   result: SourceAnalysisResult;
+  /**
+   * Chemin master (CDC 15 lot 12) : route et version RÉELLEMENT résolue du
+   * prompt maître (fichier ou version de configuration, avec empreinte).
+   * Absent : chemin étapes, empreinte inchangée.
+   */
+  master?: { masterPromptVersion: string };
 }
 
 export interface PersistedRun {
@@ -81,7 +87,7 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     assetFileId: p.leadSourceId,
     lotId: p.lotId ?? undefined,
     inputFileHash: inputHash,
-    promptVersion: EXTRACT_SOURCE_PROMPT_VERSION,
+    promptVersion: p.master?.masterPromptVersion ?? EXTRACT_SOURCE_PROMPT_VERSION,
     provider: 'gemini',
     model: p.result.operationTrace.models[0] ?? 'unknown',
     status: 'completed',
@@ -211,12 +217,19 @@ async function updateSourceMetadata(p: PersistResultInput): Promise<void> {
 /**
  * Empreinte des entrées : sources, versions et type de source. Deux analyses de
  * la même version d'une même source produisent la même empreinte.
+ *
+ * Chemin master (CDC 15 lot 12) : la route et la version résolue du master
+ * entrent dans l'empreinte — sinon le passage étapes → master (ou une
+ * nouvelle version du master) retrouverait le run des étapes et ne
+ * produirait rien. Chemin étapes : objet STRICTEMENT identique à l'historique,
+ * donc même empreinte qu'avant.
  */
-function computeInputHash(p: PersistResultInput): string {
+export function computeInputHash(p: Pick<PersistResultInput, 'groupSourceIds' | 'input' | 'master'>): string {
   return createHash('sha256').update(JSON.stringify({
     sources: [...p.groupSourceIds].sort((a, b) => a - b),
     type: p.input.sourceType,
     version: p.input.sourceVersion ?? null,
     prompt: EXTRACT_SOURCE_PROMPT_VERSION,
+    ...(p.master ? { route: 'master', masterPrompt: p.master.masterPromptVersion } : {}),
   })).digest('hex');
 }

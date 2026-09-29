@@ -106,6 +106,12 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
    * La valeur actuelle est relue : si elle n'est plus celle présentée à la
    * confirmation, rien n'est écrit — l'utilisateur a validé « A → B », pas
    * « valeur quelconque → B ».
+   *
+   * CDC 15 T2-38 : une commande confirmée est une écriture HUMAINE — origine
+   * USER, auteur et commande journalisés (`writeCanonicalAssetField` via la
+   * façade, selon `CANONICAL_WRITE_MODE`). En mode enabled, les colonnes
+   * miroirs sont capturées pour que « Annuler » les rétablisse aussi, et la
+   * valeur présentée à la confirmation est revérifiée SOUS VERROU.
    */
   async UPDATE_ASSET_FIELD(action, ctx) {
     const p = action.params as Extract<CommandParams, { field: string }>;
@@ -122,15 +128,26 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
         return ko(action, `« ${label} » a été modifié entre-temps : rien n’a été écrit. Refaites votre demande.`);
       }
       const precedent = await avant(ctx, () => readAssetSnapshot(pgClient, ctx.accountId, p.assetId));
+      const { canonicalWriteMode } = await import('@/services/canonical/rollout');
+      const actif = canonicalWriteMode() === 'enabled';
+      const miroirs = !actif ? null : await avant(ctx, async () => {
+        const { readMirrorColumns } = await import('@/services/canonical/asset-state/mirror-columns');
+        return readMirrorColumns(pgClient, ctx.accountId, p.assetId);
+      });
       await updateAssetDetails({
         assetId: p.assetId, accountId: ctx.accountId, section: p.section, fields: { [p.field]: p.value },
+        origin: 'USER', actorUserId: ctx.userId,
+        ...(actif ? { expectedCurrent: { [p.field]: p.previous ?? null } } : {}),
+        source: { type: 'assistant_command', id: action.actionId },
+        // Cache de l'assistant : aucune route ne publie ASSET_UPDATED ici.
+        emitEvent: true,
       });
       // Commande inverse : rétablir les caractéristiques telles qu'elles
       // étaient (valeur du champ, et ce que l'écriture a pu y ajouter :
       // historique de valorisation, alertes levées).
       await capturer(ctx, action.actionId, async () => {
         const apres = await readAssetSnapshot(pgClient, ctx.accountId, p.assetId);
-        if (!precedent || precedent === 'ERREUR' || !apres) {
+        if (!precedent || precedent === 'ERREUR' || !apres || miroirs === 'ERREUR') {
           return { actionId: action.actionId, reversible: false, reason: 'état antérieur non capturé' };
         }
         return {
@@ -140,6 +157,7 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
             keyCharacteristics: precedent.keyCharacteristics,
             registrationNumber: precedent.registrationNumber,
             display: action.effects.find((e) => e.startsWith('Valeur actuelle : '))?.slice(18) ?? null,
+            ...(miroirs ? { mirrors: miroirs } : {}),
           },
           versionBefore: assetVersion(precedent), versionAfter: assetVersion(apres),
           label: `« ${label} » de ${cible}`,
@@ -147,6 +165,9 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       });
     } catch (e) {
       if (e instanceof AssetDetailsError) {
+        if (e.code === 'CONFLICT') {
+          return ko(action, `« ${label} » a été modifié entre-temps : rien n’a été écrit. Refaites votre demande.`);
+        }
         if (e.code === 'NOT_FOUND') {
           return { actionId: action.actionId, status: 'REFUSED', message: 'Bien introuvable ou hors de votre compte.' };
         }

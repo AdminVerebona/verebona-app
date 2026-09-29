@@ -31,19 +31,54 @@ export function startAnalysisRecoveryScheduler(): void {
   }, INITIAL_DELAY_MS);
 }
 
-async function runOnce(): Promise<void> {
+/** Code du déclencheur T1 qui gouverne cette reprise (CDC 15 CFG-04). */
+export const RECOVERY_TRIGGER = 'analysis_recovery';
+
+export interface RecoveryTickDeps {
+  isTriggerActive: (treatment: 'T1', code: string) => Promise<boolean>;
+  runRecovery: () => Promise<{ found: number; retried: number; errors: number }>;
+  purge: () => Promise<void>;
+}
+
+const defaultDeps: RecoveryTickDeps = {
+  isTriggerActive: async (t, code) => (await import('@/services/ai/queue/triggers')).isTriggerActive(t, code),
+  runRecovery: () => runAnalysisRecovery(),
+  purge: () => purgeQuotidienne(),
+};
+
+/**
+ * Un tour du planificateur. Exporté pour les tests.
+ *
+ * CDC 15 CFG-04 : la reprise T1 partait toutes les 5 min en dur, quelle que
+ * soit la version de configuration. Elle est désormais soumise au déclencheur
+ * `analysis_recovery` de la version effective (actif par défaut : liste vide
+ * = comportement historique). Désactivé : aucune relance, rien de mis en file.
+ * La purge des téléversements n'est pas un traitement IA : elle continue.
+ */
+export async function runRecoveryTick(deps: RecoveryTickDeps = defaultDeps): Promise<{ recovery: 'ran' | 'inactive' | 'error' }> {
+  let recovery: 'ran' | 'inactive' | 'error' = 'ran';
   try {
-    const result = await runAnalysisRecovery();
-    if (result.found > 0) {
-      console.info(
-        `[analysis-recovery-scheduler] Tour terminé — ${result.found} trouvé(s), ${result.retried} relancé(s), ${result.errors} erreur(s).`,
-      );
+    if (!(await deps.isTriggerActive('T1', RECOVERY_TRIGGER))) {
+      recovery = 'inactive';
+    } else {
+      const result = await deps.runRecovery();
+      if (result.found > 0) {
+        console.info(
+          `[analysis-recovery-scheduler] Tour terminé — ${result.found} trouvé(s), ${result.retried} relancé(s), ${result.errors} erreur(s).`,
+        );
+      }
     }
   } catch (err) {
+    recovery = 'error';
     console.error('[analysis-recovery-scheduler] Erreur inattendue:', (err as Error).message);
   }
 
-  await purgeQuotidienne();
+  await deps.purge();
+  return { recovery };
+}
+
+async function runOnce(): Promise<void> {
+  await runRecoveryTick();
 }
 
 /**

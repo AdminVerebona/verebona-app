@@ -19,7 +19,8 @@ import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-publ
 import { getCachedPrice, getCacheState, loadPricingCache } from '@/services/ai/gateway/pricing/pricing.repository';
 import { listGuardrails, listTriggers } from '@/services/ai/config/catalogs';
 import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
-import { REASONING_LEVELS, GUARDRAIL_REACTIONS } from '@/services/ai/config/config-types';
+import { REASONING_LEVELS, GUARDRAIL_REACTIONS, PROMPT_ARCHITECTURES } from '@/services/ai/config/config-types';
+import { masterPromptForTreatment, MASTER_ROLLOUT_SWITCH } from '@/services/ai/config/prompt-architecture';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { getCatalogState, selectableModels } from '@/services/ai/provider/model-catalog.service';
 
@@ -53,11 +54,19 @@ export async function GET(req: NextRequest) {
       catalogRefreshedAt: state.refreshedAt,
       reasoningLevels: REASONING_LEVELS,
       guardrailReactions: GUARDRAIL_REACTIONS,
+      promptArchitectures: PROMPT_ARCHITECTURES,
       treatments: TREATMENTS.map((t) => ({
         ...TREATMENT_DEFINITIONS[t],
         guardrails: listGuardrails(t),
         // Vide pour T2 et T5 : synchrones, hors file globale (GEN-004).
         triggers: TREATMENT_DEFINITIONS[t].batch ? listTriggers(t) : [],
+        // CDC 15 D-04 : master déclaré au registre, sinon `null` (architecture
+        // « master » non proposée pour ce traitement).
+        // Commutateur d'environnement qui conditionne en plus le master
+        // (T1 : AI_T1_ANALYSIS_MODE) ; `null` : la version suffit (T3, D-04).
+        master: masterPromptForTreatment(t)
+          ? { ...masterPromptForTreatment(t)!, rolloutSwitch: MASTER_ROLLOUT_SWITCH[t] ?? null }
+          : null,
       })),
     });
   } catch (e) {

@@ -192,6 +192,16 @@ export async function PUT(
       .some((k) => !memeValeur(updateData[k], (oldDoc as Record<string, unknown>)[k]));
     const seulLeBienChange =
       assetCible !== undefined && assetCible !== oldDoc.assetId && !autresChampsModifies;
+    // CDC 15 T3-03 : détachement ou déplacement A → B — les preuves portées
+    // par A sont retirées et A réconcilié AVANT la reprojection sur B
+    // (T3_NEGATIVE_RECONCILIATION ; ne lève jamais).
+    if (accountId && assetCible !== undefined && oldDoc.assetId && assetCible !== oldDoc.assetId) {
+      const { onDocumentAssetChanged } = await import('@/services/ai/evidence/document-evidence-lifecycle');
+      await onDocumentAssetChanged({
+        accountId, userId: session.userId, fileId: documentId, fromAssetId: oldDoc.assetId, toAssetId: assetCible,
+      });
+    }
+
     const projectionPossible =
       hasBeenAnalysed && !!accountId && seulLeBienChange && !!assetCible
       && await hasProjectableKnowledge(documentId).catch(() => false);

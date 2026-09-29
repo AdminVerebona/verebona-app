@@ -132,6 +132,37 @@ export async function enqueueT3ForAnalyzedAsset(
 }
 
 /**
+ * Réconciliation des biens touchés par une transition du cycle de vie d'un
+ * document (CDC 15 T3-03 : suppression, détachement, déplacement,
+ * revalidation T2) — même travail que l'analyse (`source_analyzed`, cible
+ * bien), déclencheur tracé `document_linked` dans le run local.
+ */
+export async function enqueueT3ForAssets(
+  input: { accountId: number; userId: number; assetIds: number[]; sourceFileId?: number | null; reason: string },
+  deps?: T3QueueDeps,
+): Promise<number[]> {
+  const ids = [...new Set(input.assetIds.filter((a) => Number.isInteger(a) && a > 0))];
+  if (ids.length === 0) return [];
+  const d = deps ?? await defaultDeps();
+  if (!(await d.isTriggerActive('T3', 'source_analyzed'))) return [];
+  const jobs: number[] = [];
+  for (const assetId of ids) {
+    const { jobId } = await d.enqueue({
+      treatment: 'T3',
+      scope: { accountId: input.accountId, targetType: T3_TARGET_ASSET, targetId: assetId },
+      triggerCode: 'source_analyzed',
+      payload: {
+        kind: 'asset', userId: input.userId, sourceFileId: input.sourceFileId ?? null,
+        triggeredBy: 'document_linked', lifecycleReason: input.reason,
+      },
+      payloadOnDedupe: 'replace',
+    });
+    if (jobId != null) jobs.push(jobId);
+  }
+  return jobs;
+}
+
+/**
  * Lancement manuel d'un contrôle compte (WF-11, T3-011) : toujours une
  * nouvelle exécution, identifiable comme manuelle, sans déduplication.
  */
@@ -170,6 +201,9 @@ interface T3Payload {
   requestedByUserId?: number | null;
   events?: Array<CoherenceEvent & { at?: string }>;
   triggerCode?: string;
+  /** Cycle de vie d'un document (T3-03) : déclencheur tracé du run local. */
+  triggeredBy?: 'document_analyzed' | 'document_linked';
+  lifecycleReason?: string;
 }
 
 /**
@@ -209,7 +243,7 @@ export async function runT3Job(job: QueuedJob, guard: ExecutionGuard, deps: T3Ha
       accountId: job.accountId,
       userId: p.userId,
       assetId,
-      triggeredBy: 'document_analyzed',
+      triggeredBy: p.triggeredBy === 'document_linked' ? 'document_linked' : 'document_analyzed',
       sourceFileId: p.sourceFileId ?? undefined,
     });
     return;

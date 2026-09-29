@@ -66,6 +66,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Biens d'origine (CDC 15 T3-03 : retrait des preuves sur A avant la
+    // reprojection sur B).
+    const avant = await db
+      .select({ id: assetFiles.id, assetId: assetFiles.assetId })
+      .from(assetFiles)
+      .where(and(inArray(assetFiles.id, validIds), eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)));
+
     // Update files - only those belonging to the current account and not deleted
     const updated = await db
       .update(assetFiles)
@@ -82,6 +89,18 @@ export async function POST(request: NextRequest) {
         )
       )
       .returning();
+
+    // CDC 15 T3-03 : déplacement A → B — retrait des preuves portées par A,
+    // réconciliation de A (T3_NEGATIVE_RECONCILIATION ; ne lève jamais).
+    {
+      const { onDocumentAssetChanged } = await import('@/services/ai/evidence/document-evidence-lifecycle');
+      for (const d of updated) {
+        const origine = avant.find((a) => a.id === d.id)?.assetId ?? null;
+        if (origine && origine !== targetAssetIdInt) {
+          await onDocumentAssetChanged({ accountId, userId, fileId: d.id, fromAssetId: origine, toAssetId: targetAssetIdInt });
+        }
+      }
+    }
 
     // Re-analyser en arrière-plan les documents déjà analysés dont le bien vient de changer
     if (updated.length > 0) {

@@ -61,7 +61,12 @@ const CACHE_TTL_MS = 30_000;
  */
 const LOOKUP_TIMEOUT_MS = 1_500;
 
-let cache: { versionId: number | null; expiresAt: number } | null = null;
+/**
+ * `counter` : clé de version partagée lue au chargement (CFG-01, CDC 15) —
+ * une bascule faite sur une autre instance recharge la version tracée dès
+ * l'appel suivant. `null` : clé illisible, seul le TTL s'applique.
+ */
+let cache: { versionId: number | null; expiresAt: number; counter: number | null } | null = null;
 
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
@@ -76,23 +81,27 @@ export function invalidateConfigVersionCache(): void {
 }
 
 async function currentConfigVersionId(): Promise<number | null> {
+  const { hasTestCounterStore, readConfigVersionCounter } = await import('../config/config-cache-version');
   // Les tests unitaires n'ouvrent aucune connexion : attendre la borne à chaque
   // trace y ajouterait des secondes pour une valeur qui n'existe pas. Même
   // convention que `db/index.ts`, qui tait déjà l'absence de DATABASE_URL en test.
-  if (process.env.NODE_ENV === 'test') return null;
+  if (process.env.NODE_ENV === 'test' && !hasTestCounterStore()) return null;
 
-  if (cache && cache.expiresAt > Date.now()) return cache.versionId;
+  const counter = await readConfigVersionCounter();
+  if (cache && cache.expiresAt > Date.now() && (counter === null || cache.counter === counter)) {
+    return cache.versionId;
+  }
 
   try {
     const { getEffectiveVersion } = await import('../config/config-version.repository');
     const version = await withTimeout(getEffectiveVersion(), LOOKUP_TIMEOUT_MS, null);
-    cache = { versionId: version?.id ?? null, expiresAt: Date.now() + CACHE_TTL_MS };
+    cache = { versionId: version?.id ?? null, expiresAt: Date.now() + CACHE_TTL_MS, counter };
     return cache.versionId;
   } catch {
     // Tables absentes avant la migration, ou base indisponible : la trace part
     // sans version plutôt que l'appel échoue. La télémétrie ne doit jamais
     // faire tomber un traitement métier.
-    cache = { versionId: null, expiresAt: Date.now() + CACHE_TTL_MS };
+    cache = { versionId: null, expiresAt: Date.now() + CACHE_TTL_MS, counter };
     return null;
   }
 }

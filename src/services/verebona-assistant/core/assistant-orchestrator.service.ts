@@ -1043,8 +1043,8 @@ async function finalize(
 
   // §19.10 — dernier moment utile pour vérifier qu'une source citée existe
   // encore et reste accessible. Une source supprimée entre sa récupération et
-  // l'affichage produirait un lien mort, et l'historique conservé sept jours
-  // en produirait davantage encore.
+  // l'affichage produirait un lien mort, et l'historique conservé
+  // `historyDays` jours (3 mois, CDC 15 T2-46) en produirait davantage encore.
   //
   // Ne lève jamais : une vérification impossible ne doit pas empêcher
   // l'affichage d'une réponse.

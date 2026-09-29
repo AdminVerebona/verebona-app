@@ -24,7 +24,7 @@ import { AiGateway } from '@/services/ai/gateway/ai-gateway';
 import { AiGatewayError } from '@/services/ai/gateway/errors';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import type { AiGatewayRequest, AiGatewayResponse } from '@/services/ai/gateway/types';
-import { getAssistantConfig } from '../config/assistant-config';
+import { assistantMaxOutputTokensCap, getAssistantConfig } from '../config/assistant-config';
 import { isAssistantFlagOn } from '../config/assistant-flags';
 import { hashPromptVariables, recordAiRun, type AiRunContext } from './usage-tracking.service';
 import { aliasForRank, resolveAliases } from '../registries/model-registry';
@@ -74,8 +74,9 @@ export class AiBudgetExhaustedError extends AiGatewayError {
  *   elle est demandée explicitement (`firstModelIndex: 1`) pour un motif du
  *   §15.4 (`model-call-policy.ts`). Repli désactivé (flag §39
  *   `fallback_model`) : aucune escalade.
- * - Plafonds §13.9 / §30.1 transmis à la passerelle : 500 jetons de sortie,
- *   12 s par tentative (y compris `revalidate_fact`, déclarée à 20 s).
+ * - Plafond §30.1 transmis à la passerelle : 12 s par tentative (y compris
+ *   `revalidate_fact`, déclarée à 20 s). Jetons de sortie : configuration IA
+ *   effective, bornée à 500 (§31.2, CDC 15 T2-43).
  * - Réponse issue du cache d'idempotence : aucun appel émis, rien décompté.
  * - Succès sans repli : 1 tentative. Succès après repli : la gateway ne dit
  *   pas combien de replis ont été essayés ; on décompte tout ce qui était
@@ -101,7 +102,8 @@ export class AiBudgetExhaustedError extends AiGatewayError {
  *   erreur, timeout compris) escaladait hors des cas du §15.4 ; l'escalade
  *   est désormais une décision explicite de l'appelant.
  * - `firstModelIndex` : 1 = modèle d'escalade seul (§15.4).
- * - `maxOutputTokens` / `timeoutMs` : plafonds §13.9 (500) et §30.1 (12 s).
+ * - `maxOutputTokens` : plafond explicite de CET appel (réduit seulement la
+ *   configuration effective, CDC 15 T2-43) ; `timeoutMs` : §30.1 (12 s).
  */
 export interface CallPolicy {
   modelAttempts?: number;
@@ -118,7 +120,12 @@ export async function executeWithinBudget<T>(
 ): Promise<AiGatewayResponse<T>> {
   const cfg = getAssistantConfig();
   const plafonds = {
-    maxOutputTokensCap: policy.maxOutputTokens ?? cfg.maxOutputTokens,
+    // CDC 15 T2-43 : la valeur vient de la configuration IA effective de
+    // l'opération (version BO, sinon code) ; en attendant l'arbitrage PO, elle
+    // reste bornée au budget V1 (500, §31.2) — et, par compatibilité, à
+    // l'ancienne variable si elle est encore posée. Un plafond explicite
+    // d'appel ne peut que réduire.
+    maxOutputTokensCap: Math.min(policy.maxOutputTokens ?? Number.POSITIVE_INFINITY, assistantMaxOutputTokensCap()),
     timeoutMsCap: policy.timeoutMs ?? cfg.aiTimeoutMs,
     // §43 IDEMPOTENCY_TTL_SECONDS : durée de vie de la réponse mise en cache
     // par la passerelle pour une même demande (900 s par défaut).

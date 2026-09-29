@@ -24,7 +24,7 @@
  * même doctrine que `config-resolver` — une console ne casse pas le produit.
  */
 import type { Treatment } from '../config/treatments';
-import { SCHEDULE_PERIOD_HOURS, TRIGGER_CATALOG } from '../config/catalogs';
+import { SCHEDULE_PERIOD_HOURS, TRIGGER_CATALOG, activeUnlessDeclaredCodes, retiredTriggerCodes } from '../config/catalogs';
 import type { TriggerSetting } from '../config/config-types';
 
 /**
@@ -34,8 +34,14 @@ import type { TriggerSetting } from '../config/config-types';
  * sa reprise périodique reste portée par `analysis-recovery-scheduler`.
  */
 export const DEFAULT_TRIGGERS: Readonly<Record<'T1' | 'T3' | 'T4', readonly string[]>> = {
-  T1: ['source_uploaded', 'web_link_added'],
-  T3: ['source_analyzed', 'document_linked', 'asset_updated', 'arbitration_resolved', 'schedule_daily'],
+  // CDC 15 CFG-04 : `analysis_recovery` et `coherence_ai_review` gouvernent
+  // désormais la reprise T1 toutes les 5 min et la revue IA du cron de
+  // cohérence, qui partaient en dur ; actifs par défaut (comportement
+  // historique), y compris dans une liste renseignée qui ne les mentionne pas
+  // (`activeUnlessDeclared`). `web_link_added` retiré : il n'a jamais rien
+  // conditionné.
+  T1: ['source_uploaded', 'analysis_recovery'],
+  T3: ['source_analyzed', 'document_linked', 'asset_updated', 'arbitration_resolved', 'schedule_daily', 'coherence_ai_review'],
   T4: ['source_analyzed'],
 };
 
@@ -44,7 +50,17 @@ export function activeTriggerCodes(treatment: Treatment, configured: TriggerSett
   if (!configured || configured.length === 0) {
     return new Set((DEFAULT_TRIGGERS as Record<string, readonly string[]>)[treatment] ?? []);
   }
-  return new Set(configured.filter((t) => t.active).map((t) => t.code));
+  // Un code retiré (CDC 15 CFG-04) n'est jamais actif, même coché dans une
+  // version antérieure.
+  const retires = retiredTriggerCodes();
+  const actifs = new Set(configured.filter((t) => t.active && !retires.has(t.code)).map((t) => t.code));
+  // Code introduit après la version (CDC 15 CFG-04) : absent de la liste, il
+  // reste actif ; seul un `active: false` explicite le coupe.
+  const declares = new Set(configured.map((t) => t.code));
+  for (const code of activeUnlessDeclaredCodes(treatment)) {
+    if (!declares.has(code)) actifs.add(code);
+  }
+  return actifs;
 }
 
 type ConfigLoader = (treatment: Treatment) => Promise<{ triggers: TriggerSetting[] } | null>;

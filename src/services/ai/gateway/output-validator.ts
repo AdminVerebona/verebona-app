@@ -6,7 +6,7 @@
  * AUCUNE persistance d'une sortie brute invalide.
  */
 import type { ZodType } from 'zod';
-import { AiGatewayError } from './errors';
+import { AiGatewayError, AiOutputTaskMismatchError } from './errors';
 import { previewForLog } from './redaction';
 
 /**
@@ -55,11 +55,24 @@ export function extractJson(raw: string): unknown {
  */
 export type OutputFormat = 'json' | 'text';
 
+/**
+ * Options de validation.
+ *
+ * `expectedTask` — sortie d'un prompt maître (CDC 15 §22.2) : l'objet doit
+ * porter `task === expectedTask`. Contrôlé AVANT le schéma, même si celui-ci
+ * est l'union discriminée complète (`T1MasterOutput`) qui accepterait l'autre
+ * branche : le modèle ne choisit pas sa branche.
+ */
+export interface ValidateOutputOptions {
+  expectedTask?: string;
+}
+
 export function validateOutput<T>(
   raw: string,
   schema: ZodType<T>,
   operationCode: string,
   format: OutputFormat = 'json',
+  options: ValidateOutputOptions = {},
 ): T {
   let parsed: unknown;
   try {
@@ -68,6 +81,15 @@ export function validateOutput<T>(
     throw new AiGatewayError('INVALID_OUTPUT', operationCode,
       `Sortie non parsable : ${(e as Error).message}. Extrait : ${previewForLog(raw, 200)}`,
       { recoverable: true, cause: e });
+  }
+
+  if (options.expectedTask !== undefined) {
+    const task = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>).task
+      : undefined;
+    if (task !== options.expectedTask) {
+      throw new AiOutputTaskMismatchError(operationCode, options.expectedTask, task);
+    }
   }
 
   const result = schema.safeParse(parsed);

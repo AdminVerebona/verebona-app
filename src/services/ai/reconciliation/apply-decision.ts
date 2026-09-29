@@ -1,5 +1,5 @@
 /**
- * Application d'une décision — CDC §5.4.3.
+ * Application d'une décision — CDC §5.4.3 ; CDC 15 T3-01, T3-05 (lot 13).
  *
  * Toute écriture automatique laisse trois traces indissociables :
  *   1. la nouvelle valeur, avec son origine structurée ;
@@ -8,12 +8,36 @@
  *
  * Sans le point 2, la prochaine exécution comparerait une nouvelle preuve à une
  * valeur d'autorité inconnue et déciderait à l'aveugle.
+ *
+ * ── ÉCRITURE UNIQUE (T3-01, T3-05) selon `CANONICAL_WRITE_MODE` ────────────
+ *   legacy   chemin historique inchangé (keyCharacteristics seul) ;
+ *   shadow   chemin historique, puis observation : `observeLegacyWrite`
+ *            journalise ce que la primitive aurait écrit et l'écart
+ *            (`dry_run`) — même logique que la fiche au lot 11 ;
+ *   enabled  une clé du REGISTRE passe par `writeCanonicalAssetField`
+ *            (origine RECONCILIATION, normalisation, colonnes miroirs,
+ *            journal 0216, `ai_field_updates`, préséance USER/ADMIN sous
+ *            verrou) : une même valeur écrite par la fiche et par T3 donne le
+ *            même état, à l'origine près. Une clé HORS registre (fait générique
+ *            historique) garde le chemin historique.
  */
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import { assets, aiFieldUpdates } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { writeOrigin } from './field-origin';
+import { canonicalWriteMode, type RolloutMode } from '@/services/canonical/rollout';
+import { getField, resolveAlias, isExcludedKey } from '@/services/canonical/registry';
+import {
+  loadAssetRow, observeLegacyWrite, writeCanonicalAssetField,
+  type SqlRunner, type AssetRowJson, type CanonicalFieldWriteResult,
+} from '@/services/canonical/asset-state';
 import type { ReconciliationDecision, EvidenceCandidate } from './types';
+
+/** Clé écrite par la primitive : clé canonique ou alias connu du registre. */
+export function isRegistryKey(fieldKey: string): boolean {
+  if (isExcludedKey(fieldKey)) return false;
+  return !!getField(fieldKey) || !!resolveAlias(fieldKey);
+}
 
 export interface ApplyContext {
   accountId: number;
@@ -23,21 +47,91 @@ export interface ApplyContext {
   model?: string;
   promptVersion?: string;
   bestCandidate?: EvidenceCandidate;
+  /** Trace du run T3 (journal 0216). */
+  traceId?: string | null;
+  /** Force un mode d'écriture (tests) ; défaut : `CANONICAL_WRITE_MODE`. */
+  writeMode?: RolloutMode;
 }
+
+/** Résultat d'une application (tests, rapport). */
+export type ApplyOutcome = 'written' | 'skipped' | 'protected' | 'conflict' | 'invalid' | 'unchanged';
 
 export async function applyDecision(
   decision: ReconciliationDecision,
   ctx: ApplyContext,
-): Promise<void> {
-  if (decision.action !== 'apply' && decision.action !== 'update') return;
+): Promise<ApplyOutcome> {
+  if (decision.action !== 'apply' && decision.action !== 'update') return 'skipped';
+  const mode = ctx.writeMode ?? canonicalWriteMode();
 
+  if (mode === 'enabled' && isRegistryKey(decision.fieldKey)) {
+    const res = await writeCanonicalAssetField({
+      assetId: ctx.assetId, accountId: ctx.accountId,
+      key: decision.fieldKey, value: decision.proposedValue,
+      origin: 'RECONCILIATION',
+      expectedCurrent: decision.currentValue ?? null,
+      source: ctx.sourceFileId ? { type: 'document', id: ctx.sourceFileId } : { type: 'reconciliation', id: ctx.traceId ?? null },
+      traceId: ctx.traceId ?? null,
+      mode: 'enabled',
+      trace: {
+        evidenceId: decision.evidenceIds[0] ?? null, decisionType: decision.action, reasonCode: decision.reasonCode,
+        provider: ctx.provider ?? null, model: ctx.model ?? null, promptVersion: ctx.promptVersion ?? null,
+        confidence: decision.confidence, authority: decision.sourcePriority ?? 0,
+        sourceDate: ctx.bestCandidate?.documentDate?.toISOString() ?? null,
+      },
+    });
+    return outcomeOf(decision.fieldKey, res.notFound ? null : res.field);
+  }
+
+  // Mode shadow : état avant le chemin historique, pour l'observation.
+  const before = mode === 'shadow' && isRegistryKey(decision.fieldKey)
+    ? await loadAssetRow(pgClient as unknown as SqlRunner, ctx.assetId, ctx.accountId).catch(() => null)
+    : null;
+  const outcome = await applyDecisionLegacy(decision, ctx);
+  if (before && outcome === 'written') await observe(decision, ctx, before);
+  return outcome;
+}
+
+/** Mode shadow : ce que la primitive aurait écrit (dry_run), jamais bloquant. */
+async function observe(decision: ReconciliationDecision, ctx: ApplyContext, before: AssetRowJson): Promise<void> {
+  try {
+    const after = await loadAssetRow(pgClient as unknown as SqlRunner, ctx.assetId, ctx.accountId);
+    if (!after) return;
+    await observeLegacyWrite({
+      assetId: ctx.assetId, accountId: ctx.accountId, origin: 'RECONCILIATION',
+      source: ctx.sourceFileId ? { type: 'document', id: ctx.sourceFileId } : { type: 'reconciliation', id: ctx.traceId ?? null },
+      traceId: ctx.traceId ?? null,
+      writes: [{ key: decision.fieldKey, value: decision.proposedValue, expectedCurrent: decision.currentValue ?? null }],
+      before, after,
+    });
+  } catch (e) {
+    console.warn('[reconciliation][shadow] observation impossible (non bloquant) :', (e as Error).message);
+  }
+}
+
+function outcomeOf(fieldKey: string, f: CanonicalFieldWriteResult | null): ApplyOutcome {
+  if (!f) return 'skipped';
+  if (f.outcome === 'conflict') {
+    console.info(`[reconciliation] ${fieldKey} modifié entre-temps — application annulée`);
+  } else if (f.outcome === 'protected') {
+    console.info(`[reconciliation] ${fieldKey} : valeur humaine protégée — rien n'est écrit`);
+  } else if (f.outcome === 'invalid') {
+    console.warn(`[reconciliation] ${fieldKey} : valeur refusée par le registre (${f.reason ?? '?'})`);
+  }
+  return f.outcome;
+}
+
+/** Chemin historique (legacy, shadow, clé hors registre). */
+async function applyDecisionLegacy(
+  decision: ReconciliationDecision,
+  ctx: ApplyContext,
+): Promise<ApplyOutcome> {
   const [asset] = await db
     .select({ keyCharacteristics: assets.keyCharacteristics })
     .from(assets)
     .where(and(eq(assets.id, ctx.assetId), eq(assets.accountId, ctx.accountId)))
     .limit(1);
 
-  if (!asset) return;
+  if (!asset) return 'skipped';
 
   const kc = parseKc(asset.keyCharacteristics);
 
@@ -48,7 +142,7 @@ export async function applyDecision(
     console.info(
       `[reconciliation] ${decision.fieldKey} modifié entre-temps — application annulée`,
     );
-    return;
+    return 'conflict';
   }
 
   let next = { ...kc, [decision.fieldKey]: decision.proposedValue };
@@ -78,6 +172,7 @@ export async function applyDecision(
     promptVersion: ctx.promptVersion ?? null,
     confidence: decision.confidence,
   } as never);
+  return 'written';
 }
 
 /**
@@ -111,4 +206,83 @@ function toText(v: unknown): string | null {
 
 function isSameAsDecided(actual: unknown, decided: unknown): boolean {
   return toText(actual) === toText(decided);
+}
+
+// ── Réconciliation négative (CDC 15 T3-04) ──────────────────────────────────
+
+export const RETRACTION_REASON = 'NO_REMAINING_EVIDENCE';
+
+export interface RetractInput {
+  accountId: number;
+  assetId: number;
+  fieldKey: string;
+  /** Valeur lue par la décision : rien n'est retiré si elle a changé entre-temps. */
+  currentValue: unknown;
+  traceId?: string | null;
+}
+
+/**
+ * Retire une valeur AUTOMATIQUE qui n'a plus aucune preuve active.
+ *
+ * Clé du registre : `writeCanonicalAssetField` (valeur null, origine
+ * RECONCILIATION) — suppression dans la fiche, colonnes miroirs remises à
+ * NULL, journal 0216 et `ai_field_updates` (motif NO_REMAINING_EVIDENCE),
+ * contrôle optimiste et préséance USER/ADMIN SOUS VERROU : une valeur
+ * humaine n'est jamais retirée, même si l'origine a changé entre la décision
+ * et l'écriture. Toujours en mode `enabled` : ce retrait est piloté par son
+ * propre commutateur (`T3_NEGATIVE_RECONCILIATION`), et la colonne miroir
+ * doit suivre la fiche.
+ *
+ * Clé hors registre : suppression dans keyCharacteristics + historique.
+ */
+export async function retractAutomaticValue(p: RetractInput): Promise<ApplyOutcome> {
+  if (isRegistryKey(p.fieldKey)) {
+    const res = await writeCanonicalAssetField({
+      assetId: p.assetId, accountId: p.accountId, key: p.fieldKey, value: null,
+      origin: 'RECONCILIATION', expectedCurrent: p.currentValue,
+      source: { type: 'reconciliation', id: p.traceId ?? null }, traceId: p.traceId ?? null,
+      mode: 'enabled',
+      trace: { decisionType: 'update', reasonCode: RETRACTION_REASON, confidence: 'certain', authority: null, sourceDate: null },
+    });
+    return outcomeOf(p.fieldKey, res.notFound ? null : res.field);
+  }
+
+  // Mise à jour CIBLÉE et atomique (relecture lot 13) : seule la clé et ses
+  // métadonnées changent, sous condition — valeur toujours celle décidée et
+  // origine toujours automatique — évaluée par PostgreSQL au moment de
+  // l'écriture (aucune fenêtre lecture → réécriture du JSON entier).
+  const maintenant = new Date().toISOString();
+  const rows = (await pgClient.unsafe(
+    `UPDATE assets
+        SET key_characteristics = ((COALESCE(NULLIF(key_characteristics, ''), '{}')::jsonb
+              - $3::text - ($3::text || '__authority') - ($3::text || '__sourceDate') - ($3::text || '_origin'))
+              || jsonb_build_object($3::text || '__origin', 'RECONCILIATION', $3::text || '__updatedAt', $5::text))::text,
+            updated_at = now()
+      WHERE id = $1 AND account_id = $2
+        AND (COALESCE(NULLIF(key_characteristics, ''), '{}')::jsonb -> $3::text) = $4::jsonb
+        AND (
+          (COALESCE(NULLIF(key_characteristics, ''), '{}')::jsonb ->> ($3::text || '__origin')) IN ('DOCUMENT_EXTRACTION', 'RECONCILIATION')
+          OR ((COALESCE(NULLIF(key_characteristics, ''), '{}')::jsonb ->> ($3::text || '__origin')) IS NULL
+              AND (COALESCE(NULLIF(key_characteristics, ''), '{}')::jsonb ->> ($3::text || '_origin')) = 'auto'))
+      RETURNING id`,
+    [p.assetId, p.accountId, p.fieldKey, JSON.stringify(p.currentValue), maintenant] as never[],
+  )) as unknown as unknown[];
+  if (rows.length === 0) {
+    // Rien retiré : dire pourquoi (lecture seule).
+    const [asset] = await db
+      .select({ keyCharacteristics: assets.keyCharacteristics })
+      .from(assets)
+      .where(and(eq(assets.id, p.assetId), eq(assets.accountId, p.accountId)))
+      .limit(1);
+    if (!asset) return 'skipped';
+    const kc = parseKc(asset.keyCharacteristics);
+    if (!isSameAsDecided(kc[p.fieldKey], p.currentValue)) return 'conflict';
+    return 'protected';
+  }
+  await db.insert(aiFieldUpdates).values({
+    accountId: p.accountId, assetId: p.assetId, fieldKey: p.fieldKey,
+    oldValue: toText(p.currentValue), newValue: '',
+    decisionType: 'update', reasonCode: RETRACTION_REASON, confidence: 'certain',
+  } as never);
+  return 'written';
 }

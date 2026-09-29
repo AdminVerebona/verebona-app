@@ -16,11 +16,16 @@
  *     enrichissement horaire (§5.6).
  */
 import { randomUUID } from 'crypto';
-import { collectFields } from './evidence-collector';
+import { collectAssetEvidenceState } from './evidence-collector';
 import { decide } from './decision/decision-matrix';
 import { canRequestAiReview } from './decision/ai-exclusion';
 import { resolveAmbiguity } from './ambiguity-resolver';
-import { applyDecision } from './apply-decision';
+import { applyDecision, retractAutomaticValue } from './apply-decision';
+import {
+  planRetractions, retractionDecision, withoutStaleAuthority, NEGATIVE_REASON,
+} from './negative-reconciliation';
+import { listRetiredEvidenceValues } from '../evidence/field-evidence.service';
+import { t3NegativeMode } from '@/services/canonical/rollout';
 import { writeConflict, resolveObsoleteConflict } from './conflict-writer';
 import { openRun, closeRun, recordDecisions, failRun } from './reconciliation-run.repository';
 import { shouldWrite } from '../flags/ai-feature-flags';
@@ -62,11 +67,39 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
 
 async function runEngine(input: ReconcileInput, runId: number, traceId: string, shadow: boolean): Promise<ReconciliationRun> {
 
-  const collected = await collectFields(input.accountId, input.assetId);
+  const { kc, fields: collected } = await collectAssetEvidenceState(input.accountId, input.assetId);
   const decisions: ReconciliationDecision[] = [];
+  // ══════════════════════════════════════════════════════════════════════
+  // RÉCONCILIATION NÉGATIVE (CDC 15 T3-04), commutateur T3_NEGATIVE_RECONCILIATION
+  //   legacy   rien ;
+  //   shadow   décisions inchangées ; ce qui SERAIT remplacé ou retiré est
+  //            enregistré (`reconciliation_decisions`, action keep, motifs
+  //            SHADOW_*) et journalisé — rien n'est écrit, la file « À
+  //            traiter » n'en est pas alimentée ;
+  //   enabled  une valeur automatique qui n'est plus prouvée perd l'autorité
+  //            mémorisée de sa preuve disparue (la meilleure preuve restante
+  //            l'emporte) ; sans aucune preuve active restante, elle est
+  //            retirée (`retractAutomaticValue`). USER/ADMIN jamais touchés.
+  // Le mode observation du MOTEUR (AI_RECONCILIATION_ENGINE) prime : rien
+  // n'est écrit, le négatif est alors seulement observé.
+  // ══════════════════════════════════════════════════════════════════════
+  const negMode = t3NegativeMode();
+  const negEnabled = negMode === 'enabled' && !shadow;
+  const observations: ReconciliationDecision[] = [];
 
   for (const field of collected) {
-    let decision = decide(field.input);
+    let decision = field.unproven && negEnabled
+      ? decide(withoutStaleAuthority(field.input))
+      : decide(field.input);
+    if (field.unproven && negEnabled && decision.action === 'update') {
+      decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
+    }
+    if (field.unproven && negMode !== 'legacy' && !negEnabled) {
+      const alt = decide(withoutStaleAuthority(field.input));
+      if (alt.action === 'update' && decision.action !== 'update') {
+        observations.push({ ...alt, action: 'keep', proposedValue: field.input.current?.value ?? null, reasonCode: NEGATIVE_REASON.SHADOW_REPLACE });
+      }
+    }
 
     // Étape 7 du §4.2.8 : appel modèle UNIQUEMENT si le déterminisme n'a pas
     // tranché — et jamais sur un champ exclu du périmètre modèle.
@@ -95,6 +128,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
           bestCandidate: field.input.candidates.find(
             (c) => c.evidenceId === decision.evidenceIds[0],
           ),
+          traceId,
         });
         // Une décision tranchée rend caduc un arbitrage antérieur sur ce champ.
         await resolveObsoleteConflict(
@@ -120,7 +154,35 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     }
   }
 
-  await recordDecisions(runId, input.accountId, input.assetId, decisions);
+  // Phase négative : valeurs automatiques dont la dernière preuve a disparu.
+  if (negMode !== 'legacy' && kc) {
+    const retirees = await listRetiredEvidenceValues(input.accountId, input.assetId);
+    const retraits = planRetractions(kc, collected.map((f) => f.fieldKey), retirees);
+    for (const r of retraits) {
+      if (!negEnabled) { observations.push(retractionDecision(r, true)); continue; }
+      const outcome = await retractAutomaticValue({
+        accountId: input.accountId, assetId: input.assetId, fieldKey: r.fieldKey, currentValue: r.currentValue, traceId,
+      });
+      if (outcome === 'written') {
+        decisions.push(retractionDecision(r, false));
+        await resolveObsoleteConflict(input.accountId, input.assetId, r.fieldKey, `valeur retirée : ${NEGATIVE_REASON.RETRACT}`);
+      }
+    }
+  }
+  if (observations.length) {
+    console.info(JSON.stringify({
+      event: 't3.negative_reconciliation', mode: negMode, engineShadow: shadow,
+      accountId: input.accountId, assetId: input.assetId, runId,
+      // Jamais de valeur dans le journal (données du bien) : clés et motifs.
+      observations: observations.map((o) => ({ fieldKey: o.fieldKey, reasonCode: o.reasonCode })),
+      counts: {
+        wouldRetract: observations.filter((o) => o.reasonCode === NEGATIVE_REASON.SHADOW_RETRACT).length,
+        wouldReplace: observations.filter((o) => o.reasonCode === NEGATIVE_REASON.SHADOW_REPLACE).length,
+      },
+    }));
+  }
+
+  await recordDecisions(runId, input.accountId, input.assetId, [...decisions, ...observations]);
 
   // ══════════════════════════════════════════════════════════════════════
   // ALIMENTATION DE LA FILE « À TRAITER » V2 (CDC V2 §11.1, §10.5)

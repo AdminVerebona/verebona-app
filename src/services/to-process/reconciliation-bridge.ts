@@ -77,6 +77,9 @@ export function mapReconciliationDecision(
 ): ActionIntent | null {
   const rule = findRule('ASSET', decision.fieldKey);
   if (!rule) return null; // P-06 : pas de règle, pas d'action.
+  // CDC 15 X-03 : la carte porte la clé CANONIQUE de la règle, jamais l'alias
+  // de la preuve — un conflit sur `acquisitionPrice` crée une seule carte.
+  const fieldKey = rule.fieldKey ?? decision.fieldKey;
 
   const action: ReconciliationAction = decision.action;
 
@@ -101,7 +104,7 @@ export function mapReconciliationDecision(
       }
       return {
         kind: 'UPSERT',
-        fieldKey: decision.fieldKey,
+        fieldKey,
         ruleCode: rule.code,
         actionKind: 'ARBITRATE',
         proposals,
@@ -116,7 +119,7 @@ export function mapReconciliationDecision(
       if (rule.completePriority === null) return null;
       return {
         kind: 'UPSERT',
-        fieldKey: decision.fieldKey,
+        fieldKey,
         ruleCode: rule.code,
         actionKind: 'COMPLETE',
         proposals: [],
@@ -131,7 +134,7 @@ export function mapReconciliationDecision(
       // d'objet (§7.3, « problème devenu sans objet »).
       return {
         kind: 'RESOLVE',
-        fieldKey: decision.fieldKey,
+        fieldKey,
         ruleCode: rule.code,
         reason: decision.reasonCode,
       };
@@ -168,12 +171,24 @@ export async function syncReconciliationToProcess(
 ): Promise<SyncReconciliationResult> {
   const result: SyncReconciliationResult = { created: 0, resolved: 0, skipped: 0 };
 
-  for (const decision of input.decisions) {
-    const intent = mapReconciliationDecision(decision);
+  const intents = input.decisions.map(mapReconciliationDecision);
+  // Plusieurs décisions peuvent viser la même clé canonique (alias et clé) :
+  // une carte ouverte ou mise à jour ne doit pas être refermée par la
+  // décision « tranchée » d'un alias dans le même passage (X-03).
+  const upserted = new Set(intents.filter((i) => i?.kind === 'UPSERT').map((i) => i!.fieldKey));
+  const vus = new Set<string>();
+
+  for (const intent of intents) {
     if (!intent) {
       result.skipped += 1;
       continue;
     }
+    const cle = `${intent.kind}:${intent.fieldKey}`;
+    if (vus.has(cle) || (intent.kind === 'RESOLVE' && upserted.has(intent.fieldKey))) {
+      result.skipped += 1;
+      continue;
+    }
+    vus.add(cle);
 
     try {
       if (intent.kind === 'RESOLVE') {
@@ -188,7 +203,7 @@ export async function syncReconciliationToProcess(
         continue;
       }
 
-      const upserted = await upsertAction({
+      const res = await upsertAction({
         accountId: input.accountId,
         targetType: 'ASSET',
         targetId: input.assetId,
@@ -197,8 +212,8 @@ export async function syncReconciliationToProcess(
         ruleCode: intent.ruleCode,
         proposals: intent.proposals,
       });
-      if (upserted.status === 'CREATED') result.created += 1;
-      else if (upserted.status === 'SKIPPED') result.skipped += 1;
+      if (res.status === 'CREATED') result.created += 1;
+      else if (res.status === 'SKIPPED') result.skipped += 1;
     } catch (e) {
       result.skipped += 1;
       console.error(

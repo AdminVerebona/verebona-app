@@ -39,11 +39,20 @@ export type FlagMode =
   /** Nouveau moteur seul — l'ancien est hors du chemin d'exécution. */
   | 'enabled';
 
-function readMode(flag: AiFlag): FlagMode {
-  const raw = (process.env[flag] ?? 'legacy').toLowerCase();
+/**
+ * Interprétation d'une valeur brute (pur). Toute valeur non reconnue vaut
+ * `legacy` : une faute de frappe ne bascule jamais vers le nouveau moteur.
+ * Partagée avec la page « Drapeaux et commutateurs » (CDC 15 D-01).
+ */
+export function parseFlagMode(value: string | undefined | null): FlagMode {
+  const raw = (value ?? 'legacy').toLowerCase();
   if (raw === 'enabled' || raw === 'true' || raw === '1') return 'enabled';
   if (raw === 'shadow') return 'shadow';
   return 'legacy';
+}
+
+function readMode(flag: AiFlag): FlagMode {
+  return parseFlagMode(process.env[flag]);
 }
 
 export function getFlagMode(flag: AiFlag): FlagMode {

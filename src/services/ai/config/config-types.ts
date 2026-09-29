@@ -68,6 +68,36 @@ export interface CascadeThresholds {
   semanticEnabled: boolean;
 }
 
+/**
+ * Architecture des prompts d'un traitement — CDC 15 §29 étape 14, §29.1, D-04.
+ *
+ *   · `steps`  (défaut) : étapes historiques, un prompt technique du dépôt par
+ *     opération, précédé du préambule administrable (`prompt`) ;
+ *   · `master` : prompt maître unique, branches TASK imposées par le serveur,
+ *     texte dans `masterPrompt` (D-03) ; vide, le fichier `tN_master_vK.txt`
+ *     du dépôt s'applique (valeur initiale).
+ *
+ * `prompt` (préambule) et `masterPrompt` sont deux champs DISTINCTS : le
+ * préambule continue de servir aux étapes quelle que soit l'architecture —
+ * une version `master` activée alors que le commutateur de déploiement n'est
+ * pas `enabled` laisse les étapes tourner avec leur préambule intact.
+ *
+ * La bascule se fait par version de configuration (TO_TEST en préproduction,
+ * ACTIVE en production après validation), jamais en éditant une Active.
+ */
+export const PROMPT_ARCHITECTURES = ['steps', 'master'] as const;
+export type PromptArchitecture = (typeof PROMPT_ARCHITECTURES)[number];
+export const DEFAULT_PROMPT_ARCHITECTURE: PromptArchitecture = 'steps';
+
+export function isPromptArchitecture(v: unknown): v is PromptArchitecture {
+  return typeof v === 'string' && (PROMPT_ARCHITECTURES as readonly string[]).includes(v);
+}
+
+/** Architecture effective d'une entrée : absente ou illisible ⇒ `steps`. */
+export function promptArchitectureOf(c: Pick<TreatmentConfig, 'promptArchitecture'> | null | undefined): PromptArchitecture {
+  return isPromptArchitecture(c?.promptArchitecture) ? c.promptArchitecture : DEFAULT_PROMPT_ARCHITECTURE;
+}
+
 /** Configuration d'un traitement au sein d'une version. */
 export interface TreatmentConfig {
   treatment: Treatment;
@@ -89,6 +119,24 @@ export interface TreatmentConfig {
   triggers: TriggerSetting[];
   /** T2 uniquement. `null` = non configuré, le code décide (§11.2). */
   cascade: CascadeThresholds | null;
+  /**
+   * CDC 15 D-04 : architecture des prompts du traitement. Absent ⇒ `steps`
+   * (versions antérieures au lot 12). Lire par `promptArchitectureOf`.
+   */
+  promptArchitecture?: PromptArchitecture;
+  /**
+   * CDC 15 D-03 : texte COMPLET du prompt maître du traitement (colonne
+   * `master_prompt`, 0220). `null`/vide : fichier du dépôt. Lu par les seules
+   * opérations master, et seulement en architecture `master`. Toujours `null`
+   * pour T5 (non administrable) et pour un traitement sans master.
+   */
+  masterPrompt?: string | null;
+}
+
+/** Texte master renseigné d'une entrée, sinon `null`. */
+export function masterPromptOf(c: Pick<TreatmentConfig, 'masterPrompt'> | null | undefined): string | null {
+  const t = c?.masterPrompt;
+  return typeof t === 'string' && t.trim() !== '' ? t : null;
 }
 
 /** Version globale : un instantané des cinq traitements (GEN-002). */
@@ -126,7 +174,9 @@ export type ConfigFieldKey =
   | 'maxOutputTokens'
   | 'guardrails'
   | 'triggers'
-  | 'cascade';
+  | 'cascade'
+  | 'promptArchitecture'
+  | 'masterPrompt';
 
 /** Libellés lisibles, pour les écrans et les messages d'erreur. */
 export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
@@ -141,6 +191,8 @@ export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
   guardrails: 'Garde-fous',
   triggers: 'Déclencheurs',
   cascade: 'Cascade coût/qualité',
+  promptArchitecture: 'Architecture des prompts',
+  masterPrompt: 'Prompt maître',
 };
 
 /** Configuration vide d'un traitement — base d'un premier Brouillon. */
@@ -152,7 +204,9 @@ export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
  * qu'un prompt T5 hérité d'une ancienne version ne se propage pas.
  */
 export function normalizeTreatmentConfig<C extends Pick<TreatmentConfig, 'treatment' | 'prompt'>>(c: C): C {
-  return isPromptAdministrable(c.treatment) ? c : { ...c, prompt: '' };
+  if (isPromptAdministrable(c.treatment)) return c;
+  // T5 : ni préambule, ni texte master (CDC 15 §22.2 : T5 ne se modifie pas).
+  return 'masterPrompt' in c ? { ...c, prompt: '', masterPrompt: null } : { ...c, prompt: '' };
 }
 
 export function emptyTreatmentConfig(treatment: Treatment): TreatmentConfig {
@@ -169,5 +223,7 @@ export function emptyTreatmentConfig(treatment: Treatment): TreatmentConfig {
     guardrails: [],
     triggers: [],
     cascade: null,
+    promptArchitecture: DEFAULT_PROMPT_ARCHITECTURE,
+    masterPrompt: null,
   };
 }

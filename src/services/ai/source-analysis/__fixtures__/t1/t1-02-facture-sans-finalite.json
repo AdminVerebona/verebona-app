@@ -1,0 +1,141 @@
+{
+  "case": "U14",
+  "description": "FACTURE sans type V2 ni ligne d'achat : acquisitionDate / acquisitionPrice proposés par le modèle sans preuve d'achat du bien → connaissance générique, aucun événement purchase.",
+  "context": {
+    "linkedAssetId": 184,
+    "assets": [
+      {
+        "id": 184,
+        "name": "Draisienne",
+        "category": "OBJECT",
+        "subtype": "jouet"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [
+      "Facture Vélo"
+    ],
+    "verified": {
+      "ASSET": [
+        184
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Draisienne",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "FACTURE",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": "2026-06-01",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "01/06/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 12900,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL 129,00 €",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": null,
+          "documentTypeCode": null,
+          "confidence": 0.6,
+          "evidence": {
+            "excerpt": "FACTURE"
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "score": 0.9,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": "acquisitionDate",
+          "rawKey": "date",
+          "rawValue": "01/06/2026",
+          "normalizedValue": "2026-06-01",
+          "valueType": "date",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "probable",
+          "evidence": {
+            "excerpt": "01/06/2026"
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": "acquisitionPrice",
+          "rawKey": "total",
+          "rawValue": "129,00 €",
+          "normalizedValue": 129,
+          "valueType": "money_eur",
+          "canonicalUnit": "EUR",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "probable",
+          "evidence": {
+            "excerpt": "TOTAL 129,00 €"
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

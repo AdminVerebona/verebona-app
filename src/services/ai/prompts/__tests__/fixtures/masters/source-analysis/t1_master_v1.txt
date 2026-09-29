@@ -1,0 +1,10 @@
+FIXTURE DE TEST — master T1 minimal (le vrai fichier est src/services/ai/prompts/source-analysis/t1_master_v1.txt).
+Règles universelles écrites une seule fois.
+TASK courante : {{TASK}}
+
+BRANCHE TASK = GROUP_UPLOAD
+Fichiers : {{SOURCES}}
+
+BRANCHE TASK = ANALYZE_DOCUMENT
+Contenu : {{EXTRACTED_CONTENT}}
+Catalogue : {{FIELD_CATALOG}}

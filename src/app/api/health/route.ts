@@ -63,6 +63,17 @@ interface HealthCheckResult {
        */
       firstFailure?: { filename: string; code?: string; message: string };
     };
+    /**
+     * CDC 15 D-04 (revue lot 12) : version de configuration effective en
+     * architecture « master » alors que le commutateur de déploiement du
+     * traitement n'est pas `enabled` — le master n'est PAS appliqué, les
+     * étapes tournent. Avertissement : ne dégrade pas le statut global (le
+     * produit fonctionne), mais doit être vu en supervision.
+     */
+    aiPromptArchitecture: {
+      status: 'ok' | 'warning';
+      warnings?: Array<{ treatment: string; code: string; switchName: string; switchMode: string; message: string }>;
+    };
   };
 }
 
@@ -96,6 +107,9 @@ export async function GET(request: NextRequest) {
         status: 'ok',
       },
       migrations: {
+        status: 'ok',
+      },
+      aiPromptArchitecture: {
         status: 'ok',
       },
     },
@@ -163,6 +177,18 @@ export async function GET(request: NextRequest) {
     };
 
     result.status = 'degraded';
+  }
+
+  // Check 4: cohérence architecture des prompts / commutateur (CDC 15 D-04).
+  // Ne lève jamais ; lecture de configuration bornée (1,5 s) et en cache.
+  try {
+    const { promptArchitectureWarnings } = await import('@/services/ai/config/prompt-architecture');
+    const warnings = await promptArchitectureWarnings();
+    if (warnings.length > 0) {
+      result.checks.aiPromptArchitecture = { status: 'warning', warnings };
+    }
+  } catch {
+    /* contrôle indicatif : jamais bloquant pour la sonde */
   }
 
   // Déterminer le status global

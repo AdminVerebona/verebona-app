@@ -215,6 +215,63 @@ export interface RevalidationDeps {
    * d'une cellule relit CE tableau, pas le document entier. Facultatif.
    */
   tableText?(accountId: number, fileId: number, tableIndex: number): Promise<string | null>;
+  /**
+   * CDC 15 T2-29 (lot 13) : remplacement des preuves de l'ancien fait.
+   * Facultatif (tests) ; défaut : `replaceRevalidatedEvidence`.
+   */
+  replaceEvidence?(p: ReplaceEvidenceInput): Promise<ReplaceEvidenceResult>;
+}
+
+export interface ReplaceEvidenceInput {
+  accountId: number;
+  fileId: number;
+  assetId: number;
+  factKey: string;
+  /** Valeur établie par la revalidation (celle de la nouvelle preuve). */
+  newValue: string;
+  /** La projection du fait revalidé (preuves + T3) ; peut lever. */
+  project: () => Promise<void>;
+}
+
+export interface ReplaceEvidenceResult {
+  mode: 'legacy' | 'shadow' | 'enabled';
+  superseded: number;
+  /** false : la projection a échoué — rien n'a été retiré. */
+  projected: boolean;
+}
+
+/**
+ * T2-29 — les preuves revalidées REMPLACENT les anciennes (commutateur
+ * `T3_NEGATIVE_RECONCILIATION`). Ordre sûr (relecture lot 13) :
+ *   1. PROJECTION d'abord (la nouvelle preuve est écrite, T3 relancé) ;
+ *      si elle échoue, rien n'est retiré (journalisé) ;
+ *   2. puis, seulement s'il existe une preuve ACTIVE de la valeur revalidée
+ *      (la remplaçante), les autres preuves ACTIVE du champ pour ce document
+ *      et ce bien passent SUPERSEDED, reliées à elle.
+ *   legacy : projection seule ; shadow : projection + journal.
+ */
+export async function replaceRevalidatedEvidence(p: ReplaceEvidenceInput): Promise<ReplaceEvidenceResult> {
+  const { t3NegativeMode } = await import('@/services/canonical/rollout');
+  const mode = t3NegativeMode();
+  try {
+    await p.project();
+  } catch (e) {
+    console.error(`[revalidation] projection du fait ${p.factKey} (document ${p.fileId}) en échec — aucune preuve retirée :`, (e as Error).message);
+    return { mode, superseded: 0, projected: false };
+  }
+  if (mode === 'legacy') return { mode, superseded: 0, projected: true };
+  const { supersedeFieldEvidenceExcept } = await import('@/services/ai/evidence/field-evidence.service');
+  const { resolveAlias } = await import('@/services/canonical/registry');
+  const fieldKeys = [...new Set([p.factKey, resolveAlias(p.factKey) ?? p.factKey])];
+  try {
+    const r = await supersedeFieldEvidenceExcept({
+      accountId: p.accountId, sourceId: p.fileId, assetId: p.assetId, fieldKeys, keepValue: p.newValue, mode,
+    });
+    return { mode, superseded: r.superseded, projected: true };
+  } catch (e) {
+    console.error('[revalidation] remplacement des anciennes preuves :', (e as Error).message);
+    return { mode, superseded: 0, projected: true };
+  }
 }
 
 export const defaultRevalidationDeps: RevalidationDeps = {
@@ -424,8 +481,18 @@ export async function revalidateFact(
     if (f.assetId) {
       // Mêmes règles communes que T1 : preuves par champ puis T3 (valeurs
       // utilisateur protégées, arbitrage « À traiter » si nécessaire).
-      await deps.project({ accountId: p.accountId, userId: p.userId, fileId: f.fileId, assetId: f.assetId })
-        .catch((e: Error) => console.error('[revalidation] projection :', e.message));
+      const assetId = f.assetId;
+      const project = () => deps.project({ accountId: p.accountId, userId: p.userId, fileId: f.fileId, assetId });
+      // T2-29 : l'ancien fait a cédé la place (confirmé, ou corrigé avec une
+      // preuve certaine) — ses preuves aussi, APRÈS la projection. Sinon les
+      // deux faits restent actifs, comme leurs preuves (conflit conservé).
+      if (out.status === 'CONFIRMED' || out.confidence === 'certain') {
+        await (deps.replaceEvidence ?? replaceRevalidatedEvidence)({
+          accountId: p.accountId, fileId: f.fileId, assetId, factKey: f.factKey, newValue: out.value, project,
+        }).catch((e: Error) => console.error('[revalidation] remplacement des preuves :', e.message));
+      } else {
+        await project().catch((e: Error) => console.error('[revalidation] projection :', e.message));
+      }
     }
   }
 

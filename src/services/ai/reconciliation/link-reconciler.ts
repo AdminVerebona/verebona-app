@@ -25,14 +25,17 @@ import { z } from 'zod';
 import { AiGateway } from '../gateway/ai-gateway';
 import { isAiGatewayError } from '../gateway/errors';
 import { isExecutionCancelled } from '../queue/execution-control';
+import { getPromptArchitecture } from '../config/config-resolver';
+import { reconcileLinksMaster, type LinkAmbiguity } from './master/link-ambiguity';
 
-/** Seuils de rétention, repris à l'identique de l'existant pour ne pas changer le comportement. */
-export const LINK_SCORE_THRESHOLDS = {
-  /** Rattachement d'un équipement à des documents, agendas et fournisseurs. */
-  equipmentToObjects: 0.4,
-  /** Rattachement d'un document à un équipement. */
-  documentToEquipment: 0.5,
-} as const;
+export { LINK_MIN_MARGIN } from './master/link-ambiguity';
+
+/**
+ * Seuils de rétention (repris à l'identique de l'existant), définis avec les
+ * règles T3-07 dans `master/link-ambiguity` — la marge s'y calcule parmi les
+ * candidats AU-DESSUS de ces seuils — et réexportés ici pour les appelants.
+ */
+export { LINK_SCORE_THRESHOLDS } from './master/link-ambiguity';
 
 const MatchSchema = z.object({
   id: z.number().int().positive(),
@@ -49,7 +52,14 @@ export const ReconcileLinksOutput = z.object({
 });
 
 export type LinkMatch = z.infer<typeof MatchSchema>;
-export type ReconcileLinksResult = z.infer<typeof ReconcileLinksOutput>;
+export type ReconcileLinksResult = z.infer<typeof ReconcileLinksOutput> & {
+  /**
+   * CDC 15 T3-07 (architecture `master` seulement) : abstentions explicites —
+   * marge insuffisante, égalité ou identifiant hors liste. Aucune liaison
+   * automatique pour ces candidats ; absent en architecture `steps`.
+   */
+  ambiguities?: LinkAmbiguity[];
+};
 
 const EMPTY: ReconcileLinksResult = { documents: [], agendaItems: [], suppliers: [], matches: [] };
 
@@ -78,6 +88,11 @@ export interface ReconcileLinksInput {
 export async function reconcileLinks(
   input: ReconcileLinksInput,
 ): Promise<ReconcileLinksResult> {
+  // CDC 15 §25, T3-07, D-04 : version T3 en `master` ⇒ t3_master_v1
+  // (TASK=LINK_AMBIGUITY), marge minimale et abstention explicite. Même
+  // interface de sortie. Sinon, chemin historique strictement inchangé.
+  if (await getPromptArchitecture('T3') === 'master') return reconcileLinksMaster(input);
+
   try {
     const res = await AiGateway.execute({
       useCaseCode: 'DATA_RECONCILIATION',

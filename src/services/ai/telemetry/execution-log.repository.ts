@@ -106,6 +106,17 @@ export interface ExecutionRow {
   origin: string | null;
   /** BO-009 : mode déclaré par la mascotte (`displayed` / `pregeneration`), sinon null. */
   callerMode: string | null;
+  /** CDC 15 DP-05 (migration 0217) : branche TASK/MODE et prompt maître. */
+  task: string | null;
+  masterPromptCode: string | null;
+  masterPromptVersion: string | null;
+  /** CDC 15 CFG-02, OBS-CFG : raisonnement et plafond réellement transmis. */
+  reasoning: string | null;
+  maxOutputTokens: number | null;
+  /** CDC 15 CFG-05 : moteur réellement utilisé (`legacy` / `new`). */
+  engine: string | null;
+  /** CDC 15 OBS-CFG : déclencheur figé dans la trace de l'appel. */
+  callTrigger: string | null;
 }
 
 /** Traitement correspondant à un code d'usage, sans requête. */
@@ -149,6 +160,13 @@ function toRow(r: Row): ExecutionRow {
     trigger: r.trigger_code == null ? null : String(r.trigger_code),
     origin: r.job_origin == null ? null : String(r.job_origin),
     callerMode: typeof metadata.callerMode === 'string' ? metadata.callerMode : null,
+    task: r.task == null ? null : String(r.task),
+    masterPromptCode: r.master_prompt_code == null ? null : String(r.master_prompt_code),
+    masterPromptVersion: r.master_prompt_version == null ? null : String(r.master_prompt_version),
+    reasoning: typeof metadata.reasoning === 'string' ? metadata.reasoning : null,
+    maxOutputTokens: typeof metadata.maxOutputTokens === 'number' ? metadata.maxOutputTokens : null,
+    engine: typeof metadata.engine === 'string' ? metadata.engine : null,
+    callTrigger: typeof metadata.trigger === 'string' ? metadata.trigger : null,
   };
 }
 
@@ -157,6 +175,14 @@ function toRow(r: Row): ExecutionRow {
  * sinon fichier source (`asset_file_id`). Expressions partagées par la liste,
  * les filtres et le détail.
  */
+/**
+ * TASK et prompt maître (migration 0217), lus par `to_jsonb` : la requête
+ * reste valide — valeurs NULL — si la 0217 n'est pas appliquée
+ * (`telemetry/trace-schema.ts`), au lieu de faire tomber l'écran Exécutions.
+ */
+const MASTER_COLS = `to_jsonb(e)->>'task' AS task, to_jsonb(e)->>'master_prompt_code' AS master_prompt_code,
+            to_jsonb(e)->>'master_prompt_version' AS master_prompt_version`;
+
 const OBJECT_TYPE = `COALESCE(j.target_type, CASE WHEN e.asset_file_id IS NOT NULL THEN 'asset_file' END)`;
 const OBJECT_ID = `COALESCE(j.target_id, e.asset_file_id::text)`;
 const OBJECT_COLS = `${OBJECT_TYPE} AS object_type, ${OBJECT_ID} AS object_id,
@@ -262,6 +288,7 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
             e.provider, e.model, e.model_rank, e.is_fallback, e.input_tokens, e.output_tokens,
             e.cost_micros, e.duration_ms, e.status, e.error_code, e.error_message,
             e.config_version_id, e.app_version, e.job_id, e.metadata,
+            ${MASTER_COLS},
             v.visible_number AS config_visible_number, ${OBJECT_COLS}
        FROM ai_usage_event e
        -- LEFT : une version supprimée ne doit pas faire disparaître la trace.
@@ -329,6 +356,7 @@ const DETAIL_COLS = `e.id, e.created_at, e.use_case_code, e.operation_code, e.ac
             e.provider, e.model, e.model_rank, e.is_fallback, e.input_tokens, e.output_tokens,
             e.cost_micros, e.duration_ms, e.status, e.error_code, e.error_message,
             e.config_version_id, e.app_version, e.job_id, e.metadata, e.asset_file_id,
+            ${MASTER_COLS},
             v.visible_number AS config_visible_number, ${OBJECT_COLS}`;
 
 export async function getExecutionDetail(id: number): Promise<ExecutionDetail | null> {
@@ -421,6 +449,15 @@ async function buildInputs(
     { label: 'Version de configuration', value: call.configVisibleNumber ?? call.configVersionId },
     { label: 'Code déployé', value: call.appVersion },
     { label: 'Tarif figé', value: meta.pricing ?? null },
+    // CDC 15 CFG-02, CFG-05, DP-05, OBS-CFG : configuration réellement appliquée.
+    {
+      label: 'Configuration appliquée', value: {
+        moteur: call.engine, déclencheur: call.callTrigger ?? job?.triggerCode ?? null,
+        raisonnement: call.reasoning, jetonsSortieMax: call.maxOutputTokens,
+        task: call.task, promptMaître: call.masterPromptCode
+          ? `${call.masterPromptCode}${call.masterPromptVersion ? ` v${call.masterPromptVersion}` : ''}` : null,
+      },
+    },
   ];
   if (job) out.push({ label: 'Charge utile du job', value: jobPayload });
   const hashes = [...new Set((await pgClient.unsafe(

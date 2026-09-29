@@ -21,10 +21,15 @@ describe('liste vide = défauts du code ; liste renseignée = elle fait foi', ()
       { kind: 'event', code: 'asset_updated', active: false },
       { kind: 'schedule', code: 'schedule_weekly', active: true },
     ]);
-    expect([...codes]).toEqual(['schedule_weekly']);
+    // + `coherence_ai_review`, introduit au lot 11 et non déclaré : actif (CDC 15 CFG-04).
+    expect([...codes]).toEqual(['schedule_weekly', 'coherence_ai_review']);
   });
-  it('tout inactif = manuel uniquement', () => {
-    expect(activeTriggerCodes('T1', [{ kind: 'event', code: 'source_uploaded', active: false }]).size).toBe(0);
+  it('tout inactif = manuel uniquement (codes introduits après la version : explicitement coupés)', () => {
+    expect(activeTriggerCodes('T1', [{ kind: 'event', code: 'source_uploaded', active: false }])).toEqual(new Set(['analysis_recovery']));
+    expect(activeTriggerCodes('T1', [
+      { kind: 'event', code: 'source_uploaded', active: false },
+      { kind: 'event', code: 'analysis_recovery', active: false },
+    ]).size).toBe(0);
   });
   it('lecture impossible : défauts du code (fail-open)', async () => {
     __setTriggerConfigLoader(async () => { throw new Error('base'); });

@@ -252,6 +252,12 @@ export default function AiDashboardPage() {
                 {versionLine(data.effectiveVersion, 'validée le', data.effectiveVersion.validatedAt)}
               </p>
             )}
+            {/* CDC 15 D-01 : valeurs effectives des drapeaux AI_* et des
+                commutateurs de déploiement. Lien ici et non dans la barre
+                latérale, figée à 15 entrées (CDC Back-Office REC-NAV-01). */}
+            <Link href="/admin/ai-flags" className="text-xs text-[color:var(--accent)] hover:underline">
+              Drapeaux et commutateurs de cet environnement
+            </Link>
           </div>
 
           {/* EST-01 : engagement (motif obligatoire) et relâchement (confirmé)

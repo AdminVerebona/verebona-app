@@ -385,6 +385,12 @@ async function defaireEtape(
     [s.targetId, ctx.accountId, (before.keyCharacteristics ?? null) as string | null,
       (before.registrationNumber ?? null) as string | null] as never[],
   );
+  // Colonnes miroirs recopiées par writeCanonicalAssetField (CDC 15, D-10) :
+  // capturées hors mode legacy, rétablies avec la fiche.
+  if (before.mirrors && typeof before.mirrors === 'object') {
+    const { restoreMirrorColumns } = await import('@/services/canonical/asset-state/mirror-columns');
+    await restoreMirrorColumns(t, ctx.accountId, s.targetId, before.mirrors as Record<string, unknown>);
+  }
   dejaDefaites.set(cle, s.versionBefore);
   const valeur = typeof before.display === 'string' && before.display ? ` (${before.display})` : '';
   return `${s.label} a retrouvé sa valeur précédente${valeur}`;

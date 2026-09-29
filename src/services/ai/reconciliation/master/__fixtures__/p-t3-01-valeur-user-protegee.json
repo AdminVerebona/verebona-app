@@ -1,0 +1,26 @@
+{
+  "case": "P-T3-01",
+  "description": "VALUE_CONFLICT — valeur USER protégée : abstention ou conflit, jamais écrasement, même si le modèle choisit une preuve avec certitude.",
+  "context": {
+    "fieldKey": "livingArea",
+    "current": { "value": "82", "normalized": "82", "origin": "USER" },
+    "candidates": [
+      { "evidenceId": 4214, "value": "78.4", "normalized": "78.4", "confidence": "probable", "authorityScore": 70,
+        "documentType": "DPE", "documentDate": "2025-11-02", "sourceId": 31, "excerpt": "Surface habitable : 78,4 m²" },
+      { "evidenceId": 4213, "value": "78.4", "normalized": "78.4", "confidence": "certain", "authorityScore": 95,
+        "documentType": "ACTE_AUTHENTIQUE", "documentDate": "2026-03-12", "sourceId": 30, "excerpt": "d'une surface de 78,4 m²" }
+    ]
+  },
+  "recording": {
+    "operationCode": "t3_value_conflict",
+    "task": "VALUE_CONFLICT",
+    "output": {
+      "task": "VALUE_CONFLICT",
+      "decision": "choose",
+      "chosenEvidenceId": 4213,
+      "confidence": "certain",
+      "reason": "score d'autorité 95 le plus élevé, document le plus récent selon les données fournies"
+    }
+  },
+  "expected": { "action": "create_conflict", "neverActions": ["apply", "update"] }
+}

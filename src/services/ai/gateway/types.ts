@@ -95,7 +95,36 @@ export interface AiGatewayRequest<T> {
    * ou `pregeneration` (pré-génération non affichée).
    */
   callerMode?: 'displayed' | 'pregeneration';
+  /**
+   * Branche TASK/MODE du prompt maître imposée par le serveur (CDC 15 DP-05,
+   * ARCH-03), tracée dans `ai_usage_event.task`.
+   *
+   * Opération master (`masterPromptCode` + `task` au référentiel) : inutile,
+   * la gateway prend celle de l'opération et la trace ; fournie et
+   * différente ⇒ refus `TASK_MISMATCH`. Autre opération : tracée telle quelle.
+   */
+  task?: string;
+  /**
+   * Prompt maître appliqué (CDC 15 DP-05, D-03), tracé en colonnes (0217).
+   * Rempli par la gateway pour une opération master (version = fichier ou
+   * empreinte du texte de la version de configuration).
+   */
+  masterPromptCode?: string;
+  masterPromptVersion?: string;
+  /**
+   * Déclencheur effectif (CDC 15 OBS-CFG, CFG-04), figé en métadonnée. Absent :
+   * déclencheur du job de file courant (`job-context`), sinon aucun.
+   */
+  triggerCode?: string;
+  /**
+   * Moteur réellement utilisé (CDC 15 CFG-05). Absent : déduit de l'opération
+   * — `legacy` pour un prompt historique relayé (`legacyPrompt`), `new` sinon.
+   */
+  engine?: AiEngine;
 }
+
+/** Moteur d'une exécution (CDC 15 CFG-05) : relais historique ou nouveau moteur. */
+export type AiEngine = 'legacy' | 'new';
 
 export interface AiGatewayResponse<T> {
   data: T;

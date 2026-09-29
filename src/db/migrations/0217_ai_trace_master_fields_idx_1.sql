@@ -1,0 +1,11 @@
+-- Migration 0217 (index 1/4) : ai_usage_event (task) — CDC 15 DP-05.
+-- UNE instruction par fichier : `CREATE INDEX CONCURRENTLY` ne peut pas
+-- s'exécuter dans une transaction, et une requête à instruction unique n'en
+-- ouvre pas (`ensureMigrations` passe le fichier tel quel). Aucun verrou
+-- bloquant les écritures de traces pendant la construction.
+-- Idempotente (IF NOT EXISTS). Si une construction est interrompue, l'index
+-- reste INVALIDE et IF NOT EXISTS ne le reconstruit pas : le supprimer
+-- (DROP INDEX CONCURRENTLY <nom>) puis redémarrer — contrôle :
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- Index partiel : l'immense majorité des traces n'a pas de valeur.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS ai_usage_event_task_idx ON ai_usage_event (task, created_at) WHERE task IS NOT NULL;

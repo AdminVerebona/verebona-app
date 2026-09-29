@@ -45,6 +45,20 @@ export async function registerNode(): Promise<void> {
   const { ensureMigrations } = await import('@/db');
   await ensureMigrations();
 
+  //    CDC 15 DP-05 : colonnes de trace de la migration 0217. Absentes, les
+  //    traces IA continuent sans TASK ni prompt maître — signalé ici, au
+  //    démarrage, en erreur (le message est émis par le contrôle lui-même).
+  const { traceMasterColumnsReady } = await import('@/services/ai/telemetry/trace-schema');
+  await traceMasterColumnsReady();
+
+  //    CDC 15 T1-04, §14.4 : colonnes des migrations 0218 (document_facts) et
+  //    0219 (field_evidence). Absentes, les faits et preuves sont écrits sur
+  //    les colonnes historiques (faits ciblés équipement/pièce non projetés) —
+  //    signalé ici, en erreur, par le contrôle lui-même. Jamais bloquant.
+  const { documentFactsCanonicalReady, fieldEvidenceCanonicalReady } = await import('@/services/ai/evidence/canonical-columns');
+  await documentFactsCanonicalReady();
+  await fieldEvidenceCanonicalReady();
+
   const { assertAiRegistryStartup, syncAiRegistry } = await import('@/services/ai/registry');
   const { assertPricingReady } = await import('@/services/ai/gateway/cost-catalog');
 

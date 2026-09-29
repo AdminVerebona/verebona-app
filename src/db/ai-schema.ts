@@ -10,6 +10,7 @@ import {
   pgTable, serial, bigserial, integer, bigint, numeric, text, boolean, jsonb, uuid, index, uniqueIndex,
   date as pgDate, timestamp as pgTimestamp,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 const tstz = (name: string) => pgTimestamp(name, { withTimezone: true }).notNull().defaultNow();
 const tstzOptional = (name: string) => pgTimestamp(name, { withTimezone: true });
@@ -73,12 +74,41 @@ export const fieldEvidence = pgTable('field_evidence', {
   status: text('status').notNull().default('active'),
   operationTraceId: uuid('operation_trace_id'),
   fingerprint: text('fingerprint').notNull(),
+  // ── Migration 0219 (CDC 15 T1-04, T3-03, §14.4) ──────────────────────────
+  // Déclarées pour drizzle-kit / studio et le typage. ⚠️ Aucun `db.select()`
+  // sans projection sur cette table : si la 0219 manquait, Drizzle citerait
+  // ces colonnes et la lecture échouerait. L'écriture et la lecture passent
+  // par `evidence/canonical-columns.ts`, qui contrôle leur présence.
+  canonicalKey: text('canonical_key'),
+  canonicalUnit: text('canonical_unit'),
+  rawValue: text('raw_value'),
+  targetType: text('target_type'),
+  targetEntityId: integer('target_entity_id'),
+  targetEntityLabel: text('target_entity_label'),
+  targetConfidence: text('target_confidence'),
+  semanticEventType: text('semantic_event_type'),
+  semanticEventNature: text('semantic_event_nature'),
+  recurrence: jsonb('recurrence'),
+  projectionOrigin: text('projection_origin'),
+  projectionRule: text('projection_rule'),
+  /** ACTIVE | SUPERSEDED | WITHDRAWN — cycle de vie, distinct de `status` (décision T3). NULL = ACTIVE. */
+  lifecycleStatus: text('lifecycle_status').default('ACTIVE'),
+  supersededAt: tstzOptional('superseded_at'),
+  supersededByEvidenceId: integer('superseded_by_evidence_id'),
+  analysisRunId: integer('analysis_run_id'),
 }, (t) => ({
   fingerprintUidx: uniqueIndex('field_evidence_fingerprint_uidx').on(t.fingerprint),
   accountIdx: index('field_evidence_account_idx').on(t.accountId),
   assetFieldIdx: index('field_evidence_asset_field_idx').on(t.assetId, t.fieldKey),
   statusIdx: index('field_evidence_status_idx').on(t.status),
   sourceIdx: index('field_evidence_source_idx').on(t.sourceType, t.sourceId),
+  // Index partiels de la 0219 (fichiers `_idx_N`, CONCURRENTLY).
+  sourceLifecycleIdx: index('field_evidence_source_lifecycle_idx').on(t.accountId, t.sourceType, t.sourceId)
+    .where(sql`lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE'`),
+  accountCanonicalIdx: index('field_evidence_account_canonical_idx').on(t.accountId, t.canonicalKey)
+    .where(sql`canonical_key IS NOT NULL`),
+  targetIdx: index('field_evidence_target_idx').on(t.targetType, t.targetEntityId)
+    .where(sql`target_entity_id IS NOT NULL`),
 }));
 
 /** Cache d'idempotence des appels modèles — §5.7. */
@@ -125,6 +155,8 @@ export const documentExtractions = pgTable('document_extractions', {
   visualObservations: jsonb('visual_observations').notNull().default([]),
   documentTypeCode: text('document_type_code'),
   rubricCode: text('rubric_code'),
+  /** Document concernant plusieurs biens (0218, CDC 15 T1-05). NULL = inconnu. */
+  multiAsset: boolean('multi_asset'),
   hasExploitableContent: boolean('has_exploitable_content').notNull().default(true),
   structuralEvidence: jsonb('structural_evidence').notNull().default({}),
   metadata: jsonb('metadata').notNull().default({}),
@@ -173,8 +205,30 @@ export const documentFacts = pgTable('document_facts', {
   provenance: text('provenance').notNull().default('T1_EXTRACTION'),
   revalidationId: integer('revalidation_id'),
   createdAt: tstz('created_at'),
+  // ── Migration 0218 (CDC 15 T1-01, T1-03, T1-04, T4-06, PM-T1-PRE) ─────────
+  // Table écrite et lue en SQL direct (`knowledge/document-knowledge.service`),
+  // colonnes conditionnées par `evidence/canonical-columns.ts`.
+  canonicalKey: text('canonical_key'),
+  rawKey: text('raw_key'),
+  rawValue: text('raw_value'),
+  valueType: text('value_type'),
+  canonicalUnit: text('canonical_unit'),
+  targetType: text('target_type'),
+  targetEntityId: integer('target_entity_id'),
+  targetEntityLabel: text('target_entity_label'),
+  targetConfidence: text('target_confidence'),
+  semanticEventType: text('semantic_event_type'),
+  semanticEventNature: text('semantic_event_nature'),
+  recurrence: jsonb('recurrence'),
+  projectionOrigin: text('projection_origin'),
+  projectionRule: text('projection_rule'),
 }, (t) => ({
   fileIdx: index('document_facts_file_idx').on(t.fileId, t.status),
+  // Index partiels de la 0218 (fichiers `_idx_N`, CONCURRENTLY).
+  accountCanonicalIdx: index('document_facts_account_canonical_idx').on(t.accountId, t.canonicalKey)
+    .where(sql`canonical_key IS NOT NULL AND status = 'active'`),
+  targetIdx: index('document_facts_target_idx').on(t.targetType, t.targetEntityId)
+    .where(sql`target_entity_id IS NOT NULL`),
 }));
 
 /** Tableaux T1, structure ligne/colonne conservée — migration 0162. */
