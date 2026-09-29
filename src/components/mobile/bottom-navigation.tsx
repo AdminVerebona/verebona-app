@@ -65,7 +65,7 @@ export function BottomNavigation({ toProcessCount }: { toProcessCount?: number |
 
   return (
     <>
-      <div className="fixed inset-x-0 bottom-0 z-50 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)]/90 to-transparent px-4 pb-[max(22px,env(safe-area-inset-bottom))] pt-2 md:hidden">
+      <div data-mobile-bottom-nav className="fixed inset-x-0 bottom-0 z-50 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)]/90 to-transparent px-4 pb-[max(22px,env(safe-area-inset-bottom))] pt-2 md:hidden">
         <nav
           aria-label="Navigation principale"
           className="flex items-center rounded-[32px] border border-[color:var(--border-subtle)] p-2 shadow-relief-lg backdrop-blur-[16px]"

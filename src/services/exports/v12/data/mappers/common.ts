@@ -22,6 +22,7 @@ import { photoFileKey } from '../resolved';
 import { documentTone, IMAGE_FORMATS } from '../documents';
 import { assetFamilyLabel, assetCategoryLabel } from '@/lib/asset-taxonomy';
 import { occupancyUsageLabel } from '@/lib/assets/occupancy';
+import type { ListItem } from '@/lib/assets/additional-infos';
 
 /** Méta de génération (en-tête, couverture, page Références). */
 export interface GenerationMeta {
@@ -78,6 +79,25 @@ export const info = (sec: InfoSection | undefined, key: string): string | null =
 export const infoCents = (sec: InfoSection | undefined, key: string): number | null => {
   const v = num(sec?.[key]);
   return v == null ? null : Math.round(v);
+};
+
+/**
+ * Liste structurée d'une sous-rubrique (schéma v2). Lecture tolérante : `[]`
+ * si absente, lignes non objet écartées (le service a déjà assaini).
+ */
+export const infoList = (sec: InfoSection | undefined, key: string): ListItem[] => {
+  const v = sec?.[key];
+  return Array.isArray(v) ? v.filter((x): x is ListItem => !!x && typeof x === 'object' && !Array.isArray(x)) : [];
+};
+
+/** Identifiants numériques d'une cellule de liste (`photoIds`, `documentIds`) ou d'une référence unique. */
+export const cellIds = (v: unknown): number[] =>
+  (Array.isArray(v) ? v : v == null ? [] : [v]).map(Number).filter((n) => Number.isSafeInteger(n) && n > 0);
+
+/** Libellé d'une option (liste déroulante du dictionnaire). */
+export const optionLabel = (options: ReadonlyArray<{ value: string; label: string }>, v: unknown): string | null => {
+  const s = str(v);
+  return s ? options.find((o) => o.value === s)?.label ?? humanize(s) : null;
 };
 
 /** Lignes non vides d'un texte libre (listes saisies une par ligne). */

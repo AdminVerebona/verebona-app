@@ -23,7 +23,7 @@
 
 import type { DossierCode } from '@/services/exports/catalog';
 import type { ExportSource, SourceDocument, SourceEvent, SourcePhoto } from './source';
-import type { DocKind } from './documents';
+import { fileFormatOf, isIntegrable, type DocKind } from './documents';
 
 export type OutputFormat = 'PDF' | 'ZIP';
 export type ItemMode = 'PDF' | 'ZIP';
@@ -109,10 +109,19 @@ export const isPastEvent = (e: SourceEvent, today: string): boolean =>
 export const isUpcoming = (e: SourceEvent, today: string): boolean =>
   e.status !== 'annule' && e.status !== 'realise' && !!e.date && e.date > today;
 
-/** Date du sinistre saisie (informations complémentaires), ISO ou null. */
+/**
+ * Date du sinistre, ISO ou null : saisie (`claim.occurredOn`), sinon date de
+ * l'événement sinistre de l'agenda lié dans la fiche (`claim.claimEventKey`,
+ * RULE-001) — même repli que le mappeur (`linkedClaimEvent`).
+ */
 export function claimDate(source: ExportSource): string | null {
-  const v = source.additionalInfo.claim?.occurredOn;
-  return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null;
+  const iso = (v: unknown) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
+  const typed = iso(source.additionalInfo.claim?.occurredOn);
+  if (typed) return typed;
+  const key = source.additionalInfo.claim?.claimEventKey;
+  if (typeof key !== 'string' || !key) return null;
+  const e = source.events.find((x) => x.key === key && x.status !== 'annule');
+  return iso(e?.date);
 }
 
 /** Lien au sinistre (ASSURANCE_SINISTRE-RULE-004, matrice §24) : nature sinistre, ou datée du sinistre ou après. */
@@ -156,13 +165,18 @@ function preselectDocument(code: DossierCode, d: SourceDocument, source: ExportS
   return true;
 }
 
+/** Photo intégrable au PDF (SEL-GEN-003) : JPG, PNG, WebP. */
+export const isPhotoIntegrable = (p: Pick<SourcePhoto, 'mimeType' | 'fileName'>): boolean =>
+  isIntegrable(fileFormatOf(p.mimeType, p.fileName));
+
 function preselectPhotos(code: DossierCode, photos: SourcePhoto[], source: ExportSource): Set<number> {
   const cap = PHOTO_CAPS[code];
-  let eligible = photos;
+  // Seules les photos intégrables sont pré-cochées (elles vont dans le PDF).
+  let eligible = photos.filter(isPhotoIntegrable);
   if (code === 'ASSURANCE_SINISTRE') {
     // « 6-8 photos liées au sinistre par défaut ; autres photos proposées non cochées. »
     const d0 = claimDate(source);
-    eligible = d0 ? photos.filter((p) => !!p.date && p.date >= d0) : [];
+    eligible = d0 ? eligible.filter((p) => !!p.date && p.date >= d0) : [];
   }
   return new Set(eligible.slice(0, cap).map((p) => p.id));
 }
@@ -183,8 +197,7 @@ export function buildDefaultChoices(code: DossierCode, source: ExportSource, opt
     const mode = resolveMode(undefined, d.integrable, outputFormat);
     if (mode) items.push({ sourceType: 'document', sourceId: d.id, selected: true, mode });
   }
-  for (const id of preselectPhotos(code, source.photos, source)) items.push({ sourceType: 'photo', sourceId: id, selected: true, mode: 'PDF' });
-  for (const e of source.events) {
+  for (const id of preselectPhotos(code, source.photos, source)) items.push({ sourceType: 'photo', sourceId: id, selected: true, mode: 'PDF' });  for (const e of source.events) {
     if (!eventSection(code, e, opts.today)) continue;
     if (preselectEvent(code, e, source, opts.today)) items.push({ sourceType: e.source, sourceId: e.id, selected: true });
   }
@@ -312,8 +325,12 @@ export function planSelection(code: DossierCode, source: ExportSource, choices: 
   for (const p of source.photos) {
     const it = byKey.get(key('photo', p.id));
     if (!it?.selected) continue;
-    if (!on('photos')) { excluded.push({ sourceType: 'photo', sourceId: p.id, label: p.caption ?? `Photo ${p.id}`, reason: 'section_disabled' }); continue; }
-    const mode = it.mode === 'ZIP' && choices.outputFormat === 'ZIP' ? 'ZIP' : 'PDF';
+    const label = p.caption ?? `Photo ${p.id}`;
+    if (!on('photos')) { excluded.push({ sourceType: 'photo', sourceId: p.id, label, reason: 'section_disabled' }); continue; }
+    // Même règle que les documents : une photo non intégrable (HEIC…) va au ZIP
+    // (SEL-GEN-005) ; une photo en mode ZIP n'est pas livrée par un « PDF seul » (ALT-002).
+    const mode = resolveMode(it.mode, isPhotoIntegrable(p), choices.outputFormat);
+    if (!mode) { excluded.push({ sourceType: 'photo', sourceId: p.id, label, reason: 'zip_only_pdf_output' }); continue; }
     photos.push({ photo: p, mode });
   }
   for (const e of source.events) {

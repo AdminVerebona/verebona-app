@@ -4,48 +4,78 @@
  * VENTE-RULE-001 : le prix est la seule saisie `commercial.desiredSalePriceCents`
  * — jamais une estimation. Le design est maquetté sur un véhicule : pour un
  * bien immobilier ou un objet, `asset.infoRows` porte les lignes de la famille.
- * Points forts (VENTE-PDF-05) : faits documentés uniquement (entretiens
- * réalisés, garantie en cours, travaux datés, factures conservées), sans
- * aucun qualificatif ajouté (PDF-TXT-001/004).
+ * Points forts (VENTE-PDF-05) : ceux CHOISIS par l'utilisateur dans la fiche
+ * (`commercial.highlights`, 4 au plus, dans son ordre) ; à défaut, les faits
+ * documentés (entretiens réalisés, garantie en cours, travaux datés,
+ * factures conservées), sans aucun qualificatif ajouté (PDF-TXT-001/004). Les
+ * mêmes faits sont proposés comme suggestions dans le formulaire
+ * (`highlightSuggestions`) : l'utilisateur les accepte, les modifie ou non.
  */
 
 import { dot, fmt } from '../../html/components';
 import type { VenteData } from '../../types';
 import { eventKind, isPastEvent } from '../choices';
+import type { ExportSource } from '../source';
+import { MAX_SALE_HIGHLIGHTS, type HighlightSuggestion } from '@/lib/assets/additional-infos';
 import {
-  type MapInput, exportInfo, kc, kcNum, str, info, infoCents, humanize, categoryLabel, titleLines, conditionLabel,
+  type MapInput, exportInfo, kc, kcNum, str, info, infoCents, infoList, humanize, categoryLabel, titleLines, conditionLabel,
   familyInfoRows, factualSummary, toDocItem, sortedDocuments, toPhotoItem, plannedPhotos, selectedEvents, sectionOn,
 } from './common';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 
-/** Points forts factuels, déduits des seules données présentes (4 au plus, maquette). */
-export function saleHighlights(m: MapInput): NonNullable<VenteData['highlights']> {
-  const s = m.source;
-  const out: NonNullable<VenteData['highlights']> = [];
-  const past = s.events.filter((e) => isPastEvent(e, m.today));
+export type { HighlightSuggestion };
+
+/**
+ * Faits documentés du bien, dans l'ordre de pertinence : entretiens
+ * réalisés, garantie en cours, travaux datés, factures conservées, puis
+ * stationnement et état déclarés. Jamais de qualificatif ajouté.
+ */
+export function highlightSuggestions(s: ExportSource, today: string): HighlightSuggestion[] {
+  const out: HighlightSuggestion[] = [];
+  const past = s.events.filter((e) => isPastEvent(e, today));
   const maintenance = past.filter((e) => eventKind(e) === 'ENTRETIEN').sort((a, b) => String(b.date).localeCompare(String(a.date)));
   if (maintenance.length) {
     const last = maintenance[0];
     out.push({
-      id: 'h-maintenance',
+      key: 'maintenance',
       title: 'Entretien documenté',
       text: `${plural(maintenance.length, 'intervention documentée', 'interventions documentées')}, la dernière le ${fmt.date(last.date)}${last.provider ? ` (${last.provider})` : ''}.`,
-      selected: true,
     });
   }
-  if (s.asset.warrantyEndDate && s.asset.warrantyEndDate >= m.today) {
-    out.push({ id: 'h-warranty', title: 'Garantie en cours', text: `Jusqu'au ${fmt.date(s.asset.warrantyEndDate)}.`, selected: true });
+  if (s.asset.warrantyEndDate && s.asset.warrantyEndDate >= today) {
+    out.push({ key: 'warranty', title: 'Garantie en cours', text: `Jusqu'au ${fmt.date(s.asset.warrantyEndDate)}.` });
   }
   const works = past.filter((e) => eventKind(e) === 'TRAVAUX').sort((a, b) => String(b.date).localeCompare(String(a.date)));
   if (works.length) {
-    out.push({ id: 'h-works', title: works[0].title, text: `Réalisé le ${fmt.date(works[0].date)}${works[0].provider ? ` par ${works[0].provider}` : ''}.`, selected: true });
+    out.push({ key: `works:${works[0].key}`, title: works[0].title, text: `Réalisé le ${fmt.date(works[0].date)}${works[0].provider ? ` par ${works[0].provider}` : ''}.` });
   }
-  const invoices = s.documents.filter((d) => d.kind === 'FACTURE' && !d.sensitive);
+  const invoices = s.documents.filter((d) => d.kind === 'FACTURE' && !d.sensitive && !d.occupantData);
   if (invoices.length) {
-    out.push({ id: 'h-invoices', title: 'Factures conservées', text: `${plural(invoices.length, 'facture')} dans le dossier du bien.`, selected: true });
+    out.push({ key: 'invoices', title: 'Factures conservées', text: `${plural(invoices.length, 'facture')} dans le dossier du bien.` });
   }
-  return out.slice(0, 4);
+  const parking = str(s.asset.characteristics.parking);
+  if (parking) out.push({ key: 'parking', title: 'Stationnement déclaré', text: `${humanize(parking)}.` });
+  const cond = conditionLabel(s);
+  if (cond) out.push({ key: 'condition', title: 'État déclaré', text: `${cond}.` });
+  return out;
+}
+
+/** Points forts factuels déduits (repli sans choix de l'utilisateur, 4 au plus, maquette). */
+export function saleHighlights(m: MapInput): NonNullable<VenteData['highlights']> {
+  return highlightSuggestions(m.source, m.today)
+    .filter((h) => h.key !== 'parking' && h.key !== 'condition') // repli historique : faits datés seulement
+    .slice(0, MAX_SALE_HIGHLIGHTS)
+    .map((h) => ({ id: `h-${h.key.split(':')[0]}`, title: h.title, text: h.text, selected: true }));
+}
+
+/** Points forts choisis par l'utilisateur (fiche bien), dans son ordre ; `null` si aucun. */
+export function chosenHighlights(m: MapInput): NonNullable<VenteData['highlights']> | null {
+  const rows = infoList(m.source.additionalInfo.commercial, 'highlights')
+    .map((h, i) => ({ id: str(h.id) ?? `h${i + 1}`, title: str(h.title), text: str(h.text) }))
+    .filter((h): h is { id: string; title: string; text: string | null } => !!h.title)
+    .slice(0, MAX_SALE_HIGHLIGHTS);
+  return rows.length ? rows.map((h) => ({ ...h, selected: true })) : null;
 }
 
 export function mapVente(m: MapInput): VenteData {
@@ -94,7 +124,7 @@ export function mapVente(m: MapInput): VenteData {
       saleConditions: info(c, 'saleConditions'),
       contactInstructions: info(c, 'contactInstructions'),
     },
-    highlights: sectionOn(m, 'highlights') ? saleHighlights(m) : [],
+    highlights: sectionOn(m, 'highlights') ? chosenHighlights(m) ?? saleHighlights(m) : [],
     followUp: sectionOn(m, 'followUp')
       ? selectedEvents(m).map((e) => ({ id: e.key, date: e.date, title: e.title, provider: str(e.provider), selected: true }))
       : [],

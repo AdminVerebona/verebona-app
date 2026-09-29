@@ -59,9 +59,22 @@ vi.mock('@/services/asset-details-write.service', () => {
   };
 });
 
-vi.mock('@/services/exports/additional-infos.service', () => ({
-  getAssetAdditionalInfos: (...a: unknown[]) => getInfos(...a),
-  updateAssetAdditionalInfos: (...a: unknown[]) => updateInfos(...a),
+vi.mock('@/services/exports/additional-infos.service', () => {
+  class AdditionalInfosConflictError extends Error {
+    constructor(public expectedVersion: number) { super('conflict'); }
+  }
+  return {
+    AdditionalInfosConflictError,
+    getAssetAdditionalInfos: (...a: unknown[]) => getInfos(...a),
+    updateAssetAdditionalInfos: (...a: unknown[]) => updateInfos(...a),
+  };
+});
+
+const loadReferences = vi.fn();
+const invalidReferences = vi.fn();
+vi.mock('@/services/exports/additional-infos-references.service', () => ({
+  loadAdditionalInfoReferences: (...a: unknown[]) => loadReferences(...a),
+  findInvalidReferences: (...a: unknown[]) => invalidReferences(...a),
 }));
 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
@@ -84,7 +97,7 @@ const patch = (id: number | string, body: unknown, raw = false) => PATCH(
   ctx(id),
 );
 
-const EMPTY = { assetId: 5, commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null, updatedBy: null, version: 0 };
+const EMPTY = { assetId: 5, commercial: {}, rental: {}, insurance: {}, claim: {}, finance: {}, updatedAt: null, updatedBy: null, version: 0 };
 
 beforeEach(() => {
   session = { userId: 1, currentAccountId: 10 };
@@ -94,6 +107,8 @@ beforeEach(() => {
   updateInfos.mockReset().mockImplementation(async (assetId: number, _acc: number, userId: number) => ({
     ...EMPTY, assetId, rental: { depositCents: 0 }, updatedAt: '2026-09-28T10:00:00.000Z', updatedBy: userId, version: 1,
   }));
+  loadReferences.mockReset().mockResolvedValue({ documents: [], photos: [], claimEvents: [], highlightSuggestions: [] });
+  invalidReferences.mockReset().mockResolvedValue([]);
   loadCatalog.mockReset().mockResolvedValue({ assetId: 5, family: 'IMMOBILIER', dossiers: [], lastGenerations: [], eligibility: [] });
 });
 
@@ -125,7 +140,7 @@ describe('GET /additional-infos', () => {
     const body = await res.json();
     expect(body).toMatchObject({ assetId: 5, commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null, updatedBy: null });
     expect(body.family).toBe('IMMOBILIER');
-    expect(body.sections).toEqual(['commercial', 'rental', 'insurance', 'claim']);
+    expect(body.sections).toEqual(['commercial', 'rental', 'insurance', 'claim', 'finance']);
     expect(getInfos).toHaveBeenCalledWith(5, 10);
   });
 
@@ -136,7 +151,7 @@ describe('GET /additional-infos', () => {
 
   it('véhicule : pas de sous-rubrique locative', async () => {
     const body = await (await get(6)).json();
-    expect(body.sections).toEqual(['commercial', 'insurance', 'claim']);
+    expect(body.sections).toEqual(['commercial', 'insurance', 'claim', 'finance']);
   });
 
   it('alias CDC /additional-info : même implémentation', () => {
@@ -227,6 +242,79 @@ describe('PATCH /additional-infos', () => {
     const res = await patch(5, { rental: { depositCents: 0 } });
     expect(res.status).toBe(500);
     expect(JSON.stringify(await res.json())).not.toMatch(/connection reset/);
+  });
+});
+
+describe('Listes structurées (schéma v2)', () => {
+  const damages = [{ id: 'd1', zone: 'Salle de bain', photoIds: [11], documentIds: [21] }];
+
+  it('GET ?include=references : éléments citables du bien, lus avec le compte et l’utilisateur', async () => {
+    loadReferences.mockResolvedValueOnce({ documents: [{ id: 21, title: 'Devis' }], photos: [], claimEvents: [{ key: 'agenda:3' }], highlightSuggestions: [] });
+    session = { userId: 2, currentAccountId: 10 };
+    const body = await (await GET(new NextRequest('http://x/?include=references'), ctx(5))).json();
+    expect(body.references.claimEvents).toEqual([{ key: 'agenda:3' }]);
+    expect(loadReferences).toHaveBeenCalledWith({ assetId: 5, accountId: 10, userId: 2 });
+    // Sans le paramètre : pas de lecture supplémentaire.
+    loadReferences.mockClear();
+    expect((await (await get(5)).json()).references).toBeUndefined();
+    expect(loadReferences).not.toHaveBeenCalled();
+  });
+
+  it('liste avec version : écrite avec contrôle optimiste (version attendue transmise)', async () => {
+    const res = await patch(5, { version: 4, claim: { damages } });
+    expect(res.status).toBe(200);
+    const [, , , normalized, opts] = updateInfos.mock.calls[0];
+    expect(normalized.set.claim.damages).toEqual(damages);
+    expect(opts).toEqual({ expectedVersion: 4 });
+    expect(invalidReferences).toHaveBeenCalledWith(5, 10, normalized);
+  });
+
+  it('champs simples seuls : pas de contrôle de version (dernier écrit gagne)', async () => {
+    await patch(5, { claim: { claimType: 'VOL' } });
+    expect(updateInfos.mock.calls[0][4]).toEqual({ expectedVersion: null });
+  });
+
+  it('liste sans version : 422, rien n’est écrit', async () => {
+    const res = await patch(5, { claim: { damages } });
+    expect(res.status).toBe(422);
+    expect((await res.json()).fields).toEqual([{ path: 'version', message: expect.any(String) }]);
+    expect(updateInfos).not.toHaveBeenCalled();
+  });
+
+  it('ligne invalide : 422 avec le chemin de la cellule', async () => {
+    const res = await patch(5, { version: 1, claim: { damages: [{ id: 'd1', element: 'Plafond' }] } });
+    expect(res.status).toBe(422);
+    expect((await res.json()).fields).toEqual([{ path: 'claim.damages[0].zone', message: 'Champ requis.' }]);
+  });
+
+  it('photo ou pièce d’un autre bien : 422, rien n’est écrit', async () => {
+    invalidReferences.mockResolvedValueOnce([{ path: 'claim.damages[0].photoIds', message: 'Photo introuvable pour ce bien.' }]);
+    const res = await patch(5, { version: 1, claim: { damages } });
+    expect(res.status).toBe(422);
+    expect((await res.json()).details.fields[0].message).toBe('Photo introuvable pour ce bien.');
+    expect(updateInfos).not.toHaveBeenCalled();
+    expect(emitted).toEqual([]);
+  });
+
+  it('version dépassée : 409 CONFLICT avec l’état courant, aucun événement émis', async () => {
+    const { AdditionalInfosConflictError } = await import('@/services/exports/additional-infos.service');
+    updateInfos.mockRejectedValueOnce(new AdditionalInfosConflictError(4));
+    const current = { ...EMPTY, claim: { damages: [{ id: 'd9', zone: 'Cuisine' }] }, version: 6 };
+    getInfos.mockResolvedValueOnce(current);
+    const res = await patch(5, { version: 4, claim: { damages } });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('CONFLICT');
+    expect(body.details.current).toEqual(current);
+    expect(body.details.lists).toEqual(['claim.damages']);
+    expect(getInfos).toHaveBeenCalledWith(5, 10);
+    expect(emitted).toEqual([]);
+  });
+
+  it('sous-rubrique « Valeur et charges » : écriture admise pour un véhicule', async () => {
+    const res = await patch(6, { version: 0, finance: { retainedValueCents: 1200000, charges: [{ kind: 'ASSURANCE', amountCents: 48000, period: 'AN' }] } });
+    expect(res.status).toBe(200);
+    expect(updateInfos.mock.calls[0][3].set.finance.charges[0]).toMatchObject({ kind: 'ASSURANCE', amountCents: 48000, id: 'r1' });
   });
 });
 

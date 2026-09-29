@@ -471,15 +471,21 @@ describe('8. Dialogues d’export historiques retirés', () => {
   // navigateur : retiré. Les dossiers passent par POST /api/assets/[id]/exports.
   it('plus aucun appel client vers /api/exports/*', () => {
     expect(existsSync(join(process.cwd(), 'src/components/export-preset-dialogs.tsx'))).toBe(false);
-    const drawer = readFileSync(join(process.cwd(), 'src/components/assets/ExportPrepareDrawer.tsx'), 'utf8');
-    expect(drawer).not.toMatch(/['`]\/api\/exports\//);
-    expect(drawer).toContain('`/api/assets/${assetId}/exports`');
+    // Tiroir historique remplacé par l'écran de préparation (CDC V12 §5) et le
+    // tiroir « Transfert et récupération » (export brut, transmission).
+    expect(existsSync(join(process.cwd(), 'src/components/assets/ExportPrepareDrawer.tsx'))).toBe(false);
+    for (const f of ['src/components/assets/TransferExportDrawer.tsx', 'src/components/exports/preparation/api.ts']) {
+      const src = readFileSync(join(process.cwd(), f), 'utf8');
+      expect(src, f).not.toMatch(/['`]\/api\/exports\//);
+      expect(src, f).toContain('`/api/assets/${assetId}/exports`');
+    }
   });
 });
 
 describe('Interface', () => {
   const tab = readFileSync(join(process.cwd(), 'src/components/assets/AssetExportsTab.tsx'), 'utf8');
-  const drawer = readFileSync(join(process.cwd(), 'src/components/assets/ExportPrepareDrawer.tsx'), 'utf8');
+  const cil = readFileSync(join(process.cwd(), 'src/components/exports/preparation/PreparationSummary.tsx'), 'utf8');
+  const state = readFileSync(join(process.cwd(), 'src/lib/exports/preparation-state.ts'), 'utf8');
 
   it('le kit de vente et le dossier complet restent proposés à toutes les familles (catalogue V12)', async () => {
     const { isDossierEligibleForFamily } = await import('@/services/exports/catalog');
@@ -491,13 +497,13 @@ describe('Interface', () => {
 
   it('historique : « Fichier supprimé », sans bouton de suppression', () => {
     expect(tab).toContain('Fichier supprimé');
-    expect(tab).toContain("exp.status !== 'deleted'");
+    expect(tab).toContain("st !== 'deleted'");
   });
 
-  it('tiroir CIL : génération désactivée et message « Action requise »', () => {
-    expect(drawer).toMatch(/const cilBlocked = usage === 'CIL'[^\n]*action_required/);
-    expect(drawer).toMatch(/isDisabled = generating \|\| loadingData \|\| cilLoading \|\| cilBlocked/);
-    expect(drawer).toContain('Action requise : le CIL ne peut pas être généré');
+  it('préparation CIL : génération désactivée tant que les blocs bloquants sont à compléter', () => {
+    // Règle testée dans `lib/exports/__tests__/preparation-state.test.ts` ; ici, le message affiché.
+    expect(state).toContain("if (!s.actions.canGeneratePdf");
+    expect(cil).toContain('Complétez les blocs bloquants du CIL (B1, B3, B8) pour générer.');
   });
 });
 

@@ -3,16 +3,18 @@
  *
  * DOSSIER_COMPLET-RULE-002 : la section financière n'est rendue que si
  * l'utilisateur l'a cochée (section `finance`, décochée par défaut) ; elle ne
- * contient que des montants SAISIS (prix d'achat, coûts d'événements), jamais
- * l'estimation Verebona (« valeur retenue » absente faute de saisie dédiée).
+ * contient que des montants SAISIS (prix d'achat, frais d'acquisition, coûts
+ * d'événements, sous-rubrique « Valeur et charges » de la fiche : valeur
+ * retenue, charges et taxes), jamais l'estimation Verebona.
  * RULE-003 : historique (événements passés) et échéances (à venir) séparés.
  */
 
 import { dot, fmt } from '../../html/components';
 import type { DossierCompletData } from '../../types';
 import { eventKind, type EventKind } from '../choices';
+import { CHARGE_KIND_OPTIONS, CHARGE_PERIOD_OPTIONS, RETAINED_VALUE_SOURCE_OPTIONS } from '@/lib/assets/additional-infos';
 import {
-  type MapInput, exportInfo, kc, kcNum, str, categoryName, categoryLabel, titleLines, cityLine, roomsLabel,
+  type MapInput, exportInfo, kc, kcNum, str, info, infoCents, infoList, optionLabel, categoryName, categoryLabel, titleLines, cityLine, roomsLabel,
   heatingLabel, conditionLabel, statusLabel, familyInfoRows, toDocItem, sortedDocuments, toPhotoItem, plannedPhotos,
   selectedEvents, sectionOn,
 } from './common';
@@ -47,15 +49,33 @@ export function mapDossierComplet(m: MapInput): DossierCompletData {
   // Section financière : seulement si cochée ; montants saisis uniquement.
   let finance: DossierCompletData['finance'] = null;
   if (sectionOn(m, 'finance')) {
+    const f = s.additionalInfo.finance;
     const costEvents = history.filter((e) => e.costCents != null && e.costCents > 0);
+    const retained = infoCents(f, 'retainedValueCents');
+    const fees = infoCents(f, 'acquisitionFeesCents');
     finance = {
       enabled: true,
       acquisition: { priceCents: s.asset.purchasePriceCents, deedDate: s.asset.purchaseDate },
+      // « Valeur retenue » : saisie de l'utilisateur, avec son origine — jamais l'estimation Verebona.
+      retainedValue: retained != null
+        ? { amountCents: retained, sourceLabel: optionLabel(RETAINED_VALUE_SOURCE_OPTIONS, info(f, 'retainedValueSource')) ?? 'Saisie utilisateur', date: info(f, 'retainedValueDate') }
+        : undefined,
       lines: [
-        ...(s.asset.purchasePriceCents != null ? [{ id: 'acq', label: 'Acquisition', date: s.asset.purchaseDate, amountCents: s.asset.purchasePriceCents, kind: 'acquisition', selected: true }] : []),
+        ...(s.asset.purchasePriceCents != null ? [{ id: 'acq', label: "Prix d'achat", date: s.asset.purchaseDate, amountCents: s.asset.purchasePriceCents, kind: 'acquisition', selected: true }] : []),
+        ...(fees != null && fees > 0 ? [{ id: 'acq-fees', label: "Frais d'acquisition", date: s.asset.purchaseDate, amountCents: fees, kind: 'acquisition', selected: true }] : []),
         ...costEvents.map((e) => ({ id: e.key, label: e.title, date: e.date, amountCents: e.costCents!, kind: eventKind(e) === 'TRAVAUX' ? 'works' : 'maintenance', selected: true })),
       ],
-      charges: [],
+      // Charges et taxes déclarées : « 2 160 € / an ».
+      charges: infoList(f, 'charges')
+        .filter((ch) => typeof ch.amountCents === 'number')
+        .map((ch) => {
+          const label = str(ch.label) ?? optionLabel(CHARGE_KIND_OPTIONS, ch.kind) ?? 'Charge';
+          return {
+            label: typeof ch.year === 'number' ? `${label} (${ch.year})` : label,
+            amountCents: ch.amountCents as number,
+            period: (optionLabel(CHARGE_PERIOD_OPTIONS, ch.period) ?? 'par an').replace(/^par /, ''),
+          };
+        }),
     };
   }
 

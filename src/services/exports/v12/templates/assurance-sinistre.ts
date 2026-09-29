@@ -84,6 +84,9 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
   });
   const s02 = Section({ eyebrow: n(), title: 'Chronologie', gap: 'md', body: Timeline(events) });
 
+  // Preuves d'un dommage : photos « P2, P3 », puis pièces liées renvoyées vers leur annexe « A3 ».
+  const damageRefs = (d: Damage) => dot((d.photoRefs ?? '').replace(/ · /g, ', '), (d.docIds ?? []).map((id) => plan.ref(id)).filter(Boolean).join(', '));
+  const damagesWithDocs = damages.some((d) => (d.docIds ?? []).some((id) => plan.ref(id)));
   const s03 = Section({
     eyebrow: n(), title: 'Dommages et éléments concernés', first: true,
     body: LongTable<Damage>({
@@ -91,7 +94,7 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
         { label: 'Zone', key: 'zone', className: 'strong nowrap' },
         { label: 'Élément', key: 'element', className: 'muted' },
         { label: 'Constat', key: 'finding', className: 'muted' },
-        { label: 'Photos', key: 'photoRefs', width: 90, className: 'muted' },
+        { label: damagesWithDocs ? 'Photos · pièces' : 'Photos', render: (d) => esc(damageRefs(d)), width: damagesWithDocs ? 110 : 90, className: 'muted' },
       ],
       rows: damages,
     }),
@@ -105,7 +108,7 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
     body: PhotoGallery(main, { layout: 'grid3', height: 150, dim: true }),
   }) : '';
 
-  const s05 = Section({ eyebrow: n(), title: 'Actions déjà réalisées', first: true, body: Cards(actions.map((a) => ({ when: a.whenLabel ?? fmt.date(a.date), title: a.title, text: a.text })), { small: true }) });
+  const s05 = Section({ eyebrow: n(), title: 'Actions déjà réalisées', first: true, body: Cards(actions.map((a) => ({ when: a.whenLabel ?? fmt.date(a.date), title: a.title, text: dot(a.text, a.docId && plan.ref(a.docId) ? `facture · annexe ${plan.ref(a.docId)}` : '') || null })), { small: true }) });
   const s06 = Section({
     eyebrow: n(), title: 'Devis, factures et rapports', gap: 'sm', first: !s05, size: '',
     body: LongTable<PlannedDoc>({

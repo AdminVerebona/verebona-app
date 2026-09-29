@@ -20,8 +20,10 @@ import { evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE, CIL_ACTION_REQUIRED_MES
 import { EXPORT_ERROR_MESSAGES } from '@/services/exports/export-errors';
 import type { AccessibleAsset } from '@/services/exports/export-access';
 import { loadExportSource } from '../data/source';
-import { parseChoicesPayload, planSelection, type LegacyDrawerOptions, type OutputFormat } from '../data/choices';
-import { evaluateThresholds, estimatePages, type ThresholdAlert } from '../thresholds';
+import { parseChoicesPayload, type LegacyDrawerOptions, type OutputFormat } from '../data/choices';
+import type { ThresholdAlert } from '../thresholds';
+import { estimateSelection } from '../preparation/estimate';
+import { PREP_MESSAGES } from '../preparation/messages';
 import { templateVersion } from '../templates';
 import { effectiveChoices, type GenerationRequestSnapshot } from './job';
 import { parisDate } from './clock';
@@ -105,21 +107,18 @@ export async function enqueueGeneration(params: {
     req.legacyOptions = body.options as LegacyDrawerOptions;
   }
 
-  // Seuils (§6.3) sur l'estimation : un dossier bloqué n'est pas mis en file.
+  // Seuils (§6.3) : même estimation que l'écran de préparation
+  // (`preparation/estimate.ts`) ; un dossier bloqué n'est pas mis en file.
   const today = parisDate();
   const source = await loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code });
-  const plan = planSelection(code, source, effectiveChoices(code, source, req, today), today);
-  const pdfDocs = plan.documents.filter((pd) => pd.mode === 'PDF');
-  const { warnings, blocking } = evaluateThresholds({
-    integratedDocuments: pdfDocs.length,
-    photos: plan.photos.length,
-    totalBytes: [...plan.documents.map((pd) => pd.doc.sizeBytes ?? 0), ...plan.photos.map((pp) => pp.photo.sizeBytes ?? 0)].reduce((s, b) => s + b, 0),
-    pages: estimatePages({
-      integratedPdfBytes: pdfDocs.filter((pd) => pd.doc.format === 'PDF').map((pd) => pd.doc.sizeBytes ?? 0),
-      integratedImages: pdfDocs.filter((pd) => pd.doc.format !== 'PDF').length,
-      photos: plan.photos.length,
-    }),
-  });
+  const { warnings, blocking, dto } = estimateSelection(code, source, effectiveChoices(code, source, req, today), today, { outputFormat });
+  // ALT-002 : un « PDF seul » qui retire des pièces ZIP doit avoir été confirmé.
+  if (req.choices && outputFormat === 'PDF' && dto.zipOnlyItems.length > 0 && !req.choices.acknowledgements.pdfOnlyExcludesZipItems) {
+    return {
+      ok: false, status: 409, code: 'PDF_ONLY_CONFIRMATION_REQUIRED', message: PREP_MESSAGES['MSG-PREP-002'],
+      extra: { zipOnlyItems: dto.zipOnlyItems },
+    };
+  }
   if (blocking.length) {
     return { ok: false, status: 422, code: 'THRESHOLD_BLOCKED', message: EXPORT_ERROR_MESSAGES.THRESHOLD_BLOCKED, extra: { blocking, warnings } };
   }

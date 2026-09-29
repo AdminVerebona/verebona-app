@@ -1787,10 +1787,16 @@ export const assetCilProfiles = pgTable('asset_cil_profiles', {
 export const assetAdditionalInfos = pgTable('asset_additional_infos', {
   assetId: integer('asset_id').primaryKey().references(() => assets.id, { onDelete: 'cascade' }),
   accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
-  commercial: jsonb('commercial_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
-  rental: jsonb('rental_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
-  insurance: jsonb('insurance_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
-  claim: jsonb('claim_json').$type<Record<string, string | number>>().notNull().default(sql`'{}'::jsonb`),
+  // Valeurs simples (texte, centimes, dates ISO) et, depuis la migration 0214,
+  // listes structurées (tableaux de lignes) — dictionnaire : lib/assets/additional-infos.ts.
+  commercial: jsonb('commercial_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  rental: jsonb('rental_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  insurance: jsonb('insurance_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  claim: jsonb('claim_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  // Migration 0214 : valeur retenue, frais d'acquisition, charges et taxes (dossier complet).
+  finance: jsonb('finance_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  // Migration 0214 : 1 = champs simples, 2 = listes structurées (ADDITIONAL_INFOS_SCHEMA_VERSION).
+  schemaVersion: integer('schema_version').notNull().default(1),
   version: integer('version').notNull().default(1),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
@@ -1798,7 +1804,9 @@ export const assetAdditionalInfos = pgTable('asset_additional_infos', {
 }, (table) => ({
   accountIdIdx: index('asset_additional_infos_account_id_idx').on(table.accountId),
   jsonObjectsCheck: check('asset_additional_infos_json_objects_check',
-    sql`jsonb_typeof(${table.commercial}) = 'object' AND jsonb_typeof(${table.rental}) = 'object' AND jsonb_typeof(${table.insurance}) = 'object' AND jsonb_typeof(${table.claim}) = 'object'`),
+    sql`jsonb_typeof(${table.commercial}) = 'object' AND jsonb_typeof(${table.rental}) = 'object' AND jsonb_typeof(${table.insurance}) = 'object' AND jsonb_typeof(${table.claim}) = 'object' AND jsonb_typeof(${table.finance}) = 'object'`),
+  // Migration 0214 : déclarée ici pour qu'un `drizzle-kit push` ne la supprime pas.
+  schemaVersionCheck: check('asset_additional_infos_schema_version_check', sql`${table.schemaVersion} BETWEEN 1 AND 2`),
 }));
 
 export const energyMaterials = pgTable('energy_materials', {

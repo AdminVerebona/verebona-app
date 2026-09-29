@@ -14,7 +14,12 @@
  *     aucune sortie de la chaîne CSS ;
  *   · page « Références » qui déborderait : détectée (RENDER_ERROR) ;
  *   · isolement : un fichier local hors des répertoires autorisés n'est
- *     jamais chargé par Chromium.
+ *     jamais chargé par Chromium ;
+ *   · sinistre et kit de vente alimentés par les listes structurées des
+ *     informations complémentaires (dommages, actions, échanges, points
+ *     forts) : contenu présent dans le PDF, renvois d'annexes, pied partout.
+ *     `EXPORTS_RENDER_OUT=<dossier>` y enregistre les deux PDF (aperçus) ;
+ *     `EXPORTS_RENDER_PHOTO=<image>` remplace les photos unies par une vraie.
  *
  * Ignoré proprement sans Chromium : `EXPORTS_CHROMIUM_TESTS=0`, ou binaire
  * introuvable (`CHROMIUM_EXECUTABLE_PATH`, `PLAYWRIGHT_BROWSERS_PATH`,
@@ -27,7 +32,7 @@ import zlib from 'node:zlib';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { PDFDocument, PDFName, PDFRawStream, StandardFonts } from 'pdf-lib';
 import sharp from 'sharp';
-import { makeSource, doc, photo, TODAY } from './fixtures/sources';
+import { makeSource, doc, photo, event, TODAY } from './fixtures/sources';
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH && !process.env.CHROMIUM_EXECUTABLE_PATH && fs.existsSync('/opt/pw-browsers')) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
@@ -228,4 +233,134 @@ describe.skipIf(!enabled)('Rendu Chromium d’un dossier complet (intégration)'
     expect(widths).not.toContain('1000');
     expect(widths).not.toContain('900');
   }, 60_000);
+  it('sinistre et kit de vente à données structurées : contenu, renvois d’annexes, pied sur chaque page', async () => {
+    const { renderDossier } = await import('../render/render-dossier');
+    const { buildDefaultChoices } = await import('../data/choices');
+    // Pièces : trois PDF d'une page, lisibles.
+    for (const [key, label] of [['devis', 'DEVIS PEINTURE'], ['facture', 'FACTURE LOXAM'], ['echanges', 'ECHANGES ASSUREUR']] as const) {
+      const d = await PDFDocument.create();
+      const f = await d.embedFont(StandardFonts.Helvetica);
+      d.addPage([595, 842]).drawText(label, { x: 60, y: 760, size: 22, font: f });
+      fs.writeFileSync(files[key] = path.join(dir, `${key}.pdf`), await d.save());
+    }
+    // Photos : recadrages d'une vraie photo si fournie (« sinistre.webp[,vente.webp] »), sinon aplats de couleur.
+    const [realSin, realVen] = (process.env.EXPORTS_RENDER_PHOTO ?? '').split(',').map((x) => (x && fs.existsSync(x) ? x : null));
+    const makePhotos = async (prefix: string, real: string | null) => {
+      const meta = real ? await sharp(real).metadata() : null;
+      for (let i = 1; i <= 6; i++) {
+        const out = files[`${prefix}${i}`] = path.join(dir, `${prefix}${i}.jpg`);
+        if (real && meta?.width && meta.height) {
+          const w = Math.round(meta.width * 0.6); const h = Math.round(meta.height * 0.6);
+          await sharp(real).extract({ left: Math.round((meta.width - w) * ((i - 1) % 3) / 2), top: Math.round((meta.height - h) * (i > 3 ? 1 : 0)), width: w, height: h })
+            .jpeg({ quality: 82 }).toFile(out);
+        } else {
+          await sharp({ create: { width: 1200, height: 800, channels: 3, background: { r: 40 + i * 25, g: 90, b: 160 - i * 15 } } }).jpeg().toFile(out);
+        }
+      }
+    };
+    await makePhotos('ph', realSin);
+    await makePhotos('pv', realVen ?? realSin);
+    const fetchToFile = async (key: string, _b: string | null, dest: string) => {
+      if (!files[key]) return false;
+      fs.copyFileSync(files[key], dest);
+      return true;
+    };
+    const outDir = process.env.EXPORTS_RENDER_OUT;
+    if (outDir) fs.mkdirSync(outDir, { recursive: true });
+
+    // ── Sinistre ──
+    const sinistre = makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
+      asset: { ...makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE').asset, name: 'Appartement Lyon 2ᵉ' },
+      documents: [
+        doc({ id: 31, kind: 'DEVIS', title: 'Devis peinture et plâtrerie', date: '2026-08-19', supplier: 'Artisan peintre', amountCents: 284000, s3Key: 'devis' }),
+        doc({ id: 32, kind: 'FACTURE', title: 'Facture location déshumidificateur', date: '2026-08-22', supplier: 'Loxam Lyon', amountCents: 18600, s3Key: 'facture' }),
+        doc({ id: 33, kind: 'ECHANGE_ASSUREUR', title: 'Échanges assureur (3 messages)', date: '2026-08-04', s3Key: 'echanges' }),
+        doc({ id: 34, kind: 'DOCUMENT_BANCAIRE', title: 'RIB compte joint', sensitive: true, date: '2026-08-05', s3Key: 'devis' }),
+      ],
+      photos: [1, 2, 3, 4, 5, 6].map((i) => photo(i, { s3Key: `ph${i}`, date: i === 1 ? '2026-04-21' : '2026-08-03', caption: ['plafond SDB avant sinistre', 'auréoles plafond SDB', 'angle plâtre cloqué', 'plafonnier', 'mur chambre 2', 'parquet gonflé'][i - 1] })),
+      events: [
+        event(41, { title: 'Contrôle VMC, aucun désordre constaté', category: 'entretien', date: '2026-04-21' }),
+        event(42, { title: 'Sinistre · infiltration constatée à 19 h 40', category: 'sinistre', date: '2026-08-03', description: "Infiltration d'eau au plafond de la salle de bain et de la chambre 2, en provenance du 4ᵉ étage." }),
+        event(43, { title: 'Recherche de fuite · origine confirmée au 4ᵉ étage', category: 'reparation', date: '2026-08-07', provider: 'Plomberie Bellecour' }),
+        event(44, { title: 'Expertise sur place', category: 'sinistre', date: '2026-08-26', provider: 'Cabinet Rhône Expertises' }),
+      ],
+      additionalInfo: {
+        commercial: {}, rental: {}, insurance: {}, updatedAt: null,
+        claim: {
+          claimEventKey: 'event:42', occurredOn: '2026-08-03', claimType: 'DEGAT_DES_EAUX', declaredOn: '2026-08-04',
+          insurerClaimRef: 'SIN-2026-08-77412', policyReference: 'MRH n° 4471 992', status: 'EXPERTISE_REALISEE',
+          consequences: 'Plafonds et murs tachés et cloqués sur 11 m² environ, luminaire de salle de bain hors service, parquet de la chambre 2 gonflé sur 2 m².',
+          measures: 'Coupure du circuit électrique, bâchage, séchage par déshumidificateur, déclaration sous 24 h.',
+          statusDetail: "Expertise réalisée le 26/08/2026 · en attente de l'accord d'indemnisation",
+          damages: [
+            { id: 'd1', zone: 'Salle de bain', element: 'Plafond · 5 m²', finding: 'Auréoles, peinture cloquée, plâtre friable en angle', estimatedAmountCents: 284000, photoIds: [2, 3], documentIds: [31] },
+            { id: 'd2', zone: 'Salle de bain', element: 'Luminaire plafonnier', finding: 'Eau dans le boîtier, hors service depuis le 03/08', photoIds: [4] },
+            { id: 'd3', zone: 'Chambre 2', element: 'Plafond et mur mitoyen · 6 m²', finding: 'Traces d’humidité, décollement du papier peint', photoIds: [5] },
+            { id: 'd4', zone: 'Chambre 2', element: 'Parquet stratifié · 2 m²', finding: 'Lames gonflées le long du mur mitoyen', photoIds: [6], documentIds: [34] },
+          ],
+          actions: [
+            { id: 'a1', date: '2026-08-03', title: 'Mesures conservatoires', detail: 'Coupure électrique du circuit SDB, bâchage, déplacement du mobilier', performedBy: 'Assurée' },
+            { id: 'a2', date: '2026-08-07', title: 'Recherche et réparation de la fuite', performedBy: 'Plomberie Bellecour', detail: "À la charge de l'occupant du 4ᵉ" },
+            { id: 'a3', date: '2026-08-08', endDate: '2026-08-22', title: 'Séchage', detail: 'Déshumidificateur en location, 14 jours', performedBy: 'Loxam Lyon', invoiceDocumentId: 32 },
+            { id: 'a4', status: 'A_REALISER', title: 'Remise en état', detail: "En attente de l'accord d'indemnisation · devis joints" },
+          ],
+          exchanges: [
+            { id: 'x1', date: '2026-08-04', direction: 'RECU', party: 'ASSUREUR', channel: 'EMAIL', summary: 'Accusé de réception de la déclaration · SIN-2026-08-77412', documentId: 33 },
+            { id: 'x2', date: '2026-08-18', direction: 'RECU', party: 'EXPERT', channel: 'COURRIER', summary: "Convocation à l'expertise du 26/08/2026" },
+            { id: 'x3', date: '2026-09-15', direction: 'ENVOYE', party: 'ASSUREUR', channel: 'EMAIL', summary: "Relance de l'assuré · sans réponse à ce jour" },
+          ],
+        },
+      },
+    });
+    const sinChoices = buildDefaultChoices('ASSURANCE_SINISTRE', sinistre, { today: TODAY });
+    const rs = await renderDossier({
+      code: 'ASSURANCE_SINISTRE', source: sinistre, choices: sinChoices, today: TODAY, workDir: fs.mkdtempSync(path.join(dir, 'work-')), fetchToFile, timeoutMs: 90_000,
+      meta: { reference: 'VBN-SIN-2026-0928-002', generatedAt: '2026-09-28T10:02:00+02:00', preparedBy: 'Claire Martin' },
+    });
+    const sp = await pdfText(rs.pdf);
+    sp.forEach((t, i) => expect(t.replace(/\s/g, ''), `sinistre page ${i + 1}`).toContain(`Page${i + 1}/${sp.length}`));
+    const st = sp.join(' ');
+    for (const t of ['Dommages et éléments concernés', 'Photos · pièces', 'Plafond · 5 m', 'Actions déjà réalisées', 'Non réalisé', '08/08 → 22/08/2026',
+      'Intervenant : Loxam Lyon', 'Assureur · E-mail reçu', 'Expert · Courrier reçu', '2 zones endommagées']) expect(st.toLowerCase(), t).toContain(t.toLowerCase());
+    // Renvois : photos retenues (P1…) et pièce intégrée (A2) dans le tableau des dommages.
+    expect(st).toMatch(/P1, P2 · A\d/);
+    expect(st).toMatch(/facture · annexe A\d/);
+    expect(st).not.toContain('RIB compte joint');
+    if (outDir) fs.writeFileSync(path.join(outDir, 'data-assurance-sinistre.pdf'), rs.pdf);
+
+    // ── Kit de vente ──
+    const vente = makeSource('VEHICULE', 'VENTE', {
+      asset: { ...makeSource('VEHICULE', 'VENTE').asset, name: 'Vélo cargo Urban Arrow Family', characteristics: { ...makeSource('VEHICULE', 'VENTE').asset.characteristics, parking: 'Garage fermé', engine: 'Bosch Cargo Line · 85 Nm', color: 'Blanc' } },
+      documents: [doc({ id: 51, kind: 'FACTURE', title: 'Facture d’achat', s3Key: 'facture' })],
+      photos: [1, 2, 3, 4].map((i) => photo(i, { s3Key: `pv${i}`, caption: ['Vue de trois quarts', 'Caisse et banc enfant', 'Moteur Bosch', 'Tente de pluie'][i - 1] })),
+      events: [event(61, { title: 'Révision complète', provider: 'Cyclable Lyon', date: '2025-07-03' })],
+      additionalInfo: {
+        rental: {}, insurance: {}, claim: {}, updatedAt: null,
+        commercial: {
+          desiredSalePriceCents: 390000, newPriceCents: 549000, salePitch: 'Modèle 2022 · moteur Bosch Cargo Line · 3 480 km · entretien suivi.',
+          availabilityDate: '2026-10-15', availabilityComment: 'remise en main propre',
+          includedAccessories: 'Tente de pluie, banc enfant 2 places, antivol de cadre Abus, chargeur 4 A',
+          saleConditions: 'Vente entre particuliers, essai possible sur rendez-vous, paiement par virement',
+          contactInstructions: 'Par message via l’annonce · visites en semaine après 18 h, Lyon 7ᵉ',
+          highlights: [
+            { id: 'h1', title: 'Entretien en atelier agréé', text: 'Révisions complètes le 12/06/2023 et le 03/07/2025 chez Cyclable Lyon. Factures disponibles.', origin: 'suggestion:maintenance' },
+            { id: 'h2', title: 'Pièces d’usure récentes', text: 'Plaquettes de frein et chaîne remplacées le 03/07/2025 (1 240 km avant la date du dossier).' },
+            { id: 'h3', title: 'Batterie d’origine, garantie constructeur', text: 'Garantie Bosch 2 ans / 500 cycles échue ; 112 cycles de charge relevés à la révision 2025.' },
+            { id: 'h4', title: 'Stationnement abrité', text: 'Garage fermé déclaré comme lieu de stationnement depuis l’achat.', origin: 'suggestion:parking' },
+          ],
+        },
+      },
+    });
+    const rv = await renderDossier({
+      code: 'VENTE', source: vente, choices: buildDefaultChoices('VENTE', vente, { today: TODAY }), today: TODAY, workDir: fs.mkdtempSync(path.join(dir, 'work-')), fetchToFile, timeoutMs: 90_000,
+      meta: { reference: 'VBN-VEN-2026-0928-001', generatedAt: '2026-09-28T09:40:00+02:00', preparedBy: 'Julien Roux' },
+    });
+    const vp = await pdfText(rv.pdf);
+    vp.forEach((t, i) => expect(t.replace(/\s/g, ''), `vente page ${i + 1}`).toContain(`Page${i + 1}/${vp.length}`));
+    const vt = vp.join(' ');
+    for (const t of ['Mise en valeur du bien', 'Entretien en atelier agréé', 'Pièces d’usure récentes', 'Stationnement abrité', 'Prix souhaité']) expect(vt.toLowerCase(), t).toContain(t.toLowerCase());
+    expect(vt).not.toContain('suggestion:');
+    expect(vt).not.toContain('UA22F0000004871');
+    if (outDir) fs.writeFileSync(path.join(outDir, 'data-vente.pdf'), rv.pdf);
+  }, 180_000);
 });

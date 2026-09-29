@@ -16,6 +16,13 @@
  * compte. L'appelant a déjà vérifié l'accès (route) ; ce filtre est une
  * seconde barrière, pas la seule.
  *
+ * LISTES (schéma v2, migration 0214) : une liste est une valeur comme une
+ * autre de la sous-rubrique — l'opérateur `||` la REMPLACE en bloc. Le
+ * correctif qui en touche une porte la version lue par le client : l'écriture
+ * n'a lieu que si la ligne est toujours à cette version (`ON CONFLICT … DO
+ * UPDATE … WHERE version = attendue`), sinon `AdditionalInfosConflictError`
+ * (409 côté route, avec l'état courant). Voir `lib/assets/additional-infos`.
+ *
  * Le moteur de dossiers lit `getAssetAdditionalInfos` pour son snapshot
  * (IC-GEN-010) : les valeurs figées sont celles lues au moment de la
  * génération, jamais une valeur temporaire de préparation (IC-GEN-009).
@@ -26,6 +33,7 @@ import { db } from '@/db';
 import { assetAdditionalInfos } from '@/db/schema';
 import {
   ADDITIONAL_INFO_SECTIONS,
+  ADDITIONAL_INFOS_SCHEMA_VERSION,
   sanitizeSection,
   type AdditionalInfoSectionData,
   type AdditionalInfoSectionKey,
@@ -38,6 +46,7 @@ export interface AssetAdditionalInfos {
   rental: AdditionalInfoSectionData;
   insurance: AdditionalInfoSectionData;
   claim: AdditionalInfoSectionData;
+  finance: AdditionalInfoSectionData;
   /** ISO ; `null` tant que rien n'a été enregistré. */
   updatedAt: string | null;
   /** Utilisateur auteur de la dernière modification ; `null` si aucun / supprimé. */
@@ -50,7 +59,7 @@ type Row = typeof assetAdditionalInfos.$inferSelect;
 
 function toDto(assetId: number, row: Row | undefined): AssetAdditionalInfos {
   if (!row) {
-    return { assetId, commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null, updatedBy: null, version: 0 };
+    return { assetId, commercial: {}, rental: {}, insurance: {}, claim: {}, finance: {}, updatedAt: null, updatedBy: null, version: 0 };
   }
   return {
     assetId,
@@ -58,6 +67,7 @@ function toDto(assetId: number, row: Row | undefined): AssetAdditionalInfos {
     rental: sanitizeSection('rental', row.rental),
     insurance: sanitizeSection('insurance', row.insurance),
     claim: sanitizeSection('claim', row.claim),
+    finance: sanitizeSection('finance', row.finance),
     updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : (row.updatedAt ? String(row.updatedAt) : null),
     updatedBy: row.updatedBy ?? null,
     version: row.version ?? 1,
@@ -82,7 +92,16 @@ const COLUMN_BY_SECTION = {
   rental: assetAdditionalInfos.rental,
   insurance: assetAdditionalInfos.insurance,
   claim: assetAdditionalInfos.claim,
+  finance: assetAdditionalInfos.finance,
 } as const;
+
+/** La ligne a changé depuis la version lue par le client (contrôle optimiste des listes). */
+export class AdditionalInfosConflictError extends Error {
+  constructor(public expectedVersion: number) {
+    super(`Informations complémentaires modifiées depuis la version ${expectedVersion}`);
+    this.name = 'AdditionalInfosConflictError';
+  }
+}
 
 /** `colonne || '{...}'::jsonb - ARRAY[...]::text[]` — fusion côté base. */
 export function mergeExpression(section: AdditionalInfoSectionKey, patch: NormalizedPatch): SQL | null {
@@ -104,14 +123,19 @@ export function mergeExpression(section: AdditionalInfoSectionKey, patch: Normal
  * Applique un correctif DÉJÀ VALIDÉ (`validateAdditionalInfosPatch`) et rend
  * l'état complet après écriture. `accountId` est le compte du bien (vérifié
  * par l'appelant) ; `userId` l'auteur (titulaire ou co-titulaire Duo).
+ *
+ * `expectedVersion` (listes) : écriture seulement si la ligne est à cette
+ * version (0 = aucune ligne encore) ; sinon `AdditionalInfosConflictError`.
  */
 export async function updateAssetAdditionalInfos(
   assetId: number,
   accountId: number,
   userId: number,
   patch: NormalizedPatch,
+  opts: { expectedVersion?: number | null } = {},
 ): Promise<AssetAdditionalInfos> {
   const now = new Date();
+  const expected = opts.expectedVersion ?? null;
   // Valeurs d'une première insertion : uniquement les champs posés.
   const initial = Object.fromEntries(
     ADDITIONAL_INFO_SECTIONS.map((s) => [s, { ...(patch.set[s] ?? {}) }]),
@@ -132,6 +156,8 @@ export async function updateAssetAdditionalInfos(
       rental: initial.rental,
       insurance: initial.insurance,
       claim: initial.claim,
+      finance: initial.finance,
+      schemaVersion: ADDITIONAL_INFOS_SCHEMA_VERSION,
       version: 1,
       createdAt: now,
       updatedAt: now,
@@ -142,12 +168,16 @@ export async function updateAssetAdditionalInfos(
       set: {
         ...updates,
         accountId,
+        schemaVersion: ADDITIONAL_INFOS_SCHEMA_VERSION,
         version: sql`${assetAdditionalInfos.version} + 1`,
         updatedAt: now,
         updatedBy: userId,
       },
+      // Contrôle optimiste : aucune ligne rendue si la version a changé.
+      ...(expected != null ? { setWhere: sql`${assetAdditionalInfos.version} = ${expected}` } : {}),
     })
     .returning();
 
+  if (!row) throw new AdditionalInfosConflictError(expected ?? -1);
   return toDto(assetId, row);
 }

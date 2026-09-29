@@ -1,10 +1,11 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { FileDown, Send, FileText, Home, Shield, ShieldAlert, KeyRound, Package, RefreshCw, Download, AlertCircle, CheckCircle2, Clock, XCircle, X, Crown, CalendarDays, Trash2 } from 'lucide-react';
+import { FileDown, Send, FileText, Home, Shield, ShieldAlert, KeyRound, Package, RefreshCw, Download, AlertCircle, AlertTriangle, CheckCircle2, Clock, XCircle, X, Crown, CalendarDays, Trash2, Hourglass } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,7 +18,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import { ExportPrepareDrawer } from './ExportPrepareDrawer';
+import { TransferExportDrawer, type TransferUsage } from './TransferExportDrawer';
+import { preparationPath } from '@/lib/exports/dossier-slug';
 import { getPlanTheme } from '@/lib/plan-theme';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { useEntitlements } from '@/hooks/useEntitlements';
@@ -87,10 +89,18 @@ export interface ExportRecord {
   publicId: string;
   exportType: string;
   status: string;
+  /** Statut V12 (§2.1) : queued, generating, ready, partial, failed, expired, deleted. */
+  generationStatus?: string;
+  outputFormat?: string | null;
   requestedOutputs: string[];
   errorMessage: string | null;
+  partialMessage?: string | null;
+  excludedCount?: number | null;
   createdAt: string;
   completedAt: string | null;
+  expiresAt?: string | null;
+  /** DRH-003 : auteur de la génération (titulaire ou co-titulaire Duo). */
+  createdBy?: { userId: number; name: string | null } | null;
   downloadUrl: string | null;
   downloadZipUrl: string | null;
   generationAttemptCount?: number;
@@ -141,11 +151,20 @@ interface Props {
   assetSubtype?: string | null;
 }
 
+/** Statut V12 d'une ligne d'historique (repli sur le statut historique). */
+function v12Status(exp: ExportRecord): string {
+  if (exp.generationStatus) return exp.generationStatus;
+  return exp.status === 'pending' ? 'queued' : exp.status === 'error' ? 'failed' : exp.status;
+}
+
 function StatusIcon({ status }: { status: string }) {
   if (status === 'ready') return <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />;
-  if (status === 'error') return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />;
+  if (status === 'partial') return <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning)] flex-shrink-0" />;
+  if (status === 'failed') return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />;
   // DRH-004 : fichier supprimé, entrée conservée dans l'historique.
   if (status === 'deleted') return <Trash2 className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
+  // DRH-006 : expiré, téléchargement impossible.
+  if (status === 'expired') return <Hourglass className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
   return <Clock className="w-4 h-4 text-blue-400 flex-shrink-0 animate-pulse" />;
 }
 
@@ -163,11 +182,6 @@ export function typeLabel(code: string): string {
   return TYPE_LABELS[code] ?? exportCodeLabel(code);
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '';
-  return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short' }).format(new Date(iso));
-}
-
 function formatDateLong(iso: string): string {
   return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(iso));
 }
@@ -177,7 +191,9 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
   const cilOffert = isCilEligible({ category: assetCategory, subtype: assetSubtype });
   const [exports, setExports] = useState<ExportRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [drawerUsage, setDrawerUsage] = useState<ExportType | 'TRANSMISSION' | null>(null);
+  const router = useRouter();
+  /** Tiroir « Transfert et récupération » ; les dossiers ont leur écran de préparation (§5). */
+  const [drawerUsage, setDrawerUsage] = useState<TransferUsage | null>(null);
 
   /**
    * Ouverture d'un export, gardée pour les dossiers préparés.
@@ -206,7 +222,8 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
 
   const ouvrirExport = useCallback(
     (type: ExportType | 'TRANSMISSION', premiumOnly: boolean) => {
-      if (!premiumOnly) { setDrawerUsage(type); return; }
+      if (!isDossierCode(type)) { setDrawerUsage(type as TransferUsage); return; }
+      if (!premiumOnly) { router.push(preparationPath(assetId, type)); return; }
       // `garder` traite d'abord le compte restreint (essai terminé…).
       garder(() => {
         if (premiumRefuse) {
@@ -216,10 +233,11 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
           });
           return;
         }
-        setDrawerUsage(type);
+        // Écran de préparation (page dédiée, CDC V12 §5).
+        router.push(preparationPath(assetId, type));
       });
     },
-    [garder, signalerRefus, premiumRefuse],
+    [garder, signalerRefus, premiumRefuse, router, assetId],
   );
   const [retrying, setRetrying] = useState<number | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<ExportRecord | null>(null);
@@ -288,11 +306,17 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
     loadCatalog();
   }, [loadExports, loadTransmissions, loadCilSummary, loadCatalog]);
 
+  // Lien « Historique » de l'écran de préparation (PREP-HEA-009) : `#historique`.
+  useEffect(() => {
+    if (loading || typeof window === 'undefined' || window.location.hash !== '#historique') return;
+    document.getElementById('historique')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [loading]);
+
   const transmissionPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Poll exports (3s) — seulement si un export est en cours ET onglet visible
   useEffect(() => {
-    const hasActive = exports.some(e => e.status === 'pending' || e.status === 'generating');
+    const hasActive = exports.some(e => ['queued', 'generating'].includes(v12Status(e)));
 
     const start = () => {
       if (!pollIntervalRef.current) pollIntervalRef.current = setInterval(loadExports, 3000);
@@ -577,8 +601,8 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
         </div>
       )}
 
-      {/* ── Historique des exports ── */}
-      <div>
+      {/* ── Historique des exports (DRH-002 à 010, ALT-005, ALT-006) ── */}
+      <div id="historique" className="scroll-mt-24">
         <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
           Historique des exports
         </h3>
@@ -594,76 +618,91 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
           </div>
         ) : (
           <div className="space-y-2">
-            {exports.map(exp => (
-              <div
-                key={exp.id}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-card text-sm"
-              >
-                <StatusIcon status={exp.status} />
-                <div className="flex-1 min-w-0">
-                  <span className="font-medium truncate block">{typeLabel(exp.exportType)}</span>
-                  {exp.status === 'error' && exp.errorMessage && (
-                    <p className="text-xs text-red-500 truncate mt-0.5">{exp.errorMessage}</p>
-                  )}
-                  {(exp.status === 'pending' || exp.status === 'generating') && (
-                    <p className="text-xs text-muted-foreground mt-0.5">En cours…</p>
-                  )}
-                  {exp.status === 'deleted' && (
-                    <p className="text-xs text-muted-foreground mt-0.5">Fichier supprimé</p>
-                  )}
-                </div>
-                {exp.completedAt && (
-                  <span className="text-xs text-muted-foreground flex-shrink-0">{formatDate(exp.completedAt)}</span>
-                )}
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  {exp.status === 'ready' && exp.downloadUrl && (
-                    <a href={exp.downloadUrl} target="_blank" rel="noopener noreferrer" title="Télécharger PDF">
-                      <Button size="icon" variant="ghost" className="h-7 w-7">
-                        <Download className="w-3.5 h-3.5" />
+            {exports.map(exp => {
+              const st = v12Status(exp);
+              const downloadable = st === 'ready' || st === 'partial';
+              const active = st === 'queued' || st === 'generating';
+              return (
+                <div
+                  key={exp.id}
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-card text-sm"
+                >
+                  <StatusIcon status={st} />
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium truncate block">
+                      {typeLabel(exp.exportType)}
+                      {exp.outputFormat === 'ZIP' && downloadable && <span className="ml-1.5 text-[10px] font-semibold text-muted-foreground">PDF + ZIP</span>}
+                    </span>
+                    <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                      {formatDateLong(exp.createdAt)}
+                      {/* DRH-003 : auteur affiché (Duo : titulaire ou co-titulaire). */}
+                      {exp.createdBy && <> · par {exp.createdBy.name ?? `l’utilisateur n° ${exp.createdBy.userId}`}</>}
+                    </p>
+                    {st === 'failed' && exp.errorMessage && (
+                      <p className="text-xs text-red-500 truncate mt-0.5">{exp.errorMessage}</p>
+                    )}
+                    {st === 'partial' && (
+                      <p className="text-xs text-[color:var(--text-warning)] mt-0.5">
+                        Généré partiellement{exp.excludedCount ? ` : ${exp.excludedCount} fichier${exp.excludedCount > 1 ? 's' : ''} exclu${exp.excludedCount > 1 ? 's' : ''}` : ''}
+                      </p>
+                    )}
+                    {st === 'queued' && <p className="text-xs text-muted-foreground mt-0.5">En attente de génération…</p>}
+                    {st === 'generating' && <p className="text-xs text-muted-foreground mt-0.5">Génération en cours…</p>}
+                    {st === 'deleted' && <p className="text-xs text-muted-foreground mt-0.5">Fichier supprimé</p>}
+                    {/* DRH-006 / DRH-007 : expiré, ni téléchargement ni régénération depuis l'historique. */}
+                    {st === 'expired' && <p className="text-xs text-muted-foreground mt-0.5">Expiré — relancez une préparation pour obtenir un nouveau dossier</p>}
+                    {downloadable && exp.expiresAt && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">Disponible jusqu’au {formatDateLong(exp.expiresAt)}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {/* DRH-010 : liens vers /api/export-generations/{id}/download (droits revérifiés). */}
+                    {downloadable && exp.downloadUrl && (
+                      <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-xs">
+                        <a href={exp.downloadUrl} target="_blank" rel="noopener noreferrer"><Download className="w-3.5 h-3.5" />PDF</a>
                       </Button>
-                    </a>
-                  )}
-                  {exp.status === 'ready' && exp.downloadZipUrl && (
-                    <a href={exp.downloadZipUrl} target="_blank" rel="noopener noreferrer" title="Télécharger ZIP">
-                      <Button size="icon" variant="ghost" className="h-7 w-7">
-                        <Package className="w-3.5 h-3.5" />
+                    )}
+                    {downloadable && exp.downloadZipUrl && (
+                      <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-xs">
+                        <a href={exp.downloadZipUrl} target="_blank" rel="noopener noreferrer"><Package className="w-3.5 h-3.5" />ZIP</a>
                       </Button>
-                    </a>
-                  )}
-                  {exp.status === 'error' && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs"
-                      onClick={() => handleRetry(exp.id)}
-                      disabled={retrying === exp.id}
-                    >
-                      <RefreshCw className={`w-3 h-3 mr-1 ${retrying === exp.id ? 'animate-spin' : ''}`} />
-                      Réessayer
-                    </Button>
-                  )}
-                  {(exp.status === 'pending' || exp.status === 'generating') && (
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <RefreshCw className="w-3 h-3 animate-spin" />
-                    </div>
-                  )}
-                  {exp.status !== 'generating' && exp.status !== 'deleted' && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                      title="Supprimer le fichier de cet export"
-                      onClick={() => setDeleteConfirm(exp)}
-                      disabled={deleting === exp.id}
-                    >
-                      {deleting === exp.id
-                        ? <RefreshCw className="w-3 h-3 animate-spin" />
-                        : <Trash2 className="w-3.5 h-3.5" />}
-                    </Button>
-                  )}
+                    )}
+                    {st === 'failed' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => handleRetry(exp.id)}
+                        disabled={retrying === exp.id}
+                      >
+                        <RefreshCw className={`w-3 h-3 mr-1 ${retrying === exp.id ? 'animate-spin' : ''}`} />
+                        Réessayer
+                      </Button>
+                    )}
+                    {active && (
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                      </div>
+                    )}
+                    {!active && st !== 'deleted' && st !== 'expired' && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        title="Supprimer le fichier de cet export"
+                        aria-label="Supprimer le fichier de cet export"
+                        onClick={() => setDeleteConfirm(exp)}
+                        disabled={deleting === exp.id}
+                      >
+                        {deleting === exp.id
+                          ? <RefreshCw className="w-3 h-3 animate-spin" />
+                          : <Trash2 className="w-3.5 h-3.5" />}
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -690,9 +729,9 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ── Drawer de préparation ── */}
+      {/* ── Transfert et récupération (export brut, transmission) ── */}
       {drawerUsage !== null && (
-        <ExportPrepareDrawer
+        <TransferExportDrawer
           assetId={assetId}
           usage={drawerUsage}
           planType={premiumRefuse ? 'STANDARD' : planType}

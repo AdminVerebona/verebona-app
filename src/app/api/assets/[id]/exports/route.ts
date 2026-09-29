@@ -120,7 +120,8 @@ export async function POST(
 
     const result = await enqueueGeneration({ asset, userId: session.userId, code, body });
     if (!result.ok) {
-      return NextResponse.json({ error: result.code, code: result.code, message: result.message, ...(result.extra ?? {}) }, { status: result.status });
+      // `details` : lu par le client (`ApiClientError.details`) — blocages de seuil, pièces ZIP (ALT-002).
+      return NextResponse.json({ error: result.code, code: result.code, message: result.message, ...(result.extra ?? {}), details: result.extra ?? null }, { status: result.status });
     }
     nudgeExportWorker();
     const dto = toGenerationDto(result.generation);

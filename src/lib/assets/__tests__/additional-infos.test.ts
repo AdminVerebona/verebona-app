@@ -57,7 +57,7 @@ describe('dictionnaire (§4.2)', () => {
   it('pas de location véhicule ni objet (§4.2)', () => {
     expect(SECTIONS_BY_FAMILY.IMMOBILIER).toContain('rental');
     expect(SECTIONS_BY_FAMILY.VEHICULE).not.toContain('rental');
-    expect(sectionsForCategory('OBJECT')).toEqual(['commercial', 'insurance', 'claim']);
+    expect(sectionsForCategory('OBJECT')).toEqual(['commercial', 'insurance', 'claim', 'finance']);
     expect(sectionsForCategory('XYZ')).toEqual([]);
   });
 

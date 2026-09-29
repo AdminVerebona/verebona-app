@@ -406,7 +406,10 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
           {/* Fil d'Ariane : rendu une fois ici, jamais sur l'accueil (§3.1). */}
           {!isHome && <DashboardBreadcrumb items={breadcrumbItems} />}
           <main className={isHome ? 'w-full flex-1' : 'w-full flex-1 p-4 pb-32 md:p-6 md:pb-6 lg:p-8'}>
-            <div className="max-w-full overflow-x-hidden">
+            {/* `overflow-x-clip` et non `hidden` : `hidden` fait de ce bloc un
+                conteneur de défilement, et un élément « sticky » d'une page
+                (résumé de la préparation d'un dossier) ne collait plus. */}
+            <div className="max-w-full overflow-x-clip">
               {children}
             </div>
           </main>

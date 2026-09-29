@@ -1,7 +1,8 @@
 /**
  * Catalogue des dossiers d'un bien (EXP-001, §1.2, §3.1 étape 1) et fusion
- * atomique des informations complémentaires (§4.3), plus les choix par
- * défaut du dossier de location (EXP-008).
+ * atomique des informations complémentaires (§4.3). Les choix par défaut
+ * (dont ceux du dossier de location, EXP-008) sont calculés par l'API de
+ * préparation : `v12/__tests__/v12-preparation.test.ts`.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -11,7 +12,6 @@ vi.mock('@/services/entitlements.service', () => ({ canUsePremiumFeature: async 
 
 const { buildExportCatalog } = await import('../export-catalog.service');
 const { mergeExpression } = await import('../additional-infos.service');
-const { defaultSelectedDocIds, defaultSelectedPhotoIds } = await import('@/lib/exports/preparation-defaults');
 
 type Input = Parameters<typeof buildExportCatalog>[0];
 
@@ -151,16 +151,5 @@ describe('fusion atomique en base (§4.3, dernier écrit gagne par champ)', () =
 
   it('sous-rubrique non touchée : aucune expression (colonne laissée telle quelle)', () => {
     expect(mergeExpression('claim', { set: { commercial: { salePitch: 'x' } }, unset: {} })).toBeNull();
-  });
-});
-
-describe('dossier de location : choix par défaut (EXP-008, §6.2)', () => {
-  it('documents non précochés, 4 photos au plus', () => {
-    expect(defaultSelectedDocIds('LOCATION', [1, 2, 3])).toEqual([]);
-    expect(defaultSelectedPhotoIds('LOCATION', [1, 2, 3, 4, 5, 6])).toEqual([1, 2, 3, 4]);
-  });
-  it('autres dossiers inchangés', () => {
-    expect(defaultSelectedDocIds('VENTE', [1, 2])).toEqual([1, 2]);
-    expect(defaultSelectedPhotoIds('DOSSIER_COMPLET', [1, 2, 3, 4, 5])).toEqual([1, 2, 3, 4, 5]);
   });
 });

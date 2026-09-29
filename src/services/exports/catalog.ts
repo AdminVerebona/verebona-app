@@ -181,12 +181,13 @@ export function familyIneligibilityMessage(code: DossierCode): string {
 
 // ── Informations complémentaires utilisées par dossier (DEC-007, §6.2) ─────
 
-export type AdditionalInfoSectionKey = 'commercial' | 'rental' | 'insurance' | 'claim';
+export type AdditionalInfoSectionKey = 'commercial' | 'rental' | 'insurance' | 'claim' | 'finance';
 
 /** Sous-rubriques de la fiche bien lues par chaque dossier. */
 export const DOSSIER_ADDITIONAL_SECTIONS: Readonly<Record<DossierCode, readonly AdditionalInfoSectionKey[]>> = Object.freeze({
   CIL: [],
-  DOSSIER_COMPLET: [],
+  // « Valeur retenue », frais d'acquisition, charges et taxes (section financière, RULE-002).
+  DOSSIER_COMPLET: ['finance'],
   VENTE: ['commercial'],
   LOCATION: ['rental'],
   ASSURANCE_SOUSCRIPTION: ['insurance'],

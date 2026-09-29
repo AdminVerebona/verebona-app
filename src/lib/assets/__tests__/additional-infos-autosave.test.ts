@@ -3,7 +3,7 @@
  * IC-GEN-003, IC-GEN-004.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AUTOSAVE_DEBOUNCE_MS, createAutosaveQueue, type AutosaveState } from '../additional-infos-autosave';
+import { AUTOSAVE_DEBOUNCE_MS, createAutosaveQueue, withRequeue, type AutosaveState } from '../additional-infos-autosave';
 import type { AdditionalInfosPatch } from '../additional-infos';
 
 beforeEach(() => { vi.useFakeTimers(); });
@@ -111,4 +111,44 @@ describe('autosave', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(save).not.toHaveBeenCalled();
   });
+
+  it('conflit (409) puis échec du rejeu : seul le correctif rejoué revient, jamais la liste en conflit', async () => {
+    const localList = [{ id: 'd1', zone: 'Cuisine' }];
+    let call = 0;
+    let q!: ReturnType<typeof createAutosaveQueue>;
+    const save = vi.fn(async (_p: AdditionalInfosPatch) => {
+      call++;
+      if (call === 1) {
+        // Le composant a résolu le 409 : la liste est en conflit (bloquée), le reste
+        // est rejoué et ce rejeu échoue (réseau).
+        q.block('claim', 'damages');
+        throw withRequeue(new Error('réseau'), { claim: { circumstances: 'Fuite' } });
+      }
+    });
+    ({ q } = setup(save));
+    q.set('claim', 'damages', localList);
+    q.set('claim', 'circumstances', 'Fuite');
+    await q.flush();
+    expect(q.state()).toBe('error');
+    await q.retry();
+    // La liste du co-titulaire n'est pas écrasée : seule la saisie simple repart.
+    expect(save).toHaveBeenLastCalledWith({ claim: { circumstances: 'Fuite' } });
+    // Une nouvelle modification de la liste par l'utilisateur la débloque.
+    q.set('claim', 'damages', [{ id: 'd2', zone: 'Salon' }]);
+    await q.flush();
+    expect(save).toHaveBeenLastCalledWith({ claim: { damages: [{ id: 'd2', zone: 'Salon' }] } });
+  });
+
+  it('échec simple (sans conflit) : tout le lot revient, sauf un champ bloqué', async () => {
+    const save = vi.fn(async (_p: AdditionalInfosPatch): Promise<void> => { throw new Error('réseau'); });
+    const { q } = setup(save);
+    q.set('rental', 'depositCents', 0);
+    q.set('commercial', 'highlights', []);
+    q.block('commercial', 'highlights');
+    await q.flush();
+    save.mockImplementation(async () => {});
+    await q.retry();
+    expect(save).toHaveBeenLastCalledWith({ rental: { depositCents: 0 } });
+  });
 });
+

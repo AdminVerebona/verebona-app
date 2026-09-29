@@ -832,3 +832,10 @@ html[data-theme="beige"] body, body.theme-beige {
 @media (min-width: 768px) {
   .vb-home-halo { background: radial-gradient(900px 420px at 8% -10%, rgba(59, 130, 246, .10), transparent 70%); }
 }
+
+/* Écran plein écran sur mobile (préparation d'un dossier, CDC exports §5.1) :
+   la barre de navigation basse est masquée tant qu'il est ouvert, ses propres
+   actions étant fixées en bas de l'écran (PREP-MOB-004). */
+@media (max-width: 1023px) {
+  body:has([data-fullscreen-screen]) [data-mobile-bottom-nav] { display: none; }
+}

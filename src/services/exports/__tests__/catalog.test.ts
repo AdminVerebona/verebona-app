@@ -135,7 +135,8 @@ describe('migration 0213', () => {
     const cfg = getTableConfig(assetAdditionalInfos);
     expect(cfg.name).toBe('asset_additional_infos');
     const cols = cfg.columns.map((c) => c.name).sort();
-    expect(cols).toEqual(['account_id', 'asset_id', 'claim_json', 'commercial_json', 'created_at', 'insurance_json', 'rental_json', 'updated_at', 'updated_by', 'version'].sort());
+    // + finance_json et schema_version (migration 0214).
+    expect(cols).toEqual(['account_id', 'asset_id', 'claim_json', 'commercial_json', 'created_at', 'finance_json', 'insurance_json', 'rental_json', 'schema_version', 'updated_at', 'updated_by', 'version'].sort());
     const fks = cfg.foreignKeys.map((fk) => {
       const r = fk.reference();
       return `${r.columns[0].name}:${fk.onDelete}`;
@@ -146,5 +147,33 @@ describe('migration 0213', () => {
   it('numéro 0213 unique dans la chaîne', () => {
     const files = readdirSync(join(process.cwd(), 'src/db/migrations')).filter((f) => f.startsWith('0213_'));
     expect(files).toEqual(['0213_asset_additional_infos_export_codes.sql']);
+  });
+});
+
+describe('migration 0214 (informations complémentaires structurées)', () => {
+  const sql = readFileSync(join(process.cwd(), 'src/db/migrations/0214_asset_additional_infos_structured.sql'), 'utf8');
+  const code = sql.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
+
+  it('idempotente et non destructive', () => {
+    expect(code).toMatch(/ADD COLUMN IF NOT EXISTS finance_json jsonb NOT NULL DEFAULT '\{\}'::jsonb/);
+    expect(code).toMatch(/ADD COLUMN IF NOT EXISTS schema_version integer NOT NULL DEFAULT 1/);
+    // Chaque contrainte est retirée (IF EXISTS) avant d'être reposée.
+    for (const c of ['asset_additional_infos_json_objects_check', 'asset_additional_infos_schema_version_check']) {
+      expect(code.indexOf(`DROP CONSTRAINT IF EXISTS ${c}`), c).toBeGreaterThanOrEqual(0);
+      expect(code.indexOf(`DROP CONSTRAINT IF EXISTS ${c}`)).toBeLessThan(code.indexOf(`ADD CONSTRAINT ${c}`));
+    }
+    expect(code).not.toMatch(/\bDROP TABLE\b|DROP COLUMN|\bDELETE\b|\bUPDATE\b/i);
+  });
+
+  it('les cinq sous-rubriques restent des objets JSON', () => {
+    const check = code.slice(code.indexOf('ADD CONSTRAINT asset_additional_infos_json_objects_check'));
+    for (const col of ['commercial_json', 'rental_json', 'insurance_json', 'claim_json', 'finance_json']) {
+      expect(check).toContain(`jsonb_typeof(${col}) = 'object'`);
+    }
+  });
+
+  it('numéro 0214 unique dans la chaîne', () => {
+    const files = readdirSync(join(process.cwd(), 'src/db/migrations')).filter((f) => f.startsWith('0214_'));
+    expect(files).toEqual(['0214_asset_additional_infos_structured.sql']);
   });
 });

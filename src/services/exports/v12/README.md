@@ -259,15 +259,66 @@ rien hors Scalingo.
   injection dans l'en-tête, page « Références » en débordement détectée, fichier
   local hors racine jamais chargé.
 
-## Reste à faire (écran de préparation, lot suivant)
+## Données structurées des informations complémentaires (schéma v2, migration 0214)
 
-- API `prepare` / `estimate` (§17.1) et écran 65/35 : les routes acceptent déjà le
-  payload §17.2 (`choices`) ; l'onglet et le tiroir actuels envoient encore les
-  options historiques, converties avec les pré-sélections du CDC.
-- Saisie structurée des dommages, actions et échanges du sinistre ; points forts
-  de vente choisis par l'utilisateur (aujourd'hui déduits des faits documentés).
-- Sections optionnelles dont le contenu n'a pas encore de source structurée :
-  charges et taxes, « valeur retenue » du dossier complet, protections détaillées.
+Listes de la fiche bien (`lib/assets/additional-infos.ts`), stockées dans la
+colonne JSONB de leur sous-rubrique, remplacées en bloc avec contrôle optimiste
+(`version`, 409 `CONFLICT` + état courant) ; références (photos, pièces,
+événement) vérifiées à l'écriture et ignorées à la génération si disparues :
+
+| Liste / champ | Dossier | Repli sans saisie |
+|---|---|---|
+| `claim.claimEventKey` (sinistre de l'agenda, RULE-001) | sinistre : date, circonstances, pastille de chronologie | saisie temporaire (RULE-002) |
+| `claim.damages[]` zone, élément, constat, montant estimé, photos, pièces | sinistre 03 (« P2, P3 · A2 ») | aucun dommage (jamais extrapolé) |
+| `claim.actions[]` date(s), statut, action, intervenant, facture | sinistre 05 (« facture · annexe A3 ») | mesures ligne à ligne |
+| `claim.exchanges[]` date, sens, interlocuteur, canal, résumé, document | sinistre 07 | correspondances retenues + texte libre |
+| `commercial.highlights[]` (4 au plus, suggestions acceptables) | vente 04 | faits documentés déduits |
+| `insurance.protectionItems[]`, `insurance.insuredItems[]` | souscription 03/04 | texte libre ligne à ligne |
+| `finance.*` valeur retenue (+ origine, date), frais d'acquisition, `charges[]` | dossier complet 03 (si cochée) | — |
+
+Une photo ou une pièce liée n'est citée que si elle est RETENUE dans le dossier
+(une pièce sensible non cochée n'apparaît jamais, même par sa référence).
+
+## Écran de préparation (§5, §17.1)
+
+```
+/assets/{id}/exports/{dossier}          page dédiée (écran large 65/35 ; plein écran mobile)
+POST /api/assets/{id}/exports/prepare   { exportType, includeCurrentSelections?, choices? } → PreparationDto
+POST /api/assets/{id}/exports/estimate  { exportType, choices }                                → { estimate, actions, messages }
+POST /api/assets/{id}/exports           { exportType, choices: §17.2 }                         → 202 { generationPublicId, pollUrl }
+GET  /api/export-generations/{id}       + currentStep (étape du job), excludedFiles (partielle)
+```
+
+| Chemin | Rôle |
+|---|---|
+| `preparation/sections.ts` | sections de l'écran = sections du PDF (titres des templates), obligatoires / décochables, hôte du formulaire d'informations |
+| `preparation/prepare.ts` | préparation PURE : éléments (documents, photos une par une, suivi / agenda), pré-sélection §6.2 / §24, compatibilité (`integrable`, `zip_only`, `missing`, `too_large`), modes, blocs CIL (B2 compris), messages MSG-PREP-* |
+| `preparation/estimate.ts` | estimation PURE, partagée avec `enqueue.ts` : format (ZIP-001), pages, taille, pièces PDF / ZIP, seuils §6.3, pièces retirées par un « PDF seul » (ALT-002), pièces indisponibles |
+| `preparation/load.ts` | contrôles (type 400, famille 422, offre 403), lecture (`loadExportSource`), dernière génération et auteur |
+| `lib/exports/preparation-state.ts` | machine d'états §5.3 (réducteur pur) et payload §17.2 |
+| `components/exports/preparation/*` | écran : en-tête, sections, éléments, blocs CIL, résumé collant, progression, résultat |
+
+Règles : un document sensible n'est jamais pré-coché ni coché par « Tout
+cocher » ; un format non intégrable n'offre que le ZIP ; une photo HEIC va au
+ZIP ; une section sans élément retenu se désactive et retrouve sa dernière
+sélection à la réactivation ; une demande « PDF seul » qui retirerait des
+pièces ZIP sans accusé est refusée (409 `PDF_ONLY_CONFIRMATION_REQUIRED`).
+
+Données structurées (schéma v2) affichées dans leur section, comptées, avec
+leurs pièces et photos liées (`sectionRows`) : dommages, actions et échanges
+du sinistre, points forts de vente, protections et éléments assurés de la
+souscription, valeur et charges du dossier complet (seulement si la section
+financière est cochée). Une pièce liée n'est citée que si elle est retenue ;
+« Retenir les pièces liées » les coche ensemble, jamais une pièce sensible.
+La date du sinistre (pré-sélection) reprend, à défaut de saisie, celle de
+l'événement de l'agenda lié (`claim.claimEventKey`). L'état d'enregistrement
+du formulaire remonte par `AssetAdditionalInfosSection.onSaveStateChange`.
+
+## Reste à faire
+
+- Contenu des pièces dans l'estimation : pages d'un PDF estimées à 150 Ko par
+  page (le compte réel n'est connu qu'à `resolve_files`) ; fichiers protégés ou
+  illisibles détectés seulement à la génération (partielle, ALT-004).
 - Table `document_template_versions` (versions portées par le code et figées dans
   chaque génération ; pas de table).
 - Limitation de débit partagée entre instances (aujourd'hui en mémoire par instance ;

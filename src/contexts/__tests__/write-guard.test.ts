@@ -125,6 +125,7 @@ describe('les points de déclenchement sont gardés', () => {
     // Les fermer priverait l'utilisateur de ses propres données — ce que le
     // message « vos données sont conservées » promet précisément.
     const onglet = sansCommentaires(read('src/components/assets/AssetExportsTab.tsx'));
-    expect(onglet).toMatch(/if \(!premiumOnly\) \{ setDrawerUsage\(type\); return; \}/);
+    // Transfert et récupération : tiroir ouvert sans passer par `garder`.
+    expect(onglet).toMatch(/if \(!isDossierCode\(type\)\) \{ setDrawerUsage\(type as TransferUsage\); return; \}/);
   });
 });

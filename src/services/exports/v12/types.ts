@@ -262,8 +262,10 @@ export interface SinistreData extends CaseBase {
     measures?: Nullable<string>; statusDetail?: Nullable<string>;
   };
   timeline?: Array<Selectable & { date?: Nullable<string>; dateLabel?: Nullable<string>; tone?: 'past' | 'key' | 'open' | string | null; title: string; text?: Nullable<string> }>;
-  damages?: Array<Selectable & { zone?: Nullable<string>; element?: Nullable<string>; finding?: Nullable<string>; photoRefs?: Nullable<string> }>;
-  actions?: Array<Selectable & { date?: Nullable<string>; whenLabel?: Nullable<string>; title: string; text?: Nullable<string> }>;
+  /** `docIds` : pièces liées (identifiants `docRef`), renvoyées vers leur annexe. */
+  damages?: Array<Selectable & { zone?: Nullable<string>; element?: Nullable<string>; finding?: Nullable<string>; photoRefs?: Nullable<string>; docIds?: string[] }>;
+  /** `docId` : facture liée, renvoyée vers son annexe. */
+  actions?: Array<Selectable & { date?: Nullable<string>; whenLabel?: Nullable<string>; title: string; text?: Nullable<string>; docId?: Nullable<string> }>;
   exchanges?: Array<Selectable & { date?: Nullable<string>; title: string; channel?: Nullable<string>; docId?: Nullable<string>; linkedToClaim?: boolean }>;
 }
 

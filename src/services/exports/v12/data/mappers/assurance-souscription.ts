@@ -6,7 +6,11 @@
  * Valeurs : prix d'achat de la fiche (justifié par la facture d'acquisition
  * si elle est retenue), valeur à assurer et montant souhaité SAISIS — jamais
  * d'estimation (« Verebona ne procède à aucune estimation », page finale).
- * RULE-004 : protections dans une section décochable (`protections`).
+ * RULE-004 : protections dans une section décochable (`protections`) :
+ * liste détaillée de la fiche (`insurance.protectionItems`, titre + précision),
+ * sinon texte libre ligne à ligne (protections, éléments particuliers).
+ * Accessoires et éléments à assurer (`insurance.insuredItems`) : valeur
+ * DÉCLARÉE, justificatif cité seulement s'il est retenu dans le dossier.
  * Le design est maquetté sur un objet : pour un bien immobilier ou un
  * véhicule, `asset.infoRows` porte les lignes de la famille.
  */
@@ -15,7 +19,7 @@ import { dot, fmt } from '../../html/components';
 import type { SouscriptionData } from '../../types';
 import { INSURANCE_OBJECTIVE_OPTIONS } from '@/lib/assets/additional-infos';
 import {
-  type MapInput, exportInfo, kc, str, info, infoCents, textLines, humanize, categoryName, categoryLabel, titleLines,
+  type MapInput, exportInfo, kc, str, info, infoCents, infoList, cellIds, textLines, humanize, categoryName, categoryLabel, titleLines,
   conditionLabel, usageLabel, familyInfoRows, toDocItem, sortedDocuments, toPhotoItem, plannedPhotos, selectedEvents,
   sectionOn, docRef,
 } from './common';
@@ -44,12 +48,33 @@ export function mapSouscription(m: MapInput): SouscriptionData {
       selected: true,
     });
   }
+  // Accessoires et éléments déclarés (fiche) : justificatif renvoyé vers son annexe s'il est retenu.
+  const plannedDocs = new Map(docs.map((pd) => [pd.doc.id, pd.doc]));
+  infoList(ins, 'insuredItems').forEach((it, i) => {
+    const label = str(it.label);
+    if (!label) return;
+    const proof = cellIds(it.documentId).map((id) => plannedDocs.get(id)).find(Boolean);
+    items.push({
+      id: `acc-${str(it.id) ?? i + 1}`, kind: 'accessory', label,
+      valueCents: typeof it.valueCents === 'number' ? it.valueCents : null,
+      docId: proof ? docRef(proof.id) : null,
+      proofLabel: proof ? (proof.kind === 'FACTURE' ? 'Facture' : proof.typeLabel || 'Justificatif') : 'Déclaratif · sans facture',
+      proofDate: proof?.date ?? null,
+      selected: true,
+    });
+  });
+  const accessoryCount = items.filter((x) => x.kind === 'accessory').length;
   if (valueToInsure != null) {
     items.push({ id: 'declared', kind: 'declared', label: 'Valeur à assurer déclarée', valueCents: valueToInsure, proofLabel: "Déclaré par l'assuré", selected: true });
   }
 
+  const detailed = infoList(ins, 'protectionItems')
+    .map((p, i) => ({ id: `pr-${str(p.id) ?? i + 1}`, title: str(p.title) ?? '', text: str(p.text), selected: true }))
+    .filter((p) => p.title);
   const protections = sectionOn(m, 'protections')
-    ? [...textLines(ins?.protections), ...textLines(ins?.specialItems)].map((t, i) => ({ id: `pr${i + 1}`, title: t, selected: true }))
+    ? detailed.length
+      ? detailed
+      : [...textLines(ins?.protections), ...textLines(ins?.specialItems)].map((t, i) => ({ id: `pr${i + 1}`, title: t, selected: true }))
     : [];
   const condition = sectionOn(m, 'condition')
     ? selectedEvents(m).map((e) => ({ id: e.key, date: e.date, title: e.title, aside: str(e.provider), selected: true }))
@@ -112,7 +137,7 @@ export function mapSouscription(m: MapInput): SouscriptionData {
       desiredInsuredAmountCents: desired,
       insuredName: m.meta.preparedBy,
       contractLabel: dot(insurer, contractNo ? `n° ${contractNo}` : '') || null,
-      accessoriesLabel: null,
+      accessoriesLabel: accessoryCount ? plural(accessoryCount, 'élément déclaré', 'éléments déclarés') : null,
     },
     summary,
     items,

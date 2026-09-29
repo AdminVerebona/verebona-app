@@ -20,20 +20,26 @@ import {
 import { and, eq, isNull } from 'drizzle-orm';
 import { buildAssetSnapshot, type AssetSnapshot, type DocumentRef, type PhotoRef } from '@/services/export-snapshot.service';
 import { getAssetAdditionalInfos } from '@/services/exports/additional-infos.service';
+import type { AdditionalInfoValue } from '@/lib/assets/additional-infos';
 import { evaluateCilReadiness, type CilReadiness } from '@/services/exports/cil-preparation.service';
 import { toExportFamily, type ExportFamily, type DossierCode } from '@/services/exports/catalog';
 import {
   classifyDocument, documentTitle, documentTypeLabel, fileFormatOf, isIntegrable, type DocKind,
 } from './documents';
 
-/** Valeurs des informations complémentaires (contrat `getAssetAdditionalInfos`). */
-export type InfoSection = Record<string, string | number | null | undefined>;
+/**
+ * Valeurs des informations complémentaires (contrat `getAssetAdditionalInfos`) :
+ * champs simples et, depuis le schéma v2, listes structurées (`ListItem[]`).
+ */
+export type InfoSection = Record<string, AdditionalInfoValue | null | undefined>;
 
 export interface AdditionalInfosSnapshot {
   commercial: InfoSection;
   rental: InfoSection;
   insurance: InfoSection;
   claim: InfoSection;
+  /** Absente des snapshots antérieurs à la migration 0214. */
+  finance?: InfoSection;
   updatedAt: string | null;
 }
 
@@ -329,6 +335,7 @@ export async function loadExportSource(params: { assetId: number; accountId: num
       rental: { ...(infos.rental ?? {}) },
       insurance: { ...(infos.insurance ?? {}) },
       claim: { ...(infos.claim ?? {}) },
+      finance: { ...(infos.finance ?? {}) },
       updatedAt: infos.updatedAt ?? null,
     },
     cil,
