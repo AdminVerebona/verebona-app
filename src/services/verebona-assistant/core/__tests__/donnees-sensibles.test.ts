@@ -89,6 +89,8 @@ describe('§29.4 — secrets et codes d’accès (toujours masqués)', () => {
     ["Code d'accès du portail = 7788", '7788'],
     ['Clé wifi: maBoxWPA-9981', 'maBoxWPA-9981'],
     ['Code alarme 2468', '2468'],
+    ['Code d’alarme : 4589', '4589'],
+    ["code d'alarme 7531", '7531'],
     ['clé AIzaSyA1234567890abcdefghijklmnopqrstuv', 'AIzaSyA1234567890abcdefghijklmnopqrstuv'],
     ['jeton eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N', 'eyJhbGci'],
   ])('%s', (texte, secret) => {

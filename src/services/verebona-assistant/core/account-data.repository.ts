@@ -9,6 +9,8 @@ import { pgClient } from '@/db';
 import { SQL_IS_RENTED } from '@/lib/assets/occupancy';
 import type { AccountDataPort, AgendaRow, AssetRow, DocumentHit, ExportRow, FactHit } from './data-answer.service';
 import { searchDocumentFacts, searchDocumentText, searchTableCells } from '@/services/ai/knowledge/document-knowledge.service';
+import { canonicalReadEnabled } from '../canonical/mode';
+import { createCanonicalAccountDataRepository } from '../canonical/repository';
 
 const rows = <T>(r: unknown) => r as unknown as T[];
 
@@ -28,7 +30,8 @@ function todayParis(): string {
 const ASSET_COLS = `a.id, a.name, a.category, a.subtype, to_char(a.purchase_date, 'YYYY-MM-DD') AS "purchaseDate", ${SQL_IS_RENTED('a')} AS "isRented",
   a.city, a.address, a.registration_number AS "registrationNumber"`;
 
-export const accountDataRepository: AccountDataPort = {
+/** Lecture HISTORIQUE (ASSISTANT_CANONICAL_READ=legacy), inchangée. */
+export const legacyAccountDataRepository: AccountDataPort & Required<Pick<AccountDataPort, 'listDocuments' | 'findDocument' | 'listExports' | 'searchTableCells'>> = {
   today: todayParis,
 
   async findAssets(accountId, words) {
@@ -243,3 +246,46 @@ export const accountDataRepository: AccountDataPort = {
     return [...byFile.values()].sort((a, b) => b.matchedTerms - a.matchedTerms);
   },
 };
+
+// ══════════════════════════════════════════════════════════════════════════
+// CDC 15 §9 (lot 15) — LECTURE CANONIQUE, COMMUTATEUR ASSISTANT_CANONICAL_READ
+//
+// `accountDataRepository` choisit, À CHAQUE APPEL, la lecture historique
+// (legacy, défaut ; `shadow` = legacy, l'assistant n'a pas de mode
+// observation) ou la couche canonique (`canonical/repository.ts` : fiche
+// canonique, documents N-N, agenda sans historique, dépenses qualifiées…).
+// Les lectures nouvelles n'existent qu'en enabled (méthodes optionnelles du
+// port : `data-answer` ne les appelle que si elles sont présentes).
+// ══════════════════════════════════════════════════════════════════════════
+const canonicalRepository = createCanonicalAccountDataRepository(legacyAccountDataRepository);
+
+const choisir = (): AccountDataPort => (canonicalReadEnabled() ? canonicalRepository : legacyAccountDataRepository);
+
+export const accountDataRepository: AccountDataPort = {
+  today: () => choisir().today(),
+  findAssets: (...a) => choisir().findAssets(...a),
+  listAssets: (...a) => choisir().listAssets(...a),
+  countDocuments: (...a) => choisir().countDocuments(...a),
+  countAgenda: (...a) => choisir().countAgenda(...a),
+  upcomingAgenda: (...a) => choisir().upcomingAgenda(...a),
+  sumDocumentAmounts: (...a) => choisir().sumDocumentAmounts(...a),
+  searchFacts: (...a) => choisir().searchFacts(...a),
+  searchTableCells: (...a) => choisir().searchTableCells!(...a),
+  searchDocuments: (...a) => choisir().searchDocuments(...a),
+  listDocuments: (...a) => choisir().listDocuments!(...a),
+  findDocument: (...a) => choisir().findDocument!(...a),
+  listExports: (...a) => choisir().listExports!(...a),
+  // Lectures canoniques : appelées par `data-answer` seulement en enabled.
+  readAssetField: (...a) => canonicalRepository.readAssetField!(...a),
+  sumQualifiedExpenses: (...a) => canonicalRepository.sumQualifiedExpenses!(...a),
+  listMissingInformation: (...a) => canonicalRepository.listMissingInformation!(...a),
+  listUpcomingAgenda: (...a) => canonicalRepository.listUpcomingAgenda!(...a),
+};
+
+/**
+ * Port selon le mode courant — les lectures canoniques optionnelles
+ * (`readAssetField`, `sumQualifiedExpenses`…) n'y figurent qu'en enabled.
+ */
+export function accountDataPortForMode(): AccountDataPort {
+  return choisir();
+}

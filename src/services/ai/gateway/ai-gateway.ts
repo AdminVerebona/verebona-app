@@ -293,7 +293,7 @@ export class AiGateway {
           // porter la branche demandée, sinon erreur récupérable (modèle suivant).
           const data = validateOutput<T>(
             out.rawText, req.outputSchema, operationCode, op.outputFormat ?? 'json',
-            master ? { expectedTask: master.task } : undefined,
+            master ? { expectedTask: master.task, taskField: op.taskField ?? 'task' } : undefined,
           );
 
           const durationMs = Date.now() - startedAt;

@@ -76,9 +76,11 @@ export class AiOutputTaskMismatchError extends AiGatewayError {
     operationCode: string,
     readonly expectedTask: string,
     readonly receivedTask: unknown,
+    /** Discriminant du master : `TASK` (T1, T3, T4) ou `MODE` (T2, §24). */
+    readonly discriminant: 'TASK' | 'MODE' = 'TASK',
   ) {
     super('INVALID_OUTPUT', operationCode,
-      `Sortie de la branche ${JSON.stringify(receivedTask ?? null)} au lieu de TASK=${expectedTask} (CDC 15 §22.2).`,
+      `Sortie de la branche ${JSON.stringify(receivedTask ?? null)} au lieu de ${discriminant}=${expectedTask} (CDC 15 §22.2).`,
       { recoverable: true });
     this.name = 'AiOutputTaskMismatchError';
   }

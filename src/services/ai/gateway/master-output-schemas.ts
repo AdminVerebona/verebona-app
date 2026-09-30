@@ -17,6 +17,9 @@ import {
 import {
   T4ClassifyEventOutput, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
 } from '../agenda/master/t4-contract';
+import {
+  T2AnswerOutput, T2MasterOutput, T2RevalidateOutput, T2UnderstandOutput,
+} from '../assistant/master/t2-contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1GroupUploadOutput,
@@ -29,6 +32,10 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T4VerifyCompletionOutput,
   T4TemporalAmbiguityOutput,
   T4MasterOutput,
+  T2UnderstandOutput,
+  T2AnswerOutput,
+  T2RevalidateOutput,
+  T2MasterOutput,
 };
 
 export function masterOutputSchemaFor(name: string): ZodType | null {

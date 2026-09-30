@@ -65,6 +65,13 @@ import { buildResultGroups } from './result-groups';
 import { foundWithoutInfoMessage } from './document-status';
 import { getIntentDefinition } from '../registries/intent-registry';
 import { ROUTES } from './entity-ref';
+import { canonicalReadEnabled } from '../canonical/mode';
+import { targetsFromInput, type AssistantTargets } from './assistant-targets';
+import type { TargetAnswer } from './target-answer';
+import { clientTimelineEvents, planTimelineEvents, timelineAnswer, type SynthesisPlan } from './synthesis-planner';
+import { documentSearchFilters, hasDocumentFilters } from './query-terms';
+import { CLARIFICATION_TTL_MS } from './clarification-builder';
+import type { VerebonaIntent } from '../types/intents';
 
 /** Ports injectés (implémentés par les autres services / le repo). */
 export interface OrchestratorPorts {
@@ -78,7 +85,12 @@ export interface OrchestratorPorts {
   classifyWithAI?(message: string, input: AssistantRequestInput): Promise<IntentRoute | null>;
   generateWithAI?(
     route: IntentRoute, sources: RetrievedSource[], input: AssistantRequestInput,
-  ): Promise<{ answer: string; claims: Claim[]; actions: VerebonaAction[]; supportLevel: AssistantRunResult['supportLevel']; model?: string; path?: 'first' | 'repair' | 'escalation' } | null>;
+  ): Promise<{
+    answer: string; claims: Claim[]; actions: VerebonaAction[]; supportLevel: AssistantRunResult['supportLevel'];
+    model?: string; path?: 'first' | 'repair' | 'escalation';
+    /** Chronologie structurée (T2-35, master T2 format `timeline`). */
+    events?: Array<{ date: string | null; text: string; sourceIds: string[] }>;
+  } | null>;
   /**
    * Niveaux 1 et 2 de la cascade : réponse exacte depuis les données
    * structurées et les données T1, sans modèle. Absent : la cascade passe
@@ -157,6 +169,19 @@ export interface OrchestratorPorts {
   isAiUnavailable?(): Promise<boolean>;
   /** Plafond budgétaire mensuel du compte (§6.6, §31.3). Absent : pas de plafond. */
   checkMonthlyBudget?(accountId: number): Promise<{ allowed: boolean }>;
+  /**
+   * CDC 15 T2-19, T2-20, T2-21 (ASSISTANT_CANONICAL_READ=enabled) : lecture
+   * ciblée d'un document ou d'une échéance déjà désignés (page, fil,
+   * clarification) — « quel est le montant ? », « et sa date ? ». `null` :
+   * la question ne porte pas sur la cible, la demande suit son cours.
+   */
+  readTarget?(input: AssistantRequestInput, targets: AssistantTargets, route?: IntentRoute): Promise<TargetAnswer | null>;
+  /**
+   * CDC 15 T2-10, T2-33, T2-34 (ASSISTANT_CANONICAL_READ=enabled) :
+   * planificateurs dédiés de synthèse, comparaison et chronologie. `null` :
+   * pas de plan (recherche générique en repli).
+   */
+  buildSynthesisContext?(route: IntentRoute, input: AssistantRequestInput): Promise<SynthesisPlan | null>;
 }
 
 export async function runAssistant(
@@ -333,7 +358,8 @@ export async function runAssistant(
       const actions = await ports.resolveActions(route, input, early.answer.sources);
       done('structured', early.answer.strategy, 'SUFFICIENT_STRUCTURED', early.answer.sources.length);
       const resolvedEarly = early.answer.sources.length ? await ports.resolveSources(early.answer.sources, input.accountId) : [];
-      return finalize(base, machine, 'deterministic', early.answer.text, [], resolvedEarly, actions, ports, input);
+      return finalize(base, machine, 'deterministic', early.answer.text, early.answer.claims ?? [], resolvedEarly, actions, ports, input,
+        early.answer.claims?.length ? 'supported' : null);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -354,6 +380,30 @@ export async function runAssistant(
           prep.kind === 'plan' ? prep.preview.summary : prep.message, [], [], [], ports, input);
         if (prep.kind === 'plan') result.commandPlan = prep.preview;
         return result;
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CIBLE DE LA PAGE — CDC 15 T2-21 (lecture canonique)
+    //
+    // « Quel est le montant ? » sur la page d'un ticket vise CE ticket : la
+    // page devient une cible explicite, lue AVANT toute analyse textuelle qui
+    // chercherait dans le compte entier. Seulement si la question ne nomme
+    // rien d'autre (garde-fou de `answerFromTarget`).
+    // ══════════════════════════════════════════════════════════════════════
+    if (canonicalReadEnabled() && ports.readTarget && !input.resume) {
+      const cibles = targetsFromInput(input);
+      if (cibles.primary && (cibles.primary.type === 'document' || cibles.primary.type === 'agenda_item')) {
+        const lu = await withDeadline(ports.readTarget(input, cibles), retrievalDeadline()).catch(() => null);
+        if (lu) {
+          const route = routeForIntent(lu.intent, input.planType, `cible ${cibles.primary.origin}`);
+          base.route = route;
+          trace.intent = route.intent;
+          const actions = await ports.resolveActions(route, input, lu.sources);
+          done('structured', lu.strategy, 'SUFFICIENT_STRUCTURED', lu.sources.length);
+          const resolvedCible = await ports.resolveSources(lu.sources, input.accountId);
+          return finalize(base, machine, 'deterministic', lu.text, lu.claims, resolvedCible, actions, ports, input, 'supported');
+        }
       }
     }
 
@@ -395,6 +445,7 @@ export async function runAssistant(
     // La classification IA n'est plus sollicitée d'emblée : c'est un appel
     // modèle, et la cascade doit d'abord tenter les niveaux gratuits.
     let route: IntentRoute = outcome.kind === 'route' ? outcome.route : fallbackUnknownRoute(input.planType);
+    route = affinerRoute(route, input);
     const needsClassification = outcome.kind === 'needs_classification';
     base.route = route;
     trace.intent = route.intent;
@@ -470,7 +521,7 @@ export async function runAssistant(
     // appel modèle, elle ne l'impose jamais.
     // ══════════════════════════════════════════════════════════════════════
     let data: DataAnswerOutcome | null = null;
-    if (ports.answerFromData && isDataQuestion(route)) {
+    if (ports.answerFromData && isDataQuestion(route, input.message)) {
       machine.transition('RETRIEVING');
       data = await withDeadline(ports.answerFromData(route, input, thresholds), retrievalDeadline()).catch(() => null);
 
@@ -574,9 +625,41 @@ export async function runAssistant(
       const classified = await ports.classifyWithAI(outcome.kind === 'needs_classification' ? outcome.normalized : input.message, input);
       reconcilierBudget(budget, avantCl, 1);
       trace.aiCalls = budget.used;
-      route = classified ?? fallbackUnknownRoute(input.planType);
+      route = affinerRoute(classified ?? fallbackUnknownRoute(input.planType), input);
       base.route = route;
       trace.intent = route.intent;
+
+      // ════════════════════════════════════════════════════════════════
+      // CLASSIFICATION AMBIGUË — CDC 15 T2-09 (lecture canonique)
+      //
+      // Le modèle a répondu `ambiguous` : pas de recherche large sur une
+      // demande qu'on n'a pas comprise. Résolution déterministe si une
+      // cible est déjà connue (page, fil, clarification) pour une question
+      // sur les données ; sinon clarification — les choix viennent du
+      // registre des intentions, jamais du modèle.
+      // ════════════════════════════════════════════════════════════════
+      if (canonicalReadEnabled() && route.clarificationRequired && !input.resume) {
+        const cible = targetsFromInput(input, route).primary;
+        if (route.intent.startsWith('ACCOUNT_') && cible) {
+          trace.escalationReasons.push(`CLASSIFICATION:AMBIGUOUS_RESOLVED_BY_${cible.origin.toUpperCase()}`);
+        } else {
+          trace.escalationReasons.push('CLARIFICATION:CLASSIFICATION_AMBIGUOUS');
+          const state = buildIntentClarification({
+            accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+            originalMessage: input.message, originalMessageId: messageId, proposed: route.intent,
+          });
+          if (ports.saveClarification && await ports.saveClarification(state).catch(() => false)) {
+            done('template', 'clarification.classification', 'AMBIGUOUS_TARGET', state.candidates.length);
+            return finalizeClarification(base, machine, state, ports, input);
+          }
+          // Sans fil où enregistrer la question : la poser quand même, sans
+          // chercher (jamais de retrieval sur une demande ambiguë).
+          const actions = await ports.resolveActions(route, input, []);
+          done('template', 'clarification.classification_unsaved', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic',
+            `${state.question} Par exemple : ${state.candidates.map((c) => c.label.toLowerCase()).join(', ')}.`, [], [], actions, ports, input, 'insufficient');
+        }
+      }
 
       // L'intention classée peut appeler une réponse imposée (hors périmètre,
       // conseil réservé, demande malveillante, politesse…) : le gabarit
@@ -589,16 +672,48 @@ export async function runAssistant(
       }
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // FAIT DEMANDÉ PAR LE MASTER T2 — CDC 15 §24 A4 (lecture canonique)
+    //
+    // `t2_understand` a identifié UN champ du FIELD_CATALOG : s'il porte sur
+    // UN bien ciblé (question, fil, page, indice), il est lu sur la fiche
+    // canonique, sans recherche ni génération.
+    // ══════════════════════════════════════════════════════════════════════
+    if (canonicalReadEnabled() && ports.readTarget && route.understanding?.requestedFacts.length) {
+      const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, route), route), retrievalDeadline()).catch(() => null);
+      if (lu) {
+        const actions = await ports.resolveActions(route, input, lu.sources);
+        done('structured', lu.strategy, 'SUFFICIENT_STRUCTURED', lu.sources.length);
+        const resolvedFait = await ports.resolveSources(lu.sources, input.accountId);
+        return finalize(base, machine, 'deterministic', lu.text, lu.claims, resolvedFait, actions, ports, input, 'supported');
+      }
+    }
+
     // ── Retrieval-first (§13) ───────────────────────────────────────────────
     let sources: RetrievedSource[] = [];
     let resolved: ResolvedSource[] = [];
+    let plan: SynthesisPlan | null = null;
     if (route.requiresRetrieval || det.needsSimpleRetrieval) {
       if (machine.state !== 'RETRIEVING') machine.transition('RETRIEVING');
       let adapters: RetrievedSource[];
       // Tous les candidats classés (≤ 20, §13.9) : cartes et quotas (§11.3).
       let candidats: RetrievedSource[] = [];
       try {
-        candidats = await withDeadline(ports.retrieve(route, input), retrievalDeadline());
+        // CDC 15 T2-10, T2-33 : planificateur dédié pour une synthèse, une
+        // comparaison ou une chronologie ; recherche générique en repli.
+        plan = canonicalReadEnabled() && SYNTHESIS_INTENTS.has(route.intent) && ports.buildSynthesisContext
+          ? await withDeadline(ports.buildSynthesisContext(route, input), retrievalDeadline()).catch((err) => {
+            if ((err as Error)?.message === 'REQUEST_TIMEOUT') throw err;
+            return null;
+          })
+          : null;
+        if (plan && plan.sources.length) {
+          trace.escalationReasons.push(`SYNTHESIS:${plan.kind}:${plan.sources.length}${plan.timeline ? `:events=${plan.timeline.events.length}/${plan.timeline.totalEvents}` : ''}`);
+          candidats = plan.sources;
+        } else {
+          plan = null;
+          candidats = await withDeadline(ports.retrieve(route, input), retrievalDeadline());
+        }
         adapters = candidats.slice(0, cfg.maxSources);
       } catch (e) {
         // ══════════════════════════════════════════════════════════════════
@@ -744,6 +859,9 @@ export async function runAssistant(
           machine.transition('VALIDATING');
           trace.model = gen.model ?? null;
           const actions = gen.actions.length ? gen.actions : await ports.resolveActions(route, input, sources);
+          // T2-35 : chronologie structurée transmise au client, liens résolus
+          // côté serveur à partir des sources fournies.
+          if (gen.events?.length) base.events = clientTimelineEvents(gen.events, sources);
           done('llm', 'llm.generate_answer', trace.escalationReasons.length ? 'INSUFFICIENT' : null, sources.length);
           return finalize(base, machine, 'ai', gen.answer, gen.claims, resolved, actions, ports, input, gen.supportLevel);
         }
@@ -762,10 +880,15 @@ export async function runAssistant(
     // plutôt que « ces éléments semblent liés ».
     const repli = isHelpIntent(route.intent)
       ? fallbackFromHelpSources(sources)
-      : data?.documentState?.kind === 'FOUND_WITHOUT_INFO'
+      // Chronologie planifiée (T2-34) : la liste datée elle-même, sans modèle.
+      : plan?.kind === 'timeline' && plan.timeline?.events.length
+        ? timelineAnswer(plan)
+        : data?.documentState?.kind === 'FOUND_WITHOUT_INFO'
         ? foundWithoutInfoMessage(data.documentState.title)
         : fallbackFromSources(sources);
     if (data?.documentState?.kind === 'FOUND_WITHOUT_INFO') trace.escalationReasons.push('DOCUMENT:FOUND_WITHOUT_INFO');
+    // Chronologie planifiée servie sans modèle : liste structurée aussi.
+    if (!isHelpIntent(route.intent) && plan?.kind === 'timeline' && plan.timeline?.events.length) base.events = planTimelineEvents(plan);
     // Plafond mensuel : le dire, sans culpabiliser (§6.6).
     // IA bloquée par l'exploitation (EStop, T2 désactivé/suspendu) alors que
     // la question en aurait eu besoin : le dire (T2-041, WF-34 étape 3) —
@@ -839,7 +962,11 @@ async function applyThreadMemory(
   input: AssistantRequestInput;
   contextUpdate?: AssistantRunResult['contextUpdate'];
   clarification?: ClarificationState;
-  answer?: { text: string; sources: RetrievedSource[]; strategy: string; intent: 'NAVIGATION_OPEN' | 'ACCOUNT_FACT_DOCUMENT' };
+  answer?: {
+    text: string; sources: RetrievedSource[]; strategy: string;
+    intent: 'NAVIGATION_OPEN' | 'ACCOUNT_FACT_DOCUMENT' | 'ACCOUNT_FACT_AGENDA' | 'ACCOUNT_FACT_ASSET';
+    claims?: Claim[];
+  };
 }> {
   // Reprise d'une clarification : le choix EST la référence.
   if (input.resume) {
@@ -852,6 +979,12 @@ async function applyThreadMemory(
       pageContext: { ...input.pageContext, ...(ref.type === 'document' ? { documentId: String(ref.id) } : { assetId: String(ref.id) }) },
     };
     const update = { ...ref, label: r.choiceLabel };
+    // CDC 15 T2-19 (lecture canonique) : document choisi → lecture ciblée
+    // (« son montant »), avant les réponses immédiates historiques.
+    if (ref.type === 'document') {
+      const lu = await lectureCiblee(enriched, ports);
+      if (lu) return { input: enriched, contextUpdate: update, answer: lu };
+    }
     // Une référence résolue par clarification peut appeler la même réponse
     // immédiate qu'une référence directe (« ouvre… », « sa date… »).
     if (ref.type === 'document' && ports.describeEntity) {
@@ -918,8 +1051,22 @@ async function applyThreadMemory(
     },
   };
   const contextUpdate = { type: res.entity.type, id: res.entity.id, label };
+  // CDC 15 T2-19, T2-20 (lecture canonique) : « et son montant ? », « et sa
+  // date ? » sur le document ou l'échéance cités — lus sur l'objet lui-même.
+  const lu = await lectureCiblee(enriched, ports);
+  if (lu) return { input: enriched, contextUpdate, answer: lu };
   const quick = quickAnswer(input.message, res.entity.type, res.entity.id, d, res.detected);
   return quick ? { input: enriched, contextUpdate, answer: quick } : { input: enriched, contextUpdate };
+}
+
+/** Lecture ciblée (canonique) d'une entité du fil ou d'une clarification. */
+async function lectureCiblee(
+  input: AssistantRequestInput,
+  ports: OrchestratorPorts,
+): Promise<NonNullable<Awaited<ReturnType<typeof applyThreadMemory>>['answer']> | null> {
+  if (!canonicalReadEnabled() || !ports.readTarget) return null;
+  const lu = await ports.readTarget(input, targetsFromInput(input)).catch(() => null);
+  return lu ? { text: lu.text, sources: lu.sources, strategy: lu.strategy, intent: lu.intent, claims: lu.claims } : null;
 }
 
 /** Réponses immédiates sur une entité référencée : l'ouvrir, donner sa date. */
@@ -976,11 +1123,63 @@ async function finalizeClarification(
 }
 
 /** Intentions portant sur les données du compte : la cascade y est tentée. */
-function isDataQuestion(route: IntentRoute): boolean {
+function isDataQuestion(route: IntentRoute, message = ''): boolean {
   // Synthèse, comparaison, chronologie : une valeur exacte n'y répond pas —
   // ces intentions vont directement au retrieval puis, si éligible, au modèle.
   if (SYNTHESIS_INTENTS.has(route.intent)) return false;
+  // CDC 15 T2-14 (lecture canonique) : une recherche de documents FILTRÉE
+  // (non rattachés, statut d'analyse, fournisseur) est servie par
+  // l'adaptateur documents, seul à appliquer ces filtres exactement.
+  if (canonicalReadEnabled() && route.intent === 'ACCOUNT_SEARCH_DOCUMENT' && hasDocumentFilters(documentSearchFilters(message).filters)) return false;
   return route.intent.startsWith('ACCOUNT_') || route.intent === 'UNKNOWN';
+}
+
+/**
+ * Correction de route, lecture canonique (CDC 15 T2-14) : « quels documents
+ * sont en cours d'analyse ? » ou « … ne sont rattachés à aucun bien ? » est
+ * une RECHERCHE de documents filtrée, pas une synthèse. Sans effet en legacy.
+ */
+export function affinerRoute(route: IntentRoute, input: Pick<AssistantRequestInput, 'message' | 'planType'>): IntentRoute {
+  if (!canonicalReadEnabled()) return route;
+  if (route.intent !== 'ACCOUNT_SUMMARY' && route.intent !== 'UNKNOWN') return route;
+  const plainMsg = plainTxt(input.message ?? '');
+  if (!/\b(documents?|fichiers?|factures?|devis|contrats?|pieces?)\b/.test(plainMsg)) return route;
+  if (!hasDocumentFilters(documentSearchFilters(input.message ?? '').filters)) return route;
+  return { ...routeForIntent('ACCOUNT_SEARCH_DOCUMENT', input.planType, 'recherche de documents filtrée'), entityHints: route.entityHints };
+}
+
+/**
+ * Clarification d'une classification ambiguë — CDC 15 T2-09. Choix issus du
+ * registre des intentions (l'intention proposée par le modèle d'abord) ; la
+ * reprise rejoue la demande avec l'intention choisie, sans re-classement.
+ */
+export function buildIntentClarification(p: {
+  accountId: number; userId: number; conversationId?: number;
+  originalMessage: string; originalMessageId: string; proposed: VerebonaIntent; now?: Date;
+}): ClarificationState {
+  const now = p.now ?? new Date();
+  const CHOIX: Array<[VerebonaIntent, string]> = [
+    ['ACCOUNT_SEARCH_DOCUMENT', 'Retrouver un document'],
+    ['ACCOUNT_SEARCH_AGENDA', 'Retrouver une échéance'],
+    ['ACCOUNT_FACT_ASSET', 'Une information sur un bien'],
+    ['PRODUCT_HELP_HOW_TO', 'Savoir comment faire dans Verebona'],
+  ];
+  const propose = p.proposed.startsWith('ACCOUNT_') || p.proposed.startsWith('PRODUCT_HELP')
+    ? [[p.proposed, getIntentDefinition(p.proposed).label] as [VerebonaIntent, string]] : [];
+  const choix = [...propose, ...CHOIX.filter(([i]) => i !== p.proposed)].slice(0, 4);
+  return {
+    clarificationId: randomUUID(),
+    conversationId: p.conversationId, accountId: p.accountId, userId: p.userId,
+    originalMessageId: p.originalMessageId, originalMessage: p.originalMessage, originalIntent: p.proposed,
+    resolvedContext: {},
+    ambiguity: { kind: 'action', field: 'intent', reason: 'CLASSIFICATION_AMBIGUOUS' },
+    candidateType: 'action',
+    candidates: choix.map(([intent, label]) => ({ id: `intent_${intent.toLowerCase()}`, label, resumeMessage: p.originalMessage, resumeIntent: intent })),
+    question: 'Je ne suis pas sûr de comprendre votre demande. Que cherchez-vous ?',
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
+    attemptCount: 0, chainDepth: 1, status: 'PENDING',
+  };
 }
 
 const SYNTHESIS_INTENTS = new Set(['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACCOUNT_TIMELINE']);

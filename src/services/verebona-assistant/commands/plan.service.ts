@@ -120,6 +120,12 @@ export const sqlLookup: CommandLookup = {
     )) as unknown as Array<{ id: number; title: string; date: string | null }>;
   },
   async getAssetState(accountId, id) {
+    // CDC 15 T2-40 (ASSISTANT_CANONICAL_READ=enabled) : la valeur présentée à
+    // la confirmation (« A → B ») est la valeur CANONIQUE — celle que
+    // l'assistant lit et que la fiche affiche (`commandAssetState`, X), la
+    // même que l'exécuteur relit avant d'écrire. Legacy : lecture historique.
+    const { canonicalReadEnabled } = await import('../canonical/mode');
+    if (canonicalReadEnabled()) return (await import('../canonical/commands')).commandAssetState(accountId, id);
     const r = (await pgClient.unsafe(
       `SELECT id, name, city, category, status, lock_state AS "lockState", key_characteristics AS kc,
               purchase_date AS "purchaseDate", purchase_price_cents AS "purchasePriceCents",

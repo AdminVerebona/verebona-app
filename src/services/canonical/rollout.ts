@@ -50,8 +50,9 @@ export const ROLLOUT_SWITCHES = {
       + '(T4-07, X-04), nature HISTORICAL/DEADLINE (D-14), recopie « achat » limitée au manuel réalisé (D-13).',
   },
   ASSISTANT_CANONICAL_READ: {
-    env: 'ASSISTANT_CANONICAL_READ', lot: 'L15', wired: false,
-    description: 'Lecture canonique de l’assistant (T2) — pas de mode observation.',
+    env: 'ASSISTANT_CANONICAL_READ', lot: 'L15', wired: true,
+    description: 'Lecture canonique de l’assistant (T2) : fiche canonique, conflits ouverts, documents N-N, '
+      + 'agenda sans historique, dépenses qualifiées, complétude — pas de mode observation (shadow = legacy).',
   },
   EXPORTS_CANONICAL_SOURCE: {
     env: 'EXPORTS_CANONICAL_SOURCE', lot: 'L16', wired: false,
@@ -93,6 +94,16 @@ export function t3NegativeMode(env: Env = process.env): RolloutMode {
  */
 export function t4EffectsMode(env: Env = process.env): RolloutMode {
   return getRolloutMode('AI_T4_EFFECTS', env);
+}
+
+/**
+ * Lecture canonique de l'assistant (plan L15, CDC 15 T2-01…T2-40). PAS de
+ * mode observation : `shadow` se comporte comme `legacy` (signalé une fois
+ * par processus par `verebona-assistant/canonical/mode.ts`). Rend donc
+ * `legacy` ou `enabled`.
+ */
+export function assistantCanonicalReadMode(env: Env = process.env): Exclude<RolloutMode, 'shadow'> {
+  return getRolloutMode('ASSISTANT_CANONICAL_READ', env) === 'enabled' ? 'enabled' : 'legacy';
 }
 
 /** Mode des écritures canoniques (plan L11). */

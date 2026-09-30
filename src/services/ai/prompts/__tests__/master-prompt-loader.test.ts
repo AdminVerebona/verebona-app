@@ -111,7 +111,7 @@ describe('renderMasterPrompt (pur)', () => {
   });
 
   it('inspection et contrôle de structure', () => {
-    expect(inspectMasterTemplate(tpl)).toEqual({ placeholders: ['TASK', 'A', 'B'], branches: ['RUN'], hasTaskPlaceholder: true });
+    expect(inspectMasterTemplate(tpl)).toEqual({ placeholders: ['TASK', 'A', 'B'], branches: ['RUN'], hasTaskPlaceholder: true, discriminant: 'TASK' });
     expect(checkMasterTemplate(tpl, ['RUN'])).toEqual([]);
     expect(checkMasterTemplate('rien', ['RUN', 'OTHER'])).toEqual([
       'emplacement {{TASK}} absent', 'section « BRANCHE TASK = RUN » absente', 'section « BRANCHE TASK = OTHER » absente',

@@ -181,14 +181,21 @@ export function invalidatePromptCache(promptCode?: string): void {
 
 /** Emplacement réservé à la branche, fixé par le serveur. */
 export const MASTER_TASK_PLACEHOLDER = 'TASK';
+/**
+ * Mot-clé de branche d'un master : `TASK` (T1, T3, T4) ou `MODE` (T2, §24 :
+ * « MODE = {{MODE}} », « BRANCHE MODE = ANSWER »). Un master n'en porte qu'un ;
+ * c'est lui que le serveur fixe.
+ */
+export const MASTER_DISCRIMINANTS = ['TASK', 'MODE'] as const;
+export type MasterDiscriminant = (typeof MASTER_DISCRIMINANTS)[number];
 
 /** Marqueur de section d'une branche dans un master (`BRANCHE TASK = X`). */
-export function masterBranchMarker(task: string): string {
-  return `BRANCHE TASK = ${task}`;
+export function masterBranchMarker(task: string, discriminant: MasterDiscriminant = 'TASK'): string {
+  return `BRANCHE ${discriminant} = ${task}`;
 }
 
 const PLACEHOLDER_RE = /\{\{([A-Z0-9_]+)\}\}/g;
-const BRANCH_RE = /BRANCHE\s+TASK\s*=\s*([A-Z0-9_]+)/g;
+const BRANCH_RE = /BRANCHE\s+(?:TASK|MODE)\s*=\s*([A-Z0-9_]+)/g;
 
 export type MasterPromptErrorCode =
   | 'MASTER_NOT_FOUND'
@@ -216,12 +223,15 @@ export interface MasterTemplateInfo {
   placeholders: string[];
   branches: string[];
   hasTaskPlaceholder: boolean;
+  /** Emplacement de branche du master (`TASK` ou `MODE`), ou null. */
+  discriminant: MasterDiscriminant | null;
 }
 
 export function inspectMasterTemplate(text: string): MasterTemplateInfo {
   const placeholders = [...new Set([...text.matchAll(PLACEHOLDER_RE)].map((m) => m[1]))];
   const branches = [...new Set([...text.matchAll(BRANCH_RE)].map((m) => m[1]))];
-  return { placeholders, branches, hasTaskPlaceholder: placeholders.includes(MASTER_TASK_PLACEHOLDER) };
+  const discriminant = MASTER_DISCRIMINANTS.find((d) => placeholders.includes(d)) ?? null;
+  return { placeholders, branches, hasTaskPlaceholder: discriminant !== null, discriminant };
 }
 
 /**
@@ -234,7 +244,7 @@ export function checkMasterTemplate(text: string, tasks: readonly string[]): str
   const out: string[] = [];
   if (!info.hasTaskPlaceholder) out.push('emplacement {{TASK}} absent');
   for (const t of tasks) {
-    if (!info.branches.includes(t)) out.push(`section « ${masterBranchMarker(t)} » absente`);
+    if (!info.branches.includes(t)) out.push(`section « ${masterBranchMarker(t, info.discriminant ?? 'TASK')} » absente`);
   }
   return out;
 }
@@ -261,29 +271,30 @@ export function renderMasterPrompt(
     throw new MasterPromptError('TASK_NOT_ALLOWED', code,
       `TASK « ${task} » non autorisée (branches déclarées : ${allowedTasks.join(', ') || 'aucune'}).`);
   }
-  if (Object.prototype.hasOwnProperty.call(variables, MASTER_TASK_PLACEHOLDER)) {
-    throw new MasterPromptError('RESERVED_VARIABLE', code,
-      'la variable TASK est fixée par le serveur, jamais par l’appelant (CDC 15 §22.2).');
-  }
   const info = inspectMasterTemplate(template);
+  const cle = info.discriminant ?? MASTER_TASK_PLACEHOLDER;
+  if (Object.prototype.hasOwnProperty.call(variables, cle) || Object.prototype.hasOwnProperty.call(variables, MASTER_TASK_PLACEHOLDER)) {
+    throw new MasterPromptError('RESERVED_VARIABLE', code,
+      `la variable ${cle} est fixée par le serveur, jamais par l’appelant (CDC 15 §22.2).`);
+  }
   if (!info.hasTaskPlaceholder) {
     throw new MasterPromptError('TASK_PLACEHOLDER_MISSING', code, 'le master ne contient pas {{TASK}}.');
   }
   if (!info.branches.includes(task)) {
     throw new MasterPromptError('TASK_BRANCH_MISSING', code,
-      `section « ${masterBranchMarker(task)} » absente du master.`);
+      `section « ${masterBranchMarker(task, cle)} » absente du master.`);
   }
   const undeclared = Object.keys(variables).filter((k) => variables[k] !== undefined && !info.placeholders.includes(k));
   if (undeclared.length > 0) {
     throw new MasterPromptError('UNDECLARED_VARIABLE', code,
       `variable(s) sans emplacement dans le master : ${undeclared.join(', ')} — concaténation de consignes interdite (CDC 15 §22.3).`);
   }
-  const missing = info.placeholders.filter((p) => p !== MASTER_TASK_PLACEHOLDER && variables[p] === undefined);
+  const missing = info.placeholders.filter((p) => p !== cle && variables[p] === undefined);
   if (missing.length > 0) {
     throw new MasterPromptError('UNRESOLVED_PLACEHOLDER', code,
       `emplacement(s) sans valeur : ${missing.map((m) => `{{${m}}}`).join(', ')}.`);
   }
-  const values: Record<string, unknown> = { ...variables, [MASTER_TASK_PLACEHOLDER]: task };
+  const values: Record<string, unknown> = { ...variables, [cle]: task };
   return template.replace(PLACEHOLDER_RE, (_m, key: string) => {
     const v = values[key];
     return typeof v === 'string' ? v : JSON.stringify(v);

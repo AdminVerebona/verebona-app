@@ -33,7 +33,7 @@ describe('valeur par défaut', () => {
     expect(promptArchitectureOf(null)).toBe('steps');
   });
 
-  it('masters déclarés : T1 (lot 12), T3 (lot 13), T4 (lot 14)', () => {
+  it('masters déclarés : T1 (lot 12), T3 (lot 13), T4 (lot 14), T2 (lot 15)', () => {
     expect(masterPromptForTreatment('T1')).toEqual({
       masterPromptCode: 't1_master_v1', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'],
     });
@@ -44,8 +44,11 @@ describe('valeur par défaut', () => {
       // TEMPORAL_AMBIGUITY : opération inactive tant qu'aucun appelant (relecture lot 14).
       masterPromptCode: 't4_master_v1', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION'],
     });
-    expect(masterPromptForTreatment('T2')).toBeNull();
-    expect(masterCapableTreatments()).toEqual(['T1', 'T3', 'T4']);
+    expect(masterPromptForTreatment('T2')).toEqual({
+      masterPromptCode: 't2_master_v1', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'],
+    });
+    expect(masterPromptForTreatment('T5')).toBeNull();
+    expect([...masterCapableTreatments()].sort()).toEqual(['T1', 'T2', 'T3', 'T4']);
   });
 });
 
@@ -188,7 +191,12 @@ describe('alerte master déclaré mais non appliqué (commutateur ≠ enabled)',
   it('fonction pure', () => {
     expect(promptArchitectureWarning('T1', 'steps', 'legacy')).toBeNull();
     expect(promptArchitectureWarning('T1', 'master', 'enabled')).toBeNull();
-    expect(promptArchitectureWarning('T2', 'master', 'legacy')).toBeNull();
+    expect(promptArchitectureWarning('T5', 'master', 'legacy')).toBeNull();
+    // Lot 15 : T2 en master mais AI_INTELLIGENT_ASSISTANT ≠ enabled ⇒ aucun appel modèle.
+    expect(promptArchitectureWarning('T2', 'master', 'legacy')).toMatchObject({
+      treatment: 'T2', code: 'MASTER_ENGINE_NOT_ENABLED', switchName: 'AI_INTELLIGENT_ASSISTANT',
+    });
+    expect(promptArchitectureWarning('T2', 'master', 'enabled')).toBeNull();
     for (const mode of ['legacy', 'shadow']) {
       expect(promptArchitectureWarning('T1', 'master', mode)).toMatchObject({
         treatment: 'T1', code: 'MASTER_NOT_APPLIED', switchName: 'AI_T1_ANALYSIS_MODE', switchMode: mode,
@@ -281,5 +289,20 @@ describe('saveTreatmentConfig — §29.1 appliqué par le service', () => {
     expect((saveEntry.mock.calls[0][1] as TreatmentConfig).masterPrompt).toBe('MASTER EN PLACE');
     vi.doUnmock('../config-version.repository');
     vi.doUnmock('../config-cache-version');
+  });
+});
+
+describe('T2-43 : variable retirée VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', () => {
+  it('posée : alerte (admin, health) ; absente : rien', async () => {
+    const { retiredOutputTokensWarning } = await import('../prompt-architecture');
+    expect(retiredOutputTokensWarning({})).toBeNull();
+    expect(retiredOutputTokensWarning({ VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS: '300' })).toMatchObject({
+      treatment: 'T2', code: 'RETIRED_ENV_VARIABLE', switchName: 'VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', switchMode: '300',
+    });
+    const w = await promptArchitectureWarnings({
+      env: { VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS: '300' }, readMode: () => 'enabled', readArchitecture: async () => 'steps',
+    });
+    expect(w.map((x) => x.code)).toEqual(['RETIRED_ENV_VARIABLE']);
+    expect(await promptArchitectureWarnings({ env: {}, readMode: () => 'enabled', readArchitecture: async () => 'steps' })).toEqual([]);
   });
 });

@@ -15,19 +15,21 @@
  * qui manquait :
  *   1. langue : la réponse est en français (§21.7, CA-27) — sinon repli ;
  *   1 bis. vocabulaire interdit (§21.5) — sinon repli ;
- *   2. longueur : 4 phrases au plus avant cartes et actions (§21.2, CA-19),
- *      les étapes numérotées ne comptant pas ; chronologie et comparaison
- *      (listes) en sont exemptées mais restent sous 1 200 caractères ;
+ *   2. longueur : règle UNIQUE par intention (`prompts/answer-format.ts`,
+ *      T2-36) — 4 phrases au plus par défaut (§21.2, CA-19), étapes
+ *      numérotées non comptées ; chronologie et comparaison (listes) bornées
+ *      en caractères seulement (1 200) ;
  *   3. une affirmation coupée par la limite sort aussi des citations, et le
  *      niveau d'étayage passe à « partial » (rien n'est caché).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { Claim, SupportLevel } from '../types/sources';
 import { findForbiddenVocabulary } from './output-safety';
+import { answerFormatFor, DEFAULT_MAX_ANSWER_CHARS, DEFAULT_MAX_SENTENCES } from '../prompts/answer-format';
 
-export const MAX_SENTENCES = 4;
-export const MAX_ANSWER_CHARS = 1200;
-const LIST_INTENTS = new Set(['ACCOUNT_TIMELINE', 'ACCOUNT_COMPARISON']);
+// T2-36 : valeurs par défaut de la règle UNIQUE par intention (`answer-format.ts`).
+export const MAX_SENTENCES = DEFAULT_MAX_SENTENCES;
+export const MAX_ANSWER_CHARS = DEFAULT_MAX_ANSWER_CHARS;
 
 const FR = new Set('le la les un une des du de et est sont pour dans sur avec votre vos vous ce cette ces il elle qui que au aux pas par en ne plus a été sera date montant document bien'.split(' '));
 const EN = new Set('the and is are for with your you this that these of to in on it was be not by from have has will'.split(' '));
@@ -82,23 +84,25 @@ export function validateGeneratedAnswer(
   let answer = g.answer;
   let claims = g.claims;
   let supportLevel = g.supportLevel;
+  const regle = answerFormatFor(intent);
+  const maxPhrases = regle.maxSentences;
 
-  if (!LIST_INTENTS.has(intent) && countSentences(answer) > MAX_SENTENCES) {
+  if (maxPhrases !== null && countSentences(answer) > maxPhrases) {
     violations.push('TOO_MANY_SENTENCES');
     // Coupe à la 4e phrase, en gardant les étapes numérotées qui précèdent.
     const out: string[] = [];
     let n = 0;
     for (const bloc of answer.split(/(?<=[.!?…])\s+/)) {
       const etape = /^\s*\d+[.)]\s/.test(bloc);
-      if (!etape && n >= MAX_SENTENCES) break;
+      if (!etape && n >= maxPhrases) break;
       out.push(bloc);
       if (!etape) n += 1;
     }
     answer = out.join(' ');
   }
-  if (answer.length > MAX_ANSWER_CHARS) {
+  if (answer.length > regle.maxChars) {
     violations.push('TOO_LONG');
-    const coupe = answer.slice(0, MAX_ANSWER_CHARS);
+    const coupe = answer.slice(0, regle.maxChars);
     const fin = Math.max(coupe.lastIndexOf('. '), coupe.lastIndexOf('\n'));
     answer = fin > 200 ? coupe.slice(0, fin + 1) : `${coupe.trimEnd()}…`;
   }

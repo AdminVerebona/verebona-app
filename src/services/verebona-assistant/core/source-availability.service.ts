@@ -44,13 +44,14 @@ import { pgClient } from '@/db';
 import type { ResolvedSource } from '../types/sources';
 import type { ResultGroup } from './result-groups';
 import { parseEntityRef, type EntityKind } from './entity-ref';
+import { canonicalReadEnabled } from '../canonical/mode';
 
 /**
  * Requête de vérification par famille d'entité. `$1` : identifiants
  * numériques, `$2` : compte. Rend les identifiants ENCORE accessibles.
  *
- * `to_process` n'est pas vérifié : un élément résolu reste une source
- * historique valable, et `to_process_actions` n'a pas de suppression logique.
+ * `to_process` n'est pas vérifié ici (mode historique) : voir
+ * `REQUETE_TO_PROCESS`, appliquée en lecture canonique (CDC 15 T2-45).
  */
 export const REQUETES_DISPONIBILITE: Readonly<Partial<Record<EntityKind, string>>> = {
   asset: `SELECT id FROM assets WHERE id = ANY($1::int[]) AND account_id = $2 AND deleted_at IS NULL`,
@@ -69,6 +70,21 @@ export const REQUETES_DISPONIBILITE: Readonly<Partial<Record<EntityKind, string>
   export: `SELECT id FROM export_generation WHERE id = ANY($1::int[]) AND account_id = $2
             AND status NOT IN ('deleted', 'cancelled')`,
 };
+
+/**
+ * CDC 15 T2-45 (lot 15, ASSISTANT_CANONICAL_READ=enabled) : un élément
+ * « À traiter » est revérifié sur SA clé (`to_process_actions.id`, bornée au
+ * compte) et selon la même règle que la page « À traiter »
+ * (`to-process-query.service`, `resolved_at IS NULL`) : un élément résolu
+ * n'y figure plus — le lien « Ouvrir À traiter » n'y mènerait à rien.
+ */
+export const REQUETE_TO_PROCESS =
+  `SELECT id FROM to_process_actions WHERE id = ANY($1::int[]) AND account_id = $2 AND resolved_at IS NULL`;
+
+/** Requêtes de vérification selon le mode de lecture. */
+export function requetesDisponibilite(canonique: boolean = canonicalReadEnabled()): Readonly<Partial<Record<EntityKind, string>>> {
+  return canonique ? { ...REQUETES_DISPONIBILITE, to_process: REQUETE_TO_PROCESS } : REQUETES_DISPONIBILITE;
+}
 
 /** Exécuteur de requête — injectable pour les tests. */
 export type Requeteur = (sql: string, params: unknown[]) => Promise<Array<{ id: number }>>;
@@ -89,10 +105,11 @@ export async function identifiantsIndisponibles(
   accountId: number,
   requeteur: Requeteur = requeteurPg,
 ): Promise<Set<string>> {
+  const requetes = requetesDisponibilite();
   const parFamille = new Map<EntityKind, Map<number, string[]>>();
   for (const brut of ids) {
     const ref = parseEntityRef(brut);
-    if (!ref || !REQUETES_DISPONIBILITE[ref.kind]) continue;
+    if (!ref || !requetes[ref.kind]) continue;
     const famille = parFamille.get(ref.kind) ?? new Map<number, string[]>();
     famille.set(ref.id, [...(famille.get(ref.id) ?? []), brut]);
     parFamille.set(ref.kind, famille);
@@ -104,7 +121,7 @@ export async function identifiantsIndisponibles(
       // Le compte est dans la clause : une entité d'un autre compte ne
       // remonte pas, donc est marquée indisponible (« suppression ET
       // permission », §19.10).
-      const rows = await requeteur(REQUETES_DISPONIBILITE[kind]!, [[...famille.keys()], accountId]);
+      const rows = await requeteur(requetes[kind]!, [[...famille.keys()], accountId]);
       const vivants = new Set(rows.map((r) => Number(r.id)));
       for (const [id, bruts] of famille) if (!vivants.has(id)) bruts.forEach((b) => indisponibles.add(b));
     } catch (e) {

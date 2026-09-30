@@ -42,10 +42,15 @@ export const INTENT_DEFINITIONS: Record<VerebonaIntent, IntentDefinition> = {
   ACCOUNT_FACT_DOCUMENT: D('ACCOUNT_FACT_DOCUMENT', "Lire une donnée d'un document", 'sql+template', false, true, ['document', 'document_extraction']),
   ACCOUNT_FACT_AGENDA: D('ACCOUNT_FACT_AGENDA', "Lire une date/statut d'agenda", 'sql+template', false, true, ['agenda_item']),
   ACCOUNT_TO_PROCESS: D('ACCOUNT_TO_PROCESS', 'Compter/lister À traiter', 'sql', false, true, ['to_process_item']),
-  ACCOUNT_MISSING_INFORMATION: D('ACCOUNT_MISSING_INFORMATION', 'Données manquantes', 'business_rules', false, true, ['asset_field', 'document', 'product_rule']),
+  // CDC 15 T2-04, T2-07 (lot 15) : les informations manquantes sont aussi
+  // les éléments « À traiter » en attente — le contrat de sources le dit.
+  ACCOUNT_MISSING_INFORMATION: D('ACCOUNT_MISSING_INFORMATION', 'Données manquantes', 'business_rules', false, true, ['asset_field', 'document', 'product_rule', 'to_process_item']),
 
-  ACCOUNT_SUMMARY: D('ACCOUNT_SUMMARY', 'Synthèse multi-sources', 'retrieval+synthesis', true, true, ['document', 'document_extraction', 'asset_field']),
-  ACCOUNT_COMPARISON: D('ACCOUNT_COMPARISON', 'Comparaison', 'retrieval+comparison', true, true, ['document', 'document_extraction']),
+  // CDC 15 T2-10, T2-33 (lot 15) : la synthèse combine état canonique,
+  // documents, faits, agenda et « À traiter » ; la comparaison met en regard
+  // les mêmes dimensions (champs canoniques) des biens comparés.
+  ACCOUNT_SUMMARY: D('ACCOUNT_SUMMARY', 'Synthèse multi-sources', 'retrieval+synthesis', true, true, ['document', 'document_extraction', 'asset_field', 'agenda_item', 'to_process_item']),
+  ACCOUNT_COMPARISON: D('ACCOUNT_COMPARISON', 'Comparaison', 'retrieval+comparison', true, true, ['document', 'document_extraction', 'asset_field']),
   ACCOUNT_TIMELINE: D('ACCOUNT_TIMELINE', 'Chronologie', 'retrieval+timeline', true, true, ['document', 'agenda_item', 'asset_field']),
 
   EXPORT_HELP: D('EXPORT_HELP', 'Expliquer/ouvrir un export', 'help+action', false, true, ['help_entry']),

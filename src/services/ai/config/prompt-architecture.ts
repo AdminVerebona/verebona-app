@@ -122,7 +122,7 @@ export function masterConfigIssues(
 ): Array<{ field: 'prompt' | 'promptArchitecture' | 'masterPrompt'; message: string; blocking: boolean }> {
   const out: Array<{ field: 'prompt' | 'promptArchitecture' | 'masterPrompt'; message: string; blocking: boolean }> = [];
   const pre = inspectMasterTemplate(c.prompt ?? '');
-  if (pre.hasTaskPlaceholder || /BRANCHE\s+TASK\s*=/.test(c.prompt ?? '')) {
+  if (pre.hasTaskPlaceholder || /BRANCHE\s+(?:TASK|MODE)\s*=/.test(c.prompt ?? '')) {
     out.push({
       field: 'prompt',
       message: 'Le préambule des étapes contient un prompt maître ({{TASK}} ou « BRANCHE TASK = ») : '
@@ -178,8 +178,12 @@ export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MO
  * donc aucun effet. Le départage des liens, lui, passe par le master dans
  * tous les cas.
  */
-export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE'>> = {
+export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT'>> = {
   T3: 'AI_RECONCILIATION_ENGINE',
+  // Lot 15 : T2 en `master` mais `AI_INTELLIGENT_ASSISTANT` ≠ `enabled` ⇒
+  // l'assistant n'appelle aucun modèle (port de génération indéfini) : le
+  // master UNDERSTAND/ANSWER n'est jamais utilisé.
+  T2: 'AI_INTELLIGENT_ASSISTANT',
   // Lot 14 : T4 en `master` mais `AI_AGENDA_ENGINE` ≠ `enabled` ⇒ le moteur
   // agenda qui appelle CLASSIFY_EVENT ne tourne pas (`legacy`) ou n'écrit
   // rien (`shadow`), et le chemin manuel garde le classifieur historique. `AI_T4_EFFECTS` ne conditionne PAS le master (il gouverne
@@ -187,11 +191,12 @@ export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_EN
   T4: 'AI_AGENDA_ENGINE',
 };
 
-export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE';
+export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT';
 
 export interface PromptArchitectureWarning {
   treatment: Treatment;
-  code: 'MASTER_NOT_APPLIED' | 'MASTER_ENGINE_NOT_ENABLED';
+  /** `RETIRED_ENV_VARIABLE` : variable retirée encore posée (T2-43), ignorée. */
+  code: 'MASTER_NOT_APPLIED' | 'MASTER_ENGINE_NOT_ENABLED' | 'RETIRED_ENV_VARIABLE';
   switchName: string;
   switchMode: string;
   message: string;
@@ -223,6 +228,9 @@ export function promptArchitectureWarning(
     const portee = treatment === 'T3'
       ? `L'arbitrage de valeur (VALUE_CONFLICT) ${effet} ; seul le départage des liens passe par le prompt maître `
         + `(passer ${flag}=enabled pour appliquer l'arbitrage).`
+      : treatment === 'T2'
+        ? `L'assistant n'appelle aucun modèle : le prompt maître (UNDERSTAND/ANSWER) n'est pas utilisé `
+          + `(passer ${flag}=enabled).`
       : `La classification des échéances par le prompt maître (CLASSIFY_EVENT) ${effet}, et la création manuelle `
         + `reste sur le classifieur historique (passer ${flag}=enabled).`;
     return {
@@ -236,14 +244,34 @@ export function promptArchitectureWarning(
 }
 
 /**
+ * CDC 15 T2-43 : `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` est RETIRÉE et
+ * ignorée (source unique : configuration IA, bornée à 500). Encore posée,
+ * elle est signalée dans /admin/ai-flags et /api/health : un environnement
+ * qui s'en servait pour abaisser le plafond doit le voir.
+ */
+export function retiredOutputTokensWarning(env: Record<string, string | undefined>): PromptArchitectureWarning | null {
+  const v = env.VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS;
+  if (v === undefined || v.trim() === '') return null;
+  return {
+    treatment: 'T2', code: 'RETIRED_ENV_VARIABLE', switchName: 'VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', switchMode: v,
+    message: `T2 : VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS=${v} est posée mais IGNORÉE (CDC 15 T2-43). `
+      + 'Le plafond de sortie de l’assistant vient de la seule configuration IA (traitement T2), borné à 500 : '
+      + 'régler la version de configuration si une valeur inférieure est voulue, puis supprimer la variable.',
+  };
+}
+
+/**
  * Écarts de la version effective (ne lève jamais). `readMode` et
  * `readArchitecture` injectables pour les tests.
  */
 export async function promptArchitectureWarnings(opts: {
   readMode?: (name: MasterSwitchName) => string;
   readArchitecture?: (t: Treatment) => Promise<PromptArchitecture>;
+  env?: Record<string, string | undefined>;
 } = {}): Promise<PromptArchitectureWarning[]> {
   const out: PromptArchitectureWarning[] = [];
+  const retiree = retiredOutputTokensWarning(opts.env ?? process.env);
+  if (retiree) out.push(retiree);
   try {
     const readMode = opts.readMode
       ?? ((name: MasterSwitchName) => (name === 'AI_T1_ANALYSIS_MODE' ? getRolloutMode(name) : getFlagMode(name)));

@@ -66,6 +66,11 @@ export interface VerebonaMessage {
   /** Cartes de résultats groupées par type (§11.3, §22.3). */
   resultGroups?: UiResultGroup[] | null;
   /**
+   * Chronologie structurée (CDC 15 T2-35) : « date · libellé », avec lien
+   * vers l'objet quand il est connu. Absente : la réponse texte suffit.
+   */
+  events?: Array<{ date: string | null; text: string; href: string | null }> | null;
+  /**
    * Erreur affichée DANS le fil (§4.2, §27.11) : libellé Verebona, et les
    * actions « Réessayer » / « Ouvrir l'aide » portées par `actions`.
    */
@@ -362,6 +367,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         clarification: data.clarification ?? null,
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
         resultGroups: Array.isArray(data.resultGroups) ? data.resultGroups : null,
+        events: Array.isArray(data.events) ? data.events : null,
         notices: Array.isArray(data.notices) ? data.notices : undefined,
       };
       // Réponse `status: 'error'` (§27.11) : le libellé et les suites
@@ -508,6 +514,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         clarification: data.clarification ?? null,
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
         resultGroups: Array.isArray(data.resultGroups) ? data.resultGroups : null,
+        events: Array.isArray(data.events) ? data.events : null,
       };
       setState((s) => ({ ...s, messages: [...s.messages, assistantMsg], isLoading: false }));
       void refreshThreads();

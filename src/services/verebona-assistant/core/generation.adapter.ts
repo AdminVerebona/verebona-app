@@ -45,6 +45,14 @@ import { VEREBONA_INTENTS } from '../types/intents';
 import { VEREBONA_ACTION_TYPES } from '../types/actions';
 import { describeAccountRights } from '../prompts/rights-layer';
 import { areWriteCommandsEnabled } from '../config/assistant-config';
+import { getPromptArchitecture } from '@/services/ai/config/config-resolver';
+import { T2AnswerOutput, type T2ClaimSupport } from '@/services/ai/assistant/master/t2-contract';
+import {
+  t2MasterVariables, formatT2Sources, formatResolvedTargets, t2AnswerLines,
+} from '@/services/ai/assistant/master/t2-answer';
+import { verifyClaimSupport } from '@/services/ai/assistant/claim-support';
+import { canonicalReadEnabled } from '../canonical/mode';
+import { answerFormatFor } from '../prompts/answer-format';
 
 /**
  * Schéma de la réponse attendue du modèle — CDC §18.2, §18.4, §17.8.
@@ -118,6 +126,22 @@ export interface GeneratedAnswer {
    * machine à états passe alors par REPAIRING avant VALIDATING.
    */
   path?: 'first' | 'repair' | 'escalation';
+  /**
+   * Chronologie STRUCTURÉE (T2-35, master T2 format `timeline`) : un
+   * événement par ligne validée, dans l'ordre fourni. `answer` en porte la
+   * forme texte, une ligne par événement.
+   */
+  events?: AnswerTimelineEvent[];
+  /** Architecture du prompt qui a produit la réponse (trace). */
+  architecture?: 'steps' | 'master';
+}
+
+/** Événement de chronologie validé (T2-35). */
+export interface AnswerTimelineEvent {
+  /** AAAA-MM-JJ, ou `null` (date inconnue). */
+  date: string | null;
+  text: string;
+  sourceIds: string[];
 }
 
 /** Rejet d'une génération : motif tracé par l'orchestrateur. */
@@ -134,6 +158,13 @@ const SCHEMA_DESCRIPTION =
   + '"supportLevel":"supported"|"partial"|"insufficient"|"conflicting",'
   + '"claims":[{"text":"phrase en français","sourceIds":["id de source fourni"],"factual":true}],'
   + '"status":"answered"|"insufficient_data","actionIntents":[]} — aucun autre champ';
+
+/** Forme attendue de la branche ANSWER du master T2 (§24), rappelée à la réparation. */
+const T2_ANSWER_SCHEMA_DESCRIPTION =
+  '{"mode":"ANSWER","format":"claims","status":"answered"|"insufficient_data",'
+  + '"claims":[{"text":"phrase en français","sourceIds":["id de source fourni"],"factual":true}]}'
+  + ' ou {"mode":"ANSWER","format":"timeline","status":"answered","events":[{"date":"AAAA-MM-JJ"|null,"text":"…","sourceIds":["…"]}]}'
+  + ' ou {"mode":"ANSWER","format":"comparison","status":"answered","criterion":"…","items":[{"targetId":"…","label":"…","value":"…"|null,"sourceIds":["…"]}]}';
 
 /**
  * Rédige une réponse à partir des seules sources remontées par les outils.
@@ -177,9 +208,21 @@ export async function generateAssistantAnswerDetailed(
   const cfg = getAssistantConfig();
 
   try {
+    // Architecture T2 de la version de configuration effective (D-04) :
+    // `master` ⇒ prompt maître §24 (opération `t2_answer`), sinon étapes
+    // historiques (`generate_answer`) — inchangées.
+    const master = (await getPromptArchitecture('T2')) === 'master';
+    // T2-31 : support vérifiable de chaque affirmation, derrière la lecture
+    // canonique OU l'architecture master — jamais en legacy pur.
+    const canonical = canonicalReadEnabled();
+    const verifySupport = master || canonical;
     // Consigne propre à l'intention (synthèse, comparaison, chronologie,
-    // aide) injectée dans la section TÂCHE du prompt maître (§17.6).
-    const task = intentTaskFor(route.intent);
+    // aide) injectée dans la section TÂCHE du prompt historique (§17.6).
+    // En master : AUCUNE consigne concaténée, le code d'intention seul (T2-36).
+    // Legacy : textes v3.0 et prompt `generate_answer_v4`, octet pour octet
+    // (tag lot14b). Lecture canonique : v3.1 et `generate_answer_v5` (T2-36).
+    const task = intentTaskFor(route.intent, { canonical });
+    const operationCode = canonical ? 'generate_answer_canonical' : 'generate_answer';
     const conversation = input.threadContextText && !isHelpIntent(route.intent)
       ? escapeUntrusted(input.threadContextText)
       : isHelpIntent(route.intent)
@@ -202,13 +245,20 @@ export async function generateAssistantAnswerDetailed(
     const conversationMasquee = maskSensitiveText(conversation, besoin).text;
     const fit = fitToInputBudget({
       sources: politique.sources, conversation: conversationMasquee,
-      fixed: `${question}\n${task.intentVariable}`,
+      fixed: `${question}\n${master ? route.intent : task.intentVariable}`,
       maxInputTokens: cfg.maxInputTokens,
       maxExcerptChars: cfg.maxExcerptChars,
     });
     generationEvents.push(...fit.events);
     if (!fit.ok) return echec('INPUT_TOKENS_EXCEEDED');
     const kept = fit.sources;
+
+    if (master) {
+      return await generateWithT2Master({
+        route, input, kept: ordreFourni(politique.sources, kept), question, conversation: fit.conversation,
+        securityEvents, generationEvents, echec,
+      });
+    }
 
     const baseVariables = {
       TODAY: new Date().toISOString().slice(0, 10),
@@ -242,10 +292,10 @@ export async function generateAssistantAnswerDetailed(
       const promptVariables = v.repair
         ? { ...baseVariables, INTENT: `${baseVariables.INTENT}\n\n${repairInstruction(SCHEMA_DESCRIPTION, v.repair)}` }
         : baseVariables;
-      const cle = assistantIdempotencyKey(input, 'generate_answer', promptVariables);
+      const cle = assistantIdempotencyKey(input, operationCode, promptVariables);
       return {
         useCaseCode: 'INTELLIGENT_ASSISTANT' as const,
-        operationCode: 'generate_answer',
+        operationCode,
         accountId: input.accountId,
         userId: input.userId,
         promptVariables,
@@ -270,7 +320,7 @@ export async function generateAssistantAnswerDetailed(
         securityEvents.push({ code: 'MODEL_INTENT_MISMATCH', detail: `${data.intent}≠${route.intent}`.slice(0, 80) });
         return { out: null, reason: 'QUALITY_RULE' };
       }
-      const out = toGeneratedAnswer(data, kept, securityEvents);
+      const out = toGeneratedAnswer(data, kept, securityEvents, { verifySupport, supportEvents: generationEvents });
       if (!out) return { out: null, reason: data.claims.length === 0 ? 'EMPTY_OUTPUT' : 'NO_SUPPORTED_CLAIM' };
       // §21.5 : vocabulaire interdit — tracé, puis rejet par le validateur.
       const interdits = findForbiddenVocabulary(out.answer);
@@ -336,6 +386,133 @@ export async function generateAssistantAnswerDetailed(
 const SYNTHESIS_INTENTS = new Set(['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACCOUNT_TIMELINE']);
 
 /**
+ * Sources retenues par le budget, remises dans l'ORDRE FOURNI par les outils
+ * (le budget les trie par pertinence) : la chronologie fournie ne doit pas
+ * être réordonnée (§24 B10).
+ */
+function ordreFourni(fournies: RetrievedSource[], retenues: RetrievedSource[]): RetrievedSource[] {
+  const parId = new Map(retenues.map((s) => [s.id, s]));
+  return fournies.flatMap((s) => (parId.has(s.id) ? [parId.get(s.id)!] : []));
+}
+
+/**
+ * Chemin MASTER (CDC 15 §24, branche ANSWER) — même enveloppe que les
+ * étapes : sources déjà filtrées et masquées (§29.4), budget d'entrée
+ * appliqué (§13.9), au plus 2 appels modèle par message (CA-07 : réparation
+ * OU escalade), plafond de sortie min(BO, 500) et délais par
+ * `executeWithinBudget`, clé d'idempotence propre (`t2_answer` + version du
+ * master, ajoutée par la passerelle).
+ *
+ * Différences voulues :
+ *   · {{INTENT}} = code d'intention seul (T2-36) ; la longueur est imposée
+ *     par le validateur (`answer-format.ts`) ;
+ *   · la réparation n'est PAS concaténée à {{INTENT}} : elle suit le contexte
+ *     conversationnel ({{CONVERSATION}}), seul emplacement serveur libre de la
+ *     branche ANSWER — le master n'en déclare pas d'autre ;
+ *   · support vérifiable de chaque ligne (T2-31) toujours contrôlé ;
+ *   · chronologie structurée (`events[]`, T2-35).
+ */
+async function generateWithT2Master(p: {
+  route: IntentRoute;
+  input: AssistantRequestInput;
+  kept: RetrievedSource[];
+  question: string;
+  conversation: string;
+  securityEvents: SecurityEvent[];
+  generationEvents: string[];
+  echec: (reason: string) => GenerationFailure;
+}): Promise<GeneratedAnswer | GenerationFailure> {
+  const { route, input, kept, securityEvents, generationEvents } = p;
+  const regle = answerFormatFor(route.intent);
+  const variables = t2MasterVariables('ANSWER', {
+    INTENT: route.intent,
+    QUESTION: escapeUntrusted(p.question),
+    TODAY: new Date().toISOString().slice(0, 10),
+    RESOLVED_TARGETS: formatResolvedTargets(input.reference, kept),
+    CONVERSATION: p.conversation,
+    SOURCES: formatT2Sources(kept),
+  });
+  const trace = {
+    requestId: input.requestId ?? input.clientRequestId,
+    routeReason: route.routeReason,
+    promptId: 't2_master_v1',
+    promptVersion: 'ANSWER',
+  };
+  const build = (v: { repair?: string[]; escalation?: boolean }) => {
+    const promptVariables = v.repair
+      ? { ...variables, CONVERSATION: `${String(variables.CONVERSATION ?? '')}\n\n${repairInstruction(T2_ANSWER_SCHEMA_DESCRIPTION, v.repair)}` }
+      : variables;
+    const cle = assistantIdempotencyKey(input, 't2_answer', promptVariables);
+    return {
+      useCaseCode: 'INTELLIGENT_ASSISTANT' as const,
+      operationCode: 't2_answer',
+      accountId: input.accountId,
+      userId: input.userId,
+      promptVariables,
+      outputSchema: T2AnswerOutput,
+      idempotencyKey: cle && v.escalation ? `${cle}:escalation` : cle,
+    };
+  };
+
+  const evaluer = (data: T2AnswerOutput, model: string) => {
+    if (data.format !== regle.format && data.format !== 'claims') {
+      generationEvents.push(`T2_FORMAT:${data.format}≠${regle.format}`);
+    }
+    const l = t2AnswerLines(data);
+    const out = toGeneratedAnswer(
+      { claims: l.lines, status: l.status, actionIntents: [], derivations: [] },
+      kept, securityEvents,
+      { verifySupport: true, supportEvents: generationEvents, separator: l.separator },
+    );
+    if (!out) return { out: null, reason: l.lines.length === 0 ? 'EMPTY_OUTPUT' : 'NO_SUPPORTED_CLAIM' };
+    const interdits = findForbiddenVocabulary(out.answer);
+    if (interdits.length) securityEvents.push({ code: 'MODEL_FORBIDDEN_VOCABULARY', detail: interdits.join(',').slice(0, 80) });
+    const valide = validateGeneratedAnswer(out, route.intent);
+    if (!valide) return { out: null, reason: 'QUALITY_RULE' };
+    // T2-35 : événements structurés, restreints aux lignes validées.
+    // Comparaison sur le texte FILTRÉ (§18.7), comme celui des affirmations.
+    const gardes = new Set(valide.claims.map((c) => c.text.trim()));
+    const events: AnswerTimelineEvent[] | undefined = data.format === 'timeline'
+      ? l.lines.filter((x) => x.event && gardes.has(sanitizeModelText(x.text, 'e').text.trim()))
+        .map((x) => ({ date: x.event!.date, text: x.event!.text, sourceIds: x.sourceIds }))
+      : undefined;
+    return {
+      out: {
+        ...out, answer: valide.answer, claims: valide.claims, supportLevel: valide.supportLevel, model,
+        ...(events ? { events } : {}), architecture: 'master',
+      } as GeneratedAnswer,
+      reason: null,
+    };
+  };
+
+  const first = await callWithRepairOrEscalation({
+    budget: input.aiBudget, build, trace, schemaDescription: T2_ANSWER_SCHEMA_DESCRIPTION,
+  });
+  generationEvents.push(...first.events);
+  let path: GeneratedAnswer['path'] = first.path;
+  let res = evaluer(first.res.data, first.res.model);
+  if (!res.out && first.path === 'first' && canEscalate(input.aiBudget)) {
+    const motif: EscalationReason | null =
+      res.reason === 'EMPTY_OUTPUT' ? 'EMPTY_OUTPUT'
+        : res.reason === 'QUALITY_RULE' ? 'QUALITY_RULE'
+          : res.reason === 'NO_SUPPORTED_CLAIM' && SYNTHESIS_INTENTS.has(route.intent) && kept.length >= 2 ? 'SYNTHESIS_FAILED'
+            : null;
+    if (motif) {
+      generationEvents.push(`ESCALATION:${motif}`);
+      const second = await escalate({ budget: input.aiBudget, build, trace, schemaDescription: T2_ANSWER_SCHEMA_DESCRIPTION });
+      path = 'escalation';
+      res = evaluer(second.data, second.model);
+    }
+  }
+  logSecurityEvents(securityEvents, { requestId: input.requestId, accountId: input.accountId });
+  if (!res.out) {
+    console.warn(`[assistant] Génération master rejetée (${res.reason}) — repli déterministe.`);
+    return p.echec(res.reason ?? 'REJECTED');
+  }
+  return { ...res.out, securityEvents, generationEvents, path };
+}
+
+/**
  * Niveau d'étayage retenu (§18.3) : le plus PRUDENT de celui calculé par le
  * serveur et de celui annoncé par le modèle. Le modèle peut signaler une
  * contradiction ou une limite que le contrôle des sources ne voit pas ; il ne
@@ -362,10 +539,28 @@ function tracerRejetsDeSchema(errors: string[] | undefined, events: SecurityEven
  * la suppression de ces affirmations ; c'est ici qu'elle a lieu, côté serveur,
  * et non dans une consigne que rien ne fait respecter.
  */
+/** Affirmation candidate : sortie historique, ou ligne du master T2 (avec support). */
+export type AnswerClaimInput = AssistantAnswer['claims'][number] & { support?: T2ClaimSupport };
+
+export interface ToGeneratedAnswerOptions {
+  /** T2-31 : contrôle du support vérifiable (lecture canonique ou master). */
+  verifySupport?: boolean;
+  /** Reçoit `CLAIM_UNSUPPORTED:<motif>` (trace sans contenu). */
+  supportEvents?: string[];
+  /** Assemblage des lignes : `\n` pour une liste (T2-35), espace sinon. */
+  separator?: ' ' | '\n';
+}
+
 export function toGeneratedAnswer(
-  data: AssistantAnswer,
+  data: {
+    claims: AnswerClaimInput[];
+    status?: AssistantAnswer['status'];
+    actionIntents?: AssistantAnswer['actionIntents'];
+    derivations?: AssistantAnswer['derivations'];
+  },
   sources: RetrievedSource[],
   securityEvents: SecurityEvent[] = [],
+  opts: ToGeneratedAnswerOptions = {},
 ): GeneratedAnswer | null {
   // ══════════════════════════════════════════════════════════════════════
   // LE TEXTE AFFICHÉ EST RECONSTRUIT, PAS REPRIS
@@ -396,8 +591,17 @@ export function toGeneratedAnswer(
     securityEvents.push(...f.events);
     return f.rejected ? [] : [{ ...c, text: f.text }];
   });
-  const valide = (c: AssistantAnswer['claims'][number]) =>
-    c.sourceIds.length > 0 && c.sourceIds.every((id) => known.has(id));
+  // T2-31 : un `sourceId` valide ne suffit pas — ce que la phrase affirme
+  // doit figurer dans ce que la source porte. Non soutenue ⇒ REJETÉE (le
+  // niveau d'étayage passe à « partial »), motif tracé sans contenu.
+  const soutenue = (c: AnswerClaimInput): boolean => {
+    if (!opts.verifySupport) return true;
+    const r = verifyClaimSupport(c, sources);
+    if (!r.supported) opts.supportEvents?.push(`CLAIM_UNSUPPORTED:${r.reason}${r.missing ? `:${r.missing.length}` : ''}`);
+    return r.supported;
+  };
+  const valide = (c: AnswerClaimInput) =>
+    c.sourceIds.length > 0 && c.sourceIds.every((id) => known.has(id)) && soutenue(c);
   const factuelles = nettoyees.filter((c) => c.factual !== false || portesDonnee(c.text));
   for (const c of factuelles) {
     const inconnues = c.sourceIds.filter((id) => !known.has(id));
@@ -433,7 +637,7 @@ export function toGeneratedAnswer(
   }));
 
   return {
-    answer: phrases.join(' '),
+    answer: phrases.join(opts.separator ?? ' '),
     claims,
     actions: [],
     supportLevel: computeSupportLevel(totalFactuelles, claims.length),

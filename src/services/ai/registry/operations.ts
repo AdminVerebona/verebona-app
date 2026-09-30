@@ -112,6 +112,11 @@ export interface AiOperationDefinition {
   /** Branche TASK/MODE imposée par le serveur (CDC 15 §22.2, DP-05). */
   task?: string;
   /**
+   * Champ discriminant de la sortie d'un master : `task` (défaut) ou `mode`
+   * (T2, §24 : `{"mode":"ANSWER",…}`). Utilisé par la validation discriminée.
+   */
+  taskField?: 'task' | 'mode';
+  /**
    * Opération historique : master et TASK qui la remplacent (§22.3, « toutes
    * celles d'un même traitement doivent référencer le même master prompt et
    * un TASK explicite »). N'influence PAS l'exécution.
@@ -166,6 +171,19 @@ const T4_MASTER = 't4_master_v1';
 export const T4_MASTER_VARIABLES = [
   'EVENT_CONTEXT', 'EVENT_CATALOG', 'EVIDENCE', 'AGENDA_ITEM', 'DOCUMENT_TYPE',
   'TEMPORAL_CONTEXT', 'TEMPORAL_CANDIDATES',
+] as const;
+
+/** Prompt maître T2 (CDC 15 §24, §29.1) — même valeur que `T2_MASTER_PROMPT_CODE`. */
+const T2_MASTER = 't2_master_v1';
+/**
+ * Emplacements du master T2 (hors MODE, fixé par le serveur). Un seul texte
+ * pour les trois branches : chaque appel les fournit TOUS (`null` pour ceux
+ * des autres branches). Contrôlé contre le fichier par `prompts:check`.
+ */
+export const T2_MASTER_VARIABLES = [
+  'QUESTION', 'INTENTS', 'FIELD_CATALOG', 'PAGE_CONTEXT', 'CONVERSATION_CONTEXT',
+  'INTENT', 'TODAY', 'RESOLVED_TARGETS', 'CONVERSATION', 'SOURCES',
+  'FACT', 'CURRENT_VALUE', 'PROVENANCE_MODE', 'LOCATION', 'CONTENT',
 ] as const;
 
 /**
@@ -385,6 +403,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────
   understand_request: {
     operationCode: 'understand_request', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    migratesTo: { masterPromptCode: T2_MASTER, task: 'UNDERSTAND', operationCode: 't2_understand' },
     label: "Compréhension de la question et sélection des outils",
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
     promptCode: 'understand_request_v1', timeoutMs: 12_000,
@@ -409,6 +428,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // complète. Coût imputé à l'assistant, qui l'a déclenchée.
   revalidate_fact: {
     operationCode: 'revalidate_fact', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    migratesTo: { masterPromptCode: T2_MASTER, task: 'REVALIDATE', operationCode: 't2_revalidate' },
     label: 'Revalidation ciblée d’un fait documentaire',
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
     promptCode: 'revalidate_fact_v1', timeoutMs: 20_000,
@@ -418,11 +438,59 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   },
   generate_answer: {
     operationCode: 'generate_answer', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    migratesTo: { masterPromptCode: T2_MASTER, task: 'ANSWER', operationCode: 't2_answer' },
     label: 'Génération de la réponse sourcée',
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
     promptCode: 'generate_answer_v4', timeoutMs: 12_000,
     outputSchema: 'AssistantAnswerOutput', active: true, billable: true,
     // CDC Assistant §13.9 / §31.2 (budget V1 : 500), CDC 15 T2-43.
+    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
+  },
+  // Lot 15 (T2-36) : même étape, prompt `generate_answer_v5` (règle de
+  // longueur de l'intention prioritaire). Sélectionnée SEULEMENT avec
+  // ASSISTANT_CANONICAL_READ=enabled ; en legacy, `generate_answer` et
+  // `generate_answer_v4` restent inchangés (jamais deux textes sous un nom).
+  generate_answer_canonical: {
+    operationCode: 'generate_answer_canonical', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    migratesTo: { masterPromptCode: T2_MASTER, task: 'ANSWER', operationCode: 't2_answer' },
+    label: 'Génération de la réponse sourcée (lecture canonique)',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: 'generate_answer_v5', timeoutMs: 12_000,
+    outputSchema: 'AssistantAnswerOutput', active: true, billable: true,
+    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
+  },
+
+  // ── T2 — prompt maître (CDC 15 §24, T2-31, T2-35, T2-36, D-03, D-04) ─────
+  // Exécutées seulement quand la version de configuration bascule T2 en
+  // architecture `master` (`getPromptArchitecture('T2')`). Mêmes modèles,
+  // délais, plafond de sortie (min(BO, 500), T2-43) et facturation que les
+  // étapes qu'elles remplacent ; déclarées APRÈS elles. Sortie discriminée
+  // par `mode` (§24), et non `task`.
+  t2_understand: {
+    operationCode: 't2_understand', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    label: 'T2 master — compréhension de la demande (MODE=UNDERSTAND)',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: T2_MASTER, masterPromptCode: T2_MASTER, task: 'UNDERSTAND', taskField: 'mode', promptVariables: T2_MASTER_VARIABLES,
+    timeoutMs: 12_000, jsonResponse: true,
+    outputSchema: 'T2UnderstandOutput', active: true, billable: false,
+    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
+  },
+  t2_answer: {
+    operationCode: 't2_answer', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    label: 'T2 master — réponse sourcée (MODE=ANSWER)',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: T2_MASTER, masterPromptCode: T2_MASTER, task: 'ANSWER', taskField: 'mode', promptVariables: T2_MASTER_VARIABLES,
+    timeoutMs: 12_000, jsonResponse: true,
+    outputSchema: 'T2AnswerOutput', active: true, billable: true,
+    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
+  },
+  t2_revalidate: {
+    operationCode: 't2_revalidate', useCaseCode: 'INTELLIGENT_ASSISTANT',
+    label: 'T2 master — revalidation ciblée, texte ou visuel (MODE=REVALIDATE)',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: T2_MASTER, masterPromptCode: T2_MASTER, task: 'REVALIDATE', taskField: 'mode', promptVariables: T2_MASTER_VARIABLES,
+    timeoutMs: 20_000, jsonResponse: true,
+    outputSchema: 'T2RevalidateOutput', active: true, billable: true,
     defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
   },
 

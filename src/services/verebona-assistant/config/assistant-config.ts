@@ -7,6 +7,7 @@
  */
 
 import { isAssistantFlagOn } from './assistant-flags';
+import { ASSISTANT_MAX_OUTPUT_TOKENS } from '@/services/ai/registry/operations';
 
 function num(name: string, def: number): number {
   const v = process.env[name];
@@ -81,6 +82,12 @@ export interface AssistantConfig {
   geminiStore: boolean;
   // Limites retrieval (§13.9) et budget (§31.2)
   maxCandidates: number;
+  /**
+   * Nombre d'événements d'une chronologie (CDC 15 T2-34), DISTINCT du budget
+   * de sources (`maxSources`) : les événements sont regroupés en sources
+   * compactes. Défaut 60, borné à 1…200.
+   */
+  timelineMaxEvents: number;
   // Coûts (§31.3)
   costAlertPerResponseUsd: number;
   /**
@@ -138,6 +145,7 @@ export function loadAssistantConfig(): AssistantConfig {
     webGroundingEnabled: bool('VEREBONA_ASSISTANT_WEB_GROUNDING_ENABLED', false),
     geminiStore: bool('VEREBONA_ASSISTANT_GEMINI_STORE', false),
     maxCandidates: num('VEREBONA_ASSISTANT_MAX_CANDIDATES', 20),
+    timelineMaxEvents: Math.min(Math.max(Math.trunc(num('VEREBONA_ASSISTANT_TIMELINE_MAX_EVENTS', 60)) || 60, 1), 200),
     costAlertPerResponseUsd: num('VEREBONA_ASSISTANT_COST_ALERT_USD', 0.005),
     // 2 000 000 micro-unités ≈ 2 USD / compte / mois, soit ~1 000 réponses
     // intelligentes à l'objectif de 0,002 USD (§31.3) : un garde-fou contre
@@ -170,8 +178,11 @@ export interface OperationModels { primaryModel: string; fallbackModels: string[
  * Les modèles contrôlés sont ceux que la passerelle appelle RÉELLEMENT
  * (`AI_OPERATIONS`), et non plus un registre parallèle jamais lu.
  */
-/** Budget V1 de sortie de l'assistant (CDC Assistant §31.2). */
-export const ASSISTANT_OUTPUT_TOKENS_BUDGET = 500;
+/**
+ * Budget V1 de sortie de l'assistant (CDC Assistant §31.2) — la constante du
+ * référentiel des opérations, jamais une seconde valeur (T2-43).
+ */
+export const ASSISTANT_OUTPUT_TOKENS_BUDGET = ASSISTANT_MAX_OUTPUT_TOKENS;
 
 let varRetireeSignalee = false;
 
@@ -181,23 +192,22 @@ let varRetireeSignalee = false;
  * `min(valeur BO, 500)` — une version BO au-delà de 500 est signalée à la
  * validation et plafonnée ici.
  *
- * Compatibilité : `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` n'est plus une
- * source de vérité, mais si elle est encore posée elle est honorée comme
- * plafond INFÉRIEUR (jamais pour relever 500), et signalée une fois.
+ * T2-43 (lot 15) : SOURCE UNIQUE. `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS`
+ * n'est plus lue du tout — ni pour relever, ni pour abaisser : une variable
+ * d'environnement qui abaisse silencieusement le plafond BO est une seconde
+ * source de vérité. Encore posée, elle est seulement SIGNALÉE (une fois).
  */
 export function assistantMaxOutputTokensCap(env: NodeJS.ProcessEnv = process.env): number {
   const brut = env.VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS;
-  if (brut === undefined || brut.trim() === '') return ASSISTANT_OUTPUT_TOKENS_BUDGET;
-  const n = Number(brut);
-  if (!varRetireeSignalee) {
+  if (brut !== undefined && brut.trim() !== '' && !varRetireeSignalee) {
     varRetireeSignalee = true;
     console.warn(
-      `[verebona-assistant] VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS=${brut} : variable RETIRÉE (CDC 15 T2-43). `
-      + 'Le plafond de sortie vient de la configuration IA (BO, traitement T2), borné à 500 ; '
-      + 'la variable n\'est plus honorée que comme plafond inférieur. À supprimer de l\'environnement.',
+      `[verebona-assistant] VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS=${brut} : variable RETIRÉE et IGNORÉE (CDC 15 T2-43). `
+      + 'Le plafond de sortie vient de la seule configuration IA (BO, traitement T2), borné à 500. '
+      + 'À supprimer de l\'environnement.',
     );
   }
-  return Number.isInteger(n) && n > 0 ? Math.min(n, ASSISTANT_OUTPUT_TOKENS_BUDGET) : ASSISTANT_OUTPUT_TOKENS_BUDGET;
+  return ASSISTANT_OUTPUT_TOKENS_BUDGET;
 }
 
 /** Réservé aux tests. */

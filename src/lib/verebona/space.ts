@@ -390,3 +390,29 @@ export function previousRequests(
       return { id: t.id, title: t.title?.trim() || 'Demande sans titre', sub: parts.filter(Boolean).join(' · ') };
     });
 }
+
+// ── Chronologie (CDC 15 T2-35) ──────────────────────────────────────────────
+
+export interface TimelineRow {
+  key: string;
+  /** Date lisible (« 12/03/2024 », comme les cartes), ou « Date inconnue ». */
+  date: string;
+  text: string;
+  href: string | null;
+}
+
+/**
+ * Lignes « date · libellé » d'une chronologie structurée, dans l'ordre reçu.
+ * Vide : la réponse texte est affichée telle quelle (aucun changement).
+ */
+export function timelineRows(msg: Pick<VerebonaMessage, 'events'>): TimelineRow[] {
+  return (msg.events ?? [])
+    .filter((e) => e && typeof e.text === 'string' && e.text.trim())
+    .map((e, i) => ({
+      key: `${i}-${e.date ?? 'x'}`,
+      date: formatIsoDay(e.date) ?? 'Date inconnue',
+      text: e.text.trim(),
+      // Liens internes seulement (résolus par le serveur).
+      href: typeof e.href === 'string' && e.href.startsWith('/') && !e.href.startsWith('//') ? e.href : null,
+    }));
+}

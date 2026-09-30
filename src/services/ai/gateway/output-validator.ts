@@ -65,6 +65,8 @@ export type OutputFormat = 'json' | 'text';
  */
 export interface ValidateOutputOptions {
   expectedTask?: string;
+  /** Champ discriminant de la sortie : `task` (défaut) ou `mode` (T2, §24). */
+  taskField?: 'task' | 'mode';
 }
 
 export function validateOutput<T>(
@@ -85,10 +87,10 @@ export function validateOutput<T>(
 
   if (options.expectedTask !== undefined) {
     const task = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>).task
+      ? (parsed as Record<string, unknown>)[options.taskField ?? 'task']
       : undefined;
     if (task !== options.expectedTask) {
-      throw new AiOutputTaskMismatchError(operationCode, options.expectedTask, task);
+      throw new AiOutputTaskMismatchError(operationCode, options.expectedTask, task, options.taskField === 'mode' ? 'MODE' : 'TASK');
     }
   }
 

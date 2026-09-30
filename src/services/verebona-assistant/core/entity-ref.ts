@@ -30,6 +30,7 @@
  */
 import { drawerHref } from '@/lib/drawers';
 import { SUPPLIERS_ROUTE, supplierHref } from '@/lib/supplier-routes';
+import { parseAssetFieldSourceId } from '../canonical/source-ids';
 
 /** Familles d'entités référençables par une source (§19.2). */
 export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process' | 'export';
@@ -59,6 +60,12 @@ export interface EntityRef {
   id: number;
   /** Identifiant préfixé d'origine — conservé pour les journaux (§32). */
   sourceId: string;
+  /**
+   * Source de NIVEAU CHAMP (`asset_field:<assetId>:<clé>`, CDC 15 T2-32) :
+   * clé canonique du registre. L'entité reste le BIEN (`kind: 'asset'`) : son
+   * appartenance au compte est vérifiée comme celle de toute source bien.
+   */
+  fieldKey?: string;
 }
 
 /**
@@ -108,6 +115,15 @@ export function parseEntityRef(
   const brut = String(valeur).trim();
   if (!brut) return null;
 
+  // CDC 15 T2-32 (lot 15) : source de niveau champ `asset_field:<id>:<clé>`,
+  // décodée par la couche canonique (clé du registre obligatoire). Entité :
+  // le bien — contrôle d'appartenance au compte par la famille `asset`.
+  if (brut.startsWith('asset_field:')) {
+    const champ = parseAssetFieldSourceId(brut);
+    if (!champ || (attendu && attendu !== 'asset')) return null;
+    return { kind: 'asset', id: champ.assetId, sourceId: brut, fieldKey: champ.key };
+  }
+
   const separateur = brut.lastIndexOf('_');
 
   if (separateur === -1) {
@@ -149,7 +165,11 @@ export function hrefEntite(
 ): string | null {
   switch (ref.kind) {
     case 'asset':
-      return hrefBien(ref.id);
+      // Source de niveau champ : fiche du bien, onglet « Détails », champ en
+      // surbrillance (`?highlight=`, lu par AssetDetailsTab).
+      return ref.fieldKey
+        ? `${hrefBien(ref.id, 'details')}&highlight=${encodeURIComponent(ref.fieldKey)}`
+        : hrefBien(ref.id);
     case 'document':
       return drawerHref({ kind: 'document', id: ref.id }, ROUTES.DOCUMENTS);
     case 'agenda_item':

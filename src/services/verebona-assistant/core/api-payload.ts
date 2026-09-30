@@ -38,6 +38,9 @@ export function toApiPayload(result: AssistantRunResult, conversationId?: number
       : null,
     commandPlan: result.commandPlan ?? null,
     ...(result.resultGroups?.length ? { resultGroups: result.resultGroups } : {}),
+    // CDC 15 T2-35 : chronologie structurée (date · libellé · lien), liens
+    // résolus côté serveur ; identifiant interne de l'objet non exposé.
+    ...(result.events?.length ? { events: result.events.map(({ date, text, href }) => ({ date, text, href })) } : {}),
     // §27.11 : `error {code, message, recoverable}` accompagne `status:
     // 'error'`, pour que le client affiche un message et « Réessayer » au
     // lieu d'une impasse (§4.2).

@@ -107,6 +107,42 @@ const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /** Verbes de modification d'une caractéristique (« mets », « change », « renseigne »…). */
 const UPDATE = /\b(mets|mettre|met|modifie|modifier|change|changer|renseigne|renseigner|indique|indiquer|corrige|corriger|actualise|actualiser|remplace|remplacer|fixe|fixer|passe|passer|note|noter)\b/;
+
+/**
+ * CDC 15 T2-37 — verbes FORTS : une demande de modification sans ambiguïté
+ * (mets / modifie / change / remplace / fixe / corrige, et « actualise »).
+ */
+const UPDATE_FORT = /\b(mets|mettre|met|modifie|modifier|change|changer|corrige|corriger|actualise|actualiser|remplace|remplacer|fixe|fixer)\b/;
+
+/**
+ * CDC 15 T2-37 — verbes AMBIGUS (indique, note, passe, renseigne) : ils
+ * servent autant à demander une information (« Indique-moi la date
+ * d'achat… ») qu'à la donner. Ils ne font une commande que si une NOUVELLE
+ * VALEUR explicite est présente, et jamais dans une tournure de lecture.
+ */
+const UPDATE_AMBIGU = /\b(renseigne|renseigner|indique|indiquer|passe|passer|note|noter)\b/;
+
+/** « Indique-moi », « dis-moi », « donne-nous »… : demande d'information. */
+const LECTURE_MOI = /\b(indique|indiquez|dis|dites|donne|donnez|rappelle|rappelez|montre|montrez)[- ](moi|nous)\b/;
+
+/** Question ouverte par un mot interrogatif (« quand », « quel », « est-ce que »…). */
+const INTERROGATIF = /^\s*(quand|quel|quelle|quels|quelles|combien|ou|est-ce|pourquoi|comment|qu'est-ce)\b/;
+
+/** Demande polie d'ACTION : « peux-tu / tu peux / pourrais-tu / pouvez-vous… ». */
+const DEMANDE_POLIE = /^\s*(?:est-ce que\s+)?(?:peux[- ]tu|tu peux|pourrais[- ]tu|tu pourrais|pouvez[- ]vous|vous pouvez|pourriez[- ]vous|vous pourriez)\b/;
+
+/**
+ * Le message est-il une demande de LECTURE formulée avec un verbe ambigu
+ * (pure, testée) ? « Indique-moi… », une question ouverte par un mot
+ * interrogatif, ou un « ? » final qui n'est pas une demande polie d'action.
+ * Une question part au routage normal, jamais en commande.
+ */
+export function isReadingRequest(message: string): boolean {
+  const m = plain(message).trim();
+  if (UPDATE_FORT.test(m)) return false;
+  if (LECTURE_MOI.test(m) || INTERROGATIF.test(m)) return true;
+  return /\?\s*$/.test(m) && !DEMANDE_POLIE.test(m);
+}
 const DETERMINANT = String.raw`(?:(?:ma|mon|mes|la|le|l'|notre|votre|sa|son|ce|cet|cette)\s*)?`;
 const BIEN_APRES = new RegExp(String.raw`\b(?:pour|de|du|sur)\s+(${DETERMINANT})([a-z][a-z0-9'-]*(?:\s+[a-z][a-z0-9'-]*){0,3}?)(?=\s*$|\s*[?.!,;]|\s+(?:au|a|le|en|par|est|avec|:)\b|\s+\d)`);
 
@@ -119,12 +155,21 @@ function parseAssetFieldUpdate(message: string, today: string): CommandDraft | n
   const nfc = message.normalize('NFC');
   const m = plain(nfc);
   if (!UPDATE.test(m) || DONE.test(m)) return null;
+  const fort = UPDATE_FORT.test(m);
+  // T2-37 : verbe ambigu dans une tournure de lecture (« indique-moi »,
+  // question ouverte par un mot interrogatif) → question, pas commande. Un
+  // « ? » final seul ne suffit pas : « Peux-tu noter le kilométrage à
+  // 45 000 km ? » est une demande d'action — c'est la VALEUR qui tranche.
+  if (!fort && (!UPDATE_AMBIGU.test(m) || LECTURE_MOI.test(m) || INTERROGATIF.test(m))) return null;
   const hit = findAssetField(nfc);
   if (!hit) return null;
   const debut = hit.index + hit.alias.length;
   const apresOriginal = nfc.slice(debut);
   const apres = m.slice(debut);
   const value = parseFieldValue(hit.def, apresOriginal, today, parseDateFr);
+  // T2-37 : verbe ambigu sans nouvelle valeur explicite (avec ou sans « ? »)
+  // → pas une commande.
+  if (!fort && value === null) return null;
 
   // Le bien : cherché hors de la valeur (« à MAIF pour la polo », « au 12/03/2027 »).
   let zone = `${m.slice(0, hit.index)} ${apres}`;
@@ -180,7 +225,8 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
   }
 
   // ── Marquer comme réalisée / annuler ──────────────────────────────────
-  const done = DONE.test(m);
+  // T2-37 : « indique-moi si le ramonage est fait ? » est une question.
+  const done = DONE.test(m) && !(isReadingRequest(m) && !/\bmarquer?\b/.test(m));
   const cancel = !done && CANCEL.test(m) && AGENDA_NOUN.test(m.replace(CANCEL, ''));
   if (done || cancel) {
     const command = done ? 'MARK_AGENDA_DONE' : 'CANCEL_AGENDA_ITEM';

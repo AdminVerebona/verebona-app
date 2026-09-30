@@ -23,6 +23,19 @@ import { ACCOUNT_SUMMARY_PROMPT } from './account-summary';
 import { ACCOUNT_COMPARISON_PROMPT } from './account-comparison';
 import { ACCOUNT_TIMELINE_PROMPT } from './account-timeline';
 import { PRODUCT_HELP_PROMPT } from './product-help';
+import {
+  ACCOUNT_TIMELINE_PROMPT_V31, ACCOUNT_TIMELINE_PROMPT_V31_VERSION,
+  ACCOUNT_COMPARISON_PROMPT_V31, ACCOUNT_COMPARISON_PROMPT_V31_VERSION,
+} from './account-lists-v31';
+
+/**
+ * Lecture canonique (T2-36, lot 15) : consignes v3.1 de chronologie et de
+ * comparaison, sans « 4 phrases » levée. Legacy : textes v3.0 inchangés.
+ */
+const TEXTS_CANONICAL: Record<string, { text: string; version: string }> = {
+  'account-timeline': { text: ACCOUNT_TIMELINE_PROMPT_V31, version: ACCOUNT_TIMELINE_PROMPT_V31_VERSION },
+  'account-comparison': { text: ACCOUNT_COMPARISON_PROMPT_V31, version: ACCOUNT_COMPARISON_PROMPT_V31_VERSION },
+};
 
 const TEXTS: Record<string, string> = {
   'account-summary': ACCOUNT_SUMMARY_PROMPT,
@@ -38,9 +51,17 @@ export interface IntentTask {
   promptVersion: string;
 }
 
-export function intentTaskFor(intent: VerebonaIntent): IntentTask {
+export function intentTaskFor(intent: VerebonaIntent, opts: { canonical?: boolean } = {}): IntentTask {
   const entry = taskPromptForIntent(intent);
   if (!entry) return { intentVariable: intent, promptId: 'generate_answer', promptVersion: PROMPTS.generate_answer.version };
+  const v31 = opts.canonical ? TEXTS_CANONICAL[entry.id] : undefined;
+  if (v31) {
+    return {
+      intentVariable: `${intent}\n\nConsigne propre à cette intention (${v31.version}) — elle précise la tâche, elle ne lève aucune règle de sécurité S1 à S4 :\n${v31.text}`,
+      promptId: entry.id,
+      promptVersion: v31.version,
+    };
+  }
   return {
     intentVariable: `${intent}\n\nConsigne propre à cette intention (${entry.version}) — elle précise la tâche, elle ne lève aucune règle de sécurité S1 à S4 :\n${TEXTS[entry.id]}`,
     promptId: entry.id,

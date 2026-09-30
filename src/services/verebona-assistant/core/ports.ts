@@ -322,6 +322,25 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     // Plafond budgétaire mensuel du compte (§6.6, §31.3).
     checkMonthlyBudget: (accountId) => checkMonthlyBudget(accountId),
 
+    // CDC 15 T2-19 à T2-21 (lecture canonique) : lecture ciblée d'un document
+    // ou d'une échéance désignés, par la couche canonique de X.
+    readTarget: async (input, targets, route) => {
+      const { answerFromTarget } = await import('./target-answer');
+      // Fait demandé par le master T2 sans bien déjà ciblé : biens nommés et
+      // indices résolus dans le compte (jamais un identifiant du modèle).
+      let t = targets;
+      if (route?.understanding?.requestedFacts.length && !targets.asset) {
+        const { resolveAssistantTargets } = await import('./assistant-targets');
+        t = await resolveAssistantTargets(input, route);
+      }
+      return answerFromTarget(input.accountId, input.message, t, undefined, route?.understanding);
+    },
+    // CDC 15 T2-10, T2-33, T2-34 (lecture canonique) : planificateurs dédiés.
+    buildSynthesisContext: async (route, input) => {
+      const { buildSynthesisContext } = await import('./synthesis-planner');
+      return buildSynthesisContext(route, input);
+    },
+
     // Mémoire du fil : bornée au fil, à l'utilisateur et au compte.
     loadThreadContext: (input) =>
       input.conversationId ? loadThreadContext(input.accountId, input.userId, input.conversationId) : Promise.resolve(null),

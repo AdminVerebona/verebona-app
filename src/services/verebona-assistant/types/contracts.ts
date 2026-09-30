@@ -17,7 +17,8 @@ export interface IntentRoute {
   confidence: Confidence;
   accountScope: string;
   entityHints: Array<{
-    type: 'asset' | 'document' | 'agenda' | 'supplier' | 'help';
+    /** `period` : période désignée (« l'an dernier ») — CDC 15 T2-08. */
+    type: 'asset' | 'document' | 'agenda' | 'supplier' | 'help' | 'period';
     value: string;
   }>;
   requiresRetrieval: boolean;
@@ -25,6 +26,41 @@ export interface IntentRoute {
   clarificationRequired: boolean;
   allowedActionTypes: VerebonaActionType[];
   routeReason: string;
+  /**
+   * Compréhension structurée du master T2 (CDC 15 §24, A4–A5), présente
+   * seulement quand la route vient de `t2_understand` : clés canoniques
+   * demandées (FIELD_CATALOG, déjà restreintes par le serveur) et filtres
+   * explicites. Des INDICES : la cible et les filtres restent résolus et
+   * bornés au compte côté serveur (`assistant-targets`, `retrieval`).
+   */
+  understanding?: RouteUnderstanding;
+}
+
+/** Filtres et faits demandés, lus par le master T2 (UNDERSTAND). */
+export interface RouteUnderstanding {
+  requestedFacts: string[];
+  filters: {
+    documentType?: string | null;
+    periodStart?: string | null;
+    periodEnd?: string | null;
+    unlinked?: boolean | null;
+    status?: string | null;
+    supplier?: string | null;
+    upcoming?: boolean | null;
+  };
+}
+
+/**
+ * Événement de chronologie transmis au client (CDC 15 T2-35) : date, libellé
+ * et lien vers l'objet d'origine (résolu côté serveur, jamais fourni par le
+ * modèle). `date` null : date inconnue.
+ */
+export interface AssistantTimelineEvent {
+  date: string | null;
+  text: string;
+  /** Objet d'origine (« agenda_12 », « doc_4 »…), ou null. */
+  ref: string | null;
+  href: string | null;
 }
 
 /**
@@ -71,6 +107,12 @@ export interface AssistantApiResponse {
    * quand la réponse n'est pas une liste de résultats.
    */
   resultGroups?: import('../core/result-groups').ResultGroup[];
+  /**
+   * Chronologie structurée (CDC 15 T2-35) : liste « date · libellé » avec
+   * lien vers l'objet. Absente hors chronologie ; `answer` en porte la forme
+   * texte (une ligne par événement).
+   */
+  events?: Array<Pick<AssistantTimelineEvent, 'date' | 'text' | 'href'>>;
   /**
    * Erreur fonctionnelle (§27.11), présente quand `status === 'error'` :
    * code stable, libellé Verebona (jamais un message technique brut) et
@@ -284,6 +326,8 @@ export interface AssistantRunResult {
   commandPlan?: import('../commands/catalog').CommandPlanPreview | null;
   /** Cartes de résultats groupées (§11.3, §22.3). */
   resultGroups?: import('../core/result-groups').ResultGroup[];
+  /** Chronologie structurée (CDC 15 T2-35), une entrée par événement. */
+  events?: AssistantTimelineEvent[];
   error?: { code: import('./contracts').VerebonaErrorCode; message: string; recoverable: boolean };
   /**
    * §27.11 — codes fonctionnels INFORMATIFS, non bloquants : la réponse est

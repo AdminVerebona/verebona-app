@@ -80,7 +80,8 @@ export function checkPromptFiles(input: PromptFilesCheckInput): PromptFilesRepor
       }
       if (op.promptVariables) {
         const attendus = new Set(op.promptVariables);
-        const presents = inspectMasterTemplate(text).placeholders.filter((p) => p !== MASTER_TASK_PLACEHOLDER);
+        const info = inspectMasterTemplate(text);
+        const presents = info.placeholders.filter((p) => p !== (info.discriminant ?? MASTER_TASK_PLACEHOLDER));
         for (const p of presents) {
           if (!attendus.has(p)) report.errors.push(`${op.operationCode} : emplacement {{${p}}} de « ${code} » sans variable déclarée`);
         }

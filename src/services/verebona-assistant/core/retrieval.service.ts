@@ -22,6 +22,16 @@ import { analyserPeriode, aujourdhuiParis, sansExpressionDePeriode } from './que
 import { dedupeLogique } from './source-dedupe';
 import type { ConversationRefs } from '../types/machine';
 import { helpContextFromPage, isHelpIntent, retrieveHelpSources } from './help-corpus.service';
+import { canonicalReadEnabled } from '../canonical/mode';
+import { getIntentDefinition } from '../registries/intent-registry';
+import type { RetrievalAdapter } from '../registries/retrieval-adapter-registry';
+import type { SourceType } from '../types/sources';
+import { documentSearchFilters, documentTypeStems, hasDocumentFilters, type DocumentSearchFilters } from './query-terms';
+import { resolveAssistantTargets, type AssistantTargets } from './assistant-targets';
+import type { RouteUnderstanding } from '../types/contracts';
+import type { DocumentAnalysisFilter } from './query-terms';
+import { resolveDocumentType } from '@/services/canonical/registry';
+import { getDocumentType } from '@/lib/referential/v2';
 
 export async function retrieve(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]> {
   const cfg = getAssistantConfig();
@@ -47,6 +57,10 @@ export async function retrieve(route: IntentRoute, input: AssistantRequestInput)
 
   // 1. Sécurité & périmètre (§13.2) — accountId vient du serveur, jamais du client.
   const accountId = input.accountId;
+
+  // CDC 15 §9 (lot 15) : lecture canonique — cibles, contrat de sources de
+  // l'intention, filtres structurés. Sinon, parcours historique inchangé.
+  if (canonicalReadEnabled()) return retrieveCanonical(route, input);
 
   // ══════════════════════════════════════════════════════════════════════
   // 2. RÉSOLUTION D'ENTITÉS — §13.3
@@ -300,6 +314,154 @@ async function structuredAssetSearch(accountId: number, query: string, limit: nu
   }));
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// LECTURE CANONIQUE — CDC 15 T2-07, T2-08, T2-13, T2-14, T2-16, T2-17,
+// T2-21 (lot 15, ASSISTANT_CANONICAL_READ=enabled)
+// ══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Adaptateurs interrogés pour une intention — T2-07 (pure, testée).
+ *
+ * Seuls ceux dont un type de source est attendu par l'intention
+ * (`expectedSourceTypes` du registre). REPLI documenté : une intention sans
+ * contrat de sources (UNKNOWN, recherche simple d'un gabarit) ou dont aucun
+ * adaptateur ne couvre le contrat interroge les adaptateurs de données
+ * historiques (ceux qui n'émettent ni aide ni règle d'offre).
+ */
+export function adaptersForIntent(
+  intent: string,
+  adapters: RetrievalAdapter[],
+): { adapters: RetrievalAdapter[]; expected: SourceType[]; fallback: boolean } {
+  const def = (() => { try { return getIntentDefinition(intent as never); } catch { return undefined; } })();
+  const expected = [...(def?.expectedSourceTypes ?? [])] as SourceType[];
+  const donnees = adapters.filter((a) => !(a.sourceTypes ?? []).includes('product_rule'));
+  if (expected.length === 0) return { adapters: donnees, expected, fallback: true };
+  const retenus = adapters.filter((a) => (a.sourceTypes ?? []).some((t) => expected.includes(t)));
+  if (retenus.length === 0) return { adapters: donnees, expected, fallback: true };
+  return { adapters: retenus, expected, fallback: false };
+}
+
+/** Filtres de cible pour les adaptateurs (bien, document, fournisseur). */
+export function entityFiltersFromTargets(t: AssistantTargets): Record<string, string | number | null> {
+  const f: Record<string, string | number | null> = {};
+  // Plusieurs biens nommés (« compare la Clio et la Polo ») : aucun filtre
+  // unique — chercher dans un seul mélangerait moins que choisir au hasard.
+  if (t.asset && !(t.namedAssets.length > 1 && t.asset.origin !== 'clarification' && t.asset.origin !== 'thread')) f.assetId = t.asset.id;
+  if (t.document) f.documentId = t.document.id;
+  if (t.agendaItem) f.agendaItemId = t.agendaItem.id;
+  if (t.supplier?.id) f.supplierId = t.supplier.id;
+  return f;
+}
+
+/**
+ * Découpe canonique (pure, testée) : filtres structurés RETIRÉS du texte,
+ * types de document demandés, termes restants, période.
+ */
+export function analyserRequeteCanonique(message: string, today: string = aujourdhuiParis()): {
+  terms: QueryTerm[];
+  period: { from: string; to: string } | null;
+  documentTypes: string[];
+  documentFilters: DocumentSearchFilters;
+} {
+  const { filters, rest } = documentSearchFilters(message);
+  const p = analyserPeriode(rest, today);
+  const periode = p?.kind === 'resolved' ? p : null;
+  const terms = tokenizeQuery(periode ? sansExpressionDePeriode(rest, periode) : rest);
+  return { terms, period: periode ? { from: periode.from, to: periode.to } : null, documentTypes: documentTypeStems(terms), documentFilters: filters };
+}
+
+/** Statut d'analyse désigné par le master (texte libre ou code). */
+function statutAnalyse(v: string): DocumentAnalysisFilter | null {
+  const t = v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/echec|echou|fail|impossible/.test(t)) return 'ANALYSIS_FAILED';
+  if (/verifi|valid|conflict/.test(t)) return 'TO_VALIDATE';
+  if (/non.?analys|not.?analy|sans analyse/.test(t)) return 'NOT_ANALYZED';
+  if (/cours|in.?analysis|analyzing|attente|uploaded|uploading/.test(t)) return 'IN_ANALYSIS';
+  if (/analys/.test(t)) return 'ANALYZED';
+  return null;
+}
+
+/**
+ * Filtres du master T2 (UNDERSTAND, A5) ajoutés à ceux lus dans la question
+ * (pure, testée). La question prime : un filtre du modèle ne remplace
+ * jamais un filtre explicite, il complète. Type : code documentaire connu
+ * (registre, référentiel V2) ou mot (« facture »).
+ */
+export function mergeUnderstandingFilters(
+  a: ReturnType<typeof analyserRequeteCanonique>,
+  u: RouteUnderstanding | undefined,
+): ReturnType<typeof analyserRequeteCanonique> & { documentTypeCodes: string[] } {
+  const out = { ...a, documentFilters: { ...a.documentFilters }, documentTypes: [...a.documentTypes], documentTypeCodes: [] as string[] };
+  const f = u?.filters;
+  if (!f) return out;
+  if (f.unlinked === true && !out.documentFilters.link) out.documentFilters.link = 'unlinked';
+  if (f.status && !out.documentFilters.analysis?.length) {
+    const st = statutAnalyse(f.status);
+    if (st) out.documentFilters.analysis = [st];
+  }
+  if (f.supplier && !out.documentFilters.supplierName && f.supplier.trim().length >= 2) out.documentFilters.supplierName = f.supplier.trim().toLowerCase();
+  if (f.documentType && out.documentTypes.length === 0) {
+    const v = f.documentType.trim();
+    const entree = resolveDocumentType(v);
+    if (/^[A-Z0-9_]+$/.test(v) && (entree || getDocumentType(v))) {
+      out.documentTypeCodes = [...new Set([v, ...(entree ? [entree.code, ...(entree.aliases ?? [])] : [])].map((c) => c.toUpperCase()))];
+    } else {
+      out.documentTypes = documentTypeStems(tokenizeQuery(v));
+    }
+  }
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  if (!out.period && f.periodStart && iso.test(f.periodStart)) {
+    out.period = { from: f.periodStart, to: f.periodEnd && iso.test(f.periodEnd) ? f.periodEnd : '9999-12-31' };
+  } else if (!out.period && f.periodEnd && iso.test(f.periodEnd)) {
+    out.period = { from: '0001-01-01', to: f.periodEnd };
+  }
+  return out;
+}
+
+/** Retrieval canonique (voir l'en-tête de section). */
+async function retrieveCanonical(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]> {
+  const cfg = getAssistantConfig();
+  const accountId = input.accountId;
+  const cibles = await resolveAssistantTargets(input, route);
+  const entityFilters = entityFiltersFromTargets(cibles);
+
+  if (isInventoryQuery(input.message) && !hasDocumentFilters(documentSearchFilters(input.message).filters)) {
+    return (await listAccountAssets(accountId, cfg.maxSources)).map((s) => ({ ...s, content: s.content.slice(0, cfg.maxExcerptChars) }));
+  }
+
+  // Filtres du master T2 (A5), en complément de ceux de la question.
+  const { terms, period, documentTypes, documentFilters, documentTypeCodes } =
+    mergeUnderstandingFilters(analyserRequeteCanonique(input.message), route.understanding);
+  const choix = adaptersForIntent(route.intent, getEnabledAdapters());
+  const base = {
+    accountId,
+    normalizedQuery: terms.map((t) => t.stem).join(' '),
+    terms,
+    intent: route.intent,
+    entityFilters,
+    limit: cfg.maxCandidates,
+    // Période : celle de la question, sinon celle d'un indice (T2-08).
+    period: period ?? cibles.hints.period,
+    documentTypes,
+    canonical: true,
+    documentFilters,
+    documentTypeFilter: documentTypes,
+    documentTypeCodes,
+    hints: { documentTitles: cibles.hints.documentTitles, supplierNames: cibles.hints.supplierNames },
+  };
+  const parts = await Promise.all(choix.adapters.map((a) => a.search(base).catch((e) => {
+    if ((e as Error)?.name === 'AccountScopeViolation') throw e;
+    console.warn('[verebona] adaptateur de recherche en échec :', (e as Error).message);
+    return [] as RetrievedSource[];
+  })));
+  let collected = parts.flat();
+  if (choix.adapters.length === 0) collected.push(...(await structuredAssetSearch(accountId, input.message, cfg.maxCandidates)));
+  // Contrat de l'intention (T2-07) : aucune source hors des types attendus.
+  if (!choix.fallback) collected = collected.filter((s) => choix.expected.includes(s.type));
+  const deduped = dedupeLogique([...collected].sort((x, y) => (y.relevanceScore ?? 0) - (x.relevanceScore ?? 0)));
+  return deduped.slice(0, Math.max(cfg.maxSources, cfg.maxCandidates)).map((s) => ({ ...s, content: s.content.slice(0, cfg.maxExcerptChars) }));
+}
+
 /** Racines de types de document reconnues dans une question (§13.7). */
 const TYPES_DOCUMENT = new Set([
   'facture', 'devis', 'contrat', 'garantie', 'dpe', 'notice', 'manuel', 'certificat', 'attestation',
@@ -333,6 +495,7 @@ export function analyserRequete(message: string, today: string = aujourdhuiParis
  */
 export async function retrieveNear(route: IntentRoute, input: AssistantRequestInput, max = 3): Promise<RetrievedSource[]> {
   if (isHelpIntent(route.intent)) return [];
+  if (canonicalReadEnabled()) return retrieveNearCanonical(route, input, max);
   const { terms, period, documentTypes } = analyserRequete(input.message);
   if (terms.filter((t) => !t.exact).length === 0) return [];
   const parts = await Promise.all(getEnabledAdapters().map((a) => a.search({
@@ -350,4 +513,36 @@ export async function retrieveNear(route: IntentRoute, input: AssistantRequestIn
     return [] as RetrievedSource[];
   })));
   return dedupeLogique(parts.flat().sort((x, y) => (y.relevanceScore ?? 0) - (x.relevanceScore ?? 0))).slice(0, max);
+}
+
+/**
+ * Résultats proches, mode canonique : même contrat de sources (T2-07), même
+ * cible et mêmes filtres structurés que la recherche normale — seule la
+ * correspondance des termes est élargie.
+ */
+async function retrieveNearCanonical(route: IntentRoute, input: AssistantRequestInput, max: number): Promise<RetrievedSource[]> {
+  const { terms, period, documentTypes, documentFilters } = analyserRequeteCanonique(input.message);
+  if (terms.filter((t) => !t.exact).length === 0) return [];
+  const cibles = await resolveAssistantTargets(input, route);
+  const choix = adaptersForIntent(route.intent, getEnabledAdapters());
+  const parts = await Promise.all(choix.adapters.map((a) => a.search({
+    accountId: input.accountId,
+    normalizedQuery: terms.map((t) => t.stem).join(' '),
+    terms,
+    intent: route.intent,
+    entityFilters: entityFiltersFromTargets(cibles),
+    limit: 10,
+    period: period ?? cibles.hints.period,
+    documentTypes,
+    tolerant: true,
+    canonical: true,
+    documentFilters,
+    documentTypeFilter: documentTypes,
+  }).catch((e) => {
+    if ((e as Error)?.name === 'AccountScopeViolation') throw e;
+    return [] as RetrievedSource[];
+  })));
+  let tous = parts.flat();
+  if (!choix.fallback) tous = tous.filter((s) => choix.expected.includes(s.type));
+  return dedupeLogique(tous.sort((x, y) => (y.relevanceScore ?? 0) - (x.relevanceScore ?? 0))).slice(0, max);
 }

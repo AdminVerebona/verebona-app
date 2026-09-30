@@ -15,7 +15,7 @@ import type { VerebonaAction, VerebonaMessage } from '@/lib/verebona/useVerebona
 import { OFFLINE_PENDING_LABEL } from '@/lib/verebona/offline';
 import { processingStatus, visibleResultGroups } from '@/lib/verebona/assistant-ui';
 import {
-  exchangeCountLabel, objectsFromCards, olderLabel, railTone, showAnswerText, splitTurns, turnSummary,
+  exchangeCountLabel, objectsFromCards, olderLabel, railTone, showAnswerText, splitTurns, timelineRows, turnSummary,
   type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import { openDrawerFromLink } from '@/lib/drawers';
@@ -116,6 +116,9 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
   const isError = Boolean(msg.error);
 
   const { groups, hiddenCount } = visibleResultGroups(msg.resultGroups, allResults);
+  // CDC 15 T2-35 : chronologie structurée → liste « date · libellé » (mêmes
+  // jetons que la réponse et les objets) ; sinon, le texte seul.
+  const chrono = isError ? [] : timelineRows(msg);
   const cards = groups.flatMap((g) => g.items.map((c) => ({ ...c, groupType: g.type })));
   const objects: SpaceObject[] = [...objectsFromCards(cards), ...(msg.local?.objects ?? [])];
 
@@ -138,7 +141,29 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
 
   return (
     <div className="flex flex-col gap-2 border-l-2 pl-3.5" style={{ borderColor: RAIL[railTone(msg)] }} role={isError ? 'alert' : undefined}>
-      {showAnswerText(msg) && (
+      {chrono.length > 0 && (
+        <ol className="m-0 flex list-none flex-col gap-1 p-0" aria-label="Chronologie">
+          {chrono.map((e) => (
+            <li key={e.key} className={`flex items-baseline gap-2 leading-normal ${variant === 'mobile' ? 'text-[15px]' : 'text-[14.5px]'}`}>
+              <span className="flex-shrink-0 whitespace-nowrap text-[12px] text-[color:var(--text-muted)] tabular-nums">{e.date}</span>
+              <span aria-hidden className="text-[color:var(--text-muted)]">·</span>
+              {e.href ? (
+                <a
+                  href={e.href}
+                  className="min-w-0 break-words text-[color:var(--text-primary)] underline decoration-[color:var(--border)] underline-offset-2 hover:decoration-[color:var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+                  onClick={(ev) => { api.leaveForOverlay(); openDrawerFromLink(ev, e.href!); }}
+                >
+                  {e.text}
+                </a>
+              ) : (
+                <span className="min-w-0 break-words text-[color:var(--text-primary)]">{e.text}</span>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {chrono.length === 0 && showAnswerText(msg) && (
         <p
           className={`m-0 whitespace-pre-line leading-normal ${variant === 'mobile' ? 'text-[15px]' : 'text-[14.5px]'}`}
           style={{ color: isError ? 'var(--on-red)' : 'var(--text-primary)' }}

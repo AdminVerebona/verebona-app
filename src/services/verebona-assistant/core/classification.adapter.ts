@@ -42,9 +42,13 @@ import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
 import { VEREBONA_INTENTS, type VerebonaIntent } from '../types/intents';
 import { getIntentDefinition } from '../registries/intent-registry';
 import { allowedActionsFor } from '../registries/action-registry';
+import { canonicalReadEnabled } from '../canonical/mode';
 import type { IntentRoute, AssistantRequestInput, Confidence } from '../types/contracts';
 
-const ENTITY_TYPES = ['asset', 'document', 'agenda', 'supplier', 'help'] as const;
+// CDC 15 T2-08 : `period` en plus (bien, document, fournisseur, période) —
+// des INDICES, résolus ensuite côté serveur (`assistant-targets.ts`), jamais
+// des identifiants.
+const ENTITY_TYPES = ['asset', 'document', 'agenda', 'supplier', 'help', 'period'] as const;
 
 /** Sortie attendue — volontairement pauvre : une intention et des indices. */
 const ToolPlanOutput = z.object({
@@ -72,6 +76,19 @@ export async function classifyAssistantIntent(
   input: AssistantRequestInput,
 ): Promise<IntentRoute | null> {
   if (!message.trim()) return null;
+
+  // ── Master T2 (CDC 15 §24, D-04) ─────────────────────────────────────
+  // La version de configuration déclare T2 en architecture `master` :
+  // compréhension par `t2_understand` (Z) AU LIEU de `understand_request`.
+  // La route reste construite ICI (droits du registre) ; faits demandés et
+  // filtres suivent comme indices (`route.understanding`). En `steps` :
+  // parcours historique inchangé.
+  if (await architectureT2() === 'master') {
+    const { understandWithT2Master } = await import('@/services/ai/assistant/master/t2-understand');
+    const r = await understandWithT2Master(message, input);
+    if (!r) return null;
+    return { ...toIntentRoute(r.plan as ToolPlan, input.planType), understanding: { requestedFacts: r.requestedFacts, filters: r.filters ?? {} } };
+  }
 
   try {
     // Décompté sur le budget du message (§15.5, CA-07) : épuisé, aucun appel
@@ -134,7 +151,13 @@ export function toIntentRoute(plan: ToolPlan, planType: string): IntentRoute {
     confidence: plan.confidence as Confidence,
     // Toujours imposé côté serveur : jamais dérivé d'une réponse de modèle.
     accountScope: 'server-enforced',
-    entityHints: plan.entityHints,
+    // Indices seulement (T2-08), lecture canonique : bornés, sans préfixe
+    // « page: » — un indice du modèle ne peut pas se faire passer pour le
+    // contexte de page. Legacy : tels quels (inchangé). La branche master
+    // les filtre déjà (`toT2Understanding`).
+    entityHints: canonicalReadEnabled()
+      ? plan.entityHints.filter((h) => !h.value.trim().toLowerCase().startsWith('page:')).slice(0, 10)
+      : plan.entityHints,
     requiresRetrieval: def.requiresRetrieval,
     aiEligible: def.geminiEligible,
     // Une intention ambiguë demande confirmation plutôt que de deviner (§9.5).
@@ -144,6 +167,16 @@ export function toIntentRoute(plan: ToolPlan, planType: string): IntentRoute {
       ? `classification modèle — ${plan.reason}`
       : 'classification modèle',
   };
+}
+
+/** Architecture des prompts de T2 (ne lève jamais : `steps` par défaut). */
+async function architectureT2(): Promise<'steps' | 'master'> {
+  try {
+    const { getPromptArchitecture } = await import('@/services/ai/config/config-resolver');
+    return (await getPromptArchitecture('T2')) === 'master' ? 'master' : 'steps';
+  } catch {
+    return 'steps';
+  }
 }
 
 /** Catalogue fermé, transmis au modèle : il choisit dedans, il n'invente pas. */

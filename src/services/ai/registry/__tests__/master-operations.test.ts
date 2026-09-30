@@ -38,6 +38,8 @@ describe('opérations T1 master', () => {
     expect(listMasterPrompts()).toEqual([
       { masterPromptCode: T1_MASTER_PROMPT_CODE, useCaseCode: 'SOURCE_ANALYSIS', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] },
       { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY'] },
+      // Lot 15 : T2, discriminant MODE (§24).
+      { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
       // TEMPORAL_AMBIGUITY : opération inactive tant qu'aucun appelant (relecture lot 14).
       { masterPromptCode: 't4_master_v1', useCaseCode: 'AGENDA_INTELLIGENCE', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION'] },
     ]);

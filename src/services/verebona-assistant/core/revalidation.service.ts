@@ -21,6 +21,20 @@
  * traiter » si nécessaire). Un signal de lacune T1 est enregistré. Une
  * revalidation récente est réutilisée tant que la source et le fait n'ont
  * pas changé. Un échec ne modifie rien.
+ *
+ * LOT 15 (CDC 15 T2-27, T2-28, T2-30, §24 REVALIDATE) :
+ *   · architecture T2 `master` : l'appel passe par la branche REVALIDATE du
+ *     master (`t2_revalidate`, PROVENANCE_MODE = TEXT | VISUAL) ;
+ *   · VISUAL_RECHECK (master seulement) : une observation VISUELLE (0161,
+ *     sans extrait) est relue sur la source originale — jamais d'extrait
+ *     inventé (C3, P-T2-04), preuve visuelle obligatoire, jamais « certaine » ;
+ *   · T2-27 : AUCUNE écriture sur le bien hors du pipeline protégé
+ *     (preuves par champ → réconciliation T3) ; l'impact de la revalidation
+ *     (projection, preuves remplacées, effets T4) est tracé dans le signal
+ *     (`t1_quality_signals.t2_result.impact`) ;
+ *   · T2-28 : la projection est celle du rattachement tardif
+ *     (`projectDocumentKnowledgeToAsset`) — preuves, T3, puis candidats
+ *     agenda reconstruits et passés par la file T4 (derrière AI_T4_EFFECTS).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { z } from 'zod';
@@ -29,7 +43,11 @@ import { splitValueAndUnit } from '@/services/ai/knowledge/document-knowledge';
 import type { AiCallBudget } from './ai-call-budget';
 
 export type RevalidationTrigger = 'LOW_CONFIDENCE' | 'CONFLICT' | 'WEAK_EVIDENCE';
-export type RevalidationMode = 'PERSISTED_CONTENT' | 'SOURCE_RECHECK';
+export type RevalidationMode = 'PERSISTED_CONTENT' | 'SOURCE_RECHECK' | 'VISUAL_RECHECK';
+/** Provenance attendue par la branche REVALIDATE du master (§24). */
+export type RevalidationProvenance = 'TEXT' | 'VISUAL';
+/** Preuve visuelle d'une observation (0161 : `visual_evidence ? 'description'`). */
+export interface VisualEvidence { description: string; page?: number | null }
 export type RevalidationStatus = 'CONFIRMED' | 'CORRECTED' | 'NOT_FOUND' | 'AMBIGUOUS' | 'FAILED';
 
 export const RevalidationOutput = z.object({
@@ -40,7 +58,10 @@ export const RevalidationOutput = z.object({
   excerpt: z.string().nullable().optional(),
   page: z.number().int().positive().nullable().optional(),
 });
-export type RevalidationModelOutput = z.infer<typeof RevalidationOutput>;
+export type RevalidationModelOutput = z.infer<typeof RevalidationOutput> & {
+  /** Master REVALIDATE, PROVENANCE_MODE=VISUAL : preuve visuelle (C3). */
+  visualEvidence?: VisualEvidence | null;
+};
 
 /** Fait à vérifier, tel que la base le connaît. */
 export interface FactToCheck {
@@ -56,8 +77,12 @@ export interface FactToCheck {
   valueNumber: number | null;
   valueUnit: string | null;
   confidence: string;
-  excerpt: string;
+  /** Extrait littéral ; `null` pour une observation visuelle (0161). */
+  excerpt: string | null;
   location: Record<string, unknown>;
+  /** Provenance de la preuve T1 (0161) ; défaut TEXT_EXTRACTION. */
+  evidenceOrigin?: 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS';
+  visualEvidence?: VisualEvidence | null;
   // Extraction courante du document
   fullText: string | null;
   extractionVersion: string;
@@ -79,9 +104,33 @@ export interface RevalidationResult {
   reinjectedFactId: number | null;
   /** Résultat récent réutilisé, sans nouvelle lecture. */
   reused: boolean;
+  /** Preuve visuelle retenue (VISUAL_RECHECK). */
+  visualEvidence?: VisualEvidence | null;
+  /** T2-27 : impact tracé de la revalidation (null : rien de réinjecté). */
+  impact?: RevalidationImpact | null;
   aiCalls: number;
   model: string | null;
   revalidationId: number | null;
+}
+
+/**
+ * Impact d'une revalidation (T2-27) — tracé dans le signal de lacune. Aucune
+ * écriture sur le bien n'a lieu hors de la projection (preuves → T3 → T4).
+ */
+export interface RevalidationImpact {
+  assetId: number | null;
+  /** La projection (preuves par champ + T3 + candidats T4) a abouti. */
+  projected: boolean;
+  /** Champs projetés (nombre rendu par la projection, si connu). */
+  projectedFields: number | null;
+  /** Preuves de l'ancien fait passées SUPERSEDED (T2-29). */
+  supersededEvidence: number;
+  /** Mode T3_NEGATIVE_RECONCILIATION appliqué au remplacement. */
+  evidenceMode: 'legacy' | 'shadow' | 'enabled' | null;
+  /** Mode AI_T4_EFFECTS au moment de la projection (candidats agenda, T2-28). */
+  t4Effects: string | null;
+  /** Écritures hors pipeline protégé : toujours 0 (T2-27). */
+  directAssetWrites: 0;
 }
 
 // ── Fonctions pures ────────────────────────────────────────────────────────
@@ -152,23 +201,31 @@ export function gapProblem(trigger: RevalidationTrigger, status: RevalidationSta
 
 // ── Accès base ─────────────────────────────────────────────────────────────
 
-/** Charge le fait (du compte, document non supprimé) avec son extraction courante. */
-export async function loadFactToCheck(accountId: number, factId: number): Promise<FactToCheck | null> {
+/**
+ * Charge le fait (du compte, document non supprimé) avec son extraction courante.
+ * `includeVisual` (VISUAL_RECHECK, master T2) : les observations visuelles
+ * (0161) sont aussi chargées ; sinon, faits LUS seulement (comportement
+ * historique).
+ */
+export async function loadFactToCheck(
+  accountId: number, factId: number, opts: { includeVisual?: boolean } = {},
+): Promise<FactToCheck | null> {
   const rows = (await pgClient.unsafe(
     `SELECT f.id::float8 AS id, f.account_id AS "accountId", f.file_id AS "fileId", f.extraction_id AS "extractionId",
             f.fact_key AS "factKey", f.subject, f.attribute, f.label, f.value_text AS "valueText",
             f.value_number::float8 AS "valueNumber", f.value_unit AS "valueUnit", f.confidence, f.excerpt, f.location,
             e.full_text AS "fullText", e.extracted_at::text AS "extractionVersion", e.model AS "t1Model",
             e.prompt_version AS "t1PromptVersion", e.analysis_run_id AS "analysisRunId",
-            coalesce(af.asset_id, af.linked_asset_id) AS "assetId"
+            coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
+            coalesce(f.evidence_origin, 'TEXT_EXTRACTION') AS "evidenceOrigin", f.visual_evidence AS "visualEvidence"
        FROM document_facts f
        JOIN document_extractions e ON e.id = f.extraction_id
        JOIN asset_files af ON af.id = f.file_id AND af.deleted_at IS NULL
       WHERE f.id = $1 AND f.account_id = $2 AND f.status = 'active'
         -- La revalidation confronte un extrait au texte : une observation
-        -- visuelle (sans extrait, 0161) n'en relève pas.
-        AND f.evidence_origin = 'TEXT_EXTRACTION'`,
-    [factId, accountId] as never[],
+        -- visuelle (sans extrait, 0161) n'en relève que par VISUAL_RECHECK.
+        AND (f.evidence_origin = 'TEXT_EXTRACTION' OR ($3::boolean AND f.evidence_origin = 'VISUAL_ANALYSIS'))`,
+    [factId, accountId, opts.includeVisual === true] as never[],
   )) as unknown as FactToCheck[];
   return rows[0] ?? null;
 }
@@ -201,6 +258,10 @@ export interface RevalidationDeps {
     question: string; fact: string; currentValue: string; location: string;
     mode: RevalidationMode; content: string;
     attachment?: { url: string; mimeType: string; displayName?: string };
+    /** Architecture T2 : `master` ⇒ branche REVALIDATE du master (`t2_revalidate`). */
+    architecture?: 'steps' | 'master';
+    /** PROVENANCE_MODE du master (TEXT pour un fait lu, VISUAL pour une observation). */
+    provenance?: RevalidationProvenance;
     /** Budget d'appels modèle du message (§15.5, CA-07). */
     budget?: AiCallBudget;
     /** Demande d'origine : rattache l'appel à `verebona_ai_runs` (§28.8). */
@@ -208,8 +269,14 @@ export interface RevalidationDeps {
   }): Promise<{ output: RevalidationModelOutput; model: string | null; costMicros: number } | null>;
   /** URL signée de la source originale (pour SOURCE_RECHECK). */
   sourceUrl(accountId: number, fileId: number): Promise<{ url: string; mimeType: string; displayName?: string } | null>;
-  /** Projection sur le bien par les règles communes (preuves + T3). */
-  project(p: { accountId: number; userId: number; fileId: number; assetId: number }): Promise<void>;
+  /**
+   * Projection sur le bien par les règles communes (preuves + T3, puis
+   * candidats agenda T4) — SEUL chemin d'écriture vers le bien (T2-27).
+   * Rend le nombre de champs projetés si connu.
+   */
+  project(p: { accountId: number; userId: number; fileId: number; assetId: number }): Promise<number | void>;
+  /** Architecture T2 effective (défaut : version de configuration, D-04). */
+  architecture?(): Promise<'steps' | 'master'>;
   /**
    * Tableau persisté d'où provient le fait (texte borné) — la revalidation
    * d'une cellule relit CE tableau, pas le document entier. Facultatif.
@@ -230,7 +297,7 @@ export interface ReplaceEvidenceInput {
   /** Valeur établie par la revalidation (celle de la nouvelle preuve). */
   newValue: string;
   /** La projection du fait revalidé (preuves + T3) ; peut lever. */
-  project: () => Promise<void>;
+  project: () => Promise<number | void>;
 }
 
 export interface ReplaceEvidenceResult {
@@ -277,6 +344,7 @@ export async function replaceRevalidatedEvidence(p: ReplaceEvidenceInput): Promi
 export const defaultRevalidationDeps: RevalidationDeps = {
   async callModel(req) {
     const { executeWithinBudget } = await import('./ai-call-budget');
+    if (req.architecture === 'master') return callT2RevalidateMaster(req, executeWithinBudget);
     try {
       // Décompté sur le budget du message : la revalidation ne peut pas
       // consommer les appels réservés à la génération au-delà du plafond.
@@ -317,7 +385,11 @@ export const defaultRevalidationDeps: RevalidationDeps = {
   },
   async project(p) {
     const { projectDocumentKnowledgeToAsset } = await import('@/services/ai/knowledge/document-knowledge.service');
-    await projectDocumentKnowledgeToAsset(p);
+    return projectDocumentKnowledgeToAsset(p);
+  },
+  async architecture() {
+    const { getPromptArchitecture } = await import('@/services/ai/config/config-resolver');
+    return getPromptArchitecture('T2');
   },
   async tableText(accountId, fileId, tableIndex) {
     const { getDocumentTables } = await import('@/services/ai/knowledge/document-knowledge.service');
@@ -326,6 +398,66 @@ export const defaultRevalidationDeps: RevalidationDeps = {
     return t ? renderTableText(t) : null;
   },
 };
+
+/**
+ * Branche REVALIDATE du master T2 (§24, C1–C5). Sortie traduite vers la
+ * forme historique ; en VISUAL, l'extrait est TOUJOURS retiré (C3,
+ * P-T2-04) — une observation n'est jamais une citation.
+ */
+export function fromT2Revalidate(
+  o: { status: RevalidationModelOutput['status']; value?: string | null; unit?: string | null; confidence: 'certain' | 'probable';
+    evidence: { provenance: 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS'; excerpt?: string | null; page?: number | null;
+      visualEvidence?: string | { description: string; page?: number } | null } },
+  provenance: RevalidationProvenance,
+): RevalidationModelOutput {
+  const ve = o.evidence.visualEvidence;
+  const visual: VisualEvidence | null = typeof ve === 'string'
+    ? (ve.trim() ? { description: ve.trim(), page: o.evidence.page ?? null } : null)
+    : ve ? { description: ve.description, page: ve.page ?? o.evidence.page ?? null } : null;
+  const visuel = provenance === 'VISUAL' || o.evidence.provenance === 'VISUAL_ANALYSIS';
+  return {
+    status: o.status,
+    value: o.value ?? null,
+    unit: o.unit ?? null,
+    confidence: o.confidence,
+    excerpt: visuel ? null : (o.evidence.excerpt ?? null),
+    page: o.evidence.page ?? visual?.page ?? null,
+    visualEvidence: visuel ? visual : null,
+  };
+}
+
+async function callT2RevalidateMaster(
+  req: Parameters<RevalidationDeps['callModel']>[0],
+  executeWithinBudget: typeof import('./ai-call-budget').executeWithinBudget,
+): Promise<{ output: RevalidationModelOutput; model: string | null; costMicros: number } | null> {
+  const { T2RevalidateOutput } = await import('@/services/ai/assistant/master/t2-contract');
+  const { t2MasterVariables } = await import('@/services/ai/assistant/master/t2-answer');
+  const { maskSensitiveText, sensitiveNecessityFor } = await import('./sensitive-data.policy');
+  const provenance = req.provenance ?? (req.mode === 'VISUAL_RECHECK' ? 'VISUAL' : 'TEXT');
+  try {
+    const res = await executeWithinBudget(req.budget, {
+      useCaseCode: 'INTELLIGENT_ASSISTANT',
+      operationCode: 't2_revalidate',
+      accountId: req.accountId,
+      userId: req.userId,
+      promptVariables: t2MasterVariables('REVALIDATE', {
+        // §29.4 : la question est masquée comme pour les autres branches.
+        QUESTION: maskSensitiveText(req.question, sensitiveNecessityFor(req.question)).text.replace(/</g, '&lt;'),
+        FACT: req.fact, CURRENT_VALUE: req.currentValue, PROVENANCE_MODE: provenance,
+        LOCATION: req.location, CONTENT: req.content.replace(/</g, '&lt;'),
+      }),
+      attachments: req.attachment ? [req.attachment] : undefined,
+      outputSchema: T2RevalidateOutput,
+    }, req.requestId ? {
+      requestId: req.requestId, routeReason: `revalidation ${req.mode}`,
+      promptId: 't2_master_v1', promptVersion: 'REVALIDATE',
+    } : undefined);
+    return { output: fromT2Revalidate(res.data, provenance), model: res.model ?? null, costMicros: res.costMicros ?? 0 };
+  } catch (e) {
+    console.warn('[revalidation] appel master impossible :', (e as Error).message);
+    return null;
+  }
+}
 
 /** Contexte tabulaire d'un fait issu d'une cellule (0162), ou null. */
 export function tableContextOf(f: Pick<FactToCheck, 'location'>): { tableIndex: number; title: string | null; rowHeader: string | null; columnHeader: string | null; page: number | null } | null {
@@ -371,8 +503,13 @@ export async function revalidateFact(
   },
   deps: RevalidationDeps = defaultRevalidationDeps,
 ): Promise<RevalidationResult | null> {
-  const f = await loadFactToCheck(p.accountId, p.factId);
+  // Architecture T2 (D-04) : `master` ouvre la branche REVALIDATE et la
+  // relecture des observations visuelles (VISUAL_RECHECK).
+  const architecture = await (deps.architecture ?? defaultRevalidationDeps.architecture!)().catch(() => 'steps' as const);
+  const f = await loadFactToCheck(p.accountId, p.factId, { includeVisual: architecture === 'master' });
   if (!f) return null;
+  const visuel = f.evidenceOrigin === 'VISUAL_ANALYSIS';
+  if (visuel && architecture !== 'master') return null;
 
   // Déduplication : même fait, même extraction → on réutilise.
   const prev = await recentRevalidation(f);
@@ -394,10 +531,10 @@ export async function revalidateFact(
   let costMicros = 0;
   let model: string | null = null;
   let mode: RevalidationMode = 'PERSISTED_CONTENT';
-  let out: { status: RevalidationStatus; value: string | null; unit: string | null; confidence: 'certain' | 'probable' | null; excerpt: string | null; page: number | null } | null = null;
+  let out: { status: RevalidationStatus; value: string | null; unit: string | null; confidence: 'certain' | 'probable' | null; excerpt: string | null; page: number | null; visualEvidence?: VisualEvidence | null } | null = null;
 
-  // 1. Contenu persisté, sans modèle.
-  if (p.trigger !== 'CONFLICT' && confirmFromPersistedText(f)) {
+  // 1. Contenu persisté, sans modèle (faits LUS seulement).
+  if (!visuel && p.trigger !== 'CONFLICT' && confirmFromPersistedText(f)) {
     out = { status: 'CONFIRMED', value: initial, unit: f.valueUnit, confidence: 'certain', excerpt: f.excerpt, page };
   }
 
@@ -409,7 +546,7 @@ export async function revalidateFact(
       accountId: p.accountId, userId: p.userId, conversationId: p.conversationId,
       question: p.question, fact: describeFact(f), currentValue: `${initial ?? '—'}${f.valueUnit ? ` ${f.valueUnit}` : ''}`,
       location: describeLocation(page, table), mode: m, content, attachment, budget: p.budget,
-      requestId: p.requestId,
+      requestId: p.requestId, architecture, provenance: visuel ? 'VISUAL' : 'TEXT',
     });
     if (!r) return null;
     model = r.model; costMicros += r.costMicros;
@@ -418,15 +555,40 @@ export async function revalidateFact(
   const traduire = (o: RevalidationModelOutput, m: RevalidationMode) => {
     const st: RevalidationStatus = o.status === 'confirmed' ? 'CONFIRMED' : o.status === 'corrected' ? 'CORRECTED' : o.status === 'not_found' ? 'NOT_FOUND' : 'AMBIGUOUS';
     const value = st === 'CONFIRMED' ? (o.value ?? initial) : (o.value ?? null);
-    return { status: st, value, unit: o.unit ?? (st === 'CONFIRMED' ? f.valueUnit : null), confidence: o.confidence, excerpt: o.excerpt ?? null, page: o.page ?? page, mode: m };
+    return {
+      status: st, value, unit: o.unit ?? (st === 'CONFIRMED' ? f.valueUnit : null), confidence: o.confidence,
+      // Observation visuelle : jamais d'extrait (C3, P-T2-04, contrainte 0161).
+      excerpt: visuel ? null : (o.excerpt ?? null), page: o.page ?? page, mode: m,
+      visualEvidence: visuel ? (o.visualEvidence ?? null) : null,
+    };
   };
 
   // Sans modèle permis, rien d'autre n'est tenté — et rien n'est tracé comme
   // un échec : aucune vérification n'a eu lieu.
   if (!out && p.allowModel === false) return null;
 
+  // VISUAL_RECHECK : l'observation est relue sur la SOURCE (pas de texte à
+  // confronter). Établie seulement avec une preuve visuelle ; jamais
+  // « certaine » (aucun texte pour la contrôler).
+  if (!out && visuel) {
+    const src = await deps.sourceUrl(p.accountId, f.fileId).catch(() => null);
+    if (src) {
+      mode = 'VISUAL_RECHECK';
+      const origine = f.visualEvidence?.description ? ` Observation d'origine : ${f.visualEvidence.description}.` : '';
+      const o = await ask('VISUAL_RECHECK', `${page ? `Observe uniquement la page ${page}.` : 'Observe uniquement cette information.'}${origine}`, src);
+      if (o) {
+        const t = traduire(o, 'VISUAL_RECHECK');
+        t.confidence = t.confidence ? 'probable' : t.confidence;
+        const etablie = (t.status === 'CONFIRMED' || t.status === 'CORRECTED') && t.value && t.visualEvidence?.description;
+        out = (t.status === 'CONFIRMED' || t.status === 'CORRECTED') && !etablie ? { ...t, status: 'AMBIGUOUS' } : t;
+      } else {
+        out = { status: 'FAILED', value: null, unit: null, confidence: null, excerpt: null, page };
+      }
+    }
+  }
+
   // 2. Contenu persisté, avec modèle — l'extrait doit exister dans le texte.
-  if (!out && (tableText || f.fullText)) {
+  if (!out && !visuel && (tableText || f.fullText)) {
     const o = await ask('PERSISTED_CONTENT', tableText ?? windowAround(f));
     if (o) {
       const t = traduire(o, 'PERSISTED_CONTENT');
@@ -436,7 +598,7 @@ export async function revalidateFact(
   }
 
   // 3. Relecture ciblée de la source originale.
-  if (!out) {
+  if (!out && !visuel) {
     const src = await deps.sourceUrl(p.accountId, f.fileId).catch(() => null);
     if (src) {
       mode = 'SOURCE_RECHECK';
@@ -476,20 +638,35 @@ export async function revalidateFact(
 
   // ── Réinjection : seulement un résultat établi ──────────────────────────
   let reinjectedFactId: number | null = null;
+  let impact: RevalidationImpact | null = null;
   if ((out.status === 'CONFIRMED' || out.status === 'CORRECTED') && out.value) {
-    reinjectedFactId = await reinject(f, { ...out, value: out.value, confidence: out.confidence ?? 'probable' }, rev.id, model);
+    reinjectedFactId = await reinject(f, { ...out, value: out.value, confidence: out.confidence ?? 'probable' }, rev.id, model,
+      architecture === 'master' ? 't2_master_v1' : 'revalidate_fact_v1');
+    const { t4EffectsMode } = await import('@/services/canonical/rollout');
+    impact = {
+      assetId: f.assetId, projected: false, projectedFields: null, supersededEvidence: 0, evidenceMode: null,
+      t4Effects: f.assetId ? t4EffectsMode() : null, directAssetWrites: 0,
+    };
     if (f.assetId) {
       // Mêmes règles communes que T1 : preuves par champ puis T3 (valeurs
-      // utilisateur protégées, arbitrage « À traiter » si nécessaire).
+      // utilisateur protégées, arbitrage « À traiter » si nécessaire), puis
+      // candidats agenda (T4, T2-28). AUCUNE autre écriture sur le bien (T2-27).
       const assetId = f.assetId;
-      const project = () => deps.project({ accountId: p.accountId, userId: p.userId, fileId: f.fileId, assetId });
+      const trace = impact;
+      const project = async () => {
+        const n = await deps.project({ accountId: p.accountId, userId: p.userId, fileId: f.fileId, assetId });
+        trace.projected = true;
+        trace.projectedFields = typeof n === 'number' ? n : null;
+        return n;
+      };
       // T2-29 : l'ancien fait a cédé la place (confirmé, ou corrigé avec une
       // preuve certaine) — ses preuves aussi, APRÈS la projection. Sinon les
       // deux faits restent actifs, comme leurs preuves (conflit conservé).
       if (out.status === 'CONFIRMED' || out.confidence === 'certain') {
-        await (deps.replaceEvidence ?? replaceRevalidatedEvidence)({
+        const r = await (deps.replaceEvidence ?? replaceRevalidatedEvidence)({
           accountId: p.accountId, fileId: f.fileId, assetId, factKey: f.factKey, newValue: out.value, project,
-        }).catch((e: Error) => console.error('[revalidation] remplacement des preuves :', e.message));
+        }).catch((e: Error) => { console.error('[revalidation] remplacement des preuves :', e.message); return null; });
+        if (r) { trace.supersededEvidence = r.superseded; trace.evidenceMode = r.mode; trace.projected = r.projected; }
       } else {
         await project().catch((e: Error) => console.error('[revalidation] projection :', e.message));
       }
@@ -502,7 +679,13 @@ export async function revalidateFact(
        (account_id, file_id, extraction_id, analysis_run_id, fact_key, information, problem, t2_result, t1_model, t1_prompt_version)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) RETURNING id`,
     [p.accountId, f.fileId, f.extractionId, f.analysisRunId, f.factKey, describeFact(f), gapProblem(p.trigger, out.status),
-     JSON.stringify({ status: out.status, mode, value: out.value, unit: out.unit, confidence: out.confidence, revalidationId: rev.id }),
+     JSON.stringify({
+       status: out.status, mode, value: out.value, unit: out.unit, confidence: out.confidence, revalidationId: rev.id,
+       ...(architecture === 'master' ? { architecture } : {}),
+       ...(out.visualEvidence ? { visualEvidence: out.visualEvidence } : {}),
+       // T2-27 : trace d'impact (projection, preuves remplacées, effets T4).
+       ...(impact ? { impact } : {}),
+     }),
      f.t1Model, f.t1PromptVersion] as never[],
   )) as unknown as Array<{ id: number }>;
   await pgClient.unsafe(
@@ -513,6 +696,7 @@ export async function revalidateFact(
   return {
     status: out.status, mode, value: out.value, unit: out.unit, confidence: out.confidence, excerpt: out.excerpt,
     page: out.page, reinjectedFactId, reused: false, aiCalls, model, revalidationId: rev.id,
+    visualEvidence: out.visualEvidence ?? null, impact,
   };
 }
 
@@ -528,26 +712,45 @@ export async function revalidateFact(
  */
 async function reinject(
   f: FactToCheck,
-  out: { status: RevalidationStatus; value: string; unit: string | null; confidence: 'certain' | 'probable'; excerpt: string | null; page: number | null },
+  out: { status: RevalidationStatus; value: string; unit: string | null; confidence: 'certain' | 'probable'; excerpt: string | null; page: number | null; visualEvidence?: VisualEvidence | null },
   revalidationId: number,
   model: string | null,
+  promptVersion = 'revalidate_fact_v1',
 ): Promise<number> {
   return pgClient.begin(async (tx) => {
     const split = splitValueAndUnit(out.value);
     const valueNumber = split ? split.number : (Number.isFinite(Number(out.value.replace(',', '.'))) && /^\s*-?\d+([.,]\d+)?\s*$/.test(out.value) ? Number(out.value.replace(',', '.')) : null);
     const unit = out.unit ?? split?.unit ?? null;
     const location = { ...(f.location ?? {}), ...(out.page ? { page: out.page } : {}) };
-    const [row] = (await tx.unsafe(
-      `INSERT INTO document_facts (
-         account_id, file_id, extraction_id, fact_key, subject, attribute, label,
-         value_text, value_number, value_unit, value_json, normalized_value,
-         confidence, excerpt, location, source_type, provider, model, prompt_version, status, provenance, revalidation_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15::jsonb,'asset_file','gemini',$16,'revalidate_fact_v1','active','REVALIDATION_T2',$17)
-       RETURNING id::float8 AS id`,
-      [f.accountId, f.fileId, f.extractionId, f.factKey, f.subject, f.attribute, f.label,
-       out.value, valueNumber, unit, JSON.stringify(out.value), valueNumber != null ? String(valueNumber) : norm(out.value),
-       out.confidence, out.excerpt ?? f.excerpt, JSON.stringify(location), model, revalidationId] as never[],
-    )) as unknown as Array<{ id: number }>;
+    // Observation visuelle (VISUAL_RECHECK) : provenance VISUAL_ANALYSIS,
+    // AUCUN extrait, preuve visuelle décrite (contrainte 0161).
+    const visuel = f.evidenceOrigin === 'VISUAL_ANALYSIS';
+    const visual = visuel ? (out.visualEvidence ?? f.visualEvidence ?? null) : null;
+    const [row] = (visuel
+      ? await tx.unsafe(
+        `INSERT INTO document_facts (
+           account_id, file_id, extraction_id, fact_key, subject, attribute, label,
+           value_text, value_number, value_unit, value_json, normalized_value,
+           confidence, excerpt, location, source_type, provider, model, prompt_version, status, provenance, revalidation_id,
+           evidence_origin, visual_evidence
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,NULL,$14::jsonb,'asset_file','gemini',$15,$18,'active','REVALIDATION_T2',$16,
+                   'VISUAL_ANALYSIS',$17::jsonb)
+         RETURNING id::float8 AS id`,
+        [f.accountId, f.fileId, f.extractionId, f.factKey, f.subject, f.attribute, f.label,
+         out.value, valueNumber, unit, JSON.stringify(out.value), valueNumber != null ? String(valueNumber) : norm(out.value),
+         out.confidence, JSON.stringify(location), model, revalidationId, JSON.stringify(visual), promptVersion] as never[],
+      )
+      : await tx.unsafe(
+        `INSERT INTO document_facts (
+           account_id, file_id, extraction_id, fact_key, subject, attribute, label,
+           value_text, value_number, value_unit, value_json, normalized_value,
+           confidence, excerpt, location, source_type, provider, model, prompt_version, status, provenance, revalidation_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15::jsonb,'asset_file','gemini',$16,$18,'active','REVALIDATION_T2',$17)
+         RETURNING id::float8 AS id`,
+        [f.accountId, f.fileId, f.extractionId, f.factKey, f.subject, f.attribute, f.label,
+         out.value, valueNumber, unit, JSON.stringify(out.value), valueNumber != null ? String(valueNumber) : norm(out.value),
+         out.confidence, out.excerpt ?? f.excerpt, JSON.stringify(location), model, revalidationId, promptVersion] as never[],
+      )) as unknown as Array<{ id: number }>;
     if (out.status === 'CONFIRMED' || out.confidence === 'certain') {
       await tx.unsafe(`UPDATE document_facts SET status = 'superseded' WHERE id = $1`, [f.id] as never[]);
     }

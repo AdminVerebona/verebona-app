@@ -11,8 +11,8 @@
  *
  * TODO(lot 11, agent B → L15/L16) : écrire la valeur par
  * `writeCanonicalAssetField` (src/services/canonical/asset-state) et lire la
- * fiche par `CanonicalAssetView` dès que la primitive est livrée ; ajouter la
- * lecture T2 (L15, `ASSISTANT_CANONICAL_READ`) et l'export canonique (L16,
+ * fiche par `CanonicalAssetView` dès que la primitive est livrée ; lecture T2
+ * ajoutée au lot 15 (`ASSISTANT_CANONICAL_READ`) ; reste l'export canonique (L16,
  * `EXPORTS_CANONICAL_SOURCE`). Le cas limite deviendra alors : colonne
  * miroir remplie par la primitive (D-10 : la fiche fait foi).
  */
@@ -59,5 +59,26 @@ scenario('E2E-14', 'Immatriculation — fiche, colonne et export identiques', ({
   });
 
   it.todo('écriture par writeCanonicalAssetField : colonne miroir = fiche (D-10) — primitive de l’agent B');
-  it.todo('T2 répond la même immatriculation (L15, ASSISTANT_CANONICAL_READ)');
+  it('T2 répond la même immatriculation que la fiche (L15, ASSISTANT_CANONICAL_READ=enabled), colonne vide comprise', async () => {
+    const avant = process.env.ASSISTANT_CANONICAL_READ;
+    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+    try {
+      const compte = await make.account();
+      const bien = await make.asset(compte, {
+        category: 'VEHICULE', name: 'Clio', registrationNumber: null,
+        keyCharacteristics: { registrationNumber: 'EF-456-GH' },
+      });
+      const { answerFromData } = await import('@/services/verebona-assistant/core/data-answer.service');
+      const { accountDataRepository } = await import('@/services/verebona-assistant/core/account-data.repository');
+      const { DEFAULT_THRESHOLDS } = await import('@/services/verebona-assistant/core/sufficiency');
+      const r = await answerFromData({
+        port: accountDataRepository, accountId: compte.id, message: 'Quelle est l’immatriculation de la Clio ?', thresholds: DEFAULT_THRESHOLDS,
+      });
+      expect(r.strategy).toBe('structured.asset_field');
+      expect(r.answer).toContain('EF-456-GH');
+      expect(r.sources[0].id).toBe(`asset_field:${bien.id}:registrationNumber`);
+    } finally {
+      if (avant === undefined) delete process.env.ASSISTANT_CANONICAL_READ; else process.env.ASSISTANT_CANONICAL_READ = avant;
+    }
+  });
 });

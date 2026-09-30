@@ -295,3 +295,105 @@ export function nearMatchRatio(terms: QueryTerm[], text: string): number {
   }
   return total / terms.length;
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// FILTRES STRUCTURÉS D'UNE RECHERCHE DE DOCUMENTS — CDC 15 T2-13, T2-14
+// (lot 15, ASSISTANT_CANONICAL_READ=enabled)
+//
+// « Retrouve une facture » ne cherche pas le MOT « facture » dans un titre :
+// il demande les documents DE TYPE facture. De même « quels documents ne
+// sont rattachés à aucun bien ? » demande un filtre (aucun lien), pas les
+// mots « aucun » et « bien ». Ces expressions sont reconnues ici, sans
+// modèle, puis RETIRÉES du texte cherché : elles deviennent des filtres.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Racines de types de document reconnues dans une question (§13.7). */
+export const DOCUMENT_TYPE_STEMS: ReadonlySet<string> = new Set([
+  'facture', 'devis', 'devi', 'contrat', 'garantie', 'dpe', 'notice', 'manuel', 'certificat', 'attestation',
+  'assurance', 'acte', 'bail', 'quittance', 'releve', 'diagnostic', 'rapport', 'ticket', 'constat', 'avenant',
+]);
+
+/** Forme canonique d'une racine de type (« devi » → « devis »). */
+const TYPE_CANONIQUE: Readonly<Record<string, string>> = { devi: 'devis' };
+
+/** Types de document demandés (racines canoniques), dans l'ordre du message. */
+export function documentTypeStems(terms: QueryTerm[]): string[] {
+  const out: string[] = [];
+  for (const t of terms) {
+    if (t.exact) continue;
+    const s = DOCUMENT_TYPE_STEMS.has(t.stem) ? t.stem : DOCUMENT_TYPE_STEMS.has(t.raw) ? t.raw : null;
+    const c = s ? TYPE_CANONIQUE[s] ?? s : null;
+    if (c && !out.includes(c)) out.push(c);
+  }
+  return out;
+}
+
+export type DocumentLinkFilter = 'linked' | 'unlinked';
+export type DocumentAnalysisFilter = 'IN_ANALYSIS' | 'ANALYSIS_FAILED' | 'TO_VALIDATE' | 'ANALYZED' | 'NOT_ANALYZED';
+
+/** Filtres structurés d'une recherche de documents (T2-14). */
+export interface DocumentSearchFilters {
+  /** Rattaché à au moins un bien / à aucun bien (`document_asset_links`, colonnes historiques). */
+  link?: DocumentLinkFilter;
+  /** États d'analyse demandés (`document-status.ts`). */
+  analysis?: DocumentAnalysisFilter[];
+  /** Nom de fournisseur désigné (« chez Norauto », « fournisseur Martin »). */
+  supplierName?: string;
+}
+
+const plainQ = (s: string) => normalizeWord(s).replace(/[’]/g, "'");
+
+const FILTRES_LIEN: Array<[RegExp, DocumentLinkFilter]> = [
+  [/\b(?:ne\s+(?:sont|est)\s+)?(?:rattache|lie|associe|range|classe)e?s?\s+a\s+aucun\s+bien\b/, 'unlinked'],
+  [/\b(?:non|pas|jamais)\s+(?:encore\s+)?(?:rattache|lie|associe|range|classe)e?s?(?:\s+a\s+(?:un|mes|des|aucun)\s+biens?)?\b/, 'unlinked'],
+  [/\bsans\s+(?:aucun\s+)?bien(?:\s+(?:rattache|lie|associe)e?s?)?\b/, 'unlinked'],
+  [/\borphelins?\b/, 'unlinked'],
+  [/\b(?:rattache|lie|associe)e?s?\s+a\s+(?:un|mes|des|au\s+moins\s+un)\s+biens?\b/, 'linked'],
+];
+
+const FILTRES_ANALYSE: Array<[RegExp, DocumentAnalysisFilter]> = [
+  [/\b(?:en\s+cours\s+d'?\s?analyse|en\s+analyse|pas\s+encore\s+analyse(?:e|s|es)?|en\s+attente\s+d'?\s?analyse)\b/, 'IN_ANALYSIS'],
+  [/\b(?:analyse(?:s)?\s+(?:(?:a|ont)\s+)?(?:echouee?s?|echoue|impossibles?|en\s+echec)|echec\s+d'?\s?analyse|(?:n'?\s?ont|n'?\s?a)\s+pas\s+pu\s+etre\s+analyse(?:e|s|es)?)\b/, 'ANALYSIS_FAILED'],
+  [/\b(?:a\s+verifier|a\s+valider)\b/, 'TO_VALIDATE'],
+  [/\b(?:non\s+analyse(?:e|s|es)?|sans\s+analyse)\b/, 'NOT_ANALYZED'],
+  [/\b(?:deja\s+analyse(?:e|s|es)?|analyse(?:e|s|es)?\s+avec\s+succes)\b/, 'ANALYZED'],
+];
+
+/** « chez Norauto », « du fournisseur Martin », « fournisseur : Martin ». */
+const FILTRE_FOURNISSEUR = /\b(?:chez|(?:du|le|au)\s+fournisseur|fournisseur\s*:?)\s+([a-z0-9][a-z0-9&'-]*(?:\s+[a-z0-9][a-z0-9&'-]*){0,3}?)(?=\s*$|\s*[?.!,;]|\s+(?:en|pour|de|du|des|depuis|avant|apres|le|la|les|sur|dans|et)\b)/;
+
+/**
+ * Filtres structurés et texte restant (pure, testée). Le texte restant est
+ * celui dont on tire les termes : les expressions reconnues en sont retirées.
+ */
+export function documentSearchFilters(message: string): { filters: DocumentSearchFilters; rest: string } {
+  let t = plainQ(message);
+  const filters: DocumentSearchFilters = {};
+  for (const [re, v] of FILTRES_LIEN) {
+    const m = re.exec(t);
+    if (m) {
+      filters.link ??= v;
+      t = t.replace(m[0], ' ');
+    }
+  }
+  const analyses: DocumentAnalysisFilter[] = [];
+  for (const [re, v] of FILTRES_ANALYSE) {
+    const m = re.exec(t);
+    if (m) {
+      if (!analyses.includes(v)) analyses.push(v);
+      t = t.replace(m[0], ' ');
+    }
+  }
+  if (analyses.length) filters.analysis = analyses;
+  const f = FILTRE_FOURNISSEUR.exec(t);
+  if (f && extractSearchTerms(f[1]).length) {
+    filters.supplierName = f[1].trim();
+    t = t.replace(f[0], ` ${f[1]} `);
+  }
+  return { filters, rest: t.replace(/\s+/g, ' ').trim() };
+}
+
+/** Aucun filtre structuré. */
+export function hasDocumentFilters(f: DocumentSearchFilters | undefined | null): boolean {
+  return !!f && (!!f.link || !!f.analysis?.length || !!f.supplierName);
+}

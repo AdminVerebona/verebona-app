@@ -2,8 +2,8 @@
  * CDC 15 T2-43 — `maxOutputTokens` de l'assistant : la valeur vient de la
  * configuration IA effective (`generate_answer`), bornée au budget V1 (500,
  * §31.2) tant que le PO n'a pas arbitré. L'ancienne variable
- * `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` n'est plus qu'un plafond inférieur
- * de compatibilité, signalé une fois.
+ * `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` est IGNORÉE (lot 15 : source
+ * unique), seulement signalée une fois.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { z } from 'zod';
@@ -62,16 +62,17 @@ describe('T2-43 : plafond de sortie de l’assistant', () => {
     expect(ASSISTANT_MAX_OUTPUT_TOKENS).toBe(500);
   });
 
-  it('variable retirée encore posée : plafond inférieur seulement, signalée une fois', async () => {
+  it('variable retirée encore posée : ignorée (source unique), signalée une fois', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS = '200';
     version(400);
     fakeProvider.on('m-a', () => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
     await executeWithinBudget(undefined, req());
     await executeWithinBudget(undefined, req());
-    expect(fakeProvider.calls.map((c) => c.maxOutputTokens)).toEqual([200, 200]);
+    // Seule la configuration BO (400) s'applique — la variable n'abaisse plus rien.
+    expect(fakeProvider.calls.map((c) => c.maxOutputTokens)).toEqual([400, 400]);
     expect(warn.mock.calls.filter((c) => String(c[0]).includes('VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS'))).toHaveLength(1);
-    // Jamais pour relever le budget.
+    // Ni pour relever le budget.
     expect(assistantMaxOutputTokensCap({ VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS: '2000' } as unknown as NodeJS.ProcessEnv)).toBe(500);
   });
 

@@ -101,7 +101,7 @@ const TELEPHONE = /(?:\b0|\+33\s?)[1-9](?:[ .-]?\d{2}){4}\b/g;
 const NAISSANCE = /((?:n[ée]e?\s+le|date\s+de\s+naissance\s*:?)\s*)(\d{1,2}[/.\-\s]\d{1,2}[/.\-\s]\d{2,4}|\d{1,2}\s+[a-zéû]+\s+\d{4})/gi;
 
 /** Secret annoncé par son intitulé : la valeur qui suit est masquée. */
-const SECRET_ANNONCE = /((?:mot\s+de\s+passe|password|\bmdp\b|passcode|digicode|code\s+(?:d['’]\s?acc[èe]s|d['’]\s?entr[ée]e|du\s+portail|portail|de\s+l['’]\s?alarme|alarme|wi-?fi|pin|secret|confidentiel|de\s+la\s+porte|du\s+coffre|coffre)|cl[ée]\s+(?:wi-?fi|wpa2?|d['’]\s?api|secr[èe]te)|identifiant\s+de\s+connexion)(?:\s+(?:du|de\s+la|de\s+l['’]|de|des)\s*[a-zà-ÿ-]{2,20})?\s*(?:est|:|=|-)?\s*)([^\s,;]{3,64})/gi;
+const SECRET_ANNONCE = /((?:mot\s+de\s+passe|password|\bmdp\b|passcode|digicode|code\s+(?:d['’]\s?acc[èe]s|d['’]\s?entr[ée]e|du\s+portail|portail|de\s+l['’]\s?alarme|d['’]\s?alarme|alarme|wi-?fi|pin|secret|confidentiel|de\s+la\s+porte|du\s+coffre|coffre)|cl[ée]\s+(?:wi-?fi|wpa2?|d['’]\s?api|secr[èe]te)|identifiant\s+de\s+connexion)(?:\s+(?:du|de\s+la|de\s+l['’]|de|des)\s*[a-zà-ÿ-]{2,20})?\s*(?:est|:|=|-)?\s*)([^\s,;]{3,64})/gi;
 const CLE_API = /\b(?:AIza[0-9A-Za-z\-_]{35}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abp]-[A-Za-z0-9-]{10,})\b/g;
 const JWT = /\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}\b/g;
 const CLE_PRIVEE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;

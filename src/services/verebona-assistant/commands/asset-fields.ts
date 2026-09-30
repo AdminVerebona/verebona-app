@@ -1,21 +1,28 @@
 /**
- * Champs d'un bien modifiables depuis l'assistant — liste FERMÉE, en code.
+ * Champs d'un bien modifiables depuis l'assistant — VUE DU REGISTRE
+ * CANONIQUE (CDC 15 T2-39, T2-40 ; lot 15).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * « METS DATE D'ACHAT LE 25/05/2021 POUR LA POLO »
  *
- * L'assistant répondait « Je ne peux pas encore réaliser cette action ».
- * Il propose désormais la modification, avec l'ancienne et la nouvelle
+ * L'assistant propose la modification, avec l'ancienne et la nouvelle
  * valeur, et ne l'exécute qu'après confirmation explicite — par le même
- * service que la fiche bien (asset-details-write.service), donc avec les
- * mêmes contrôles.
+ * service que la fiche bien (asset-details-write.service), origine USER.
  *
- * Seuls les champs listés ici sont proposés : chacun a un libellé, une
- * section, un type et les familles de biens auxquelles il s'applique. Un
- * champ absent de la liste n'est jamais écrit depuis le chat — le modèle
- * n'intervient pas dans le choix du champ.
+ * La liste n'est plus maintenue ici : ce sont les champs du registre
+ * `assistantWritable: true`, avec leur libellé, leur type, leurs familles et
+ * leurs formulations (`assistantPhrases`). Un champ absent du registre, ou
+ * non modifiable par l'assistant, n'est jamais écrit depuis le chat — le
+ * modèle n'intervient pas dans le choix du champ. La LECTURE passe par le
+ * même registre (`canonical/field-reader`, `assistantReadable`) : T2 ne sait
+ * jamais modifier un champ qu'il ne sait pas lire (T2-40).
+ *
+ * Seule information propre à l'assistant : la section de la fiche par
+ * famille quand elle diffère de la section du registre (fiche véhicule :
+ * « Assurance » dans `vehicle_insurance`). Parité vérifiée par un test.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { CANONICAL_FIELDS, type CanonicalFieldDef } from '@/services/canonical/registry';
 
 export type AssetFamily = 'IMMOBILIER' | 'VEHICULE' | 'OBJET';
 
@@ -30,53 +37,54 @@ export interface AssetFieldDefinition {
   unit?: string;
 }
 
-export const ASSISTANT_ASSET_FIELDS: AssetFieldDefinition[] = [
-  {
-    key: 'acquisitionDate', label: 'Date d’achat', type: 'date',
-    sections: { IMMOBILIER: 'common', VEHICULE: 'common', OBJET: 'common' },
-    aliases: ["date d'achat", "date d'acquisition", 'date achat', 'date acquisition', "achete le", "acquis le"],
-  },
-  {
-    key: 'acquisitionPrice', label: 'Prix d’achat', type: 'number', unit: '€',
-    sections: { IMMOBILIER: 'common', VEHICULE: 'common', OBJET: 'common' },
-    aliases: ["prix d'achat", "prix d'acquisition", 'prix achat', "cout d'achat"],
-  },
-  {
-    key: 'estimatedValue', label: 'Valeur estimée', type: 'number', unit: '€',
-    sections: { IMMOBILIER: 'valuation', VEHICULE: 'valuation', OBJET: 'valuation' },
-    aliases: ['valeur estimee', 'valeur actuelle', 'estimation', 'valeur'],
-  },
-  {
-    key: 'nextInspection', label: 'Prochain contrôle technique', type: 'date',
-    sections: { VEHICULE: 'vehicle_insurance' },
-    aliases: ['prochain controle technique', 'date du controle technique', 'controle technique', 'prochain ct'],
-  },
-  {
-    key: 'insuranceExpiry', label: 'Échéance de l’assurance', type: 'date',
-    sections: { IMMOBILIER: 'insurance', VEHICULE: 'vehicle_insurance', OBJET: 'insurance' },
-    aliases: ["echeance de l'assurance", "echeance d'assurance", "fin d'assurance", "date d'echeance de l'assurance"],
-  },
-  {
-    key: 'insurer', label: 'Assureur', type: 'text',
-    sections: { IMMOBILIER: 'insurance', VEHICULE: 'vehicle_insurance', OBJET: 'insurance' },
-    aliases: ['assureur', 'compagnie d\'assurance'],
-  },
-  {
-    key: 'mileage', label: 'Kilométrage', type: 'number', unit: 'km',
-    sections: { VEHICULE: 'vehicle_usage' },
-    aliases: ['kilometrage', 'compteur', 'nombre de kilometres'],
-  },
-  {
-    key: 'registrationNumber', label: 'Immatriculation', type: 'text',
-    sections: { VEHICULE: 'vehicle_identification' },
-    aliases: ['immatriculation', "plaque d'immatriculation", 'plaque'],
-  },
-  {
-    key: 'firstRegistrationDate', label: 'Date de première immatriculation', type: 'date',
-    sections: { VEHICULE: 'vehicle_technical' },
-    aliases: ['date de premiere immatriculation', 'premiere immatriculation', 'date de mise en circulation', 'mise en circulation'],
-  },
+/** Section de la fiche par famille quand elle diffère de celle du registre. */
+const SECTION_OVERRIDES: Readonly<Record<string, Partial<Record<AssetFamily, string>>>> = {
+  insurer: { VEHICULE: 'vehicle_insurance' },
+  insuranceExpiry: { VEHICULE: 'vehicle_insurance' },
+};
+
+const FAMILLE_ASSISTANT: Readonly<Record<string, AssetFamily>> = { IMMOBILIER: 'IMMOBILIER', VEHICULE: 'VEHICULE', OBJECT: 'OBJET' };
+
+/** Définition assistant d'un champ du registre (pure, testée). */
+export function assistantFieldOf(d: CanonicalFieldDef): AssetFieldDefinition {
+  const sections: Partial<Record<AssetFamily, string>> = {};
+  for (const f of d.families) {
+    const fam = FAMILLE_ASSISTANT[f];
+    if (fam) sections[fam] = SECTION_OVERRIDES[d.key]?.[fam] ?? d.section ?? 'common';
+  }
+  const type: AssetFieldDefinition['type'] = d.valueType === 'date' ? 'date'
+    : d.valueType === 'number' || d.valueType === 'money_eur' || d.valueType === 'money_cents' ? 'number' : 'text';
+  const unit = d.valueType === 'money_eur' || d.unit === 'EUR' ? '€' : d.unit;
+  return {
+    key: d.key, label: d.label, sections, type, aliases: [...(d.assistantPhrases ?? [])],
+    ...(unit ? { unit } : {}),
+  };
+}
+
+/**
+ * Ordre EXACT de l'ancienne liste (tag lot14b), restauré à la relecture du
+ * lot 15 : il départage deux alias de même longueur dans `findAssetField`
+ * (le premier champ de la liste gagne — ex. « kilométrage » et
+ * « prochain ct », 11 caractères chacun → prochain contrôle technique).
+ * Un champ ajouté au registre sans figurer ici vient après, dans l'ordre du
+ * registre.
+ */
+export const ASSISTANT_FIELD_ORDER: readonly string[] = [
+  'acquisitionDate', 'acquisitionPrice', 'estimatedValue', 'nextInspection', 'insuranceExpiry',
+  'insurer', 'mileage', 'registrationNumber', 'firstRegistrationDate',
 ];
+
+const rang = (key: string) => {
+  const i = ASSISTANT_FIELD_ORDER.indexOf(key);
+  return i < 0 ? ASSISTANT_FIELD_ORDER.length : i;
+};
+
+/** Champs modifiables depuis l'assistant : registre, `assistantWritable`, ordre historique. */
+export const ASSISTANT_ASSET_FIELDS: AssetFieldDefinition[] = CANONICAL_FIELDS
+  .filter((d) => d.assistantWritable && d.assistantReadable)
+  .map((d, i) => ({ d, i }))
+  .sort((a, b) => rang(a.d.key) - rang(b.d.key) || a.i - b.i)
+  .map(({ d }) => assistantFieldOf(d));
 
 export function familyOf(category: string): AssetFamily {
   return category === 'IMMOBILIER' || category === 'VEHICULE' ? category : 'OBJET';
