@@ -26,6 +26,8 @@ import { toExportFamily, type ExportFamily, type DossierCode } from '@/services/
 import {
   classifyDocument, documentTitle, documentTypeLabel, fileFormatOf, isIntegrable, type DocKind,
 } from './documents';
+import type { AgendaStatus4 } from '@/services/verebona-assistant/canonical/agenda';
+import type { ExportSourceTrace } from './canonical-source';
 
 /**
  * Valeurs des informations complémentaires (contrat `getAssetAdditionalInfos`) :
@@ -65,6 +67,12 @@ export interface SourceDocument {
   /** Tous les codes connus (types V1/V2, fonction retenue, rubriques CIL), en capitales. */
   codes: string[];
   equipmentId: number | null;
+  /**
+   * Source canonique (relecture lot 16) : rattachement non confirmé
+   * (lien SECONDARY AI, `linked_asset_id` / `linked_room_id`) — proposé
+   * DÉCOCHÉ, jamais pré-sélectionné. Absent en lecture historique.
+   */
+  unconfirmedLink?: boolean;
 }
 
 export interface SourcePhoto {
@@ -97,6 +105,12 @@ export interface SourceEvent {
   description: string | null;
   /** Prévision issue d'une récurrence (agenda). */
   forecast: boolean;
+  /**
+   * Source canonique seulement (X-02, lot 16) : nature D-14 et statut à
+   * 4 états du lot 14. Absents en lecture historique (règles inchangées).
+   */
+  nature?: 'HISTORICAL' | 'DEADLINE' | null;
+  status4?: AgendaStatus4;
 }
 
 export interface SourceEquipment {
@@ -153,6 +167,8 @@ export interface ExportSource {
   additionalInfo: AdditionalInfosSnapshot;
   cil: SourceCil | null;
   preparedBy: string | null;
+  /** Source réellement utilisée et version du registre (X-02, figé dans le snapshot). */
+  sourceTrace?: ExportSourceTrace;
 }
 
 /**
@@ -228,7 +244,10 @@ export function toSourcePhotos(photos: PhotoRef[]): SourcePhoto[] {
     }));
 }
 
-function toSourceEvents(snapshot: AssetSnapshot, agenda: Array<{ id: number; title: string; description: string | null; startDate: unknown; manualStatus: string | null; occurrenceNature: string | null }>): SourceEvent[] {
+function toSourceEvents(snapshot: AssetSnapshot, agenda: Array<{
+  id: number; title: string; description: string | null; startDate: unknown; manualStatus: string | null; occurrenceNature: string | null;
+  nature?: SourceEvent['nature']; status4?: AgendaStatus4;
+}>): SourceEvent[] {
   const fromEvents: SourceEvent[] = snapshot.events.map((e) => ({
     key: `event:${e.id}`, source: 'event', id: e.id, title: e.title, date: asIso(e.date), category: e.categorie ?? null,
     status: e.statut ?? null, provider: e.provider ?? null, costCents: e.costCents ?? null, description: e.notes ?? null, forecast: false,
@@ -239,15 +258,116 @@ function toSourceEvents(snapshot: AssetSnapshot, agenda: Array<{ id: number; tit
       key: `agenda:${a.id}`, source: 'agenda', id: a.id, title: a.title, date: asIso(a.startDate), category: null,
       status: a.manualStatus ?? null, provider: null, costCents: null, description: a.description ?? null,
       forecast: a.occurrenceNature === 'FORECAST',
+      ...(a.status4 !== undefined ? { nature: a.nature ?? null, status4: a.status4 } : {}),
     }));
   return [...fromEvents, ...fromAgenda];
 }
 
+type LoadParams = { assetId: number; accountId: number; userId: number; exportType: DossierCode };
+
 /**
  * Lit les données d'un bien pour un dossier. `accountId` est le compte du
  * bien, déjà vérifié par l'appelant (`findAccessibleAssetForExport`).
+ *
+ * Commutateur `EXPORTS_CANONICAL_SOURCE` (CDC 15 X-02, lot 16 — voir
+ * `canonical-source.ts`) :
+ *   · legacy  : lecture historique, strictement inchangée ;
+ *   · shadow  : lecture historique UTILISÉE, lecture canonique calculée en
+ *               plus (données seulement, aucun rendu), rapport d'écarts sans
+ *               valeur journalisé ; un échec du calcul canonique n'affecte
+ *               jamais le dossier ;
+ *   · enabled : lecture canonique.
+ * Toujours : `sourceTrace` (source utilisée, version du registre).
  */
-export async function loadExportSource(params: { assetId: number; accountId: number; userId: number; exportType: DossierCode }): Promise<ExportSource> {
+export async function loadExportSource(params: LoadParams): Promise<ExportSource> {
+  const { exportsSourceMode, traceOf } = await import('./canonical-source');
+  const mode = exportsSourceMode();
+  const { source: legacy, snapshot } = await loadLegacyExportSource(params);
+  if (mode === 'legacy') return { ...legacy, sourceTrace: traceOf(mode, 'legacy') };
+  if (mode === 'enabled') {
+    const { source, documentPaths, unconfirmed } = await buildCanonicalExportSource(params, legacy, snapshot);
+    return { ...source, sourceTrace: traceOf(mode, 'canonical', { documentPaths, unconfirmedDocuments: unconfirmed }) };
+  }
+  // shadow
+  try {
+    const { source: canonical, documentPaths, today, unconfirmed } = await buildCanonicalExportSource(params, legacy, snapshot);
+    const { diffExportSources } = await import('./source-diff');
+    const diff = diffExportSources(legacy, canonical, { today, documentPaths, unconfirmed });
+    // Journal structuré, SANS VALEUR : noms de champs, identifiants, clés.
+    console.info('[exports:canonical-shadow]', JSON.stringify({
+      assetId: params.assetId, accountId: params.accountId, exportType: params.exportType, ...diff,
+    }));
+    return {
+      ...legacy,
+      sourceTrace: traceOf(mode, 'legacy', {
+        shadowDiff: {
+          fields: diff.fields.length, documentsOnlyLegacy: diff.documents.onlyLegacy.length,
+          documentsOnlyCanonical: diff.documents.onlyCanonical.length, events: diff.events.length,
+          addedConfirmed: diff.documents.addedInCanonical.confirmed, addedUnconfirmed: diff.documents.addedInCanonical.unconfirmed,
+        },
+      }),
+    };
+  } catch (err) {
+    console.warn('[exports:canonical-shadow] calcul canonique en échec', {
+      assetId: params.assetId, exportType: params.exportType, error: err instanceof Error ? err.message : String(err),
+    });
+    return { ...legacy, sourceTrace: traceOf(mode, 'legacy', { shadowDiff: { fields: 0, documentsOnlyLegacy: 0, documentsOnlyCanonical: 0, events: 0, failed: true } }) };
+  }
+}
+
+/**
+ * Source canonique, construite SUR la lecture historique : seuls changent
+ * les champs du bien, les pièces et l'agenda (photos, pièces de la maison,
+ * équipements, informations complémentaires D-12, CIL : identiques).
+ */
+async function buildCanonicalExportSource(
+  params: LoadParams, legacy: ExportSource, snapshot: AssetSnapshot,
+): Promise<{ source: ExportSource; documentPaths: ExportSourceTrace['documentPaths']; today: string; unconfirmed: number[] }> {
+  const cs = await import('./canonical-source');
+  const { pgClient } = await import('@/db');
+  const { parisDate } = await import('../generation/clock');
+  const today = parisDate();
+  const row = await cs.loadAssetRow(pgClient as never, params.assetId, params.accountId);
+  if (!row) throw Object.assign(new Error(`Bien ${params.assetId} introuvable pour le compte ${params.accountId}`), { exportErrorCode: 'ASSET_NOT_FOUND' });
+  const state = cs.buildCanonicalAssetState(row);
+  const [docs, agenda] = await Promise.all([
+    cs.loadCanonicalDocuments(params.accountId, params.assetId),
+    cs.loadCanonicalAgenda(params.accountId, params.assetId, today),
+  ]);
+  const scalars = cs.canonicalAssetScalars(state, {
+    purchaseDate: legacy.asset.purchaseDate, purchasePriceCents: legacy.asset.purchasePriceCents,
+    warrantyEndDate: legacy.asset.warrantyEndDate, mileageOrHours: legacy.asset.mileageOrHours,
+    registrationNumber: legacy.asset.registrationNumber, dimensions: legacy.asset.dimensions,
+    engineInfo: legacy.asset.engineInfo, purchaseLocation: legacy.asset.purchaseLocation,
+    address: legacy.asset.address, postalCode: legacy.asset.postalCode, city: legacy.asset.city,
+    generalCondition: legacy.asset.generalCondition, objectCategory: legacy.asset.objectCategory,
+    description: legacy.asset.description,
+  });
+  const photoFileIds = new Set(snapshot.photos.map((p) => p.fileId).filter((x): x is number => x != null));
+  return {
+    today,
+    documentPaths: docs.paths,
+    unconfirmed: docs.unconfirmed,
+    source: {
+      ...legacy,
+      asset: {
+        ...legacy.asset,
+        ...scalars,
+        characteristics: cleanCharacteristics(cs.canonicalCharacteristics(row, state)),
+      },
+      // Rattachement non confirmé : proposé décoché (relecture lot 16).
+      documents: toSourceDocuments(docs.documents, photoFileIds)
+        .map((d) => (docs.unconfirmed.includes(d.id) ? { ...d, unconfirmedLink: true } : d)),
+      events: toSourceEvents(snapshot, agenda.map((a) => ({
+        id: a.id, title: a.title, description: a.description, startDate: a.startDate, manualStatus: a.manualStatus,
+        occurrenceNature: a.occurrenceNature, nature: a.nature, status4: a.status4,
+      }))),
+    },
+  };
+}
+
+/** Lecture historique (inchangée) ; rend aussi le snapshot lu. */
+async function loadLegacyExportSource(params: LoadParams): Promise<{ source: ExportSource; snapshot: AssetSnapshot }> {
   const { assetId, accountId, userId, exportType } = params;
   const [assetRow] = await db.select().from(assets)
     .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId), isNull(assets.deletedAt))).limit(1);
@@ -298,7 +418,7 @@ export async function loadExportSource(params: { assetId: number; accountId: num
   const photoFileIds = new Set(snapshot.photos.map((p) => p.fileId).filter((x): x is number => x != null));
   const name = [author[0]?.firstName, author[0]?.lastName].filter((x) => x && x.trim()).join(' ').trim();
 
-  return {
+  const source: ExportSource = {
     exportType,
     family,
     asset: {
@@ -341,4 +461,5 @@ export async function loadExportSource(params: { assetId: number; accountId: num
     cil,
     preparedBy: name || null,
   };
+  return { source, snapshot };
 }

@@ -55,8 +55,11 @@ export const ROLLOUT_SWITCHES = {
       + 'agenda sans historique, dépenses qualifiées, complétude — pas de mode observation (shadow = legacy).',
   },
   EXPORTS_CANONICAL_SOURCE: {
-    env: 'EXPORTS_CANONICAL_SOURCE', lot: 'L16', wired: false,
-    description: 'Exports lus depuis CanonicalAssetView (X-02).',
+    env: 'EXPORTS_CANONICAL_SOURCE', lot: 'L16', wired: true,
+    // shadow : source historique utilisée, source canonique calculée en plus
+    // (données seulement, aucun rendu) et rapport d'écarts sans valeur.
+    description: 'Dossiers V12 lus depuis CanonicalAssetView et document_asset_links (X-02) : champs du bien, '
+      + 'pièces N-N (PRIMARY, SECONDARY ; MENTIONED exclus) avec repli sur les colonnes historiques, agenda D-14 / 4 états.',
   },
 } as const satisfies Record<string, RolloutSwitchDef>;
 

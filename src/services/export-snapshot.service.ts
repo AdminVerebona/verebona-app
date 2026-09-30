@@ -2,9 +2,11 @@
  * Service de snapshot d'asset pour les exports
  * Capture l'état complet d'un bien au moment de la génération (données gelées)
  *
- * Règles d'inclusion :
+ * Règles d'inclusion (lecture HISTORIQUE — `EXPORTS_CANONICAL_SOURCE=legacy`) :
  * - asset_files : direct (assetId) + indirect via substructureId/equipmentId
- *   MAIS pas linkedAssetId/linkedRoomId (rattachement croisé hors périmètre V1)
+ *   MAIS pas linkedAssetId/linkedRoomId (rattachement croisé hors périmètre V1).
+ *   La source canonique (relation N-N, X-02) est appliquée par-dessus par
+ *   `services/exports/export-snapshot-source.ts` (shadow / enabled).
  * - Exclusions strictes : deletedAt, isDraft, isIgnored, uploadStatus != COMPLETED
  * - web links : chargés dans snapshot mais filtrés au niveau manifest selon l'usage
  * - equipments : archivedAt IS NULL uniquement
@@ -207,6 +209,12 @@ export interface AssetSnapshot {
   /** Sections structurées avec libellés lisibles — issues de keyCharacteristics */
   detailSections: AssetDetailSections;
   equipmentList: string[];
+  /**
+   * Source des données (CDC 15 X-02, lot 16) : posée par
+   * `buildExportAssetSnapshot` (mode du commutateur, source utilisée,
+   * version du registre). Absente d'un snapshot construit directement.
+   */
+  dataSource?: import('@/services/exports/v12/data/canonical-source').ExportSourceTrace;
   // Related data
   documents: DocumentRef[];   // all (incl. web links) — filtered per usage by manifest
   photos: PhotoRef[];
@@ -237,7 +245,8 @@ export interface AssetSnapshot {
 // ─── Reconstruction des sections structurées depuis keyCharacteristics ─────────
 // Même logique que /api/assets/[id]/details — source unique de vérité pour le renderer
 
-function buildDetailSections(
+/** Exportée pour la source canonique des exports (X-02, `exports/export-snapshot-source.ts`). */
+export function buildDetailSections(
   kc: Record<string, unknown>,
   assetRow: { category: string; address?: string | null; postalCode?: string | null; city?: string | null; registrationNumber?: string | null; generalCondition?: string | null; mileageOrHours?: number | null; notes?: string | null; name?: string | null },
 ): AssetDetailSections {

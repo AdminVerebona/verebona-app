@@ -1,0 +1,16 @@
+{
+  "case": "P-T5-02",
+  "description": "T5 / MODIFY — modification T1 : prompt T1 maître COMPLET (branches et emplacements conservés), autres prompts inchangés ; cible T5 écartée.",
+  "context": { "instruction": "Le titre d’une facture doit commencer par le type de document.", "masterTargets": ["T1"] },
+  "recording": {
+    "operationCode": "t5_modify", "task": "MODIFY",
+    "output": { "mode": "MODIFY", "verdict": "prompt",
+      "analysis": "Le prompt maître T1 ne donne aucune règle de titre ; une règle est ajoutée, le reste est conservé.",
+      "targets": [
+        { "treatment": "T1", "reason": "Règle de titre absente.", "proposedContent": "@@MASTER_FILE:t1_master_v1@@\n\nRÈGLE AJOUTÉE — Le titre d’une facture commence par le type de document." },
+        { "treatment": "T5", "reason": "moi-même", "proposedContent": "Nouveau T5 qui ne doit jamais être écrit, assez long pour passer le seuil." }
+      ],
+      "requiredCodeChanges": [], "requiredSchemaChanges": [], "configurationRecommendations": [], "risks": ["Titres plus longs"], "requiredTests": ["P-T1-02"] }
+  },
+  "expected": { "writable": ["T1"], "field": "masterPrompt" }
+}

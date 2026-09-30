@@ -227,9 +227,21 @@ export interface MasterTemplateInfo {
   discriminant: MasterDiscriminant | null;
 }
 
+/**
+ * Branches déclarées sans section dédiée (T5, §27) : la ligne
+ * « Valeurs autorisées : ANALYZE | MODIFY » qui suit `MODE = {{MODE}}`. Les
+ * règles de chaque mode sont alors dans le corps commun (R3/R4) — le texte
+ * du CDC est transcrit tel quel, sans section « BRANCHE » ajoutée.
+ */
+const DECLARED_VALUES_RE = /(?:TASK|MODE)\s*=\s*\{\{(?:TASK|MODE)\}\}\s*\n+\s*Valeurs autorisées\s*:\s*([A-Z0-9_]+(?:\s*\|\s*[A-Z0-9_]+)*)/;
+
 export function inspectMasterTemplate(text: string): MasterTemplateInfo {
   const placeholders = [...new Set([...text.matchAll(PLACEHOLDER_RE)].map((m) => m[1]))];
-  const branches = [...new Set([...text.matchAll(BRANCH_RE)].map((m) => m[1]))];
+  let branches = [...new Set([...text.matchAll(BRANCH_RE)].map((m) => m[1]))];
+  if (branches.length === 0) {
+    const declared = DECLARED_VALUES_RE.exec(text);
+    if (declared) branches = declared[1].split('|').map((b) => b.trim()).filter(Boolean);
+  }
   const discriminant = MASTER_DISCRIMINANTS.find((d) => placeholders.includes(d)) ?? null;
   return { placeholders, branches, hasTaskPlaceholder: discriminant !== null, discriminant };
 }
@@ -341,6 +353,26 @@ export function masterPromptVersionOf(input: {
   if (!configured) return `${input.masterPromptCode}@file`;
   const digest = createHash('sha256').update(configured).digest('hex').slice(0, 12);
   return `${input.masterPromptCode}@cfg${input.configVersionId ?? ''}:${digest}`;
+}
+
+/**
+ * Texte BRUT d'un master (fichier du dépôt, sa valeur initiale D-03) — sans
+ * rendu. Sert à T5 (lecture et diff d'un master complet, §29.1), au corpus
+ * (empreinte, §30) et au contrôle de retrait. Lève `MasterPromptError`.
+ */
+export async function loadMasterTemplate(masterPromptCode: string, useCaseCode?: AiUseCaseCode): Promise<string> {
+  try {
+    return (await loadActiveVersion(masterPromptCode, useCaseCode)).text;
+  } catch (e) {
+    throw new MasterPromptError('MASTER_NOT_FOUND', masterPromptCode, (e as Error).message);
+  }
+}
+
+/** Empreinte SHA-256 d'un texte master (garde d'activation §30). */
+export function masterTextFingerprint(text: string): string {
+  // Fins de ligne normalisées : un dépôt extrait sous Windows (CRLF) doit
+  // produire la même empreinte que la CI et la production (LF).
+  return createHash('sha256').update(text.replace(/\r\n?/g, '\n')).digest('hex');
 }
 
 /** Charge, contrôle et rend le prompt maître d'une branche. Lève `MasterPromptError`. */

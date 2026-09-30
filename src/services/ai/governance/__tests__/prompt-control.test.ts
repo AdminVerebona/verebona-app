@@ -11,7 +11,7 @@ const getVersion = vi.fn();
 const getActiveVersion = vi.fn();
 const listVersions = vi.fn();
 const createDraft = vi.fn();
-const saveEntry = vi.fn(async (_v: unknown, _e: unknown, _u: unknown) => {});
+const savePrompt = vi.fn(async (_p: Record<string, unknown>) => true);
 const execute = vi.fn();
 const recordT5Modification = vi.fn(async (_t: unknown) => {});
 const getEmergencyStop = vi.fn(async (): Promise<{ active: boolean; reason: string | null; engagedAt: Date | null }> =>
@@ -22,7 +22,7 @@ vi.mock('../../config/config-version.repository', () => ({
   getActiveVersion: (env: unknown) => getActiveVersion(env),
   listVersions: (env: unknown) => listVersions(env),
   createDraft: (u: unknown, l: unknown) => createDraft(u, l),
-  saveEntry: (a: unknown, b: unknown, c: unknown) => saveEntry(a, b, c),
+  savePromptFieldIfUnchanged: (p: Record<string, unknown>) => savePrompt(p),
 }));
 vi.mock('../../gateway/ai-gateway', () => ({ AiGateway: { execute: (req: unknown) => execute(req) } }));
 vi.mock('../prompt-control.audit', () => ({ recordT5Modification: (t: unknown) => recordT5Modification(t) }));
@@ -60,7 +60,7 @@ const demande = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   for (const m of [getVersion, getActiveVersion, listVersions, createDraft, execute]) m.mockReset();
-  saveEntry.mockClear();
+  savePrompt.mockClear();
   recordT5Modification.mockClear();
   getEmergencyStop.mockResolvedValue({ active: false, reason: null, engagedAt: null });
 });
@@ -89,7 +89,7 @@ describe('T5 choisit les cibles', () => {
       { treatment: 'T2', reason: 'citation', proposedContent: NEW('T2') },
     ] }));
     const r = await modify(demande());
-    expect(saveEntry).toHaveBeenCalledTimes(2);
+    expect(savePrompt).toHaveBeenCalledTimes(2);
     expect(r.changes.map((c) => [c.treatment, c.applied])).toEqual([['T1', true], ['T2', true]]);
     expect(r).toMatchObject({ applied: true, draftId: 1, mode: 'modify' });
     expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 'control_prompts' });
@@ -105,15 +105,18 @@ describe('T5 choisit les cibles', () => {
     ] }));
     const r = await modify(demande());
     expect(r.changes.map((c) => c.treatment)).toEqual(['T3']);
-    expect(saveEntry).toHaveBeenCalledTimes(1);
+    expect(savePrompt).toHaveBeenCalledTimes(1);
   });
 
   it('T5-001 — ne change que le prompt', async () => {
     getVersion.mockResolvedValue(version());
     execute.mockResolvedValue(sortie());
     await modify(demande());
-    const ecrit = saveEntry.mock.calls[0][1] as Record<string, unknown>;
-    expect(ecrit).toMatchObject({ primaryModel: 'm1', fallback1: 'm2', guardrails: [{ code: 'g' }], prompt: NEW('T1') });
+    // Écriture conditionnelle de la SEULE zone prompt (revue lot 16) :
+    // modèles, replis et garde-fous ne font pas partie de l'écriture.
+    expect(savePrompt).toHaveBeenCalledWith({
+      versionId: 1, treatment: 'T1', field: 'prompt', expected: P('T1'), next: NEW('T1'), userId: 7,
+    });
   });
 
   it('T5-014 — trace chaque modification', async () => {
@@ -133,7 +136,7 @@ describe('analyse seule (T5-006)', () => {
     const r = await analyze(1, 'Pourquoi ces titres ?', 99, 7);
     expect(r.applied).toBe(false);
     expect(r.changes).toEqual([expect.objectContaining({ treatment: 'T1', applied: false, diff: null })]);
-    expect(saveEntry).not.toHaveBeenCalled();
+    expect(savePrompt).not.toHaveBeenCalled();
     expect(createDraft).not.toHaveBeenCalled();
     expect(execute.mock.calls[0][0].promptVariables.MODE).toMatch(/^ANALYSE/);
   });
@@ -145,7 +148,7 @@ describe('diagnostic non-prompt (T5-011, WF-39)', () => {
     execute.mockResolvedValue(sortie({ verdict }));
     const r = await modify(demande());
     expect(r.applied).toBe(false);
-    expect(saveEntry).not.toHaveBeenCalled();
+    expect(savePrompt).not.toHaveBeenCalled();
   });
 
   it('n’écrit pas une proposition identique ou trop courte', () => {
@@ -196,8 +199,18 @@ describe('brouillon (T5-004, T5-007)', () => {
       .mockResolvedValueOnce(version({ entries: [entree('T1', 'Texte enregistré entre-temps par un autre administrateur.')] }));
     execute.mockResolvedValue(sortie());
     const r = await modify(demande());
-    expect(saveEntry).not.toHaveBeenCalled();
+    expect(savePrompt).not.toHaveBeenCalled();
     expect(r.changes[0].rejected).toMatch(/modifié pendant l'analyse/);
+  });
+
+  it('revue lot 16 — écriture concurrente APRÈS la relecture : 0 ligne, conflit explicite, rien écrasé', async () => {
+    getVersion.mockResolvedValue(version());
+    execute.mockResolvedValue(sortie());
+    savePrompt.mockResolvedValueOnce(false);
+    const r = await modify(demande());
+    expect(r.applied).toBe(false);
+    expect(r.changes[0].rejected).toMatch(/^Conflit/);
+    expect(recordT5Modification).not.toHaveBeenCalled();
   });
 });
 
@@ -210,7 +223,7 @@ describe('disponibilité (T5-015)', () => {
 });
 
 describe('verdicts', () => {
-  it('quatre causes', () => {
-    expect([...VERDICTS]).toEqual(['prompt', 'code', 'donnees', 'configuration']);
+  it('quatre causes, plus « mixed » (CDC 15 §27 R1, lot 16)', () => {
+    expect([...VERDICTS]).toEqual(['prompt', 'code', 'donnees', 'configuration', 'mixed']);
   });
 });

@@ -49,13 +49,22 @@ import { AiGateway } from '../gateway/ai-gateway';
 import { computeDiff, type DiffSummary } from './diff.service';
 import { T5_TARGETS, type Treatment } from '../config/treatments';
 import {
-  getVersion, getActiveVersion, listVersions, createDraft, saveEntry,
+  getVersion, getActiveVersion, listVersions, createDraft, savePromptFieldIfUnchanged,
 } from '../config/config-version.repository';
 import type { ConfigVersionWithEntries } from '../config/config-types';
 import { recordT5Modification } from './prompt-control.audit';
 import { diffVersions, renderDiff, type ConfigDiff } from '../config/config-diff.service';
+import { promptArchitectureOf, masterPromptOf, type TreatmentConfig } from '../config/config-types';
+import { masterPromptForTreatment, checkMasterProposal } from '../config/prompt-architecture';
+import { TREATMENT_DEFINITIONS } from '../config/treatments';
+import { loadMasterTemplate, inspectMasterTemplate } from '../prompts/prompt-loader';
+import { T5AnalyzeOutput, T5ModifyOutput, type T5MasterOutput } from './master/t5-contract';
 
-export const VERDICTS = ['prompt', 'code', 'donnees', 'configuration'] as const;
+/**
+ * Verdicts. `mixed` (CDC 15 §27 R1) : plusieurs chantiers ; comme tout
+ * verdict autre que « prompt », il n'écrit RIEN (T5-02, T5-011).
+ */
+export const VERDICTS = ['prompt', 'code', 'donnees', 'configuration', 'mixed'] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
 export const T5_MODES = ['analyze', 'modify'] as const;
@@ -88,18 +97,30 @@ const TargetOut = z.object({
   proposedContent: z.string().nullable().default(null),
 });
 const PromptControlOutput = z.object({
-  verdict: z.enum(VERDICTS),
+  // Le prompt d'étapes (`prompt_control_v2`) n'annonce que quatre verdicts.
+  verdict: z.enum(['prompt', 'code', 'donnees', 'configuration']),
   analysis: z.string().min(1).transform((s) => s.slice(0, 4000)),
   targets: z.array(TargetOut).max(8).default([]),
   risks: z.array(z.string()).default([]).transform((a) => a.slice(0, 10).map((s) => s.slice(0, 400))),
   recommendations: z.array(z.string()).default([]).transform((a) => a.slice(0, 10).map((s) => s.slice(0, 400))),
 });
-type PromptControlOut = z.infer<typeof PromptControlOutput>;
+/** Forme interne commune (étapes et master) : `verdict` peut valoir `mixed`. */
+type PromptControlOut = Omit<z.infer<typeof PromptControlOutput>, 'verdict'> & {
+  verdict: Verdict;
+  requiredCodeChanges?: string[];
+  requiredSchemaChanges?: string[];
+  requiredTests?: string[];
+};
 
 export interface T5Change {
   treatment: Treatment;
   label: string;
   reason: string;
+  /**
+   * Zone lue et réécrite : `prompt` (préambule des étapes) ou `masterPrompt`
+   * (texte master COMPLET, branches comprises — traitement en `master`).
+   */
+  field?: 'prompt' | 'masterPrompt';
   diff: DiffSummary | null;
   /** Écrit dans le Brouillon. */
   applied: boolean;
@@ -123,6 +144,13 @@ export interface T5Result {
   comparison?: { versionId: number; label: string; status: string; diff: ConfigDiff } | null;
   /** T5-009 : synthèse des journaux effectivement transmise à T5 (sur demande). */
   logsDigest?: string | null;
+  /** §27 R6 : changements de code et de schéma requis (master T5). */
+  requiredCodeChanges?: string[];
+  requiredSchemaChanges?: string[];
+  /** §27 R8 : tests minimums à ajouter au corpus. */
+  requiredTests?: string[];
+  /** Architecture de T5 qui a produit la réponse. */
+  architecture?: 'steps' | 'master';
 }
 
 /** Contexte complémentaire demandé par l'administrateur (T5-009, T5-010). */
@@ -261,10 +289,58 @@ function promptOf(version: ConfigVersionWithEntries | null, t: Treatment): strin
   return version?.entries.find((e) => e.treatment === t)?.prompt ?? '';
 }
 
+/**
+ * Texte ADMINISTRABLE d'une cible, selon l'architecture de sa ligne
+ * (lot 16, CDC 15 §29.1, MP-16) :
+ *   · `steps`  : le préambule (`prompt`) — comportement historique inchangé ;
+ *   · `master` : le texte master COMPLET (`masterPrompt`, ou le fichier du
+ *     dépôt, sa valeur initiale D-03), avec ses branches TASK/MODE. T5 le lit
+ *     et le réécrit en entier ; il ne le traite jamais comme un préambule.
+ */
+export interface TargetText {
+  treatment: Treatment;
+  field: 'prompt' | 'masterPrompt';
+  text: string;
+  masterPromptCode: string | null;
+  branches: string[];
+  discriminant: string | null;
+  /** Texte master vide dans la version : fichier du dépôt présenté. */
+  fromFile: boolean;
+}
+
+export async function targetTexts(version: ConfigVersionWithEntries | null): Promise<Map<Treatment, TargetText>> {
+  const out = new Map<Treatment, TargetText>();
+  for (const t of T5_TARGETS) {
+    const entry = version?.entries.find((e) => e.treatment === t) as TreatmentConfig | undefined;
+    const master = masterPromptForTreatment(t);
+    if (entry && master && promptArchitectureOf(entry) === 'master') {
+      const configured = masterPromptOf(entry);
+      const text = configured ?? await loadMasterTemplate(master.masterPromptCode, TREATMENT_DEFINITIONS[t].useCaseCode);
+      out.set(t, {
+        treatment: t, field: 'masterPrompt', text, masterPromptCode: master.masterPromptCode,
+        branches: master.tasks, discriminant: inspectMasterTemplate(text).discriminant, fromFile: configured === null,
+      });
+    } else {
+      out.set(t, {
+        treatment: t, field: 'prompt', text: entry?.prompt ?? '', masterPromptCode: null, branches: [], discriminant: null, fromFile: false,
+      });
+    }
+  }
+  return out;
+}
+
 /** Les prompts administrables (T1–T4, T6), présentés au modèle. */
-export function formatCurrentPrompts(version: ConfigVersionWithEntries | null): string {
+export function formatCurrentPrompts(
+  version: ConfigVersionWithEntries | null,
+  texts?: Map<Treatment, TargetText>,
+): string {
   return T5_TARGETS.map((t) => {
-    const content = promptOf(version, t).trim();
+    const x = texts?.get(t);
+    if (x && x.field === 'masterPrompt') {
+      return `──── ${TARGET_LABELS[t].replace(/ \(.*\)$/, '')} — PROMPT MAÎTRE ${x.masterPromptCode} `
+        + `(branches ${x.discriminant ?? 'TASK'} : ${x.branches.join(', ')}) — à réécrire EN ENTIER ────\n${x.text.trim()}`;
+    }
+    const content = (x?.text ?? promptOf(version, t)).trim();
     return `──── ${TARGET_LABELS[t]} ────\n${content || '(vide)'}`;
   }).join('\n\n');
 }
@@ -282,6 +358,7 @@ export function interpret(
   mode: T5Mode,
   d: PromptControlOut,
   current: (t: Treatment) => string,
+  fieldOf: (t: Treatment) => 'prompt' | 'masterPrompt' = () => 'prompt',
 ): { verdict: Verdict; analysis: string; changes: Array<T5Change & { proposedContent: string | null }>; risks: string[]; recommendations: string[] } {
   const seen = new Set<string>();
   const changes: Array<T5Change & { proposedContent: string | null }> = [];
@@ -291,7 +368,8 @@ export function interpret(
     if (!(T5_TARGETS as readonly string[]).includes(treatment) || seen.has(treatment)) continue;
     seen.add(treatment);
     const tr = treatment as Treatment;
-    const base = { treatment: tr, label: TARGET_LABELS[tr], reason: t.reason, applied: false };
+    const field = fieldOf(tr);
+    const base = { treatment: tr, label: TARGET_LABELS[tr], reason: t.reason, applied: false, field };
 
     if (mode === 'analyze' || d.verdict !== 'prompt') {
       changes.push({ ...base, diff: null, proposedContent: null });
@@ -307,6 +385,16 @@ export function interpret(
       changes.push({ ...base, diff, proposedContent: null, rejected: 'La proposition est identique au prompt actuel.' });
       continue;
     }
+    // Traitement en `master` : la proposition est un master COMPLET — même
+    // discriminant, une section par branche, emplacements identiques à ceux
+    // du code (§22, §29.1). Sinon elle n'est pas écrite.
+    if (field === 'masterPrompt') {
+      const anomalies = checkMasterProposal(tr, text);
+      if (anomalies.length) {
+        changes.push({ ...base, diff, proposedContent: null, rejected: `Prompt maître proposé incomplet : ${anomalies.join(' ; ')}.` });
+        continue;
+      }
+    }
     changes.push({ ...base, diff, proposedContent: text });
   }
 
@@ -315,8 +403,38 @@ export function interpret(
 
 async function callModel(
   mode: T5Mode, version: ConfigVersionWithEntries | null, instruction: string, accountId: number, userId: number,
-  extra = '(aucun)',
-) {
+  extra = '(aucun)', texts?: Map<Treatment, TargetText>,
+): Promise<{ output: PromptControlOut; traceId: string; architecture: 'steps' | 'master' }> {
+  // T5 suit sa ligne de la version effective (D-04) : `master` ⇒ t5_master_v1
+  // (fichier du dépôt, jamais administrable), sinon `control_prompts`.
+  const { getPromptArchitecture } = await import('../config/config-resolver');
+  if ((await getPromptArchitecture('T5')) === 'master') {
+    const res = await AiGateway.execute<T5MasterOutput>({
+      useCaseCode: 'AI_GOVERNANCE',
+      operationCode: mode === 'analyze' ? 't5_analyze' : 't5_modify',
+      accountId,
+      userId,
+      promptVariables: {
+        CURRENT_MASTER_PROMPTS: formatCurrentPrompts(version, texts),
+        // T5-009 / T5-010 : le contexte demandé suit la demande, délimité —
+        // le §27 n'a pas d'emplacement dédié.
+        INSTRUCTION: extra && extra !== '(aucun)'
+          ? `${instruction}\n\nContexte complémentaire demandé par l'administrateur :\n${extra}`
+          : instruction,
+      },
+      outputSchema: (mode === 'analyze' ? T5AnalyzeOutput : T5ModifyOutput) as never,
+    });
+    const o = res.data;
+    return {
+      output: {
+        verdict: o.verdict, analysis: o.analysis, targets: o.targets, risks: o.risks,
+        recommendations: o.configurationRecommendations,
+        requiredCodeChanges: o.requiredCodeChanges, requiredSchemaChanges: o.requiredSchemaChanges, requiredTests: o.requiredTests,
+      },
+      traceId: res.traceId,
+      architecture: 'master',
+    };
+  }
   const res = await AiGateway.execute({
     useCaseCode: 'AI_GOVERNANCE',
     operationCode: 'control_prompts',
@@ -324,13 +442,21 @@ async function callModel(
     userId,
     promptVariables: {
       MODE: MODE_PROMPT[mode],
-      CURRENT_PROMPTS: formatCurrentPrompts(version),
+      CURRENT_PROMPTS: formatCurrentPrompts(version, texts),
       INSTRUCTION: instruction,
       EXTRA_CONTEXT: extra,
     },
     outputSchema: PromptControlOutput,
   });
-  return { output: res.data, traceId: res.traceId };
+  return { output: res.data, traceId: res.traceId, architecture: 'steps' };
+}
+
+/** Champs §27 transmis au résultat (vides en architecture steps). */
+function extras(o: PromptControlOut, architecture: 'steps' | 'master') {
+  return {
+    requiredCodeChanges: o.requiredCodeChanges ?? [], requiredSchemaChanges: o.requiredSchemaChanges ?? [],
+    requiredTests: o.requiredTests ?? [], architecture,
+  };
 }
 
 // ── Analyse ─────────────────────────────────────────────────────────────────
@@ -341,10 +467,11 @@ export async function analyze(
   await assertAiAvailable();
   const version = await loadVersion(versionId);
   const extra = await extraContext(version, options);
-  const { output, traceId } = await callModel('analyze', version, instruction, accountId, userId, extra.text);
-  const r = interpret('analyze', output, (t) => promptOf(version, t));
+  const texts = await targetTexts(version);
+  const { output, traceId, architecture } = await callModel('analyze', version, instruction, accountId, userId, extra.text, texts);
+  const r = interpret('analyze', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt');
   return {
-    mode: 'analyze', ...r,
+    mode: 'analyze', ...r, ...extras(output, architecture),
     changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
     applied: false, draftId: null, draftCreated: false, traceId,
     comparison: extra.comparison, logsDigest: extra.logsDigest,
@@ -400,12 +527,14 @@ export async function modify(req: ModifyRequest): Promise<T5Result> {
   const source = target.kind === 'existing' ? target.draft : target.base;
 
   const extra = await extraContext(source, req.options ?? {});
-  const { output, traceId } = await callModel('modify', source, req.instruction, req.accountId, req.userId, extra.text);
-  const r = interpret('modify', output, (t) => promptOf(source, t));
+  const texts = await targetTexts(source);
+  const { output, traceId, architecture } = await callModel('modify', source, req.instruction, req.accountId, req.userId, extra.text, texts);
+  const r = interpret('modify', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt');
   const writable = r.changes.filter((c) => c.proposedContent);
 
   const result: T5Result = {
     mode: 'modify', verdict: r.verdict, analysis: r.analysis, risks: r.risks, recommendations: r.recommendations,
+    ...extras(output, architecture),
     changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
     applied: false, draftId: null, draftCreated: false, traceId,
     comparison: extra.comparison, logsDigest: extra.logsDigest,
@@ -425,18 +554,35 @@ export async function modify(req: ModifyRequest): Promise<T5Result> {
     const entry = fresh.entries.find((e) => e.treatment === c.treatment);
     const changed = result.changes.find((x) => x.treatment === c.treatment)!;
     if (!entry) { changed.rejected = `Configuration ${c.treatment} absente du brouillon.`; continue; }
-    if (entry.prompt !== promptOf(source, c.treatment)) {
+    const cible = texts.get(c.treatment)!;
+    const sourceEntry = source?.entries.find((e) => e.treatment === c.treatment);
+    // Contrôle de concurrence sur la zone réellement lue par T5.
+    const inchange = cible.field === 'masterPrompt'
+      ? promptArchitectureOf(entry) === 'master' && masterPromptOf(entry) === masterPromptOf(sourceEntry)
+      : entry.prompt === promptOf(source, c.treatment);
+    if (!inchange) {
       changed.rejected = `Le prompt ${c.treatment} a été modifié pendant l'analyse : il n'a pas été écrasé. Relancez la demande.`;
       continue;
     }
-    // Seul le prompt change (T5-001).
-    await saveEntry(draft.id, { ...entry, prompt: c.proposedContent! }, req.userId);
+    // Seul le prompt change (T5-001) : le préambule en `steps`, le texte
+    // master complet en `master` — jamais le préambule d'un master. Écriture
+    // CONDITIONNELLE (revue lot 16) : si la zone a changé depuis la lecture,
+    // 0 ligne ⇒ conflit explicite, rien n'est écrasé.
+    const ecrit = await savePromptFieldIfUnchanged({
+      versionId: draft.id, treatment: c.treatment, field: cible.field,
+      expected: cible.field === 'masterPrompt' ? masterPromptOf(sourceEntry) : promptOf(source, c.treatment),
+      next: c.proposedContent!, userId: req.userId,
+    });
+    if (!ecrit) {
+      changed.rejected = `Conflit : le prompt ${c.treatment} a été modifié (ou le brouillon validé) pendant l'analyse — rien n'a été écrasé. Relancez la demande.`;
+      continue;
+    }
     changed.applied = true;
     try {
       await recordT5Modification({
         adminUserId: req.userId, instruction: req.instruction, treatment: c.treatment,
         versionId: draft.id, draftCreated: target.kind === 'create',
-        before: entry.prompt, after: c.proposedContent!, traceId, verdict: r.verdict,
+        before: cible.text, after: c.proposedContent!, traceId, verdict: r.verdict, field: cible.field,
       });
     } catch (e) {
       console.error('[T5] Journal de modification non écrit', { traceId, versionId: draft.id, e });

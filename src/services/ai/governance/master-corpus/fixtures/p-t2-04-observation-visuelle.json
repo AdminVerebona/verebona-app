@@ -1,0 +1,12 @@
+{
+  "case": "P-T2-04",
+  "description": "REVALIDATE — observation visuelle : preuve visuelle, aucun faux extrait (l’extrait inventé est retiré).",
+  "context": { "provenance": "VISUAL" },
+  "recording": {
+    "operationCode": "t2_revalidate", "task": "REVALIDATE",
+    "output": { "mode": "REVALIDATE", "status": "confirmed", "value": "murale", "unit": null, "confidence": "certain",
+      "evidence": { "provenance": "VISUAL_ANALYSIS", "excerpt": "Chaudière murale (texte inventé)", "page": 1,
+        "visualEvidence": { "description": "chaudière murale fixée au mur", "page": 1 } } }
+  },
+  "expected": { "excerpt": null, "visualEvidence": true }
+}

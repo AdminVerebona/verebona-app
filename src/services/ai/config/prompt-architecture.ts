@@ -26,7 +26,7 @@
  * `config-resolver#getPromptArchitecture`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { listMasterPrompts } from '../registry/operations';
+import { listMasterPrompts, AI_OPERATIONS } from '../registry/operations';
 import { checkMasterTemplate, inspectMasterTemplate } from '../prompts/prompt-loader';
 import { treatmentForUseCase, type Treatment } from './treatments';
 import {
@@ -106,14 +106,51 @@ export function checkPromptArchitectureChange(input: {
 }
 
 /**
+ * Emplacements `{{X}}` déclarés au registre pour un master (union des
+ * `promptVariables` de ses opérations actives), hors discriminant.
+ * Vide : aucune déclaration (pas de contrôle d'égalité possible).
+ */
+export function declaredMasterVariables(masterPromptCode: string): string[] {
+  const vars = new Set<string>();
+  for (const op of Object.values(AI_OPERATIONS)) {
+    if (op.active && op.masterPromptCode === masterPromptCode) for (const v of op.promptVariables ?? []) vars.add(v);
+  }
+  return [...vars].sort();
+}
+
+/**
+ * Contrôle COMPLET d'un texte master proposé pour un traitement (T5 MODIFY,
+ * enregistrement d'une version) : structure (`checkMasterTemplate` :
+ * discriminant + une section par branche) ET emplacements identiques à ceux
+ * que le code fournit (registre) — un emplacement supprimé ou inventé ferait
+ * échouer chaque appel (`UNDECLARED_VARIABLE` / `UNRESOLVED_PLACEHOLDER`).
+ */
+export function checkMasterProposal(treatment: Treatment, text: string): string[] {
+  const master = masterPromptForTreatment(treatment);
+  if (!master) return [`aucun prompt maître déclaré pour ${treatment}`];
+  const out = checkMasterTemplate(text, master.tasks);
+  const attendus = declaredMasterVariables(master.masterPromptCode);
+  if (attendus.length) {
+    const info = inspectMasterTemplate(text);
+    const presents = info.placeholders.filter((p) => p !== info.discriminant);
+    const manquants = attendus.filter((v) => !presents.includes(v));
+    const inconnus = presents.filter((v) => !attendus.includes(v));
+    if (manquants.length) out.push(`emplacement(s) supprimé(s) : ${manquants.map((m) => `{{${m}}}`).join(', ')}`);
+    if (inconnus.length) out.push(`emplacement(s) inconnu(s) du code : ${inconnus.map((m) => `{{${m}}}`).join(', ')}`);
+  }
+  return out;
+}
+
+/**
  * Anomalies des textes d'une ligne, pour les contrôles de promotion (WF-02) :
  *
  *   · préambule (étapes) : ne doit pas contenir de master (`{{TASK}}`,
  *     `BRANCHE TASK =`) — un master collé dans le préambule serait préfixé à
  *     chaque prompt technique des étapes ;
  *   · texte master renseigné : seulement pour un traitement qui a un master,
- *     et complet (`{{TASK}}` + une section par TASK), quelle que soit
- *     l'architecture (il peut être préparé avant la bascule) ;
+ *     et complet (discriminant, une section par branche, emplacements du
+ *     code) — BLOQUANT en `master`, simple avertissement en `steps` (texte
+ *     préparé avant la bascule, ignoré tant qu'elle n'a pas eu lieu) ;
  *   · architecture `master` : master déclaré au registre ; texte vide ⇒
  *     fichier du dépôt, signalé sans bloquer.
  */
@@ -133,12 +170,16 @@ export function masterConfigIssues(
 
   const master = masterPromptForTreatment(c.treatment);
   const texte = masterPromptOf(c);
+  // Revue lot 16 : un texte master préparé alors que le traitement est en
+  // `steps` n'est PAS utilisé — avertissement, jamais un blocage de promotion.
+  const enMaster = promptArchitectureOf(c) === 'master';
+  const ignore = enMaster ? '' : ` Champ ignoré tant que ${c.treatment} est en « steps ».`;
   if (texte && !master) {
-    out.push({ field: 'masterPrompt', message: `Aucun prompt maître n'est déclaré pour ${c.treatment} : texte master sans objet.`, blocking: true });
+    out.push({ field: 'masterPrompt', message: `Aucun prompt maître n'est déclaré pour ${c.treatment} : texte master sans objet.${ignore}`, blocking: enMaster });
   }
   if (texte && master) {
-    for (const a of checkMasterTemplate(texte, master.tasks)) {
-      out.push({ field: 'masterPrompt', message: `Prompt maître incomplet (${a}) : le master doit être complet (D-03).`, blocking: true });
+    for (const a of checkMasterProposal(c.treatment, texte)) {
+      out.push({ field: 'masterPrompt', message: `Prompt maître incomplet (${a}) : le master doit être complet (D-03).${ignore}`, blocking: enMaster });
     }
   }
 
@@ -166,8 +207,11 @@ export function masterConfigIssues(
  * T3 (lot 13) n'en a pas : sa bascule vers le master se fait par la seule
  * version de configuration (D-04).
  */
-export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MODE'>> = {
+export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MODE' | 'AI_HOME_MASCOT'>> = {
   T1: 'AI_T1_ANALYSIS_MODE',
+  // Lot 16 (C) : T6 en `master` n'est appliqué que si la mascotte tourne
+  // sur le nouveau moteur (AI_HOME_MASCOT=enabled) ; sinon texte déterministe.
+  T6: 'AI_HOME_MASCOT',
 };
 
 /**
@@ -191,7 +235,7 @@ export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_EN
   T4: 'AI_AGENDA_ENGINE',
 };
 
-export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT';
+export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_HOME_MASCOT' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT';
 
 export interface PromptArchitectureWarning {
   treatment: Treatment;
@@ -216,7 +260,9 @@ export function promptArchitectureWarning(
       treatment, code: 'MASTER_NOT_APPLIED', switchName: sw, switchMode,
       message:
         `${treatment} : la version de configuration effective déclare l'architecture « master », mais ${sw}=${switchMode}. `
-        + 'Le prompt maître n\'est PAS appliqué : les étapes historiques tournent avec leur préambule '
+        + (treatment === 'T6'
+          ? 'Le prompt maître n\'est PAS appliqué : la mascotte affiche son texte déterministe '
+          : 'Le prompt maître n\'est PAS appliqué : les étapes historiques tournent avec leur préambule ')
         + `(passer ${sw}=enabled, ou remettre la ligne ${treatment} en « steps »).`,
     };
   }

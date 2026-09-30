@@ -23,7 +23,14 @@
       "EQUIPMENT": [],
       "ROOM": [],
       "SUPPLIER": []
-    }
+    },
+    "extractedContent": "TICKET DE CAISSE — JOUETS & CIE\n24/04/2026 15:42\nDRAISIENNE BOIS 12 POUCES   129,00 €\nTOTAL TTC   129,00 €\nPAIEMENT CB",
+    "displayNames": [
+      "ticket-draisienne.jpg"
+    ],
+    "mimeTypes": [
+      "image/jpeg"
+    ]
   },
   "recording": {
     "operationCode": "t1_analyze_document",

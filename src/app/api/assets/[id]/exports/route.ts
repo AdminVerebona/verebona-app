@@ -31,7 +31,7 @@ import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { exportGenerations, accounts, users } from '@/db/schema';
 import { eq, desc, inArray } from 'drizzle-orm';
-import { buildAssetSnapshot } from '@/services/export-snapshot.service';
+import { buildExportAssetSnapshot } from '@/services/exports/export-snapshot-source';
 import { buildExportManifest } from '@/services/export-manifest.service';
 import { isPremiumPlan } from '@/types/domain';
 import { buildExportZip } from '@/services/export-zip.service';
@@ -172,7 +172,8 @@ async function generateRawExport(
   try {
     const [accountRow] = await db.select({ planType: accounts.planType }).from(accounts).where(eq(accounts.id, accountId)).limit(1);
     const isPremium = isPremiumPlan(accountRow?.planType ?? '');
-    const snapshot = await buildAssetSnapshot(asset.id, userId, { accountId });
+    // X-02 (lot 16) : source selon EXPORTS_CANONICAL_SOURCE (legacy inchangé).
+    const snapshot = await buildExportAssetSnapshot(asset.id, userId, { accountId }, 'EXPORT_BRUT');
     const manifest = buildExportManifest('EXPORT_BRUT', snapshot, { ...options, requestedOutputs: ['ZIP'] });
     const zipBuffer = await buildExportZip(manifest, snapshot, null, isPremium);
     const zipKey = buildExportS3Key(accountId, asset.id, row.id, 'export_brut.zip');
@@ -184,7 +185,10 @@ async function generateRawExport(
       fileKey: zipKey,
       fileSizeBytes: zipBuffer.length,
       expiresAt: new Date(completedAt.getTime() + EXPORT_RETENTION_DAYS * 86_400_000),
-      metricsJson: { 'generation.duration_ms': completedAt.getTime() - now.getTime(), 'generation.output_format': 'ZIP', 'generation.file_size_bytes': zipBuffer.length },
+      metricsJson: {
+        'generation.duration_ms': completedAt.getTime() - now.getTime(), 'generation.output_format': 'ZIP', 'generation.file_size_bytes': zipBuffer.length,
+        ...(snapshot.dataSource ? { 'generation.data_source': snapshot.dataSource.source, 'generation.registry_version': snapshot.dataSource.registryVersion } : {}),
+      },
       completedAt,
     }).where(eq(exportGenerations.id, row.id)).returning();
     const dto = toGenerationDto(done);

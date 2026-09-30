@@ -10,7 +10,10 @@
  * appartiennent au compte (§11.4) ; un identifiant étranger lève
  * `DocumentLinkOwnershipError` sans rien écrire.
  *
- * Aucun écran ni export ne lit encore cette table (lots 15 et 16).
+ * Lecteurs : l'assistant (lot 15, `ASSISTANT_CANONICAL_READ`) et les
+ * exports — dossiers V12, export brut, transmission, aperçu admin (lot 16,
+ * `EXPORTS_CANONICAL_SOURCE` en shadow / enabled) — par `listAssetDocuments`
+ * (liens ACTIFS seulement ; PROPOSED, REJECTED et REMOVED exclus).
  */
 import { db } from '@/db';
 import { assetFiles, assets, documentAssetLinks, equipments, rooms } from '@/db/schema';
@@ -204,8 +207,8 @@ export async function listDocumentAssets(accountId: number, fileId: number): Pro
 
 /**
  * Documents d'un bien par la relation N-N (PRIMARY, SECONDARY et MENTIONED
- * par défaut), documents supprimés exclus. Helper de lecture destiné aux
- * écrans et exports (lots 15 et 16).
+ * par défaut), documents supprimés exclus, liens ACTIFS seulement. Lu par
+ * l'assistant (lot 15) et les exports (lot 16, sans MENTIONED).
  */
 export async function listAssetDocuments(
   accountId: number,

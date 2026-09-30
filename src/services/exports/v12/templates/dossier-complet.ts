@@ -32,6 +32,7 @@ export function render(c: DossierCompletData, ctx: RenderContext): RenderedHtml 
   const galleryPhotos = photos;
   const events = selected(c.history);
   const deadlines = selected(c.deadlines);
+  const toConfirm = selected(c.toConfirm);
   const contracts = selected(c.contracts);
   const fin = c.finance?.enabled ? c.finance : null; // DOSSIER_COMPLET-RULE-002 : non inclus par défaut
   const keyDocs = plan.inSection('docs');
@@ -113,6 +114,8 @@ export function render(c: DossierCompletData, ctx: RenderContext): RenderedHtml 
         rows: events.slice().sort((a, b) => String(a.date).localeCompare(String(b.date))),
       }),
       deadlines.length ? `<div class="eyebrow sub-eyebrow due-eyebrow">Échéances à venir</div>${DeadlineRows(deadlines, { refDate: ex.generatedAt })}` : '',
+      // Mêmes composants et classes que « Échéances à venir » : aucun nouvel élément graphique.
+      toConfirm.length ? `<div class="eyebrow sub-eyebrow due-eyebrow">Échéances passées à confirmer</div>${DeadlineRows(toConfirm, { refDate: ex.generatedAt, pill: { label: 'À confirmer', tone: 'warn' } })}` : '',
     ].filter(Boolean).join('\n'),
   });
   const s05 = Section({

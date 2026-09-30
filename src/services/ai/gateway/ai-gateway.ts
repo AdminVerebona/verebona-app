@@ -22,7 +22,7 @@ import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, MasterPrompt
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
-import { treatmentForUseCase } from '../config/treatments';
+import { treatmentForUseCase, isPromptAdministrable } from '../config/treatments';
 import { assertTreatmentRunnable } from '../queue/runnable-guard';
 import { noteGatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
 import { currentJobContext } from '../queue/job-context';
@@ -89,7 +89,7 @@ export class AiGateway {
       const cfg = await resolveOperationConfig(op.operationCode);
       masterVersion = masterPromptVersionOf({
         masterPromptCode: op.masterPromptCode,
-        configuredText: cfg.promptArchitecture === 'master' ? cfg.masterPromptText : null,
+        configuredText: configuredMasterText(op.useCaseCode, cfg),
         configVersionId: cfg.configVersionId,
       });
     }
@@ -177,7 +177,7 @@ export class AiGateway {
           task: op.task,
           variables: safeVariables,
           useCaseCode: op.useCaseCode,
-          configuredText: configuration.promptArchitecture === 'master' ? configuration.masterPromptText : null,
+          configuredText: configuredMasterText(op.useCaseCode, configuration),
           configVersionId: configuration.configVersionId,
         });
       } catch (e) {
@@ -426,4 +426,17 @@ function substituteOverride(template: string, variables: Record<string, unknown>
 function sansSortieBrute(useCaseCode: string): boolean {
   if (useCaseCode !== 'INTELLIGENT_ASSISTANT') return false;
   return !/^(on|true|1)$/i.test(process.env.VEREBONA_ASSISTANT_DIAGNOSTIC_PREVIEW ?? '');
+}
+
+/**
+ * Texte master porté par la version (D-03) — JAMAIS pour un traitement non
+ * administrable (T5, §10 / T5-003 / §27 « Tu ne modifies JAMAIS T5 ») : son
+ * master est toujours le fichier du dépôt.
+ */
+function configuredMasterText(
+  useCaseCode: Parameters<typeof treatmentForUseCase>[0],
+  cfg: { promptArchitecture?: string; masterPromptText?: string | null },
+): string | null {
+  if (!isPromptAdministrable(treatmentForUseCase(useCaseCode))) return null;
+  return cfg.promptArchitecture === 'master' ? cfg.masterPromptText ?? null : null;
 }

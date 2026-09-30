@@ -436,12 +436,15 @@ export function LineRows(items: Nullable<Array<{ date?: Nullable<string>; dateLa
 }
 
 /** Échéances à venir : titre · date · pastille relative (calculée à la date de génération). */
-export function DeadlineRows(items: Nullable<Array<{ title: Nullable<string>; date: Nullable<string> }>>, { refDate }: { refDate: string }): string {
+export function DeadlineRows(
+  items: Nullable<Array<{ title: Nullable<string>; date: Nullable<string> }>>,
+  { refDate, pill }: { refDate: string; /** Pastille fixe (ex. « À confirmer ») au lieu de l'échéance relative. */ pill?: ToneLabel },
+): string {
   const kept = (items ?? []).filter((i) => !isEmpty(i.title) && !isEmpty(i.date));
   if (!kept.length) return '';
   return `<div class="rows tight ${kept.length <= 6 ? 'keep' : ''}">${kept
     .map((i) => {
-      const d = fmt.due(String(i.date), refDate);
+      const d = pill ?? fmt.due(String(i.date), refDate);
       return `<div class="line-row due"><span class="t">${esc(i.title)}</span><span class="aside">${esc(fmt.date(i.date))}</span>${StatusPill(d, { size: 'lg' })}</div>`;
     })
     .join('')}</div>`;

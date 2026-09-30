@@ -4,6 +4,23 @@ import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { canonicalWriteMode, getRolloutMode } from '@/services/canonical/rollout';
+import { buildCanonicalAssetState, loadAssetRow, type SqlRunner } from '@/services/canonical/asset-state';
+import { pgClient } from '@/db';
+
+/**
+ * Ordre de lecture de l'adresse (arbitrage lot 16, CDC 15 X-02 / T3-05).
+ * Historique (legacy) : colonne d'abord, puis `keyCharacteristics` —
+ * inchangé. Dès que `CANONICAL_WRITE_MODE` ou `EXPORTS_CANONICAL_SOURCE`
+ * est `enabled`, la fiche canonique fait foi, dans l'ordre de
+ * `CanonicalAssetView` (clé, alias, colonne miroir — D-10) : la fiche, T2 et
+ * les exports affichent la même adresse.
+ */
+function canonicalAddressRead(env: Record<string, string | undefined> = process.env): boolean {
+  return canonicalWriteMode(env) === 'enabled' || getRolloutMode('EXPORTS_CANONICAL_SOURCE', env) === 'enabled';
+}
+
+type AddressOverride = { address1: unknown; postalCode: unknown; city: unknown };
 
 // Map family → applicable section keys
 const FAMILY_SECTIONS: Record<string, string[]> = {
@@ -12,7 +29,7 @@ const FAMILY_SECTIONS: Record<string, string[]> = {
   OBJET: ['common', 'object_identification', 'object_condition', 'object_provenance', 'object_usage', 'valuation', 'insurance'],
 };
 
-function buildSections(family: string, kc: Record<string, unknown>, assetRow: Record<string, unknown>) {
+function buildSections(family: string, kc: Record<string, unknown>, assetRow: Record<string, unknown>, adresse: AddressOverride | null = null) {
   const sections: Record<string, unknown> = {};
 
   // common — always present
@@ -35,10 +52,10 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
 
   if (family === 'IMMOBILIER') {
     sections.location_identification = {
-      address1: assetRow.address ?? kc.address1 ?? null,
+      address1: adresse ? adresse.address1 : assetRow.address ?? kc.address1 ?? null,
       address2: kc.address2 ?? null,
-      postalCode: assetRow.postalCode ?? kc.postalCode ?? null,
-      city: assetRow.city ?? kc.city ?? null,
+      postalCode: adresse ? adresse.postalCode : assetRow.postalCode ?? kc.postalCode ?? null,
+      city: adresse ? adresse.city : assetRow.city ?? kc.city ?? null,
       country: kc.country ?? null,
       cadastralRef: kc.cadastralRef ?? null,
       lotNumber: kc.lotNumber ?? null,
@@ -204,7 +221,14 @@ export async function GET(
       : assetRow.category === 'IMMOBILIER' ? 'IMMOBILIER'
       : 'OBJET';
 
-    const sections = buildSections(family, kc, assetRow as unknown as Record<string, unknown>);
+    // Adresse : fiche canonique quand un commutateur canonique est `enabled`.
+    let adresse: AddressOverride | null = null;
+    if (family === 'IMMOBILIER' && canonicalAddressRead()) {
+      const row = await loadAssetRow(pgClient as unknown as SqlRunner, assetId, session.currentAccountId);
+      const f = row ? buildCanonicalAssetState(row).fields : {};
+      adresse = { address1: f.address1?.value ?? null, postalCode: f.postalCode?.value ?? null, city: f.city?.value ?? null };
+    }
+    const sections = buildSections(family, kc, assetRow as unknown as Record<string, unknown>, adresse);
 
     // Include coherence alerts for UI display
     const coherenceAlerts = Array.isArray(kc.coherenceAlerts) ? kc.coherenceAlerts : [];

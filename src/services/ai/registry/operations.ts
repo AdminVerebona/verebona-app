@@ -115,7 +115,7 @@ export interface AiOperationDefinition {
    * Champ discriminant de la sortie d'un master : `task` (défaut) ou `mode`
    * (T2, §24 : `{"mode":"ANSWER",…}`). Utilisé par la validation discriminée.
    */
-  taskField?: 'task' | 'mode';
+  taskField?: 'task' | 'mode' | 'none';
   /**
    * Opération historique : master et TASK qui la remplacent (§22.3, « toutes
    * celles d'un même traitement doivent référencer le même master prompt et
@@ -249,6 +249,15 @@ export const ASSISTANT_MAX_OUTPUT_TOKENS = 500;
 /** Famille 3 — gouvernance : raisonnement sur des prompts, hors chemin utilisateur. */
 const GOV_PRIMARY = 'gemini-2.5-pro';
 const GOV_FALLBACKS = ['gemini-3.1-flash-lite'];
+
+/**
+ * Prompt maître T5 (CDC 15 §27) — FICHIER DU DÉPÔT seulement : T5 n'a pas
+ * de prompt administrable (§10, T5-003) et ne se modifie jamais lui-même.
+ */
+const T5_MASTER = 't5_master_v1';
+/** Prompt maître T6 (CDC 15 §28) — même valeur que `T6_MASTER_PROMPT_CODE`. */
+const T6_MASTER = 't6_master_v1';
+export const T5_MASTER_VARIABLES = ['CURRENT_MASTER_PROMPTS', 'INSTRUCTION'] as const;
 
 export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // ── Usage 1 — Analyse unifiée des sources (CDC §4.1.4) ────────────────────
@@ -562,6 +571,9 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // ── Usage 5 — Gouvernance (CDC §4.5.3) ────────────────────────────────────
   analyze_instruction: {
     operationCode: 'analyze_instruction', useCaseCode: 'AI_GOVERNANCE',
+    // CDC 15 §27 : T5 remplace `analyze_instruction`, `control_prompts` et
+    // `propose_change` par une seule gouvernance (t5_master_v1).
+    migratesTo: { masterPromptCode: T5_MASTER, task: 'MODIFY', operationCode: 't5_modify' },
     label: "Analyse d'impact d'une instruction administrateur",
     provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
     promptCode: 'analyze_instruction_v1', timeoutMs: 60_000,
@@ -573,6 +585,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // route historique `prompt-changes` avec un autre format de sortie.
   control_prompts: {
     operationCode: 'control_prompts', useCaseCode: 'AI_GOVERNANCE',
+    migratesTo: { masterPromptCode: T5_MASTER, task: 'MODIFY', operationCode: 't5_modify' },
     label: 'Prompt Control — diagnostic et réécriture des prompts administrables',
     provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
     promptCode: 'prompt_control_v2', timeoutMs: 120_000, minOutputTokens: 32_768,
@@ -580,12 +593,33 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   },
   propose_change: {
     operationCode: 'propose_change', useCaseCode: 'AI_GOVERNANCE',
+    migratesTo: { masterPromptCode: T5_MASTER, task: 'MODIFY', operationCode: 't5_modify' },
     label: 'Proposition de modification de prompt (jamais appliquée directement)',
     provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
     promptCode: 'propose_change_v1', timeoutMs: 60_000,
     // CDC 15 ARCH-02, T5-01 (lot 12) : fichier `propose_change_v1.txt` absent
     // et aucun appelant — désactivée, suppression au lot 16.
     outputSchema: 'PromptChangeProposalOutput', active: false, billable: false,
+  },
+  // ── T5 — prompt maître (CDC 15 §27, §29 étape 16, MP-16) ──────────────────
+  // Exécutées quand la version de configuration bascule T5 en `master`
+  // (D-04). Texte = fichier du dépôt, JAMAIS la version (T5 non
+  // administrable). Mêmes modèles et délais que `control_prompts`.
+  t5_analyze: {
+    operationCode: 't5_analyze', useCaseCode: 'AI_GOVERNANCE',
+    label: 'T5 master — diagnostic (MODE=ANALYZE)',
+    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
+    promptCode: T5_MASTER, masterPromptCode: T5_MASTER, task: 'ANALYZE', taskField: 'mode', promptVariables: T5_MASTER_VARIABLES,
+    timeoutMs: 120_000, jsonResponse: true,
+    outputSchema: 'T5AnalyzeOutput', active: true, billable: false,
+  },
+  t5_modify: {
+    operationCode: 't5_modify', useCaseCode: 'AI_GOVERNANCE',
+    label: 'T5 master — réécriture des prompts maîtres (MODE=MODIFY)',
+    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
+    promptCode: T5_MASTER, masterPromptCode: T5_MASTER, task: 'MODIFY', taskField: 'mode', promptVariables: T5_MASTER_VARIABLES,
+    timeoutMs: 120_000, minOutputTokens: 32_768, jsonResponse: true,
+    outputSchema: 'T5ModifyOutput', active: true, billable: false,
   },
   evaluate_prompt: {
     operationCode: 'evaluate_prompt', useCaseCode: 'AI_GOVERNANCE',
@@ -602,10 +636,24 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // bascule sur le texte déterministe (RUN-002) — un modèle lent vaut un échec.
   formulate_mascot: {
     operationCode: 'formulate_mascot', useCaseCode: 'HOME_MASCOT',
+    migratesTo: { masterPromptCode: T6_MASTER, task: 'FORMULATE', operationCode: 't6_formulate' },
     label: "Formulation du discours de la mascotte d'accueil",
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
     promptCode: 'mascot_t6_v1', timeoutMs: 8_000,
     outputSchema: 'MascotT6Output', active: true, billable: false,
+  },
+  // T6 — prompt maître (CDC 15 §28), `T6_MASTER_OPERATION_SPEC` de
+  // `home/mascot/t6-contract.ts`. Sortie sans discriminant (`taskField:
+  // 'none'`) : `schemaVersion` t6-output-v2 strict. Mêmes modèles, délai et
+  // facturation que `formulate_mascot` ; bascule par la version (D-04) et
+  // AI_HOME_MASCOT.
+  t6_formulate: {
+    operationCode: 't6_formulate', useCaseCode: 'HOME_MASCOT',
+    label: 'T6 master — formulation de la mascotte (MODE=FORMULATE)',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: T6_MASTER, masterPromptCode: T6_MASTER, task: 'FORMULATE', taskField: 'none', promptVariables: ['INPUT_JSON'],
+    timeoutMs: 8_000, jsonResponse: true,
+    outputSchema: 'T6FormulateOutput', active: true, billable: false,
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -744,4 +792,50 @@ export function listMasterPrompts(): Array<{ masterPromptCode: string; useCaseCo
     byCode.set(op.masterPromptCode, e);
   }
   return [...byCode.values()];
+}
+
+// ── Dépréciation (CDC 15 §29 étape 15, §32, D-02) ───────────────────────────
+
+/**
+ * Motif de dépréciation d'une opération — DÉDUIT du registre, jamais saisi
+ * à la main (une seule source de vérité) :
+ *   · `MIGRATED_TO_MASTER` : opération d'étape remplacée par une branche de
+ *     master (`migratesTo`) ; conservée tant que le traitement peut tourner
+ *     en `steps` (D-04) ;
+ *   · `LEGACY_RELAY` : relais `legacy_*` des prompts historiques (WF-41),
+ *     conservé pendant la transition (D-02) et retiré après bascule.
+ * Rien n'est supprimé ici : la liste de retrait est produite par
+ * `scripts/check-master-cutover.ts`, sur préconditions.
+ */
+export type DeprecationReason = 'MIGRATED_TO_MASTER' | 'LEGACY_RELAY';
+
+export interface OperationDeprecation {
+  reason: DeprecationReason;
+  /** Opération master de remplacement, s'il y en a une. */
+  replacedBy: string | null;
+  masterPromptCode: string | null;
+  task: string | null;
+}
+
+export function operationDeprecation(op: AiOperationDefinition): OperationDeprecation | null {
+  if (op.migratesTo) {
+    return {
+      reason: 'MIGRATED_TO_MASTER', replacedBy: op.migratesTo.operationCode,
+      masterPromptCode: op.migratesTo.masterPromptCode, task: op.migratesTo.task,
+    };
+  }
+  if (op.legacyPrompt) return { reason: 'LEGACY_RELAY', replacedBy: null, masterPromptCode: null, task: null };
+  return null;
+}
+
+export function isDeprecatedOperation(op: AiOperationDefinition): boolean {
+  return operationDeprecation(op) !== null;
+}
+
+/** Opérations dépréciées (actives ou non), dans l'ordre du registre. */
+export function listDeprecatedOperations(): Array<AiOperationDefinition & { deprecation: OperationDeprecation }> {
+  return Object.values(AI_OPERATIONS).flatMap((op) => {
+    const d = operationDeprecation(op);
+    return d ? [{ ...op, deprecation: d }] : [];
+  });
 }

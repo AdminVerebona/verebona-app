@@ -25,7 +25,7 @@ import {
 import { CIL_ACTION_REQUIRED_MESSAGE, isBlockBlocking } from '@/services/exports/cil-preparation.service';
 import type { ExportSource, SourceDocument, SourceEvent, SourcePhoto } from '../data/source';
 import {
-  buildDefaultChoices, DEFAULT_SECTIONS, PHOTO_CAPS, eventKind, eventSection, isPhotoIntegrable, isUpcoming, planSelection,
+  buildDefaultChoices, DEFAULT_SECTIONS, PHOTO_CAPS, eventKind, eventSection, isPhotoIntegrable, isUpcoming, isUnconfirmedPastDeadline, planSelection,
   type ChoiceItem, type ExportChoices,
 } from '../data/choices';
 import { mapDossierData } from '../data/mappers';
@@ -86,7 +86,7 @@ function documentItem(code: DossierCode, d: SourceDocument, cur: ChoiceItem | un
     selected: selectable && !!cur?.selected,
     mode: selectable ? (requested ?? recommendedMode) : null,
     fileId: d.id,
-    detail: code === 'CIL' ? `Bloc ${cilSection(d)}` : d.supplier,
+    detail: [code === 'CIL' ? `Bloc ${cilSection(d)}` : d.supplier, d.unconfirmedLink ? 'Rattachement à confirmer' : null].filter(Boolean).join(' · ') || null,
     error: fileError(compatibility),
   };
 }
@@ -145,7 +145,7 @@ function eventItem(e: SourceEvent, today: string, cur: ChoiceItem | undefined, r
     selected: !!cur?.selected,
     mode: null,
     fileId: null,
-    detail: [e.provider, upcoming ? 'À venir' : null].filter(Boolean).join(' · ') || null,
+    detail: [e.provider, upcoming ? 'À venir' : isUnconfirmedPastDeadline(e, today) ? 'À confirmer' : null].filter(Boolean).join(' · ') || null,
     error: null,
   };
 }
@@ -336,7 +336,8 @@ export function buildPreparation(code: DossierCode, source: ExportSource, ctx: P
     return {
       id: def.id,
       label: def.label,
-      description: def.description,
+      // Libellé « à confirmer » seulement quand la source canonique est utilisée (enabled).
+      description: source.sourceTrace?.source === 'canonical' ? def.descriptionCanonical ?? def.description : def.description,
       required: def.required,
       toggleable,
       enabled,

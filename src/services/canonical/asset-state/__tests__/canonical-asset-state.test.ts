@@ -44,7 +44,8 @@ describe('rollout — commutateurs', () => {
     expect(snap.find((s) => s.name === 'CANONICAL_WRITE_MODE')).toMatchObject({ mode: 'legacy', invalid: true, raw: 'on', wired: true });
     // AI_T4_EFFECTS est branché depuis le lot 14 (T4-07/T4-08/D-13/D-14).
     expect(snap.find((s) => s.name === 'AI_T4_EFFECTS')).toMatchObject({ mode: 'shadow', wired: true });
-    expect(snap.find((s) => s.name === 'EXPORTS_CANONICAL_SOURCE')).toMatchObject({ mode: 'legacy', wired: false });
+    // EXPORTS_CANONICAL_SOURCE est branché depuis le lot 16 (X-02).
+    expect(snap.find((s) => s.name === 'EXPORTS_CANONICAL_SOURCE')).toMatchObject({ mode: 'legacy', wired: true });
   });
 });
 

@@ -1,0 +1,19 @@
+{
+  "case": "P-T2-03",
+  "description": "ANSWER — chronologie : structure ordonnée conservée (events[]), pas de phrases aplaties.",
+  "context": {
+    "intent": "ACCOUNT_TIMELINE",
+    "sources": [
+      { "id": "timeline:asset_1:1", "type": "agenda_item", "title": "Chronologie", "content": "2026-04-24 · Achat de la draisienne\n2026-09-12 · Révision de la draisienne",
+        "meta": { "timeline": true, "events": 2, "from": "2026-04-24", "to": "2026-09-12" } }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer", "task": "ANSWER",
+    "output": { "mode": "ANSWER", "format": "timeline", "status": "answered", "events": [
+      { "date": "2026-04-24", "text": "Achat de la draisienne", "sourceIds": ["timeline:asset_1:1"] },
+      { "date": "2026-09-12", "text": "Révision de la draisienne", "sourceIds": ["timeline:asset_1:1"] }
+    ] }
+  },
+  "expected": { "events": 2, "lines": 2, "supportLevel": "supported" }
+}

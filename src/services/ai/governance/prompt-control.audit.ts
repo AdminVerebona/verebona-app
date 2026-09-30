@@ -23,6 +23,8 @@ export interface T5ModificationTrace {
   after: string;
   traceId: string;
   verdict: string;
+  /** Zone réécrite : préambule (`prompt`) ou texte master complet (`masterPrompt`). */
+  field?: 'prompt' | 'masterPrompt';
 }
 
 export async function recordT5Modification(t: T5ModificationTrace): Promise<void> {
@@ -37,7 +39,7 @@ export async function recordT5Modification(t: T5ModificationTrace): Promise<void
     adminUserId: t.adminUserId,
     adminEmail: admin?.email ?? `user:${t.adminUserId}`,
     actionType: 't5_prompt_modify',
-    beforeValue: { treatment: t.treatment, versionId: t.versionId, prompt: t.before },
+    beforeValue: { treatment: t.treatment, versionId: t.versionId, field: t.field ?? 'prompt', prompt: t.before },
     afterValue: {
       treatment: t.treatment,
       versionId: t.versionId,

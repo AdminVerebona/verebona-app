@@ -40,6 +40,7 @@ import {
   Archive, Play, Save, Lock, Undo2,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { MasterCorpusStatus } from './_components/MasterCorpusStatus';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
@@ -714,7 +715,13 @@ function TreatmentEditor({
         aux étapes ; ce texte ne sert qu'au prompt maître. Vide : fichier du
         dépôt (valeur initiale). Peut être préparé avant la bascule.
       */}
-      {catalog.master ? (
+      {catalog.master && !isPromptAdministrable(entry.treatment) ? (
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Prompt maître {catalog.master.masterPromptCode} : fichier du dépôt, non modifiable — Prompt Control
+          ne se modifie jamais lui-même (CDC 15 §27).
+        </p>
+      ) : null}
+      {catalog.master && isPromptAdministrable(entry.treatment) ? (
         <details className="rounded-lg border border-[color:var(--border-subtle)] p-3"
           open={(entry.promptArchitecture ?? 'steps') === 'master'}>
           <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
@@ -722,8 +729,9 @@ function TreatmentEditor({
           </summary>
           <div className="pt-3 space-y-2">
             <p className="text-xs text-[color:var(--text-muted)]">
-              Master complet : doit contenir {'{{TASK}}'} et une section « BRANCHE TASK = … » par branche
-              ({catalog.master.tasks.join(', ')}). Laissé vide, le fichier du dépôt s’applique.
+              Master complet : son emplacement de branche ({'{{TASK}}'} ou {'{{MODE}}'}), une section par branche
+              ({catalog.master.tasks.join(', ')}) et les mêmes emplacements {'{{X}}'} que le fichier du dépôt.
+              Laissé vide, le fichier du dépôt s’applique.
             </p>
             <Textarea
               value={entry.masterPrompt ?? ''}
@@ -735,7 +743,17 @@ function TreatmentEditor({
         </details>
       ) : null}
 
-      {isPromptAdministrable(entry.treatment) ? (
+      {/*
+        CDC 15 §22.3, §32 : « une seule zone prompt par traitement ». En
+        `master`, le préambule des étapes n'est plus proposé (il ne sert pas
+        au master) : seule la zone « Texte master » ci-dessus est éditable.
+      */}
+      {isPromptAdministrable(entry.treatment) && (entry.promptArchitecture ?? 'steps') === 'master' ? (
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Architecture « master » : le prompt de ce traitement est le texte master ci-dessus. Le préambule et les
+          prompts techniques des étapes ne sont plus utilisés ni proposés.
+        </p>
+      ) : isPromptAdministrable(entry.treatment) ? (
         <details className="rounded-lg border border-[color:var(--border-subtle)] p-3">
           <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
             Modifier le prompt directement
@@ -1154,6 +1172,9 @@ export default function AiConfigPage() {
     } finally { setBusy(false); }
   };
 
+  // Relecture de l'état du corpus après un refus d'activation (§30).
+  const [corpusKey, setCorpusKey] = useState(0);
+
   const act = async (path: string, success: string, body: Record<string, unknown> = {}) => {
     if (!current) return;
     setBusy(true);
@@ -1186,6 +1207,19 @@ export default function AiConfigPage() {
             ? { label: 'Ouvrir', onClick: () => guardUnsaved(() => openVersion(err.details!.id!)) }
             : undefined,
         });
+      } else if (err.code === 'ROLLBACK_JUSTIFICATION_REQUIRED') {
+        // CDC 15 §30 : restauration d'urgence permise, justifiée et tracée.
+        setCorpusKey((k) => k + 1);
+        const justification = window.prompt(
+          `${err.message ?? 'Corpus des masters non vert.'}\n\nJustification de la restauration d'urgence (tracée dans l'audit) :`,
+        );
+        if (justification && justification.trim()) {
+          await act('rollback', 'Version restaurée (justification tracée)', { justification });
+        }
+      } else if (err.code === 'MASTER_CORPUS_NOT_GREEN') {
+        // CDC 15 §30 : refus motivé, détail sous l'en-tête de la version.
+        setCorpusKey((k) => k + 1);
+        toast.error(err.message ?? 'Corpus des prompts maîtres non vert : activation refusée.');
       } else {
         toast.error(err.message || "L'opération n'a pas abouti.");
       }
@@ -1323,6 +1357,9 @@ export default function AiConfigPage() {
               </Button>
             )}
           </div>
+
+          {/* CDC 15 §30, D-17 : état du corpus des masters et raison d'un refus d'activation. */}
+          {current.status !== 'ARCHIVED' && <MasterCorpusStatus versionId={current.id} refreshKey={corpusKey} />}
 
           {/*
             Champ unique « Demander une modification » (SCR-06) : T5 choisit

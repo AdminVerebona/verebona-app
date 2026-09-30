@@ -1,0 +1,21 @@
+{
+  "case": "P-T2-02",
+  "description": "ANSWER — valeur USER contredit un ancien document : réponse USER/canonique ; affirmation non soutenue rejetée (T2-31).",
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "sources": [
+      { "id": "asset_field:42:acquisitionDate", "type": "asset_field", "title": "Clio — Date d’achat", "content": "Date d’achat : 25 mai 2021 (saisie utilisateur)",
+        "meta": { "assetId": 42, "fieldKey": "acquisitionDate", "value": "2021-05-25", "display": "25 mai 2021", "origin": "USER" } },
+      { "id": "doc_88", "type": "document", "title": "Facture ancienne", "content": "Facture du 01/01/2019 — Clio" }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer", "task": "ANSWER",
+    "output": { "mode": "ANSWER", "format": "claims", "status": "answered", "claims": [
+      { "text": "Vous avez acheté la Clio le 25 mai 2021.", "sourceIds": ["asset_field:42:acquisitionDate"], "derivation": "direct", "factual": true,
+        "support": { "kind": "field", "sourceId": "asset_field:42:acquisitionDate", "value": "2021-05-25" } },
+      { "text": "Elle a été achetée le 3 mars 2020.", "sourceIds": ["asset_field:42:acquisitionDate"], "factual": true }
+    ] }
+  },
+  "expected": { "answerContains": "25 mai 2021", "answerNotContains": ["2020", "2019"], "supportLevel": "partial" }
+}

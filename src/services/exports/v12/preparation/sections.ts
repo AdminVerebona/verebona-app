@@ -36,6 +36,11 @@ export interface PrepSectionDef {
   cil?: boolean;
   /** Contenu décrit par les informations complémentaires (pas d'élément à cocher). */
   fedBy?: string;
+  /**
+   * Description quand le dossier est lu en source canonique
+   * (`EXPORTS_CANONICAL_SOURCE=enabled`, X-02 lot 16) ; `description` sinon.
+   */
+  descriptionCanonical?: string;
 }
 
 const COVER = (description: string): PrepSectionDef => ({ id: 'cover', label: 'Couverture', description, required: true });
@@ -53,7 +58,7 @@ export const PREP_SECTIONS: Readonly<Record<DossierCode, readonly PrepSectionDef
     { id: 'info', label: 'Informations principales', description: 'Caractéristiques de la fiche du bien ; les champs vides sont masqués.', required: true },
     { id: 'finance', label: 'Valeur, acquisition et informations financières', description: 'Prix d’acquisition, valeur retenue, frais, charges et taxes saisis. Non inclus par défaut.', required: false, toggle: 'finance', fedBy: 'Prix d’acquisition de la fiche, valeur et charges saisies ci-dessous, coûts des événements.' },
     { id: 'history', label: 'Historique d’entretien', description: 'Section « Calendrier et historique d’entretien » : événements réalisés.', required: false, toggle: 'history', items: 'event' },
-    { id: 'deadlines', label: 'Échéances à venir', description: 'Section « Calendrier et historique d’entretien » : prochaines échéances de l’agenda.', required: false, toggle: 'deadlines', items: 'event' },
+    { id: 'deadlines', label: 'Échéances à venir', description: 'Section « Calendrier et historique d’entretien » : prochaines échéances de l’agenda.', descriptionCanonical: 'Section « Calendrier et historique d’entretien » : prochaines échéances de l’agenda et échéances passées à confirmer.', required: false, toggle: 'deadlines', items: 'event' },
     { id: 'contracts', label: 'Garanties et contrats utiles', description: 'Garantie et assurance en cours, telles que saisies dans la fiche.', required: false, toggle: 'contracts' },
     { id: 'documents', label: 'Documents clés', description: 'Factures, garanties, contrats et autres pièces du bien.', required: false, toggle: 'documents', items: 'document' },
     { id: 'photos', label: 'Photos du bien', description: 'De 6 à 8 photos recommandées, choisies une par une.', required: false, toggle: 'photos', items: 'photo' },

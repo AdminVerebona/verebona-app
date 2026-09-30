@@ -1,0 +1,12 @@
+{
+  "case": "P-T2-01",
+  "description": "UNDERSTAND — « Indique-moi la date d’achat » : intention de LECTURE, jamais une commande ; fait du catalogue.",
+  "context": { "question": "Indique-moi la date d’achat de la Clio" },
+  "recording": {
+    "operationCode": "t2_understand", "task": "UNDERSTAND",
+    "output": { "mode": "UNDERSTAND", "intent": "ACCOUNT_FACT_ASSET", "confidence": "exact",
+      "entityHints": [{ "type": "asset", "value": "Clio" }], "requestedFacts": ["acquisitionDate", "dateInventee"],
+      "requestedTopics": [], "filters": {}, "reason": "lecture d’un champ" }
+  },
+  "expected": { "intent": "ACCOUNT_FACT_ASSET", "requestedFacts": ["acquisitionDate"], "readOnly": true }
+}

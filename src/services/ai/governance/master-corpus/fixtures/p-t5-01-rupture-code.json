@@ -1,0 +1,14 @@
+{
+  "case": "P-T5-01",
+  "description": "T5 / ANALYZE — rupture de code : verdict code (ou mixed), changement de code requis, aucun faux correctif prompt.",
+  "context": { "instruction": "Les documents déposés depuis mardi ne sont plus rattachés à aucun bien." },
+  "recording": {
+    "operationCode": "t5_analyze", "task": "ANALYZE",
+    "output": { "mode": "ANALYZE", "verdict": "code",
+      "analysis": "Le rattachement est fait par le pipeline après l’analyse : la régression vient du code, pas du prompt T1.",
+      "targets": [{ "treatment": "T1", "reason": "Aucune règle du prompt n’est en cause.", "proposedContent": "Texte qui ne doit jamais être écrit en analyse, même long de plus de cinquante caractères." }],
+      "requiredCodeChanges": ["Rétablir l’appel de rattachement après la projection des faits."],
+      "requiredSchemaChanges": [], "configurationRecommendations": [], "risks": [], "requiredTests": ["E2E dépôt → rattachement"] }
+  },
+  "expected": { "verdicts": ["code", "mixed"], "noProposedContent": true, "requiredCodeChanges": true }
+}

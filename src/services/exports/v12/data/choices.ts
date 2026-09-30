@@ -101,13 +101,44 @@ export function eventKind(e: Pick<SourceEvent, 'category' | 'title'>): EventKind
   return 'AUTRE';
 }
 
-/** Événement passé et non annulé (historique). */
-export const isPastEvent = (e: SourceEvent, today: string): boolean =>
-  e.status !== 'annule' && !!e.date && e.date <= today && !e.forecast;
+/**
+ * Événement passé et non annulé (historique).
+ *
+ * Source canonique (X-02, lot 16 — `status4` présent) : un élément d'agenda
+ * n'entre dans l'historique que s'il est un FAIT (nature HISTORICAL, D-14)
+ * ou une échéance marquée réalisée (`completed`). Une échéance passée non
+ * prouvée (`not_proven`) ou en attente de confirmation (`unknown`) n'est pas
+ * présentée comme réalisée : une date passée ne prouve rien (T4-12, U2).
+ */
+export const isPastEvent = (e: SourceEvent, today: string): boolean => {
+  if (e.status === 'annule' || !e.date || e.date > today || e.forecast) return false;
+  if (e.status4 === undefined) return true;
+  return e.status4 !== 'not_completed' && (e.nature === 'HISTORICAL' || e.status4 === 'completed');
+};
 
-/** Échéance à venir (agenda). */
-export const isUpcoming = (e: SourceEvent, today: string): boolean =>
-  e.status !== 'annule' && e.status !== 'realise' && !!e.date && e.date > today;
+/**
+ * Échéance PASSÉE non confirmée (source canonique seulement) : élément
+ * d'agenda non historique, date passée, ni réalisé ni annulé — `not_proven`
+ * ou `unknown` (carte « réalisée ? » en attente). Arbitrage lot 16 : rubrique
+ * « Échéances passées à confirmer » du dossier complet, dans la section
+ * existante « Calendrier et historique d'entretien » (sans nouvelle section
+ * graphique). Les dossiers vente, location et assurance ne présentent que des
+ * faits établis (« valorisant / rassurant », matrice §6.2) : exclue.
+ */
+export const isUnconfirmedPastDeadline = (e: SourceEvent, today: string): boolean =>
+  e.status4 !== undefined && e.status !== 'annule' && e.status !== 'realise' && !e.forecast && !!e.date && e.date <= today
+  && e.nature !== 'HISTORICAL' && (e.status4 === 'not_proven' || e.status4 === 'unknown');
+
+/**
+ * Échéance à venir (agenda). Source canonique : jamais un fait historique
+ * (D-14 — pas de « prochaine échéance » tirée de l'historique), jamais un
+ * élément clos (réalisé ou annulé).
+ */
+export const isUpcoming = (e: SourceEvent, today: string): boolean => {
+  if (e.status === 'annule' || e.status === 'realise' || !e.date || e.date <= today) return false;
+  if (e.status4 === undefined) return true;
+  return e.nature !== 'HISTORICAL' && e.status4 === 'unknown';
+};
 
 /**
  * Date du sinistre, ISO ou null : saisie (`claim.occurredOn`), sinon date de
@@ -137,7 +168,7 @@ export function isLinkedToClaim(date: string | null, kind: DocKind | EventKind, 
 export function eventSection(code: DossierCode, e: SourceEvent, today: string): string | null {
   const k = eventKind(e);
   switch (code) {
-    case 'DOSSIER_COMPLET': return isUpcoming(e, today) ? 'deadlines' : isPastEvent(e, today) ? 'history' : null;
+    case 'DOSSIER_COMPLET': return isUpcoming(e, today) || isUnconfirmedPastDeadline(e, today) ? 'deadlines' : isPastEvent(e, today) ? 'history' : null;
     case 'VENTE':
     case 'LOCATION': return isPastEvent(e, today) && (k === 'ENTRETIEN' || k === 'TRAVAUX') ? 'followUp' : null;
     case 'ASSURANCE_SOUSCRIPTION': return isPastEvent(e, today) && (k === 'ENTRETIEN' || k === 'TRAVAUX') ? 'condition' : null;
@@ -150,7 +181,7 @@ export function eventSection(code: DossierCode, e: SourceEvent, today: string): 
 function preselectEvent(code: DossierCode, e: SourceEvent, source: ExportSource, today: string): boolean {
   const k = eventKind(e);
   switch (code) {
-    case 'DOSSIER_COMPLET': return isUpcoming(e, today) || k === 'ENTRETIEN' || k === 'GARANTIE';
+    case 'DOSSIER_COMPLET': return isUpcoming(e, today) || isUnconfirmedPastDeadline(e, today) || k === 'ENTRETIEN' || k === 'GARANTIE';
     case 'ASSURANCE_SOUSCRIPTION': return k === 'ENTRETIEN';
     case 'ASSURANCE_SINISTRE': return isLinkedToClaim(e.date, k, source);
     // Vente, location : « proposés non précochés » (la section elle-même est décochée).
@@ -160,6 +191,9 @@ function preselectEvent(code: DossierCode, e: SourceEvent, source: ExportSource,
 
 function preselectDocument(code: DossierCode, d: SourceDocument, source: ExportSource): boolean {
   if (d.sensitive || d.occupantData) return false; // SEL-GEN-007, garde-fou occupant
+  // Rattachement non confirmé (source canonique, relecture lot 16) : proposé
+  // décoché — l'utilisateur le voit et choisit, jamais envoyé d'office à un tiers.
+  if (d.unconfirmedLink) return false;
   if (!PRESELECTED_KINDS[code].has(d.kind)) return false;
   if (code === 'ASSURANCE_SINISTRE') return isLinkedToClaim(d.date, d.kind, source);
   return true;
@@ -224,7 +258,8 @@ export function choicesFromLegacyOptions(code: DossierCode, source: ExportSource
   if (ids) {
     items = items.filter((i) => i.sourceType !== 'document');
     for (const d of source.documents) {
-      if (!ids.has(d.id) || d.sensitive || d.occupantData) continue;
+      // Rattachement non confirmé : ce tiroir pré-coche tout, ce n'est donc pas un choix explicite.
+      if (!ids.has(d.id) || d.sensitive || d.occupantData || d.unconfirmedLink) continue;
       const mode = resolveMode(undefined, d.integrable, opts.outputFormat);
       if (mode) items.push({ sourceType: 'document', sourceId: d.id, selected: true, mode });
     }

@@ -16,8 +16,11 @@ import {
 import { diffVersions } from '../config-diff.service';
 import { validateTreatment, type ConfigCatalogs } from '../config-validation.service';
 import { runInJobContext } from '../../queue/job-context';
+import { T1_MASTER_VARIABLES } from '../../registry/operations';
 
-const MASTER_T1 = '{{TASK}}\nBRANCHE TASK = GROUP_UPLOAD\nBRANCHE TASK = ANALYZE_DOCUMENT\n';
+const MASTER_T1 = `{{TASK}}\n${T1_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = GROUP_UPLOAD\nBRANCHE TASK = ANALYZE_DOCUMENT\n`;
+/** Traitement fictif sans master (lot 16 : T1 à T6 en ont tous un). */
+const SANS_MASTER = 'T9' as never;
 const t1 = (over: Partial<TreatmentConfig> = {}): TreatmentConfig => ({
   ...emptyTreatmentConfig('T1'), primaryModel: 'm-a', ...over,
 });
@@ -47,8 +50,9 @@ describe('valeur par défaut', () => {
     expect(masterPromptForTreatment('T2')).toEqual({
       masterPromptCode: 't2_master_v1', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'],
     });
-    expect(masterPromptForTreatment('T5')).toBeNull();
-    expect([...masterCapableTreatments()].sort()).toEqual(['T1', 'T2', 'T3', 'T4']);
+    // Lot 16 : T5 (§27), discriminant MODE, branches déclarées « Valeurs autorisées ».
+    expect(masterPromptForTreatment('T5')).toEqual({ masterPromptCode: 't5_master_v1', tasks: ['ANALYZE', 'MODIFY'] });
+    expect([...masterCapableTreatments()].sort()).toEqual(expect.arrayContaining(['T1', 'T2', 'T3', 'T4', 'T5']));
   });
 });
 
@@ -72,8 +76,9 @@ describe('checkPromptArchitectureChange — §29.1', () => {
       .toEqual({ allowed: true });
   });
 
+  // Lot 16 : T1 à T6 ont tous un master — traitement fictif pour le cas « sans master ».
   it('master refusé pour un traitement sans prompt maître déclaré', () => {
-    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T6', from: 'steps', to: 'master' }))
+    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: SANS_MASTER, from: 'steps', to: 'master' }))
       .toMatchObject({ allowed: false, code: 'NO_MASTER_FOR_TREATMENT' });
   });
 });
@@ -155,12 +160,14 @@ describe('diff et contrôles de promotion', () => {
     expect(issues).toContainEqual(expect.objectContaining({ field: 'prompt', blocking: true, message: 'Le prompt est obligatoire.' }));
   });
 
-  it('texte master incomplet : bloquant, même préparé en steps', () => {
+  it('texte master incomplet : bloquant en master ; en steps, avertissement (champ ignoré) — revue lot 16', () => {
     for (const promptArchitecture of ['master', 'steps'] as const) {
       const issues = masterConfigIssues(t1({ prompt: 'P', masterPrompt: 'Sois précis.', promptArchitecture }));
-      expect(issues.map((i) => [i.field, i.blocking])).toEqual([
-        ['masterPrompt', true], ['masterPrompt', true], ['masterPrompt', true],
-      ]);
+      // {{TASK}}, deux sections, et (lot 16) les emplacements attendus par le code.
+      expect(issues.length).toBe(4);
+      expect(issues.every((i) => i.field === 'masterPrompt' && i.blocking === (promptArchitecture === 'master'))).toBe(true);
+      if (promptArchitecture === 'steps') expect(issues[0].message).toMatch(/ignoré tant que T1 est en « steps »/);
+      expect(issues[3].message).toMatch(/emplacement\(s\) supprimé/);
       expect(issues[0].message).toMatch(/\{\{TASK\}\}/);
     }
   });
@@ -180,8 +187,9 @@ describe('diff et contrôles de promotion', () => {
   });
 
   it('master ou texte master sur un traitement sans master : bloquant', () => {
-    const c = { ...emptyTreatmentConfig('T6'), prompt: 'x', promptArchitecture: 'master' as const, masterPrompt: MASTER_T1 };
-    const issues = validateTreatment(c, cat);
+    const c = { ...emptyTreatmentConfig(SANS_MASTER), prompt: 'x', promptArchitecture: 'master' as const, masterPrompt: MASTER_T1 };
+    // `masterConfigIssues` : le contrôle que `validateTreatment` applique à chaque ligne.
+    const issues = masterConfigIssues(c);
     expect(issues).toContainEqual(expect.objectContaining({ field: 'promptArchitecture', blocking: true }));
     expect(issues).toContainEqual(expect.objectContaining({ field: 'masterPrompt', blocking: true }));
   });
@@ -271,14 +279,14 @@ describe('saveTreatmentConfig — §29.1 appliqué par le service', () => {
     const saveEntry = vi.fn(async (..._a: unknown[]) => undefined);
     const brouillon = {
       id: 5, status: 'DRAFT', environment: 'local', entries: [
-        { ...emptyTreatmentConfig('T1'), promptArchitecture: 'master', masterPrompt: 'MASTER EN PLACE' }, emptyTreatmentConfig('T6'),
+        { ...emptyTreatmentConfig('T1'), promptArchitecture: 'master', masterPrompt: 'MASTER EN PLACE' }, emptyTreatmentConfig(SANS_MASTER),
       ],
     };
     vi.doMock('../config-version.repository', () => ({ getVersion: async () => brouillon, saveEntry }));
     vi.doMock('../config-cache-version', () => ({ bumpConfigVersionCounter: async () => true }));
     const svc = await import('../config-version.service');
 
-    await expect(svc.saveTreatmentConfig(5, { ...emptyTreatmentConfig('T6'), promptArchitecture: 'master' }, 1))
+    await expect(svc.saveTreatmentConfig(5, { ...emptyTreatmentConfig(SANS_MASTER), promptArchitecture: 'master' }, 1))
       .rejects.toMatchObject({ code: 'NO_MASTER_FOR_TREATMENT' });
 
     const sansChamp = { ...emptyTreatmentConfig('T1') };

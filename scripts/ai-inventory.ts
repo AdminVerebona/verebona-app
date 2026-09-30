@@ -109,10 +109,16 @@ function afficher(report: InventoryReport): void {
         ? `  [master ${op.masterPromptCode} · TASK=${op.task}]`
         : op.migratesTo ? `  [→ ${op.migratesTo}]` : '';
       const inactive = op.active ? '' : '  (inactive)';
-      console.log(`       · ${op.code.padEnd(22)} ${op.deterministic ? 'déterministe' : op.model}${master}${inactive}`);
+      // CDC 15 §29 étape 15, D-02 : conservée jusqu'au retrait (check-master-cutover).
+      const deprecie = op.deprecated
+        ? `  DÉPRÉCIÉE (${op.deprecated.reason === 'LEGACY_RELAY' ? 'relais legacy' : `remplacée par ${op.deprecated.replacedBy}`})`
+        : '';
+      console.log(`       · ${op.code.padEnd(22)} ${op.deterministic ? 'déterministe' : op.model}${master}${inactive}${deprecie}`);
     }
     console.log('');
   }
+  const deprecies = declare.useCases.flatMap((u) => u.operations).filter((o) => o.deprecated);
+  console.log(`  Opérations dépréciées : ${deprecies.length} (retrait : npm run ai:cutover-check)`);
   console.log(`  Usages déclarés : ${declare.activeUseCaseCount} / ${declare.expectedUseCaseCount}`);
   console.log(`  Bascule         : ${Object.entries(declare.flags).map(([k, v]) => `${k}=${v}`).join('  ')}\n`);
 

@@ -14,6 +14,7 @@ import { buildT6Input } from './t6-contract';
 import { formulateWithT6, logT6, type T6Mode } from './t6-runner';
 import type { MascotPresentation } from './types';
 import { t4EffectsMode } from '@/services/canonical/rollout';
+import { parisDay, tileFor } from './bubble';
 
 export async function getMascotPresentation(
   accountId: number,
@@ -41,7 +42,9 @@ export async function getMascotPresentation(
   }
 
   const input = buildT6Input(subjects);
-  const outcome = await formulateWithT6({ accountId, input, contextHash, mode });
+  // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
+  const kinds = subjects.map((s) => tileFor(s, raw.today ?? parisDay(), tiles).kind);
+  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
   // Le drapeau de recette coupé n'est pas un appel T6 : rien à journaliser.
   if (outcome.status !== 'skipped') {
     void logT6({ accountId, contextHash, mode, outcome, input });

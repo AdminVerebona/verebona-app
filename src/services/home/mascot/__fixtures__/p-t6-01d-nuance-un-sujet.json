@@ -1,0 +1,75 @@
+{
+  "case": "P-T6-01d",
+  "description": "T6 / FORMULATE — un seul paragraphe fautif (R9, vocabulaire alarmiste) : il reprend son texte de secours, l’autre reste formulé.",
+  "context": {
+    "input": {
+      "schemaVersion": "t6-input-v1",
+      "language": "fr",
+      "subjects": [
+        {
+          "subjectId": "DATE-NEXT:12",
+          "sourceCode": "DATE-NEXT",
+          "intent": "deadline",
+          "facts": {
+            "title": "Contrôle technique",
+            "date": "2026-11-14",
+            "dateLabel": "14 novembre 2026",
+            "dateNature": "prévisionnelle",
+            "assetName": "Clio"
+          },
+          "fallbackText": "Votre prochaine échéance, « Contrôle technique » pour Clio, est prévue autour du 14 novembre 2026 (date estimée).",
+          "allowedHighlight": "14 novembre 2026"
+        },
+        {
+          "subjectId": "ATP:5f1c",
+          "sourceCode": "ATP-DATA-MILEAGE",
+          "intent": "act",
+          "facts": {
+            "question": "Quel est le kilométrage actuel de la Clio ?",
+            "targetLabel": "Clio",
+            "assetName": "Clio",
+            "actionKind": "complément"
+          },
+          "fallbackText": "Quel est le kilométrage actuel de la Clio ? Cela concerne Clio.",
+          "allowedHighlight": null
+        }
+      ]
+    },
+    "kinds": [
+      "info",
+      "action"
+    ],
+    "variables": {
+      "INPUT_JSON": "{\"schemaVersion\": \"t6-input-v1\", \"language\": \"fr\", \"subjects\": [{\"subjectId\": \"DATE-NEXT:12\", \"sourceCode\": \"DATE-NEXT\", \"intent\": \"deadline\", \"facts\": {\"title\": \"Contrôle technique\", \"date\": \"2026-11-14\", \"dateLabel\": \"14 novembre 2026\", \"dateNature\": \"prévisionnelle\", \"assetName\": \"Clio\"}, \"fallbackText\": \"Votre prochaine échéance, « Contrôle technique » pour Clio, est prévue autour du 14 novembre 2026 (date estimée).\", \"allowedHighlight\": \"14 novembre 2026\"}, {\"subjectId\": \"ATP:5f1c\", \"sourceCode\": \"ATP-DATA-MILEAGE\", \"intent\": \"act\", \"facts\": {\"question\": \"Quel est le kilométrage actuel de la Clio ?\", \"targetLabel\": \"Clio\", \"assetName\": \"Clio\", \"actionKind\": \"complément\"}, \"fallbackText\": \"Quel est le kilométrage actuel de la Clio ? Cela concerne Clio.\", \"allowedHighlight\": null}]}"
+    }
+  },
+  "recording": {
+    "operationCode": "t6_formulate",
+    "task": "FORMULATE",
+    "output": {
+      "schemaVersion": "t6-output-v2",
+      "messages": [
+        {
+          "subjectId": "DATE-NEXT:12",
+          "text": "Le contrôle technique de la Clio est prévu autour du 14 novembre 2026, une date encore estimée.",
+          "highlight": "14 novembre 2026"
+        },
+        {
+          "subjectId": "ATP:5f1c",
+          "text": "Urgent : indiquez sans tarder le kilométrage actuel de la Clio.",
+          "highlight": null
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "subjectIds": [
+      "DATE-NEXT:12",
+      "ATP:5f1c"
+    ],
+    "fallbackSubjects": [
+      1
+    ]
+  }
+}

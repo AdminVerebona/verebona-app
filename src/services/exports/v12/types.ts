@@ -182,6 +182,8 @@ export interface DossierCompletData extends CaseBase {
   } | null;
   history?: Array<Selectable & { date?: Nullable<string>; title: string; typeLabel?: Nullable<string>; provider?: Nullable<string> }>;
   deadlines?: Array<Selectable & { title: string; date: string }>;
+  /** Échéances passées non confirmées (source canonique, X-02 lot 16). */
+  toConfirm?: Array<Selectable & { title: string; date: string }>;
   contracts?: Array<Selectable & { title: string; detail?: Nullable<string> }>;
 }
 

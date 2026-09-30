@@ -185,9 +185,10 @@ export interface PreviewAnalysis {
 
 /** Snapshot + manifeste du bien choisi, avec les données manquantes. */
 export async function analysePreview(exportType: ExportCode, asset: AdminPreviewAsset): Promise<PreviewAnalysis> {
-  const { buildAssetSnapshot } = await import('@/services/export-snapshot.service');
+  // X-02 (lot 16) : même source que les exports (EXPORTS_CANONICAL_SOURCE).
+  const { buildExportAssetSnapshot } = await import('@/services/exports/export-snapshot-source');
   const { buildExportManifest } = await import('@/services/export-manifest.service');
-  const snapshot = await buildAssetSnapshot(asset.id, asset.ownerUserId);
+  const snapshot = await buildExportAssetSnapshot(asset.id, asset.ownerUserId, undefined, 'ADMIN_PREVIEW');
   const manifest = buildExportManifest(toEngineType(exportType), snapshot, {
     requestedOutputs: exportType === 'EXPORT_BRUT' ? ['ZIP'] : ['PDF'],
   });

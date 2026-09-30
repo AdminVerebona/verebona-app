@@ -63,6 +63,14 @@ beforeEach(() => {
 });
 
 describe('runGeneration', () => {
+  it('X-02 (lot 16) : le snapshot garde la source réellement utilisée et la version du registre', async () => {
+    renderMock.mockResolvedValue(rendered());
+    const base = await loadSource();
+    const trace = { mode: 'enabled', source: 'canonical', registryVersion: 'reg-v1-2026-09', documentPaths: { 12: ['link:SECONDARY'] } };
+    loadSource.mockResolvedValueOnce({ ...base, sourceTrace: trace } as never);
+    expect(await runGeneration(row(), 'w1', { deps })).toBe('ready');
+    expect((state.updates.at(-1)!.snapshotJson as Row).dataSource).toEqual(trace);
+  });
   it('succès : PDF stocké sous exports/, statut ready, expiration à 30 jours, métriques et traçabilité', async () => {
     renderMock.mockResolvedValue(rendered());
     expect(await runGeneration(row(), 'w1', { deps })).toBe('ready');

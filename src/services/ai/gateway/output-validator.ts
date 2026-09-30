@@ -65,8 +65,13 @@ export type OutputFormat = 'json' | 'text';
  */
 export interface ValidateOutputOptions {
   expectedTask?: string;
-  /** Champ discriminant de la sortie : `task` (défaut) ou `mode` (T2, §24). */
-  taskField?: 'task' | 'mode';
+  /**
+   * Champ discriminant de la sortie : `task` (défaut), `mode` (T2 §24, T5
+   * §27) ou `none` (T6 §28 : la sortie ne porte pas de discriminant — le
+   * contrôle de branche est sauté, le `schemaVersion` strict du contrat joue
+   * ce rôle ; la branche reste imposée en entrée par `{{MODE}}`).
+   */
+  taskField?: 'task' | 'mode' | 'none';
 }
 
 export function validateOutput<T>(
@@ -85,7 +90,7 @@ export function validateOutput<T>(
       { recoverable: true, cause: e });
   }
 
-  if (options.expectedTask !== undefined) {
+  if (options.expectedTask !== undefined && options.taskField !== 'none') {
     const task = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)[options.taskField ?? 'task']
       : undefined;

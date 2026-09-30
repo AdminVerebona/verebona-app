@@ -46,6 +46,11 @@ interface Snapshot {
   generatedAt: string;
   /** CDC 15 D-04 : master déclaré par la configuration mais non appliqué. */
   promptArchitectureWarnings?: Array<{ treatment: string; switchName: string; switchMode: string; message: string }>;
+  /** CDC 15 §29 étape 15, D-02 : opérations dépréciées, conservées jusqu'au retrait. */
+  deprecatedOperations?: Array<{
+    code: string; label: string; useCaseCode: string; promptCode: string | null; active: boolean;
+    reason: 'MIGRATED_TO_MASTER' | 'LEGACY_RELAY'; replacedBy: string | null;
+  }>;
 }
 
 const MODE_STYLE: Record<string, string> = {
@@ -169,7 +174,7 @@ export default function AiFlagsPage() {
       )}
 
       {(data.promptArchitectureWarnings ?? []).map((w) => (
-        <div key={w.treatment}
+        <div key={`${w.treatment}-${w.switchName}`}
           className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-500">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>{w.message}</span>
@@ -179,6 +184,39 @@ export default function AiFlagsPage() {
       <Tableau titre="Drapeaux IA (un par usage)" lignes={data.aiFlags} />
       <Tableau titre="Bascules techniques" lignes={data.technical} />
       <Tableau titre="Commutateurs de déploiement (CDC 15)" lignes={data.rollout.map((r) => ({ ...r, name: r.env }))} colonneLot />
+      <Deprecies lignes={data.deprecatedOperations ?? []} />
     </div>
   );
 }
+
+/** Opérations dépréciées (CDC 15 §29 étape 15, D-02) : visibles, jamais supprimées ici. */
+function Deprecies({ lignes }: { lignes: NonNullable<Snapshot['deprecatedOperations']> }) {
+  if (lignes.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <h2 className="text-sm font-semibold">Opérations dépréciées ({lignes.length})</h2>
+      <p className="text-xs text-[color:var(--text-secondary)]">
+        Conservées pendant la transition (D-02). Le retrait n’a lieu qu’après les préconditions vérifiées par
+        <code className="mx-1">npm run ai:cutover-check</code>.
+      </p>
+      <div className="overflow-x-auto rounded-lg border border-[color:var(--border-subtle)]">
+        <table className="w-full text-sm">
+          <thead className="text-left text-xs text-[color:var(--text-secondary)]">
+            <tr><th className="px-3 py-2">Opération</th><th className="px-3 py-2">Usage</th><th className="px-3 py-2">Motif</th><th className="px-3 py-2">Remplacée par</th></tr>
+          </thead>
+          <tbody>
+            {lignes.map((o) => (
+              <tr key={o.code} className="border-t border-[color:var(--border-subtle)]">
+                <td className="px-3 py-2 font-mono text-xs">{o.code}{o.active ? '' : ' (inactive)'}</td>
+                <td className="px-3 py-2 text-xs">{o.useCaseCode}</td>
+                <td className="px-3 py-2 text-xs">{o.reason === 'LEGACY_RELAY' ? 'Relais legacy' : 'Étape migrée vers un master'}</td>
+                <td className="px-3 py-2 font-mono text-xs">{o.replacedBy ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+

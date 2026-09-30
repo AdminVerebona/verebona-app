@@ -1,0 +1,17 @@
+{
+  "case": "P-T2-05",
+  "description": "REVALIDATE (texte) — une correction s’appuie sur un extrait littéral du contenu ciblé (C2) ; sous-ensemble critique du passage réel.",
+  "context": {
+    "provenance": "TEXT",
+    "revalidate": {
+      "question": "Quel est le kilométrage de la Clio ?", "fact": "Clio — Kilométrage", "currentValue": "48 250 km",
+      "location": "page 1", "content": "Contrôle technique du 12/03/2026. Kilométrage relevé : 48 520 km."
+    }
+  },
+  "recording": {
+    "operationCode": "t2_revalidate", "task": "REVALIDATE",
+    "output": { "mode": "REVALIDATE", "status": "corrected", "value": "48 520", "unit": "km", "confidence": "certain",
+      "evidence": { "provenance": "TEXT_EXTRACTION", "excerpt": "Kilométrage relevé : 48 520 km", "page": 1, "visualEvidence": null } }
+  },
+  "expected": { "excerptInContent": true }
+}

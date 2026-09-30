@@ -274,6 +274,47 @@ export async function backToDraft(versionId: number): Promise<void> {
   await invalidateCaches(`demote:${versionId}`);
 }
 
+// ── Garde d'activation des masters (CDC 15 §30, D-17, HC-06) ────────────────
+
+/**
+ * Refuse la mise en service d'une version dont un traitement en `master`
+ * n'a pas de corpus vert sur l'empreinte exacte de son texte, toutes
+ * branches couvertes. Appelée avant CHAQUE passage à ACTIVE : validation
+ * d'une « À tester », activation (dont un package importé), restauration.
+ * Aucun contournement (le CDC n'en prévoit pas).
+ */
+export async function assertMasterCorpusGreen(version: Pick<ConfigVersionWithEntries, 'id' | 'entries'>): Promise<void> {
+  const gate = await masterCorpusGate(version);
+  if (gate.allowed) return;
+  const bloquants = gate.entries.filter((e) => e.status !== 'GREEN');
+  throw new ConfigOperationRefused(
+    'MASTER_CORPUS_NOT_GREEN',
+    'Activation refusée : corpus des prompts maîtres non vert (CDC 15 §30). '
+    + bloquants.map((b) => b.message).join(' '),
+    { versionId: version.id, entries: gate.entries },
+  );
+}
+
+/**
+ * État de la garde ; toute erreur de lecture (fichier master illisible,
+ * base) devient un refus EXPLICITE — jamais un passage, jamais un 500.
+ */
+async function masterCorpusGate(version: Pick<ConfigVersionWithEntries, 'id' | 'entries'>) {
+  try {
+    const { checkMasterActivation } = await import('../governance/master-corpus/activation-guard');
+    return await checkMasterActivation(version);
+  } catch (e) {
+    throw new ConfigOperationRefused(
+      'MASTER_CORPUS_CHECK_FAILED',
+      `Activation refusée : état du corpus des prompts maîtres illisible (${(e as Error).message}).`,
+      { versionId: version.id },
+    );
+  }
+}
+
+/** Justification minimale d'une restauration malgré un corpus non vert. */
+export const ROLLBACK_JUSTIFICATION_MIN = 15;
+
 // ── WF-03 — Validation ──────────────────────────────────────────────────────
 
 /**
@@ -297,6 +338,8 @@ export async function validate(
       validation.issues.filter((i) => i.blocking),
     );
   }
+  // La validation fait de la version l'ACTIVE (préproduction) : garde §30.
+  await assertMasterCorpusGreen(version);
   const { visibleNumber } = await commitValidation(versionId, userId);
   await invalidateCaches(`validate:${versionId}`);
   return { visibleNumber };
@@ -314,6 +357,7 @@ export interface SwitchResult {
 
 /** WF-05 — activation normale : n'interrompt aucune exécution en cours. */
 export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
+  await assertMasterCorpusGreen(await load(versionId));
   const r = await switchActive(versionId, userId, 'activate');
   await invalidateCaches(`activate:${versionId}`);
   // WF-27 : les Brouillons dérivés de l'Active remplacée deviennent obsolètes
@@ -336,7 +380,9 @@ export async function activate(versionId: number, userId: number): Promise<Switc
  * en tête avant la bascule pourrait être repris par une autre instance sous
  * l'ancienne configuration, c'est-à-dire précisément celle qu'on abandonne.
  */
-export async function rollback(versionId: number, userId: number): Promise<SwitchResult> {
+export async function rollback(
+  versionId: number, userId: number, options: { justification?: string | null } = {},
+): Promise<SwitchResult & { corpusOverride?: boolean }> {
   const version = await load(versionId);
   if (version.activatedAt === null) {
     throw new ConfigOperationRefused(
@@ -344,9 +390,33 @@ export async function rollback(versionId: number, userId: number): Promise<Switc
       'Cette version n\'a jamais été active : la restaurer ne serait pas un retour en arrière (VER-007).',
     );
   }
+  // Restauration d'URGENCE : jamais bloquée par le corpus des masters, mais
+  // une version dont le corpus n'est pas vert n'est restaurée qu'avec une
+  // justification, tracée dans l'audit (qui, quand, pourquoi, état du corpus).
+  const gate = await masterCorpusGate(version).catch((e: ConfigOperationRefused) => ({
+    allowed: false, entries: [{ status: 'CHECK_FAILED', message: e.message }],
+  }));
+  const justification = options.justification?.trim() ?? '';
+  let corpusOverride = false;
+  if (!gate.allowed) {
+    if (justification.length < ROLLBACK_JUSTIFICATION_MIN) {
+      throw new ConfigOperationRefused(
+        'ROLLBACK_JUSTIFICATION_REQUIRED',
+        'Corpus des prompts maîtres non vert pour cette version : la restauration d\'urgence reste possible, '
+        + `avec une justification (au moins ${ROLLBACK_JUSTIFICATION_MIN} caractères), tracée dans l'audit.`,
+        { versionId, entries: gate.entries },
+      );
+    }
+    corpusOverride = true;
+  }
 
   const r = await switchActive(versionId, userId, 'rollback');
   await invalidateCaches(`rollback:${versionId}`);
+  if (corpusOverride) {
+    const { recordRollbackOverride } = await import('./rollback-override.audit');
+    await recordRollbackOverride({ adminUserId: userId, versionId, justification, corpus: gate.entries })
+      .catch((e: Error) => console.error('[config] Trace de la restauration hors corpus non écrite :', e.message));
+  }
   if (r.previousId) await markStaleDrafts(r.previousId);
 
   const { requeueRunning } = await import('../queue/job-queue.repository');
@@ -356,7 +426,7 @@ export async function rollback(versionId: number, userId: number): Promise<Switc
     requeued += await requeueRunning(t, `restauration de la version ${version.visibleNumber ?? versionId}`);
   }
 
-  return { previousId: r.previousId, interrupts: true, requeuedJobs: requeued };
+  return { previousId: r.previousId, interrupts: true, requeuedJobs: requeued, corpusOverride };
 }
 
 /**

@@ -21,6 +21,7 @@
 import {
   listActiveUseCases, listOperationsByUseCase, listLlmOperations,
 } from './index';
+import { operationDeprecation } from './operations';
 import { snapshotFlags, type AiFlag, type FlagMode } from '../flags/ai-feature-flags';
 import {
   concludeExecutionInventory, knownOperationCodes,
@@ -54,6 +55,8 @@ export interface DeclaredSection {
       /** Étape historique : opération master qui la remplace. */
       migratesTo: string | null;
       active: boolean;
+      /** CDC 15 §29 étape 15, D-02 : opération dépréciée (conservée, retrait après bascule). */
+      deprecated: { reason: 'MIGRATED_TO_MASTER' | 'LEGACY_RELAY'; replacedBy: string | null } | null;
     }>;
   }>;
   totalLlmOperations: number;
@@ -118,6 +121,10 @@ export function buildDeclaredSection(): DeclaredSection {
           task: o.task ?? o.migratesTo?.task ?? null,
           migratesTo: o.migratesTo ? `${o.migratesTo.masterPromptCode}/${o.migratesTo.task}` : null,
           active: o.active,
+          deprecated: (() => {
+            const d = operationDeprecation(o);
+            return d ? { reason: d.reason, replacedBy: d.replacedBy } : null;
+          })(),
         })),
       };
     }),

@@ -14,7 +14,7 @@ import { db } from '@/db';
 import { assets, assetTransmissions, accountMemberships, users, emailTemplates } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
-import { buildAssetSnapshot } from '@/services/export-snapshot.service';
+import { buildExportAssetSnapshot } from '@/services/exports/export-snapshot-source';
 import { randomUUID } from 'crypto';
 import { Resend } from 'resend';
 
@@ -247,7 +247,9 @@ export async function POST(
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
 
     // Build snapshot at transmission time
-    const snapshot = await buildAssetSnapshot(assetId, session.userId);
+    // X-02 (lot 16) : source selon EXPORTS_CANONICAL_SOURCE (legacy inchangé) ;
+    // `snapshot.dataSource` est figé dans `snapshotPayload` hors legacy.
+    const snapshot = await buildExportAssetSnapshot(assetId, session.userId, undefined, 'TRANSMISSION');
     const token = randomUUID();
     const now = new Date();
 

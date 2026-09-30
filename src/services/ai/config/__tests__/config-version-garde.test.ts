@@ -50,6 +50,8 @@ describe('promotion', () => {
 
 describe('obsolescence à la bascule (WF-27)', () => {
   it('activation et rollback marquent les Brouillons de l’Active remplacée', async () => {
+    // Lot 16 : l'activation relit la version (garde du corpus des masters, §30).
+    repo.getVersion.mockResolvedValue(draft({ status: 'VALIDATED' }));
     await activate(8, 1);
     expect(repo.markStaleDrafts).toHaveBeenCalledWith(4);
     repo.getVersion.mockResolvedValue(draft({ status: 'VALIDATED', activatedAt: new Date() }));

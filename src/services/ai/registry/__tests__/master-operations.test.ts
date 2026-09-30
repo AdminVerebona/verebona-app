@@ -42,6 +42,10 @@ describe('opérations T1 master', () => {
       { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
       // TEMPORAL_AMBIGUITY : opération inactive tant qu'aucun appelant (relecture lot 14).
       { masterPromptCode: 't4_master_v1', useCaseCode: 'AGENDA_INTELLIGENCE', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION'] },
+      // Lot 16 : T5 (§27), MODE ANALYZE / MODIFY.
+      { masterPromptCode: 't5_master_v1', useCaseCode: 'AI_GOVERNANCE', tasks: ['ANALYZE', 'MODIFY'] },
+      // Lot 16 (C) : T6 (§28), MODE FORMULATE, sortie sans discriminant.
+      { masterPromptCode: 't6_master_v1', useCaseCode: 'HOME_MASCOT', tasks: ['FORMULATE'] },
     ]);
   });
 
