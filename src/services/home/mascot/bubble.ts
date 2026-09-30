@@ -32,7 +32,17 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? 
  * Métadonnées de tuile d'un sujet : sévérité (amber = à vérifier, rouge = en
  * retard), libellé de l'action, bien et statut. `today` : AAAA-MM-JJ.
  */
-export function tileFor(s: MascotSubject, today: string): MascotTile {
+export interface TileOptions {
+  /**
+   * CDC 15 T4-12 (AI_T4_EFFECTS=enabled) : une échéance passée sans statut est
+   * NON PROUVÉE, pas « non réalisée ». Tuile ambre « à confirmer », nature
+   * `verify` (pose `questioning`), au lieu de rouge « en retard »
+   * (`alert-folder`). Absent / false : comportement historique.
+   */
+  unprovenOverdueIsQuestion?: boolean;
+}
+
+export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {}): MascotTile {
   const f = s.facts;
   const asset = s.assetName ?? str(f.assetName) ?? str(f.targetLabel);
   const code = s.sourceCode;
@@ -49,6 +59,9 @@ export function tileFor(s: MascotSubject, today: string): MascotTile {
   if (code === 'MASC-EXT-ACTION') {
     const date = str(f.date);
     const retard = date ? daysBetween(date, today) : 0;
+    if (retard > 0 && opts.unprovenOverdueIsQuestion) {
+      return { tone: 'amber', icon: 'clock', attention: true, assetName: asset, label: 'Confirmer ou reporter', status: `Prévue il y a ${retard} j — à confirmer`, kind: 'verify' };
+    }
     return retard > 0
       ? { tone: 'red', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: `En retard (${retard} j)`, kind: 'overdue' }
       : { tone: 'amber', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: 'Aujourd’hui', kind: 'action' };
@@ -260,6 +273,17 @@ function kindOf(x: MascotParagraph): NonNullable<MascotTile['kind']> {
  *   sinon un autre sujet d'attention (rappel, à compléter) → `reminder-bell` ;
  *   rien à traiter → `success-check` ;
  *   discours indisponible → `neutral` (jamais « tout est à jour » sur une panne).
+ *
+ * Cohérence avec les 4 statuts de T4 (CDC 15 T4-12, AI_T4_EFFECTS=enabled) :
+ *   · completed     → l'élément est réalisé, il ne remonte plus ;
+ *   · not_completed → jamais écrit : PROPOSÉ via « À traiter » (carte ATP,
+ *                     pose `questioning` ou `reminder-bell` selon la carte) ;
+ *   · not_proven / unknown → statut inchangé ; une échéance passée est « à
+ *                     confirmer » (tuile ambre, `verify` → `questioning`),
+ *                     JAMAIS « en retard » (`alert-folder`) : l'absence de
+ *                     preuve n'est pas un constat de non-réalisation.
+ * `alert-folder` reste la pose d'une échéance en retard dans le mode
+ * historique (et de toute tuile rouge future qui établirait un retard).
  */
 export function homePose(p: MascotPresentation | null, empty: boolean, failed = false): HomePose {
   if (empty) return 'welcome-wave';

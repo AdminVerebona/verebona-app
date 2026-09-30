@@ -178,11 +178,16 @@ export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MO
  * donc aucun effet. Le départage des liens, lui, passe par le master dans
  * tous les cas.
  */
-export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_ENGINE'>> = {
+export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE'>> = {
   T3: 'AI_RECONCILIATION_ENGINE',
+  // Lot 14 : T4 en `master` mais `AI_AGENDA_ENGINE` ≠ `enabled` ⇒ le moteur
+  // agenda qui appelle CLASSIFY_EVENT ne tourne pas (`legacy`) ou n'écrit
+  // rien (`shadow`), et le chemin manuel garde le classifieur historique. `AI_T4_EFFECTS` ne conditionne PAS le master (il gouverne
+  // les effets d'écriture T4-04/07/08) : aucune alerte sur lui.
+  T4: 'AI_AGENDA_ENGINE',
 };
 
-export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE';
+export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE';
 
 export interface PromptArchitectureWarning {
   treatment: Treatment;
@@ -215,12 +220,16 @@ export function promptArchitectureWarning(
     const effet = switchMode === 'shadow'
       ? 'tourne en observation, sans rien appliquer'
       : 'ne tourne pas (moteur historique)';
+    const portee = treatment === 'T3'
+      ? `L'arbitrage de valeur (VALUE_CONFLICT) ${effet} ; seul le départage des liens passe par le prompt maître `
+        + `(passer ${flag}=enabled pour appliquer l'arbitrage).`
+      : `La classification des échéances par le prompt maître (CLASSIFY_EVENT) ${effet}, et la création manuelle `
+        + `reste sur le classifieur historique (passer ${flag}=enabled).`;
     return {
       treatment, code: 'MASTER_ENGINE_NOT_ENABLED', switchName: flag, switchMode,
       message:
         `${treatment} : la version de configuration effective déclare l'architecture « master », mais ${flag}=${switchMode}. `
-        + `L'arbitrage de valeur (VALUE_CONFLICT) ${effet} ; seul le départage des liens passe par le prompt maître `
-        + `(passer ${flag}=enabled pour appliquer l'arbitrage).`,
+        + portee,
     };
   }
   return null;
@@ -237,7 +246,7 @@ export async function promptArchitectureWarnings(opts: {
   const out: PromptArchitectureWarning[] = [];
   try {
     const readMode = opts.readMode
-      ?? ((name: MasterSwitchName) => (name === 'AI_RECONCILIATION_ENGINE' ? getFlagMode(name) : getRolloutMode(name)));
+      ?? ((name: MasterSwitchName) => (name === 'AI_T1_ANALYSIS_MODE' ? getRolloutMode(name) : getFlagMode(name)));
     const readArchitecture = opts.readArchitecture
       ?? (async (t: Treatment) => (await import('./config-resolver')).getPromptArchitecture(t));
     const surveilles = [

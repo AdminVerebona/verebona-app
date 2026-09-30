@@ -156,6 +156,18 @@ export const T3_MASTER_VARIABLES = [
   'FIELD', 'CURRENT_STATE', 'EVIDENCES', 'SUBJECT_CONTEXT', 'CANDIDATES', 'RELATION_TYPE',
 ] as const;
 
+/** Prompt maître T4 (CDC 15 §26, §29.1) — même valeur que `T4_MASTER_PROMPT_CODE`. */
+const T4_MASTER = 't4_master_v1';
+/**
+ * Emplacements du master T4 (hors TASK). Un seul texte pour les trois
+ * branches : chaque appel les fournit TOUS (`null` pour ceux des autres
+ * branches). Contrôlé contre le fichier par `prompts:check`.
+ */
+export const T4_MASTER_VARIABLES = [
+  'EVENT_CONTEXT', 'EVENT_CATALOG', 'EVIDENCE', 'AGENDA_ITEM', 'DOCUMENT_TYPE',
+  'TEMPORAL_CONTEXT', 'TEMPORAL_CANDIDATES',
+] as const;
+
 /**
  * Variable de relais des prompts historiques (`legacy_*_v1.txt`), exemptée de
  * masquage — voir `unredactedVariables`. Même nom que
@@ -423,6 +435,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   },
   classify_event: {
     operationCode: 'classify_event', useCaseCode: 'AGENDA_INTELLIGENCE',
+    migratesTo: { masterPromptCode: T4_MASTER, task: 'CLASSIFY_EVENT', operationCode: 't4_classify_event' },
     label: 'Classification action / information (cas ambigus uniquement)',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: 'classify_event_v2', timeoutMs: 15_000,
@@ -436,10 +449,46 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   },
   reconcile_status: {
     operationCode: 'reconcile_status', useCaseCode: 'AGENDA_INTELLIGENCE',
+    migratesTo: { masterPromptCode: T4_MASTER, task: 'VERIFY_COMPLETION', operationCode: 't4_verify_completion' },
     label: "Mise à jour du statut d'un événement sous preuve explicite",
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: 'reconcile_status_v1', timeoutMs: 15_000,
     outputSchema: 'ReconcileStatusOutput', active: true, billable: false,
+  },
+
+  // ── T4 — prompt maître (CDC 15 §26, T4-10 à T4-14, D-04) ─────────────────
+  // Exécutées seulement quand la version de configuration bascule T4 en
+  // architecture `master` (`getPromptArchitecture('T4')`). Mêmes modèles et
+  // même facturation que les étapes qu'elles remplacent ; déclarées APRÈS
+  // elles. TEMPORAL_AMBIGUITY : branche du master, sans appelant au lot 14.
+  t4_classify_event: {
+    operationCode: 't4_classify_event', useCaseCode: 'AGENDA_INTELLIGENCE',
+    label: 'T4 master — classification action / information (TASK=CLASSIFY_EVENT)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T4_MASTER, masterPromptCode: T4_MASTER, task: 'CLASSIFY_EVENT', promptVariables: T4_MASTER_VARIABLES,
+    timeoutMs: 15_000, jsonResponse: true,
+    outputSchema: 'T4ClassifyEventOutput', active: true, billable: false,
+  },
+  t4_verify_completion: {
+    operationCode: 't4_verify_completion', useCaseCode: 'AGENDA_INTELLIGENCE',
+    label: 'T4 master — preuve de réalisation d’une occurrence (TASK=VERIFY_COMPLETION)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T4_MASTER, masterPromptCode: T4_MASTER, task: 'VERIFY_COMPLETION', promptVariables: T4_MASTER_VARIABLES,
+    timeoutMs: 15_000, jsonResponse: true,
+    outputSchema: 'T4VerifyCompletionOutput', active: true, billable: false,
+  },
+  // INACTIVE (relecture du lot 14) : branche déclarée avec son schéma, mais
+  // AUCUN appelant dans le code — les dates ambiguës restent traitées par
+  // `interpretDate` (règles). Active, elle apparaîtrait dans l'inventaire et
+  // la console comme une opération en service. À réactiver avec son premier
+  // appelant.
+  t4_temporal_ambiguity: {
+    operationCode: 't4_temporal_ambiguity', useCaseCode: 'AGENDA_INTELLIGENCE',
+    label: 'T4 master — arbitrage d’une ambiguïté temporelle (TASK=TEMPORAL_AMBIGUITY)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T4_MASTER, masterPromptCode: T4_MASTER, task: 'TEMPORAL_AMBIGUITY', promptVariables: T4_MASTER_VARIABLES,
+    timeoutMs: 15_000, jsonResponse: true,
+    outputSchema: 'T4TemporalAmbiguityOutput', active: false, billable: false,
   },
 
   // ── Usage 5 — Gouvernance (CDC §4.5.3) ────────────────────────────────────

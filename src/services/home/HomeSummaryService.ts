@@ -17,7 +17,9 @@ import {
   deriveUpcoming, deriveVerebonaWork, docStatus, docTone,
   type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem,
 } from '@/services/home/home-blocks';
-import { isAgendaActionItem } from '@/services/home/mascot/collector';
+import { isAgendaActionItem, isAgendaActionForMode, isAgendaActionItemT4 } from '@/services/home/mascot/collector';
+import { t4EffectsMode } from '@/services/canonical/rollout';
+import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { getRubric } from '@/lib/referential/v2';
 
 // Champs visibles par l'utilisateur dans l'UI — les autres champs (techniques)
@@ -105,6 +107,14 @@ function dateMinus(days: number): string {
 export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPayload> {
   const today = todayStr();
 
+  // CDC 15 D-14, T4-02 (AI_T4_EFFECTS=enabled, 0223 appliquée) : les
+  // échéances AUTOMATIQUES entrent dans l'accueil, les faits HISTORICAL
+  // jamais (filtre de B) ; la catégorie vient de l'élément lui-même. Sinon :
+  // requête et classification historiques, inchangées.
+  const t4Mode = t4EffectsMode();
+  const filtreT4 = await upcomingDeadlinesSqlFilter('agenda_items', t4Mode);
+  const t4 = filtreT4 !== '';
+
   const [
     accountRows,
     agendaRows,
@@ -128,12 +138,18 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       originType: agendaItems.originType,
       homeCategory: agendaItems.homeCategory,
       occurrenceNature: agendaItems.occurrenceNature,
+      originFieldKey: agendaItems.originFieldKey,
+      // Colonnes 0223 : non déclarées dans Drizzle, lues seulement si présentes.
+      eventNature: t4 ? sql<string | null>`agenda_items.event_nature` : sql<string | null>`NULL::text`,
+      businessType: t4 ? sql<string | null>`agenda_items.business_type` : sql<string | null>`NULL::text`,
     })
       .from(agendaItems)
       .where(and(
         eq(agendaItems.accountId, accountId),
         or(isNull(agendaItems.manualStatus), sql`trim(${agendaItems.manualStatus}) = ''`),
-        or(eq(agendaItems.isAutomatic, false), eq(agendaItems.occurrenceNature, 'FORECAST')),
+        t4
+          ? sql.raw(filtreT4.replace(/^\s*AND\s*/, ''))
+          : or(eq(agendaItems.isAutomatic, false), eq(agendaItems.occurrenceNature, 'FORECAST')),
         gte(agendaItems.startDate, dateMinus(365)),
         lte(agendaItems.startDate, dateIn(730)),
       ))
@@ -259,7 +275,9 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         eq(assetFiles.accountId, accountId),
         isNull(assetFiles.deletedAt),
         isNotNull(assetFiles.analysisState),
-        gte(sql`coalesce(${assetFiles.lastAnalysisAt}, ${assetFiles.uploadedAt})`, new Date(dateMinus(30) + 'T00:00:00')),
+        // Borne passée en texte typé : une `Date` comparée à une expression SQL
+        // brute (sans colonne pour l'encoder) est refusée par le pilote.
+        gte(sql`coalesce(${assetFiles.lastAnalysisAt}, ${assetFiles.uploadedAt})`, sql`${new Date(dateMinus(30) + 'T00:00:00').toISOString()}::timestamptz`),
       ))
       .orderBy(desc(sql`coalesce(${assetFiles.lastAnalysisAt}, ${assetFiles.uploadedAt})`))
       .limit(5),
@@ -459,10 +477,22 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         date: String(i.startDate),
         assetName: agendaAssetMap[i.id]?.[0]?.assetName ?? null,
         forecast: i.occurrenceNature === 'FORECAST',
-        action: isAgendaActionItem({ homeCategory: i.homeCategory, originType: i.originType, title: i.title }),
+        action: isAgendaActionForMode({
+          homeCategory: i.homeCategory, originType: i.originType, title: i.title,
+          eventNature: i.eventNature, businessType: i.businessType, originFieldKey: i.originFieldKey,
+        }, t4 ? 'enabled' : 'legacy'),
       })),
     today,
   );
+
+  if (t4Mode === 'shadow') {
+    // Observation : classification T4 calculée sur les lignes historiques, sans effet.
+    const divergences = agendaRows.filter((i) => {
+      const item = { homeCategory: i.homeCategory, originType: i.originType, title: i.title, originFieldKey: i.originFieldKey };
+      return isAgendaActionItem(item) !== isAgendaActionItemT4(item);
+    }).length;
+    if (divergences > 0) console.info('[t4-shadow] accueil', JSON.stringify({ accountId, lus: agendaRows.length, divergences }));
+  }
 
   const isEmpty = assetRows.length === 0 && agendaRows.length === 0;
 

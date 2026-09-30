@@ -12,7 +12,7 @@ vi.mock('../to-process-action.service', () => ({ upsertAction: h.upsert, resolve
 
 import { findRule, PROCESSING_RULES } from '../rules-catalog';
 import { mapReconciliationDecision, syncReconciliationToProcess } from '../reconciliation-bridge';
-import { getField } from '@/services/canonical/registry';
+import { getField, EXCLUDED_KEYS } from '@/services/canonical/registry';
 import type { ReconciliationDecision } from '@/services/ai/reconciliation/types';
 
 const d = (over: Partial<ReconciliationDecision>): ReconciliationDecision => ({
@@ -23,10 +23,13 @@ const d = (over: Partial<ReconciliationDecision>): ReconciliationDecision => ({
 beforeEach(() => { h.upsert.mockClear(); h.resolve.mockClear(); });
 
 describe('catalogue', () => {
-  it('toute règle de BIEN porte une clé canonique du registre', () => {
+  it('toute règle de BIEN porte une clé canonique du registre (ou une colonne d’identité exclue, D-15)', () => {
+    const identite = new Set(EXCLUDED_KEYS.filter((k) => k.kind === 'IDENTITY_COLUMN').map((k) => k.key));
     for (const r of PROCESSING_RULES.filter((x) => x.targetType === 'ASSET' && x.fieldKey)) {
+      if (identite.has(r.fieldKey!)) continue; // ASSET-STATUS : `assets.status`, règle métier séparée.
       expect(getField(r.fieldKey!), r.code).toBeDefined();
     }
+    expect(findRule('ASSET', 'status')?.code).toBe('ASSET-STATUS');
   });
 
   it('alias résolus vers la règle canonique', () => {

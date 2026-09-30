@@ -13,6 +13,7 @@ import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
 import { formulateWithT6, logT6, type T6Mode } from './t6-runner';
 import type { MascotPresentation } from './types';
+import { t4EffectsMode } from '@/services/canonical/rollout';
 
 export async function getMascotPresentation(
   accountId: number,
@@ -27,13 +28,16 @@ export async function getMascotPresentation(
     return buildPresentation({ subjects: [], secondaries: [], degraded: true, messages: null });
   }
 
+  // CDC 15 T4-12 : échéance passée sans statut = non prouvée (à confirmer),
+  // jamais « non réalisée » — seulement quand AI_T4_EFFECTS=enabled.
+  const tiles = { unprovenOverdueIsQuestion: t4EffectsMode() === 'enabled' };
   const candidates = buildCandidates(raw);
   const subjects = selectSubjects(candidates.candidates);
   const secondaries = buildSecondaries(candidates, subjects);
   const contextHash = contextHashOf(subjects, secondaries, candidates.degraded);
 
   if (subjects.length === 0) {
-    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today });
+    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles });
   }
 
   const input = buildT6Input(subjects);
@@ -43,7 +47,7 @@ export async function getMascotPresentation(
     void logT6({ accountId, contextHash, mode, outcome, input });
   }
   return buildPresentation({
-    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today,
+    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles,
   });
 }
 

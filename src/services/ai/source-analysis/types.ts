@@ -205,6 +205,39 @@ export interface AgendaCandidate {
   originFieldKey?: string;
   /** Récurrence démontrée par la source (EXPLICIT_SOURCE), le cas échéant. */
   recurrence?: import('../agenda/rules/recurrence').RecurrenceSpec;
+
+  // ── Candidat T4 enrichi — CDC 15 T4-01, T4-03, T4-04, T4-08 (lot 14) ────
+  // Renseignés quand AI_T4_EFFECTS=enabled (`buildAgendaCandidatesT4`) ;
+  // absents : candidat historique, traité comme avant par T4.
+
+  /** Nature du registre (§13) : fait passé ou échéance à venir. */
+  nature?: 'HISTORICAL' | 'DEADLINE';
+  /** Type métier de l'EVENT_CATALOG (purchase, maintenance, repair, dpe…). */
+  businessType?: string;
+  /** Cible de l'événement (clé fonctionnelle T4-08) ; `id` null si non déterminée. */
+  target?: { type: 'ASSET' | 'EQUIPMENT' | 'ROOM'; id: number | null };
+  /**
+   * Occurrence (clé fonctionnelle T4-08) : `single` pour le fait unique d'un
+   * champ d'origine (une date corrigée MET À JOUR l'événement), sinon la date.
+   */
+  occurrence?: string;
+  /** Document source (clé fonctionnelle T4-08, liens document ↔ agenda T4-07). */
+  sourceFileId?: number;
+  /** D'où vient la date : le champ lui-même, ou la date du document (réparation…). */
+  dateSource?: 'FIELD' | 'DOCUMENT_DATE';
+  /** Type documentaire canonique de la source (DOCUMENT_CATALOG) — T4-04. */
+  documentType?: string | null;
+  /** Autorité du type documentaire (T4-04) ; null si type inconnu (jamais autoritaire). */
+  authority?: 'AUTHORITATIVE' | 'SUPPORTING' | 'WEAK' | null;
+  /** Le type documentaire autorise-t-il la création automatique (T4-04) ? */
+  mayCreateAgenda?: boolean | null;
+  /**
+   * Documents de l'événement (liens source ↔ agenda T4-07, clé fonctionnelle
+   * T4-08) : le document source et, dès qu'elle est écrite, la preuve
+   * (`field_evidence.id`) du champ d'origine. Même forme que
+   * `AgendaSourceRef` de la primitive agenda.
+   */
+  sources?: Array<{ fileId: number; role: 'SOURCE'; evidenceId?: number | null }>;
 }
 
 export type AnalysisWarningCode =

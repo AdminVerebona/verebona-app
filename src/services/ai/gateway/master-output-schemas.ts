@@ -14,6 +14,9 @@ import {
 import {
   T3LinkAmbiguityOutput, T3MasterOutput, T3ValueConflictOutput,
 } from '../reconciliation/master/t3-contract';
+import {
+  T4ClassifyEventOutput, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
+} from '../agenda/master/t4-contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1GroupUploadOutput,
@@ -22,6 +25,10 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3ValueConflictOutput,
   T3LinkAmbiguityOutput,
   T3MasterOutput,
+  T4ClassifyEventOutput,
+  T4VerifyCompletionOutput,
+  T4TemporalAmbiguityOutput,
+  T4MasterOutput,
 };
 
 export function masterOutputSchemaFor(name: string): ZodType | null {

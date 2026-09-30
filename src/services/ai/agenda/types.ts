@@ -73,6 +73,37 @@ export interface AgendaDecision {
       computedAt: string;
     };
   };
+  /**
+   * CDC 15 T4-10 : classification détaillée (catégorie éventuellement
+   * `unknown`, confiance, origine). `category` ci-dessus reste la valeur
+   * affichable ; `requiresQualification` signale une classification à faire
+   * confirmer par l'utilisateur.
+   */
+  classification?: AgendaClassification & { requiresQualification: boolean };
+  // ── Sémantique T4 recopiée du candidat (CDC 15 T4-04, T4-07, T4-08) ──────
+  // Renseignée seulement sous AI_T4_EFFECTS=enabled, depuis les candidats du
+  // registre (C) : B en tire la clé fonctionnelle et les liens source.
+  /** Nature du registre : fait passé ou échéance à venir. */
+  nature?: 'HISTORICAL' | 'DEADLINE' | null;
+  /** Type métier de l'EVENT_CATALOG. */
+  businessType?: string | null;
+  /** Cible de l'événement (id null si non déterminée). */
+  target?: { type: 'ASSET' | 'EQUIPMENT' | 'ROOM'; id: number | null } | null;
+  /**
+   * Index d'occurrence de la clé fonctionnelle : `single` (fait unique d'un
+   * champ, une date corrigée met à jour) ou la date de l'occurrence.
+   */
+  occurrenceIndex?: string | null;
+  /** D'où vient la date : le champ ou la date du document. */
+  dateSource?: 'FIELD' | 'DOCUMENT_DATE' | null;
+  /** Documents de l'événement (liens source ↔ agenda). */
+  sources?: Array<{ fileId: number; role: 'SOURCE'; evidenceId?: number | null }>;
+  /** Type documentaire de la source et son autorité (T4-04). */
+  documentType?: string | null;
+  authority?: 'AUTHORITATIVE' | 'SUPPORTING' | 'WEAK' | null;
+  mayCreateAgenda?: boolean | null;
+  /** Récurrence énoncée par la source (spécification du candidat). */
+  recurrence?: import('./rules/recurrence').RecurrenceSpec | null;
   /** Rapprochement incertain : ce qui a fait penser au même événement. */
   duplicate?: {
     similarity: number;
@@ -97,6 +128,10 @@ export interface ExistingAgendaItem {
   /** FORECAST | CONFIRMED (0158) ; absent = CONFIRMED. */
   nature?: 'FORECAST' | 'CONFIRMED';
   seriesKey?: string | null;
+  /** Type métier (EVENT_CATALOG), s'il est connu — preuves de réalisation (T4-13). */
+  businessType?: string | null;
+  /** Récurrence de la série, si connue — fenêtre d'occurrence (T4-14). */
+  recurrence?: { frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'; interval: number } | null;
 }
 
 export interface AgendaClassificationInput {
@@ -104,4 +139,27 @@ export interface AgendaClassificationInput {
   description?: string | null;
   originType: string;
   originFieldKey?: string | null;
+  /** Type métier de l'EVENT_CATALOG, s'il est connu (CDC 15 T4-02). */
+  businessType?: string | null;
+  /** Nature HISTORICAL / DEADLINE, si connue (CDC 15 T4-02, D-14). */
+  nature?: 'HISTORICAL' | 'DEADLINE' | null;
+}
+
+/**
+ * Classification T4 avec abstention (CDC 15 T4-10, §26 C5) : `unknown` quand
+ * la nature reste réellement ambiguë. Jamais persisté tel quel : voir
+ * `prudentCategory`.
+ */
+export type ClassificationCategory = HomeCategory | 'unknown';
+export type ClassificationConfidence = 'certain' | 'probable' | 'ambiguous';
+
+export interface AgendaClassification {
+  category: ClassificationCategory;
+  confidence: ClassificationConfidence;
+  /** registry | business_rule | pattern | model | fallback. */
+  source: 'registry' | 'business_rule' | 'pattern' | 'model' | 'fallback';
+  ruleCode?: string;
+  /** Type métier retenu (catalogue fermé), si connu. */
+  businessType?: string | null;
+  reason?: string;
 }

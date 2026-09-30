@@ -38,6 +38,8 @@ describe('opérations T1 master', () => {
     expect(listMasterPrompts()).toEqual([
       { masterPromptCode: T1_MASTER_PROMPT_CODE, useCaseCode: 'SOURCE_ANALYSIS', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] },
       { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY'] },
+      // TEMPORAL_AMBIGUITY : opération inactive tant qu'aucun appelant (relecture lot 14).
+      { masterPromptCode: 't4_master_v1', useCaseCode: 'AGENDA_INTELLIGENCE', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION'] },
     ]);
   });
 
@@ -146,5 +148,33 @@ describe('opérations T3 master (CDC 15 §25, lot 13)', () => {
       if (op.legacyPrompt) continue;
       expect(isMasterOperation(op) || Boolean(op.migratesTo), op.operationCode).toBe(true);
     }
+  });
+});
+
+describe('opérations T4 master (CDC 15 §26, lot 14)', () => {
+  it('trois branches, rattachées aux étapes historiques, mêmes modèles', () => {
+    const ref = getOperation('classify_event');
+    // `t4_temporal_ambiguity` : déclarée mais INACTIVE tant qu'aucun appelant
+    // n'existe (relecture du lot 14).
+    for (const [code, task, schema, active] of [
+      ['t4_classify_event', 'CLASSIFY_EVENT', 'T4ClassifyEventOutput', true],
+      ['t4_verify_completion', 'VERIFY_COMPLETION', 'T4VerifyCompletionOutput', true],
+      ['t4_temporal_ambiguity', 'TEMPORAL_AMBIGUITY', 'T4TemporalAmbiguityOutput', false],
+    ] as const) {
+      expect(getOperation(code)).toMatchObject({
+        useCaseCode: 'AGENDA_INTELLIGENCE', promptCode: 't4_master_v1', masterPromptCode: 't4_master_v1', task,
+        outputSchema: schema, primaryModel: ref.primaryModel, billable: false, active,
+      });
+    }
+    expect(getOperation('classify_event')).toMatchObject({
+      promptCode: 'classify_event_v2',
+      migratesTo: { masterPromptCode: 't4_master_v1', task: 'CLASSIFY_EVENT', operationCode: 't4_classify_event' },
+    });
+    expect(getOperation('reconcile_status')).toMatchObject({
+      promptCode: 'reconcile_status_v1',
+      migratesTo: { masterPromptCode: 't4_master_v1', task: 'VERIFY_COMPLETION', operationCode: 't4_verify_completion' },
+    });
+    const actives = listOperationsByUseCase('AGENDA_INTELLIGENCE').filter((o) => o.active && o.provider !== 'none');
+    expect(actives[0].operationCode).toBe('classify_event');
   });
 });

@@ -57,7 +57,9 @@ function confidenceToScore(c?: 'certain' | 'probable' | 'conflictual'): number |
   return null;
 }
 import { identifyEntities } from './steps/identify-entities.step';
-import { buildAgendaCandidates } from './steps/build-agenda-candidates.step';
+import { buildAgendaCandidates, selectAgendaCandidates, attachEvidenceToCandidates } from './steps/build-agenda-candidates.step';
+import { resolveAlias } from '@/services/canonical/registry';
+import { t4EffectsMode } from '@/services/canonical/rollout';
 import { persistEvidence, persistProjectedFacts } from './steps/persist-evidence.step';
 import { persistAnalysisResult } from './persistence/analysis-result.repository';
 import { notifyLotCompleted } from './lot-notification';
@@ -204,6 +206,18 @@ export async function runSourceAnalysis(
         });
       }
 
+      // Candidats agenda (CDC 15 T4-01, T4-03, T4-04) : registre et nature
+      // HISTORICAL / DEADLINE derrière AI_T4_EFFECTS ; legacy inchangé.
+      result.agendaCandidates = selectAgendaCandidates(result.agendaCandidates, result.extractedFields, {
+        sourceFileId: leadSourceId,
+        documentAssetId: resolveAssetId(result, input),
+        multiAsset: master ? master.projection.multiAsset : result.warnings.some((w) => w.code === 'MULTI_ASSET_DOCUMENT'),
+        documentTitle: result.document.title?.value ?? null,
+        documentDate: result.document.date?.value ?? null,
+        documentType: result.document.type?.value ?? null,
+        documentTypeCode: result.document.rubric?.documentTypeCode ?? null,
+      }, t4EffectsMode());
+
       // ⚠️ Point de contrôle essentiel : l'appel IA a pu répondre APRÈS un
       // rollback. Aucun de ses résultats n'est alors écrit.
       await guard?.assertActive('persistance du résultat');
@@ -303,6 +317,12 @@ export async function runSourceAnalysis(
           analysisRunId: persisted.runId,
           promptVersion: master.promptVersion,
         });
+        // Candidats T4 : preuve du champ d'origine sur le bien du document (T4-07, T4-08).
+        if (assetId && ecrites?.evidenceIds) {
+          const suffixe = `@ASSET:${assetId}`;
+          attachEvidenceToCandidates(result.agendaCandidates, new Map([...ecrites.evidenceIds]
+            .filter(([k]) => k.endsWith(suffixe)).map(([k, id]) => [k.slice(0, -suffixe.length), id])));
+        }
         // Chaque bien touché est réconcilié, pas seulement celui du document
         // (multi-biens, preuves remplacées sur un autre bien).
         await enqueueT3ForAffectedAssets({
@@ -334,7 +354,7 @@ export async function runSourceAnalysis(
         // (enabled : écrit ; shadow : journalisé ; legacy : rien).
         const negMode = t3NegativeMode();
         let remplacees: { assetIds: number[] } | null = null;
-        await persistEvidence({
+        const preuves = await persistEvidence({
           input,
           leadSourceId,
           assetId,
@@ -344,6 +364,11 @@ export async function runSourceAnalysis(
           trace: result.operationTrace,
           supersede: negMode === 'legacy' ? undefined : { mode: negMode, onResult: (r) => { remplacees = r; } },
         });
+        // Candidats T4 : preuve du champ d'origine (clé historique → canonique).
+        if (preuves instanceof Map) {
+          attachEvidenceToCandidates(result.agendaCandidates, new Map([...preuves]
+            .map(([k, id]) => [resolveAlias(k) ?? k, id] as [string, number])));
+        }
         // Preuves remplacées sur un AUTRE bien (document déplacé puis
         // réanalysé) : ce bien est réconcilié aussi.
         const autres = (remplacees as { assetIds: number[] } | null)?.assetIds ?? [];

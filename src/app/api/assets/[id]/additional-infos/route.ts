@@ -14,16 +14,29 @@
  * (corps lu par `parseWriteBlocked` côté client).
  *
  * Corps du PATCH : `{ commercial?: {...}, rental?: {...}, insurance?: {...},
- * claim?: {...} }`. Une valeur `null` ou vide retire le champ ; `0` est une
- * valeur (IC-GEN-008). Montants en centimes entiers, dates `AAAA-MM-JJ`.
+ * claim?: {...}, finance?: {...}, version?: n }`. Une valeur `null` ou vide
+ * retire le champ ; `0` est une valeur (IC-GEN-008). Montants en centimes
+ * entiers, dates `AAAA-MM-JJ`.
+ * Listes structurées (dommages, actions, échanges, points forts, protections,
+ * éléments à assurer, charges) : remplacées en bloc ; `version` (celle lue
+ * par le client) est alors obligatoire — 409 `CONFLICT` si la ligne a changé
+ * depuis, avec l'état courant dans `details.current`. Les photos, pièces et
+ * événements cités doivent appartenir au bien (422 sinon).
  * Réponse : l'état complet `{ assetId, commercial, rental, insurance, claim,
- * updatedAt, updatedBy, version }`.
+ * finance, updatedAt, updatedBy, version }`.
+ *
+ * GET `?include=references` : ajoute `references` (pièces, photos,
+ * événements sinistre, suggestions de points forts) pour les sélecteurs du
+ * formulaire.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { findAccessibleAssetForExport } from '@/services/exports/export-access';
 import { AssetDetailsError, loadWritableAsset } from '@/services/asset-details-write.service';
-import { getAssetAdditionalInfos, updateAssetAdditionalInfos } from '@/services/exports/additional-infos.service';
+import {
+  AdditionalInfosConflictError, getAssetAdditionalInfos, updateAssetAdditionalInfos,
+} from '@/services/exports/additional-infos.service';
+import { findInvalidReferences, loadAdditionalInfoReferences } from '@/services/exports/additional-infos-references.service';
 import { validateAdditionalInfosPatch, sectionsForCategory } from '@/lib/assets/additional-infos';
 import { toExportFamily } from '@/services/exports/catalog';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
@@ -59,11 +72,16 @@ export async function GET(request: NextRequest, { params }: Ctx) {
     const asset = await findAccessibleAssetForExport(session, assetId);
     if (!asset) return notFound();
 
-    const infos = await getAssetAdditionalInfos(assetId, asset.accountId);
+    const withReferences = request.nextUrl.searchParams.get('include') === 'references';
+    const [infos, references] = await Promise.all([
+      getAssetAdditionalInfos(assetId, asset.accountId),
+      withReferences ? loadAdditionalInfoReferences({ assetId, accountId: asset.accountId, userId: session.userId }) : Promise.resolve(undefined),
+    ]);
     return NextResponse.json({
       ...infos,
       family: toExportFamily(asset.category),
       sections: sectionsForCategory(asset.category),
+      ...(references ? { references } : {}),
     });
   } catch (error) {
     return internalError('GET', error);
@@ -110,22 +128,45 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
       );
     }
 
+    const validationError = (issues: Array<{ path: string; message: string }>) => NextResponse.json(
+      {
+        error: 'VALIDATION_ERROR',
+        code: 'VALIDATION_ERROR',
+        message: issues.length === 1 ? issues[0].message : 'Certains champs sont invalides.',
+        fields: issues,
+        // `details` : seul champ que `apiClient` transmet à l'appelant.
+        details: { fields: issues },
+      },
+      { status: 422 },
+    );
+
     const result = validateAdditionalInfosPatch(body, toExportFamily(asset.category));
-    if (!result.ok) {
+    if (!result.ok) return validationError(result.issues);
+
+    // Photos, pièces et événements cités : ceux du bien uniquement.
+    const refIssues = await findInvalidReferences(assetId, accountId, result.patch);
+    if (refIssues.length) return validationError(refIssues);
+
+    let infos;
+    try {
+      infos = await updateAssetAdditionalInfos(assetId, accountId, session.userId, result.patch, {
+        // Contrôle optimiste dès qu'une liste est touchée (ou qu'une version est fournie).
+        expectedVersion: result.listPaths.length > 0 || result.expectedVersion !== null ? result.expectedVersion : null,
+      });
+    } catch (e) {
+      if (!(e instanceof AdditionalInfosConflictError)) throw e;
+      const current = await getAssetAdditionalInfos(assetId, accountId);
       return NextResponse.json(
         {
-          error: 'VALIDATION_ERROR',
-          code: 'VALIDATION_ERROR',
-          message: result.issues.length === 1 ? result.issues[0].message : 'Certains champs sont invalides.',
-          fields: result.issues,
-          // `details` : seul champ que `apiClient` transmet à l'appelant.
-          details: { fields: result.issues },
+          error: 'CONFLICT',
+          code: 'CONFLICT',
+          message: 'Ces informations ont été modifiées entre-temps (autre onglet ou co-titulaire).',
+          current,
+          details: { current, lists: result.listPaths },
         },
-        { status: 422 },
+        { status: 409 },
       );
     }
-
-    const infos = await updateAssetAdditionalInfos(assetId, accountId, session.userId, result.patch);
 
     // CDC Assistant §25.7, §31.7 : la fiche du bien a changé — les caches de
     // l'assistant qui la recopient sont invalidés.

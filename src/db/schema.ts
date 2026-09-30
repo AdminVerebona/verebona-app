@@ -1,6 +1,30 @@
 import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint, bigserial } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
+// ══════════════════════════════════════════════════════════════════════════
+// COLONNES EXISTANT EN BASE MAIS VOLONTAIREMENT NON DÉCLARÉES ICI
+//
+// Drizzle cite TOUTES les colonnes déclarées dans un INSERT (`default` pour
+// les absentes) et dans un `select()` complet. `ensureMigrations` poursuit
+// après une migration en échec : une colonne déclarée mais absente de la
+// base ferait échouer toutes les écritures (ou lectures) de la table. Les
+// colonnes ci-dessous sont donc lues et écrites en SQL, après contrôle de
+// présence :
+//   · ai_usage_event, ai_pipeline_step — `task`, `master_prompt_code`,
+//     `master_prompt_version` (0217, CDC 15 DP-05) : `telemetry/trace-schema.ts` ;
+//   · agenda_items — `functional_key`, `event_nature`, `business_type`
+//     (0223, CDC 15 T4-08, D-14) : `services/agenda/agenda-columns.ts` ;
+//   · agenda_item_sources — `source_role`, `evidence_id` (0223, T4-07, X-04) :
+//     `services/agenda/agenda-source-links.ts` ;
+//   · table agenda_item_removals (0223, trace des retraits) :
+//     `services/agenda/agenda-removal-trace.ts`.
+//
+// ⚠️ `drizzle-kit push` (ou `generate` suivi d'une migration) sur une base
+// réelle SUPPRIMERAIT ces colonnes et cette table, absentes du schéma. Ne
+// jamais l'utiliser contre une base alimentée : les migrations SQL de
+// `db/migrations` font foi.
+// ══════════════════════════════════════════════════════════════════════════
+
 // ── Timestamp helpers ────────────────────────────────────────────────────────
 // All structural timestamps use TIMESTAMPTZ (not text).
 // Drizzle maps these to JS Date objects on read; pass new Date() on write.
@@ -1631,14 +1655,21 @@ export const agendaItemSources = pgTable('agenda_item_sources', {
   id: serial('id').primaryKey(),
   agendaItemId: integer('agenda_item_id').references(() => agendaItems.id, { onDelete: 'set null' }),
   assetFileId: integer('asset_file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
-  runId: integer('run_id').notNull().references(() => documentAnalysisRuns.id, { onDelete: 'cascade' }),
+  // Migration 0223 (CDC 15 T4-07, X-04) : facultatif — une pièce jointe
+  // d'un élément manuel n'a pas de run d'analyse.
+  runId: integer('run_id').references(() => documentAnalysisRuns.id, { onDelete: 'cascade' }),
   effectType: text('effect_type').notNull(),
+  // Colonnes 0223 `source_role` (SOURCE | ATTACHMENT | PROOF) et `evidence_id`
+  // NON déclarées, volontairement : Drizzle cite toutes les colonnes déclarées
+  // dans un INSERT (`default` pour les absentes) — le moteur d'analyse
+  // historique (`commit-engine`) échouerait si la 0223 manquait. Écrites en
+  // SQL par `services/agenda/agenda-source-links.ts`, après contrôle.
   createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   agendaItemIdIdx: index('agenda_item_sources_agenda_item_id_idx').on(table.agendaItemId),
   assetFileIdIdx: index('agenda_item_sources_asset_file_id_idx').on(table.assetFileId),
   runIdIdx: index('agenda_item_sources_run_id_idx').on(table.runId),
-  effectTypeCheck: check('agenda_item_sources_effect_type_check', sql`${table.effectType} IN ('created','resolved_existing','conflict_pending','rejected_orphan')`),
+  effectTypeCheck: check('agenda_item_sources_effect_type_check', sql`${table.effectType} IN ('created','resolved_existing','conflict_pending','rejected_orphan','linked')`),
 }));
 
 // ─── Fournisseurs CDC V1 ──────────────────────────────────────────────────────

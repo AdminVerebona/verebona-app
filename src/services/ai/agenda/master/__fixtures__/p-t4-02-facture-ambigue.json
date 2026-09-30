@@ -1,0 +1,18 @@
+{
+  "case": "P-T4-02",
+  "description": "VERIFY_COMPLETION — facture ambiguë : insufficient ⇒ not_proven, jamais « non réalisé ».",
+  "context": {
+    "item": { "id": 70, "title": "Entretien chaudière", "date": "2026-10-15", "category": "action", "status": null,
+      "manual": false, "originFieldKey": "maintenanceDueDate", "businessType": "maintenance" },
+    "evidence": { "excerpt": "Facture n°118 — Entretien annuel chaudière — 145,00 € TTC", "confidence": "certain",
+      "documentType": "FACTURE", "documentDate": "2026-10-12" }
+  },
+  "recording": {
+    "operationCode": "t4_verify_completion",
+    "task": "VERIFY_COMPLETION",
+    "output": { "task": "VERIFY_COMPLETION", "evidenceStatus": "insufficient", "occurrenceMatch": "probable", "confidence": "probable",
+      "evidence": { "excerpt": "Entretien annuel chaudière — 145,00 € TTC" },
+      "reason": "facture sans mention d'acquittement ni d'exécution" }
+  },
+  "expected": { "status": "not_proven", "decision": "keep", "neverStatus": "not_completed" }
+}

@@ -42,7 +42,9 @@ describe('rollout — commutateurs', () => {
     const snap = rolloutSnapshot({ CANONICAL_WRITE_MODE: 'on', AI_T4_EFFECTS: 'shadow' });
     expect(snap.map((s) => s.name)).toEqual(Object.keys(ROLLOUT_SWITCHES));
     expect(snap.find((s) => s.name === 'CANONICAL_WRITE_MODE')).toMatchObject({ mode: 'legacy', invalid: true, raw: 'on', wired: true });
-    expect(snap.find((s) => s.name === 'AI_T4_EFFECTS')).toMatchObject({ mode: 'shadow', wired: false });
+    // AI_T4_EFFECTS est branché depuis le lot 14 (T4-07/T4-08/D-13/D-14).
+    expect(snap.find((s) => s.name === 'AI_T4_EFFECTS')).toMatchObject({ mode: 'shadow', wired: true });
+    expect(snap.find((s) => s.name === 'EXPORTS_CANONICAL_SOURCE')).toMatchObject({ mode: 'legacy', wired: false });
   });
 });
 

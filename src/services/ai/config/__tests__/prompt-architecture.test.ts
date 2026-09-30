@@ -33,15 +33,19 @@ describe('valeur par défaut', () => {
     expect(promptArchitectureOf(null)).toBe('steps');
   });
 
-  it('masters déclarés : T1 (lot 12) et T3 (lot 13)', () => {
+  it('masters déclarés : T1 (lot 12), T3 (lot 13), T4 (lot 14)', () => {
     expect(masterPromptForTreatment('T1')).toEqual({
       masterPromptCode: 't1_master_v1', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'],
     });
     expect(masterPromptForTreatment('T3')).toEqual({
       masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY'],
     });
+    expect(masterPromptForTreatment('T4')).toEqual({
+      // TEMPORAL_AMBIGUITY : opération inactive tant qu'aucun appelant (relecture lot 14).
+      masterPromptCode: 't4_master_v1', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION'],
+    });
     expect(masterPromptForTreatment('T2')).toBeNull();
-    expect(masterCapableTreatments()).toEqual(['T1', 'T3']);
+    expect(masterCapableTreatments()).toEqual(['T1', 'T3', 'T4']);
   });
 });
 
@@ -66,7 +70,7 @@ describe('checkPromptArchitectureChange — §29.1', () => {
   });
 
   it('master refusé pour un traitement sans prompt maître déclaré', () => {
-    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T4', from: 'steps', to: 'master' }))
+    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T6', from: 'steps', to: 'master' }))
       .toMatchObject({ allowed: false, code: 'NO_MASTER_FOR_TREATMENT' });
   });
 });
@@ -173,7 +177,7 @@ describe('diff et contrôles de promotion', () => {
   });
 
   it('master ou texte master sur un traitement sans master : bloquant', () => {
-    const c = { ...emptyTreatmentConfig('T4'), prompt: 'x', promptArchitecture: 'master' as const, masterPrompt: MASTER_T1 };
+    const c = { ...emptyTreatmentConfig('T6'), prompt: 'x', promptArchitecture: 'master' as const, masterPrompt: MASTER_T1 };
     const issues = validateTreatment(c, cat);
     expect(issues).toContainEqual(expect.objectContaining({ field: 'promptArchitecture', blocking: true }));
     expect(issues).toContainEqual(expect.objectContaining({ field: 'masterPrompt', blocking: true }));
@@ -229,6 +233,21 @@ describe('alerte master déclaré mais non appliqué (commutateur ≠ enabled)',
     }
   });
 
+  it('T4 en master : alerte si AI_AGENDA_ENGINE ≠ enabled ; AI_T4_EFFECTS ne conditionne pas le master (lot 14)', async () => {
+    expect(promptArchitectureWarning('T4', 'master', 'legacy')).toMatchObject({
+      treatment: 'T4', code: 'MASTER_ENGINE_NOT_ENABLED', switchName: 'AI_AGENDA_ENGINE',
+      message: expect.stringMatching(/CLASSIFY_EVENT/),
+    });
+    expect(promptArchitectureWarning('T4', 'master', 'enabled')).toBeNull();
+    const lus: string[] = [];
+    await promptArchitectureWarnings({
+      readMode: (n) => { lus.push(n); return 'enabled'; },
+      readArchitecture: async () => 'master',
+    });
+    expect(lus).toContain('AI_AGENDA_ENGINE');
+    expect(lus).not.toContain('AI_T4_EFFECTS');
+  });
+
   it('bascule T3 → master permise en Brouillon (master déclaré)', () => {
     expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T3', from: 'steps', to: 'master' })).toEqual({ allowed: true });
   });
@@ -244,14 +263,14 @@ describe('saveTreatmentConfig — §29.1 appliqué par le service', () => {
     const saveEntry = vi.fn(async (..._a: unknown[]) => undefined);
     const brouillon = {
       id: 5, status: 'DRAFT', environment: 'local', entries: [
-        { ...emptyTreatmentConfig('T1'), promptArchitecture: 'master', masterPrompt: 'MASTER EN PLACE' }, emptyTreatmentConfig('T4'),
+        { ...emptyTreatmentConfig('T1'), promptArchitecture: 'master', masterPrompt: 'MASTER EN PLACE' }, emptyTreatmentConfig('T6'),
       ],
     };
     vi.doMock('../config-version.repository', () => ({ getVersion: async () => brouillon, saveEntry }));
     vi.doMock('../config-cache-version', () => ({ bumpConfigVersionCounter: async () => true }));
     const svc = await import('../config-version.service');
 
-    await expect(svc.saveTreatmentConfig(5, { ...emptyTreatmentConfig('T4'), promptArchitecture: 'master' }, 1))
+    await expect(svc.saveTreatmentConfig(5, { ...emptyTreatmentConfig('T6'), promptArchitecture: 'master' }, 1))
       .rejects.toMatchObject({ code: 'NO_MASTER_FOR_TREATMENT' });
 
     const sansChamp = { ...emptyTreatmentConfig('T1') };

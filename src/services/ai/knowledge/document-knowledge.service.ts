@@ -37,6 +37,9 @@ import { factsToExtractedFields } from './document-knowledge';
 import type { TableCellRow } from './document-tables';
 import type { ExtractedTableCell, ExtractedField } from '../source-analysis/types';
 import { documentFactsCanonicalReady } from '../evidence/canonical-columns';
+import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
+import { t4EffectsMode } from '@/services/canonical/rollout';
+import { shouldRunNewEngine } from '../flags/ai-feature-flags';
 
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
@@ -522,6 +525,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
 }): Promise<number> {
   const knowledge = await getDocumentKnowledge(p.accountId, p.fileId);
   if (!knowledge || knowledge.facts.length === 0) return 0;
+  const allowReassign = lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, p.assetId);
 
   const { persistEvidence } = await import('../source-analysis/steps/persist-evidence.step');
   const byField = await persistEvidence({
@@ -535,9 +539,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
     },
     leadSourceId: p.fileId,
     assetId: p.assetId,
-    fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), p.assetId, {
-      allowReassign: lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, p.assetId),
-    }),
+    fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), p.assetId, { allowReassign }),
     documentType: (knowledge.extraction.metadata?.legacyDocumentType as string | undefined) ?? undefined,
     documentDate: knowledge.extraction.documentDate ?? undefined,
     trace: {
@@ -562,7 +564,97 @@ export async function projectDocumentKnowledgeToAsset(p: {
   const { notifyCoherenceEvent } = await import('../reconciliation/account-reconciliation.service');
   notifyCoherenceEvent(p.accountId, { event: 'document_linked', objectType: 'asset', objectId: p.assetId });
 
+  // T4-05 (lot 14, derrière AI_T4_EFFECTS) : candidats agenda reconstruits
+  // depuis les faits persistés — récurrence comprise (T4-06) — par LE MÊME
+  // constructeur que l'analyse, puis passés par le chemin agenda existant
+  // (file T4). Même document rattaché avant ou après analyse → même état
+  // final (DOD-05). Non bloquant : preuves et T3 sont déjà faits.
+  await rebuildAgendaAfterLink({ ...p, knowledge, allowReassign }).catch((e: Error) =>
+    console.error('[knowledge] candidats agenda après rattachement :', e.message));
+
   return byField.size;
+}
+
+/**
+ * Champs d'un document rattaché tardivement, pour les candidats agenda :
+ * comme `fieldsForLinkedAsset`, mais les faits GÉNÉRIQUES portant un
+ * événement (réparation, sinistre, vente…) sont conservés — ils ne sont pas
+ * des preuves de champ, mais ils datent un événement (§13).
+ */
+export function candidateFieldsForLinkedAsset(
+  fields: ExtractedField[],
+  assetId: number,
+  opts: { allowReassign: boolean },
+): ExtractedField[] {
+  return fields.map((f) => {
+    const enrichi = f.origin !== undefined || f.canonicalKey !== undefined || f.target !== undefined;
+    if (!enrichi || !opts.allowReassign) return f;
+    if (!f.target || (f.target.targetType === 'ASSET' && f.target.targetEntityId == null)) {
+      return {
+        ...f,
+        target: {
+          targetType: 'ASSET' as const, targetEntityId: assetId,
+          targetEntityLabel: f.target?.targetEntityLabel ?? null,
+          targetConfidence: f.target?.targetConfidence ?? 'probable' as const,
+        },
+      };
+    }
+    return f;
+  });
+}
+
+/** Candidats T4 d'un document projeté sur un bien (rattachement tardif). */
+/** Ce que lit la reconstruction des candidats (représentation persistée ou en mémoire). */
+export interface KnowledgeForAgenda {
+  extraction: {
+    title: string | null; documentDate: string | null; documentTypeCode: string | null;
+    multiAsset?: boolean | null; metadata?: Record<string, unknown> | null;
+  };
+  facts: Parameters<typeof factsToExtractedFields>[0];
+}
+
+export function lateLinkAgendaCandidates(p: {
+  knowledge: KnowledgeForAgenda;
+  fileId: number;
+  assetId: number;
+  allowReassign: boolean;
+}) {
+  const e = p.knowledge.extraction;
+  return buildAgendaCandidatesT4(
+    candidateFieldsForLinkedAsset(factsToExtractedFields(p.knowledge.facts), p.assetId, { allowReassign: p.allowReassign }),
+    {
+      sourceFileId: p.fileId,
+      documentAssetId: p.assetId,
+      multiAsset: !p.allowReassign && e.multiAsset === true,
+      documentTitle: e.title,
+      documentDate: e.documentDate,
+      documentType: (e.metadata?.legacyDocumentType as string | undefined) ?? null,
+      documentTypeCode: e.documentTypeCode,
+    },
+  );
+}
+
+async function rebuildAgendaAfterLink(p: {
+  accountId: number; userId: number; fileId: number; assetId: number;
+  knowledge: KnowledgeForAgenda; allowReassign: boolean;
+}): Promise<void> {
+  const mode = t4EffectsMode();
+  if (mode === 'legacy') return;
+  const candidates = lateLinkAgendaCandidates(p);
+  if (mode === 'shadow') {
+    console.info('[t4-shadow] rattachement tardif', JSON.stringify({
+      fileId: p.fileId, assetId: p.assetId,
+      candidats: candidates.map((c) => `${c.businessType}:${c.nature}`).sort(),
+    }));
+    return;
+  }
+  // Même garde que l'abonné d'analyse : T4 n'est mis en file que si son
+  // moteur est actif (§10.4).
+  if (candidates.length === 0 || !shouldRunNewEngine('AI_AGENDA_ENGINE')) return;
+  const { enqueueT4Candidates } = await import('../agenda');
+  await enqueueT4Candidates({
+    accountId: p.accountId, userId: p.userId, assetId: p.assetId, leadSourceId: p.fileId, candidates,
+  });
 }
 
 /**

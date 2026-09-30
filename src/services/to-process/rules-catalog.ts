@@ -227,6 +227,59 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
   },
   // L'ancienne règle ASSET-RENTED (« Bien mis en location ») est retirée avec
   // l'attribut : l'usage « Mis en location » de la fiche porte seul l'information.
+
+  // ── CDC 15 T4-12 (lot 14) : statut d'une échéance ───────────────────────
+  // Verdicts de `reconcileStatus()` qui ne s'écrivent jamais seuls : une
+  // réalisation probable, ou une non-réalisation (jamais écrite
+  // automatiquement). Voir `agenda-status-cards.ts`.
+  {
+    code: 'AGENDA-DONE',
+    targetType: 'AGENDA_ITEM',
+    fieldKey: 'manualStatus',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Cette échéance a-t-elle été réalisée ?',
+    businessImpact: 55,
+  },
+  {
+    code: 'AGENDA-NOT-DONE',
+    targetType: 'AGENDA_ITEM',
+    fieldKey: 'manualStatus',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Cette échéance semble ne pas avoir été réalisée : qu’en est-il ?',
+    businessImpact: 60,
+  },
+
+  // ── CDC 15 T4-04 (lot 14) : échéance d'une source non autoritaire ───────
+  // Devis, document de type inconnu : l'échéance lue est PROPOSÉE, jamais
+  // créée d'office. Une carte par échéance de la source (relation
+  // `agenda:<clé>`). Voir `agenda-proposal-cards.ts`.
+  {
+    code: 'AGENDA-PROPOSAL',
+    targetType: 'DOCUMENT',
+    relationKey: 'agenda',
+    arbitratePriority: 'CAN_WAIT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Ajouter cette échéance à l’agenda ?',
+    businessImpact: 35,
+  },
+
+  // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────
+  // Un événement historique ne change jamais le statut : il le propose.
+  {
+    code: 'ASSET-STATUS',
+    targetType: 'ASSET',
+    fieldKey: 'status',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Le statut de ce bien a-t-il changé ?',
+    businessImpact: 50,
+  },
 ] as const;
 
 import { resolveAlias } from '@/services/canonical/registry';

@@ -33,6 +33,7 @@ import { REFERENTIAL_VERSION, getDocumentType, getRubric } from '@/lib/referenti
 import { applyClassificationChange } from '@/services/documents/rubric-classification';
 import type { ResolutionReason, TargetType } from './action-model';
 import { getRule } from './rules-catalog';
+import { AGENDA_STATUS_WRITER, ASSET_STATUS_WRITER } from './agenda-status-cards';
 
 /**
  * Client de base : la transaction en cours, ou `db` hors transaction.
@@ -52,9 +53,28 @@ export interface FieldWriter {
   write: (client: DbClient, targetId: number, accountId: number, value: unknown) => Promise<void>;
   /** Valeur actuelle, relue pour permettre l'annulation (§8.5). */
   read: (client: DbClient, targetId: number, accountId: number) => Promise<unknown>;
+  /**
+   * Contrôle EN BASE, dans la transaction (appartenance au compte, objet
+   * modifiable) ; faux → INVALID_VALUE, rien n'est écrit. Lot 14.
+   */
+  check?: (client: DbClient, targetId: number, accountId: number, value: unknown) => Promise<boolean>;
+  /**
+   * « Aucune valeur » (null) est une valeur légitime du champ : l'annulation
+   * la restaure (statut d'échéance, lot 14). Défaut : une valeur précédente
+   * nulle n'est pas réécrite.
+   */
+  nullable?: boolean;
+  /**
+   * Effets hors transaction, une fois la résolution validée (recopie « achat »
+   * D-13, proposition de statut D-15…) ; ne lève jamais. Lot 14.
+   */
+  afterCommit?: (p: { accountId: number; targetId: number; value: unknown; previousValue: unknown; userId: number | null }) => Promise<void>;
 }
 
 const FIELD_WRITERS: FieldWriter[] = [
+  // CDC 15 T4-12 et D-15 (lot 14) : statut d'une échéance, statut du bien.
+  AGENDA_STATUS_WRITER,
+  ASSET_STATUS_WRITER,
   {
     targetType: 'DOCUMENT',
     fieldKey: 'rubricCode',
@@ -229,6 +249,13 @@ export async function resolveArbitration(
       return resolveAgendaDuplicate(tx, action, value, accountId, options);
     }
 
+    // Échéance d'une source non autoritaire (T4-04, lot 14) : « Oui » crée
+    // l'élément (primitive, origine MANUAL), « Non » clôt la carte.
+    if (action.ruleCode === 'AGENDA-PROPOSAL') {
+      const { resolveAgendaProposal } = await import('./agenda-proposal-cards');
+      return resolveAgendaProposal(tx as never, action, value, accountId, options);
+    }
+
     // Relation (T3-07, LINK-ELT) : écrivain de relation de la liste blanche,
     // contrôle d'appartenance EN BASE dans la transaction.
     const relation = action.relationKey
@@ -240,6 +267,10 @@ export async function resolveArbitration(
       return { ok: false, previousValue: null, error: 'INVALID_VALUE' as const };
     }
     if (relation && !(await relation.check(tx, action.targetId, accountId, value))) {
+      return { ok: false, previousValue: null, error: 'INVALID_VALUE' as const };
+    }
+    const fieldCheck = relation ? undefined : (writer as FieldWriter).check;
+    if (fieldCheck && !(await fieldCheck(tx, action.targetId, accountId, value))) {
       return { ok: false, previousValue: null, error: 'INVALID_VALUE' as const };
     }
 
@@ -276,9 +307,12 @@ export async function resolveArbitration(
       createdAt: now,
     });
 
+    const fieldAfter = relation ? undefined : (writer as FieldWriter).afterCommit;
     return { ok: true, previousValue, afterCommit: relation?.afterCommit
       ? () => relation.afterCommit!({ accountId, targetId: action.targetId, value, previousValue, undo: false })
-      : undefined };
+      : fieldAfter
+        ? () => fieldAfter({ accountId, targetId: action.targetId, value, previousValue, userId: options.userId ?? null })
+        : undefined };
   }).then(async (r) => {
     // Effet hors transaction (lien N-N), seulement une fois la résolution validée.
     const { afterCommit, ...res } = r as ResolveResult & { afterCommit?: () => Promise<void> };
@@ -316,6 +350,11 @@ export async function undoArbitration(
 
   if (!action) return { ok: false, previousValue: null, error: 'NOT_FOUND' };
 
+  if (action.ruleCode === 'AGENDA-PROPOSAL') {
+    const { undoAgendaProposal } = await import('./agenda-proposal-cards');
+    return undoAgendaProposal(action, accountId);
+  }
+
   const relation = action.relationKey
     ? (await import('./document-equipment-link')).findRelationWriter(action.targetType, action.relationKey)
     : null;
@@ -333,7 +372,16 @@ export async function undoArbitration(
       const restaurable = previousValue === null || previousValue === undefined
         || (relation.validate(previousValue) && await relation.check(tx, action.targetId, accountId, previousValue));
       if (restaurable) await relation.write(tx, action.targetId, accountId, previousValue ?? null);
-    } else if (previousValue !== null && previousValue !== undefined && writer.validate(previousValue)) {
+    } else if ((writer as FieldWriter).nullable && (previousValue === null || previousValue === undefined)) {
+      // Champ où « aucune valeur » est un état légitime (statut d'échéance
+      // encore ouvert) : l'annulation le restaure, si l'objet reste au compte.
+      const fw = writer as FieldWriter;
+      if (!fw.check || await fw.check(tx, action.targetId, accountId, null)) {
+        await fw.write(tx, action.targetId, accountId, null);
+      }
+    } else if (previousValue !== null && previousValue !== undefined && writer.validate(previousValue)
+      && (relation || !(writer as FieldWriter).check
+        || await (writer as FieldWriter).check!(tx, action.targetId, accountId, previousValue))) {
       // Une valeur précédente nulle n'est pas restaurable par l'écrivain, qui
       // écrit des valeurs valides : seule l'action est rouverte, et la donnée
       // reste telle quelle. Le problème redevient visible, ce qui est l'essentiel.

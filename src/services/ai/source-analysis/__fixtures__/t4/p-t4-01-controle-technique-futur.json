@@ -1,0 +1,54 @@
+{
+  "case": "P-T4-01",
+  "description": "PV de contrôle technique annonçant le prochain contrôle : échéance DEADLINE « Prochain contrôle technique », catégorie ACTION (T4-02), source autoritaire.",
+  "context": {
+    "sourceFileId": 900,
+    "documentAssetId": 12,
+    "documentTitle": "PV de contrôle technique Clio",
+    "documentDate": "2026-09-15",
+    "documentType": "CONTROLE_TECHNIQUE"
+  },
+  "fields": [
+    {
+      "fieldKey": "lastInspectionDate",
+      "canonicalKey": "lastInspectionDate",
+      "value": "2026-09-15",
+      "confidence": "certain",
+      "excerpt": "Date du contrôle : 15/09/2026",
+      "provenance": "TEXT_EXTRACTION",
+      "target": {
+        "targetType": "ASSET",
+        "targetEntityId": 12,
+        "targetEntityLabel": "Clio",
+        "targetConfidence": "certain"
+      }
+    },
+    {
+      "fieldKey": "nextInspection",
+      "canonicalKey": "nextInspection",
+      "value": "2028-09-14",
+      "confidence": "certain",
+      "excerpt": "Prochain contrôle avant le 14/09/2028",
+      "provenance": "TEXT_EXTRACTION",
+      "target": {
+        "targetType": "ASSET",
+        "targetEntityId": 12,
+        "targetEntityLabel": "Clio",
+        "targetConfidence": "certain"
+      }
+    }
+  ],
+  "expected": {
+    "deadline": {
+      "originFieldKey": "nextInspection",
+      "date": "2028-09-14",
+      "suggestedCategory": "action",
+      "authority": "AUTHORITATIVE",
+      "mayCreateAgenda": true
+    },
+    "historical": {
+      "originFieldKey": "lastInspectionDate",
+      "suggestedCategory": "information"
+    }
+  }
+}

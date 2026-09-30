@@ -1,19 +1,24 @@
 /**
  * Usage IA n°4 — Intelligence de l'agenda.
  */
-export { processAgendaCandidates, classifyAgendaCategory } from './agenda-intelligence.service';
+export {
+  processAgendaCandidates, classifyAgendaCategory, classifyAgendaEvent, creationAuthorization,
+} from './agenda-intelligence.service';
 export type { AgendaIntelligenceInput } from './agenda-intelligence.service';
 
 export { classifyByRules, getClassificationPatterns } from './rules/deterministic-classification';
 export { interpretDate, isPastDue } from './rules/date-interpreter';
 export { findDuplicate, titleSimilarity } from './dedupe.service';
-export { decideStatus } from './status-reconciler';
+export { decideStatus, decideCompletion, matchOccurrence } from './status-reconciler';
+export type { CompletionStatus, CompletionDecision, CompletionEvidence } from './status-reconciler';
+export { reconcileStatus } from './status-reconciliation.service';
 
 export type {
   HomeCategory, AgendaDecision, AgendaDecisionAction, ExistingAgendaItem,
 } from './types';
 
 import { onSourceAnalyzed } from '../source-analysis/events';
+import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import { shouldWrite } from '../flags/ai-feature-flags';
 import { processAgendaCandidates } from './agenda-intelligence.service';
 import { registerJobHandler } from '../queue/queue-worker';
@@ -22,7 +27,16 @@ import type { ExecutionGuard } from '../queue/execution-control';
 import type { AgendaCandidate } from '../source-analysis/types';
 
 type LoadExisting = (accountId: number, assetId: number) => Promise<import('./types').ExistingAgendaItem[]>;
-type Persist = (decisions: import('./types').AgendaDecision[], accountId: number, assetId: number) => Promise<void>;
+/**
+ * Persistance des décisions (`persistAgendaDecisions`, B). `opts` n'est passé
+ * que sous `AI_T4_EFFECTS=enabled` : `sourceFileId` permet la
+ * synchronisation par source (T4-08) — y compris le retrait des anciens
+ * éléments automatiques quand une réanalyse ne produit plus aucun candidat.
+ */
+type Persist = (
+  decisions: import('./types').AgendaDecision[], accountId: number, assetId: number,
+  opts?: { sourceFileId?: number; analysisComplete?: boolean; incompleteReasons?: string[] },
+) => Promise<void>;
 
 /** Type de cible T4 dans la file : le document source des candidats. */
 export const T4_TARGET = 'asset_file';
@@ -44,6 +58,15 @@ export interface T4Payload {
   userId: number;
   leadSourceId: number;
   candidates: AgendaCandidate[];
+  /**
+   * CDC 15 T4-08 (relecture lot 14) : l'analyse qui a produit ces candidats
+   * est COMPLÈTE (`services/agenda/analysis-completeness.ts`). Seule une
+   * analyse complète retire les éléments automatiques qu'elle ne produit
+   * plus. Absent (travail antérieur, rattachement tardif) : incomplète.
+   */
+  analysisComplete?: boolean;
+  /** Avertissements d'incomplétude, pour le journal. */
+  incompleteReasons?: string[];
 }
 
 export interface T4Deps {
@@ -51,6 +74,8 @@ export interface T4Deps {
   persist: Persist;
   process: typeof processAgendaCandidates;
   shouldWrite: () => boolean;
+  /** Mode de `AI_T4_EFFECTS` (injectable) ; à défaut, environnement. */
+  t4Effects?: () => RolloutMode;
 }
 
 /**
@@ -58,6 +83,29 @@ export interface T4Deps {
  */
 export async function runT4Job(job: QueuedJob, guard: ExecutionGuard, deps: T4Deps): Promise<void> {
   const p = (job.payload ?? {}) as Partial<T4Payload>;
+  const effects = (deps.t4Effects ?? (() => t4EffectsMode()))();
+  // CDC 15 T4-08 (lot 14) : sous AI_T4_EFFECTS=enabled, une réanalyse SANS
+  // candidat est un travail valide — la synchronisation de la source retire
+  // les anciens éléments automatiques qu'elle ne produit plus.
+  const vide = Array.isArray(p.candidates) && p.candidates.length === 0;
+  if (job.accountId && p.assetId && p.leadSourceId && vide && effects === 'enabled') {
+    if (!deps.shouldWrite()) {
+      console.info(`[agenda][shadow] réanalyse sans candidat (source ${p.leadSourceId}) — aucune synchronisation.`);
+      return;
+    }
+    // Réanalyse vide ET dégradée (contenu inexploitable, extraction
+    // partielle, repli…) : elle n'a rien lu — on ne retire rien.
+    if (p.analysisComplete !== true) {
+      console.info(JSON.stringify({
+        event: 't4.empty_reanalysis_ignored', jobId: job.id, sourceFileId: p.leadSourceId, assetId: p.assetId,
+        reasons: p.incompleteReasons ?? ['UNKNOWN'],
+      }));
+      return;
+    }
+    await guard.assertActive('synchronisation des échéances de la source');
+    await deps.persist([], job.accountId, p.assetId, { sourceFileId: p.leadSourceId, analysisComplete: true });
+    return;
+  }
   if (!job.accountId || !p.assetId || !Array.isArray(p.candidates) || p.candidates.length === 0) {
     // Malformé ou vide : relancer ne l'améliorera pas.
     console.error(`[agenda] travail T4 ${job.id} sans bien ni candidat exploitable — ignoré.`);
@@ -84,7 +132,13 @@ export async function runT4Job(job: QueuedJob, guard: ExecutionGuard, deps: T4De
   }
   // Interrompue (rollback, arrêt d'urgence, désactivation) : aucune écriture.
   await guard.assertActive('écriture des échéances');
-  await deps.persist(decisions, job.accountId, p.assetId);
+  if (effects === 'enabled' && p.leadSourceId) {
+    await deps.persist(decisions, job.accountId, p.assetId, {
+      sourceFileId: p.leadSourceId, analysisComplete: p.analysisComplete === true, incompleteReasons: p.incompleteReasons,
+    });
+  } else {
+    await deps.persist(decisions, job.accountId, p.assetId);
+  }
 }
 
 /**
@@ -93,7 +147,10 @@ export async function runT4Job(job: QueuedJob, guard: ExecutionGuard, deps: T4De
  * REMPLACE les candidats en attente : les plus récents font foi.
  */
 export async function enqueueT4Candidates(
-  e: { accountId: number; userId: number; assetId: number; leadSourceId: number; candidates: AgendaCandidate[] },
+  e: {
+    accountId: number; userId: number; assetId: number; leadSourceId: number; candidates: AgendaCandidate[];
+    analysisComplete?: boolean; incompleteReasons?: string[];
+  },
   deps?: {
     enqueue: typeof import('../queue/job-queue.repository').enqueue;
     isTriggerActive: (t: 'T4', code: string) => Promise<boolean>;
@@ -106,6 +163,8 @@ export async function enqueueT4Candidates(
   if (!(await d.isTriggerActive('T4', 'source_analyzed'))) return null;
   const payload: T4Payload = {
     assetId: e.assetId, userId: e.userId, leadSourceId: e.leadSourceId, candidates: e.candidates,
+    ...(e.analysisComplete !== undefined ? { analysisComplete: e.analysisComplete } : {}),
+    ...(e.incompleteReasons?.length ? { incompleteReasons: e.incompleteReasons } : {}),
   };
   const { jobId } = await d.enqueue({
     treatment: 'T4',
@@ -137,13 +196,21 @@ export function registerAgendaHandlers(loadExisting: LoadExisting, persist: Pers
   }));
 
   onSourceAnalyzed('AI_AGENDA_ENGINE', async (e) => {
-    if (!e.assetId || e.result.agendaCandidates.length === 0) return;
+    // Réanalyse sans candidat : mise en file seulement sous
+    // AI_T4_EFFECTS=enabled (synchronisation de la source, T4-08).
+    if (!e.assetId) return;
+    if (e.result.agendaCandidates.length === 0 && t4EffectsMode() !== 'enabled') return;
+    // Complétude de l'analyse (T4-08) : portée jusqu'à la persistance.
+    const { analysisCompleteness } = await import('@/services/agenda/analysis-completeness');
+    const completude = analysisCompleteness(e.result);
     await enqueueT4Candidates({
       accountId: e.accountId,
       userId: e.userId,
       assetId: e.assetId,
       leadSourceId: e.leadSourceId,
       candidates: e.result.agendaCandidates,
+      analysisComplete: completude.complete,
+      incompleteReasons: completude.reasons,
     });
   });
 }

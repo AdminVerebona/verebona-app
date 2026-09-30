@@ -1,0 +1,18 @@
+{
+  "case": "P-T4-03",
+  "description": "VERIFY_COMPLETION — entretien annuel : la preuve de l'occurrence 2025 ne clôt pas l'occurrence 2026 (occurrenceMatch none).",
+  "context": {
+    "item": { "id": 71, "title": "Entretien chaudière", "date": "2026-10-15", "category": "action", "status": null,
+      "manual": false, "originFieldKey": "maintenanceDueDate", "businessType": "maintenance",
+      "recurrence": { "frequency": "yearly", "interval": 1 } },
+    "evidence": { "excerpt": "Attestation d'entretien de la chaudière réalisé le 14/10/2025", "confidence": "certain",
+      "documentType": "RAPPORT_ENTRETIEN", "documentDate": "2025-10-14" }
+  },
+  "recording": {
+    "operationCode": "t4_verify_completion",
+    "task": "VERIFY_COMPLETION",
+    "output": { "task": "VERIFY_COMPLETION", "evidenceStatus": "proves_completed", "occurrenceMatch": "exact", "confidence": "certain",
+      "evidence": { "excerpt": "entretien réalisé le 14/10/2025" }, "reason": "attestation d'entretien" }
+  },
+  "expected": { "status": "not_proven", "occurrenceMatch": "none", "neverDecision": "mark_done" }
+}

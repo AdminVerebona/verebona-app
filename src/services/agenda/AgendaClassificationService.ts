@@ -9,6 +9,7 @@
  */
 
 import { executeLegacyPrompt } from '@/services/ai/gateway/legacy-prompt';
+import { classifyByRulesInMode, resolveClassificationMode } from '@/services/ai/agenda/rules/rules-engine';
 
 /**
  * Passerelle (plan de retrait WF-41) : opération
@@ -26,62 +27,24 @@ export interface AgendaClassificationContext {
 export type HomeCategory = 'action' | 'information';
 
 /**
- * Règles déterministes appliquées AVANT l'appel IA.
- * Retourne null si on ne peut pas décider de façon certaine.
+ * Règles déterministes appliquées AVANT l'appel IA — CDC 15 T4-02, T4-11.
+ *
+ * PLUS DE COPIE LOCALE : ce service appelle la source unique
+ * `ai/agenda/rules` (`classifyByRulesInMode`). Moteur historique EXACT tant
+ * que ni `AI_T4_EFFECTS=enabled` ni T4 `master` (test de parité) ; moteur
+ * v2 (registre, règles métier stables) sinon ; divergences journalisées en
+ * shadow. Retourne null si on ne peut pas décider de façon certaine.
  */
-function classifyByRules(
+async function classifyByRules(
   title: string,
+  description: string | null | undefined,
   originType: string,
   originFieldKey?: string | null,
-): HomeCategory | null {
-  // Tout item créé automatiquement depuis un champ de bien est informatif
-  if (originType === 'asset_field') return 'information';
-
-  const t = title.toLowerCase();
-
-  // Mots-clés actions prioritaires (vérifiés AVANT les patterns informatifs)
-  const actionPatterns = [
-    /contrôle technique/i, /revision/i, /révision/i,
-    /réparation/i, /reparation/i,
-    /renouvellement/i,
-    /rendez-vous/i, /rdv/i,
-    /entretien/i,
-    /intervention/i,
-    /installation/i,
-    /inspection/i,
-    /visite/i,
-    /nettoyage/i,
-    /remplacement/i,
-    /paiement/i, /facture/i,
-    // Stockage / gardiennage / dépôt → reprise physique requise
-    /reprise/i, /restitution/i, /récupération/i, /recuperation/i,
-    /gardiennage/i, /stockage/i, /dépôt.*pneu/i, /pneu.*dépôt/i,
-    /pneu.*hiver/i, /pneu.*été/i, /pneu.*saison/i,
-    // Fin d'un contrat de gardiennage/stockage = il faut aller récupérer l'objet
-    /fin.*contrat.*(gardiennage|stockage|dépôt|depot|pneu)/i,
-    /(gardiennage|stockage|dépôt|depot|pneu).*fin.*contrat/i,
-  ];
-  for (const p of actionPatterns) {
-    if (p.test(t)) return 'action';
-  }
-
-  // Mots-clés informatifs (faits passifs, échéances automatiques)
-  const infoPatterns = [
-    /fin de garantie/i, /garantie.*expir/i, /expir.*garantie/i,
-    /fin.*(p[eé]riode|contrat).*assurance/i,
-    /assurance.*fin/i, /assurance.*expir/i, /expiration.*assurance/i,
-    /reconduction/i, /renouvellement.*auto/i,
-    /date d['']achat/i, /^achat\b/i,   // "Achat — Vélo" mais PAS "Achat Pneus Discount → Reprise"
-    /fabrication/i,
-    /dpe/i, /diagnostic/i,
-    /décennale/i,
-    /échéance.*contrat/i, /fin.*contrat/i,
-  ];
-  for (const p of infoPatterns) {
-    if (p.test(t)) return 'information';
-  }
-
-  return null; // indécis → appel IA
+): Promise<HomeCategory | null> {
+  const mode = await resolveClassificationMode();
+  return classifyByRulesInMode(
+    { title, description: description ?? null, originType, originFieldKey: originFieldKey ?? null }, mode,
+  )?.category ?? null;
 }
 
 /**
@@ -97,7 +60,7 @@ export async function classifyAgendaItem(
   ctx: AgendaClassificationContext,
 ): Promise<HomeCategory> {
   // 1. Règles déterministes d'abord
-  const ruleResult = classifyByRules(title, originType, originFieldKey);
+  const ruleResult = await classifyByRules(title, description, originType, originFieldKey);
   if (ruleResult !== null) return ruleResult;
 
   // 2. Appel IA via la passerelle — clé ACTIVE du BO, garde d'exploitation de

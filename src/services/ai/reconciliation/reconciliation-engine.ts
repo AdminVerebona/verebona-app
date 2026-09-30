@@ -56,12 +56,39 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
     triggeredBy: input.triggeredBy, shadow, traceId, accountRunId: input.accountRunId ?? null,
   });
   try {
-    return await runEngine(input, runId, traceId, shadow);
+    const run = await runEngine(input, runId, traceId, shadow);
+    await reconcileAgendaStatusAfter(input);
+    return run;
   } catch (e) {
     // Un run local en échec est clos comme tel : il n'apparaît plus « en
     // cours », et l'exécution T3 qui l'a lancé peut continuer avec les autres.
     await failRun(runId).catch(() => {});
     throw e;
+  }
+}
+
+/**
+ * CDC 15 T4-12 à T4-14 (lot 14) — un document analysé ou rattaché est une
+ * preuve possible de RÉALISATION d'une échéance du bien : la réconciliation
+ * de statut (`reconcileStatus`, T4) s'exécute ici, après celle des champs,
+ * dans le même travail (file T3 pour l'analyse et le cycle de vie des
+ * documents). Gouvernée par AI_T4_EFFECTS=enabled ou T4 `master` (contrôle
+ * dans `reconcileAgendaStatusForSource`) ; jamais bloquante.
+ */
+async function reconcileAgendaStatusAfter(input: ReconcileInput): Promise<void> {
+  if (input.forceShadow || !input.sourceFileId) return;
+  if (input.triggeredBy !== 'document_analyzed' && input.triggeredBy !== 'document_linked') return;
+  try {
+    const { reconcileAgendaStatusForSource } = await import('@/services/agenda/agenda-status-sync');
+    await reconcileAgendaStatusForSource({
+      accountId: input.accountId, assetId: input.assetId, sourceFileId: input.sourceFileId, userId: input.userId,
+    });
+  } catch (e) {
+    // Interruption (arrêt d'urgence, désactivation) : remontée, le travail
+    // est remis en file ; toute autre erreur est non bloquante.
+    const { isExecutionCancelled } = await import('../queue/execution-control');
+    if (isExecutionCancelled(e)) throw e;
+    console.error('[reconciliation] réconciliation de statut agenda (non bloquante) :', (e as Error).message);
   }
 }
 

@@ -10,6 +10,11 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
+    // Délais relevés : sous Windows, en suite complète (collecte de plusieurs
+    // minutes), les tests qui importent dynamiquement de gros modules
+    // dépassaient les 5 s par défaut sans être en défaut.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     include: ['src/**/*.test.ts'],
     coverage: {
       provider: 'v8',

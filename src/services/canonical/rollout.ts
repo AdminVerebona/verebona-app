@@ -45,8 +45,9 @@ export const ROLLOUT_SWITCHES = {
       + 'remplacement à la revalidation T2) et retrait des valeurs automatiques sans preuve active (T3-03, T3-04).',
   },
   AI_T4_EFFECTS: {
-    env: 'AI_T4_EFFECTS', lot: 'L14', wired: false,
-    description: 'Effets agenda T4 (historique, échéances, clé fonctionnelle).',
+    env: 'AI_T4_EFFECTS', lot: 'L14', wired: true,
+    description: 'Effets agenda T4 : clé fonctionnelle et synchronisation par source (T4-08), liens source ↔ agenda '
+      + '(T4-07, X-04), nature HISTORICAL/DEADLINE (D-14), recopie « achat » limitée au manuel réalisé (D-13).',
   },
   ASSISTANT_CANONICAL_READ: {
     env: 'ASSISTANT_CANONICAL_READ', lot: 'L15', wired: false,
@@ -82,6 +83,16 @@ export function getRolloutMode(name: RolloutSwitch, env: Env = process.env): Rol
  */
 export function t3NegativeMode(env: Env = process.env): RolloutMode {
   return getRolloutMode('T3_NEGATIVE_RECONCILIATION', env);
+}
+
+/**
+ * Mode des effets agenda T4 (plan L14, CDC 15 T4-07, T4-08, T4-09, D-13,
+ * D-14) : `legacy` comportement historique (refonte interne à parité) ;
+ * `shadow` clé et synchronisation calculées et journalisées, sans écriture ;
+ * `enabled` clé, synchronisation, liens source et règles D-13 / D-14.
+ */
+export function t4EffectsMode(env: Env = process.env): RolloutMode {
+  return getRolloutMode('AI_T4_EFFECTS', env);
 }
 
 /** Mode des écritures canoniques (plan L11). */

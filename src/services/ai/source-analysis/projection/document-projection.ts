@@ -384,7 +384,7 @@ export function projectDocumentFacts(
     serviceEvents: facts.filter((f) => (f.semanticEvent?.type === 'repair' || f.semanticEvent?.type === 'maintenance')
       && f.semanticEvent.nature === 'HISTORICAL').length,
   });
-  const projected = applyPurposeRules(facts, analysis, ctx, { purpose, multiAsset }, warnings, noteRule);
+  const projected = applyPurposeRules(facts, analysis, ctx, { purpose, multiAsset, autreBienMentionne }, warnings, noteRule);
 
   return { facts: projected, warnings, purpose, multiAsset, appliedRules };
 }
@@ -530,7 +530,7 @@ function applyPurposeRules(
   facts: ProjectedFact[],
   analysis: ProjectableAnalysis,
   ctx: ProjectionContext,
-  doc: { purpose: DocumentPurpose; multiAsset: boolean },
+  doc: { purpose: DocumentPurpose; multiAsset: boolean; autreBienMentionne?: boolean },
   warnings: ProjectionWarning[],
   noteRule: (c: ProjectionRuleCode) => void,
 ): ProjectedFact[] {
@@ -594,9 +594,13 @@ function applyPurposeRules(
     return facts;
   }
 
-  // Cible : le bien du document, vérifié, seul bien concerné.
+  // Cible : le bien du document, vérifié, seul bien concerné. Sans bien
+  // déterminé (document déposé seul, aucun bien mentionné), les faits
+  // d'acquisition sont posés SANS identifiant : non rattachés à l'analyse, ils
+  // le seront au rattachement tardif (T4-05, DOD-05 : même état final que si
+  // le bien avait été choisi au dépôt). Jamais s'il en mentionne un (U8).
   const assetId = ctx.documentAssetId;
-  if (assetId === null || !isVerified(ctx, 'ASSET', assetId)) return facts;
+  if (assetId === null ? doc.autreBienMentionne !== false : !isVerified(ctx, 'ASSET', assetId)) return facts;
   const surLeBien = (f: ProjectedFact) => f.target.targetType === 'ASSET' && f.target.targetEntityId === assetId;
   if (facts.some((f) => f.semanticEvent?.type === 'purchase' && f.target.targetType === 'ASSET' && !surLeBien(f))) return facts;
 
@@ -606,7 +610,7 @@ function applyPurposeRules(
     targetType: 'ASSET',
     targetEntityId: assetId,
     targetEntityLabel: null,
-    targetConfidence: assetId === ctx.knownAssetId ? 'certain' : 'probable',
+    targetConfidence: assetId !== null && assetId === ctx.knownAssetId ? 'certain' : 'probable',
   };
   const confiance = (c: 'certain' | 'probable' | 'conflictual') =>
     c === 'certain' && classificationConfidence < 0.9 ? 'probable' as const : c;

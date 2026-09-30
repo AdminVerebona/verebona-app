@@ -1,0 +1,39 @@
+{
+  "case": "P-T4-02",
+  "description": "Facture simple (sans mention d'acquittement ni d'exécution) produite pour un entretien à échéance : jamais « non réalisé » ; déterministe → forme de preuve à établir ; sortie modèle « insufficient » → not_proven.",
+  "item": {
+    "id": 1,
+    "title": "Prochain entretien — Chaudière",
+    "date": "2026-09-01",
+    "category": "action",
+    "status": null,
+    "manual": false,
+    "originFieldKey": "maintenanceDueDate",
+    "businessType": "maintenance"
+  },
+  "evidence": {
+    "excerpt": "Facture n° 2026-118 — entretien chaudière",
+    "confidence": "certain",
+    "documentType": "FACTURE",
+    "documentDate": "2026-09-03"
+  },
+  "recording": {
+    "operationCode": "t4_verify_completion",
+    "task": "VERIFY_COMPLETION",
+    "output": {
+      "task": "VERIFY_COMPLETION",
+      "evidenceStatus": "insufficient",
+      "occurrenceMatch": "exact",
+      "confidence": "probable",
+      "evidence": {
+        "excerpt": "Facture n° 2026-118"
+      },
+      "reason": "Facture sans mention d'exécution ni d'acquittement."
+    }
+  },
+  "expected": {
+    "deterministic": "unknown",
+    "afterModel": "not_proven",
+    "never": "not_completed"
+  }
+}
