@@ -140,3 +140,30 @@ describe('agenda T4 au fil du document (corpus §15 E2E-11 / E2E-19)', () => {
     expect(agenda).not.toHaveBeenCalled();
   });
 });
+
+describe('équipements et pièces (lot 18, R3)', () => {
+  const avecEntites = (mode: RolloutMode) => {
+    const base = deps(mode);
+    const entityTargets = vi.fn(async (_a: number, _ids: number[]) => [{ type: 'EQUIPMENT' as const, id: 4 }]);
+    const enqueueEntities = vi.fn(async (_i: unknown) => [1]);
+    return { ...base, d: { ...base.d, entityTargets, enqueueEntities }, entityTargets, enqueueEntities };
+  };
+
+  it('enabled : cibles des preuves retirées réconciliées (travail ciblé)', async () => {
+    const { d, entityTargets, enqueueEntities } = avecEntites('enabled');
+    await onDocumentsDeleted({ accountId: 1, userId: 2, fileIds: [55] }, d);
+    expect(entityTargets).toHaveBeenCalledWith(1, [1, 2]);
+    expect(enqueueEntities).toHaveBeenCalledWith({
+      accountId: 1, userId: 2, targets: [{ type: 'EQUIPMENT', id: 4 }], sourceFileId: 55, reason: 'DOCUMENT_DELETED',
+    });
+  });
+
+  it('shadow / legacy : ni lecture des cibles ni mise en file', async () => {
+    for (const mode of ['shadow', 'legacy'] as const) {
+      const { d, entityTargets, enqueueEntities } = avecEntites(mode);
+      await onDocumentsDeleted({ accountId: 1, userId: 2, fileIds: [55] }, d);
+      expect(entityTargets).not.toHaveBeenCalled();
+      expect(enqueueEntities).not.toHaveBeenCalled();
+    }
+  });
+});

@@ -14,9 +14,9 @@
  * `equipment_cil_specs.brand`, `model`, `serial_number`, `power_kw` ; dates
  * de garantie et d'entretien portées par preuves et agenda) ou à une PIÈCE
  * (`rooms.area` → `roomArea`). `rooms` n'a pas de colonne d'étage : `floor`
- * reste un champ du bien. L'APPLICATION de ces valeurs à l'état de
- * l'équipement ou de la pièce n'est pas faite au lot 13 : seules les preuves
- * ciblées sont écrites (persistance du lot 12).
+ * reste un champ du bien. Depuis le lot 18 (R3), ces valeurs s'appliquent à
+ * la fiche de l'équipement ou de la pièce (`writeCanonicalEntityField`, fiche
+ * 0227, colonnes ci-dessus en miroir — `canonical/entity-state`).
  *
  * Construit à partir de l'existant (lot 10) :
  *   - `components/assets/AssetDetailsTab.tsx` (sections et libellés) ;

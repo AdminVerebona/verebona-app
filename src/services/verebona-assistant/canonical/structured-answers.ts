@@ -244,6 +244,16 @@ export async function tryCanonicalStructured(p: {
 
 /** Phrase de réponse d'un champ (pure, testée) : valeur, origine, preuve, conflit. */
 export function fieldAnswer(r: CanonicalFieldReading): string {
+  // Lot 18 (R3) : champ vide sur le bien mais renseigné sur ses équipements
+  // ou pièces — chaque valeur est rattachée à SON équipement / SA pièce.
+  if (!r.display && r.entities?.length) {
+    const lignes = r.entities.filter((e) => e.display && !e.sensitive).map((e) => {
+      const nom = e.entityName ?? (e.target.type === 'ROOM' ? 'la pièce' : 'l’équipement');
+      const doc = e.evidence?.documentTitle && e.origin !== 'USER' ? ` (« ${e.evidence.documentTitle} »)` : '';
+      return `${e.label} de ${nom} : ${e.display}.${e.originLabel ? ` Valeur ${e.originLabel}${doc}.` : ''}`;
+    });
+    if (lignes.length) return lignes.join(' ');
+  }
   const valeur = r.key === 'acquisitionDate' && r.display
     ? `Vous avez acheté ${r.assetName ?? 'ce bien'} le ${r.display}.`
     : `${r.label} de ${r.assetName ?? 'ce bien'} : ${r.display}.`;

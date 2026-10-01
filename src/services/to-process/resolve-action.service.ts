@@ -268,6 +268,13 @@ export async function resolveArbitration(
       return resolveMigrationReview(tx, action, value, accountId, options);
     }
 
+    // Conflit de champ d'un équipement (CDC 15 T1-04, lot 18) : la valeur
+    // choisie est écrite par la primitive canonique de l'entité.
+    if (action.ruleCode === 'ENTITY-FIELD') {
+      const { resolveEntityFieldCard } = await import('./entity-field-cards');
+      return resolveEntityFieldCard(tx, action, value, accountId, options);
+    }
+
     // Relation (T3-07, LINK-ELT) : écrivain de relation de la liste blanche,
     // contrôle d'appartenance EN BASE dans la transaction.
     const relation = action.relationKey
@@ -370,6 +377,11 @@ export async function undoArbitration(
   if (action.ruleCode === 'MIG-REVIEW') {
     const { undoMigrationReview } = await import('./migration-review-cards');
     return undoMigrationReview(action, accountId);
+  }
+
+  if (action.ruleCode === 'ENTITY-FIELD') {
+    const { undoEntityFieldCard } = await import('./entity-field-cards');
+    return undoEntityFieldCard(action, accountId);
   }
 
   const relation = action.relationKey

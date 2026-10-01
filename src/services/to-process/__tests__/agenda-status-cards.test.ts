@@ -82,7 +82,7 @@ describe('T4-04 — échéance d’une source non autoritaire (AGENDA-PROPOSAL)'
   it('règle dédiée : relation par échéance de la source, « Non » = Non applicable', async () => {
     expect(getRule('AGENDA-PROPOSAL')).toMatchObject({ targetType: 'DOCUMENT', relationKey: 'agenda', completePriority: null, allowNotApplicable: true });
     const { AGENDA_PROPOSAL_REASONS } = await import('../agenda-proposal-cards');
-    expect([...AGENDA_PROPOSAL_REASONS].sort()).toEqual(['SOURCE_TYPE_NOT_AUTHORIZED', 'SOURCE_TYPE_UNKNOWN']);
+    expect([...AGENDA_PROPOSAL_REASONS].sort()).toEqual(['SOURCE_TYPE_NOT_AUTHORIZED', 'SOURCE_TYPE_UNKNOWN', 'TEMPORAL_AMBIGUITY']);
   });
   it('relation : clé fonctionnelle, sinon empreinte stable (titre normalisé, champ, date)', async () => {
     const { agendaProposalRelation } = await import('../agenda-proposal-cards');

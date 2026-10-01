@@ -412,6 +412,7 @@ async function proposeFromDecision(decision: AgendaDecision, accountId: number, 
       originFieldKey: decision.originFieldKey ?? null, nature: input.nature ?? null, businessType: input.businessType ?? null,
       assetId, target: input.target?.type === 'EQUIPMENT' ? { type: 'EQUIPMENT', id: input.target.id } : null,
       sources: input.sources ?? [], reasonCode: decision.reasonCode, documentType: decision.documentType ?? null,
+      ...(decision.temporalCandidates?.length ? { alternatives: decision.temporalCandidates } : {}),
     },
   });
 }

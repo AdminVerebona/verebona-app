@@ -61,3 +61,31 @@ export async function enqueueT3ForAffectedAssets(p: {
   }
   return { enqueued, legacy };
 }
+
+/**
+ * Équipements et pièces touchés par un document (lot 18, volet R3, CDC 15
+ * T1-04) : chaque cible reçoit son travail T3 ciblé — les valeurs lues pour
+ * elle s'appliquent à SA fiche, jamais à celle du bien. Nouveau moteur
+ * seulement (le moteur historique ne connaît pas les cibles) ; rien tant que
+ * CANONICAL_WRITE_MODE et T3_NEGATIVE_RECONCILIATION sont `legacy`
+ * (contrôle dans `enqueueT3ForEntities`, avant toute requête).
+ */
+export async function enqueueT3ForAffectedEntities(p: {
+  accountId: number;
+  userId: number;
+  leadSourceId: number;
+  targets: ReadonlyArray<{ type: 'EQUIPMENT' | 'ROOM'; id: number }>;
+}): Promise<number[]> {
+  if (p.targets.length === 0 || !shouldRunNewEngine('AI_RECONCILIATION_ENGINE')) return [];
+  try {
+    const { enqueueT3ForEntities } = await import('../../reconciliation/t3-queue');
+    return await enqueueT3ForEntities({
+      accountId: p.accountId, userId: p.userId, targets: [...p.targets], sourceFileId: p.leadSourceId,
+      triggeredBy: 'document_analyzed',
+    });
+  } catch (e) {
+    // Non bloquant : les preuves ciblées sont écrites ; une nouvelle analyse les reprendra.
+    console.error(`[t1-master] mise en file T3 des équipements / pièces de la source ${p.leadSourceId} impossible :`, (e as Error).message);
+    return [];
+  }
+}

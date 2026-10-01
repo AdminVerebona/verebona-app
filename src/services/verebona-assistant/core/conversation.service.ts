@@ -866,7 +866,11 @@ export async function clearUserHistory(
   }) as Promise<ConversationPurge>;
 }
 
-/** Purge quotidienne des conversations expirées (> 7 j) — appelée par cleanup-job (§28.13). */
+/**
+ * Purge quotidienne des conversations expirées — appelée par cleanup-job
+ * (§28.13). Expirée = `expires_at` dépassé, soit `historyDays` jours (90,
+ * 3 mois — `assistant-config.ts`) sans activité ; CDC 15 T2-46.
+ */
 export async function purgeExpired(): Promise<number> {
   return pgClient.begin(async (tx) => {
     const rows = (await tx.unsafe(

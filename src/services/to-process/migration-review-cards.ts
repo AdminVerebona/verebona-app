@@ -142,15 +142,15 @@ async function ecrire(action: Action, accountId: number, key: string, value: unk
   });
 }
 
-/** Carte périmée : la valeur en place a changé depuis son ouverture (ou sa résolution). */
-async function perimer(client: DbClient, action: Action, accountId: number, userId: number | null): Promise<ResolveResult> {
+/** Carte périmée : la valeur en place a changé depuis son ouverture (ou sa résolution). Partagée (cartes d'entité, lot 18). */
+export async function perimer(client: DbClient, action: Action, accountId: number, userId: number | null): Promise<ResolveResult> {
   const now = new Date();
   await client.update(toProcessActions).set({
     resolvedAt: action.resolvedAt ?? now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now,
   }).where(eq(toProcessActions.id, action.id));
   await client.insert(toProcessActionEvents).values({
     actionId: action.id, accountId, event: 'OBSOLETE', actorUserId: userId,
-    targetType: action.targetType, targetId: action.targetId, fieldKey: action.relationKey,
+    targetType: action.targetType, targetId: action.targetId, fieldKey: action.fieldKey ?? action.relationKey,
     previousValue: null as never, newValue: null as never,
     details: { ruleCode: action.ruleCode, reason: 'CURRENT_VALUE_CHANGED' }, createdAt: now,
   });

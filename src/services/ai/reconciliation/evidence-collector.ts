@@ -17,6 +17,7 @@ import { readOrigin } from './field-origin';
 import { isCriticalField } from './decision/critical-fields';
 import { EVIDENCE_BASED_ORIGINS } from './negative-reconciliation';
 import type { DecisionInput, EvidenceCandidate, CurrentValue } from './types';
+import type { FieldEvidence } from '../evidence/evidence.types';
 
 export interface CollectedField {
   fieldKey: string;
@@ -62,36 +63,7 @@ export async function collectAssetEvidenceState(
   for (const fieldKey of fieldKeys) {
     const evidences = await getActiveEvidence(accountId, assetId, fieldKey);
 
-    const candidates: EvidenceCandidate[] = evidences.map((e) => ({
-      evidenceId: e.id,
-      value: e.value,
-      normalized: normalize(fieldKey, e.value),
-      // ══════════════════════════════════════════════════════════════════
-      // UNE OBSERVATION VISUELLE NE S'APPLIQUE JAMAIS SEULE
-      //
-      // Elle suit les mêmes règles d'arbitrage que les autres preuves, mais
-      // plafonnée à « probable » : ce que le modèle croit voir sur une photo
-      // est proposé ou arbitré, pas écrit d'office dans la fiche. Elle ne
-      // franchit pas non plus la barrière des champs critiques, qui exige un
-      // extrait littéral.
-      // ══════════════════════════════════════════════════════════════════
-      confidence: e.evidenceOrigin === 'VISUAL_ANALYSIS' && e.confidence === 'certain' ? 'probable' : e.confidence,
-      evidenceOrigin: e.evidenceOrigin ?? 'TEXT_EXTRACTION',
-      visualDescription: e.evidenceOrigin === 'VISUAL_ANALYSIS'
-        ? String((e.visualEvidence as { description?: unknown } | null)?.description ?? '') || null
-        : null,
-      // L'autorité est recalculée à chaque exécution : une évolution de la
-      // matrice doit se refléter immédiatement, sans réanalyser les documents.
-      authorityScore: resolveAuthority({
-        fieldKey,
-        documentType: e.documentType ?? null,
-        isWebLink: e.sourceType === 'web_link',
-      }).score,
-      documentType: e.documentType ?? null,
-      documentDate: e.documentDate ?? null,
-      sourceId: e.sourceId,
-      excerpt: e.excerpt ?? '',
-    }));
+    const candidates = toEvidenceCandidates(fieldKey, evidences);
 
     const current = buildCurrentValue(fieldKey, kc);
     collected.push({
@@ -107,6 +79,43 @@ export async function collectAssetEvidenceState(
   }
 
   return { kc, fields: collected };
+}
+
+/**
+ * Preuves actives → candidats normalisés du moteur (bien, équipement ou
+ * pièce : même règle, lot 18).
+ */
+export function toEvidenceCandidates(fieldKey: string, evidences: FieldEvidence[]): EvidenceCandidate[] {
+  return evidences.map((e) => ({
+    evidenceId: e.id,
+    value: e.value,
+    normalized: normalize(fieldKey, e.value),
+    // ══════════════════════════════════════════════════════════════════
+    // UNE OBSERVATION VISUELLE NE S'APPLIQUE JAMAIS SEULE
+    //
+    // Elle suit les mêmes règles d'arbitrage que les autres preuves, mais
+    // plafonnée à « probable » : ce que le modèle croit voir sur une photo
+    // est proposé ou arbitré, pas écrit d'office dans la fiche. Elle ne
+    // franchit pas non plus la barrière des champs critiques, qui exige un
+    // extrait littéral.
+    // ══════════════════════════════════════════════════════════════════
+    confidence: e.evidenceOrigin === 'VISUAL_ANALYSIS' && e.confidence === 'certain' ? 'probable' : e.confidence,
+    evidenceOrigin: e.evidenceOrigin ?? 'TEXT_EXTRACTION',
+    visualDescription: e.evidenceOrigin === 'VISUAL_ANALYSIS'
+      ? String((e.visualEvidence as { description?: unknown } | null)?.description ?? '') || null
+      : null,
+    // L'autorité est recalculée à chaque exécution : une évolution de la
+    // matrice doit se refléter immédiatement, sans réanalyser les documents.
+    authorityScore: resolveAuthority({
+      fieldKey,
+      documentType: e.documentType ?? null,
+      isWebLink: e.sourceType === 'web_link',
+    }).score,
+    documentType: e.documentType ?? null,
+    documentDate: e.documentDate ?? null,
+    sourceId: e.sourceId,
+    excerpt: e.excerpt ?? '',
+  }));
 }
 
 /**

@@ -40,8 +40,8 @@ describe('opérations T1 master', () => {
       { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY'] },
       // Lot 15 : T2, discriminant MODE (§24).
       { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
-      // TEMPORAL_AMBIGUITY : opération inactive tant qu'aucun appelant (relecture lot 14).
-      { masterPromptCode: 't4_master_v1', useCaseCode: 'AGENDA_INTELLIGENCE', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION'] },
+      // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
+      { masterPromptCode: 't4_master_v1', useCaseCode: 'AGENDA_INTELLIGENCE', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] },
       // Lot 16 : T5 (§27), MODE ANALYZE / MODIFY.
       { masterPromptCode: 't5_master_v1', useCaseCode: 'AI_GOVERNANCE', tasks: ['ANALYZE', 'MODIFY'] },
       // Lot 16 (C) : T6 (§28), MODE FORMULATE, sortie sans discriminant.
@@ -160,12 +160,11 @@ describe('opérations T3 master (CDC 15 §25, lot 13)', () => {
 describe('opérations T4 master (CDC 15 §26, lot 14)', () => {
   it('trois branches, rattachées aux étapes historiques, mêmes modèles', () => {
     const ref = getOperation('classify_event');
-    // `t4_temporal_ambiguity` : déclarée mais INACTIVE tant qu'aucun appelant
-    // n'existe (relecture du lot 14).
+    // `t4_temporal_ambiguity` : active depuis le lot 18 (R5), appelée par T4.
     for (const [code, task, schema, active] of [
       ['t4_classify_event', 'CLASSIFY_EVENT', 'T4ClassifyEventOutput', true],
       ['t4_verify_completion', 'VERIFY_COMPLETION', 'T4VerifyCompletionOutput', true],
-      ['t4_temporal_ambiguity', 'TEMPORAL_AMBIGUITY', 'T4TemporalAmbiguityOutput', false],
+      ['t4_temporal_ambiguity', 'TEMPORAL_AMBIGUITY', 'T4TemporalAmbiguityOutput', true],
     ] as const) {
       expect(getOperation(code)).toMatchObject({
         useCaseCode: 'AGENDA_INTELLIGENCE', promptCode: 't4_master_v1', masterPromptCode: 't4_master_v1', task,

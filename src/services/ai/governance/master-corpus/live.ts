@@ -110,6 +110,12 @@ const BUILDERS: Record<string, Builder> = {
       { accountId: 0, date: src.date ?? null, excerpt: x.candidate?.excerpt },
     );
   },
+  async t4_temporal_ambiguity(c) {
+    const x = ctx<{ temporal?: Record<string, unknown>; candidates?: Array<{ candidateId: number; date: string; interpretation: string }> }>(c);
+    if (!x.temporal || !x.candidates?.length) return null;
+    const { temporalAmbiguityVariables } = await import('../../agenda/master/temporal-ambiguity');
+    return temporalAmbiguityVariables(x.temporal, x.candidates);
+  },
   async t4_verify_completion(c) {
     const x = ctx<{ item: never; evidence: Record<string, unknown> }>(c);
     if (!x.item || !x.evidence) return null;

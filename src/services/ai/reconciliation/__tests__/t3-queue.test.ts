@@ -119,3 +119,59 @@ describe('cycle de vie d’un document (CDC 15 T3-03)', () => {
     expect(reconcileAsset).toHaveBeenCalledWith(expect.objectContaining({ assetId: 10, triggeredBy: 'document_linked' }));
   });
 });
+
+describe('équipement / pièce (lot 18, R3)', () => {
+  const env = { ...process.env };
+  const restaurer = () => {
+    for (const k of ['CANONICAL_WRITE_MODE', 'T3_NEGATIVE_RECONCILIATION']) {
+      if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k];
+    }
+  };
+
+  it('legacy (écriture et négatif) : aucune mise en file, aucune requête', async () => {
+    delete process.env.CANONICAL_WRITE_MODE;
+    delete process.env.T3_NEGATIVE_RECONCILIATION;
+    const { enqueueT3ForEntities } = await import('../t3-queue');
+    const isTriggerActive = vi.fn(async () => true);
+    expect(await enqueueT3ForEntities({ accountId: 5, userId: 3, targets: [{ type: 'EQUIPMENT', id: 4 }] }, { enqueue: enqueue as never, isTriggerActive })).toEqual([]);
+    expect(isTriggerActive).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+    restaurer();
+  });
+
+  it('un travail ciblé par entité (dédoublonné), cible equipment / room', async () => {
+    process.env.CANONICAL_WRITE_MODE = 'shadow';
+    const { enqueueT3ForEntities } = await import('../t3-queue');
+    const ids = await enqueueT3ForEntities({
+      accountId: 5, userId: 3, sourceFileId: 55, reason: 'DOCUMENT_DELETED', triggeredBy: 'document_linked',
+      targets: [{ type: 'EQUIPMENT', id: 4 }, { type: 'EQUIPMENT', id: 4 }, { type: 'ROOM', id: 9 }, { type: 'ROOM', id: 0 }],
+    }, deps());
+    expect(ids).toEqual([99, 99]);
+    expect(enqueue.mock.calls.map((c) => (c[0] as { scope: unknown }).scope)).toEqual([
+      { accountId: 5, targetType: 'equipment', targetId: 4 }, { accountId: 5, targetType: 'room', targetId: 9 },
+    ]);
+    expect(enqueue.mock.calls[0][0]).toMatchObject({
+      triggerCode: 'source_analyzed', payloadOnDedupe: 'replace',
+      payload: { kind: 'entity', userId: 3, sourceFileId: 55, triggeredBy: 'document_linked', lifecycleReason: 'DOCUMENT_DELETED' },
+    });
+    restaurer();
+  });
+
+  it('exécutant : cible equipment → reconcileEntity ; jamais reconcileAsset ni le compte', async () => {
+    const reconcileEntity = vi.fn(async () => ({}));
+    const reconcileAsset = vi.fn(async () => ({}));
+    const reconcileAccount = vi.fn();
+    await runT3Job(job({ targetType: 'equipment', targetId: '4', payload: { kind: 'entity', userId: 3, sourceFileId: 55, triggeredBy: 'document_linked' } }), NO_GUARD, {
+      reconcileAsset, reconcileEntity, reconcileAccount: reconcileAccount as never, listSweepAccounts: async () => [], enqueue: enqueue as never,
+    });
+    expect(reconcileEntity).toHaveBeenCalledWith({
+      accountId: 5, target: { type: 'EQUIPMENT', id: 4 }, userId: 3, sourceFileId: 55, triggeredBy: 'document_linked',
+    });
+    expect(reconcileAsset).not.toHaveBeenCalled();
+    expect(reconcileAccount).not.toHaveBeenCalled();
+    await runT3Job(job({ targetType: 'room', targetId: '9', payload: { kind: 'entity' } }), NO_GUARD, {
+      reconcileAsset, reconcileEntity, reconcileAccount: reconcileAccount as never, listSweepAccounts: async () => [], enqueue: enqueue as never,
+    });
+    expect(reconcileEntity).toHaveBeenLastCalledWith(expect.objectContaining({ target: { type: 'ROOM', id: 9 }, triggeredBy: 'document_analyzed' }));
+  });
+});

@@ -44,8 +44,8 @@ describe('valeur par défaut', () => {
       masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY'],
     });
     expect(masterPromptForTreatment('T4')).toEqual({
-      // TEMPORAL_AMBIGUITY : opération inactive tant qu'aucun appelant (relecture lot 14).
-      masterPromptCode: 't4_master_v1', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION'],
+      // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
+      masterPromptCode: 't4_master_v1', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'],
     });
     expect(masterPromptForTreatment('T2')).toEqual({
       masterPromptCode: 't2_master_v1', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'],

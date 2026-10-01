@@ -12,7 +12,9 @@
  */
 import { pgClient } from '@/db';
 import { getCanonicalAssetState, type CanonicalAssetState, type CanonicalOrigin } from '@/services/canonical/asset-state';
-import { getField, resolveAlias, type CanonicalFieldDef } from '@/services/canonical/registry';
+import { fieldTargetTypes, getField, resolveAlias, type CanonicalFieldDef } from '@/services/canonical/registry';
+import type { CanonicalEntityState, CanonicalEntityTarget } from '@/services/canonical/entity-state';
+import type { EntityEvidenceWithTitle } from '@/services/ai/evidence/entity-evidence';
 import type { RetrievedSource } from '../types/sources';
 
 /** Preuve active retenue pour un champ (la plus autoritaire). */
@@ -53,6 +55,30 @@ export interface CanonicalFieldReading {
   evidence: CanonicalFieldEvidence | null;
   openConflict: CanonicalFieldConflict | null;
   /** Donnée sensible : jamais citée en clair au modèle (voir `assetFieldSource`). */
+  sensitive: boolean;
+  /**
+   * Lot 18 (R3) : valeurs du même champ sur les ÉQUIPEMENTS ou PIÈCES du bien
+   * (chaudière, salon) — jamais confondues avec la valeur du bien. Présent
+   * seulement pour un champ dont `targetTypes` admet une entité.
+   */
+  entities?: CanonicalEntityFieldReading[];
+}
+
+/** Lecture d'un champ canonique d'un équipement ou d'une pièce (lot 18). */
+export interface CanonicalEntityFieldReading {
+  target: CanonicalEntityTarget;
+  entityName: string | null;
+  /** Bien porteur. */
+  assetId: number;
+  key: string;
+  label: string;
+  value: unknown;
+  display: string | null;
+  origin: CanonicalOrigin | null;
+  originLabel: string | null;
+  updatedAt: string | null;
+  from: 'key' | 'alias' | 'column' | null;
+  evidence: CanonicalFieldEvidence | null;
   sensitive: boolean;
 }
 
@@ -152,7 +178,7 @@ export async function readCanonicalField(
   accountId: number,
   assetId: number,
   keyOrAlias: string,
-  opts: { state?: CanonicalAssetState | null; assetName?: string | null } = {},
+  opts: { state?: CanonicalAssetState | null; assetName?: string | null; entityCache?: EntityReadCache } = {},
 ): Promise<CanonicalFieldReading | null> {
   const key = canonicalKeyOf(keyOrAlias);
   const def = key ? getField(key) : undefined;
@@ -160,12 +186,14 @@ export async function readCanonicalField(
   const state = opts.state !== undefined ? opts.state : await getCanonicalAssetState(assetId, accountId);
   if (!state || state.accountId !== accountId) return null;
   const f = state.fields[key];
-  const [evidence, conflicts, nom] = await Promise.all([
+  const [evidence, conflicts, nom, entities] = await Promise.all([
     activeEvidence(accountId, assetId, def),
     openFieldConflicts(accountId, assetId, [key]),
     opts.assetName !== undefined ? Promise.resolve(opts.assetName) : assetNameOf(accountId, assetId),
+    readEntitiesOfAsset(accountId, assetId, def, opts.entityCache ?? new EntityReadCache()),
   ]);
   return {
+    ...(entities ? { entities } : {}),
     assetId,
     assetName: nom,
     key,
@@ -180,6 +208,119 @@ export async function readCanonicalField(
     openConflict: conflicts.get(key) ?? null,
     sensitive: def.sensitive === true,
   };
+}
+
+/** Lecture d'une entité déjà chargée (pure, hors preuve). */
+function entityReading(def: CanonicalFieldDef, st: CanonicalEntityState, evidence: CanonicalFieldEvidence | null): CanonicalEntityFieldReading {
+  const f = st.fields[def.key];
+  return {
+    target: st.target, entityName: st.name, assetId: st.assetId, key: def.key, label: def.label,
+    value: f?.value ?? null, display: formatCanonicalValue(def, f?.value ?? null),
+    origin: f?.origin ?? null, originLabel: f?.origin ? ORIGIN_LABELS[f.origin] ?? null : null,
+    updatedAt: f?.updatedAt ?? null, from: f?.from ?? null, evidence, sensitive: def.sensitive === true,
+  };
+}
+
+/** Preuve retenue (la plus autoritaire) au format de la lecture. */
+function versPreuveLue(e: EntityEvidenceWithTitle): CanonicalFieldEvidence {
+  const p = e.evidence;
+  return {
+    evidenceId: p.id,
+    fileId: p.sourceType === 'document' ? p.sourceId : null,
+    documentTitle: e.documentTitle,
+    documentDate: p.documentDate ? p.documentDate.toISOString().slice(0, 10) : null,
+    excerpt: p.evidenceOrigin === 'VISUAL_ANALYSIS' ? null : p.excerpt ?? null,
+    confidence: p.confidence,
+  };
+}
+
+interface EntitiesOfAsset {
+  states: CanonicalEntityState[];
+  /** `TYPE:id:cléCanonique` → preuve la plus autoritaire. */
+  evidence: Map<string, CanonicalFieldEvidence>;
+}
+
+/**
+ * Cache PAR DEMANDE des fiches d'équipements et de pièces (relecture lot 18) :
+ * pour un bien, UNE requête pour les fiches (`loadAssetEntityRows`) et UNE
+ * pour les preuves actives de toutes ses entités
+ * (`listActiveEvidenceForTargets`), quel que soit le nombre de champs lus.
+ * Preuves lues par cible et compte, jamais par `asset_id` (équipement
+ * déplacé). À créer pour une demande, jamais partagé entre comptes.
+ */
+export class EntityReadCache {
+  private readonly parBien = new Map<string, Promise<EntitiesOfAsset | null>>();
+
+  entitiesOf(accountId: number, assetId: number): Promise<EntitiesOfAsset | null> {
+    const k = `${accountId}:${assetId}`;
+    let p = this.parBien.get(k);
+    if (!p) {
+      p = charger(accountId, assetId);
+      this.parBien.set(k, p);
+    }
+    return p;
+  }
+}
+
+async function charger(accountId: number, assetId: number): Promise<EntitiesOfAsset | null> {
+  const es = await import('@/services/canonical/entity-state');
+  if (!(await es.entityCanonicalColumnsReady())) return null;
+  const rows = await es.loadAssetEntityRows(pgClient as never, accountId, assetId);
+  const states = rows.map(es.buildCanonicalEntityState);
+  const evidence = new Map<string, CanonicalFieldEvidence>();
+  if (states.length) {
+    const { listActiveEvidenceForTargets } = await import('@/services/ai/evidence/entity-evidence');
+    for (const e of await listActiveEvidenceForTargets(accountId, states.map((x) => x.target))) {
+      const k = `${e.target.type}:${e.target.id}:${canonicalKeyOf(e.evidence.fieldKey) ?? e.evidence.fieldKey}`;
+      if (!evidence.has(k)) evidence.set(k, versPreuveLue(e));
+    }
+  }
+  return { states, evidence };
+}
+
+/**
+ * Lit un champ canonique d'un ÉQUIPEMENT ou d'une PIÈCE du compte (lot 18,
+ * R3) : valeur de SA fiche, origine, preuve active ciblée. `null` : entité
+ * hors compte, clé hors registre ou champ qui n'admet pas ce type de cible.
+ */
+export async function readCanonicalEntityField(
+  accountId: number,
+  target: CanonicalEntityTarget,
+  keyOrAlias: string,
+): Promise<CanonicalEntityFieldReading | null> {
+  const key = canonicalKeyOf(keyOrAlias);
+  const def = key ? getField(key) : undefined;
+  if (!def || !def.assistantReadable || !fieldTargetTypes(def).includes(target.type)) return null;
+  const { getCanonicalEntityState } = await import('@/services/canonical/entity-state');
+  const st = await getCanonicalEntityState(target, accountId);
+  if (!st) return null;
+  let evidence: CanonicalFieldEvidence | null = null;
+  if (st.fields[def.key]) {
+    const { listActiveEvidenceForTargets } = await import('@/services/ai/evidence/entity-evidence');
+    const e = (await listActiveEvidenceForTargets(accountId, [target]))
+      .find((x) => (canonicalKeyOf(x.evidence.fieldKey) ?? x.evidence.fieldKey) === def.key);
+    evidence = e ? versPreuveLue(e) : null;
+  }
+  return entityReading(def, st, evidence);
+}
+
+/** Valeurs RENSEIGNÉES du champ sur les entités actives du bien (undefined : champ sans cible entité). */
+async function readEntitiesOfAsset(
+  accountId: number, assetId: number, def: CanonicalFieldDef, cache: EntityReadCache,
+): Promise<CanonicalEntityFieldReading[] | undefined> {
+  const cibles = fieldTargetTypes(def);
+  if (!cibles.some((t) => t === 'EQUIPMENT' || t === 'ROOM')) return undefined;
+  try {
+    const lu = await cache.entitiesOf(accountId, assetId);
+    if (!lu) return undefined;
+    return lu.states
+      .filter((st) => cibles.includes(st.target.type) && st.fields[def.key])
+      .slice(0, 50)
+      .map((st) => entityReading(def, st, lu.evidence.get(`${st.target.type}:${st.target.id}:${def.key}`) ?? null));
+  } catch (e) {
+    console.warn('[assistant] lecture des équipements / pièces (non bloquante) :', (e as Error).message);
+    return undefined;
+  }
 }
 
 async function assetNameOf(accountId: number, assetId: number): Promise<string | null> {
@@ -210,6 +351,12 @@ export function assetFieldSource(r: CanonicalFieldReading): RetrievedSource {
     parts.push(r.evidence.excerpt ? `preuve : ${doc}, « ${r.evidence.excerpt.slice(0, 200)} »` : `preuve : ${doc}`);
   }
   if (r.openConflict) parts.push(`conflit ouvert (À traiter) : ${r.openConflict.question}`);
+  // Lot 18 : valeurs des équipements / pièces du bien, chacune nommée.
+  for (const e of entityValues(r)) {
+    const doc = e.evidence?.documentTitle ? `, preuve « ${e.evidence.documentTitle} »` : '';
+    parts.push(`${e.entityName ?? (e.target.type === 'ROOM' ? 'pièce' : 'équipement')} : ${e.sensitive ? '(donnée protégée)' : e.display}`
+      + `${e.originLabel ? ` (${e.originLabel}${doc})` : ''}`);
+  }
   return {
     id: assetFieldSourceId(r.assetId, r.key),
     type: 'asset_field',
@@ -227,6 +374,18 @@ export function assetFieldSource(r: CanonicalFieldReading): RetrievedSource {
       evidenceFileId: r.evidence?.fileId ?? null,
       openConflict: r.openConflict !== null,
       sensitive: r.sensitive,
+      ...(r.entities?.length ? {
+        // Méta scalaire : liste sérialisée (cible, origine, preuve ; pas de valeur sensible).
+        entities: JSON.stringify(entityValues(r).map((e) => ({
+          type: e.target.type, id: e.target.id, name: e.entityName, display: e.sensitive ? null : e.display,
+          origin: e.origin, evidenceId: e.evidence?.evidenceId ?? null, evidenceFileId: e.evidence?.fileId ?? null,
+        }))),
+      } : {}),
     },
   };
+}
+
+/** Valeurs renseignées des équipements / pièces d'une lecture (lot 18). */
+export function entityValues(r: CanonicalFieldReading): CanonicalEntityFieldReading[] {
+  return (r.entities ?? []).filter((e) => e.display !== null && e.display !== '');
 }

@@ -188,7 +188,7 @@ async function loadSourceProofs(accountId: number, assetId: number, sourceFileId
             ${col0219 ? 'e.semantic_event_nature' : 'NULL::text'} AS "eventNature"
        FROM field_evidence e
        JOIN asset_files f ON f.id = e.source_id AND f.account_id = e.account_id AND f.deleted_at IS NULL
-      WHERE e.account_id = $1 AND e.asset_id = $2 AND e.source_type = 'document' AND e.source_id = $3
+      WHERE e.account_id = $1 AND e.asset_id = $2 AND e.source_type IN ('document', 'web_link') AND e.source_id = $3
         ${col0219 ? `AND COALESCE(e.lifecycle_status, 'ACTIVE') = 'ACTIVE'
         AND (e.target_type IS NULL OR (e.target_type = 'ASSET' AND e.target_entity_id = $2))` : ''}
       LIMIT 500`,

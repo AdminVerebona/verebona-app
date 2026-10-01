@@ -282,9 +282,17 @@ export type EvidenceWithdrawalReason =
   | 'ASSET_DELETED'
   | 'FACT_REVALIDATED';
 
+/**
+ * Types de preuve dont `source_id` est un `asset_files.id` : un document, et
+ * un lien web (ligne `asset_files` `is_web_link`, analysée avec
+ * `sourceIds: [asset_files.id]` — CDC 15 R4, DOD-06).
+ */
+export const ASSET_FILE_SOURCE_TYPES = ['document', 'web_link'] as const;
+export const ASSET_FILE_SOURCE_TYPES_SQL = ASSET_FILE_SOURCE_TYPES.map((t) => `'${t}'`).join(', ');
+
 export interface WithdrawEvidenceInput {
   accountId: number;
-  /** Documents (asset_files.id, preuves `source_type = 'document'`) dont les preuves sont retirées. */
+  /** Sources `asset_files.id` (preuves `document` ET `web_link`, R4) dont les preuves sont retirées. */
   sourceIds?: number[];
   /** Restreint au bien porteur (détachement / déplacement : retrait sur A seulement). */
   assetId?: number | null;
@@ -325,10 +333,11 @@ export async function withdrawEvidence(p: WithdrawEvidenceInput): Promise<Withdr
   const conds = [`account_id = $1`, `(lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE')`];
   if (p.sourceIds && p.sourceIds.length) {
     params.push(p.sourceIds);
-    // `source_id` = asset_files.id : seules les preuves de type `document`.
-    // Un lien web a ses propres identifiants — les mélanger ferait retirer
-    // les preuves d'un lien web dont l'id coïncide (relecture lot 13).
-    conds.push(`source_type = 'document' AND source_id = ANY($${params.length}::int[])`);
+    // `source_id` = asset_files.id : preuves `document` ET `web_link`. Un lien
+    // web EST une ligne `asset_files` (`is_web_link`), analysée avec
+    // `sourceIds: [asset_files.id]` (adaptateur web, R4) : même espace
+    // d'identifiants. Les autres types (agenda, équipement…) restent exclus.
+    conds.push(`source_type IN (${ASSET_FILE_SOURCE_TYPES_SQL}) AND source_id = ANY($${params.length}::int[])`);
   }
   if (p.assetId != null) { params.push(p.assetId); conds.push(`asset_id = $${params.length}`); }
   if (p.fieldKeys && p.fieldKeys.length) {
@@ -565,7 +574,7 @@ export async function supersedeFieldEvidenceExcept(p: {
   const { normalize } = await import('../reconciliation/decision/normalizers');
   const rows = (await pgClient.unsafe(
     `SELECT id, field_key AS "fieldKey", value_json AS value FROM field_evidence
-      WHERE account_id = $1 AND source_type = 'document' AND source_id = $2 AND asset_id = $3
+      WHERE account_id = $1 AND source_type IN (${ASSET_FILE_SOURCE_TYPES_SQL}) AND source_id = $2 AND asset_id = $3
         AND (field_key = ANY($4::text[]) OR canonical_key = ANY($4::text[]))
         AND (lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE')
       ORDER BY id DESC`,
@@ -591,12 +600,12 @@ export async function supersedeFieldEvidenceExcept(p: {
   return { superseded: upd.length, replacementId: Number(remplacante.id) };
 }
 
-/** Biens portant au moins une preuve ACTIVE d'un document (asset_files.id). Vide sans 0219. */
+/** Biens portant au moins une preuve ACTIVE d'un document ou d'un lien web (asset_files.id). Vide sans 0219. */
 export async function listActiveEvidenceAssets(accountId: number, sourceId: number): Promise<number[]> {
   if (!(await fieldEvidenceCanonicalReady())) return [];
   const rows = (await pgClient.unsafe(
     `SELECT DISTINCT asset_id AS "assetId" FROM field_evidence
-      WHERE account_id = $1 AND source_type = 'document' AND source_id = $2
+      WHERE account_id = $1 AND source_type IN (${ASSET_FILE_SOURCE_TYPES_SQL}) AND source_id = $2
         AND (lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE')`,
     [accountId, sourceId] as never[],
   )) as unknown as Array<{ assetId: number }>;

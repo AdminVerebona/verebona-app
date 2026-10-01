@@ -58,7 +58,7 @@ async function cabler(): Promise<void> {
  */
 export function useTargetState(
   extra: Record<string, string> = {},
-  opts: { masters?: Array<'T1' | 'T2'> } = {},
+  opts: { masters?: Array<'T1' | 'T2' | 'T4'> } = {},
 ): void {
   const avant = { ...process.env };
   beforeAll(async () => {
@@ -121,6 +121,8 @@ export interface AnalyseInput {
   linkedAssetId?: number | null;
   /** Sortie T1 (ANALYZE_DOCUMENT) rejouée. */
   output: Record<string, unknown>;
+  /** Autres sorties rejouées pendant l'analyse et ses files (T3, T4…). */
+  extra?: RecordedOutput[];
 }
 
 /**
@@ -134,7 +136,7 @@ export async function analyserDocument(
 ): Promise<{ replay: ReplayProvider; analysedCount: number }> {
   await sql`UPDATE asset_files SET s3_bucket = 'e2e-bucket', original_filename = coalesce(original_filename, ${`doc-${p.fileId}.pdf`}),
               analysis_state = NULL WHERE id = ${p.fileId}`;
-  const replay = await rejouer([{ operationCode: 't1_analyze_document', task: 'ANALYZE_DOCUMENT', output: p.output }]);
+  const replay = await rejouer([{ operationCode: 't1_analyze_document', task: 'ANALYZE_DOCUMENT', output: p.output }, ...(p.extra ?? [])]);
   // Aiguillage de production (critère 24, `ai:check-legacy`) : jamais le
   // pipeline directement. Il ne lève pas : un échec rend `null`.
   const { analyzeFileSources } = await import('@/services/ai/source-analysis/entrypoint');

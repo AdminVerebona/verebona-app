@@ -53,6 +53,16 @@ export interface LifecycleDeps {
    * éléments modifiés par l'utilisateur sont conservés.
    */
   agenda?: (p: { accountId: number; sourceFileId: number; assetId: number | null }) => Promise<unknown>;
+  /**
+   * Lot 18 (R3) : équipements et pièces dont des preuves viennent d'être
+   * retirées — réconciliation ciblée de leur fiche (retrait des valeurs
+   * automatiques qui ne sont plus prouvées). Mode `enabled` seulement.
+   */
+  entityTargets?: (accountId: number, evidenceIds: number[]) => Promise<Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number }>>;
+  enqueueEntities?: (input: {
+    accountId: number; userId: number; targets: Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number }>;
+    sourceFileId?: number | null; reason: string;
+  }) => Promise<unknown>;
 }
 
 const defaultDeps: LifecycleDeps = {
@@ -68,6 +78,11 @@ const defaultDeps: LifecycleDeps = {
   },
   evidenceAssets: listActiveEvidenceAssets,
   agenda: (p) => retirerAgendaDeLaSource(p),
+  entityTargets: async (a, ids) => (await import('./entity-evidence')).listEvidenceEntityTargets(a, ids),
+  enqueueEntities: async (input) => {
+    const { enqueueT3ForEntities } = await import('../reconciliation/t3-queue');
+    return enqueueT3ForEntities({ ...input, triggeredBy: 'document_linked' });
+  },
 };
 
 /**
@@ -162,6 +177,20 @@ async function transition(
         accountId: p.accountId, userId: p.userId, assetIds,
         sourceFileId: p.sourceIds.length === 1 ? p.sourceIds[0] : null, reason: p.reason,
       });
+    }
+    // Équipements et pièces dont des preuves sont retirées (lot 18, R3).
+    if (mode === 'enabled' && r.evidenceIds.length && deps.entityTargets && deps.enqueueEntities) {
+      try {
+        const targets = await deps.entityTargets(p.accountId, r.evidenceIds);
+        if (targets.length) {
+          await deps.enqueueEntities({
+            accountId: p.accountId, userId: p.userId, targets: targets.map((t) => ({ type: t.type, id: t.id })),
+            sourceFileId: p.sourceIds.length === 1 ? p.sourceIds[0] : null, reason: p.reason,
+          });
+        }
+      } catch (e) {
+        console.error(`[t3-lifecycle] cibles équipement / pièce (sources ${p.sourceIds.join(',')}) :`, (e as Error).message);
+      }
     }
     return { mode, withdrawn: r.evidenceIds.length, assetIds, dryRun: r.dryRun };
   } catch (e) {

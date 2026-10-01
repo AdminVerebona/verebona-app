@@ -46,6 +46,11 @@ export interface AgendaDecision {
   existingItemId?: number;
   /** true si la décision a été prise par règle, sans appel modèle. */
   deterministic: boolean;
+  /**
+   * Dates possibles d'une ambiguïté temporelle non tranchée (R5, motif
+   * TEMPORAL_AMBIGUITY) : proposées à l'utilisateur, aucune création.
+   */
+  temporalCandidates?: string[];
   sourceFileId?: number;
   originFieldKey?: string;
   /**

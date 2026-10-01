@@ -20,7 +20,7 @@ import { classifyEventMaster } from './master/classify-event';
 import { getPromptArchitecture } from '../config/config-resolver';
 import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import { DOCUMENT_CATALOG, resolveDocumentType } from '@/services/canonical/registry';
-import { interpretDate } from './rules/date-interpreter';
+import { interpretDate, detectTemporalAmbiguity } from './rules/date-interpreter';
 import { findDuplicate, titleSimilarity, containmentSimilarity } from './dedupe.service';
 import {
   computeOccurrences, describeRecurrence, inferHistoricalRecurrence, type RecurrenceSpec,
@@ -128,7 +128,18 @@ export async function processAgendaCandidates(
   const today = input.today ?? todayParis();
 
   const t4Effects = input.t4Effects ?? t4EffectsMode();
-  for (const candidate of input.candidates) {
+  for (const brut of input.candidates) {
+    // R5 (CDC 15 §26) : date incertaine → branche TEMPORAL_AMBIGUITY du
+    // master (T4 master + enabled seulement) ; sinon inchangé.
+    const temporel = await resoudreAmbiguiteTemporelle(brut, input, t4Effects);
+    if (temporel.kind === 'propose') {
+      const d = temporel.decision;
+      if (t4Effects === 'enabled') Object.assign(d, t4Semantics(brut as T4AgendaCandidate, input.sourceFileId));
+      decisions.push(d);
+      planned.push(asPlanned(d, planned.length));
+      continue;
+    }
+    const candidate = temporel.candidate;
     const base = await processOne(candidate, { ...input, existing: planned, today, t4Effects });
     decisions.push(base);
     let recurrent = await forecastsFor(candidate, base, input, planned, today);
@@ -299,6 +310,89 @@ async function forecastsFor(
     }
   }
   return out;
+}
+
+/**
+ * Ambiguïté temporelle (R5) : sous T4 `master` ET `AI_T4_EFFECTS=enabled`,
+ * une date signalée incertaine par `detectTemporalAmbiguity` :
+ *   · mention RELATIVE (« sous 30 jours », « avant fin mars ») : aucun appel
+ *     modèle — décision `propose` TEMPORAL_AMBIGUITY avec la date déduite
+ *     (carte AGENDA-PROPOSAL, aucune création) ;
+ *   · plusieurs candidats (jj/mm ↔ mm/jj) : branche TEMPORAL_AMBIGUITY, en
+ *     cache par (source, clé fonctionnelle, extrait) — une réanalyse de la
+ *     même ambiguïté ne rappelle pas le modèle. Candidat certain de la liste →
+ *     date remplacée ; abstention, hors liste ou échec → `propose`.
+ * Hors de ce mode : candidat inchangé, aucun appel.
+ */
+type ChoixTemporel = { chosen: { candidateId: number; date: string; interpretation: string } | null; warning: string | null };
+const CACHE_TEMPOREL = new Map<string, { at: number; r: ChoixTemporel }>();
+const CACHE_TEMPOREL_TTL_MS = 24 * 3600_000;
+const CACHE_TEMPOREL_MAX = 500;
+
+/** Clé du cache : source, clé fonctionnelle (champ d'origine, cible, occurrence), extrait. */
+export function cleCacheTemporel(c: AgendaCandidate, sourceFileId: number | null | undefined): string {
+  const x = c as AgendaCandidate & { target?: { type: string; id: number | null }; occurrence?: string };
+  const fonctionnelle = [c.originFieldKey ?? normTitle(c.title), x.target ? `${x.target.type}:${x.target.id ?? '-'}` : '-', x.occurrence ?? '-'].join('|');
+  return createHash('sha256').update(`${sourceFileId ?? '-'}|${fonctionnelle}|${c.excerpt}`).digest('hex');
+}
+
+/** Réservé aux tests. */
+export function __resetTemporalCacheForTests(): void { CACHE_TEMPOREL.clear(); }
+
+export async function resoudreAmbiguiteTemporelle(
+  candidate: AgendaCandidate,
+  input: Pick<AgendaIntelligenceInput, 'accountId' | 'userId' | 'sourceFileId'>,
+  t4Effects: RolloutMode,
+  deps: {
+    architecture?: () => Promise<string>;
+    resolve?: typeof import('./master/temporal-ambiguity').resolveTemporalAmbiguityMaster;
+  } = {},
+): Promise<{ kind: 'keep'; candidate: AgendaCandidate } | { kind: 'propose'; decision: AgendaDecision }> {
+  if (t4Effects !== 'enabled') return { kind: 'keep', candidate };
+  const ambig = detectTemporalAmbiguity(candidate.date, candidate.excerpt);
+  if (!ambig) return { kind: 'keep', candidate };
+  const architecture = await (deps.architecture ?? (() => getPromptArchitecture('T4')))();
+  if (architecture !== 'master') return { kind: 'keep', candidate };
+
+  const proposer = (dates: string[]): { kind: 'propose'; decision: AgendaDecision } => ({
+    kind: 'propose',
+    decision: {
+      action: 'propose', title: candidate.title, date: candidate.date, category: candidate.suggestedCategory ?? 'action',
+      confidence: candidate.confidence, reasonCode: 'TEMPORAL_AMBIGUITY', deterministic: true,
+      sourceFileId: input.sourceFileId, originFieldKey: candidate.originFieldKey, temporalCandidates: dates,
+    },
+  });
+  // Mention relative : une seule date déduite — rien à faire choisir au modèle.
+  if (ambig.kind === 'RELATIVE_MENTION' || ambig.dates.length < 2) return proposer(ambig.dates);
+
+  const { resolveTemporalAmbiguityMaster } = await import('./master/temporal-ambiguity');
+  const candidats = ambig.dates.map((date, i) => ({
+    candidateId: i + 1, date,
+    interpretation: ambig.kind === 'RELATIVE_MENTION'
+      ? `date déduite de la mention relative « ${ambig.mention} »`
+      : date === candidate.date ? `lecture mois/jour de « ${ambig.mention} »` : `lecture jour/mois de « ${ambig.mention} »`,
+  }));
+  const cle = cleCacheTemporel(candidate, input.sourceFileId);
+  const enCache = CACHE_TEMPOREL.get(cle);
+  let r: ChoixTemporel;
+  if (enCache && Date.now() - enCache.at < CACHE_TEMPOREL_TTL_MS) {
+    r = enCache.r;
+  } else {
+    r = await (deps.resolve ?? resolveTemporalAmbiguityMaster)(
+      { title: candidate.title, excerpt: candidate.excerpt.slice(0, 500), extractedDate: candidate.date, kind: ambig.kind, mention: ambig.mention },
+      candidats,
+      { accountId: input.accountId, userId: input.userId, sourceFileId: input.sourceFileId ?? null },
+    );
+    // Un échec du modèle n'est pas mis en cache : la prochaine analyse réessaie.
+    if (r.warning !== 'MODEL_UNAVAILABLE') {
+      if (CACHE_TEMPOREL.size >= CACHE_TEMPOREL_MAX) CACHE_TEMPOREL.delete(CACHE_TEMPOREL.keys().next().value as string);
+      CACHE_TEMPOREL.set(cle, { at: Date.now(), r });
+    }
+  }
+  if (r.chosen && ambig.dates.includes(r.chosen.date)) return { kind: 'keep', candidate: { ...candidate, date: r.chosen.date } };
+  const p = proposer(ambig.dates);
+  p.decision.deterministic = false;
+  return p;
 }
 
 async function processOne(

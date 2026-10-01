@@ -216,7 +216,8 @@ export async function answerFromTarget(
   const faits = understanding?.requestedFacts ?? [];
   if (faits.length === 1 && targets.asset && targets.namedAssets.length <= 1 && readers.field) {
     const r = await readers.field(accountId, targets.asset.id, faits[0]);
-    if (r && !r.sensitive && r.value !== null && r.value !== undefined && r.display) {
+    const surEntites = !!r?.entities?.some((e) => e.display && !e.sensitive);
+    if (r && !r.sensitive && ((r.value !== null && r.value !== undefined && r.display) || surEntites)) {
       const [{ fieldAnswer }, { assetFieldSource }] = await Promise.all([
         import('../canonical/structured-answers'), import('../canonical/field-reader'),
       ]);

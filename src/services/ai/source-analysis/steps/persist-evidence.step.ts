@@ -218,6 +218,13 @@ export interface PersistProjectedFactsResult {
   skipped: Array<{ fact: ProjectedFact; reason: ProjectedFactSkipReason }>;
   /** Biens porteurs touchés (nouvelles preuves ET preuves remplacées) — à réconcilier (T3). */
   affectedAssetIds: number[];
+  /**
+   * Équipements et pièces touchés (nouvelles preuves ciblées ET preuves
+   * ciblées remplacées) — réconciliation ciblée de leur fiche (lot 18, R3).
+   * Les preuves remplacées ne sont lues que si CANONICAL_WRITE_MODE ou
+   * T3_NEGATIVE_RECONCILIATION n'est pas `legacy` (sinon aucune requête).
+   */
+  affectedTargets: Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number; assetId: number }>;
   /** Preuves antérieures de la source passées SUPERSEDED, dont reliées à une remplaçante. */
   superseded: { count: number; linked: number };
 }
@@ -239,7 +246,7 @@ const scalarToString = (v: string | number | boolean | null): string | null =>
  */
 export async function persistProjectedFacts(p: PersistProjectedFactsInput): Promise<PersistProjectedFactsResult> {
   const result: PersistProjectedFactsResult = {
-    evidenceIds: new Map(), skipped: [], affectedAssetIds: [], superseded: { count: 0, linked: 0 },
+    evidenceIds: new Map(), skipped: [], affectedAssetIds: [], affectedTargets: [], superseded: { count: 0, linked: 0 },
   };
   const skip = (fact: ProjectedFact, reason: ProjectedFactSkipReason) => result.skipped.push({ fact, reason });
 
@@ -268,6 +275,7 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
     isWebLink: p.input.sourceType === 'web_link',
   });
   const touched = new Set<number>();
+  const cibles = new Map<string, { type: 'EQUIPMENT' | 'ROOM'; id: number; assetId: number }>();
   const written: number[] = [];
   let failures = 0;
 
@@ -318,6 +326,7 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
       });
       written.push(id);
       touched.add(r.assetId);
+      if (type !== 'ASSET') cibles.set(`${type}:${entityId}`, { type, id: entityId, assetId: r.assetId });
       result.evidenceIds.set(projectedEvidenceKey(key, type, entityId), id);
     } catch (e) {
       failures += 1;
@@ -329,6 +338,20 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
   // 4. Cycle de vie (§14.4) : les preuves antérieures de la source sont
   //    remplacées, jamais supprimées. Un échec ici n'annule pas les
   //    nouvelles preuves (elles restent ACTIVE) ; il est journalisé.
+  // Cibles des preuves sur le point d'être remplacées (lot 18) : lues seulement
+  // si l'application aux entités est active (aucune requête en legacy).
+  try {
+    const { canonicalWriteMode, t3NegativeMode } = await import('@/services/canonical/rollout');
+    if (canonicalWriteMode() !== 'legacy' || t3NegativeMode() !== 'legacy') {
+      const { listSourceEntityTargets } = await import('../../evidence/entity-evidence');
+      for (const c of await listSourceEntityTargets(p.input.accountId, evidenceSourceType(p.input), p.leadSourceId)) {
+        cibles.set(`${c.type}:${c.id}`, c);
+      }
+    }
+  } catch (e) {
+    console.error(`[persist-evidence] cibles remplacées de la source ${p.leadSourceId} :`, (e as Error).message);
+  }
+
   try {
     const s = await supersedePriorSourceEvidence({
       accountId: p.input.accountId,
@@ -352,6 +375,7 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
   }
 
   result.affectedAssetIds = [...touched];
+  result.affectedTargets = [...cibles.values()];
   return result;
 }
 

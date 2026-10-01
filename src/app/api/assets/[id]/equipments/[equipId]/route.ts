@@ -1,3 +1,19 @@
+/**
+ * PUT / DELETE d'un équipement d'un bien.
+ *
+ * ⚠️ RUPTURE (lot 18, CDC 15 T3-02) — `purchasePriceCents` et
+ * `estimatedValueCents` étaient lus du corps mais JAMAIS écrits. Ils le sont
+ * désormais (`equipments.purchase_price_cents`, `estimated_value_cents`) :
+ *   · unité : CENTIMES, entier ≥ 0, ou `null` pour effacer ;
+ *   · un nombre DÉCIMAL est encore accepté (ancien client API qui enverrait
+ *     des euros ou un montant calculé) : arrondi au centime entier, avec un
+ *     avertissement journalisé — il n'est pas converti d'euros en centimes ;
+ *   · négatif, non numérique : 400 INVALID_INPUT.
+ * Une valeur réellement modifiée (comparée à la vue canonique de
+ * l'équipement : fiche puis colonne) reçoit l'origine USER dans la fiche
+ * canonique de l'équipement (hors commutateur) : aucune écriture automatique
+ * ne la remplacera.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
@@ -48,7 +64,8 @@ export async function PUT(
     if (refusQuota) return refusQuota;
 
     const body = await request.json();
-    const { name, type, category, status, substructureId, newAssetId, purchasePriceCents, estimatedValueCents } = body;
+    const { name, type, category, status, substructureId, newAssetId } = body;
+    let { purchasePriceCents, estimatedValueCents } = body;
 
     // Determine the effective assetId after potential transfer
     let effectiveAssetId = assetId;
@@ -74,6 +91,21 @@ export async function PUT(
       updateData.name = name.trim();
     }
 
+    // Montants en centimes : entier ≥ 0 ou null ; un décimal est arrondi
+    // (avertissement) pour ne pas casser un client API existant (en-tête).
+    const centimes = (champ: string, v: unknown): number | null | undefined | 'INVALID' => {
+      if (v === undefined || v === null) return v as null | undefined;
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return 'INVALID';
+      if (Number.isInteger(v)) return v;
+      console.warn(`[equipments] ${champ} décimal (${v}) arrondi au centime entier — attendu : entier en centimes.`);
+      return Math.round(v);
+    };
+    const ppc = centimes('purchasePriceCents', purchasePriceCents);
+    const evc = centimes('estimatedValueCents', estimatedValueCents);
+    if (ppc === 'INVALID' || evc === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid amount');
+    purchasePriceCents = ppc;
+    estimatedValueCents = evc;
+
     if (type !== undefined) updateData.type = type;
     if (category !== undefined) updateData.category = category;
     if (purchasePriceCents !== undefined) updateData.purchasePriceCents = purchasePriceCents;
@@ -96,6 +128,14 @@ export async function PUT(
       updateData.substructureId = substructureId;
     }
 
+    // Vue canonique AVANT modification (fiche puis colonne) : seules les clés
+    // RÉELLEMENT modifiées reçoivent l'origine USER (lot 18). Null sans 0227.
+    const montants = purchasePriceCents !== undefined || estimatedValueCents !== undefined;
+    const cibleEquipement = { type: 'EQUIPMENT' as const, id: equipmentId };
+    const vueAvant = montants
+      ? await (await import('@/services/canonical/entity-state')).getCanonicalEntityState(cibleEquipement, session.currentAccountId!)
+      : null;
+
     // Build SET clause using raw SQL — same proven pattern as DELETE handler
     const now = new Date().toISOString();
     const sets: string[] = ['updated_at = $1'];
@@ -107,6 +147,10 @@ export async function PUT(
     if (status !== undefined)        { sets.push(`status = $${p++}`);          vals.push(status); }
     if (updateData.substructureId !== undefined) { sets.push(`substructure_id = $${p++}`); vals.push(updateData.substructureId ?? null); }
     if (newAssetId !== undefined)    { sets.push(`asset_id = $${p++}`);        vals.push(effectiveAssetId); }
+    // Prix d'achat et valeur estimée : lus du corps depuis toujours, mais
+    // jamais écrits jusqu'ici (lot 18 — signalé).
+    if (purchasePriceCents !== undefined)  { sets.push(`purchase_price_cents = $${p++}`);  vals.push(purchasePriceCents); }
+    if (estimatedValueCents !== undefined) { sets.push(`estimated_value_cents = $${p++}`); vals.push(estimatedValueCents); }
 
     // WHERE params
     vals.push(equipmentId); // $p
@@ -119,6 +163,28 @@ export async function PUT(
 
     if (!rows.length) {
       return apiError(404, 'NOT_FOUND', 'Equipment not found');
+    }
+
+    // CDC 15 T3-02 (lot 18, hors commutateur) : saisie de l'écran → origine
+    // USER dans la fiche canonique de l'équipement, sur les clés modifiées.
+    if (montants && vueAvant) {
+      const euros = (c: number | null | undefined) => (c === null || c === undefined ? null : c / 100);
+      const after: Record<string, unknown> = {};
+      if (purchasePriceCents !== undefined) after.acquisitionPrice = euros(purchasePriceCents);
+      if (estimatedValueCents !== undefined) after.estimatedValue = euros(estimatedValueCents);
+      const { recordManualEntityEdit } = await import('@/services/canonical/entity-state');
+      const saisies = await recordManualEntityEdit({
+        target: cibleEquipement, accountId: session.currentAccountId!,
+        actorUserId: session.userId ?? null, before: vueAvant, after,
+      });
+      // La saisie tranche une carte « À traiter » ouverte sur ce champ (ENTITY-FIELD).
+      if (saisies.length) {
+        const { resolveActionsForData } = await import('@/services/to-process/to-process-action.service');
+        for (const k of saisies) {
+          await resolveActionsForData(session.currentAccountId!, 'EQUIPMENT', equipmentId, k, 'USER_COMPLETED')
+            .catch((e: Error) => console.error(`[equipments] carte ${k} non close :`, e.message));
+        }
+      }
     }
 
     // CDC Assistant §25.7, §31.7 : équipement modifié.

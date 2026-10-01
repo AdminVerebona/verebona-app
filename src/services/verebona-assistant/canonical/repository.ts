@@ -24,7 +24,7 @@
 import { pgClient } from '@/db';
 import { buildCanonicalAssetState, type AssetRowJson } from '@/services/canonical/asset-state';
 import type { AccountDataPort, AgendaRow, AssetRow, DocumentHit, FactHit } from '../core/data-answer.service';
-import { canonicalKeyOf, readCanonicalField, openFieldConflicts, ORIGIN_LABELS, formatCanonicalValue } from './field-reader';
+import { EntityReadCache, canonicalKeyOf, readCanonicalField, openFieldConflicts, ORIGIN_LABELS, formatCanonicalValue } from './field-reader';
 import { getField } from '@/services/canonical/registry';
 import { listUpcomingAgenda, countUpcomingAgenda } from './agenda';
 import { sumQualifiedExpenses } from './expenses';
@@ -127,7 +127,9 @@ export function createCanonicalAccountDataRepository(legacy: LegacyPort): Accoun
       if (!assetId) return facts;
       const keys = [...new Set(facts.map((f) => canonicalKeyOf(f.factKey)).filter((k): k is string => !!k))].slice(0, 10);
       const readings = new Map<string, Awaited<ReturnType<typeof readCanonicalField>>>();
-      for (const k of keys) readings.set(k, await readCanonicalField(accountId, assetId, k));
+      // Fiches d'équipements / pièces chargées une fois pour la demande (lot 18).
+      const entityCache = new EntityReadCache();
+      for (const k of keys) readings.set(k, await readCanonicalField(accountId, assetId, k, { entityCache }));
       return attachCanonical(facts, readings);
     },
 
@@ -177,9 +179,10 @@ export function createCanonicalAccountDataRepository(legacy: LegacyPort): Accoun
 /** Valeurs canoniques d'un bien pour une liste de clés (conflits compris), en une passe. */
 export async function readCanonicalFields(accountId: number, assetId: number, keys: string[]) {
   const conflicts = await openFieldConflicts(accountId, assetId);
+  const entityCache = new EntityReadCache();
   const out = [];
   for (const k of keys) {
-    const r = await readCanonicalField(accountId, assetId, k);
+    const r = await readCanonicalField(accountId, assetId, k, { entityCache });
     if (r) out.push({ ...r, openConflict: conflicts.get(r.key) ?? r.openConflict });
   }
   return out;

@@ -264,3 +264,37 @@ describe('projectedFactToExtractedField', () => {
       .toBe('Chaudière.puissance');
   });
 });
+
+describe('cibles équipement / pièce touchées (lot 18, R3)', () => {
+  const env = { ...process.env };
+  const restaurer = () => {
+    for (const k of ['CANONICAL_WRITE_MODE', 'T3_NEGATIVE_RECONCILIATION']) {
+      if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k];
+    }
+  };
+  const chaudiere = [
+    fact({ canonicalKey: 'serialNumber', value: 'SN-77', rawValue: 'SN-77', valueType: 'string', canonicalUnit: null, target: target('EQUIPMENT', 7), evidence: { excerpt: 'N° de série : SN-77', page: 1 } }),
+    fact({ canonicalKey: 'roomArea', value: 18, rawValue: '18 m²', canonicalUnit: 'm2', target: target('ROOM', 3), evidence: { excerpt: 'Salon 18 m²', page: 1 } }),
+  ];
+  const lectureCiblesRemplacees = () => db.calls.filter((c) => c.sql.includes("target_type IN ('EQUIPMENT', 'ROOM')"));
+
+  it('preuves écrites sur un équipement et une pièce : cibles rendues ; legacy : aucune requête de plus', async () => {
+    delete process.env.CANONICAL_WRITE_MODE;
+    delete process.env.T3_NEGATIVE_RECONCILIATION;
+    const r = await persistProjectedFacts({ input, leadSourceId: 55, trace, analysisRunId: 9, documentType: 'FACTURE', facts: chaudiere });
+    expect(r.affectedTargets).toEqual([
+      { type: 'EQUIPMENT', id: 7, assetId: 10 }, { type: 'ROOM', id: 3, assetId: 11 },
+    ]);
+    expect(lectureCiblesRemplacees()).toHaveLength(0);
+    restaurer();
+  });
+
+  it('commutateur actif : cibles des preuves sur le point d’être remplacées lues avant le remplacement', async () => {
+    process.env.CANONICAL_WRITE_MODE = 'enabled';
+    await persistProjectedFacts({ input, leadSourceId: 55, trace, analysisRunId: 9, documentType: 'FACTURE', facts: chaudiere });
+    const lu = lectureCiblesRemplacees();
+    expect(lu).toHaveLength(1);
+    expect(lu[0].params).toEqual([1, 'document', 55]);
+    restaurer();
+  });
+});

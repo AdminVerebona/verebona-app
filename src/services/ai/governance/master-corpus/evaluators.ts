@@ -67,6 +67,13 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
     const r = translateClassifyEvent(output as never);
     return ecart(r.classification.category === exp(c, 'category'), `catégorie ${r.classification.category} ≠ ${String(exp(c, 'category'))}`);
   },
+  async t4_temporal_ambiguity(c, output) {
+    const { translateTemporalAmbiguity } = await import('../../agenda/master/temporal-ambiguity');
+    const candidats = ((c.context as { candidates?: unknown[] }).candidates ?? []) as never[];
+    const r = translateTemporalAmbiguity(output as never, candidats);
+    const attendu = exp<string | null>(c, 'chosenDate') ?? null;
+    return ecart((r.chosen?.date ?? null) === attendu, `date retenue ${r.chosen?.date ?? 'aucune'} ≠ ${attendu ?? 'aucune'}`);
+  },
   async t4_verify_completion(c, output) {
     const { decideCompletion } = await import('../../agenda/status-reconciler');
     const { translateVerifyCompletion } = await import('../../agenda/master/verify-completion');

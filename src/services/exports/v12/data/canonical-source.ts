@@ -73,6 +73,7 @@ import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { agendaStatus4, type AgendaStatus4 } from '@/services/verebona-assistant/canonical/agenda';
 import type { DocumentRef } from '@/services/export-snapshot.service';
+import type { SourceEquipment, SourceEquipmentField } from './source';
 
 /** Mode du commutateur (lu à chaque appel). */
 export function exportsSourceMode(env: Record<string, string | undefined> = process.env): RolloutMode {
@@ -417,3 +418,50 @@ export function sameExportValue(a: unknown, b: unknown): boolean {
 export { REGISTRY_VERSION };
 export type { AssetRowJson, CanonicalAssetState };
 export { buildCanonicalAssetState, loadAssetRow };
+
+// ── Équipements (lot 18, volet R3 — CDC 15 T1-04) ──────────────────────────
+
+/**
+ * Équipements du dossier avec leur fiche CANONIQUE : chaque champ renseigné
+ * (numéro de série, fin de garantie, marque…) avec sa valeur, son origine et
+ * la RÉFÉRENCE de sa preuve active ciblée (identifiant, document, date —
+ * jamais l'extrait, qui n'a rien à faire dans un dossier transmis). Marque et
+ * modèle repris de la fiche canonique (repli : `equipment_cil_specs`).
+ *
+ * Deux requêtes pour tout le dossier (relecture lot 18) : fiches des entités
+ * du bien, puis preuves actives de toutes ses entités — lues par cible et
+ * compte, jamais par `asset_id` (équipement déplacé). Sans 0227 : liste
+ * historique inchangée.
+ */
+export async function canonicalEquipments(accountId: number, assetId: number, list: SourceEquipment[]): Promise<SourceEquipment[]> {
+  if (list.length === 0) return list;
+  const es = await import('@/services/canonical/entity-state');
+  if (!(await es.entityCanonicalColumnsReady())) return list;
+  const states = new Map((await es.loadAssetEntityRows(pgClient as never, accountId, assetId))
+    .filter((r) => r.target.type === 'EQUIPMENT')
+    .map((r) => [r.target.id, es.buildCanonicalEntityState(r)] as const));
+  const { listActiveEvidenceForTargets } = await import('@/services/ai/evidence/entity-evidence');
+  const preuves = new Map<string, SourceEquipmentField['evidence']>();
+  const cibles = list.filter((e) => states.has(e.id)).map((e) => ({ type: 'EQUIPMENT' as const, id: e.id }));
+  for (const p of cibles.length ? await listActiveEvidenceForTargets(accountId, cibles) : []) {
+    const k = `${p.target.id}:${resolveAlias(p.evidence.fieldKey) ?? p.evidence.fieldKey}`;
+    if (preuves.has(k)) continue;
+    preuves.set(k, {
+      evidenceId: p.evidence.id,
+      fileId: p.evidence.sourceType === 'document' ? p.evidence.sourceId : null,
+      documentDate: p.evidence.documentDate ? p.evidence.documentDate.toISOString().slice(0, 10) : null,
+    });
+  }
+  return list.map((e) => {
+    const st = states.get(e.id);
+    if (!st) return e;
+    const fields: SourceEquipmentField[] = [];
+    for (const f of Object.values(st.fields)) {
+      const def = getField(f.key);
+      if (!def) continue;
+      fields.push({ key: f.key, label: def.label, value: f.value, origin: f.origin, evidence: preuves.get(`${e.id}:${f.key}`) ?? null });
+    }
+    const texte = (k: string, repli: string | null) => (typeof st.fields[k]?.value === 'string' ? st.fields[k].value as string : repli);
+    return { ...e, brand: texte('brand', e.brand), model: texte('modelName', e.model), fields };
+  });
+}

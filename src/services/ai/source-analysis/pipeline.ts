@@ -74,7 +74,7 @@ import { markSourcesGrouped } from '@/services/documents/grouped-sources';
 // CDC 15 lot 12 — prompt maître T1 derrière `AI_T1_ANALYSIS_MODE` (legacy par défaut).
 import { resolveT1Route } from './master/analysis-mode';
 import { analyseGroupWithMaster, type MasterGroupAnalysis } from './master/analyse-group-master';
-import { enqueueT3ForAffectedAssets } from './master/reconciliation-fanout';
+import { enqueueT3ForAffectedAssets, enqueueT3ForAffectedEntities } from './master/reconciliation-fanout';
 import { t3NegativeMode } from '@/services/canonical/rollout';
 import { computeMasterDocumentLinks, writeMasterDocumentLinks } from './master/document-links';
 import { scheduleT1Shadow } from './master/shadow';
@@ -331,6 +331,11 @@ export async function runSourceAnalysis(
           leadSourceId,
           affectedAssetIds: ecrites?.affectedAssetIds ?? [],
           documentAssetId: assetId,
+        });
+        // Équipements et pièces touchés : réconciliation ciblée (lot 18, R3).
+        await enqueueT3ForAffectedEntities({
+          accountId: req.accountId, userId: req.userId, leadSourceId,
+          targets: ecrites?.affectedTargets ?? [],
         });
         // Relation N-N (X-01, T1-05) : chaque bien vérifié d'un document
         // multi-biens est relié (PRIMARY / SECONDARY / MENTIONED, origine AI).

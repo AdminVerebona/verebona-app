@@ -1,0 +1,24 @@
+{
+  "case": "P-T4-04",
+  "description": "TEMPORAL_AMBIGUITY — « 03/04/2027 » lu mm/jj par l'extraction ; le contexte français désigne le 3 avril : le modèle choisit le candidat jj/mm de la liste fournie (U1, monde fermé).",
+  "context": {
+    "temporal": {
+      "title": "Prochain entretien chaudière",
+      "excerpt": "Prochain entretien conseillé le 03/04/2027 (garage Martin, Lyon).",
+      "extractedDate": "2027-03-04",
+      "kind": "DAY_MONTH_ORDER",
+      "mention": "03/04/2027"
+    },
+    "candidates": [
+      { "candidateId": 1, "date": "2027-03-04", "interpretation": "lecture mois/jour de « 03/04/2027 »" },
+      { "candidateId": 2, "date": "2027-04-03", "interpretation": "lecture jour/mois de « 03/04/2027 »" }
+    ]
+  },
+  "recording": {
+    "operationCode": "t4_temporal_ambiguity",
+    "task": "TEMPORAL_AMBIGUITY",
+    "output": { "task": "TEMPORAL_AMBIGUITY", "decision": "choose", "candidateId": 2, "confidence": "probable",
+      "reason": "document français (Lyon) : la date se lit jour/mois" }
+  },
+  "expected": { "chosenDate": "2027-04-03" }
+}

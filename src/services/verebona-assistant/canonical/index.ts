@@ -5,9 +5,9 @@
  */
 export { assistantReadMode, canonicalReadEnabled, type AssistantReadMode } from './mode';
 export {
-  readCanonicalField, openFieldConflicts, formatCanonicalValue, canonicalKeyOf, ORIGIN_LABELS,
+  readCanonicalField, readCanonicalEntityField, EntityReadCache, openFieldConflicts, formatCanonicalValue, canonicalKeyOf, ORIGIN_LABELS,
   assetFieldSource, assetFieldSourceId, parseAssetFieldSourceId,
-  type CanonicalFieldReading, type CanonicalFieldEvidence, type CanonicalFieldConflict,
+  type CanonicalFieldReading, type CanonicalFieldEvidence, type CanonicalFieldConflict, type CanonicalEntityFieldReading,
 } from './field-reader';
 export {
   getCanonicalDocumentState, documentAssetsOf, catalogCodeOf,

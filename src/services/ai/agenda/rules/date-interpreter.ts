@@ -62,3 +62,72 @@ export function isPastDue(iso: string, now = new Date()): boolean {
   const d = interpretDate(iso, now);
   return d.qualification !== 'invalid' && (d.daysFromNow ?? 0) < 0;
 }
+
+// ── Ambiguïté temporelle (CDC 15 §26, R5) ───────────────────────────────────
+
+/**
+ * Pourquoi la date retenue par l'extraction n'est pas certaine :
+ *   · DAY_MONTH_ORDER : l'extrait porte une date numérique dont les deux
+ *     premiers nombres sont ≤ 12 et différents (« 03/04/2027 ») — lue jj/mm
+ *     ou mm/jj, les deux dates sont valides — ET l'extraction a retenu la
+ *     lecture mm/jj, contraire à la convention française. Une date lue jj/mm
+ *     n'est pas signalée : sinon presque toute date française (jour ≤ 12)
+ *     déclencherait un appel modèle ;
+ *   · RELATIVE_MENTION : l'échéance n'est donnée que par une mention relative
+ *     (« avant fin mars », « dans six mois », « sous 30 jours »), sans date
+ *     complète dans l'extrait — la date ISO est une déduction.
+ */
+export interface TemporalAmbiguity {
+  kind: 'DAY_MONTH_ORDER' | 'RELATIVE_MENTION';
+  /** Dates candidates (ISO, triées) ; une seule pour une mention relative. */
+  dates: string[];
+  /** Fragment de l'extrait qui porte l'ambiguïté. */
+  mention: string;
+}
+
+const MOIS = 'janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre';
+const DATE_NUMERIQUE = /\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})\b/g;
+const DATE_COMPLETE = new RegExp(`\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b|\\b\\d{4}-\\d{2}-\\d{2}\\b|\\b\\d{1,2}(er)? (${MOIS}) \\d{4}\\b`);
+const RELATIVES: RegExp[] = [
+  new RegExp(`\\b(avant|d'ici|au plus tard|vers|courant|debut|fin|mi)[ -](la fin |fin |debut |de |d')*(${MOIS})\\b`),
+  /\b(dans|sous|d'ici) (\d+|un|une|deux|trois|quatre|six|douze) (jours?|semaines?|mois|ans?|annees?)\b/,
+  /\b(l'an prochain|l'annee prochaine|le mois prochain|en fin d'annee|avant la fin de l'annee)\b/,
+];
+
+const plainFr = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
+
+function isoValide(y: number, m: number, d: number): string | null {
+  const iso = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const dt = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(dt.getTime()) && dt.toISOString().slice(0, 10) === iso ? iso : null;
+}
+
+/**
+ * Ambiguïté de la date `iso` au vu de son extrait (pure, testée). `null` :
+ * la date est certaine (date complète non ambiguë, ou aucun extrait).
+ * Ne modifie jamais `interpretDate` : le comportement historique reste le
+ * même tant que l'appelant n'exploite pas ce signal (T4 master + enabled).
+ */
+export function detectTemporalAmbiguity(iso: string | null | undefined, excerpt: string | null | undefined): TemporalAmbiguity | null {
+  if (!iso || !ISO_DATE.test(iso) || !excerpt) return null;
+  const m = plainFr(excerpt);
+
+  for (const hit of m.matchAll(DATE_NUMERIQUE)) {
+    const a = Number(hit[1]);
+    const b = Number(hit[2]);
+    const y = hit[3].length === 2 ? 2000 + Number(hit[3]) : Number(hit[3]);
+    if (a > 12 || b > 12 || a === b || a === 0 || b === 0) continue;
+    const jjmm = isoValide(y, b, a);
+    const mmjj = isoValide(y, a, b);
+    // Lecture française retenue (ou date sans rapport) : rien d'ambigu à trancher.
+    if (!jjmm || !mmjj || iso !== mmjj) continue;
+    return { kind: 'DAY_MONTH_ORDER', dates: [jjmm, mmjj].sort(), mention: hit[0] };
+  }
+
+  if (DATE_COMPLETE.test(m)) return null;
+  for (const re of RELATIVES) {
+    const hit = m.match(re);
+    if (hit) return { kind: 'RELATIVE_MENTION', dates: [iso], mention: hit[0] };
+  }
+  return null;
+}

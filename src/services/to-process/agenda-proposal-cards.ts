@@ -29,7 +29,7 @@ import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.s
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
 
 export const AGENDA_PROPOSAL_RULE = 'AGENDA-PROPOSAL';
-export const AGENDA_PROPOSAL_REASONS = new Set(['SOURCE_TYPE_NOT_AUTHORIZED', 'SOURCE_TYPE_UNKNOWN']);
+export const AGENDA_PROPOSAL_REASONS = new Set(['SOURCE_TYPE_NOT_AUTHORIZED', 'SOURCE_TYPE_UNKNOWN', 'TEMPORAL_AMBIGUITY']);
 
 /** Échéance proposée, telle que la carte la conserve. */
 export interface AgendaProposalCandidate {
@@ -44,6 +44,11 @@ export interface AgendaProposalCandidate {
   sources: Array<{ fileId: number; role: 'SOURCE' | 'ATTACHMENT' | 'PROOF'; evidenceId?: number | null }>;
   reasonCode: string;
   documentType: string | null;
+  /**
+   * Dates possibles (R5, TEMPORAL_AMBIGUITY) : une proposition par date
+   * (`YES:<iso>`) ; absent : une seule date, proposition « Oui ».
+   */
+  alternatives?: string[];
 }
 
 /** Relation de la carte : une par échéance de la source (clé fonctionnelle, sinon empreinte). */
@@ -78,6 +83,8 @@ export async function proposeAgendaCreation(p: {
   }
   const c = p.candidate;
   const source = { label: `${c.title} — ${c.date}`.slice(0, 200), targetType: 'DOCUMENT' as const, targetId: p.sourceFileId };
+  const dates = [...new Set(c.alternatives ?? [])].sort();
+  const evidenceIds = c.sources.filter((s) => s.evidenceId != null).map((s) => String(s.evidenceId));
   return upsertAction({
     accountId: p.accountId,
     targetType: 'DOCUMENT',
@@ -85,14 +92,40 @@ export async function proposeAgendaCreation(p: {
     relationKey,
     actionKind: 'ARBITRATE',
     ruleCode: AGENDA_PROPOSAL_RULE,
-    question: `Ajouter cette échéance à l’agenda ? « ${c.title} » le ${c.date}`.slice(0, 300),
-    proposals: [
-      { value: 'YES', label: 'Oui, l’ajouter à l’agenda', confidence: 0.6, sourceContext: source,
-        evidenceIds: c.sources.filter((s) => s.evidenceId != null).map((s) => String(s.evidenceId)) },
-      { value: 'NO', label: 'Non', confidence: 0.3 },
-    ],
+    question: (dates.length > 1
+      ? `Quelle date pour « ${c.title} » ? La source est ambiguë : ${dates.join(' ou ')}`
+      : `Ajouter cette échéance à l’agenda ? « ${c.title} » le ${c.date}`).slice(0, 300),
+    // Dates possibles (R5) : une proposition par date. Au plus deux
+    // propositions affichées (§8.4) : le refus passe alors par « Non
+    // applicable » (règle `allowNotApplicable`), même effet que « Non ».
+    proposals: dates.length > 1
+      ? dates.slice(0, 2).map((d) => ({ value: `YES:${d}`, label: `Oui, le ${d}`, confidence: 0.5, sourceContext: { ...source, label: `${c.title} — ${d}`.slice(0, 200) }, evidenceIds }))
+      : [
+        { value: 'YES', label: 'Oui, l’ajouter à l’agenda', confidence: 0.6, sourceContext: source, evidenceIds },
+        { value: 'NO', label: 'Non', confidence: 0.3 },
+      ],
     triggerContext: { kind: 'agenda_proposal', functionalKey: p.functionalKey, candidate: c as unknown as Record<string, unknown> },
   });
+}
+
+/**
+ * Cartes AGENDA-PROPOSAL devenues sans objet (R5) : un élément d'agenda de
+ * même clé fonctionnelle vient d'être écrit (réanalyse qui tranche la date,
+ * création par un autre chemin). Fermées `OBSOLETE`, pour éviter un doublon
+ * si l'utilisateur acceptait ensuite la carte. Rend le nombre de cartes fermées.
+ */
+export async function closeObsoleteAgendaProposals(
+  client: Pick<typeof db, 'update'>, accountId: number, functionalKey: string,
+): Promise<number> {
+  const now = new Date();
+  const rows = await client.update(toProcessActions)
+    .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
+    .where(and(
+      eq(toProcessActions.accountId, accountId), eq(toProcessActions.ruleCode, AGENDA_PROPOSAL_RULE),
+      eq(toProcessActions.relationKey, `agenda:${functionalKey}`), isNull(toProcessActions.resolvedAt),
+    ))
+    .returning({ id: toProcessActions.id });
+  return rows.length;
 }
 
 type Action = typeof toProcessActions.$inferSelect;
@@ -112,10 +145,20 @@ export async function resolveAgendaProposal(
   accountId: number,
   options: ResolveOptions,
 ): Promise<ResolveResult & { afterCommit?: () => Promise<void> }> {
-  if (value !== 'YES' && value !== 'NO') return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
   const ctx = action.triggerContext as { candidate?: AgendaProposalCandidate } | null;
-  const c = ctx?.candidate;
-  if (!c) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
+  const lu = ctx?.candidate;
+  if (!lu) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
+  // R5 : « YES:<iso> » choisit l'une des dates possibles (et seulement elles) ;
+  // un « YES » nu est refusé quand plusieurs dates sont possibles.
+  let c = lu;
+  if (value === 'YES' && (lu.alternatives?.length ?? 0) > 1) return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
+  if (typeof value === 'string' && value.startsWith('YES:')) {
+    const date = value.slice(4);
+    if (!(lu.alternatives ?? []).includes(date)) return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
+    c = { ...lu, date };
+    value = 'YES';
+  }
+  if (value !== 'YES' && value !== 'NO') return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
   const now = new Date();
   let createdItemId: number | null = null;
   let empreinte: string | null = null;

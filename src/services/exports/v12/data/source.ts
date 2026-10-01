@@ -121,6 +121,23 @@ export interface SourceEquipment {
   brand: string | null;
   model: string | null;
   energyType: string | null;
+  /**
+   * Lecture canonique (EXPORTS_CANONICAL_SOURCE = enabled, lot 18) : champs
+   * renseignés de la fiche de l'équipement — valeur, origine, preuve active.
+   * Absent en lecture historique.
+   */
+  fields?: SourceEquipmentField[];
+}
+
+/** Champ canonique d'un équipement (lot 18, R3). */
+export interface SourceEquipmentField {
+  key: string;
+  label: string;
+  /** Unité du registre (euros pour un montant, `AAAA-MM-JJ` pour une date). */
+  value: unknown;
+  origin: string;
+  /** Référence de la preuve active (jamais l'extrait : dossier transmis à un tiers). */
+  evidence: { evidenceId: number; fileId: number | null; documentDate: string | null } | null;
 }
 
 export interface SourceCil {
@@ -317,8 +334,9 @@ export async function loadExportSource(params: LoadParams): Promise<ExportSource
 
 /**
  * Source canonique, construite SUR la lecture historique : seuls changent
- * les champs du bien, les pièces et l'agenda (photos, pièces de la maison,
- * équipements, informations complémentaires D-12, CIL : identiques).
+ * les champs du bien, les pièces, l'agenda et, depuis le lot 18, les champs
+ * canoniques des équipements (photos, pièces de la maison, informations
+ * complémentaires D-12, CIL : identiques).
  */
 async function buildCanonicalExportSource(
   params: LoadParams, legacy: ExportSource, snapshot: AssetSnapshot,
@@ -330,9 +348,10 @@ async function buildCanonicalExportSource(
   const row = await cs.loadAssetRow(pgClient as never, params.assetId, params.accountId);
   if (!row) throw Object.assign(new Error(`Bien ${params.assetId} introuvable pour le compte ${params.accountId}`), { exportErrorCode: 'ASSET_NOT_FOUND' });
   const state = cs.buildCanonicalAssetState(row);
-  const [docs, agenda] = await Promise.all([
+  const [docs, agenda, equipments] = await Promise.all([
     cs.loadCanonicalDocuments(params.accountId, params.assetId),
     cs.loadCanonicalAgenda(params.accountId, params.assetId, today),
+    cs.canonicalEquipments(params.accountId, params.assetId, legacy.equipments),
   ]);
   const scalars = cs.canonicalAssetScalars(state, {
     purchaseDate: legacy.asset.purchaseDate, purchasePriceCents: legacy.asset.purchasePriceCents,
@@ -358,6 +377,7 @@ async function buildCanonicalExportSource(
       // Rattachement non confirmé : proposé décoché (relecture lot 16).
       documents: toSourceDocuments(docs.documents, photoFileIds)
         .map((d) => (docs.unconfirmed.includes(d.id) ? { ...d, unconfirmedLink: true } : d)),
+      equipments,
       events: toSourceEvents(snapshot, agenda.map((a) => ({
         id: a.id, title: a.title, description: a.description, startDate: a.startDate, manualStatus: a.manualStatus,
         occurrenceNature: a.occurrenceNature, nature: a.nature, status4: a.status4,

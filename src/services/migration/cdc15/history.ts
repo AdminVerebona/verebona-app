@@ -55,11 +55,16 @@ export async function loadHistory(sql: postgres.Sql, assetIds: number[]): Promis
     push(Number(r.assetId), { key: canon(r.fieldKey), value: parse(r.newValue), origin: 'RECONCILIATION', at: new Date(r.at).getTime(), source: 'ai_field_updates',
       fileId: r.fileId == null ? null : Number(r.fileId), evidenceId: r.evidenceId == null ? null : Number(r.evidenceId) });
   }
+  // Lignes d'un équipement ou d'une pièce (0227, lot 18) : pas des écritures du bien.
+  const [cible] = await sql<Array<{ has: boolean }>>`
+    SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                     AND table_name = 'canonical_field_writes' AND column_name = 'target_type') AS has`;
   const journal = await sql<Array<{ assetId: number; key: string; newValue: unknown; origin: FieldOrigin; at: Date; sourceType: string | null; sourceId: string | null }>>`
     SELECT asset_id AS "assetId", canonical_key AS key, new_value AS "newValue", origin, created_at AS at,
            source_type AS "sourceType", source_id AS "sourceId"
       FROM canonical_field_writes
      WHERE asset_id = ANY(string_to_array(${assetIds.join(',')}, ',')::int[]) AND outcome = 'written' AND dry_run = false
+       ${cible?.has ? sql`AND target_type IS NULL` : sql``}
      ORDER BY created_at, id`;
   for (const r of journal) push(Number(r.assetId), { key: canon(r.key), value: r.newValue, origin: r.origin, at: new Date(r.at).getTime(), source: 'canonical_field_writes',
     fileId: r.sourceType === 'document' && /^\d+$/.test(r.sourceId ?? '') ? Number(r.sourceId) : null });

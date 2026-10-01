@@ -302,7 +302,20 @@ export async function upsertAgendaItem(input: AgendaUpsertInput, opts: AgendaUps
   });
 
   try {
-    return await write();
+    const res = await write();
+    // R5 : une carte AGENDA-PROPOSAL de même clé (dates ambiguës, source non
+    // autoritaire) est sans objet dès que l'élément existe. Ne fait jamais
+    // échouer l'écriture.
+    if (effets && functionalKey) {
+      try {
+        const { closeObsoleteAgendaProposals } = await import('@/services/to-process/agenda-proposal-cards');
+        const { db } = await import('@/db');
+        await closeObsoleteAgendaProposals((opts.client ?? db) as never, input.accountId, functionalKey);
+      } catch (err) {
+        console.error(`[agenda] cartes AGENDA-PROPOSAL de ${functionalKey} :`, (err as Error).message);
+      }
+    }
+    return res;
   } catch (e) {
     // Course sur la clé (index unique partiel) : l'élément vient d'être créé
     // par un autre passage — mise à jour.

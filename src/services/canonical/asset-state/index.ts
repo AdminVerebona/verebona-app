@@ -13,6 +13,6 @@ export {
 export {
   writeCanonicalAssetField, writeCanonicalAssetFields, observeLegacyWrite,
   planCanonicalWrites, divergenceOf, sameCanonicalValue, resolveDefForFamily,
-  type WriteHooks, type WriteHookContext, type WriteDivergence, type CanonicalWritePlan,
+  type WriteHooks, type WriteHookContext, type TxRunner, type WriteDivergence, type CanonicalWritePlan,
 } from './write-canonical-asset-field';
 export { readMirrorColumns, restoreMirrorColumns, ALL_MIRROR_COLUMNS } from './mirror-columns';

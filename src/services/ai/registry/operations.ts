@@ -537,7 +537,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // Exécutées seulement quand la version de configuration bascule T4 en
   // architecture `master` (`getPromptArchitecture('T4')`). Mêmes modèles et
   // même facturation que les étapes qu'elles remplacent ; déclarées APRÈS
-  // elles. TEMPORAL_AMBIGUITY : branche du master, sans appelant au lot 14.
+  // elles. TEMPORAL_AMBIGUITY : appelée depuis le lot 18 (R5).
   t4_classify_event: {
     operationCode: 't4_classify_event', useCaseCode: 'AGENDA_INTELLIGENCE',
     label: 'T4 master — classification action / information (TASK=CLASSIFY_EVENT)',
@@ -554,18 +554,16 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     timeoutMs: 15_000, jsonResponse: true,
     outputSchema: 'T4VerifyCompletionOutput', active: true, billable: false,
   },
-  // INACTIVE (relecture du lot 14) : branche déclarée avec son schéma, mais
-  // AUCUN appelant dans le code — les dates ambiguës restent traitées par
-  // `interpretDate` (règles). Active, elle apparaîtrait dans l'inventaire et
-  // la console comme une opération en service. À réactiver avec son premier
-  // appelant.
+  // Active depuis le lot 18 (R5) : appelée par T4 (`resoudreAmbiguiteTemporelle`)
+  // quand une date est incertaine (jj/mm ↔ mm/jj, mention relative), sous T4
+  // `master` et AI_T4_EFFECTS=enabled. Abstention → carte AGENDA-PROPOSAL.
   t4_temporal_ambiguity: {
     operationCode: 't4_temporal_ambiguity', useCaseCode: 'AGENDA_INTELLIGENCE',
     label: 'T4 master — arbitrage d’une ambiguïté temporelle (TASK=TEMPORAL_AMBIGUITY)',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: T4_MASTER, masterPromptCode: T4_MASTER, task: 'TEMPORAL_AMBIGUITY', promptVariables: T4_MASTER_VARIABLES,
     timeoutMs: 15_000, jsonResponse: true,
-    outputSchema: 'T4TemporalAmbiguityOutput', active: false, billable: false,
+    outputSchema: 'T4TemporalAmbiguityOutput', active: true, billable: false,
   },
 
   // ── Usage 5 — Gouvernance (CDC §4.5.3) ────────────────────────────────────

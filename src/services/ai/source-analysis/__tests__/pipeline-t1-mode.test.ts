@@ -71,7 +71,10 @@ vi.mock('../master/document-links', async (orig) => ({
   ...(await orig<typeof import('../master/document-links')>()),
   writeMasterDocumentLinks: (...a: unknown[]) => m.writeMasterDocumentLinks(...a),
 }));
-vi.mock('../master/reconciliation-fanout', () => ({ enqueueT3ForAffectedAssets: (...a: unknown[]) => m.enqueueT3ForAffectedAssets(...a) }));
+vi.mock('../master/reconciliation-fanout', () => ({
+  enqueueT3ForAffectedAssets: (...a: unknown[]) => m.enqueueT3ForAffectedAssets(...a),
+  enqueueT3ForAffectedEntities: async () => [],
+}));
 vi.mock('../master/shadow', () => ({ scheduleT1Shadow: (...a: unknown[]) => m.scheduleT1Shadow(...a) }));
 vi.mock('@/services/ai/config/prompt-architecture', () => ({ getPromptArchitecture: (...a: unknown[]) => m.getPromptArchitecture(...a) }));
 vi.mock('../persistence/analysis-result.repository', () => ({ persistAnalysisResult: (...a: unknown[]) => m.persistAnalysisResult(...a) }));

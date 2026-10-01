@@ -220,8 +220,9 @@ describe('withdrawEvidence (T3-03, lot 13)', () => {
     expect(q.sql).not.toMatch(/DELETE|\bstatus = /);
     expect(q.sql).toMatch(/lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE'/);
     // Relecture lot 13 : jamais les preuves d'un lien web (autre espace d'identifiants).
-    expect(q.sql).toMatch(/source_type = 'document' AND source_id = ANY/);
-    expect(q.sql).not.toMatch(/web_link/);
+    // R4 : un lien web est une ligne asset_files — même espace d'identifiants.
+    expect(q.sql).toMatch(/source_type IN \('document', 'web_link'\) AND source_id = ANY/);
+    expect(q.sql).not.toMatch(/'agenda'|'equipment'|'supplier'|'user_input'/);
     expect(q.params).toEqual([1, [55], 10, ['mileage']]);
     expect(r).toEqual({ evidenceIds: [4, 5], assetIds: [10], dryRun: false });
   });
@@ -255,11 +256,17 @@ describe('withdrawEvidence (T3-03, lot 13)', () => {
 describe('relecture lot 13', () => {
   beforeEach(() => { vi.spyOn(console, 'info').mockImplementation(() => {}); });
 
-  it('listActiveEvidenceAssets : documents seulement (pas de collision avec un lien web)', async () => {
+  it('listActiveEvidenceAssets (R4) : documents ET liens web (asset_files.id), aucun autre type de source', async () => {
     await listActiveEvidenceAssets(1, 55);
     const q = db.calls.at(-1)!;
-    expect(q.sql).toMatch(/source_type = 'document' AND source_id = \$2/);
-    expect(q.sql).not.toMatch(/web_link/);
+    expect(q.sql).toMatch(/source_type IN \('document', 'web_link'\) AND source_id = \$2/);
+    expect(q.sql).not.toMatch(/'agenda'|'equipment'|'supplier'|'user_input'/);
+  });
+
+  it('supersedeFieldEvidenceExcept (R4) : documents ET liens web', async () => {
+    db.selectRows = [];
+    await supersedeFieldEvidenceExcept({ accountId: 1, sourceId: 55, assetId: 10, fieldKeys: ['acquisitionDate'], keepValue: 'x', mode: 'shadow' });
+    expect(db.calls.at(-1)!.sql).toMatch(/source_type IN \('document', 'web_link'\) AND source_id = \$2 AND asset_id = \$3/);
   });
 
   it('supersedeFieldEvidenceExcept : remplace seulement s’il existe une remplaçante de la valeur revalidée', async () => {

@@ -23,6 +23,10 @@
  *
  *   · bien (`target_type = 'asset'`) : réconciliation locale après analyse T1,
  *     déclencheur `source_analyzed` ;
+ *   · équipement / pièce (`target_type = 'equipment' | 'room'`, lot 18) :
+ *     valeurs lues pour la cible appliquées à SA fiche (`reconcileEntity`),
+ *     même déclencheur — mis en file seulement si CANONICAL_WRITE_MODE ou
+ *     T3_NEGATIVE_RECONCILIATION n'est pas `legacy` ;
  *   · compte (`account_id`, sans cible) : contrôle global du compte, sur
  *     événement à impact de cohérence (temporisé et fusionné), planification
  *     ou lancement manuel ;
@@ -41,6 +45,11 @@ import type { T3Trigger } from './account-reconciliation.service';
 
 /** Types de cible T3 dans la file. */
 export const T3_TARGET_ASSET = 'asset';
+/** Équipement / pièce : réconciliation ciblée de leur fiche (CDC 15 T1-04, lot 18). */
+export const T3_TARGET_EQUIPMENT = 'equipment';
+export const T3_TARGET_ROOM = 'room';
+
+const CIBLE_FILE: Record<'EQUIPMENT' | 'ROOM', string> = { EQUIPMENT: T3_TARGET_EQUIPMENT, ROOM: T3_TARGET_ROOM };
 
 /**
  * Événement métier → code du catalogue de déclencheurs (T3-005 : le catalogue
@@ -163,6 +172,48 @@ export async function enqueueT3ForAssets(
 }
 
 /**
+ * Réconciliation ciblée d'équipements ou de pièces (lot 18, R3) : après
+ * l'analyse d'un document qui a écrit des preuves sur ces cibles, ou après
+ * le retrait de leurs preuves (cycle de vie T3-03). Rien — et AUCUNE requête
+ * — tant que CANONICAL_WRITE_MODE et T3_NEGATIVE_RECONCILIATION sont `legacy`.
+ */
+export async function enqueueT3ForEntities(
+  input: {
+    accountId: number; userId: number; targets: Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number }>;
+    sourceFileId?: number | null; triggeredBy?: 'document_analyzed' | 'document_linked'; reason?: string;
+  },
+  deps?: T3QueueDeps,
+): Promise<number[]> {
+  const { canonicalWriteMode, t3NegativeMode } = await import('@/services/canonical/rollout');
+  if (canonicalWriteMode() === 'legacy' && t3NegativeMode() === 'legacy') return [];
+  const vus = new Set<string>();
+  const cibles = input.targets.filter((t) => {
+    const k = `${t.type}:${t.id}`;
+    if (!CIBLE_FILE[t.type] || !Number.isInteger(t.id) || t.id <= 0 || vus.has(k)) return false;
+    vus.add(k);
+    return true;
+  });
+  if (cibles.length === 0) return [];
+  const d = deps ?? await defaultDeps();
+  if (!(await d.isTriggerActive('T3', 'source_analyzed'))) return [];
+  const jobs: number[] = [];
+  for (const t of cibles) {
+    const { jobId } = await d.enqueue({
+      treatment: 'T3',
+      scope: { accountId: input.accountId, targetType: CIBLE_FILE[t.type], targetId: t.id },
+      triggerCode: 'source_analyzed',
+      payload: {
+        kind: 'entity', userId: input.userId, sourceFileId: input.sourceFileId ?? null,
+        triggeredBy: input.triggeredBy ?? 'document_analyzed', lifecycleReason: input.reason ?? null,
+      },
+      payloadOnDedupe: 'replace',
+    });
+    if (jobId != null) jobs.push(jobId);
+  }
+  return jobs;
+}
+
+/**
  * Lancement manuel d'un contrôle compte (WF-11, T3-011) : toujours une
  * nouvelle exécution, identifiable comme manuelle, sans déduplication.
  */
@@ -187,6 +238,8 @@ export async function enqueueT3Manual(
 
 export interface T3HandlerDeps {
   reconcileAsset: (input: import('./reconciliation-engine').ReconcileInput) => Promise<unknown>;
+  /** Équipement / pièce (lot 18). */
+  reconcileEntity?: (input: import('./entity-reconciliation').ReconcileEntityInput) => Promise<unknown>;
   reconcileAccount: typeof import('./account-reconciliation.service').reconcileAccount;
   /** Comptes à rationaliser lors d'un balayage planifié. */
   listSweepAccounts: (periodHours: number) => Promise<number[]>;
@@ -194,7 +247,7 @@ export interface T3HandlerDeps {
 }
 
 interface T3Payload {
-  kind?: 'asset' | 'account';
+  kind?: 'asset' | 'account' | 'entity';
   scope?: 'full' | 'incremental';
   userId?: number | null;
   sourceFileId?: number | null;
@@ -249,6 +302,24 @@ export async function runT3Job(job: QueuedJob, guard: ExecutionGuard, deps: T3Ha
     return;
   }
 
+  // Équipement / pièce : réconciliation ciblée de leur fiche (lot 18).
+  if ((job.targetType === T3_TARGET_EQUIPMENT || job.targetType === T3_TARGET_ROOM) && job.targetId) {
+    const id = Number(job.targetId);
+    if (!Number.isInteger(id) || !deps.reconcileEntity) {
+      console.error(`[t3-queue] travail ${job.id} : cible ${job.targetType} inexploitable — ignoré.`);
+      return;
+    }
+    await guard.assertActive('réconciliation de la cible');
+    await deps.reconcileEntity({
+      accountId: job.accountId,
+      target: { type: job.targetType === T3_TARGET_EQUIPMENT ? 'EQUIPMENT' : 'ROOM', id },
+      userId: p.userId ?? null,
+      sourceFileId: p.sourceFileId ?? null,
+      triggeredBy: p.triggeredBy === 'document_linked' ? 'document_linked' : 'document_analyzed',
+    });
+    return;
+  }
+
   // Compte : contrôle global.
   const last = p.events?.[p.events.length - 1];
   const trigger: T3Trigger = job.origin === 'manual'
@@ -299,12 +370,14 @@ async function listSweepAccountsFromDb(periodHours: number): Promise<number[]> {
  * démarrage du boucleur dans `instrumentation.ts`.
  */
 export async function t3JobHandler(job: QueuedJob, guard: ExecutionGuard): Promise<void> {
-  const [{ reconcileAsset }, { reconcileAccount }, { enqueue }] = await Promise.all([
+  const [{ reconcileAsset }, { reconcileAccount }, { enqueue }, { reconcileEntity }] = await Promise.all([
     import('./reconciliation-engine'),
     import('./account-reconciliation.service'),
     import('../queue/job-queue.repository'),
+    import('./entity-reconciliation'),
   ]);
   await runT3Job(job, guard, {
     reconcileAsset, reconcileAccount, enqueue, listSweepAccounts: listSweepAccountsFromDb,
+    reconcileEntity: (i) => reconcileEntity(i),
   });
 }

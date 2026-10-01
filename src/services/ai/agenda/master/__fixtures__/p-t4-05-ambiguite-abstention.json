@@ -1,0 +1,23 @@
+{
+  "case": "P-T4-05",
+  "description": "TEMPORAL_AMBIGUITY — « à faire avant fin mars » sans année ni date : abstention ; une sortie hors liste serait aussi une abstention (U1).",
+  "context": {
+    "temporal": {
+      "title": "Ramonage",
+      "excerpt": "Ramonage à faire avant fin mars.",
+      "extractedDate": "2027-03-31",
+      "kind": "RELATIVE_MENTION",
+      "mention": "avant fin mars"
+    },
+    "candidates": [
+      { "candidateId": 1, "date": "2027-03-31", "interpretation": "date déduite de la mention relative « avant fin mars »" }
+    ]
+  },
+  "recording": {
+    "operationCode": "t4_temporal_ambiguity",
+    "task": "TEMPORAL_AMBIGUITY",
+    "output": { "task": "TEMPORAL_AMBIGUITY", "decision": "abstain", "candidateId": null, "confidence": "ambiguous",
+      "reason": "année non précisée : impossible de dater l'échéance avec certitude" }
+  },
+  "expected": { "chosenDate": null }
+}

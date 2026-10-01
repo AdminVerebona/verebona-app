@@ -285,6 +285,23 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 30,
   },
 
+  // ── CDC 15 T1-04 (lot 18, R3) : conflit sur un champ d'ÉQUIPEMENT ───────
+  // Deux preuves (ou une preuve et une saisie) divergent sur un champ de la
+  // fiche canonique d'un équipement. Même mécanisme que le conflit de champ
+  // d'un bien (ARBITRATE, propositions + valeur en place) ; la carte porte la
+  // clé canonique en `field_key`, la relation ne sert qu'au contrôle du
+  // catalogue. Voir `entity-field-cards.ts`.
+  {
+    code: 'ENTITY-FIELD',
+    targetType: 'EQUIPMENT',
+    relationKey: 'canonicalField',
+    arbitratePriority: 'CAN_WAIT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Quelle valeur garder pour ce champ de l’équipement ?',
+    businessImpact: 35,
+  },
+
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────
   // Un événement historique ne change jamais le statut : il le propose.
   {

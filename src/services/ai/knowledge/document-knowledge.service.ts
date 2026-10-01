@@ -320,6 +320,8 @@ export interface StoredExtraction {
   extractedAt: string;
   /** Bien du document au moment de l'analyse (ancien bien après un déplacement). */
   assetIdAtAnalysis?: number | null;
+  /** `asset_file` | `web_link` (0139). */
+  sourceType?: string | null;
 }
 
 export interface StoredFact extends DocumentFactRecord {
@@ -339,7 +341,7 @@ const EXTRACTION_COLUMNS = `
   document_type_code AS "documentTypeCode", rubric_code AS "rubricCode",
   structural_evidence AS "structuralEvidence", metadata, fact_count AS "factCount",
   model, prompt_version AS "promptVersion", extracted_at AS "extractedAt",
-  asset_id_at_analysis AS "assetIdAtAnalysis"`;
+  asset_id_at_analysis AS "assetIdAtAnalysis", source_type AS "sourceType"`;
 
 /**
  * Colonnes d'un fait, préfixées par l'alias de table (`f.` ou rien). Avec
@@ -538,7 +540,9 @@ export async function projectDocumentKnowledgeToAsset(p: {
   const { persistEvidence } = await import('../source-analysis/steps/persist-evidence.step');
   const byField = await persistEvidence({
     input: {
-      sourceType: 'file',
+      // Lien web (R4) : ses preuves restent de type `web_link` après un
+      // rattachement ou un déplacement, comme à l'analyse.
+      sourceType: knowledge.extraction.sourceType === 'web_link' ? 'web_link' : 'file',
       sourceIds: [p.fileId],
       accountId: p.accountId,
       userId: p.userId,
