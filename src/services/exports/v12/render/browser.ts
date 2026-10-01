@@ -74,12 +74,31 @@ function state(): BrowserState {
 }
 
 /**
+ * Ubuntu ≥ 26.04 (stack scalingo-26) : Playwright 1.56 ne connaît pas cette
+ * version et chercherait un binaire « ubuntu26.04 » inexistant. Le postinstall
+ * installe le build ubuntu24.04 (scripts/install-chromium.mjs) : même
+ * substitution ici, AVANT l'import de playwright-core (plateforme lue au chargement).
+ */
+function preparePlatformOverride(): void {
+  if (process.env.PLAYWRIGHT_HOST_PLATFORM_OVERRIDE || process.platform !== 'linux') return;
+  try {
+    const rel = fs.readFileSync('/etc/os-release', 'utf8');
+    if (!/^ID="?ubuntu"?$/m.test(rel)) return;
+    const major = Number(/^VERSION_ID="?(\d+)/m.exec(rel)?.[1]);
+    if (major >= 26) process.env.PLAYWRIGHT_HOST_PLATFORM_OVERRIDE = `ubuntu24.04-${process.arch}`;
+  } catch {
+    /* pas d'os-release : détection Playwright par défaut */
+  }
+}
+
+/**
  * Prépare l'environnement de résolution du binaire AVANT l'import de
  * playwright-core (qui lit `PLAYWRIGHT_BROWSERS_PATH` au chargement) :
  * navigateur installé dans le paquet (`PLAYWRIGHT_BROWSERS_PATH=0`, slug
  * Scalingo) détecté automatiquement.
  */
 function prepareBrowsersPath(): void {
+  preparePlatformOverride();
   if (process.env.PLAYWRIGHT_BROWSERS_PATH) return;
   const local = path.join(process.cwd(), 'node_modules', 'playwright-core', '.local-browsers');
   if (fs.existsSync(local)) process.env.PLAYWRIGHT_BROWSERS_PATH = '0';

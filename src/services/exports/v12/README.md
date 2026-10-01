@@ -214,6 +214,9 @@ Reprise de l'existant :
    scalingo-22. Vérifier / changer la stack AVANT le premier déploiement :
    `scalingo --app <app> stacks-set scalingo-24`. Sur une stack plus ancienne, le
    `postinstall` échoue avec un message explicite.
+   Sur **scalingo-26** (Ubuntu 26.04), Playwright 1.56 n'a pas de binaire dédié :
+   le `postinstall` et le moteur utilisent automatiquement le build ubuntu24.04
+   (`PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64`, surchargeable).
 1. `.buildpacks` : `apt-buildpack` **puis** `nodejs-buildpack` (déjà dans le dépôt).
 2. `Aptfile` (scalingo-24 / scalingo-26, noms `t64`) : bibliothèques de Chromium
    (`libgtk-3-0t64 libgbm-dev libnotify-dev libnss3 libxss1 libasound2t64 libxtst6

@@ -31,11 +31,13 @@
  * STACK SCALINGO : l'`Aptfile` utilise les noms de paquets d'Ubuntu 24.04
  * (suffixe t64 : libasound2t64, libgtk-3-0t64), absents de scalingo-22. Le
  * build échoue donc sur une stack antérieure à scalingo-24 (voir
- * src/services/exports/v12/README.md, « Déploiement Scalingo »).
+ * src/services/exports/v12/README.md, « Déploiement Scalingo »). Sur
+ * scalingo-26 (Ubuntu 26.04, non reconnue par Playwright 1.56), le binaire
+ * ubuntu24.04 est installé (PLAYWRIGHT_HOST_PLATFORM_OVERRIDE).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -86,6 +88,24 @@ if (!existsSync(cli)) {
 }
 
 const childEnv = { ...env, PLAYWRIGHT_BROWSERS_PATH: env.PLAYWRIGHT_BROWSERS_PATH || '0' };
+
+// Ubuntu ≥ 26.04 (stack scalingo-26) : Playwright 1.56 ne publie pas de binaire
+// « ubuntu26.04 » et refuse l'installation. On télécharge le build ubuntu24.04,
+// compatible (mêmes bibliothèques de l'Aptfile). Le moteur applique la même
+// substitution à l'exécution (render/browser.ts), sinon il ne retrouve pas le binaire.
+function ubuntuMajor() {
+  try {
+    const rel = readFileSync('/etc/os-release', 'utf8');
+    if (!/^ID="?ubuntu"?$/m.test(rel)) return null;
+    const m = /^VERSION_ID="?(\d+)/m.exec(rel);
+    return m ? Number(m[1]) : null;
+  } catch { return null; }
+}
+const major = ubuntuMajor();
+if (!childEnv.PLAYWRIGHT_HOST_PLATFORM_OVERRIDE && process.platform === 'linux' && major !== null && major >= 26) {
+  childEnv.PLAYWRIGHT_HOST_PLATFORM_OVERRIDE = `ubuntu24.04-${process.arch}`;
+  log(`Ubuntu ${major} : binaire ubuntu24.04 utilisé (PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=${childEnv.PLAYWRIGHT_HOST_PLATFORM_OVERRIDE}).`);
+}
 log(`installation du chromium-headless-shell (PLAYWRIGHT_BROWSERS_PATH=${childEnv.PLAYWRIGHT_BROWSERS_PATH})…`);
 const r = spawnSync(process.execPath, [cli, 'install', '--only-shell', 'chromium'], { stdio: 'inherit', env: childEnv });
 if (r.status !== 0) {
