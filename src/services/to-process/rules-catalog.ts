@@ -268,6 +268,23 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 35,
   },
 
+  // ── CDC 15 §14, MIG-09 (lot 17) : cas ambigus des rattrapages de données ─
+  // Valeur de bien à choisir (alias en conflit, montant ×100 non prouvé,
+  // colonne historique ≠ fiche). Une carte par champ : la carte porte la clé
+  // canonique en `field_key` (fermée par la saisie de la valeur) ; la
+  // relation ci-dessous ne sert qu'au contrôle du catalogue.
+  // Voir `migration-review-cards.ts`.
+  {
+    code: 'MIG-REVIEW',
+    targetType: 'ASSET',
+    relationKey: 'migration',
+    arbitratePriority: 'CAN_WAIT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Quelle valeur garder pour ce champ ?',
+    businessImpact: 30,
+  },
+
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────
   // Un événement historique ne change jamais le statut : il le propose.
   {

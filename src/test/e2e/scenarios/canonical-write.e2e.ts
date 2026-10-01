@@ -106,7 +106,7 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     expect(vide.field?.outcome).toBe('written');
   });
 
-  it('E2E-14 : fiche = colonne = vue canonique = lecture de l’assistant ; compte étranger : introuvable', async () => {
+  it('E2E-14 (enabled) : fiche = colonne = vue canonique = lecture de l’assistant = export ; compte étranger : introuvable', async () => {
     process.env.CANONICAL_WRITE_MODE = 'enabled';
     const c = await compte('e2e14');
     const autre = await compte('e2e14-autre');
@@ -121,6 +121,16 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     const { sqlLookup } = await import('@/services/verebona-assistant/commands/plan.service');
     const t2 = await sqlLookup.getAssetState!(c.accountId, a);
     expect(t2?.characteristics.registrationNumber).toBe('CD-456-EF');
+    // Export (source canonique, L16) : même immatriculation.
+    const exportAvant = process.env.EXPORTS_CANONICAL_SOURCE;
+    process.env.EXPORTS_CANONICAL_SOURCE = 'enabled';
+    try {
+      const { loadExportSource } = await import('@/services/exports/v12/data/source');
+      const ex = await loadExportSource({ assetId: a, accountId: c.accountId, userId: c.userId, exportType: 'DOSSIER_COMPLET' });
+      expect(ex.asset.registrationNumber).toBe('CD-456-EF');
+    } finally {
+      if (exportAvant === undefined) delete process.env.EXPORTS_CANONICAL_SOURCE; else process.env.EXPORTS_CANONICAL_SOURCE = exportAvant;
+    }
 
     expect(await canon.getCanonicalAssetState(a, autre.accountId)).toBeNull();
     const refus = await canon.writeCanonicalAssetField({ assetId: a, accountId: autre.accountId, key: 'registrationNumber', value: 'ZZ', origin: 'USER' });
@@ -147,8 +157,15 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     // aussi en legacy/shadow depuis le lot 13 (CDC 15 T3-02).
     expect(l.kcObj).toMatchObject({ acquisitionPrice: '1000', acquisitionPrice__origin: 'USER' });
     expect(l.purchase_price_cents).toBeNull();
-    const j = await sql<Array<{ canonical_key: string; dry_run: boolean; divergence: Record<string, unknown> | null }>>`
+    // L'observation shadow est HORS du chemin de la requête (non attendue) :
+    // on attend son journal (borné) au lieu de supposer qu'il est déjà écrit.
+    const lire = () => sql<Array<{ canonical_key: string; dry_run: boolean; divergence: Record<string, unknown> | null }>>`
       SELECT canonical_key, dry_run, divergence FROM canonical_field_writes WHERE asset_id = ${a} ORDER BY id`;
+    let j = await lire();
+    for (let i = 0; i < 40 && !j.some((r) => r.canonical_key === 'acquisitionPrice'); i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      j = await lire();
+    }
     expect(j.every((r) => r.dry_run)).toBe(true);
     const prix = j.find((r) => r.canonical_key === 'acquisitionPrice')!;
     // L'origine ne diverge plus (T3-02, lot 13) : seul le miroir reste propre à la primitive.

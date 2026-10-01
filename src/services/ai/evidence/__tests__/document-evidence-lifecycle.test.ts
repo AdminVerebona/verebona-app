@@ -114,3 +114,29 @@ describe('relation N-N au déplacement / détachement (0221)', () => {
     expect(withdraw).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('agenda T4 au fil du document (corpus §15 E2E-11 / E2E-19)', () => {
+  it('suppression : éléments automatiques de chaque source retirés sur tous les biens', async () => {
+    const { d } = deps('enabled');
+    const agenda = vi.fn(async () => undefined);
+    await onDocumentsDeleted({ accountId: 1, userId: 2, fileIds: [55, 56] }, { ...d, agenda });
+    expect(agenda.mock.calls).toEqual([[{ accountId: 1, sourceFileId: 55, assetId: null }], [{ accountId: 1, sourceFileId: 56, assetId: null }]]);
+  });
+
+  it('déplacement A → B : retrait sur A seulement ; une erreur agenda ne fait pas échouer le déplacement', async () => {
+    const { d } = deps('enabled', [], []);
+    const agenda = vi.fn(async () => { throw new Error('KO'); });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(onDocumentAssetChanged({ accountId: 1, userId: 2, fileId: 55, fromAssetId: 10, toAssetId: 11 }, { ...d, agenda }))
+      .resolves.toMatchObject({ mode: 'enabled' });
+    expect(agenda).toHaveBeenCalledWith({ accountId: 1, sourceFileId: 55, assetId: 10 });
+  });
+
+  it('même bien ou premier rattachement : aucun retrait', async () => {
+    const { d } = deps('enabled');
+    const agenda = vi.fn(async () => undefined);
+    await onDocumentAssetChanged({ accountId: 1, userId: 2, fileId: 55, fromAssetId: null, toAssetId: 11 }, { ...d, agenda });
+    await onDocumentAssetChanged({ accountId: 1, userId: 2, fileId: 55, fromAssetId: 11, toAssetId: 11 }, { ...d, agenda });
+    expect(agenda).not.toHaveBeenCalled();
+  });
+});

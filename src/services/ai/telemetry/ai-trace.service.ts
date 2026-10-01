@@ -163,6 +163,11 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
       operationCode: t.operationCode,
       configVersionId: t.configVersionId !== undefined ? t.configVersionId : ctx.configVersionId,
       appVersion: ctx.appVersion,
+      // §18 (lot 17) : environnement réel de l'appel. La colonne vaut
+      // 'production' PAR DÉFAUT : sans cette écriture, un appel de
+      // préproduction ou local y était enregistré comme de production.
+      // Inconnu → défaut de la colonne, comme avant.
+      ...(ctx.environment ? { environment: ctx.environment } : {}),
       modelRank: t.modelRank ?? (t.usedFallback ? null : 'primary'),
       jobId: t.jobId ?? currentJobContext()?.jobId ?? null,
     } as never), aiUsageEvent.id);

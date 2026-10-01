@@ -85,6 +85,9 @@ export function writeOrigin(
 ): Record<string, unknown> {
   const next = { ...keyCharacteristics, [`${fieldKey}__origin`]: origin };
   delete next[`${fieldKey}_origin`];
+  // Motif de reconstitution de l'origine (rattrapage CDC 15 MIG-03, lot 17) :
+  // il décrivait l'origine PRÉCÉDENTE — toute nouvelle écriture d'origine le retire.
+  delete next[`${fieldKey}__originBasis`];
   if (opts.updatedAt) next[`${fieldKey}__updatedAt`] = opts.updatedAt;
   if (isHumanOrigin(origin)) {
     delete next[`${fieldKey}__authority`];

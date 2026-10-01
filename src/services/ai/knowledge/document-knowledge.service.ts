@@ -318,6 +318,8 @@ export interface StoredExtraction {
   model: string | null;
   promptVersion: string | null;
   extractedAt: string;
+  /** Bien du document au moment de l'analyse (ancien bien après un déplacement). */
+  assetIdAtAnalysis?: number | null;
 }
 
 export interface StoredFact extends DocumentFactRecord {
@@ -336,7 +338,8 @@ const EXTRACTION_COLUMNS = `
   visual_summary AS "visualSummary", visual_observations AS "visualObservations",
   document_type_code AS "documentTypeCode", rubric_code AS "rubricCode",
   structural_evidence AS "structuralEvidence", metadata, fact_count AS "factCount",
-  model, prompt_version AS "promptVersion", extracted_at AS "extractedAt"`;
+  model, prompt_version AS "promptVersion", extracted_at AS "extractedAt",
+  asset_id_at_analysis AS "assetIdAtAnalysis"`;
 
 /**
  * Colonnes d'un fait, préfixées par l'alias de table (`f.` ou rien). Avec
@@ -525,7 +528,12 @@ export async function projectDocumentKnowledgeToAsset(p: {
 }): Promise<number> {
   const knowledge = await getDocumentKnowledge(p.accountId, p.fileId);
   if (!knowledge || knowledge.facts.length === 0) return 0;
-  const allowReassign = lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, p.assetId);
+  // Document déplacé A → B : A est le bien de l'analyse. Ses faits ciblés
+  // ne sont jamais recopiés sur B ni réécrits sur A (E2E-11) ; ils ne
+  // bloquent pas non plus l'attribution des faits sans cible.
+  const ancien = knowledge.extraction.assetIdAtAnalysis != null && Number(knowledge.extraction.assetIdAtAnalysis) !== p.assetId
+    ? Number(knowledge.extraction.assetIdAtAnalysis) : null;
+  const allowReassign = lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, p.assetId, ancien);
 
   const { persistEvidence } = await import('../source-analysis/steps/persist-evidence.step');
   const byField = await persistEvidence({
@@ -539,7 +547,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
     },
     leadSourceId: p.fileId,
     assetId: p.assetId,
-    fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), p.assetId, { allowReassign }),
+    fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), p.assetId, { allowReassign, previousAssetId: ancien }),
     documentType: (knowledge.extraction.metadata?.legacyDocumentType as string | undefined) ?? undefined,
     documentDate: knowledge.extraction.documentDate ?? undefined,
     trace: {
@@ -584,7 +592,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
 export function candidateFieldsForLinkedAsset(
   fields: ExtractedField[],
   assetId: number,
-  opts: { allowReassign: boolean },
+  opts: { allowReassign: boolean; previousAssetId?: number | null },
 ): ExtractedField[] {
   return fields.map((f) => {
     const enrichi = f.origin !== undefined || f.canonicalKey !== undefined || f.target !== undefined;
@@ -674,7 +682,7 @@ async function rebuildAgendaAfterLink(p: {
 export function fieldsForLinkedAsset(
   fields: ExtractedField[],
   assetId: number,
-  opts: { allowReassign: boolean },
+  opts: { allowReassign: boolean; previousAssetId?: number | null },
 ): ExtractedField[] {
   const out: ExtractedField[] = [];
   for (const f of fields) {
@@ -698,6 +706,11 @@ export function fieldsForLinkedAsset(
     }
     // Équipement / pièce sans identifiant : aucune cible à déduire du bien.
     if (f.target.targetEntityId == null) continue;
+    // Fait ciblant explicitement l'ANCIEN bien d'un document déplacé A → B :
+    // jamais projeté (ni recopié sur B, ni réécrit sur A dont T3 vient de
+    // retirer les preuves — corpus §15, E2E-11). Un fait ciblant
+    // explicitement un TIERS garde sa cible, comme avant.
+    if (f.target.targetType === 'ASSET' && opts.previousAssetId != null && f.target.targetEntityId === opts.previousAssetId) continue;
     out.push(f);
   }
   return out;
@@ -714,20 +727,23 @@ export function lateLinkAllowsReassignment(
   extraction: { multiAsset?: boolean | null; metadata?: Record<string, unknown> | null },
   facts: Array<{ targetType?: string | null; targetEntityId?: number | null }>,
   assetId: number,
+  /** Ancien bien d'un document déplacé : ses mentions ne comptent pas comme « autre bien ». */
+  previousAssetId: number | null = null,
 ): boolean {
   if (extraction.multiAsset === true) return false;
   const meta = extraction.metadata ?? {};
   const warnings = Array.isArray(meta.warnings) ? (meta.warnings as unknown[]) : [];
   if (extraction.multiAsset == null && warnings.includes('MULTI_ASSET_DOCUMENT')) return false;
-  const candidats = Array.isArray(meta.assetCandidates)
+  const candidats = (Array.isArray(meta.assetCandidates)
     ? (meta.assetCandidates as Array<{ entityId?: number | null; rawLabel?: string | null }>)
-    : [];
+    : []).filter((c) => previousAssetId == null || c.entityId !== previousAssetId);
   const identites = new Set(candidats
     .map((c) => (c.entityId != null ? `#${c.entityId}` : c.rawLabel?.trim().toLowerCase() || null))
     .filter(Boolean));
   if (extraction.multiAsset == null && identites.size > 1) return false;
   if (candidats.some((c) => c.entityId != null && c.entityId !== assetId)) return false;
-  if (facts.some((f) => f.targetType === 'ASSET' && f.targetEntityId != null && f.targetEntityId !== assetId)) return false;
+  if (facts.some((f) => f.targetType === 'ASSET' && f.targetEntityId != null && f.targetEntityId !== assetId
+    && f.targetEntityId !== previousAssetId)) return false;
   return true;
 }
 

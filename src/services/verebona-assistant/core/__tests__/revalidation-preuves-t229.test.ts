@@ -45,6 +45,22 @@ describe('replaceRevalidatedEvidence', () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/aucune preuve retirée/), 'KO');
   });
 
+  it('E2E-T2-22 : preuves remplacées → T3 relancé APRÈS le remplacement ; rien remplacé ou shadow → pas de relance', async () => {
+    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
+    const reconcile = vi.fn(async () => { h.order.push('reconcile'); });
+    await replaceRevalidatedEvidence({ ...input, reconcile });
+    expect(h.order).toEqual(['project', 'supersede', 'reconcile']);
+    h.supersede.mockResolvedValueOnce({ superseded: 0, replacementId: 8 });
+    await replaceRevalidatedEvidence({ ...input, reconcile });
+    process.env.T3_NEGATIVE_RECONCILIATION = 'shadow';
+    await replaceRevalidatedEvidence({ ...input, reconcile });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    // Une réconciliation en échec ne fait pas échouer la revalidation.
+    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
+    await expect(replaceRevalidatedEvidence({ ...input, reconcile: async () => { throw new Error('KO'); } }))
+      .resolves.toEqual({ mode: 'enabled', superseded: 1, projected: true });
+  });
+
   it('shadow : projection puis lecture/journal seulement', async () => {
     process.env.T3_NEGATIVE_RECONCILIATION = 'shadow';
     await replaceRevalidatedEvidence(input);

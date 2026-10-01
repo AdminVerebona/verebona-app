@@ -56,7 +56,7 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     return f;
   };
 
-  it('E2E-T2-10 : page document + « Quel est le montant ? » → le document de la page', async () => {
+  it('E2E-T2-10 (enabled) : page document + « Quel est le montant ? » → le document de la page', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { name: 'Maison' });
     const ticket = await doc(compte, { assetId: maison.id, title: 'Ticket Leroy Merlin', type: 'SUBSCRIPTION_INVOICE', amount: 4590, supplier: 'Leroy Merlin' });
@@ -78,7 +78,7 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     expect(x.answer).not.toContain('45,90');
   });
 
-  it('E2E-T2-11 : « Retrouve la facture Leroy » puis « Et son montant ? » dans le même fil', async () => {
+  it('E2E-T2-11 (enabled) : « Retrouve la facture Leroy » puis « Et son montant ? » dans le même fil', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { name: 'Maison' });
     const ticket = await doc(compte, { assetId: maison.id, title: 'Facture Leroy Merlin', type: 'SUBSCRIPTION_INVOICE', amount: 4590 });
@@ -91,7 +91,7 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     expect(r2.cascade?.reference?.entity).toEqual({ type: 'document', id: ticket.id });
   });
 
-  it('E2E-T2-09 : bien courant (page) puis échéances → aucune échéance d’un autre bien ; legacy : les deux', async () => {
+  it('E2E-T2-09 (enabled ; legacy) : bien courant (page) puis échéances → aucune échéance d’un autre bien ; legacy : les deux', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte, { name: 'Clio', category: 'VEHICULE' });
     const polo = await make.asset(compte, { name: 'Polo', category: 'VEHICULE' });
@@ -117,7 +117,7 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     expect(off.map((s) => s.id)).toEqual(expect.arrayContaining([`agenda_${ctClio.id}`, `agenda_${ctPolo.id}`]));
   });
 
-  it('E2E-T2-07 : documents non rattachés — filtre exact (lien N-N et colonnes)', async () => {
+  it('E2E-T2-07 (enabled) : documents non rattachés — filtre exact (lien N-N et colonnes)', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { name: 'Maison' });
     const lie = await doc(compte, { assetId: maison.id, title: 'Facture chaudière' });
@@ -172,7 +172,7 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     expect((await ret.retrieve(route, input)).map((s) => s.id)).toContain(`todo_${b1}`);
   });
 
-  it('T2-37 : « Indique-moi la date d’achat de la Polo » est une lecture, jamais une commande', async () => {
+  it('E2E-T2-20 (enabled) + T2-37 : « Indique-moi la date d’achat de la Polo » est une lecture, jamais une commande', async () => {
     const compte = await make.account();
     await make.asset(compte, { name: 'Polo', category: 'VEHICULE', keyCharacteristics: { acquisitionDate: '2021-05-25', acquisitionDate__origin: 'USER' } });
     process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS = 'true';

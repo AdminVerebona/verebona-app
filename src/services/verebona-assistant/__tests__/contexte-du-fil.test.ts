@@ -65,6 +65,12 @@ describe('pronoms, démonstratifs, « l’autre », « le précédent »', () =>
   const sel = ctx({ lastSelected: { type: 'document', id: 456, label: 'Facture 2025' } });
 
   it('« sa date » désigne l’élément sélectionné', () => expect(resolved('Et sa date ?', sel)).toBe(456));
+  it('« quel est son statut ? » : élément sélectionné en lecture canonique seulement (legacy = lot16)', () => {
+    expect(resolved('Quel est son statut ?', sel)).toBe('none');
+    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+    try { expect(resolved('Quel est son statut ?', sel)).toBe(456); } finally { delete process.env.ASSISTANT_CANONICAL_READ; }
+  });
+
   it('« ce document » désigne l’élément sélectionné', () => expect(resolved('Ouvre ce document', sel)).toBe(456));
   it('« le précédent » : l’élément affiché avant', () => expect(resolved('Et le précédent ?', sel)).toBe(123));
 
@@ -144,5 +150,34 @@ describe('câblage', () => {
   it('la référence est tracée (méthode, entité)', () => {
     expect(O).toMatch(/trace\.reference = \{/);
     expect(O).toMatch(/trace\.reference\.entity = \{ type: res\.entity\.type, id: res\.entity\.id \}/);
+  });
+});
+
+describe('E2E-T2-12 : « est-il réalisé ? » (inversion) — renvoi seulement sur une échéance choisie, en lecture canonique', () => {
+  const echeance = ctx({ lastSelected: { type: 'agenda_item', id: 77, label: 'Entretien Polo' } });
+  const avec = (fn: () => void) => {
+    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+    try { fn(); } finally { delete process.env.ASSISTANT_CANONICAL_READ; }
+  };
+
+  it.each(['Est-il réalisé ?', 'A-t-il été fait ?', 'Est-elle faite ?', 'Et est-il déjà passé ?'])(
+    'enabled, échéance sélectionnée : « %s » → l’échéance', (msg) => avec(() => expect(resolved(msg, echeance)).toBe(77)));
+
+  it('non-régression : une question qui nomme ce qu’elle vise n’est jamais un renvoi, avec ou sans sélection', () => avec(() => {
+    for (const msg of ['Le contrôle technique de la Clio est-il passé ?', 'Mon assurance habitation est-elle à jour ?']) {
+      expect(resolved(msg, echeance)).toBe('none');
+      expect(resolved(msg, ctx())).toBe('none');
+      expect(resolved(msg, ctx({ lastSelected: { type: 'document', id: 456 } }))).toBe('none');
+    }
+  }));
+
+  it('sélection qui n’est pas une échéance, ou aucune : pas de renvoi', () => avec(() => {
+    expect(resolved('Est-il réalisé ?', ctx({ lastSelected: { type: 'document', id: 456 } }))).toBe('none');
+    expect(resolved('Est-il réalisé ?', ctx())).toBe('none');
+  }));
+
+  it('legacy (défaut) : comportement historique, aucun renvoi par inversion', () => {
+    expect(resolved('Est-il réalisé ?', echeance)).toBe('none');
+    expect(resolved('Le contrôle technique de la Clio est-il passé ?', echeance)).toBe('none');
   });
 });

@@ -25,7 +25,7 @@
  * Fichier : `src/test/e2e/scenarios/<id>-<sujet>.e2e.ts`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { beforeAll, describe } from 'vitest';
+import { afterAll, beforeAll, describe } from 'vitest';
 import type postgres from 'postgres';
 import { factories, type Factories } from './factories';
 import { installReplayGateway, type RecordedOutput, type ReplayProvider } from './replay-gateway';
@@ -40,11 +40,32 @@ export interface ScenarioContext {
   useRecordings(recordings: RecordedOutput[]): Promise<ReplayProvider>;
 }
 
+let fermetureEnregistree = false;
+
+/**
+ * Chaque fichier réimporte ses modules (isolation vitest, même dans le fork
+ * unique) : `@/db` y ouvre SON pool (jusqu'à 8 connexions, libérées après
+ * 20 s d'inactivité seulement). Au-delà d'une trentaine de fichiers, les
+ * pools des fichiers précédents saturaient PostgreSQL (« too many clients
+ * already », max_connections = 100 par défaut). Le pool du fichier est donc
+ * fermé à la FIN DU FICHIER (crochet de niveau fichier, enregistré une fois,
+ * après tous ses scénarios ; requêtes en cours terminées).
+ */
+function fermerLePoolEnFinDeFichier(): void {
+  if (fermetureEnregistree) return;
+  fermetureEnregistree = true;
+  afterAll(async () => {
+    const { pgClient } = await import('@/db');
+    await pgClient.end({ timeout: 5 }).catch(() => undefined);
+  });
+}
+
 /**
  * Déclare un scénario du corpus. `id` suit le CDC (E2E-01…, E2E-T2-01…) : le
  * rapport de CI se lit directement contre le §15.
  */
 export function scenario(id: string, titre: string, body: (ctx: ScenarioContext) => void): void {
+  fermerLePoolEnFinDeFichier();
   describe(`${id} — ${titre}`, () => {
     const etat: { sql?: postgres.Sql; make?: Factories; replay?: ReplayProvider } = {};
     // Le corps du scénario est évalué à la COLLECTE, avant `beforeAll` : le
@@ -76,8 +97,6 @@ export function scenario(id: string, titre: string, body: (ctx: ScenarioContext)
       etat.replay = await installReplayGateway();
     });
 
-    // La connexion `@/db` est partagée par les fichiers de l'exécution (fork
-    // unique) : fermée par la fin du processus, jamais par un scénario.
 
     body(ctx);
   });

@@ -46,6 +46,13 @@ export interface LifecycleDeps {
   enqueue: (input: { accountId: number; userId: number; assetIds: number[]; sourceFileId?: number | null; reason: string }) => Promise<unknown>;
   links?: LinkDeps;
   evidenceAssets?: (accountId: number, sourceId: number) => Promise<number[]>;
+  /**
+   * T4 (corpus §15 E2E-11 / E2E-19) : retrait des éléments d'agenda
+   * AUTOMATIQUES intacts de la source sur le bien (`assetId`, ou tous les
+   * biens si null). Sous `AI_T4_EFFECTS` (shadow = journal seulement) ; les
+   * éléments modifiés par l'utilisateur sont conservés.
+   */
+  agenda?: (p: { accountId: number; sourceFileId: number; assetId: number | null }) => Promise<unknown>;
 }
 
 const defaultDeps: LifecycleDeps = {
@@ -60,7 +67,72 @@ const defaultDeps: LifecycleDeps = {
     unlink: async (i) => (await import('@/services/documents/document-asset-links')).unlinkDocument(i),
   },
   evidenceAssets: listActiveEvidenceAssets,
+  agenda: (p) => retirerAgendaDeLaSource(p),
 };
+
+/**
+ * Retrait T4 des éléments automatiques d'une source retirée. Commutateur
+ * `AI_T4_EFFECTS` testé EN TÊTE (relecture lot 17) : en `legacy`, sortie
+ * immédiate — aucune requête (ni détachement des sources partagées, ni
+ * lecture de la primitive).
+ */
+export async function retirerAgendaDeLaSource(p: { accountId: number; sourceFileId: number; assetId: number | null }): Promise<unknown> {
+  const { t4EffectsMode } = await import('@/services/canonical/rollout');
+  if (t4EffectsMode() === 'legacy') return null;
+  const { removeAgendaItemsFromSource } = await import('@/services/agenda/agenda-write-primitive');
+  // Événement dont un AUTRE document encore présent est aussi la source :
+  // conservé ; seul le lien vers la source retirée disparaît.
+  const partages = await detacherSourcePartagee(p);
+  // Plus aucun autre élément de cette source n'est produit pour ce bien.
+  return removeAgendaItemsFromSource({ ...p, keepKeys: [], keepIds: partages, analysisComplete: true });
+}
+
+/**
+ * Éléments automatiques de la source `sourceFileId` (sur `assetId`, ou tous)
+ * qui ont une AUTRE source encore présente (non supprimée). En mode T4
+ * `enabled`, le lien vers `sourceFileId` leur est retiré. Rend leurs ids
+ * (à conserver). Ne lève jamais : en cas d'échec, rien n'est conservé de plus.
+ */
+export async function detacherSourcePartagee(p: { accountId: number; sourceFileId: number; assetId: number | null }): Promise<number[]> {
+  try {
+    const { pgClient } = await import('@/db');
+    const rows = (await pgClient.unsafe(
+      `SELECT i.id FROM agenda_items i
+        WHERE i.account_id = $1 AND i.is_automatic
+          AND ((i.origin_ref_type = 'asset_file' AND i.origin_ref_id = $2)
+               OR EXISTS (SELECT 1 FROM agenda_item_sources s WHERE s.agenda_item_id = i.id AND s.asset_file_id = $2
+                           AND s.effect_type = 'linked' AND s.source_role = 'SOURCE'))
+          AND ($3::int IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = $3))
+          AND EXISTS (SELECT 1 FROM agenda_item_sources s2 JOIN asset_files f ON f.id = s2.asset_file_id AND f.deleted_at IS NULL
+                       WHERE s2.agenda_item_id = i.id AND s2.asset_file_id <> $2
+                         AND s2.effect_type = 'linked' AND s2.source_role = 'SOURCE')`,
+      [p.accountId, p.sourceFileId, p.assetId] as never[],
+    )) as unknown as Array<{ id: number }>;
+    const ids = rows.map((r) => Number(r.id));
+    const { t4EffectsMode } = await import('@/services/canonical/rollout');
+    if (ids.length && t4EffectsMode() === 'enabled') {
+      await pgClient.unsafe(`DELETE FROM agenda_item_sources WHERE agenda_item_id = ANY($1::int[]) AND asset_file_id = $2`, [ids, p.sourceFileId] as never[]);
+      await pgClient.unsafe(`DELETE FROM agenda_file_links WHERE agenda_item_id = ANY($1::int[]) AND asset_file_id = $2`, [ids, p.sourceFileId] as never[]);
+    }
+    return ids;
+  } catch (e) {
+    console.error(`[t3-lifecycle] sources partagées de ${p.sourceFileId} :`, (e as Error).message);
+    return [];
+  }
+}
+
+/** Retrait T4 des éléments automatiques d'une source ; ne lève jamais. */
+async function retirerAgenda(deps: LifecycleDeps, accountId: number, sourceFileIds: number[], assetId: number | null) {
+  // Commutateur propre : `AI_T4_EFFECTS` (lu par la primitive agenda).
+  if (!deps.agenda) return;
+  for (const sourceFileId of sourceFileIds) {
+    try {
+      await deps.agenda({ accountId, sourceFileId, assetId });
+    } catch (e) {
+      console.error(`[t3-lifecycle] agenda de la source ${sourceFileId} :`, (e as Error).message);
+    }
+  }
+}
 
 export interface LifecycleOutcome {
   mode: RolloutMode;
@@ -104,7 +176,11 @@ export function onDocumentsDeleted(
   deps: LifecycleDeps = defaultDeps,
 ): Promise<LifecycleOutcome> {
   if (p.fileIds.length === 0) return Promise.resolve(RIEN(deps.mode()));
-  return transition({ accountId: p.accountId, userId: p.userId, sourceIds: p.fileIds, reason: 'DOCUMENT_DELETED' }, deps);
+  return (async () => {
+    const r = await transition({ accountId: p.accountId, userId: p.userId, sourceIds: p.fileIds, reason: 'DOCUMENT_DELETED' }, deps);
+    await retirerAgenda(deps, p.accountId, p.fileIds, null);
+    return r;
+  })();
 }
 
 /**
@@ -148,6 +224,9 @@ export async function onDocumentAssetChanged(
     // A est réconcilié même sans preuve retirée (valeur prouvée par ce seul document).
     alsoReconcile: [from],
   }, deps);
+  // Agenda : les événements automatiques de ce document portés par A partent
+  // avec lui (B les reçoit par la reprojection / réanalyse de la route).
+  await retirerAgenda(deps, p.accountId, [p.fileId], from);
 
   // ── Biens SECONDAIRES qui ne sont plus liés (sous le commutateur) ──────────
   // Un bien qui porte encore des preuves de ce document mais n'a plus AUCUN

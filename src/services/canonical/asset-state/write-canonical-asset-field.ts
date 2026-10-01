@@ -368,6 +368,12 @@ export interface WriteHookContext {
   /** keyCharacteristics après les écritures canoniques — modifiable en place. */
   kc: Record<string, unknown>;
   results: CanonicalFieldWriteResult[];
+  /**
+   * Transaction en cours (ligne verrouillée) : écritures annexes ATOMIQUES
+   * avec la mise à jour du bien (ex. copie de sauvegarde des rattrapages
+   * CDC 15, lot 17).
+   */
+  tx: SqlRunner;
 }
 
 export interface WriteHooks {
@@ -434,7 +440,7 @@ export async function writeCanonicalAssetFields(
     if (!row) { out = vide(mode, { dryRun: false, notFound: true }); return; }
     const plan = planCanonicalWrites(row, input.writes, ctxPlan);
     let extra: Record<string, unknown> = {};
-    if (hooks.mutate) extra = (await hooks.mutate({ row, kc: plan.kc, results: plan.results })) ?? {};
+    if (hooks.mutate) extra = (await hooks.mutate({ row, kc: plan.kc, results: plan.results, tx: t })) ?? {};
     if (plan.changed || hooks.mutate) {
       await updateAssetRow(t, input.assetId, input.accountId, plan.kc, { ...plan.columns, ...extra });
     }

@@ -430,6 +430,12 @@ export async function resolveActionsForData(
   // CDC 15 X-03 : une donnée de BIEN est fermée sous sa clé canonique ET ses
   // alias (cartes antérieures à l'alignement, ex. `purchasePriceCents`).
   const cles = targetType === 'ASSET' ? assetKeyVariants(dataKey) : [dataKey];
+  // Cartes des rattrapages CDC 15 (MIG-REVIEW, lot 17) : relation
+  // `mig:<étape>:<clé canonique>` — fermées par la saisie de la même donnée.
+  if (targetType === 'ASSET') {
+    const canonique = resolveAlias(dataKey) ?? dataKey;
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) cles.push(`mig:MIG-0${n}:${canonique}`);
+  }
   const updated = await db
     .update(toProcessActions)
     .set({ resolvedAt: now, resolutionReason: reason, updatedAt: now })

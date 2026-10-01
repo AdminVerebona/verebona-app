@@ -86,6 +86,18 @@ export async function indexBuildInProgress(client: SqlRunner, name: string): Pro
   return rows.length > 0;
 }
 
+/**
+ * `lock_timeout` de la construction (relecture lot 17) : `CREATE INDEX
+ * CONCURRENTLY` est une instruction seule par fichier, hors transaction —
+ * le délai est donc posé par `SET` sur la connexion RÉSERVÉE avant la
+ * construction (et la suppression d'un index invalide), puis réinitialisé
+ * (`RESET`) avant de rendre la connexion au pool. Délai dépassé : erreur,
+ * fichier non marqué appliqué, repris au démarrage suivant (index invalide
+ * réparé). Sans connexion réservable, rien n'est posé (on ne modifie pas une
+ * connexion partagée du pool).
+ */
+export const MIGRATION_INDEX_LOCK_TIMEOUT = '10s';
+
 /** Clé du verrou consultatif d'un index (texte haché par PostgreSQL). */
 export const indexLockKey = (name: string) => `verebona:migration-index:${name}`;
 
@@ -131,6 +143,7 @@ export async function runMigrationSql(client: SqlRunner, sql: string): Promise<M
       console.warn(`[db] index ${index} : construction en cours ailleurs — rien n'est fait.`);
       return { status: 'deferred', index };
     }
+    if (cnx) await cnx.unsafe(`SET lock_timeout = '${MIGRATION_INDEX_LOCK_TIMEOUT}'`);
     let status: MigrationRunStatus = 'applied';
     if ((await indexValidity(c, index)) === false) {
       console.warn(`[db] index ${index} INVALIDE (construction interrompue) : suppression puis reconstruction.`);
@@ -143,6 +156,7 @@ export async function runMigrationSql(client: SqlRunner, sql: string): Promise<M
     }
     return { status, index };
   } finally {
+    if (cnx) await cnx.unsafe('RESET lock_timeout').catch(() => undefined);
     if (verrou) {
       await c.unsafe(`SELECT pg_advisory_unlock(hashtext($1))`, [indexLockKey(index)] as never[]).catch(() => undefined);
     }

@@ -82,6 +82,24 @@ describe('T4-01 — candidats depuis le registre (HISTORICAL et DEADLINE)', () =
   });
 });
 
+describe('Corpus §15 E2E-17 — échéance d’un équipement', () => {
+  it('facture chaudière : candidat CIBLÉ sur l’équipement, jamais rabattu sur le bien parent ; rien en multi-biens', () => {
+    const f = loadT1Fixture('t1-04-equipement-chaudiere.json');
+    const { fields } = champs(f);
+    const eq = fields.filter((x) => x.target?.targetType === 'EQUIPMENT' && x.target.targetEntityId != null);
+    expect(eq.length).toBeGreaterThan(0);
+    const c = buildAgendaCandidatesT4(fields, ctxDe(f));
+    const surEquipement = c.filter((x) => x.target?.type === 'EQUIPMENT');
+    expect(surEquipement.length).toBeGreaterThan(0);
+    expect(surEquipement.every((x) => x.target?.id === eq[0].target?.targetEntityId)).toBe(true);
+    // Aucun candidat du bien parent ne reprend un champ de l'équipement.
+    const clesEquipement = new Set(eq.map((x) => x.canonicalKey ?? x.fieldKey));
+    expect(c.filter((x) => x.target?.type === 'ASSET' && clesEquipement.has(x.originFieldKey ?? ''))).toEqual([]);
+    expect(buildAgendaCandidatesT4(fields, { ...ctxDe(f), multiAsset: true }).filter((x) => x.target?.type === 'EQUIPMENT')).toEqual([]);
+    expect(buildAgendaCandidatesT4(fields, { ...ctxDe(f), documentAssetId: null }).filter((x) => x.target?.type === 'EQUIPMENT')).toEqual([]);
+  });
+});
+
 describe('T4-03 — DPE', () => {
   it('DPE réalisé seul → « DPE réalisé » historique, aucun futur', () => {
     const f = loadT1Fixture('p-t1-05-dpe-realise.json');

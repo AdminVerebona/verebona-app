@@ -44,6 +44,8 @@ import type { VerebonaAction } from '../types/actions';
 import { RESPONSE_SCHEMA_VERSION } from '../types/contracts';
 import type { PresentedEntity, ReferencedType, ThreadContext } from './reference-resolver';
 import { awaitAiRuns } from './usage-tracking.service';
+import { targetsFromInput } from './assistant-targets';
+import { buildT2ObservabilityTrace } from '@/services/ai/telemetry/t2-observability';
 
 const expiresFromNow = () =>
   new Date(Date.now() + getAssistantConfig().historyDays * 86400_000).toISOString();
@@ -329,6 +331,20 @@ export const MESSAGE_OWNED_BY_USER = (m: string, acc: string, usr: string) =>
               AND oc.user_id = ${usr} AND oc.status = 'active')`;
 
 /**
+ * Trace §18 d'une demande (lot 17) : jamais bloquante — une cible illisible
+ * laisse `target` à null, la réponse est déjà rendue.
+ */
+function t2Observability(result: AssistantRunResult, input: AssistantRequestInput) {
+  let target: { type: string; origin: string } | null = null;
+  try {
+    target = targetsFromInput(input, result.route ?? null).primary;
+  } catch {
+    target = null;
+  }
+  return buildT2ObservabilityTrace({ strategy: result.cascade?.strategy, sources: result.sources, target });
+}
+
+/**
  * Persiste le résultat complet — CDC §28.
  *
  * ══════════════════════════════════════════════════════════════════════════
@@ -583,6 +599,9 @@ export async function persistResult(
       const cascade = result.cascade
         ? {
             ...result.cascade,
+            // §18 (lot 17) : source de vérité, sources PAR TYPE, type et
+            // origine de la cible — codes et compteurs, aucun contenu.
+            observability: t2Observability(result, input),
             levelsReached: [
               ...new Set([
                 // Seuls les niveaux réellement évalués comptent : un niveau

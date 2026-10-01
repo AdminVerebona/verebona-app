@@ -145,3 +145,27 @@ describe('legacy : strictement inchangé', () => {
     expect((await ask('Quand ai-je acheté la Clio ?')).strategy).toBe('structured.purchase_date');
   });
 });
+
+describe('contrat de sources de l’intention au niveau 2 (T2-07, corpus §15 E2E-T2-18)', () => {
+  const doc = { fileId: 9, title: 'Contrôle technique — procès-verbal', date: '2026-03-01', assetName: 'Clio', snippet: '', matchedTerms: 2, analysisState: 'ANALYZED' };
+  const avecDoc = port({ searchDocuments: async () => [doc] as never });
+  const demande = (intent: string) => answerFromData({ port: avecDoc, accountId: 1, message: 'Retrouve le contrôle technique', thresholds: DEFAULT_THRESHOLDS, intent });
+
+  it('enabled : une intention sans document au contrat n’obtient jamais un document ; la recherche documentaire, si', async () => {
+    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+    const agenda = await demande('ACCOUNT_SEARCH_AGENDA');
+    expect(agenda.handled).toBe(false);
+    expect(agenda.sources).toEqual([]);
+    expect((await demande('ACCOUNT_SEARCH_DOCUMENT')).strategy).toBe('retrieval.document');
+  });
+
+  it('legacy : inchangé', async () => {
+    expect((await demande('ACCOUNT_SEARCH_AGENDA')).strategy).toBe('retrieval.document');
+  });
+
+  it('intentionSansDocuments : contrat vide ou absent → non', async () => {
+    const { intentionSansDocuments } = await import('../../core/data-answer.service');
+    expect(['ACCOUNT_SEARCH_AGENDA', 'ACCOUNT_SEARCH_SUPPLIER', 'ACCOUNT_TO_PROCESS', 'ACCOUNT_FACT_AGENDA'].every(intentionSansDocuments)).toBe(true);
+    expect(['ACCOUNT_FACT_ASSET', 'ACCOUNT_SEARCH_DOCUMENT', 'ACCOUNT_SUMMARY', 'UNKNOWN', undefined].some(intentionSansDocuments)).toBe(false);
+  });
+});

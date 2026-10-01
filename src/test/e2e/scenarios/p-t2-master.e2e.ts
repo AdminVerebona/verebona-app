@@ -92,7 +92,7 @@ scenario('P-T2-MASTER', 'Prompt maître T2 : compréhension, réponse vérifiée
     expect(await trace(compte.id, 't2_understand')).toMatchObject({ task: 'UNDERSTAND', master_prompt_code: 't2_master_v1' });
   });
 
-  it('P-T2-02 + T2-23 + T2-31 : valeur USER de la fiche, jamais l’ancienne colonne ; affirmation non soutenue rejetée', async () => {
+  it('E2E-T2-19 (master) + P-T2-02 + T2-23 + T2-31 : valeur USER de la fiche, jamais l’ancienne colonne ; affirmation non soutenue rejetée', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, {
       category: 'VEHICULE', name: 'Clio', purchaseDate: '2019-01-01',

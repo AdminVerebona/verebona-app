@@ -191,12 +191,23 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
     // Cible : le bien du document, jamais un autre bien (U8) ni un équipement
     // rabattu sur son bien parent.
     const t = field.target;
+    let cible: NonNullable<AgendaCandidate['target']> = { type: 'ASSET', id: ctx.documentAssetId };
     if (t) {
-      if (t.targetType !== 'ASSET') continue;
-      const surLeBien = ctx.documentAssetId !== null
-        ? t.targetEntityId === ctx.documentAssetId
-        : t.targetEntityId === null && !ctx.multiAsset;
-      if (!surLeBien) continue;
+      if (t.targetType === 'EQUIPMENT') {
+        // Corpus §15 E2E-17 (lot 17) : l'échéance d'un ÉQUIPEMENT (fin de
+        // garantie d'une chaudière) devient un candidat CIBLÉ sur lui — la
+        // persistance le lie à l'équipement (`agenda_equipment_links`). Elle
+        // était ignorée. Document mono-bien seulement : l'équipement d'un
+        // document multi-biens peut appartenir à un autre bien.
+        if (t.targetEntityId === null || ctx.documentAssetId === null || ctx.multiAsset) continue;
+        cible = { type: 'EQUIPMENT', id: t.targetEntityId };
+      } else {
+        if (t.targetType !== 'ASSET') continue;
+        const surLeBien = ctx.documentAssetId !== null
+          ? t.targetEntityId === ctx.documentAssetId
+          : t.targetEntityId === null && !ctx.multiAsset;
+        if (!surLeBien) continue;
+      }
     } else if (ctx.multiAsset) {
       continue;
     }
@@ -209,7 +220,7 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
     // Événement sans champ de date déjà couvert par un champ du registre.
     if (!sem.originFieldKey && typesDates.has(`${sem.businessType}|${sem.nature}`)) continue;
     const occurrence = sem.originFieldKey ? 'single' : date;
-    const cle = `${sem.businessType}|${sem.originFieldKey ?? '-'}|${occurrence}`;
+    const cle = `${cible.type}:${cible.id ?? '-'}|${sem.businessType}|${sem.originFieldKey ?? '-'}|${occurrence}`;
     if (vus.has(cle)) continue;
     vus.add(cle);
     typesDates.add(`${sem.businessType}|${sem.nature}`);
@@ -231,7 +242,7 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
       ...(recurrence ? { recurrence } : {}),
       nature: sem.nature,
       businessType: sem.businessType,
-      target: { type: 'ASSET', id: ctx.documentAssetId },
+      target: cible,
       occurrence,
       sourceFileId: ctx.sourceFileId,
       dateSource: valeur ? 'FIELD' : 'DOCUMENT_DATE',

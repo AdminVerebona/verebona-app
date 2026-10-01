@@ -43,6 +43,7 @@
  */
 
 import { db } from '@/db';
+import { getAiEnvironment, type AiEnvironment } from '@/services/ai/config/environment';
 import {
   aiOperation, aiPipelineStep, aiAnalysisVersion,
   aiUsageAccountCounter, aiSecurityLock,
@@ -105,7 +106,23 @@ export interface StartOperationOptions {
   isReanalysis?: boolean;
   reanalysisReason?: string;
   isBillable?: boolean;
-  environment?: 'production' | 'staging' | 'test';
+  /**
+   * Environnement de l'opération (CDC BO IA GEN-003 ; §18, lot 17). Par
+   * défaut, l'environnement RÉEL (`NEXT_PUBLIC_APP_ENV` : local | preprod |
+   * production) — et non plus « production » d'office, qui étiquetait comme
+   * de production les opérations de préproduction et locales. Inconnu :
+   * défaut de la colonne.
+   */
+  environment?: AiEnvironment;
+}
+
+/** Environnement réel, ou `undefined` (défaut de la colonne) s'il est illisible. */
+function environnementReel(): AiEnvironment | undefined {
+  try {
+    return getAiEnvironment();
+  } catch {
+    return undefined;
+  }
 }
 
 export interface CompleteOperationOptions {
@@ -156,6 +173,7 @@ export class AiUsageTracker {
    */
   static async startOperation(opts: StartOperationOptions): Promise<number> {
     const routing = DEFAULT_PROVIDER_ROUTING[opts.operationCategory];
+    const environment = opts.environment ?? environnementReel();
 
     const [operation] = await db.insert(aiOperation).values({
       accountId: opts.accountId,
@@ -167,7 +185,7 @@ export class AiUsageTracker {
       isReanalysis: opts.isReanalysis ?? false,
       reanalysisReason: opts.reanalysisReason ?? null,
       isBillable: opts.isBillable ?? true,
-      environment: opts.environment ?? 'production',
+      ...(environment ? { environment } : {}),
       providerPrimary: routing.primary,
       businessResult: 'pending',
       startedAt: new Date(),

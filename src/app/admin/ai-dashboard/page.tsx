@@ -59,6 +59,7 @@ import {
   type DashboardWindow,
 } from '@/lib/admin/ai-dashboard';
 import { EmergencyStopControl } from './_components/AiEnvBanner';
+import { ObservabilityPanel } from './_components/ObservabilityPanel';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
 type State = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
@@ -401,6 +402,11 @@ export default function AiDashboardPage() {
           </div>
         ))}
       </div>
+
+      {/* §18 (CDC 15, lot 17) : indicateurs par traitement, même fenêtre,
+          filtre de version et d'environnement — section repliée, chargée à
+          l'ouverture. */}
+      <ObservabilityPanel days={days} versions={data.versions} environment={data.environment} />
 
       {/* Versions */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">

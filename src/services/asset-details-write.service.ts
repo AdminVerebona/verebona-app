@@ -309,6 +309,7 @@ export async function updateAssetDetails(p: UpdateAssetDetailsInput): Promise<{ 
 
   if (mode === 'enabled') {
     await writeSectionCanonical({ ...p, origin, source }, family);
+    await fermerCartesSaisies(accountId, assetId, canonicalWritesOf(fields, family));
     await recontroleCoherence(accountId, assetId, fields);
     return { updated: true, section };
   }
@@ -393,6 +394,25 @@ export async function updateAssetDetails(p: UpdateAssetDetailsInput): Promise<{ 
 
   await recontroleCoherence(accountId, assetId, fields);
   return { updated: true, section };
+}
+
+/**
+ * Valeur saisie par l'utilisateur (§5.3, `USER_COMPLETED`) : les cartes
+ * « À traiter » encore ouvertes sur ces champs (arbitrage, complétion) sont
+ * résolues — la saisie dans le tiroir ou la fiche EST l'arbitrage. Sans
+ * cela, la carte restait ouverte et l'assistant annonçait encore « à
+ * arbitrer » (corpus §15 E2E-T2-23). Valeur vidée : rien n'est fermé. Ne
+ * fait jamais échouer l'écriture (journalisé).
+ */
+async function fermerCartesSaisies(accountId: number, assetId: number, writes: CanonicalFieldWrite[]): Promise<void> {
+  const saisies = writes.filter((w) => w.value !== null && w.value !== undefined && w.value !== '');
+  if (saisies.length === 0) return;
+  try {
+    const { resolveActionsForData } = await import('@/services/to-process/to-process-action.service');
+    for (const w of saisies) await resolveActionsForData(accountId, 'ASSET', assetId, w.key, 'USER_COMPLETED');
+  } catch (e) {
+    console.error(`[asset-details] cartes « À traiter » du bien ${assetId} :`, (e as Error).message);
+  }
 }
 
 /**

@@ -19,7 +19,7 @@ import { it, expect } from 'vitest';
 import { scenario } from '../scenario';
 
 scenario('E2E-14', 'Immatriculation — fiche, colonne et export identiques', ({ sql, make }) => {
-  it('nominal : fiche, colonne et source d’export portent la même immatriculation', async () => {
+  it('E2E-14 (legacy/colonne) — nominal : fiche, colonne et source d’export portent la même immatriculation', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, {
       category: 'VEHICULE', registrationNumber: 'AB-123-CD',
@@ -77,7 +77,8 @@ scenario('E2E-14', 'Immatriculation — fiche, colonne et export identiques', ({
     }
   });
 
-  it.todo('écriture par writeCanonicalAssetField : colonne miroir = fiche (D-10) — primitive de l’agent B');
+  // Écriture par writeCanonicalAssetField (colonne miroir = fiche, D-10) :
+  // couverte par `canonical-write.e2e.ts` (« E2E-14 : fiche = colonne = vue canonique… »).
   it('T2 répond la même immatriculation que la fiche (L15, ASSISTANT_CANONICAL_READ=enabled), colonne vide comprise', async () => {
     const avant = process.env.ASSISTANT_CANONICAL_READ;
     process.env.ASSISTANT_CANONICAL_READ = 'enabled';

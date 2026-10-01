@@ -15,13 +15,17 @@ import { sql } from 'drizzle-orm';
 //   · agenda_items — `functional_key`, `event_nature`, `business_type`
 //     (0223, CDC 15 T4-08, D-14) : `services/agenda/agenda-columns.ts` ;
 //   · agenda_item_sources — `source_role`, `evidence_id` (0223, T4-07, X-04) :
-//     `services/agenda/agenda-source-links.ts` ;
-//   · table agenda_item_removals (0223, trace des retraits) :
-//     `services/agenda/agenda-removal-trace.ts`.
+//     `services/agenda/agenda-source-links.ts`.
+//
+// Les TABLES NEUVES de ces lots, elles, sont déclarées (fin de fichier :
+// agenda_item_removals 0223, ai_master_corpus_runs 0224, cdc15_migration_*
+// 0225), alignées sur le SQL : une table neuve n'existe qu'après sa
+// migration, et la déclarer protège contre un `db:push` qui la supprimerait.
+// Elles restent écrites et lues en SQL par leurs services.
 //
 // ⚠️ `drizzle-kit push` (ou `generate` suivi d'une migration) sur une base
-// réelle SUPPRIMERAIT ces colonnes et cette table, absentes du schéma. Ne
-// jamais l'utiliser contre une base alimentée : les migrations SQL de
+// réelle SUPPRIMERAIT les colonnes ci-dessus, absentes du schéma. Ne jamais
+// l'utiliser contre une base alimentée : les migrations SQL de
 // `db/migrations` font foi.
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -3006,4 +3010,123 @@ export const documentAssetLinks = pgTable('document_asset_links', {
   statusCheck: check('document_asset_links_status_check', sql`${t.status} IN ('ACTIVE', 'PROPOSED', 'REJECTED', 'REMOVED')`),
   confidenceCheck: check('document_asset_links_confidence_check', sql`${t.confidence} IS NULL OR (${t.confidence} >= 0 AND ${t.confidence} <= 1)`),
   targetCheck: check('document_asset_links_target_check', sql`${t.assetId} IS NOT NULL OR ${t.roomId} IS NOT NULL OR ${t.equipmentId} IS NOT NULL`),
+}));
+
+// ── Tables NEUVES des lots 14 à 17, déclarées pour `db:push` ────────────────
+// Écrites et lues en SQL par leurs services ; déclarées ICI (alignement exact
+// avec le SQL, contrôlé par `__tests__/schema-tables-neuves.test.ts`) pour
+// qu'un `drizzle-kit push` ne les supprime pas. Les colonnes 0217 / 0223
+// ajoutées à des tables EXISTANTES restent volontairement non déclarées
+// (voir l'en-tête de ce fichier).
+
+// Migration 0223 (suite) — trace des retraits d'éléments d'agenda (CDC 15 T4-08, §14.6).
+export const agendaItemRemovals = pgTable('agenda_item_removals', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  agendaItemId: integer('agenda_item_id').notNull(),
+  functionalKey: text('functional_key'),
+  startDate: pgDate('start_date'),
+  title: text('title'),
+  sourceFileId: integer('source_file_id'),
+  assetId: integer('asset_id'),
+  reason: text('reason').notNull(),
+  itemSnapshot: jsonb('item_snapshot').notNull(),
+  linksSnapshot: jsonb('links_snapshot').notNull().default(sql`'{}'::jsonb`),
+  removedAt: pgTimestamp('removed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  accountIdx: index('agenda_item_removals_account_idx').on(t.accountId, t.removedAt),
+  sourceIdx: index('agenda_item_removals_source_idx').on(t.sourceFileId),
+}));
+
+// Migration 0224 — exécutions du corpus des prompts maîtres (CDC 15 §30, §32 ; D-08, D-17).
+export const aiMasterCorpusRuns = pgTable('ai_master_corpus_runs', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  configVersionId: integer('config_version_id'),
+  treatment: text('treatment').notNull(),
+  masterPromptCode: text('master_prompt_code').notNull(),
+  masterPromptVersion: text('master_prompt_version').notNull(),
+  textSha256: text('text_sha256').notNull(),
+  textSource: text('text_source').notNull(),
+  branchesRequired: text('branches_required').array().notNull().default(sql`'{}'`),
+  branchesPassed: text('branches_passed').array().notNull().default(sql`'{}'`),
+  casesTotal: integer('cases_total').notNull().default(0),
+  casesPassed: integer('cases_passed').notNull().default(0),
+  status: text('status').notNull(),
+  source: text('source').notNull(),
+  runMode: text('run_mode').notNull().default('replay'),
+  environment: text('environment'),
+  gitSha: text('git_sha'),
+  details: jsonb('details').notNull().default(sql`'{}'::jsonb`),
+  createdBy: integer('created_by'),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  statusCheck: check('ai_master_corpus_runs_status_ck', sql`${t.status} IN ('PASSED', 'FAILED')`),
+  sourceCheck: check('ai_master_corpus_runs_source_ck', sql`${t.source} IN ('ci', 'preprod', 'prod', 'local')`),
+  runModeCheck: check('ai_master_corpus_runs_run_mode_ck', sql`${t.runMode} IN ('replay', 'live')`),
+  textSourceCheck: check('ai_master_corpus_runs_text_source_ck', sql`${t.textSource} IN ('config', 'file')`),
+  lookupIdx: index('ai_master_corpus_runs_lookup_idx').on(t.masterPromptCode, t.textSha256, t.runMode, t.createdAt.desc()),
+  versionIdx: index('ai_master_corpus_runs_version_idx').on(t.configVersionId, t.treatment, t.createdAt.desc()),
+}));
+
+// Migration 0225 — rattrapages de données CDC 15 §14 (MIG-01 à MIG-09, lot 17) :
+// exécutions, rapport (valeurs masquées), copie restaurable (accès restreint).
+export const cdc15MigrationRuns = pgTable('cdc15_migration_runs', {
+  runId: uuid('run_id').primaryKey(),
+  runMode: text('run_mode').notNull(),
+  steps: text('steps').array().notNull(),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  options: jsonb('options').notNull().default(sql`'{}'::jsonb`),
+  cursors: jsonb('cursors').notNull().default(sql`'{}'::jsonb`),
+  counts: jsonb('counts').notNull().default(sql`'{}'::jsonb`),
+  status: text('status').notNull().default('RUNNING'),
+  startedAt: pgTimestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: pgTimestamp('finished_at', { withTimezone: true }),
+}, (t) => ({
+  modeCheck: check('cdc15_migration_runs_mode_check', sql`${t.runMode} IN ('dry_run', 'apply')`),
+  statusCheck: check('cdc15_migration_runs_status_check', sql`${t.status} IN ('RUNNING', 'DONE', 'FAILED', 'PARTIAL')`),
+}));
+
+export const cdc15MigrationReport = pgTable('cdc15_migration_report', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  runId: uuid('run_id').notNull(),
+  runMode: text('run_mode').notNull(),
+  step: text('step').notNull(),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  assetId: integer('asset_id'),
+  entityType: text('entity_type').notNull(),
+  entityId: text('entity_id'),
+  fieldKey: text('field_key'),
+  beforeValue: jsonb('before_value'),
+  afterValue: jsonb('after_value'),
+  decision: text('decision').notNull(),
+  reason: text('reason'),
+  details: jsonb('details').notNull().default(sql`'{}'::jsonb`),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  decisionCheck: check('cdc15_migration_report_decision_check', sql`${t.decision} IN ('APPLIED', 'SKIPPED_USER', 'AMBIGUOUS', 'NO_CHANGE')`),
+  modeCheck: check('cdc15_migration_report_mode_check', sql`${t.runMode} IN ('dry_run', 'apply')`),
+  stepCheck: check('cdc15_migration_report_step_check',
+    sql`${t.step} IN ('MIG-01', 'MIG-02', 'MIG-03', 'MIG-04', 'MIG-05', 'MIG-06', 'MIG-07', 'MIG-08')`),
+  runIdx: index('cdc15_migration_report_run_idx').on(t.runId, t.step, t.decision),
+  accountIdx: index('cdc15_migration_report_account_idx').on(t.accountId, t.createdAt),
+  ambiguousIdx: index('cdc15_migration_report_ambiguous_idx').on(t.step, t.createdAt).where(sql`decision = 'AMBIGUOUS'`),
+}));
+
+export const cdc15MigrationBackups = pgTable('cdc15_migration_backups', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  runId: uuid('run_id').notNull(),
+  step: text('step').notNull(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  assetId: integer('asset_id'),
+  targetType: text('target_type').notNull(),
+  targetId: bigint('target_id', { mode: 'number' }).notNull(),
+  name: text('name').notNull(),
+  oldValue: jsonb('old_value'),
+  newValue: jsonb('new_value'),
+  restoredAt: pgTimestamp('restored_at', { withTimezone: true }),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  targetCheck: check('cdc15_migration_backups_target_check',
+    sql`${t.targetType} IN ('asset_column', 'asset_kc', 'field_evidence', 'document_fact')`),
+  runIdx: index('cdc15_migration_backups_run_idx').on(t.runId, t.id),
 }));

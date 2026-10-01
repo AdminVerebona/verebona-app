@@ -10,6 +10,7 @@
  * courants) et rend soit une entité, soit une ambiguïté (candidats), soit
  * rien. Il n'autorise rien : l'appelant re-vérifie l'entité en base.
  */
+import { canonicalReadEnabled } from '../canonical/mode';
 
 export type ReferencedType = 'asset' | 'document' | 'agenda_item';
 
@@ -56,6 +57,29 @@ const DEMONSTRATIF_BIEN = /\b(ce|cet|cette)\s+(bien|maison|appartement|logement|
 const AUTRE = /\b(l'autre|l autre|pour l'autre|et l'autre)\b/;
 const PRECEDENT = /\b(le precedent|la precedente|celui d'avant|celle d'avant)\b/;
 const PRONOM = /\b(celui-ci|celle-ci|celui-la|celle-la|lui)\b|\b(sa|son|ses)\s+(date|montant|echeance|prix|titre|fournisseur|adresse|reference|numero|immatriculation|date d'achat)\b/;
+// Lecture canonique seulement (legacy strictement identique au lot 16) :
+// « son statut », « son état » visent l'élément sélectionné (E2E-T2-12).
+const PRONOM_STATUT = /\b(sa|son|ses)\s+(statut|etat)\b/;
+
+// Corpus §15 E2E-T2-12 : question de STATUT sur l'échéance choisie
+// (« est-il réalisé ? », « a-t-il été fait ? »). L'inversion ne vaut renvoi
+// QUE si le message ne contient rien d'autre que ce vocabulaire de suivi
+// (court, aucune entité nommée), que la dernière sélection du fil est une
+// échéance, et en lecture canonique (ASSISTANT_CANONICAL_READ=enabled).
+// « Le contrôle technique de la Clio est-il passé ? » n'est pas un renvoi.
+const INVERSION = /^(?:et\s+)?(est-il|est-elle|a-t-il|a-t-elle)\b/;
+const MOTS_DE_STATUT = new Set([
+  'et', 'est-il', 'est-elle', 'a-t-il', 'a-t-elle', 'deja', 'bien', 'ete', 'eu', 'lieu', 'vraiment', 'maintenant',
+  'fait', 'faite', 'realise', 'realisee', 'effectue', 'effectuee', 'passe', 'passee', 'termine', 'terminee',
+  'confirme', 'confirmee', 'annule', 'annulee', 'en', 'retard', 'a', 'jour', 'prevu', 'prevue',
+]);
+function inversionDeStatut(m: string, ctx: ThreadContext): string | null {
+  if (!canonicalReadEnabled() || ctx.lastSelected?.type !== 'agenda_item') return null;
+  const mots = m.replace(/[?.!,;:]/g, ' ').split(/\s+/).filter(Boolean);
+  const hit = m.trim().match(INVERSION);
+  if (!hit || mots.length > 6 || !mots.every((w) => MOTS_DE_STATUT.has(w))) return null;
+  return hit[1];
+}
 
 /** Liste la plus récente qui contient la position demandée. */
 function parPosition(ctx: ThreadContext, pos: number): PresentedEntity | null {
@@ -142,7 +166,9 @@ export function resolveThreadReference(message: string, ctx: ThreadContext): Ref
 
   // 5. Pronoms — « sa date », « celui-ci » : l'entité sélectionnée, ou
   //    l'unique entité présentée.
-  const pron = m.match(PRONOM);
+  const statut = inversionDeStatut(m, ctx);
+  if (statut) return { kind: 'resolved', entity: ctx.lastSelected!, method: 'pronoun', detected: statut };
+  const pron = m.match(PRONOM) ?? (canonicalReadEnabled() ? m.match(PRONOM_STATUT) : null);
   if (pron) {
     if (ctx.lastSelected) return { kind: 'resolved', entity: ctx.lastSelected, method: 'pronoun', detected: pron[0] };
     const seul = unique(derniere);

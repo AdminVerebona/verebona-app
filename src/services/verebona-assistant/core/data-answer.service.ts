@@ -36,6 +36,8 @@ import {
 } from './document-status';
 import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
 import { canonicalReadEnabled } from '../canonical/mode';
+import { getIntentDefinition } from '../registries/intent-registry';
+import type { VerebonaIntent } from '../types/intents';
 import { tryCanonicalStructured, fieldAnswer } from '../canonical/structured-answers';
 import { assetFieldSource } from '../canonical/field-reader';
 import { exportCodeLabel } from '@/services/exports/catalog';
@@ -752,6 +754,16 @@ async function visualRecheckEnabled(): Promise<boolean> {
   }
 }
 
+/**
+ * L'intention a un contrat de sources (T2-07) qui n'admet aucun document
+ * (pure, testée). Sans intention ou sans contrat : non.
+ */
+export function intentionSansDocuments(intent: string | undefined): boolean {
+  if (!intent) return false;
+  const attendus = getIntentDefinition(intent as VerebonaIntent)?.expectedSourceTypes ?? [];
+  return attendus.length > 0 && !attendus.some((t) => t === 'document' || t === 'document_extraction');
+}
+
 // ── Point d'entrée ─────────────────────────────────────────────────────────
 
 export async function answerFromData(p: {
@@ -805,6 +817,19 @@ export async function answerFromData(p: {
     contextSources.push(...l1.sources);
   } else {
     attempts.push({ level: 1, strategy: 'none', status: 'NOT_APPLICABLE', score: 0, threshold: p.thresholds.database, reason: 'NO_STRUCTURED_PLAN' });
+  }
+
+  // ── Contrat de sources de l'intention (CDC 15 T2-07, corpus §15 E2E-T2-18) ─
+  // En lecture canonique, le niveau 2 ne rend QUE des documents (faits T1,
+  // document le plus pertinent) : une intention dont le contrat exclut les
+  // documents (échéances, fournisseurs, « À traiter », biens) n'y a pas
+  // accès — sinon « retrouve le contrôle technique dans mon agenda »
+  // répondait par le procès-verbal. La recherche par adaptateurs, filtrée
+  // par le même contrat, prend le relais.
+  if (canonicalReadEnabled() && intentionSansDocuments(p.intent)) {
+    const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 2, score: 0, threshold: p.thresholds.text, reason: 'NO_RESULT', detail: 'contrat de sources sans document' };
+    attempts.push({ level: 2, strategy: 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
+    return noAnswer(decision);
   }
 
   // ── Niveau 2 : faits T1 ──────────────────────────────────────────────────

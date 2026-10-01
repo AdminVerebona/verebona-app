@@ -77,4 +77,15 @@ describe('traces IA', () => {
     await recordCallTrace(trace());
     expect(updates).toHaveLength(0);
   });
+
+  it('§18 (lot 17) : l’environnement réel est écrit (la colonne vaut « production » par défaut)', async () => {
+    const avant = process.env.NEXT_PUBLIC_APP_ENV;
+    process.env.NEXT_PUBLIC_APP_ENV = 'staging';
+    try {
+      await recordCallTrace(trace());
+      expect(inserts[0].values.environment).toBe('preprod');
+    } finally {
+      if (avant === undefined) delete process.env.NEXT_PUBLIC_APP_ENV; else process.env.NEXT_PUBLIC_APP_ENV = avant;
+    }
+  });
 });

@@ -110,6 +110,21 @@ describe('fieldsForLinkedAsset — rattachement explicite par l’utilisateur', 
       ['maintenanceDueDate', 'EQUIPMENT', 7],
     ]);
   });
+
+  it('E2E-11 : un fait ciblant l’ANCIEN bien (A) n’est jamais projeté sur B ; un tiers garde sa cible ; les faits sans cible vont à B', () => {
+    const cible = (id: number | null) => ({ targetType: 'ASSET' as const, targetEntityId: id, targetEntityLabel: null, targetConfidence: 'certain' as const });
+    const versA = asField({ canonicalKey: 'mileage', target: cible(7) });
+    const versB = asField({ canonicalKey: 'lastRevision', target: cible(42) });
+    const tiers = asField({ canonicalKey: 'acquisitionDate', target: cible(9) });
+    const sansCible = asField({ canonicalKey: 'maintenanceDueDate', target: cible(null) });
+    const out = fieldsForLinkedAsset([versA, versB, tiers, sansCible], 42, { allowReassign: true, previousAssetId: 7 });
+    expect(out.map((f) => [f.fieldKey, f.target?.targetEntityId])).toEqual([['lastRevision', 42], ['acquisitionDate', 9], ['maintenanceDueDate', 42]]);
+    // Sans ancien bien connu : comportement antérieur (le fait ciblé reste sur sa cible).
+    expect(fieldsForLinkedAsset([versA], 42, { allowReassign: false }).map((f) => f.target?.targetEntityId)).toEqual([7]);
+    // L'ancien bien ne bloque pas l'attribution des faits sans cible ; un tiers, si.
+    expect(lateLinkAllowsReassignment({ multiAsset: false, metadata: { assetCandidates: [{ entityId: 7 }] } }, [{ targetType: 'ASSET', targetEntityId: 7 }], 42, 7)).toBe(true);
+    expect(lateLinkAllowsReassignment({ multiAsset: false, metadata: {} }, [{ targetType: 'ASSET', targetEntityId: 9 }], 42, 7)).toBe(false);
+  });
 });
 
 describe('P-T1-04 — rattachement tardif sans fuite entre biens (T1-05)', () => {

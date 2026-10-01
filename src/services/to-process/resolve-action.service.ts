@@ -185,7 +185,12 @@ export interface ResolveResult {
   ok: boolean;
   /** Valeur précédente, à conserver côté client pour l'annulation (§8.5). */
   previousValue: unknown;
-  error?: 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'FIELD_NOT_RESOLVABLE' | 'INVALID_VALUE';
+  /**
+   * STALE (lot 17, cartes MIG-REVIEW) : la valeur en place n'est plus celle
+   * sur laquelle la carte a été ouverte (ou résolue) — carte marquée périmée,
+   * rien n'est écrit.
+   */
+  error?: 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'FIELD_NOT_RESOLVABLE' | 'INVALID_VALUE' | 'STALE';
 }
 
 export interface ResolveOptions {
@@ -254,6 +259,13 @@ export async function resolveArbitration(
     if (action.ruleCode === 'AGENDA-PROPOSAL') {
       const { resolveAgendaProposal } = await import('./agenda-proposal-cards');
       return resolveAgendaProposal(tx as never, action, value, accountId, options);
+    }
+
+    // Cas ambigu d'un rattrapage CDC 15 (§14, MIG-09, lot 17) : la valeur
+    // choisie parmi les propositions est écrite par la primitive canonique.
+    if (action.ruleCode === 'MIG-REVIEW') {
+      const { resolveMigrationReview } = await import('./migration-review-cards');
+      return resolveMigrationReview(tx, action, value, accountId, options);
     }
 
     // Relation (T3-07, LINK-ELT) : écrivain de relation de la liste blanche,
@@ -353,6 +365,11 @@ export async function undoArbitration(
   if (action.ruleCode === 'AGENDA-PROPOSAL') {
     const { undoAgendaProposal } = await import('./agenda-proposal-cards');
     return undoAgendaProposal(action, accountId);
+  }
+
+  if (action.ruleCode === 'MIG-REVIEW') {
+    const { undoMigrationReview } = await import('./migration-review-cards');
+    return undoMigrationReview(action, accountId);
   }
 
   const relation = action.relationKey

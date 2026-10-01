@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   concurrentIndexName, runMigrationSql, listInvalidIndexes, repairInvalidMigrationIndexes, indexLockKey, type SqlRunner,
+  MIGRATION_INDEX_LOCK_TIMEOUT,
 } from '../migration-index';
 
 const FICHIER = `-- Migration 0219 (index 1/3)
@@ -106,6 +107,30 @@ describe('runMigrationSql', () => {
     calls.length = 0;
     expect(await runMigrationSql(client, 'ALTER TABLE t ADD COLUMN IF NOT EXISTS x int;')).toEqual({ status: 'applied', index: null });
     expect(calls).toEqual(['ALTER TABLE t ADD COLUMN IF NOT EXISTS x int;']);
+  });
+});
+
+describe('lock_timeout sur la connexion réservée (relecture lot 17)', () => {
+  it('SET avant DROP / CREATE CONCURRENTLY, RESET avant de rendre la connexion', async () => {
+    const e = etat({ index: new Map([['field_evidence_target_idx', false]]) });
+    const { client, calls } = fakeClient(e);
+    await runMigrationSql(client, FICHIER);
+    const set = calls.indexOf(`SET lock_timeout = '${MIGRATION_INDEX_LOCK_TIMEOUT}'`);
+    const drop = calls.findIndex((c) => c.startsWith('DROP INDEX CONCURRENTLY'));
+    const create = calls.findIndex((c) => c.startsWith('-- Migration 0219')); // le fichier lui-même (première ligne)
+    const reset = calls.indexOf('RESET lock_timeout');
+    expect(set).toBeGreaterThanOrEqual(0);
+    expect(set).toBeLessThan(drop);
+    expect(drop).toBeLessThan(create);
+    expect(reset).toBeGreaterThan(create);
+  });
+  it('échec de construction : RESET quand même ; sans connexion réservable : aucun SET (connexion du pool intacte)', async () => {
+    const a = fakeClient(etat({ buildLeavesInvalid: true }));
+    await expect(runMigrationSql(a.client, FICHIER)).rejects.toThrow();
+    expect(a.calls).toContain('RESET lock_timeout');
+    const b = fakeClient(etat(), false);
+    await runMigrationSql(b.client, FICHIER);
+    expect(b.calls.some((c) => /lock_timeout/.test(c))).toBe(false);
   });
 });
 

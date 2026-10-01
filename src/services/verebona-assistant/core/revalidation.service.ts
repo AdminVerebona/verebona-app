@@ -298,6 +298,13 @@ export interface ReplaceEvidenceInput {
   newValue: string;
   /** La projection du fait revalidé (preuves + T3) ; peut lever. */
   project: () => Promise<number | void>;
+  /**
+   * Réconciliation T3 du bien APRÈS le remplacement (corpus §15 E2E-T2-22) :
+   * la projection a réconcilié pendant que l'ancienne preuve était encore
+   * active — la fiche gardait l'ancienne valeur. Appelée seulement si des
+   * preuves ont été remplacées (mode enabled) ; ne fait jamais échouer.
+   */
+  reconcile?: () => Promise<unknown>;
 }
 
 export interface ReplaceEvidenceResult {
@@ -334,6 +341,9 @@ export async function replaceRevalidatedEvidence(p: ReplaceEvidenceInput): Promi
     const r = await supersedeFieldEvidenceExcept({
       accountId: p.accountId, sourceId: p.fileId, assetId: p.assetId, fieldKeys, keepValue: p.newValue, mode,
     });
+    if (mode === 'enabled' && r.superseded > 0 && p.reconcile) {
+      await p.reconcile().catch((e: Error) => console.error('[revalidation] réconciliation après remplacement :', e.message));
+    }
     return { mode, superseded: r.superseded, projected: true };
   } catch (e) {
     console.error('[revalidation] remplacement des anciennes preuves :', (e as Error).message);
@@ -665,6 +675,9 @@ export async function revalidateFact(
       if (out.status === 'CONFIRMED' || out.confidence === 'certain') {
         const r = await (deps.replaceEvidence ?? replaceRevalidatedEvidence)({
           accountId: p.accountId, fileId: f.fileId, assetId, factKey: f.factKey, newValue: out.value, project,
+          reconcile: async () => (await import('@/services/ai/reconciliation/t3-queue')).enqueueT3ForAssets({
+            accountId: p.accountId, userId: p.userId, assetIds: [assetId], sourceFileId: f.fileId, reason: 'FACT_REVALIDATED',
+          }),
         }).catch((e: Error) => { console.error('[revalidation] remplacement des preuves :', e.message); return null; });
         if (r) { trace.supersededEvidence = r.superseded; trace.evidenceMode = r.mode; trace.projected = r.projected; }
       } else {

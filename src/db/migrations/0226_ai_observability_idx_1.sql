@@ -1,0 +1,17 @@
+-- Migration 0226 (index 1/9) : document_facts (created_at) — CDC 15 §18, observabilité (lot 17).
+-- Les indicateurs du tableau de bord IA lisent une PÉRIODE sur toute la base
+-- (tous comptes) : sans index sur la date, chaque affichage parcourrait la
+-- table entière. UNE instruction par fichier (CREATE INDEX CONCURRENTLY hors
+-- transaction). Idempotente (IF NOT EXISTS).
+-- Verrous : `runMigrationSql` pose `lock_timeout` (MIGRATION_INDEX_LOCK_TIMEOUT,
+-- 10 s) sur sa connexion réservée — une construction qui attend un verrou
+-- échoue au lieu de bloquer les écritures ; l'index invalide laissé est
+-- reconstruit au démarrage suivant (`repairInvalidMigrationIndexes`).
+-- Durée attendue (HC-03) : une lecture complète de la table par index ;
+-- de quelques secondes à quelques minutes sur les plus grosses tables
+-- (document_facts, field_evidence, verebona_request_runs). Les migrations
+-- tournant AU DÉMARRAGE, prévoir un démarrage plus long lors du déploiement
+-- de la 0226, OU créer ces index à la main avant (même instruction, hors
+-- démarrage) : le fichier, idempotent, sera alors marqué appliqué sans rien
+-- refaire.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS document_facts_created_at_obs_idx ON document_facts (created_at);
