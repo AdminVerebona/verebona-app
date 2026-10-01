@@ -218,9 +218,16 @@ Reprise de l'existant :
    le `postinstall` et le moteur utilisent automatiquement le build ubuntu24.04
    (`PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64`, surchargeable).
 1. `.buildpacks` : `apt-buildpack` **puis** `nodejs-buildpack` (déjà dans le dépôt).
-2. `Aptfile` (scalingo-24 / scalingo-26, noms `t64`) : bibliothèques de Chromium
-   (`libgtk-3-0t64 libgbm-dev libnotify-dev libnss3 libxss1 libasound2t64 libxtst6
-   xauth xvfb`) et `fonts-dejavu-core` (glyphes de repli).
+2. `Aptfile` (scalingo-24 / scalingo-26, noms `t64`) : bibliothèques MINIMALES de
+   Chromium headless (dépendances Playwright absentes de l'image de base : `libasound2t64
+   libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libdrm2 libgbm1 libnss3
+   libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2`) et
+   `fonts-dejavu-core` (glyphes de repli). Pas de GTK, xvfb ni paquets `-dev` :
+   inutiles au headless-shell et responsables d'un dépassement de la limite
+   d'image Scalingo (2048 Mo).
+2 bis. `postbuild` (`scripts/prune-image.mjs`, builds Scalingo uniquement) : retire
+   de l'image le cache de compilation Next (`.next/cache/webpack|swc|eslint`), la
+   documentation des paquets apt et le ffmpeg de Playwright.
 3. Installation de Chromium par le `postinstall` (`scripts/install-chromium.mjs`) :
    automatique sur tout build Scalingo (`STACK=scalingo-*`), ou forcée par
    **`EXPORTS_INSTALL_CHROMIUM=1`** ; `chromium-headless-shell` est installé dans
