@@ -74,6 +74,18 @@ interface HealthCheckResult {
       status: 'ok' | 'warning';
       warnings?: Array<{ treatment: string; code: string; switchName: string; switchMode: string; message: string }>;
     };
+    /**
+     * Corpus du Centre d'aide lu par l'assistant (CDC Centre d'aide PUB-01,
+     * ENV-02) : corpus publié refusé (invalide, autre environnement) ou
+     * injoignable → `warning`, avec le corpus réellement servi (dernier
+     * valide en mémoire ou en base, ou aucun). Avertissement : ne dégrade pas
+     * le statut global.
+     */
+    helpCorpus?: Omit<import('@/services/verebona-assistant/core/help-corpus.service').HelpCorpusHealth, 'status'> & {
+      /** `not_loaded` : aucune lecture du corpus sur cette instance depuis son démarrage. */
+      status: 'ok' | 'warning' | 'not_loaded';
+      message?: string;
+    };
   };
 }
 
@@ -189,6 +201,19 @@ export async function GET(request: NextRequest) {
     }
   } catch {
     /* contrôle indicatif : jamais bloquant pour la sonde */
+  }
+
+  // Check 5: corpus d'aide de l'assistant (PUB-01). État EN MÉMOIRE
+  // seulement : aucun chargement, aucun appel sortant, aucune écriture — la
+  // sonde ne doit rien déclencher. Jamais lu sur l'instance : « non chargé ».
+  try {
+    const { helpCorpusHealth } = await import('@/services/verebona-assistant/core/help-corpus.service');
+    const h = helpCorpusHealth();
+    result.checks.helpCorpus = h.status === 'unknown'
+      ? { ...h, status: 'not_loaded', message: 'Corpus d’aide non chargé sur cette instance (aucune question d’aide depuis le démarrage).' }
+      : { ...h, status: h.status };
+  } catch {
+    /* contrôle indicatif */
   }
 
   // Déterminer le status global

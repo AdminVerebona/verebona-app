@@ -91,6 +91,11 @@ export function VerebonaSources({ messageId, count, open: openProp, onOpenChange
                 {r.excerpt_snapshot && <p className="text-muted-foreground">{r.excerpt_snapshot}</p>}
                 {/* Le lien n'apparaît que si le serveur en a fourni un : pas de
                     destination devinée côté client (§22.1). */}
+                {/* Source disponible sans objet à ouvrir (regroupement, règle) :
+                    signalée, jamais de lien mort (R8). */}
+                {!r.href && r.is_available && (
+                  <div className="mt-1 text-muted-foreground">Pas d’élément à ouvrir</div>
+                )}
                 {r.href && (
                   <Link
                     href={r.href}

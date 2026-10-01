@@ -71,6 +71,12 @@ interface Props {
    * enregistrement est en cours ou en échec). Facultatif.
    */
   onSaveStateChange?: (state: AutosaveState) => void;
+  /**
+   * Sous-rubriques dont des champs viennent d'être ENREGISTRÉS (écriture
+   * réussie) — ex. recomposer les annonces de vente quand `commercial`
+   * change (VENTE-RULE-002). Facultatif.
+   */
+  onSectionsSaved?: (sections: AdditionalInfoSectionKey[]) => void;
 }
 
 const NONE = '__none__';
@@ -104,7 +110,7 @@ function SaveIndicator({ state, onRetry }: { state: AutosaveState; onRetry: () =
 }
 
 export function AssetAdditionalInfosSection({
-  assetId, category, readOnly = false, sections, variant = 'card', defaultOpen = false, onSaveStateChange,
+  assetId, category, readOnly = false, sections, variant = 'card', defaultOpen = false, onSaveStateChange, onSectionsSaved,
 }: Props) {
   const family = toExportFamily(category);
   const visible = useMemo(() => {
@@ -123,6 +129,8 @@ export function AssetAdditionalInfosSection({
   // Rappel lu par la file sans la recréer à chaque rendu.
   const onSaveStateRef = useRef(onSaveStateChange);
   onSaveStateRef.current = onSaveStateChange;
+  const onSectionsSavedRef = useRef(onSectionsSaved);
+  onSectionsSavedRef.current = onSectionsSaved;
   /** Listes affichées (brouillons compris), clé `section.champ`. */
   const [lists, setLists] = useState<Record<string, ListItem[]>>({});
   /** Liste dont une cellule est illisible (montant…) : elle ne part pas. */
@@ -259,6 +267,9 @@ export function AssetAdditionalInfosSection({
           }
           throw err;
         }
+        // Écriture réussie : sous-rubriques effectivement envoyées.
+        const envoyees = Object.keys(patch).filter((k) => k !== 'version') as AdditionalInfoSectionKey[];
+        if (envoyees.length) onSectionsSavedRef.current?.(envoyees);
       },
       onStateChange: (s) => { setSaveState(s); onSaveStateRef.current?.(s); },
     });

@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
+import { createExportSettleWatcher } from '@/lib/data-freshness';
 import { toast } from 'sonner';
 import { TransferExportDrawer, type TransferUsage } from './TransferExportDrawer';
 import { preparationPath } from '@/lib/exports/dossier-slug';
@@ -263,9 +264,13 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
   const [cilSummary, setCilSummary] = useState<CilPreparationSummary | null>(null);
   const [cilSummaryLoading, setCilSummaryLoading] = useState(false);
 
+  // CDC 11 §15 : historique interrogé toutes les 3 s pendant une génération —
+  // un export passé à prêt / erreur émet `verebona:data-mutated` (mascotte).
+  const generationsWatcher = useRef(createExportSettleWatcher());
   const loadExports = useCallback(async () => {
     try {
       const res = await apiClient.get<{ exports: ExportRecord[] }>(`/api/assets/${assetId}/exports`);
+      generationsWatcher.current.observeList((res.exports ?? []).map((e) => ({ id: e.id, status: v12Status(e) })));
       setExports(res.exports ?? []);
     } catch {
       // ignore

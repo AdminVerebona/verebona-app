@@ -46,9 +46,31 @@ describe('ENTITY-FIELD', () => {
     expect((m.upsertAction.mock.calls[0][0] as { question: string }).question).toContain('Chaudière');
     expect(m.resolveActionsForData).toHaveBeenCalledWith(7, 'EQUIPMENT', 4, 'warrantyEndDate', 'OBSOLETE');
 
-    m.upsertAction.mockClear();
-    const r = await syncEntityFieldCards({ accountId: 7, target: { type: 'ROOM', id: 2 }, decisions: [decision({ fieldKey: 'roomArea' })] });
-    expect(r.skipped).toBe(1);
-    expect(m.upsertAction).not.toHaveBeenCalled();
+  });
+
+  it('pièce (lot 19) : carte ENTITY-FIELD-ROOM sur la pièce, fermeture sur la pièce', async () => {
+    expect(getRule('ENTITY-FIELD-ROOM')).toMatchObject({ targetType: 'ROOM', completePriority: null });
+    await syncEntityFieldCards({
+      accountId: 7, target: { type: 'ROOM', id: 2 }, entityName: 'Salon',
+      decisions: [decision({ fieldKey: 'roomArea', currentValue: 18, proposedValue: 20 }), decision({ fieldKey: 'roomArea', action: 'keep' })],
+    });
+    expect(m.upsertAction).toHaveBeenCalledWith(expect.objectContaining({
+      targetType: 'ROOM', targetId: 2, fieldKey: 'roomArea', ruleCode: 'ENTITY-FIELD-ROOM',
+      proposals: [expect.objectContaining({ value: 20 }), expect.objectContaining({ value: 18, isCurrentValue: true })],
+    }));
+    expect((m.upsertAction.mock.calls[0][0] as { question: string }).question).toContain('de Salon');
+    // La décision tranchée du même passage ne referme pas la carte qu'il vient d'ouvrir.
+    expect(m.resolveActionsForData).not.toHaveBeenCalled();
+  });
+
+  it('navigation : une pièce ouvre la page de son bien, onglet « Pièces »', async () => {
+    vi.doMock('@/lib/drawers', () => ({ openDrawer: vi.fn() }));
+    const { openToProcessTarget } = await import('@/lib/to-process-target');
+    const push = vi.fn();
+    const repli = vi.fn();
+    openToProcessTarget({ targetType: 'ROOM', targetId: 2, targetPublicId: 'uuid-bien' }, { push }, repli);
+    expect(push).toHaveBeenCalledWith('/assets/uuid-bien?tab=rooms');
+    openToProcessTarget({ targetType: 'ROOM', targetId: 2, targetPublicId: null }, { push }, repli);
+    expect(repli).toHaveBeenCalledTimes(1);
   });
 });

@@ -20,6 +20,7 @@
 import { pgClient } from '@/db';
 import { HELP_INTENTS } from './help-corpus.service';
 import { redact } from './redaction.service';
+import { truthSourceOf } from '@/services/ai/telemetry/t2-observability';
 
 export interface UnansweredHelpQuestion {
   intent: string;
@@ -127,3 +128,120 @@ export async function listUnansweredHelpQuestions(opts: { days?: number; limit?:
   )) as unknown as Array<{ intent: string | null; content: string | null; created_at: string }>;
   return agregerQuestions(lignes, Math.min(Math.max(opts.limit ?? 50, 1), 200));
 }
+
+// ── §32.5 : demandes non résolues, par intention et MOTIF ───────────────────
+//
+// Au-delà des questions d'aide sans article, TOUTES les demandes non
+// résolues sont regroupées par motif (CDC Assistant §32.5) : aucune donnée,
+// ambiguïté, absence d'article d'aide, action non supportée, incident
+// technique, hors périmètre. COMPTEURS SEULEMENT : aucun texte, aucun compte,
+// aucun utilisateur (« les tableaux de bord privilégient des regroupements »).
+// Lecture seule, connexion réservée, `statement_timeout` côté base (cadre
+// de l'observabilité, lot 17), sur l'index de date 0226.
+
+export const UNANSWERED_MOTIVES = [
+  'aucune_donnee', 'ambiguite', 'absence_article_aide', 'action_non_supportee', 'incident_technique', 'hors_perimetre',
+] as const;
+export type UnansweredMotive = (typeof UNANSWERED_MOTIVES)[number];
+
+export const UNANSWERED_MOTIVE_LABELS: Readonly<Record<UnansweredMotive, string>> = {
+  aucune_donnee: 'Aucune donnée',
+  ambiguite: 'Ambiguïté',
+  absence_article_aide: 'Absence d’article d’aide',
+  action_non_supportee: 'Action non supportée',
+  incident_technique: 'Incident technique',
+  hors_perimetre: 'Hors périmètre',
+};
+
+/** Ligne agrégée de `verebona_request_runs` (sans contenu). */
+export interface UnansweredRunGroup {
+  intent: string | null;
+  status: string | null;
+  error_code: string | null;
+  state: string | null;
+  strategy: string | null;
+  no_source: boolean | null;
+  ambiguous_ref: boolean | null;
+  n: number;
+}
+
+/** Codes qui ne sont pas des demandes « non résolues » (refus d'usage, annulation). */
+const HORS_DECOMPTE = new Set(['REQUEST_CANCELLED', 'RATE_LIMITED', 'PLAN_NOT_ELIGIBLE', 'VALIDATION_FAILED', 'CONVERSATION_EXPIRED']);
+const HORS_PERIMETRE_INTENTS = new Set(['OUT_OF_SCOPE', 'SENSITIVE_ADVICE', 'UNSAFE_OR_MALICIOUS']);
+
+/**
+ * Motif d'une demande non résolue, ou `null` si elle a reçu une réponse (ou
+ * n'est pas une question : annulation, quota, offre). Pur, testé.
+ * Ordre : l'incident prime (la réponse n'a pas pu être construite), puis le
+ * périmètre, l'action, l'ambiguïté, l'aide, enfin l'absence de donnée.
+ */
+export function classifyUnanswered(g: Omit<UnansweredRunGroup, 'n'>): UnansweredMotive | null {
+  const code = g.error_code ?? '';
+  const strategy = g.strategy ?? '';
+  const intent = g.intent ?? '';
+  if (HORS_DECOMPTE.has(code) || g.state === 'CANCELLED' || g.status === 'pending') return null;
+  if (g.status === 'error' && !['UNSAFE_REQUEST', 'INVALID_ACTION', 'CLARIFICATION_REQUIRED', 'CLARIFICATION_EXPIRED', 'NO_RELEVANT_SOURCE'].includes(code)) {
+    return 'incident_technique';
+  }
+  if (strategy.startsWith('timeout.')) return 'incident_technique';
+  if (HORS_PERIMETRE_INTENTS.has(intent) || code === 'UNSAFE_REQUEST') return 'hors_perimetre';
+  if (intent === 'UNSUPPORTED_ACTION' || code === 'INVALID_ACTION') return 'action_non_supportee';
+  if (g.state === 'CLARIFYING' || strategy.startsWith('clarification.') || strategy === 'reference.clarification'
+    || code === 'CLARIFICATION_REQUIRED' || code === 'CLARIFICATION_EXPIRED' || g.ambiguous_ref) return 'ambiguite';
+  if (HELP_INTENTS.has(intent) && g.no_source) return 'absence_article_aide';
+  if (code === 'NO_RELEVANT_SOURCE' || (g.no_source && truthSourceOf(strategy || null) === 'aucune')) return 'aucune_donnee';
+  return null;
+}
+
+export interface UnansweredByMotive {
+  days: number;
+  total: number;
+  byMotive: Array<{ motive: UnansweredMotive; label: string; count: number }>;
+  byIntent: Array<{ intent: string; motive: UnansweredMotive; label: string; count: number }>;
+}
+
+/** Agrège des groupes de demandes (pur : testable sans base). */
+export function aggregateUnanswered(groups: UnansweredRunGroup[], days: number, limit = 30): UnansweredByMotive {
+  const parMotif = new Map<UnansweredMotive, number>();
+  const parIntention = new Map<string, number>();
+  for (const g of groups) {
+    const m = classifyUnanswered(g);
+    if (!m) continue;
+    const k = Number(g.n) || 0;
+    parMotif.set(m, (parMotif.get(m) ?? 0) + k);
+    const cle = `${g.intent ?? 'UNKNOWN'}|${m}`;
+    parIntention.set(cle, (parIntention.get(cle) ?? 0) + k);
+  }
+  return {
+    days,
+    total: [...parMotif.values()].reduce((a, b) => a + b, 0),
+    byMotive: UNANSWERED_MOTIVES.map((motive) => ({ motive, label: UNANSWERED_MOTIVE_LABELS[motive], count: parMotif.get(motive) ?? 0 })),
+    byIntent: [...parIntention.entries()]
+      .map(([cle, count]) => {
+        const [intent, motive] = cle.split('|') as [string, UnansweredMotive];
+        return { intent, motive, label: UNANSWERED_MOTIVE_LABELS[motive], count };
+      })
+      .sort((a, b) => b.count - a.count || a.intent.localeCompare(b.intent))
+      .slice(0, limit),
+  };
+}
+
+/** Demandes non résolues des `days` derniers jours, par motif et intention. */
+export async function listUnansweredByMotive(opts: { days?: number } = {}): Promise<UnansweredByMotive> {
+  const days = Math.min(Math.max(Math.floor(opts.days ?? 30), 1), 90);
+  const { readOnlyObservabilityQuery } = await import('@/services/ai/telemetry/observability.repository');
+  const groups = (await readOnlyObservabilityQuery(
+    `SELECT intent, COALESCE(status, 'ok') AS status, error_code, machine_final_state AS state,
+            retrieval_methods_json->>'strategy' AS strategy,
+            (COALESCE(source_count, 0) = 0) AS no_source,
+            COALESCE(retrieval_methods_json->'reference'->>'outcome' = 'ambiguous', false) AS ambiguous_ref,
+            COUNT(*)::int AS n
+       FROM verebona_request_runs
+      WHERE created_at >= now() - make_interval(days => $1::int) AND COALESCE(status, 'ok') <> 'pending'
+      GROUP BY 1, 2, 3, 4, 5, 6, 7
+      LIMIT 5000`,
+    [days],
+  )) as unknown as UnansweredRunGroup[];
+  return aggregateUnanswered(groups, days);
+}
+

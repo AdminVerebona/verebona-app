@@ -357,6 +357,33 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     expect(await readCanonicalEntityField(m.compte.id, m.piece, 'roomArea')).toMatchObject({ value: 18.5, origin: 'RECONCILIATION', entityName: 'Salon' });
   });
 
+  it('lot 19 — conflit sur une pièce : carte ENTITY-FIELD-ROOM, libellé et bien porteur, résolution', async () => {
+    process.env.CANONICAL_WRITE_MODE = 'enabled';
+    const m = await maison();
+    await es.writeCanonicalEntityField({ target: m.piece, accountId: m.compte.id, origin: 'USER', key: 'roomArea', value: 20, mode: 'enabled' });
+    const { r } = await facture(m, [fait(m.piece, 'roomArea', 18.5, 'Salon : 18,5 m²', { canonicalUnit: 'm2' })]);
+    await t3.enqueueT3ForEntities({ accountId: m.compte.id, userId: m.compte.ownerUserId, targets: r.affectedTargets });
+    expect(await executerFile(m.compte.id)).toEqual([`room:${m.piece.id}`]);
+    // Valeur saisie protégée, conflit ouvert.
+    const [p] = await sql<{ area: string }[]>`SELECT area FROM rooms WHERE id = ${m.piece.id}`;
+    expect(p.area).toBe('20');
+
+    const { getToProcessPage } = await import('@/services/to-process/to-process-query.service');
+    const page = await getToProcessPage(m.compte.id, { filters: { targetType: 'ROOM' } });
+    const carte = page.actions.find((a) => a.targetType === 'ROOM' && a.targetId === m.piece.id)!;
+    expect(carte).toMatchObject({ ruleCode: 'ENTITY-FIELD-ROOM', fieldKey: 'roomArea', actionKind: 'ARBITRATE' });
+    const [bien] = await sql<{ public_id: string }[]>`SELECT public_id FROM assets WHERE id = ${m.bien.id}`;
+    expect(carte.target).toMatchObject({ label: 'Salon', assetId: m.bien.id, assetName: 'Maison', publicId: bien.public_id });
+    // Filtre « bien » (§8.8) : la carte de la pièce suit son bien.
+    expect((await getToProcessPage(m.compte.id, { filters: { assetIds: [m.bien.id] } })).actions.some((a) => a.publicId === carte.publicId)).toBe(true);
+
+    const { resolveArbitration } = await import('@/services/to-process/resolve-action.service');
+    expect(await resolveArbitration(m.compte.id, carte.publicId, 18.5, { userId: m.compte.ownerUserId })).toMatchObject({ ok: true, previousValue: 20 });
+    const [apres] = await sql<{ area: string; kc: Record<string, unknown> }[]>`SELECT area, key_characteristics AS kc FROM rooms WHERE id = ${m.piece.id}`;
+    expect(apres.area).toBe('18.5');
+    expect(apres.kc).toMatchObject({ roomArea: 18.5, roomArea__origin: 'USER' });
+  });
+
   it('commutateurs : legacy = aucun travail ni écriture ; shadow = journal dry_run, équipement intact', async () => {
     delete process.env.CANONICAL_WRITE_MODE;
     delete process.env.T3_NEGATIVE_RECONCILIATION;

@@ -66,3 +66,64 @@ if (typeof window !== 'undefined') {
     window.addEventListener(name, () => markAccountDataMutated());
   }
 }
+
+/**
+ * Signale une modification des données du compte constatée SANS écriture
+ * `apiClient` (même effet que `apiClient.post` réussi) : fraîcheur de
+ * l'accueil + événement `verebona:data-mutated`, écouté par la mascotte
+ * (CDC 11 §15 : sujet PROC-EXPORT recalculé sans attendre le minuteur).
+ */
+export function notifyDataMutated(): void {
+  markAccountDataMutated();
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('verebona:data-mutated'));
+}
+
+// ── Génération d'export : passage à un état final (CDC 11 §15, lot 19) ─────
+
+/** Statuts finals d'une génération V12 qui changent l'état présenté (prêt, partiel, erreur). */
+const EXPORT_SETTLED = new Set(['ready', 'partial', 'failed']);
+
+/** Une génération est-elle passée d'un état non final à prêt / partiel / erreur ? */
+export function exportJustSettled(previous: string | null | undefined, next: string | null | undefined): boolean {
+  return !!next && EXPORT_SETTLED.has(next) && !(previous && EXPORT_SETTLED.has(previous));
+}
+
+/**
+ * Suivi par interrogation (GET) des générations d'export : mémorise le
+ * dernier statut vu de chaque génération et émet `notifyDataMutated` UNE fois
+ * quand l'une passe à prêt / partiel / erreur. `seed` : premier relevé d'une
+ * liste (historique) — les générations déjà finales ne déclenchent rien.
+ */
+export function createExportSettleWatcher(notify: () => void = notifyDataMutated) {
+  const vus = new Map<string, string>();
+  let amorce = false;
+  return {
+    /** Relevé d'une génération ; vrai si elle vient de se terminer (événement émis). */
+    observe(id: string | number, status: string | null | undefined): boolean {
+      const k = String(id);
+      const avant = vus.get(k);
+      if (status) vus.set(k, status);
+      if (!exportJustSettled(avant, status)) return false;
+      notify();
+      return true;
+    },
+    /** Relevé d'une liste : la première fois, mémorise sans émettre ; ensuite, un seul événement au plus. */
+    observeList(items: ReadonlyArray<{ id: string | number; status: string | null | undefined }>): boolean {
+      if (!amorce) {
+        amorce = true;
+        for (const i of items) if (i.status) vus.set(String(i.id), i.status);
+        return false;
+      }
+      let termine = false;
+      for (const i of items) {
+        const k = String(i.id);
+        const avant = vus.get(k);
+        if (i.status) vus.set(k, i.status);
+        // Nouvelle ligne déjà finale (créée et terminée entre deux relevés) : aussi un changement.
+        if (exportJustSettled(avant, i.status)) termine = true;
+      }
+      if (termine) notify();
+      return termine;
+    },
+  };
+}

@@ -207,5 +207,27 @@ export function hrefSource(
   meta?: Record<string, string | number | boolean | null> | null,
 ): string | null {
   const ref = parseEntityRef(sourceId);
-  return ref ? hrefEntite(ref, meta) : null;
+  return ref ? hrefEntite(ref, meta) : hrefAgendaSynthetique(sourceId);
+}
+
+/**
+ * Sources SYNTHÉTIQUES d'agenda (reliquat R8) : `timeline:<portée>:<n>` et
+ * `upcoming_agenda:<portée>` regroupent plusieurs événements, sans objet
+ * unique à ouvrir. Elles ouvrent l'agenda filtré sur leur portée (page
+ * `/agenda`, paramètre `assetIds` lu par la page) :
+ *   · `asset_12` → `/agenda?assetIds=12` ; `assets_3_7` → `/agenda?assetIds=3,7` ;
+ *   · `account` → `/agenda` (tout le compte).
+ * Toute autre source synthétique (`to_process:…`, `expenses:…`) : `null`,
+ * non ouvrable — jamais de lien deviné.
+ */
+export function hrefAgendaSynthetique(sourceId: string): string | null {
+  const m = /^(?:timeline:([a-z0-9_]+):\d+|upcoming_agenda:([a-z0-9_]+))$/.exec(sourceId);
+  if (!m) return null;
+  const portee = m[1] ?? m[2];
+  if (portee === 'account') return ROUTES.AGENDA;
+  const p = /^assets?_((?:\d+_)*\d+)$/.exec(portee);
+  if (!p) return null;
+  const ids = p[1].split('_').map(versEntierPositif);
+  if (ids.some((x) => x == null) || (portee.startsWith('asset_') && ids.length !== 1)) return null;
+  return `${ROUTES.AGENDA}?assetIds=${ids.join(',')}`;
 }

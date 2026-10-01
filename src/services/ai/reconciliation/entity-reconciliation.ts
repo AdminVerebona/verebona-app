@@ -24,11 +24,11 @@
  *   AI_RECONCILIATION_ENGINE    moteur en observation → au plus `shadow`.
  *
  * Pas d'appel modèle (`request_ai_review` reste sans effet). Conflit :
- * carte « À traiter » ENTITY-FIELD pour un équipement, comme le conflit de
- * champ d'un bien (`entity-field-cards`), seulement quand l'écriture est
- * effective (mode `enabled`, moteur hors observation) ; une décision
- * tranchée rend la carte du champ sans objet. Pièce : journal seulement
- * (voir l'en-tête de `entity-field-cards`). Équipement archivé : ignoré.
+ * carte « À traiter » (ENTITY-FIELD pour un équipement, ENTITY-FIELD-ROOM
+ * pour une pièce), comme le conflit de champ d'un bien
+ * (`entity-field-cards`), seulement quand l'écriture est effective (mode
+ * `enabled`, moteur hors observation) ; une décision tranchée rend la carte
+ * du champ sans objet. Équipement archivé : ignoré.
  */
 import { randomUUID } from 'crypto';
 import { decide } from './decision/decision-matrix';

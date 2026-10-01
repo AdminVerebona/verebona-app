@@ -248,6 +248,25 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // PUB-01 (CDC Centre d'aide) : corpus d'aide publié refusé ou injoignable
+    // — l'assistant sert le dernier corpus valide, ou aucun. Lecture en cache.
+    try {
+      const { loadHelpCorpus, helpCorpusHealth } = await import('@/services/verebona-assistant/core/help-corpus.service');
+      await loadHelpCorpus();
+      const h = helpCorpusHealth();
+      if (h.alert) {
+        alerts.push({
+          severity: h.source === 'none' ? 'critical' : 'warning',
+          message: `${h.alert.message}${h.source === 'none'
+            ? ' Aucun corpus valide connu : l’assistant ne répond plus aux questions d’aide.'
+            : ` Corpus servi : ${h.version ?? '?'}${h.lastValidAt ? `, lu le ${h.lastValidAt.slice(0, 16).replace('T', ' ')} UTC (${ageLisible(h.lastValidAgeSeconds)})` : ''}.`}`,
+          href: '/api/health',
+        });
+      }
+    } catch {
+      /* indicatif */
+    }
+
     // Aucune Active : état initial bloquant, avec indication de bootstrap.
     if (!active) {
       alerts.push({
@@ -342,3 +361,12 @@ export async function GET(req: NextRequest) {
     return toErrorResponse(e, 'GET /api/admin/ai/dashboard');
   }
 }
+
+/** Âge lisible du dernier corpus valide (« il y a 3 h », « il y a 2 j »). */
+function ageLisible(secondes: number | null): string {
+  if (secondes == null) return 'âge inconnu';
+  if (secondes < 3600) return `il y a ${Math.max(1, Math.round(secondes / 60))} min`;
+  if (secondes < 172_800) return `il y a ${Math.round(secondes / 3600)} h`;
+  return `il y a ${Math.round(secondes / 86_400)} j`;
+}
+

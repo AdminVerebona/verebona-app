@@ -32,7 +32,7 @@ export const dynamic = 'force-dynamic';
 
 const KINDS: ActionKind[] = ['ARBITRATE', 'COMPLETE'];
 const PRIORITIES: ActionPriority[] = ['DO_FIRST', 'DO_NEXT', 'CAN_WAIT'];
-const TARGETS: TargetType[] = ['DOCUMENT', 'ASSET', 'EQUIPMENT', 'AGENDA_ITEM', 'SUPPLIER'];
+const TARGETS: TargetType[] = ['DOCUMENT', 'ASSET', 'EQUIPMENT', 'ROOM', 'AGENDA_ITEM', 'SUPPLIER'];
 
 export async function GET(req: NextRequest) {
   let session;

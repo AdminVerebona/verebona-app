@@ -37,6 +37,7 @@ import { maxFileBytes } from '../render/media';
 import { docCompatibility, estimateSelection, unavailability } from './estimate';
 import { prepMessage, type PrepMessage } from './messages';
 import { INFO_HOST_SECTION, PREP_SECTIONS, type PrepSectionDef } from './sections';
+import { saleAds } from '../data/mappers/vente';
 import type { CilBlockDto, Compatibility, EstimateDto, ItemMode, PrepItem, PrepRow, PrepSection, PreparationDto } from './types';
 import {
   ACTION_STATUS_OPTIONS, CHARGE_KIND_OPTIONS, CHARGE_PERIOD_OPTIONS, EXCHANGE_CHANNEL_OPTIONS, EXCHANGE_PARTY_OPTIONS,
@@ -389,5 +390,6 @@ export function buildPreparation(code: DossierCode, source: ExportSource, ctx: P
     messages,
     thresholds: { ...THRESHOLDS },
     empty,
+    saleAds: code === 'VENTE' ? saleAds(source, today) : null,
   };
 }

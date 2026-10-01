@@ -270,7 +270,7 @@ export async function resolveArbitration(
 
     // Conflit de champ d'un équipement (CDC 15 T1-04, lot 18) : la valeur
     // choisie est écrite par la primitive canonique de l'entité.
-    if (action.ruleCode === 'ENTITY-FIELD') {
+    if (action.ruleCode === 'ENTITY-FIELD' || action.ruleCode === 'ENTITY-FIELD-ROOM') {
       const { resolveEntityFieldCard } = await import('./entity-field-cards');
       return resolveEntityFieldCard(tx, action, value, accountId, options);
     }
@@ -379,7 +379,7 @@ export async function undoArbitration(
     return undoMigrationReview(action, accountId);
   }
 
-  if (action.ruleCode === 'ENTITY-FIELD') {
+  if (action.ruleCode === 'ENTITY-FIELD' || action.ruleCode === 'ENTITY-FIELD-ROOM') {
     const { undoEntityFieldCard } = await import('./entity-field-cards');
     return undoEntityFieldCard(action, accountId);
   }

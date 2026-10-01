@@ -52,6 +52,11 @@ vi.mock('@/services/ai/config/draft-summary.repository', () => ({
   }],
 }));
 
+const corpusAide = vi.fn(() => ({ status: 'ok', source: 'live', version: 'v1', alert: null } as Record<string, unknown>));
+vi.mock('@/services/verebona-assistant/core/help-corpus.service', () => ({
+  loadHelpCorpus: async () => null, helpCorpusHealth: () => corpusAide(),
+}));
+
 const { GET } = await import('../route');
 const call = (qs = '') => GET(new NextRequest(`http://localhost/api/admin/ai/dashboard${qs}`));
 
@@ -102,5 +107,21 @@ describe('GET /api/admin/ai/dashboard', () => {
     expect((await (await call()).json()).globalStatus).toEqual({ key: 'operational', label: 'Opérationnel' });
     stopActive = true;
     expect((await (await call()).json()).globalStatus).toEqual({ key: 'emergency_stop', label: 'Arrêt d’urgence' });
+  });
+
+  it('PUB-01 : corpus d’aide refusé → alerte, critique sans aucun corpus valide', async () => {
+    corpusAide.mockReturnValueOnce({
+      status: 'warning', source: 'last_valid_memory', version: 'v1', lastValidAt: '2026-09-30T08:00:00.000Z', lastValidAgeSeconds: 3 * 3600,
+      alert: { code: 'HELP_CORPUS_INVALID', message: 'Corpus d’aide publié invalide.', at: 'x' },
+    });
+    let body = await (await call()).json();
+    expect(body.alerts).toContainEqual(expect.objectContaining({
+      severity: 'warning', message: expect.stringContaining('Corpus servi : v1, lu le 2026-09-30 08:00 UTC (il y a 3 h)'),
+    }));
+    corpusAide.mockReturnValueOnce({ status: 'warning', source: 'none', version: null, alert: { code: 'HELP_CORPUS_WRONG_ENVIRONMENT', message: 'Refusé.', at: 'x' } });
+    body = await (await call()).json();
+    expect(body.alerts).toContainEqual(expect.objectContaining({ severity: 'critical', message: expect.stringContaining('Aucun corpus valide') }));
+    body = await (await call()).json();
+    expect(body.alerts.some((a: { message: string }) => /corpus/i.test(a.message))).toBe(false);
   });
 });

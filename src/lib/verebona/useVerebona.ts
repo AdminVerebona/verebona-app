@@ -137,6 +137,8 @@ interface HistoryRow {
   id: number; role: 'user' | 'assistant'; content: string | null;
   intent: string | null; mode: string | null; source_count?: number;
   result_groups_json?: UiResultGroup[] | null;
+  /** Chronologie conservée (R1, 0228) ; liens revérifiés par le serveur. */
+  timeline_events_json?: Array<{ date: string | null; text: string; href: string | null }> | null;
 }
 const fromHistory = (r: HistoryRow): VerebonaMessage => ({
   id: String(r.id),
@@ -147,6 +149,8 @@ const fromHistory = (r: HistoryRow): VerebonaMessage => ({
   sourcesAvailable: (r.source_count ?? 0) > 0,
   sourceCount: r.source_count ?? 0,
   resultGroups: Array.isArray(r.result_groups_json) ? r.result_groups_json : null,
+  // R1 : la chronologie relue s'affiche comme à la réception (même rendu).
+  events: Array.isArray(r.timeline_events_json) ? r.timeline_events_json : null,
 });
 
 function newId(): string {

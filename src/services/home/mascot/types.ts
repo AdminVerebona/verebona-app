@@ -34,7 +34,7 @@ export type MascotActionTarget =
   | {
       kind: 'to_process';
       publicId: string;
-      targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'AGENDA_ITEM' | 'SUPPLIER';
+      targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'AGENDA_ITEM' | 'SUPPLIER';
       targetId: number;
       targetPublicId: string | null;
       field: string | null;

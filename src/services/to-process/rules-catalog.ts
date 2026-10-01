@@ -301,6 +301,18 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quelle valeur garder pour ce champ de l’équipement ?',
     businessImpact: 35,
   },
+  // Même conflit sur une PIÈCE (lot 19) — `roomArea` aujourd'hui. Code
+  // distinct (un code par règle et par type de cible), même mécanisme.
+  {
+    code: 'ENTITY-FIELD-ROOM',
+    targetType: 'ROOM',
+    relationKey: 'canonicalField',
+    arbitratePriority: 'CAN_WAIT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Quelle valeur garder pour ce champ de la pièce ?',
+    businessImpact: 30,
+  },
 
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────
   // Un événement historique ne change jamais le statut : il le propose.

@@ -455,3 +455,85 @@ describe('relecture lot 17 : délais et concurrence', () => {
     expect(t3b.busy).toBeUndefined();
   });
 });
+
+describe('T2 — indicateurs techniques §32.2 (lot 19)', () => {
+  beforeEach(async () => {
+    const { resetBusinessEventsForTests, emitBusinessEvent } = await import('@/services/verebona-assistant/events/business-events');
+    const { resetScopeIncidentsForTests, recordScopeIncident } = await import('@/services/verebona-assistant/security/scope-incidents');
+    resetBusinessEventsForTests();
+    resetScopeIncidentsForTests();
+    await emitBusinessEvent({ type: 'DOCUMENT_UPLOADED', accountId: 1, entityId: 2 });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    recordScopeIncident('CLIENT_ACCOUNT_OVERRIDE');
+    responses = [
+      USAGE,
+      [/AS traced/, [{ total: 20, clarifications: 0, revalidations: 0, revalidated_requests: 0, avg_sources: 1, traced: 20 }]],
+      [/AS scope_incidents/, [{ timeouts: 2, retrieved: 80, shown: 30, scope_incidents: 1 }]],
+      [/status = 'error' GROUP BY 1/, [{ code: 'REQUEST_TIMEOUT', n: 2 }, { code: 'ASSISTANT_UNAVAILABLE', n: 1 }]],
+      [/AS tout/, [
+        { service: 'assistant_generate', calls: 10, errors: 1, tin: 4000, tout: 300 },
+        { service: 'assistant_classify', calls: 8, errors: 0, tin: 1000, tout: 50 },
+      ]],
+      [/GROUPING SETS/, [
+        { plan: 'PREMIUM', accounts: 6, calls: 12, cost: 900, median: 300, max: 400 },
+        { plan: 'STANDARD', accounts: 4, calls: 6, cost: 100, median: 100, max: 100 },
+        { plan: '*', accounts: 10, calls: 18, cost: 1000, median: 250, max: 400 },
+      ]],
+      [/master_prompt_version/, [
+        { model: 'gemini-a', prompt: 'p-1', master: 't2_master@3', n: 10 },
+        { model: 'gemini-b', prompt: 'p-1', master: '—', n: 8 },
+      ]],
+    ];
+  });
+
+  it('taux de timeout, erreurs par service, jetons', async () => {
+    const r = await getObservability({ domain: 'T2', days: 7 }, NOW);
+    expect(val(r, 'timeout_rate')).toBe(10);
+    expect(val(r, 'timeouts')).toBe(2);
+    expect(val(r, 'service_errors')).toBe(4);
+    expect([val(r, 'tokens_in'), val(r, 'tokens_out')]).toEqual([5000, 350]);
+    expect(table(r, 't2_service_errors')).toContainEqual({ service: 'modèle · assistant_generate', calls: 10, errors: 1, rate: '10 %' });
+    expect(table(r, 't2_service_errors')).toContainEqual({ service: 'assistant · REQUEST_TIMEOUT', calls: 20, errors: 2, rate: '10 %' });
+  });
+
+  it('coût par compte et par offre, sans identifiant de compte', async () => {
+    const r = await getObservability({ domain: 'T2', days: 7 }, NOW);
+    expect(val(r, 'accounts_using')).toBe(10);
+    expect(val(r, 'avg_cost_per_account')).toBe(100);
+    const rows = table(r, 't2_cost_by_plan');
+    // Moins de 5 comptes : médiane et maximum masqués.
+    expect(rows).toEqual([
+      { plan: 'PREMIUM', accounts: 6, calls: 12, cost: '0.0009 $', median: '0.0003 $', max: '0.0004 $' },
+      { plan: 'STANDARD', accounts: 4, calls: 6, cost: '0.0001 $', median: '< 5 comptes', max: '< 5 comptes' },
+    ]);
+    // Requête finale : agrégats par offre seulement (aucun account_id rendu).
+    const finale = calls.find((c) => /GROUPING SETS/.test(c.sql))!.sql.split('FROM par_compte')[0].split(')\n')[1] ?? '';
+    expect(finale).not.toMatch(/account_id/);
+    expect(rows.every((x) => Object.keys(x).every((k) => ['plan', 'accounts', 'calls', 'cost', 'median', 'max'].includes(k)))).toBe(true);
+  });
+
+  it('volume de sources, incidents de cloisonnement, versions de modèles et prompts', async () => {
+    const r = await getObservability({ domain: 'T2', days: 7 }, NOW);
+    expect([val(r, 'sources_retrieved'), val(r, 'sources_shown')]).toEqual([80, 30]);
+    expect(val(r, 'scope_incidents')).toBe(1);
+    expect(val(r, 'scope_incidents_instance')).toBe(1);
+    expect(val(r, 'model_versions')).toBe(2);
+    expect(val(r, 'prompt_versions')).toBe(2);
+    expect(table(r, 't2_versions')[0]).toEqual({ model: 'gemini-a', prompt: 'p-1', master: 't2_master@3', count: 10 });
+  });
+
+  it('§25.7 : compteurs d’événements métier de l’instance, portée indiquée', async () => {
+    const r = await getObservability({ domain: 'T2', days: 7 }, NOW);
+    expect(table(r, 't2_business_events')).toContainEqual({ code: 'DOCUMENT_UPLOADED', count: 1 });
+    expect(r.tables.find((t) => t.key === 't2_business_events')!.label).toMatch(/instance .+, depuis/);
+    expect(r.notes.join(' ')).toMatch(/non agrégés entre instances/);
+  });
+
+  it('filtre de version EXACT sur les appels modèle', async () => {
+    responses.unshift([/FROM ai_config_versions v/, [{ id: 5, visible_number: 2, status: 'ACTIVE', activated_at: '2026-09-25T00:00:00Z', first_call: '2026-09-26T00:00:00Z', last_call: '2026-09-27T00:00:00Z' }]]);
+    await getObservability({ domain: 'T2', days: 7, configVersionId: 5 }, NOW);
+    expect(calls.find((c) => /GROUPING SETS/.test(c.sql))!.params[2]).toBe(5);
+    expect(calls.find((c) => /master_prompt_version/.test(c.sql))!.params[2]).toBe(5);
+  });
+});
+

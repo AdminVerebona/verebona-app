@@ -33,6 +33,7 @@
  *
  * Utilise les tables verebona_* (voir migration 0100). Câblé sur `@/db` (postgres.js).
  */
+import { timelineColumnReady, timelineForStorage } from './timeline-persistence';
 import { pgClient } from '@/db';
 import type { AssistantRunResult, AssistantRequestInput } from '../types/contracts';
 import { getAssistantConfig } from '../config/assistant-config';
@@ -300,10 +301,12 @@ export async function listActiveMessages(
 ) {
   const limit = Math.min(Math.max(Math.floor(options.limit ?? HISTORY_PAGE_MAX), 1), HISTORY_PAGE_MAX);
   const before = options.before != null && Number.isInteger(options.before) && options.before > 0 ? options.before : null;
+  // R1 (0228) : chronologie relue si la colonne existe.
+  const chronologie = (await timelineColumnReady()) ? 'm.timeline_events_json' : 'NULL::jsonb AS timeline_events_json';
   // Un message de plus que la page : il dit s'il reste des messages plus anciens.
   const rows = (await pgClient.unsafe(
     `SELECT * FROM (
-       SELECT m.id, m.role, m.content, m.intent, m.mode, m.created_at, m.result_groups_json,
+       SELECT m.id, m.role, m.content, m.intent, m.mode, m.created_at, m.result_groups_json, ${chronologie},
               (SELECT count(*)::int FROM verebona_message_sources s WHERE s.message_id = m.id) AS source_count
          FROM verebona_messages m
          JOIN verebona_conversations c ON c.id = m.conversation_id
@@ -475,6 +478,16 @@ export async function persistResult(
          INTENT_CATALOG_VERSION, RESPONSE_SCHEMA_VERSION, questionId],
       );
       const messageId = (messageRows as unknown as Array<{ id: number }>)[0].id;
+
+      // CDC 15 T2-35 / R1 (migration 0228) : chronologie structurée, relue à la
+      // reprise du fil. Absente (legacy, autre format) : colonne NULL.
+      const chronologie = timelineForStorage(result.events);
+      if (chronologie && await timelineColumnReady()) {
+        await tx.unsafe(
+          `UPDATE verebona_messages SET timeline_events_json = $2::jsonb WHERE id = $1`,
+          [messageId, JSON.stringify(chronologie)],
+        );
+      }
 
       // ── 3. Sources, avec instantané ─────────────────────────────────────
       //

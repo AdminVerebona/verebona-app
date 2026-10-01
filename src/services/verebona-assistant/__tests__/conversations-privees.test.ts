@@ -11,6 +11,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const calls: Array<{ sql: string; params: unknown[] }> = [];
+// R1 (lot 19) : colonne 0228 réputée présente — la détection de schéma
+// n'entre pas dans la séquence de requêtes observée ici.
+vi.mock('../core/timeline-persistence', async (o) => ({ ...(await o<object>()), timelineColumnReady: async () => true }));
 vi.mock('@/db', () => {
   const unsafe = vi.fn(async (sql: string, params: unknown[] = []) => {
     calls.push({ sql, params });

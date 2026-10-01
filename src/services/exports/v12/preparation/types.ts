@@ -154,6 +154,11 @@ export interface PreparationDto {
   thresholds: { docsWarning: number; docsBlocking: number; bytesWarning: number; bytesBlocking: number; pagesBlocking: number; photosBlocking: number };
   /** ALT-001 : aucun élément à proposer. */
   empty: boolean;
+  /**
+   * VENTE-RULE-002 (lot 19) : annonces courte et détaillée, affichées dans
+   * l'interface HORS PDF ; composition déterministe. Dossier VENTE seulement.
+   */
+  saleAds?: { short: string; detailed: string; priceMissing: boolean; generatedBy: 'deterministic' } | null;
 }
 
 /** Réponse de `POST …/exports/estimate`. */

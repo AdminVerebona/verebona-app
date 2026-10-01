@@ -9,7 +9,7 @@ import { randomUUID } from 'crypto';
 import type { RetrievedSource, ResolvedSource, SourceType, Claim } from '../types/sources';
 import type { VerebonaAction } from '../types/actions';
 import { getAssistantConfig } from '../config/assistant-config';
-import { parseEntityRef, hrefEntite } from './entity-ref';
+import { parseEntityRef, hrefEntite, hrefAgendaSynthetique } from './entity-ref';
 import { integratedHelpHref } from '@/lib/help-center/open';
 
 export const TYPE_LABELS: Record<SourceType, string> = {
@@ -79,7 +79,16 @@ function ouvertureDeSource(source: RetrievedSource): VerebonaAction | null {
     };
   }
   const ref = parseEntityRef(source.id);
-  if (!ref) return null;
+  if (!ref) {
+    // R8 : chronologie / échéances regroupées → agenda filtré sur leur portée.
+    const agenda = hrefAgendaSynthetique(source.id);
+    return agenda
+      ? {
+          actionId: randomUUID(), type: 'OPEN_AGENDA', label: 'Voir l’agenda', href: agenda,
+          token: null, requiresConfirmation: false, expiresAt: null, analyticsCode: 'verebona.source.open_agenda',
+        }
+      : null;
+  }
 
   const href = hrefEntite(ref, source.meta);
   if (!href) return null;

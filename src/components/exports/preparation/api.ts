@@ -12,6 +12,7 @@
  */
 
 import { apiClient } from '@/lib/api-client';
+import { createExportSettleWatcher } from '@/lib/data-freshness';
 import type { EstimateResponse, PreparationDto } from '@/services/exports/v12/preparation/types';
 
 export interface GenerationPoll {
@@ -50,11 +51,20 @@ export function toFailure(err: unknown): ApiFailure {
 }
 
 export function httpPreparationApi(assetId: number): PreparationApi {
+  // CDC 11 §15 : le passage à prêt / erreur n'est vu que par cette
+  // interrogation GET (aucune écriture `apiClient`) — l'événement
+  // `verebona:data-mutated` est émis ici pour que la mascotte recalcule
+  // PROC-EXPORT sans attendre son minuteur.
+  const generations = createExportSettleWatcher();
   return {
     prepare: (body) => apiClient.post<PreparationDto>(`/api/assets/${assetId}/exports/prepare`, body),
     estimate: (body) => apiClient.post<EstimateResponse>(`/api/assets/${assetId}/exports/estimate`, body),
     generate: (body) => apiClient.post(`/api/assets/${assetId}/exports`, body),
-    poll: (publicId) => apiClient.get<GenerationPoll>(`/api/export-generations/${publicId}`),
+    poll: async (publicId) => {
+      const g = await apiClient.get<GenerationPoll>(`/api/export-generations/${publicId}`);
+      generations.observe(publicId, g.generationStatus);
+      return g;
+    },
     viewUrl: async (fileId) => {
       try {
         const r = await apiClient.get<{ viewUrl?: string; url?: string }>(`/api/files/${fileId}/view`, { useCache: true });

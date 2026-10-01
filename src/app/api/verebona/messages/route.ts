@@ -23,6 +23,7 @@ import {
 import { closePendingRequest, requestStatus, reserveRequest } from '@/services/verebona-assistant/core/request-lifecycle.service';
 import { sanitizePageContext } from '@/services/verebona-assistant/core/page-context';
 import { AccountScopeError, assertNoClientAccountOverride } from '@/services/verebona-assistant/security/account-scope';
+import { recordScopeIncident } from '@/services/verebona-assistant/security/scope-incidents';
 import { buildOrchestratorPorts } from '@/services/verebona-assistant/core/ports';
 import {
   ConversationNotFoundError,
@@ -94,7 +95,11 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
   try {
     assertNoClientAccountOverride((body as Record<string, unknown>)?.accountId, accountId);
   } catch (e) {
-    if (e instanceof AccountScopeError) return NextResponse.json({ error: 'ACCOUNT_SCOPE_VIOLATION' }, { status: 403 });
+    if (e instanceof AccountScopeError) {
+      // §32.2 : incident de cloisonnement compté (instance, sans contenu).
+      recordScopeIncident('CLIENT_ACCOUNT_OVERRIDE');
+      return NextResponse.json({ error: 'ACCOUNT_SCOPE_VIOLATION' }, { status: 403 });
+    }
     throw e;
   }
   const entree = parseWith(PostMessageSchema, body, httpId);

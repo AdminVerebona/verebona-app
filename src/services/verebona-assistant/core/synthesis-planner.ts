@@ -61,6 +61,11 @@ export interface SynthesisPlan {
   timeline?: { events: TimelineEvent[]; totalEvents: number; truncated: boolean };
   /** Budgets appliqués (trace). */
   budget: { sources: number; events?: number };
+  /**
+   * Comparaison (R7) : plus de 3 biens correspondent — question posée à
+   * l'utilisateur, aucune source (le planificateur ne choisit pas).
+   */
+  clarification?: { reason: 'COMPARISON_TOO_MANY_ASSETS'; question: string; candidates: Array<{ id: number; name: string }> };
 }
 
 /**
@@ -92,7 +97,7 @@ export interface SynthesisDeps {
   upcoming(accountId: number, assetIds: number[]): Promise<Array<{ id: number; title: string; date: string; forecast: boolean; assetNames: string[] }>>;
   toProcess(accountId: number, assetIds: number[]): Promise<Array<{ id: number; question: string; priority: string }>>;
   timelineRows(accountId: number, assetIds: number[], limit: number): Promise<TimelineEvent[]>;
-  accountAssets(accountId: number, limit: number): Promise<Array<{ id: number; name: string }>>;
+  accountAssets(accountId: number, limit: number): Promise<Array<{ id: number; name: string; category?: string | null }>>;
 }
 
 /* ── Sources compactes ─────────────────────────────────────────────────── */
@@ -166,6 +171,84 @@ export function timelineAnswer(plan: SynthesisPlan, max = 15): string {
   return `Chronologie${pour} :\n${lignes.map((l) => `• ${l}`).join('\n')}${reste > 0 ? `\n(${reste} événement${reste > 1 ? 's' : ''} plus ancien${reste > 1 ? 's' : ''} non affiché${reste > 1 ? 's' : ''}.)` : ''}`;
 }
 
+/* ── Biens d'une comparaison (R7) ─────────────────────────────────────── */
+
+/** Famille désignée au pluriel ou par un possessif (« mes voitures », « nos deux maisons »). */
+const FAMILLES: Array<[RegExp, string[]]> = [
+  [/\b(mes|nos|les|ces|deux|trois|quatre)\s+(\w+\s+)?(voitures?|vehicules?|autos?|motos?|camionnettes?|scooters?)\b/, ['VEHICULE']],
+  [/\b(mes|nos|les|ces|deux|trois|quatre)\s+(\w+\s+)?(maisons?|appartements?|logements?|biens immobiliers|immeubles?|studios?)\b/, ['IMMOBILIER']],
+  [/\b(mes|nos|les|ces|deux|trois|quatre)\s+(\w+\s+)?(objets?)\b/, ['OBJECT', 'OBJET']],
+];
+
+/** Famille visée par la question (pure, testée), ou null. */
+export function familleComparee(message: string): string[] | null {
+  const m = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  for (const [re, familles] of FAMILLES) if (re.test(m)) return familles;
+  return null;
+}
+
+/** Noms cités au plus dans une question de clarification (relecture lot 19). */
+export const CLARIFICATION_MAX_NAMES = 8;
+
+/** « A, B, …, H et N autres » : liste bornée à `CLARIFICATION_MAX_NAMES` noms (pure). */
+export function listeBornee(noms: readonly string[], max = CLARIFICATION_MAX_NAMES): string {
+  if (noms.length <= max) return noms.join(', ');
+  const reste = noms.length - max;
+  return `${noms.slice(0, max).join(', ')} et ${reste} ${reste > 1 ? 'autres' : 'autre'}`;
+}
+
+/** Au-delà, la comparaison demande à l'utilisateur de choisir. */
+export const COMPARISON_MAX_ASSETS = 3;
+
+/**
+ * Biens à comparer (R7, pure hors lecture des biens) :
+ *   1. les biens NOMMÉS dans la question ;
+ *   2. complétés par le bien de la PAGE puis celui du FIL (« compare-la avec
+ *      la Polo » sur la fiche de la Clio) ;
+ *   3. sinon, la FAMILLE désignée (« mes voitures ») : les biens du compte de
+ *      cette catégorie.
+ * Plus de 3 biens → clarification (aucun choix arbitraire) ; moins de 2 →
+ * comportement antérieur (pas de planificateur).
+ */
+export async function biensAComparer(
+  input: Pick<AssistantRequestInput, 'message' | 'pageContext' | 'reference'>,
+  cibles: Pick<AssistantTargets, 'namedAssets'>,
+  biensDuCompte: (limit: number) => Promise<Array<{ id: number; name: string; category?: string | null }>>,
+): Promise<{ kind: 'assets'; assets: Array<{ id: number; name: string }> } | { kind: 'clarification'; candidates: Array<{ id: number; name: string }>; clarification: NonNullable<SynthesisPlan['clarification']> }> {
+  const trop = (candidates: Array<{ id: number; name: string }>, quoi: string) => ({
+    kind: 'clarification' as const, candidates,
+    clarification: {
+      reason: 'COMPARISON_TOO_MANY_ASSETS' as const, candidates,
+      question: `${quoi} (${candidates.length}) : ${listeBornee(candidates.map((c) => c.name))}. Lesquels voulez-vous comparer ? Nommez-en deux ou trois.`,
+    },
+  });
+  const nommes = cibles.namedAssets;
+  if (nommes.length > COMPARISON_MAX_ASSETS) return trop(nommes, 'Plusieurs biens sont nommés');
+  const out = [...nommes];
+  const ajouter = (id: number | null, tous: Array<{ id: number; name: string }>) => {
+    if (id == null || out.some((b) => b.id === id)) return;
+    const b = tous.find((x) => x.id === id);
+    if (b) out.push({ id: b.id, name: b.name });
+  };
+  if (out.length < 2) {
+    const page = Number(input.pageContext?.assetId);
+    const fil = input.reference?.type === 'asset' ? input.reference.id : null;
+    const familles = familleComparee(input.message);
+    if ((Number.isInteger(page) && page > 0) || fil != null || familles) {
+      const tous = await biensDuCompte(500);
+      ajouter(Number.isInteger(page) && page > 0 ? page : null, tous);
+      if (out.length < 2) ajouter(fil, tous);
+      if (out.length < 2 && familles) {
+        const famille = tous.filter((b) => b.category && familles.includes(b.category));
+        const reunis = [...out, ...famille.filter((b) => !out.some((o) => o.id === b.id)).map((b) => ({ id: b.id, name: b.name }))];
+        if (reunis.length > COMPARISON_MAX_ASSETS) return trop(reunis, 'Plusieurs biens correspondent');
+        return { kind: 'assets', assets: reunis };
+      }
+    }
+  }
+  return { kind: 'assets', assets: out.slice(0, COMPARISON_MAX_ASSETS) };
+}
+
 /* ── Planificateur ─────────────────────────────────────────────────────── */
 
 const KIND: Record<string, SynthesisKind> = { ACCOUNT_SUMMARY: 'summary', ACCOUNT_COMPARISON: 'comparison', ACCOUNT_TIMELINE: 'timeline' };
@@ -198,7 +281,11 @@ export async function buildSynthesisContext(
 
   // ── Comparaison ──────────────────────────────────────────────────────
   if (kind === 'comparison') {
-    const biens = cibles.namedAssets.slice(0, 3);
+    const choix = await biensAComparer(input, cibles, (n) => safe(deps.accountAssets(input.accountId, n), []));
+    if (choix.kind === 'clarification') {
+      return { kind, sources: [], assets: choix.candidates, budget: { sources: budget }, clarification: choix.clarification };
+    }
+    const biens = choix.assets;
     if (biens.length < 2) return null;
     const snaps = (await Promise.all(biens.map((b) => safe(deps.assetSnapshot(input.accountId, b.id), null))))
       .filter((s): s is AssetSnapshot => !!s);
@@ -403,10 +490,10 @@ export const defaultDeps: SynthesisDeps = {
 
   async accountAssets(accountId, limit) {
     const rows = (await pgClient.unsafe(
-      `SELECT id, name FROM assets WHERE account_id = $1 AND deleted_at IS NULL ORDER BY id LIMIT $2`,
+      `SELECT id, name, category FROM assets WHERE account_id = $1 AND deleted_at IS NULL ORDER BY id LIMIT $2`,
       [accountId, limit] as never[],
-    )) as unknown as Array<{ id: number; name: string }>;
-    return rows.map((r) => ({ id: Number(r.id), name: r.name }));
+    )) as unknown as Array<{ id: number; name: string; category: string | null }>;
+    return rows.map((r) => ({ id: Number(r.id), name: r.name, category: r.category ?? null }));
   },
 };
 

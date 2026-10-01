@@ -77,6 +77,22 @@ const DELETION_REASONS: Record<string, string> = {
   UNPAID: 'suite à des impayés',
 };
 
+/** Libellés d'une suppression selon sa portée (CDC 13, point 3). */
+export const DELETION_LABELS: Record<'account' | 'user', { engaged: string; cancelled: string; executed: string; scheduled: string }> = {
+  account: {
+    engaged: 'Suppression du compte engagée',
+    cancelled: 'Suppression annulée',
+    executed: 'Suppression exécutée',
+    scheduled: 'Suppression définitive programmée',
+  },
+  user: {
+    engaged: 'Suppression d’un utilisateur engagée (avec les comptes dont il est titulaire)',
+    cancelled: 'Suppression de l’utilisateur annulée',
+    executed: 'Suppression de l’utilisateur exécutée',
+    scheduled: 'Suppression définitive de l’utilisateur programmée',
+  },
+};
+
 export interface HistorySources {
   now: Date;
   account: { createdAt: Date | string | null };
@@ -100,6 +116,13 @@ export interface HistorySources {
     cancelledAt: Date | string | null;
     executedAt: Date | string | null;
     scheduledAt: Date | string | null;
+    /**
+     * `account` (défaut) : le compte et tous ses utilisateurs ; `user` :
+     * l'utilisateur demandeur et les comptes dont il est titulaire (0206).
+     */
+    scope?: string | null;
+    /** Utilisateur visé (portée `user`). */
+    userEmail?: string | null;
   }[];
   auditLogs: { at: Date | string; actionType: string; userEmail: string | null; targetUserEmail: string | null }[];
 }
@@ -152,10 +175,16 @@ export function buildAccountHistory(src: HistorySources): HistoryEntry[] {
 
   for (const d of src.deletions) {
     const origin: HistoryOrigin = d.origin === 'admin' ? 'admin' : d.origin === 'system' ? 'system' : 'user';
-    push(d.createdAt, 'Suppression du compte engagée', origin, DELETION_REASONS[d.reason] ?? null);
-    if (d.status === 'CANCELLED') push(d.cancelledAt, 'Suppression annulée', 'user');
-    if (d.status === 'EXECUTED') push(d.executedAt, 'Suppression exécutée', 'system');
-    else if (d.status === 'SCHEDULED') push(d.scheduledAt, 'Suppression définitive programmée', 'system');
+    // CDC 13 point 3 (lot 19) : libellé exact selon la portée — une
+    // suppression `user` vise un UTILISATEUR (et les comptes dont il est
+    // titulaire), pas ce compte en tant que tel.
+    const l = DELETION_LABELS[d.scope === 'user' ? 'user' : 'account'];
+    const motif = DELETION_REASONS[d.reason] ?? null;
+    const detail = d.scope === 'user' ? [d.userEmail, motif].filter(Boolean).join(' · ') || null : motif;
+    push(d.createdAt, l.engaged, origin, detail);
+    if (d.status === 'CANCELLED') push(d.cancelledAt, l.cancelled, 'user');
+    if (d.status === 'EXECUTED') push(d.executedAt, l.executed, 'system');
+    else if (d.status === 'SCHEDULED') push(d.scheduledAt, l.scheduled, 'system');
   }
 
   for (const l of src.auditLogs) {
@@ -192,8 +221,10 @@ export async function loadAccountHistory(accountId: number, now = new Date()): P
       [accountId],
     ),
     pgClient.unsafe<Row[]>(
-      `SELECT created_at, origin, reason, status, cancelled_at, executed_at, scheduled_at
-         FROM scheduled_account_deletions WHERE account_id = $1`,
+      `SELECT d.created_at, d.origin, d.reason, d.status, d.cancelled_at, d.executed_at, d.scheduled_at,
+              d.scope, u.email AS user_email
+         FROM scheduled_account_deletions d LEFT JOIN users u ON u.id = d.user_id
+        WHERE d.account_id = $1`,
       [accountId],
     ),
     pgClient.unsafe<Row[]>(
@@ -238,6 +269,8 @@ export async function loadAccountHistory(accountId: number, now = new Date()): P
       cancelledAt: r.cancelled_at as string | null,
       executedAt: r.executed_at as string | null,
       scheduledAt: r.scheduled_at as string | null,
+      scope: r.scope as string | null,
+      userEmail: r.user_email as string | null,
     })),
     auditLogs: auditLogs.map((r) => ({
       at: r.timestamp as string,

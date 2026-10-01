@@ -1,6 +1,7 @@
 /**
- * Cartes « À traiter » des conflits de champ d'un ÉQUIPEMENT — CDC 15 T1-04,
- * §11.1 (lot 18, R3, relecture) — règle ENTITY-FIELD.
+ * Cartes « À traiter » des conflits de champ d'un ÉQUIPEMENT ou d'une PIÈCE —
+ * CDC 15 T1-04, §11.1 (lot 18, R3 ; pièce : lot 19) — règles ENTITY-FIELD et
+ * ENTITY-FIELD-ROOM.
  *
  * Même mécanisme que le conflit de champ d'un bien (`reconciliation-bridge`) :
  * les DÉCISIONS de la réconciliation ciblée (`reconcileEntity`) sont
@@ -17,11 +18,10 @@
  *     sinon carte PÉRIMÉE, rien écrit. Annulation : valeur précédente
  *     réécrite sous le même contrôle, carte rouverte.
  *
- * PIÈCE (ROOM) : pas de carte. Ce qui manque : `TargetType` de « À traiter »
- * ne connaît pas ROOM (action-model, requête d'affichage
- * `to-process-query.service` qui résout les libellés par type, liens de
- * navigation de la page), et aucune règle du catalogue ne vise une pièce.
- * Le conflit d'une pièce reste journalisé (`t3.entity_reconciliation`).
+ * PIÈCE (ROOM, lot 19) : même mécanisme, règle ENTITY-FIELD-ROOM, cible
+ * ROOM ; libellé « nom de la pièce » et bien porteur résolus par
+ * `to-process-query.service`, navigation vers la page du bien, onglet
+ * « Pièces » (`openToProcessTarget`).
  */
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/db';
@@ -35,6 +35,12 @@ import { resolveActionsForData, upsertAction } from './to-process-action.service
 import { perimer, valueLabel } from './migration-review-cards';
 
 export const ENTITY_FIELD_RULE = 'ENTITY-FIELD';
+export const ENTITY_FIELD_ROOM_RULE = 'ENTITY-FIELD-ROOM';
+/** Règles des cartes de champ d'entité, par type de cible. */
+export const ENTITY_FIELD_RULES: Readonly<Record<'EQUIPMENT' | 'ROOM', string>> = {
+  EQUIPMENT: ENTITY_FIELD_RULE, ROOM: ENTITY_FIELD_ROOM_RULE,
+};
+export const isEntityFieldRule = (code: string | null | undefined) => code === ENTITY_FIELD_RULE || code === ENTITY_FIELD_ROOM_RULE;
 
 type Scalar = string | number | boolean | null;
 const scalar = (v: unknown): Scalar => (v === null || v === undefined ? null
@@ -68,28 +74,31 @@ export async function syncEntityFieldCards(p: {
   accountId: number; target: CanonicalEntityTarget; entityName?: string | null; decisions: readonly ReconciliationDecision[];
 }): Promise<EntityCardsResult> {
   const out: EntityCardsResult = { created: 0, resolved: 0, skipped: 0 };
-  if (p.target.type !== 'EQUIPMENT') { out.skipped = p.decisions.length; return out; }
+  const type = p.target.type;
+  const ruleCode = ENTITY_FIELD_RULES[type];
+  if (!ruleCode) { out.skipped = p.decisions.length; return out; }
+  const de = type === 'ROOM' ? 'de la pièce' : 'de l’équipement';
   const conflits = new Set(p.decisions.filter((d) => d.action === 'create_conflict').map((d) => d.fieldKey));
   for (const d of p.decisions) {
     try {
       if (d.action === 'create_conflict') {
         const label = getField(d.fieldKey)?.label ?? d.fieldKey;
         const r = await upsertAction({
-          accountId: p.accountId, targetType: 'EQUIPMENT', targetId: p.target.id, fieldKey: d.fieldKey,
-          actionKind: 'ARBITRATE', ruleCode: ENTITY_FIELD_RULE,
-          question: `Deux valeurs différentes pour « ${label} »${p.entityName ? ` de ${p.entityName}` : ''}. Laquelle garder ?`.slice(0, 300),
+          accountId: p.accountId, targetType: type, targetId: p.target.id, fieldKey: d.fieldKey,
+          actionKind: 'ARBITRATE', ruleCode,
+          question: `Deux valeurs différentes pour « ${label} » ${p.entityName ? `de ${p.entityName}` : de}. Laquelle garder ?`.slice(0, 300),
           proposals: entityConflictProposals(d),
           triggerContext: { kind: 'entity_field', key: d.fieldKey, current: scalar(d.currentValue), reasonCode: d.reasonCode },
         });
         if (r.status === 'CREATED') out.created += 1; else if (r.status === 'SKIPPED') out.skipped += 1;
       } else if ((d.action === 'apply' || d.action === 'update' || d.action === 'keep') && !conflits.has(d.fieldKey)) {
-        out.resolved += await resolveActionsForData(p.accountId, 'EQUIPMENT', p.target.id, d.fieldKey, 'OBSOLETE');
+        out.resolved += await resolveActionsForData(p.accountId, type, p.target.id, d.fieldKey, 'OBSOLETE');
       } else {
         out.skipped += 1;
       }
     } catch (e) {
       out.skipped += 1;
-      console.error(`[to-process] carte du champ ${d.fieldKey} (équipement ${p.target.id}) :`, (e as Error).message);
+      console.error(`[to-process] carte du champ ${d.fieldKey} (${type} ${p.target.id}) :`, (e as Error).message);
     }
   }
   return out;
@@ -101,7 +110,7 @@ type Ctx = { key?: string; current?: Scalar };
 async function ecrire(action: Action, accountId: number, key: string, value: unknown, expected: unknown, userId: number | null) {
   const { writeCanonicalEntityField } = await import('@/services/canonical/entity-state');
   return writeCanonicalEntityField({
-    target: { type: 'EQUIPMENT', id: action.targetId }, accountId, key, value, origin: 'USER', actorUserId: userId,
+    target: { type: action.targetType === 'ROOM' ? 'ROOM' : 'EQUIPMENT', id: action.targetId }, accountId, key, value, origin: 'USER', actorUserId: userId,
     expectedCurrent: expected ?? null, source: { type: 'to_process', id: action.publicId }, mode: 'enabled',
   });
 }

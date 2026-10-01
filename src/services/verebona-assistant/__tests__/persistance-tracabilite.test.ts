@@ -20,6 +20,9 @@ const h = vi.hoisted(() => {
   return { calls, unsafe };
 });
 
+// R1 (lot 19) : colonne 0228 réputée présente — la détection de schéma
+// n'entre pas dans la séquence de requêtes observée ici.
+vi.mock('../core/timeline-persistence', async (o) => ({ ...(await o<object>()), timelineColumnReady: async () => true }));
 vi.mock('@/db', () => ({
   pgClient: Object.assign(h.unsafe, {
     unsafe: h.unsafe,

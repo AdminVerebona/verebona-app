@@ -20,6 +20,7 @@ import {
 import { chargerClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { isExpired } from '@/services/verebona-assistant/core/clarification-builder';
 import { reverifierCartesDesMessages } from '@/services/verebona-assistant/core/source-availability.service';
+import { reverifierChronologiesDesMessages } from '@/services/verebona-assistant/core/timeline-persistence';
 import { listThreadCommandPlans } from '@/services/verebona-assistant/commands/plan.service';
 import { httpRequestId, mutationRateLimited, parseWith, queryObject, readRateLimited, withRequestId } from '@/lib/verebona/api-guard';
 import { ConversationQuerySchema } from '@/lib/verebona/api-schemas';
@@ -69,8 +70,12 @@ async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   });
   // §19.10 : les cartes relues depuis l'historique sont REVÉRIFIÉES — un
   // objet supprimé ou devenu inaccessible depuis perd son lien.
-  const messages = await reverifierCartesDesMessages(
-    page.messages as unknown as Array<{ result_groups_json?: unknown }>,
+  // R1 : de même pour la chronologie conservée (lien retiré, ligne gardée).
+  const messages = await reverifierChronologiesDesMessages(
+    await reverifierCartesDesMessages(
+      page.messages as unknown as Array<{ result_groups_json?: unknown; timeline_events_json?: unknown }>,
+      accountId,
+    ),
     accountId,
   );
 

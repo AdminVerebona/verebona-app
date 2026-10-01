@@ -26,7 +26,7 @@
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { FileText, Image as ImageIcon, Home, Package, Calendar, Wrench } from 'lucide-react';
+import { FileText, Image as ImageIcon, Home, Package, Calendar, Wrench, LayoutGrid } from 'lucide-react';
 import { ACTION_KIND_LABELS, MICROCOPY } from '@/lib/referential/v2/microcopy';
 import { PRIORITY_LABELS } from '@/services/to-process/priority';
 import type { ActionKind, ActionPriority } from '@/services/to-process/action-model';
@@ -40,7 +40,7 @@ export interface ActionProposalView {
 
 export interface ActionView {
   publicId: string;
-  targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'AGENDA_ITEM' | 'SUPPLIER';
+  targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'AGENDA_ITEM' | 'SUPPLIER';
   targetId: number;
   fieldKey: string | null;
   relationKey: string | null;
@@ -75,6 +75,7 @@ function TargetIcon({ action }: { action: ActionView }) {
   }
   if (action.targetType === 'ASSET') return <Home className={className} aria-hidden />;
   if (action.targetType === 'EQUIPMENT') return <Wrench className={className} aria-hidden />;
+  if (action.targetType === 'ROOM') return <LayoutGrid className={className} aria-hidden />;
   if (action.targetType === 'AGENDA_ITEM') return <Calendar className={className} aria-hidden />;
   return <Package className={className} aria-hidden />;
 }

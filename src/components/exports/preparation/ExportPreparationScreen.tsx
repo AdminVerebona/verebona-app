@@ -39,6 +39,8 @@ import { PREP_MESSAGES } from '@/services/exports/v12/preparation/messages';
 import type { ItemMode, OutputFormat, PrepSection } from '@/services/exports/v12/preparation/types';
 import { httpPreparationApi, toFailure, type PreparationApi } from './api';
 import { CilBlocksPanel } from './CilBlocksPanel';
+import { SaleAdsPanel } from './SaleAdsPanel';
+import { createSaleAdsRefresher } from './sale-ads-refresh';
 import { PreparationSection } from './PreparationSection';
 import { GenerateButtons, PreparationSummary } from './PreparationSummary';
 import { Callout, Eyebrow, Pill, formatDate } from './ui';
@@ -230,6 +232,16 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
 
   // ── Enregistrement des informations complémentaires (MSG-PREP-006) ───────
   const onSaveStateChange = useCallback((st: 'idle' | 'pending' | 'saving' | 'saved' | 'error') => dispatch({ type: 'AUTOSAVE', status: toAutosaveStatus(st) }), []);
+
+  // VENTE-RULE-002 : un champ COMMERCIAL enregistré → annonces recomposées
+  // (choix conservés), 2,5 s après la dernière saisie enregistrée.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const adsRefresher = useMemo(() => createSaleAdsRefresher(() => {
+    if (stateRef.current.prep?.saleAds) void loadRef.current(true);
+  }), []);
+  useEffect(() => () => adsRefresher.cancel(), [adsRefresher]);
+  const onSectionsSaved = useCallback((sections: string[]) => adsRefresher.onSectionsSaved(sections), [adsRefresher]);
 
   // Quitter la page avec des choix non générés : avertissement du navigateur.
   useEffect(() => {
@@ -458,10 +470,12 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
                   {s.cil && prep.cil ? (
                     <CilBlocksPanel cil={prep.cil} assetId={assetId} api={api} disabled={!editable} onChanged={() => load(true)} />
                   ) : s.infoSections.length > 0 ? (
-                    <AssetAdditionalInfosSection assetId={assetId} category={prep.asset.family} sections={stableInfo(s.infoSections)} variant="embedded" readOnly={!editable} onSaveStateChange={onSaveStateChange} />
+                    <AssetAdditionalInfosSection assetId={assetId} category={prep.asset.family} sections={stableInfo(s.infoSections)} variant="embedded" readOnly={!editable} onSaveStateChange={onSaveStateChange} onSectionsSaved={prep.saleAds ? onSectionsSaved : undefined} />
                   ) : null}
                 </PreparationSection>
               ))}
+              {/* VENTE-RULE-002 : annonces hors PDF, dans l'interface. */}
+              {prep.saleAds && <SaleAdsPanel ads={prep.saleAds} />}
             </div>
           </div>
 

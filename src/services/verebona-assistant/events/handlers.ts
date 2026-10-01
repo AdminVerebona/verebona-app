@@ -22,6 +22,10 @@ import { assistantCachePrefix } from '../core/assistant-cache-key';
  * Purge les réponses modèle en cache des fils d'un compte. Rend le nombre de
  * lignes retirées.
  *
+ * Ne peut jamais atteindre une clé réservée de la table (`help-corpus:last-
+ * valid:<env>`, PUB-01 — `RESERVED_IDEMPOTENCY_KEY_PREFIXES`, service
+ * d'idempotence) : le filtre exige le préfixe `assistant:c`.
+ *
  * Préfixe CONSTANT `assistant:c` (index `text_pattern_ops`, migration 0209)
  * puis filtre exact sur le segment du fil : un `LIKE ANY(tableau)` ne peut
  * utiliser aucun index et parcourait toute la table.

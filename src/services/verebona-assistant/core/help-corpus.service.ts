@@ -112,6 +112,10 @@ export async function noteHelpCorpusVersion(version: string | null | undefined):
 export function resetHelpCorpusCacheForTests(): void {
   cache = null;
   derniereVersion = null;
+  dernierValide = null;
+  versionStockee = null;
+  alerte = null;
+  servi = null;
 }
 
 /** Site du Centre d'aide : `HELP_CENTER_URL` côté serveur, sinon le site public. */
@@ -136,10 +140,146 @@ export function articlePublie(a: Pick<HelpCorpusArticle, 'status'>): boolean {
   return a.status == null || String(a.status).toLowerCase() === 'published';
 }
 
+// ── PUB-01 : dernier corpus valide ──────────────────────────────────────────
+//
+// Un corpus publié invalide (schéma, articles malformés) ou d'un autre
+// environnement (ENV-02) ne doit PAS devenir la référence : l'assistant
+// continue sur le DERNIER CORPUS VALIDE de son environnement — en mémoire,
+// et en base (`ai_operation_idempotency`, clé `help-corpus:last-valid:<env>`)
+// pour qu'une instance qui redémarre ne reparte pas de rien. L'incident est
+// signalé dans `/api/health` et au tableau de bord IA (`helpCorpusHealth`).
+
+export type HelpCorpusAlertCode = 'HELP_CORPUS_INVALID' | 'HELP_CORPUS_WRONG_ENVIRONMENT' | 'HELP_CORPUS_UNAVAILABLE';
+
+export interface HelpCorpusHealth {
+  /** `warning` : le corpus publié est refusé ou injoignable. */
+  status: 'ok' | 'warning' | 'unknown';
+  /** Corpus réellement servi. */
+  source: 'live' | 'last_valid_memory' | 'last_valid_db' | 'none';
+  version: string | null;
+  environment: string | null;
+  /** Lecture du dernier corpus valide (ISO), s'il y en a un. */
+  lastValidAt: string | null;
+  /** Âge du dernier corpus valide, en secondes (`null` sans corpus valide). */
+  lastValidAgeSeconds: number | null;
+  alert: { code: HelpCorpusAlertCode; message: string; at: string } | null;
+}
+
+/** Stockage durable du dernier corpus valide (base par défaut, injectable en test). */
+export interface HelpCorpusStore {
+  read(env: string): Promise<{ corpus: unknown; at: string } | null>;
+  write(env: string, corpus: HelpCorpus): Promise<void>;
+}
+
 /**
- * Corpus de l'environnement, mis en cache (HELP_CACHE_TTL_SECONDS, §43). Ne lève jamais : sans
- * corpus, l'assistant dit qu'il ne peut pas répondre de façon fiable (T2-03)
- * au lieu d'improviser une procédure.
+ * Clé RÉSERVÉE (`RESERVED_IDEMPOTENCY_KEY_PREFIXES`, service d'idempotence) :
+ * exclue de toute purge de la table, sans expiration (`expires_at =
+ * 'infinity'`) — seule une nouvelle version valide la remplace.
+ */
+export const HELP_CORPUS_STORE_KEY_PREFIX = 'help-corpus:last-valid:';
+const CLE_STOCKAGE = (env: string) => `${HELP_CORPUS_STORE_KEY_PREFIX}${env}`;
+
+export const dbHelpCorpusStore: HelpCorpusStore = {
+  async read(env) {
+    const { pgClient } = await import('@/db');
+    const rows = (await pgClient.unsafe(
+      `SELECT result_json AS corpus, created_at AS at FROM ai_operation_idempotency WHERE key_hash = $1`,
+      [CLE_STOCKAGE(env)] as never[],
+    )) as unknown as Array<{ corpus: unknown; at: string | Date }>;
+    return rows[0] ? { corpus: rows[0].corpus, at: new Date(rows[0].at).toISOString() } : null;
+  },
+  async write(env, corpus) {
+    const { pgClient } = await import('@/db');
+    await pgClient.unsafe(
+      `INSERT INTO ai_operation_idempotency (key_hash, result_json, created_at, expires_at)
+       VALUES ($1, $2::jsonb, now(), 'infinity')
+       ON CONFLICT (key_hash) DO UPDATE
+         SET result_json = EXCLUDED.result_json, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at`,
+      [CLE_STOCKAGE(env), JSON.stringify(corpus)] as never[],
+    );
+  },
+};
+
+/** Tests unitaires : aucune base, sauf stockage injecté. */
+let store: HelpCorpusStore | null = process.env.NODE_ENV === 'test' ? null : dbHelpCorpusStore;
+let dernierValide: { corpus: HelpCorpus; at: string; origin: 'live' | 'db' } | null = null;
+let versionStockee: string | null = null;
+let alerte: HelpCorpusHealth['alert'] = null;
+let servi: HelpCorpusHealth['source'] | null = null;
+/** Nouvel essai après un refus, tant qu'un corpus de repli est servi. */
+const REESSAI_REFUS_MS = 5 * 60_000;
+const REESSAI_PANNE_MS = 30_000;
+
+/** Réservé aux tests : stockage durable (`null` : aucun). */
+export function setHelpCorpusStoreForTests(s: HelpCorpusStore | null): void {
+  store = s;
+}
+
+/** Environnement servi (clé de stockage) : celui de l'application. */
+function envApplication(): string {
+  return parseEnvironment(process.env.NEXT_PUBLIC_APP_ENV) ?? 'local';
+}
+
+function retenirValide(corpus: HelpCorpus): void {
+  dernierValide = { corpus, at: new Date().toISOString(), origin: 'live' };
+  alerte = null;
+  servi = 'live';
+  if (store && corpus.version !== versionStockee) {
+    const s = store;
+    s.write(envApplication(), corpus)
+      .then(() => { versionStockee = corpus.version; })
+      .catch((e) => console.warn(`[assistant] Dernier corpus d'aide valide non enregistré (${(e as Error).message}).`));
+  }
+}
+
+/** Dernier corpus valide : mémoire, sinon base (même environnement, revalidé). */
+async function dernierCorpusValide(): Promise<HelpCorpus | null> {
+  if (dernierValide) {
+    servi = dernierValide.origin === 'db' ? 'last_valid_db' : 'last_valid_memory';
+    return dernierValide.corpus;
+  }
+  if (store) {
+    try {
+      const lu = await store.read(envApplication());
+      const corpus = lu ? parseHelpCorpus(lu.corpus) : null;
+      if (corpus && corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
+        dernierValide = { corpus, at: lu!.at, origin: 'db' };
+        versionStockee = corpus.version;
+        servi = 'last_valid_db';
+        return corpus;
+      }
+    } catch (e) {
+      console.warn(`[assistant] Dernier corpus d'aide valide illisible en base (${(e as Error).message}).`);
+    }
+  }
+  servi = 'none';
+  return null;
+}
+
+function signaler(code: HelpCorpusAlertCode, message: string): void {
+  alerte = { code, message: message.slice(0, 300), at: new Date().toISOString() };
+}
+
+/** État du corpus d'aide de cette instance — `/api/health`, tableau de bord IA. */
+export function helpCorpusHealth(): HelpCorpusHealth {
+  const c = cache?.corpus ?? null;
+  return {
+    status: servi === null ? 'unknown' : alerte ? 'warning' : 'ok',
+    source: servi ?? 'none',
+    version: c?.version ?? null,
+    environment: c?.environment ?? null,
+    lastValidAt: dernierValide?.at ?? null,
+    lastValidAgeSeconds: dernierValide ? Math.max(0, Math.round((Date.now() - new Date(dernierValide.at).getTime()) / 1000)) : null,
+    alert: alerte,
+  };
+}
+
+/**
+ * Corpus de l'environnement, mis en cache (HELP_CACHE_TTL_SECONDS, §43). Ne
+ * lève jamais. Corpus publié refusé (invalide, autre environnement) ou
+ * injoignable : DERNIER CORPUS VALIDE (PUB-01), alerte levée ; sans aucun
+ * corpus valide connu, l'assistant dit qu'il ne peut pas répondre de façon
+ * fiable (T2-03) au lieu d'improviser une procédure.
  */
 export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
   if (cache && Date.now() - cache.at < ttlMs()) return cache.corpus;
@@ -147,21 +287,47 @@ export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     const res = await fetch(helpCorpusUrl(), { signal: ctrl.signal }).finally(() => clearTimeout(timer));
-    let corpus = res.ok ? parseHelpCorpus(await res.json()) : null;
-    // ENV-02 : la préproduction de l'application ne lit jamais le corpus de
-    // production, et inversement. Une variable mal renseignée ferait sinon
-    // répondre l'assistant sur des articles d'un autre environnement.
-    if (corpus && !corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
-      console.error(`[assistant] Corpus d'aide refusé : environnement « ${corpus.environment} » ≠ application « ${process.env.NEXT_PUBLIC_APP_ENV} » (ENV-02).`);
-      corpus = null;
+    if (!res.ok) {
+      signaler('HELP_CORPUS_UNAVAILABLE', `Corpus d’aide non publié ou inaccessible (HTTP ${res.status}) : dernier corpus valide conservé.`);
+      const repli = await dernierCorpusValide();
+      cache = { at: Date.now() - ttlMs() + REESSAI_REFUS_MS, corpus: repli };
+      return repli;
     }
-    cache = { at: Date.now(), corpus };
-    if (corpus) await noteHelpCorpusVersion(corpus.version);
+    let brut: unknown;
+    try {
+      brut = await res.json();
+    } catch {
+      brut = null;
+    }
+    const corpus = parseHelpCorpus(brut);
+    let refus: { code: HelpCorpusAlertCode; message: string } | null = null;
+    if (!corpus) {
+      refus = { code: 'HELP_CORPUS_INVALID', message: 'Corpus d’aide publié invalide (schéma ou articles) : dernier corpus valide conservé.' };
+    } else if (!corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
+      // ENV-02 : la préproduction de l'application ne lit jamais le corpus de
+      // production, et inversement.
+      refus = {
+        code: 'HELP_CORPUS_WRONG_ENVIRONMENT',
+        message: `Corpus d’aide d’environnement « ${String(corpus.environment).slice(0, 20)} » refusé (application « ${envApplication()} », ENV-02) : dernier corpus valide conservé.`,
+      };
+    }
+    if (refus) {
+      console.error(`[assistant] ${refus.message}`);
+      signaler(refus.code, refus.message);
+      const repli = await dernierCorpusValide();
+      cache = { at: Date.now() - ttlMs() + REESSAI_REFUS_MS, corpus: repli };
+      return repli;
+    }
+    retenirValide(corpus!);
+    cache = { at: Date.now(), corpus: corpus! };
+    await noteHelpCorpusVersion(corpus!.version);
     return corpus;
   } catch (e) {
     console.warn(`[assistant] Corpus du Centre d'aide indisponible (${(e as Error).message}).`);
-    cache = { at: Date.now() - ttlMs() + 30_000, corpus: null };
-    return null;
+    signaler('HELP_CORPUS_UNAVAILABLE', `Corpus d’aide injoignable (${(e as Error).message.slice(0, 120)}) : dernier corpus valide conservé.`);
+    const repli = await dernierCorpusValide();
+    cache = { at: Date.now() - ttlMs() + REESSAI_PANNE_MS, corpus: repli };
+    return repli;
   }
 }
 

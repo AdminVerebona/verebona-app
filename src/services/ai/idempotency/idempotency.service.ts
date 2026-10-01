@@ -13,6 +13,46 @@
 import { createHash } from 'crypto';
 import { pgClient } from '@/db';
 
+/**
+ * Clés RÉSERVÉES de `ai_operation_idempotency` — à ne jamais purger.
+ *
+ * La table sert aussi de stockage durable à des valeurs qui ne sont PAS des
+ * résultats rejouables :
+ *   · `help-corpus:last-valid:<env>` — dernier corpus d'aide valide de
+ *     l'environnement (CDC Centre d'aide PUB-01,
+ *     `verebona-assistant/core/help-corpus.service.ts`), `expires_at =
+ *     'infinity'`, remplacé à chaque nouvelle version valide.
+ *
+ * Toute purge de cette table (expiration, purge globale, outil de
+ * maintenance) DOIT exclure ces clés : `NOT_RESERVED_IDEMPOTENCY_KEY_SQL`, ou
+ * `purgeExpiredIdempotency` ci-dessous. Les purges ciblées existantes ne
+ * peuvent pas les atteindre (préfixes `assistant:c…` / `assistant:<id>:` —
+ * `events/handlers.ts`, `conversation.service.ts`).
+ */
+export const RESERVED_IDEMPOTENCY_KEY_PREFIXES = ['help-corpus:last-valid:'] as const;
+
+/** Prédicat SQL à ajouter à toute purge de `ai_operation_idempotency`. */
+export const NOT_RESERVED_IDEMPOTENCY_KEY_SQL =
+  RESERVED_IDEMPOTENCY_KEY_PREFIXES.map((p) => `key_hash NOT LIKE '${p.replace(/'/g, "''")}%'`).join(' AND ');
+
+export function isReservedIdempotencyKey(key: string): boolean {
+  return RESERVED_IDEMPOTENCY_KEY_PREFIXES.some((p) => key.startsWith(p));
+}
+
+/**
+ * Purge des résultats expirés — SANS JAMAIS toucher aux clés réservées
+ * (garde-fou PUB-01 : une purge globale ne doit pas faire perdre le dernier
+ * corpus d'aide valide). Rend le nombre de lignes supprimées.
+ */
+export async function purgeExpiredIdempotency(): Promise<number> {
+  const rows = (await pgClient.unsafe(
+    `DELETE FROM ai_operation_idempotency
+      WHERE expires_at <= now() AND ${NOT_RESERVED_IDEMPOTENCY_KEY_SQL}
+      RETURNING 1`,
+  )) as unknown as unknown[];
+  return rows.length;
+}
+
 const DEFAULT_TTL_SECONDS = 3600;
 
 export interface IdempotencyKeyParts {

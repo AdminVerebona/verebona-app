@@ -9,6 +9,9 @@ import { NextRequest } from 'next/server';
 vi.mock('@/db', () => ({ db: { execute: async () => [] }, getMigrationFailures: () => [] }));
 const warnings = vi.fn(async () => [] as unknown[]);
 vi.mock('@/services/ai/config/prompt-architecture', () => ({ promptArchitectureWarnings: () => warnings() }));
+vi.mock('@/services/verebona-assistant/core/help-corpus.service', () => ({
+  loadHelpCorpus: async () => null, helpCorpusHealth: () => ({ status: 'ok', source: 'live' }),
+}));
 
 const { GET } = await import('../route');
 const req = () => new NextRequest('http://localhost/api/health');

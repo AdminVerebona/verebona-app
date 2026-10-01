@@ -707,6 +707,14 @@ export async function runAssistant(
             return null;
           })
           : null;
+        // R7 : comparaison à plus de 3 biens → l'utilisateur choisit, rien
+        // n'est comparé ni recherché (aucun choix arbitraire).
+        if (plan?.clarification) {
+          trace.escalationReasons.push(`CLARIFICATION:${plan.clarification.reason}`);
+          const actions = await ports.resolveActions(route, input, []);
+          done('template', 'clarification.comparison_scope', 'AMBIGUOUS_TARGET', plan.clarification.candidates.length);
+          return finalize(base, machine, 'deterministic', plan.clarification.question, [], [], actions, ports, input, 'insufficient');
+        }
         if (plan && plan.sources.length) {
           trace.escalationReasons.push(`SYNTHESIS:${plan.kind}:${plan.sources.length}${plan.timeline ? `:events=${plan.timeline.events.length}/${plan.timeline.totalEvents}` : ''}`);
           candidats = plan.sources;
@@ -1265,21 +1273,56 @@ async function finalize(
 }
 
 /**
+ * Qualité du type de source (§19.4, critère 3) — rang croissant : l'état
+ * canonique de la fiche d'abord (CDC 15 B2 : il prime sur un document
+ * historique), puis le document lui-même et ce qui en est extrait, l'agenda,
+ * les objets liés, les éléments « À traiter », enfin l'aide et les règles
+ * d'offre (hors données du compte).
+ */
+export const RANG_TYPE_SOURCE: Readonly<Record<string, number>> = {
+  asset_field: 0, document: 1, document_extraction: 2, agenda_item: 3,
+  supplier: 4, export_item: 4, to_process_item: 5, help_entry: 6, product_rule: 6,
+};
+
+/**
+ * Deux échéances : leur date est une date d'ÉVÉNEMENT, pas de mise à jour —
+ * l'ordre chronologique du retrieval (prochaines échéances, chronologie) est
+ * conservé, jamais inversé par la récence.
+ */
+const chronologique = (a: ResolvedSource, b: ResolvedSource) => a.type === 'agenda_item' && b.type === 'agenda_item';
+
+/** Date utile ISO (AAAA-MM-JJ…) d'une source, ou null. */
+const dateUtile = (s: ResolvedSource): string | null =>
+  (typeof s.usefulDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(s.usefulDate) ? s.usefulDate.slice(0, 10) : null);
+
+/**
  * Ordre d'affichage des sources — §19.4 : d'abord celles qui soutiennent le
  * plus d'affirmations (la première affirmation, principale, départage), puis
  * le score de retrieval ; à égalité, l'ordre d'origine. Sans affirmation,
  * l'ordre du retrieval est conservé tel quel.
+ *
+ * Lecture canonique (`ASSISTANT_CANONICAL_READ=enabled`, lot 19) : entre la
+ * contribution et le score, critères 3 (qualité du type de source,
+ * `RANG_TYPE_SOURCE`) et 4 (date utile la plus récente ; sans date, après ;
+ * entre deux échéances, l'ordre chronologique d'origine est gardé).
+ * La récence ne passe jamais devant le type (« la récence seule ne permet
+ * pas d'écarter une source contractuelle »). Legacy : ordre inchangé.
  */
-export function trierParContribution(sources: ResolvedSource[], claims: Claim[]): ResolvedSource[] {
+export function trierParContribution(
+  sources: ResolvedSource[], claims: Claim[], canonique: boolean = canonicalReadEnabled(),
+): ResolvedSource[] {
   if (sources.length < 2 || claims.length === 0) return sources;
   const citations = new Map<string, number>();
   const principale = new Set(claims[0]?.sourceIds ?? []);
   for (const c of claims) for (const id of new Set(c.sourceIds)) citations.set(id, (citations.get(id) ?? 0) + 1);
+  const rang = (s: ResolvedSource) => RANG_TYPE_SOURCE[s.type] ?? 9;
   return sources
     .map((s, i) => ({ s, i }))
     .sort((a, b) =>
       (citations.get(b.s.id) ?? 0) - (citations.get(a.s.id) ?? 0)
       || Number(principale.has(b.s.id)) - Number(principale.has(a.s.id))
+      || (canonique ? rang(a.s) - rang(b.s) : 0)
+      || (canonique && !chronologique(a.s, b.s) ? (dateUtile(b.s) ?? '').localeCompare(dateUtile(a.s) ?? '') : 0)
       || (b.s.relevanceScore ?? 0) - (a.s.relevanceScore ?? 0)
       || a.i - b.i)
     .map((x) => x.s);

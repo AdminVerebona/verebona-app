@@ -673,6 +673,10 @@ export async function getTreatmentMetrics(
       PAR_TRAITEMENT[treatment](days),
       TABLES[treatment]?.(days).catch(() => []) ?? Promise.resolve(undefined),
     ]);
+    if (treatment === 'T2') {
+      const tech = await t2TechnicalIndicators(days);
+      return { treatment, windowDays: days, metrics: [...metrics, ...tech.metrics], tables: [...(tables ?? []), ...tech.tables] };
+    }
     return { treatment, windowDays: days, metrics, ...(tables ? { tables } : {}) };
   } catch (e) {
     console.error(`[metrics] ${treatment} indisponible :`, (e as Error).message);
@@ -684,3 +688,36 @@ export async function getTreatmentMetrics(
     };
   }
 }
+
+/** Indicateurs §32.2 ajoutés à l'onglet T2 (lot 19). */
+const T2_TECH_METRICS = [
+  'timeout_rate', 'timeouts', 'service_errors', 'tokens_in', 'tokens_out', 'accounts_using', 'avg_cost_per_account',
+  'sources_retrieved', 'sources_shown', 'scope_incidents', 'scope_incidents_instance', 'model_versions', 'prompt_versions',
+] as const;
+const T2_TECH_TABLES = ['t2_service_errors', 't2_cost_by_plan', 't2_versions', 't2_business_events'] as const;
+
+/**
+ * CDC Assistant §32.2 (lot 19) — timeouts, erreurs par service, jetons, coût
+ * par compte et par offre, volume de sources, incidents de cloisonnement,
+ * versions de modèles et prompts, compteurs d'événements §25.7.
+ *
+ * Calculés par l'observabilité (`telemetry/observability.repository.ts`) :
+ * même cadre que le lot 17 — connexion réservée, transaction READ ONLY,
+ * `statement_timeout` côté base, un seul calcul à la fois par instance,
+ * cache 2 min. Ici seulement relus et ajoutés à l'onglet T2.
+ */
+async function t2TechnicalIndicators(days: number): Promise<{ metrics: Metric[]; tables: MetricTable[] }> {
+  try {
+    const { getObservability } = await import('../telemetry/observability.repository');
+    const r = await getObservability({ domain: 'T2', days: Math.min(days, 90) });
+    if (r.busy) {
+      return { metrics: [M('t2_technical', 'Indicateurs techniques §32.2', null, 'count', 'Calcul en cours sur cette instance : rouvrir l’onglet dans quelques secondes.')], tables: [] };
+    }
+    const keys = new Set<string>(T2_TECH_METRICS);
+    const tkeys = new Set<string>(T2_TECH_TABLES);
+    return { metrics: r.metrics.filter((m) => keys.has(m.key)), tables: r.tables.filter((t) => tkeys.has(t.key)) };
+  } catch {
+    return { metrics: [M('t2_technical', 'Indicateurs techniques §32.2', null, 'count', 'Indicateurs momentanément indisponibles.')], tables: [] };
+  }
+}
+

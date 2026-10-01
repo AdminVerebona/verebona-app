@@ -48,7 +48,7 @@
  *   lui-même une requête trop longue (rien ne continue de tourner), chaque
  *   requête est isolée dans un SAVEPOINT, et l'indicateur concerné devient
  *   « indisponible », pas nul. Budget total `DOMAIN_BUDGET_MS` par domaine
- *   (9 requêtes au plus par domaine, filtre de version compris).
+ *   (14 requêtes au plus par domaine — T2 —, filtre de version compris).
  * · Un seul calcul à la fois par instance : une demande concurrente reçoit
  *   le dernier résultat connu (`stale`) ou « en cours » (`busy`).
  * · `raw_response_json` illisible : ligne comptée et ignorée, jamais
@@ -60,7 +60,11 @@
  * AUCUN CONTENU UTILISATEUR : seulement des compteurs, des codes et des
  * énumérations (motifs, stratégies, types de source, états).
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { hostname } from 'node:os';
 import { pgClient } from '@/db';
+import { businessEventCounters } from '@/services/verebona-assistant/events/business-events';
+import { scopeIncidentCounters } from '@/services/verebona-assistant/security/scope-incidents';
 import type { Metric, MetricTable } from '../config/treatment-metrics.repository';
 import { getAiEnvironment, parseEnvironment } from '../config/environment';
 import type { AnalysisWarningCode } from '../source-analysis/types';
@@ -166,40 +170,42 @@ export class ObservabilityVersionNotFound extends Error {
  *     d'une connexion du pool ;
  *   · `READ ONLY` : aucune écriture possible depuis cet écran.
  */
-let activeExec: QueryRunner | null = null;
-let deadline = Number.POSITIVE_INFINITY;
+/**
+ * Session courante, portée par le contexte asynchrone (`AsyncLocalStorage`) :
+ * deux sessions simultanées (calcul d'un domaine, lecture des questions sans
+ * réponse) ne se marchent jamais dessus.
+ */
+const session = new AsyncLocalStorage<{ exec: QueryRunner; deadline: number }>();
 
-async function runSession<T>(fn: () => Promise<T>): Promise<T> {
-  if (injectedRunner) {
-    activeExec = injectedRunner;
-    try {
-      return await fn();
-    } finally {
-      activeExec = null;
-    }
-  }
+async function runSession<T>(fn: () => Promise<T>, budgetMs = Number.POSITIVE_INFINITY): Promise<T> {
+  const deadline = Date.now() + budgetMs;
+  if (injectedRunner) return session.run({ exec: injectedRunner, deadline }, fn);
   return (await pgClient.begin('read only', async (tx) => {
     await tx.unsafe(`SET LOCAL statement_timeout = ${QUERY_TIMEOUT_MS}`);
-    activeExec = (q, p) => tx.savepoint((sp) => sp.unsafe(q, p as never[])) as unknown as Promise<Row[]>;
-    try {
-      return await fn();
-    } finally {
-      activeExec = null;
-    }
+    const exec: QueryRunner = (q, p) => tx.savepoint((sp) => sp.unsafe(q, p as never[])) as unknown as Promise<Row[]>;
+    return session.run({ exec, deadline }, fn);
   })) as T;
 }
 
-/** Une requête dans une session — réservé aux tests (annulation côté base). */
-export async function observabilityQueryForTests(sql: string, params: unknown[] = []): Promise<Row[]> {
-  deadline = Number.POSITIVE_INFINITY;
+/**
+ * UNE requête de lecture dans sa propre session (connexion réservée, READ
+ * ONLY, `statement_timeout` côté base) — pour les autres écrans
+ * d'observabilité (questions sans réponse §32.5). Délai dépassé : lève
+ * (`délai dépassé, requête annulée par la base`).
+ */
+export async function readOnlyObservabilityQuery(sql: string, params: unknown[] = []): Promise<Row[]> {
   return runSession(() => many(sql, params));
 }
 
+/** Une requête dans une session — réservé aux tests (annulation côté base). */
+export const observabilityQueryForTests = readOnlyObservabilityQuery;
+
 async function many(sql: string, params: unknown[]): Promise<Row[]> {
-  if (!activeExec) throw new Error('[observabilité] requête hors session');
-  if (Date.now() > deadline) throw new QueryUnavailable('budget du domaine dépassé');
+  const ctx = session.getStore();
+  if (!ctx) throw new Error('[observabilité] requête hors session');
+  if (Date.now() > ctx.deadline) throw new QueryUnavailable('budget du domaine dépassé');
   try {
-    return await activeExec(sql, params);
+    return await ctx.exec(sql, params);
   } catch (e) {
     // 57014 : query_canceled (statement_timeout).
     if ((e as { code?: string }).code === '57014') throw new QueryUnavailable('délai dépassé, requête annulée par la base');
@@ -662,6 +668,166 @@ const TRUTH_LABELS: Readonly<Record<T2TruthSource, string>> = {
   clarification: 'Clarification', aucune: 'Sans résultat', autre: 'Autre',
 };
 
+/** Seuil d'affichage de la distribution du coût d'une offre (anonymisation). */
+export const COST_PLAN_MIN_ACCOUNTS = 5;
+const MASQUE_COMPTES = `< ${COST_PLAN_MIN_ACCOUNTS} comptes`;
+
+const usd = (micros: unknown): string => `${(n(micros) / 1_000_000).toFixed(4)} $`;
+
+/** Instance qui répond (compteurs en mémoire) : conteneur Scalingo, sinon hôte. */
+function instanceLabel(): string {
+  return (process.env.CONTAINER || process.env.HOSTNAME || hostname() || 'instance').slice(0, 40);
+}
+
+/**
+ * Indicateurs techniques T2 — CDC Assistant §32.2 (lot 19) : timeouts,
+ * erreurs par service, jetons, coût par compte et par offre (agrégé, AUCUN
+ * identifiant de compte), volume de sources récupérées / affichées,
+ * incidents de cloisonnement, versions de modèles et de prompts. Plus les
+ * compteurs d'événements métier §25.7 et d'incidents de cloisonnement de
+ * l'INSTANCE qui répond (mémoire, depuis son démarrage — arbitrage lot 19 :
+ * non persistés, non agrégés entre instances, remis à zéro au redémarrage).
+ * Coût par offre : offre ACTUELLE du compte (arbitrage lot 19) ; médiane et
+ * maximum masqués sous `COST_PLAN_MIN_ACCOUNTS` comptes.
+ */
+async function t2Technical(s: Scope, p: [string, string], total: number, errors: string[]): Promise<DomainResult> {
+  const W = `created_at >= $1 AND created_at < $2`;
+  const usageWhere = `created_at >= $1 AND created_at < $2 AND use_case_code = 'INTELLIGENT_ASSISTANT'
+                      AND operation_type <> 'circuit_breaker_probe' AND ($3::int IS NULL OR config_version_id = $3::int)`;
+  const usageParams = [s.from.toISOString(), s.to.toISOString(), s.versionId];
+
+  const runs = await tryMany(
+    `SELECT COUNT(*) FILTER (WHERE error_code = 'REQUEST_TIMEOUT'
+              OR retrieval_methods_json->>'strategy' LIKE 'timeout.%')::int AS timeouts,
+            COALESCE(SUM(candidate_count), 0)::bigint AS retrieved,
+            COALESCE(SUM(source_count), 0)::bigint AS shown,
+            COUNT(*) FILTER (WHERE EXISTS (
+              SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(retrieval_methods_json->'securityEvents') = 'array'
+                                                      THEN retrieval_methods_json->'securityEvents' ELSE '[]'::jsonb END) ev
+               WHERE ev->>'code' = 'MODEL_UNKNOWN_SOURCE_REJECTED'))::int AS scope_incidents
+       FROM verebona_request_runs WHERE ${W} AND status <> 'pending'`,
+    p, errors, 'Indicateurs techniques T2',
+  );
+  const reqErrors = await tryMany(
+    `SELECT COALESCE(error_code, '—') AS code, COUNT(*)::int AS n FROM verebona_request_runs
+      WHERE ${W} AND status = 'error' GROUP BY 1 ORDER BY n DESC LIMIT 15`,
+    p, errors, 'Erreurs des demandes',
+  );
+  const services = await tryMany(
+    `SELECT COALESCE(operation_code, operation_type, '—') AS service, COUNT(*)::int AS calls,
+            COUNT(*) FILTER (WHERE status <> 'success')::int AS errors,
+            COALESCE(SUM(input_tokens), 0)::bigint AS tin, COALESCE(SUM(output_tokens), 0)::bigint AS tout
+       FROM ai_usage_event WHERE ${usageWhere}
+      GROUP BY 1 ORDER BY calls DESC LIMIT 20`,
+    usageParams, errors, 'Appels modèle par service',
+  );
+  // Coût par compte et par offre : distribution par compte (médiane, max),
+  // jamais l'identifiant. Offre COURANTE du compte (`accounts.plan_type`).
+  const plans = await tryMany(
+    `WITH par_compte AS (
+       SELECT account_id, COUNT(*)::int AS calls,
+              COALESCE(SUM(cost_micros) FILTER (WHERE is_billable), 0)::bigint AS cost
+         FROM ai_usage_event WHERE ${usageWhere} AND account_id IS NOT NULL
+        GROUP BY account_id
+     )
+     SELECT CASE WHEN GROUPING(a.plan_type) = 1 THEN '*' ELSE COALESCE(a.plan_type, '—') END AS plan,
+            COUNT(*)::int AS accounts, SUM(pc.calls)::int AS calls, SUM(pc.cost)::bigint AS cost,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY pc.cost)::bigint AS median, MAX(pc.cost)::bigint AS max
+       FROM par_compte pc LEFT JOIN accounts a ON a.id = pc.account_id
+      GROUP BY GROUPING SETS ((a.plan_type), ())`,
+    usageParams, errors, 'Coût par offre',
+  );
+  const versions = await tryMany(
+    `SELECT COALESCE(model, '—') AS model, COALESCE(metadata->>'promptVersion', '—') AS prompt,
+            COALESCE(master_prompt_version, '—') AS master, COUNT(*)::int AS n
+       FROM ai_usage_event WHERE ${usageWhere}
+      GROUP BY 1, 2, 3 ORDER BY n DESC LIMIT 20`,
+    usageParams, errors, 'Versions de modèles et de prompts',
+  );
+
+  const r = runs ? runs[0] ?? {} : null;
+  const sv: Row | null = services ? {} : null;
+  const somme = (k: string) => (services ?? []).reduce((a, x) => a + n(x[k]), 0);
+  const reqErr = (reqErrors ?? []).reduce((a, x) => a + n(x.n), 0);
+  const tous = (plans ?? []).find((x) => x.plan === '*');
+  const pl: Row | null = plans ? (tous ?? {}) : null;
+  const vr: Row | null = versions ? {} : null;
+  const distincts = (k: string) => new Set((versions ?? []).map((x) => String(x[k])).filter((v) => v !== '—')).size;
+  const evenements = businessEventCounters();
+  const incidents = scopeIncidentCounters();
+  const depuis = new Date(Date.now() - process.uptime() * 1000).toISOString();
+  const instance = instanceLabel();
+
+  const tables: MetricTable[] = [];
+  if (services || reqErrors) {
+    tables.push({
+      key: 't2_service_errors', label: 'Erreurs par service',
+      columns: [{ key: 'service', label: 'Service' }, { key: 'calls', label: 'Appels' }, { key: 'errors', label: 'Erreurs' }, { key: 'rate', label: 'Taux' }],
+      rows: [
+        ...(services ?? []).map((x) => ({
+          service: `modèle · ${String(x.service)}`, calls: n(x.calls), errors: n(x.errors),
+          rate: n(x.calls) > 0 ? `${Math.round((n(x.errors) / n(x.calls)) * 1000) / 10} %` : '—',
+        })),
+        ...(reqErrors ?? []).map((x) => ({
+          service: `assistant · ${String(x.code)}`, calls: total, errors: n(x.n),
+          rate: total > 0 ? `${Math.round((n(x.n) / total) * 1000) / 10} %` : '—',
+        })),
+      ],
+    });
+  }
+  if (plans) {
+    tables.push({
+      key: 't2_cost_by_plan', label: 'Coût par offre (distribution par compte, sans identifiant)',
+      columns: [{ key: 'plan', label: 'Offre' }, { key: 'accounts', label: 'Comptes' }, { key: 'calls', label: 'Appels' },
+        { key: 'cost', label: 'Coût' }, { key: 'median', label: 'Médiane / compte' }, { key: 'max', label: 'Max / compte' }],
+      // Moins de COST_PLAN_MIN_ACCOUNTS comptes : médiane et maximum masqués
+      // (ils désigneraient presque un compte précis).
+      rows: plans.filter((x) => x.plan !== '*').map((x) => {
+        const masque = n(x.accounts) < COST_PLAN_MIN_ACCOUNTS;
+        return {
+          plan: String(x.plan), accounts: n(x.accounts), calls: n(x.calls), cost: usd(x.cost),
+          median: masque ? MASQUE_COMPTES : usd(x.median), max: masque ? MASQUE_COMPTES : usd(x.max),
+        };
+      }),
+    });
+  }
+  if (versions) {
+    tables.push({
+      key: 't2_versions', label: 'Versions de modèles et de prompts',
+      columns: [{ key: 'model', label: 'Modèle' }, { key: 'prompt', label: 'Prompt' }, { key: 'master', label: 'Master' }, { key: 'count', label: 'Appels' }],
+      rows: versions.map((x) => ({ model: String(x.model), prompt: String(x.prompt), master: String(x.master), count: n(x.n) })),
+    });
+  }
+  tables.push({
+    key: 't2_business_events', label: `Événements métier §25.7 — instance ${instance}, depuis ${depuis.slice(0, 16).replace('T', ' ')} UTC`,
+    columns: [{ key: 'code', label: 'Événement' }, { key: 'count', label: 'Publiés' }],
+    rows: Object.entries(evenements).map(([code, count]) => ({ code, count })),
+  });
+
+  return {
+    metrics: [
+      M('timeout_rate', 'Taux de timeout', r, (x) => (total > 0 ? Math.round((n(x.timeouts) / total) * 1000) / 10 : null), 'percent', 'Aucune demande sur la période.'),
+      M('timeouts', 'Demandes en timeout', r, (x) => n(x.timeouts)),
+      M('service_errors', 'Erreurs (modèle + assistant)', sv && reqErrors ? {} : null, () => somme('errors') + reqErr),
+      M('tokens_in', 'Jetons d’entrée', sv, () => somme('tin')),
+      M('tokens_out', 'Jetons de sortie', sv, () => somme('tout')),
+      M('accounts_using', 'Comptes ayant appelé le modèle', pl, (x) => n(x.accounts)),
+      M('avg_cost_per_account', 'Coût moyen par compte', pl, (x) => (n(x.accounts) > 0 ? Math.round(n(x.cost) / n(x.accounts)) : null), 'usd_micros', 'Aucun compte sur la période.'),
+      M('sources_retrieved', 'Sources récupérées', r, (x) => n(x.retrieved)),
+      M('sources_shown', 'Sources affichées', r, (x) => n(x.shown)),
+      M('scope_incidents', 'Incidents de cloisonnement (sources hors périmètre rejetées)', r, (x) => n(x.scope_incidents)),
+      M('scope_incidents_instance', 'Surcharges de compte refusées (instance)', {}, () => incidents.CLIENT_ACCOUNT_OVERRIDE),
+      M('model_versions', 'Modèles utilisés', vr, () => distincts('model')),
+      M('prompt_versions', 'Versions de prompt utilisées', vr, () => distincts('prompt') + distincts('master')),
+    ],
+    tables,
+    notes: [
+      `Compteurs d’instance (événements métier §25.7, surcharges de compte refusées) : instance « ${instance} », en mémoire depuis son démarrage — non agrégés entre instances, remis à zéro au redémarrage.`,
+      'Coût par offre : offre ACTUELLE de chaque compte ; aucun identifiant de compte n’est affiché.',
+    ],
+  };
+}
+
 async function domainT2(s: Scope, errors: string[]): Promise<DomainResult> {
   const usage = await usageMetrics('INTELLIGENT_ASSISTANT', s, errors);
   const p = bp(s);
@@ -755,6 +921,8 @@ async function domainT2(s: Scope, errors: string[]): Promise<DomainResult> {
   if (t && n(t.traced) < total) {
     notes.push(`Cible et types de source : tracés depuis le lot 17 (${n(t.traced)} demandes sur ${total}) ; les demandes antérieures n’en portent pas.`);
   }
+  // §32.2 (lot 19) : indicateurs techniques et compteurs d'instance.
+  const tech = await t2Technical(s, p, total, errors);
   return {
     metrics: [
       M('requests', 'Demandes', t, (x) => n(x.total)),
@@ -766,9 +934,10 @@ async function domainT2(s: Scope, errors: string[]): Promise<DomainResult> {
       M('claims_rejected', 'Claims rejetées', claims ? {} : null, () => claimRows.reduce((a, r) => a + r.count, 0)),
       M('avg_sources', 'Sources par demande (moyenne)', t, (x) => (x.avg_sources == null ? null : Math.round(Number(x.avg_sources) * 100) / 100), 'decimal'),
       ...usage,
+      ...tech.metrics,
     ],
-    tables,
-    notes,
+    tables: [...tables, ...tech.tables],
+    notes: [...notes, ...tech.notes],
   };
 }
 
@@ -974,10 +1143,8 @@ export async function getObservability(q: ObservabilityQuery, now: Date = new Da
     };
   }
 
-  const compute = async (): Promise<ObservabilityReport> => {
-    deadline = Date.now() + DOMAIN_BUDGET_MS;
-    try {
-      return await runSession(async () => {
+  const compute = async (): Promise<ObservabilityReport> =>
+    runSession(async () => {
         const useVersion = versionId !== null && q.domain !== 'EXPORTS';
         let version: ObservabilityReport['version'] = null;
         let business: Scope['business'] = { from, to };
@@ -1019,11 +1186,7 @@ export async function getObservability(q: ObservabilityQuery, now: Date = new Da
           cache.set(key, { expires: now.getTime() + CACHE_TTL_MS, report });
         }
         return report;
-      });
-    } finally {
-      deadline = Number.POSITIVE_INFINITY;
-    }
-  };
+      }, DOMAIN_BUDGET_MS);
   const promise = compute();
   inFlight = { key, promise };
   try {
