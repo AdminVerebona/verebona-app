@@ -52,7 +52,6 @@ import type { RoomDrawerItem } from '@/components/assets/RoomDrawer';
 import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
-import { VerebonaMascot } from '@/components/verebona/VerebonaMascot';
 import {
   RubricTypeFields,
   effectiveRubric,
@@ -1138,27 +1137,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {isEditing ? editFilename || filename : filename}
                 </SheetTitle>
                 <Badge variant="outline" className="mt-1.5 text-xs">{typeLabel}</Badge>
-                {/* §23.3 : Verebona depuis le document — petite mascotte et
-                    « Demander à Verebona », qui ouvre l'assistant sur CE
-                    document (contexte `documentId`). Aucune ouverture
-                    automatique : l'utilisateur clique (§22.10). */}
-                {doc?.id != null && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const documentId = doc.id;
-                      onOpenChange(false);
-                      window.dispatchEvent(new CustomEvent('verebona:open', {
-                        detail: { question: 'Quel est le statut de ce document ?', context: { documentId } },
-                      }));
-                    }}
-                    className="mt-2 flex items-center gap-1.5 rounded-full border border-[color:var(--border-subtle)] px-2.5 py-1 text-xs font-medium text-[color:var(--text-primary)] hover:bg-muted"
-                    aria-label="Demander à Verebona à propos de ce document"
-                  >
-                    <VerebonaMascot pose={isCurrentlyAnalyzing ? 'thinking' : 'idle'} size={18} />
-                    Demander à Verebona
-                  </button>
-                )}
               </div>
             </div>
 

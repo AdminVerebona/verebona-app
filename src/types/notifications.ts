@@ -167,8 +167,8 @@ export interface NotificationPayloadMap {
   };
   SUBSCRIPTION_CANCELLATION_SCHEDULED: { effectiveAt?: string };
   SUBSCRIPTION_CANCELLED: Record<string, never>;
-  ANALYSIS_QUOTA_90: { accountId: number; threshold: 90; includedConsumed: number; includedQuota: number; cta?: string; planCode?: string };
-  ANALYSIS_QUOTA_100: { accountId: number; threshold: 100; includedConsumed: number; includedQuota: number; cta?: string; planCode?: string };
+  ANALYSIS_QUOTA_90: { accountId: number; threshold: 90; includedConsumed: number; includedQuota: number; cta?: string; planCode?: string; periodType?: 'trial' | 'annual' };
+  ANALYSIS_QUOTA_100: { accountId: number; threshold: 100; includedConsumed: number; includedQuota: number; cta?: string; planCode?: string; periodType?: 'trial' | 'annual' };
   REFERRAL_REWARD_GRANTED: { referralEventId: number; referredAccountId?: number };
   GDPR_EXPORT_READY: { exportId: number; expiresAt?: string };
 

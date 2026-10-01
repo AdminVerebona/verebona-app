@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useRouter as useNextRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { Card, CardContent } from '@/components/ui/card';
+import { EmptyStateCard } from '@/components/ui/empty-state-card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
@@ -534,21 +535,13 @@ function AssetsPageContent() {
         )}
 
         {filteredAssets.length === 0 ? (
-          <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
-            <CardContent className="flex items-center gap-4 py-4 px-5">
-              <div className="w-8 h-8 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
-                <Package className="w-4 h-4 text-[color:var(--accent)]" />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun bien pour le moment</p>
-                <p className="text-xs text-[color:var(--text-muted)] mt-0.5">Ajoutez votre premier bien pour commencer</p>
-              </div>
-              <Button onClick={handleAddAsset} className="btn-add px-4 flex-shrink-0 ml-auto">
-                <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
-                Ajouter mon premier bien
-              </Button>
-            </CardContent>
-          </Card>
+          <EmptyStateCard
+            icon={<Package className="w-4 h-4 text-[color:var(--accent)]" />}
+            title="Aucun bien pour le moment"
+            description="Ajoutez votre premier bien pour commencer"
+            actionLabel="Ajouter mon premier bien"
+            onAction={handleAddAsset}
+          />
         ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 w-full">
               {filteredAssets.map((asset, idx) => (

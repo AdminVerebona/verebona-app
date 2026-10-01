@@ -157,7 +157,7 @@ export async function getAnalysisQuotaState(accountId: number): Promise<{
   };
 }
 
-async function emitThresholdNotifications(accountId: number, includedConsumed: number, includedQuota: number, planCode: CommercialPlanCode, counterId: number) {
+async function emitThresholdNotifications(accountId: number, includedConsumed: number, includedQuota: number, planCode: CommercialPlanCode, counterId: number, periodType: AnalysisPeriodType) {
   if (includedQuota <= 0) return;
 
   const ratio = (includedConsumed / includedQuota) * 100;
@@ -213,6 +213,8 @@ async function emitThresholdNotifications(accountId: number, includedConsumed: n
         includedQuota,
         cta,
         planCode,
+        // Le libellé dépend de la période (essai / annuelle) : le quota n'est pas mensuel.
+        periodType,
       },
       dedupeKey: `account:${dedupeKey}`,
     });
@@ -310,7 +312,7 @@ export async function consumeAnalysisCredits(accountId: number, amount = 1): Pro
     throw new Error('ANALYSIS_QUOTA_REACHED');
   }
 
-  await emitThresholdNotifications(accountId, newIncludedConsumed, counter.includedQuota, state.planCode, counter.id);
+  await emitThresholdNotifications(accountId, newIncludedConsumed, counter.includedQuota, state.planCode, counter.id, state.periodType);
 }
 
 export async function grantReferralRewardForFirstBilling(

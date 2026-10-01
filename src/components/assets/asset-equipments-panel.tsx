@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
+import { EmptyStateCard } from '@/components/ui/empty-state-card';
 import { Button } from '@/components/ui/button';
 import { Equipment, Substructure } from '@/types/domain';
 import { Plus, Settings, MapPin } from 'lucide-react';
@@ -127,23 +128,17 @@ export function AssetEquipmentsPanel({
         </div>
 
         {equipments.length === 0 ? (
-          <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
-            <CardContent className="flex items-center gap-4 py-4 px-5">
-              <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-                <Settings className="w-4 h-4 text-blue-500" />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun équipement répertorié</p>
-                <p className="text-xs text-[color:var(--text-muted)] mt-0.5">
-                  Ex: Chaudière, Moteur, Pompe à chaleur, Alarme…
-                </p>
-              </div>
-              <Button variant="outline" size="sm" onClick={handleAdd} data-guide="add-equipment" className="btn-add px-4 flex-shrink-0">
-                <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
-                Ajouter un équipement
-              </Button>
-            </CardContent>
-          </Card>
+          <EmptyStateCard
+            icon={<Settings className="w-4 h-4 text-blue-500" />}
+            iconClassName="bg-blue-500/10"
+            title="Aucun équipement répertorié"
+            description="Ex: Chaudière, Moteur, Pompe à chaleur, Alarme…"
+            actionLabel="Ajouter un équipement"
+            onAction={handleAdd}
+            actionVariant="outline"
+            actionSize="sm"
+            actionGuide="add-equipment"
+          />
         ) : (
           <Card>
             <CardContent className="space-y-6 pt-4">

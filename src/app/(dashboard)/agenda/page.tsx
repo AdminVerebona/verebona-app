@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Card, CardContent } from '@/components/ui/card';
+import { EmptyStateCard } from '@/components/ui/empty-state-card';
 import { Calendar, List, SlidersHorizontal, Plus, AlertCircle, CalendarDays, CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
@@ -590,21 +590,13 @@ function AgendaPageInner() {
             </div>
           ) : (
             /* Même bloc que « Mes biens » : une ligne, une explication, une action. */
-            <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
-              <CardContent className="flex items-center gap-4 py-4 px-5">
-                <div className="w-8 h-8 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
-                  <Calendar className="w-4 h-4 text-[color:var(--accent)]" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun élément pour le moment</p>
-                  <p className="text-xs text-[color:var(--text-muted)] mt-0.5">Ajoutez votre premier élément pour commencer</p>
-                </div>
-                <Button onClick={() => setShowCreate(true)} className="btn-add px-4 flex-shrink-0 ml-auto">
-                  <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
-                  Ajouter mon premier élément
-                </Button>
-              </CardContent>
-            </Card>
+            <EmptyStateCard
+              icon={<Calendar className="w-4 h-4 text-[color:var(--accent)]" />}
+              title="Aucun élément pour le moment"
+              description="Ajoutez votre premier élément pour commencer"
+              actionLabel="Ajouter mon premier élément"
+              onAction={() => setShowCreate(true)}
+            />
           )
         ) : (
           <div className="space-y-2">

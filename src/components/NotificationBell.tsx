@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { apiClient } from '@/lib/api-client';
 import { drawerHref, openDrawer } from '@/lib/drawers';
 import { lotNotificationText } from '@/services/ai/source-analysis/lot-notification-text';
+import { quotaNotificationText } from '@/lib/notifications/quota-notification-text';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -37,6 +38,8 @@ interface NotificationPayload extends SubscriptionNotificationPayload {
   failedCount?: number;
   errorReason?: string;
   documentTitle?: string;
+  /** Quota d'analyses : période du compteur (essai / annuelle). */
+  periodType?: 'trial' | 'annual';
   /** Fin de lot : documents analysés, nommés (lot-notification-text). */
   documents?: Array<{ assetFileId: number; title: string }>;
   inviteToken?: string;
@@ -121,10 +124,11 @@ function getNotificationText(
       return p.documentTitle
         ? lotNotificationText({ analysedCount: 1, documentTitle: p.documentTitle })
         : `Analyse terminée : ${p.analysedCount ?? 0} document(s) traité(s)${p.failedCount ? `, ${p.failedCount} échoué(s)` : ''}`;
+    // Quota par période (essai / annuelle), pas mensuel : texte partagé avec le catalogue.
     case 'ANALYSIS_QUOTA_90':
-      return `Vous avez utilisé 90 % de votre quota d'analyses ce mois-ci`;
+      return quotaNotificationText(90, p.periodType);
     case 'ANALYSIS_QUOTA_100':
-      return `Vous avez atteint votre quota d'analyses ce mois-ci`;
+      return quotaNotificationText(100, p.periodType);
     case 'REFERRAL_REWARD_GRANTED':
       return `Votre récompense de parrainage a été créditée`;
     case 'ANALYSIS_FAILED_PERSISTENT': {

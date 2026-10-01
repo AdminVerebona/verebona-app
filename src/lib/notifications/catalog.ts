@@ -24,6 +24,7 @@ import { drawerHref } from '@/lib/drawers';
 import { z } from 'zod';
 import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications';
 import { subscriptionNotificationText } from './subscription-messages';
+import { quotaNotificationText, quotaNotificationTitle } from './quota-notification-text';
 import { formatUnpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 
 export type NotificationCategory =
@@ -468,28 +469,29 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     category: 'account', priority: 'normal', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: false }, retentionDays: 90, // §6 : email Non à 90 %
-    render: () => content(
-      'Quota d\'analyses à 90 %',
-      'Vous avez utilisé 90 % de votre quota d\'analyses ce mois-ci.',
-      { body: 'Vous approchez de votre quota d\'analyses.' },
+    // Quota par période d'essai ou annuelle, jamais mensuel : cf. quota-notification-text.ts.
+    render: (p: { periodType?: string }) => content(
+      quotaNotificationTitle(90),
+      `${quotaNotificationText(90, p?.periodType)}.`,
+      { body: 'Vous approchez de la limite d\'analyses incluses.' },
       'notif_quota',
     ),
     deepLink: () => '/mon-compte/offres',
-    payloadSchema: z.object({ accountId: z.number(), threshold: z.literal(90), includedConsumed: z.number(), includedQuota: z.number(), cta: z.string().optional(), planCode: z.string().optional() }),
+    payloadSchema: z.object({ accountId: z.number(), threshold: z.literal(90), includedConsumed: z.number(), includedQuota: z.number(), cta: z.string().optional(), planCode: z.string().optional(), periodType: z.enum(['trial', 'annual']).optional() }),
   },
   [T.ANALYSIS_QUOTA_100]: {
     type: T.ANALYSIS_QUOTA_100,
     category: 'account', priority: 'high', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: true }, retentionDays: 90, // §6 : email Oui à 100 %
-    render: () => content(
-      'Quota d\'analyses atteint',
-      'Vous avez atteint votre quota d\'analyses ce mois-ci.',
-      { body: 'Vous avez atteint votre quota d\'analyses.' },
+    render: (p: { periodType?: string }) => content(
+      quotaNotificationTitle(100),
+      `${quotaNotificationText(100, p?.periodType)}.`,
+      { body: 'Vous avez utilisé toutes vos analyses incluses.' },
       'notif_quota',
     ),
     deepLink: () => '/mon-compte/offres',
-    payloadSchema: z.object({ accountId: z.number(), threshold: z.literal(100), includedConsumed: z.number(), includedQuota: z.number(), cta: z.string().optional(), planCode: z.string().optional() }),
+    payloadSchema: z.object({ accountId: z.number(), threshold: z.literal(100), includedConsumed: z.number(), includedQuota: z.number(), cta: z.string().optional(), planCode: z.string().optional(), periodType: z.enum(['trial', 'annual']).optional() }),
   },
   [T.REFERRAL_REWARD_GRANTED]: {
     type: T.REFERRAL_REWARD_GRANTED,

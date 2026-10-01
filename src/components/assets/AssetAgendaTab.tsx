@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Card, CardContent } from '@/components/ui/card';
+import { EmptyStateCard } from '@/components/ui/empty-state-card';
 import { Plus, CalendarDays, AlertCircle } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
@@ -127,21 +127,14 @@ export function AssetAgendaTab({ assetId }: Props) {
           {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
         </div>
       ) : items.length === 0 ? (
-        <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm">
-          <CardContent className="flex items-center gap-4 py-4 px-5">
-            <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
-              <CalendarDays className="w-4 h-4 text-emerald-500" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-[color:var(--text-primary)]">Aucun élément pour le moment</p>
-              <p className="text-xs text-[color:var(--text-muted)] mt-0.5">Créez votre premier élément d'agenda</p>
-            </div>
-            <Button onClick={ouvrirCreation} className="btn-add px-4 flex-shrink-0">
-              <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
-              Ajouter un élément
-            </Button>
-          </CardContent>
-        </Card>
+        <EmptyStateCard
+          icon={<CalendarDays className="w-4 h-4 text-emerald-500" />}
+          iconClassName="bg-emerald-500/10"
+          title="Aucun élément pour le moment"
+          description="Créez votre premier élément d'agenda"
+          actionLabel="Ajouter un élément"
+          onAction={ouvrirCreation}
+        />
       ) : (
         <div className="rounded-lg border overflow-hidden">
           {items.map(item => (
