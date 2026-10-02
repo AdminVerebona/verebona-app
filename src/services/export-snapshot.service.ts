@@ -18,7 +18,7 @@ import {
   assets, assetFiles, substructures, equipments, events,
   assetPhotos,
 } from '@/db/schema';
-import { eq, and, isNull, inArray, or } from 'drizzle-orm';
+import { eq, and, isNull, inArray, or, sql } from 'drizzle-orm';
 
 export interface DocumentRef {
   id: number;
@@ -218,7 +218,12 @@ export interface AssetSnapshot {
   // Related data
   documents: DocumentRef[];   // all (incl. web links) — filtered per usage by manifest
   photos: PhotoRef[];
-  substructures: Array<{ id: number; name: string; roomType?: string; area?: string | null }>;
+  /**
+   * Pièces = sous-structures (D-G, lot 20). `roomType` / `area` /
+   * `description` : colonnes posées par 0229 (SQL seulement, non déclarées
+   * dans Drizzle) — `null` avant migration ou reprise.
+   */
+  substructures: Array<{ id: number; name: string; roomType?: string | null; area?: string | null; description?: string | null }>;
   equipments: Array<{
     id: number;
     name: string;
@@ -435,9 +440,16 @@ export async function buildAssetSnapshot(
     catch { equipList = assetRow.equipmentList.split(',').map(e => e.trim()).filter(Boolean); }
   }
 
-  // Load substructures (rooms)
+  // Pièces = sous-structures (D-G, lot 20). Colonnes 0229 lues par `to_jsonb`
+  // (non déclarées dans Drizzle ; absentes → null, sans erreur).
   const subs = await db
-    .select({ id: substructures.id, name: substructures.name, roomType: substructures.name })
+    .select({
+      id: substructures.id,
+      name: substructures.name,
+      roomType: sql<string | null>`to_jsonb(${substructures}) ->> 'room_type'`,
+      area: sql<string | null>`to_jsonb(${substructures}) ->> 'area'`,
+      description: sql<string | null>`to_jsonb(${substructures}) ->> 'description'`,
+    })
     .from(substructures)
     .where(eq(substructures.assetId, assetId));
 
@@ -603,7 +615,7 @@ export async function buildAssetSnapshot(
       documentDate: p.documentDate ?? null,
       createdAt: p.fileCreatedAt ? new Date(p.fileCreatedAt).toISOString() : null,
     })),
-    substructures: subs.map(s => ({ id: s.id, name: s.name, area: null })),
+    substructures: subs.map(s => ({ id: s.id, name: s.name, roomType: s.roomType ?? null, area: s.area ?? null, description: s.description ?? null })),
     equipments: equipMapped,
     events: evts,
     snapshotAt: new Date().toISOString(),

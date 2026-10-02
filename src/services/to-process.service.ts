@@ -301,6 +301,8 @@ export async function getToProcessItems(
       assetId: assetFiles.assetId,
       linkedAssetId: assetFiles.linkedAssetId,
       linkedRoomId: assetFiles.linkedRoomId,
+      // Pièce = sous-structure (D-G, lot 20) : un rattachement utile.
+      substructureId: assetFiles.substructureId,
       equipmentId: assetFiles.equipmentId,
       documentType: assetFiles.documentType,
       documentDate: assetFiles.documentDate,
@@ -324,6 +326,7 @@ export async function getToProcessItems(
               isNull(assetFiles.assetId),
               isNull(assetFiles.linkedAssetId),
               isNull(assetFiles.linkedRoomId),
+              isNull(assetFiles.substructureId),
               isNull(assetFiles.equipmentId)
             ),
             eq(assetFiles.analysisState, 'CONFLICT_DETECTED'),
@@ -409,7 +412,7 @@ export async function getToProcessItems(
       continue; // Skip fusion items for now
     }
 
-    if (!doc.assetId && !doc.linkedAssetId && !doc.linkedRoomId && !doc.equipmentId) {
+    if (!doc.assetId && !doc.linkedAssetId && !doc.linkedRoomId && !doc.substructureId && !doc.equipmentId) {
       motifs.push({ motif: 'missing_useful_link', mapping: mapDocumentMotif('missing_useful_link', doc) });
     }
     if (doc.analysisState === 'CONFLICT_DETECTED') {

@@ -223,3 +223,52 @@ export async function repairInvalidMigrationIndexes(
   }
   return report;
 }
+
+export interface MigrationFileFailure {
+  filename: string;
+  message: string;
+  code?: string;
+}
+
+/**
+ * Applique, dans l'ordre LEXICOGRAPHIQUE, les fichiers non encore marqués
+ * dans `_migrations` (boucle de `ensureMigrations`, exportée pour être
+ * éprouvée telle quelle par le harnais E2E — revue lot 20).
+ *
+ * Un échec n'interrompt pas la chaîne : le fichier n'est pas marqué et sera
+ * retenté au démarrage suivant, toujours APRÈS ceux qui le précèdent. Les
+ * fichiers d'une même migration qui dépendent du principal (`_idx_N`)
+ * doivent donc échouer proprement tant qu'il manque (colonne absente, garde
+ * explicite comme 0229_idx_3) plutôt que de détruire un état valide.
+ */
+export async function applyMigrationFiles(
+  client: SqlRunner,
+  files: Array<{ filename: string; sql: string }>,
+  log: { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void } = console,
+): Promise<{ applied: string[]; deferred: string[]; failures: MigrationFileFailure[] }> {
+  const out = { applied: [] as string[], deferred: [] as string[], failures: [] as MigrationFileFailure[] };
+  const deja = (await client.unsafe(`SELECT filename FROM _migrations`)) as Array<{ filename: string }>;
+  const appliedSet = new Set(deja.map((r) => r.filename));
+  for (const f of [...files].sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0))) {
+    if (appliedSet.has(f.filename)) continue;
+    try {
+      const r = await runMigrationSql(client, f.sql);
+      if (r.status === 'deferred') {
+        log.warn(`[db] Migration ${f.filename} differee (index ${r.index} en construction ailleurs).`);
+        out.deferred.push(f.filename);
+        continue;
+      }
+      await client.unsafe(`INSERT INTO _migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING`, [f.filename] as never[]);
+      log.info(`[db] Applied migration: ${f.filename}`);
+      out.applied.push(f.filename);
+    } catch (e) {
+      const err = e as { message?: string; code?: string };
+      out.failures.push({ filename: f.filename, message: err.message ?? String(e), code: err.code });
+      log.error(
+        `[db] ECHEC de la migration ${f.filename} (${err.code ?? 'sans code'}) : ${err.message ?? e}\n` +
+        '     La chaine se poursuit. Ce fichier sera retente au prochain demarrage.',
+      );
+    }
+  }
+  return out;
+}

@@ -30,6 +30,7 @@ import {
   exportGenerations,
   pendingBlobDeletions,
   rooms,
+  substructures,
 } from '@/db/schema';
 import { and, count, eq, inArray, isNull, notInArray, or } from 'drizzle-orm';
 
@@ -39,6 +40,7 @@ export interface AssetDeletionSummary {
   photos: number;
   deadlines: number;
   events: number;
+  /** Pièces = sous-structures du bien (D-G, lot 20). */
   rooms: number;
   equipments: number;
 }
@@ -100,16 +102,42 @@ export function selectBlobKeysToPurge(input: {
 
 /* ── Accès base ─────────────────────────────────────────────────────────── */
 
+/**
+ * Pièces `rooms` (dépréciées, D-G) du bien : COMPATIBILITÉ seulement — un
+ * document, une échéance ou un événement encore rattaché par
+ * `linked_room_id` (non repris) disparaît avec la pièce, donc avec le bien.
+ */
 function roomIdsOf(assetId: number) {
   return db.select({ id: rooms.id }).from(rooms).where(eq(rooms.assetId, assetId));
 }
 
-/** Tout ce que la cascade emporte parmi les fichiers : bien, bien lié, pièce du bien. */
+/** Pièces (sous-structures) du bien. */
+function subIdsOf(run: Pick<typeof db, 'select'>, assetId: number) {
+  return run.select({ id: substructures.id }).from(substructures).where(eq(substructures.assetId, assetId));
+}
+
+/**
+ * Rattachés à une PIÈCE du bien sans bien propre (`asset_id` NULL) — cas
+ * courant après la reprise D-G (`linked_room_id` → `substructure_id`). La
+ * clé étrangère `substructure_id` est ON DELETE SET NULL : sans suppression
+ * explicite, ces lignes survivraient orphelines à la suppression du bien (et
+ * leur stockage ne serait jamais purgé).
+ */
+function viaPiece(
+  run: Pick<typeof db, 'select'>,
+  t: typeof assetFiles | typeof events | typeof deadlines,
+  assetId: number,
+) {
+  return and(inArray(t.substructureId, subIdsOf(run, assetId)), isNull(t.assetId));
+}
+
+/** Tout ce que la suppression emporte parmi les fichiers : bien, bien lié, pièce du bien. */
 function filesScope(assetId: number) {
   return or(
     eq(assetFiles.assetId, assetId),
     eq(assetFiles.linkedAssetId, assetId),
     inArray(assetFiles.linkedRoomId, roomIdsOf(assetId)),
+    viaPiece(db, assetFiles, assetId),
   );
 }
 
@@ -135,6 +163,7 @@ export async function getAssetDeletionSummary(assetId: number): Promise<AssetDel
           eq(deadlines.assetId, assetId),
           eq(deadlines.linkedAssetId, assetId),
           inArray(deadlines.linkedRoomId, roomIdsOf(assetId)),
+          viaPiece(db, deadlines, assetId),
         ),
         eq(deadlines.isDraft, false),
       )),
@@ -146,10 +175,11 @@ export async function getAssetDeletionSummary(assetId: number): Promise<AssetDel
           eq(events.assetId, assetId),
           eq(events.linkedAssetId, assetId),
           inArray(events.linkedRoomId, roomIdsOf(assetId)),
+          viaPiece(db, events, assetId),
         ),
         eq(events.isDraft, false),
       )),
-    db.select({ n: count() }).from(rooms).where(eq(rooms.assetId, assetId)),
+    db.select({ n: count() }).from(substructures).where(eq(substructures.assetId, assetId)),
     db.select({ n: count() }).from(equipments).where(eq(equipments.assetId, assetId)),
   ]);
 
@@ -186,6 +216,7 @@ export async function deleteAssetCompletely(asset: {
         eq(assetFiles.assetId, assetId),
         eq(assetFiles.linkedAssetId, assetId),
         inArray(assetFiles.linkedRoomId, roomIds),
+        viaPiece(tx, assetFiles, assetId),
       ));
     const fileIds = files.map((f) => f.id);
 
@@ -248,7 +279,12 @@ export async function deleteAssetCompletely(asset: {
       .set({ duplicatedAssetId: null })
       .where(eq(assetTransmissions.duplicatedAssetId, assetId));
 
-    // 3. Le bien ; la cascade emporte tout le reste.
+    // 3. Rattachés à une pièce du bien seulement (D-G) : hors cascade (SET NULL).
+    await tx.delete(assetFiles).where(viaPiece(tx, assetFiles, assetId));
+    await tx.delete(events).where(viaPiece(tx, events, assetId));
+    await tx.delete(deadlines).where(viaPiece(tx, deadlines, assetId));
+
+    // 4. Le bien ; la cascade emporte tout le reste.
     await tx.delete(assets).where(eq(assets.id, assetId));
 
     // `fileIds` : documents emportés — leurs preuves portées par d'AUTRES

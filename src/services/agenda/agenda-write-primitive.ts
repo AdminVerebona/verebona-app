@@ -95,8 +95,8 @@ export interface AgendaUpsertInput {
   /** Occurrence dans la source : `single`, date de l'occurrence, ou rang. */
   occurrenceIndex?: string | number | null;
   /**
-   * Cible de la CLÉ si elle diffère de `target` : cible T1 (équipement, pièce
-   * `rooms`) — une pièce T1 n'est pas une pièce de l'agenda (`substructures`).
+   * Cible de la CLÉ si elle diffère de `target` (cible T1 : équipement, pièce).
+   * Pièce = sous-structure depuis D-G (lot 20) : `target` et clé coïncident.
    */
   keyTarget?: { type: string; id: number } | null;
   details?: AgendaItemDetails;

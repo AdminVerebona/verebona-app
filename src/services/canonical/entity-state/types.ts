@@ -1,13 +1,16 @@
 /**
  * État canonique d'un ÉQUIPEMENT ou d'une PIÈCE — types publics (CDC 15
  * T1-04, T3-01, T3-02, T3-05 ; plan lot 18, volet R3).
+ *
+ * PIÈCE (`ROOM`) = SOUS-STRUCTURE (`substructures.id`) depuis la décision PO
+ * D-G (lot 20, migration 0229) ; la table `rooms` n'est plus lue.
  */
 import type { RolloutMode } from '@/services/canonical/rollout';
 import type {
   CanonicalFieldState, CanonicalFieldWrite, CanonicalOrigin, CanonicalWriteResult, CanonicalWriteSource,
 } from '@/services/canonical/asset-state';
 
-/** Cibles d'une fiche autre que le bien (registre : `targetTypes`). */
+/** Cibles d'une fiche autre que le bien (registre : `targetTypes`). `ROOM` : identifiant de `substructures`. */
 export type CanonicalEntityType = 'EQUIPMENT' | 'ROOM';
 
 export interface CanonicalEntityTarget {
@@ -17,7 +20,7 @@ export interface CanonicalEntityTarget {
 
 /** Colonne miroir d'un champ d'entité (D-10 transposée). */
 export interface EntityMirrorColumn {
-  table: 'equipments' | 'equipment_cil_specs' | 'rooms';
+  table: 'equipments' | 'equipment_cil_specs' | 'substructures';
   column: string;
   transform: 'eur_to_cents' | 'number' | 'text_number' | 'identity';
 }

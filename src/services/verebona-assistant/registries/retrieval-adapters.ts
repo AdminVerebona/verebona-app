@@ -29,7 +29,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '@/db';
-import { assets, assetFiles, agendaItems, equipments, rooms, suppliers, toProcessActions } from '@/db/schema';
+import { assets, assetFiles, agendaItems, equipments, substructures, suppliers, toProcessActions } from '@/db/schema';
 import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { DOCUMENT_CATALOG } from '@/services/canonical/registry';
 import { DOCUMENT_TYPES } from '@/lib/referential/v2';
@@ -383,6 +383,8 @@ export const equipmentsAdapter: RetrievalAdapter = {
 };
 
 /* ── Pièces ────────────────────────────────────────────────────────────── */
+// Pièce = SOUS-STRUCTURE (décision PO D-G, lot 20) : `roomId` = `substructures.id`,
+// celui qu'ouvre le tiroir de la pièce (`/api/substructures/[id]`).
 
 export const roomsAdapter: RetrievalAdapter = {
   code: 'structured',
@@ -392,17 +394,17 @@ export const roomsAdapter: RetrievalAdapter = {
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
     const termes = q.terms ?? [];
-    const cond = await conditionTermes([rooms.name], termes, q.tolerant);
+    const cond = await conditionTermes([substructures.name], termes, q.tolerant);
     if (!cond) return [];
 
     const lignes = await db
       .select({
-        id: rooms.id, accountId: assets.accountId, name: rooms.name, assetId: rooms.assetId,
+        id: substructures.id, accountId: assets.accountId, name: substructures.name, assetId: substructures.assetId,
         assetName: assets.name,
       })
-      .from(rooms)
-      .innerJoin(assets, eq(rooms.assetId, assets.id))
-      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), cond, ...filtreBien(q, rooms.assetId)))
+      .from(substructures)
+      .innerJoin(assets, eq(substructures.assetId, assets.id))
+      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), cond, ...filtreBien(q, substructures.assetId)))
       .limit(q.limit);
 
     verifierPerimetre('rooms', lignes, q.accountId);

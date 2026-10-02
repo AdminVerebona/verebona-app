@@ -16,6 +16,8 @@ export const REASON_CODES = {
   // CDC 15 T3-04 — réconciliation négative.
   STALE_AUTO_VALUE_REPLACED: 'Valeur automatique sans preuve active remplacée par la meilleure preuve restante',
   NO_REMAINING_EVIDENCE: 'Valeur automatique retirée : plus aucune preuve active',
+  // Décision PO D-M (lot 20) — date tranchée par T4, preuve révisée.
+  T4_DATE_REVISED: 'Date tranchée par l’agenda : valeur automatique corrigée par la preuve révisée',
 
   // ── Conservations ───────────────────────────────────────────────────────
   MANUAL_VALUE_CONFIRMED: 'Valeur saisie confirmée par un document',

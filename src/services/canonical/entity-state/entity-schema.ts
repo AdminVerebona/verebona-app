@@ -1,6 +1,7 @@
 /**
- * Présence des colonnes de la migration 0227 (fiche canonique d'équipement et
- * de pièce, cible du journal 0216) — CDC 15 T1-04, lot 18.
+ * Présence des colonnes de la migration 0227 (fiche canonique d'équipement,
+ * cible du journal 0216) et 0229 (fiche canonique de la pièce, portée par la
+ * SOUS-STRUCTURE depuis D-G) — CDC 15 T1-04, lots 18 et 20.
  *
  * Colonnes NON déclarées dans Drizzle (en-tête de la 0227) : lues et écrites
  * en SQL, seulement si ce contrôle confirme leur présence. Absentes : la
@@ -13,7 +14,8 @@ let signale = false;
 
 const ATTENDUES: ReadonlyArray<[string, string]> = [
   ['equipments', 'key_characteristics'],
-  ['rooms', 'key_characteristics'],
+  ['substructures', 'key_characteristics'],
+  ['substructures', 'area'],
   ['canonical_field_writes', 'target_type'],
   ['canonical_field_writes', 'target_id'],
 ];
@@ -26,8 +28,8 @@ export async function entityCanonicalColumnsReady(): Promise<boolean> {
     const rows = (await pgClient.unsafe(
       `SELECT table_name AS t, column_name AS c FROM information_schema.columns
         WHERE table_schema = current_schema()
-          AND table_name IN ('equipments', 'rooms', 'canonical_field_writes')
-          AND column_name IN ('key_characteristics', 'target_type', 'target_id')`,
+          AND table_name IN ('equipments', 'substructures', 'canonical_field_writes')
+          AND column_name IN ('key_characteristics', 'area', 'target_type', 'target_id')`,
     )) as unknown as Array<{ t: string; c: string }>;
     const vues = new Set(rows.map((r) => `${r.t}.${r.c}`));
     ready = ATTENDUES.every(([t, c]) => vues.has(`${t}.${c}`));
@@ -38,7 +40,7 @@ export async function entityCanonicalColumnsReady(): Promise<boolean> {
   if (!ready && !signale) {
     signale = true;
     console.error(
-      '[canonical] ⚠️ MIGRATION 0227 NON APPLIQUÉE : fiche canonique des équipements et pièces absente. '
+      '[canonical] ⚠️ MIGRATION 0227 / 0229 NON APPLIQUÉE : fiche canonique des équipements et pièces absente. '
       + 'Aucune valeur lue pour un équipement ou une pièce n’est appliquée. Voir /api/health.',
     );
   }

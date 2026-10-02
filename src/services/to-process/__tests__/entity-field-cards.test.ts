@@ -63,14 +63,25 @@ describe('ENTITY-FIELD', () => {
     expect(m.resolveActionsForData).not.toHaveBeenCalled();
   });
 
-  it('navigation : une pièce ouvre la page de son bien, onglet « Pièces »', async () => {
-    vi.doMock('@/lib/drawers', () => ({ openDrawer: vi.fn() }));
+  it('navigation (D-G) : une pièce (sous-structure) s’ouvre dans le tiroir de la pièce', async () => {
+    const openDrawer = vi.fn();
+    vi.doMock('@/lib/drawers', () => ({ openDrawer }));
     const { openToProcessTarget } = await import('@/lib/to-process-target');
     const push = vi.fn();
     const repli = vi.fn();
     openToProcessTarget({ targetType: 'ROOM', targetId: 2, targetPublicId: 'uuid-bien' }, { push }, repli);
-    expect(push).toHaveBeenCalledWith('/assets/uuid-bien?tab=rooms');
-    openToProcessTarget({ targetType: 'ROOM', targetId: 2, targetPublicId: null }, { push }, repli);
-    expect(repli).toHaveBeenCalledTimes(1);
+    expect(openDrawer).toHaveBeenCalledWith({ kind: 'piece', id: 2 });
+    expect(push).not.toHaveBeenCalled();
+    expect(repli).not.toHaveBeenCalled();
+  });
+
+  it('D-G : une carte LEGACY_ROOM (suspendue par 0229) n’écrit jamais, ni sur une pièce ni sur un équipement', async () => {
+    const { resolveEntityFieldCard } = await import('../entity-field-cards');
+    const action = {
+      id: 1, publicId: 'p', targetType: 'LEGACY_ROOM', targetId: 2, fieldKey: 'roomArea', ruleCode: 'ENTITY-FIELD-ROOM',
+      triggerContext: { key: 'roomArea', current: 18 }, proposalsJson: [{ value: 20 }],
+    } as never;
+    await expect(resolveEntityFieldCard({} as never, action, 20, 7, { userId: 1 } as never))
+      .resolves.toEqual({ ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' });
   });
 });

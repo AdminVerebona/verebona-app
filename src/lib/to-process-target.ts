@@ -5,8 +5,8 @@
  * cible, sur le MÊME champ. Une seule fonction, utilisée par les deux.
  *   · document, équipement, échéance : en tiroir, sans quitter l'écran ;
  *   · bien : sa page, sur le champ concerné ;
- *   · pièce (lot 19) : la page de SON bien, onglet « Pièces » — aucun tiroir
- *     de pièce n'existe ; `targetPublicId` porte l'identifiant public du bien ;
+ *   · pièce (lot 19 ; sous-structure depuis D-G, lot 20) : en tiroir de pièce
+ *     (`targetId` = `substructures.id`) ;
  *   · fournisseur : sa fiche `/fournisseurs/[id]` (ATP-03), à condition que
  *     le serveur ait résolu le VRAI fournisseur (`supplierId`) — `targetId`
  *     peut être l'identifiant d'une revue fournisseur. Sans fournisseur
@@ -37,11 +37,8 @@ export function openToProcessTarget(
       openDrawer({ kind: 'equipement', id: ref.targetId });
       return;
     case 'ROOM':
-      if (ref.targetPublicId) {
-        nav.push(`/assets/${ref.targetPublicId}?tab=rooms`);
-        return;
-      }
-      break;
+      openDrawer({ kind: 'piece', id: ref.targetId });
+      return;
     case 'AGENDA_ITEM':
       openDrawer({ kind: 'echeance', id: ref.targetId, initialMode: 'edit' });
       return;

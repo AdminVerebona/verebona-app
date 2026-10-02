@@ -15,7 +15,7 @@ vi.mock('@/db', () => {
           kc: { warrantyEndDate: '2031-03-01', warrantyEndDate__origin: 'RECONCILIATION' },
           cols: { 'equipment_cil_specs.serial_number': 'SN-77', 'equipments.purchase_price_cents': 189900 } },
         { type: 'EQUIPMENT', id: 5, assetId: 3, accountId: 7, name: 'Ballon', hasSpecs: false, kc: {}, cols: { 'equipment_cil_specs.serial_number': 'B-1' } },
-        { type: 'ROOM', id: 9, assetId: 3, accountId: 7, name: 'Salon', hasSpecs: false, kc: {}, cols: { 'rooms.area': '18.5' } },
+        { type: 'ROOM', id: 9, assetId: 3, accountId: 7, name: 'Salon', hasSpecs: false, kc: {}, cols: { 'substructures.area': '18.5' } },
       ];
     }
     if (sql.includes('FROM field_evidence e')) {

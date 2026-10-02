@@ -77,21 +77,24 @@ describe('onAssetDeleted', () => {
 
 describe('relation N-N au déplacement / détachement (0221)', () => {
   const lien = (over: Record<string, unknown>) => ({
-    id: 1, accountId: 1, fileId: 55, assetId: 10, roomId: null, equipmentId: null, linkRole: 'PRIMARY', origin: 'USER',
+    id: 1, accountId: 1, fileId: 55, assetId: 10, roomId: null, equipmentId: null, substructureId: null, linkRole: 'PRIMARY', origin: 'USER',
     confidence: null, status: 'ACTIVE', createdAt: new Date(), updatedAt: new Date(), removedAt: null, ...over,
   });
 
   it('liens USER / AI / MIGRATION visant A (bien, pièce) retirés, LEGACY_COLUMN laissé au déclencheur — même en legacy', async () => {
-    const avant = [lien({}), lien({ id: 2, roomId: 4, origin: 'AI', linkRole: 'SECONDARY' }), lien({ id: 3, origin: 'LEGACY_COLUMN' }), lien({ id: 4, assetId: 30, origin: 'AI', linkRole: 'SECONDARY' })];
+    // D-G (lot 20) : la pièce d'un lien est une sous-structure (`substructureId`) ; `roomId` historique conservé tel quel.
+    const avant = [lien({}), lien({ id: 2, roomId: 4, origin: 'AI', linkRole: 'SECONDARY' }), lien({ id: 3, origin: 'LEGACY_COLUMN' }), lien({ id: 4, assetId: 30, origin: 'AI', linkRole: 'SECONDARY' }),
+      lien({ id: 5, substructureId: 6, origin: 'USER', linkRole: 'SECONDARY' })];
     const unlink = vi.fn(async () => 1);
     const { d } = deps('legacy');
     const r = await onDocumentAssetChanged({ accountId: 1, userId: 2, fileId: 55, fromAssetId: 10, toAssetId: 20 },
       { ...d, links: { list: async () => avant as never, unlink } });
     expect(unlink.mock.calls.map((c) => (c as unknown as [{ target: unknown; origins: unknown }])[0])).toEqual([
-      expect.objectContaining({ target: { assetId: 10, roomId: null, equipmentId: null }, origins: ['USER'] }),
-      expect.objectContaining({ target: { assetId: 10, roomId: 4, equipmentId: null }, origins: ['AI'] }),
+      expect.objectContaining({ target: { assetId: 10, roomId: null, equipmentId: null, substructureId: null }, origins: ['USER'] }),
+      expect.objectContaining({ target: { assetId: 10, roomId: 4, equipmentId: null, substructureId: null }, origins: ['AI'] }),
+      expect.objectContaining({ target: { assetId: 10, roomId: null, equipmentId: null, substructureId: 6 }, origins: ['USER'] }),
     ]);
-    expect(r.unlinked).toBe(2);
+    expect(r.unlinked).toBe(3);
   });
 
   it('enabled : un bien SECONDAIRE qui porte des preuves mais n’est plus lié perd ses preuves ; un bien lié les garde', async () => {

@@ -40,7 +40,7 @@ import type { ExtractedField, SourceInput, AiOperationTrace, PersistedFactTarget
 import type { ProjectedFact } from '../master/t1-contract';
 import { T1_MASTER_PROMPT_CODE } from '../master/t1-contract';
 import { EXTRACT_SOURCE_PROMPT_VERSION } from '../prompt-version';
-import { getField } from '@/services/canonical/registry';
+import { getField, isContextualAlias, isInputOnlyKey, resolveAlias } from '@/services/canonical/registry';
 
 export interface PersistEvidenceInput {
   input: SourceInput;
@@ -104,7 +104,18 @@ export async function persistEvidence(p: PersistEvidenceInput): Promise<Map<stri
   const targeted = p.fields.map((f) => verifiableTarget(f.target)).filter((t): t is NonNullable<typeof t> => !!t);
   const resolved = targeted.length ? await resolveFactTargets(p.input.accountId, targeted) : new Map<string, { assetId: number }>();
 
-  for (const field of p.fields) {
+  for (const field0 of p.fields) {
+    // D-D (lot 20) : champ de saisie seule (prix, surface d'annonce) — jamais
+    // une preuve, quel que soit le document.
+    if (isInputOnlyKey(field0.canonicalKey ?? field0.fieldKey)) {
+      console.info(`[persist-evidence] champ ${field0.fieldKey} : saisie seule, preuve non écrite.`);
+      continue;
+    }
+    // D-C (lot 20) : alias dont la clé dépend du document (`dateFinContrat`
+    // d'un bail → leaseEndDate) résolu ICI, avec le type documentaire : la
+    // preuve porte la clé canonique retenue, plus l'alias ambigu.
+    const contextuelle = contextualFieldKey(field0, p.documentType);
+    const field = contextuelle ? { ...field0, fieldKey: contextuelle } : field0;
     const vt = verifiableTarget(field.target);
     let assetId = p.assetId;
     let target: FieldEvidenceInput['target'] = null;
@@ -150,7 +161,8 @@ export async function persistEvidence(p: PersistEvidenceInput): Promise<Map<stri
         ...canonicalExtension(field),
         ...(target ? { target } : {}),
       });
-      byField.set(field.fieldKey, evidenceId);
+      byField.set(field0.fieldKey, evidenceId);
+      if (contextuelle) byField.set(contextuelle, evidenceId);
       written.push(evidenceId);
     } catch (e) {
       failures += 1;
@@ -198,6 +210,8 @@ export type ProjectedFactSkipReason =
   | 'GENERIC_KNOWLEDGE'
   /** Clé annoncée canonique mais absente du registre : jamais écrite telle quelle. */
   | 'UNKNOWN_CANONICAL_KEY'
+  /** Champ de saisie seule (`inputOnly`, décision PO D-D, lot 20) : jamais une preuve. */
+  | 'INPUT_ONLY_FIELD'
   /** Cible DOCUMENT / SUPPLIER / GENERIC : pas un champ de bien. */
   | 'NON_ENTITY_TARGET'
   /** Aucune cible vérifiée (identifiant null) : non rattaché (U8). */
@@ -255,6 +269,7 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
   for (const fact of p.facts) {
     if (fact.canonicalKey === null) { skip(fact, 'GENERIC_KNOWLEDGE'); continue; }
     if (!getField(fact.canonicalKey)) { skip(fact, 'UNKNOWN_CANONICAL_KEY'); continue; }
+    if (getField(fact.canonicalKey)!.inputOnly) { skip(fact, 'INPUT_ONLY_FIELD'); continue; }
     if (!isEvidenceTargetType(fact.target.targetType)) { skip(fact, 'NON_ENTITY_TARGET'); continue; }
     if (fact.target.targetEntityId == null) { skip(fact, 'UNATTACHED'); continue; }
     const visual = fact.provenance === 'VISUAL_ANALYSIS';
@@ -415,4 +430,24 @@ export function projectedFactToExtractedField(f: ProjectedFact): ExtractedField 
     origin: f.origin,
     ruleCode: f.ruleCode,
   };
+}
+
+// ── Alias contextuels (décision PO D-C, lot 20) ─────────────────────────────
+
+/**
+ * Clé canonique d'un champ historique dont la clé est un ALIAS CONTEXTUEL
+ * (`dateFinContrat`, `numeroContrat`, `dateEtablissement`), pour ce type
+ * documentaire ; `null` pour tout autre champ (inchangé), pour un champ du
+ * contrat enrichi (sa `canonicalKey` fait foi), quand l'alias ne se résout
+ * pas (`dateEtablissement` d'une facture : date du document) et quand le
+ * document ne change rien à la résolution historique (`dateFinContrat` d'une
+ * facture reste tel quel : même empreinte de preuve qu'avant). Pure.
+ */
+export function contextualFieldKey(
+  field: Pick<ExtractedField, 'fieldKey' | 'canonicalKey'>, documentType: string | null | undefined,
+): string | null {
+  if (field.canonicalKey != null || !isContextualAlias(field.fieldKey)) return null;
+  const avecContexte = resolveAlias(field.fieldKey, undefined, { documentType: documentType ?? null });
+  if (!avecContexte || avecContexte === resolveAlias(field.fieldKey)) return null;
+  return avecContexte;
 }

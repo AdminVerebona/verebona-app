@@ -21,6 +21,21 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { EQUIPMENT_FICHE_FIELDS, equipmentFicheChanges } from '@/lib/asset-detail-rules';
+
+/** Fiche saisie (lot 20, D-D) : valeurs du formulaire, en texte. */
+type FicheForm = Record<string, string>;
+const FICHE_VIDE: FicheForm = Object.fromEntries(EQUIPMENT_FICHE_FIELDS.map((f) => [f.key, '']));
+
+/** Valeur lue → affichage « 12,5 kW », « 4,2 », « R32 ». */
+export function ficheValueLabel(key: string, v: unknown): string | null {
+  if (v === null || v === undefined || v === '') return null;
+  const f = EQUIPMENT_FICHE_FIELDS.find((x) => x.key === key);
+  if (f?.type !== 'number') return String(v);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return `${n.toLocaleString('fr-FR')}${f.unit ? ` ${f.unit}` : ''}`;
+}
 
 export interface EquipmentDrawerItem {
   id: number;
@@ -150,6 +165,13 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
   const [equipmentDocuments, setEquipmentDocuments] = useState<EquipmentDocument[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
 
+  // Fiche canonique (puissance, COP, fluide, compteur horaire)
+  // null = fiche non chargée (GET en cours ou en échec) : rien n'est envoyé.
+  const [fiche, setFiche] = useState<Record<string, unknown> | null>(null);
+  const [ficheForm, setFicheForm] = useState<FicheForm>(FICHE_VIDE);
+  const ficheToForm = (f: Record<string, unknown>): FicheForm =>
+    Object.fromEntries(EQUIPMENT_FICHE_FIELDS.map((x) => [x.key, f[x.key] === null || f[x.key] === undefined ? '' : String(f[x.key])]));
+
   // Agenda
   const [equipmentAgenda, setEquipmentAgenda] = useState<EquipmentAgendaItem[]>([]);
   const [loadingAgenda, setLoadingAgenda] = useState(false);
@@ -179,6 +201,8 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       setSelectedAssetId(aid > 0 ? String(aid) : 'none');
       setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
       setIsEditing(isCreateMode || initialEditing);
+      setFiche(null);
+      setFicheForm(FICHE_VIDE);
       const subs = initialSubstructures;
       if (subs.length > 0) {
         setDynamicSubstructures(subs);
@@ -193,6 +217,15 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
 
     // Load equipment linked data if equipment exists
     if (open && eq?.id) {
+      // Fiche canonique
+      apiClient.get<{ fiche?: Record<string, unknown> }>(`/api/equipments/${eq.id}`)
+        .then(d => {
+          if (!d.fiche) return; // réponse sans fiche : non chargée
+          setFiche(d.fiche);
+          setFicheForm(ficheToForm(d.fiche));
+        })
+        .catch(() => { setFiche(null); });
+
       // Suppliers
       setLoadingSuppliers(true);
       apiClient.get<{ suppliers: { supplierId: number; name: string; email: string | null; isPrimary: boolean }[] }>(
@@ -253,9 +286,10 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       setType(eq?.type ?? '');
       setStatus(eq?.status ?? 'EN_SERVICE');
       setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
+      setFicheForm(fiche ? ficheToForm(fiche) : FICHE_VIDE);
       setIsEditing(true);
     });
-  }, [garder, eq]);
+  }, [garder, eq, fiche]);
 
   const handleSave = useCallback(async () => {
     if (!name.trim()) { toast.error('Le nom est obligatoire'); return; }
@@ -268,6 +302,10 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         status,
         substructureId: substructureId === 'none' ? null : parseInt(substructureId),
       };
+      // Fiche canonique : seules les clés modifiées par rapport à la fiche
+      // CHARGÉE ; omise tant qu'elle ne l'est pas (origine USER côté serveur).
+      const ficheModifiee = equipmentFicheChanges(fiche, ficheForm);
+      if (!isCreateMode && ficheModifiee) payload.fiche = ficheModifiee;
       if (isCreateMode) {
         if (!effectiveAssetId) { toast.error('Veuillez sélectionner un bien'); setIsSaving(false); return; }
         await apiClient.post(`/api/assets/${effectiveAssetId}/equipments`, payload);
@@ -286,7 +324,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     } finally {
       setIsSaving(false);
     }
-  }, [eq, assetId, selectedAssetId, name, type, status, substructureId, isCreateMode, onRefresh, onOpenChange]);
+  }, [eq, assetId, selectedAssetId, name, type, status, substructureId, fiche, ficheForm, isCreateMode, onRefresh, onOpenChange]);
 
   const handleArchive = useCallback(async () => {
     if (!eq) return;
@@ -355,6 +393,21 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         <Label>Type</Label>
         <Input value={type} onChange={e => setType(e.target.value)} placeholder="Ex: Chaudière, Pompe à chaleur…" />
       </div>
+      {/* Fiche (équipement existant : la création n'écrit pas la fiche canonique). */}
+      {/* Saisie proposée seulement une fois la fiche chargée. */}
+      {!isCreateMode && fiche && EQUIPMENT_FICHE_FIELDS.map((f) => (
+        <div key={f.key} className="space-y-1.5">
+          <Label htmlFor={`equipment-${f.key}`}>{f.label}</Label>
+          <Input
+            id={`equipment-${f.key}`}
+            type={f.type === 'number' ? 'number' : 'text'}
+            inputMode={f.type === 'number' ? 'decimal' : undefined}
+            min={f.type === 'number' ? 0 : undefined}
+            value={ficheForm[f.key] ?? ''}
+            onChange={e => setFicheForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+          />
+        </div>
+      ))}
       <div className="space-y-1.5">
         <Label>Statut</Label>
         <Select value={status} onValueChange={setStatus}>
@@ -413,6 +466,15 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
             <span className="font-medium">{eq.type}</span>
           </div>
         )}
+        {EQUIPMENT_FICHE_FIELDS.map((f) => {
+          const v = ficheValueLabel(f.key, fiche?.[f.key]);
+          return v ? (
+            <div key={f.key} className="flex items-center justify-between">
+              <span className="text-muted-foreground">{f.unit ? f.label.replace(/ \([^)]*\)$/, '') : f.label}</span>
+              <span className="font-medium">{v}</span>
+            </div>
+          ) : null;
+        })}
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-1.5 text-muted-foreground"><MapPin className="w-3.5 h-3.5" />Pièce</span>
           <span className="font-medium">{room?.name ?? 'Sans pièce'}</span>

@@ -92,7 +92,7 @@ export async function listSourceEntityTargets(
 
 // ── Preuves actives d'une cible, sans filtre sur le bien porteur ───────────
 
-const colonnes = (p = '') => `${p}id, ${p}account_id AS "accountId", ${p}asset_id AS "assetId", ${p}field_key AS "fieldKey", ${p}value_json AS "valueJson", ${p}normalized_value AS "normalizedValue", ${p}source_type AS "sourceType", ${p}source_id AS "sourceId", ${p}source_version AS "sourceVersion", ${p}source_location AS "sourceLocation", ${p}evidence_excerpt AS "evidenceExcerpt", ${p}evidence_origin AS "evidenceOrigin", ${p}visual_evidence AS "visualEvidence", ${p}document_type AS "documentType", ${p}document_date AS "documentDate", ${p}provider, ${p}model, ${p}prompt_version AS "promptVersion", ${p}confidence, ${p}authority_score AS "authorityScore", ${p}operation_trace_id AS "operationTraceId", ${p}status, ${p}extracted_at AS "extractedAt", ${p}lifecycle_status AS "lifecycleStatus", ${p}target_type AS "targetType", ${p}target_entity_id AS "targetEntityId"`;
+const colonnes = (p = '') => `${p}id, ${p}account_id AS "accountId", ${p}asset_id AS "assetId", ${p}field_key AS "fieldKey", ${p}value_json AS "valueJson", ${p}normalized_value AS "normalizedValue", ${p}source_type AS "sourceType", ${p}source_id AS "sourceId", ${p}source_version AS "sourceVersion", ${p}source_location AS "sourceLocation", ${p}evidence_excerpt AS "evidenceExcerpt", ${p}evidence_origin AS "evidenceOrigin", ${p}visual_evidence AS "visualEvidence", ${p}document_type AS "documentType", ${p}document_date AS "documentDate", ${p}provider, ${p}model, ${p}prompt_version AS "promptVersion", ${p}confidence, ${p}authority_score AS "authorityScore", ${p}operation_trace_id AS "operationTraceId", ${p}status, ${p}extracted_at AS "extractedAt", ${p}lifecycle_status AS "lifecycleStatus", ${p}target_type AS "targetType", ${p}target_entity_id AS "targetEntityId", ${p}projection_rule AS "projectionRule"`;
 
 type Ligne = Record<string, unknown>;
 
@@ -122,6 +122,8 @@ function versPreuve(r: Ligne): FieldEvidence {
     status: r.status as FieldEvidence['status'],
     extractedAt: new Date(r.extractedAt as string),
     lifecycleStatus: (r.lifecycleStatus ?? 'ACTIVE') as FieldEvidence['lifecycleStatus'],
+    // Règle de projection (D-M, lot 20 : preuve révisée par T4).
+    ...(r.projectionRule ? { projectionRule: r.projectionRule as string } : {}),
   } as FieldEvidence;
 }
 

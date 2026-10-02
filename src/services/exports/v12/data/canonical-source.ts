@@ -191,8 +191,11 @@ export type DocumentPath =
 export interface AttachmentLink {
   role: LinkRole;
   origin: 'USER' | 'AI' | 'MIGRATION' | 'LEGACY_COLUMN';
+  /** @deprecated Liens historiques vers `rooms` (non repris) — la pièce est une sous-structure (0229, D-G). */
   roomId: number | null;
   equipmentId: number | null;
+  /** Pièce / sous-structure du bien (`document_asset_links.substructure_id`, lot 20). */
+  substructureId: number | null;
 }
 
 /**
@@ -209,10 +212,11 @@ export function isConfirmedAttachment(
   if (d.equipmentId != null && ctx.equipmentIds.has(d.equipmentId)) return true;
   return links.some((l) => {
     if (l.origin === 'USER' || l.origin === 'MIGRATION') return true;
-    // Lien tenu depuis equipment_id (équipement du bien, archivé compris — arbitrage lot 16).
-    if (l.origin === 'LEGACY_COLUMN') return l.equipmentId != null;
-    // AI : PRIMARY seulement ; un lien de pièce reste secondaire par nature.
-    return l.role === 'PRIMARY' && l.roomId == null;
+    // Lien tenu depuis equipment_id (équipement du bien, archivé compris — arbitrage lot 16)
+    // ou depuis asset_files.substructure_id (pièce / sous-structure, déclencheur 0229).
+    if (l.origin === 'LEGACY_COLUMN') return l.equipmentId != null || l.substructureId != null;
+    // AI : PRIMARY seulement ; un lien de pièce (historique ou sous-structure) reste secondaire par nature.
+    return l.role === 'PRIMARY' && l.roomId == null && l.substructureId == null;
   });
 }
 
@@ -292,7 +296,8 @@ export async function loadCanonicalDocuments(
   )) as unknown as CanonicalDocumentRow[];
   // Origine et cible de chaque lien actif (règle de confirmation).
   const detail = (await pgClient.unsafe(
-    `SELECT file_id AS "fileId", link_role AS role, origin, room_id AS "roomId", equipment_id AS "equipmentId"
+    `SELECT file_id AS "fileId", link_role AS role, origin, room_id AS "roomId", equipment_id AS "equipmentId",
+            substructure_id AS "substructureId"
        FROM document_asset_links
       WHERE account_id = $1 AND asset_id = $2 AND status = 'ACTIVE' AND link_role = ANY($3::text[]) AND file_id = ANY($4::int[])`,
     [accountId, assetId, roles, [...links.keys()]] as never[],

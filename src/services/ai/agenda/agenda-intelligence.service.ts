@@ -19,7 +19,7 @@ import { prudentCategory } from './rules/prudent-category';
 import { classifyEventMaster } from './master/classify-event';
 import { getPromptArchitecture } from '../config/config-resolver';
 import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
-import { DOCUMENT_CATALOG, resolveDocumentType } from '@/services/canonical/registry';
+import { DOCUMENT_CATALOG, documentMayCreateEvent, resolveDocumentType } from '@/services/canonical/registry';
 import { interpretDate, detectTemporalAmbiguity } from './rules/date-interpreter';
 import { findDuplicate, titleSimilarity, containmentSimilarity } from './dedupe.service';
 import {
@@ -48,6 +48,12 @@ export interface AgendaIntelligenceInput {
   today?: string;
   /** Mode de `AI_T4_EFFECTS` (lu dans l'environnement si absent) — injectable. */
   t4Effects?: RolloutMode;
+  /**
+   * Révision de la preuve du champ d'origine quand T4 tranche une date
+   * (décision PO D-M, lot 20) — injectable pour les tests ; défaut :
+   * `reviseDateEvidenceFromT4` (sous CANONICAL_WRITE_MODE, jamais bloquant).
+   */
+  reviseDate?: (p: import('../evidence/revised-date-evidence').ReviseDateInput) => Promise<unknown>;
 }
 
 /**
@@ -66,8 +72,10 @@ export type T4AgendaCandidate = AgendaCandidate & {
 /**
  * Types documentaires autorisant une création automatique d'échéance
  * (§4.4.4, CDC 15 T4-04) — DÉRIVÉ du DOCUMENT_CATALOG (`mayCreateAgenda`),
- * source unique. Contient les types du lot 10 et les extensions du catalogue
- * (acte authentique, PV de contrôle technique — question ouverte du registre).
+ * source unique. Contient les types du lot 10 et ceux des décisions PO D-A
+ * (acte authentique, PV de contrôle technique) et D-B (constat de sinistre,
+ * limité au sinistre HISTORIQUE par sa `creationScope` : voir
+ * `creationAuthorization`).
  */
 const AUTHORIZED_CREATION_TYPES: ReadonlySet<string> = new Set(
   DOCUMENT_CATALOG.filter((d) => d.mayCreateAgenda).flatMap((d) => [d.code, ...(d.aliases ?? [])]),
@@ -102,14 +110,18 @@ export function t4Semantics(c: T4AgendaCandidate, fallbackSourceFileId?: number)
 /**
  * CDC 15 T4-04 — la source autorise-t-elle une CRÉATION automatique ?
  * `mayCreateAgenda` porté par le candidat, sinon lu au catalogue par type ;
- * type absent ou inconnu : jamais autoritaire (proposition).
+ * type absent ou inconnu : jamais autoritaire (proposition). La portée de
+ * création du type (`creationScope`, D-B : constat de sinistre → sinistre
+ * HISTORIQUE seulement) s'applique dans tous les cas : toute autre échéance
+ * portée par ce document est proposée.
  */
 export function creationAuthorization(c: T4AgendaCandidate): {
   allowed: boolean; reasonCode: 'SOURCE_AUTHORIZED' | 'SOURCE_TYPE_NOT_AUTHORIZED' | 'SOURCE_TYPE_UNKNOWN'; documentType: string | null;
 } {
   const documentType = c.documentType ?? null;
   const entry = resolveDocumentType(documentType);
-  const allowed = typeof c.mayCreateAgenda === 'boolean' ? c.mayCreateAgenda : entry?.mayCreateAgenda ?? false;
+  let allowed = typeof c.mayCreateAgenda === 'boolean' ? c.mayCreateAgenda : entry?.mayCreateAgenda ?? false;
+  if (allowed && entry?.creationScope) allowed = documentMayCreateEvent(entry, c);
   if (allowed) return { allowed, reasonCode: 'SOURCE_AUTHORIZED', documentType };
   return {
     allowed,
@@ -140,6 +152,11 @@ export async function processAgendaCandidates(
       continue;
     }
     const candidate = temporel.candidate;
+    // D-M (lot 20) : la date TRANCHÉE par T4 (branche TEMPORAL_AMBIGUITY, T4
+    // master + AI_T4_EFFECTS=enabled) corrige aussi la fiche — preuve révisée
+    // du champ d'origine, puis T3 par les primitives canoniques (jamais
+    // au-dessus d'une valeur USER/ADMIN), sous CANONICAL_WRITE_MODE.
+    if (candidate.date !== brut.date) await reviserPreuveDate(brut, candidate.date, input);
     const base = await processOne(candidate, { ...input, existing: planned, today, t4Effects });
     decisions.push(base);
     let recurrent = await forecastsFor(candidate, base, input, planned, today);
@@ -165,6 +182,25 @@ export async function processAgendaCandidates(
   }
 
   return decisions;
+}
+
+/** Preuve révisée d'une date tranchée par T4 (D-M) — jamais bloquant. */
+async function reviserPreuveDate(brut: AgendaCandidate, chosenDate: string, input: AgendaIntelligenceInput): Promise<void> {
+  const sourceFileId = (brut as AgendaCandidate & { sourceFileId?: number }).sourceFileId ?? input.sourceFileId;
+  if (!brut.originFieldKey || !sourceFileId) return;
+  const evidenceId = (brut as AgendaCandidate & { sources?: Array<{ role?: string; evidenceId?: number | null }> })
+    .sources?.find((s) => s.role === 'SOURCE' && s.evidenceId != null)?.evidenceId ?? null;
+  try {
+    const revise = input.reviseDate
+      ?? (await import('../evidence/revised-date-evidence')).reviseDateEvidenceFromT4;
+    await revise({
+      accountId: input.accountId, userId: input.userId ?? null, sourceFileId,
+      fieldKey: brut.originFieldKey, extractedDate: brut.date, chosenDate, evidenceId,
+    });
+  } catch (e) {
+    if (isExecutionCancelled(e)) throw e;
+    console.error('[t4] révision de la preuve de date (non bloquante) :', (e as Error).message);
+  }
 }
 
 function todayParis(): string {

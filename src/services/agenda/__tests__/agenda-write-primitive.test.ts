@@ -103,15 +103,15 @@ describe('décision T4 enrichie (A, enabled) : sources, cible, occurrence du can
       .toEqual([{ fileId: 9, role: 'SOURCE', evidenceId: 8 }, { fileId: 3, role: 'SOURCE', evidenceId: 7 }]);
     expect(decisionSources(base as never)).toEqual([{ fileId: 9, role: 'SOURCE' }]);
   });
-  it('clé : occurrence et cible du candidat ; lien équipement, jamais une pièce T1', () => {
+  it('clé : occurrence et cible du candidat ; lien équipement ou pièce (sous-structure, D-G)', () => {
     const eq = t4UpsertInput({ ...base, occurrenceIndex: '2027-01-15', target: { type: 'EQUIPMENT', id: 4 } } as never, 1, 7, false, null);
     expect(eq).toMatchObject({ target: { type: 'EQUIPMENT', id: 4 }, keyTarget: { type: 'EQUIPMENT', id: 4 }, occurrenceIndex: '2027-01-15' });
     expect(functionalKeyFor(eq)).toBe(computeAgendaFunctionalKey({
       sourceFileId: 9, target: { type: 'EQUIPMENT', id: 4 }, businessType: 'maintenance', originFieldKey: 'maintenanceDueDate', occurrence: '2027-01-15',
     }));
     const piece = t4UpsertInput({ ...base, occurrenceIndex: 'single', target: { type: 'ROOM', id: 5 } } as never, 1, 7, false, null);
-    expect(piece.target).toBeNull();
+    expect(piece.target).toEqual({ type: 'ROOM', id: 5 });
     expect(piece.keyTarget).toEqual({ type: 'ROOM', id: 5 });
-    expect(agendaItemLinks(piece)).toEqual({ assetIds: [7], substructureIds: [], equipmentIds: [] });
+    expect(agendaItemLinks(piece)).toEqual({ assetIds: [7], substructureIds: [5], equipmentIds: [] });
   });
 });

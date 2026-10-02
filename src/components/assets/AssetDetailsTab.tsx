@@ -51,6 +51,16 @@ function getCommonFields(category: string, currentSubtype?: string | null): Fiel
   ];
 }
 
+/**
+ * Contrats de véhicule (CDC 15, D-E) : sans objet quand le statut de
+ * détention est renseigné et n'est pas l'un de ceux qui portent ce contrat.
+ * Statut vide : le champ reste saisissable.
+ */
+const vehicleContractNa = (statuts: string[]) => (d: Record<string, unknown>) => {
+  const statut = String(d.vehicleOwnershipStatus ?? '');
+  return statut !== '' && !statuts.includes(statut);
+};
+
 // Section field definitions per section key (common section uses getCommonFields() instead)
 const SECTION_FIELDS: Record<string, FieldDef[]> = {
   location_identification: [
@@ -66,11 +76,15 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
   ],
   physical_characteristics: [
     { key: 'livingArea', label: 'Surface habitable (m²)', type: 'number' },
+    { key: 'carrezArea', label: 'Surface Carrez (m²)', type: 'number' },
+    // Fait d'annonce : saisie seule (jamais écrit par l'IA — registre `inputOnly`).
+    { key: 'listedArea', label: 'Surface annoncée (m²)', type: 'number' },
     { key: 'landArea', label: 'Surface terrain (m²)', type: 'number' },
     { key: 'roomCount', label: 'Nombre de pièces', type: 'number' },
     { key: 'bedroomCount', label: 'Nombre de chambres', type: 'number' },
     { key: 'levels', label: 'Nombre de niveaux', type: 'number' },
     { key: 'constructionYear', label: 'Année de construction', type: 'number' },
+    { key: 'parking', label: 'Stationnement' },
     { key: 'generalCondition', label: 'État général', type: 'select', options: [
       { value: 'NEUF', label: 'Neuf' },
       { value: 'BON', label: 'Bon' },
@@ -99,23 +113,32 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     { key: 'mainEnergy', label: 'Énergie principale' },
     { key: 'dpeClass', label: 'Classe DPE', type: 'select', options: ['A','B','C','D','E','F','G'].map(v => ({ value: v, label: v })) },
     { key: 'dpeDate', label: 'Date DPE', type: 'date' },
+    { key: 'dpeExpiryDate', label: 'Fin de validité du DPE', type: 'date' },
+    { key: 'dpeAdemeNumber', label: 'N° ADEME du DPE' },
+    { key: 'energyConsumption', label: 'Consommation énergétique (kWh/m²/an)', type: 'number' },
     { key: 'gesClass', label: 'Classe GES', type: 'select', options: ['A','B','C','D','E','F','G'].map(v => ({ value: v, label: v })) },
+    { key: 'lastRevision', label: 'Dernier entretien', type: 'date' },
+    { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
     { key: 'networks', label: 'Réseaux', type: 'textarea' },
   ],
   valuation: [
     { key: 'estimatedValue', label: 'Valeur estimée (€)', type: 'number' },
     { key: 'valuationSource', label: 'Source de valorisation' },
     { key: 'valuationDate', label: 'Date de valorisation', type: 'date' },
+    // Fait d'annonce : saisie seule (registre `inputOnly`).
+    { key: 'listingPrice', label: 'Prix annoncé (€)', type: 'number' },
   ],
   vehicle_identification: [
     { key: 'make', label: 'Marque' },
     { key: 'model', label: 'Modèle' },
     { key: 'registrationNumber', label: 'Immatriculation' },
+    { key: 'registrationExpiry', label: 'Fin de validité d\'immatriculation', type: 'date' },
     { key: 'vin', label: 'VIN / Numéro de série' },
     { key: 'year', label: 'Année', type: 'number' },
   ],
   vehicle_technical: [
     { key: 'engine', label: 'Motorisation' },
+    { key: 'engineDisplacement', label: 'Cylindrée (cm³)', type: 'number' },
     { key: 'fuelType', label: 'Carburant', type: 'select', options: [
       { value: 'ESSENCE', label: 'Essence' },
       { value: 'DIESEL', label: 'Diesel' },
@@ -142,6 +165,18 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     { key: 'mileageUnit', label: 'Unité (km/h)', type: 'select', options: [{ value: 'km', label: 'Km' }, { value: 'h', label: 'Heures' }] },
     { key: 'mileageDate', label: 'Date du relevé', type: 'date' },
     { key: 'primaryUse', label: 'Usage principal' },
+    { key: 'lastRevision', label: 'Dernière révision', type: 'date' },
+    { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
+    { key: 'contractNumber', label: 'N° de contrat (LLD / LOA / crédit)',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
+    { key: 'contractStartDate', label: 'Début de contrat', type: 'date',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
+    { key: 'leaseDurationMonths', label: 'Durée du contrat (mois)', type: 'number',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
+    { key: 'leaseMonthlyPayment', label: 'Loyer mensuel LLD / LOA (€)', type: 'number',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA']) },
+    { key: 'leaseResidualValue', label: 'Valeur de rachat (€)', type: 'number',
+      notApplicableWhen: vehicleContractNa(['LOA']) },
   ],
   vehicle_insurance: [
     { key: 'isInsured', label: 'Assuré', type: 'select', options: [{ value: 'true', label: 'Oui' }, { value: 'false', label: 'Non' }] },
@@ -150,6 +185,7 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     { key: 'insuranceClientNumber', label: 'N° de client' },
     { key: 'insuranceExpiry', label: 'Date d\'échéance', type: 'date' },
     { key: 'insurancePremium', label: 'Prime annuelle (€)', type: 'number' },
+    { key: 'lastInspectionDate', label: 'Dernier contrôle technique', type: 'date' },
     { key: 'nextInspection', label: 'Prochain contrôle technique', type: 'date', futureOnly: true },
   ],
   insurance: [
@@ -181,11 +217,13 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     { key: 'acquisitionMode', label: 'Mode d\'acquisition' },
     { key: 'provenance', label: 'Provenance', type: 'textarea' },
     { key: 'authenticityProof', label: 'Preuve d\'authenticité' },
+    { key: 'warrantyStartDate', label: 'Début de garantie', type: 'date' },
   ],
   object_usage: [
     { key: 'primaryUse', label: 'Usage principal' },
     { key: 'storageLocation', label: 'Lieu de stockage' },
     { key: 'lastRevision', label: 'Dernière révision', type: 'date' },
+    { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
     { key: 'isInsured', label: 'Assuré', type: 'select', options: [{ value: 'true', label: 'Oui' }, { value: 'false', label: 'Non' }] },
   ],
 };

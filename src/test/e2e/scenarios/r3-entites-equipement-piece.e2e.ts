@@ -9,7 +9,8 @@
  *  · valeur USER protégée (fiche de l'entité et colonne saisie à l'écran) ;
  *    édition manuelle par la route → origine USER ;
  *  · suppression du document → retrait des valeurs automatiques ;
- *  · pièce : surface (`rooms.area`), jamais la surface habitable du bien ;
+ *  · pièce (= sous-structure depuis D-G, lot 20) : surface (`substructures.area`),
+ *    jamais la surface habitable du bien ;
  *  · commutateurs : legacy = rien (aucun travail), shadow = journal seulement.
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
@@ -79,8 +80,9 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const [eq] = await sql<{ id: number }[]>`INSERT INTO equipments (asset_id, name, type) VALUES (${bien.id}, 'Chaudière', 'BOILER') RETURNING id`;
+    // Pièce = sous-structure (D-G, lot 20).
     const [piece] = await sql<{ id: number }[]>`
-      INSERT INTO rooms (asset_id, account_id, name, room_type) VALUES (${bien.id}, ${compte.id}, 'Salon', 'LIVING_ROOM') RETURNING id`;
+      INSERT INTO substructures (asset_id, name, room_type) VALUES (${bien.id}, 'Salon', 'LIVING_ROOM') RETURNING id`;
     return { compte, bien, equipement: { type: 'EQUIPMENT' as const, id: eq.id }, piece: { type: 'ROOM' as const, id: piece.id } };
   };
   const facture = async (m: Awaited<ReturnType<typeof maison>>, facts: ProjectedFact[], run = 1) => {
@@ -340,14 +342,14 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     expect(apres.kc.warrantyEndDate).toBeUndefined();
   });
 
-  it('pièce : surface appliquée à la pièce (`rooms.area`), jamais à la surface habitable du bien', async () => {
+  it('pièce : surface appliquée à la pièce (`substructures.area`), jamais à la surface habitable du bien', async () => {
     process.env.CANONICAL_WRITE_MODE = 'enabled';
     const m = await maison();
     const { r } = await facture(m, [fait(m.piece, 'roomArea', 18.5, 'Salon : 18,5 m²', { canonicalUnit: 'm2' })]);
     expect(r.affectedTargets).toEqual([expect.objectContaining({ type: 'ROOM', id: m.piece.id })]);
     await t3.enqueueT3ForEntities({ accountId: m.compte.id, userId: m.compte.ownerUserId, targets: r.affectedTargets });
     expect(await executerFile(m.compte.id)).toEqual([`room:${m.piece.id}`]);
-    const [p] = await sql<{ area: string | null; kc: Record<string, unknown> }[]>`SELECT area, key_characteristics AS kc FROM rooms WHERE id = ${m.piece.id}`;
+    const [p] = await sql<{ area: string | null; kc: Record<string, unknown> }[]>`SELECT area, key_characteristics AS kc FROM substructures WHERE id = ${m.piece.id}`;
     expect(p.area).toBe('18.5');
     expect(p.kc).toMatchObject({ roomArea: 18.5, roomArea__origin: 'RECONCILIATION' });
     const bien = await kcBien(m.bien.id);
@@ -365,7 +367,7 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     await t3.enqueueT3ForEntities({ accountId: m.compte.id, userId: m.compte.ownerUserId, targets: r.affectedTargets });
     expect(await executerFile(m.compte.id)).toEqual([`room:${m.piece.id}`]);
     // Valeur saisie protégée, conflit ouvert.
-    const [p] = await sql<{ area: string }[]>`SELECT area FROM rooms WHERE id = ${m.piece.id}`;
+    const [p] = await sql<{ area: string }[]>`SELECT area FROM substructures WHERE id = ${m.piece.id}`;
     expect(p.area).toBe('20');
 
     const { getToProcessPage } = await import('@/services/to-process/to-process-query.service');
@@ -379,7 +381,7 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
 
     const { resolveArbitration } = await import('@/services/to-process/resolve-action.service');
     expect(await resolveArbitration(m.compte.id, carte.publicId, 18.5, { userId: m.compte.ownerUserId })).toMatchObject({ ok: true, previousValue: 20 });
-    const [apres] = await sql<{ area: string; kc: Record<string, unknown> }[]>`SELECT area, key_characteristics AS kc FROM rooms WHERE id = ${m.piece.id}`;
+    const [apres] = await sql<{ area: string; kc: Record<string, unknown> }[]>`SELECT area, key_characteristics AS kc FROM substructures WHERE id = ${m.piece.id}`;
     expect(apres.area).toBe('18.5');
     expect(apres.kc).toMatchObject({ roomArea: 18.5, roomArea__origin: 'USER' });
   });

@@ -95,6 +95,8 @@ export type ProjectionWarningCode =
   | 'ALIAS_RESOLVED'
   | 'UNKNOWN_CANONICAL_KEY'
   | 'KEY_NOT_APPLICABLE_TO_FAMILY'
+  /** Champ de saisie seule (`inputOnly`, décision PO D-D, lot 20) : jamais inféré. */
+  | 'KEY_INPUT_ONLY'
   | 'CANONICAL_KEY_TARGET_MISMATCH'
   | 'VALUE_NOT_NORMALIZABLE'
   | 'UNIT_CONVERTED'
@@ -246,6 +248,12 @@ export function projectDocumentFacts(
     (c) => c.entityId === null ? Boolean(c.rawLabel?.trim()) : c.entityId !== ctx.documentAssetId,
   ) || [...verifiedAssetTargets].some((id) => id !== ctx.documentAssetId);
 
+  // Type documentaire : contexte des alias contextuels (décision PO D-C,
+  // lot 20 — `dateFinContrat` d'un bail → leaseEndDate, `numeroContrat`
+  // d'une assurance → insuranceContractNumber).
+  const documentType = documentEntryOf(analysis.document.classification)?.code
+    ?? analysis.document.classification?.documentTypeCode ?? null;
+
   // ── 1 à 4 : cible, clé, valeur, temps — fait par fait ────────────────────
   const facts: ProjectedFact[] = [];
   for (const fact of analysis.facts) {
@@ -303,7 +311,9 @@ export function projectDocumentFacts(
     let def = getField(fact.canonicalKey);
     let aliasUnit: string | undefined;
     if (!def) {
-      const alias = resolveAliasDetailed(fact.canonicalKey, family);
+      // Cible du fait : un équipement ou une pièce résout parmi les champs qui
+      // l'admettent, sans filtre de famille (même règle que catalogForPrompts).
+      const alias = resolveAliasDetailed(fact.canonicalKey, family, { documentType, targetType: target.targetType });
       if (alias) {
         def = getField(alias.key);
         aliasUnit = alias.sourceUnit;
@@ -317,6 +327,15 @@ export function projectDocumentFacts(
       }
     }
     if (!def) { facts.push(generic()); continue; }
+
+    // D-D : champ de SAISIE seule (prix, surface d'annonce) — jamais inféré
+    // par l'IA, conservé comme connaissance générique du document.
+    if (def.inputOnly) {
+      warnings.push({ code: 'KEY_INPUT_ONLY', target: def.key,
+        message: `« ${def.key} » est un champ de saisie seule : jamais inféré, connaissance générique.` });
+      facts.push(generic());
+      continue;
+    }
 
     // Cible du fait admise par le champ (lot 13, T1-04) : un champ de bien
     // n'accueille qu'un fait de BIEN ; un fait d'équipement ou de pièce n'est

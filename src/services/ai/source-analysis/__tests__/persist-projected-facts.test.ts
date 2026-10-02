@@ -31,7 +31,8 @@ vi.mock('@/db', () => {
       if (sql.includes('FROM equipments')) {
         return (params[1] as number[]).filter((id) => params[0] === 1 && db.equipments.has(id)).map((id) => ({ entityId: id, assetId: db.equipments.get(id) }));
       }
-      if (sql.includes('FROM rooms')) {
+      // D-G (lot 20) : une cible ROOM est vérifiée dans `substructures`.
+      if (sql.includes('FROM substructures')) {
         return (params[1] as number[]).filter((id) => params[0] === 1 && db.rooms.has(id)).map((id) => ({ entityId: id, assetId: db.rooms.get(id) }));
       }
       if (sql.includes('INSERT INTO field_evidence')) {

@@ -14,6 +14,7 @@ import { LEASE_USAGE_OPTIONS } from '@/lib/assets/additional-infos';
 import {
   type MapInput, exportInfo, kc, kcNum, str, info, infoCents, num, humanize, categoryLabel, titleLines, conditionLabel,
   roomsLabel, heatingLabel, factualSummary, toDocItem, sortedDocuments, toPhotoItem, plannedPhotos, selectedEvents, sectionOn,
+  energyConsumptionLabel,
 } from './common';
 
 const optionLabel = (options: ReadonlyArray<{ value: string; label: string }>, v: string | null) =>
@@ -66,7 +67,7 @@ export function mapLocation(m: MapInput): LocationData {
     energy: sectionOn(m, 'equipments')
       ? {
         dpe: kc(s, 'dpeClass'),
-        consumption: kc(s, 'energyConsumption') ?? kc(s, 'dpeConsumption'),
+        consumption: energyConsumptionLabel(s),
         ges: kc(s, 'gesClass'),
         heating: heatingLabel(s),
         hotWater: humanize(kc(s, 'hotWater')),

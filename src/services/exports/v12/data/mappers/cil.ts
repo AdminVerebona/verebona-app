@@ -12,7 +12,7 @@ import type { CilData, CilBlockStatus } from '../../types';
 import type { SourceDocument } from '../source';
 import {
   type MapInput, exportInfo, kc, kcNum, str, humanize, categoryName, categoryLabel, titleLines,
-  toDocItem, sortedDocuments, docRef,
+  toDocItem, sortedDocuments, docRef, equipmentSpecs, energyConsumptionLabel,
 } from './common';
 
 const TRIGGER_LABELS: Record<string, string> = {
@@ -128,6 +128,8 @@ export function mapCil(m: MapInput): CilData {
       equipments: b6List.map((e) => ({
         usage: humanize(e.category) ?? humanize(e.type) ?? 'Équipement',
         equipment: e.name,
+        // D-N : caractéristiques de la fiche de l'équipement, dans la cellule existante.
+        specs: equipmentSpecs(s, e),
         model: dot(e.brand, e.model) || null,
         installed: null,
       })),
@@ -140,10 +142,11 @@ export function mapCil(m: MapInput): CilData {
       energy: {
         dpe: kc(s, 'dpeClass'),
         ges: kc(s, 'gesClass'),
-        consumption: kc(s, 'energyConsumption') ?? kc(s, 'dpeConsumption'),
+        consumption: energyConsumptionLabel(s),
         emissions: kc(s, 'gesEmissions') ?? kc(s, 'dpeEmissions'),
         date: kc(s, 'dpeDate') ?? dpeDoc?.date ?? null,
-        validUntil: kc(s, 'dpeValidUntil'),
+        // Clé canonique (éditable sur la fiche, D-E) ; repli sur l'ancien alias.
+        validUntil: kc(s, 'dpeExpiryDate') ?? kc(s, 'dpeValidUntil'),
       },
     },
     documents: docItems,

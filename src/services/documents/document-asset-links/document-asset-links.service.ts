@@ -6,6 +6,10 @@
  * jamais écrits ici). Lecture N-N : `listDocumentAssets`,
  * `listAssetDocuments` (y compris SECONDARY / MENTIONED).
  *
+ * Pièce = SOUS-STRUCTURE (`substructureId`, décision D-G, migration 0229) ;
+ * `roomId` (table `rooms`, dépréciée) n'est plus qu'une compatibilité de
+ * lecture des liens non repris.
+ *
  * Cloisonnement : chaque appel vérifie que le document ET la cible
  * appartiennent au compte (§11.4) ; un identifiant étranger lève
  * `DocumentLinkOwnershipError` sans rien écrire.
@@ -16,7 +20,7 @@
  * (liens ACTIFS seulement ; PROPOSED, REJECTED et REMOVED exclus).
  */
 import { db } from '@/db';
-import { assetFiles, assets, documentAssetLinks, equipments, rooms } from '@/db/schema';
+import { assetFiles, assets, documentAssetLinks, equipments, rooms, substructures } from '@/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   canRefresh,
@@ -40,7 +44,7 @@ type Row = typeof documentAssetLinks.$inferSelect;
 function toLink(r: Row): DocumentAssetLink {
   return {
     id: r.id, accountId: r.accountId, fileId: r.fileId,
-    assetId: r.assetId, roomId: r.roomId, equipmentId: r.equipmentId,
+    assetId: r.assetId, roomId: r.roomId, equipmentId: r.equipmentId, substructureId: r.substructureId ?? null,
     linkRole: r.linkRole as LinkRole, origin: r.origin as LinkOrigin,
     confidence: r.confidence === null ? null : Number(r.confidence),
     status: r.status as LinkStatus,
@@ -52,7 +56,13 @@ function toLink(r: Row): DocumentAssetLink {
 function sameTarget(t: Required<LinkTarget>) {
   return sql`COALESCE(${documentAssetLinks.assetId}, 0) = ${t.assetId ?? 0}
     AND COALESCE(${documentAssetLinks.roomId}, 0) = ${t.roomId ?? 0}
-    AND COALESCE(${documentAssetLinks.equipmentId}, 0) = ${t.equipmentId ?? 0}`;
+    AND COALESCE(${documentAssetLinks.equipmentId}, 0) = ${t.equipmentId ?? 0}
+    AND COALESCE(${documentAssetLinks.substructureId}, 0) = ${t.substructureId ?? 0}`;
+}
+
+/** Cible complète (champs absents = NULL). */
+function fullTarget(t: LinkTarget): Required<LinkTarget> {
+  return { assetId: t.assetId ?? null, roomId: t.roomId ?? null, equipmentId: t.equipmentId ?? null, substructureId: t.substructureId ?? null };
 }
 
 async function assertFileInAccount(accountId: number, fileId: number): Promise<void> {
@@ -66,22 +76,26 @@ async function assertFileInAccount(accountId: number, fileId: number): Promise<v
  * bien (déduit, jamais fourni par l'appelant s'il contredit).
  */
 async function resolveTarget(accountId: number, t: LinkTarget): Promise<Required<LinkTarget>> {
-  const out: Required<LinkTarget> = { assetId: t.assetId ?? null, roomId: t.roomId ?? null, equipmentId: t.equipmentId ?? null };
-  if (out.assetId === null && out.roomId === null && out.equipmentId === null) {
+  const out = fullTarget(t);
+  if (out.assetId === null && out.roomId === null && out.equipmentId === null && out.substructureId === null) {
     throw new DocumentLinkOwnershipError('Lien sans cible (bien, pièce ou équipement).');
   }
-  const parent = async (id: number | null, kind: 'room' | 'equipment'): Promise<number | null> => {
+  const parent = async (id: number | null, kind: 'room' | 'substructure' | 'equipment'): Promise<number | null> => {
     if (id === null) return null;
-    const table = kind === 'room' ? rooms : equipments;
+    const table = kind === 'room' ? rooms : kind === 'substructure' ? substructures : equipments;
     const [r] = await db.select({ assetId: table.assetId }).from(table)
       .innerJoin(assets, eq(table.assetId, assets.id))
       .where(and(eq(table.id, id), eq(assets.accountId, accountId), isNull(assets.deletedAt))).limit(1);
-    if (!r) throw new DocumentLinkOwnershipError(`${kind === 'room' ? 'Pièce' : 'Équipement'} ${id} introuvable dans le compte ${accountId}.`);
+    if (!r) throw new DocumentLinkOwnershipError(`${kind === 'equipment' ? 'Équipement' : 'Pièce'} ${id} introuvable dans le compte ${accountId}.`);
     return r.assetId;
   };
-  const roomAsset = await parent(out.roomId, 'room');
-  const equipAsset = await parent(out.equipmentId, 'equipment');
-  const derived = roomAsset ?? equipAsset;
+  const parents = [
+    await parent(out.roomId, 'room'), await parent(out.substructureId, 'substructure'), await parent(out.equipmentId, 'equipment'),
+  ].filter((x): x is number => x !== null);
+  if (new Set(parents).size > 1) {
+    throw new DocumentLinkOwnershipError(`Pièce et équipement de biens différents (${[...new Set(parents)].join(', ')}).`);
+  }
+  const derived = parents[0] ?? null;
   if (derived !== null) {
     if (out.assetId !== null && out.assetId !== derived) {
       throw new DocumentLinkOwnershipError(`La cible appartient au bien ${derived}, pas au bien ${out.assetId}.`);
@@ -141,7 +155,7 @@ export async function linkDocumentToAsset(input: LinkDocumentInput): Promise<{ o
 
   const inserted = await db.insert(documentAssetLinks).values({
     accountId: input.accountId, fileId: input.fileId,
-    assetId: target.assetId, roomId: target.roomId, equipmentId: target.equipmentId,
+    assetId: target.assetId, roomId: target.roomId, equipmentId: target.equipmentId, substructureId: target.substructureId,
     linkRole: input.role, origin: input.origin,
     confidence: confidence === null ? null : String(confidence), status,
   }).onConflictDoNothing().returning();
@@ -182,8 +196,7 @@ export async function unlinkDocument(input: UnlinkInput): Promise<number> {
     inArray(documentAssetLinks.origin, origins),
   ];
   if (input.target) {
-    const t = { assetId: input.target.assetId ?? null, roomId: input.target.roomId ?? null, equipmentId: input.target.equipmentId ?? null };
-    conditions.push(sameTarget(t));
+    conditions.push(sameTarget(fullTarget(input.target)));
   }
   if (input.keepIds?.length) conditions.push(sql`${documentAssetLinks.id} NOT IN (${sql.join(input.keepIds.map((id) => sql`${id}`), sql`, `)})`);
   if (input.keepAssetIds?.length) {

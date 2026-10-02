@@ -26,7 +26,7 @@ import { assets, aiFieldUpdates } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { writeOrigin } from './field-origin';
 import { canonicalWriteMode, type RolloutMode } from '@/services/canonical/rollout';
-import { getField, resolveAlias, isExcludedKey } from '@/services/canonical/registry';
+import { getField, resolveAlias, isExcludedKey, isInputOnlyKey } from '@/services/canonical/registry';
 import {
   loadAssetRow, observeLegacyWrite, writeCanonicalAssetField,
   type SqlRunner, type AssetRowJson, type CanonicalFieldWriteResult,
@@ -61,6 +61,9 @@ export async function applyDecision(
   ctx: ApplyContext,
 ): Promise<ApplyOutcome> {
   if (decision.action !== 'apply' && decision.action !== 'update') return 'skipped';
+  // D-D (lot 20) : un champ de saisie seule n'est jamais écrit par T3, dans
+  // aucun mode (le chemin historique écrivait toute clé brute).
+  if (isInputOnlyKey(decision.fieldKey)) return 'skipped';
   const mode = ctx.writeMode ?? canonicalWriteMode();
 
   if (mode === 'enabled' && isRegistryKey(decision.fieldKey)) {

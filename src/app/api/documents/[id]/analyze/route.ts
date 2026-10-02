@@ -32,10 +32,10 @@ export const maxDuration = 300; // 5 minutes — Vercel only
 import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles, assets } from '@/db/schema';
-import { eq, and, isNull, isNotNull } from 'drizzle-orm';
+import { eq, and, isNull, isNotNull, sql } from 'drizzle-orm';
 import { analyzeDocument } from '@/services/document-ai/analyze-document';
 import { PROMPT_VERSIONS } from '@/services/document-ai/gemini-client';
-import { agendaFileLinks, agendaItemSources, agendaItems, rooms, equipments } from '@/db/schema';
+import { agendaFileLinks, agendaItemSources, agendaItems, substructures, equipments } from '@/db/schema';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { s3Client } from '@/lib/s3-client';
@@ -207,7 +207,8 @@ export async function POST(
           .where(eq(agendaItemSources.assetFileId, assetFileId)),
         // Rooms of the already-linked asset (if any) to help AI identify rooms more precisely
         linkedAssetId
-          ? db.select({ id: rooms.id, name: rooms.name, roomType: rooms.roomType }).from(rooms).where(eq(rooms.assetId, linkedAssetId))
+          // Pièces = sous-structures (D-G, lot 20) ; le type n'est qu'un libellé de contexte.
+          ? db.select({ id: substructures.id, name: substructures.name, roomType: sql<string>`'pièce'` }).from(substructures).where(eq(substructures.assetId, linkedAssetId))
           : Promise.resolve([]),
         // Equipments of the already-linked asset (if any) to help AI identify equipment more precisely
         linkedAssetId

@@ -62,7 +62,8 @@ export const REQUETES_DISPONIBILITE: Readonly<Partial<Record<EntityKind, string>
   // lui-même être au compte et non supprimé.
   equipment: `SELECT e.id FROM equipments e JOIN assets a ON a.id = e.asset_id
                WHERE e.id = ANY($1::int[]) AND a.account_id = $2 AND a.deleted_at IS NULL`,
-  room: `SELECT r.id FROM rooms r JOIN assets a ON a.id = r.asset_id
+  // Pièce = sous-structure (D-G, lot 20).
+  room: `SELECT r.id FROM substructures r JOIN assets a ON a.id = r.asset_id
           WHERE r.id = ANY($1::int[]) AND a.account_id = $2 AND a.deleted_at IS NULL`,
   // Mêmes règles que la fiche fournisseur (`supplierInAccount`).
   supplier: `SELECT id FROM suppliers WHERE id = ANY($1::int[]) AND account_id = $2 AND status <> 'deleted'`,

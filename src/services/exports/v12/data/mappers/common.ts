@@ -15,13 +15,14 @@
 
 import { fmt, dot, isEmpty } from '../../html/components';
 import type { DocItem, ExportInfo, PhotoItem, Nullable } from '../../types';
-import type { ExportSource, SourceDocument, SourceEvent, InfoSection } from '../source';
+import type { ExportSource, SourceDocument, SourceEquipment, SourceEvent, InfoSection } from '../source';
 import type { SelectionPlan, PlannedDocument, PlannedPhoto } from '../choices';
 import type { ResolvedFiles } from '../resolved';
 import { photoFileKey } from '../resolved';
 import { documentTone, IMAGE_FORMATS } from '../documents';
 import { assetFamilyLabel, assetCategoryLabel } from '@/lib/asset-taxonomy';
 import { occupancyUsageLabel } from '@/lib/assets/occupancy';
+import { CANONICAL_FIELDS, getField } from '@/services/canonical/registry';
 import type { ListItem } from '@/lib/assets/additional-infos';
 
 /** Méta de génération (en-tête, couverture, page Références). */
@@ -153,6 +154,92 @@ export const heatingLabel = (s: ExportSource): string | null => dot(humanize(kc(
 /** Identifiant masqué comme dans le design (n° de série, VIN, immatriculation). */
 export const masked = (v: unknown, opts?: { start?: number; end?: number; dots?: number }): string | null => str(fmt.mask(v, opts)) ;
 
+/**
+ * Numéro de série (CDC 15, décision D-N) : imprimé SEULEMENT dans les
+ * dossiers CIL et assurance (souscription, sinistre) — retiré des autres.
+ */
+const SERIAL_NUMBER_EXPORTS: ReadonlySet<string> = new Set(['CIL', 'ASSURANCE_SOUSCRIPTION', 'ASSURANCE_SINISTRE']);
+export const serialNumberAllowed = (s: Pick<ExportSource, 'exportType'>): boolean => SERIAL_NUMBER_EXPORTS.has(s.exportType);
+
+/** Consommation énergétique du DPE, au format du design (« 142 kWh/m²/an »). */
+export function energyConsumptionLabel(s: ExportSource): string | null {
+  const v = kc(s, 'energyConsumption') ?? kc(s, 'dpeConsumption');
+  if (v == null) return null;
+  const n = num(v);
+  return n == null ? v : `${fmt.number(n, 1)} kWh/m²/an`;
+}
+
+/** Unités du registre → écriture française du design. */
+const UNIT_LABELS: Record<string, string> = { cm3: 'cm³', m2: 'm²', 'kWh/m2/an': 'kWh/m²/an' };
+
+/** Rang d'une clé dans le registre : ordre d'affichage stable des champs d'équipement. */
+const REGISTRY_RANK = new Map(CANONICAL_FIELDS.map((d, i) => [d.key, i] as const));
+
+/**
+ * Champs d'équipement jamais repris dans la ligne de caractéristiques : déjà
+ * en colonne (marque, modèle). Les montants sont écartés par
+ * `equipmentFieldValue` (aucun coût dans les tableaux d'équipement).
+ */
+const EQUIPMENT_SPEC_SKIPPED = new Set(['name', 'brand', 'modelName']);
+
+/**
+ * Valeur d'un champ canonique d'équipement au format du dossier (dates
+ * JJ/MM/AAAA, nombres français + unité du registre, libellés d'énumération).
+ * `null` : vide, montant, ou valeur structurée (jamais imprimée telle quelle).
+ */
+export function equipmentFieldValue(key: string, value: unknown): string | null {
+  if (isEmpty(value) || (typeof value === 'object' && value !== null)) return null;
+  const def = getField(key);
+  switch (def?.valueType) {
+    case 'money_eur':
+    case 'money_cents':
+    case 'json':
+      return null;
+    case 'date':
+      return str(fmt.date(value));
+    case 'number': {
+      const n = num(value);
+      if (n == null) return str(value);
+      const unit = def.unit ? UNIT_LABELS[def.unit] ?? def.unit : '';
+      return `${fmt.number(n, 2)}${unit ? ` ${unit}` : ''}`;
+    }
+    case 'boolean':
+      return value === true || value === 'true' ? 'Oui' : value === false || value === 'false' ? 'Non' : str(value);
+    case 'enum':
+      return str(def.enumLabels?.[String(value)]) ?? humanize(value);
+    default:
+      return str(value);
+  }
+}
+
+/**
+ * Caractéristiques d'un équipement pour les tableaux d'équipement EXISTANTS
+ * (CDC 15, D-N) : champs renseignés de sa fiche canonique (puissance, COP,
+ * fluide frigorigène, compteur, entretien, garantie…) dans l'ordre du
+ * registre, « Libellé : valeur » joints par « · ». Le numéro de série n'y
+ * figure que dans les dossiers CIL et assurance, masqué comme dans le design.
+ * Lecture historique (sans fiche canonique) : énergie seule.
+ */
+export function equipmentSpecs(s: ExportSource, e: SourceEquipment): string | null {
+  const parts: string[] = [];
+  const energy = humanize(e.energyType);
+  const fields = (e.fields ?? [])
+    .filter((f) => !EQUIPMENT_SPEC_SKIPPED.has(f.key))
+    .slice().sort((a, b) => (REGISTRY_RANK.get(a.key) ?? 1e6) - (REGISTRY_RANK.get(b.key) ?? 1e6));
+  if (energy && !fields.some((f) => /energ/i.test(f.key))) parts.push(`Énergie : ${energy}`);
+  for (const f of fields) {
+    if (f.key === 'serialNumber') {
+      if (!serialNumberAllowed(s)) continue;
+      const v = masked(f.value, { start: 12, end: 3, dots: 3 });
+      if (v) parts.push(`${f.label} : ${v}`);
+      continue;
+    }
+    const v = equipmentFieldValue(f.key, f.value);
+    if (v) parts.push(`${f.label} : ${v}`);
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
 /** Point focal sûr pour `object-position` (évite toute injection CSS). */
 export function safeFocus(v: unknown): string {
   const s = str(v);
@@ -200,7 +287,8 @@ export function familyInfoRows(s: ExportSource): Array<{ label: string; value: N
   return [
     { label: 'Catégorie', value: categoryName(s) },
     { label: 'Marque · modèle', value: dot(kc(s, 'brand'), kc(s, 'modelName')) },
-    { label: 'Numéro de série', value: masked(kc(s, 'serialNumber'), { start: 12, end: 3, dots: 3 }) },
+    // D-N : numéro de série seulement dans les dossiers CIL et assurance.
+    ...(serialNumberAllowed(s) ? [{ label: 'Numéro de série', value: masked(kc(s, 'serialNumber'), { start: 12, end: 3, dots: 3 }) }] : []),
     { label: "Date d'achat", value: fmt.date(s.asset.purchaseDate) },
     { label: 'Dimensions', value: kc(s, 'dimensions') ?? s.asset.dimensions },
     { label: 'Poids', value: kc(s, 'weight') },

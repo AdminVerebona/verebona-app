@@ -16,6 +16,7 @@ import { normalize } from './decision/normalizers';
 import { readOrigin } from './field-origin';
 import { isCriticalField } from './decision/critical-fields';
 import { EVIDENCE_BASED_ORIGINS } from './negative-reconciliation';
+import { isInputOnlyKey } from '@/services/canonical/registry';
 import type { DecisionInput, EvidenceCandidate, CurrentValue } from './types';
 import type { FieldEvidence } from '../evidence/evidence.types';
 
@@ -61,6 +62,9 @@ export async function collectAssetEvidenceState(
   const collected: CollectedField[] = [];
 
   for (const fieldKey of fieldKeys) {
+    // D-D (lot 20) : un champ de saisie seule n'est jamais réconcilié depuis
+    // une preuve (aucune proposition, aucune écriture, aucun conflit).
+    if (isInputOnlyKey(fieldKey)) continue;
     const evidences = await getActiveEvidence(accountId, assetId, fieldKey);
 
     const candidates = toEvidenceCandidates(fieldKey, evidences);
@@ -115,6 +119,7 @@ export function toEvidenceCandidates(fieldKey: string, evidences: FieldEvidence[
     documentDate: e.documentDate ?? null,
     sourceId: e.sourceId,
     excerpt: e.excerpt ?? '',
+    ...(e.projectionRule ? { projectionRule: e.projectionRule } : {}),
   }));
 }
 

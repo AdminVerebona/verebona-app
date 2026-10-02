@@ -46,7 +46,7 @@ export const STEP_REQUIREMENTS: Record<MigStep, Requirement[]> = {
   'MIG-07': [T('to_process_actions', '0128'), T('cdc15_migration_backups', '0225_cdc15_migration_report_backups'),
     T('canonical_field_writes', '0216'), T('ai_field_updates', '0103')],
   'MIG-08': [
-    T('document_asset_links', '0221_document_asset_links'),
+    T('document_asset_links', '0221_document_asset_links'), C('document_asset_links.substructure_id', '0229_rooms_to_substructures'),
     { kind: 'function', name: 'document_asset_links_sync_file', migration: '0221_document_asset_links_trigger' },
   ],
 };

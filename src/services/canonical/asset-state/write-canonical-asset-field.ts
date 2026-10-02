@@ -74,6 +74,9 @@ function sameColumnValue(a: unknown, b: unknown): boolean {
 
 /* ── Plan (fonction pure) ────────────────────────────────────────────────── */
 
+/** Origines admises pour un champ de saisie seule (`inputOnly`, D-D). */
+export const INPUT_ONLY_ORIGINS: readonly CanonicalOrigin[] = ['USER', 'ADMIN', 'IMPORT'];
+
 export interface PlanContext {
   origin: CanonicalOrigin;
   /** Date ISO posée dans `<clé>__updatedAt`. */
@@ -156,6 +159,14 @@ export function planCanonicalWrites(
     // Champ d'une autre cible (pièce, équipement, document…) : jamais écrit
     // dans la fiche du BIEN (CDC 15 T1-04, relecture lot 13) — ex. `roomArea`.
     if (!fieldTargetsAsset(def)) { refuse(def.key, 'invalid', 'TARGET_NOT_ASSET'); continue; }
+    // Champ de SAISIE seule (décision PO D-D, lot 20 : prix et surface
+    // d'annonce) : jamais écrit par une origine automatique (T3, extraction,
+    // règle système) — seulement par l'humain ou un import qu'il a fourni.
+    if (def.inputOnly && !INPUT_ONLY_ORIGINS.includes(ctx.origin)) {
+      const etat = readFieldState(def, kc, vueCourante(), indexKcAliases(kc, family).get(def.key) ?? []);
+      refuse(def.key, 'protected', 'INPUT_ONLY_FIELD', etat?.value ?? null, etat?.origin ?? null);
+      continue;
+    }
 
     // Unité : celle déclarée par l'appelant, sinon celle portée par l'alias.
     const unit = w.sourceUnit ?? (w.key !== def.key ? def.aliasUnits?.[w.key] : undefined);

@@ -2,11 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
+import { EQUIPMENT_FICHE_FIELDS } from '@/lib/asset-detail-rules';
 
 /**
  * GET /api/equipments/[id] — l'équipement seul, pour l'ouvrir en tiroir
  * depuis n'importe quel écran (lien profond `?tiroir=equipement:<id>`).
  * Le bien doit appartenir au compte courant et ne pas être supprimé.
+ *
+ * `fiche` (lot 20, D-D) : caractéristiques canoniques saisissables dans le
+ * tiroir (`EQUIPMENT_FICHE_FIELDS`), lues de la fiche canonique de
+ * l'équipement (repli colonnes) ; valeur `null` quand non renseignée, fiche
+ * `null` quand illisible.
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   let session;
@@ -38,7 +44,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       LIMIT 1
     `;
     if (!row) return apiError(404, 'NOT_FOUND', 'Équipement introuvable');
-    return NextResponse.json({ equipment: row });
+    // `null` quand la fiche canonique est illisible : le tiroir ne propose
+    // alors aucune saisie (un formulaire vide n'efface rien en USER).
+    let fiche: Record<string, unknown> | null = null;
+    try {
+      const { getCanonicalEntityState } = await import('@/services/canonical/entity-state');
+      const etat = await getCanonicalEntityState({ type: 'EQUIPMENT', id: equipmentId }, accountId);
+      if (etat) fiche = Object.fromEntries(EQUIPMENT_FICHE_FIELDS.map((f) => [f.key, etat.fields[f.key]?.value ?? null]));
+    } catch (e) {
+      // Fiche canonique indisponible (0227 absente) : l'équipement reste lisible.
+      console.warn('[api/equipments/:id] fiche canonique non lue :', (e as Error).message);
+    }
+    return NextResponse.json({ equipment: row, fiche });
   } catch (error) {
     console.error('[api/equipments/:id] GET', error);
     return apiError(500, 'INTERNAL_ERROR', 'Internal server error');

@@ -158,6 +158,7 @@ interface EvidenceRow {
   provider: string | null; model: string | null; promptVersion: string | null; confidence: string;
   authorityScore: number; operationTraceId: string | null; status: string; extractedAt: Date | string;
   lifecycleStatus?: string | null;
+  projectionRule?: string | null;
 }
 
 /**
@@ -198,7 +199,7 @@ export async function getActiveEvidence(
             document_type AS "documentType", document_date AS "documentDate",
             provider, model, prompt_version AS "promptVersion", confidence,
             authority_score AS "authorityScore", operation_trace_id AS "operationTraceId",
-            status, extracted_at AS "extractedAt"${canonical ? `, lifecycle_status AS "lifecycleStatus"` : ''}
+            status, extracted_at AS "extractedAt"${canonical ? `, lifecycle_status AS "lifecycleStatus", projection_rule AS "projectionRule"` : ''}
        FROM field_evidence
       WHERE account_id = $1 AND asset_id = $2 AND field_key = $3 AND status = 'active'${extra}
       ORDER BY authority_score DESC, document_date DESC NULLS FIRST`,
@@ -233,6 +234,8 @@ export async function getActiveEvidence(
     status: r.status as FieldEvidence['status'],
     extractedAt: new Date(r.extractedAt),
     lifecycleStatus: (r.lifecycleStatus ?? 'ACTIVE') as FieldEvidence['lifecycleStatus'],
+    // Règle de projection (D-M, lot 20 : preuve révisée par T4) — absente avant 0219.
+    ...(r.projectionRule ? { projectionRule: r.projectionRule } : {}),
   }));
 }
 

@@ -5,7 +5,7 @@
  * Documents :
  *   - missing_function : retainedFunctionCode IS NULL ou vide ET le fichier n'est pas une image
  *                        (les images ont la fonction implicite "Photo")
- *   - missing_useful_link : aucune liaison parmi assetId, linkedAssetId, linkedRoomId, equipmentId
+ *   - missing_useful_link : aucune liaison parmi assetId, linkedAssetId, linkedRoomId, substructureId (pièce, D-G), equipmentId
  *   Note : missing_title supprimé — un document a toujours originalFilename comme titre de repli.
  *
  * Agenda :
@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
       // ─── Documents à traiter ──────────────────────────────────────────────
       // Un document entre dans À traiter si au moins un motif est vrai.
       // missing_function : retainedFunctionCode IS NULL ou vide
-      // missing_useful_link : aucune liaison parmi assetId, linkedAssetId, linkedRoomId, equipmentId
+      // missing_useful_link : aucune liaison parmi assetId, linkedAssetId, linkedRoomId, substructureId, equipmentId
       db.select({
         id: assetFiles.id,
         publicId: assetFiles.publicId,
@@ -65,6 +65,8 @@ export async function GET(req: NextRequest) {
         assetId: assetFiles.assetId,
         linkedAssetId: assetFiles.linkedAssetId,
         linkedRoomId: assetFiles.linkedRoomId,
+        // Pièce = sous-structure (D-G, lot 20) : un rattachement utile.
+        substructureId: assetFiles.substructureId,
         equipmentId: assetFiles.equipmentId,
         documentType: assetFiles.documentType,
         documentDate: assetFiles.documentDate,
@@ -98,6 +100,7 @@ export async function GET(req: NextRequest) {
                 isNull(assetFiles.assetId),
                 isNull(assetFiles.linkedAssetId),
                 isNull(assetFiles.linkedRoomId),
+                isNull(assetFiles.substructureId),
                 isNull(assetFiles.equipmentId)
               ),
               // missing_analysis : document jamais analysé par l'IA
@@ -185,7 +188,7 @@ export async function GET(req: NextRequest) {
         if (!hasFunction && !isImage(doc.mimeType)) motifs.push('missing_function');
 
         // missing_useful_link
-        if (!doc.assetId && !doc.linkedAssetId && !doc.linkedRoomId && !doc.equipmentId) {
+        if (!doc.assetId && !doc.linkedAssetId && !doc.linkedRoomId && !doc.substructureId && !doc.equipmentId) {
           motifs.push('missing_useful_link');
         }
 

@@ -25,7 +25,7 @@ function equipement(kc: Record<string, unknown> = {}, cols: Record<string, unkno
   };
 }
 const piece = (kc: Record<string, unknown> = {}, area: unknown = null): CanonicalEntityRow => ({
-  target: { type: 'ROOM', id: 21 }, assetId: 3, accountId: 7, name: 'Salon', archived: false, kc, columns: { 'rooms.area': area },
+  target: { type: 'ROOM', id: 21 }, assetId: 3, accountId: 7, name: 'Salon', archived: false, kc, columns: { 'substructures.area': area },
 });
 
 describe('vue canonique d’une entité', () => {
@@ -41,7 +41,7 @@ describe('vue canonique d’une entité', () => {
     expect(st.fields.registrationNumber).toBeUndefined();
   });
 
-  it('pièce : `rooms.area` (texte) lu comme nombre', () => {
+  it('pièce (sous-structure, D-G) : `substructures.area` (texte) lu comme nombre', () => {
     expect(es.buildCanonicalEntityState(piece({}, '18.5')).fields.roomArea).toMatchObject({ value: 18.5, from: 'column', origin: 'USER' });
   });
 });
@@ -92,7 +92,7 @@ describe('planEntityWrites', () => {
     const r = es.planEntityWrites(auto, [{ key: 'roomArea', value: null, expectedCurrent: 20 }], ctx());
     expect(r.results[0].outcome).toBe('written');
     expect(r.kc.roomArea).toBeUndefined();
-    expect(r.columns).toEqual({ 'rooms.area': null });
+    expect(r.columns).toEqual({ 'substructures.area': null });
   });
 });
 
@@ -103,7 +103,7 @@ function runner(row: Record<string, unknown> | null) {
     calls,
     unsafe: vi.fn(async (q: string, p: unknown[] = []) => {
       calls.push({ q, p });
-      if (/FROM equipments x|FROM rooms x/.test(q)) return row ? [row] : [];
+      if (/FROM equipments x|FROM substructures x/.test(q)) return row ? [row] : [];
       return [];
     }),
     begin: async (fn: (t: unknown) => Promise<unknown>) => fn(r),

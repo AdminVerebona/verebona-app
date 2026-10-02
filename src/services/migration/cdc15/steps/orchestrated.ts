@@ -106,7 +106,10 @@ export const MIG08_ESTIMATE_SQL = `
        OR (f.linked_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM document_asset_links l
             WHERE l.file_id = f.id AND l.asset_id = f.linked_asset_id AND l.status = 'ACTIVE'))
        OR (f.linked_room_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM document_asset_links l
-            WHERE l.file_id = f.id AND l.room_id = f.linked_room_id AND l.status = 'ACTIVE')))`;
+            WHERE l.file_id = f.id AND l.room_id = f.linked_room_id AND l.status = 'ACTIVE'))
+       -- D-G (0229) : la sous-structure du document est aussi une cible du lien N-N.
+       OR (f.substructure_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM document_asset_links l
+            WHERE l.file_id = f.id AND l.substructure_id = f.substructure_id AND l.status = 'ACTIVE')))`;
 
 export async function runMig08(ctx: StepContext): Promise<StepResult> {
   const step = 'MIG-08' as const;

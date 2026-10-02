@@ -9,17 +9,22 @@
  *   4. sans famille, une forme qui désigne plusieurs clés n'est PAS résolue
  *      (ex. `loyerMensuel` : loyer d'un logement ou mensualité de LOA) ;
  *   5. les clés exclues (EXCLUDED_KEYS) et les origines `*_origin` ne sont
- *      jamais résolues.
+ *      jamais résolues ;
+ *   6. un alias CONTEXTUEL (`CONTEXTUAL_ALIASES`, décisions PO D-C / D-D)
+ *      dépend du type documentaire passé en contexte (`dateFinContrat`,
+ *      `numeroContrat`, `dateEtablissement`) ; sans contexte, sa branche
+ *      générale (résolution historique inchangée).
  */
-import { CANONICAL_FIELDS, EXCLUDED_KEYS, REGISTRY_VERSION } from './fields';
-import { EVENT_CATALOG, DOCUMENT_CATALOG } from './catalogs';
-import type {
-  AliasResolution,
-  AssetFamily,
-  CanonicalFieldDef,
-  CanonicalTargetType,
-  ExcludedKey,
-  PromptCatalogDTO,
+import { CANONICAL_FIELDS, CONTEXTUAL_ALIASES, EXCLUDED_KEYS, REGISTRY_VERSION } from './fields';
+import { EVENT_CATALOG, DOCUMENT_CATALOG, resolveDocumentType } from './catalogs';
+import {
+  ASSET_FAMILY_CODES,
+  type AliasResolution,
+  type AssetFamily,
+  type CanonicalFieldDef,
+  type CanonicalTargetType,
+  type ExcludedKey,
+  type PromptCatalogDTO,
 } from './types';
 
 /** Forme de comparaison d'une clé brute. */
@@ -82,12 +87,103 @@ export function isExcludedKey(rawKey: string): ExcludedKey | undefined {
   return EXCLUDED_BY_TOKEN.get(aliasToken(rawKey));
 }
 
-/** Résolution détaillée : clé canonique et unité portée par la clé brute. */
-export function resolveAliasDetailed(rawKey: string, family?: AssetFamily): AliasResolution | undefined {
+/** Contexte documentaire d'une résolution (décisions PO D-C / D-D, lot 20). */
+export interface AliasContext {
+  /** Type documentaire : code DOCUMENT_CATALOG, alias, code V2 ou libre. */
+  documentType?: string | null;
+  /**
+   * Cible du fait. Pour un ÉQUIPEMENT ou une PIÈCE, seuls les champs qui
+   * admettent cette cible sont candidats et la famille du bien porteur ne
+   * filtre pas (comme `catalogForPrompts`) : la puissance d'une PAC de maison
+   * se résout en `powerKw` même si le champ n'est « de bien » que pour un véhicule.
+   */
+  targetType?: CanonicalTargetType | string | null;
+}
+
+/** Cible d'entité (équipement, pièce) : la famille du bien ne s'applique pas. */
+const cibleEntite = (ctx: AliasContext | undefined): 'EQUIPMENT' | 'ROOM' | null =>
+  (ctx?.targetType === 'EQUIPMENT' || ctx?.targetType === 'ROOM' ? ctx.targetType : null);
+
+const CONTEXTUAL_BY_TOKEN = new Map(Object.entries(CONTEXTUAL_ALIASES).map(([k, v]) => [aliasToken(k), v]));
+
+/** Le jeton désigne-t-il un alias contextuel (`dateFinContrat`…) ? */
+export function isContextualAlias(rawKey: string): boolean {
+  return !!rawKey && CONTEXTUAL_BY_TOKEN.has(aliasToken(rawKey));
+}
+
+const LEASE_CODE = /(^|_)(BAIL|BAUX|LEASE|LEASING|LOCATION|LOA|LLD|RENTAL)(_|$)/;
+const INSURANCE_CODE = /(^|_)(ASSURANCE|INSURANCE)(_|$)/;
+const DIAGNOSTIC_CODE = /(^|_)DIAGNOSTIC(_|$)/;
+
+/**
+ * Nature documentaire utile aux alias contextuels (pure) : par le catalogue
+ * (types d'événement du type), sinon par le code lui-même (codes V2 ou
+ * libres : `RESIDENTIAL_LEASE`, `INSURANCE_POLICY`…). Un type inconnu ou
+ * absent : aucune nature (branche générale).
+ */
+export function documentContextOf(documentType: string | null | undefined): {
+  lease: boolean; insurance: boolean; dpe: boolean; diagnostic: boolean;
+} {
+  const code = (documentType ?? '').trim().toUpperCase();
+  if (!code) return { lease: false, insurance: false, dpe: false, diagnostic: false };
+  const entry = resolveDocumentType(code);
+  if (entry) {
+    // Type catalogué : le catalogue seul fait foi.
+    const types: readonly string[] = entry.businessTypes;
+    return {
+      lease: types.includes('lease'),
+      insurance: types.includes('insurance'),
+      dpe: entry.code === 'DPE',
+      diagnostic: entry.code === 'DIAGNOSTIC',
+    };
+  }
+  return {
+    lease: LEASE_CODE.test(code),
+    insurance: INSURANCE_CODE.test(code),
+    dpe: code === 'DPE',
+    diagnostic: DIAGNOSTIC_CODE.test(code),
+  };
+}
+
+/**
+ * Alias contextuel : clé retenue selon le type documentaire, puis la famille
+ * (une clé inapplicable à la famille retombe sur la branche générale).
+ * `null` : le jeton n'est pas contextuel ; `undefined` : non résolu.
+ */
+function resolveContextual(rawKey: string, family: AssetFamily | undefined, ctx: AliasContext | undefined): AliasResolution | undefined | null {
+  const regle = CONTEXTUAL_BY_TOKEN.get(aliasToken(rawKey));
+  if (!regle) return null;
+  const d = documentContextOf(ctx?.documentType);
+  const candidates = [
+    d.lease ? regle.lease : undefined,
+    d.insurance ? regle.insurance : undefined,
+    d.dpe ? regle.dpe : undefined,
+    d.diagnostic ? regle.diagnostic : undefined,
+    regle.otherwise,
+  ].filter((k): k is string => typeof k === 'string');
+  const entite = cibleEntite(ctx);
+  for (const k of candidates) {
+    const def = BY_KEY.get(k);
+    if (!def) continue;
+    if (entite ? fieldTargetTypes(def).includes(entite) : (!family || def.families.includes(family))) return { key: def.key, canonical: false };
+  }
+  return undefined;
+}
+
+/**
+ * Résolution détaillée : clé canonique et unité portée par la clé brute.
+ * `ctx.documentType` : alias dont la clé dépend du document (règle 6).
+ */
+export function resolveAliasDetailed(rawKey: string, family?: AssetFamily, ctx?: AliasContext): AliasResolution | undefined {
   if (!rawKey || isExcludedKey(rawKey)) return undefined;
+  const contextuelle = resolveContextual(rawKey, family, ctx);
+  if (contextuelle !== null) return contextuelle;
   const entrees = BY_TOKEN.get(aliasToken(rawKey));
   if (!entrees?.length) return undefined;
-  const applicables = family ? entrees.filter((e) => e.def.families.includes(family)) : entrees;
+  const entite = cibleEntite(ctx);
+  const applicables = entite
+    ? entrees.filter((e) => fieldTargetTypes(e.def).includes(entite))
+    : family ? entrees.filter((e) => e.def.families.includes(family)) : entrees;
   const canoniques = applicables.filter((e) => e.canonical);
   const retenues = canoniques.length ? canoniques : applicables;
   if (retenues.length !== 1) return undefined;
@@ -96,9 +192,21 @@ export function resolveAliasDetailed(rawKey: string, family?: AssetFamily): Alia
   return { key: def.key, canonical, ...(sourceUnit ? { sourceUnit } : {}) };
 }
 
-/** Clé brute → clé canonique (voir règles en tête de fichier). */
-export function resolveAlias(rawKey: string, family?: AssetFamily): string | undefined {
-  return resolveAliasDetailed(rawKey, family)?.key;
+/** Clé brute → clé canonique (voir règles en tête de fichier) ; `ctx` : type documentaire (règle 6). */
+export function resolveAlias(rawKey: string, family?: AssetFamily, ctx?: AliasContext): string | undefined {
+  return resolveAliasDetailed(rawKey, family, ctx)?.key;
+}
+
+/**
+ * Clé de SAISIE UNIQUEMENT (`inputOnly`, décision PO D-D) : la clé
+ * canonique, ou un alias qui y mène dans au moins une famille. Jamais
+ * inférée par l'IA : ni projetée, ni prouvée, ni appliquée par T3.
+ */
+export function isInputOnlyKey(rawKey: string | null | undefined): boolean {
+  if (!rawKey || isExcludedKey(rawKey)) return false;
+  if (BY_KEY.get(rawKey)?.inputOnly) return true;
+  const keys = new Set<string | undefined>([resolveAlias(rawKey), ...ASSET_FAMILY_CODES.map((f) => resolveAlias(rawKey, f))]);
+  return [...keys].some((k) => !!k && BY_KEY.get(k)?.inputOnly === true);
 }
 
 /**
@@ -112,6 +220,8 @@ export function catalogForPrompts(opts: { family?: AssetFamily } = {}): PromptCa
   // l'ÉQUIPEMENT ou la PIÈCE si déclarés (un bien de toute famille peut
   // avoir des équipements ; les pièces restent limitées aux familles du champ).
   const fields = CANONICAL_FIELDS.flatMap((d) => {
+    // D-D : un champ de saisie seule n'est jamais demandé au modèle.
+    if (d.inputOnly) return [];
     const dansFamille = !family || d.families.includes(family);
     const targets = fieldTargetTypes(d).filter((t) => (t === 'ASSET' || t === 'ROOM' ? dansFamille : true));
     if (targets.length === 0) return [];

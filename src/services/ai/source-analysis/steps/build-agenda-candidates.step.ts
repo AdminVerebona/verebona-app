@@ -12,6 +12,7 @@
 import type { ExtractedField, AgendaCandidate } from '../types';
 import { parseRecurrenceFr, type RecurrenceSpec } from '../../agenda/rules/recurrence';
 import {
+  documentMayCreateEvent,
   getEventEntry,
   getField,
   resolveAlias,
@@ -140,15 +141,19 @@ const HISTORICAL_TITLES: Readonly<Record<string, string>> = {
 
 type Semantique = { nature: AgendaNature; businessType: string; originFieldKey: string | null; title: string };
 
-/** Clé canonique d'un champ : contrat enrichi, sinon clé historique résolue. */
-function cleCanonique(f: ExtractedField): string | null {
+/**
+ * Clé canonique d'un champ : contrat enrichi, sinon clé historique résolue —
+ * avec le type documentaire pour les alias contextuels (décision PO D-C,
+ * lot 20 : `dateFinContrat` d'un bail ou d'une LOA/LLD → leaseEndDate).
+ */
+function cleCanonique(f: ExtractedField, documentType: string | null): string | null {
   if (f.canonicalKey !== undefined) return f.canonicalKey;
   if (getField(f.fieldKey)) return f.fieldKey;
-  return resolveAlias(f.fieldKey) ?? null;
+  return resolveAlias(f.fieldKey, undefined, { documentType }) ?? null;
 }
 
-function semantique(f: ExtractedField): Semantique | null {
-  const key = cleCanonique(f);
+function semantique(f: ExtractedField, documentType: string | null): Semantique | null {
+  const key = cleCanonique(f, documentType);
   const def = key ? getField(key) : undefined;
   if (def?.agendaEffect) {
     const { nature, businessType } = def.agendaEffect;
@@ -179,13 +184,13 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
   // Champs d'agenda du registre d'abord, puis les événements sans champ de
   // date : un « Achat » porté par acquisitionDate n'est pas doublé par
   // l'événement purchase du prix ou de la ligne d'article.
-  const parChamp = (f: ExtractedField) => (semantique(f)?.originFieldKey ? 0 : 1);
+  const parChamp = (f: ExtractedField) => (semantique(f, documentType)?.originFieldKey ? 0 : 1);
   const ordonnes = [...fields].sort((a, b) => parChamp(a) - parChamp(b));
   const typesDates = new Set<string>();
 
   for (const field of ordonnes) {
     if (field.provenance === 'VISUAL_ANALYSIS' || !field.excerpt) continue;
-    const sem = semantique(field);
+    const sem = semantique(field, documentType);
     if (!sem) continue;
 
     // Cible : le bien du document, jamais un autre bien (U8) ni un équipement
@@ -248,7 +253,36 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
       dateSource: valeur ? 'FIELD' : 'DOCUMENT_DATE',
       documentType,
       authority: entry?.authority ?? null,
-      mayCreateAgenda: entry ? entry.mayCreateAgenda : null,
+      // T4-04, D-B : droit de création du type, restreint à sa portée
+      // (`creationScope` : constat de sinistre → sinistre HISTORIQUE seul).
+      mayCreateAgenda: entry ? documentMayCreateEvent(entry, sem) : null,
+      sources: [{ fileId: ctx.sourceFileId, role: 'SOURCE' }],
+    });
+  }
+
+  // D-B (lot 20) : un constat de sinistre crée l'événement HISTORIQUE
+  // « sinistre » même si aucun fait ne le porte — daté du document, sur le
+  // bien du document (mono-bien seulement). Le changement de statut du bien
+  // reste PROPOSÉ (carte À traiter ASSET-STATUS, à la création de l'élément).
+  if (entry?.code === 'CONSTAT_SINISTRE' && !out.some((c) => c.businessType === 'claim')
+    && ctx.documentAssetId !== null && !ctx.multiAsset && ctx.documentDate && ISO_DATE.test(ctx.documentDate)) {
+    const titre = HISTORICAL_TITLES.claim;
+    out.push({
+      title: ctx.documentTitle?.trim() ? `${titre} — ${ctx.documentTitle.trim()}` : titre,
+      date: ctx.documentDate,
+      suggestedCategory: 'information',
+      confidence: 'certain',
+      // Aucun extrait : jamais de citation fabriquée (la date vient du document).
+      excerpt: '',
+      nature: 'HISTORICAL',
+      businessType: 'claim',
+      target: { type: 'ASSET', id: ctx.documentAssetId },
+      occurrence: ctx.documentDate,
+      sourceFileId: ctx.sourceFileId,
+      dateSource: 'DOCUMENT_DATE',
+      documentType: entry.code,
+      authority: entry.authority,
+      mayCreateAgenda: documentMayCreateEvent(entry, { businessType: 'claim', nature: 'HISTORICAL' }),
       sources: [{ fileId: ctx.sourceFileId, role: 'SOURCE' }],
     });
   }

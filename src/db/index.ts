@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "@/db/schema";
-import { runMigrationSql, repairInvalidMigrationIndexes, type SqlRunner } from "@/db/migration-index";
+import { applyMigrationFiles, repairInvalidMigrationIndexes, type SqlRunner } from "@/db/migration-index";
 
 const connectionString = process.env.DATABASE_URL!;
 
@@ -68,60 +68,27 @@ export async function ensureMigrations() {
     const migrationsDir = join(process.cwd(), 'src', 'db', 'migrations');
     const allFiles = await readdir(migrationsDir);
     const sqlFiles = allFiles.filter(f => f.endsWith('.sql')).sort();
-    const applied = await client<{ filename: string }[]>`SELECT filename FROM _migrations`;
-    const appliedSet = new Set(applied.map(r => r.filename));
+    const fichiers = await Promise.all(
+      sqlFiles.map(async (f) => ({ filename: f, sql: await readFile(join(migrationsDir, f), 'utf-8') })),
+    );
 
     // ══════════════════════════════════════════════════════════════════════
-    // UN ECHEC N'INTERROMPT PLUS LA CHAINE
+    // UN ECHEC N'INTERROMPT PLUS LA CHAINE (`applyMigrationFiles`)
     //
-    // La version precedente placait la boucle entiere dans un seul `try`.
-    // La premiere migration en echec faisait sortir de la boucle : TOUTES les
-    // suivantes etaient abandonnees, et l'exception etait avalee. Une base
-    // pouvait ainsi rester bloquee des dizaines de migrations en arriere sans
-    // qu'aucun signal ne remonte — le symptome n'apparaissant qu'au premier
-    // `SELECT` portant sur une colonne jamais creee.
-    //
-    // Chaque fichier a desormais son propre `try`. Un echec est journalise,
-    // enregistre dans `_migrationFailures`, et la chaine se poursuit. Le
-    // fichier en echec n'est PAS marque comme applique : il sera retente au
-    // prochain demarrage.
+    // Chaque fichier a son propre `try`. Un echec est journalise, enregistre
+    // dans `_migrationFailures`, et la chaine se poursuit. Le fichier en echec
+    // n'est PAS marque comme applique : il sera retente au prochain demarrage,
+    // dans l'ordre lexicographique (un `_idx_N` apres son fichier principal).
+    // Index CONCURRENTLY : reprise d'un index invalide et controle de validite
+    // avant de marquer le fichier applique (`migration-index.ts`).
     // ══════════════════════════════════════════════════════════════════════
-    for (const file of sqlFiles) {
-      if (appliedSet.has(file)) continue;
-      const sql = await readFile(join(migrationsDir, file), 'utf-8');
-      try {
-        // Index CONCURRENTLY : reprise d'un index invalide et contrôle de
-        // validité avant de marquer le fichier appliqué (`migration-index.ts`).
-        const r = await runMigrationSql(client as unknown as SqlRunner, sql);
-        if (r.status === 'deferred') {
-          // Index en cours de construction par une autre instance : rien
-          // n'est fait, le fichier sera repris au prochain démarrage.
-          console.warn(`[db] Migration ${file} differee (index ${r.index} en construction ailleurs).`);
-          continue;
-        }
-        await client`INSERT INTO _migrations (filename) VALUES (${file}) ON CONFLICT DO NOTHING`;
-        console.log(`[db] Applied migration: ${file}`);
-      } catch (e) {
-        const err = e as { message?: string; code?: string };
-        _migrationFailures.push({
-          filename: file,
-          message: err.message ?? String(e),
-          code: err.code,
-        });
-        console.error(
-          `[db] ECHEC de la migration ${file} (${err.code ?? 'sans code'}) : ${err.message ?? e}\n` +
-          '     La chaine se poursuit. Ce fichier sera retente au prochain demarrage.',
-        );
-      }
-    }
+    const res = await applyMigrationFiles(client as unknown as SqlRunner, fichiers);
+    _migrationFailures.push(...res.failures);
 
     // Index invalides (construction CONCURRENTLY interrompue) : jamais
     // utilisés, toujours maintenus. Ceux d'un fichier de migration connu —
     // même déjà marqué appliqué (0217…) — sont reconstruits tout de suite ;
     // sinon leur fichier est remis en file (`migration-index.ts`).
-    const fichiers = await Promise.all(
-      sqlFiles.map(async (f) => ({ filename: f, sql: await readFile(join(migrationsDir, f), 'utf-8') })),
-    );
     const rep = await repairInvalidMigrationIndexes(client as unknown as SqlRunner, fichiers);
     for (const i of rep.repaired) console.warn(`[db] index invalide ${i} reconstruit.`);
     for (const q of rep.requeued) {

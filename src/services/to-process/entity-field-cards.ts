@@ -19,9 +19,10 @@
  *     réécrite sous le même contrôle, carte rouverte.
  *
  * PIÈCE (ROOM, lot 19) : même mécanisme, règle ENTITY-FIELD-ROOM, cible
- * ROOM ; libellé « nom de la pièce » et bien porteur résolus par
- * `to-process-query.service`, navigation vers la page du bien, onglet
- * « Pièces » (`openToProcessTarget`).
+ * ROOM = SOUS-STRUCTURE (`substructures.id`, décision D-G, lot 20) ; libellé
+ * « nom de la pièce » et bien porteur résolus par `to-process-query.service`,
+ * ouverture dans le tiroir de la pièce (`openToProcessTarget`). Une carte
+ * d'une autre cible (LEGACY_ROOM suspendue par 0229) n'écrit jamais rien.
  */
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/db';
@@ -108,9 +109,11 @@ type Action = typeof toProcessActions.$inferSelect;
 type Ctx = { key?: string; current?: Scalar };
 
 async function ecrire(action: Action, accountId: number, key: string, value: unknown, expected: unknown, userId: number | null) {
+  // Cible stricte : une carte d'une autre cible (ex. LEGACY_ROOM, D-G) n'écrit jamais sur un équipement.
+  if (action.targetType !== 'ROOM' && action.targetType !== 'EQUIPMENT') return null;
   const { writeCanonicalEntityField } = await import('@/services/canonical/entity-state');
   return writeCanonicalEntityField({
-    target: { type: action.targetType === 'ROOM' ? 'ROOM' : 'EQUIPMENT', id: action.targetId }, accountId, key, value, origin: 'USER', actorUserId: userId,
+    target: { type: action.targetType, id: action.targetId }, accountId, key, value, origin: 'USER', actorUserId: userId,
     expectedCurrent: expected ?? null, source: { type: 'to_process', id: action.publicId }, mode: 'enabled',
   });
 }
@@ -124,6 +127,7 @@ export async function resolveEntityFieldCard(
   const proposees = (action.proposalsJson as ActionProposal[] | null) ?? [];
   if (!key || !proposees.some((p) => p.value === value)) return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
   const res = await ecrire(action, accountId, key, value, ctx?.current ?? null, options.userId ?? null);
+  if (!res) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
   const f = res.field;
   if (f?.outcome === 'conflict') return perimer(tx, action, accountId, options.userId ?? null);
   if (res.notFound || res.skipped || !f || f.outcome === 'invalid') {
@@ -154,6 +158,7 @@ export async function undoEntityFieldCard(action: Action, accountId: number): Pr
     .orderBy(desc(toProcessActionEvents.id)).limit(1);
   if (!ev || action.resolutionReason !== 'USER_ARBITRATED') return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
   const res = await ecrire(action, accountId, key, ev.prev ?? null, ev.next ?? null, null);
+  if (!res) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
   if (res.field?.outcome === 'conflict') return perimer(db, action, accountId, null);
   if (res.notFound || !res.field || res.field.outcome === 'invalid') return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
   await db.update(toProcessActions).set({ resolvedAt: null, resolutionReason: null, lastSeenAt: new Date(), updatedAt: new Date() })

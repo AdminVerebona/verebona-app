@@ -48,12 +48,17 @@ export async function GET(
       orderIndex: number;
       createdAt: string | null;
       updatedAt: string | null;
+      roomType: string | null;
+      area: string | null;
+      description: string | null;
     }[]>`
-      SELECT id, name, asset_id AS "assetId", order_index AS "orderIndex",
-             created_at AS "createdAt", updated_at AS "updatedAt"
-      FROM substructures
-      WHERE asset_id = ${assetId}
-      ORDER BY order_index ASC
+      SELECT s.id, s.name, s.asset_id AS "assetId", s.order_index AS "orderIndex",
+             s.created_at AS "createdAt", s.updated_at AS "updatedAt",
+             -- Colonnes de la pièce (D-G, migration 0229), lues par to_jsonb : null si la migration manque.
+             to_jsonb(s)->>'room_type' AS "roomType", to_jsonb(s)->>'area' AS area, to_jsonb(s)->>'description' AS description
+      FROM substructures s
+      WHERE s.asset_id = ${assetId}
+      ORDER BY s.order_index ASC
     `;
 
     return NextResponse.json(results);

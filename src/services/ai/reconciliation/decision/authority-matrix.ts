@@ -72,6 +72,8 @@ const NEUTRAL_AUTHORITY = 500;
 /** Champs partageant l'ordre d'un autre champ (mêmes règles métier). */
 const FIELD_ALIASES: Record<string, string> = {
   landArea: 'livingArea',
+  // Surface Carrez (D-D, lot 20) : mêmes règles que la surface habitable.
+  carrezArea: 'livingArea',
   vin: 'registrationNumber',
   serialNumber: 'registrationNumber',
   estimatedValue: 'acquisitionPrice',

@@ -11,11 +11,17 @@ export type LinkOrigin = (typeof LINK_ORIGINS)[number];
 export const LINK_STATUSES = ['ACTIVE', 'PROPOSED', 'REJECTED', 'REMOVED'] as const;
 export type LinkStatus = (typeof LINK_STATUSES)[number];
 
-/** Cible d'un lien : un bien, une pièce ou un équipement (au moins un). */
+/**
+ * Cible d'un lien : un bien, une pièce ou un équipement (au moins un).
+ * Pièce = SOUS-STRUCTURE (`substructureId`, décision D-G, migration 0229).
+ */
 export interface LinkTarget {
   assetId?: number | null;
+  /** @deprecated D-G : pièce `rooms` historique (liens non repris) — utiliser `substructureId`. */
   roomId?: number | null;
   equipmentId?: number | null;
+  /** Pièce (sous-structure). */
+  substructureId?: number | null;
 }
 
 export interface DocumentAssetLink {
@@ -23,8 +29,11 @@ export interface DocumentAssetLink {
   accountId: number;
   fileId: number;
   assetId: number | null;
+  /** @deprecated D-G : pièce `rooms` historique — voir `substructureId`. */
   roomId: number | null;
   equipmentId: number | null;
+  /** Pièce (sous-structure, 0229). */
+  substructureId: number | null;
   linkRole: LinkRole;
   origin: LinkOrigin;
   confidence: number | null;

@@ -23,7 +23,7 @@ vi.mock('@/db', async () => {
       from: (t: never) => {
         const name = getTableName(t);
         return chain(() => {
-          if (name === 'rooms') return [];
+          if (name === 'rooms' || name === 'substructures') return [];
           ops.push(`select:${name}`);
           return (selectResults[name] ?? []).shift() ?? [];
         });
@@ -69,6 +69,12 @@ describe('deleteAssetCompletely', () => {
     expect(ops.indexOf('insert:pending_blob_deletions')).toBeLessThan(ops.indexOf('delete:assets'));
     expect(ops).toContain('update:asset_transmissions');
     expect(ops[ops.length - 1]).toBe('delete:assets');
+    // D-G : documents, événements et échéances rattachés à une PIÈCE du bien seulement
+    // (substructure_id, asset_id NULL) supprimés explicitement — la clé est ON DELETE SET NULL.
+    for (const t of ['asset_files', 'events', 'deadlines']) {
+      expect(ops.indexOf(`delete:${t}`)).toBeGreaterThan(-1);
+      expect(ops.indexOf(`delete:${t}`)).toBeLessThan(ops.indexOf('delete:assets'));
+    }
   });
 
   it('bien sans fichier : aucune programmation, le bien est supprimé', async () => {

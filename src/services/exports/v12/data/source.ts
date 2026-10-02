@@ -180,7 +180,8 @@ export interface ExportSource {
   photos: SourcePhoto[];
   events: SourceEvent[];
   equipments: SourceEquipment[];
-  rooms: Array<{ id: number; name: string }>;
+  /** Pièces = sous-structures du bien (D-G, lot 20) ; type, surface, description depuis 0229. */
+  rooms: Array<{ id: number; name: string; roomType?: string | null; area?: string | null; description?: string | null }>;
   additionalInfo: AdditionalInfosSnapshot;
   cil: SourceCil | null;
   preparedBy: string | null;
@@ -469,7 +470,7 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
     photos: toSourcePhotos(snapshot.photos),
     events: toSourceEvents(snapshot, agenda),
     equipments: equipRows,
-    rooms: snapshot.substructures.map((s) => ({ id: s.id, name: s.name })),
+    rooms: snapshot.substructures.map((s) => ({ id: s.id, name: s.name, roomType: s.roomType ?? null, area: s.area ?? null, description: s.description ?? null })),
     additionalInfo: {
       commercial: { ...(infos.commercial ?? {}) },
       rental: { ...(infos.rental ?? {}) },

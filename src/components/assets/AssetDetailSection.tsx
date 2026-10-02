@@ -16,7 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
-import { todayParis } from '@/lib/asset-detail-rules';
+import { changedDetailFields, todayParis } from '@/lib/asset-detail-rules';
 import { toast } from 'sonner';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 
@@ -249,7 +249,12 @@ export function AssetDetailSection({
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
-      await apiClient.patch(`/api/assets/${assetId}/details/${sectionKey}`, { fields: form });
+      // Seuls les champs modifiés sont envoyés (lot 20) : un champ non touché
+      // n'est ni effacé ni marqué saisi par l'utilisateur.
+      const fields = changedDetailFields(data, form);
+      if (Object.keys(fields).length > 0) {
+        await apiClient.patch(`/api/assets/${assetId}/details/${sectionKey}`, { fields });
+      }
       setDisplayData({ ...form });
       savedRef.current = true;
       setEditing(false);
@@ -265,7 +270,7 @@ export function AssetDetailSection({
     } finally {
       setIsSaving(false);
     }
-  }, [assetId, sectionKey, form, onRefresh, onAiDraftConsumed]);
+  }, [assetId, sectionKey, data, form, onRefresh, onAiDraftConsumed]);
 
   const setField = useCallback((key: string, value: unknown) => {
     setForm(prev => ({ ...prev, [key]: value }));

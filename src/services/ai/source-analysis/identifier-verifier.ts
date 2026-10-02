@@ -13,7 +13,7 @@
  * puisse le traiter comme une proposition et non comme un fait.
  */
 import { db } from '@/db';
-import { assets, rooms, equipments, suppliers } from '@/db/schema';
+import { assets, substructures, equipments, suppliers } from '@/db/schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { LinkCandidate, AnalysisWarning } from './types';
 
@@ -74,10 +74,11 @@ async function loadExistingIds(
     }
     case 'room': {
       // Les pièces sont rattachées à un bien : le cloisonnement passe par une jointure.
-      const rows = await db.select({ id: rooms.id })
-        .from(rooms)
-        .innerJoin(assets, eq(rooms.assetId, assets.id))
-        .where(and(inArray(rooms.id, ids), eq(assets.accountId, accountId), isNull(assets.deletedAt)));
+      // D-G (lot 20, 0229) : une pièce est une SOUS-STRUCTURE (`substructures.id`).
+      const rows = await db.select({ id: substructures.id })
+        .from(substructures)
+        .innerJoin(assets, eq(substructures.assetId, assets.id))
+        .where(and(inArray(substructures.id, ids), eq(assets.accountId, accountId), isNull(assets.deletedAt)));
       return new Set(rows.map((r) => r.id));
     }
     case 'equipment': {

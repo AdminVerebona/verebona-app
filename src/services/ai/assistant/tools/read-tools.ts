@@ -11,7 +11,7 @@
  */
 import { db, pgClient } from '@/db';
 import {
-  assets, assetFiles, rooms, equipments, suppliers, agendaItems, agendaAssetLinks,
+  assets, assetFiles, substructures, equipments, suppliers, agendaItems, agendaAssetLinks,
   aiFieldUpdates, inconsistencyRegistry,
 } from '@/db/schema';
 import { and, eq, ilike, or, isNull, desc, gte, lte } from 'drizzle-orm';
@@ -82,8 +82,9 @@ export const getAssetDetails: AssistantTool<{ assetId: number }> = {
     if (!asset) return buildResult(null, []);
 
     const [roomRows, equipRows] = await Promise.all([
-      db.select({ id: rooms.id, name: rooms.name })
-        .from(rooms).where(eq(rooms.assetId, asset.id)).limit(ctx.maxResults),
+      // Pièces = sous-structures (D-G, lot 20).
+      db.select({ id: substructures.id, name: substructures.name })
+        .from(substructures).where(eq(substructures.assetId, asset.id)).limit(ctx.maxResults),
       db.select({ id: equipments.id, name: equipments.name, type: equipments.type })
         .from(equipments).where(eq(equipments.assetId, asset.id)).limit(ctx.maxResults),
     ]);

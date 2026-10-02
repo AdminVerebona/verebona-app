@@ -131,6 +131,14 @@ export interface CanonicalFieldDef {
    * Prime sur `targetType` (historique, cible unique).
    */
   targetTypes?: CanonicalTargetType[];
+  /**
+   * Saisie UNIQUEMENT (décision PO D-D, lot 20) : la valeur n'est jamais
+   * inférée par l'IA. Absent du FIELD_CATALOG des prompts T1, jamais
+   * projetée comme fait canonique, jamais écrite comme preuve ni appliquée
+   * par T3 ; `writeCanonicalAssetField` refuse toute origine autre que
+   * USER / ADMIN / IMPORT (`INPUT_ONLY_FIELD`). Ex. prix et surface d'annonce.
+   */
+  inputOnly?: boolean;
   /** Section de la fiche (`AssetDetailsTab`) — information d'affichage. */
   section?: string;
 }
@@ -227,6 +235,13 @@ export interface DocumentCatalogEntry {
   families: AssetFamily[];
   /** Alias de codes documentaires rencontrés (anciens codes, variantes). */
   aliases?: string[];
+  /**
+   * Création automatique LIMITÉE à ces types et natures d'événement
+   * (décision PO D-B, lot 20 : un constat de sinistre crée le sinistre
+   * HISTORIQUE, rien d'autre — toute autre échéance qu'il porte est
+   * proposée). Absent : tout événement que le document produit.
+   */
+  creationScope?: { businessTypes: EventBusinessType[]; natures: AgendaNature[] };
 }
 
 /* ── DTO pour les prompts (R6) ────────────────────────────────────────────── */

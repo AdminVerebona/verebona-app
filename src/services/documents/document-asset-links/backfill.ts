@@ -8,7 +8,12 @@
  *   2. RATTACHEMENTS CONFIRMÉS : propositions de lien T1 acceptées telles
  *      quelles par l'utilisateur (`document_analysis_proposals`,
  *      proposal_type = 'link', status = 'kept') → lien MIGRATION, SECONDARY,
- *      si la cible existe dans le même compte.
+ *      si la cible existe dans le même compte. Pièce (D-G, lot 20) : une
+ *      proposition ANTÉRIEURE à la migration 0229 porte un identifiant
+ *      `rooms` — lien vers la sous-structure reprise (`legacy_room_id`), sinon
+ *      vers la pièce historique (`room_id`, reprise plus tard par
+ *      `scripts/merge-rooms-into-substructures.ts`) ; une proposition
+ *      postérieure porte un identifiant de sous-structure.
  *
  * Tout ce qui ne se tranche pas sans hypothèse va au RAPPORT, sans écriture :
  * cible introuvable ou d'un autre compte, proposition « modifiée » (la valeur
@@ -104,13 +109,17 @@ export async function backfillDocumentAssetLinks(sql: postgres.Sql, opts: Backfi
   }
 
   // ── 2. Rattachements confirmés (propositions de lien acceptées) ─────────
+  // Bascule D-G : date d'application de 0229 (absente : tout est historique).
+  const [bascule] = await sql<{ at: Date | null }[]>`
+    SELECT (SELECT applied_at FROM _migrations WHERE filename = '0229_rooms_to_substructures.sql') AS at`.catch(() => [{ at: null }]);
+  const pieceSousStructure = (cree: Date) => bascule?.at != null && cree >= bascule.at;
   for (;;) {
     const props = await sql<{
       id: number; file_id: number; account_id: number; deleted_at: Date | null;
-      target_key: string; code: string | null; status: string; confidence: string | null;
+      target_key: string; code: string | null; status: string; confidence: string | null; created_at: Date;
     }[]>`
       SELECT p.id, p.asset_file_id AS file_id, f.account_id, f.deleted_at, p.target_key,
-             p.canonical_code AS code, p.status, p.confidence
+             p.canonical_code AS code, p.status, p.confidence, p.created_at
         FROM document_analysis_proposals p
         JOIN asset_files f ON f.id = p.asset_file_id
        WHERE p.proposal_type = 'link' AND p.status IN ('kept', 'modified') AND p.id > ${report.lastProposalId}
@@ -126,26 +135,34 @@ export async function backfillDocumentAssetLinks(sql: postgres.Sql, opts: Backfi
       if (!Number.isInteger(entityId) || entityId <= 0 || !['asset', 'room', 'equipment'].includes(p.target_key)) {
         flag('UNREADABLE_CODE', `cible « ${p.target_key} » / « ${p.code ?? ''} »`); continue;
       }
+      type Cible = { asset_id: number; account_id: number; sub_id?: number | null };
       const [cible] = p.target_key === 'asset'
-        ? await sql<{ asset_id: number; account_id: number }[]>`SELECT id AS asset_id, account_id FROM assets WHERE id = ${entityId} AND deleted_at IS NULL`
+        ? await sql<Cible[]>`SELECT id AS asset_id, account_id FROM assets WHERE id = ${entityId} AND deleted_at IS NULL`
         : p.target_key === 'room'
-          ? await sql<{ asset_id: number; account_id: number }[]>`SELECT a.id AS asset_id, a.account_id FROM rooms r JOIN assets a ON a.id = r.asset_id WHERE r.id = ${entityId} AND a.deleted_at IS NULL`
-          : await sql<{ asset_id: number; account_id: number }[]>`SELECT a.id AS asset_id, a.account_id FROM equipments e JOIN assets a ON a.id = e.asset_id WHERE e.id = ${entityId} AND a.deleted_at IS NULL`;
+          ? pieceSousStructure(p.created_at)
+            ? await sql<Cible[]>`SELECT a.id AS asset_id, a.account_id, s.id AS sub_id FROM substructures s JOIN assets a ON a.id = s.asset_id WHERE s.id = ${entityId} AND a.deleted_at IS NULL`
+            // Identifiant `rooms` (proposition antérieure à D-G) : sous-structure reprise si elle existe.
+            : await sql<Cible[]>`SELECT a.id AS asset_id, a.account_id,
+                  (SELECT s.id FROM substructures s WHERE s.legacy_room_id = r.id) AS sub_id
+                FROM rooms r JOIN assets a ON a.id = r.asset_id WHERE r.id = ${entityId} AND a.deleted_at IS NULL`
+          : await sql<Cible[]>`SELECT a.id AS asset_id, a.account_id FROM equipments e JOIN assets a ON a.id = e.asset_id WHERE e.id = ${entityId} AND a.deleted_at IS NULL`;
       if (!cible) { flag('TARGET_NOT_FOUND', `${p.target_key} ${entityId} introuvable`); continue; }
       if (cible.account_id !== p.account_id) { flag('TARGET_OTHER_ACCOUNT', `${p.target_key} ${entityId} d’un autre compte`); continue; }
 
-      const roomId = p.target_key === 'room' ? entityId : null;
+      const substructureId = p.target_key === 'room' && cible.sub_id != null ? Number(cible.sub_id) : null;
+      const roomId = p.target_key === 'room' && substructureId === null ? entityId : null;
       const equipmentId = p.target_key === 'equipment' ? entityId : null;
       const created = await sql`
-        INSERT INTO document_asset_links (account_id, file_id, asset_id, room_id, equipment_id, link_role, origin, confidence, status)
-        SELECT ${p.account_id}, ${p.file_id}, ${cible.asset_id}, ${roomId}, ${equipmentId}, 'SECONDARY', 'MIGRATION',
+        INSERT INTO document_asset_links (account_id, file_id, asset_id, room_id, equipment_id, substructure_id, link_role, origin, confidence, status)
+        SELECT ${p.account_id}, ${p.file_id}, ${cible.asset_id}, ${roomId}, ${equipmentId}, ${substructureId}, 'SECONDARY', 'MIGRATION',
                ${CONFIANCE[p.confidence ?? ''] ?? null}, 'ACTIVE'
          WHERE NOT EXISTS (
            SELECT 1 FROM document_asset_links l
             WHERE l.file_id = ${p.file_id} AND l.status = 'ACTIVE'
               AND COALESCE(l.asset_id, 0) = ${cible.asset_id}
               AND COALESCE(l.room_id, 0) = ${roomId ?? 0}
-              AND COALESCE(l.equipment_id, 0) = ${equipmentId ?? 0})
+              AND COALESCE(l.equipment_id, 0) = ${equipmentId ?? 0}
+              AND COALESCE(l.substructure_id, 0) = ${substructureId ?? 0})
         ON CONFLICT DO NOTHING`;
       report.migrationLinksCreated += created.count;
     }

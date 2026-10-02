@@ -154,7 +154,8 @@ const SANS_PREUVE = (code: string, description: string) => ({ code, description,
 export const DOCUMENT_CATALOG: readonly DocumentCatalogEntry[] = [
   {
     code: 'ACTE_AUTHENTIQUE', label: 'Acte authentique', authority: 'AUTHORITATIVE',
-    // Extension proposée (hors AUTHORIZED_CREATION_TYPES du lot 10) : voir README, question ouverte.
+    // Décision PO D-A (01/10/2026) : autorisé à créer des événements (achat ou
+    // vente réalisés, HISTORICAL), prouvés par l'acte signé.
     mayCreateAgenda: true, businessTypes: ['purchase', 'sale'], completionProofs: [ACTE_SIGNE], families: ALL,
     aliases: ['ACTE_NOTARIE', 'PROPERTY_TITLE', 'TRANSACTION_ACT', 'TRANSFER_CERTIFICATE', 'TITRE_PROPRIETE', 'ACTE_TRANSACTION', 'CONTRAT_ACHAT'],
   },
@@ -170,7 +171,8 @@ export const DOCUMENT_CATALOG: readonly DocumentCatalogEntry[] = [
   },
   {
     code: 'CONTROLE_TECHNIQUE', label: 'Procès-verbal de contrôle technique', authority: 'AUTHORITATIVE',
-    // Extension proposée (hors AUTHORIZED_CREATION_TYPES du lot 10) : voir README, question ouverte.
+    // Décision PO D-A (01/10/2026) : autorisé à créer des événements (contrôle
+    // réalisé, prochain contrôle) ; PV favorable = réalisé, contre-visite = non prouvé.
     mayCreateAgenda: true, businessTypes: ['inspection'], completionProofs: [PV_FAVORABLE, PV_CONTRE_VISITE], families: ['VEHICULE'],
     aliases: ['VEHICLE_TECHNICAL_INSPECTION', 'PV_CONTROLE_TECHNIQUE'],
   },
@@ -242,8 +244,11 @@ export const DOCUMENT_CATALOG: readonly DocumentCatalogEntry[] = [
   },
   {
     code: 'CONSTAT_SINISTRE', label: 'Constat / rapport de sinistre', authority: 'SUPPORTING',
-    // Question ouverte : la matrice §13 cite le constat comme source du sinistre historique.
-    mayCreateAgenda: false, businessTypes: ['claim'], completionProofs: [], families: ALL,
+    // Décision PO D-B (01/10/2026) : crée l'événement HISTORIQUE « sinistre »
+    // (et lui seul : `creationScope`) ; le statut du bien reste PROPOSÉ via la
+    // carte À traiter ASSET-STATUS (D-15), jamais appliqué automatiquement.
+    mayCreateAgenda: true, businessTypes: ['claim'], completionProofs: [], families: ALL,
+    creationScope: { businessTypes: ['claim'], natures: ['HISTORICAL'] },
     aliases: ['CLAIM_DECLARATION', 'CLAIM_REPORT', 'CLAIM_APPRAISAL', 'SINISTRE'],
   },
   {
@@ -291,3 +296,20 @@ export function resolveDocumentType(code: string | null | undefined): DocumentCa
 
 /** Alias de `resolveDocumentType`, pour la symétrie avec `getEventEntry`. */
 export const getDocumentEntry = resolveDocumentType;
+
+/**
+ * Ce type documentaire peut-il CRÉER automatiquement cet événement (T4-04) ?
+ * `mayCreateAgenda`, restreint par `creationScope` quand il est déclaré
+ * (D-B : constat de sinistre → sinistre HISTORIQUE seulement). Type inconnu :
+ * jamais. Type ou nature d'événement absents avec une portée : jamais.
+ */
+export function documentMayCreateEvent(
+  entry: DocumentCatalogEntry | undefined,
+  event: { businessType?: string | null; nature?: string | null } = {},
+): boolean {
+  if (!entry?.mayCreateAgenda) return false;
+  const scope = entry.creationScope;
+  if (!scope) return true;
+  return !!event.businessType && (scope.businessTypes as readonly string[]).includes(event.businessType)
+    && !!event.nature && (scope.natures as readonly string[]).includes(event.nature);
+}

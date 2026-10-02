@@ -155,7 +155,8 @@ export interface CilData extends CaseBase {
     profile?: { triggerLabel?: Nullable<string>; triggerDate?: Nullable<string>; authorization?: Nullable<string>; reason?: Nullable<string> };
     networks?: Array<{ network: string; element?: Nullable<string>; docId?: Nullable<string>; status: string | ToneLabel }>;
     materials?: Array<{ post: string; material?: Nullable<string>; spec?: Nullable<string>; source?: Nullable<string> }>;
-    equipments?: Array<{ usage: string; equipment?: Nullable<string>; model?: Nullable<string>; installed?: Nullable<string> }>;
+    /** `specs` : caractéristiques de la fiche de l'équipement (CDC 15, D-N), sous le nom. */
+    equipments?: Array<{ usage: string; equipment?: Nullable<string>; specs?: Nullable<string>; model?: Nullable<string>; installed?: Nullable<string> }>;
     works?: Array<{ date?: Nullable<string>; title: string; description?: Nullable<string>; company?: Nullable<string>; status?: Nullable<ToneLabel> }>;
     energy?: { dpe?: Nullable<string>; ges?: Nullable<string>; consumption?: Nullable<string>; emissions?: Nullable<string>; date?: Nullable<string>; validUntil?: Nullable<string> };
   };

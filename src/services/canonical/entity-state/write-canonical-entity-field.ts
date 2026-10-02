@@ -17,7 +17,8 @@
  *      date de la preuve) ; les colonnes réelles sont recopiées dans la même
  *      transaction (`equipments.purchase_price_cents`, `estimated_value_cents`,
  *      `equipment_cil_specs.brand / model / serial_number / power_kw` — ligne
- *      créée au besoin —, `rooms.area`) ;
+ *      créée au besoin —, `substructures.area` : la pièce est une
+ *      sous-structure depuis D-G, migration 0229) ;
  *   5. journal 0216 `canonical_field_writes`, une ligne par clé, avec
  *      `target_type` / `target_id` (0227) et `asset_id` = bien porteur ;
  *   6. après validation, ASSET_UPDATED (bien porteur) invalide les caches de
@@ -152,7 +153,7 @@ async function persist(t: SqlRunner, row: CanonicalEntityRow, plan: EntityWriteP
     const [table, col] = id.split('.');
     parTable.set(table, [...(parTable.get(table) ?? []), [col, v]]);
   }
-  const principale = row.target.type === 'EQUIPMENT' ? 'equipments' : 'rooms';
+  const principale = row.target.type === 'EQUIPMENT' ? 'equipments' : 'substructures';
   const sets = ['key_characteristics = $2::jsonb', 'updated_at = now()'];
   const params: unknown[] = [row.target.id, JSON.stringify(plan.kc)];
   for (const [col, v] of parTable.get(principale) ?? []) { params.push(v); sets.push(`${col} = $${params.length}`); }

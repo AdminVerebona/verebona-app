@@ -102,7 +102,7 @@ describe('pièces — chemins de rattachement', () => {
 
 describe('relecture lot 16 — rattachements confirmés pour un envoi à un tiers', () => {
   const ctx = { assetId: 5, substructureIds: new Set([90]), equipmentIds: new Set([80, 81]) };
-  const lien = (over: Partial<AttachmentLink>): AttachmentLink => ({ role: 'SECONDARY', origin: 'AI', roomId: null, equipmentId: null, ...over });
+  const lien = (over: Partial<AttachmentLink>): AttachmentLink => ({ role: 'SECONDARY', origin: 'AI', roomId: null, equipmentId: null, substructureId: null, ...over });
   const sansCol = { assetId: null, equipmentId: null, substructureId: null };
   it('confirmés : asset_id, équipement (archivé compris) ou sous-structure, PRIMARY, USER, MIGRATION', () => {
     expect(isConfirmedAttachment({ ...sansCol, assetId: 5 }, [], ctx)).toBe(true);
@@ -112,6 +112,13 @@ describe('relecture lot 16 — rattachements confirmés pour un envoi à un tier
     expect(isConfirmedAttachment(sansCol, [lien({ origin: 'USER' })], ctx)).toBe(true);
     expect(isConfirmedAttachment(sansCol, [lien({ origin: 'MIGRATION' })], ctx)).toBe(true);
     expect(isConfirmedAttachment(sansCol, [lien({ origin: 'LEGACY_COLUMN', equipmentId: 80 })], ctx)).toBe(true);
+    // Lot 20 (0229) : lien tenu depuis asset_files.substructure_id (pièce = sous-structure).
+    expect(isConfirmedAttachment(sansCol, [lien({ origin: 'LEGACY_COLUMN', substructureId: 90 })], ctx)).toBe(true);
+    expect(isConfirmedAttachment(sansCol, [lien({ origin: 'USER', substructureId: 90 })], ctx)).toBe(true);
+  });
+  it('lot 20 : un lien AI vers une pièce (sous-structure) reste secondaire, même PRIMARY', () => {
+    expect(isConfirmedAttachment(sansCol, [lien({ role: 'PRIMARY', substructureId: 90 })], ctx)).toBe(false);
+    expect(isConfirmedAttachment(sansCol, [lien({ role: 'PRIMARY', substructureId: 90 }), lien({ role: 'PRIMARY' })], ctx)).toBe(true);
   });
   it('non confirmés : SECONDARY AI, linked_asset_id, linked_room_id (même PRIMARY), repli colonnes', () => {
     expect(isConfirmedAttachment(sansCol, [lien({})], ctx)).toBe(false);

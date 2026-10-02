@@ -64,11 +64,14 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
     };
     sections.physical_characteristics = {
       livingArea: kc.livingArea ?? null,
+      carrezArea: kc.carrezArea ?? null,
+      listedArea: kc.listedArea ?? null,
       landArea: kc.landArea ?? null,
       roomCount: kc.roomCount ?? null,
       bedroomCount: kc.bedroomCount ?? null,
       levels: kc.levels ?? null,
       constructionYear: kc.constructionYear ?? null,
+      parking: kc.parking ?? null,
       generalCondition: kc.generalCondition ?? assetRow.generalCondition ?? null,
     };
     sections.occupancy_usage = {
@@ -83,13 +86,19 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       mainEnergy: kc.mainEnergy ?? null,
       dpeClass: kc.dpeClass ?? null,
       dpeDate: kc.dpeDate ?? null,
+      dpeExpiryDate: kc.dpeExpiryDate ?? null,
+      dpeAdemeNumber: kc.dpeAdemeNumber ?? null,
+      energyConsumption: kc.energyConsumption ?? null,
       gesClass: kc.gesClass ?? null,
+      lastRevision: kc.lastRevision ?? null,
+      maintenanceDueDate: kc.maintenanceDueDate ?? null,
       networks: kc.networks ?? [],
     };
     sections.valuation = {
       valuationLow: kc.valuationLow ?? null,
       valuationHigh: kc.valuationHigh ?? null,
       valuationSource: kc.valuationSource ?? null,
+      listingPrice: kc.listingPrice ?? null,
       valuationDate: kc.valuationDate ?? null,
     };
     sections.insurance = {
@@ -105,11 +114,13 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       make: kc.make ?? null,
       model: kc.model ?? null,
       registrationNumber: assetRow.registrationNumber ?? kc.registrationNumber ?? null,
+      registrationExpiry: kc.registrationExpiry ?? null,
       vin: kc.vin ?? null,
       year: kc.year ?? null,
     };
     sections.vehicle_technical = {
       engine: kc.engine ?? assetRow.engineInfo ?? null,
+      engineDisplacement: kc.engineDisplacement ?? null,
       fuelType: kc.fuelType ?? null,
       fiscalHp: kc.fiscalHp ?? null,
       powerKw: kc.powerKw ?? null,
@@ -123,6 +134,13 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       mileageUnit: kc.mileageUnit ?? 'km',
       mileageDate: kc.mileageDate ?? null,
       primaryUse: kc.primaryUse ?? null,
+      lastRevision: kc.lastRevision ?? null,
+      maintenanceDueDate: kc.maintenanceDueDate ?? null,
+      contractNumber: kc.contractNumber ?? null,
+      contractStartDate: kc.contractStartDate ?? null,
+      leaseDurationMonths: kc.leaseDurationMonths ?? null,
+      leaseMonthlyPayment: kc.leaseMonthlyPayment ?? null,
+      leaseResidualValue: kc.leaseResidualValue ?? null,
     };
     sections.vehicle_insurance = {
       isInsured: kc.isInsured ?? null,
@@ -131,12 +149,14 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       insuranceClientNumber: kc.insuranceClientNumber ?? null,
       insuranceExpiry: kc.insuranceExpiry ?? null,
       insurancePremium: kc.insurancePremium ?? null,
+      lastInspectionDate: kc.lastInspectionDate ?? null,
       nextInspection: kc.nextInspection ?? null,
     };
     sections.valuation = {
       valuationLow: kc.valuationLow ?? null,
       valuationHigh: kc.valuationHigh ?? null,
       valuationSource: kc.valuationSource ?? null,
+      listingPrice: kc.listingPrice ?? null,
     };
   } else {
     // OBJET or other
@@ -156,17 +176,20 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       acquisitionMode: kc.acquisitionMode ?? null,
       provenance: kc.provenance ?? null,
       authenticityProof: kc.authenticityProof ?? null,
+      warrantyStartDate: kc.warrantyStartDate ?? null,
     };
     sections.object_usage = {
       primaryUse: kc.primaryUse ?? null,
       storageLocation: kc.storageLocation ?? null,
       lastRevision: kc.lastRevision ?? null,
+      maintenanceDueDate: kc.maintenanceDueDate ?? null,
       isInsured: kc.isInsured ?? null,
     };
     sections.valuation = {
       valuationLow: kc.valuationLow ?? null,
       valuationHigh: kc.valuationHigh ?? null,
       valuationSource: kc.valuationSource ?? null,
+      listingPrice: kc.listingPrice ?? null,
     };
     sections.insurance = {
       isInsured: kc.isInsured ?? null,

@@ -35,6 +35,23 @@ export const NEGATIVE_REASON = {
   SHADOW_REPLACE: 'SHADOW_WOULD_REPLACE_STALE',
 } as const;
 
+/** Règle de projection d'une preuve RÉVISÉE par une date tranchée par T4 (D-M, lot 20). */
+export const T4_REVISION_RULE = 'T4_TEMPORAL_RESOLUTION';
+export const T4_REVISION_REASON = 'T4_DATE_REVISED';
+
+/**
+ * Décision PO D-M (lot 20) — la valeur AUTOMATIQUE en place n'est plus
+ * prouvée (sa preuve a été remplacée) ET une preuve révisée par T4 la
+ * corrige : comme pour une preuve remplacée sous T3_NEGATIVE_RECONCILIATION,
+ * l'autorité mémorisée de la preuve disparue ne protège plus la valeur
+ * (`withoutStaleAuthority`) — quel que soit ce commutateur, puisque la
+ * révision n'existe que si CANONICAL_WRITE_MODE l'a écrite. Une valeur
+ * USER/ADMIN n'est jamais « non prouvée » : elle reste protégée (conflit).
+ */
+export function isT4DateRevision(unproven: boolean, input: DecisionInput): boolean {
+  return unproven && input.candidates.some((c) => c.projectionRule === T4_REVISION_RULE && c.normalized !== null && c.normalized !== '');
+}
+
 /** Forme de comparaison d'une clé : clé canonique si le registre la connaît. */
 export function canonicalToken(key: string): string {
   return resolveAlias(key) ?? key;

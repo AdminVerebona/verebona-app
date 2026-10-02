@@ -122,6 +122,13 @@ export const assets = pgTable('assets', {
   statusCheck: check('assets_status_check', sql`${table.status} IN ('EN_SERVICE', 'EN_MAINTENANCE', 'EN_PANNE', 'EN_REPARATION', 'HORS_SERVICE', 'VENDU', 'DETRUIT', 'INACTIF', 'ARCHIVED', 'TRANSMIS')`),
 }));
 
+/**
+ * @deprecated D-G (lot 20, migration 0229) : la pièce est une SOUS-STRUCTURE
+ * (`substructures`). Table conservée pour la compatibilité (colonnes
+ * `linked_room_id`, liens `document_asset_links.room_id` non repris) et la
+ * restauration de `scripts/merge-rooms-into-substructures.ts`. Aucun nouveau
+ * code ne doit la lire ni l'écrire.
+ */
 export const rooms = pgTable('rooms', {
   id: serial('id').primaryKey(),
   publicId: uuid('public_id').defaultRandom().unique().notNull(),
@@ -164,6 +171,7 @@ export const events = pgTable('events', {
   userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   assetId: integer('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
   linkedAssetId: integer('linked_asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+  /** @deprecated D-G (0229) : pièce `rooms` — utiliser `substructureId`. */
   linkedRoomId: integer('linked_room_id').references(() => rooms.id, { onDelete: 'cascade' }),
   categorie: text('categorie').notNull(),
   title: text('titre').notNull(),
@@ -219,6 +227,7 @@ export const deadlines = pgTable('deadlines', {
   userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   assetId: integer('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
   linkedAssetId: integer('linked_asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+  /** @deprecated D-G (0229) : pièce `rooms` — utiliser `substructureId`. */
   linkedRoomId: integer('linked_room_id').references(() => rooms.id, { onDelete: 'cascade' }),
   label: text('label').notNull(),
   deadlineDate: pgDate('deadline_date'),
@@ -342,6 +351,7 @@ export const assetFiles = pgTable('asset_files', {
   userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   assetId: integer('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
   linkedAssetId: integer('linked_asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+  /** @deprecated D-G (0229) : pièce `rooms` — utiliser `substructureId`. */
   linkedRoomId: integer('linked_room_id').references(() => rooms.id, { onDelete: 'cascade' }),
   accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
   isWebLink: boolean('is_web_link').notNull().default(false),
@@ -2988,8 +2998,11 @@ export const documentAssetLinks = pgTable('document_asset_links', {
   accountId:   integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
   fileId:      integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
   assetId:     integer('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+  /** @deprecated D-G (0229) : pièce `rooms` (liens non repris) — utiliser `substructureId`. */
   roomId:      integer('room_id').references(() => rooms.id, { onDelete: 'cascade' }),
   equipmentId: integer('equipment_id').references(() => equipments.id, { onDelete: 'cascade' }),
+  /** Pièce (sous-structure) visée — D-G, migration 0229. Pièce supprimée : repli sur le bien (SET NULL). */
+  substructureId: integer('substructure_id').references(() => substructures.id, { onDelete: 'set null' }),
   /** PRIMARY | SECONDARY | MENTIONED */
   linkRole:    text('link_role').notNull(),
   /** USER | AI | MIGRATION | LEGACY_COLUMN */
@@ -3001,8 +3014,9 @@ export const documentAssetLinks = pgTable('document_asset_links', {
   updatedAt:   pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   removedAt:   pgTimestamp('removed_at', { withTimezone: true }),
 }, (t) => ({
-  activeUniq: uniqueIndex('document_asset_links_active_uniq')
-    .on(t.fileId, sql`COALESCE(${t.assetId}, 0)`, sql`COALESCE(${t.roomId}, 0)`, sql`COALESCE(${t.equipmentId}, 0)`)
+  // 0229 : unicité étendue à la sous-structure (remplace document_asset_links_active_uniq).
+  activeUniq: uniqueIndex('document_asset_links_active_uniq2')
+    .on(t.fileId, sql`COALESCE(${t.assetId}, 0)`, sql`COALESCE(${t.roomId}, 0)`, sql`COALESCE(${t.equipmentId}, 0)`, sql`COALESCE(${t.substructureId}, 0)`)
     .where(sql`status = 'ACTIVE'`),
   assetIdx:    index('document_asset_links_asset_idx').on(t.assetId, t.fileId)
     .where(sql`status = 'ACTIVE' AND asset_id IS NOT NULL`),
@@ -3011,7 +3025,7 @@ export const documentAssetLinks = pgTable('document_asset_links', {
   originCheck: check('document_asset_links_origin_check', sql`${t.origin} IN ('USER', 'AI', 'MIGRATION', 'LEGACY_COLUMN')`),
   statusCheck: check('document_asset_links_status_check', sql`${t.status} IN ('ACTIVE', 'PROPOSED', 'REJECTED', 'REMOVED')`),
   confidenceCheck: check('document_asset_links_confidence_check', sql`${t.confidence} IS NULL OR (${t.confidence} >= 0 AND ${t.confidence} <= 1)`),
-  targetCheck: check('document_asset_links_target_check', sql`${t.assetId} IS NOT NULL OR ${t.roomId} IS NOT NULL OR ${t.equipmentId} IS NOT NULL`),
+  targetCheck: check('document_asset_links_target_check', sql`${t.assetId} IS NOT NULL OR ${t.roomId} IS NOT NULL OR ${t.equipmentId} IS NOT NULL OR ${t.substructureId} IS NOT NULL`),
 }));
 
 // ── Tables NEUVES des lots 14 à 17, déclarées pour `db:push` ────────────────
@@ -3131,4 +3145,49 @@ export const cdc15MigrationBackups = pgTable('cdc15_migration_backups', {
   targetCheck: check('cdc15_migration_backups_target_check',
     sql`${t.targetType} IN ('asset_column', 'asset_kc', 'field_evidence', 'document_fact')`),
   runIdx: index('cdc15_migration_backups_run_idx').on(t.runId, t.id),
+}));
+
+// Migration 0229 — reprise des pièces `rooms` dans `substructures` (décision
+// PO D-G, lot 20). Écrites en SQL par `services/migration/rooms-merge` ;
+// déclarées ici pour qu'un `drizzle-kit push` ne les supprime pas. Les
+// colonnes ajoutées à `substructures` (legacy_room_id, room_type, area,
+// description, key_characteristics) ne sont PAS déclarées (comme 0227) : lues
+// et écrites en SQL après contrôle de présence.
+export const roomMergeRuns = pgTable('room_merge_runs', {
+  runId: uuid('run_id').primaryKey(),
+  runMode: text('run_mode').notNull(),
+  accountId: integer('account_id'),
+  options: jsonb('options').notNull().default(sql`'{}'::jsonb`),
+  counts: jsonb('counts').notNull().default(sql`'{}'::jsonb`),
+  status: text('status').notNull().default('RUNNING'),
+  startedAt: pgTimestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: pgTimestamp('finished_at', { withTimezone: true }),
+  restoredAt: pgTimestamp('restored_at', { withTimezone: true }),
+}, (t) => ({
+  modeCheck: check('room_merge_runs_mode_check', sql`${t.runMode} IN ('dry_run', 'apply')`),
+  statusCheck: check('room_merge_runs_status_check', sql`${t.status} IN ('RUNNING', 'DONE', 'FAILED', 'RESTORED')`),
+}));
+
+export const roomMergeChanges = pgTable('room_merge_changes', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  runId: uuid('run_id').notNull(),
+  runMode: text('run_mode').notNull(),
+  roomId: integer('room_id').notNull(),
+  accountId: integer('account_id'),
+  assetId: integer('asset_id'),
+  decision: text('decision').notNull(),
+  tableName: text('table_name').notNull(),
+  rowId: text('row_id').notNull(),
+  columnName: text('column_name').notNull(),
+  oldValue: jsonb('old_value'),
+  newValue: jsonb('new_value'),
+  reason: text('reason'),
+  restoredAt: pgTimestamp('restored_at', { withTimezone: true }),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  modeCheck: check('room_merge_changes_mode_check', sql`${t.runMode} IN ('dry_run', 'apply')`),
+  decisionCheck: check('room_merge_changes_decision_check',
+    sql`${t.decision} IN ('CREATED', 'MAPPED', 'REPOINTED', 'REOPENED', 'SUPERSEDED', 'CONFLICT', 'NO_CHANGE')`),
+  runIdx: index('room_merge_changes_run_idx').on(t.runId, t.id),
+  roomIdx: index('room_merge_changes_room_idx').on(t.roomId, t.id),
 }));

@@ -1,3 +1,4 @@
+
 /**
  * GET /api/verebona/conversation?conversationId=… — historique d'UN fil (§24, §27.3).
  *   Sans identifiant : le fil le plus récent de l'utilisateur (rien n'est créé).

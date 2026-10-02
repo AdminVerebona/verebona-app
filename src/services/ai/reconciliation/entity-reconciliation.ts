@@ -35,7 +35,9 @@ import { decide } from './decision/decision-matrix';
 import { isCriticalField } from './decision/critical-fields';
 import { normalize } from './decision/normalizers';
 import { toEvidenceCandidates, isUnprovenAutomaticValue } from './evidence-collector';
-import { planRetractions, retractionDecision, withoutStaleAuthority, NEGATIVE_REASON } from './negative-reconciliation';
+import {
+  planRetractions, retractionDecision, withoutStaleAuthority, NEGATIVE_REASON, isT4DateRevision, T4_REVISION_REASON,
+} from './negative-reconciliation';
 import { canonicalWriteMode, t3NegativeMode, type RolloutMode } from '@/services/canonical/rollout';
 import {
   fieldTargetsEntity, resolveEntityDef, type CanonicalEntityState, type CanonicalEntityTarget,
@@ -145,15 +147,19 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
   for (const rawKey of keys) {
     const def = resolveEntityDef(rawKey);
     // Champ hors registre ou d'une autre cible : jamais appliqué à l'entité.
-    if (!def || !fieldTargetsEntity(def, input.target.type)) continue;
+    // Champ de saisie seule (D-D, lot 20) : jamais réconcilié depuis une preuve.
+    if (!def || !fieldTargetsEntity(def, input.target.type) || def.inputOnly) continue;
     const evidences = await d.activeEvidence(input.accountId, rawKey, input.target);
     const candidates = toEvidenceCandidates(def.key, evidences);
     if (candidates.length) prouves.push(def.key);
     const current = entityCurrentValue(state, def.key);
     const unproven = isUnprovenAutomaticValue(current, candidates);
     const entree = { fieldKey: def.key, current, candidates, isCritical: isCriticalField(def.key) };
-    let decision = unproven && negEnabled ? decide(withoutStaleAuthority(entree)) : decide(entree);
-    if (unproven && negEnabled && decision.action === 'update') decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
+    // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la valeur automatique.
+    const revision = isT4DateRevision(unproven, entree);
+    let decision = (unproven && negEnabled) || revision ? decide(withoutStaleAuthority(entree)) : decide(entree);
+    if (revision && decision.action === 'update') decision = { ...decision, reasonCode: T4_REVISION_REASON };
+    else if (unproven && negEnabled && decision.action === 'update') decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
     out.decisions.push(decision);
     if ((decision.action !== 'apply' && decision.action !== 'update') || modes.apply === 'legacy') continue;
 

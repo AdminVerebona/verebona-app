@@ -237,7 +237,9 @@ export async function onDocumentAssetChanged(
       for (const l of avant.filter((x) => x.assetId === from && x.origin !== 'LEGACY_COLUMN')) {
         unlinked += await deps.links.unlink({
           accountId: p.accountId, fileId: p.fileId,
-          target: { assetId: l.assetId, roomId: l.roomId, equipmentId: l.equipmentId },
+          // D-G (lot 20) : une pièce est une sous-structure — sans `substructureId`,
+          // le lien d'une pièce n'était plus retiré au déplacement du document.
+          target: { assetId: l.assetId, roomId: l.roomId, equipmentId: l.equipmentId, substructureId: l.substructureId },
           origins: [l.origin as Exclude<typeof l.origin, 'LEGACY_COLUMN'>],
         });
       }

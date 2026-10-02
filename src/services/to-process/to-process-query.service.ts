@@ -29,7 +29,7 @@
 import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import {
-  assetFiles, assets, equipments, rooms, supplierReviewItems, suppliers, toProcessActions,
+  assetFiles, assets, equipments, substructures, supplierReviewItems, suppliers, toProcessActions,
 } from '@/db/schema';
 import type {
   ActionKind,
@@ -276,15 +276,15 @@ async function hydrateTargets(
     }
   }
 
-  // Pièce (lot 19) : nom de la pièce, bien porteur ; `publicId` = celui du
-  // BIEN (la navigation ouvre sa page, onglet « Pièces »). Bornée au compte.
+  // Pièce (lot 19 ; SOUS-STRUCTURE depuis D-G, lot 20) : nom de la pièce, bien
+  // porteur ; `publicId` = celui du BIEN (repli de navigation). Bornée au compte.
   const roomIds = byType.get('ROOM');
   if (roomIds?.length) {
     const rowsRooms = await db
-      .select({ id: rooms.id, name: rooms.name, assetId: rooms.assetId, assetName: assets.name, assetPublicId: assets.publicId })
-      .from(rooms)
-      .innerJoin(assets, eq(assets.id, rooms.assetId))
-      .where(and(eq(assets.accountId, accountId), inArray(rooms.id, [...new Set(roomIds)])));
+      .select({ id: substructures.id, name: substructures.name, assetId: substructures.assetId, assetName: assets.name, assetPublicId: assets.publicId })
+      .from(substructures)
+      .innerJoin(assets, eq(assets.id, substructures.assetId))
+      .where(and(eq(assets.accountId, accountId), inArray(substructures.id, [...new Set(roomIds)])));
     for (const r of rowsRooms) {
       contexts.set(`ROOM:${r.id}`, {
         label: r.name,

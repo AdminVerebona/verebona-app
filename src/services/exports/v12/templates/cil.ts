@@ -167,7 +167,8 @@ export function render(c: CilData, ctx: RenderContext): RenderedHtml {
   const b6 = LongTable<Equipment>({
     columns: [
       { label: 'Usage', key: 'usage', className: 'strong' },
-      { label: 'Équipement', key: 'equipment', className: 'muted' },
+      // D-N : caractéristiques sous le nom (cellule titre + sous-titre existante).
+      { label: 'Équipement', render: (r) => (isEmpty(r.specs) ? esc(r.equipment ?? '') : cellTS(r.equipment, r.specs)), className: 'muted' },
       { label: 'Marque · modèle', render: (r) => dash(r.model), className: 'muted' },
       { label: 'Installation', render: (r) => dash(fmt.date(r.installed)), width: 110, className: 'muted' },
     ],

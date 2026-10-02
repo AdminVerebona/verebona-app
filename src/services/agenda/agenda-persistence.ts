@@ -66,12 +66,14 @@ export function decisionSources(d: AgendaDecision): AgendaSourceRef[] {
 }
 
 /**
- * Cible fine de l'élément (lien agenda) : un ÉQUIPEMENT identifié. Une pièce
- * T1 (`rooms`) n'est pas une pièce de l'agenda (`substructures`) : elle
- * entre dans la clé, pas dans les liens.
+ * Cible fine de l'élément (lien agenda) : un ÉQUIPEMENT ou une PIÈCE
+ * identifiés. Depuis la décision PO D-G (lot 20, migration 0229), la pièce
+ * ciblée (`ROOM`) EST une sous-structure : elle devient un lien
+ * `agenda_room_links`, en plus d'entrer dans la clé.
  */
 const agendaTargetOf = (d: AgendaDecision): AgendaUpsertInput['target'] =>
-  d.target?.type === 'EQUIPMENT' && d.target.id != null ? { type: 'EQUIPMENT', id: d.target.id } : null;
+  (d.target?.type === 'EQUIPMENT' || d.target?.type === 'ROOM') && d.target.id != null
+    ? { type: d.target.type, id: d.target.id } : null;
 
 export interface PersistAgendaOptions {
   /**

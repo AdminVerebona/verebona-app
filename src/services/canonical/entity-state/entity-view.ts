@@ -2,10 +2,11 @@
  * Vue canonique d'un ÉQUIPEMENT ou d'une PIÈCE — CDC 15 T1-04 (lot 18, R3).
  *
  * Même ordre de lecture qu'un bien (D-10) :
- *   1. fiche de l'entité (`equipments.key_characteristics`,
- *      `rooms.key_characteristics`, migration 0227) ;
+ *   1. fiche de l'entité (`equipments.key_characteristics`, migration 0227 ;
+ *      `substructures.key_characteristics`, migration 0229 — la pièce est une
+ *      SOUS-STRUCTURE depuis la décision D-G, `rooms` n'est plus lue) ;
  *   2. colonne historique miroir (`equipments.purchase_price_cents`,
- *      `equipment_cil_specs.serial_number`, `rooms.area`…), convertie dans
+ *      `equipment_cil_specs.serial_number`, `substructures.area`…), convertie dans
  *      l'unité canonique. Une valeur de colonne sans origine dans la fiche est
  *      lue `USER` (saisie de l'écran, protégée — `readOrigin`).
  *
@@ -42,7 +43,7 @@ export const ENTITY_MIRRORS: Readonly<Record<CanonicalEntityType, Readonly<Recor
     powerKw: { table: 'equipment_cil_specs', column: 'power_kw', transform: 'number' },
   },
   ROOM: {
-    roomArea: { table: 'rooms', column: 'area', transform: 'text_number' },
+    roomArea: { table: 'substructures', column: 'area', transform: 'text_number' },
   },
 };
 
@@ -172,7 +173,7 @@ export async function loadEntityRow(
   }
   const rows = (await run.unsafe(
     `SELECT x.id, x.asset_id AS "assetId", a.account_id AS "accountId", x.name, x.key_characteristics AS kc, x.area
-       FROM rooms x
+       FROM substructures x
        JOIN assets a ON a.id = x.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL
       WHERE x.id = $1${lock ? LOCK : ''}`,
     [target.id, accountId] as never[],
@@ -181,7 +182,7 @@ export async function loadEntityRow(
   if (!r) return null;
   return {
     target, assetId: Number(r.assetId), accountId: Number(r.accountId), name: (r.name as string) ?? null,
-    archived: false, kc: parseKc(r.kc), columns: { 'rooms.area': r.area ?? null },
+    archived: false, kc: parseKc(r.kc), columns: { 'substructures.area': r.area ?? null },
   };
 }
 
@@ -200,7 +201,7 @@ export async function getCanonicalEntityState(
   return row ? buildCanonicalEntityState(row) : null;
 }
 
-/** Entités (actives) d'un bien du compte : équipements non archivés et pièces. */
+/** Entités (actives) d'un bien du compte : équipements non archivés et pièces (sous-structures). */
 export async function listAssetEntities(
   accountId: number,
   assetId: number,
@@ -210,7 +211,7 @@ export async function listAssetEntities(
     `SELECT 'EQUIPMENT' AS type, e.id FROM equipments e JOIN assets a ON a.id = e.asset_id
       WHERE a.id = $1 AND a.account_id = $2 AND a.deleted_at IS NULL AND e.archived_at IS NULL
      UNION ALL
-     SELECT 'ROOM', r.id FROM rooms r JOIN assets a ON a.id = r.asset_id
+     SELECT 'ROOM', r.id FROM substructures r JOIN assets a ON a.id = r.asset_id
       WHERE a.id = $1 AND a.account_id = $2 AND a.deleted_at IS NULL
      ORDER BY 1, 2`,
     [assetId, accountId] as never[],
@@ -242,8 +243,8 @@ export async function loadAssetEntityRows(
       WHERE x.asset_id = $1 AND x.archived_at IS NULL
      UNION ALL
      SELECT 'ROOM', x.id, x.asset_id, a.account_id, x.name, x.key_characteristics, false,
-            jsonb_build_object('rooms.area', x.area)
-       FROM rooms x
+            jsonb_build_object('substructures.area', x.area)
+       FROM substructures x
        JOIN assets a ON a.id = x.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL
       WHERE x.asset_id = $1
       ORDER BY 1, 2`,

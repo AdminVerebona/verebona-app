@@ -70,6 +70,12 @@ export interface EvidenceCandidate {
   evidenceOrigin?: 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS';
   /** Ce qui est observé, pour une preuve visuelle (jamais présenté comme citation). */
   visualDescription?: string | null;
+  /**
+   * Règle de projection de la preuve (`field_evidence.projection_rule`) —
+   * `T4_TEMPORAL_RESOLUTION` : preuve RÉVISÉE par une date tranchée par T4
+   * (décision PO D-M, lot 20).
+   */
+  projectionRule?: string | null;
 }
 
 /** Entrée du moteur de décision — aucune dépendance à la base. */

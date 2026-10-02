@@ -65,7 +65,7 @@ describe('§19.10 — disponibilité revérifiée dans la BONNE table (une requ�
     ['doc_5', 'document', 'asset_files'],
     ['agenda_9', 'agenda_item', 'agenda_items'],
     ['equipment_12', 'asset_field', 'equipments'],
-    ['room_7', 'asset_field', 'rooms'],
+    ['room_7', 'asset_field', 'substructures'], // pièce = sous-structure (D-G, lot 20)
     ['supplier_4', 'supplier', 'suppliers'],
     ['export_2', 'export_item', 'export_generation'],
   ] as const)('%s (%s) est vérifié dans « %s »', async (id, type, table) => {

@@ -57,8 +57,10 @@ export async function resolveFactTargets(
     for (const r of rows) out.set(targetKey('EQUIPMENT', r.entityId), { assetId: r.assetId });
   }
   if (roomIds.length) {
+    // D-G (lot 20, migration 0229) : une cible ROOM désigne une SOUS-STRUCTURE
+    // (`substructures.id`) ; la table `rooms` n'est plus lue.
     const rows = (await pgClient.unsafe(
-      `SELECT r.id AS "entityId", r.asset_id AS "assetId" FROM rooms r
+      `SELECT r.id AS "entityId", r.asset_id AS "assetId" FROM substructures r
          JOIN assets a ON a.id = r.asset_id
         WHERE a.account_id = $1 AND r.id = ANY($2::int[]) AND a.deleted_at IS NULL`,
       [accountId, roomIds] as never[],

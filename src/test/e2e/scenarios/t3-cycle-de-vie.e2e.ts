@@ -194,10 +194,11 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
     expect(actives).toEqual([{ value: '2024-03-04' }]);
 
     const { linkDocumentToAsset, listDocumentAssets } = await import('@/services/documents/document-asset-links');
-    // Le lien au bien A lui-même est LEGACY_COLUMN (déclencheur) : lien AI sur une pièce de A.
+    // Le lien au bien A lui-même est LEGACY_COLUMN (déclencheur) : lien AI sur une pièce de A
+    // (pièce = sous-structure depuis D-G, lot 20).
     const [piece] = await sql<{ id: number }[]>`
-      INSERT INTO rooms (asset_id, account_id, name, room_type) VALUES (${A.id}, ${compte.id}, 'Garage', 'GARAGE') RETURNING id`;
-    await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { roomId: piece.id }, role: 'SECONDARY', origin: 'AI' });
+      INSERT INTO substructures (asset_id, name) VALUES (${A.id}, 'Garage') RETURNING id`;
+    await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { substructureId: piece.id }, role: 'SECONDARY', origin: 'AI' });
     await sql`UPDATE asset_files SET asset_id = ${B.id} WHERE id = ${doc.id}`;
     const r = await lifecycle.onDocumentAssetChanged({ accountId: compte.id, userId: compte.ownerUserId, fileId: doc.id, fromAssetId: A.id, toAssetId: B.id });
     expect(r.unlinked).toBe(1);

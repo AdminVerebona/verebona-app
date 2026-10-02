@@ -23,7 +23,7 @@
 import { buildKnowledgeFromSourceAnalysis } from '../knowledge/document-knowledge';
 import { persistDocumentKnowledge } from '../knowledge/document-knowledge.service';
 import { db } from '@/db';
-import { assetFiles, assets, rooms, equipments, documentLots, documentLotItems } from '@/db/schema';
+import { assetFiles, assets, substructures, equipments, documentLots, documentLotItems } from '@/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { canConsumeAnalysis, consumeAnalysisCredits } from '@/services/commercial-model.service';
 
@@ -771,8 +771,10 @@ async function loadAnalysisContext(
 
   const [roomRows, equipRows, titleRows] = await Promise.all([
     assetIds.length
-      ? db.select({ id: rooms.id, name: rooms.name, assetId: rooms.assetId })
-          .from(rooms).where(inArray(rooms.assetId, assetIds)).limit(300)
+      // D-G (lot 20, 0229) : pièces = sous-structures ; les identifiants proposés
+      // au modèle (puis revérifiés) sont des `substructures.id`.
+      ? db.select({ id: substructures.id, name: substructures.name, assetId: substructures.assetId })
+          .from(substructures).where(inArray(substructures.assetId, assetIds)).limit(300)
       : Promise.resolve([]),
     assetIds.length
       ? db.select({ id: equipments.id, name: equipments.name, type: equipments.type, assetId: equipments.assetId })

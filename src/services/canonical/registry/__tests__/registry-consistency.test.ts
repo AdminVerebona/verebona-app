@@ -20,6 +20,7 @@ import { CORPUS_CASES } from '@/services/ai/governance/corpus/corpus-cases';
 import {
   ASSET_FAMILY_CODES,
   CANONICAL_FIELDS,
+  CONTEXTUAL_ALIASES,
   DOCUMENT_CATALOG,
   EVENT_CATALOG,
   EXCLUDED_KEYS,
@@ -27,6 +28,7 @@ import {
   columnToProperty,
   getEventEntry,
   getField,
+  isContextualAlias,
   isExcludedKey,
   resolveAlias,
   resolveDocumentType,
@@ -39,6 +41,8 @@ const src = (p: string) => readFileSync(resolve(ROOT, 'src', p), 'utf8');
 /** Clé connue : canonique ou alias dans au moins une famille, ou exclusion déclarée. */
 function classee(k: string): boolean {
   if (isExcludedKey(k)) return true;
+  // Alias contextuel (D-C / D-D, lot 20) : classé, sa clé dépend du document.
+  if (isContextualAlias(k)) return true;
   if (resolveAlias(k)) return true;
   return ASSET_FAMILY_CODES.some((f) => resolveAlias(k, f) !== undefined);
 }
@@ -67,6 +71,17 @@ describe('registre — structure', () => {
           vu.set(t, d.key);
         }
       }
+    }
+  });
+
+  it('alias contextuels (D-C, D-D) : branches vers des clés canoniques, jamais exclus ni clés canoniques', () => {
+    for (const [raw, regle] of Object.entries(CONTEXTUAL_ALIASES)) {
+      expect(getField(raw), raw).toBeUndefined();
+      expect(isExcludedKey(raw), raw).toBeUndefined();
+      for (const k of Object.values(regle)) if (k !== null) expect(getField(k), `${raw} → ${k}`).toBeDefined();
+      // Branche générale déclarée comme alias : résolution SANS contexte inchangée.
+      if (regle.otherwise) expect(resolveAlias(raw), raw).toBe(regle.otherwise);
+      else expect(resolveAlias(raw), raw).toBeUndefined();
     }
   });
 
@@ -277,6 +292,16 @@ describe('catalogues — événements (T4-01) et documents (T4-04, T4-13)', () =
     expect(pv.completionProofs.find((p) => p.code === 'PV_CONTROLE_FAVORABLE')!.establishes).toBe('completed');
     const facture = resolveDocumentType('FACTURE')!;
     expect(facture.completionProofs.find((p) => p.code === 'FACTURE_SIMPLE')!.establishes).toBe('not_proven');
+  });
+
+  it('portée de création (creationScope) : sous-ensemble des types du document, natures du catalogue', () => {
+    for (const d of DOCUMENT_CATALOG.filter((x) => x.creationScope)) {
+      expect(d.mayCreateAgenda, d.code).toBe(true);
+      for (const b of d.creationScope!.businessTypes) {
+        expect(d.businessTypes, d.code).toContain(b);
+        for (const n of d.creationScope!.natures) expect(getEventEntry(b)!.natures, `${d.code} ${b}`).toContain(n);
+      }
+    }
   });
 
   it('codes et alias documentaires uniques ; types d’événement connus', () => {

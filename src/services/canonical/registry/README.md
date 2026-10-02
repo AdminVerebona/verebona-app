@@ -11,7 +11,10 @@ Le registre est la seule définition des clés métier d'un bien. T1, T2, T3, T4
 | `AssetFamily` | `'IMMOBILIER' \| 'VEHICULE' \| 'OBJECT'`, les codes de `assets.category`. `toAssetFamily()` ramène `OBJET` (assistant), `MATERIEL_PRO` et `AUTRE` à `OBJECT`. |
 | `CanonicalFieldDef` | Clé, libellé, familles, type, unité, alias, colonnes miroirs, effet agenda, droits T2, règle de complétude, sensibilité. Champs facultatifs en plus du contrat : `enumValues`/`enumLabels`, `integer`, `range`, `section`, `targetType`, `assistantPhrases`, `aliasUnits`. |
 | `getField(key)` | Définition d'une clé **canonique**. Un alias ne donne rien. |
-| `resolveAlias(raw, family?)` / `resolveAliasDetailed` | Clé brute → clé canonique. La version détaillée renvoie aussi l'unité portée par l'alias (`purchasePriceCents` → `sourceUnit: 'cents'`). |
+| `resolveAlias(raw, family?, { documentType }?)` / `resolveAliasDetailed` | Clé brute → clé canonique. La version détaillée renvoie aussi l'unité portée par l'alias (`purchasePriceCents` → `sourceUnit: 'cents'`). Le contexte documentaire tranche les alias contextuels (D-C, lot 20). |
+| `CONTEXTUAL_ALIASES`, `isContextualAlias`, `documentContextOf` | Alias dont la clé dépend du type documentaire (`dateFinContrat`, `numeroContrat`, `dateEtablissement`). |
+| `isInputOnlyKey(raw)` | Champ de saisie seule (`inputOnly`, D-D) : jamais inféré par l'IA. |
+| `documentMayCreateEvent(entry, { businessType, nature })` | Droit de création automatique d'un type documentaire, restreint par sa `creationScope` (D-B). |
 | `listFields(family?)` | Champs applicables à une famille. |
 | `normalizeValue(key, raw, { sourceUnit })` | Normalisation. C'est **le seul endroit** où une unité est convertie. |
 | `toMirrorValue(key, value)` / `toMirrorPatch` | Colonnes miroirs : nom SQL → valeur, ou propriété Drizzle → valeur. |
@@ -58,7 +61,26 @@ Le registre est la seule définition des clés métier d'un bien. T1, T2, T3, T4
 4. Sans famille, une forme qui désigne plusieurs clés n'est pas résolue. C'est le cas de `loyerMensuel`, qui peut désigner `monthlyRent` ou `leaseMonthlyPayment`.
 5. Les clés exclues et les origines `*_origin` / `*__origin` ne sont jamais résolues.
 
+6. Un alias **contextuel** (`CONTEXTUAL_ALIASES`) dépend du type documentaire passé en contexte (décisions PO D-C et D-D, lot 20) :
+
+   | Alias | Bail / location (LLD, LOA, bail) | Assurance | DPE | Diagnostic | Sinon |
+   |---|---|---|---|---|---|
+   | `dateFinContrat` | `leaseEndDate` | | | | `contractEndDate` |
+   | `numeroContrat` | | `insuranceContractNumber` | | | `contractNumber` |
+   | `dateEtablissement` | | | `dpeDate` | `diagnosticDate` | date du document (non résolue) |
+
+   La nature du document vient du catalogue (types d'événement du type), sinon du code (`RENTAL_LEASE`, `INSURANCE_POLICY`…). Sans contexte, ou si la clé ne s'applique pas à la famille (bail d'un objet), la branche « sinon » : la résolution historique est inchangée. Points d'application : projection T1 (`document-projection.ts`), candidats T4 (`build-agenda-candidates.step.ts`), preuves du chemin « étapes » (`persist-evidence.step.ts`, clé réécrite seulement si le document change la résolution).
+
 Les formulations de l'assistant (« date d'achat », « prochain ct »…) sont dans `assistantPhrases`. Ce ne sont pas des clés.
+
+## Champs de saisie seule (D-D, lot 20)
+
+`listingPrice` (alias `prixAnnonce`) et `listedArea` (alias `surfaceAnnoncee`) portent `inputOnly: true` : ils ne sont **jamais inférés par l'IA**.
+- absents du `FIELD_CATALOG` des prompts (`catalogForPrompts`) ;
+- projection T1 : connaissance générique, avertissement `KEY_INPUT_ONLY` ;
+- preuves : jamais écrites (`INPUT_ONLY_FIELD` côté maître, ignorées côté « étapes ») ;
+- T3 : ni collectés, ni appliqués (`applyDecision` les ignore dans tous les modes) ;
+- `writeCanonicalAssetField` refuse toute origine autre que USER / ADMIN / IMPORT (`protected`, `INPUT_ONLY_FIELD`).
 
 ## Droits T2
 
@@ -83,7 +105,8 @@ La récurrence déclarée (`FREQ=YEARLY` pour l'assurance) est seulement indicat
 
 - Les codes suivent la table d'autorité (`evidence/authority-score.ts`). Les codes du référentiel V2 (`ACQUISITION_INVOICE`, `VEHICLE_TECHNICAL_INSPECTION`…) et les anciens codes V1 sont déclarés comme alias.
 - **Un type inconnu n'est jamais autoritaire** : `resolveDocumentType` renvoie `undefined`.
-- `mayCreateAgenda` reprend les 11 types de `AUTHORIZED_CREATION_TYPES`, et un test l'impose. Deux extensions restent **à valider** : `ACTE_AUTHENTIQUE` (achat, vente) et `CONTROLE_TECHNIQUE` (PV).
+- `mayCreateAgenda` reprend les 11 types du lot 10 (`AUTHORIZED_CREATION_TYPES` en est dérivé), et un test l'impose. Décision PO D-A (01/10/2026) : `ACTE_AUTHENTIQUE` (achat, vente) et `CONTROLE_TECHNIQUE` (PV) créent aussi des événements.
+- Décision PO D-B : `CONSTAT_SINISTRE` crée l'événement HISTORIQUE « sinistre », et lui seul (`creationScope: { businessTypes: ['claim'], natures: ['HISTORICAL'] }`) ; toute autre échéance du constat est proposée. Un constat sans fait daté produit le sinistre à la date du document (mono-bien). Le statut du bien reste **proposé** par la carte À traiter ASSET-STATUS (D-15), jamais appliqué.
 - `completionProofs` décrit, par type, les formes de preuve qui établissent l'exécution (`completed`) ou non (`not_proven`). Exemples :
   - PV favorable : `completed` ;
   - PV avec contre-visite : `not_proven` ;
@@ -93,14 +116,16 @@ La récurrence déclarée (`FREQ=YEARLY` pour l'assurance) est seulement indicat
 
 ## Questions ouvertes
 
-1. **`dateFinContrat`.** Le CDC indique « contractEndDate / leaseEndDate selon contexte ». La clé est résolue en `contractEndDate` par défaut, et T1 doit émettre `leaseEndDate` pour un bail, une LOA ou une LLD.
-2. **`numeroContrat`.** La clé est résolue en `contractNumber` (générique), alors que le corpus l'emploie pour des contrats d'assurance (`insuranceContractNumber`). Le contexte documentaire devrait trancher en T1.
-3. **`dateEtablissement`.** C'est `dpeDate` pour un DPE et `documentDate` sinon. Elle est exclue et classée `UNCLASSIFIED`.
-4. **`surfaceCarrez`.** Faut-il créer un champ distinct de `livingArea` ? Il est exclu pour l'instant.
-5. **`parking`.** Il est lu par l'export Vente mais jamais écrit. Il faut soit le classer, soit retirer la lecture.
-6. **`surfaceAnnoncee`, `prixAnnonce`.** Ce sont des faits d'annonce, pas des champs du bien.
-7. **`puissance`, `cop`, `fluideFrigorigene`.** Ils concernent un équipement (cible `EQUIPMENT`) et restent hors registre du bien.
-8. **Champs ajoutés hors fiche**, présents dans le CDC ou le corpus mais sans écran : `maintenanceDueDate`, `lastInspectionDate`, `dpeExpiryDate`, `energyConsumption`, `dpeAdemeNumber`, `engineDisplacement`, `leaseMonthlyPayment`, `leaseDurationMonths`, `leaseResidualValue`, `contractNumber`, `contractStartDate`, `warrantyStartDate`, `registrationExpiry`. Il faut décider de leur affichage.
+Les questions 1 à 7 et 10 sont tranchées par les décisions PO du 01/10/2026 (lot 20) :
+
+1. **`dateFinContrat`** → alias contextuel (D-C1) : bail / location → `leaseEndDate`, sinon `contractEndDate`.
+2. **`numeroContrat`** → alias contextuel (D-C2) : assurance → `insuranceContractNumber`, sinon `contractNumber`.
+3. **`dateEtablissement`** → alias contextuel (D-D) : DPE → `dpeDate`, diagnostic → `diagnosticDate` (nouveau champ), sinon date du document.
+4. **`surfaceCarrez`** → `carrezArea` (D-D), distinct de `livingArea` ; même ordre d'autorité.
+5. **`parking`** → clé canonique `parking` (D-D), lue par les exports.
+6. **`surfaceAnnoncee`, `prixAnnonce`** → `listedArea`, `listingPrice`, **saisie seule** (D-D).
+7. **`puissance`, `cop`, `fluideFrigorigene`** → `powerKw` (alias `puissance`, colonne `equipment_cil_specs.power_kw`), `cop` et `refrigerant`, cible ÉQUIPEMENT (D-D).
+8. **Champs ajoutés hors fiche** : décision D-E (affichage dans la fiche), hors registre.
 9. **Familles de `lastRevision`.** Le champ est déclaré pour toutes les familles (matrice §13 : « entretien réalisé »), mais la fiche ne l'affiche que pour les objets.
-10. **Constat de sinistre.** La matrice §13 le cite comme source, mais `mayCreateAgenda` vaut `false`, comme dans l'existant. Faut-il l'autoriser pour l'historique ?
-11. **`mileage` en heures.** La colonne `mileage_or_hours` porte des heures quand `mileageUnit = 'h'`. Le registre n'applique aucune conversion entre heures et kilomètres.
+10. **Constat de sinistre** → autorisé pour le sinistre historique seulement (D-B).
+11. **`mileage` en heures.** La colonne `mileage_or_hours` porte des heures quand `mileageUnit = 'h'`. Le compteur horaire a désormais sa clé, `hourMeter` (D-D, bien ou équipement, sans colonne miroir) ; aucune conversion entre heures et kilomètres.

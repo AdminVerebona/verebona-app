@@ -32,7 +32,7 @@ export type ActionKind = 'ARBITRATE' | 'COMPLETE';
 export type ActionPriority = 'DO_FIRST' | 'DO_NEXT' | 'CAN_WAIT';
 
 /** Objets susceptibles de porter une action. */
-/** ROOM (lot 19) : pièce (table `rooms`) — conflits de champ ENTITY-FIELD (`roomArea`). */
+/** ROOM (lot 19) : pièce = SOUS-STRUCTURE (`substructures.id`, D-G lot 20) — conflits de champ ENTITY-FIELD (`roomArea`). */
 export type TargetType = 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'AGENDA_ITEM' | 'SUPPLIER';
 
 /** §12.1 — origine d'une valeur. */

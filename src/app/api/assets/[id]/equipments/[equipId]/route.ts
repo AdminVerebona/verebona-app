@@ -13,6 +13,11 @@
  * l'équipement : fiche puis colonne) reçoit l'origine USER dans la fiche
  * canonique de l'équipement (hors commutateur) : aucune écriture automatique
  * ne la remplacera.
+ *
+ * Lot 20 (CDC 15, D-D) : `fiche` — caractéristiques canoniques saisies dans
+ * le tiroir (puissance, COP, fluide frigorigène, compteur horaire,
+ * `EQUIPMENT_FICHE_FIELDS`), écrites par le même chemin (origine USER, clés
+ * réellement modifiées seulement). Valeur invalide : 400 VALIDATION_ERROR.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
@@ -23,6 +28,7 @@ import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { isValidEquipmentStatus } from '@/types/domain';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
+import { parseEquipmentFiche } from '@/lib/asset-detail-rules';
 
 export async function PUT(
   request: NextRequest,
@@ -103,6 +109,14 @@ export async function PUT(
     const ppc = centimes('purchasePriceCents', purchasePriceCents);
     const evc = centimes('estimatedValueCents', estimatedValueCents);
     if (ppc === 'INVALID' || evc === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid amount');
+    const fiche = parseEquipmentFiche(body.fiche);
+    if (fiche.errors.length) {
+      return NextResponse.json(
+        { error: 'VALIDATION_ERROR', message: fiche.errors.map((e) => e.message).join(' '), fields: fiche.errors },
+        { status: 400 },
+      );
+    }
+    const ficheSaisie = Object.keys(fiche.values).length > 0;
     purchasePriceCents = ppc;
     estimatedValueCents = evc;
 
@@ -132,7 +146,7 @@ export async function PUT(
     // RÉELLEMENT modifiées reçoivent l'origine USER (lot 18). Null sans 0227.
     const montants = purchasePriceCents !== undefined || estimatedValueCents !== undefined;
     const cibleEquipement = { type: 'EQUIPMENT' as const, id: equipmentId };
-    const vueAvant = montants
+    const vueAvant = montants || ficheSaisie
       ? await (await import('@/services/canonical/entity-state')).getCanonicalEntityState(cibleEquipement, session.currentAccountId!)
       : null;
 
@@ -167,9 +181,9 @@ export async function PUT(
 
     // CDC 15 T3-02 (lot 18, hors commutateur) : saisie de l'écran → origine
     // USER dans la fiche canonique de l'équipement, sur les clés modifiées.
-    if (montants && vueAvant) {
+    if ((montants || ficheSaisie) && vueAvant) {
       const euros = (c: number | null | undefined) => (c === null || c === undefined ? null : c / 100);
-      const after: Record<string, unknown> = {};
+      const after: Record<string, unknown> = { ...fiche.values };
       if (purchasePriceCents !== undefined) after.acquisitionPrice = euros(purchasePriceCents);
       if (estimatedValueCents !== undefined) after.estimatedValue = euros(estimatedValueCents);
       const { recordManualEntityEdit } = await import('@/services/canonical/entity-state');

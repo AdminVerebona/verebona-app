@@ -13,7 +13,9 @@
  * `equipments.purchase_price_cents`, `estimated_value_cents`,
  * `equipment_cil_specs.brand`, `model`, `serial_number`, `power_kw` ; dates
  * de garantie et d'entretien portées par preuves et agenda) ou à une PIÈCE
- * (`rooms.area` → `roomArea`). `rooms` n'a pas de colonne d'étage : `floor`
+ * (`substructures.area` → `roomArea` ; depuis D-G, lot 20, migration 0229, une
+ * pièce est une sous-structure et `rooms` n'est plus lue). Aucune des deux
+ * tables n'a de colonne d'étage : `floor`
  * reste un champ du bien. Depuis le lot 18 (R3), ces valeurs s'appliquent à
  * la fiche de l'équipement ou de la pièce (`writeCanonicalEntityField`, fiche
  * 0227, colonnes ci-dessus en miroir — `canonical/entity-state`).
@@ -30,7 +32,7 @@
  */
 import type { AssetFamily, CanonicalFieldDef, ExcludedKey } from './types';
 
-export const REGISTRY_VERSION = 'reg-v1-2026-09';
+export const REGISTRY_VERSION = 'reg-v1-2026-10';
 
 const ALL: AssetFamily[] = ['IMMOBILIER', 'VEHICULE', 'OBJECT'];
 const I: AssetFamily[] = ['IMMOBILIER'];
@@ -168,6 +170,8 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
   }),
   f({
     key: 'contractNumber', label: 'N° de contrat', families: ALL, valueType: 'string',
+    // `numeroContrat` : branche générale de l'alias CONTEXTUEL (D-C2,
+    // CONTEXTUAL_ALIASES) — document d'assurance → insuranceContractNumber.
     aliases: ['numeroContrat'],
   }),
   f({
@@ -176,8 +180,8 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
   }),
   f({
     key: 'contractEndDate', label: 'Fin de contrat', families: ALL, valueType: 'date',
-    // CDC §5 : dateFinContrat → contractEndDate OU leaseEndDate « selon contexte ».
-    // Sans contexte, contractEndDate ; T1 doit émettre leaseEndDate pour un bail/LOA/LLD.
+    // `dateFinContrat` : branche générale de l'alias CONTEXTUEL (D-C1,
+    // CONTEXTUAL_ALIASES) — bail / location (LLD, LOA) → leaseEndDate.
     aliases: ['dateFinContrat', 'finContrat'],
     agendaEffect: { nature: 'DEADLINE', businessType: 'contract' },
   }),
@@ -215,7 +219,7 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
     aliases: ['surfaceHabitable', 'surface', 'habitableArea'],
     range: { min: 0 },
   }),
-  // Pièce (table `rooms`, colonne `area`) — CDC 15 T1-04 : une surface lue
+  // Pièce (table `substructures`, colonne `area` — D-G) — CDC 15 T1-04 : une surface lue
   // pour une pièce ne devient jamais la surface habitable du bien.
   f({
     key: 'roomArea', label: 'Surface de la pièce', families: I, valueType: 'number', unit: 'm2',
@@ -318,7 +322,9 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
     aliases: ['carburant', 'energie'],
   }),
   f({ key: 'fiscalHp', label: 'Puissance administrative', families: V, valueType: 'number', unit: 'CV', integer: true, range: { min: 0 }, section: 'vehicle_technical', aliases: ['puissanceFiscale', 'chevauxFiscaux'] }),
-  f({ key: 'powerKw', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Puissance réelle', families: V, valueType: 'number', unit: 'kW', range: { min: 0 }, section: 'vehicle_technical', aliases: ['puissanceKw', 'puissanceReelle'] }),
+  // `puissance` (D-D) : puissance d'un équipement (fiche produit PAC) ou
+  // puissance réelle d'un véhicule, en kW — jamais la puissance fiscale (CV).
+  f({ key: 'powerKw', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Puissance réelle', families: V, valueType: 'number', unit: 'kW', range: { min: 0 }, section: 'vehicle_technical', aliases: ['puissanceKw', 'puissanceReelle', 'puissance', 'puissanceNominale'] }),
   f({ key: 'ptac', label: 'PTAC', families: V, valueType: 'number', unit: 'kg', range: { min: 0 }, section: 'vehicle_technical', aliases: ['poidsTotalAutorise'] }),
   f({ key: 'seats', label: 'Nombre de places', families: V, valueType: 'number', integer: true, range: { min: 0 }, section: 'vehicle_technical', aliases: ['nombrePlaces', 'places'] }),
   f({ key: 'engineDisplacement', label: 'Cylindrée', families: V, valueType: 'number', unit: 'cm3', integer: true, range: { min: 0 }, aliases: ['cylindree'] }),
@@ -388,7 +394,85 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
   f({ key: 'provenance', label: 'Provenance', families: O, valueType: 'string', section: 'object_provenance' }),
   f({ key: 'authenticityProof', label: 'Preuve d’authenticité', families: O, valueType: 'string', section: 'object_provenance', aliases: ['preuveAuthenticite'] }),
   f({ key: 'storageLocation', label: 'Lieu de stockage', families: O, valueType: 'string', section: 'object_usage', aliases: ['lieuStockage'] }),
+
+  /* ── Clés classées par la décision PO D-D (lot 20) ──────────────────────── */
+  // Surface « loi Carrez » : distincte de la surface habitable, jamais recopiée
+  // dans livingArea (ni l'inverse).
+  f({
+    key: 'carrezArea', label: 'Surface Carrez', families: I, valueType: 'number', unit: 'm2', range: { min: 0 },
+    section: 'physical_characteristics', aliases: ['surfaceCarrez', 'surfaceLoiCarrez', 'carrez'],
+  }),
+  // Stationnement déclaré (place, box, garage…) — clé lue par les exports
+  // Vente / Location (`characteristics.parking`).
+  f({
+    key: 'parking', label: 'Stationnement', families: I, valueType: 'string', section: 'physical_characteristics',
+    aliases: ['stationnement', 'placeParking', 'placeDeParking'],
+  }),
+  // Faits d'ANNONCE : SAISIE UNIQUEMENT (`inputOnly`), jamais inférés par l'IA
+  // — ni la surface habitable, ni le prix d'achat, ni la valeur estimée.
+  f({
+    key: 'listedArea', label: 'Surface annoncée', families: I, valueType: 'number', unit: 'm2', range: { min: 0 },
+    aliases: ['surfaceAnnoncee'], inputOnly: true,
+  }),
+  f({
+    key: 'listingPrice', label: 'Prix annoncé', families: ALL, valueType: 'money_eur', unit: 'EUR', range: { min: 0 },
+    aliases: ['prixAnnonce', 'prixAffiche'], inputOnly: true,
+  }),
+  // Équipement (PAC, climatisation) : cible ÉQUIPEMENT seulement, jamais le
+  // bien. La « puissance » d'un équipement est l'alias de powerKw (colonne
+  // réelle `equipment_cil_specs.power_kw`, voir plus haut).
+  f({
+    key: 'cop', label: 'Coefficient de performance (COP)', families: ALL, valueType: 'number', range: { min: 0, max: 20 },
+    targetTypes: ['EQUIPMENT'], aliases: ['coefficientPerformance', 'coefficientDePerformance'],
+  }),
+  f({
+    key: 'refrigerant', label: 'Fluide frigorigène', families: ALL, valueType: 'string',
+    targetTypes: ['EQUIPMENT'], aliases: ['fluideFrigorigene', 'refrigerantFluid', 'gazFrigorigene'],
+  }),
+  // Date d'établissement d'un diagnostic immobilier (amiante, plomb,
+  // électricité, gaz, termites, ERP…). `dateEtablissement` est un alias
+  // CONTEXTUEL (CONTEXTUAL_ALIASES) : DPE → dpeDate, diagnostic → diagnosticDate,
+  // autre document → date du document (hors registre, non résolue).
+  f({
+    key: 'diagnosticDate', label: 'Date d’établissement du diagnostic', families: I, valueType: 'date',
+    section: 'performance_technical', aliases: ['dateDiagnostic', 'dateEtablissementDiagnostic'],
+  }),
+  // Compteur horaire (engins, bateaux, groupes électrogènes, PAC) : SÉPARÉ du
+  // kilométrage, aucune conversion heures ↔ km, aucune colonne miroir
+  // (`mileage_or_hours` reste celle de `mileage`).
+  f({
+    key: 'hourMeter', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Compteur horaire', families: ['VEHICULE', 'OBJECT'],
+    valueType: 'number', unit: 'h', range: { min: 0 }, section: 'vehicle_usage',
+    aliases: ['compteurHoraire', 'heuresMoteur', 'heuresFonctionnement', 'engineHours', 'horametre'],
+  }),
 ];
+
+/**
+ * Alias dont la clé canonique dépend du TYPE DOCUMENTAIRE (décisions PO D-C,
+ * D-D, lot 20), résolus par `resolveAliasDetailed(raw, family, { documentType })` :
+ *   · `dateFinContrat` : bail / location (LLD, LOA, bail) → `leaseEndDate`,
+ *     sinon `contractEndDate` ;
+ *   · `numeroContrat` : document d'assurance → `insuranceContractNumber`,
+ *     sinon `contractNumber` ;
+ *   · `dateEtablissement` : DPE → `dpeDate`, diagnostic → `diagnosticDate`,
+ *     sinon date du document (hors registre : non résolue).
+ * Sans type documentaire, ou si la clé retenue ne s'applique pas à la famille
+ * (bail d'un objet), la branche générale `otherwise`. Les branches générales
+ * de `dateFinContrat` et `numeroContrat` restent des alias déclarés : la
+ * résolution SANS contexte est inchangée.
+ */
+export interface ContextualAliasRule {
+  lease?: string;
+  insurance?: string;
+  dpe?: string;
+  diagnostic?: string;
+  otherwise: string | null;
+}
+export const CONTEXTUAL_ALIASES: Readonly<Record<string, ContextualAliasRule>> = {
+  dateFinContrat: { lease: 'leaseEndDate', otherwise: 'contractEndDate' },
+  numeroContrat: { insurance: 'insuranceContractNumber', otherwise: 'contractNumber' },
+  dateEtablissement: { dpe: 'dpeDate', diagnostic: 'diagnosticDate', otherwise: null },
+};
 
 /**
  * Clés rencontrées dans le code ou les extractions, volontairement HORS
@@ -432,13 +516,6 @@ export const EXCLUDED_KEYS: readonly ExcludedKey[] = [
     'insuredItems', 'retainedValueCents', 'retainedValueSource', 'retainedValueDate', 'acquisitionFeesCents',
     'estimatedDamageCents', 'compensationCents', 'claimEventKey', 'claimType', 'insurerClaimRef', 'policyReference',
   ].map((key): ExcludedKey => ({ key, kind: 'ADDITIONAL_INFO', reason: 'Information complémentaire des exports (D-12), hors registre.' })),
-  // Non classées : questions ouvertes (README).
-  { key: 'parking', kind: 'UNCLASSIFIED', reason: 'Lu par l’export Vente (characteristics.parking), jamais écrit par la fiche ni l’assistant.' },
-  { key: 'dateEtablissement', kind: 'UNCLASSIFIED', reason: 'Date d’établissement (corpus DPE) : dpeDate pour un DPE, documentDate sinon — dépend du type de document.' },
-  { key: 'surfaceCarrez', kind: 'UNCLASSIFIED', reason: 'Surface Carrez ≠ surface habitable : champ distinct à créer ou non.' },
-  { key: 'surfaceAnnoncee', kind: 'UNCLASSIFIED', reason: 'Surface d’une annonce : preuve faible de livingArea, à traiter comme fait documentaire.' },
-  { key: 'prixAnnonce', kind: 'UNCLASSIFIED', reason: 'Prix affiché d’une annonce : ni prix d’achat ni valeur estimée.' },
-  { key: 'puissance', kind: 'UNCLASSIFIED', reason: 'Puissance d’un équipement (fiche produit PAC) : cible EQUIPMENT, pas le bien.' },
-  { key: 'cop', kind: 'UNCLASSIFIED', reason: 'Coefficient de performance d’un équipement : cible EQUIPMENT.' },
-  { key: 'fluideFrigorigene', kind: 'UNCLASSIFIED', reason: 'Fluide frigorigène d’un équipement : cible EQUIPMENT.' },
+  // Les anciennes clés « non classées » sont au registre depuis la décision PO
+  // D-D (lot 20) : voir la fin de CANONICAL_FIELDS et CONTEXTUAL_ALIASES.
 ];

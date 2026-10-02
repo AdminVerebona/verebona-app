@@ -21,7 +21,7 @@ import {
   documentLotItems,
   documentAnalysisProposals,
   agendaItems,
-  rooms,
+  substructures,
   equipments,
 } from '@/db/schema';
 import { eq, and, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
@@ -133,7 +133,8 @@ async function loadAnalysisContext(accountId: number, linkedAssetId: number | nu
       .where(eq(agendaItems.accountId, accountId))
       .limit(200),
     linkedAssetId
-      ? db.select({ id: rooms.id, name: rooms.name, roomType: rooms.roomType }).from(rooms).where(eq(rooms.assetId, linkedAssetId))
+      // Pièces = sous-structures (D-G, lot 20) ; le type n'est qu'un libellé de contexte.
+      ? db.select({ id: substructures.id, name: substructures.name, roomType: sql<string>`'pièce'` }).from(substructures).where(eq(substructures.assetId, linkedAssetId))
       : Promise.resolve([]),
     linkedAssetId
       ? db.select({ id: equipments.id, name: equipments.name, type: equipments.type, category: equipments.category }).from(equipments).where(eq(equipments.assetId, linkedAssetId))

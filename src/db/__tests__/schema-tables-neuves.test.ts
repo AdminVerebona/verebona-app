@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { agendaItemRemovals, aiMasterCorpusRuns, cdc15MigrationBackups, cdc15MigrationReport, cdc15MigrationRuns } from '../schema';
+import { agendaItemRemovals, aiMasterCorpusRuns, cdc15MigrationBackups, cdc15MigrationReport, cdc15MigrationRuns, roomMergeChanges, roomMergeRuns } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
 
@@ -33,6 +33,8 @@ const CAS: Array<[PgTable, string, string]> = [
   [cdc15MigrationRuns, '0225_cdc15_migration_report.sql', 'cdc15_migration_runs'],
   [cdc15MigrationReport, '0225_cdc15_migration_report.sql', 'cdc15_migration_report'],
   [cdc15MigrationBackups, '0225_cdc15_migration_report_backups.sql', 'cdc15_migration_backups'],
+  [roomMergeRuns, '0229_rooms_to_substructures.sql', 'room_merge_runs'],
+  [roomMergeChanges, '0229_rooms_to_substructures.sql', 'room_merge_changes'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

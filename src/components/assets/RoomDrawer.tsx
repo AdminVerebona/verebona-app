@@ -23,6 +23,25 @@ export interface RoomDrawerItem {
   equipmentCount?: number;
 }
 
+/**
+ * Fiche de la pièce (D-G, lot 20) : la pièce est une sous-structure ; type,
+ * surface et description viennent de GET /api/substructures/[id] (colonnes
+ * 0229, `null` avant migration ou reprise).
+ */
+interface RoomDetails {
+  roomType: string | null;
+  area: string | null;
+  description: string | null;
+}
+
+/** Surface au format de la fiche : « 18,5 m² » (texte libre conservé tel quel). */
+export function roomAreaLabel(area: string | null | undefined): string | null {
+  const s = (area ?? '').trim();
+  if (!s) return null;
+  const n = Number(s.replace(',', '.'));
+  return Number.isFinite(n) ? `${n.toLocaleString('fr-FR')} m²` : s;
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -40,6 +59,20 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [details, setDetails] = useState<RoomDetails | null>(null);
+
+  // Type, surface, description de la pièce (lecture seule).
+  const roomId = room?.id ?? null;
+  useEffect(() => {
+    if (!open || roomId == null) { setDetails(null); return; }
+    let actif = true;
+    apiClient.get<{ room?: Partial<RoomDetails> }>(`/api/substructures/${roomId}`)
+      .then((r) => {
+        if (actif) setDetails({ roomType: r.room?.roomType ?? null, area: r.room?.area ?? null, description: r.room?.description ?? null });
+      })
+      .catch(() => { if (actif) setDetails(null); });
+    return () => { actif = false; };
+  }, [open, roomId]);
 
   // Sync state when drawer opens
   useEffect(() => {
@@ -134,6 +167,28 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
               </div>
             ) : (
               <div className="px-5 py-4 space-y-3">
+                {(details?.roomType || roomAreaLabel(details?.area) || details?.description) && (
+                  <div className="space-y-2 text-sm">
+                    {details?.roomType && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Type</span>
+                        <span className="font-medium">{details.roomType}</span>
+                      </div>
+                    )}
+                    {roomAreaLabel(details?.area) && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Surface</span>
+                        <span className="font-medium">{roomAreaLabel(details?.area)}</span>
+                      </div>
+                    )}
+                    {details?.description && (
+                      <div className="space-y-1">
+                        <span className="text-muted-foreground">Description</span>
+                        <p className="font-medium whitespace-pre-line">{details.description}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {eqCount > 0 && (
                   <div className="text-sm text-muted-foreground border rounded-md p-3 bg-muted/30">
                     <span className="font-medium">{eqCount}</span> équipement{eqCount > 1 ? 's' : ''} rattaché{eqCount > 1 ? 's' : ''}

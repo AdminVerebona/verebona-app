@@ -22,7 +22,7 @@ import { canRequestAiReview } from './decision/ai-exclusion';
 import { resolveAmbiguity } from './ambiguity-resolver';
 import { applyDecision, retractAutomaticValue } from './apply-decision';
 import {
-  planRetractions, retractionDecision, withoutStaleAuthority, NEGATIVE_REASON,
+  planRetractions, retractionDecision, withoutStaleAuthority, NEGATIVE_REASON, isT4DateRevision, T4_REVISION_REASON,
 } from './negative-reconciliation';
 import { listRetiredEvidenceValues } from '../evidence/field-evidence.service';
 import { t3NegativeMode } from '@/services/canonical/rollout';
@@ -115,10 +115,15 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
   const observations: ReconciliationDecision[] = [];
 
   for (const field of collected) {
-    let decision = field.unproven && negEnabled
+    // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la
+    // valeur automatique qu'elle remplace (jamais une valeur USER/ADMIN).
+    const revision = isT4DateRevision(field.unproven, field.input);
+    let decision = (field.unproven && negEnabled) || revision
       ? decide(withoutStaleAuthority(field.input))
       : decide(field.input);
-    if (field.unproven && negEnabled && decision.action === 'update') {
+    if (revision && decision.action === 'update') {
+      decision = { ...decision, reasonCode: T4_REVISION_REASON };
+    } else if (field.unproven && negEnabled && decision.action === 'update') {
       decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
     }
     if (field.unproven && negMode !== 'legacy' && !negEnabled) {
