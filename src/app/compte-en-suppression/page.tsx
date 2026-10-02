@@ -170,7 +170,7 @@ export default function AccountPendingDeletionPage() {
             <p className="text-sm text-[color:var(--text-secondary)]">
               Avant la suppression, vous pouvez télécharger une copie de toutes vos données :
             </p>
-            <MyDataCard />
+            <MyDataCard defaultOpen />
           </div>
         )}
 

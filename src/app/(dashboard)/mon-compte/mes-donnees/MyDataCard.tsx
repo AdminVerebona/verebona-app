@@ -43,7 +43,8 @@ function size(bytes: number | null): string {
   return mo >= 1 ? `${mo.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo` : `${Math.ceil(bytes / 1024)} Ko`;
 }
 
-export function MyDataCard() {
+/** `defaultOpen` : tiroir ouvert d'emblée (page « Compte en cours de suppression »). */
+export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = {}) {
   const [state, setState] = useState<ExportState | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,25 +103,17 @@ export function MyDataCard() {
     || (state?.status === 'ready' && state.expiresAt !== null && new Date(state.expiresAt) <= new Date());
 
   return (
-    <div id="mes-donnees" className="scroll-mt-24">
+    <div>
       <CollapsibleCard
+        anchorId="mes-donnees"
+        defaultOpen={defaultOpen}
         icon={<Database className="w-5 h-5" />}
         title="Mes données"
         description="Téléchargez une copie de toutes vos données personnelles (RGPD)."
         contentClassName="space-y-4"
-        // État visible tiroir fermé : l'utilisateur arrive souvent ici depuis
-        // la notification « export prêt ».
-        headerExtra={
-          state?.status === 'ready' && !expired && downloadUrl ? (
-            <a href={downloadUrl} className="inline-flex items-center text-sm text-primary hover:underline">
-              <Download className="w-4 h-4 mr-1" /> Télécharger mon archive
-            </a>
-          ) : inProgress ? (
-            <span className="inline-flex items-center text-sm text-muted-foreground">
-              <Loader2 className="w-4 h-4 mr-1 animate-spin" /> Archive en préparation
-            </span>
-          ) : undefined
-        }
+        // Pas de bouton hors du tiroir (modèle « Informations légales ») : le
+        // lien « export prêt » des notifications (#mes-donnees) ouvre le
+        // tiroir, où se trouve le téléchargement.
       >
         <p className="text-sm text-muted-foreground">
           L’archive (ZIP) contient les données de votre compte utilisateur et de votre espace Verebona

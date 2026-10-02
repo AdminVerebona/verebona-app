@@ -35,7 +35,8 @@ import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvi
 import { useMascotPresentation } from './useMascotPresentation';
 
 interface MascotSpeaksProps {
-  firstName: string;
+  /** Nom affiché dans « Bonjour, … » : le nom d'utilisateur, à défaut le prénom. */
+  greetingName: string;
   /** Compte vide : aucun bien, aucun document (§12ter). */
   empty: boolean;
   onCreateAsset: () => void;
@@ -62,7 +63,7 @@ function kindOf(p: MascotParagraph): AnswerKind {
   return 'action';
 }
 
-export function MascotSpeaks({ firstName, empty, onCreateAsset, onUploadDocument, pageSuggestions }: MascotSpeaksProps) {
+export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocument, pageSuggestions }: MascotSpeaksProps) {
   const router = useRouter();
   const space = useVerebonaSpace();
   const { garder } = useWriteGuard();
@@ -212,7 +213,7 @@ export function MascotSpeaks({ firstName, empty, onCreateAsset, onUploadDocument
         <div className="flex flex-col gap-2 md:gap-2.5">
           <div className="flex items-baseline justify-between gap-2.5 md:justify-start md:gap-3.5">
             <h1 className="m-0 font-display text-[28px] font-semibold leading-[1.05] tracking-[-.03em] text-[color:var(--text-primary)] md:text-[36px]">
-              {greetingWord(now)}, {firstName}
+              {greetingWord(now)}, {greetingName}
             </h1>
             <span className="text-[12px] text-[color:var(--text-muted)] md:hidden">{greetingDateShort(now)}</span>
             <span className="hidden text-[13px] text-[color:var(--text-muted)] md:inline">{greetingDateLong(now)}</span>

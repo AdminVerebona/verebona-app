@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CreditCard, AlertTriangle, Clock, Crown, Lock, ShieldAlert, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/useSession';
 import { ReferralBlock } from '@/components/account/ReferralBlock';
@@ -123,6 +124,9 @@ function QuotaBar({ label, quota }: { label: string; quota: QuotaUsage }) {
   );
 }
 
+/** Ligne unique du tiroir fermé. */
+const RESUME = 'Votre offre, vos quotas, vos factures et le parrainage.';
+
 export function SubscriptionSummary() {
   const router = useRouter();
   const { user } = useSession();
@@ -219,13 +223,12 @@ export function SubscriptionSummary() {
 
   if (!data) {
     return (
-      <div className="mb-6 rounded-xl border border-[color:var(--border)] bg-[color:var(--bg-subtle)] p-5">
-        <h2 className="mb-2 text-base font-semibold text-[color:var(--text-primary)]">Mon abonnement</h2>
+      <CollapsibleCard icon={<CreditCard className="w-5 h-5" />} title="Mon abonnement" description={RESUME}>
         <p className="mb-4 text-sm text-[color:var(--text-muted)]">
           Le détail de votre abonnement est momentanément indisponible.
         </p>
         {actions}
-      </div>
+      </CollapsibleCard>
     );
   }
 
@@ -239,8 +242,14 @@ export function SubscriptionSummary() {
         : '—';
 
   return (
-    <div className="mb-6 rounded-xl border border-[color:var(--border)] bg-[color:var(--bg-subtle)] p-5">
-      <h2 className="mb-4 text-base font-semibold text-[color:var(--text-primary)]">Mon abonnement</h2>
+    // Tiroir fermé par défaut, sur le modèle « Informations légales » —
+    // sauf impayé ou compte restreint : l'alerte ne doit pas rester cachée.
+    <CollapsibleCard
+      icon={<CreditCard className="w-5 h-5" />}
+      title="Mon abonnement"
+      description={isUnpaid(data) ? 'Paiement en échec : une action est requise.' : RESUME}
+      defaultOpen={isUnpaid(data) || Boolean(data.isRestricted)}
+    >
 
       {/* Etat du compte */}
       <div className="mb-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -383,6 +392,6 @@ export function SubscriptionSummary() {
           <ReferralBlock />
         </div>
       )}
-    </div>
+    </CollapsibleCard>
   );
 }

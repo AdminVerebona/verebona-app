@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Bell, ChevronRight } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
+import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { getPermissionState, isPushSupported, type PushPermission } from '@/lib/push/push-client';
@@ -38,23 +38,21 @@ export function NotificationsCard() {
   const dot = status.tone === 'ok' ? 'bg-emerald-500' : status.tone === 'warn' ? 'bg-amber-500' : 'bg-muted-foreground/40';
 
   return (
-    <Card>
-      <CardContent className="flex items-center gap-4 py-4">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">
-          <Bell className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="font-medium">Notifications</p>
-          <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
-            <span className={`inline-block h-2 w-2 rounded-full ${dot}`} aria-hidden />
-            {status.label}
-          </p>
-        </div>
-        <Button variant="outline" onClick={() => router.push('/mon-compte/notifications')} className="shrink-0">
-          Gérer mes notifications
-          <ChevronRight className="ml-1 h-4 w-4" />
-        </Button>
-      </CardContent>
-    </Card>
+    // Tiroir fermé par défaut : titre, une ligne, chevron (modèle « Informations légales »).
+    <CollapsibleCard
+      icon={<Bell className="w-5 h-5" />}
+      title="Notifications"
+      description="Notifications de vos échéances et de vos documents sur vos appareils."
+      contentClassName="flex flex-wrap items-center justify-between gap-3"
+    >
+      <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <span className={`inline-block h-2 w-2 rounded-full ${dot}`} aria-hidden />
+        {status.label}
+      </p>
+      <Button variant="outline" onClick={() => router.push('/mon-compte/notifications')} className="shrink-0">
+        Gérer mes notifications
+        <ChevronRight className="ml-1 h-4 w-4" />
+      </Button>
+    </CollapsibleCard>
   );
 }

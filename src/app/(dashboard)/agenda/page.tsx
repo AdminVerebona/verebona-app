@@ -494,7 +494,7 @@ function AgendaPageInner() {
                 variant="outline"
                 size="sm"
                 className="hidden sm:flex items-center gap-1.5"
-                onClick={() => router.push('/mon-compte/informations#sync-agenda')}
+                onClick={() => router.push('/mon-compte#sync-agenda')}
               >
                 <CalendarDays className="h-4 w-4" />
                 Ajouter à mon agenda personnel

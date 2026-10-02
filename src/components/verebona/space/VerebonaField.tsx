@@ -19,7 +19,7 @@ import { useRef, useState } from 'react';
 import { ArrowRight, History, Square, X } from 'lucide-react';
 import { FocusScope } from '@radix-ui/react-focus-scope';
 import { composerState } from '@/lib/verebona/offline';
-import { exchangeCountLabel, fieldPlaceholder, mobileFieldLabel, resumeLabel } from '@/lib/verebona/space';
+import { exchangeCountLabel, fieldPlaceholder } from '@/lib/verebona/space';
 import { MascotPose } from './MascotPose';
 import { SpaceBody, LIVE_OPTION_ID } from './SpaceContent';
 import { useVerebonaSpace, type VerebonaSpaceApi } from './VerebonaSpaceProvider';
@@ -114,9 +114,10 @@ export function VerebonaHeaderField() {
   const { text, submit, etat, onKeyDown, a11y } = useFieldText(api);
   const [focused, setFocused] = useState(false);
   if (!api) return null;
-  const n = api.turns.length;
+  // Échange affiché seulement après une question ou une reprise (accueil du pop-up sinon).
+  const n = api.showThread ? api.turns.length : 0;
   const actif = focused || api.isOpen;
-  const idle = !api.isOpen && n === 0;
+  const idle = !api.isOpen;
 
   return (
     <div
@@ -161,15 +162,6 @@ export function VerebonaHeaderField() {
       {idle && !text && (
         <kbd className="rounded-md bg-[color:var(--muted)] px-[7px] py-0.5 font-sans text-[10.5px] text-[color:var(--text-muted)]" aria-hidden>⌘K</kbd>
       )}
-      {!api.isOpen && n > 0 && (
-        <button
-          type="button"
-          onClick={api.open}
-          className="h-[30px] whitespace-nowrap rounded-full px-2.5 text-[12px] font-medium text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)]"
-        >
-          {resumeLabel(n)}
-        </button>
-      )}
       <SendButton api={api} canSend={etat.canSend} onSend={submit} size={34} />
     </div>
   );
@@ -183,7 +175,7 @@ export function VerebonaDesktopPanel() {
   const api = useVerebonaSpace();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   if (!api || !api.isOpen || !api.isDesktop) return null;
-  const n = api.turns.length;
+  const n = api.showThread ? api.turns.length : 0;
   const notice = composerState(api.v.online, false, '').notice;
   return (
     <>
@@ -250,7 +242,7 @@ export function VerebonaMobileField() {
       className="flex h-[46px] min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--field-bg)] pl-2.5 pr-1.5 text-left text-[14px] text-[color:var(--text-muted)]"
     >
       <MascotPose pose={api.pose} size={28} priority />
-      <span className="min-w-0 flex-1 truncate">{mobileFieldLabel(api.turns)}</span>
+      <span className="min-w-0 flex-1 truncate">Demander à Verebona</span>
       <span className="flex h-[34px] w-[34px] flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--muted)] text-[color:var(--text-primary)]">
         <ArrowRight className="h-4 w-4" strokeWidth={2.2} aria-hidden />
       </span>
@@ -267,7 +259,7 @@ export function VerebonaMobileSpace() {
   const { text, submit, etat, onKeyDown, a11y } = useFieldText(api);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   if (!api || !api.isOpen || api.isDesktop) return null;
-  const n = api.turns.length;
+  const n = api.showThread ? api.turns.length : 0;
   return (
     <FocusScope trapped loop asChild>
       <section

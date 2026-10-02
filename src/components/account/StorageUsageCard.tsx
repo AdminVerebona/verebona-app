@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { HardDrive } from 'lucide-react';
 import { formatBytes } from '@/lib/admin/format';
+import { CollapsibleCard } from '@/components/ui/collapsible-card';
 
 interface StorageUsage {
   usedBytes: number;
@@ -41,11 +42,12 @@ export function StorageUsageCard() {
   if (!data && !error) return null;
 
   return (
-    <section className="rounded-xl border border-[color:var(--border)] bg-[color:var(--bg-card,transparent)] p-5">
-      <div className="mb-3 flex items-center gap-2">
-        <HardDrive className="h-4 w-4 text-[color:var(--text-muted)]" />
-        <h2 className="text-sm font-medium text-[color:var(--text-primary)]">Espace de stockage</h2>
-      </div>
+    // Tiroir fermé par défaut, sur le modèle « Informations légales ».
+    <CollapsibleCard
+      icon={<HardDrive className="w-5 h-5" />}
+      title="Espace de stockage"
+      description="Espace utilisé par vos fichiers et plafond de votre offre."
+    >
       {error || !data ? (
         <p className="text-sm text-[color:var(--text-muted)]">
           Impossible d’afficher votre espace de stockage pour le moment.{' '}
@@ -77,6 +79,6 @@ export function StorageUsageCard() {
           )}
         </>
       )}
-    </section>
+    </CollapsibleCard>
   );
 }

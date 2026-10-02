@@ -391,6 +391,34 @@ export function previousRequests(
     });
 }
 
+// ── Recherches récentes (pop-up du champ) ───────────────────────────────────
+
+/** Nombre de recherches récentes affichées sous les suggestions. */
+export const MAX_RECENT_SEARCHES = 3;
+
+export interface RecentSearchRow {
+  id: number;
+  /** Une seule ligne : la question, jamais la réponse. */
+  title: string;
+}
+
+/**
+ * Recherches récentes du pop-up : les fils non vides, du plus récent au plus
+ * ancien (ordre du serveur), fil courant compris, `max` au plus. `hidden` :
+ * fils en cours de suppression, retirés tout de suite — le suivant remonte
+ * sans attendre la réponse du serveur.
+ */
+export function recentSearches(
+  threads: Array<Pick<VerebonaThread, 'id' | 'title' | 'messageCount'>>,
+  hidden: ReadonlySet<number> = new Set(),
+  max = MAX_RECENT_SEARCHES,
+): RecentSearchRow[] {
+  return threads
+    .filter((t) => t.messageCount > 0 && !hidden.has(t.id))
+    .slice(0, max)
+    .map((t) => ({ id: t.id, title: t.title?.replace(/\s+/g, ' ').trim() || 'Demande sans titre' }));
+}
+
 // ── Chronologie (CDC 15 T2-35) ──────────────────────────────────────────────
 
 export interface TimelineRow {

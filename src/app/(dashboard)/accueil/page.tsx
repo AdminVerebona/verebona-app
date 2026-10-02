@@ -253,7 +253,9 @@ export default function DashboardPage() {
 
   // Compte vide (§12ter) : aucun bien, aucun document.
   const isEmpty = !!summary && summary.assets.total === 0 && summary.documents.total === 0;
-  const firstName = user.firstName || user.username || '';
+  // Salutation : le nom d'utilisateur par défaut ; le prénom seulement s'il
+  // n'a pas été choisi (2 oct. 2026).
+  const greetingName = user.username?.trim() || user.firstName || '';
 
   return (
     <>
@@ -261,7 +263,7 @@ export default function DashboardPage() {
         {/* 1. La mascotte parle — sa prise de parole a son propre chargement
             (GET /api/home/mascot) et ne retarde pas le reste de la page. */}
         <MascotSpeaks
-          firstName={firstName}
+          greetingName={greetingName}
           empty={isEmpty}
           pageSuggestions={pageSuggestions}
           onCreateAsset={() => setShowAssetDialog(true)}

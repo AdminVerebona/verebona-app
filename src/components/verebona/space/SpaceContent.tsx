@@ -8,7 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Info, Package, ThumbsDown, ThumbsUp, Trash2,
+  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Info, Package, Trash2,
 } from 'lucide-react';
 import type { LiveResult } from '@/lib/verebona/live-search';
 import type { VerebonaAction, VerebonaMessage } from '@/lib/verebona/useVerebona';
@@ -21,7 +21,6 @@ import {
 import { openDrawerFromLink } from '@/lib/drawers';
 import { trackAssistantUsage } from '@/lib/verebona/usage-events';
 import { VerebonaCommandPlan } from '../VerebonaCommandPlan';
-import { VerebonaSources } from '../VerebonaSources';
 import { VerebonaExplanation } from '../VerebonaExplanation';
 import { useVerebonaSpace, type VerebonaSpaceApi } from './VerebonaSpaceProvider';
 
@@ -92,25 +91,8 @@ function ObjectRow({ o, variant, onLocal, onLeave }: { o: SpaceObject; variant: 
 
 // ── Réponse ─────────────────────────────────────────────────────────────────
 
-function Feedback({ id, onFeedback }: { id: string; onFeedback: (id: string, v: 'helpful' | 'not_helpful') => void }) {
-  const [done, setDone] = useState(false);
-  if (done) return <p className="m-0 text-[11px] text-[color:var(--text-muted)]" role="status">Merci pour votre retour.</p>;
-  const btn = 'inline-flex h-7 w-7 items-center justify-center rounded-full text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] transition-colors';
-  return (
-    <div className="flex items-center gap-1">
-      <button type="button" aria-label="Réponse utile" className={btn} onClick={() => { onFeedback(id, 'helpful'); setDone(true); }}>
-        <ThumbsUp className="h-3.5 w-3.5" aria-hidden />
-      </button>
-      <button type="button" aria-label="Réponse pas utile" className={btn} onClick={() => { onFeedback(id, 'not_helpful'); setDone(true); }}>
-        <ThumbsDown className="h-3.5 w-3.5" aria-hidden />
-      </button>
-    </div>
-  );
-}
-
 function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVariant; api: VerebonaSpaceApi }) {
   const { v } = api;
-  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [explanationOpen, setExplanationOpen] = useState(false);
   const [allResults, setAllResults] = useState(false);
   const [reported, setReported] = useState(false);
@@ -125,13 +107,14 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
 
   const onAction = (a: VerebonaAction) => {
     switch (a.type) {
-      case 'SHOW_SOURCES': setSourcesOpen(true); break;
       case 'SHOW_EXPLANATION': setExplanationOpen((o) => !o); break;
       case 'RETRY_REQUEST': api.guard(() => { void v.retry(msg.id); }); break;
       default: break;
     }
   };
-  const serverActions = (msg.actions ?? []).filter((a) => a.type !== 'SHOW_SOURCES' || msg.sourcesAvailable);
+  // Ni « Voir les sources » ni avis 👍/👎 sous les réponses (décision produit
+  // du 2 oct. 2026) : l'action SHOW_SOURCES proposée par le serveur est écartée.
+  const serverActions = (msg.actions ?? []).filter((a) => a.type !== 'SHOW_SOURCES');
   // §32.3 (D-J7) : clic sur une action — type et rang seulement.
   const clicAction = (a: VerebonaAction, rang: number) =>
     trackAssistantUsage({ type: 'ACTION_CLICK', actionType: a.type, value: rang === 0 ? 'primary' : 'secondary', intent: msg.intent ?? null });
@@ -238,10 +221,6 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
       )}
 
       {explanationOpen && <VerebonaExplanation messageId={msg.id} />}
-      {msg.sourcesAvailable && (
-        <VerebonaSources messageId={msg.id} count={msg.sourceCount ?? 0} open={sourcesOpen} onOpenChange={setSourcesOpen} />
-      )}
-      {!isError && !msg.local && /^\d+$/.test(msg.id) && <Feedback id={msg.id} onFeedback={(id, avis) => { trackAssistantUsage({ type: 'FEEDBACK', value: avis, intent: msg.intent ?? null }); return v.sendFeedback(id, avis); }} />}
     </div>
   );
 }
@@ -391,29 +370,41 @@ function HistoryView({ api }: { api: VerebonaSpaceApi }) {
   );
 }
 
+/** Une recherche récente : une ligne (la question), corbeille au bout, sans confirmation. */
+function RecentRow({ title, first, onResume, onDelete }: { title: string; first: boolean; onResume: () => void; onDelete: () => void }) {
+  return (
+    <li className={`flex items-center gap-1 pr-1.5 ${first ? '' : 'border-t border-[color:var(--border-subtle)]'}`}>
+      <button
+        type="button"
+        onClick={onResume}
+        className="flex min-h-10 min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none"
+      >
+        <Clock className="h-[15px] w-[15px] flex-shrink-0 text-[color:var(--text-muted)]" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[13.5px] text-[color:var(--text-primary)]">{title}</span>
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        aria-label={`Supprimer « ${title} »`}
+        title="Supprimer"
+        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-[color:var(--text-muted)] hover:bg-[color:var(--wash-red)] hover:text-[color:var(--on-red)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+      >
+        <Trash2 className="h-3.5 w-3.5" aria-hidden />
+      </button>
+    </li>
+  );
+}
+
+/**
+ * Accueil du pop-up : les suggestions, puis les 3 dernières recherches
+ * (une ligne chacune, corbeille au bout). Une recherche supprimée laisse
+ * remonter la suivante.
+ */
 function InitialState({ variant, api }: { variant: SpaceVariant; api: VerebonaSpaceApi }) {
   const mobile = variant === 'mobile';
   return (
     <div className="flex flex-col gap-1.5">
-      {api.previous.length > 0 && (
-        <div className="mb-2.5 flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className={SECTION_LABEL}>Demandes précédentes</span>
-            {api.allPrevious.length > api.previous.length && (
-              <button type="button" onClick={() => api.setHistoryOpen(true)} className="pb-1 text-[12px] font-medium text-[color:var(--accent)] hover:underline">
-                Toutes ({api.allPrevious.length})
-              </button>
-            )}
-          </div>
-          <ul className={LIST}>
-            {api.previous.map((h, i) => (
-              <ThreadRow key={h.id} first={i === 0} title={h.title} sub={h.sub} onResume={() => api.resume(h.id)} resumeLabel="Reprendre"
-                onDelete={() => { void api.v.deleteThread(h.id); }} />
-            ))}
-          </ul>
-        </div>
-      )}
-      {!mobile && <span className={SECTION_LABEL}>Par exemple</span>}
+      {!mobile && api.suggestions.length > 0 && <span className={SECTION_LABEL}>Par exemple</span>}
       {api.suggestions.map((s) => (
         <button
           key={s.id}
@@ -424,13 +415,23 @@ function InitialState({ variant, api }: { variant: SpaceVariant; api: VerebonaSp
           <span className="font-semibold text-[color:var(--accent)]" aria-hidden>›</span>{s.label}
         </button>
       ))}
+      {api.recent.length > 0 && (
+        <div className="mt-2.5 flex flex-col gap-1.5">
+          <span className={SECTION_LABEL}>Recherches récentes</span>
+          <ul className={LIST} aria-label="Recherches récentes">
+            {api.recent.map((r, i) => (
+              <RecentRow key={r.id} first={i === 0} title={r.title} onResume={() => api.resume(r.id)} onDelete={() => api.removeRecent(r.id)} />
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
 
 /**
  * Échanges regroupés (§7.2) : une ligne « question → résumé » par échange ;
- * un clic DÉPLIE l'échange (avec ses boutons, sources, avis) — il ne repose
+ * un clic DÉPLIE l'échange (avec ses boutons) — il ne repose
  * pas la question, ce qui pourrait préparer une seconde action.
  */
 function OlderDrawer({ older, api, variant }: { older: SpaceTurn[]; api: VerebonaSpaceApi; variant: SpaceVariant }) {
@@ -527,7 +528,8 @@ function LiveResults({ api }: { api: VerebonaSpaceApi }) {
  */
 export function SpaceBody({ variant, scrollRef }: { variant: SpaceVariant; scrollRef: React.RefObject<HTMLDivElement | null> }) {
   const api = useVerebonaSpace();
-  const turns = api?.turns ?? [];
+  // Accueil du pop-up : l'échange n'est affiché qu'après une question ou une reprise.
+  const turns = api?.showThread ? api.turns : [];
   const { recent, older } = splitTurns(turns);
   const last = turns[turns.length - 1];
   const saisie = (api?.live.length ?? 0) > 0;

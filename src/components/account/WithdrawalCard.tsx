@@ -114,7 +114,7 @@ export function WithdrawalCard() {
 
   if (loading) {
     return (
-      <CollapsibleCard icon={<FileMinus className="w-5 h-5" />} title="Droit de rétractation">
+      <CollapsibleCard icon={<FileMinus className="w-5 h-5" />} title="Droit de rétractation" description="Quatorze jours pour renoncer à un abonnement souscrit en ligne.">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="w-4 h-4 animate-spin" /> Chargement…
         </div>

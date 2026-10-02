@@ -17,6 +17,11 @@
  * Continuité : un fil = un échange suivi ; « Nouvelle demande » archive le
  * fil (il reste dans « Demandes précédentes ») et repart vide ; « Reprendre »
  * rouvre un fil archivé avec tout son contexte.
+ *
+ * POP-UP DU CHAMP (2 oct. 2026) : chaque ouverture affiche les suggestions
+ * puis les 3 dernières recherches (une ligne, corbeille) — jamais le dernier
+ * échange. Une question posée depuis cet écran démarre une nouvelle
+ * recherche ; un clic sur une recherche récente rouvre son échange.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -25,8 +30,8 @@ import { useVerebona } from '@/lib/verebona/useVerebona';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { buildPageContext } from '@/lib/verebona/page-context';
 import {
-  buildTurns, previousRequests, spacePose,
-  type MascotPoseName, type PreviousRequestRow, type SpaceObject, type SpaceTurn,
+  buildTurns, previousRequests, recentSearches, spacePose,
+  type MascotPoseName, type PreviousRequestRow, type RecentSearchRow, type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import {
   LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, moveActive, navMatches, toLiveResults, type LiveResult,
@@ -54,8 +59,15 @@ export interface VerebonaSpaceApi {
   isDesktop: boolean;
   reducedMotion: boolean;
   pose: MascotPoseName;
-  /** « Demandes précédentes » de l'état initial (4 au plus, §8). */
-  previous: PreviousRequestRow[];
+  /** Recherches récentes du pop-up (3 au plus, fil courant compris). */
+  recent: RecentSearchRow[];
+  /** Supprime une recherche récente, sans confirmation ; la suivante remonte. */
+  removeRecent: (id: number) => void;
+  /**
+   * L'échange en cours est-il affiché ? Faux à chaque ouverture (pop-up :
+   * suggestions + recherches récentes), vrai après une question ou une reprise.
+   */
+  showThread: boolean;
   /** Toutes les demandes (vue « Toutes les demandes »), sans le fil courant. */
   allPrevious: PreviousRequestRow[];
   historyOpen: boolean;
@@ -138,7 +150,24 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   const turns = useMemo(() => buildTurns(v.messages, v.isLoading), [v.messages, v.isLoading]);
   const pose = spacePose(turns);
   const allPrevious = useMemo(() => previousRequests(v.threads, v.conversationId, new Date(), Number.POSITIVE_INFINITY), [v.threads, v.conversationId]);
-  const previous = useMemo(() => allPrevious.slice(0, 4), [allPrevious]);
+
+  // ── Pop-up : accueil (suggestions + recherches récentes) ou échange ──────
+  const [threadShown, setThreadShown] = useState(false);
+  const showThread = threadShown && turns.length > 0;
+  const [hiddenThreads, setHiddenThreads] = useState<ReadonlySet<number>>(() => new Set());
+  const recent = useMemo(() => recentSearches(v.threads, hiddenThreads), [v.threads, hiddenThreads]);
+  const removeRecent = useCallback((id: number) => {
+    setHiddenThreads((h) => new Set(h).add(id));
+    void v.deleteThread(id);
+  }, [v]);
+  /** Depuis l'accueil du pop-up, une question ouvre une NOUVELLE recherche. */
+  const threadShownRef = useRef(threadShown);
+  threadShownRef.current = threadShown;
+  const turnsCountRef = useRef(turns.length);
+  turnsCountRef.current = turns.length;
+  const partirDeZero = useCallback(async () => {
+    if (!threadShownRef.current && turnsCountRef.current > 0) await v.newConversation();
+  }, [v]);
 
   // « Par exemple » (§6.5 état 1) : catalogue de la page, complété par l'état
   // du compte côté serveur dès la première ouverture sur cette page.
@@ -220,6 +249,8 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   const open = useCallback(() => {
     setIsOpen(true);
     focusInput();
+    // Chaque ouverture : accueil du pop-up (suggestions + recherches récentes).
+    setThreadShown(false);
     // §32.3 (D-J7) : ouverture de Verebona (anonyme).
     trackAssistantUsage({ type: 'ASSISTANT_OPEN' });
   }, [focusInput]);
@@ -229,6 +260,8 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     // « Reprendre · n échanges ».
     setIsOpen(false);
     setHistoryOpen(false);
+    // Une question posée espace fermé (tuiles, mascotte…) ouvre une nouvelle recherche.
+    setThreadShown(false);
   }, []);
 
   const toggle = useCallback(() => {
@@ -255,8 +288,12 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     }
     setIsOpen(true);
     setHistoryOpen(false);
-    return v.send(texte, context);
-  }, [autorise, v, leaveForOverlay]);
+    return (async () => {
+      await partirDeZero();
+      setThreadShown(true);
+      return v.send(texte, context);
+    })();
+  }, [autorise, v, leaveForOverlay, partirDeZero]);
 
   const guard = useCallback((fn: () => void) => {
     if (autorise()) fn();
@@ -285,25 +322,31 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
       localHandlers.current.set(actionId, onOpen);
       return { ...rest, actionId };
     });
-    v.appendLocal(ex.question, {
-      content: ex.content, kind: ex.kind, tone: ex.tone, summary: ex.summary, objects, actions,
-    });
+    void (async () => {
+      await partirDeZero();
+      v.appendLocal(ex.question, {
+        content: ex.content, kind: ex.kind, tone: ex.tone, summary: ex.summary, objects, actions,
+      });
+      setThreadShown(true);
+    })();
     setHistoryOpen(false);
     setIsOpen(true);
-  }, [v]);
+  }, [v, partirDeZero]);
 
   const runLocal = useCallback((id: string) => {
     localHandlers.current.get(id)?.();
   }, []);
 
+  /** Retour à l'accueil du pop-up ; la prochaine question ouvre une nouvelle recherche. */
   const newRequest = useCallback(() => {
-    void v.newConversation();
+    setThreadShown(false);
     setHistoryOpen(false);
     focusInput();
-  }, [v, focusInput]);
+  }, [focusInput]);
 
   const resume = useCallback((id: number) => {
     void v.selectConversation(id);
+    setThreadShown(true);
     setHistoryOpen(false);
     focusInput();
   }, [v, focusInput]);
@@ -361,7 +404,7 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   }, [onOpenHelp, leaveForOverlay]);
 
   const api: VerebonaSpaceApi = {
-    v, turns, isOpen, isDesktop, reducedMotion, pose, previous, allPrevious, historyOpen, setHistoryOpen, suggestions,
+    v, turns, isOpen, isDesktop, reducedMotion, pose, recent, removeRecent, showThread, allPrevious, historyOpen, setHistoryOpen, suggestions,
     draft, setDraft, live, liveLoading, activeLive, moveLive, openLive,
     open, close, toggle, leaveForOverlay, ask: envoyer, askLocal, runLocal, guard, newRequest, resume, registerInput, focusInput,
   };

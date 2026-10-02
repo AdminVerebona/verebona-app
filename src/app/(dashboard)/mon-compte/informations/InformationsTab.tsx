@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from '@/hooks/useSession';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -148,13 +148,7 @@ export default function InformationsTab() {
     }
   }, [sessionLoading, sessionUser]);
 
-  // Scroll to anchor after data loads (e.g. coming from agenda page)
-  useEffect(() => {
-    if (!loading && typeof window !== 'undefined' && window.location.hash === '#sync-agenda') {
-      const el = document.getElementById('sync-agenda');
-      if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
-    }
-  }, [loading]);
+  // Arrivée par #sync-agenda (page Agenda) : le tiroir s'ouvre seul (CollapsibleCard anchorId).
 
   const fetchData = async () => {
     try {
@@ -325,215 +319,178 @@ export default function InformationsTab() {
   const profileChanged = JSON.stringify(profile) !== JSON.stringify(initialProfile);
 
   return (
-    <div className="w-full max-w-full">
+    // Tous les blocs en tiroirs fermés, sur le modèle « Informations légales » :
+    // un titre, une ligne, le chevron — aucun autre bouton avant ouverture.
+    <div className="flex w-full max-w-full flex-col gap-6">
 
-      {/* ══ Grille 2 colonnes ══
-          Le profil occupait seul la colonne gauche et s'étirait (items-stretch
-          + flex-1) sur la hauteur des quatre blocs de droite : un grand vide
-          sous quatre champs. Les blocs sont désormais répartis — identité,
-          sécurité et suppression à gauche ; agenda et historique IA à droite —
-          et chaque carte garde sa hauteur naturelle. */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+      {/* Profil */}
+      <CollapsibleCard
+        icon={<User className="w-5 h-5" />}
+        title="Mon profil"
+        description="Vos informations personnelles et votre nom d’utilisateur."
+        contentClassName="space-y-3"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="firstName">Prénom</Label>
+            <Input id="firstName" value={profile.firstName} onChange={e => setProfile({...profile, firstName: e.target.value})} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="lastName">Nom</Label>
+            <Input id="lastName" value={profile.lastName} onChange={e => setProfile({...profile, lastName: e.target.value})} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="username">Nom d'utilisateur</Label>
+            <Input id="username" value={profile.username} onChange={e => setProfile({...profile, username: e.target.value})} />
+            <p className="text-xs text-muted-foreground">Affiché dans le message de bienvenue et les emails.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="email">Email <span className="text-muted-foreground">(non modifiable)</span></Label>
+            <Input id="email" value={profile.email} disabled className="bg-muted" />
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <button
+            onClick={handleSaveProfile}
+            disabled={!profileChanged || savingProfile}
+            className="btn-add disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
+          >
+            {savingProfile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {savingProfile ? 'Enregistrement…' : 'Enregistrer'}
+          </button>
+        </div>
+      </CollapsibleCard>
 
-        {/* ── Colonne gauche : Profil + Sécurité + Zone dangereuse ── */}
-        <div className="flex flex-col gap-4">
+      {/* Le bloc « Abonnement » faisait doublon avec « Mon abonnement »
+          (SubscriptionSummary, en tête de page) : il est supprimé. */}
 
-          {/* Profil */}
-          <Card className="flex flex-col">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <User className="h-4 w-4 text-[#3b82f6]" />
-                  <CardTitle className="text-base">Mon profil</CardTitle>
+      {/* Sécurité */}
+      <CollapsibleCard
+        icon={<Key className="w-5 h-5" />}
+        title="Sécurité"
+        description="Modifiez le mot de passe de votre compte."
+      >
+        <Dialog open={isPasswordDialogOpen} onOpenChange={setIsPasswordDialogOpen}>
+          <DialogTrigger asChild>
+            <Button variant="outline" className="rounded-full gap-2">
+              <Key className="w-4 h-4" />
+              Modifier mon mot de passe
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <form onSubmit={handleChangePassword}>
+              <DialogHeader>
+                <DialogTitle>Modifier le mot de passe</DialogTitle>
+                <DialogDescription>Veuillez saisir votre mot de passe actuel avant d'en choisir un nouveau.</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="currentPassword">Mot de passe actuel</Label>
+                  <PasswordInput id="currentPassword" value={passwordForm.currentPassword} onChange={e => setPasswordForm({...passwordForm, currentPassword: e.target.value})} required />
                 </div>
-                <button
-                  onClick={handleSaveProfile}
-                  disabled={!profileChanged || savingProfile}
-                  className="btn-add disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
-                >
-                  {savingProfile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                  {savingProfile ? 'Enregistrement…' : 'Enregistrer'}
+                <div className="space-y-2">
+                  <Label htmlFor="newPassword">Nouveau mot de passe</Label>
+                  <PasswordInput id="newPassword" value={passwordForm.newPassword} onChange={e => setPasswordForm({...passwordForm, newPassword: e.target.value})} required />
+                  <PasswordRequirements password={passwordForm.newPassword} confirmPassword={passwordForm.confirmPassword} showConfirmRule={true} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
+                  <PasswordInput id="confirmPassword" value={passwordForm.confirmPassword} onChange={e => setPasswordForm({...passwordForm, confirmPassword: e.target.value})} required />
+                </div>
+                <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] px-3 py-2.5">
+                  <p className="text-xs text-muted-foreground">
+                    Tous les appareils et navigateurs connectés à votre compte seront déconnectés.
+                  </p>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={keepCurrentSession}
+                      onChange={(e) => setKeepCurrentSession(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    Rester connecté sur cet appareil
+                  </label>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="ghost" onClick={() => setIsPasswordDialogOpen(false)}>Annuler</Button>
+                <button type="submit" disabled={changingPassword} className="btn-add disabled:opacity-40">
+                  {changingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {changingPassword ? 'Mise à jour…' : 'Mettre à jour'}
                 </button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </CollapsibleCard>
+
+      {/* Synchronisation agenda — ancre utilisée par la page Agenda */}
+      <CollapsibleCard
+        anchorId="sync-agenda"
+        icon={<Calendar className="w-5 h-5" />}
+        title="Synchronisation agenda"
+        description="Retrouvez vos échéances dans Google Agenda, Apple Agenda ou Outlook."
+        contentClassName="space-y-4"
+      >
+        {subscription?.plan_type === 'STANDARD' ? (() => {
+          const premiumTheme = getPlanTheme('PREMIUM');
+          return (
+            <div className={`flex flex-col sm:flex-row sm:items-start gap-3 rounded-lg border border-dashed ${premiumTheme.colors.border} bg-blue-500/5 px-3 py-3`}>
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <Lock className={`w-4 h-4 ${premiumTheme.colors.text}/60 mt-0.5 flex-shrink-0`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium">Disponible en Premium</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Synchronisez vos événements avec Google Agenda, Apple Agenda ou Outlook.</p>
+                </div>
               </div>
-              <CardDescription>Vos informations personnelles.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="firstName">Prénom</Label>
-                  <Input id="firstName" value={profile.firstName} onChange={e => setProfile({...profile, firstName: e.target.value})} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="lastName">Nom</Label>
-                  <Input id="lastName" value={profile.lastName} onChange={e => setProfile({...profile, lastName: e.target.value})} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="username">Nom d'utilisateur</Label>
-                  <Input id="username" value={profile.username} onChange={e => setProfile({...profile, username: e.target.value})} />
-                  <p className="text-xs text-muted-foreground">Affiché dans le message de bienvenue et les emails.</p>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="email">Email <span className="text-muted-foreground">(non modifiable)</span></Label>
-                  <Input id="email" value={profile.email} disabled className="bg-muted" />
-                </div>
+              <Button size="sm" variant="outline" className="w-full sm:w-auto sm:shrink-0 border-blue-500/40 text-blue-400 hover:bg-blue-500/10 gap-1 rounded-full" onClick={() => router.push('/mon-compte/offres')}>
+                <Crown className="w-3.5 h-3.5" />Passer Premium
+              </Button>
+            </div>
+          );
+        })() : !calToken ? (
+          <button onClick={handleGenerateCalToken} disabled={calGenerating} className="btn-add disabled:opacity-40">
+            {calGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
+            Générer le lien de synchronisation
+          </button>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Synchronisation active</p>
+                <p className="text-xs text-muted-foreground">Désactivez pour bloquer l'accès sans supprimer le lien</p>
               </div>
-            </CardContent>
-          </Card>
-
-          {/* Le bloc « Abonnement » faisait doublon avec « Mon abonnement »
-              (SubscriptionSummary, en tête de page) : il est supprimé. Son
-              bouton « Changer d'offre », le bloc Duo et le parrainage y
-              ont été déplacés. */}
-
-          {/* Sécurité */}
-          <Card className="flex flex-col">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <Key className="h-4 w-4 text-[#3b82f6]" />
-                <CardTitle className="text-base">Sécurité</CardTitle>
-              </div>
-              <CardDescription>Gérez vos identifiants de connexion.</CardDescription>
-            </CardHeader>
-            <CardContent className="flex-1">
-              <Dialog open={isPasswordDialogOpen} onOpenChange={setIsPasswordDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button variant="outline" className="rounded-full gap-2">
-                    <Key className="w-4 h-4" />
-                    Modifier mon mot de passe
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <form onSubmit={handleChangePassword}>
-                    <DialogHeader>
-                      <DialogTitle>Modifier le mot de passe</DialogTitle>
-                      <DialogDescription>Veuillez saisir votre mot de passe actuel avant d'en choisir un nouveau.</DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 py-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="currentPassword">Mot de passe actuel</Label>
-                        <PasswordInput id="currentPassword" value={passwordForm.currentPassword} onChange={e => setPasswordForm({...passwordForm, currentPassword: e.target.value})} required />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="newPassword">Nouveau mot de passe</Label>
-                        <PasswordInput id="newPassword" value={passwordForm.newPassword} onChange={e => setPasswordForm({...passwordForm, newPassword: e.target.value})} required />
-                        <PasswordRequirements password={passwordForm.newPassword} confirmPassword={passwordForm.confirmPassword} showConfirmRule={true} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
-                        <PasswordInput id="confirmPassword" value={passwordForm.confirmPassword} onChange={e => setPasswordForm({...passwordForm, confirmPassword: e.target.value})} required />
-                      </div>
-                      <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] px-3 py-2.5">
-                        <p className="text-xs text-muted-foreground">
-                          Tous les appareils et navigateurs connectés à votre compte seront déconnectés.
-                        </p>
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={keepCurrentSession}
-                            onChange={(e) => setKeepCurrentSession(e.target.checked)}
-                            className="h-4 w-4"
-                          />
-                          Rester connecté sur cet appareil
-                        </label>
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button type="button" variant="ghost" onClick={() => setIsPasswordDialogOpen(false)}>Annuler</Button>
-                      <button type="submit" disabled={changingPassword} className="btn-add disabled:opacity-40">
-                        {changingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                        {changingPassword ? 'Mise à jour…' : 'Mettre à jour'}
-                      </button>
-                    </DialogFooter>
-                  </form>
-                </DialogContent>
-              </Dialog>
-            </CardContent>
-          </Card>
-
-          {/* Zone dangereuse */}
-          <DeleteAccountCard
-            duoRole={sessionUser?.duoRole ?? null}
-            hasPaidSubscription={Boolean(subscription?.has_stripe_subscription)}
-          />
-
-        </div>{/* end left col */}
-
-        {/* ── Colonne droite : Synchronisation agenda + Historique IA ── */}
-        <div className="flex flex-col gap-4">
-
-          {/* Synchronisation agenda */}
-          <Card id="sync-agenda" className="flex flex-col">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4 text-[#3b82f6]" />
-                  <CardTitle className="text-base">Synchronisation agenda</CardTitle>
+              <Switch checked={calActive} onCheckedChange={handleToggleCal} disabled={calToggling} />
+            </div>
+            {calActive && calFeedUrl && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Lien de votre agenda</label>
+                <div className="flex gap-2">
+                  <Input readOnly value={calFeedUrl} className="font-mono text-xs bg-muted" onClick={e => (e.target as HTMLInputElement).select()} />
+                  <Button variant="outline" size="icon" onClick={handleCopyCalUrl} title="Copier"><Copy className="w-4 h-4" /></Button>
+                  <Button variant="outline" size="icon" asChild title="Ouvrir dans mon agenda"><a href={calFeedUrl}><ExternalLink className="w-4 h-4" /></a></Button>
                 </div>
-                {subscription?.plan_type === 'STANDARD' && (
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30">Premium</span>
-                )}
+                <CalendarTutorial />
               </div>
-            </CardHeader>
-            <CardContent className="space-y-4 flex-1">
-              {subscription?.plan_type === 'STANDARD' ? (() => {
-                const premiumTheme = getPlanTheme('PREMIUM');
-                return (
-                  <div className={`flex flex-col sm:flex-row sm:items-start gap-3 rounded-lg border border-dashed ${premiumTheme.colors.border} bg-blue-500/5 px-3 py-3`}>
-                    <div className="flex items-start gap-3 flex-1 min-w-0">
-                      <Lock className={`w-4 h-4 ${premiumTheme.colors.text}/60 mt-0.5 flex-shrink-0`} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium">Disponible en Premium</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">Synchronisez vos événements avec Google Agenda, Apple Agenda ou Outlook.</p>
-                      </div>
-                    </div>
-                    <Button size="sm" variant="outline" className="w-full sm:w-auto sm:shrink-0 border-blue-500/40 text-blue-400 hover:bg-blue-500/10 gap-1 rounded-full" onClick={() => router.push('/mon-compte/offres')}>
-                      <Crown className="w-3.5 h-3.5" />Passer Premium
-                    </Button>
-                  </div>
-                );
-              })() : !calToken ? (
-                <button onClick={handleGenerateCalToken} disabled={calGenerating} className="btn-add disabled:opacity-40">
-                  {calGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
-                  Générer le lien de synchronisation
-                </button>
-              ) : (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">Synchronisation active</p>
-                      <p className="text-xs text-muted-foreground">Désactivez pour bloquer l'accès sans supprimer le lien</p>
-                    </div>
-                    <Switch checked={calActive} onCheckedChange={handleToggleCal} disabled={calToggling} />
-                  </div>
-                  {calActive && calFeedUrl && (
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Lien de votre agenda</label>
-                      <div className="flex gap-2">
-                        <Input readOnly value={calFeedUrl} className="font-mono text-xs bg-muted" onClick={e => (e.target as HTMLInputElement).select()} />
-                        <Button variant="outline" size="icon" onClick={handleCopyCalUrl} title="Copier"><Copy className="w-4 h-4" /></Button>
-                        <Button variant="outline" size="icon" asChild title="Ouvrir dans mon agenda"><a href={calFeedUrl}><ExternalLink className="w-4 h-4" /></a></Button>
-                      </div>
-                      <CalendarTutorial />
-                    </div>
-                  )}
-                  <div className="pt-1 border-t border-border">
-                    <Button variant="ghost" size="sm" onClick={() => { if (confirm('Régénérer le lien invalidera l\'ancien. Continuer ?')) handleGenerateCalToken(); }} disabled={calGenerating} className="text-muted-foreground gap-2">
-                      {calGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                      Régénérer le lien
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+            )}
+            <div className="pt-1 border-t border-border">
+              <Button variant="ghost" size="sm" onClick={() => { if (confirm('Régénérer le lien invalidera l\'ancien. Continuer ?')) handleGenerateCalToken(); }} disabled={calGenerating} className="text-muted-foreground gap-2">
+                {calGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                Régénérer le lien
+              </Button>
+            </div>
+          </div>
+        )}
+      </CollapsibleCard>
 
-          {/* Historique des modifications automatiques IA */}
-          <AiHistoryBlock />
+      {/* Historique des modifications automatiques IA */}
+      <AiHistoryBlock />
 
-
-        </div>{/* end right col */}
-
-      </div>{/* end grid */}
+      {/* Zone dangereuse */}
+      <DeleteAccountCard
+        duoRole={sessionUser?.duoRole ?? null}
+        hasPaidSubscription={Boolean(subscription?.has_stripe_subscription)}
+      />
 
     </div>
   );
@@ -609,18 +566,18 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
   };
 
   return (
-    <Card className="border-red-500/30 bg-red-950/10 flex flex-col">
-      <CardHeader className="pb-3">
-        <div className="flex items-center gap-2">
-          <Trash2 className="h-5 w-5 text-red-500" />
-          <CardTitle className="text-red-500">Zone dangereuse</CardTitle>
-        </div>
-        <CardDescription>
-          Votre compte est clôturé immédiatement, puis supprimé définitivement {DELETION_DELAY_DAYS} jours plus tard.
-          Pendant ce délai, vous pouvez annuler la suppression ou exporter vos données.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex-1">
+    <CollapsibleCard
+      className="border-red-500/30 bg-red-950/10"
+      titleClassName="text-red-500"
+      icon={<Trash2 className="w-5 h-5 text-red-500" />}
+      title="Zone dangereuse"
+      description="Clôturer votre compte, puis le supprimer définitivement."
+      contentClassName="space-y-4"
+    >
+      <p className="text-sm text-muted-foreground">
+        Votre compte est clôturé immédiatement, puis supprimé définitivement {DELETION_DELAY_DAYS} jours plus tard.
+        Pendant ce délai, vous pouvez annuler la suppression ou exporter vos données.
+      </p>
         <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild>
             <Button variant="outline" className="border-red-500/40 text-red-500 hover:bg-red-500/10 hover:border-red-500 gap-2 btn-delete">
@@ -755,7 +712,6 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
 
           </DialogContent>
         </Dialog>
-      </CardContent>
-    </Card>
+    </CollapsibleCard>
   );
 }
