@@ -176,15 +176,6 @@ function LoginForm() {
                     Mot de passe oublié ?
                   </Link>
                 </div>
-                {/* CDC rétractation §6.1 : le lien doit figurer sur l'écran de
-                    connexion. Un consommateur qui ne parvient plus à se
-                    connecter doit pouvoir exercer son droit. */}
-                <div className="text-center text-xs mt-2">
-                  <Link href="/retractation" className="text-[color:var(--text-muted)] hover:underline">
-                    Renoncer au contrat ici
-                  </Link>
-                </div>
-                
                 <div className="text-muted-foreground">
                   Pas encore de compte ?{' '}
                   <Link href="/signup" className="text-primary hover:underline">
