@@ -1,94 +1,64 @@
 "use client"
 
 /**
- * Modèle d'export — consultation (CDC Back-Office V1 §11.1).
+ * Modèle d'export — consultation et prévisualisation.
  *
- * EXP-007 / REC-MOD-06 : la structure du modèle (libellé, catégorie, type
- * d'export, variables…) n'est plus éditable depuis le BO ; le formulaire et le
- * handler PUT ont été retirés. CDC Exports V12 MIG-06 / DEC-001 : l'identifiant
- * PDFMonkey n'est ni affiché ni lu (colonne conservée en base, inutilisée). EXP-003 / EXP-004 :
- * seule l'activation reste, avec confirmation. EXP-002 : pas de numéro de
- * version affiché.
+ * Nom, description, familles concernées et statut ; activation /
+ * désactivation (confirmation pour désactiver) ; aperçu du rendu à partir
+ * d'un bien du compte administrateur, avec téléchargement. Aucun numéro de
+ * version, aucune édition : le contenu du modèle est géré dans le code.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft, FileType } from 'lucide-react';
 import { ExportTemplateActiveToggle } from '../_components/ExportTemplateActiveToggle';
-import { formatDateTime } from '@/lib/admin/format';
-import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { ExportTemplatePreview } from '../_components/ExportTemplatePreview';
-import { exportCodeLabel } from '@/services/exports/catalog';
-
-interface ExportTemplate {
-  id: number;
-  code: string;
-  label: string;
-  description?: string;
-  variables?: string;
-  category: 'IMMOBILIER' | 'VEHICULE' | 'MATERIEL_PRO' | 'GENERAL';
-  exportType?: string;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-const CATEGORIES: Record<string, string> = {
-  GENERAL: 'Général',
-  IMMOBILIER: 'Immobilier',
-  VEHICULE: 'Véhicule',
-  MATERIEL_PRO: 'Matériel Pro',
-};
-
-/** Type d'export : codes V12 du catalogue (anciens codes compris, SAV / Autre hors catalogue). */
-const LEGACY_ONLY_TYPES: Record<string, string> = { SAV_GARANTIE: 'SAV / Garantie', AUTRE: 'Autre' };
-const exportTypeLabel = (code: string) => LEGACY_ONLY_TYPES[code] ?? exportCodeLabel(code);
-
-function parseVariables(raw: string | undefined): string[] | null {
-  if (!raw?.trim()) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map(String) : null;
-  } catch {
-    return null;
-  }
-}
+import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
+import { formatDateTime } from '@/lib/admin/format';
+import type { AdminExportModel } from '@/app/api/admin/export-templates/model';
 
 export default function ExportTemplateDetailPage() {
   const router = useRouter();
   const params = useParams();
-  const templateId = params.id as string;
+  const code = String(params.id ?? '');
 
-  const [template, setTemplate] = useState<ExportTemplate | null>(null);
+  const [model, setModel] = useState<AdminExportModel | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadTemplate = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
-      setIsLoading(true);
       setError(null);
-      const response = await fetch(`/api/admin/export-templates/${templateId}`, { credentials: 'include' });
+      const response = await fetch(`/api/admin/export-templates/${encodeURIComponent(code)}`, { credentials: 'include' });
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         if (response.status === 401) {
           router.push('/login?redirect=/admin/export-templates');
           return;
         }
-        throw new Error('Erreur lors du chargement du modèle');
+        throw new Error(payload.message || 'Erreur lors du chargement du modèle');
       }
-      setTemplate(await response.json());
+      setModel(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setIsLoading(false);
     }
-  }, [templateId, router]);
+  }, [code, router]);
 
-  useEffect(() => { loadTemplate(); }, [loadTemplate]);
+  useEffect(() => { void load(); }, [load]);
 
-  if (isLoading && !template) {
+  const back = (
+    <Button variant="ghost" size="sm" onClick={() => router.push('/admin/export-templates')}>
+      <ArrowLeft className="h-4 w-4 mr-2" />
+      Retour
+    </Button>
+  );
+
+  if (isLoading && !model) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-10 w-64" />
@@ -97,48 +67,26 @@ export default function ExportTemplateDetailPage() {
     );
   }
 
-  if (error || !template) {
+  if (error || !model) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" size="sm" onClick={() => router.push('/admin/export-templates')}>
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          Retour à la liste
-        </Button>
-        <EcranEnErreur
-          titre="Chargement du modèle impossible"
-          message={error ?? 'Modèle introuvable.'}
-          onRetry={loadTemplate}
-        />
+        {back}
+        <EcranEnErreur titre="Chargement du modèle impossible" message={error ?? 'Modèle introuvable.'} onRetry={load} />
       </div>
     );
   }
 
-  const variables = parseVariables(template.variables);
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => router.push('/admin/export-templates')}>
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Retour
-          </Button>
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
-              <FileType className="h-8 w-8" />
-              {template.label}
-            </h1>
-            <p className="text-muted-foreground mt-1">
-              Code : <span className="font-mono font-semibold">{template.code}</span>
-            </p>
-          </div>
+          {back}
+          <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
+            <FileType className="h-8 w-8" />
+            {model.label}
+          </h1>
         </div>
-        <ExportTemplateActiveToggle
-          templateId={template.id}
-          label={template.label}
-          isActive={template.isActive}
-          onChanged={loadTemplate}
-        />
+        <ExportTemplateActiveToggle code={model.code} label={model.label} isActive={model.isActive} onChanged={load} />
       </div>
 
       <Card>
@@ -146,42 +94,26 @@ export default function ExportTemplateDetailPage() {
           <CardTitle className="text-sm font-medium text-muted-foreground">Informations</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {template.description && <p className="text-sm">{template.description}</p>}
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
+          <p className="text-sm">{model.description}</p>
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
             <div>
-              <p className="text-xs text-muted-foreground mb-1">Catégorie</p>
-              <Badge variant="outline">{CATEGORIES[template.category] ?? template.category}</Badge>
+              <p className="text-xs text-muted-foreground mb-1">Biens concernés</p>
+              <p className="text-sm">{model.families.join(', ')}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground mb-1">Type d’export</p>
-              <p className="text-sm">{template.exportType ? exportTypeLabel(template.exportType) : '—'}</p>
+              <p className="text-xs text-muted-foreground mb-1">Dernier changement de statut</p>
+              <p className="text-sm">
+                {model.updatedAt ? `${formatDateTime(model.updatedAt)}${model.updatedBy ? ` · ${model.updatedBy}` : ''}` : '—'}
+              </p>
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Créé le</p>
-              <p className="text-sm">{formatDateTime(template.createdAt)}</p>
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground mb-1">Données utilisées</p>
-            {variables === null ? (
-              <p className="text-sm text-muted-foreground">Liste illisible.</p>
-            ) : variables.length === 0 ? (
-              <p className="text-sm text-muted-foreground">—</p>
-            ) : (
-              <div className="flex flex-wrap gap-1">
-                {variables.map((v) => (
-                  <Badge key={v} variant="secondary" className="text-xs">{v}</Badge>
-                ))}
-              </div>
-            )}
           </div>
           <p className="text-xs text-muted-foreground border-t pt-3">
-            Le contenu et la structure des modèles d’export sont versionnés hors back-office.
+            Le contenu et la structure des modèles sont gérés dans le code : ils ne sont pas modifiables ici.
           </p>
         </CardContent>
       </Card>
 
-      <ExportTemplatePreview templateId={template.id} />
+      <ExportTemplatePreview code={model.code} />
     </div>
   );
 }

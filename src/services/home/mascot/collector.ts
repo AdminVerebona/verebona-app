@@ -11,7 +11,6 @@ import { getEntitlements } from '@/services/entitlements.service';
 import type { MascotAgendaRow, MascotDocRow, MascotExportRow, MascotRawData, MascotRights } from './signals';
 import { EXT_ACTION_LOOKBACK_DAYS, mascotRightsFrom } from './signals';
 import { MAX_SECONDARIES, MAX_SUBJECTS } from './types';
-import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { classifyByRules } from '@/services/ai/agenda/rules/deterministic-classification';
 
@@ -34,20 +33,6 @@ export function todayParis(now: Date = new Date()): string {
   }).format(now);
 }
 
-/**
- * Échéance « action » (et non simple information) — RÈGLE HISTORIQUE
- * (AI_T4_EFFECTS=legacy), conservée à l'identique : elle recopie en dur
- * T4-02 (« champ de bien = information ») et T4-11 (assurance). En mode
- * `enabled`, voir `isAgendaActionItemT4`.
- */
-export function isAgendaActionItem(item: { homeCategory: string | null; originType: string; title: string }): boolean {
-  if (item.homeCategory === 'action') return true;
-  if (item.homeCategory === 'information') return false;
-  // Non classée : les dates passives (fin d'assurance, reconduction tacite) sont de l'information.
-  if (/fin.*(p.riode|contrat).*assurance|reconduction|renouvellement.*auto/i.test(item.title)) return false;
-  return item.originType !== 'asset_field';
-}
-
 /** Élément d'agenda tel que lu par l'accueil et la mascotte. */
 export interface HomeAgendaItemForClassification {
   homeCategory: string | null;
@@ -60,7 +45,7 @@ export interface HomeAgendaItemForClassification {
 }
 
 /**
- * Échéance « action » — CDC 15 T4-02, T4-11, D-14 (AI_T4_EFFECTS=enabled).
+ * Échéance « action » — CDC 15 T4-02, T4-11, D-14.
  * Plus aucune règle recopiée ici : la classification vient de l'élément
  * d'agenda lui-même, puis des règles partagées de T4.
  *   1. fait HISTORICAL (achat, entretien réalisé, DPE réalisé…) : information,
@@ -79,16 +64,8 @@ export function isAgendaActionItemT4(item: HomeAgendaItemForClassification): boo
   const cat = classifyByRules({
     title: item.title, originType: item.originType, originFieldKey: item.originFieldKey ?? null,
     businessType: item.businessType ?? null, nature,
-  }, 'v2');
+  });
   return cat !== 'information';
-}
-
-/**
- * Classification selon le mode : legacy → règle historique ; shadow → règle
- * historique retenue, divergence comptée par l'appelant ; enabled → T4.
- */
-export function isAgendaActionForMode(item: HomeAgendaItemForClassification, mode: RolloutMode): boolean {
-  return mode === 'enabled' ? isAgendaActionItemT4(item) : isAgendaActionItem(item);
 }
 
 type Row = Record<string, unknown>;
@@ -170,11 +147,11 @@ async function readOnboarding(accountId: number): Promise<MascotRawData['onboard
   };
 }
 
-async function readAgenda(accountId: number, today: string, mode: RolloutMode = t4EffectsMode()): Promise<MascotAgendaRow[]> {
-  // AI_T4_EFFECTS=enabled (0223 appliquée) : les échéances AUTOMATIQUES sont
-  // lues aussi, les faits HISTORICAL jamais (D-14) — filtre de B. Sinon :
-  // requête historique inchangée (automatiques exclus hors prévisions).
-  const filtreT4 = await upcomingDeadlinesSqlFilter('i', mode);
+async function readAgenda(accountId: number, today: string): Promise<MascotAgendaRow[]> {
+  // 0223 appliquée : les échéances AUTOMATIQUES sont lues aussi, les faits
+  // HISTORICAL jamais (D-14) — filtre de B. 0223 absente : automatiques
+  // exclus hors prévisions, faute de nature pour écarter les faits passés.
+  const filtreT4 = await upcomingDeadlinesSqlFilter('i');
   const t4 = filtreT4 !== '';
   const r = await rows(
     `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date,
@@ -205,12 +182,8 @@ async function readAgenda(accountId: number, today: string, mode: RolloutMode = 
     businessType: (i.businessType as string | null | undefined) ?? null,
     originFieldKey: (i.originFieldKey as string | null | undefined) ?? null,
   });
-  if (mode === 'shadow') {
-    const divergences = r.filter((i) => isAgendaActionItem(classer(i)) !== isAgendaActionItemT4(classer(i))).length;
-    if (divergences > 0) console.info('[t4-shadow] mascotte', JSON.stringify({ accountId, lus: r.length, divergences }));
-  }
   return r
-    .filter((i) => isAgendaActionForMode(classer(i), mode))
+    .filter((i) => isAgendaActionItemT4(classer(i)))
     .map((i) => ({
       id: Number(i.id),
       title: String(i.title),

@@ -40,7 +40,9 @@ function pricesFor(useCaseCode: AiUseCaseCode): CachedPrice[] {
  * Lot 16b : T5 (gouvernance) et T6 (mascotte) n'ont plus de drapeau — leur
  * nouveau moteur tourne toujours, leurs tarifs sont donc toujours exigés.
  */
-const sansDrapeau = (): CachedPrice[] => [...pricesFor('AI_GOVERNANCE'), ...pricesFor('HOME_MASCOT')];
+/** Usages sans drapeau, toujours actifs (lot 16b) : T2, T4, T5, T6. */
+const SANS_DRAPEAU = ['INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT'] as const;
+const sansDrapeau = (): CachedPrice[] => SANS_DRAPEAU.flatMap((u) => pricesFor(u));
 
 beforeEach(() => {
   clearPricingCache();
@@ -58,12 +60,12 @@ afterEach(() => {
 describe('périmètre du contrôle tarifaire', () => {
   it('ne bloque pas quand aucun usage à drapeau n\'est basculé, même en production', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    primePricingCache(sansDrapeau()); // seuls les tarifs de T5/T6, toujours actifs
+    primePricingCache(sansDrapeau()); // seuls les tarifs de T2, T4, T5, T6, toujours actifs
 
     await expect(assertPricingReady()).resolves.toBeUndefined();
 
     const state = getPricingReadiness();
-    expect(state.runningUseCases).toEqual(['AI_GOVERNANCE', 'HOME_MASCOT']);
+    expect(state.runningUseCases).toEqual([...SANS_DRAPEAU]);
     expect(state.blocking).toBe(false);
   });
 
@@ -93,10 +95,10 @@ describe('périmètre du contrôle tarifaire', () => {
     await expect(assertPricingReady()).rejects.toThrow(/DATA_RECONCILIATION/);
   });
 
-  it('lot 16b : T5 et T6, sans drapeau, sont toujours dans le périmètre', async () => {
+  it('lot 16b : T2, T4, T5 et T6, sans drapeau, sont toujours dans le périmètre', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     primePricingCache([]);
-    expect(getPricingReadiness().runningUseCases).toEqual(['AI_GOVERNANCE', 'HOME_MASCOT']);
+    expect(getPricingReadiness().runningUseCases).toEqual([...SANS_DRAPEAU]);
     await expect(assertPricingReady()).rejects.toThrow(/sans tarif sur un usage actif/);
   });
 

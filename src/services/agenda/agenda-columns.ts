@@ -4,8 +4,9 @@
  *
  * Colonnes volontairement NON déclarées dans Drizzle (voir l'en-tête de la
  * 0223) : lues et écrites en SQL, seulement si ce contrôle confirme leur
- * présence. Absentes : l'agenda garde son comportement historique, et
- * l'absence est signalée une fois par processus. Ne lève jamais.
+ * présence. Absentes (migration non passée) : clé, nature et liens source
+ * ne sont ni écrits ni lus, et l'absence est signalée une fois par
+ * processus. Ne lève jamais.
  */
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
@@ -32,7 +33,7 @@ export async function agendaFunctionalColumnsReady(): Promise<boolean> {
     signale = true;
     console.error(
       '[agenda] ⚠️ MIGRATION 0223 NON APPLIQUÉE : clé fonctionnelle et nature absentes de agenda_items. '
-      + 'Effets T4 (AI_T4_EFFECTS) inopérants, agenda en comportement historique. Voir /api/health.',
+      + 'Effets T4 inopérants (clé, nature, liens source, synchronisation par source). Voir /api/health.',
     );
   }
   return ready;

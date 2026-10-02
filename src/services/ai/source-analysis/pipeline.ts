@@ -57,9 +57,8 @@ function confidenceToScore(c?: 'certain' | 'probable' | 'conflictual'): number |
   return null;
 }
 import { identifyEntities } from './steps/identify-entities.step';
-import { buildAgendaCandidates, selectAgendaCandidates, attachEvidenceToCandidates } from './steps/build-agenda-candidates.step';
+import { buildAgendaCandidates, buildAgendaCandidatesT4, attachEvidenceToCandidates } from './steps/build-agenda-candidates.step';
 import { resolveAlias } from '@/services/canonical/registry';
-import { t4EffectsMode } from '@/services/canonical/rollout';
 import { persistEvidence, persistProjectedFacts } from './steps/persist-evidence.step';
 import { persistAnalysisResult } from './persistence/analysis-result.repository';
 import { notifyLotCompleted } from './lot-notification';
@@ -207,8 +206,9 @@ export async function runSourceAnalysis(
       }
 
       // Candidats agenda (CDC 15 T4-01, T4-03, T4-04) : registre et nature
-      // HISTORICAL / DEADLINE derrière AI_T4_EFFECTS ; legacy inchangé.
-      result.agendaCandidates = selectAgendaCandidates(result.agendaCandidates, result.extractedFields, {
+      // HISTORICAL / DEADLINE — toujours depuis le lot 16b-2 (AI_T4_EFFECTS
+      // retiré) ; ils remplacent ceux de l'analyse.
+      result.agendaCandidates = buildAgendaCandidatesT4(result.extractedFields, {
         sourceFileId: leadSourceId,
         documentAssetId: resolveAssetId(result, input),
         multiAsset: master ? master.projection.multiAsset : result.warnings.some((w) => w.code === 'MULTI_ASSET_DOCUMENT'),
@@ -216,7 +216,7 @@ export async function runSourceAnalysis(
         documentDate: result.document.date?.value ?? null,
         documentType: result.document.type?.value ?? null,
         documentTypeCode: result.document.rubric?.documentTypeCode ?? null,
-      }, t4EffectsMode());
+      });
 
       // ⚠️ Point de contrôle essentiel : l'appel IA a pu répondre APRÈS un
       // rollback. Aucun de ses résultats n'est alors écrit.

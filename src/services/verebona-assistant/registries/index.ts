@@ -2,7 +2,6 @@
 export * from './intent-registry';
 export * from './action-registry';
 export * from './capability-registry';
-export * from './prompt-registry';
 export * from './retrieval-adapter-registry';
 export * from './model-registry';
 

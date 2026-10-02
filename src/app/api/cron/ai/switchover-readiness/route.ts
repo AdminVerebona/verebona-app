@@ -208,13 +208,12 @@ export async function GET(req: NextRequest) {
         },
   );
 
-  // ── 6. État des cinq drapeaux ──────────────────────────────────────────
+  // ── 6. État des drapeaux restants ──────────────────────────────────────────
   const drapeaux = {
     AI_UNIFIED_SOURCE_ANALYSIS: getFlagMode('AI_UNIFIED_SOURCE_ANALYSIS'),
     AI_RECONCILIATION_ENGINE: getFlagMode('AI_RECONCILIATION_ENGINE'),
-    AI_INTELLIGENT_ASSISTANT: getFlagMode('AI_INTELLIGENT_ASSISTANT'),
-    AI_AGENDA_ENGINE: getFlagMode('AI_AGENDA_ENGINE'),
-    // AI_PROMPT_GOVERNANCE et AI_HOME_MASCOT : supprimés (lot 16b).
+    // AI_INTELLIGENT_ASSISTANT, AI_AGENDA_ENGINE, AI_PROMPT_GOVERNANCE et
+    // AI_HOME_MASCOT : supprimés (lot 16b), usages toujours actifs.
   };
 
   // §10.1 : un usage à la fois. Basculer l'analyse ET la réconciliation

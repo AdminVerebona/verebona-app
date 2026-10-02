@@ -259,7 +259,7 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="vb-home-halo flex min-h-full flex-col gap-[26px] px-4 pb-32 pt-2.5 md:gap-9 md:px-10 md:pb-10 md:pt-8">
+      <div className="vb-home-halo flex min-h-full flex-col gap-[26px] px-4 pb-36 pt-2.5 md:gap-9 md:px-10 md:pb-10 md:pt-8">
         {/* 1. La mascotte parle — sa prise de parole a son propre chargement
             (GET /api/home/mascot) et ne retarde pas le reste de la page. */}
         <MascotSpeaks

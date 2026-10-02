@@ -11,7 +11,7 @@ process.env.DATABASE_URL = inject('e2eDatabaseUrl');
 process.env.GEMINI_API_KEY = 'e2e-sans-reseau';
 process.env.NEXT_PUBLIC_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV ?? 'local';
 // Décision D-01 : on cible le nouveau moteur seul.
-for (const f of ['AI_UNIFIED_SOURCE_ANALYSIS', 'AI_RECONCILIATION_ENGINE', 'AI_INTELLIGENT_ASSISTANT', 'AI_AGENDA_ENGINE']) {
+for (const f of ['AI_UNIFIED_SOURCE_ANALYSIS', 'AI_RECONCILIATION_ENGINE']) {
   process.env[f] = process.env[f] ?? 'enabled';
 }
 // Idempotence en base désactivée : chaque scénario rejoue ses propres sorties.

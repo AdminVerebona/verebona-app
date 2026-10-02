@@ -21,19 +21,17 @@ import { db, pgClient } from '@/db';
 import { agendaItems, agendaAssetLinks, agendaOccurrenceEvents, assetFiles } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { AgendaDecision, ExistingAgendaItem, HomeCategory } from '@/services/ai/agenda';
-import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
-import type { AgendaItemValues } from './write-agenda-item';
 import { AGENDA_PROPOSAL_REASONS } from '@/services/to-process/agenda-proposal-cards';
 import {
-  upsertAgendaItem, removeAgendaItemsFromSource, agendaItemValues, functionalKeyFor, type AgendaUpsertInput, type AgendaSourceRef,
+  upsertAgendaItem, removeAgendaItemsFromSource, functionalKeyFor, type AgendaUpsertInput, type AgendaSourceRef,
 } from './agenda-write-primitive';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
-import { statusReconciliationActive, parseSeriesRecurrence } from './agenda-status-sync';
+import { parseSeriesRecurrence } from './agenda-status-sync';
 import {
   planSourceSync, resolveEventSemantics, keyTarget, type SourceSyncPlan, type SourceItem, type SyncStep, type AgendaEventNature,
 } from './agenda-functional-key';
 
-/** Sémantique T4 recopiée du candidat (A, enabled) : nature et type métier. */
+/** Sémantique T4 recopiée du candidat (A) : nature et type métier. */
 const semanticsOf = (d: AgendaDecision): { businessType: string | null; nature: AgendaEventNature | null } =>
   ({ businessType: d.businessType ?? null, nature: d.nature ?? null });
 
@@ -78,9 +76,9 @@ const agendaTargetOf = (d: AgendaDecision): AgendaUpsertInput['target'] =>
 export interface PersistAgendaOptions {
   /**
    * Document source des décisions (réanalyse). Fourni — ou commun à toutes
-   * les décisions — il déclenche la synchronisation de la source (T4-08) en
-   * AI_T4_EFFECTS=shadow/enabled, y compris avec ZÉRO décision (tous les
-   * événements de la source ont disparu).
+   * les décisions — il déclenche la synchronisation de la source (T4-08),
+   * y compris avec ZÉRO décision (tous les événements de la source ont
+   * disparu).
    */
   sourceFileId?: number | null;
   /**
@@ -92,8 +90,6 @@ export interface PersistAgendaOptions {
   analysisComplete?: boolean;
   /** Avertissements d'incomplétude (journal). */
   incompleteReasons?: string[];
-  /** Force un mode (tests) ; défaut : `AI_T4_EFFECTS`. */
-  mode?: RolloutMode;
 }
 
 /**
@@ -168,32 +164,26 @@ export async function persistAgendaDecisions(
   assetId: number,
   opts: PersistAgendaOptions = {},
 ): Promise<void> {
-  const mode = opts.mode ?? t4EffectsMode();
   // ══════════════════════════════════════════════════════════════════════
-  // SYNCHRONISATION DE LA SOURCE (CDC 15 T4-08) — AI_T4_EFFECTS
-  //   legacy   rien : chaque décision est appliquée comme avant ;
-  //   shadow   plan calculé et journalisé (créations, mises à jour,
-  //            retraits), sans effet sur l'écriture ;
-  //   enabled  clé fonctionnelle : une décision créatrice met à jour
-  //            l'élément de même clé (ou l'adopte), un élément modifié à la
-  //            main n'est jamais touché, et les éléments automatiques de la
-  //            source que plus rien ne produit sont retirés.
+  // SYNCHRONISATION DE LA SOURCE (CDC 15 T4-08) — toujours active depuis le
+  // lot 16b-2 (AI_T4_EFFECTS retiré) : une décision créatrice met à jour
+  // l'élément de même clé (ou l'adopte), un élément modifié à la main n'est
+  // jamais touché, et les éléments automatiques de la source que plus rien
+  // ne produit sont retirés (analyse complète seulement).
   // ══════════════════════════════════════════════════════════════════════
-  const plan = mode === 'legacy' ? null : await planForSource(decisions, accountId, assetId, opts.sourceFileId, mode);
-  const actif = mode === 'enabled' ? plan : null;
+  const actif = await planForSource(decisions, accountId, assetId, opts.sourceFileId);
   // T4-10 (lot 14) : une classification à faire confirmer (`unknown` rendu
-  // prudent, confiance insuffisante) est écrite dans `requires_qualification`
-  // — sous AI_T4_EFFECTS=enabled ou T4 `master`, comme la décision de A.
-  const qualification = decisions.some((d) => d.classification?.requiresQualification)
-    && await statusReconciliationActive(mode);
+  // prudent, confiance insuffisante) est écrite dans `requires_qualification`.
+  const qualification = decisions.some((d) => d.classification?.requiresQualification);
   const qualifier = (d: AgendaDecision, base: boolean) => base || (qualification && d.classification?.requiresQualification === true);
 
   for (const [index, decision] of decisions.entries()) {
     const step = actif?.steps.find((x) => x.index === index);
     try {
-      // CDC 15 T4-04 (enabled) : échéance d'une source non autoritaire →
-      // carte « Ajouter à l'agenda ? », aucun élément créé ni mis à jour.
-      if (mode === 'enabled' && decision.action === 'propose' && AGENDA_PROPOSAL_REASONS.has(decision.reasonCode)) {
+      // CDC 15 T4-04 : échéance d'une source non autoritaire (ou date
+      // ambiguë, R5) → carte « Ajouter à l'agenda ? », aucun élément créé ni
+      // mis à jour.
+      if (decision.action === 'propose' && AGENDA_PROPOSAL_REASONS.has(decision.reasonCode)) {
         if (!step || step.kind === 'create') await proposeFromDecision(decision, accountId, assetId, step?.key ?? null);
         continue;
       }
@@ -204,13 +194,13 @@ export async function persistAgendaDecisions(
       const cle = step?.kind === 'create' ? step.key : null;
       switch (decision.action) {
         case 'create':
-          await createItem(decision, accountId, assetId, qualifier(decision, false), cle, mode);
+          await createItem(decision, accountId, assetId, qualifier(decision, false), cle);
           break;
 
         case 'propose':
           // Preuve insuffisante : l'événement est créé mais demande une
           // qualification par l'utilisateur avant d'être tenu pour acquis.
-          await createItem(decision, accountId, assetId, qualifier(decision, true), cle, mode);
+          await createItem(decision, accountId, assetId, qualifier(decision, true), cle);
           break;
 
         case 'update':
@@ -221,7 +211,7 @@ export async function persistAgendaDecisions(
             await createDuplicateArbitration(decision, accountId, assetId);
             break;
           }
-          await updateItem(decision, accountId, mode);
+          await updateItem(decision, accountId);
           break;
 
         case 'arbitrate_duplicate':
@@ -229,7 +219,7 @@ export async function persistAgendaDecisions(
           break;
 
         case 'create_conflict':
-          await createConflict(decision, accountId, assetId, cle, mode);
+          await createConflict(decision, accountId, assetId, cle);
           break;
 
         case 'skip_duplicate':
@@ -259,7 +249,7 @@ export async function persistAgendaDecisions(
   if (actif && actif.remove.length) {
     try {
       await removeAgendaItemsFromSource({
-        accountId, sourceFileId: actif.sourceFileId, assetId, mode,
+        accountId, sourceFileId: actif.sourceFileId, assetId,
         keepKeys: actif.steps.map((x) => x.key), keepIds: actif.keep,
         analysisComplete: opts.analysisComplete === true,
       });
@@ -281,7 +271,6 @@ async function planForSource(
   accountId: number,
   assetId: number,
   explicite: number | null | undefined,
-  mode: RolloutMode,
 ): Promise<SourceSyncPlan | null> {
   const sources = new Set(decisions.map(sourceOf).filter((x): x is number => typeof x === 'number'));
   const sourceFileId = explicite ?? (sources.size === 1 ? [...sources][0] : null);
@@ -299,11 +288,11 @@ async function planForSource(
       })),
     });
     console.info(JSON.stringify({
-      event: 't4.source_sync', mode, accountId, assetId, sourceFileId,
+      event: 't4.source_sync', accountId, assetId, sourceFileId,
       create: plan.steps.filter((x) => x.kind === 'create').length,
       update: plan.steps.filter((x) => x.kind === 'update').map((x) => (x as { itemId: number }).itemId),
       protected: plan.steps.filter((x) => x.kind === 'protected').map((x) => (x as { itemId: number }).itemId),
-      remove: plan.remove, dryRun: mode !== 'enabled',
+      remove: plan.remove,
     }));
     return plan;
   } catch (e) {
@@ -326,7 +315,7 @@ async function loadSourceItems(accountId: number, assetId: number, sourceFileId:
   return rows.map((r) => ({ ...r, id: Number(r.id) }));
 }
 
-/** Décision créatrice rattachée à un élément existant de même clé (T4-08, enabled). */
+/** Décision créatrice rattachée à un élément existant de même clé (T4-08). */
 async function applySyncStep(step: SyncStep, decision: AgendaDecision, accountId: number, requiresQualification?: boolean): Promise<void> {
   if (step.kind === 'protected') {
     console.info(`[agenda-persistence] élément ${step.itemId} modifié à la main — synchronisation sans effet`);
@@ -345,7 +334,7 @@ async function applySyncStep(step: SyncStep, decision: AgendaDecision, accountId
     title: base.title, date: base.date, category: base.category, nature: base.nature, businessType: base.businessType,
     sources: base.sources, functionalKey: step.key,
     details: requiresQualification === undefined ? {} : { requiresQualification },
-  }, { mode: 'enabled', onlyIfUntouched: true });
+  }, { onlyIfUntouched: true });
 }
 
 /**
@@ -401,7 +390,7 @@ async function proposeFromDecision(decision: AgendaDecision, accountId: number, 
   const input = t4UpsertInput(decision, accountId, assetId, true, planKey);
   const source = sourceOf(decision);
   if (!source) {
-    await createItem(decision, accountId, assetId, true, planKey, 'enabled');
+    await createItem(decision, accountId, assetId, true, planKey);
     return;
   }
   const { proposeAgendaCreation } = await import('@/services/to-process/agenda-proposal-cards');
@@ -419,37 +408,21 @@ async function proposeFromDecision(decision: AgendaDecision, accountId: number, 
   });
 }
 
-/** Valeurs d'un élément créé par T4 — identiques à l'historique (parité). */
-export function t4InsertValues(decision: AgendaDecision, requiresQualification: boolean): AgendaItemValues {
-  return agendaItemValues(t4UpsertInput(decision, 0, null, requiresQualification, null)) as AgendaItemValues;
-}
-
 async function createItem(
   decision: AgendaDecision,
   accountId: number,
   assetId: number,
   requiresQualification: boolean,
   functionalKey: string | null,
-  mode: RolloutMode,
 ): Promise<void> {
-  let itemId: number;
-  if (mode === 'enabled') {
-    // Primitive commune (CDC 15 T4-09) : mêmes validations, liens (bien,
-    // source), nature, clé et effets (D-13, D-14, D-15) que l'agenda manuel.
-    const res = await upsertAgendaItem(
-      t4UpsertInput(decision, accountId, assetId, requiresQualification, functionalKey),
-      { mode, notify: true, purchaseSync: {} },
-    );
-    if (res.protected || !res.created) return;
-    itemId = res.id;
-  } else {
-    // legacy / shadow : écriture historique, à l'identique.
-    const [item] = await db.insert(agendaItems).values({
-      accountId, ...t4InsertValues(decision, requiresQualification),
-    }).returning({ id: agendaItems.id });
-    await linkToAsset(item.id, assetId);
-    itemId = item.id;
-  }
+  // Primitive commune (CDC 15 T4-09) : mêmes validations, liens (bien,
+  // source), nature, clé et effets (D-13, D-14, D-15) que l'agenda manuel.
+  const res = await upsertAgendaItem(
+    t4UpsertInput(decision, accountId, assetId, requiresQualification, functionalKey),
+    { notify: true, purchaseSync: {} },
+  );
+  if (res.protected || !res.created) return;
+  const itemId = res.id;
 
   if (decision.occurrence?.nature === 'FORECAST') {
     await recordOccurrenceEvent(itemId, accountId, 'FORECAST_CREATED', {
@@ -458,13 +431,6 @@ async function createItem(
       seriesKey: decision.occurrence.seriesKey,
     });
   }
-}
-
-/** Rattache l'événement au bien (chemin historique). L'index d'unicité rend l'opération idempotente. */
-async function linkToAsset(agendaItemId: number, assetId: number): Promise<void> {
-  await db.insert(agendaAssetLinks)
-    .values({ agendaItemId, assetId })
-    .onConflictDoNothing();
 }
 
 /** Type d'événement d'une consolidation (doublon certain rattaché à l'existant). */
@@ -590,7 +556,7 @@ async function retireForecast(decision: AgendaDecision, accountId: number): Prom
     ));
 }
 
-async function updateItem(decision: AgendaDecision, accountId: number, mode: RolloutMode): Promise<void> {
+async function updateItem(decision: AgendaDecision, accountId: number): Promise<void> {
   if (!decision.existingItemId) return;
 
   // Relecture de sécurité : entre la décision et son application, l'utilisateur
@@ -615,29 +581,12 @@ async function updateItem(decision: AgendaDecision, accountId: number, mode: Rol
     return;
   }
 
-  if (mode === 'enabled') {
-    const base = t4UpsertInput(decision, accountId, null, false, null);
-    await upsertAgendaItem({
-      itemId: decision.existingItemId, accountId, assetId: null, origin: 'AUTOMATIC',
-      title: base.title, date: base.date, category: base.category, nature: base.nature, businessType: base.businessType,
-      sources: base.sources,
-    }, { mode, onlyIfUntouched: true });
-    return;
-  }
-  // legacy / shadow : écriture historique, à l'identique.
-  await db.update(agendaItems)
-    .set({
-      title: decision.title,
-      startDate: decision.date,
-      homeCategory: decision.category,
-      originRefType: decision.sourceFileId ? 'asset_file' : null,
-      originRefId: decision.sourceFileId ?? null,
-      updatedAt: new Date(),
-    })
-    .where(and(
-      eq(agendaItems.id, decision.existingItemId),
-      eq(agendaItems.accountId, accountId),
-    ));
+  const base = t4UpsertInput(decision, accountId, null, false, null);
+  await upsertAgendaItem({
+    itemId: decision.existingItemId, accountId, assetId: null, origin: 'AUTOMATIC',
+    title: base.title, date: base.date, category: base.category, nature: base.nature, businessType: base.businessType,
+    sources: base.sources,
+  }, { onlyIfUntouched: true });
 }
 
 /**
@@ -652,34 +601,14 @@ async function createConflict(
   accountId: number,
   assetId: number,
   functionalKey: string | null,
-  mode: RolloutMode,
 ): Promise<void> {
   const description =
     `Cette échéance a été détectée dans un document mais diverge d'un événement ` +
     `que vous avez saisi ou modifié` +
     (decision.existingItemId ? ` (événement n° ${decision.existingItemId})` : '') +
     `. Aucun de vos événements n'a été modifié.`;
-  if (mode === 'enabled') {
-    const base = t4UpsertInput(decision, accountId, assetId, true, functionalKey);
-    await upsertAgendaItem({ ...base, details: { description, requiresQualification: true } }, { mode, notify: true });
-    return;
-  }
-  // legacy / shadow : écriture historique, à l'identique.
-  const [item] = await db.insert(agendaItems).values({
-    accountId,
-    title: decision.title,
-    description,
-    startDate: decision.date,
-    homeCategory: decision.category,
-    isAutomatic: true,
-    isAutomaticModified: false,
-    requiresQualification: true,
-    originType: decision.originFieldKey ? 'asset_field' : 'qualified_document',
-    originFieldKey: decision.originFieldKey ?? null,
-    originRefType: decision.sourceFileId ? 'asset_file' : null,
-    originRefId: decision.sourceFileId ?? null,
-  }).returning({ id: agendaItems.id });
-  await linkToAsset(item.id, assetId);
+  const base = t4UpsertInput(decision, accountId, assetId, true, functionalKey);
+  await upsertAgendaItem({ ...base, details: { description, requiresQualification: true } }, { notify: true });
 }
 
 /** Clé du couple « événement existant + échéance détectée » (déduplication). */

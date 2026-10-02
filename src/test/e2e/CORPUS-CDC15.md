@@ -20,9 +20,10 @@ y être verts (D-17).
 
 **Commutateurs** — « cible » = `TARGET_SWITCHES` de `chain.ts` :
 `AI_T1_ANALYSIS_MODE`, `CANONICAL_WRITE_MODE`, `T3_NEGATIVE_RECONCILIATION`,
-`AI_T4_EFFECTS`, `ASSISTANT_CANONICAL_READ`, `EXPORTS_CANONICAL_SOURCE` à
-`enabled`, T1 en architecture `master` par la version de configuration
-(plus T2 `master` pour `corpus-e2e-t2`). Le mode est rappelé dans le titre
+`EXPORTS_CANONICAL_SOURCE` à `enabled`, T1 en architecture `master` par la
+version de configuration. Depuis le lot 16b-2, `AI_T4_EFFECTS` et
+`ASSISTANT_CANONICAL_READ` sont retirés (toujours actifs) et T2, T4, T5, T6
+sont toujours en `master`. Le mode est rappelé dans le titre
 de chaque test.
 
 | ID | Fichier | Test | Commutateurs | Couverture de « Attendu » |
@@ -53,10 +54,10 @@ de chaque test.
 | E2E-T2-04 | corpus-e2e-t2.e2e.ts | E2E-T2-04 — informations manquantes | cible, T1+T2 master | = `listMissingInformation` ; une saisie sort de la liste |
 | E2E-T2-05 | corpus-e2e-t2.e2e.ts | E2E-T2-05 — fournisseurs | cible, T1+T2 master | sources `supplier` seules, dédoublonnées, compte seul |
 | E2E-T2-06 | corpus-e2e-t2.e2e.ts | E2E-T2-06 — « Retrouve une facture » | cible, T1+T2 master | factures seules (devis, attestation exclus) |
-| E2E-T2-07 | t2-routage-cibles.e2e.ts | E2E-T2-07 (enabled) : documents non rattachés | ASSISTANT_CANONICAL_READ | filtre exact : ni colonne ni lien N-N |
+| E2E-T2-07 | t2-routage-cibles.e2e.ts | E2E-T2-07 : documents non rattachés | lecture canonique (seule depuis L16b-2) | filtre exact : ni colonne ni lien N-N |
 | E2E-T2-08 | corpus-e2e-t2.e2e.ts | E2E-T2-08 — échéances proches | cible, T1+T2 master | ordre chronologique ; ni HISTORICAL, ni passé, ni hors fenêtre |
-| E2E-T2-09 | t2-routage-cibles.e2e.ts | E2E-T2-09 (enabled ; legacy) : bien courant puis échéances | ASSISTANT_CANONICAL_READ | aucune échéance d'un autre bien (legacy : les deux) |
-| E2E-T2-10 | t2-routage-cibles.e2e.ts | E2E-T2-10 (enabled) : page document + « Quel est le montant ? » | ASSISTANT_CANONICAL_READ | le document de la page ; autre compte : rien |
+| E2E-T2-09 | t2-routage-cibles.e2e.ts | E2E-T2-09 : bien courant puis échéances | lecture canonique (seule depuis L16b-2) | aucune échéance d'un autre bien |
+| E2E-T2-10 | t2-routage-cibles.e2e.ts | E2E-T2-10 : page document + « Quel est le montant ? » | lecture canonique (seule depuis L16b-2) | le document de la page ; autre compte : rien |
 | E2E-T2-11 | corpus-e2e-t2.e2e.ts | E2E-T2-11 — suivi conversationnel document | cible, T1+T2 master | « le deuxième » → 2e résultat affiché ; « son montant » → même document (aussi `t2-routage-cibles`) |
 | E2E-T2-12 | corpus-e2e-t2.e2e.ts | E2E-T2-12 — suivi agenda | cible, T1+T2 master | « le premier » puis « quel est son statut ? » / « est-il réalisé ? » → même échéance |
 | E2E-T2-13 | corpus-e2e-t2.e2e.ts | E2E-T2-13 — synthèse | cible, T1+T2 master, t2_answer rejoué | sources canonique + document + agenda + À traiter, toutes dans le prompt |
@@ -65,8 +66,8 @@ de chaque test.
 | E2E-T2-16 | corpus-e2e-t2.e2e.ts | E2E-T2-16 — somme sémantique | cible, T1+T2 master | entretien = 300,00 € (assurance exclue) |
 | E2E-T2-17 | corpus-e2e-t2.e2e.ts | E2E-T2-17 — classification ambiguë | cible, T1+T2 master, t2_understand rejoué | clarification, aucune source |
 | E2E-T2-18 | corpus-e2e-t2.e2e.ts | E2E-T2-18 — source hors type attendu | cible, T1+T2 master | sources ⊂ contrat de l'intention (agenda) ; procès-verbal rejeté |
-| E2E-T2-19 | p-t2-master.e2e.ts | E2E-T2-19 (master) + P-T2-02 … | T2 master, ASSISTANT_CANONICAL_READ, t2_answer rejoué | affirmation à source valide mais non soutenue rejetée (CLAIM_UNSUPPORTED) |
-| E2E-T2-20 | t2-routage-cibles.e2e.ts | E2E-T2-20 (enabled) + T2-37 | ASSISTANT_CANONICAL_READ, écritures T2 actives | lecture, jamais de plan de commande |
+| E2E-T2-19 | p-t2-master.e2e.ts | E2E-T2-19 (master) + P-T2-02 … | T2 master, lecture canonique, t2_answer rejoué | affirmation à source valide mais non soutenue rejetée (CLAIM_UNSUPPORTED) |
+| E2E-T2-20 | t2-routage-cibles.e2e.ts | E2E-T2-20 + T2-37 | lecture canonique, écritures T2 actives | lecture, jamais de plan de commande |
 | E2E-T2-21 | corpus-e2e-t2.e2e.ts | E2E-T2-21 — vraie modification | cible, T1+T2 master, écritures T2 actives | aperçu sans écriture → confirmation → valeur USER ; pas de rejeu |
 | E2E-T2-22 | corpus-e2e-t2.e2e.ts | E2E-T2-22 — revalidation d'une échéance | cible, T1+T2 master, t2_revalidate rejoué | fait réinjecté, une preuve active, fiche (T3) et échéance (T4) à la date corrigée |
 | E2E-T2-23 | corpus-e2e-t2.e2e.ts | E2E-T2-23 — conflit déjà arbitré | cible, T1+T2 master | carte d'arbitrage fermée (USER_COMPLETED) ; T2 : valeur retenue, plus « à arbitrer » |

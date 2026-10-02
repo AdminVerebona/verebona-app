@@ -4,9 +4,9 @@
  * T2-32, T2-40).
  *
  *  · fiche canonique vs colonnes : la date d'achat de la fiche (USER) prime
- *    sur `purchase_date` en enabled ; legacy lit toujours la colonne ;
+ *    sur `purchase_date` (lecture canonique seule depuis le lot 16b-2) ;
  *  · conflit ouvert (À traiter) et preuve active portés par la lecture ;
- *  · document multi-biens : biens N-N, comptage par bien (legacy : colonne) ;
+ *  · document multi-biens : biens N-N, comptage par bien ;
  *  · agenda : un élément HISTORICAL n'est jamais une échéance à venir ;
  *    objet agenda complet (nature, statut à 4 états, sources) ;
  *  · dépenses qualifiées, informations manquantes, fournisseurs dédoublonnés,
@@ -38,7 +38,7 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
   const ask = (accountId: number, message: string) =>
     da.answerFromData({ port: repo.accountDataRepository, accountId, message, thresholds });
 
-  it('fiche canonique vs colonnes : date d’achat et immatriculation de la fiche ; legacy : colonne', async () => {
+  it('fiche canonique vs colonnes : date d’achat et immatriculation de la fiche', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, {
       category: 'VEHICULE', name: 'Clio', purchaseDate: '2019-01-01', registrationNumber: null,
@@ -50,17 +50,16 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
     const autre = await make.account();
     expect(await can.readCanonicalField(autre.id, bien.id, 'acquisitionDate')).toBeNull();
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const on = await ask(compte.id, 'Quand ai-je acheté la Clio ?');
     expect(on.answer).toContain('25 mai 2021');
     expect(on.sources[0].id).toBe(`asset_field:${bien.id}:acquisitionDate`);
     const immat = await ask(compte.id, 'Quelle est l’immatriculation de la Clio ?');
     expect(immat.answer).toContain('EF-456-GH');
 
+    // Lot 16b-2 : variable retirée encore posée — sans effet (lecture canonique).
     process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    const off = await ask(compte.id, 'Quand ai-je acheté la Clio ?');
-    expect(off.strategy).toBe('structured.purchase_date');
-    expect(off.answer).toContain('1 janvier 2019');
+    const reste = await ask(compte.id, 'Quand ai-je acheté la Clio ?');
+    expect(reste.answer).toContain('25 mai 2021');
   });
 
   it('conflit ouvert (À traiter) et preuve active portés par la lecture du champ', async () => {
@@ -77,7 +76,7 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
     expect(can.assetFieldSource(r!).meta?.openConflict).toBe(true);
   });
 
-  it('document multi-biens : biens N-N ; comptage et liste par bien (enabled) ; legacy : colonne seule', async () => {
+  it('document multi-biens : biens N-N ; comptage et liste par bien (lecture canonique seule)', async () => {
     const compte = await make.account();
     const a = await make.asset(compte, { name: 'Clio' });
     const b = await make.asset(compte, { name: 'Tesla' });
@@ -91,14 +90,13 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
     expect(etat!.assets.map((x) => x.name).sort()).toEqual(['Clio', 'Tesla']);
     expect(await can.getCanonicalDocumentState((await make.account()).id, doc.id)).toBeNull();
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     expect(await repo.accountDataRepository.countDocuments(compte.id, { assetIds: [b.id] })).toBe(1);
     expect((await repo.accountDataRepository.listDocuments!(compte.id, { assetIds: [b.id] })).map((d) => d.fileId)).toEqual([doc.id]);
     process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    expect(await repo.accountDataRepository.countDocuments(compte.id, { assetIds: [b.id] })).toBe(0);
+    expect(await repo.accountDataRepository.countDocuments(compte.id, { assetIds: [b.id] })).toBe(1);
   });
 
-  it('agenda : HISTORICAL exclu des échéances à venir (enabled) ; objet agenda complet', async () => {
+  it('agenda : HISTORICAL exclu des échéances à venir ; objet agenda complet', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { name: 'Clio' });
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -118,12 +116,11 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
     expect(liste.map((r) => r.id)).toEqual([ct]);
     expect(await can.countUpcomingAgenda(compte.id, { assetIds: [bien.id], from: '2099-01-01' })).toBe(1);
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const prochaines = await repo.accountDataRepository.upcomingAgenda(compte.id, { assetIds: [bien.id], limit: 5 });
     expect(prochaines.map((r) => r.id)).toEqual([ct]);
-    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    const legacy = await repo.accountDataRepository.upcomingAgenda(compte.id, { assetIds: [bien.id], limit: 5 });
-    expect(legacy.map((r) => r.id)).toEqual([achat, achatAncien, ct]);
+    // Faits passés (nature HISTORICAL, ou champ historique sans nature) exclus.
+    expect(prochaines.map((r) => r.id)).not.toContain(achat);
+    expect(prochaines.map((r) => r.id)).not.toContain(achatAncien);
 
     const item = await can.getCanonicalAgendaItem(compte.id, ct);
     expect(item).toMatchObject({ nature: 'DEADLINE', businessType: 'inspection', status: 'unknown', forecast: false });
@@ -154,7 +151,6 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
     const q = await can.sumQualifiedExpenses(compte.id, { assetIds: [bien.id], theme: 'maintenance' });
     expect(q).toMatchObject({ qualifiedSumCents: 45000, qualifiedCount: 2, complete: false, unqualified: { count: 1 }, excluded: { count: 1 } });
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r = await ask(compte.id, 'Combien ai-je dépensé en entretien pour la Polo ?');
     expect(r.strategy).toBe('structured.sum_qualified');
     expect(r.answer).toMatch(/450,00\s€ \(2 documents\)/);
@@ -209,7 +205,6 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
     const tout = await can.sumQualifiedExpenses(compte.id, { assetIds: [bien.id], theme: 'maintenance' });
     expect(tout).toMatchObject({ qualifiedSumCents: 34900, complete: true, duplicates: { count: 1 } });
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r = await ask(compte.id, 'Combien ai-je dépensé en entretien pour la Polo en 2025 ?');
     expect(r.strategy).toBe('structured.sum_qualified');
     expect(r.answer).toMatch(/200,00\s€ \(1 document\)/);

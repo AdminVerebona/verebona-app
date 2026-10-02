@@ -3,7 +3,8 @@
  * CDC §15.11–15.14, §17.1, §17.6, §17.11, §18.4, §21.2, §21.7, §28.8, §30.3.
  *
  * Ce qui était présent mais jamais appelé est soit BRANCHÉ (trace des appels,
- * prompts par intention, validateur, contrôle de démarrage), soit SUPPRIMÉ
+ * validateur, contrôle de démarrage), soit SUPPRIMÉ (lot 16b-2 : prompts par
+ * intention concaténés et registre des prompts historiques aussi)
  * (disjoncteur en mémoire, constructeur de prompt, registre de modèles,
  * providers, bus d'événements, composer par outils).
  */
@@ -33,11 +34,9 @@ vi.mock('@/services/ai/gateway/ai-gateway', () => ({ AiGateway: { execute: h.exe
 const { assertConfigAtStartup, loadAssistantConfig } = await import('../../config/assistant-config');
 const { assertAssistantStartup } = await import('../../index');
 const { AI_OPERATIONS } = await import('@/services/ai/registry/operations');
-const { intentTaskFor } = await import('../../prompts/intent-tasks');
 const { createAiCallBudget, executeWithinBudget } = await import('../ai-call-budget');
 const { validateGeneratedAnswer, looksFrench, countSentences } = await import('../response-validator.service');
 const { evaluateBudget, checkMonthlyBudget, setBudgetAlertWriterForTests } = await import('../budget.service');
-const { PROMPTS } = await import('../../registries/prompt-registry');
 
 const ROOT = join(process.cwd(), 'src/services');
 
@@ -59,6 +58,12 @@ describe('code mort supprimé (il laissait croire à des garanties absentes)', (
     'verebona-assistant/prompts/system.ts',
     'ai/assistant/answer-composer.service.ts',
     'ai/assistant/tool-planner.service.ts',
+    // Lot 16b-2 : consignes par intention concaténées et registre des
+    // prompts historiques — le master T2 est le seul prompt de l'assistant.
+    'verebona-assistant/prompts/intent-tasks.ts',
+    'verebona-assistant/prompts/rights-layer.ts',
+    'verebona-assistant/registries/prompt-registry.ts',
+    'verebona-assistant/canonical/mode.ts',
   ])('%s n’existe plus', (f) => {
     expect(existsSync(join(ROOT, f))).toBe(false);
   });
@@ -67,24 +72,25 @@ describe('code mort supprimé (il laissait croire à des garanties absentes)', (
 describe('contrôle de démarrage (§15.14) sur les modèles RÉELLEMENT appelés', () => {
   const cfg = loadAssistantConfig();
   const ops = (over: Record<string, { primaryModel: string; fallbackModels: string[] }> = {}) => ({
-    understand_request: { primaryModel: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.1-flash-lite'] },
-    revalidate_fact: { primaryModel: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.1-flash-lite'] },
-    generate_answer: { primaryModel: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.1-flash-lite'] },
+    t2_understand: { primaryModel: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.1-flash-lite'] },
+    t2_revalidate: { primaryModel: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.1-flash-lite'] },
+    t2_answer: { primaryModel: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.1-flash-lite'] },
     ...over,
   });
 
   it('la configuration livrée passe', () => {
     expect(() => assertAssistantStartup()).not.toThrow();
-    expect(AI_OPERATIONS.generate_answer).toBeTruthy();
+    expect(AI_OPERATIONS.t2_answer).toBeTruthy();
+    expect(AI_OPERATIONS.generate_answer).toBeUndefined();
   });
   it('refuse un alias « latest »', () => {
-    expect(() => assertConfigAtStartup(cfg, ops({ generate_answer: { primaryModel: 'gemini-flash-latest', fallbackModels: [] } }))).toThrow(/latest/);
+    expect(() => assertConfigAtStartup(cfg, ops({ t2_answer: { primaryModel: 'gemini-flash-latest', fallbackModels: [] } }))).toThrow(/latest/);
   });
   it('refuse un modèle Pro dans le chemin utilisateur', () => {
-    expect(() => assertConfigAtStartup(cfg, ops({ generate_answer: { primaryModel: 'gemini-2.5-pro', fallbackModels: [] } }))).toThrow(/Pro/);
+    expect(() => assertConfigAtStartup(cfg, ops({ t2_answer: { primaryModel: 'gemini-2.5-pro', fallbackModels: [] } }))).toThrow(/Pro/);
   });
   it('refuse une escalade identique au modèle par défaut', () => {
-    expect(() => assertConfigAtStartup(cfg, ops({ understand_request: { primaryModel: 'm', fallbackModels: ['m'] } }))).toThrow(/escalade/);
+    expect(() => assertConfigAtStartup(cfg, ops({ t2_understand: { primaryModel: 'm', fallbackModels: ['m'] } }))).toThrow(/escalade/);
   });
   it('refuse une opération absente, plus de 2 appels, la recherche web', () => {
     expect(() => assertConfigAtStartup(cfg, {})).toThrow(/absente/);
@@ -93,30 +99,9 @@ describe('contrôle de démarrage (§15.14) sur les modèles RÉELLEMENT appelé
   });
 });
 
-describe('prompts par intention (§17.6) — injectés dans la TÂCHE du prompt maître', () => {
-  it('synthèse, comparaison, chronologie et aide ont leur consigne versionnée', () => {
-    for (const [intent, id] of [['ACCOUNT_SUMMARY', 'account-summary'], ['ACCOUNT_COMPARISON', 'account-comparison'], ['ACCOUNT_TIMELINE', 'account-timeline'], ['PRODUCT_HELP_HOW_TO', 'product-help']] as const) {
-      const t = intentTaskFor(intent);
-      expect(t.promptId).toBe(id);
-      expect(t.promptVersion).toBe(PROMPTS[id].version);
-      expect(t.intentVariable.startsWith(intent)).toBe(true);
-      expect(t.intentVariable).toMatch(/Consigne propre à cette intention/);
-    }
-  });
-  it('les autres intentions gardent la tâche générique du maître', () => {
-    const t = intentTaskFor('ACCOUNT_SEARCH_DOCUMENT');
-    expect(t).toEqual({ intentVariable: 'ACCOUNT_SEARCH_DOCUMENT', promptId: 'generate_answer', promptVersion: 'generate_answer_v4' });
-  });
-  it('aucune consigne ne contredit le maître : pas d’URL produite, pas d’arbitrage de divergence', () => {
-    expect(intentTaskFor('PRODUCT_HELP_HOW_TO').intentVariable).not.toMatch(/termines par le lien/);
-    expect(intentTaskFor('ACCOUNT_SUMMARY').intentVariable).not.toMatch(/faisant autorité/);
-    expect(intentTaskFor('PRODUCT_HELP_HOW_TO').intentVariable).toMatch(/se contredisent/);
-  });
-});
-
 describe('trace des appels modèle dans verebona_ai_runs (§28.8)', () => {
-  const REQ = { useCaseCode: 'INTELLIGENT_ASSISTANT' as const, operationCode: 'generate_answer', accountId: 7, userId: 3, promptVariables: { QUESTION: 'x' }, outputSchema: {} as never };
-  const TRACE = { requestId: 'req-1', routeReason: 'test', promptId: 'account-summary', promptVersion: 'account-summary-v3.0' };
+  const REQ = { useCaseCode: 'INTELLIGENT_ASSISTANT' as const, operationCode: 't2_answer', accountId: 7, userId: 3, promptVariables: { QUESTION: 'x' }, outputSchema: {} as never };
+  const TRACE = { requestId: 'req-1', routeReason: 'test', promptId: 't2_master', promptVersion: 't2_master_v1' };
 
   it('succès : une ligne avec alias, modèle réel, prompt, catalogues, empreinte — pas le texte', async () => {
     h.execute.mockResolvedValue({ data: {}, model: 'gemini-3.5-flash-lite', usedFallback: false, inputTokens: 100, outputTokens: 20, costMicros: 42, durationMs: 300, fromCache: false, promptVersion: 'v3', provider: 'g', traceId: 't' });
@@ -126,10 +111,10 @@ describe('trace des appels modèle dans verebona_ai_runs (§28.8)', () => {
     expect(ins).toBeTruthy();
     const p = ins!.p;
     expect(p[0]).toBe('req-1');
-    expect(p[3]).toBe('assistant-default:generate_answer');
+    expect(p[3]).toBe('assistant-default:t2_answer');
     expect(p[4]).toBe('gemini-3.5-flash-lite');
-    expect(p[6]).toBe('account-summary');
-    expect(p[7]).toBe('account-summary-v3.0');
+    expect(p[6]).toBe('t2_master');
+    expect(p[7]).toBe('t2_master_v1');
     expect(String(p[8])).toMatch(/^[0-9a-f]{64}$/);
     expect(p).toContain('intent-catalog-v1.0');
     expect(p).toContain('action-catalog-v1.2');
@@ -144,7 +129,7 @@ describe('trace des appels modèle dans verebona_ai_runs (§28.8)', () => {
     await expect(executeWithinBudget(createAiCallBudget(2), REQ, TRACE)).rejects.toBeTruthy();
     await new Promise((r) => setTimeout(r, 0));
     const lignes = h.sql.filter((x) => /INSERT INTO verebona_ai_runs/.test(x.q)).map((x) => x.p);
-    expect(lignes[0][3]).toBe('assistant-escalation:generate_answer');
+    expect(lignes[0][3]).toBe('assistant-escalation:t2_answer');
     expect(lignes[1][18]).toBe('error');
   });
 

@@ -3,9 +3,9 @@
  *   · R1 : chronologie persistée (valeur écrite, relecture revérifiée §19.10) ;
  *   · R7 : biens d'une comparaison (page, fil, famille ; > 3 → clarification) ;
  *   · R8 : sources synthétiques d'agenda ouvrables, les autres non ouvrables ;
- *   · §19.4 : critères 3 (type) et 4 (date) sous lecture canonique, legacy à l'identique.
+ *   · §19.4 : critères 3 (type) et 4 (date) — lecture canonique seule depuis le lot 16b-2.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('@/db', () => ({ pgClient: { unsafe: vi.fn(async () => []) }, db: {}, ensureMigrations: vi.fn(async () => {}) }));
 
@@ -16,7 +16,6 @@ import { resolveSourcesForDisplay } from '../source-resolver.service';
 import { trierParContribution, RANG_TYPE_SOURCE } from '../assistant-orchestrator.service';
 import type { Claim, ResolvedSource } from '../../types/sources';
 
-afterEach(() => { delete process.env.ASSISTANT_CANONICAL_READ; });
 
 describe('R1 — chronologie persistée', () => {
   it('valeur écrite : entrées valides seulement, liens internes, null sans chronologie', () => {
@@ -150,42 +149,18 @@ describe('§19.4 — tri des sources', () => {
     src('d', 'help_entry', 0.99, '2026-09-01'),
   ];
 
-  /** Algorithme du tag lot18 (référence de parité). */
-  const lot18 = (ss: ResolvedSource[], cs: Claim[]) => {
-    if (ss.length < 2 || cs.length === 0) return ss;
-    const cit = new Map<string, number>();
-    const p = new Set(cs[0]?.sourceIds ?? []);
-    for (const c of cs) for (const id of new Set(c.sourceIds)) cit.set(id, (cit.get(id) ?? 0) + 1);
-    return ss.map((s, i) => ({ s, i })).sort((a, b) => (cit.get(b.s.id) ?? 0) - (cit.get(a.s.id) ?? 0)
-      || Number(p.has(b.s.id)) - Number(p.has(a.s.id)) || (b.s.relevanceScore ?? 0) - (a.s.relevanceScore ?? 0) || a.i - b.i).map((x) => x.s);
-  };
-
-  it('legacy (défaut) : ordre strictement identique au lot 18', () => {
-    const jeux: Array<[ResolvedSource[], Claim[]]> = [
-      [sources, claims],
-      [sources, [{ claimKey: 'x', text: 't', sourceIds: ['c'], derivation: 'direct' }, { claimKey: 'y', text: 'u', sourceIds: ['c', 'a'], derivation: 'direct' }]],
-      [sources, []],
-      [[...sources].reverse(), claims],
-    ];
-    for (const [ss, cs] of jeux) expect(trierParContribution(ss, cs).map((s) => s.id)).toEqual(lot18(ss, cs).map((s) => s.id));
-    expect(trierParContribution(sources, claims).map((s) => s.id)).toEqual(['d', 'a', 'b', 'c']);
-  });
-
-  it('enabled : type (fiche > document > aide) puis date la plus récente, puis score', () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+  it('type (fiche > document > aide) puis date la plus récente, puis score', () => {
     expect(trierParContribution(sources, claims).map((s) => s.id)).toEqual(['b', 'c', 'a', 'd']);
     expect(RANG_TYPE_SOURCE.asset_field).toBeLessThan(RANG_TYPE_SOURCE.document);
   });
 
-  it('enabled : entre deux échéances, l’ordre chronologique d’origine est gardé (pas de récence)', () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+  it('entre deux échéances, l’ordre chronologique d’origine est gardé (pas de récence)', () => {
     const ech = [src('e1', 'agenda_item', 1, '2026-10-05'), src('e2', 'agenda_item', 1, '2026-10-12'), src('e3', 'agenda_item', 1, '2026-10-20')];
     const cs: Claim[] = [{ claimKey: 'l', text: 't', sourceIds: ['e1', 'e2', 'e3'], derivation: 'direct' }];
     expect(trierParContribution(ech, cs).map((s) => s.id)).toEqual(['e1', 'e2', 'e3']);
   });
 
-  it('enabled : la contribution reste le premier critère (la récence ne passe jamais devant)', () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+  it('la contribution reste le premier critère (la récence ne passe jamais devant)', () => {
     const cs: Claim[] = [{ claimKey: 'p', text: 't', sourceIds: ['a'], derivation: 'direct' }, { claimKey: 'q', text: 'u', sourceIds: ['a', 'd'], derivation: 'direct' }];
     expect(trierParContribution(sources, cs).map((s) => s.id).slice(0, 2)).toEqual(['a', 'd']);
   });

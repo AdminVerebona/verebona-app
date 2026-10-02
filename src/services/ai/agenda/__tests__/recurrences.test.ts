@@ -66,7 +66,8 @@ describe('historique', () => {
 describe('moteur T4', () => {
   const run = (excerpt: string, existing: ExistingAgendaItem[] = []) => processAgendaCandidates({
     accountId: 1, assetId: 2, sourceFileId: 9, today: TODAY, existing,
-    candidates: [{ title: 'Entretien à prévoir', date: '2026-11-15', confidence: 'certain', excerpt, originFieldKey: 'maintenanceDueDate', recurrence: parseRecurrenceFr(excerpt) ?? undefined }],
+    // Source autoritaire (T4-04, toujours appliqué depuis le lot 16b-2).
+    candidates: [{ title: 'Entretien à prévoir', date: '2026-11-15', confidence: 'certain', excerpt, originFieldKey: 'maintenanceDueDate', documentType: 'RAPPORT_ENTRETIEN', recurrence: parseRecurrenceFr(excerpt) ?? undefined }],
   });
 
   it('prévision marquée, avec sa provenance', async () => {

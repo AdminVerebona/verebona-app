@@ -28,7 +28,7 @@ vi.mock('../agenda-write-primitive', () => ({ upsertAgendaItem: h.write }));
 vi.mock('../agenda-persistence', () => ({ recordOccurrenceEvent: h.record }));
 
 import {
-  parseSeriesRecurrence, evidenceForItem, toStatusItem, reconcileAgendaStatusForSource, statusReconciliationActive,
+  parseSeriesRecurrence, evidenceForItem, toStatusItem, reconcileAgendaStatusForSource,
   type SourceProof,
 } from '../agenda-status-sync';
 
@@ -82,20 +82,17 @@ describe('preuve d’une échéance dans un document', () => {
 });
 
 describe('gouvernance', () => {
-  it('AI_T4_EFFECTS=enabled OU T4 master', async () => {
-    expect(await statusReconciliationActive('enabled', 'steps')).toBe(true);
-    expect(await statusReconciliationActive('legacy', 'master')).toBe(true);
-    expect(await statusReconciliationActive('shadow', 'steps')).toBe(false);
-  });
-  it('inactive : rien n’est lu ni écrit', async () => {
-    const r = await reconcileAgendaStatusForSource({ accountId: 1, assetId: 2, sourceFileId: 3, mode: 'legacy', architecture: 'steps' });
-    expect(r).toEqual({ skipped: 'NOT_ENABLED', entries: [] });
-    expect(h.reconcile).not.toHaveBeenCalled();
+  // Lot 16b-2 : AI_T4_EFFECTS et T4 `steps` retirés — toujours active.
+  it('toujours active : la preuve du document est lue et la décision demandée', async () => {
+    h.reconcile.mockResolvedValue({ engine: 'completion_v2', status: 'unknown', decision: 'keep', occurrenceMatch: 'exact', reasonCode: 'X', reason: '', needsModel: false });
+    const r = await reconcileAgendaStatusForSource({ accountId: 1, assetId: 2, sourceFileId: 3 });
+    expect(r.skipped).toBeUndefined();
+    expect(h.reconcile).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('effets', () => {
-  const run = () => reconcileAgendaStatusForSource({ accountId: 1, assetId: 2, sourceFileId: 3, mode: 'enabled', architecture: 'steps' });
+  const run = () => reconcileAgendaStatusForSource({ accountId: 1, assetId: 2, sourceFileId: 3 });
   const verdict = (decision: string) => ({ engine: 'completion_v2', status: 'completed', decision, occurrenceMatch: 'exact', reasonCode: 'COMPLETION_PROVEN', reason: '', needsModel: false });
 
   it('ExistingAgendaItem transmis avec type métier, récurrence et statut', async () => {
@@ -104,7 +101,7 @@ describe('effets', () => {
     const [item, evidence, ctx] = h.reconcile.mock.calls[0];
     expect(item).toMatchObject({ id: 10, businessType: 'maintenance', status: null, manual: false });
     expect(evidence).toMatchObject({ confidence: 'certain', documentType: 'RAPPORT_ENTRETIEN' });
-    expect(ctx).toMatchObject({ accountId: 1, sourceFileId: 3, mode: 'enabled' });
+    expect(ctx).toEqual({ accountId: 1, sourceFileId: 3, userId: undefined });
   });
 
   it('mark_done : statut « réalisé » par la primitive (origine automatique), document lié comme preuve, trace, cartes closes', async () => {
@@ -114,7 +111,6 @@ describe('effets', () => {
     expect(h.write.mock.calls[0][0]).toMatchObject({
       itemId: 10, origin: 'AUTOMATIC', details: { manualStatus: 'realise' }, sources: [{ fileId: 3, role: 'PROOF' }],
     });
-    expect(h.write.mock.calls[0][1]).toMatchObject({ mode: 'enabled' });
     expect(h.record).toHaveBeenCalledWith(10, 1, 'STATUS_AUTO_COMPLETED', expect.objectContaining({ origin: 'AI', sourceFileId: 3 }));
     expect(h.close).toHaveBeenCalledWith(1, 10, 'OBSOLETE');
   });

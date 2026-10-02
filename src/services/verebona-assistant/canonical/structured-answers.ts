@@ -1,7 +1,7 @@
 /**
  * Réponses structurées CANONIQUES — CDC 15 T2-04, T2-15, T2-22, T2-23,
- * T2-24, T2-32 (lot 15). Appelées par `data-answer.service` (niveau 1)
- * seulement quand ASSISTANT_CANONICAL_READ = enabled ; aucun appel modèle.
+ * T2-24, T2-32 (lot 15). Appelées par `data-answer.service` (niveau 1) ;
+ * aucun appel modèle.
  *
  *   · structured.asset_field          « Quel est le kilométrage de la Clio ? »,
  *                                     « Quand ai-je acheté la maison ? » — un champ

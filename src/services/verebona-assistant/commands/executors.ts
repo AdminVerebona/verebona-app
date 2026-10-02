@@ -124,16 +124,14 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       await loadWritableAsset(p.assetId, ctx.accountId);
       const state = await sqlLookup.getAssetState?.(ctx.accountId, p.assetId);
       const actuelle = state?.characteristics[p.field] ?? null;
-      // CDC 15 T2-40 (ASSISTANT_CANONICAL_READ=enabled) : la valeur relue est
-      // la valeur CANONIQUE, celle que l'assistant lit et que la fiche affiche.
-      const { canonicalReadEnabled } = await import('../canonical/mode');
-      const inchangee = canonicalReadEnabled()
-        ? (await import('../canonical/commands')).unchangedSinceConfirmation(
-          p.previous,
-          (await (await import('../canonical/commands')).commandAssetState(ctx.accountId, p.assetId))?.characteristics[p.field] ?? null,
-          actuelle,
-        )
-        : String(actuelle ?? '') === String(p.previous ?? '');
+      // CDC 15 T2-40 : la valeur relue est la valeur CANONIQUE, celle que
+      // l'assistant lit et que la fiche affiche.
+      const commandes = await import('../canonical/commands');
+      const inchangee = commandes.unchangedSinceConfirmation(
+        p.previous,
+        (await commandes.commandAssetState(ctx.accountId, p.assetId))?.characteristics[p.field] ?? null,
+        actuelle,
+      );
       if (!inchangee) {
         return ko(action, `« ${label} » a été modifié entre-temps : rien n’a été écrit. Refaites votre demande.`);
       }

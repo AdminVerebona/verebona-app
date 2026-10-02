@@ -65,10 +65,8 @@ describe('pronoms, démonstratifs, « l’autre », « le précédent »', () =>
   const sel = ctx({ lastSelected: { type: 'document', id: 456, label: 'Facture 2025' } });
 
   it('« sa date » désigne l’élément sélectionné', () => expect(resolved('Et sa date ?', sel)).toBe(456));
-  it('« quel est son statut ? » : élément sélectionné en lecture canonique seulement (legacy = lot16)', () => {
-    expect(resolved('Quel est son statut ?', sel)).toBe('none');
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
-    try { expect(resolved('Quel est son statut ?', sel)).toBe(456); } finally { delete process.env.ASSISTANT_CANONICAL_READ; }
+  it('« quel est son statut ? » : élément sélectionné (lecture canonique seule, lot 16b-2)', () => {
+    expect(resolved('Quel est son statut ?', sel)).toBe(456);
   });
 
   it('« ce document » désigne l’élément sélectionné', () => expect(resolved('Ouvre ce document', sel)).toBe(456));
@@ -114,17 +112,17 @@ describe('contexte borné pour le modèle', () => {
     expect(t).toContain('« Facture 2025 »');
   });
 
-  // v4 (§17.3, §18.2) remplace v3 et garde la règle R9.
-  it('le prompt v4 reçoit {{CONVERSATION}} et interdit d’en tirer des faits', () => {
-    const p = read('src/services/ai/prompts/assistant/generate_answer_v4.txt');
+  // Lot 16b-2 : master T2 seul (règle U5 au lieu de R9 du prompt v4 retiré).
+  it('le master T2 reçoit {{CONVERSATION}} et interdit d’en tirer des faits', () => {
+    const p = read('src/services/ai/prompts/assistant/t2_master_v1.txt');
     expect(p).toContain('{{CONVERSATION}}');
-    expect(p).toMatch(/R9 — LE CONTEXTE SERT À COMPRENDRE, PAS À AFFIRMER/);
-    expect(read('src/services/ai/registry/operations.ts')).toMatch(/promptCode: 'generate_answer_v4'/);
+    expect(p).toMatch(/U5 — CONTEXTE CONVERSATIONNEL\.\nLe contexte sert à comprendre[^\n]*jamais une preuve factuelle/);
     // Le contexte du fil alimente {{CONVERSATION}} (borné par le budget de
     // jetons d'entrée, §13.9).
     const gen = read('src/services/verebona-assistant/core/generation.adapter.ts');
     expect(gen).toMatch(/input\.threadContextText && !isHelpIntent/);
-    expect(gen).toMatch(/CONVERSATION: fit\.conversation/);
+    expect(gen).toMatch(/conversation: fit\.conversation/);
+    expect(gen).toMatch(/CONVERSATION: p\.conversation/);
   });
 });
 
@@ -153,15 +151,13 @@ describe('câblage', () => {
   });
 });
 
-describe('E2E-T2-12 : « est-il réalisé ? » (inversion) — renvoi seulement sur une échéance choisie, en lecture canonique', () => {
+describe('E2E-T2-12 : « est-il réalisé ? » (inversion) — renvoi seulement sur une échéance choisie', () => {
   const echeance = ctx({ lastSelected: { type: 'agenda_item', id: 77, label: 'Entretien Polo' } });
-  const avec = (fn: () => void) => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
-    try { fn(); } finally { delete process.env.ASSISTANT_CANONICAL_READ; }
-  };
+  // Lot 16b-2 : lecture canonique seule, plus de commutateur.
+  const avec = (fn: () => void) => fn();
 
   it.each(['Est-il réalisé ?', 'A-t-il été fait ?', 'Est-elle faite ?', 'Et est-il déjà passé ?'])(
-    'enabled, échéance sélectionnée : « %s » → l’échéance', (msg) => avec(() => expect(resolved(msg, echeance)).toBe(77)));
+    'échéance sélectionnée : « %s » → l’échéance', (msg) => avec(() => expect(resolved(msg, echeance)).toBe(77)));
 
   it('non-régression : une question qui nomme ce qu’elle vise n’est jamais un renvoi, avec ou sans sélection', () => avec(() => {
     for (const msg of ['Le contrôle technique de la Clio est-il passé ?', 'Mon assurance habitation est-elle à jour ?']) {
@@ -176,8 +172,4 @@ describe('E2E-T2-12 : « est-il réalisé ? » (inversion) — renvoi seulement 
     expect(resolved('Est-il réalisé ?', ctx())).toBe('none');
   }));
 
-  it('legacy (défaut) : comportement historique, aucun renvoi par inversion', () => {
-    expect(resolved('Est-il réalisé ?', echeance)).toBe('none');
-    expect(resolved('Le contrôle technique de la Clio est-il passé ?', echeance)).toBe('none');
-  });
 });

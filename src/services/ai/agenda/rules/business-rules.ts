@@ -1,12 +1,11 @@
 /**
  * Règles métier STABLES de classification agenda — CDC 15 T4-11, §26 (C4).
  *
- * UN SEUL EXEMPLAIRE. Ces deux règles vivaient en dur dans le prompt
- * `classify_event_v2` (R1, R3) ET dans le prompt inline de
- * `AgendaClassificationService` : deux copies d'une même règle dérivent.
+ * UN SEUL EXEMPLAIRE. Ces deux règles vivaient en dur dans deux prompts
+ * historiques (retirés au lot 16b-2) : deux copies d'une même règle dérivent.
  * Elles sont désormais des règles déterministes, évaluées AVANT tout appel
- * modèle, par le moteur (`deterministic-classification`) comme par le chemin
- * historique (`AgendaClassificationService`). Le prompt maître T4 ne les
+ * modèle (`deterministic-classification`), pour l'agenda automatique comme
+ * pour la création manuelle (`AgendaWriteService`). Le prompt maître T4 ne les
  * contient pas (C4 : « N'applique pas de règle générale par type de
  * contrat »).
  *

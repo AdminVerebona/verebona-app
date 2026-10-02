@@ -65,7 +65,6 @@ import { buildResultGroups } from './result-groups';
 import { foundWithoutInfoMessage } from './document-status';
 import { getIntentDefinition } from '../registries/intent-registry';
 import { ROUTES } from './entity-ref';
-import { canonicalReadEnabled } from '../canonical/mode';
 import { targetsFromInput, type AssistantTargets } from './assistant-targets';
 import type { TargetAnswer } from './target-answer';
 import { clientTimelineEvents, planTimelineEvents, timelineAnswer, type SynthesisPlan } from './synthesis-planner';
@@ -170,14 +169,14 @@ export interface OrchestratorPorts {
   /** Plafond budgétaire mensuel du compte (§6.6, §31.3). Absent : pas de plafond. */
   checkMonthlyBudget?(accountId: number): Promise<{ allowed: boolean }>;
   /**
-   * CDC 15 T2-19, T2-20, T2-21 (ASSISTANT_CANONICAL_READ=enabled) : lecture
+   * CDC 15 T2-19, T2-20, T2-21 (lecture canonique) : lecture
    * ciblée d'un document ou d'une échéance déjà désignés (page, fil,
    * clarification) — « quel est le montant ? », « et sa date ? ». `null` :
    * la question ne porte pas sur la cible, la demande suit son cours.
    */
   readTarget?(input: AssistantRequestInput, targets: AssistantTargets, route?: IntentRoute): Promise<TargetAnswer | null>;
   /**
-   * CDC 15 T2-10, T2-33, T2-34 (ASSISTANT_CANONICAL_READ=enabled) :
+   * CDC 15 T2-10, T2-33, T2-34 (lecture canonique) :
    * planificateurs dédiés de synthèse, comparaison et chronologie. `null` :
    * pas de plan (recherche générique en repli).
    */
@@ -391,7 +390,7 @@ export async function runAssistant(
     // chercherait dans le compte entier. Seulement si la question ne nomme
     // rien d'autre (garde-fou de `answerFromTarget`).
     // ══════════════════════════════════════════════════════════════════════
-    if (canonicalReadEnabled() && ports.readTarget && !input.resume) {
+    if (ports.readTarget && !input.resume) {
       const cibles = targetsFromInput(input);
       if (cibles.primary && (cibles.primary.type === 'document' || cibles.primary.type === 'agenda_item')) {
         const lu = await withDeadline(ports.readTarget(input, cibles), retrievalDeadline()).catch(() => null);
@@ -638,7 +637,7 @@ export async function runAssistant(
       // sur les données ; sinon clarification — les choix viennent du
       // registre des intentions, jamais du modèle.
       // ════════════════════════════════════════════════════════════════
-      if (canonicalReadEnabled() && route.clarificationRequired && !input.resume) {
+      if (route.clarificationRequired && !input.resume) {
         const cible = targetsFromInput(input, route).primary;
         if (route.intent.startsWith('ACCOUNT_') && cible) {
           trace.escalationReasons.push(`CLASSIFICATION:AMBIGUOUS_RESOLVED_BY_${cible.origin.toUpperCase()}`);
@@ -679,7 +678,7 @@ export async function runAssistant(
     // UN bien ciblé (question, fil, page, indice), il est lu sur la fiche
     // canonique, sans recherche ni génération.
     // ══════════════════════════════════════════════════════════════════════
-    if (canonicalReadEnabled() && ports.readTarget && route.understanding?.requestedFacts.length) {
+    if (ports.readTarget && route.understanding?.requestedFacts.length) {
       const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, route), route), retrievalDeadline()).catch(() => null);
       if (lu) {
         const actions = await ports.resolveActions(route, input, lu.sources);
@@ -701,7 +700,7 @@ export async function runAssistant(
       try {
         // CDC 15 T2-10, T2-33 : planificateur dédié pour une synthèse, une
         // comparaison ou une chronologie ; recherche générique en repli.
-        plan = canonicalReadEnabled() && SYNTHESIS_INTENTS.has(route.intent) && ports.buildSynthesisContext
+        plan = SYNTHESIS_INTENTS.has(route.intent) && ports.buildSynthesisContext
           ? await withDeadline(ports.buildSynthesisContext(route, input), retrievalDeadline()).catch((err) => {
             if ((err as Error)?.message === 'REQUEST_TIMEOUT') throw err;
             return null;
@@ -1072,7 +1071,7 @@ async function lectureCiblee(
   input: AssistantRequestInput,
   ports: OrchestratorPorts,
 ): Promise<NonNullable<Awaited<ReturnType<typeof applyThreadMemory>>['answer']> | null> {
-  if (!canonicalReadEnabled() || !ports.readTarget) return null;
+  if (!ports.readTarget) return null;
   const lu = await ports.readTarget(input, targetsFromInput(input)).catch(() => null);
   return lu ? { text: lu.text, sources: lu.sources, strategy: lu.strategy, intent: lu.intent, claims: lu.claims } : null;
 }
@@ -1138,17 +1137,16 @@ function isDataQuestion(route: IntentRoute, message = ''): boolean {
   // CDC 15 T2-14 (lecture canonique) : une recherche de documents FILTRÉE
   // (non rattachés, statut d'analyse, fournisseur) est servie par
   // l'adaptateur documents, seul à appliquer ces filtres exactement.
-  if (canonicalReadEnabled() && route.intent === 'ACCOUNT_SEARCH_DOCUMENT' && hasDocumentFilters(documentSearchFilters(message).filters)) return false;
+  if (route.intent === 'ACCOUNT_SEARCH_DOCUMENT' && hasDocumentFilters(documentSearchFilters(message).filters)) return false;
   return route.intent.startsWith('ACCOUNT_') || route.intent === 'UNKNOWN';
 }
 
 /**
  * Correction de route, lecture canonique (CDC 15 T2-14) : « quels documents
  * sont en cours d'analyse ? » ou « … ne sont rattachés à aucun bien ? » est
- * une RECHERCHE de documents filtrée, pas une synthèse. Sans effet en legacy.
+ * une RECHERCHE de documents filtrée, pas une synthèse.
  */
 export function affinerRoute(route: IntentRoute, input: Pick<AssistantRequestInput, 'message' | 'planType'>): IntentRoute {
-  if (!canonicalReadEnabled()) return route;
   if (route.intent !== 'ACCOUNT_SUMMARY' && route.intent !== 'UNKNOWN') return route;
   const plainMsg = plainTxt(input.message ?? '');
   if (!/\b(documents?|fichiers?|factures?|devis|contrats?|pieces?)\b/.test(plainMsg)) return route;
@@ -1301,16 +1299,13 @@ const dateUtile = (s: ResolvedSource): string | null =>
  * le score de retrieval ; à égalité, l'ordre d'origine. Sans affirmation,
  * l'ordre du retrieval est conservé tel quel.
  *
- * Lecture canonique (`ASSISTANT_CANONICAL_READ=enabled`, lot 19) : entre la
- * contribution et le score, critères 3 (qualité du type de source,
- * `RANG_TYPE_SOURCE`) et 4 (date utile la plus récente ; sans date, après ;
- * entre deux échéances, l'ordre chronologique d'origine est gardé).
- * La récence ne passe jamais devant le type (« la récence seule ne permet
- * pas d'écarter une source contractuelle »). Legacy : ordre inchangé.
+ * Lecture canonique (lot 19) : entre la contribution et le score, critères 3
+ * (qualité du type de source, `RANG_TYPE_SOURCE`) et 4 (date utile la plus
+ * récente ; sans date, après ; entre deux échéances, l'ordre chronologique
+ * d'origine est gardé). La récence ne passe jamais devant le type (« la
+ * récence seule ne permet pas d'écarter une source contractuelle »).
  */
-export function trierParContribution(
-  sources: ResolvedSource[], claims: Claim[], canonique: boolean = canonicalReadEnabled(),
-): ResolvedSource[] {
+export function trierParContribution(sources: ResolvedSource[], claims: Claim[]): ResolvedSource[] {
   if (sources.length < 2 || claims.length === 0) return sources;
   const citations = new Map<string, number>();
   const principale = new Set(claims[0]?.sourceIds ?? []);
@@ -1321,8 +1316,8 @@ export function trierParContribution(
     .sort((a, b) =>
       (citations.get(b.s.id) ?? 0) - (citations.get(a.s.id) ?? 0)
       || Number(principale.has(b.s.id)) - Number(principale.has(a.s.id))
-      || (canonique ? rang(a.s) - rang(b.s) : 0)
-      || (canonique && !chronologique(a.s, b.s) ? (dateUtile(b.s) ?? '').localeCompare(dateUtile(a.s) ?? '') : 0)
+      || rang(a.s) - rang(b.s)
+      || (!chronologique(a.s, b.s) ? (dateUtile(b.s) ?? '').localeCompare(dateUtile(a.s) ?? '') : 0)
       || (b.s.relevanceScore ?? 0) - (a.s.relevanceScore ?? 0)
       || a.i - b.i)
     .map((x) => x.s);

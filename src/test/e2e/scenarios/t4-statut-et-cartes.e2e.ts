@@ -5,12 +5,13 @@
  *  · document analysé (T1 → preuves) puis réconciliation locale du bien :
  *    preuve certaine → « réalisé » ; preuve probable → carte AGENDA-DONE
  *    (idempotente), résolue puis annulée ; autre occurrence → rien ;
- *    élément manuel → rien ; AI_T4_EFFECTS=legacy → rien ;
+ *    élément manuel → rien ; AI_T4_EFFECTS retiré au lot 16b-2 (une valeur
+ *    encore posée est sans effet) ;
  *  · carte AGENDA-NOT-DONE : ouverte (lecture mascotte), remplace la carte
  *    de l'autre verdict, résolue en « annulé » — jamais écrite seule ;
- *  · requires_qualification écrit depuis la classification T4 (enabled) ;
+ *  · requires_qualification écrit depuis la classification T4 ;
  *  · D-15 : vente / sinistre → carte ASSET-STATUS, résolution, annulation,
- *    valeur forgée refusée ; rien en legacy.
+ *    valeur forgée refusée.
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
@@ -99,7 +100,6 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
        WHERE account_id = ${accountId} AND target_type = ${targetType} AND target_id = ${targetId} ORDER BY id`;
 
   it('preuve certaine dans la fenêtre (enabled) → « réalisé », trace IA, lien document ↔ échéance', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const { compte, itemId, docB } = await preuveArrivee({ date: '2027-03-10', proof: '2027-03-08', confidence: 'certain' });
     expect(await statut(itemId)).toBe('realise');
     const [ev] = await sql<{ d: { origin: string } }[]>`
@@ -111,7 +111,6 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
   });
 
   it('preuve probable → carte AGENDA-DONE idempotente ; résolue « réalisé » (USER) puis annulée', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const { compte, itemId, analyser } = await preuveArrivee({ date: '2027-03-10', proof: '2027-03-08', confidence: 'probable' });
     expect(await statut(itemId)).toBeNull();
     await analyser();
@@ -130,8 +129,7 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     expect((await cartes(compte.id, itemId)).filter((c) => !c.resolved_at)).toHaveLength(1);
   });
 
-  it('autre occurrence (hors fenêtre), élément manuel, AI_T4_EFFECTS=legacy : rien', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
+  it('autre occurrence (hors fenêtre), élément manuel : rien ; variable retirée encore posée : sans effet', async () => {
     const loin = await preuveArrivee({ date: '2027-03-10', proof: '2025-01-05', confidence: 'certain' });
     expect(await statut(loin.itemId)).toBeNull();
     expect(await cartes(loin.compte.id, loin.itemId)).toHaveLength(0);
@@ -141,13 +139,11 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     expect(await cartes(manuel.compte.id, manuel.itemId)).toHaveLength(0);
 
     process.env.AI_T4_EFFECTS = 'legacy';
-    const legacy = await preuveArrivee({ date: '2027-03-10', proof: '2027-03-08', confidence: 'certain' });
-    expect(await statut(legacy.itemId)).toBeNull();
-    expect(await cartes(legacy.compte.id, legacy.itemId)).toHaveLength(0);
+    const reste = await preuveArrivee({ date: '2027-03-10', proof: '2027-03-08', confidence: 'certain' });
+    expect(await statut(reste.itemId)).toBe('realise');
   });
 
   it('AGENDA-NOT-DONE : ouverte (lecture mascotte), remplace l’autre verdict, résolue « annulé » par l’utilisateur', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -173,12 +169,12 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     expect(await cards.listOpenNotDoneProposals(compte.id)).toHaveLength(0);
   });
 
-  it('requires_qualification écrit depuis la classification T4 (enabled), pas en legacy', async () => {
+  it('requires_qualification écrit depuis la classification T4 (variable retirée encore posée : sans effet)', async () => {
     const decision = (fileId: number) => echeance(fileId, '2027-05-01', {
       originFieldKey: undefined, title: 'Rendez-vous garage',
       classification: { category: 'unknown', confidence: 'ambiguous', source: 'model', requiresQualification: true } as never,
     });
-    for (const [mode, attendu] of [['enabled', true], ['legacy', false]] as const) {
+    for (const [mode, attendu] of [['enabled', true], ['legacy', true]] as const) {
       process.env.AI_T4_EFFECTS = mode;
       const compte = await make.account();
       const bien = await make.asset(compte);
@@ -191,7 +187,6 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
   });
 
   it('D-15 : vente → carte ASSET-STATUS (valeurs admises par la base : TRANSMIS), résolution, annulation, valeur refusée', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -218,8 +213,7 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     expect(await resolve.resolveArbitration(autre.id, carte.public_id, 'TRANSMIS')).toMatchObject({ ok: false, error: 'NOT_FOUND' });
   });
 
-  it('D-15 : sinistre → HORS_SERVICE / EN_MAINTENANCE (base 0121) ; legacy → aucune carte', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
+  it('D-15 : sinistre → HORS_SERVICE / EN_MAINTENANCE (base 0121) ; variable retirée sans effet', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -233,6 +227,6 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     const bien2 = await make.asset(compte);
     const doc2 = await make.assetFile(compte, { assetId: bien2.id });
     await persist([{ ...sinistre, sourceFileId: doc2.id }], compte.id, bien2.id);
-    expect(await cartes(compte.id, bien2.id, 'ASSET')).toHaveLength(0);
+    expect(await cartes(compte.id, bien2.id, 'ASSET')).toHaveLength(1);
   });
 });

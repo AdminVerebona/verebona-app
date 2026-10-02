@@ -47,7 +47,6 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
   const ids = async (accountId: number) => (await sql<{ id: number }[]>`SELECT id FROM agenda_items WHERE account_id = ${accountId} ORDER BY id`).map((x) => x.id);
 
   it('1. réanalyse dégradée : rien retiré ; complète : retrait tracé et rattrapable', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -73,7 +72,6 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
   });
 
   it('2. mise à jour automatique gardée : élément modifié par l’utilisateur (même concurrent) jamais écrasé', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -107,7 +105,6 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
     SELECT public_id, resolved_at FROM to_process_actions WHERE account_id = ${accountId} AND target_id = ${fileId} AND rule_code = 'AGENDA-PROPOSAL'`)[0];
 
   it('3. annulation AGENDA-PROPOSAL : élément modifié depuis → conservé, carte rouverte ; autre compte → rien', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -125,7 +122,6 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
   });
 
   it('4. effets après validation : vente acceptée → ASSET-STATUS (D-15) ; « réalisé » depuis une carte → recopie achat (D-13)', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });

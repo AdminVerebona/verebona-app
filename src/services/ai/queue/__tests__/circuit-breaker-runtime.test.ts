@@ -93,7 +93,7 @@ describe('ouverture du disjoncteur (OPS-022, MOD-011)', () => {
   });
 
   it('réactivation par sonde : horodatée pour détecter une réouverture rapide', async () => {
-    const t4 = getOperation('classify_event');
+    const t4 = getOperation('t4_classify_event');
     unsafe.mockResolvedValueOnce([{ treatment: 'T4', model_failures: {}, probe_attempts: 0 }]);
     await runDueProbes(async (m) => m === t4.primaryModel);
     expect(sqls().some((q) => /breaker_last_reactivated_at = NOW\(\)/.test(q))).toBe(true);
@@ -112,7 +112,7 @@ describe('ouverture du disjoncteur (OPS-022, MOD-011)', () => {
 });
 
 describe('sondes (WF-09, MOD-013, MOD-014)', () => {
-  const t4 = getOperation('classify_event');
+  const t4 = getOperation('t4_classify_event');
 
   it('premier succès (repli 1) : réactive, n’efface que le compteur du modèle qui a répondu', async () => {
     const [primary, fb1] = [t4.primaryModel, t4.fallbackModels[0]];

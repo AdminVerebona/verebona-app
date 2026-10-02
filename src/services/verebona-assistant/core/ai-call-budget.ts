@@ -75,7 +75,7 @@ export class AiBudgetExhaustedError extends AiGatewayError {
  *   §15.4 (`model-call-policy.ts`). Repli désactivé (flag §39
  *   `fallback_model`) : aucune escalade.
  * - Plafond §30.1 transmis à la passerelle : 12 s par tentative (y compris
- *   `revalidate_fact`, déclarée à 20 s). Jetons de sortie : configuration IA
+ *   `t2_revalidate`, déclarée à 20 s). Jetons de sortie : configuration IA
  *   effective, bornée à 500 (§31.2, CDC 15 T2-43).
  * - Réponse issue du cache d'idempotence : aucun appel émis, rien décompté.
  * - Succès sans repli : 1 tentative. Succès après repli : la gateway ne dit

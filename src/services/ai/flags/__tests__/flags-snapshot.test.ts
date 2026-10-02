@@ -18,7 +18,10 @@ describe('instantané des drapeaux', () => {
       NEXT_PUBLIC_APP_ENV: 'staging',
       AI_UNIFIED_SOURCE_ANALYSIS: 'enabled',
       AI_RECONCILIATION_ENGINE: 'shadow',
-      AI_AGENDA_ENGINE: 'enabeld',
+      AI_AGENDA_ENGINE: 'enabled',
+      AI_INTELLIGENT_ASSISTANT: 'enabled',
+      ASSISTANT_CANONICAL_READ: 'enabled',
+      AI_T4_EFFECTS: 'enabled',
       AI_DURABLE_QUEUE: 'true',
       AI_HOME_MASCOT: 'enabled',
       AI_PROMPT_GOVERNANCE: 'enabled',
@@ -31,19 +34,23 @@ describe('instantané des drapeaux', () => {
     expect(par.AI_UNIFIED_SOURCE_ANALYSIS).toMatchObject({ mode: 'enabled', raw: 'enabled', invalid: false });
     expect(par.AI_RECONCILIATION_ENGINE.mode).toBe('shadow');
     // Faute de frappe : visible, et appliquée comme legacy.
-    expect(par.AI_AGENDA_ENGINE).toMatchObject({ mode: 'legacy', raw: 'enabeld', invalid: true });
+    expect(buildFlagsSnapshot({ AI_RECONCILIATION_ENGINE: 'enabeld' }).aiFlags.find((f) => f.name === 'AI_RECONCILIATION_ENGINE'))
+      .toMatchObject({ mode: 'legacy', raw: 'enabeld', invalid: true });
     // Absente : défaut du code.
-    expect(par.AI_INTELLIGENT_ASSISTANT).toMatchObject({ mode: 'legacy', raw: null, invalid: false });
+    expect(buildFlagsSnapshot({}).aiFlags.find((f) => f.name === 'AI_UNIFIED_SOURCE_ANALYSIS'))
+      .toMatchObject({ mode: 'legacy', raw: null, invalid: false });
     // Lot 16b : variables retirées, même posées, ne figurent plus.
     const noms = JSON.stringify(snap);
-    for (const retiree of ['AI_DURABLE_QUEUE', 'AI_HOME_MASCOT', 'AI_PROMPT_GOVERNANCE']) expect(noms).not.toContain(retiree);
+    for (const retiree of [
+      'AI_DURABLE_QUEUE', 'AI_HOME_MASCOT', 'AI_PROMPT_GOVERNANCE',
+      'AI_AGENDA_ENGINE', 'AI_INTELLIGENT_ASSISTANT', 'ASSISTANT_CANONICAL_READ', 'AI_T4_EFFECTS',
+    ]) expect(noms).not.toContain(retiree);
     expect(snap).not.toHaveProperty('technical');
     const cw = snap.rollout.find((r) => r.env === 'CANONICAL_WRITE_MODE');
     expect(cw).toMatchObject({ mode: 'shadow' });
-    expect(snap.rollout.map((r) => r.env)).toEqual(expect.arrayContaining([
-      'CANONICAL_WRITE_MODE', 'AI_T1_ANALYSIS_MODE', 'T3_NEGATIVE_RECONCILIATION',
-      'AI_T4_EFFECTS', 'ASSISTANT_CANONICAL_READ', 'EXPORTS_CANONICAL_SOURCE',
-    ]));
+    expect(snap.rollout.map((r) => r.env)).toEqual([
+      'CANONICAL_WRITE_MODE', 'AI_T1_ANALYSIS_MODE', 'T3_NEGATIVE_RECONCILIATION', 'EXPORTS_CANONICAL_SOURCE',
+    ]);
     expect(snap.generatedAt).toBe('2026-09-29T08:00:00.000Z');
   });
 
@@ -70,6 +77,7 @@ describe('route /api/admin/ai/flags', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     const body = await res.json();
     // setup.ts : tous les nouveaux moteurs actifs en test.
-    expect(body.aiFlags.find((f: { name: string }) => f.name === 'AI_INTELLIGENT_ASSISTANT').mode).toBe('enabled');
+    expect(body.aiFlags.find((f: { name: string }) => f.name === 'AI_RECONCILIATION_ENGINE').mode).toBe('enabled');
+    expect(body.aiFlags.map((f: { name: string }) => f.name)).toEqual(['AI_UNIFIED_SOURCE_ANALYSIS', 'AI_RECONCILIATION_ENGINE']);
   });
 });

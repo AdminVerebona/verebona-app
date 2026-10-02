@@ -53,7 +53,6 @@ scenario('P-T2-MASTER', 'Prompt maître T2 : compréhension, réponse vérifiée
   });
   /** Sources construites par le serveur à partir de la base (couche de X). */
   const sourcesFor = async (accountId: number, message: string) => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r = await da.answerFromData({ port: repo.accountDataRepository, accountId, message, thresholds });
     return r.sources;
   };
@@ -198,7 +197,6 @@ scenario('P-T2-MASTER', 'Prompt maître T2 : compréhension, réponse vérifiée
   });
 
   it('P-T2-04 + T2-27/28/30 : observation visuelle → preuve visuelle, aucun faux extrait ; impact tracé, aucune écriture directe', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const fichier = await make.assetFile(compte, { assetId: bien.id, name: 'chaufferie.jpg', mimeType: 'image/jpeg' });

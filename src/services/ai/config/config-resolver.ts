@@ -254,7 +254,7 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
  * l'opération du sien — le contrôle de promotion l'aurait refusée, mais une
  * version importée d'un environnement plus permissif pourrait passer.
  */
-/** Architecture du code pour l'opération (sans version) : `master` pour T5/T6 (lot 16b). */
+/** Architecture du code pour l'opération (sans version) : `master` pour T2, T4, T5 et T6 (lot 16b). */
 function architectureParDefaut(op: AiOperationDefinition): PromptArchitecture {
   try {
     return defaultPromptArchitectureFor(treatmentForUseCase(op.useCaseCode));
@@ -275,7 +275,7 @@ export async function resolveOperationConfig(
     reasoningPrimary: null,
     reasoningByRank: [],
     promptPreamble: null,
-    // T5/T6 : `master` même sans version (lot 16b).
+    // T2, T4, T5, T6 : `master` même sans version (lot 16b).
     promptArchitecture: architectureParDefaut(op),
     masterPromptText: null,
     configVersionId: null,
@@ -353,7 +353,7 @@ function promptOf(entry: TreatmentConfig): Pick<ResolvedOperationConfig, 'prompt
  * base illisible : `steps`, le comportement historique. Ne lève jamais.
  */
 export async function getPromptArchitecture(treatment: Treatment): Promise<PromptArchitecture> {
-  // T5 et T6 : master seul (lot 16b), sans lecture de la version.
+  // T2, T4, T5 et T6 : master seul (lot 16b), sans lecture de la version.
   if (isMasterOnlyTreatment(treatment)) return 'master';
   try {
     const effective = await entriesForCurrentExecution();

@@ -29,8 +29,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '@/db';
-import { assets, assetFiles, agendaItems, equipments, substructures, suppliers, toProcessActions } from '@/db/schema';
-import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { assets, assetFiles, agendaItems, equipments, substructures, toProcessActions } from '@/db/schema';
+import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { DOCUMENT_CATALOG } from '@/services/canonical/registry';
 import { DOCUMENT_TYPES } from '@/lib/referential/v2';
 import type { DocumentAnalysisFilter } from '../core/query-terms';
@@ -213,72 +213,7 @@ export const documentsAdapter: RetrievalAdapter = {
   sourceTypes: ['document', 'document_extraction'],
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
-    if (q.canonical) return searchDocumentsCanonical(q);
-    const conditions = [eq(assetFiles.accountId, q.accountId), isNull(assetFiles.deletedAt)];
-
-    const assetId = q.entityFilters.assetId;
-    if (typeof assetId === 'number') conditions.push(or(eq(assetFiles.assetId, assetId), eq(assetFiles.linkedAssetId, assetId))!);
-
-    const documentType = q.entityFilters.documentType;
-    if (typeof documentType === 'string') {
-      conditions.push(eq(assetFiles.documentType, documentType));
-    }
-
-    const termes = q.terms ?? [];
-    // Titre, nom de fichier, fournisseur, type, description ET texte extrait
-    // (« contenu textuel indexé », §12.1) : c'est souvent là qu'est la réponse.
-    const cond = await conditionTermes([
-      assetFiles.retainedTitle, assetFiles.originalFilename, assetFiles.supplier,
-      assetFiles.description, assetFiles.documentType, assetFiles.extractedText,
-    ], termes, q.tolerant);
-    if (cond) conditions.push(cond);
-
-    const lignes = await db
-      .select({
-        id: assetFiles.id, accountId: assetFiles.accountId,
-        title: assetFiles.retainedTitle, filename: assetFiles.originalFilename,
-        documentType: assetFiles.documentType, documentDate: assetFiles.documentDate,
-        supplier: assetFiles.supplier, description: assetFiles.description,
-        assetId: assetFiles.assetId, assetName: assets.name,
-        analysisState: assetFiles.analysisState,
-        // Dédoublonnage logique (§13.8) : empreinte, taille, document principal.
-        contentHash: assetFiles.sha256Hash, size: assetFiles.size, groupedIntoFileId: assetFiles.groupedIntoFileId,
-        // Seul un court extrait du texte sert au classement : le texte entier
-        // ne quitte pas la base.
-        textHead: sql<string | null>`left(${assetFiles.extractedText}, 4000)`,
-      })
-      .from(assetFiles)
-      .leftJoin(assets, eq(assets.id, assetFiles.assetId))
-      .where(and(...conditions))
-      // Le plus récent d'abord : sur un même type de document, c'est presque
-      // toujours celui qui fait foi.
-      .orderBy(desc(assetFiles.documentDate))
-      .limit(q.limit);
-
-    verifierPerimetre('documents', lignes, q.accountId);
-
-    return lignes.flatMap((l) => {
-      const titre = l.title ?? l.filename ?? `Document ${l.id}`;
-      const designe = typeof assetId === 'number' ? 0.05 : 0;
-      const score = scorer(q, [titre, l.filename, l.supplier, l.documentType, l.description, l.textHead].filter(Boolean).join(' '),
-        designe + bonusRecence(l.documentDate) + bonusPeriode(q, l.documentDate) + bonusType(q, l.documentType));
-      if (score == null) return [];
-      const statut = documentAnalysisStatus(l.analysisState);
-      return [{
-        id: `doc_${l.id}`,
-        type: 'document' as const,
-        title: titre,
-        content: extrait([l.documentType, l.supplier, l.documentDate, l.description]),
-        meta: {
-          documentId: l.id, assetId: l.assetId, assetName: l.assetName ?? null,
-          date: l.documentDate ?? null, analysisStatus: statut,
-          statusLabel: ANALYSIS_STATUS_LABELS[statut],
-          contentHash: l.contentHash ?? null, size: l.size ?? null,
-          logicalFileId: l.groupedIntoFileId ?? l.id,
-        },
-        relevanceScore: score,
-      }];
-    });
+    return searchDocumentsCanonical(q);
   },
 };
 
@@ -295,9 +230,9 @@ export const agendaAdapter: RetrievalAdapter = {
     const termes = q.terms ?? [];
     const cond = await conditionTermes([agendaItems.title, agendaItems.description], termes, q.tolerant);
     if (cond) conditions.push(cond);
-    // CDC 15 T2-16 (mode canonique) : bien ciblé → échéances LIÉES à ce bien
+    // CDC 15 T2-16 : bien ciblé → échéances LIÉES à ce bien
     // (`agenda_asset_links`), jamais celles d'un autre bien.
-    const assetCible = q.canonical && typeof q.entityFilters.assetId === 'number' ? q.entityFilters.assetId : null;
+    const assetCible = typeof q.entityFilters.assetId === 'number' ? q.entityFilters.assetId : null;
     if (assetCible !== null) {
       conditions.push(sql`EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = ${agendaItems.id} AND l.asset_id = ${assetCible})`);
     }
@@ -433,40 +368,7 @@ export const suppliersAdapter: RetrievalAdapter = {
   sourceTypes: ['supplier'],
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
-    if (q.canonical) return searchSuppliersCanonical(q);
-    const termes = q.terms ?? [];
-    const cond = await conditionTermes([suppliers.name, suppliers.city], termes, q.tolerant);
-    // Sans terme, les fournisseurs ne sont listés que pour une recherche de
-    // fournisseurs : sinon ils ajouteraient du bruit à toute question.
-    if (!cond && q.intent !== 'ACCOUNT_SEARCH_SUPPLIER') return [];
-    const conditions = [eq(suppliers.accountId, q.accountId), ne(suppliers.status, 'deleted')];
-    if (cond) conditions.push(cond);
-
-    const lignes = await db
-      .select({
-        id: suppliers.id, accountId: suppliers.accountId, name: suppliers.name,
-        city: suppliers.city, status: suppliers.status,
-      })
-      .from(suppliers)
-      .where(and(...conditions))
-      .orderBy(suppliers.name)
-      .limit(q.limit);
-
-    verifierPerimetre('suppliers', lignes, q.accountId);
-
-    return lignes.flatMap((l) => {
-      const score = scorer(q, [l.name, l.city].filter(Boolean).join(' '));
-      if (score == null) return [];
-      return [{
-        id: `supplier_${l.id}`,
-        type: 'supplier' as const,
-        title: l.name,
-        // Coordonnées volontairement absentes (minimisation, §29.3).
-        content: extrait([l.city]),
-        meta: { supplierId: l.id, subtitle: l.city ?? null },
-        relevanceScore: score,
-      }];
-    });
+    return searchSuppliersCanonical(q);
   },
 };
 
@@ -491,10 +393,10 @@ export const toProcessAdapter: RetrievalAdapter = {
     if (!cond && !liste) return [];
     const conditions = [eq(toProcessActions.accountId, q.accountId), isNull(toProcessActions.resolvedAt)];
     if (cond && !liste) conditions.push(cond);
-    // CDC 15 T2-17 (mode canonique) : bien ciblé → éléments DE ce bien —
+    // CDC 15 T2-17 : bien ciblé → éléments DE ce bien —
     // le bien lui-même, ses équipements, ses documents (lien N-N ou
     // colonnes) et ses échéances (`agenda_asset_links`).
-    const bienCible = q.canonical && typeof q.entityFilters.assetId === 'number' ? q.entityFilters.assetId : null;
+    const bienCible = typeof q.entityFilters.assetId === 'number' ? q.entityFilters.assetId : null;
     if (bienCible !== null) conditions.push(toProcessDuBien(bienCible));
 
     const lignes = await db
@@ -540,12 +442,12 @@ function toProcessDuBien(assetId: number): SQL {
   )`;
 }
 
-/* ── Règles d'offre (T2-06), mode canonique ─────────────────────────────── */
+/* ── Règles d'offre (T2-06) ─────────────────────────────────────────────── */
 
 /**
  * Sources `product_rule` de l'offre effective du compte (fournisseur de X,
- * `ProductRuleProvider`). Interrogé seulement en mode canonique ET quand
- * l'intention attend des règles d'offre (T2-07) : jamais sur une recherche.
+ * `ProductRuleProvider`). Interrogé seulement quand l'intention attend des
+ * règles d'offre (T2-07) : jamais sur une recherche.
  */
 export const productRulesAdapter: RetrievalAdapter = {
   code: 'structured',
@@ -554,7 +456,6 @@ export const productRulesAdapter: RetrievalAdapter = {
   sourceTypes: ['product_rule'],
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
-    if (!q.canonical) return [];
     const { ProductRuleProvider } = await import('../canonical/product-rules');
     return (await ProductRuleProvider.sources(q.accountId)).slice(0, q.limit);
   },
@@ -573,12 +474,12 @@ export const ADAPTATEURS: RetrievalAdapter[] = [
 ];
 
 /* ══════════════════════════════════════════════════════════════════════════
- * MODE CANONIQUE (lot 15, ASSISTANT_CANONICAL_READ=enabled)
+ * LECTURE CANONIQUE (lot 15 ; seule lecture depuis le lot 16b-2)
  * ══════════════════════════════════════════════════════════════════════════ */
 
-/** Bien ciblé appliqué aux adaptateurs relationnels (T2-17), mode canonique. */
+/** Bien ciblé appliqué aux adaptateurs relationnels (T2-17). */
 function filtreBien(q: RetrievalQuery, col: AnyPgColumn): SQL[] {
-  const id = q.canonical ? q.entityFilters.assetId : null;
+  const id = q.entityFilters.assetId;
   return typeof id === 'number' ? [eq(col, id)] : [];
 }
 

@@ -146,9 +146,9 @@ describe('§29.4 — appliqué au prompt réellement envoyé au fournisseur', ()
   it('document d’identité exclu, secret et téléphone masqués dans DATA et QUESTION ; trace sans contenu', async () => {
     const { generateAssistantAnswerDetailed } = await import('../generation.adapter');
     const { createAiCallBudget } = await import('../ai-call-budget');
-    const ENV = { schemaVersion: 'assistant-response-v1.0', intent: 'ACCOUNT_SUMMARY', supportLevel: 'supported' };
+    // Branche ANSWER du master T2 (seul moteur depuis le lot 16b-2).
     fakeProvider.onAny(() => ({
-      rawText: JSON.stringify({ ...ENV, claims: [{ text: 'La chaudière a été révisée le 03/03/2025.', sourceIds: ['doc_3'], factual: true }], status: 'answered' }),
+      rawText: JSON.stringify({ mode: 'ANSWER', format: 'claims', status: 'answered', claims: [{ text: 'La chaudière a été révisée le 03/03/2025.', sourceIds: ['doc_3'], factual: true }] }),
       inputTokens: 10, outputTokens: 5,
     }));
     const r = await generateAssistantAnswerDetailed(
@@ -168,7 +168,7 @@ describe('§29.4 — appliqué au prompt réellement envoyé au fournisseur', ()
     );
     expect('failed' in r).toBe(false);
     const prompt = fakeProvider.calls.at(-1)!.prompt;
-    expect(prompt).not.toMatch(/id="doc_1"|18AB12345|06 12 34 56 78|4521B|2468/);
+    expect(prompt).not.toMatch(/"sourceId": "doc_1"|18AB12345|06 12 34 56 78|4521B|2468/);
     expect(prompt).toContain('Révisée le 03/03/2025');
     expect((r as { generationEvents: string[] }).generationEvents).toEqual(expect.arrayContaining(['SENSITIVE:EXCLUDED:1']));
   });

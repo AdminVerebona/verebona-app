@@ -4,8 +4,7 @@
  * CDC 15 T4-09 (lot 14) : création et modification passent par la primitive
  * commune `upsertAgendaItem` (validations, liens, liens source, nature,
  * recopie « achat » D-13, notification D-14, statut du bien D-15), partagée
- * avec T4 (`agenda-persistence`). Tous modes : comportement historique à
- * l'identique en legacy et shadow (tests de parité).
+ * avec T4 (`agenda-persistence`).
  */
 import { db } from '@/db';
 import {
@@ -14,9 +13,6 @@ import {
 } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getAgendaItemById, type AgendaItemFull } from './AgendaQueryService';
-import { classifyAgendaItem } from './AgendaClassificationService';
-import { isEnabled } from '@/services/ai/flags/ai-feature-flags';
-import { t4EffectsMode } from '@/services/canonical/rollout';
 import {
   writeAgendaLinks, validateAgendaWrite, syncPurchaseDate, type AgendaItemValues,
 } from './write-agenda-item';
@@ -78,45 +74,25 @@ export async function createAgendaItem(
     { assetIds, fileIds, substructureIds, equipmentIds },
   );
 
-  // 3. Classify for home page (async, non-blocking for the transaction)
-  //
-  // ── AIGUILLAGE DE BASCULE (CDC §10.4) ────────────────────────────────────
-  // Ce chemin ignorait `AI_AGENDA_ENGINE` : quelle que soit sa valeur, c'est
-  // l'ancien `AgendaClassificationService` qui classait toute échéance créée à
-  // la main, y compris quand le nouveau moteur était censé l'avoir remplacé.
-  // Le drapeau ne commandait donc rien sur la moitié du trafic agenda.
-  //
-  // `isEnabled` et non `shouldRunNewEngine` : en mode observation, faire
-  // classer le même événement par les DEUX moteurs doublerait l'appel modèle
-  // pour une valeur dont une seule serait retenue. L'ancien reste seul tant
-  // que la bascule n'est pas franche.
-  const homeCategoryResult = input.homeCategory ?? (
-    isEnabled('AI_AGENDA_ENGINE')
-      // Import dynamique : le chemin historique ne doit pas charger l'usage 4
-      // tant qu'il n'est pas basculé, comme le pont inverse dans `events.ts`.
-      ? await (async () => {
-          const { classifyAgendaCategory } = await import('@/services/ai/agenda');
-          return classifyAgendaCategory(
-            {
-              title: input.title,
-              description: input.description,
-              originType: input.originType ?? 'manual',
-              originFieldKey: input.originFieldKey,
-            },
-            { accountId, userId: createdByUserId ?? undefined },
-          );
-        })()
-      : await classifyAgendaItem(
-          input.title,
-          input.description,
-          input.originType ?? 'manual',
-          input.originFieldKey,
-          { accountId, userId: createdByUserId ?? undefined },
-        )
+  // 3. Catégorie de l'accueil (action / information) : mêmes règles
+  // déterministes et même branche CLASSIFY_EVENT du master T4 que l'agenda
+  // automatique (lot 16b-2 : `AgendaClassificationService` et le drapeau
+  // `AI_AGENDA_ENGINE` sont retirés). Un échec du modèle rend la catégorie
+  // prudente `action` (`classifyEventMaster`) — la création n'échoue jamais.
+  // Import dynamique : évite de charger le moteur T4 (passerelle, file) au
+  // chargement du service d'agenda, et tout cycle d'import.
+  const homeCategoryResult = input.homeCategory ?? await (await import('@/services/ai/agenda/agenda-intelligence.service')).classifyAgendaCategory(
+    {
+      title: input.title,
+      description: input.description,
+      originType: input.originType ?? 'manual',
+      originFieldKey: input.originFieldKey,
+    },
+    { accountId, userId: createdByUserId ?? undefined },
   );
 
   // 4. Primitive commune (CDC 15 T4-09) : ligne + liens en une transaction,
-  // liens source (pièces jointes, enabled), recopie « achat » (D-13) et
+  // liens source (pièces jointes), recopie « achat » (D-13) et
   // notification des biens liés (D-14).
   const written = await upsertAgendaItem(
     manualUpsertInput(input, accountId, createdByUserId, homeCategoryResult),
@@ -240,8 +216,8 @@ export async function updateAgendaItem(
     }, null);
   }
 
-  // Recopie « achat » (historique : à chaque édition ; enabled : D-13).
-  await syncPurchaseDate({ itemId: id, accountId, actorUserId: null, mode: t4EffectsMode() });
+  // Recopie « achat » (D-13).
+  await syncPurchaseDate({ itemId: id, accountId, actorUserId: null });
 
   const full = await getAgendaItemById(id, accountId);
   if (!full) throw new Error('Item not found after update');
@@ -280,17 +256,16 @@ export async function updateManualStatus(
   await recordOccurrenceEvent(id, accountId, 'STATUS_CHANGED', { manualStatus, nature: full.occurrenceNature });
 
   // Statut posé par l'utilisateur : les cartes « réalisée ? » / « non
-  // réalisée ? » de l'élément sont sans objet (T4-12, lot 14). Elles
-  // n'existent que sous AI_T4_EFFECTS=enabled ou T4 master.
+  // réalisée ? » de l'élément sont sans objet (T4-12, lot 14).
   if (manualStatus) {
     const { closeAgendaStatusCards } = await import('@/services/to-process/agenda-status-cards');
     await closeAgendaStatusCards(accountId, id, 'USER_COMPLETED')
       .catch((e: Error) => console.error('[agenda] fermeture des cartes de statut :', e.message));
   }
 
-  // Recopie « achat » quand l'élément est marqué réalisé (D-13 en enabled).
+  // Recopie « achat » quand l'élément est marqué réalisé (D-13).
   if (manualStatus === 'realise') {
-    await syncPurchaseDate({ itemId: id, accountId, actorUserId: null, mode: t4EffectsMode(), manualStatus });
+    await syncPurchaseDate({ itemId: id, accountId, actorUserId: null, manualStatus });
   }
 
   return full;

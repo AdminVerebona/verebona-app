@@ -1,269 +1,112 @@
 "use client"
 
 /**
- * Modèles d'export — CDC Back-Office V1 §11.1.
+ * Modèles d'export — back-office.
  *
- * EXP-007 / REC-MOD-06 : structure non éditable ; création, édition et
- * suppression retirées (UI et API). EXP-003 / EXP-004 : seule l'activation
- * globale reste, avec confirmation. EXP-002 : pas de numéro de version.
- * CDC Exports V12 MIG-06 : type d'export (code V12) et statut affichés ;
- * aucun identifiant PDFMonkey (ni lu ni affiché, colonne conservée en base).
+ * Objectif : consulter les modèles, vérifier leur rendu et gérer leur
+ * disponibilité. Les modèles sont les six dossiers prêts à l'emploi V12,
+ * définis dans le code :
+ *   - liste : nom, description, statut actif / inactif ;
+ *   - consultation et prévisualisation (données du compte administrateur,
+ *     bien au choix, téléchargement du rendu) : page de détail ;
+ *   - activation / désactivation, la désactivation sur confirmation explicite ;
+ *   - aucun versionnement, aucune édition du contenu, aucune relance de
+ *     génération ; statistiques d'utilisation : Dashboard.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  FileType,
-  Search,
-  Eye,
-  CheckCircle,
-  XCircle,
-} from 'lucide-react';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { CheckCircle, Eye, FileType, XCircle } from 'lucide-react';
 import { ExportTemplateActiveToggle } from './_components/ExportTemplateActiveToggle';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
-import { exportCodeLabel } from '@/services/exports/catalog';
-
-/** Type d'export (MIG-06) : codes V12 du catalogue ; SAV / Autre hors catalogue. */
-const exportTypeLabel = (code: string) => ({ SAV_GARANTIE: 'SAV / Garantie', AUTRE: 'Autre' } as Record<string, string>)[code] ?? exportCodeLabel(code);
-
-interface ExportTemplate {
-  id: number;
-  code: string;
-  label: string;
-  description?: string;
-  templateContent: string;
-  variables?: string;
-  category: 'IMMOBILIER' | 'VEHICULE' | 'MATERIEL_PRO' | 'GENERAL';
-  exportType?: string | null;
-  isActive: boolean;
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-  updatedByUser?: {
-    id: number;
-    email: string;
-    firstName: string;
-    lastName: string;
-  } | null;
-}
-
-const CATEGORIES = [
-  { value: 'GENERAL', label: 'Général' },
-  { value: 'IMMOBILIER', label: 'Immobilier' },
-  { value: 'VEHICULE', label: 'Véhicule' },
-  { value: 'MATERIEL_PRO', label: 'Matériel Pro' },
-];
+import type { AdminExportModel } from '@/app/api/admin/export-templates/model';
 
 export default function ExportTemplatesPage() {
   const router = useRouter();
-  const [templates, setTemplates] = useState<ExportTemplate[]>([]);
+  const [models, setModels] = useState<AdminExportModel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Filters
-  const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-
-  useEffect(() => {
-    loadTemplates();
-  }, [categoryFilter, statusFilter, searchQuery]);
-
-  const loadTemplates = async () => {
+  const load = useCallback(async () => {
     try {
-      setIsLoading(true);
       setError(null);
-
-
-      const params = new URLSearchParams();
-      if (categoryFilter !== 'all') params.append('category', categoryFilter);
-      if (statusFilter !== 'all') params.append('isActive', statusFilter);
-      if (searchQuery.trim()) params.append('search', searchQuery.trim());
-      params.append('limit', '100');
-
-      const response = await fetch(`/api/admin/export-templates?${params.toString()}`, {
-      credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
+      const response = await fetch('/api/admin/export-templates', { credentials: 'include' });
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         if (response.status === 401) {
           router.push('/login?redirect=/admin/export-templates');
           return;
         }
-        throw new Error('Erreur lors du chargement des modèles');
+        throw new Error(payload.message || 'Erreur lors du chargement des modèles');
       }
-
-      const data = await response.json();
-      setTemplates(data.data || []);
+      setModels(payload.data ?? []);
     } catch (err) {
-      console.error('Error loading templates:', err);
       setError(err instanceof Error ? err.message : 'Erreur inconnue');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [router]);
 
-  const getCategoryLabel = (category: string) => {
-    return CATEGORIES.find(c => c.value === category)?.label || category;
-  };
+  useEffect(() => { void load(); }, [load]);
 
   if (isLoading) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-24 w-full" />
-        <div className="grid gap-4">
-          {[...Array(3)].map((_, i) => (
-            <Skeleton key={i} className="h-32" />
-          ))}
-        </div>
+        <div className="grid gap-4">{[...Array(3)].map((_, i) => <Skeleton key={i} className="h-28" />)}</div>
       </div>
     );
   }
 
   if (error) {
-    return <EcranEnErreur titre="Chargement des modèles impossible" message={error} onRetry={loadTemplates} />;
+    return <EcranEnErreur titre="Chargement des modèles impossible" message={error} onRetry={load} />;
   }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
-            <FileType className="h-8 w-8" />
-            Modèles d'export
-          </h1>
-          <p className="text-muted-foreground mt-1">
-            Activation des modèles de génération des exports PDF (contenu non modifiable depuis le back-office)
-          </p>
-        </div>
+      <div>
+        <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
+          <FileType className="h-8 w-8" />
+          Modèles d’export
+        </h1>
+        <p className="text-muted-foreground mt-1">
+          Consultez les modèles, vérifiez leur rendu et gérez leur disponibilité. Le contenu des modèles est géré dans le
+          code ; les statistiques d’utilisation sont dans le Dashboard.
+        </p>
       </div>
 
-      {/* Filters */}
-      <Card>
-        <CardContent className="pt-6">
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Rechercher par code ou libellé..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
-              />
-            </div>
-            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Catégorie" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Toutes les catégories</SelectItem>
-                {CATEGORIES.map((cat) => (
-                  <SelectItem key={cat.value} value={cat.value}>
-                    {cat.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Statut" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les statuts</SelectItem>
-                <SelectItem value="true">Actifs</SelectItem>
-                <SelectItem value="false">Inactifs</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Templates List */}
       <div className="grid gap-4">
-        {templates.length === 0 ? (
-          <Card>
+        {models.map((m) => (
+          <Card key={m.code} className="hover:shadow-md transition-shadow">
             <CardContent className="pt-6">
-              <div className="text-center py-12">
-                <FileType className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                <h3 className="text-lg font-medium mb-2">Aucun modèle trouvé</h3>
-                <p className="text-muted-foreground">
-                  {searchQuery || categoryFilter !== 'all' || statusFilter !== 'all'
-                    ? 'Aucun modèle ne correspond aux critères.'
-                    : 'Aucun modèle d\'export.'}
-                </p>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-lg font-semibold">{m.label}</h3>
+                    <Badge variant={m.isActive ? 'active' : 'secondary'}>
+                      {m.isActive
+                        ? <><CheckCircle className="h-3 w-3 mr-1" /> Actif</>
+                        : <><XCircle className="h-3 w-3 mr-1" /> Inactif</>}
+                    </Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground">{m.description}</p>
+                  <p className="text-xs text-muted-foreground">Biens concernés : {m.families.join(', ')}</p>
+                </div>
+                <div className="flex flex-row items-center gap-3 sm:flex-col sm:items-end">
+                  <ExportTemplateActiveToggle code={m.code} label={m.label} isActive={m.isActive} onChanged={load} />
+                  <Button variant="outline" size="sm" onClick={() => router.push(`/admin/export-templates/${m.code}`)}>
+                    <Eye className="h-4 w-4 mr-1" />
+                    Consulter et prévisualiser
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
-        ) : (
-          templates.map((template) => (
-            <Card key={template.id} className="hover:shadow-md transition-shadow">
-              <CardContent className="pt-6">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h3 className="text-lg font-semibold">{template.label}</h3>
-                      <Badge variant={template.isActive ? 'active' : 'secondary'}>
-                        {template.isActive ? (
-                          <><CheckCircle className="h-3 w-3 mr-1" /> Actif</>
-                        ) : (
-                          <><XCircle className="h-3 w-3 mr-1" /> Inactif</>
-                        )}
-                      </Badge>
-                      <Badge variant="outline">
-                        {getCategoryLabel(template.category)}
-                      </Badge>
-                      {template.exportType && (
-                        <Badge variant="secondary">{exportTypeLabel(template.exportType)}</Badge>
-                      )}
-                    </div>
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Code: <span className="font-mono font-semibold">{template.code}</span>
-                    </p>
-                    {template.description && (
-                      <p className="text-sm text-muted-foreground mb-3">
-                        {template.description}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex flex-col items-end gap-3">
-                    <ExportTemplateActiveToggle
-                      templateId={template.id}
-                      label={template.label}
-                      isActive={template.isActive}
-                      onChanged={loadTemplates}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => router.push(`/admin/export-templates/${template.id}`)}
-                    >
-                      <Eye className="h-4 w-4 mr-1" />
-                      Consulter et prévisualiser
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))
-        )}
+        ))}
       </div>
-
     </div>
   );
 }

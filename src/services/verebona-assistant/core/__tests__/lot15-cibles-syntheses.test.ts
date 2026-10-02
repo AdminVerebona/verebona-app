@@ -15,7 +15,7 @@ const { runAssistant, affinerRoute, buildIntentClarification } = await import('.
 const { toIntentRoute } = await import('../classification.adapter');
 const { routeForIntent } = await import('../intent-router.service');
 const { parseCommand, isReadingRequest } = await import('../../commands/parser');
-const { identifiantsIndisponibles, requetesDisponibilite, REQUETE_TO_PROCESS } = await import('../source-availability.service');
+const { identifiantsIndisponibles, REQUETES_DISPONIBILITE, REQUETE_TO_PROCESS } = await import('../source-availability.service');
 type Ports = import('../assistant-orchestrator.service').OrchestratorPorts;
 type Doc = import('../../canonical/document-state').CanonicalDocumentState;
 type Item = import('../../canonical/agenda').CanonicalAgendaItem;
@@ -24,7 +24,7 @@ type Deps = import('../synthesis-planner').SynthesisDeps;
 
 const ENV = { ...process.env };
 afterEach(() => { process.env = { ...ENV }; });
-const enabled = () => { process.env.ASSISTANT_CANONICAL_READ = 'enabled'; };
+// Lot 16b-2 : lecture canonique seule (ASSISTANT_CANONICAL_READ retiré).
 
 const DOC: Doc = {
   fileId: 12, title: 'Ticket Leroy Merlin', documentDate: '2026-03-02', documentTypeCode: 'SUBSCRIPTION_INVOICE', documentTypeLabel: 'Facture',
@@ -167,7 +167,6 @@ const ports = (over: Partial<Ports> = {}): Ports & { retrieve: ReturnType<typeof
 
 describe('orchestrateur — lecture canonique', () => {
   it('T2-21 : page document + « Quel est le montant ? » → lecture ciblée, aucune recherche', async () => {
-    enabled();
     const p = ports({ readTarget: async (i, t) => T.answerFromTarget(i.accountId, i.message, t, readers()) });
     const r = await runAssistant({ ...input('Quel est le montant ?'), pageContext: { documentId: '12' } } as never, p);
     expect(r.answer).toMatch(/^Le montant de « Ticket Leroy Merlin » est de 45,90\s€\.$/);
@@ -175,15 +174,7 @@ describe('orchestrateur — lecture canonique', () => {
     expect(p.retrieve).not.toHaveBeenCalled();
   });
 
-  it('legacy : strictement inchangé (le port de lecture ciblée n’est pas consulté)', async () => {
-    const readTarget = vi.fn(async () => null);
-    const p = ports({ readTarget });
-    await runAssistant({ ...input('Quel est le montant ?'), pageContext: { documentId: '12' } } as never, p);
-    expect(readTarget).not.toHaveBeenCalled();
-  });
-
   it('T2-09 : classification ambiguë sans cible → clarification, aucune recherche', async () => {
-    enabled();
     const saveClarification = vi.fn(async () => true);
     const p = ports({
       saveClarification,
@@ -197,7 +188,6 @@ describe('orchestrateur — lecture canonique', () => {
   });
 
   it('T2-09 : cas limite — cible de page connue → résolution déterministe, la recherche a lieu', async () => {
-    enabled();
     const p = ports({
       saveClarification: async () => true,
       classifyWithAI: async () => toIntentRoute({ intent: 'ACCOUNT_SEARCH_DOCUMENT', confidence: 'ambiguous', entityHints: [], reason: '' }, 'PREMIUM'),
@@ -209,7 +199,6 @@ describe('orchestrateur — lecture canonique', () => {
   });
 
   it('T2-33 : chronologie → plan dédié (pas la recherche générique) ; repli sans modèle = liste datée', async () => {
-    enabled();
     const plan: import('../synthesis-planner').SynthesisPlan = {
       kind: 'timeline', assets: [{ id: 1, name: 'Clio' }], budget: { sources: 8, events: 60 },
       timeline: { events: [{ date: '2021-05-25', label: 'Achat', kind: 'acquisition', ref: 'asset_field:1:acquisitionDate', assetName: 'Clio', detail: null }], totalEvents: 1, truncated: false },
@@ -223,11 +212,8 @@ describe('orchestrateur — lecture canonique', () => {
   });
 
   it('T2-14 : « quels documents sont en cours d’analyse ? » est une recherche de documents, pas une synthèse', () => {
-    enabled();
     const r = affinerRoute(routeForIntent('ACCOUNT_SUMMARY', 'PREMIUM', 't'), { message: 'Quels documents sont en cours d’analyse ?', planType: 'PREMIUM' });
     expect(r.intent).toBe('ACCOUNT_SEARCH_DOCUMENT');
-    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    expect(affinerRoute(routeForIntent('ACCOUNT_SUMMARY', 'PREMIUM', 't'), { message: 'Quels documents sont en cours d’analyse ?', planType: 'PREMIUM' }).intent).toBe('ACCOUNT_SUMMARY');
   });
 
   it('clarification d’intention : choix du registre, intention proposée d’abord', () => {
@@ -268,15 +254,11 @@ describe('T2-37 — le parseur de commandes n’intercepte plus les questions (h
 });
 
 describe('T2-45 — disponibilité des sources « À traiter »', () => {
-  it('enabled : revérifiée sur sa clé, élément résolu = indisponible ; legacy : non vérifiée', async () => {
-    enabled();
-    expect(requetesDisponibilite().to_process).toBe(REQUETE_TO_PROCESS);
+  it('revérifiée sur sa clé, élément résolu = indisponible', async () => {
+    expect(REQUETES_DISPONIBILITE.to_process).toBe(REQUETE_TO_PROCESS);
     const requeteur = vi.fn(async (sql: string) => (sql.includes('to_process_actions') ? [{ id: 1 }] : []));
     const morts = await identifiantsIndisponibles(['todo_1', 'todo_2'], 9, requeteur);
     expect([...morts]).toEqual(['todo_2']);
     expect(requeteur).toHaveBeenCalledWith(REQUETE_TO_PROCESS, [[1, 2], 9]);
-    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    expect(requetesDisponibilite().to_process).toBeUndefined();
-    expect([...(await identifiantsIndisponibles(['todo_2'], 9, requeteur))]).toEqual([]);
   });
 });

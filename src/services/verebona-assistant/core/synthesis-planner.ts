@@ -1,6 +1,6 @@
 /**
  * Planificateurs de synthèse — `buildSynthesisContext()`, CDC 15 T2-10,
- * T2-33, T2-34 (lot 15, ASSISTANT_CANONICAL_READ=enabled).
+ * T2-33, T2-34 (lot 15).
  *
  * ACCOUNT_SUMMARY, ACCOUNT_COMPARISON et ACCOUNT_TIMELINE passaient par la
  * recherche générique : titre, type et date de quelques objets, au hasard des

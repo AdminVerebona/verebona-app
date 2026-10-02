@@ -9,8 +9,16 @@
  * chaque valeur (REFD-003), sans seuil « rarement utilisé » (REFD-004), sans
  * historique (REFD-005) et sans aucune écriture (REFD-006).
  *
- *   · Familles et sous-catégories de biens : `asset_types`,
- *     `asset_type_subcategories` (seeds) ; utilisations = biens non supprimés.
+ *   · Familles et sous-catégories de biens : classement du code
+ *     (`lib/asset-taxonomy.ts`) ; utilisations = biens non supprimés, comptés
+ *     sur les colonnes réellement écrites par l'application
+ *     (`assets.category`, `assets.subtype`, `assets.object_category`).
+ *     Les tables `asset_types` / `asset_type_subcategories` ne sont plus
+ *     lues : alimentées par un seed manuel, elles étaient vides en preprod
+ *     (onglets « Familles » et « Sous-catégories » vides, 2 oct. 2026), et
+ *     `assets.asset_type_id` n'est pas renseigné par la création de bien.
+ *     Valeurs présentes en base mais absentes du classement (familles
+ *     anciennes, « Studio »…) : listées « Inactif », pour rester visibles.
  *   · Rubriques et Types de documents : référentiel V2 du code
  *     (`lib/referential/v2`) ; utilisations = documents non supprimés classés.
  *   · Règles et mappings : applicabilité par famille (code) et mappings de
@@ -26,6 +34,7 @@ import {
   getRubric,
   type Applicability,
 } from '@/lib/referential/v2';
+import { ASSET_FAMILIES as TAXONOMY, assetFamilyLabel, normalizeAssetCategory } from '@/lib/asset-taxonomy';
 
 export interface ReferentialRow {
   code: string;
@@ -106,20 +115,72 @@ export function buildCodeReferentials(
   return { rubrics, documentTypes, applicability };
 }
 
+type FamilyCountRow = { family: string; n: number };
+type CategoryCountRow = { family: string; value: string | null; n: number };
+
+/**
+ * Familles et sous-catégories de biens (pure) : le classement du code, dans
+ * son ordre, puis les valeurs rencontrées en base hors classement.
+ */
+export function buildAssetTaxonomyReferentials(
+  familyCounts: FamilyCountRow[],
+  categoryCounts: CategoryCountRow[],
+): Pick<ReferentialsSnapshot, 'assetFamilies' | 'assetSubcategories'> {
+  const familyUsage = new Map<string, number>();
+  for (const r of familyCounts) familyUsage.set(r.family, (familyUsage.get(r.family) ?? 0) + Number(r.n));
+
+  // Catégorie stockée → clé « famille|valeur » ; anciens libellés ramenés aux actuels.
+  const categoryUsage = new Map<string, number>();
+  for (const r of categoryCounts) {
+    const value = r.family === 'OBJECT' ? (r.value?.trim() || null) : normalizeAssetCategory(r.value);
+    const key = `${r.family}|${value ?? ''}`;
+    categoryUsage.set(key, (categoryUsage.get(key) ?? 0) + Number(r.n));
+  }
+
+  const known = new Set(TAXONOMY.map((f) => f.code as string));
+  const assetFamilies: ReferentialRow[] = [
+    ...TAXONOMY.map((f) => ({
+      code: f.code,
+      label: f.label,
+      active: true,
+      usage: familyUsage.get(f.code) ?? 0,
+      details: (ASSET_FAMILIES as readonly string[]).includes(f.code) ? null : 'Hors familles du référentiel documentaire',
+    })),
+    ...[...familyUsage.entries()]
+      .filter(([code]) => !known.has(code))
+      .map(([code, n]) => ({ code, label: assetFamilyLabel(code), active: false, usage: n, details: 'Famille ancienne, plus proposée' })),
+  ];
+
+  const listed = new Set<string>();
+  const assetSubcategories: ReferentialRow[] = [];
+  for (const f of TAXONOMY) {
+    for (const c of f.categories) {
+      const key = `${f.code}|${c.value}`;
+      listed.add(key);
+      assetSubcategories.push({ code: c.value, label: c.label, active: true, usage: categoryUsage.get(key) ?? 0, details: f.label });
+    }
+  }
+  for (const [key, n] of categoryUsage) {
+    if (listed.has(key)) continue;
+    const [family, value] = [key.slice(0, key.indexOf('|')), key.slice(key.indexOf('|') + 1)];
+    assetSubcategories.push(value
+      ? { code: value, label: value, active: false, usage: n, details: `${assetFamilyLabel(family)} — hors classement` }
+      : { code: '—', label: 'Catégorie non renseignée', active: null, usage: n, details: assetFamilyLabel(family) });
+  }
+  return { assetFamilies, assetSubcategories };
+}
+
 export async function loadReferentials(): Promise<ReferentialsSnapshot> {
-  const [families, subcategories, rubricCounts, typeCounts, mappings] = await Promise.all([
-    pgClient.unsafe<Array<{ code: string; label: string; is_enabled: boolean; n: number }>>(
-      `SELECT t.code, t.label, t.is_enabled, count(a.id)::int AS n
-         FROM asset_types t
-         LEFT JOIN assets a ON a.asset_type_id = t.id AND a.deleted_at IS NULL
-        GROUP BY t.id ORDER BY t.display_order, t.label`,
+  const [familyCounts, categoryCounts, rubricCounts, typeCounts, mappings] = await Promise.all([
+    pgClient.unsafe<FamilyCountRow[]>(
+      `SELECT category AS family, count(*)::int AS n FROM assets
+        WHERE deleted_at IS NULL GROUP BY category`,
     ),
-    pgClient.unsafe<Array<{ code: string; label: string; is_enabled: boolean; parent: string; n: number }>>(
-      `SELECT s.code, s.label, s.is_enabled, t.label AS parent, count(a.id)::int AS n
-         FROM asset_type_subcategories s
-         JOIN asset_types t ON t.id = s.asset_type_id
-         LEFT JOIN assets a ON a.asset_type_subcategory_id = s.id AND a.deleted_at IS NULL
-        GROUP BY s.id, t.label, t.display_order ORDER BY t.display_order, s.display_order, s.label`,
+    pgClient.unsafe<CategoryCountRow[]>(
+      `SELECT category AS family,
+              CASE WHEN category = 'OBJECT' THEN object_category ELSE subtype END AS value,
+              count(*)::int AS n
+         FROM assets WHERE deleted_at IS NULL GROUP BY 1, 2`,
     ),
     pgClient.unsafe<CountRow[]>(
       `SELECT rubric_code AS code, count(*)::int AS n FROM asset_files
@@ -143,20 +204,7 @@ export async function loadReferentials(): Promise<ReferentialsSnapshot> {
   const code = buildCodeReferentials(toMap(rubricCounts), toMap(typeCounts));
   return {
     version: REFERENTIAL_VERSION,
-    assetFamilies: families.map((f) => ({
-      code: f.code,
-      label: f.label,
-      active: Boolean(f.is_enabled),
-      usage: Number(f.n),
-      details: (ASSET_FAMILIES as readonly string[]).includes(f.code) ? null : 'Hors familles du référentiel documentaire',
-    })),
-    assetSubcategories: subcategories.map((s) => ({
-      code: s.code,
-      label: s.label,
-      active: Boolean(s.is_enabled),
-      usage: Number(s.n),
-      details: s.parent,
-    })),
+    ...buildAssetTaxonomyReferentials(familyCounts, categoryCounts),
     ...code,
     mappings: mappings.map((m) => ({
       code: m.canonical_code,

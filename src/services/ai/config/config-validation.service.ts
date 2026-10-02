@@ -390,7 +390,7 @@ export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): Vali
   }
   // CDC 15 D-03, D-04, §29.1 : préambule sans master, texte master complet,
   // architecture master cohérente — T5 compris depuis le lot 16b (`steps`
-  // refusé pour T5 et T6).
+  // refusé pour T2, T4, T5 et T6).
   for (const m of masterConfigIssues(c)) out.push(issue(c.treatment, m.field, m.message, m.blocking));
   out.push(...validateModels(c, cat));
   out.push(...validateReasoning(c));

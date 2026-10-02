@@ -1,10 +1,12 @@
 /**
  * CDC 15 T4-02, T4-10, T4-11, P-T4-01 — classification action / information :
  * registre avant tout, règles métier stables en un seul exemplaire, master à
- * trois valeurs, classification prudente, chemin `steps` inchangé.
+ * trois valeurs, classification prudente. Lot 16b-2 : master T4 seul (le
+ * moteur de règles historique, `classify_event` et `AgendaClassificationService`
+ * sont retirés) — le chemin manuel passe par `classifyAgendaCategory`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
 const traces: Array<Record<string, unknown>> = [];
@@ -13,12 +15,10 @@ vi.mock('../../telemetry/ai-trace.service', async (orig) => ({
   recordCallTrace: async (t: Record<string, unknown>) => { traces.push(t); },
 }));
 
-const { classifyByRules, classifyByRulesDetailed, classifyByRulesLegacy } = await import('../rules/deterministic-classification');
-const { classificationMode, classifyByRulesInMode } = await import('../rules/rules-engine');
+const { classifyByRules, classifyByRulesDetailed } = await import('../rules/deterministic-classification');
 const { applyBusinessRules } = await import('../rules/business-rules');
 const { prudentCategory } = await import('../rules/prudent-category');
 const { classifyAgendaEvent, classifyAgendaCategory } = await import('../agenda-intelligence.service');
-const { classifyAgendaItem } = await import('@/services/agenda/AgendaClassificationService');
 const { FakeProvider, setAiProvider } = await import('../../gateway/providers');
 const { __setConfigForTests } = await import('../../config/config-resolver');
 const { emptyTreatmentConfig } = await import('../../config/config-types');
@@ -35,7 +35,7 @@ afterEach(() => { __setConfigForTests(null); vi.restoreAllMocks(); vi.unstubAllE
 
 describe('T4-02 : plus de « champ de bien ⇒ information »', () => {
   it('échéances futures issues d’un champ : action ; faits passés : information (registre)', () => {
-    const f = (originFieldKey: string, title = 'Échéance') => classifyByRulesDetailed({ title, originType: 'asset_field', originFieldKey }, 'v2');
+    const f = (originFieldKey: string, title = 'Échéance') => classifyByRulesDetailed({ title, originType: 'asset_field', originFieldKey });
     expect(f('nextInspection')).toMatchObject({ category: 'action', source: 'registry' });
     expect(f('maintenanceDueDate')).toMatchObject({ category: 'action', source: 'registry' });
     expect(f('lastRevision')).toMatchObject({ category: 'information', source: 'registry' });
@@ -44,13 +44,13 @@ describe('T4-02 : plus de « champ de bien ⇒ information »', () => {
   });
 
   it('`selon_evenement` (assurance) : l’événement concret décide, sinon ambigu', () => {
-    expect(classifyByRules({ title: "Échéance d'assurance", originType: 'asset_field', originFieldKey: 'insuranceExpiry' }, 'v2')).toBeNull();
-    expect(classifyByRules({ title: 'Entretien chaudière', originType: 'asset_field', originFieldKey: 'champInconnu' }, 'v2')).toBe('action');
+    expect(classifyByRules({ title: "Échéance d'assurance", originType: 'asset_field', originFieldKey: 'insuranceExpiry' })).toBeNull();
+    expect(classifyByRules({ title: 'Entretien chaudière', originType: 'asset_field', originFieldKey: 'champInconnu' })).toBe('action');
   });
 
   it('type métier et nature fournis sans champ', () => {
-    expect(classifyByRules({ title: 'X', originType: 'document', businessType: 'purchase', nature: 'HISTORICAL' }, 'v2')).toBe('information');
-    expect(classifyByRules({ title: 'X', originType: 'document', businessType: 'inspection', nature: 'DEADLINE' }, 'v2')).toBe('action');
+    expect(classifyByRules({ title: 'X', originType: 'document', businessType: 'purchase', nature: 'HISTORICAL' })).toBe('information');
+    expect(classifyByRules({ title: 'X', originType: 'document', businessType: 'inspection', nature: 'DEADLINE' })).toBe('action');
   });
 });
 
@@ -58,29 +58,28 @@ describe('T4-11 : règles métier stables, un seul exemplaire', () => {
   it('reconduction tacite = information, sauf démarche explicite', () => {
     expect(applyBusinessRules('Échéance assurance habitation — reconduction tacite')).toEqual({ category: 'information', ruleCode: 'TACIT_RENEWAL_INFORMATION' });
     expect(applyBusinessRules('Échéance assurance — reconduction tacite, à résilier avant le 1er mars')).toBeNull();
-    expect(classifyByRules({ title: "Échéance d'assurance", description: 'Contrat reconduit tacitement ; pour résilier, envoyez le formulaire avant le 1/03', originType: 'asset_field', originFieldKey: 'insuranceExpiry' }, 'v2')).toBeNull();
+    expect(classifyByRules({ title: "Échéance d'assurance", description: 'Contrat reconduit tacitement ; pour résilier, envoyez le formulaire avant le 1/03', originType: 'asset_field', originFieldKey: 'insuranceExpiry' })).toBeNull();
   });
 
   it('gardiennage / stockage / reprise : action', () => {
-    expect(classifyByRules({ title: 'Fin de contrat de gardiennage', originType: 'document' }, 'v2')).toBe('action');
-    expect(classifyByRules({ title: 'Pneus hiver en dépôt', originType: 'document' }, 'v2')).toBe('action');
+    expect(classifyByRules({ title: 'Fin de contrat de gardiennage', originType: 'document' })).toBe('action');
+    expect(classifyByRules({ title: 'Pneus hiver en dépôt', originType: 'document' })).toBe('action');
   });
 
   it('plus de règle « assurance = information » par type de contrat', () => {
-    expect(classifyByRules({ title: 'Fin assurance auto', originType: 'document' }, 'v2')).toBeNull();
+    expect(classifyByRules({ title: 'Fin assurance auto', originType: 'document' })).toBeNull();
   });
 
-  it('AgendaClassificationService utilise la même source (aucun appel modèle sur un cas tranché)', async () => {
-    vi.stubEnv('AI_T4_EFFECTS', 'enabled');
+  it('chemin manuel (`classifyAgendaCategory`) : même source, aucun appel modèle sur un cas tranché', async () => {
     fake.onAny(() => { throw new Error('ne doit pas être appelé'); });
-    await expect(classifyAgendaItem("Échéance d'assurance", 'reconduction tacite', 'asset_field', 'insuranceExpiry', ctx)).resolves.toBe('information');
-    await expect(classifyAgendaItem('Contrôle technique', null, 'asset_field', 'nextInspection', ctx)).resolves.toBe('action');
+    await expect(classifyAgendaCategory({ title: "Échéance d'assurance", description: 'reconduction tacite', originType: 'asset_field', originFieldKey: 'insuranceExpiry' }, ctx)).resolves.toBe('information');
+    await expect(classifyAgendaCategory({ title: 'Contrôle technique', originType: 'asset_field', originFieldKey: 'nextInspection' }, ctx)).resolves.toBe('action');
     expect(fake.calls).toHaveLength(0);
-    const src = readFileSync(join(process.cwd(), 'src/services/agenda/AgendaClassificationService.ts'), 'utf8');
-    // Plus de copie des règles en code ; le prompt inline historique est
-    // conservé tel quel (parité legacy, arbitrage lead).
-    expect(src).not.toMatch(/const actionPatterns/);
-    vi.unstubAllEnvs();
+    // Le classifieur historique et sa copie des règles n'existent plus.
+    expect(existsSync(join(process.cwd(), 'src/services/agenda/AgendaClassificationService.ts'))).toBe(false);
+    const write = readFileSync(join(process.cwd(), 'src/services/agenda/AgendaWriteService.ts'), 'utf8');
+    expect(write).toMatch(/classifyAgendaCategory\(/);
+    expect(write).not.toMatch(/AI_AGENDA_ENGINE'\)|isEnabled\(/);
   });
 });
 
@@ -94,7 +93,7 @@ describe('T4-10 : unknown et classification prudente', () => {
   });
 });
 
-describe('P-T4-01 et aiguillage par architecture', () => {
+describe('P-T4-01 et master T4 seul', () => {
   it('champ nextInspection : action par le registre, sans appel', async () => {
     T4('master');
     const c = await classifyAgendaEvent({ title: P1.context.field.title, originType: 'asset_field', originFieldKey: P1.context.field.originFieldKey }, ctx);
@@ -119,12 +118,18 @@ describe('P-T4-01 et aiguillage par architecture', () => {
     await expect(classifyAgendaCategory({ title: 'Truc', originType: 'manual' }, { ...ctx, date: '2020-01-01' })).resolves.toBe('information');
   });
 
-  it('steps : classify_event historique, sortie binaire, aucune TASK', async () => {
+  it('version ancienne en `steps` : le master T4 s’applique quand même (lot 16b-2)', async () => {
     T4('steps');
-    fake.onAny(() => ({ rawText: JSON.stringify({ category: 'information', reason: 'r' }), inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', homeCategory: 'information', confidence: 'probable', reason: 'r' }), inputTokens: 1, outputTokens: 1 }));
     const c = await classifyAgendaEvent({ title: 'Truc', originType: 'manual' }, ctx);
     expect(c).toMatchObject({ category: 'information', source: 'model' });
-    expect(traces[0]).toMatchObject({ operationCode: 'classify_event', task: null });
+    expect(traces[0]).toMatchObject({ operationCode: 't4_classify_event', task: 'CLASSIFY_EVENT' });
+  });
+
+  it('sans version : master T4 aussi', async () => {
+    fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', homeCategory: 'action', confidence: 'probable', reason: 'r' }), inputTokens: 1, outputTokens: 1 }));
+    await classifyAgendaEvent({ title: 'Truc', originType: 'manual' }, ctx);
+    expect(traces[0]).toMatchObject({ operationCode: 't4_classify_event' });
   });
 
   it('échec du modèle : repli historique « action », ambigu', async () => {
@@ -134,88 +139,14 @@ describe('P-T4-01 et aiguillage par architecture', () => {
   });
 });
 
-/**
- * Copie FIGÉE de la classification d'avant le lot 14 (tag lot13b,
- * `AgendaClassificationService.classifyByRules` ≡ `deterministic-classification`).
- */
-function avantLot14(title: string, originType: string): 'action' | 'information' | null {
-  if (originType === 'asset_field') return 'information';
-  const t = title.toLowerCase();
-  const actions = [
-    /contrôle technique/i, /revision/i, /révision/i, /réparation/i, /reparation/i, /renouvellement/i,
-    /rendez-vous/i, /rdv/i, /entretien/i, /intervention/i, /installation/i, /inspection/i, /visite/i,
-    /nettoyage/i, /remplacement/i, /paiement/i, /facture/i,
-    /reprise/i, /restitution/i, /récupération/i, /recuperation/i,
-    /gardiennage/i, /stockage/i, /dépôt.*pneu/i, /pneu.*dépôt/i, /pneu.*hiver/i, /pneu.*été/i, /pneu.*saison/i,
-    /fin.*contrat.*(gardiennage|stockage|dépôt|depot|pneu)/i, /(gardiennage|stockage|dépôt|depot|pneu).*fin.*contrat/i,
-  ];
-  for (const p of actions) if (p.test(t)) return 'action';
-  const infos = [
-    /fin de garantie/i, /garantie.*expir/i, /expir.*garantie/i, /fin.*(p[eé]riode|contrat).*assurance/i,
-    /assurance.*fin/i, /assurance.*expir/i, /expiration.*assurance/i, /reconduction/i, /renouvellement.*auto/i,
-    /date d['']achat/i, /^achat\b/i, /fabrication/i, /dpe/i, /diagnostic/i, /décennale/i, /échéance.*contrat/i, /fin.*contrat/i,
-  ];
-  for (const p of infos) if (p.test(t)) return 'information';
-  return null;
-}
-
-const JEU: Array<[string, string, string | null]> = [
-  ['Contrôle technique', 'asset_field', 'nextInspection'],
-  ['Entretien chaudière', 'asset_field', 'maintenanceDueDate'],
-  ['Échéance d\'assurance', 'asset_field', 'insuranceExpiry'],
-  ['Fin de garantie', 'asset_field', 'warrantyEndDate'],
-  ['Achat — Vélo', 'asset_field', 'acquisitionDate'],
-  ['Fin assurance auto', 'document', null],
-  ['Expiration assurance habitation', 'manual', null],
-  ['Reconduction contrat box', 'document', null],
-  ['Renouvellement automatique abonnement', 'document', null],
-  ['Fin de contrat de gardiennage', 'document', null],
-  ['Pneus hiver en dépôt', 'document', null],
-  ['Achat Pneus Discount → Reprise', 'document', null],
-  ['Rendez-vous notaire', 'manual', null],
-  ['DPE', 'document', null],
-  ['Truc à vérifier', 'manual', null],
-  ['Fin de contrat', 'document', null],
-];
-
-describe('parité legacy (arbitrage lead, lot 14)', () => {
-  it('moteur legacy strictement identique à avant, sur titres et champs', () => {
-    for (const [title, originType, originFieldKey] of JEU) {
-      expect(classifyByRulesLegacy({ title, originType, originFieldKey }), title).toBe(avantLot14(title, originType));
-      expect(classifyByRules({ title, originType, originFieldKey, description: 'reconduction tacite ; stockage' }, 'legacy'), title)
-        .toBe(avantLot14(title, originType));
-      expect(classifyByRulesInMode({ title, originType, originFieldKey }, 'legacy')?.category ?? null, title)
-        .toBe(avantLot14(title, originType));
-    }
-  });
-
-  it('AgendaClassificationService en legacy : même sortie qu’avant, sans commutateur', async () => {
-    fake.onAny(() => ({ rawText: 'action', inputTokens: 1, outputTokens: 1 }));
-    for (const [title, originType, originFieldKey] of JEU) {
-      const attendu = avantLot14(title, originType) ?? 'action';
-      await expect(classifyAgendaItem(title, null, originType, originFieldKey, ctx), title).resolves.toBe(attendu);
-    }
-  });
-
-  it('mode : v2 sous enabled ou master, shadow journalise, legacy sinon', () => {
-    expect(classificationMode('legacy', 'steps')).toBe('legacy');
-    expect(classificationMode('shadow', 'steps')).toBe('shadow');
-    expect(classificationMode('enabled', 'steps')).toBe('v2');
-    expect(classificationMode('legacy', 'master')).toBe('v2');
-  });
-
-  it('shadow : résultat historique, divergence journalisée', () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const r = classifyByRulesInMode({ title: 'Contrôle technique', originType: 'asset_field', originFieldKey: 'nextInspection' }, 'shadow');
-    expect(r?.category).toBe('information');
-    expect(info).toHaveBeenCalledWith(expect.stringMatching(/divergente .*historique=information, v2=action/));
-  });
-
-  it('classifyAgendaEvent : legacy par défaut, v2 sous enabled', async () => {
+describe('règles v2 seules (lot 16b-2 : moteur historique retiré)', () => {
+  it('un champ de bien n’est plus « information » par principe (T4-02)', async () => {
     fake.onAny(() => { throw new Error('ne doit pas être appelé'); });
     const champ = { title: 'Contrôle technique', originType: 'asset_field', originFieldKey: 'nextInspection' };
-    expect((await classifyAgendaEvent(champ, ctx)).category).toBe('information');
-    vi.stubEnv('AI_T4_EFFECTS', 'enabled');
+    expect(classifyByRules(champ)).toBe('action');
+    expect((await classifyAgendaEvent(champ, ctx)).category).toBe('action');
+    // Variable retirée encore posée : sans effet.
+    vi.stubEnv('AI_T4_EFFECTS', 'legacy');
     expect((await classifyAgendaEvent(champ, ctx)).category).toBe('action');
   });
 });

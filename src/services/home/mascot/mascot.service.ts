@@ -13,7 +13,6 @@ import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
 import { formulateWithT6, logT6, type T6Mode } from './t6-runner';
 import type { MascotPresentation } from './types';
-import { t4EffectsMode } from '@/services/canonical/rollout';
 import { parisDay, tileFor } from './bubble';
 
 export async function getMascotPresentation(
@@ -30,8 +29,8 @@ export async function getMascotPresentation(
   }
 
   // CDC 15 T4-12 : échéance passée sans statut = non prouvée (à confirmer),
-  // jamais « non réalisée » — seulement quand AI_T4_EFFECTS=enabled.
-  const tiles = { unprovenOverdueIsQuestion: t4EffectsMode() === 'enabled' };
+  // jamais « non réalisée » (toujours depuis le lot 16b-2).
+  const tiles = { unprovenOverdueIsQuestion: true };
   const candidates = buildCandidates(raw);
   const subjects = selectSubjects(candidates.candidates);
   const secondaries = buildSecondaries(candidates, subjects);

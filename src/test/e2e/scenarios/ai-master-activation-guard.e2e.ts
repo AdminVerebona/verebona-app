@@ -27,14 +27,15 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
   }
 
   /**
-   * Lot 16b : T5 et T6 sont TOUJOURS en master (fichier du dépôt) — leur
-   * corpus vert est donc exigé à chaque activation, comme celui de T1 ici.
+   * Lot 16b : T5 et T6 (L16b-1), T2 et T4 (L16b-2) sont TOUJOURS en master
+   * (fichier du dépôt) — leur corpus vert est donc exigé à chaque
+   * activation, comme celui de T1 ici.
    */
-  async function corpusVertT5T6(versionId: number) {
+  async function corpusVertMastersSeuls(versionId: number) {
     const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const { recordCorpusRun } = await import('@/services/ai/governance/master-corpus/repository');
-    for (const run of await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T5', 'T6'] })) {
+    for (const run of await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T2', 'T4', 'T5', 'T6'] })) {
       expect(run.status, run.masterPromptCode).toBe('PASSED');
       await recordCorpusRun(run, { configVersionId: versionId, source: 'ci', environment: 'local', gitSha: 'e2e' });
     }
@@ -56,9 +57,9 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
 
     const r1 = await refus(versionId, user.id);
     expect(r1?.code).toBe('MASTER_CORPUS_NOT_GREEN');
-    // Lot 16b : T5 et T6, master seul, sont contrôlés comme T1.
-    expect(r1?.details?.entries?.map((e) => e.treatment)).toEqual(expect.arrayContaining(['T1', 'T5', 'T6']));
-    await corpusVertT5T6(versionId);
+    // Lot 16b : T2, T4, T5 et T6, master seul, sont contrôlés comme T1.
+    expect(r1?.details?.entries?.map((e) => e.treatment)).toEqual(expect.arrayContaining(['T1', 'T2', 'T4', 'T5', 'T6']));
+    await corpusVertMastersSeuls(versionId);
     const r1b = await refus(versionId, user.id);
     expect(r1b?.details?.entries?.filter((e) => e.status !== 'GREEN')).toEqual([expect.objectContaining({ treatment: 'T1', status: 'NO_RUN' })]);
 
@@ -90,7 +91,7 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const texte = `${readMasterFileFromRepo('t1_master_v1')}\n\nRÈGLE AJOUTÉE (e2e) — Le titre commence par le type de document.`;
     const versionId = await versionT1Master(user.id, texte);
-    await corpusVertT5T6(versionId);
+    await corpusVertMastersSeuls(versionId);
 
     const r = await refus(versionId, user.id);
     expect(r?.code).toBe('MASTER_CORPUS_NOT_GREEN');

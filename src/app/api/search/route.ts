@@ -2,10 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { drawerHref } from '@/lib/drawers';
 import { SessionService } from '@/lib/session-service';
 import { db, ensureMigrations, ensureUnaccent } from '@/db';
-import { geminiSearch } from '@/lib/gemini-search';
-import { shouldRunLegacy } from '@/services/ai/flags/ai-feature-flags';
 
-const PREMIUM_PLANS = new Set(['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO']);
+/**
+ * Recherche LEXICALE du compte (biens, documents, échéances), toutes offres.
+ *
+ * Décision PO D-H2 (lot 16b-2) : le repli sémantique Gemini des comptes
+ * Premium (`lib/gemini-search.ts`, usage historique n°6) et la recherche
+ * intelligente (`/api/search/intelligent`, usage n°7) sont SUPPRIMÉS. La
+ * recherche reste lexicale ; une question en langage naturel passe par
+ * l'assistant (`/api/verebona/messages`). `aiPowered` est conservé dans la
+ * réponse (toujours `false`) pour la compatibilité des clients.
+ */
 
 /** Escape a LIKE pattern value for safe SQL interpolation (prevents SQL injection). */
 function escapeLike(val: string): string {
@@ -179,33 +186,9 @@ export async function GET(req: NextRequest) {
       }),
     ];
 
-    // SQL a trouvé des résultats → les retourner immédiatement
-    if (results.length > 0) {
-      return NextResponse.json({ results, aiPowered: false });
-    }
-
-    // Aucun résultat SQL → tenter Gemini pour les comptes Premium (sémantique)
-    //
-    // `shouldRunLegacy` : ce repli est l'usage historique n°6. La recherche
-    // classique reste ouverte à tous — l'offre Standard en dépend — mais son
-    // repli sémantique sort du chemin dès que l'assistant est basculé, sans
-    // quoi deux moteurs répondraient à la même requête (§10.4, critère n°15).
-    // `instant=1` : suggestions pendant la frappe (champ Verebona, Direction D
-    // v2) — jamais d'appel modèle à chaque frappe ; « Entrée » interroge
-    // l'assistant avec la question complète.
-    const instant = new URL(req.url).searchParams.get('instant') === '1';
-    if (!instant && shouldRunLegacy('AI_INTELLIGENT_ASSISTANT') && PREMIUM_PLANS.has(session.planType)) {
-      try {
-        const aiResults = await geminiSearch(q, accountId);
-        if (aiResults.length > 0) {
-          return NextResponse.json({ results: aiResults, aiPowered: true });
-        }
-      } catch (err) {
-        console.warn('[search] Gemini failed:', (err as Error).message);
-      }
-    }
-
-    return NextResponse.json({ results: [], aiPowered: false });
+    // `instant=1` (suggestions pendant la frappe) : même réponse, la
+    // recherche est lexicale dans tous les cas.
+    return NextResponse.json({ results, aiPowered: false });
   } catch (err) {
     console.error('[search] error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

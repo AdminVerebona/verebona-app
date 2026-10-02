@@ -67,7 +67,7 @@ export async function GET(req: NextRequest) {
         master: masterPromptForTreatment(t)
           ? {
             ...masterPromptForTreatment(t)!, rolloutSwitch: MASTER_ROLLOUT_SWITCH[t] ?? null,
-            // Lot 16b : T5 et T6 sans architecture `steps` (choix non proposé).
+            // Lot 16b : T2, T4, T5 et T6 sans architecture `steps` (choix non proposé).
             masterOnly: isMasterOnlyTreatment(t),
           }
           : null,

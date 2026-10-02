@@ -66,10 +66,10 @@ describe('T4-02 — un champ de bien FUTUR est une action', () => {
     for (const [key, date] of [['nextInspection', '2028-05-01'], ['maintenanceDueDate', '2027-05-01']]) {
       const [c] = un([lu(key, date)]);
       expect(c.suggestedCategory, key).toBe('action');
-      expect(classifyByRules({ title: c.title, originType: 'asset_field', originFieldKey: c.originFieldKey, businessType: c.businessType, nature: c.nature }, 'v2'), key)
+      expect(classifyByRules({ title: c.title, originType: 'asset_field', originFieldKey: c.originFieldKey, businessType: c.businessType, nature: c.nature }), key)
         .toBe('action');
-      // Moteur historique (AI_T4_EFFECTS ≠ enabled) : inchangé, « champ de bien ⇒ information ».
-      expect(classifyByRules({ title: c.title, originType: 'asset_field' }), key).toBe('information');
+      // Lot 16b-2 : plus de moteur historique « champ de bien ⇒ information ».
+      expect(classifyByRules({ title: c.title, originType: 'asset_field', originFieldKey: c.originFieldKey }), key).not.toBe('information');
     }
   });
 });

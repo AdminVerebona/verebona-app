@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('@/db', () => ({ pgClient: { unsafe: vi.fn(async () => []) }, db: {}, ensureMigrations: vi.fn(), ensureUnaccent: vi.fn() }));
 
 const { targetsFromInput, assetsNamedIn, resolveAssistantTargets } = await import('../assistant-targets');
-const { adaptersForIntent, analyserRequeteCanonique, analyserRequete, entityFiltersFromTargets } = await import('../retrieval.service');
+const { adaptersForIntent, analyserRequeteCanonique, entityFiltersFromTargets } = await import('../retrieval.service');
 const { documentSearchFilters, documentTypeStems, tokenizeQuery } = await import('../query-terms');
 const { ADAPTATEURS, documentTypeCodesFor } = await import('../../registries/retrieval-adapters');
 
@@ -96,8 +96,6 @@ describe('T2-13, T2-14 — filtres structurés des documents', () => {
   it('« facture », « devis » : types demandés (y compris le pluriel « devis »)', () => {
     expect(analyserRequeteCanonique('Retrouve une facture', TODAY).documentTypes).toEqual(['facture']);
     expect(analyserRequeteCanonique('Retrouve le devis de Norauto', TODAY).documentTypes).toEqual(['devis']);
-    // Historique : « devis » n'était pas reconnu (racine « devi »).
-    expect(analyserRequete('Retrouve le devis de Norauto', TODAY).documentTypes).toEqual([]);
     expect(documentTypeStems(tokenizeQuery('mes factures et devis'))).toEqual(['facture', 'devis']);
   });
 

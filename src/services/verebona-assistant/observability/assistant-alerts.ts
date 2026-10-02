@@ -327,7 +327,7 @@ const defaultDeps: AssistantAlertDeps = {
     return (await import('@/services/ai/alerts/alerts.repository')).raiseAlert(a);
   },
   async resolveActiveModels() {
-    const r = await resolveAliases('generate_answer');
+    const r = await resolveAliases('t2_answer');
     const a = configuredAliases();
     return [
       ...(r.default ? [{ model: r.default, alias: a.default }] : []),

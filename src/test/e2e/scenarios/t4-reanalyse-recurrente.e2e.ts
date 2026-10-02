@@ -47,7 +47,6 @@ scenario('T4-L14-RECUR', 'Réanalyse d’une échéance récurrente, sources et 
      WHERE l.asset_id = ${assetId} ORDER BY i.start_date`;
 
   it('deux occurrences : réanalyse idempotente, preuve tracée, occurrence disparue retirée (sauf modifiée)', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER' });
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -77,7 +76,6 @@ scenario('T4-L14-RECUR', 'Réanalyse d’une échéance récurrente, sources et 
   });
 
   it('document multi-biens : la réanalyse pour un bien ne retire rien sur l’autre', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const b1 = await make.asset(compte, { category: 'IMMOBILIER' });
     const b2 = await make.asset(compte, { category: 'IMMOBILIER' });
@@ -94,7 +92,6 @@ scenario('T4-L14-RECUR', 'Réanalyse d’une échéance récurrente, sources et 
   });
 
   it('cible ÉQUIPEMENT du candidat : lien équipement, clé propre, réanalyse idempotente', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER' });
     const doc = await make.assetFile(compte, { assetId: bien.id });

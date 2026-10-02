@@ -8,7 +8,6 @@ import {
 } from '@/db/schema';
 import { eq, and, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
 import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
-import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { listAgendaItemIdsForSource, SOURCE_LINK_EFFECTS } from './agenda-source-links';
 
@@ -62,8 +61,8 @@ export interface AgendaItemFull {
   equipmentLinks: { id: number; equipmentId: number; name: string; resolvedAssetId: number | null }[];
   attentionFlags: AttentionFlag[];
   /**
-   * HISTORICAL | DEADLINE (0223, CDC 15 D-14) — renseigné quand
-   * AI_T4_EFFECTS=enabled ; absent sinon.
+   * HISTORICAL | DEADLINE (0223, CDC 15 D-14) — renseigné quand la
+   * migration 0223 est appliquée ; absent sinon.
    */
   eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
 }
@@ -281,11 +280,11 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
 }
 
 /**
- * Nature des éléments (colonne 0223, non déclarée dans Drizzle) — seulement
- * en AI_T4_EFFECTS=enabled ; null sinon (rien n'est lu).
+ * Nature des éléments (colonne 0223, non déclarée dans Drizzle) ; null si
+ * la migration n'est pas appliquée (rien n'est lu).
  */
 async function loadEventNatures(ids: number[]): Promise<Map<number, 'HISTORICAL' | 'DEADLINE' | null> | null> {
-  if (ids.length === 0 || t4EffectsMode() !== 'enabled' || !(await agendaFunctionalColumnsReady())) return null;
+  if (ids.length === 0 || !(await agendaFunctionalColumnsReady())) return null;
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(
     `SELECT id, event_nature AS nature FROM agenda_items WHERE id = ANY($1::int[])`,
@@ -299,8 +298,8 @@ async function loadEventNatures(ids: number[]): Promise<Map<number, 'HISTORICAL'
 /**
  * Un élément entre-t-il dans les « prochaines échéances » ? Jamais un
  * élément HISTORICAL (fait passé : achat, entretien réalisé, sinistre,
- * vente…), ni un élément réalisé ou annulé. `eventNature` absent (legacy,
- * élément antérieur) : comportement historique.
+ * vente…), ni un élément réalisé ou annulé. `eventNature` absent (élément
+ * antérieur à la 0223) : échéance.
  */
 export function isUpcomingDeadlineCandidate(item: {
   eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
@@ -312,19 +311,19 @@ export function isUpcomingDeadlineCandidate(item: {
 
 /**
  * Fragment SQL à ajouter au WHERE d'une requête « prochaines échéances » sur
- * `agenda_items` : exclut les éléments HISTORICAL quand AI_T4_EFFECTS=enabled
- * et que la 0223 est appliquée ; chaîne vide sinon (requête historique
- * valide). `alias` : alias de `agenda_items` dans la requête.
+ * `agenda_items` : exclut les éléments HISTORICAL quand la 0223 est
+ * appliquée ; chaîne vide sinon (requête valide sans la colonne). `alias` :
+ * alias de `agenda_items` dans la requête.
  */
-export async function upcomingDeadlinesSqlFilter(alias = '', mode: RolloutMode = t4EffectsMode()): Promise<string> {
-  if (mode !== 'enabled' || !(await agendaFunctionalColumnsReady())) return '';
+export async function upcomingDeadlinesSqlFilter(alias = ''): Promise<string> {
+  if (!(await agendaFunctionalColumnsReady())) return '';
   const a = alias ? `${alias}.` : '';
   return ` AND (${a}event_nature IS DISTINCT FROM 'HISTORICAL')`;
 }
 
 /**
  * Prochaines échéances d'un compte (à partir d'aujourd'hui), HISTORICAL
- * exclus en enabled, réalisées et annulées exclues — prête pour l'accueil.
+ * exclus, réalisées et annulées exclues — prête pour l'accueil.
  */
 export async function getUpcomingDeadlines(
   accountId: number,
@@ -348,8 +347,8 @@ export async function getAgendaItems(params: AgendaQueryParams): Promise<AgendaI
   if (fileId) {
     // Éléments liés au document : service unique de liaison source ↔ agenda
     // (CDC 15 T4-07, X-04) — liens `agenda_file_links`, traces
-    // `agenda_item_sources` et, en AI_T4_EFFECTS=enabled, éléments
-    // automatiques issus de ce document (`origin_ref`).
+    // `agenda_item_sources` et éléments automatiques issus de ce document
+    // (`origin_ref`).
     const ids = await listAgendaItemIdsForSource(accountId, fileId);
     if (ids.length === 0) return [];
     rows = await db.select().from(agendaItems).where(
@@ -520,8 +519,8 @@ export async function getHomepageAgendaItems(accountId: number): Promise<AgendaI
   const today = now.toISOString().slice(0, 10);
 
   // Exclude realise and annule (treat empty string as null — DB may store '')
-  // CDC 15 D-14 (AI_T4_EFFECTS=enabled) : un élément HISTORICAL n'est pas une
-  // échéance — ni « en retard », ni « à venir ». Nature absente : historique.
+  // CDC 15 D-14 : un élément HISTORICAL n'est pas une échéance — ni « en
+  // retard », ni « à venir ». Nature absente (avant la 0223) : échéance.
   const active = enriched.filter(isUpcomingDeadlineCandidate);
 
   // Pass 1 — classify

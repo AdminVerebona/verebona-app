@@ -14,8 +14,8 @@
  * EFFECTIVE (configuration versionnée, sinon code) :
  *   1. alias résolus (défaut, et escalade si le repli est actif) ;
  *   2. modèles autorisés : ni « latest », ni Pro, ni preview sans flag ;
- *   3. prix présents (bloquant en production pour un usage basculé, sinon
- *      signalé) ;
+ *   3. prix présents (bloquant en production — l'assistant tourne toujours
+ *      depuis le lot 16b-2 —, sinon signalé) ;
  *   4. compatibilité avec les sorties structurées (schéma JSON déclaré,
  *      modèle Gemini) ;
  *   5. défaut ≠ escalade sans décision explicite.
@@ -47,7 +47,7 @@ export interface RegistryCheckDeps {
   operations?: Record<string, AiOperationDefinition | undefined>;
   resolve?: (op: string) => Promise<{ primaryModel: string; fallbackModels: string[] }>;
   hasPrice?: (provider: string, model: string) => boolean;
-  /** Un prix manquant bloque-t-il ? (production + usage basculé) */
+  /** Un prix manquant bloque-t-il ? (production) */
   pricingBlocking?: () => boolean;
 }
 
@@ -57,8 +57,9 @@ async function defaultHasPrice(): Promise<(provider: string, model: string) => b
 }
 
 async function defaultPricingBlocking(): Promise<() => boolean> {
-  const { isUseCaseRunning } = await import('@/services/ai/flags/use-case-flags');
-  return () => process.env.NODE_ENV === 'production' && isUseCaseRunning('INTELLIGENT_ASSISTANT');
+  // Lot 16b-2 : `AI_INTELLIGENT_ASSISTANT` retiré, l'assistant tourne
+  // toujours — un prix manquant bloque dès la production.
+  return () => process.env.NODE_ENV === 'production';
 }
 
 /** Contrôle complet du registre (pur si les dépendances sont injectées). */
@@ -105,7 +106,7 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
   }
 
   const aliases = configuredAliases();
-  const principal = resolved.find((x) => x.operationCode === 'generate_answer');
+  const principal = resolved.find((x) => x.operationCode === 't2_answer');
   return {
     ok: errors.length === 0,
     errors,

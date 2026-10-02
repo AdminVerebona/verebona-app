@@ -75,13 +75,8 @@ describe('T2-30 — revalidation des faits visuels en T2 master (VISUAL_RECHECK)
   });
   const ask = (facts: Fact[]) => answerFromData({ port: port(facts), accountId: 1, message: 'état de la toiture', thresholds: DEFAULT_THRESHOLDS });
 
-  it('steps : un fait visuel n’est jamais proposé à la revalidation (inchangé)', async () => {
+  it('l’observation visuelle peu sûre est proposée (VISUAL_RECHECK, master T2 seul depuis le lot 16b-2)', async () => {
     h.arch = 'steps';
-    const r = await ask([visuel(1, 'ambiguous')]);
-    expect(r.revalidation).toBeUndefined();
-  });
-  it('master : l’observation visuelle peu sûre est proposée (VISUAL_RECHECK possible)', async () => {
-    h.arch = 'master';
     const r = await ask([visuel(1, 'ambiguous')]);
     expect(r.revalidation).toEqual({ trigger: 'LOW_CONFIDENCE', factIds: [1] });
   });

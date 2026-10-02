@@ -3,9 +3,11 @@
  *
  * ══════════════════════════════════════════════════════════════════════════
  * SOURCE UNIQUE des règles de classification action / information : le
- * moteur T4 ET le chemin historique (`AgendaClassificationService`) les
- * appellent — plus aucune copie. Lot 14 : registre d'abord (T4-02), règles
- * métier stables ensuite (T4-11), motifs de titre enfin.
+ * moteur T4, le chemin manuel et la mascotte les appellent — plus aucune
+ * copie. Lot 14 : registre d'abord (T4-02), règles métier stables ensuite
+ * (T4-11), motifs de titre enfin. Lot 16b-2 : le moteur historique
+ * (`legacy`, règle « champ de bien ⇒ information ») est retiré avec
+ * `AI_T4_EFFECTS`.
  *
  * Critère d'acceptation n°17 : « Aucun appel modèle n'est émis sur un cas que
  * les règles tranchent. »
@@ -56,54 +58,6 @@ const INFO_PATTERNS: RegExp[] = [
   /échéance.*contrat/i, /fin.*contrat/i,
 ];
 
-/**
- * ══════════════════════════════════════════════════════════════════════════
- * MOTEUR HISTORIQUE (`legacy`) — CONSERVÉ À L'IDENTIQUE (arbitrage lead,
- * lot 14 : « rien ne change en production sans commutateur »).
- *
- * Tant que ni `AI_T4_EFFECTS=enabled` ni l'architecture T4 `master` ne sont
- * en place, la classification est EXACTEMENT celle d'avant le lot 14 : règle
- * « champ de bien ⇒ information », motifs de gardiennage et d'assurance
- * compris. Ces motifs sont la copie de référence historique (ex-doublon de
- * `AgendaClassificationService`, qui l'appelle désormais) ; un test de parité
- * la fige.
- * ══════════════════════════════════════════════════════════════════════════
- */
-const LEGACY_ACTION_PATTERNS: RegExp[] = [
-  ...ACTION_PATTERNS,
-  /reprise/i, /restitution/i, /récupération/i, /recuperation/i,
-  /gardiennage/i, /stockage/i, /dépôt.*pneu/i, /pneu.*dépôt/i,
-  /pneu.*hiver/i, /pneu.*été/i, /pneu.*saison/i,
-  /fin.*contrat.*(gardiennage|stockage|dépôt|depot|pneu)/i,
-  /(gardiennage|stockage|dépôt|depot|pneu).*fin.*contrat/i,
-];
-const LEGACY_INFO_PATTERNS: RegExp[] = [
-  /fin de garantie/i, /garantie.*expir/i, /expir.*garantie/i,
-  /fin.*(p[eé]riode|contrat).*assurance/i,
-  /assurance.*fin/i, /assurance.*expir/i, /expiration.*assurance/i,
-  /reconduction/i, /renouvellement.*auto/i,
-  /date d['']achat/i, /^achat\b/i,
-  /fabrication/i,
-  /dpe/i, /diagnostic/i,
-  /décennale/i,
-  /échéance.*contrat/i, /fin.*contrat/i,
-];
-
-/** Classification historique exacte (titre seul, champ de bien ⇒ information). */
-export function classifyByRulesLegacy(input: AgendaClassificationInput): HomeCategory | null {
-  if (input.originType === 'asset_field') return 'information';
-  const title = input.title.toLowerCase();
-  for (const p of LEGACY_ACTION_PATTERNS) if (p.test(title)) return 'action';
-  for (const p of LEGACY_INFO_PATTERNS) if (p.test(title)) return 'information';
-  return null;
-}
-
-/**
- * Moteur de règles : `legacy` (historique exact) ou `v2` (CDC 15 T4-02,
- * T4-11 : registre, règles métier stables, motifs de titre).
- */
-export type RulesEngine = 'legacy' | 'v2';
-
 /** Origine d'une classification déterministe (traçabilité). */
 export type RuleSource = 'registry' | 'business_rule' | 'pattern';
 
@@ -143,7 +97,7 @@ function registryHomeCategory(input: {
 
 /**
  * Classification déterministe détaillée, ou `null` si le cas est réellement
- * ambigu — seul cas où un appel modèle est justifié. Moteur `v2`, ordre :
+ * ambigu — seul cas où un appel modèle est justifié. Ordre :
  *   1. registre (`agendaEffect` du champ / type métier + nature) ;
  *   2. règles métier stables (business-rules, titre + description) ;
  *   3. motifs de titre.
@@ -152,13 +106,7 @@ function registryHomeCategory(input: {
  * information » est SUPPRIMÉE — elle neutralisait `nextInspection`,
  * `maintenanceDueDate`… Un champ de bien est classé selon SA nature.
  */
-export function classifyByRulesDetailed(
-  input: AgendaClassificationInput, engine: RulesEngine = 'legacy',
-): RuleClassification | null {
-  if (engine === 'legacy') {
-    const c = classifyByRulesLegacy(input);
-    return c === null ? null : { category: c, source: 'pattern', ruleCode: 'LEGACY' };
-  }
+export function classifyByRulesDetailed(input: AgendaClassificationInput): RuleClassification | null {
   const registry = registryHomeCategory(input);
   if (registry && registry.value !== 'selon_evenement') {
     return { category: registry.value, source: 'registry', ruleCode: `EVENT_CATALOG:${registry.businessType}:${registry.nature}` };
@@ -185,18 +133,13 @@ export function classifyByRulesDetailed(
 
 /**
  * Retourne la catégorie si une règle tranche, `null` si le cas est réellement
- * ambigu — seul cas où un appel modèle est justifié. Moteur `legacy` par
- * défaut (« rien ne change sans commutateur ») : un appelant placé sous
- * AI_T4_EFFECTS=enabled passe `'v2'` explicitement, ou utilise
- * `classifyByRulesInMode` (`rules-engine`).
+ * ambigu — seul cas où un appel modèle est justifié.
  */
-export function classifyByRules(input: AgendaClassificationInput, engine: RulesEngine = 'legacy'): HomeCategory | null {
-  return classifyByRulesDetailed(input, engine)?.category ?? null;
+export function classifyByRules(input: AgendaClassificationInput): HomeCategory | null {
+  return classifyByRulesDetailed(input)?.category ?? null;
 }
 
 /** Expose les motifs pour les tests de non-régression. */
-export function getClassificationPatterns(engine: RulesEngine = 'legacy'): { action: RegExp[]; information: RegExp[] } {
-  return engine === 'legacy'
-    ? { action: LEGACY_ACTION_PATTERNS, information: LEGACY_INFO_PATTERNS }
-    : { action: ACTION_PATTERNS, information: INFO_PATTERNS };
+export function getClassificationPatterns(): { action: RegExp[]; information: RegExp[] } {
+  return { action: ACTION_PATTERNS, information: INFO_PATTERNS };
 }

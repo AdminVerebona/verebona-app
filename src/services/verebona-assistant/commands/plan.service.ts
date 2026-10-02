@@ -120,35 +120,10 @@ export const sqlLookup: CommandLookup = {
     )) as unknown as Array<{ id: number; title: string; date: string | null }>;
   },
   async getAssetState(accountId, id) {
-    // CDC 15 T2-40 (ASSISTANT_CANONICAL_READ=enabled) : la valeur présentée à
-    // la confirmation (« A → B ») est la valeur CANONIQUE — celle que
-    // l'assistant lit et que la fiche affiche (`commandAssetState`, X), la
-    // même que l'exécuteur relit avant d'écrire. Legacy : lecture historique.
-    const { canonicalReadEnabled } = await import('../canonical/mode');
-    if (canonicalReadEnabled()) return (await import('../canonical/commands')).commandAssetState(accountId, id);
-    const r = (await pgClient.unsafe(
-      `SELECT id, name, city, category, status, lock_state AS "lockState", key_characteristics AS kc,
-              purchase_date AS "purchaseDate", purchase_price_cents AS "purchasePriceCents",
-              registration_number AS "registrationNumber"
-         FROM assets WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
-      [id, accountId] as never[],
-    )) as unknown as Array<{
-      id: number; name: string; city: string | null; category: string; status: string | null; lockState: string | null;
-      kc: string | null; purchaseDate: string | Date | null; purchasePriceCents: number | null; registrationNumber: string | null;
-    }>;
-    const a = r[0];
-    if (!a) return null;
-    let kc: Record<string, unknown> = {};
-    try { kc = a.kc ? JSON.parse(a.kc) : {}; } catch { /* caractéristiques illisibles : vides */ }
-    // Mêmes replis que la fiche bien (GET /details) : colonnes historiques.
-    const jour = (d: string | Date | null) => (d ? (typeof d === 'string' ? d : d.toISOString()).slice(0, 10) : null);
-    const characteristics = {
-      ...kc,
-      acquisitionDate: kc.acquisitionDate ?? jour(a.purchaseDate),
-      acquisitionPrice: kc.acquisitionPrice ?? (a.purchasePriceCents != null ? a.purchasePriceCents / 100 : null),
-      registrationNumber: kc.registrationNumber ?? a.registrationNumber,
-    };
-    return { id: a.id, name: a.name, city: a.city, category: a.category, status: a.status, lockState: a.lockState, characteristics };
+    // CDC 15 T2-40 : la valeur présentée à la confirmation (« A → B ») est
+    // la valeur CANONIQUE — celle que l'assistant lit et que la fiche affiche
+    // (`commandAssetState`), la même que l'exécuteur relit avant d'écrire.
+    return (await import('../canonical/commands')).commandAssetState(accountId, id);
   },
   async getAgendaItem(accountId, id) {
     const r = (await pgClient.unsafe(

@@ -61,7 +61,7 @@ describe('Mes biens', () => {
 });
 
 describe('Ce que j’ai fait', () => {
-  it('frise, moment, lien d’action ; « Toute l’activité »', () => {
+  it('frise, moment, ligne cliquable sans bouton visible ; « Toute l’activité »', () => {
     const html = renderToStaticMarkup(h(VerebonaWork, {
       onNavigate: noop,
       items: [{ id: 'a', kind: 'deadline', text: 'J’ai identifié une nouvelle échéance.', at: new Date().toISOString(), tone: 'green', cta: 'Voir dans l’agenda', target: { kind: 'agenda', id: 1 } }],
@@ -69,7 +69,10 @@ describe('Ce que j’ai fait', () => {
     expect(html).toContain('Ce que j’ai fait');
     expect(html).toContain('Toute l’activité');
     expect(html).toContain('J’ai identifié une nouvelle échéance.');
-    expect(html).toContain('Voir dans l’agenda');
+    // Libellé d'action : annoncé aux lecteurs d'écran seulement, toute la ligne est le bouton.
+    expect(html).toContain('aria-label="J’ai identifié une nouvelle échéance. — Voir dans l’agenda"');
+    expect(html).not.toContain('>Voir dans l’agenda<');
+    expect(html.match(/<button/g)?.length).toBe(1);
     expect(html).toContain('Aujourd’hui');
   });
 

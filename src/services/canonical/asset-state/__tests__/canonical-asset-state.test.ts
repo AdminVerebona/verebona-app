@@ -42,8 +42,9 @@ describe('rollout — commutateurs', () => {
     const snap = rolloutSnapshot({ CANONICAL_WRITE_MODE: 'on', AI_T4_EFFECTS: 'shadow' });
     expect(snap.map((s) => s.name)).toEqual(Object.keys(ROLLOUT_SWITCHES));
     expect(snap.find((s) => s.name === 'CANONICAL_WRITE_MODE')).toMatchObject({ mode: 'legacy', invalid: true, raw: 'on', wired: true });
-    // AI_T4_EFFECTS est branché depuis le lot 14 (T4-07/T4-08/D-13/D-14).
-    expect(snap.find((s) => s.name === 'AI_T4_EFFECTS')).toMatchObject({ mode: 'shadow', wired: true });
+    // Lot 16b-2 : AI_T4_EFFECTS et ASSISTANT_CANONICAL_READ retirés (toujours actifs).
+    expect(snap.map((s) => s.env)).not.toContain('AI_T4_EFFECTS');
+    expect(snap.map((s) => s.env)).not.toContain('ASSISTANT_CANONICAL_READ');
     // EXPORTS_CANONICAL_SOURCE est branché depuis le lot 16 (X-02).
     expect(snap.find((s) => s.name === 'EXPORTS_CANONICAL_SOURCE')).toMatchObject({ mode: 'legacy', wired: true });
   });

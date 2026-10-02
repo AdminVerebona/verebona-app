@@ -3,7 +3,8 @@
  *
  *   · détection (pure) : lecture mm/jj contraire à la convention française,
  *     mention relative sans date complète ;
- *   · appel SEULEMENT sous T4 master + AI_T4_EFFECTS=enabled ;
+ *   · appel dès qu'une date est incertaine (lot 16b-2 : master T4 seul,
+ *     AI_T4_EFFECTS retiré) ;
  *   · candidat certain de la liste → appliqué ; abstention, hors liste ou
  *     échec → décision `propose` TEMPORAL_AMBIGUITY avec les dates possibles.
  */
@@ -52,22 +53,17 @@ describe('resoudreAmbiguiteTemporelle', () => {
   beforeEach(() => __resetTemporalCacheForTests());
   const cand = { title: 'Prochain entretien', date: '2027-03-04', confidence: 'certain' as const, excerpt: 'Prochain entretien le 03/04/2027', originFieldKey: 'maintenanceDueDate' };
   const input = { accountId: 1, userId: 2, sourceFileId: 55 };
-  const master = async () => 'master';
 
-  it('legacy / shadow, ou T4 en steps, ou date certaine : aucun appel, candidat inchangé', async () => {
+  it('date certaine : aucun appel, candidat inchangé', async () => {
     const resolve = vi.fn();
-    for (const mode of ['legacy', 'shadow'] as const) {
-      expect(await resoudreAmbiguiteTemporelle(cand, input, mode, { architecture: master, resolve })).toEqual({ kind: 'keep', candidate: cand });
-    }
-    expect(await resoudreAmbiguiteTemporelle(cand, input, 'enabled', { architecture: async () => 'steps', resolve })).toEqual({ kind: 'keep', candidate: cand });
     const certain = { ...cand, date: '2027-05-15', excerpt: 'le 15/05/2027' };
-    expect(await resoudreAmbiguiteTemporelle(certain, input, 'enabled', { architecture: master, resolve })).toEqual({ kind: 'keep', candidate: certain });
+    expect(await resoudreAmbiguiteTemporelle(certain, input, { resolve })).toEqual({ kind: 'keep', candidate: certain });
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it('enabled + master : candidat certain de la liste → date appliquée', async () => {
+  it('candidat certain de la liste → date appliquée', async () => {
     const resolve = vi.fn(async (_ctx: unknown, c: Array<{ candidateId: number; date: string; interpretation: string }>) => ({ chosen: c[1], warning: null }));
-    const r = await resoudreAmbiguiteTemporelle(cand, input, 'enabled', { architecture: master, resolve: resolve as never });
+    const r = await resoudreAmbiguiteTemporelle(cand, input, { resolve: resolve as never });
     expect(r).toEqual({ kind: 'keep', candidate: { ...cand, date: '2027-04-03' } });
     const [ctx, candidats, appel] = resolve.mock.calls[0] as unknown as [Record<string, unknown>, Array<{ date: string }>, Record<string, unknown>];
     expect(candidats.map((c) => c.date)).toEqual(['2027-03-04', '2027-04-03']);
@@ -77,7 +73,7 @@ describe('resoudreAmbiguiteTemporelle', () => {
 
   it('abstention, hors liste ou échec → proposition TEMPORAL_AMBIGUITY avec les dates possibles, aucune création', async () => {
     const resolve = vi.fn(async () => ({ chosen: null, warning: 'UNKNOWN_CANDIDATE_ID:9' }));
-    const r = await resoudreAmbiguiteTemporelle(cand, input, 'enabled', { architecture: master, resolve: resolve as never });
+    const r = await resoudreAmbiguiteTemporelle(cand, input, { resolve: resolve as never });
     expect(r).toMatchObject({
       kind: 'propose',
       decision: { action: 'propose', reasonCode: 'TEMPORAL_AMBIGUITY', date: '2027-03-04', temporalCandidates: ['2027-03-04', '2027-04-03'], sourceFileId: 55, deterministic: false },
@@ -103,20 +99,19 @@ describe('traduction (monde fermé U1)', () => {
 describe('R5 — coût : mentions relatives sans modèle, cache des arbitrages', () => {
   const cand = { title: 'Prochain entretien', date: '2027-03-04', confidence: 'certain' as const, excerpt: 'Prochain entretien le 03/04/2027', originFieldKey: 'maintenanceDueDate' };
   const input = { accountId: 1, userId: 2, sourceFileId: 55 };
-  const master = async () => 'master';
   beforeEach(() => __resetTemporalCacheForTests());
 
   it('mention relative : aucun appel modèle, proposition TEMPORAL_AMBIGUITY avec la date déduite', async () => {
     const resolve = vi.fn();
     const rel = { title: 'Paiement', date: '2026-10-31', confidence: 'certain' as const, excerpt: 'Paiement sous 30 jours' };
-    const r = await resoudreAmbiguiteTemporelle(rel, input, 'enabled', { architecture: master, resolve });
+    const r = await resoudreAmbiguiteTemporelle(rel, input, { resolve });
     expect(resolve).not.toHaveBeenCalled();
     expect(r).toMatchObject({ kind: 'propose', decision: { reasonCode: 'TEMPORAL_AMBIGUITY', temporalCandidates: ['2026-10-31'], deterministic: true } });
   });
 
   it('même source, même clé, même extrait : un seul appel ; autre source ou autre extrait : nouvel appel', async () => {
     const resolve = vi.fn(async () => ({ chosen: null, warning: null }));
-    const go = (c = cand, i = input) => resoudreAmbiguiteTemporelle(c, i, 'enabled', { architecture: master, resolve: resolve as never });
+    const go = (c = cand, i = input) => resoudreAmbiguiteTemporelle(c, i, { resolve: resolve as never });
     await go(); await go();
     expect(resolve).toHaveBeenCalledTimes(1);
     await go(cand, { ...input, sourceFileId: 56 });
@@ -127,8 +122,8 @@ describe('R5 — coût : mentions relatives sans modèle, cache des arbitrages',
 
   it('échec du modèle : pas mis en cache (réessai à la prochaine analyse)', async () => {
     const resolve = vi.fn(async () => ({ chosen: null, warning: 'MODEL_UNAVAILABLE' }));
-    await resoudreAmbiguiteTemporelle(cand, input, 'enabled', { architecture: master, resolve: resolve as never });
-    await resoudreAmbiguiteTemporelle(cand, input, 'enabled', { architecture: master, resolve: resolve as never });
+    await resoudreAmbiguiteTemporelle(cand, input, { resolve: resolve as never });
+    await resoudreAmbiguiteTemporelle(cand, input, { resolve: resolve as never });
     expect(resolve).toHaveBeenCalledTimes(2);
   });
 });

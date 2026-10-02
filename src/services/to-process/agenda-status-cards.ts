@@ -30,8 +30,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  * STATUT DU BIEN (ASSET-STATUS, D-15)
  *
- * Un événement historique « vente » ou « sinistre » créé en
- * AI_T4_EFFECTS=enabled (manuel ou T4, `writeAgendaItem`) ne change jamais
+ * Un événement historique « vente » ou « sinistre » créé (manuel ou T4,
+ * `writeAgendaItem`) ne change jamais
  * le statut du bien : il le PROPOSE. Correspondance avec les valeurs réelles
  * du modèle (`assets.status`, valeurs modifiables par l'utilisateur de la
  * fiche — ARCHIVED relève du parcours d'archivage, EN_MAINTENANCE /

@@ -3,7 +3,7 @@
  * VISUAL_RECHECK (T2-30, P-T2-04), aucune écriture hors pipeline protégé et
  * trace d'impact (T2-27), propagation T3 → T4 par la projection (T2-28).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   sql: [] as Array<{ q: string; params: unknown[] }>,
@@ -52,7 +52,6 @@ const deps = (over: Partial<Deps> = {}): Deps & { calls: Array<Record<string, un
     sourceUrl: vi.fn(async () => ({ url: 'https://s3/x', mimeType: 'image/jpeg' })),
     project: vi.fn(async () => 2),
     replaceEvidence: vi.fn(async (p) => { await p.project(); return { mode: 'enabled' as const, superseded: 1, projected: true }; }),
-    architecture: async () => 'master',
     ...over,
   } as Deps & { calls: Array<Record<string, unknown>> };
 };
@@ -62,7 +61,6 @@ const ecritures = () => h.sql.filter((s) => /^\s*(INSERT|UPDATE|DELETE)/i.test(s
   .map((s) => /^\s*(?:INSERT INTO|UPDATE|DELETE FROM)\s+(\w+)/i.exec(s.q)?.[1]);
 
 beforeEach(() => { h.sql = []; h.fact = null; h.projectKnowledge.mockClear(); vi.spyOn(console, 'error').mockImplementation(() => {}); });
-afterEach(() => { delete process.env.AI_T4_EFFECTS; });
 
 describe('fromT2Revalidate (P-T2-04)', () => {
   it('VISUAL : l’extrait est retiré, la preuve visuelle conservée', () => {
@@ -81,19 +79,19 @@ describe('fromT2Revalidate (P-T2-04)', () => {
   });
 });
 
-describe('revalidateFact — architecture master', () => {
+describe('revalidateFact — branche REVALIDATE du master T2 (seul moteur, lot 16b-2)', () => {
   it('fait LU : branche REVALIDATE, PROVENANCE_MODE=TEXT', async () => {
     h.fact = { ...textFact };
     const d = deps();
     await revalidateFact({ accountId: 1, userId: 3, factId: 11, question: 'kilométrage ?', trigger: 'CONFLICT' }, d);
-    expect(d.calls[0]).toMatchObject({ architecture: 'master', provenance: 'TEXT', mode: 'PERSISTED_CONTENT' });
-    // Les observations visuelles sont chargeables en master.
+    expect(d.calls[0]).toMatchObject({ provenance: 'TEXT', mode: 'PERSISTED_CONTENT' });
+    expect(d.calls[0]).not.toHaveProperty('architecture');
+    // Les observations visuelles sont chargeables (VISUAL_RECHECK).
     expect(h.sql[0].params[2]).toBe(true);
   });
 
   it('VISUAL_RECHECK : relue sur la source, jamais d’extrait, jamais « certaine », réinjectée en VISUAL_ANALYSIS', async () => {
     h.fact = { ...visualFact };
-    process.env.AI_T4_EFFECTS = 'enabled';
     const d = deps({
       callModel: vi.fn(async () => ({
         output: { status: 'confirmed' as const, value: 'murale', confidence: 'certain' as const, excerpt: null, page: 1,
@@ -125,23 +123,6 @@ describe('revalidateFact — architecture master', () => {
     const r = await revalidateFact({ accountId: 1, userId: 3, factId: 12, question: 'q', trigger: 'CONFLICT' }, d);
     expect(r).toMatchObject({ status: 'AMBIGUOUS', reinjectedFactId: null, impact: null });
     expect(d.project).not.toHaveBeenCalled();
-  });
-});
-
-describe('revalidateFact — architecture steps (historique)', () => {
-  it('observations visuelles non chargées ; une ligne visuelle éventuelle est ignorée', async () => {
-    h.fact = { ...visualFact };
-    const d = deps({ architecture: async () => 'steps' });
-    expect(await revalidateFact({ accountId: 1, userId: 3, factId: 12, question: 'q', trigger: 'CONFLICT' }, d)).toBeNull();
-    expect(h.sql[0].params[2]).toBe(false);
-    expect(d.callModel).not.toHaveBeenCalled();
-  });
-
-  it('fait lu : opération historique (pas de provenance master)', async () => {
-    h.fact = { ...textFact };
-    const d = deps({ architecture: async () => 'steps' });
-    await revalidateFact({ accountId: 1, userId: 3, factId: 11, question: 'q', trigger: 'CONFLICT' }, d);
-    expect(d.calls[0]).toMatchObject({ architecture: 'steps' });
   });
 });
 

@@ -14,8 +14,8 @@
  *   · agenda : HISTORICAL exclu des échéances (D-14), fenêtre (T2-15) ;
  *   · dépenses qualifiées (T2-24), informations manquantes (T2-04),
  *     lecture d'un champ (T2-22, T2-32).
- * Sélectionné par `accountDataRepository` quand ASSISTANT_CANONICAL_READ =
- * enabled ; sinon la lecture historique s'applique, inchangée.
+ * C'est la lecture de `accountDataRepository` (seule depuis le lot 16b-2 :
+ * commutateur ASSISTANT_CANONICAL_READ et lecture historique retirés).
  *
  * Les commandes (écriture) passent par la même couche : même registre
  * (`asset-fields.ts`, vue de `assistantWritable`), même lecture de la valeur
@@ -30,7 +30,12 @@ import { listUpcomingAgenda, countUpcomingAgenda } from './agenda';
 import { sumQualifiedExpenses } from './expenses';
 import { listMissingInformation } from './completeness';
 
-type LegacyPort = AccountDataPort & Required<Pick<AccountDataPort, 'listDocuments' | 'findDocument' | 'listExports' | 'searchTableCells'>>;
+/**
+ * Lectures de BASE décorées par la couche canonique (SQL direct, bornées au
+ * compte) — `core/account-data.repository.ts`.
+ */
+export type BaseAccountDataPort = Pick<AccountDataPort, 'today' | 'findAssets' | 'listAssets' | 'countAgenda' | 'searchFacts' | 'searchDocuments'>
+  & Required<Pick<AccountDataPort, 'findDocument' | 'listExports' | 'searchTableCells'>>;
 
 /** Dates d'achat CANONIQUES (`acquisitionDate`) d'une liste de biens du compte. */
 export async function canonicalAcquisitionDates(accountId: number, assetIds: number[]): Promise<Map<number, string | null>> {
@@ -81,7 +86,7 @@ export function attachCanonical(
   });
 }
 
-export function createCanonicalAccountDataRepository(legacy: LegacyPort): AccountDataPort {
+export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort): AccountDataPort {
   return {
     today: () => legacy.today(),
 

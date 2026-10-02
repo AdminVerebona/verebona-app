@@ -12,13 +12,9 @@
  * Critère d'acceptation n°17. Le compteur `deterministic` de chaque décision
  * permet de vérifier en production qu'aucun appel n'est émis sur un cas tranché.
  */
-import { z } from 'zod';
-import { AiGateway } from '../gateway/ai-gateway';
-import { classifyByRulesInMode, resolveClassificationMode, type ClassificationMode } from './rules/rules-engine';
+import { classifyByRulesDetailed } from './rules/deterministic-classification';
 import { prudentCategory } from './rules/prudent-category';
 import { classifyEventMaster } from './master/classify-event';
-import { getPromptArchitecture } from '../config/config-resolver';
-import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import { DOCUMENT_CATALOG, documentMayCreateEvent, resolveDocumentType } from '@/services/canonical/registry';
 import { interpretDate, detectTemporalAmbiguity } from './rules/date-interpreter';
 import { findDuplicate, titleSimilarity, containmentSimilarity } from './dedupe.service';
@@ -32,11 +28,6 @@ import type {
 import type { AgendaCandidate } from '../source-analysis/types';
 import { isExecutionCancelled } from '../queue/execution-control';
 
-const ClassifyEventOutput = z.object({
-  category: z.enum(['action', 'information']),
-  reason: z.string().max(300),
-});
-
 export interface AgendaIntelligenceInput {
   accountId: number;
   userId?: number;
@@ -46,8 +37,6 @@ export interface AgendaIntelligenceInput {
   sourceFileId?: number;
   /** Date du jour (AAAA-MM-JJ, Europe/Paris) — injectable pour les tests. */
   today?: string;
-  /** Mode de `AI_T4_EFFECTS` (lu dans l'environnement si absent) — injectable. */
-  t4Effects?: RolloutMode;
   /**
    * Révision de la preuve du champ d'origine quand T4 tranche une date
    * (décision PO D-M, lot 20) — injectable pour les tests ; défaut :
@@ -82,8 +71,8 @@ const AUTHORIZED_CREATION_TYPES: ReadonlySet<string> = new Set(
 );
 
 /**
- * Sémantique T4 d'un candidat enrichi, recopiée dans ses décisions (sous
- * AI_T4_EFFECTS=enabled). Champs absents du candidat : non recopiés.
+ * Sémantique T4 d'un candidat enrichi, recopiée dans ses décisions. Champs
+ * absents du candidat : non recopiés.
  */
 export function t4Semantics(c: T4AgendaCandidate, fallbackSourceFileId?: number): Partial<AgendaDecision> {
   const x = c as T4AgendaCandidate & {
@@ -139,25 +128,24 @@ export async function processAgendaCandidates(
   const planned: ExistingAgendaItem[] = [...input.existing];
   const today = input.today ?? todayParis();
 
-  const t4Effects = input.t4Effects ?? t4EffectsMode();
   for (const brut of input.candidates) {
     // R5 (CDC 15 §26) : date incertaine → branche TEMPORAL_AMBIGUITY du
-    // master (T4 master + enabled seulement) ; sinon inchangé.
-    const temporel = await resoudreAmbiguiteTemporelle(brut, input, t4Effects);
+    // master ; sinon inchangé.
+    const temporel = await resoudreAmbiguiteTemporelle(brut, input);
     if (temporel.kind === 'propose') {
       const d = temporel.decision;
-      if (t4Effects === 'enabled') Object.assign(d, t4Semantics(brut as T4AgendaCandidate, input.sourceFileId));
+      Object.assign(d, t4Semantics(brut as T4AgendaCandidate, input.sourceFileId));
       decisions.push(d);
       planned.push(asPlanned(d, planned.length));
       continue;
     }
     const candidate = temporel.candidate;
-    // D-M (lot 20) : la date TRANCHÉE par T4 (branche TEMPORAL_AMBIGUITY, T4
-    // master + AI_T4_EFFECTS=enabled) corrige aussi la fiche — preuve révisée
+    // D-M (lot 20) : la date TRANCHÉE par T4 (branche TEMPORAL_AMBIGUITY)
+    // corrige aussi la fiche — preuve révisée
     // du champ d'origine, puis T3 par les primitives canoniques (jamais
     // au-dessus d'une valeur USER/ADMIN), sous CANONICAL_WRITE_MODE.
     if (candidate.date !== brut.date) await reviserPreuveDate(brut, candidate.date, input);
-    const base = await processOne(candidate, { ...input, existing: planned, today, t4Effects });
+    const base = await processOne(candidate, { ...input, existing: planned, today });
     decisions.push(base);
     let recurrent = await forecastsFor(candidate, base, input, planned, today);
     // T4-04 : une source non autorisée ne crée pas non plus les occurrences
@@ -168,13 +156,11 @@ export async function processAgendaCandidates(
     if (base.action === 'create' || base.action === 'propose') {
       planned.push(asPlanned(base, planned.length));
     }
-    // CDC 15 T4-07/T4-08 (lot 14) : sous enabled, la sémantique du candidat
-    // accompagne chaque décision jusqu'à la persistance (clé fonctionnelle,
-    // liens source). L'occurrence d'une récurrence porte SA date.
-    if (t4Effects === 'enabled') {
-      Object.assign(base, t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId));
-      recurrent = recurrent.map((d) => ({ ...d, ...t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId), occurrenceIndex: d.date }));
-    }
+    // CDC 15 T4-07/T4-08 (lot 14) : la sémantique du candidat accompagne
+    // chaque décision jusqu'à la persistance (clé fonctionnelle, liens
+    // source). L'occurrence d'une récurrence porte SA date.
+    Object.assign(base, t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId));
+    recurrent = recurrent.map((d) => ({ ...d, ...t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId), occurrenceIndex: d.date }));
     for (const d of recurrent) {
       decisions.push(d);
       if (d.action === 'create' || d.action === 'propose') planned.push(asPlanned(d, planned.length));
@@ -349,8 +335,8 @@ async function forecastsFor(
 }
 
 /**
- * Ambiguïté temporelle (R5) : sous T4 `master` ET `AI_T4_EFFECTS=enabled`,
- * une date signalée incertaine par `detectTemporalAmbiguity` :
+ * Ambiguïté temporelle (R5) : une date signalée incertaine par
+ * `detectTemporalAmbiguity` :
  *   · mention RELATIVE (« sous 30 jours », « avant fin mars ») : aucun appel
  *     modèle — décision `propose` TEMPORAL_AMBIGUITY avec la date déduite
  *     (carte AGENDA-PROPOSAL, aucune création) ;
@@ -358,7 +344,7 @@ async function forecastsFor(
  *     cache par (source, clé fonctionnelle, extrait) — une réanalyse de la
  *     même ambiguïté ne rappelle pas le modèle. Candidat certain de la liste →
  *     date remplacée ; abstention, hors liste ou échec → `propose`.
- * Hors de ce mode : candidat inchangé, aucun appel.
+ * Date certaine : candidat inchangé, aucun appel.
  */
 type ChoixTemporel = { chosen: { candidateId: number; date: string; interpretation: string } | null; warning: string | null };
 const CACHE_TEMPOREL = new Map<string, { at: number; r: ChoixTemporel }>();
@@ -378,17 +364,12 @@ export function __resetTemporalCacheForTests(): void { CACHE_TEMPOREL.clear(); }
 export async function resoudreAmbiguiteTemporelle(
   candidate: AgendaCandidate,
   input: Pick<AgendaIntelligenceInput, 'accountId' | 'userId' | 'sourceFileId'>,
-  t4Effects: RolloutMode,
   deps: {
-    architecture?: () => Promise<string>;
     resolve?: typeof import('./master/temporal-ambiguity').resolveTemporalAmbiguityMaster;
   } = {},
 ): Promise<{ kind: 'keep'; candidate: AgendaCandidate } | { kind: 'propose'; decision: AgendaDecision }> {
-  if (t4Effects !== 'enabled') return { kind: 'keep', candidate };
   const ambig = detectTemporalAmbiguity(candidate.date, candidate.excerpt);
   if (!ambig) return { kind: 'keep', candidate };
-  const architecture = await (deps.architecture ?? (() => getPromptArchitecture('T4')))();
-  if (architecture !== 'master') return { kind: 'keep', candidate };
 
   const proposer = (dates: string[]): { kind: 'propose'; decision: AgendaDecision } => ({
     kind: 'propose',
@@ -533,20 +514,14 @@ async function processOne(
 
   // Une date explicite issue d'un document autorisé est créée automatiquement.
   // CDC 15 T4-04 : l'autorisation du TYPE documentaire (DOCUMENT_CATALOG)
-  // s'applique sous AI_T4_EFFECTS=enabled ; en shadow, le refus est
-  // seulement journalisé ; en legacy, rien ne change.
+  // s'applique ; sinon l'échéance est proposée.
   let authorized = candidate.confidence === 'certain';
   let reasonCode = authorized ? 'EXPLICIT_DATE_AUTHORIZED_SOURCE' : 'INSUFFICIENT_CONFIDENCE';
-  const mode = input.t4Effects ?? t4EffectsMode();
-  if (authorized && mode !== 'legacy') {
+  if (authorized) {
     const auth = creationAuthorization(candidate as T4AgendaCandidate);
     if (!auth.allowed) {
-      if (mode === 'enabled') {
-        authorized = false;
-        reasonCode = auth.reasonCode;
-      } else {
-        console.info(`[agenda][shadow] T4-04 : création refusée sous enabled (${auth.reasonCode}, type ${auth.documentType ?? 'absent'}) — « ${candidate.title} » ${candidate.date}`);
-      }
+      authorized = false;
+      reasonCode = auth.reasonCode;
     }
   }
   return {
@@ -573,71 +548,33 @@ async function classify(
     sourceFileId: input.sourceFileId,
     excerpt: candidate.excerpt,
     date: candidate.date,
-    ...(input.t4Effects ? { mode: await resolveClassificationMode({ t4Effects: input.t4Effects }) } : {}),
   });
 }
 
 /**
  * Classification DÉTAILLÉE d'un événement (CDC 15 T4-10) :
- *   1. règles déterministes (registre, règles métier, motifs) ;
- *   2. sinon, architecture T4 `master` : branche CLASSIFY_EVENT du master
- *      (action | information | unknown, confiance) ;
- *   3. sinon, `classify_event` historique, strictement inchangé ;
- *   échec du modèle : repli `action` (comportement historique), ambigu.
+ *   1. règles déterministes (registre, règles métier stables T4-11, motifs) ;
+ *   2. sinon, branche CLASSIFY_EVENT du master T4 (action | information |
+ *      unknown, confiance) — seul moteur depuis le lot 16b-2 ;
+ *   échec du modèle : repli `action`, ambigu (`classifyEventMaster`).
  * Aucun appel modèle sur un cas que les règles tranchent (critère n°17).
  */
 export async function classifyAgendaEvent(
   input: AgendaClassificationInput,
-  contexte: {
-    accountId: number; userId?: number; sourceFileId?: number | null; excerpt?: string; date?: string | null;
-    /** Mode de classification (injectable) ; à défaut, commutateur + configuration. */
-    mode?: ClassificationMode;
-  },
+  contexte: { accountId: number; userId?: number; sourceFileId?: number | null; excerpt?: string; date?: string | null },
 ): Promise<AgendaClassification> {
-  // Arbitrage lead (lot 14) : règles v2 sous AI_T4_EFFECTS=enabled ou T4
-  // master ; historique exact sinon (divergences journalisées en shadow).
-  const architecture = await getPromptArchitecture('T4');
-  const mode = contexte.mode ?? await resolveClassificationMode({ architecture });
-  const byRules = classifyByRulesInMode(input, mode);
+  const byRules = classifyByRulesDetailed(input);
   if (byRules !== null) {
     return { category: byRules.category, confidence: 'certain', source: byRules.source, ruleCode: byRules.ruleCode, businessType: input.businessType ?? null };
   }
-
-  if (architecture === 'master') {
-    return classifyEventMaster(input, contexte);
-  }
-
-  try {
-    const res = await AiGateway.execute({
-      useCaseCode: 'AGENDA_INTELLIGENCE',
-      operationCode: 'classify_event',
-      accountId: contexte.accountId,
-      userId: contexte.userId,
-      sourceIds: contexte.sourceFileId ? [contexte.sourceFileId] : undefined,
-      promptVariables: {
-        TITLE: input.title,
-        EXCERPT: (contexte.excerpt ?? input.description ?? '').slice(0, 500),
-      },
-      outputSchema: ClassifyEventOutput,
-    });
-    return { category: res.data.category, confidence: 'probable', source: 'model', reason: res.data.reason };
-  } catch (e) {
-    // Interruption (garde AI_BLOCKED, jeton révoqué) : pas de repli
-    // silencieux sur « action », qui ferait écrire une classification par
-    // défaut ; le travail T4 est remis en file (execution-control).
-    if (isExecutionCancelled(e)) throw e;
-    console.warn('[agenda] classification modèle indisponible :', (e as Error).message);
-    return { category: 'action', confidence: 'ambiguous', source: 'fallback', reason: 'modèle indisponible' };
-  }
+  return classifyEventMaster(input, contexte);
 }
 
 /**
- * Classification d'un seul événement — point d'entrée du CHEMIN MANUEL.
- *
- * Extraite de `classify` pour que la création manuelle d'une échéance puisse
- * passer par ce moteur au lieu de l'ancien `AgendaClassificationService`. Sans
- * ce point d'entrée, `AI_AGENDA_ENGINE=enabled` laissait l'ancien classifieur
- * seul maître du chemin manuel : le drapeau ne commandait rien.
+ * Classification d'un seul événement — point d'entrée du CHEMIN MANUEL
+ * (`AgendaWriteService`) : mêmes règles et même master T4 que l'agenda
+ * automatique (l'ancien `AgendaClassificationService` et le rattrapage
+ * `backfill-home-category` sont supprimés au lot 16b-2).
  *
  * Renvoie une catégorie affichable : `unknown` devient la catégorie prudente
  * (`prudentCategory`, sans date : `action`).

@@ -6,9 +6,9 @@
  *   removeAgendaItemsFromSource({ … })      retrait des éléments automatiques
  *                                           d'une source qui ne sont plus produits.
  *
- * Appelée par l'agenda MANUEL (`AgendaWriteService`, tous modes) et par
- * l'agenda AUTOMATIQUE (`agenda-persistence`, AI_T4_EFFECTS=enabled ; en
- * legacy et shadow, T4 garde son écriture historique). Un même événement
+ * Appelée par l'agenda MANUEL (`AgendaWriteService`) et par l'agenda
+ * AUTOMATIQUE (`agenda-persistence`) — seul chemin d'écriture depuis le lot
+ * 16b-2 (commutateur AI_T4_EFFECTS et écritures historiques retirés). Un même événement
  * décrit par la même entrée donne le même état, à l'origine près : mêmes
  * validations, mêmes liens (bien, cible, documents), même nature et type
  * métier, mêmes effets (recopie « achat » D-13, notification D-14,
@@ -22,8 +22,8 @@
  *
  * CLÉ FONCTIONNELLE (T4-08) : un élément AUTOMATIQUE porte
  * `functionalKey` — fournie, ou calculée depuis la source principale, la
- * cible, le type métier, le champ d'origine et `occurrenceIndex`. En
- * enabled, une création dont la clé existe déjà MET À JOUR l'élément (ou le
+ * cible, le type métier, le champ d'origine et `occurrenceIndex`. Une
+ * création dont la clé existe déjà MET À JOUR l'élément (ou le
  * laisse, s'il a été modifié par l'utilisateur : `protected`).
  *
  * « MODIFIÉ PAR L'UTILISATEUR » : notion existante réutilisée —
@@ -32,7 +32,6 @@
  * jamais mis à jour ni retiré par la synchronisation (§14.6).
  */
 import { pgClient } from '@/db';
-import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import type { HomeCategory } from '@/services/ai/agenda/types';
 import { validateTemporalConstraints } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
@@ -111,13 +110,12 @@ export interface AgendaUpsertOptions {
   actorUserId?: number | null;
   /** Contrôles de dates et de cohérence des liens (agenda manuel). */
   validate?: boolean;
-  /** Notification de création (biens liés) ; HISTORICAL jamais (D-14, enabled). */
+  /** Notification de création (biens liés) ; HISTORICAL jamais (D-14). */
   notify?: boolean;
   /** Recopie « achat » (D-13) ; voir `writeAgendaItem`. */
   purchaseSync?: WriteAgendaItemOptions['purchaseSync'];
   /** Liaisons remplacées (état complet) ou ajoutées. Défaut : manuel `replace`, automatique `add`. */
   linkMode?: 'replace' | 'add';
-  mode?: RolloutMode;
   /** Transaction englobante (résolution d'une carte À traiter). */
   client?: WriteAgendaItemOptions['client'];
   /** Mise à jour automatique gardée (voir `writeAgendaItem`) ; défaut : vrai pour une mise à jour AUTOMATIQUE par clé. */
@@ -236,7 +234,7 @@ export function functionalKeyFor(input: AgendaUpsertInput): string | null {
   });
 }
 
-/** Élément automatique existant de même clé (enabled, 0223 présente). */
+/** Élément automatique existant de même clé (0223 présente). */
 async function itemByKey(accountId: number, key: string) {
   const rows = (await pgClient.unsafe(
     `SELECT id, is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified", manual_status AS "manualStatus"
@@ -251,12 +249,12 @@ async function itemByKey(accountId: number, key: string) {
  * `AgendaValidationError` sur une entrée invalide — rien n'est écrit.
  */
 export async function upsertAgendaItem(input: AgendaUpsertInput, opts: AgendaUpsertOptions = {}): Promise<AgendaUpsertResult> {
-  const mode = opts.mode ?? t4EffectsMode();
-  const effets = mode === 'enabled' && await agendaFunctionalColumnsReady();
+  // Colonnes 0223 présentes : clé fonctionnelle, nature, liens source (T4).
+  const effets = await agendaFunctionalColumnsReady();
   const creation = input.itemId === undefined;
   if (creation && !input.title?.trim()) throw new AgendaValidationError('Validation : titre requis');
 
-  // Validation commune (enabled) : les dates de l'élément automatique suivent
+  // Validation commune : les dates de l'élément automatique suivent
   // les mêmes règles que celles de l'agenda manuel.
   if (effets && input.origin === 'AUTOMATIC' && !opts.validate) {
     const erreurs = validateTemporalConstraints({ startDate: input.date ?? undefined });
@@ -294,7 +292,6 @@ export async function upsertAgendaItem(input: AgendaUpsertInput, opts: AgendaUps
     validate: opts.validate,
     notify: opts.notify,
     purchaseSync: opts.purchaseSync,
-    mode,
     client: opts.client,
     // Une mise à jour automatique n'écrase jamais un geste de l'utilisateur,
     // même concurrent (WHERE gardé).
@@ -328,11 +325,11 @@ export async function upsertAgendaItem(input: AgendaUpsertInput, opts: AgendaUps
 }
 
 export interface RemoveFromSourceResult {
-  /** Éléments retirés (enabled) ou qui le seraient (shadow, analyse incomplète). */
+  /** Éléments retirés, ou qui le seraient (analyse incomplète). */
   removed: number[];
   dryRun: boolean;
   /** Pourquoi rien n'a été retiré, le cas échéant. */
-  skipped?: 'LEGACY' | 'COLUMNS_MISSING' | 'ANALYSIS_INCOMPLETE';
+  skipped?: 'COLUMNS_MISSING' | 'ANALYSIS_INCOMPLETE';
 }
 
 /**
@@ -350,7 +347,6 @@ export interface RemoveFromSourceResult {
  *    ou dégradée ne vide jamais l'agenda ;
  *  · retrait TRACÉ (`agenda_item_removals`, rattrapable) — voir
  *    `agenda-removal-trace.ts`.
- * legacy : rien ; shadow : calcul et journal, aucun retrait ; enabled : retrait.
  */
 export async function removeAgendaItemsFromSource(p: {
   accountId: number;
@@ -359,10 +355,7 @@ export async function removeAgendaItemsFromSource(p: {
   keepIds?: number[];
   assetId?: number | null;
   analysisComplete?: boolean;
-  mode?: RolloutMode;
 }): Promise<RemoveFromSourceResult> {
-  const mode = p.mode ?? t4EffectsMode();
-  if (mode === 'legacy') return { removed: [], dryRun: true, skipped: 'LEGACY' };
   if (!(await agendaFunctionalColumnsReady())) return { removed: [], dryRun: true, skipped: 'COLUMNS_MISSING' };
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.functional_key AS "functionalKey", i.is_automatic AS "isAutomatic",
@@ -396,12 +389,8 @@ export async function removeAgendaItemsFromSource(p: {
     .map((r) => r.id);
 
   const journal = (extra: Record<string, unknown>) => console.info(JSON.stringify({
-    event: 't4.source_remove', mode, accountId: p.accountId, sourceFileId: p.sourceFileId, assetId: p.assetId ?? null, ...extra,
+    event: 't4.source_remove', accountId: p.accountId, sourceFileId: p.sourceFileId, assetId: p.assetId ?? null, ...extra,
   }));
-  if (mode !== 'enabled') {
-    journal({ wouldRemove: retires, dryRun: true });
-    return { removed: retires, dryRun: true };
-  }
   if (p.analysisComplete !== true) {
     journal({ wouldRemove: retires, dryRun: true, skipped: 'ANALYSIS_INCOMPLETE' });
     return { removed: retires, dryRun: true, skipped: 'ANALYSIS_INCOMPLETE' };

@@ -1,9 +1,9 @@
 /**
- * Parité legacy du résolveur de références (relecture lot 17) : avec
- * ASSISTANT_CANONICAL_READ absent / legacy, chaque message × contexte rend
- * EXACTEMENT ce que rendait le tag `lot16` (attendus figés, produits par la
- * version lot16 du module). Les ajouts E2E-T2-12 (« son statut », « est-il
- * réalisé ? ») n'existent qu'en lecture canonique.
+ * Non-régression du résolveur de références (relecture lot 17). Lot 16b-2 :
+ * lecture canonique seule (ASSISTANT_CANONICAL_READ retiré). Chaque message ×
+ * contexte rend ce que rendait le tag `lot16` (attendus figés), SAUF les
+ * ajouts E2E-T2-12 (« son statut », « son état », « est-il réalisé ? » sur
+ * une échéance choisie), désormais toujours actifs.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { resolveThreadReference } from '../core/reference-resolver';
@@ -23,18 +23,28 @@ const LOT16: Array<[string, keyof typeof CTX, unknown]> = [["Quel est son statut
 
 afterEach(() => { delete process.env.ASSISTANT_CANONICAL_READ; });
 
-describe('résolveur de références — parité legacy avec lot16', () => {
-  for (const mode of [undefined, 'legacy', 'shadow']) {
-    it(`ASSISTANT_CANONICAL_READ=${mode ?? '(absent)'} : ${LOT16.length} cas identiques au tag lot16`, () => {
-      if (mode) process.env.ASSISTANT_CANONICAL_READ = mode;
-      for (const [msg, c, attendu] of LOT16) {
-        expect(resolveThreadReference(msg, CTX[c] as never), `${msg} / ${c}`).toEqual(attendu);
-      }
-    });
-  }
+/** Ajouts E2E-T2-12 : seuls cas où le résultat diffère de lot16. */
+const AJOUT_T2_12 = (msg: string, c: keyof typeof CTX) =>
+  (['Quel est son statut ?', 'Et son état ?'].includes(msg) && c !== 'vide')
+  || (['Est-il réalisé ?', 'A-t-il été fait ?', 'Est-elle faite ?'].includes(msg) && c === 'selAgenda');
 
-  it('enabled : « son statut » vise l’élément sélectionné (E2E-T2-12)', () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+describe('résolveur de références — non-régression avec lot16', () => {
+  it(`${LOT16.length} cas : identiques au tag lot16 hors ajouts E2E-T2-12`, () => {
+    let ajouts = 0;
+    for (const [msg, c, attendu] of LOT16) {
+      const r = resolveThreadReference(msg, CTX[c] as never);
+      if (AJOUT_T2_12(msg, c)) { ajouts += 1; expect(r, `${msg} / ${c}`).not.toEqual({ kind: 'none' }); continue; }
+      expect(r, `${msg} / ${c}`).toEqual(attendu);
+    }
+    expect(ajouts).toBe(11);
+  });
+
+  it('variable retirée encore posée (legacy) : sans effet', () => {
+    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
+    expect(resolveThreadReference('Quel est son statut ?', CTX.selAgenda as never)).toMatchObject({ kind: 'resolved', entity: { type: 'agenda_item', id: 77 } });
+  });
+
+  it('« son statut » vise l’élément sélectionné (E2E-T2-12)', () => {
     expect(resolveThreadReference('Quel est son statut ?', CTX.selAgenda as never)).toMatchObject({ kind: 'resolved', entity: { type: 'agenda_item', id: 77 } });
     expect(resolveThreadReference('Et son état ?', CTX.selDoc as never)).toMatchObject({ kind: 'resolved', entity: { id: 200 } });
   });

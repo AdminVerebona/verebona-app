@@ -56,7 +56,7 @@ export function configuredAliases(): Record<ModelAliasRole, string> {
 }
 
 /** Modèle attendu pour un rôle et une opération. */
-export function expectedModelFor(role: ModelAliasRole, operationCode = 'generate_answer'): string | null {
+export function expectedModelFor(role: ModelAliasRole, operationCode = 't2_answer'): string | null {
   const surcharge = env(role === 'default' ? 'VEREBONA_ASSISTANT_MODEL_ASSISTANT_DEFAULT' : 'VEREBONA_ASSISTANT_MODEL_ASSISTANT_ESCALATION');
   if (surcharge) return surcharge;
   const op = AI_OPERATIONS[operationCode];
@@ -74,7 +74,7 @@ export function expectedModelFor(role: ModelAliasRole, operationCode = 'generate
  * réels (repli imprévu, configuration non appliquée). Sans chaîne résolue :
  * configuration §43, puis référentiel du code.
  */
-export function aliasForRank(rank: number, operationCode = 'generate_answer', chaine?: ResolvedAliases | null): ModelAliasEntry {
+export function aliasForRank(rank: number, operationCode = 't2_answer', chaine?: ResolvedAliases | null): ModelAliasEntry {
   const role: ModelAliasRole = rank > 0 ? 'escalation' : 'default';
   const effectif = chaine ? (role === 'default' ? chaine.default : chaine.escalation) : null;
   return {
@@ -86,7 +86,7 @@ export function aliasForRank(rank: number, operationCode = 'generate_answer', ch
 }
 
 /** Registre complet d'une opération (administration, contrôle de démarrage). */
-export function modelRegistry(operationCode = 'generate_answer'): ModelAliasEntry[] {
+export function modelRegistry(operationCode = 't2_answer'): ModelAliasEntry[] {
   return [aliasForRank(0, operationCode), aliasForRank(1, operationCode)];
 }
 

@@ -89,7 +89,7 @@ describe('câblage dans la gateway', () => {
 
   it('T2 désactivé : l’assistant est refusé, T1 continue', async () => {
     setRuntimeSnapshotLoader(async () => ({ emergencyStop: false, states: { T2: 'DISABLED' } }));
-    await expect(AiGateway.execute(req('INTELLIGENT_ASSISTANT', 'understand_request')))
+    await expect(AiGateway.execute(req('INTELLIGENT_ASSISTANT', 't2_understand')))
       .rejects.toMatchObject({ code: 'AI_BLOCKED' });
     await expect(AiGateway.execute(req('SOURCE_ANALYSIS', 'classify_document')))
       .resolves.toMatchObject({ data: { title: 'x' } });

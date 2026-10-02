@@ -18,8 +18,7 @@ beforeEach(() => {
   // Bascule : tous les nouveaux moteurs actifs en test.
   process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
   process.env.AI_RECONCILIATION_ENGINE = 'enabled';
-  process.env.AI_INTELLIGENT_ASSISTANT = 'enabled';
-  process.env.AI_AGENDA_ENGINE = 'enabled';
+  // AI_INTELLIGENT_ASSISTANT, AI_AGENDA_ENGINE : retirés (lot 16b-2).
 });
 
 afterEach(() => {

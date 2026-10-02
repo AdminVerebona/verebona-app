@@ -8,7 +8,7 @@
  *  · T4-07 : depuis le document source, tous ses événements automatiques ;
  *  · D-13  : achat manuel réalisé → recopie (champ vide) ; achat automatique → aucune ;
  *  · D-14  : HISTORICAL jamais notifié, exclu des prochaines échéances ;
- *  · legacy : aucune colonne 0223 écrite, pas de retrait ; shadow : aucune écriture 0223.
+ *  · lot 16b-2 : AI_T4_EFFECTS retiré, une valeur encore posée est sans effet.
  */
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
@@ -59,7 +59,6 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
      WHERE l.asset_id = ${assetId} ORDER BY i.id`;
 
   it('T4-08 (enabled) : réanalyse idempotente, 01/03 → 01/04 met à jour, disparition → retrait', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -90,7 +89,6 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
   });
 
   it('§14.6 (enabled) : un élément modifié à la main n’est ni mis à jour ni retiré', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -116,38 +114,27 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
     expect((await itemsDe(bien.id)).map((i) => i.id)).toEqual([id, id2]);
   });
 
-  it('legacy : comportement historique (doublons possibles, aucune colonne 0223, aucun retrait)', async () => {
-    process.env.AI_T4_EFFECTS = 'legacy';
-    const compte = await make.account();
-    const bien = await make.asset(compte);
-    const doc = await make.assetFile(compte, { assetId: bien.id });
-    await persist([decision(doc.id, '2027-03-01')], compte.id, bien.id);
-    await persist([decision(doc.id, '2027-04-01')], compte.id, bien.id);
-    const items = await itemsDe(bien.id);
-    expect(items).toHaveLength(2);
-    expect(items.every((i) => i.functional_key === null && i.event_nature === null && i.business_type === null)).toBe(true);
-    await persist([], compte.id, bien.id, { sourceFileId: doc.id, analysisComplete: true });
-    expect(await itemsDe(bien.id)).toHaveLength(2);
-    const [lien] = await sql`SELECT 1 FROM agenda_file_links WHERE agenda_item_id = ${items[0].id}`;
-    expect(lien).toBeUndefined();
-  });
-
-  it('shadow : plan calculé, aucune écriture 0223 ni retrait', async () => {
-    process.env.AI_T4_EFFECTS = 'shadow';
-    const compte = await make.account();
-    const bien = await make.asset(compte);
-    const doc = await make.assetFile(compte, { assetId: bien.id });
-    await persist([decision(doc.id, '2027-03-01')], compte.id, bien.id);
-    await persist([], compte.id, bien.id, { sourceFileId: doc.id, analysisComplete: true });
-    const items = await itemsDe(bien.id);
-    expect(items).toHaveLength(1);
-    expect(items[0].functional_key).toBeNull();
-    expect(items[0].event_nature).toBeNull();
-  });
+  // Lot 16b-2 : AI_T4_EFFECTS retiré — une valeur encore posée (legacy,
+  // shadow) n'a plus d'effet : clé fonctionnelle, nature et retrait par source.
+  for (const reste of ['legacy', 'shadow'] as const) {
+    it(`variable retirée encore posée (AI_T4_EFFECTS=${reste}) : comportement cible`, async () => {
+      process.env.AI_T4_EFFECTS = reste;
+      const compte = await make.account();
+      const bien = await make.asset(compte);
+      const doc = await make.assetFile(compte, { assetId: bien.id });
+      await persist([decision(doc.id, '2027-03-01')], compte.id, bien.id);
+      await persist([decision(doc.id, '2027-04-01')], compte.id, bien.id, { sourceFileId: doc.id, analysisComplete: true });
+      const items = await itemsDe(bien.id);
+      expect(items).toHaveLength(1);
+      expect(items[0].functional_key).not.toBeNull();
+      expect(items[0].start_date).toBe('2027-04-01');
+      await persist([], compte.id, bien.id, { sourceFileId: doc.id, analysisComplete: true });
+      expect(await itemsDe(bien.id)).toHaveLength(0);
+    });
+  }
 
   for (const canonique of ['legacy', 'enabled'] as const) {
     it(`D-13 (enabled, CANONICAL_WRITE_MODE=${canonique}) : achat manuel réalisé recopié si vide ; achat automatique jamais`, async () => {
-      process.env.AI_T4_EFFECTS = 'enabled';
       process.env.CANONICAL_WRITE_MODE = canonique;
       const compte = await make.account();
 
@@ -178,7 +165,6 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
   }
 
   it('D-14 (enabled) : un événement HISTORICAL n’est pas notifié et sort des prochaines échéances', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte, { purchaseDate: '2020-01-01' });
     const futur = '2099-06-01';
@@ -195,17 +181,5 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
     expect(await query.upcomingDeadlinesSqlFilter('a')).toContain('HISTORICAL');
     const [nat] = await sql<{ n: string }[]>`SELECT event_nature AS n FROM agenda_items WHERE id = ${historique.id}`;
     expect(nat.n).toBe('HISTORICAL');
-  });
-
-  it('D-14 (legacy) : notification et prochaines échéances inchangées', async () => {
-    process.env.AI_T4_EFFECTS = 'legacy';
-    const compte = await make.account();
-    const bien = await make.asset(compte, { purchaseDate: '2020-01-01' });
-    const historique = await write.createAgendaItem({
-      title: 'Achat (facture)', startDate: '2099-06-01', assetIds: [bien.id], originFieldKey: 'acquisitionDate', homeCategory: 'information',
-    }, compte.id, compte.ownerUserId);
-    expect(notifications.map((n) => n.itemId)).toEqual([historique.id]);
-    expect((await query.getUpcomingDeadlines(compte.id, { assetIds: [bien.id] })).map((i) => i.id)).toEqual([historique.id]);
-    expect(await query.upcomingDeadlinesSqlFilter('a')).toBe('');
   });
 });

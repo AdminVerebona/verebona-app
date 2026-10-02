@@ -6,8 +6,8 @@
  * sont accessibles. »
  *
  * ÉCRITURE — `recordAgendaItemSources`, appelée par la primitive
- * (`upsertAgendaItem`) à chaque création ou mise à jour, sous
- * AI_T4_EFFECTS=enabled, pour l'automatique comme pour le manuel :
+ * (`upsertAgendaItem`) à chaque création ou mise à jour, pour l'automatique
+ * comme pour le manuel :
  *   · `agenda_file_links`   lien affiché (élément ↔ document), idempotent ;
  *   · `agenda_item_sources` trace du lien : `effect_type = 'linked'`, rôle
  *     SOURCE (document qui a produit l'élément automatique), ATTACHMENT
@@ -19,14 +19,13 @@
  *
  * LECTURE — `listAgendaItemsForDocument` / `listAgendaItemIdsForSource` :
  * liens `agenda_file_links`, traces `agenda_item_sources` (historiques
- * 'created' / 'resolved_existing' et 'linked') et, en enabled, éléments
- * automatiques dont la source d'origine est le document (`origin_ref`),
- * pour ceux créés avant ce lot.
+ * 'created' / 'resolved_existing' et 'linked') et éléments automatiques dont
+ * la source d'origine est le document (`origin_ref`), pour ceux créés avant
+ * le lot 14.
  */
 import { db } from '@/db';
 import { agendaFileLinks, agendaItems, agendaItemSources } from '@/db/schema';
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
-import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import { agendaSourcesColumnsReady } from './agenda-columns';
 
 export type AgendaSourceRole = 'SOURCE' | 'ATTACHMENT' | 'PROOF';
@@ -82,7 +81,6 @@ export async function linkAgendaItemToSources(client: any, agendaItemId: number,
 export async function listAgendaItemIdsForSource(
   accountId: number,
   fileId: number,
-  mode: RolloutMode = t4EffectsMode(),
 ): Promise<number[]> {
   const [fileLinks, traces, origines] = await Promise.all([
     db.selectDistinct({ id: agendaFileLinks.agendaItemId })
@@ -95,13 +93,11 @@ export async function listAgendaItemIdsForSource(
         eq(agendaItemSources.assetFileId, fileId),
         inArray(agendaItemSources.effectType, [...SOURCE_LINK_EFFECTS]),
       )),
-    mode === 'enabled'
-      ? db.select({ id: agendaItems.id }).from(agendaItems).where(and(
-        eq(agendaItems.accountId, accountId),
-        eq(agendaItems.originRefType, 'asset_file'),
-        eq(agendaItems.originRefId, fileId),
-      ))
-      : Promise.resolve([] as Array<{ id: number }>),
+    db.select({ id: agendaItems.id }).from(agendaItems).where(and(
+      eq(agendaItems.accountId, accountId),
+      eq(agendaItems.originRefType, 'asset_file'),
+      eq(agendaItems.originRefId, fileId),
+    )),
   ]);
   const ids = new Set<number>();
   fileLinks.forEach((r) => ids.add(r.id));
@@ -128,9 +124,9 @@ export interface DocumentAgendaItem {
  */
 export async function listAgendaItemsForDocument(
   fileId: number,
-  opts: { accountId: number; automaticOnly?: boolean; mode?: RolloutMode },
+  opts: { accountId: number; automaticOnly?: boolean },
 ): Promise<DocumentAgendaItem[]> {
-  const ids = await listAgendaItemIdsForSource(opts.accountId, fileId, opts.mode);
+  const ids = await listAgendaItemIdsForSource(opts.accountId, fileId);
   if (ids.length === 0) return [];
   return db.select({
     id: agendaItems.id,

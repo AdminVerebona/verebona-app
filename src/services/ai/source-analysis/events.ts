@@ -46,8 +46,12 @@ export interface SourceAnalyzedEvent {
 type Handler = (e: SourceAnalyzedEvent) => Promise<void>;
 
 interface Subscription {
-  /** Drapeau qui gouverne CET abonné, et lui seul (§10.1). */
-  flag: AiFlag;
+  /**
+   * Drapeau qui gouverne CET abonné, et lui seul (§10.1). `null` : usage
+   * sans drapeau (lot 16b — agenda T4, `AI_AGENDA_ENGINE` retiré), toujours
+   * exécuté.
+   */
+  flag: AiFlag | null;
   handler: Handler;
 }
 
@@ -56,10 +60,12 @@ const subscriptions: Subscription[] = [];
 /**
  * Enregistré par les usages 2 et 4 au démarrage.
  *
- * Le drapeau est obligatoire : un abonné sans drapeau ne pourrait pas être
- * exclu d'une bascule partielle, ce qui est précisément le défaut corrigé ici.
+ * Le drapeau est obligatoire tant que l'usage en a un : un abonné sans
+ * drapeau ne pourrait pas être exclu d'une bascule partielle, ce qui est
+ * précisément le défaut corrigé ici. `null` est réservé aux usages dont le
+ * drapeau a été retiré (nouveau moteur seul, lot 16b).
  */
-export function onSourceAnalyzed(flag: AiFlag, handler: Handler): void {
+export function onSourceAnalyzed(flag: AiFlag | null, handler: Handler): void {
   subscriptions.push({ flag, handler });
 }
 
@@ -71,10 +77,10 @@ export async function emitSourceAnalyzed(e: SourceAnalyzedEvent): Promise<void> 
   // Aiguillage de bascule : un seul moteur agit sur un objet donné (§10.4).
   // La décision est prise abonné par abonné, jamais globalement.
   for (const { flag, handler } of subscriptions) {
-    if (!shouldRunNewEngine(flag)) continue;
+    if (flag && !shouldRunNewEngine(flag)) continue;
     // Un abonné défaillant ne doit jamais faire échouer l'analyse (§11.4).
     await handler(e).catch((err) =>
-      console.error(`[source-analyzed] abonné ${flag} en échec (non bloquant) :`, (err as Error).message));
+      console.error(`[source-analyzed] abonné ${flag ?? 'agenda'} en échec (non bloquant) :`, (err as Error).message));
   }
 
   if (shouldRunLegacy('AI_RECONCILIATION_ENGINE')) {

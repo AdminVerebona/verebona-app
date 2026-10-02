@@ -47,8 +47,7 @@ const RECONNUES = new Set(['legacy', 'shadow', 'enabled', 'true', '1']);
 /** Libellé de l'usage piloté par chaque drapeau. */
 function flagDescription(flag: AiFlag): string {
   const usage = (Object.entries(USE_CASE_FLAGS) as Array<[string, AiFlag | null]>).find(([, f]) => f === flag)?.[0];
-  const sansObservation = flag === 'AI_INTELLIGENT_ASSISTANT';
-  return `Usage ${usage ?? '—'}${sansObservation ? ' — sans mode observation (shadow refusé au démarrage)' : ''}.`;
+  return `Usage ${usage ?? '—'}.`;
 }
 
 function entry(name: string, raw: string | undefined, description: string): FlagSnapshotEntry {
@@ -64,8 +63,10 @@ function entry(name: string, raw: string | undefined, description: string): Flag
 
 /** Instantané des drapeaux et commutateurs de CE processus (pur, testable). */
 export function buildFlagsSnapshot(env: Env = process.env, now: Date = new Date()): FlagsSnapshot {
-  // Lot 16b : `AI_DURABLE_QUEUE` (file durable T1 seule), `AI_PROMPT_GOVERNANCE`
-  // et `AI_HOME_MASCOT` sont supprimés — plus rien à afficher pour eux.
+  // Lot 16b : `AI_DURABLE_QUEUE` (file durable T1 seule), `AI_PROMPT_GOVERNANCE`,
+  // `AI_HOME_MASCOT`, `AI_INTELLIGENT_ASSISTANT`, `AI_AGENDA_ENGINE`,
+  // `ASSISTANT_CANONICAL_READ` et `AI_T4_EFFECTS` sont supprimés — plus rien
+  // à afficher pour eux.
   return {
     environment: {
       appEnv: env.NEXT_PUBLIC_APP_ENV ?? null,

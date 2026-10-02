@@ -72,8 +72,7 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
  * preuve possible de RÉALISATION d'une échéance du bien : la réconciliation
  * de statut (`reconcileStatus`, T4) s'exécute ici, après celle des champs,
  * dans le même travail (file T3 pour l'analyse et le cycle de vie des
- * documents). Gouvernée par AI_T4_EFFECTS=enabled ou T4 `master` (contrôle
- * dans `reconcileAgendaStatusForSource`) ; jamais bloquante.
+ * documents). Jamais bloquante.
  */
 async function reconcileAgendaStatusAfter(input: ReconcileInput): Promise<void> {
   if (input.forceShadow || !input.sourceFileId) return;

@@ -26,14 +26,16 @@ import { type AiFlag, type FlagMode, getFlagMode, shouldRunNewEngine } from './a
 /**
  * Un usage → au plus un drapeau, et un drapeau ne pilote qu'un usage. `null` :
  * usage SANS drapeau, dont le nouveau moteur est le seul (lot 16b : T5
- * gouvernance et T6 mascotte, anciens `AI_PROMPT_GOVERNANCE` et
- * `AI_HOME_MASCOT` supprimés) — il tourne toujours (`enabled`).
+ * gouvernance et T6 mascotte — anciens `AI_PROMPT_GOVERNANCE` et
+ * `AI_HOME_MASCOT` —, T2 assistant et T4 agenda — anciens
+ * `AI_INTELLIGENT_ASSISTANT` et `AI_AGENDA_ENGINE` — supprimés) : il tourne
+ * toujours (`enabled`).
  */
 export const USE_CASE_FLAGS: Record<AiUseCaseCode, AiFlag | null> = {
   SOURCE_ANALYSIS: 'AI_UNIFIED_SOURCE_ANALYSIS',
   DATA_RECONCILIATION: 'AI_RECONCILIATION_ENGINE',
-  INTELLIGENT_ASSISTANT: 'AI_INTELLIGENT_ASSISTANT',
-  AGENDA_INTELLIGENCE: 'AI_AGENDA_ENGINE',
+  INTELLIGENT_ASSISTANT: null,
+  AGENDA_INTELLIGENCE: null,
   AI_GOVERNANCE: null,
   HOME_MASCOT: null,
 };

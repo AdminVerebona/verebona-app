@@ -93,7 +93,8 @@ function dedupeByDateAndField(candidates: AgendaCandidate[]): AgendaCandidate[] 
 
 // ══════════════════════════════════════════════════════════════════════════
 // CANDIDATS T4 PILOTÉS PAR LE REGISTRE — CDC 15 T4-01, T4-03, T4-04, §13
-// (lot 14, derrière AI_T4_EFFECTS)
+// (lot 14 ; seuls candidats retenus depuis le lot 16b-2, AI_T4_EFFECTS
+// retiré — ceux de `buildAgendaCandidates` sont remplacés par le pipeline)
 //
 // Plus de liste fermée : un champ produit un candidat si le registre lui
 // donne un `agendaEffect` (nature HISTORICAL ou DEADLINE, type métier). Les
@@ -287,31 +288,6 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
     });
   }
   return out;
-}
-
-/**
- * Candidats retenus selon `AI_T4_EFFECTS` (lot 14) :
- *   · legacy  : candidats historiques, STRICTEMENT inchangés ;
- *   · shadow  : candidats du registre calculés et journalisés (résumé, sans
- *               valeur), candidats historiques retenus — aucun effet ;
- *   · enabled : candidats du registre.
- */
-export function selectAgendaCandidates(
-  legacy: AgendaCandidate[],
-  fields: ExtractedField[],
-  ctx: T4CandidateContext,
-  mode: 'legacy' | 'shadow' | 'enabled',
-): AgendaCandidate[] {
-  if (mode === 'legacy') return legacy;
-  const t4 = buildAgendaCandidatesT4(fields, ctx);
-  if (mode === 'enabled') return t4;
-  const resume = (cs: AgendaCandidate[]) => cs.map((c) => `${c.businessType ?? c.originFieldKey ?? '?'}:${c.nature ?? '?'}`).sort();
-  console.info('[t4-shadow] candidats agenda', JSON.stringify({
-    sourceFileId: ctx.sourceFileId, legacy: resume(legacy), t4: resume(t4),
-    historical: t4.filter((c) => c.nature === 'HISTORICAL').length,
-    deadline: t4.filter((c) => c.nature === 'DEADLINE').length,
-  }));
-  return legacy;
 }
 
 /**

@@ -44,14 +44,20 @@ import { pgClient } from '@/db';
 import type { ResolvedSource } from '../types/sources';
 import type { ResultGroup } from './result-groups';
 import { parseEntityRef, type EntityKind } from './entity-ref';
-import { canonicalReadEnabled } from '../canonical/mode';
+
+/**
+ * CDC 15 T2-45 (lot 15) : un élément « À traiter » est revérifié sur SA clé
+ * (`to_process_actions.id`, bornée au compte) et selon la même règle que la
+ * page « À traiter » (`to-process-query.service`, `resolved_at IS NULL`) : un
+ * élément résolu n'y figure plus — le lien « Ouvrir À traiter » n'y mènerait
+ * à rien.
+ */
+export const REQUETE_TO_PROCESS =
+  `SELECT id FROM to_process_actions WHERE id = ANY($1::int[]) AND account_id = $2 AND resolved_at IS NULL`;
 
 /**
  * Requête de vérification par famille d'entité. `$1` : identifiants
  * numériques, `$2` : compte. Rend les identifiants ENCORE accessibles.
- *
- * `to_process` n'est pas vérifié ici (mode historique) : voir
- * `REQUETE_TO_PROCESS`, appliquée en lecture canonique (CDC 15 T2-45).
  */
 export const REQUETES_DISPONIBILITE: Readonly<Partial<Record<EntityKind, string>>> = {
   asset: `SELECT id FROM assets WHERE id = ANY($1::int[]) AND account_id = $2 AND deleted_at IS NULL`,
@@ -70,22 +76,8 @@ export const REQUETES_DISPONIBILITE: Readonly<Partial<Record<EntityKind, string>
   // Export ou dossier généré (§12.1) : supprimé ou annulé = indisponible.
   export: `SELECT id FROM export_generation WHERE id = ANY($1::int[]) AND account_id = $2
             AND status NOT IN ('deleted', 'cancelled')`,
+  to_process: REQUETE_TO_PROCESS,
 };
-
-/**
- * CDC 15 T2-45 (lot 15, ASSISTANT_CANONICAL_READ=enabled) : un élément
- * « À traiter » est revérifié sur SA clé (`to_process_actions.id`, bornée au
- * compte) et selon la même règle que la page « À traiter »
- * (`to-process-query.service`, `resolved_at IS NULL`) : un élément résolu
- * n'y figure plus — le lien « Ouvrir À traiter » n'y mènerait à rien.
- */
-export const REQUETE_TO_PROCESS =
-  `SELECT id FROM to_process_actions WHERE id = ANY($1::int[]) AND account_id = $2 AND resolved_at IS NULL`;
-
-/** Requêtes de vérification selon le mode de lecture. */
-export function requetesDisponibilite(canonique: boolean = canonicalReadEnabled()): Readonly<Partial<Record<EntityKind, string>>> {
-  return canonique ? { ...REQUETES_DISPONIBILITE, to_process: REQUETE_TO_PROCESS } : REQUETES_DISPONIBILITE;
-}
 
 /** Exécuteur de requête — injectable pour les tests. */
 export type Requeteur = (sql: string, params: unknown[]) => Promise<Array<{ id: number }>>;
@@ -106,7 +98,7 @@ export async function identifiantsIndisponibles(
   accountId: number,
   requeteur: Requeteur = requeteurPg,
 ): Promise<Set<string>> {
-  const requetes = requetesDisponibilite();
+  const requetes = REQUETES_DISPONIBILITE;
   const parFamille = new Map<EntityKind, Map<number, string[]>>();
   for (const brut of ids) {
     const ref = parseEntityRef(brut);

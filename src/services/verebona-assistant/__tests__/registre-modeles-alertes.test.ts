@@ -14,7 +14,6 @@ const { checkModelRegistry, runAssistantStartupCheck, lastValidRegistry, resetMo
 const alertes = await import('../observability/assistant-alerts');
 const { getTreatmentMetrics, setMetricsQueryRunner } = await import('@/services/ai/config/treatment-metrics.repository');
 const { outputDigestForLog, stripRawExcerpt } = await import('@/services/ai/gateway/redaction');
-const { PROMPTS } = await import('../registries/prompt-registry');
 const { ensureAssistantStartupChecked, resetStartupCheckForTests } = await import('..');
 
 const ENV = ['VEREBONA_ASSISTANT_DEFAULT_MODEL_ALIAS', 'VEREBONA_ASSISTANT_ESCALATION_MODEL_ALIAS',
@@ -40,20 +39,20 @@ describe('§15.11 — alias configurés, modèle attendu', () => {
   });
 
   it('résolution de l’alias par la chaîne effective (configuration versionnée)', async () => {
-    const r = await registre.resolveAliases('generate_answer', async () => ({ primaryModel: 'gemini-a', fallbackModels: ['gemini-b'] }));
-    expect(r).toEqual({ operationCode: 'generate_answer', default: 'gemini-a', escalation: 'gemini-b' });
+    const r = await registre.resolveAliases('t2_answer', async () => ({ primaryModel: 'gemini-a', fallbackModels: ['gemini-b'] }));
+    expect(r).toEqual({ operationCode: 't2_answer', default: 'gemini-a', escalation: 'gemini-b' });
   });
 
   it('chaque appel trace l’alias configuré et le modèle attendu (verebona_ai_runs)', async () => {
     process.env.VEREBONA_ASSISTANT_ESCALATION_MODEL_ALIAS = 'verebona-escalade';
     await recordAiRun({
-      requestId: 'r1', routeReason: 'x', promptId: 'p', promptVersion: 'v', accountId: 7, operationCode: 'generate_answer',
+      requestId: 'r1', routeReason: 'x', promptId: 'p', promptVersion: 'v', accountId: 7, operationCode: 't2_answer',
       resolvedModelId: 'gemini-b', fallbackUsed: true, inputTokens: 1, outputTokens: 1, costMicros: 1, latencyMs: 1,
       attemptNumber: 1, status: 'ok', promptHash: 'h', expectedModelId: 'gemini-b',
     });
     const [sql, params] = h.unsafe.mock.calls[0] as [string, unknown[]];
     expect(sql).toMatch(/expected_model_id/);
-    expect(params[3]).toBe('verebona-escalade:generate_answer');
+    expect(params[3]).toBe('verebona-escalade:t2_answer');
     expect(params.at(-1)).toBe('gemini-b');
   });
 
@@ -61,7 +60,7 @@ describe('§15.11 — alias configurés, modèle attendu', () => {
     let fini = false;
     h.unsafe.mockImplementationOnce(async () => { await new Promise((r) => setTimeout(r, 20)); fini = true; return []; });
     void recordAiRun({
-      requestId: 'r2', routeReason: 'x', promptId: 'p', promptVersion: 'v', accountId: 7, operationCode: 'generate_answer',
+      requestId: 'r2', routeReason: 'x', promptId: 'p', promptVersion: 'v', accountId: 7, operationCode: 't2_answer',
       resolvedModelId: 'm', fallbackUsed: false, inputTokens: 1, outputTokens: 1, costMicros: 1, latencyMs: 1, attemptNumber: 1, status: 'ok', promptHash: 'h',
     });
     await awaitAiRuns('r2');
@@ -71,9 +70,9 @@ describe('§15.11 — alias configurés, modèle attendu', () => {
 
 describe('§15.14 — contrôle du registre au démarrage et au changement de configuration', () => {
   const ops = (primary: string, fallback: string[]) => ({
-    understand_request: { operationCode: 'understand_request', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
-    revalidate_fact: { operationCode: 'revalidate_fact', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
-    generate_answer: { operationCode: 'generate_answer', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
+    t2_understand: { operationCode: 't2_understand', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
+    t2_revalidate: { operationCode: 't2_revalidate', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
+    t2_answer: { operationCode: 't2_answer', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
   }) as never;
   const deps = (primary: string, fallback: string[], prix = true, bloquant = true) => ({
     operations: ops(primary, fallback),
@@ -203,15 +202,14 @@ describe('§29.6 — sortie brute non validée jamais journalisée pour l’assi
   });
 });
 
-describe('§17.1 — métadonnées du registre de prompts', () => {
-  it('date d’effet, propriétaire, modèles compatibles (alias), schéma et historique', () => {
-    for (const p of Object.values(PROMPTS)) {
-      expect(p.effectiveDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      expect(p.owner.length).toBeGreaterThan(0);
-      expect(p.compatibleModels).toEqual(['assistant-default', 'assistant-escalation']);
-      expect(p.history.at(-1)?.version).toBe(p.version);
-      expect(p.history.at(-1)?.status).toBe('active');
+describe('§17.1 — prompt de l’assistant : le master T2 seul (lot 16b-2)', () => {
+  it('le registre des prompts historiques est supprimé ; métadonnées portées par le master', async () => {
+    const { existsSync } = await import('fs');
+    const { join } = await import('path');
+    expect(existsSync(join(process.cwd(), 'src/services/verebona-assistant/registries/prompt-registry.ts'))).toBe(false);
+    const { AI_OPERATIONS } = await import('@/services/ai/registry/operations');
+    for (const op of ['t2_understand', 't2_answer', 't2_revalidate']) {
+      expect(AI_OPERATIONS[op]).toMatchObject({ masterPromptCode: 't2_master_v1', fallbackModels: expect.any(Array) });
     }
-    expect(PROMPTS.generate_answer.history.map((x) => x.version)).toEqual(['generate_answer_v2', 'generate_answer_v3', 'generate_answer_v4']);
   });
 });

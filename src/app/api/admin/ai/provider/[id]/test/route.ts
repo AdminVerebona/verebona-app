@@ -39,7 +39,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const body = await req.json().catch(() => ({}));
     const model = typeof body.model === 'string'
       ? body.model
-      : AI_OPERATIONS.generate_answer?.primaryModel ?? 'gemini-3.1-flash-lite';
+      : AI_OPERATIONS.t2_answer?.primaryModel ?? 'gemini-3.1-flash-lite';
 
     const result = await testProviderKey(secret, model, compte, guard.ctx.adminUserId);
     await recordTest(credentialId, result.ok, result.detail);

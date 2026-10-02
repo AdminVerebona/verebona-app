@@ -21,7 +21,7 @@
  */
 import type { RetrievedSource } from '../types/sources';
 
-/** Enveloppe fixe : prompt maître generate_answer_v4 (~8 Ko) + préambule BO. */
+/** Enveloppe fixe : prompt maître t2_master_v1 (~8 Ko). */
 export const PROMPT_OVERHEAD_TOKENS = 3000;
 const CHARS_PER_TOKEN = 3.5;
 const MIN_SOURCES = 2;

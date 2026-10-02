@@ -8,7 +8,7 @@
  *  · liens source ↔ agenda : `agenda_file_links` + `agenda_item_sources`
  *    (rôles SOURCE / ATTACHMENT), `listAgendaItemsForDocument` ;
  *  · `removeAgendaItemsFromSource` : clés conservées, bien ciblé, manuel
- *    et modifié jamais retirés, shadow sans retrait ;
+ *    et modifié jamais retirés, analyse incomplète sans retrait ;
  *  · rattrapages §14.5 (liens depuis origin_ref) et §14.6 (doublons).
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
@@ -48,7 +48,6 @@ scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
       FROM agenda_items i WHERE id = ${id}`)[0];
 
   it('T4-09 : même événement créé à la main ou automatiquement → même état, à l’origine près', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -70,7 +69,6 @@ scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
   });
 
   it('T4-08 : upsert par clé — 01/03 corrigé en 01/04 → un seul élément ; modifié par l’utilisateur → protégé', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -93,8 +91,7 @@ scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
     expect((await etat(r1.id)).start_date).toBe('2027-04-01');
   });
 
-  it('T4-07 : depuis le document, tous ses événements (automatiques, pièces jointes) ; rien en legacy', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
+  it('T4-07 : depuis le document, tous ses événements (automatiques, pièces jointes)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -109,15 +106,16 @@ scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
     const autre = await make.account();
     expect(await links.listAgendaItemsForDocument(doc.id, { accountId: autre.id })).toEqual([]);
 
+    // Lot 16b-2 : variable retirée encore posée — sans effet, les liens
+    // source sont tracés comme en mode cible.
     process.env.AI_T4_EFFECTS = 'legacy';
     const doc2 = await make.assetFile(compte, { assetId: bien.id });
     const m2 = await write.createAgendaItem({ title: 'Garage 2', startDate: '2027-02-02', assetIds: [bien.id], fileIds: [doc2.id], homeCategory: 'action' }, compte.id, compte.ownerUserId);
-    expect((await etat(m2.id)).roles).toBeNull();
+    expect((await etat(m2.id)).roles).toEqual(['ATTACHMENT']);
     expect((await etat(m2.id)).files).toEqual([doc2.id]);
   });
 
-  it('removeAgendaItemsFromSource : clés conservées, bien ciblé, élément modifié et manuel épargnés ; shadow sans retrait', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
+  it('removeAgendaItemsFromSource : clés conservées, bien ciblé, élément modifié et manuel épargnés ; analyse incomplète sans retrait', async () => {
     const compte = await make.account();
     const b1 = await make.asset(compte);
     const b2 = await make.asset(compte);
@@ -133,15 +131,14 @@ scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
     await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${modifie.id}`;
     const manuel = await write.createAgendaItem({ title: 'Manuel', startDate: '2027-01-05', assetIds: [b1.id], fileIds: [doc.id], homeCategory: 'action' }, compte.id, compte.ownerUserId);
 
-    const ombre = await prim.removeAgendaItemsFromSource({ accountId: compte.id, sourceFileId: doc.id, assetId: b1.id, keepKeys: [garde.functionalKey!], mode: 'shadow' });
-    expect(ombre).toEqual({ removed: [perime.id], dryRun: true });
+    const ombre = await prim.removeAgendaItemsFromSource({ accountId: compte.id, sourceFileId: doc.id, assetId: b1.id, keepKeys: [garde.functionalKey!] });
+    expect(ombre).toEqual({ removed: [perime.id], dryRun: true, skipped: 'ANALYSIS_INCOMPLETE' });
     expect(await etat(perime.id)).toBeDefined();
 
     const r = await prim.removeAgendaItemsFromSource({ accountId: compte.id, sourceFileId: doc.id, assetId: b1.id, keepKeys: [garde.functionalKey!], analysisComplete: true });
     expect(r).toEqual({ removed: [perime.id], dryRun: false });
     const restants = (await sql<{ id: number }[]>`SELECT id FROM agenda_items WHERE account_id = ${compte.id} ORDER BY id`).map((x) => x.id);
     expect(restants).toEqual([garde.id, modifie.id, autreBien.id, manuel.id]);
-    expect((await prim.removeAgendaItemsFromSource({ accountId: compte.id, sourceFileId: doc.id, keepKeys: [], mode: 'legacy' })).removed).toEqual([]);
   });
 
   it('§14.5 : liens reconstruits depuis origin_ref ; références inexploitables au rapport', async () => {

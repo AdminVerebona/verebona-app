@@ -7,7 +7,7 @@
  *  · E2E-T2-11 : « Retrouve la facture Leroy » puis « Et son montant ? »
  *    dans le même fil → le document cité ;
  *  · E2E-T2-09 : bien courant (page) puis échéances → aucune échéance d'un
- *    autre bien (`agenda_asset_links`) ; legacy : les deux ;
+ *    autre bien (`agenda_asset_links`) ;
  *  · E2E-T2-07 : « Quels documents ne sont rattachés à aucun bien ? » →
  *    filtre exact (lien N-N et colonnes vides) ;
  *  · T2-13 : « Retrouve un devis » → filtre de type, pas un bonus ;
@@ -56,13 +56,12 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     return f;
   };
 
-  it('E2E-T2-10 (enabled) : page document + « Quel est le montant ? » → le document de la page', async () => {
+  it('E2E-T2-10 : page document + « Quel est le montant ? » → le document de la page', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { name: 'Maison' });
     const ticket = await doc(compte, { assetId: maison.id, title: 'Ticket Leroy Merlin', type: 'SUBSCRIPTION_INVOICE', amount: 4590, supplier: 'Leroy Merlin' });
     await doc(compte, { assetId: maison.id, title: 'Facture EDF', type: 'SUBSCRIPTION_INVOICE', amount: 12000 });
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r = await ask(compte, 'Quel est le montant ?', { pageContext: { documentId: String(ticket.id) } });
     expect(r.answer).toMatch(/Ticket Leroy Merlin.*45,90/);
     expect(r.cascade?.strategy).toBe('target.document_amount');
@@ -78,11 +77,10 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     expect(x.answer).not.toContain('45,90');
   });
 
-  it('E2E-T2-11 (enabled) : « Retrouve la facture Leroy » puis « Et son montant ? » dans le même fil', async () => {
+  it('E2E-T2-11 : « Retrouve la facture Leroy » puis « Et son montant ? » dans le même fil', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { name: 'Maison' });
     const ticket = await doc(compte, { assetId: maison.id, title: 'Facture Leroy Merlin', type: 'SUBSCRIPTION_INVOICE', amount: 4590 });
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r1 = await ask(compte, 'Retrouve la facture Leroy Merlin');
     expect(r1.sources.map((s) => s.id)).toContain(`doc_${ticket.id}`);
     expect(r1.conversationId).toBeTruthy();
@@ -91,7 +89,7 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     expect(r2.cascade?.reference?.entity).toEqual({ type: 'document', id: ticket.id });
   });
 
-  it('E2E-T2-09 (enabled ; legacy) : bien courant (page) puis échéances → aucune échéance d’un autre bien ; legacy : les deux', async () => {
+  it('E2E-T2-09 : bien courant (page) puis échéances → aucune échéance d’un autre bien', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte, { name: 'Clio', category: 'VEHICULE' });
     const polo = await make.asset(compte, { name: 'Polo', category: 'VEHICULE' });
@@ -103,7 +101,6 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     } as never;
     const route = router.routeForIntent('ACCOUNT_SEARCH_AGENDA', 'PREMIUM', 'e2e');
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const on = await ret.retrieve(route, input);
     expect(on.map((s) => s.id)).toEqual([`agenda_${ctClio.id}`]);
     // Contrat de l'intention (T2-07) : que des échéances.
@@ -112,12 +109,12 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     const bout = await ask(compte, 'Retrouve le contrôle technique', { pageContext: { assetId: String(clio.id) } });
     expect(bout.sources.map((s) => s.id)).not.toContain(`agenda_${ctPolo.id}`);
 
+    // Lot 16b-2 : variable retirée encore posée — sans effet.
     process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    const off = await ret.retrieve(route, input);
-    expect(off.map((s) => s.id)).toEqual(expect.arrayContaining([`agenda_${ctClio.id}`, `agenda_${ctPolo.id}`]));
+    expect((await ret.retrieve(route, input)).map((s) => s.id)).toEqual([`agenda_${ctClio.id}`]);
   });
 
-  it('E2E-T2-07 (enabled) : documents non rattachés — filtre exact (lien N-N et colonnes)', async () => {
+  it('E2E-T2-07 : documents non rattachés — filtre exact (lien N-N et colonnes)', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { name: 'Maison' });
     const lie = await doc(compte, { assetId: maison.id, title: 'Facture chaudière' });
@@ -126,7 +123,6 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     await sql`INSERT INTO document_asset_links (account_id, file_id, asset_id, link_role, origin, status)
               VALUES (${compte.id}, ${nn.id}, ${maison.id}, 'PRIMARY', 'USER', 'ACTIVE') ON CONFLICT DO NOTHING`;
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r = await ask(compte, 'Quels documents ne sont rattachés à aucun bien ?');
     expect(r.route?.intent).toBe('ACCOUNT_SEARCH_DOCUMENT');
     expect(r.sources.map((s) => s.id)).toEqual([`doc_${orphelin.id}`]);
@@ -141,10 +137,9 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     const route = router.routeForIntent('ACCOUNT_SEARCH_DOCUMENT', 'PREMIUM', 'e2e');
     const input = { accountId: compte.id, userId: compte.owner.id, planType: 'PREMIUM', message: 'Retrouve un devis', clientRequestId: 'd' } as never;
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
-    expect((await ret.retrieve(route, input)).map((s) => s.id)).toEqual([`doc_${devis.id}`]);
-    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    expect((await ret.retrieve(route, input)).map((s) => s.id)).toContain(`doc_${facture.id}`);
+    const trouves = (await ret.retrieve(route, input)).map((s) => s.id);
+    expect(trouves).toEqual([`doc_${devis.id}`]);
+    expect(trouves).not.toContain(`doc_${facture.id}`);
   });
 
   it('T2-17 : « À traiter » du bien courant — bien, équipement, document et échéance de CE bien seulement', async () => {
@@ -166,17 +161,15 @@ scenario('T2-L15-ROUTAGE', 'Recherche, ciblage et routage de l’assistant', ({ 
     const route = router.routeForIntent('ACCOUNT_TO_PROCESS', 'PREMIUM', 'e2e');
     const input = { accountId: compte.id, userId: compte.owner.id, planType: 'PREMIUM', message: 'Que dois-je traiter ?', clientRequestId: 't', pageContext: { assetId: String(clio.id) } } as never;
 
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
-    expect((await ret.retrieve(route, input)).map((s) => s.id).sort()).toEqual([`todo_${a1}`, `todo_${a2}`, `todo_${a3}`].sort());
-    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    expect((await ret.retrieve(route, input)).map((s) => s.id)).toContain(`todo_${b1}`);
+    const todos = (await ret.retrieve(route, input)).map((s) => s.id);
+    expect([...todos].sort()).toEqual([`todo_${a1}`, `todo_${a2}`, `todo_${a3}`].sort());
+    expect(todos).not.toContain(`todo_${b1}`);
   });
 
-  it('E2E-T2-20 (enabled) + T2-37 : « Indique-moi la date d’achat de la Polo » est une lecture, jamais une commande', async () => {
+  it('E2E-T2-20 + T2-37 : « Indique-moi la date d’achat de la Polo » est une lecture, jamais une commande', async () => {
     const compte = await make.account();
     await make.asset(compte, { name: 'Polo', category: 'VEHICULE', keyCharacteristics: { acquisitionDate: '2021-05-25', acquisitionDate__origin: 'USER' } });
     process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS = 'true';
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r = await ask(compte, 'Indique-moi la date d’achat de la Polo');
     expect(r.commandPlan ?? null).toBeNull();
     expect(r.cascade?.intent).not.toBe('WRITE_COMMAND');

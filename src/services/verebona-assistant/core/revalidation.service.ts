@@ -23,9 +23,10 @@
  * pas changé. Un échec ne modifie rien.
  *
  * LOT 15 (CDC 15 T2-27, T2-28, T2-30, §24 REVALIDATE) :
- *   · architecture T2 `master` : l'appel passe par la branche REVALIDATE du
- *     master (`t2_revalidate`, PROVENANCE_MODE = TEXT | VISUAL) ;
- *   · VISUAL_RECHECK (master seulement) : une observation VISUELLE (0161,
+ *   · l'appel passe par la branche REVALIDATE du master T2 (`t2_revalidate`,
+ *     PROVENANCE_MODE = TEXT | VISUAL) — seul moteur depuis le lot 16b-2
+ *     (`revalidate_fact` retiré) ;
+ *   · VISUAL_RECHECK : une observation VISUELLE (0161,
  *     sans extrait) est relue sur la source originale — jamais d'extrait
  *     inventé (C3, P-T2-04), preuve visuelle obligatoire, jamais « certaine » ;
  *   · T2-27 : AUCUNE écriture sur le bien hors du pipeline protégé
@@ -34,10 +35,9 @@
  *     (`t1_quality_signals.t2_result.impact`) ;
  *   · T2-28 : la projection est celle du rattachement tardif
  *     (`projectDocumentKnowledgeToAsset`) — preuves, T3, puis candidats
- *     agenda reconstruits et passés par la file T4 (derrière AI_T4_EFFECTS).
+ *     agenda reconstruits et passés par la file T4.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { z } from 'zod';
 import { pgClient } from '@/db';
 import { splitValueAndUnit } from '@/services/ai/knowledge/document-knowledge';
 import type { AiCallBudget } from './ai-call-budget';
@@ -50,18 +50,17 @@ export type RevalidationProvenance = 'TEXT' | 'VISUAL';
 export interface VisualEvidence { description: string; page?: number | null }
 export type RevalidationStatus = 'CONFIRMED' | 'CORRECTED' | 'NOT_FOUND' | 'AMBIGUOUS' | 'FAILED';
 
-export const RevalidationOutput = z.object({
-  status: z.enum(['confirmed', 'corrected', 'not_found', 'ambiguous']),
-  value: z.union([z.string(), z.number()]).transform(String).nullable().optional(),
-  unit: z.string().nullable().optional(),
-  confidence: z.enum(['certain', 'probable']).default('probable'),
-  excerpt: z.string().nullable().optional(),
-  page: z.number().int().positive().nullable().optional(),
-});
-export type RevalidationModelOutput = z.infer<typeof RevalidationOutput> & {
-  /** Master REVALIDATE, PROVENANCE_MODE=VISUAL : preuve visuelle (C3). */
+/** Sortie du master REVALIDATE, traduite (`fromT2Revalidate`). */
+export interface RevalidationModelOutput {
+  status: 'confirmed' | 'corrected' | 'not_found' | 'ambiguous';
+  value?: string | null;
+  unit?: string | null;
+  confidence: 'certain' | 'probable';
+  excerpt?: string | null;
+  page?: number | null;
+  /** PROVENANCE_MODE=VISUAL : preuve visuelle (C3). */
   visualEvidence?: VisualEvidence | null;
-};
+}
 
 /** Fait à vérifier, tel que la base le connaît. */
 export interface FactToCheck {
@@ -127,8 +126,12 @@ export interface RevalidationImpact {
   supersededEvidence: number;
   /** Mode T3_NEGATIVE_RECONCILIATION appliqué au remplacement. */
   evidenceMode: 'legacy' | 'shadow' | 'enabled' | null;
-  /** Mode AI_T4_EFFECTS au moment de la projection (candidats agenda, T2-28). */
-  t4Effects: string | null;
+  /**
+   * Effets agenda T4 au moment de la projection (candidats agenda, T2-28) :
+   * `enabled` dès qu'un bien est projeté (commutateur AI_T4_EFFECTS retiré au
+   * lot 16b-2, valeur conservée pour la lecture des traces).
+   */
+  t4Effects: 'enabled' | null;
   /** Écritures hors pipeline protégé : toujours 0 (T2-27). */
   directAssetWrites: 0;
 }
@@ -203,9 +206,8 @@ export function gapProblem(trigger: RevalidationTrigger, status: RevalidationSta
 
 /**
  * Charge le fait (du compte, document non supprimé) avec son extraction courante.
- * `includeVisual` (VISUAL_RECHECK, master T2) : les observations visuelles
- * (0161) sont aussi chargées ; sinon, faits LUS seulement (comportement
- * historique).
+ * `includeVisual` (VISUAL_RECHECK) : les observations visuelles (0161) sont
+ * aussi chargées ; sinon, faits LUS seulement.
  */
 export async function loadFactToCheck(
   accountId: number, factId: number, opts: { includeVisual?: boolean } = {},
@@ -252,14 +254,12 @@ async function recentRevalidation(f: FactToCheck) {
 // ── Dépendances (injectables pour les tests) ───────────────────────────────
 
 export interface RevalidationDeps {
-  /** Appel modèle ciblé (opération revalidate_fact, usage T2). */
+  /** Appel modèle ciblé (branche REVALIDATE du master T2, `t2_revalidate`). */
   callModel(req: {
     accountId: number; userId: number; conversationId?: number;
     question: string; fact: string; currentValue: string; location: string;
     mode: RevalidationMode; content: string;
     attachment?: { url: string; mimeType: string; displayName?: string };
-    /** Architecture T2 : `master` ⇒ branche REVALIDATE du master (`t2_revalidate`). */
-    architecture?: 'steps' | 'master';
     /** PROVENANCE_MODE du master (TEXT pour un fait lu, VISUAL pour une observation). */
     provenance?: RevalidationProvenance;
     /** Budget d'appels modèle du message (§15.5, CA-07). */
@@ -275,8 +275,6 @@ export interface RevalidationDeps {
    * Rend le nombre de champs projetés si connu.
    */
   project(p: { accountId: number; userId: number; fileId: number; assetId: number }): Promise<number | void>;
-  /** Architecture T2 effective (défaut : version de configuration, D-04). */
-  architecture?(): Promise<'steps' | 'master'>;
   /**
    * Tableau persisté d'où provient le fait (texte borné) — la revalidation
    * d'une cellule relit CE tableau, pas le document entier. Facultatif.
@@ -354,31 +352,7 @@ export async function replaceRevalidatedEvidence(p: ReplaceEvidenceInput): Promi
 export const defaultRevalidationDeps: RevalidationDeps = {
   async callModel(req) {
     const { executeWithinBudget } = await import('./ai-call-budget');
-    if (req.architecture === 'master') return callT2RevalidateMaster(req, executeWithinBudget);
-    try {
-      // Décompté sur le budget du message : la revalidation ne peut pas
-      // consommer les appels réservés à la génération au-delà du plafond.
-      const res = await executeWithinBudget(req.budget, {
-        useCaseCode: 'INTELLIGENT_ASSISTANT',
-        operationCode: 'revalidate_fact',
-        accountId: req.accountId,
-        userId: req.userId,
-        promptVariables: {
-          QUESTION: req.question, FACT: req.fact, CURRENT_VALUE: req.currentValue,
-          LOCATION: req.location, MODE: req.mode === 'PERSISTED_CONTENT' ? 'texte déjà extrait du document' : 'document original joint',
-          CONTENT: req.content,
-        },
-        attachments: req.attachment ? [req.attachment] : undefined,
-        outputSchema: RevalidationOutput,
-      }, req.requestId ? {
-        requestId: req.requestId, routeReason: `revalidation ${req.mode}`,
-        promptId: 'revalidate_fact', promptVersion: 'revalidate_fact_v1',
-      } : undefined);
-      return { output: res.data, model: res.model ?? null, costMicros: res.costMicros ?? 0 };
-    } catch (e) {
-      console.warn('[revalidation] appel modèle impossible :', (e as Error).message);
-      return null;
-    }
+    return callT2RevalidateMaster(req, executeWithinBudget);
   },
   async sourceUrl(accountId, fileId) {
     const [row] = (await pgClient.unsafe(
@@ -396,10 +370,6 @@ export const defaultRevalidationDeps: RevalidationDeps = {
   async project(p) {
     const { projectDocumentKnowledgeToAsset } = await import('@/services/ai/knowledge/document-knowledge.service');
     return projectDocumentKnowledgeToAsset(p);
-  },
-  async architecture() {
-    const { getPromptArchitecture } = await import('@/services/ai/config/config-resolver');
-    return getPromptArchitecture('T2');
   },
   async tableText(accountId, fileId, tableIndex) {
     const { getDocumentTables } = await import('@/services/ai/knowledge/document-knowledge.service');
@@ -513,13 +483,11 @@ export async function revalidateFact(
   },
   deps: RevalidationDeps = defaultRevalidationDeps,
 ): Promise<RevalidationResult | null> {
-  // Architecture T2 (D-04) : `master` ouvre la branche REVALIDATE et la
-  // relecture des observations visuelles (VISUAL_RECHECK).
-  const architecture = await (deps.architecture ?? defaultRevalidationDeps.architecture!)().catch(() => 'steps' as const);
-  const f = await loadFactToCheck(p.accountId, p.factId, { includeVisual: architecture === 'master' });
+  // Branche REVALIDATE du master T2 : faits lus ET observations visuelles
+  // (VISUAL_RECHECK).
+  const f = await loadFactToCheck(p.accountId, p.factId, { includeVisual: true });
   if (!f) return null;
   const visuel = f.evidenceOrigin === 'VISUAL_ANALYSIS';
-  if (visuel && architecture !== 'master') return null;
 
   // Déduplication : même fait, même extraction → on réutilise.
   const prev = await recentRevalidation(f);
@@ -556,7 +524,7 @@ export async function revalidateFact(
       accountId: p.accountId, userId: p.userId, conversationId: p.conversationId,
       question: p.question, fact: describeFact(f), currentValue: `${initial ?? '—'}${f.valueUnit ? ` ${f.valueUnit}` : ''}`,
       location: describeLocation(page, table), mode: m, content, attachment, budget: p.budget,
-      requestId: p.requestId, architecture, provenance: visuel ? 'VISUAL' : 'TEXT',
+      requestId: p.requestId, provenance: visuel ? 'VISUAL' : 'TEXT',
     });
     if (!r) return null;
     model = r.model; costMicros += r.costMicros;
@@ -650,12 +618,10 @@ export async function revalidateFact(
   let reinjectedFactId: number | null = null;
   let impact: RevalidationImpact | null = null;
   if ((out.status === 'CONFIRMED' || out.status === 'CORRECTED') && out.value) {
-    reinjectedFactId = await reinject(f, { ...out, value: out.value, confidence: out.confidence ?? 'probable' }, rev.id, model,
-      architecture === 'master' ? 't2_master_v1' : 'revalidate_fact_v1');
-    const { t4EffectsMode } = await import('@/services/canonical/rollout');
+    reinjectedFactId = await reinject(f, { ...out, value: out.value, confidence: out.confidence ?? 'probable' }, rev.id, model);
     impact = {
       assetId: f.assetId, projected: false, projectedFields: null, supersededEvidence: 0, evidenceMode: null,
-      t4Effects: f.assetId ? t4EffectsMode() : null, directAssetWrites: 0,
+      t4Effects: f.assetId ? 'enabled' : null, directAssetWrites: 0,
     };
     if (f.assetId) {
       // Mêmes règles communes que T1 : preuves par champ puis T3 (valeurs
@@ -694,7 +660,7 @@ export async function revalidateFact(
     [p.accountId, f.fileId, f.extractionId, f.analysisRunId, f.factKey, describeFact(f), gapProblem(p.trigger, out.status),
      JSON.stringify({
        status: out.status, mode, value: out.value, unit: out.unit, confidence: out.confidence, revalidationId: rev.id,
-       ...(architecture === 'master' ? { architecture } : {}),
+       architecture: 'master',
        ...(out.visualEvidence ? { visualEvidence: out.visualEvidence } : {}),
        // T2-27 : trace d'impact (projection, preuves remplacées, effets T4).
        ...(impact ? { impact } : {}),
@@ -728,7 +694,7 @@ async function reinject(
   out: { status: RevalidationStatus; value: string; unit: string | null; confidence: 'certain' | 'probable'; excerpt: string | null; page: number | null; visualEvidence?: VisualEvidence | null },
   revalidationId: number,
   model: string | null,
-  promptVersion = 'revalidate_fact_v1',
+  promptVersion = 't2_master_v1',
 ): Promise<number> {
   return pgClient.begin(async (tx) => {
     const split = splitValueAndUnit(out.value);

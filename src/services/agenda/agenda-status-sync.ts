@@ -15,8 +15,8 @@
  * champs (les preuves du document sont alors écrites) : aucune file ni
  * déclencheur nouveau, même reprise et même backoff que T3.
  *
- * Gouvernance : AI_T4_EFFECTS=enabled, OU architecture T4 `master` (la
- * condition de `reconcileStatus`). Sinon rien — pas même une lecture.
+ * Toujours active depuis le lot 16b-2 (commutateur AI_T4_EFFECTS et T4
+ * `steps` retirés).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CORRESPONDANCE PREUVE ↔ ÉCHÉANCE
@@ -43,11 +43,9 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
-import { t4EffectsMode, type RolloutMode } from '@/services/canonical/rollout';
 import { getField, resolveDocumentType } from '@/services/canonical/registry';
 import type { ExistingAgendaItem, HomeCategory } from '@/services/ai/agenda/types';
 import type { CompletionEvidence, OccurrenceMatch } from '@/services/ai/agenda/status-reconciler';
-import type { PromptArchitecture } from '@/services/ai/config/config-types';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { resolveEventSemantics } from './agenda-functional-key';
 
@@ -221,18 +219,8 @@ export interface StatusSyncEntry {
 }
 
 export interface StatusSyncReport {
-  skipped?: 'NOT_ENABLED' | 'NO_PROOF';
+  skipped?: 'NO_PROOF';
   entries: StatusSyncEntry[];
-}
-
-/** La réconciliation de statut est-elle active ? (AI_T4_EFFECTS=enabled OU T4 master) */
-export async function statusReconciliationActive(
-  mode: RolloutMode = t4EffectsMode(),
-  architecture?: PromptArchitecture,
-): Promise<boolean> {
-  if (mode === 'enabled') return true;
-  const arch = architecture ?? await (await import('@/services/ai/config/config-resolver')).getPromptArchitecture('T4');
-  return arch === 'master';
 }
 
 /**
@@ -244,12 +232,7 @@ export async function reconcileAgendaStatusForSource(p: {
   assetId: number;
   sourceFileId: number;
   userId?: number;
-  mode?: RolloutMode;
-  architecture?: PromptArchitecture;
 }): Promise<StatusSyncReport> {
-  const mode = p.mode ?? t4EffectsMode();
-  if (!(await statusReconciliationActive(mode, p.architecture))) return { skipped: 'NOT_ENABLED', entries: [] };
-
   const proofs = await loadSourceProofs(p.accountId, p.assetId, p.sourceFileId);
   if (proofs.length === 0) return { skipped: 'NO_PROOF', entries: [] };
   const items = await loadOpenItems(p.accountId, p.assetId);
@@ -276,11 +259,10 @@ export async function reconcileAgendaStatusForSource(p: {
   for (const { item, evidence } of retenues.values()) {
     try {
       const r = await reconcileStatus(item, evidence, {
-        accountId: p.accountId, userId: p.userId, sourceFileId: p.sourceFileId, mode, architecture: p.architecture,
+        accountId: p.accountId, userId: p.userId, sourceFileId: p.sourceFileId,
       });
-      if (r.engine !== 'completion_v2') continue;
       const applied = await applyStatusDecision(p.accountId, item, r.decision, {
-        sourceFileId: p.sourceFileId, reasonCode: r.reasonCode, occurrenceMatch: r.occurrenceMatch, mode,
+        sourceFileId: p.sourceFileId, reasonCode: r.reasonCode, occurrenceMatch: r.occurrenceMatch,
       });
       entries.push({ itemId: item.id, decision: r.decision, reasonCode: r.reasonCode, occurrenceMatch: r.occurrenceMatch, applied });
     } catch (e) {
@@ -290,7 +272,7 @@ export async function reconcileAgendaStatusForSource(p: {
     }
   }
   console.info(JSON.stringify({
-    event: 't4.status_sync', accountId: p.accountId, assetId: p.assetId, sourceFileId: p.sourceFileId, mode,
+    event: 't4.status_sync', accountId: p.accountId, assetId: p.assetId, sourceFileId: p.sourceFileId,
     entries: entries.map((x) => ({ itemId: x.itemId, decision: x.decision, reasonCode: x.reasonCode, applied: x.applied })),
   }));
   return { entries };
@@ -300,7 +282,7 @@ async function applyStatusDecision(
   accountId: number,
   item: ExistingAgendaItem,
   decision: string,
-  ctx: { sourceFileId: number; reasonCode: string; occurrenceMatch: OccurrenceMatch; mode: RolloutMode },
+  ctx: { sourceFileId: number; reasonCode: string; occurrenceMatch: OccurrenceMatch },
 ): Promise<StatusSyncEntry['applied']> {
   if (decision === 'mark_done') {
     // Relecture : un statut posé entre-temps (utilisateur) n'est jamais écrasé.
@@ -314,7 +296,7 @@ async function applyStatusDecision(
       itemId: item.id, accountId, assetId: null, origin: 'AUTOMATIC',
       sources: [{ fileId: ctx.sourceFileId, role: 'PROOF' }],
       details: { manualStatus: 'realise' },
-    }, { mode: ctx.mode });
+    });
     const { recordOccurrenceEvent } = await import('./agenda-persistence');
     await recordOccurrenceEvent(item.id, accountId, 'STATUS_AUTO_COMPLETED', {
       manualStatus: 'realise', origin: 'AI', sourceFileId: ctx.sourceFileId,

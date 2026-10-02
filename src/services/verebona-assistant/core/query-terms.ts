@@ -298,7 +298,7 @@ export function nearMatchRatio(terms: QueryTerm[], text: string): number {
 
 // ══════════════════════════════════════════════════════════════════════════
 // FILTRES STRUCTURÉS D'UNE RECHERCHE DE DOCUMENTS — CDC 15 T2-13, T2-14
-// (lot 15, ASSISTANT_CANONICAL_READ=enabled)
+// (lot 15)
 //
 // « Retrouve une facture » ne cherche pas le MOT « facture » dans un titre :
 // il demande les documents DE TYPE facture. De même « quels documents ne

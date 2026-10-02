@@ -16,8 +16,8 @@
  *      (`isT4DateRevision`) ; une valeur USER/ADMIN n'est JAMAIS remplacée
  *      (carte de conflit à la place). La source n'est jamais USER.
  *
- * Commutateurs : ceux de R5 (T4 `master` + `AI_T4_EFFECTS=enabled`, contrôlés
- * par l'appelant) ET `CANONICAL_WRITE_MODE` :
+ * Commutateur : `CANONICAL_WRITE_MODE` (R5 et T4 sont toujours actifs
+ * depuis le lot 16b-2) :
  *   legacy   rien (aucune requête) ;
  *   shadow   journal de ce qui SERAIT révisé (lecture seule) ;
  *   enabled  preuve révisée, preuve d'origine remplacée, T3 en file.

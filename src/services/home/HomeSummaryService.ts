@@ -17,8 +17,7 @@ import {
   deriveUpcoming, deriveVerebonaWork, docStatus, docTone,
   type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem,
 } from '@/services/home/home-blocks';
-import { isAgendaActionItem, isAgendaActionForMode, isAgendaActionItemT4 } from '@/services/home/mascot/collector';
-import { t4EffectsMode } from '@/services/canonical/rollout';
+import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { getRubric } from '@/lib/referential/v2';
 
@@ -107,12 +106,11 @@ function dateMinus(days: number): string {
 export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPayload> {
   const today = todayStr();
 
-  // CDC 15 D-14, T4-02 (AI_T4_EFFECTS=enabled, 0223 appliquée) : les
-  // échéances AUTOMATIQUES entrent dans l'accueil, les faits HISTORICAL
-  // jamais (filtre de B) ; la catégorie vient de l'élément lui-même. Sinon :
-  // requête et classification historiques, inchangées.
-  const t4Mode = t4EffectsMode();
-  const filtreT4 = await upcomingDeadlinesSqlFilter('agenda_items', t4Mode);
+  // CDC 15 D-14, T4-02 (0223 appliquée) : les échéances AUTOMATIQUES entrent
+  // dans l'accueil, les faits HISTORICAL jamais (filtre de B) ; la catégorie
+  // vient de l'élément lui-même. 0223 absente : sans les automatiques (hors
+  // prévisions), faute de nature pour écarter les faits passés.
+  const filtreT4 = await upcomingDeadlinesSqlFilter('agenda_items');
   const t4 = filtreT4 !== '';
 
   const [
@@ -477,22 +475,13 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         date: String(i.startDate),
         assetName: agendaAssetMap[i.id]?.[0]?.assetName ?? null,
         forecast: i.occurrenceNature === 'FORECAST',
-        action: isAgendaActionForMode({
+        action: isAgendaActionItemT4({
           homeCategory: i.homeCategory, originType: i.originType, title: i.title,
           eventNature: i.eventNature, businessType: i.businessType, originFieldKey: i.originFieldKey,
-        }, t4 ? 'enabled' : 'legacy'),
+        }),
       })),
     today,
   );
-
-  if (t4Mode === 'shadow') {
-    // Observation : classification T4 calculée sur les lignes historiques, sans effet.
-    const divergences = agendaRows.filter((i) => {
-      const item = { homeCategory: i.homeCategory, originType: i.originType, title: i.title, originFieldKey: i.originFieldKey };
-      return isAgendaActionItem(item) !== isAgendaActionItemT4(item);
-    }).length;
-    if (divergences > 0) console.info('[t4-shadow] accueil', JSON.stringify({ accountId, lus: agendaRows.length, divergences }));
-  }
 
   const isEmpty = assetRows.length === 0 && agendaRows.length === 0;
 

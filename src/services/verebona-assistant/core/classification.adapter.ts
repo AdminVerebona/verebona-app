@@ -1,19 +1,17 @@
 /**
- * Classification de l'intention — opération `understand_request`, usage IA n°3.
- * CDC §9.1, §9.5, §9.10 et §15.5.
+ * Classification de l'intention — branche UNDERSTAND du master T2 (opération
+ * `t2_understand`, CDC 15 §24), usage IA n°3. CDC Assistant §9.1, §9.5,
+ * §9.10 et §15.5.
  *
- * ══════════════════════════════════════════════════════════════════════════
- * CE QUE CE FICHIER DÉBLOQUE
- *
- * `ports.ts` portait `classifyWithAI: undefined`. L'orchestrateur ne recourt au
- * modèle que si les règles déterministes n'ont rien reconnu :
+ * L'orchestrateur ne recourt au modèle que si les règles déterministes n'ont
+ * rien reconnu :
  *
  *     } else if (ports.classifyWithAI && isPlanAiEligible(input.planType)) {
  *
- * Le port valant `undefined`, toute question non couverte par une règle
- * retombait sur `UNKNOWN` — donc sur « je n'ai pas assez d'éléments pour
- * répondre », **sans même chercher**. Une question bien posée mais formulée
- * autrement que prévu ne recevait rien.
+ * Lot 16b-2 : l'étape historique `understand_request` et le drapeau
+ * `AI_INTELLIGENT_ASSISTANT` sont retirés — le master T2 est le seul moteur,
+ * et le port est toujours branché (l'offre et le réglage `account_ai`
+ * décident encore de l'appel).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * LA RÈGLE ABSOLUE DU §9.1
@@ -21,118 +19,48 @@
  * « Une intention inconnue n'est JAMAIS créée dynamiquement par le modèle. Le
  *   classifieur ne peut retourner qu'une valeur de cette énumération. »
  *
- * Elle est appliquée ici par le schéma de sortie : `z.enum(VEREBONA_INTENTS)`.
- * Une intention hors catalogue fait échouer la validation, et la classification
- * rend `null` — l'orchestrateur retombe alors sur `UNKNOWN`, ce qu'il aurait
- * fait de toute façon. Le modèle ne peut donc pas élargir le catalogue, ni par
- * erreur ni autrement.
+ * Elle est appliquée par le schéma de sortie du master (`T2UnderstandOutput`,
+ * intention du catalogue fermé). Une intention hors catalogue fait échouer la
+ * validation, et la classification rend `null` — l'orchestrateur retombe
+ * alors sur `UNKNOWN`. Le modèle ne peut donc pas élargir le catalogue.
  *
  * Et surtout : **le modèle ne décide pas des droits.** Il propose une intention,
  * rien de plus. `aiEligible`, `requiresRetrieval` et `allowedActionTypes` sont
- * lus dans le registre côté serveur (§9.2). Laisser le modèle les fournir
- * reviendrait à lui laisser étendre ses propres permissions.
+ * lus dans le registre côté serveur (§9.2).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { z } from 'zod';
-import { maskSensitiveText, sensitiveNecessityFor } from './sensitive-data.policy';
-import { callWithRepairOrEscalation, repairInstruction } from './model-call-policy';
-import { isAiGatewayError } from '@/services/ai/gateway/errors';
-import { assistantIdempotencyKey } from './assistant-cache-key';
-import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
-import { VEREBONA_INTENTS, type VerebonaIntent } from '../types/intents';
+import type { VerebonaIntent } from '../types/intents';
 import { getIntentDefinition } from '../registries/intent-registry';
 import { allowedActionsFor } from '../registries/action-registry';
-import { canonicalReadEnabled } from '../canonical/mode';
 import type { IntentRoute, AssistantRequestInput, Confidence } from '../types/contracts';
 
-// CDC 15 T2-08 : `period` en plus (bien, document, fournisseur, période) —
-// des INDICES, résolus ensuite côté serveur (`assistant-targets.ts`), jamais
-// des identifiants.
-const ENTITY_TYPES = ['asset', 'document', 'agenda', 'supplier', 'help', 'period'] as const;
-
-/** Sortie attendue — volontairement pauvre : une intention et des indices. */
-const ToolPlanOutput = z.object({
-  intent: z.enum(VEREBONA_INTENTS as unknown as [string, ...string[]]),
-  confidence: z.enum(['exact', 'probable', 'ambiguous']).default('probable'),
-  entityHints: z.array(z.object({
-    type: z.enum(ENTITY_TYPES),
-    value: z.string().min(1).max(200),
-  })).max(10).default([]),
+/** Plan proposé par le modèle — volontairement pauvre : une intention et des indices. */
+export interface ToolPlan {
+  intent: string;
+  confidence: 'exact' | 'probable' | 'ambiguous';
+  entityHints: Array<{ type: IntentRoute['entityHints'][number]['type']; value: string }>;
   /** Justification courte, journalisée — jamais montrée à l'utilisateur. */
-  reason: z.string().max(300).default(''),
-});
-
-export type ToolPlan = z.infer<typeof ToolPlanOutput>;
+  reason: string;
+}
 
 /**
- * Classe une question que les règles déterministes n'ont pas reconnue.
+ * Classe une question que les règles déterministes n'ont pas reconnue, par
+ * la branche UNDERSTAND du master T2.
  *
  * Rend `null` en cas d'échec — jamais une exception. L'orchestrateur traite
- * `null` comme une classification indisponible et retombe sur `UNKNOWN` : le
- * comportement actuel, exactement.
+ * `null` comme une classification indisponible et retombe sur `UNKNOWN`.
+ * La route est construite ICI (droits du registre) ; faits demandés et
+ * filtres suivent comme indices (`route.understanding`).
  */
 export async function classifyAssistantIntent(
   message: string,
   input: AssistantRequestInput,
 ): Promise<IntentRoute | null> {
   if (!message.trim()) return null;
-
-  // ── Master T2 (CDC 15 §24, D-04) ─────────────────────────────────────
-  // La version de configuration déclare T2 en architecture `master` :
-  // compréhension par `t2_understand` (Z) AU LIEU de `understand_request`.
-  // La route reste construite ICI (droits du registre) ; faits demandés et
-  // filtres suivent comme indices (`route.understanding`). En `steps` :
-  // parcours historique inchangé.
-  if (await architectureT2() === 'master') {
-    const { understandWithT2Master } = await import('@/services/ai/assistant/master/t2-understand');
-    const r = await understandWithT2Master(message, input);
-    if (!r) return null;
-    return { ...toIntentRoute(r.plan as ToolPlan, input.planType), understanding: { requestedFacts: r.requestedFacts, filters: r.filters ?? {} } };
-  }
-
-  try {
-    // Décompté sur le budget du message (§15.5, CA-07) : épuisé, aucun appel
-    // n'est émis et l'intention reste inconnue (repli déterministe).
-    // Premier appel au modèle par défaut seul ; sortie invalide → une
-    // réparation (§18.6), sortie vide → escalade (§15.4). Rien d'autre.
-    // §29.4 : la classification n'a besoin que de l'intention — données
-    // sensibles de la question masquées (secrets toujours, le reste sauf
-    // besoin exprimé).
-    const variables = { QUESTION: maskSensitiveText(message, sensitiveNecessityFor(message)).text, INTENTS: describeCatalog() };
-    const { res, events } = await callWithRepairOrEscalation({
-      budget: input.aiBudget,
-      schemaDescription: '{"intent":"<intention du catalogue>","confidence":"exact"|"probable"|"ambiguous","entityHints":[],"reason":"…"}',
-      build: (v) => {
-        const promptVariables = v.repair
-          ? { ...variables, INTENTS: `${variables.INTENTS}\n\n${repairInstruction('{"intent":"<intention du catalogue>","confidence":"exact"|"probable"|"ambiguous","entityHints":[],"reason":"…"}', v.repair)}` }
-          : variables;
-        const cle = assistantIdempotencyKey(input, 'understand_request', promptVariables);
-        return {
-          useCaseCode: 'INTELLIGENT_ASSISTANT' as const,
-          operationCode: 'understand_request',
-          accountId: input.accountId,
-          userId: input.userId,
-          promptVariables,
-          outputSchema: ToolPlanOutput,
-          // Rattachée au fil : purgée à l'effacement de l'historique.
-          idempotencyKey: cle && v.escalation ? `${cle}:escalation` : cle,
-        };
-      },
-      trace: {
-        // Trace §28.8 : rattachée à la demande, prompt maître de classification.
-        requestId: input.requestId ?? input.clientRequestId,
-        routeReason: 'classification : aucune règle déterministe',
-        promptId: 'understand_request', promptVersion: 'understand_request_v1',
-      },
-    });
-    input.aiReport?.events.push(...events.map((e) => `CLASSIFICATION:${e}`));
-
-    return toIntentRoute(res.data as ToolPlan, input.planType);
-  } catch (e) {
-    const detail = isAiGatewayError(e) ? `${e.code} — ${e.message}` : (e as Error).message;
-    console.warn(`[assistant] Classification indisponible (${detail}) — intention inconnue.`);
-    return null;
-  }
+  const { understandWithT2Master } = await import('@/services/ai/assistant/master/t2-understand');
+  const r = await understandWithT2Master(message, input);
+  if (!r) return null;
+  return { ...toIntentRoute(r.plan, input.planType), understanding: { requestedFacts: r.requestedFacts, filters: r.filters ?? {} } };
 }
 
 /**
@@ -151,13 +79,9 @@ export function toIntentRoute(plan: ToolPlan, planType: string): IntentRoute {
     confidence: plan.confidence as Confidence,
     // Toujours imposé côté serveur : jamais dérivé d'une réponse de modèle.
     accountScope: 'server-enforced',
-    // Indices seulement (T2-08), lecture canonique : bornés, sans préfixe
-    // « page: » — un indice du modèle ne peut pas se faire passer pour le
-    // contexte de page. Legacy : tels quels (inchangé). La branche master
-    // les filtre déjà (`toT2Understanding`).
-    entityHints: canonicalReadEnabled()
-      ? plan.entityHints.filter((h) => !h.value.trim().toLowerCase().startsWith('page:')).slice(0, 10)
-      : plan.entityHints,
+    // Indices seulement (T2-08) : bornés, sans préfixe « page: » — un indice
+    // du modèle ne peut pas se faire passer pour le contexte de page.
+    entityHints: plan.entityHints.filter((h) => !h.value.trim().toLowerCase().startsWith('page:')).slice(0, 10),
     requiresRetrieval: def.requiresRetrieval,
     aiEligible: def.geminiEligible,
     // Une intention ambiguë demande confirmation plutôt que de deviner (§9.5).
@@ -169,31 +93,7 @@ export function toIntentRoute(plan: ToolPlan, planType: string): IntentRoute {
   };
 }
 
-/** Architecture des prompts de T2 (ne lève jamais : `steps` par défaut). */
-async function architectureT2(): Promise<'steps' | 'master'> {
-  try {
-    const { getPromptArchitecture } = await import('@/services/ai/config/config-resolver');
-    return (await getPromptArchitecture('T2')) === 'master' ? 'master' : 'steps';
-  } catch {
-    return 'steps';
-  }
-}
-
-/** Catalogue fermé, transmis au modèle : il choisit dedans, il n'invente pas. */
-function describeCatalog(): string {
-  return VEREBONA_INTENTS
-    .map((i) => `- ${i} : ${getIntentDefinition(i as VerebonaIntent).label}`)
-    .join('\n');
-}
-
-/**
- * Port à injecter, ou `undefined` si l'usage n'est pas basculé.
- *
- * `undefined` et non une fonction inerte : l'orchestrateur teste la présence du
- * port pour décider d'appeler un modèle, et compte cet appel au titre du §15.5.
- */
-export function buildClassificationPort():
-  | ((message: string, input: AssistantRequestInput) => Promise<IntentRoute | null>)
-  | undefined {
-  return isUseCaseRunning('INTELLIGENT_ASSISTANT') ? classifyAssistantIntent : undefined;
+/** Port de classification (toujours branché depuis le lot 16b-2). */
+export function buildClassificationPort(): (message: string, input: AssistantRequestInput) => Promise<IntentRoute | null> {
+  return classifyAssistantIntent;
 }

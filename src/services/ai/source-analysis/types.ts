@@ -207,8 +207,8 @@ export interface AgendaCandidate {
   recurrence?: import('../agenda/rules/recurrence').RecurrenceSpec;
 
   // ── Candidat T4 enrichi — CDC 15 T4-01, T4-03, T4-04, T4-08 (lot 14) ────
-  // Renseignés quand AI_T4_EFFECTS=enabled (`buildAgendaCandidatesT4`) ;
-  // absents : candidat historique, traité comme avant par T4.
+  // Renseignés par `buildAgendaCandidatesT4` ; absents (candidat d'un
+  // travail ancien) : traité comme un candidat sans sémantique.
 
   /** Nature du registre (§13) : fait passé ou échéance à venir. */
   nature?: 'HISTORICAL' | 'DEADLINE';

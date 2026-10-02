@@ -560,7 +560,7 @@ function TreatmentEditor({
         « master », le prompt ci-dessous est le MASTER COMPLET (D-03) ; vide,
         le fichier du dépôt s'applique.
       */}
-      {/* Lot 16b : T5 et T6 n'ont plus que leur master — aucun choix proposé. */}
+      {/* Lot 16b : T2, T4, T5 et T6 n'ont plus que leur master — aucun choix proposé. */}
       {catalog.master && !catalog.master.masterOnly ? (
         <Field
           label="Architecture des prompts"

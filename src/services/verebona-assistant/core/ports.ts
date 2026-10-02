@@ -5,8 +5,8 @@
  * et les injecte dans `runAssistant`.
  *
  * La génération est branchée (`generation.adapter.ts`), via la gateway et non un
- * client fournisseur direct. Elle reste inactive tant que
- * `AI_INTELLIGENT_ASSISTANT` vaut `legacy`.
+ * client fournisseur direct — master T2 seul depuis le lot 16b-2 (drapeau
+ * `AI_INTELLIGENT_ASSISTANT` retiré).
  *
  * ── CE QUI A CHANGÉ, ET POURQUOI ─────────────────────────────────────────
  * Le port `resolveActions` recevait les entités trouvées et ne s'en servait
@@ -36,7 +36,6 @@ import { resolveSourcesForDisplay } from './source-resolver.service';
 import { resolveActions, exigeUneCible, type AccessChecker } from './action-resolver.service';
 import { parseEntityRef } from './entity-ref';
 import { persistResult, loadThreadContext } from './conversation.service';
-import { isUseCaseRunning } from '@/services/ai/flags/use-case-flags';
 import { isPlanAiEligible } from '../registries/capability-registry';
 import { saveClarification } from './clarification.service';
 import { pgClient } from '@/db';
@@ -235,14 +234,9 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
 
     resolveSources: async (sources: RetrievedSource[]) => resolveSourcesForDisplay(sources),
 
-    // ── Génération (usage 3) ─────────────────────────────────────────────
-    // Branchée, mais gouvernée par AI_INTELLIGENT_ASSISTANT : le port reste
-    // `undefined` tant que le drapeau vaut `legacy`, et l'orchestrateur
-    // n'entre alors jamais dans l'état GENERATING.
-    //
-    // Rester `undefined` est essentiel : l'orchestrateur teste la PRÉSENCE du
-    // port pour décider d'appeler un modèle. Une fonction inerte lui ferait
-    // traverser l'état pour rien.
+    // ── Classification et génération (usage 3, master T2) ────────────────
+    // Toujours branchées depuis le lot 16b-2 ; l'offre, le réglage
+    // `account_ai` et l'état du traitement T2 décident encore de l'appel.
     classifyWithAI: buildClassificationPort(),
     generateWithAI: buildGenerationPort(),
     // EStop / T2 désactivé ou suspendu : message explicite au repli (T2-041).
@@ -300,8 +294,8 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
           accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
           factId, question: input.message, trigger: req.trigger,
           requestId: input.requestId,
-          // Mêmes conditions qu'une génération : usage basculé, offre éligible.
-          allowModel: isUseCaseRunning('INTELLIGENT_ASSISTANT') && isPlanAiEligible(input.planType),
+          // Mêmes conditions qu'une génération : offre éligible.
+          allowModel: isPlanAiEligible(input.planType),
           // Budget partagé du message : la revalidation y puise comme la
           // classification et la génération.
           budget: input.aiBudget,

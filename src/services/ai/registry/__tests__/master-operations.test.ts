@@ -157,29 +157,38 @@ describe('opérations T3 master (CDC 15 §25, lot 13)', () => {
   });
 });
 
-describe('opérations T4 master (CDC 15 §26, lot 14)', () => {
-  it('trois branches, rattachées aux étapes historiques, mêmes modèles', () => {
-    const ref = getOperation('classify_event');
+describe('opérations T4 master (CDC 15 §26, lot 14 ; seules depuis le lot 16b-2)', () => {
+  it('trois branches, famille de modèles documentaire, étapes historiques retirées', () => {
     // `t4_temporal_ambiguity` : active depuis le lot 18 (R5), appelée par T4.
-    for (const [code, task, schema, active] of [
-      ['t4_classify_event', 'CLASSIFY_EVENT', 'T4ClassifyEventOutput', true],
-      ['t4_verify_completion', 'VERIFY_COMPLETION', 'T4VerifyCompletionOutput', true],
-      ['t4_temporal_ambiguity', 'TEMPORAL_AMBIGUITY', 'T4TemporalAmbiguityOutput', true],
+    for (const [code, task, schema] of [
+      ['t4_classify_event', 'CLASSIFY_EVENT', 'T4ClassifyEventOutput'],
+      ['t4_verify_completion', 'VERIFY_COMPLETION', 'T4VerifyCompletionOutput'],
+      ['t4_temporal_ambiguity', 'TEMPORAL_AMBIGUITY', 'T4TemporalAmbiguityOutput'],
     ] as const) {
       expect(getOperation(code)).toMatchObject({
         useCaseCode: 'AGENDA_INTELLIGENCE', promptCode: 't4_master_v1', masterPromptCode: 't4_master_v1', task,
-        outputSchema: schema, primaryModel: ref.primaryModel, billable: false, active,
+        outputSchema: schema, primaryModel: getOperation('t4_classify_event').primaryModel, billable: false, active: true,
       });
     }
-    expect(getOperation('classify_event')).toMatchObject({
-      promptCode: 'classify_event_v2',
-      migratesTo: { masterPromptCode: 't4_master_v1', task: 'CLASSIFY_EVENT', operationCode: 't4_classify_event' },
-    });
-    expect(getOperation('reconcile_status')).toMatchObject({
-      promptCode: 'reconcile_status_v1',
-      migratesTo: { masterPromptCode: 't4_master_v1', task: 'VERIFY_COMPLETION', operationCode: 't4_verify_completion' },
-    });
+    for (const retire of ['classify_event', 'reconcile_status', 'legacy_classify_home_category']) {
+      expect(AI_OPERATIONS[retire], retire).toBeUndefined();
+    }
     const actives = listOperationsByUseCase('AGENDA_INTELLIGENCE').filter((o) => o.active && o.provider !== 'none');
-    expect(actives[0].operationCode).toBe('classify_event');
+    // Le disjoncteur sonde la première opération active : désormais le master.
+    expect(actives[0].operationCode).toBe('t4_classify_event');
+    for (const op of actives) expect(isMasterOperation(op), op.operationCode).toBe(true);
   });
 });
+
+describe('opérations T2 master (CDC 15 §24 ; seules depuis le lot 16b-2)', () => {
+  it('trois branches, étapes historiques et relais de recherche retirés', () => {
+    for (const retire of [
+      'understand_request', 'generate_answer', 'generate_answer_canonical', 'revalidate_fact',
+      'legacy_semantic_search', 'legacy_intelligent_search',
+    ]) expect(AI_OPERATIONS[retire], retire).toBeUndefined();
+    const actives = listOperationsByUseCase('INTELLIGENT_ASSISTANT').filter((o) => o.active && o.provider !== 'none');
+    expect(actives.map((o) => o.operationCode)).toEqual(['t2_understand', 't2_answer', 't2_revalidate']);
+    for (const op of actives) expect(op).toMatchObject({ masterPromptCode: 't2_master_v1', taskField: 'mode' });
+  });
+});
+

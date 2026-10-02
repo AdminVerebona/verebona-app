@@ -86,6 +86,8 @@ export interface CatalogInput {
   additional: Pick<AssetAdditionalInfos, 'commercial' | 'rental' | 'insurance' | 'claim'>;
   /** Préparation CIL, si le bien y est éligible. */
   cil: { globalStatus: 'ready' | 'action_required'; percentage: number; blockingLabels: string[] } | null;
+  /** Dossiers désactivés depuis le back-office : non proposés. */
+  unavailable?: ReadonlySet<DossierCode>;
   /** Générations du bien, les plus récentes d'abord. */
   generations: Array<{ id: number; publicId: string; exportType: string; status: string; createdAt: Date | string; completedAt: Date | string | null }>;
 }
@@ -162,7 +164,7 @@ export function buildExportCatalog(input: CatalogInput): ExportCatalog {
     lastGenerations.push(entry);
   }
 
-  const dossiers = DOSSIER_CODES.map((code): CatalogDossier => {
+  const dossiers = DOSSIER_CODES.filter((code) => !input.unavailable?.has(code)).map((code): CatalogDossier => {
     let eligible = isDossierEligibleForFamily(code, input.asset.category);
     if (eligible && code === 'CIL' && !isCilEligible({ category: input.asset.category, subtype: input.asset.subtype })) {
       eligible = false;
@@ -212,7 +214,8 @@ export async function loadExportCatalog(asset: {
   id: number; accountId: number; category: string; subtype: string | null;
   address: string | null; postalCode: string | null; city: string | null;
 }): Promise<ExportCatalog> {
-  const [premium, fileCounts, additional, generations] = await Promise.all([
+  const { loadInactiveDossiers } = await import('./dossier-availability');
+  const [premium, fileCounts, additional, generations, unavailable] = await Promise.all([
     canUsePremiumFeature(asset.accountId),
     db
       .select({
@@ -240,6 +243,7 @@ export async function loadExportCatalog(asset: {
       .where(and(eq(exportGenerations.assetId, asset.id), eq(exportGenerations.accountId, asset.accountId)))
       .orderBy(desc(exportGenerations.createdAt))
       .limit(50),
+    loadInactiveDossiers(),
   ]);
 
   let cil: CatalogInput['cil'] = null;
@@ -261,5 +265,6 @@ export async function loadExportCatalog(asset: {
     additional,
     cil,
     generations,
+    unavailable,
   });
 }

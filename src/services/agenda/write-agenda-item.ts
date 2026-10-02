@@ -9,21 +9,17 @@
  *      équipement) — demandées par l'appelant (`validate`) ;
  *   2. une transaction : ligne `agenda_items` (création ou mise à jour) et
  *      liaisons (remplacées pour l'agenda manuel, ajoutées pour T4) ;
- *   3. AI_T4_EFFECTS=enabled (0223 présente) : clé fonctionnelle, nature
- *      HISTORICAL | DEADLINE et type métier ; liens source canoniques
- *      (`agenda_file_links`, service unique `agenda-source-links`) ;
- *   4. après validation : recopie « achat » (D-13) et notification.
+ *   3. colonnes 0223 présentes : clé fonctionnelle, nature HISTORICAL |
+ *      DEADLINE et type métier ; liens source canoniques (`agenda_file_links`,
+ *      service unique `agenda-source-links`) ;
+ *   4. après validation : recopie « achat » (D-13) — seulement pour un
+ *      événement MANUEL réalisé, d'achat, sur un champ vide, par
+ *      `writeCanonicalAssetField` (origine USER) quand
+ *      CANONICAL_WRITE_MODE=enabled — et notification (jamais pour un
+ *      élément HISTORICAL, D-14).
  *
- * Modes (`AI_T4_EFFECTS`) :
- *   legacy   comportement historique des deux chemins, à l'identique : même
- *            ligne, mêmes liaisons, même recopie « achat » (titre contenant
- *            « achat » → `purchase_date` vide), même notification ;
- *   shadow   comme legacy ; ce qui serait écrit en plus (clé, nature, liens
- *            source, recopie D-13) est journalisé (`t4.agenda_write`) ;
- *   enabled  3 et D-13 : la recopie n'a lieu que pour un événement MANUEL
- *            réalisé, d'achat, sur un champ vide — par `writeCanonicalAssetField`
- *            (origine USER) quand CANONICAL_WRITE_MODE=enabled ; un élément
- *            HISTORICAL n'est jamais notifié (D-14).
+ * Lot 16b-2 : commutateur AI_T4_EFFECTS retiré, comportement = ancien
+ * `enabled` (les écritures historiques legacy / shadow n'existent plus).
  */
 import { db } from '@/db';
 import {
@@ -32,7 +28,7 @@ import {
 } from '@/db/schema';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { validateTemporalConstraints, validateLinkCoherence, type ResolvedLink } from './AgendaDomainService';
-import { t4EffectsMode, canonicalWriteMode, type RolloutMode } from '@/services/canonical/rollout';
+import { canonicalWriteMode } from '@/services/canonical/rollout';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { recordAgendaItemSources, type AgendaSourceRef } from './agenda-source-links';
 import { resolveEventSemantics, type AgendaEventNature } from './agenda-functional-key';
@@ -79,8 +75,6 @@ export interface WriteAgendaItemOptions {
    * édition ; 'realise' = marqué réalisé).
    */
   purchaseSync?: { manualStatus?: 'realise' | 'annule' | null };
-  /** Force un mode (tests) ; défaut : `AI_T4_EFFECTS`. */
-  mode?: RolloutMode;
   /**
    * Transaction englobante (résolution d'une carte « À traiter », §13.5) :
    * l'écriture y est faite (SAVEPOINT), jamais sur le client global. Les
@@ -102,7 +96,7 @@ export interface WriteAgendaItemResult {
   created: boolean;
   nature: AgendaEventNature | null;
   businessType: string | null;
-  /** D-14 : faux pour un élément HISTORICAL (enabled). */
+  /** D-14 : faux pour un élément HISTORICAL. */
   notifiable: boolean;
   functionalKey: string | null;
   /** Élément modifié par l'utilisateur : rien n'a été écrit (`onlyIfUntouched`). */
@@ -197,8 +191,7 @@ export async function writeAgendaItem(
   input: AgendaItemWriteInput,
   opts: WriteAgendaItemOptions,
 ): Promise<WriteAgendaItemResult> {
-  const mode = opts.mode ?? t4EffectsMode();
-  const effets = mode === 'enabled' && await agendaFunctionalColumnsReady();
+  const effets = await agendaFunctionalColumnsReady();
 
   const semantics = resolveEventSemantics({
     originFieldKey: (input.values.originFieldKey as string | null | undefined) ?? null,
@@ -260,22 +253,14 @@ export async function writeAgendaItem(
     };
   }
 
-  if (mode === 'shadow') {
-    console.info(JSON.stringify({
-      event: 't4.agenda_write', mode, channel: opts.channel, accountId: opts.accountId, itemId: id, created: creation,
-      wouldSet: { nature: semantics.nature, businessType: semantics.businessType, functionalKey: input.functionalKey ?? null },
-      wouldLinkSources: (input.sources ?? []).map((x) => ({ fileId: x.fileId, role: x.role })), dryRun: true,
-    }));
-  }
-
   if (opts.purchaseSync) {
     await syncPurchaseDate({
-      itemId: id, accountId: opts.accountId, actorUserId: opts.actorUserId ?? null, mode,
+      itemId: id, accountId: opts.accountId, actorUserId: opts.actorUserId ?? null,
       manualStatus: opts.purchaseSync.manualStatus, businessType: semantics.businessType,
     });
   }
 
-  const notifiable = mode === 'enabled' ? semantics.notifiable : true;
+  const notifiable = semantics.notifiable;
   if (opts.notify && creation && notifiable) {
     const { emitAgendaItemCreated } = await import('@/services/coherence/impact-propagation.service');
     for (const aid of input.links?.assetIds ?? []) {
@@ -283,7 +268,7 @@ export async function writeAgendaItem(
     }
   }
 
-  // D-15 : un événement historique « vente » ou « sinistre » créé en enabled
+  // D-15 : un événement historique « vente » ou « sinistre » créé
   // propose le changement de statut du bien (carte À traiter ASSET-STATUS) ;
   // le statut n'est JAMAIS écrit automatiquement. Non bloquant.
   if (effets && creation && !opts.client && semantics.nature === 'HISTORICAL' && semantics.businessType) {
@@ -313,14 +298,7 @@ const estAchat = (title: string, businessType: string | null) =>
 
 /**
  * Recopie de la date d'un événement « achat » vers la date d'acquisition du
- * bien lié.
- *
- *   legacy / shadow : comportement historique À L'IDENTIQUE — titre
- *   contenant « achat », création / édition ou marqué réalisé, recopie vers
- *   `purchase_date` des biens liés qui n'en ont pas (écriture directe) ;
- *   en shadow, la règle D-13 est en plus évaluée et journalisée.
- *
- *   enabled (D-13) : jamais pour un événement AUTOMATIQUE (la date
+ * bien lié (D-13) : jamais pour un événement AUTOMATIQUE (la date
  *   d'acquisition relève de T3, pas de l'agenda) ; pour un événement MANUEL
  *   réalisé (statut « réalisé », ou date passée sans statut), d'achat, et
  *   seulement si le champ est vide — par `writeCanonicalAssetField`
@@ -331,7 +309,6 @@ export async function syncPurchaseDate(p: {
   itemId: number;
   accountId: number;
   actorUserId: number | null;
-  mode: RolloutMode;
   manualStatus?: 'realise' | 'annule' | null;
   businessType?: string | null;
 }): Promise<void> {
@@ -343,24 +320,6 @@ export async function syncPurchaseDate(p: {
 
   const links = await db.select({ assetId: agendaAssetLinks.assetId })
     .from(agendaAssetLinks).where(eq(agendaAssetLinks.agendaItemId, p.itemId));
-
-  if (p.mode !== 'enabled') {
-    // Historique, inchangé.
-    if (item.title.toLowerCase().includes('achat')
-      && (p.manualStatus === undefined || p.manualStatus === 'realise' || p.manualStatus === null)) {
-      for (const { assetId } of links) {
-        await db.update(assets).set({ purchaseDate: item.startDate })
-          .where(and(eq(assets.id, assetId), isNull(assets.purchaseDate)));
-      }
-    }
-    if (p.mode === 'shadow') {
-      console.info(JSON.stringify({
-        event: 't4.purchase_sync', mode: 'shadow', itemId: p.itemId,
-        wouldSync: purchaseSyncAllowed(item, p.businessType ?? null), dryRun: true,
-      }));
-    }
-    return;
-  }
 
   if (!purchaseSyncAllowed(item, p.businessType ?? null)) return;
   for (const { assetId } of links) {
@@ -397,9 +356,9 @@ export function purchaseSyncAllowed(
  * Mêmes effets que `writeAgendaItem` hors transaction englobante, à appeler
  * APRÈS la validation de celle-ci (relecture de lot 14) :
  *   · D-13 recopie « achat » (création, ou élément marqué réalisé) ;
- *   · D-15 proposition de statut du bien (enabled : événement historique
- *     « vente » / « sinistre » créé, ou marqué réalisé) ;
- *   · notification de création (D-14 : jamais un HISTORICAL en enabled).
+ *   · D-15 proposition de statut du bien (événement historique « vente » /
+ *     « sinistre » créé, ou marqué réalisé) ;
+ *   · notification de création (D-14 : jamais un HISTORICAL).
  * Ne lève jamais.
  */
 export async function agendaEffectsAfterCommit(p: {
@@ -408,9 +367,7 @@ export async function agendaEffectsAfterCommit(p: {
   actorUserId: number | null;
   created: boolean;
   manualStatus?: 'realise' | 'annule' | null;
-  mode?: RolloutMode;
 }): Promise<void> {
-  const mode = p.mode ?? t4EffectsMode();
   try {
     let nature: string | null = null;
     let businessType: string | null = null;
@@ -425,13 +382,13 @@ export async function agendaEffectsAfterCommit(p: {
     }
     if (p.created || p.manualStatus === 'realise') {
       await syncPurchaseDate({
-        itemId: p.itemId, accountId: p.accountId, actorUserId: p.actorUserId, mode,
+        itemId: p.itemId, accountId: p.accountId, actorUserId: p.actorUserId,
         ...(p.created ? {} : { manualStatus: p.manualStatus }), businessType,
       });
     }
     const assetIds = (await db.select({ assetId: agendaAssetLinks.assetId }).from(agendaAssetLinks)
       .where(eq(agendaAssetLinks.agendaItemId, p.itemId))).map((r) => r.assetId);
-    if (mode === 'enabled' && businessType && ((p.created && nature === 'HISTORICAL') || p.manualStatus === 'realise')) {
+    if (businessType && ((p.created && nature === 'HISTORICAL') || p.manualStatus === 'realise')) {
       const { proposeAssetStatusChange, ASSET_STATUS_BY_EVENT } = await import('@/services/to-process/agenda-status-cards');
       if (ASSET_STATUS_BY_EVENT[businessType]) {
         for (const assetId of assetIds) {
@@ -439,7 +396,7 @@ export async function agendaEffectsAfterCommit(p: {
         }
       }
     }
-    if (p.created && !(mode === 'enabled' && nature === 'HISTORICAL')) {
+    if (p.created && nature !== 'HISTORICAL') {
       const { emitAgendaItemCreated } = await import('@/services/coherence/impact-propagation.service');
       for (const assetId of assetIds) await emitAgendaItemCreated(p.accountId, assetId, p.itemId).catch(() => {});
     }

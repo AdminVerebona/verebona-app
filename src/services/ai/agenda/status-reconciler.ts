@@ -40,65 +40,13 @@ export interface StatusEvidence {
   documentDate: Date | null;
 }
 
-/** Types de documents attestant qu'une intervention a bien eu lieu. */
-const COMPLETION_DOCUMENT_TYPES = new Set([
-  'RAPPORT_ENTRETIEN', 'FACTURE', 'CERTIFICAT_GARANTIE', 'DIAGNOSTIC', 'DPE',
-]);
-
-/** Formulations attestant explicitement une réalisation. */
-const COMPLETION_PATTERNS: RegExp[] = [
-  /effectu[ée]/i, /réalis[ée]/i, /realis[ée]/i,
-  /contrôle\s+favorable/i, /controle\s+favorable/i,
-  /intervention\s+termin[ée]e/i,
-  /travaux\s+achev[ée]s/i,
-  /prestation\s+r[ée]alis[ée]e/i,
-];
-
-export function decideStatus(
-  item: ExistingAgendaItem,
-  evidence: StatusEvidence | null,
-): { decision: StatusDecision; reason: string } {
-  // Un événement créé manuellement n'est jamais modifié silencieusement (§4.4.4).
-  if (item.manual) {
-    return { decision: 'keep', reason: 'événement créé manuellement — jamais modifié automatiquement' };
-  }
-
-  if (item.status === 'done') {
-    return { decision: 'keep', reason: 'déjà marqué réalisé' };
-  }
-
-  // Une échéance dépassée n'est pas une preuve de réalisation.
-  if (!evidence) {
-    return { decision: 'keep', reason: 'aucune preuve de réalisation' };
-  }
-
-  const hasAuthorizedType = evidence.documentType !== null
-    && COMPLETION_DOCUMENT_TYPES.has(evidence.documentType.toUpperCase());
-  const hasExplicitWording = COMPLETION_PATTERNS.some((p) => p.test(evidence.excerpt));
-
-  if (!hasAuthorizedType || !hasExplicitWording) {
-    return { decision: 'keep', reason: 'preuve non explicite ou type de document non probant' };
-  }
-
-  // Les deux conditions du §4.4.4 : preuve explicite ET confiance certaine.
-  if (evidence.confidence !== 'certain') {
-    return { decision: 'propose_done', reason: `preuve explicite mais confiance ${evidence.confidence}` };
-  }
-
-  return { decision: 'mark_done', reason: 'preuve explicite de réalisation, confiance certaine' };
-}
-
 // ══════════════════════════════════════════════════════════════════════════
 // CDC 15 T4-12 à T4-14 (lot 14) — QUATRE ÉTATS, PREUVE PAR TYPE, OCCURRENCE
 //
-// `decideStatus` ci-dessus est le chemin HISTORIQUE, conservé à l'identique.
-// `decideCompletion` le remplace quand `AI_T4_EFFECTS=enabled` OU quand la
-// version de configuration met T4 en architecture `master`
-// (`reconcileStatus`). Justification : la nouvelle décision est plus
-// STRICTE (elle ne clôt jamais sur une facture simple ni sur une autre
-// occurrence), l'activer par l'un ou l'autre commutateur ne peut que réduire
-// les clôtures automatiques ; et la branche VERIFY_COMPLETION du master rend
-// quatre états qui n'ont de sens qu'avec elle.
+// `decideCompletion` est la seule décision depuis le lot 16b-2 (l'ancien
+// `decideStatus` est retiré avec `AI_T4_EFFECTS`) : elle ne clôt jamais sur
+// une facture simple ni sur une autre occurrence, et la branche
+// VERIFY_COMPLETION du master T4 rend les quatre états qu'elle attend.
 //
 // Persistance (inchangée, aucune colonne) : `agenda_items.manual_status`
 // ∈ {NULL, 'realise', 'annule'}. Correspondance :

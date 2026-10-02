@@ -2,8 +2,9 @@
  * Commutateurs de déploiement du CDC 15 — module unique (plan, § Déploiement).
  *
  * Variables d'environnement HORS `AI_FLAGS` : chacune passe de `legacy`
- * (comportement historique, défaut) à `shadow` (observation, sans écriture —
- * sauf l'assistant, qui n'a pas de mode observation) puis à `enabled`.
+ * (comportement historique, défaut) à `shadow` (observation, sans écriture)
+ * puis à `enabled`. Lot 16b : un commutateur retiré a pour comportement
+ * définitif l'ancien `enabled`.
  * Tant qu'un commutateur n'est pas actionné, la production ne change pas.
  *
  * Lecture à CHAQUE appel (pas de cache) : un test ou un redémarrage avec une
@@ -44,16 +45,9 @@ export const ROLLOUT_SWITCHES = {
     description: 'Cycle de vie des preuves (retrait à la suppression, au détachement, au déplacement, '
       + 'remplacement à la revalidation T2) et retrait des valeurs automatiques sans preuve active (T3-03, T3-04).',
   },
-  AI_T4_EFFECTS: {
-    env: 'AI_T4_EFFECTS', lot: 'L14', wired: true,
-    description: 'Effets agenda T4 : clé fonctionnelle et synchronisation par source (T4-08), liens source ↔ agenda '
-      + '(T4-07, X-04), nature HISTORICAL/DEADLINE (D-14), recopie « achat » limitée au manuel réalisé (D-13).',
-  },
-  ASSISTANT_CANONICAL_READ: {
-    env: 'ASSISTANT_CANONICAL_READ', lot: 'L15', wired: true,
-    description: 'Lecture canonique de l’assistant (T2) : fiche canonique, conflits ouverts, documents N-N, '
-      + 'agenda sans historique, dépenses qualifiées, complétude — pas de mode observation (shadow = legacy).',
-  },
+  // AI_T4_EFFECTS (L14) et ASSISTANT_CANONICAL_READ (L15) : SUPPRIMÉS au
+  // lot 16b-2 — effets agenda T4 et lecture canonique de l'assistant
+  // toujours actifs (comportement de l'ancien `enabled`).
   EXPORTS_CANONICAL_SOURCE: {
     env: 'EXPORTS_CANONICAL_SOURCE', lot: 'L16', wired: true,
     // shadow : source historique utilisée, source canonique calculée en plus
@@ -87,26 +81,6 @@ export function getRolloutMode(name: RolloutSwitch, env: Env = process.env): Rol
  */
 export function t3NegativeMode(env: Env = process.env): RolloutMode {
   return getRolloutMode('T3_NEGATIVE_RECONCILIATION', env);
-}
-
-/**
- * Mode des effets agenda T4 (plan L14, CDC 15 T4-07, T4-08, T4-09, D-13,
- * D-14) : `legacy` comportement historique (refonte interne à parité) ;
- * `shadow` clé et synchronisation calculées et journalisées, sans écriture ;
- * `enabled` clé, synchronisation, liens source et règles D-13 / D-14.
- */
-export function t4EffectsMode(env: Env = process.env): RolloutMode {
-  return getRolloutMode('AI_T4_EFFECTS', env);
-}
-
-/**
- * Lecture canonique de l'assistant (plan L15, CDC 15 T2-01…T2-40). PAS de
- * mode observation : `shadow` se comporte comme `legacy` (signalé une fois
- * par processus par `verebona-assistant/canonical/mode.ts`). Rend donc
- * `legacy` ou `enabled`.
- */
-export function assistantCanonicalReadMode(env: Env = process.env): Exclude<RolloutMode, 'shadow'> {
-  return getRolloutMode('ASSISTANT_CANONICAL_READ', env) === 'enabled' ? 'enabled' : 'legacy';
 }
 
 /** Mode des écritures canoniques (plan L11). */

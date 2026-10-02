@@ -158,7 +158,6 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     expect(lignesBien).toBe(0);
 
     // Assistant (lecture canonique) : valeur, origine et preuve de l'équipement.
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const { readCanonicalField, readCanonicalEntityField } = await import('@/services/verebona-assistant/canonical/field-reader');
     const lu = await readCanonicalField(m.compte.id, m.bien.id, 'serialNumber');
     expect(lu?.value).toBeNull();
@@ -290,7 +289,6 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
   it('équipement déplacé vers un autre bien : preuves toujours lues, réconciliation et retrait corrects', async () => {
     process.env.CANONICAL_WRITE_MODE = 'enabled';
     process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const m = await maison();
     const studio = await make.asset(m.compte, { category: 'IMMOBILIER', name: 'Studio' });
     const { doc, r } = await facture(m, [

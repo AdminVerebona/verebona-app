@@ -22,6 +22,7 @@ const { createAiCallBudget, executeWithinBudget } = await import('../ai-call-bud
 const { runAssistant } = await import('../assistant-orchestrator.service');
 const { classifyAssistantIntent } = await import('../classification.adapter');
 const { generateAssistantAnswer } = await import('../generation.adapter');
+const { t2MasterVariables } = await import('@/services/ai/assistant/master/t2-answer');
 type Ports = import('../assistant-orchestrator.service').OrchestratorPorts;
 type Input = import('../../types/contracts').AssistantRequestInput;
 type Source = import('../../types/sources').RetrievedSource;
@@ -53,15 +54,20 @@ function ports(over: Partial<Ports> = {}): Ports {
   };
 }
 
-const CLASSIFICATION = JSON.stringify({ intent: 'ACCOUNT_SUMMARY', confidence: 'probable', entityHints: [], reason: 'synthèse' });
+// Lot 16b-2 : master T2 seul — sorties au format des branches UNDERSTAND / ANSWER.
+const CLASSIFICATION = JSON.stringify({ mode: 'UNDERSTAND', intent: 'ACCOUNT_SUMMARY', confidence: 'probable', entityHints: [], reason: 'synthèse' });
+const ANSWER_OK = JSON.stringify({ mode: 'ANSWER', format: 'claims', status: 'answered', claims: [] });
+const reqT2 = (Schema: z.ZodTypeAny) => ({
+  useCaseCode: 'INTELLIGENT_ASSISTANT' as const, operationCode: 't2_answer', accountId: 1,
+  promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q', INTENT: 'ACCOUNT_SUMMARY' }), outputSchema: Schema,
+});
 
 beforeEach(() => {
   delete process.env.VEREBONA_ASSISTANT_MAX_AI_CALLS_PER_REQUEST;
 });
 
 describe('gateway : maxModelAttempts tronque la chaîne de repli', () => {
-  const Schema = z.object({ ok: z.boolean() });
-  const req = { useCaseCode: 'INTELLIGENT_ASSISTANT' as const, operationCode: 'generate_answer', accountId: 1, promptVariables: {}, outputSchema: Schema };
+  const req = reqT2(z.object({ mode: z.literal('ANSWER') }).passthrough());
 
   it('sans budget : principal puis repli', async () => {
     fakeProvider.onAny(() => { throw new Error('503'); });
@@ -84,9 +90,8 @@ describe('gateway : maxModelAttempts tronque la chaîne de repli', () => {
 describe('AiCallBudget', () => {
   it('décompte 1 sur succès direct, tout le permis sur échec, refuse une fois épuisé', async () => {
     const b = createAiCallBudget(2);
-    const Schema = z.object({ ok: z.boolean() });
-    const req = { useCaseCode: 'INTELLIGENT_ASSISTANT' as const, operationCode: 'generate_answer', accountId: 1, promptVariables: {}, outputSchema: Schema };
-    fakeProvider.onAny(() => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    const req = reqT2(z.object({ mode: z.literal('ANSWER') }).passthrough());
+    fakeProvider.onAny(() => ({ rawText: ANSWER_OK, inputTokens: 1, outputTokens: 1 }));
     await executeWithinBudget(b, { ...req, idempotencyKey: `k-${Math.random()}` });
     expect(b.used).toBe(1);
     fakeProvider.onAny(() => { throw new Error('503'); });
@@ -130,7 +135,7 @@ describe('orchestrateur : au plus 2 appels modèle par message (CA-07)', () => {
     fakeProvider.onAny(() => {
       n += 1;
       if (n === 1) return { rawText: CLASSIFICATION, inputTokens: 10, outputTokens: 5 };
-      return { rawText: JSON.stringify({ schemaVersion: 'assistant-response-v1.0', intent: 'ACCOUNT_SUMMARY', supportLevel: 'supported', claims: [{ text: 'La garantie court 2 ans à compter du 12/03/2024.', sourceIds: ['doc_1'], factual: true }], status: 'answered' }), inputTokens: 10, outputTokens: 5 };
+      return { rawText: JSON.stringify({ mode: 'ANSWER', format: 'claims', status: 'answered', claims: [{ text: 'La garantie court 2 ans à compter du 12/03/2024.', sourceIds: ['doc_1'], factual: true }] }), inputTokens: 10, outputTokens: 5 };
     });
     const r = await runAssistant(INPUT, ports());
     expect(fakeProvider.calls.length).toBe(2);

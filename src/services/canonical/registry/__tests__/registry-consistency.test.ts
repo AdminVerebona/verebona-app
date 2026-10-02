@@ -274,19 +274,6 @@ describe('catalogues — événements (T4-01) et documents (T4-04, T4-13)', () =
     for (const t of Object.keys(getBaseAuthorityTable())) expect(resolveDocumentType(t), t).toBeDefined();
   });
 
-  it('types de preuve historiques (status-reconciler) catalogués avec une preuve « completed »', () => {
-    const txt = src('services/ai/agenda/status-reconciler.ts');
-    const bloc = /COMPLETION_DOCUMENT_TYPES = new Set\(\[([\s\S]*?)\]\)/.exec(txt)![1];
-    for (const m of bloc.matchAll(/'([A-Z_]+)'/g)) {
-      const e = resolveDocumentType(m[1]);
-      expect(e, m[1]).toBeDefined();
-      // CERTIFICAT_GARANTIE : ne prouve pas une exécution (aucune forme de preuve).
-      if (m[1] !== 'CERTIFICAT_GARANTIE') {
-        expect(e!.completionProofs.some((p) => p.establishes === 'completed'), m[1]).toBe(true);
-      }
-    }
-  });
-
   it('T4-13 : PV favorable et facture simple produisent des statuts différents', () => {
     const pv = resolveDocumentType('VEHICLE_TECHNICAL_INSPECTION')!;
     expect(pv.completionProofs.find((p) => p.code === 'PV_CONTROLE_FAVORABLE')!.establishes).toBe('completed');

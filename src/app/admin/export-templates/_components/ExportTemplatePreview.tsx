@@ -47,7 +47,7 @@ function decodeHeader(value: string | null): string | null {
   }
 }
 
-export function ExportTemplatePreview({ templateId }: { templateId: number }) {
+export function ExportTemplatePreview({ code }: { code: string }) {
   const [ctx, setCtx] = useState<PreviewContext | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [assetId, setAssetId] = useState<number | null>(null);
@@ -59,7 +59,7 @@ export function ExportTemplatePreview({ templateId }: { templateId: number }) {
   const loadContext = useCallback(async () => {
     setLoadError(null);
     try {
-      const res = await fetch(`/api/admin/export-templates/${templateId}/preview`, { credentials: 'include' });
+      const res = await fetch(`/api/admin/export-templates/${encodeURIComponent(code)}/preview`, { credentials: 'include' });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.message ?? 'Chargement de la prévisualisation impossible.');
       setCtx(data as PreviewContext);
@@ -68,7 +68,7 @@ export function ExportTemplatePreview({ templateId }: { templateId: number }) {
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'Erreur inconnue');
     }
-  }, [templateId]);
+  }, [code]);
 
   useEffect(() => {
     loadContext();
@@ -82,7 +82,7 @@ export function ExportTemplatePreview({ templateId }: { templateId: number }) {
     setRendering(true);
     setRenderError(null);
     try {
-      const res = await fetch(`/api/admin/export-templates/${templateId}/preview`, {
+      const res = await fetch(`/api/admin/export-templates/${encodeURIComponent(code)}/preview`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

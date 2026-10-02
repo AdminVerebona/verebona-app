@@ -5,12 +5,11 @@
  *     vraie route `GET /api/verebona/conversation` (session simulée), et ses
  *     liens sont REVÉRIFIÉS à la lecture (§19.10) : un événement supprimé ou
  *     un document passé hors compte perd son lien, la ligne reste ;
- *     en lecture `legacy`, aucune chronologie, colonne NULL ;
  *   · R7 : « Compare mes voitures » (famille) et « compare-la avec la Polo »
  *     (bien de la page) passent par le planificateur de comparaison ;
  *     plus de 3 véhicules → clarification, rien n'est comparé.
  *
- * État : commutateurs cibles (`ASSISTANT_CANONICAL_READ=enabled`…), T1 et T2
+ * État : commutateurs cibles (lecture canonique seule depuis le lot 16b-2), T1 et T2
  * en architecture `master`. Sorties T2 rejouées (D-08) ; aucun réseau.
  */
 import { expect, it, vi } from 'vitest';
@@ -83,18 +82,6 @@ scenario('LOT19-ASSISTANT', 'Reliquats assistant : chronologie persistée, compa
     expect(relue[0].unavailable).toBeUndefined();
     expect(relue[1]).toMatchObject({ ref: `agenda_${revision}`, href: null, unavailable: true });
     expect(relue[2]).toMatchObject({ ref: `doc_${f.id}`, href: null, unavailable: true });
-  });
-
-  it('R1 (legacy) — lecture historique : aucune chronologie, colonne NULL', async () => {
-    const c = await compteDe();
-    const clio = await bien(c, 'Clio');
-    await evenement(c, clio.id, 'Achat de la Clio', '2021-05-25');
-    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    const r = await demander(c, 'Historique de la Clio');
-    expect(r.events ?? null).toBeNull();
-    const lignes = await sql<{ t: unknown }[]>`
-      SELECT timeline_events_json AS t FROM verebona_messages WHERE conversation_id = ${r.conversationId!} AND role = 'assistant'`;
-    expect(lignes.map((l) => l.t)).toEqual([null]);
   });
 
   /** Réponse de comparaison rejouée, citant les deux fiches. */

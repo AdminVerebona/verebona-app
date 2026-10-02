@@ -42,9 +42,9 @@ const input = (over: Partial<Input> = {}): Input => ({
   aiReport: { securityEvents: [], events: [] }, ...over,
 });
 
-// Enveloppe stricte du §18.2 (schemaVersion, intent, supportLevel).
-const ENV = { schemaVersion: 'assistant-response-v1.0', intent: 'ACCOUNT_SUMMARY', supportLevel: 'supported' };
-const OK = JSON.stringify({ ...ENV, claims: [{ text: 'La garantie du vélo court 2 ans à compter du 12/03/2024.', sourceIds: ['doc_1'], factual: true }], status: 'answered' });
+// Branche ANSWER du master T2 (seul moteur depuis le lot 16b-2).
+const ENV = { mode: 'ANSWER', format: 'claims', status: 'answered' };
+const OK = JSON.stringify({ ...ENV, claims: [{ text: 'La garantie du vélo court 2 ans à compter du 12/03/2024.', sourceIds: ['doc_1'], factual: true }] });
 const ok = () => ({ rawText: OK, inputTokens: 10, outputTokens: 5 });
 
 beforeEach(() => {
@@ -57,7 +57,7 @@ describe('réparation (§18.6) et escalade (§15.4)', () => {
     let n = 0;
     fakeProvider.onAny(() => {
       n += 1;
-      return n === 1 ? { rawText: '{"claims":[{"text":42}]}', inputTokens: 5, outputTokens: 5 } : ok();
+      return n === 1 ? { rawText: JSON.stringify({ ...ENV, claims: [{ text: 42 }] }), inputTokens: 5, outputTokens: 5 } : ok();
     });
     const inp = input();
     const r = await generateAssistantAnswerDetailed(ROUTE(), SOURCES, inp);
@@ -67,7 +67,7 @@ describe('réparation (§18.6) et escalade (§15.4)', () => {
     expect(fakeProvider.calls[1].prompt).toMatch(/CORRECTION DEMANDÉE/);
     expect(fakeProvider.calls[1].prompt).toMatch(/claims\.0\.text/);
     // Aucune nouvelle donnée : mêmes sources dans les deux prompts.
-    const data = (p: string) => p.match(/<retrieved_source id="[^"]*"[\s\S]*?<\/retrieved_source>/g);
+    const data = (p: string) => p.match(/"sourceId": "[^"]*"/g);
     expect(data(fakeProvider.calls[1].prompt)).toEqual(data(fakeProvider.calls[0].prompt));
     expect(data(fakeProvider.calls[0].prompt)!.length).toBeGreaterThanOrEqual(2);
     expect((r as { generationEvents: string[] }).generationEvents).toContain('REPAIR:INVALID_OUTPUT');
@@ -122,14 +122,14 @@ describe('réparation (§18.6) et escalade (§15.4)', () => {
 
   it('budget déjà consommé par la classification → pas de réparation', async () => {
     const b = createAiCallBudget(2); b.consume(1);
-    fakeProvider.onAny(() => ({ rawText: '{"claims":[{"text":42}]}', inputTokens: 5, outputTokens: 5 }));
+    fakeProvider.onAny(() => ({ rawText: JSON.stringify({ ...ENV, claims: [{ text: 42 }] }), inputTokens: 5, outputTokens: 5 }));
     const r = await generateAssistantAnswerDetailed(ROUTE(), SOURCES, input({ aiBudget: b }));
     expect('failed' in r).toBe(true);
     expect(fakeProvider.calls).toHaveLength(1);
   });
 
   it('nature d’un échec de la passerelle', () => {
-    const e = (m: string) => new AiGatewayError('ALL_MODELS_FAILED', 'generate_answer', m, { recoverable: true });
+    const e = (m: string) => new AiGatewayError('ALL_MODELS_FAILED', 't2_answer', m, { recoverable: true });
     expect(classifyModelFailure(e('Tous les modèles ont échoué. m : Sortie non parsable : Aucune structure JSON détectée. Extrait : ')).kind).toBe('EMPTY_OUTPUT');
     expect(classifyModelFailure(e('Tous les modèles ont échoué. m : Sortie non conforme au schéma. claims.0.text : Expected string')).errors).toEqual(['claims.0.text : Expected string']);
     expect(classifyModelFailure(e('Tous les modèles ont échoué. m : timeout after 12000ms')).kind).toBe('TIMEOUT');
@@ -181,18 +181,12 @@ describe('filtrage de la sortie (§18.7, CA-09, 37.12)', () => {
   });
 
   it('37.12 : l’événement de sécurité est enregistré dans la trace de la demande', async () => {
-    // 1re sortie : action HORS CATALOGUE → rejetée par le schéma strict
-    // (§17.8), réparée ; la 2e porte une URL, retirée du texte.
-    let n = 0;
-    fakeProvider.onAny(() => {
-      n += 1;
-      return {
-        rawText: JSON.stringify(n === 1
-          ? { ...ENV, claims: [{ text: 'La garantie court 2 ans.', sourceIds: ['doc_1'], factual: true }], actionIntents: [{ type: 'OPEN_URL' }] }
-          : { ...ENV, claims: [{ text: 'La garantie court 2 ans, détails sur www.evil.example.', sourceIds: ['doc_1'], factual: true }] }),
-        inputTokens: 5, outputTokens: 5,
-      };
-    });
+    // Master T2 : aucune action proposée par le modèle (les actions viennent
+    // du serveur) ; une URL dans une affirmation est retirée et tracée.
+    fakeProvider.onAny(() => ({
+      rawText: JSON.stringify({ ...ENV, claims: [{ text: 'La garantie court 2 ans à compter du 12/03/2024, détails sur www.evil.example.', sourceIds: ['doc_1'], factual: true }] }),
+      inputTokens: 5, outputTokens: 5,
+    }));
     const { generateAssistantAnswer } = await import('../generation.adapter');
     const ports: Ports = {
       retrieve: async () => SOURCES,
@@ -206,7 +200,7 @@ describe('filtrage de la sortie (§18.7, CA-09, 37.12)', () => {
     expect(r.mode).toBe('ai');
     expect(containsUrlOrMarkup(r.answer)).toBe(false);
     const codes = (r.cascade?.securityEvents ?? []).map((e) => e.code);
-    expect(codes).toEqual(expect.arrayContaining(['MODEL_URL_STRIPPED', 'MODEL_ACTION_REJECTED']));
+    expect(codes).toEqual(expect.arrayContaining(['MODEL_URL_STRIPPED']));
   });
 });
 
@@ -218,13 +212,15 @@ describe('limites avant appel (§13.9, §17.7, §30.1, §31.2)', () => {
     expect(fakeProvider.calls[0].timeoutMs).toBeLessThanOrEqual(12_000);
   });
 
-  it('revalidate_fact : 12 s par tentative (l’opération en déclare 20)', async () => {
+  it('t2_revalidate : 12 s par tentative (l’opération en déclare 20)', async () => {
     const { z } = await import('zod');
     const { executeWithinBudget } = await import('../ai-call-budget');
-    fakeProvider.onAny(() => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    const { t2MasterVariables } = await import('@/services/ai/assistant/master/t2-answer');
+    fakeProvider.onAny(() => ({ rawText: '{"mode":"REVALIDATE","status":"confirmed"}', inputTokens: 1, outputTokens: 1 }));
     await executeWithinBudget(createAiCallBudget(2), {
-      useCaseCode: 'INTELLIGENT_ASSISTANT', operationCode: 'revalidate_fact', accountId: 1,
-      promptVariables: { QUESTION: 'q' }, outputSchema: z.object({ ok: z.boolean() }), idempotencyKey: `k-${Math.random()}`,
+      useCaseCode: 'INTELLIGENT_ASSISTANT', operationCode: 't2_revalidate', accountId: 1,
+      promptVariables: t2MasterVariables('REVALIDATE', { QUESTION: 'q' }), outputSchema: z.object({ mode: z.literal('REVALIDATE') }).passthrough(),
+      idempotencyKey: `k-${Math.random()}`,
     });
     expect(fakeProvider.calls[0].timeoutMs).toBe(12_000);
   });

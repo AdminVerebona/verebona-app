@@ -4,7 +4,7 @@
  *
  *  · T1 lit « 03/04/2027 » et retient la lecture mm/jj (2027-03-04) ; T3
  *    l'écrit sur la fiche (origine RECONCILIATION) ;
- *  · T4 (master + AI_T4_EFFECTS=enabled) tranche l'ambiguïté : 2027-04-03 ;
+ *  · T4 (master, seul moteur depuis le lot 16b-2) tranche l'ambiguïté : 2027-04-03 ;
  *  · la preuve d'origine passe SUPERSEDED, une preuve RÉVISÉE (règle
  *    T4_TEMPORAL_RESOLUTION) la remplace ; T3 met la fiche à jour par la
  *    primitive canonique (motif T4_DATE_REVISED), miroir compris ;
@@ -87,7 +87,6 @@ scenario('D-M-L20', 'Date tranchée par T4 : preuve révisée, fiche corrigée p
     await reconcileAsset({ accountId: compte.id, userId: compte.ownerUserId, assetId: bien.id, triggeredBy: 'document_analyzed' });
     const t4 = () => processAgendaCandidates({
       accountId: compte.id, userId: compte.ownerUserId, assetId: bien.id, sourceFileId: doc.id, existing: [], today: '2026-10-02',
-      t4Effects: 'enabled',
       candidates: [{
         title: 'Contrôle technique', date: '2027-03-04', confidence: 'certain', excerpt: EXTRAIT, originFieldKey: 'nextInspection',
         documentType: 'CONTROLE_TECHNIQUE', nature: 'DEADLINE', businessType: 'inspection',

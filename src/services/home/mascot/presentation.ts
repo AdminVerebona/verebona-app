@@ -29,7 +29,7 @@ export function buildPresentation(p: {
   now?: Date;
   /** AAAA-MM-JJ (Europe/Paris) : calcul des retards des tuiles. */
   today?: string;
-  /** Options des tuiles (CDC 15 T4-12, AI_T4_EFFECTS) — voir `tileFor`. */
+  /** Options des tuiles (CDC 15 T4-12) — voir `tileFor`. */
   tiles?: TileOptions;
 }): MascotPresentation {
   const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded);

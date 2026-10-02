@@ -35,7 +35,6 @@ import {
   ANALYSIS_STATUS_LABELS, IN_ANALYSIS_MESSAGE, analysisFailedMessage, documentAnalysisStatus,
 } from './document-status';
 import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
-import { canonicalReadEnabled } from '../canonical/mode';
 import { getIntentDefinition } from '../registries/intent-registry';
 import type { VerebonaIntent } from '../types/intents';
 import { tryCanonicalStructured, fieldAnswer } from '../canonical/structured-answers';
@@ -111,7 +110,7 @@ export interface FactHit {
   visualDescription?: string | null;
   page?: number | null;
   /**
-   * CDC 15 T2-02 (ASSISTANT_CANONICAL_READ=enabled) : valeur CANONIQUE du
+   * CDC 15 T2-02 (lecture canonique) : valeur CANONIQUE du
    * bien pour la clé du fait (registre), son origine et le conflit ouvert.
    * Elle prime sur le fait T1 (ordre de vérité §9).
    */
@@ -151,7 +150,7 @@ export interface AccountDataPort {
   findDocument?(accountId: number, fileId: number): Promise<DocumentHit | null>;
   /** Exports et dossiers générés, les plus récents d'abord (§12.1). */
   listExports?(accountId: number, opts: { assetIds?: number[]; limit?: number }): Promise<ExportRow[]>;
-  // ── Lecture canonique (lot 15, ASSISTANT_CANONICAL_READ=enabled) ────────
+  // ── Lecture canonique (lot 15 ; seule lecture depuis le lot 16b-2) ──────
   /** Champ canonique d'un bien : valeur, origine, preuve, conflit (T2-22). */
   readAssetField?(accountId: number, assetId: number, key: string): Promise<import('../canonical/field-reader').CanonicalFieldReading | null>;
   /** Dépenses qualifiées par thème (T2-24). */
@@ -189,7 +188,7 @@ export type DataAnswerStrategy =
   | 'structured.list_documents'
   | 'structured.document_status'
   | 'structured.exports'
-  // Lecture canonique (lot 15, ASSISTANT_CANONICAL_READ=enabled).
+  // Lecture canonique (lot 15).
   | 'structured.asset_field'
   | 'structured.upcoming_agenda'
   | 'structured.missing_information'
@@ -532,10 +531,10 @@ async function tryStructured(
   }
 
   // ── Lecture canonique (CDC 15 §9, lot 15) ──────────────────────────────
-  // ASSISTANT_CANONICAL_READ=enabled : champ du registre (valeur, origine,
-  // preuve, conflit), échéances à venir sur une fenêtre, informations
-  // manquantes, dépenses QUALIFIÉES. Sinon : branches historiques, inchangées.
-  if (canonicalReadEnabled()) {
+  // Champ du registre (valeur, origine, preuve, conflit), échéances à venir
+  // sur une fenêtre, informations manquantes, dépenses QUALIFIÉES ; sinon,
+  // stratégies communes ci-dessous (les lectures du port sont canoniques).
+  {
     const c = await tryCanonicalStructured({
       port, accountId, message,
       resolveScope: (texte) => resolveAssetScope(port, accountId, texte, pageAssetId, resolvedAssetId),
@@ -741,19 +740,6 @@ function displayValue(f: FactHit): string {
   return formatQuantity(f.valueNumber ?? f.valueText, f.valueUnit);
 }
 
-/** Fait candidat à une revalidation ciblée (visuel : seulement si VISUAL_RECHECK est possible). */
-const revalidable = (f: FactHit, visuels: boolean) => !isVisual(f) || visuels;
-
-/** VISUAL_RECHECK possible : T2 en architecture `master` (config versionnée). Ne lève jamais. */
-async function visualRecheckEnabled(): Promise<boolean> {
-  try {
-    const { getPromptArchitecture } = await import('@/services/ai/config/config-resolver');
-    return (await getPromptArchitecture('T2')) === 'master';
-  } catch {
-    return false;
-  }
-}
-
 /**
  * L'intention a un contrat de sources (T2-07) qui n'admet aucun document
  * (pure, testée). Sans intention ou sans contrat : non.
@@ -820,13 +806,13 @@ export async function answerFromData(p: {
   }
 
   // ── Contrat de sources de l'intention (CDC 15 T2-07, corpus §15 E2E-T2-18) ─
-  // En lecture canonique, le niveau 2 ne rend QUE des documents (faits T1,
+  // Le niveau 2 ne rend QUE des documents (faits T1,
   // document le plus pertinent) : une intention dont le contrat exclut les
   // documents (échéances, fournisseurs, « À traiter », biens) n'y a pas
   // accès — sinon « retrouve le contrôle technique dans mon agenda »
   // répondait par le procès-verbal. La recherche par adaptateurs, filtrée
   // par le même contrat, prend le relais.
-  if (canonicalReadEnabled() && intentionSansDocuments(p.intent)) {
+  if (intentionSansDocuments(p.intent)) {
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 2, score: 0, threshold: p.thresholds.text, reason: 'NO_RESULT', detail: 'contrat de sources sans document' };
     attempts.push({ level: 2, strategy: 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
     return noAnswer(decision);
@@ -887,10 +873,10 @@ export async function answerFromData(p: {
   if (!wantsDocument) {
     const facts = await p.port.searchFacts(p.accountId, terms, scopedAssetId);
 
-    // CDC 15 T2-02 (enabled) : un fait qui porte une clé du registre cède la
+    // CDC 15 T2-02 : un fait qui porte une clé du registre cède la
     // place à la VALEUR CANONIQUE du bien (fiche, arbitrage T3), avec son
     // origine et le conflit ouvert — jamais remise en cause par un document.
-    if (canonicalReadEnabled() && p.port.readAssetField && facts.length) {
+    if (p.port.readAssetField && facts.length) {
       const top = Math.max(...facts.map((f) => f.matchedTerms));
       const c = facts.find((f) => f.matchedTerms === top && f.canonical?.value);
       const r = c?.canonical ? await p.port.readAssetField(p.accountId, c.canonical.assetId, c.canonical.key) : null;
@@ -907,10 +893,8 @@ export async function answerFromData(p: {
       }
     }
 
-    // CDC 15 T2-30 (lot 15, besoin de Z) : en architecture T2 `master`, une
-    // observation VISUELLE peut être revalidée (VISUAL_RECHECK, sans citation
-    // fabriquée) ; en `steps`, seuls les faits lus le sont, comme avant.
-    const visuelsRevalidables = facts.some(isVisual) && await visualRecheckEnabled();
+    // CDC 15 T2-30 (lot 15) : une observation VISUELLE peut être revalidée
+    // comme un fait lu (VISUAL_RECHECK du master T2, sans citation fabriquée).
     const decision = decideFacts(
       facts.map((f) => ({ comparable: comparableOf(f), confidence: f.confidence, matchedTerms: f.matchedTerms, sourceKey: `doc_${f.fileId}` })),
       terms.length,
@@ -945,14 +929,14 @@ export async function answerFromData(p: {
       // Le conflit est rendu tel quel ; une revalidation ciblée peut le lever.
       return {
         handled: true, answer, sources, claims: [claim('conflict', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources,
-        revalidation: { trigger: 'CONFLICT', factIds: [...byValue.values()].filter((f) => revalidable(f, visuelsRevalidables)).slice(0, 3).map((f) => f.id) },
+        revalidation: { trigger: 'CONFLICT', factIds: [...byValue.values()].slice(0, 3).map((f) => f.id) },
       };
     }
     if (decision.status === 'INSUFFICIENT' && decision.reason === 'LOW_CONFIDENCE' && facts.length > 0) {
       const best = Math.max(...facts.map((f) => f.matchedTerms));
       // Revalidation ciblée : faits lus (comparaison d'un extrait au texte) ;
       // observations visuelles aussi en T2 master (VISUAL_RECHECK).
-      const low = facts.filter((f) => f.matchedTerms === best && revalidable(f, visuelsRevalidables)).slice(0, 2);
+      const low = facts.filter((f) => f.matchedTerms === best).slice(0, 2);
       if (low.length) return { ...noAnswer(decision, 'retrieval.t1_fact'), revalidation: { trigger: 'LOW_CONFIDENCE', factIds: low.map((f) => f.id) } };
     }
   }

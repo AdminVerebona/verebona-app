@@ -133,8 +133,11 @@ describe('fils : suppression et accès à toutes les demandes', () => {
 
 describe('coquille', () => {
   const layout = read('src/components/DashboardLayout.tsx');
-  it('mobile : « Mon agenda » dans le panneau du compte', () => {
-    expect(layout).toMatch(/href="\/agenda"[^]*?Mon agenda/);
+  it('mobile (maquette D v2, 2b) : Agenda dans la barre basse, plus dans le panneau du compte', () => {
+    const nav = read('src/components/mobile/bottom-navigation.tsx');
+    expect(nav).toContain("{ id: 'agenda', name: 'Agenda', href: '/agenda', icon: CalendarDays }");
+    expect(read('src/components/mobile/mobile-account-panel.tsx')).not.toContain('/agenda');
+    expect(layout).toContain('<MobileAccountPanel');
   });
   it('pas de « + » global desktop (spécification) : plus de fenêtres d’ajout mortes', () => {
     expect(layout).not.toMatch(/AssetFormDialog|UnifiedDocumentDialog|CreateAgendaItemDrawer/);

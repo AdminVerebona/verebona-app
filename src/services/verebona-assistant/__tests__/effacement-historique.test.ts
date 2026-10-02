@@ -84,20 +84,16 @@ describe('clearUserHistory', () => {
 
 describe('copies en cache du modèle rattachées au fil', () => {
   it('clé préfixée par la conversation', () => {
-    const k = assistantIdempotencyKey({ accountId: 5, conversationId: 41 }, 'generate_answer', { QUESTION: 'x' });
+    const k = assistantIdempotencyKey({ accountId: 5, conversationId: 41 }, 't2_answer', { QUESTION: 'x' });
     expect(k!.startsWith(assistantCachePrefix(41))).toBe(true);
   });
 
   it('les deux appels modèle de l’assistant passent cette clé', () => {
-    // Lot 15 : `generate_answer` ou `generate_answer_canonical` (lecture
-    // canonique), et les branches du master T2 (`t2_answer`, `t2_understand`).
+    // Lot 16b-2 : branches du master T2 seules (`t2_answer`, `t2_understand`).
     const gen = read('src/services/verebona-assistant/core/generation.adapter.ts');
-    expect(gen).toMatch(/const operationCode = canonical \? 'generate_answer_canonical' : 'generate_answer'/);
-    expect(gen).toMatch(/assistantIdempotencyKey\(input, operationCode/);
     expect(gen).toMatch(/assistantIdempotencyKey\(input, 't2_answer'/);
+    expect(gen).not.toMatch(/operationCode: 'generate_answer/);
     expect(read('src/services/ai/assistant/master/t2-understand.ts')).toMatch(/assistantIdempotencyKey\(input, 't2_understand'/);
-    expect(read('src/services/verebona-assistant/core/classification.adapter.ts'))
-      .toMatch(/assistantIdempotencyKey\(input, 'understand_request'/);
   });
 });
 

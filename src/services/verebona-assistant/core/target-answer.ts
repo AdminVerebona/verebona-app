@@ -1,6 +1,5 @@
 /**
- * Lectures ciblées — CDC 15 T2-19, T2-20, T2-21 (lot 15,
- * ASSISTANT_CANONICAL_READ=enabled).
+ * Lectures ciblées — CDC 15 T2-19, T2-20, T2-21 (lot 15).
  *
  * « Quel est le montant ? » posé sur la page d'un ticket, « et son montant ? »
  * après avoir cité une facture, « et sa date ? » après avoir cité une

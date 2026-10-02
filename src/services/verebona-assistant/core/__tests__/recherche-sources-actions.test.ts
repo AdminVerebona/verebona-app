@@ -19,7 +19,8 @@ const { trierParContribution, runAssistant } = await import('../assistant-orches
 const { explanationDetails } = await import('../explanation');
 const { resolveActions, offrePermet } = await import('../action-resolver.service');
 const { analyserPeriode, dansPeriode } = await import('../query-period');
-const { analyserRequete } = await import('../retrieval.service');
+// Lot 16b-2 : découpe canonique seule (l'ancienne `analyserRequete` est retirée).
+const { analyserRequeteCanonique } = await import('../retrieval.service');
 const { bonusPeriode, bonusType } = await import('../../registries/retrieval-adapters');
 const { dedupeLogique } = await import('../source-dedupe');
 const { likePatternsTolerants, nearMatchRatio, tokenizeQuery } = await import('../query-terms');
@@ -98,12 +99,17 @@ describe('§19.10 — disponibilité revérifiée dans la BONNE table (une requ�
     expect(dispo.REQUETES_DISPONIBILITE.agenda_item).not.toMatch(/deleted_at/);
   });
 
-  it('autre compte = indisponible ; identifiants non décodables et « À traiter » : intouchés ; panne : disponible', async () => {
+  it('autre compte = indisponible ; identifiants non décodables intouchés ; « À traiter » revérifié (T2-45) ; panne : disponible', async () => {
     const b = fausseBase({ asset_files: [5] });
     const [etranger] = await dispo.marquerDisponibilite([resolved('doc_5', 'document')], 8, b.requeteur);
     expect(etranger.isAvailable).toBe(false);
-    const aide = await dispo.marquerDisponibilite([resolved('AID-DOC-001', 'help_entry'), resolved('todo_3', 'to_process_item')], 7, b.requeteur);
-    expect(aide.every((s) => s.isAvailable)).toBe(true);
+    const [aide, todo] = await dispo.marquerDisponibilite([resolved('AID-DOC-001', 'help_entry'), resolved('todo_3', 'to_process_item')], 7, b.requeteur);
+    expect(aide.isAvailable).toBe(true);
+    // Lot 16b-2 : lecture canonique seule — un élément « À traiter » résolu
+    // (absent de `to_process_actions` non résolus) n'est plus disponible.
+    expect(todo.isAvailable).toBe(false);
+    const ouvert = fausseBase({ to_process_actions: [3] });
+    expect((await dispo.marquerDisponibilite([resolved('todo_3', 'to_process_item')], 7, ouvert.requeteur))[0].isAvailable).toBe(true);
     const enPanne = await dispo.marquerDisponibilite([resolved('doc_5', 'document')], 7, async () => { throw new Error('panne'); });
     expect(enPanne[0].isAvailable).toBe(true);
   });
@@ -231,9 +237,9 @@ describe('§13.7 — période et type de document demandés', () => {
     expect(analyserPeriode('ma facture EDF', TODAY)).toBeNull();
   });
   it('la période sort des termes cherchés ; le type demandé est reconnu', () => {
-    const r = analyserRequete('Retrouve mes factures EDF de 2024', TODAY);
+    const r = analyserRequeteCanonique('Retrouve mes factures EDF de 2024', TODAY);
     expect(r.period).toEqual({ from: '2024-01-01', to: '2024-12-31' });
-    expect(r.terms.map((t) => t.stem)).not.toContain('2024');
+    expect(r.terms.map((t: { stem: string }) => t.stem)).not.toContain('2024');
     expect(r.documentTypes).toEqual(['facture']);
   });
   it('bonus : dans la période +, hors période −, date inconnue neutre ; type correspondant +', () => {

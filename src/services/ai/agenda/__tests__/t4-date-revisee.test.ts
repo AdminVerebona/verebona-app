@@ -24,8 +24,8 @@ const cand = {
   originFieldKey: 'nextInspection', documentType: 'CONTROLE_TECHNIQUE', nature: 'DEADLINE', businessType: 'inspection',
   sources: [{ fileId: 40, role: 'SOURCE', evidenceId: 70 }],
 };
-const run = (t4Effects: 'legacy' | 'shadow' | 'enabled', reviseDate: ReturnType<typeof vi.fn>, c: Record<string, unknown> = cand) => processAgendaCandidates({
-  accountId: 1, userId: 2, assetId: 3, sourceFileId: 40, candidates: [c] as never, existing: [], today: '2026-10-02', t4Effects,
+const run = (reviseDate: ReturnType<typeof vi.fn>, c: Record<string, unknown> = cand) => processAgendaCandidates({
+  accountId: 1, userId: 2, assetId: 3, sourceFileId: 40, candidates: [c] as never, existing: [], today: '2026-10-02',
   reviseDate: reviseDate as never,
 });
 
@@ -35,40 +35,36 @@ beforeEach(() => {
 });
 
 describe('D-M — date tranchée par T4', () => {
-  it('enabled + master, date changée : révision demandée (champ, date lue, date retenue, preuve du candidat)', async () => {
+  it('date changée : révision demandée (champ, date lue, date retenue, preuve du candidat)', async () => {
     const reviseDate = vi.fn(async () => ({}));
-    const [d] = await run('enabled', reviseDate);
+    const [d] = await run(reviseDate);
     expect(d.date).toBe('2027-04-03');
     expect(reviseDate).toHaveBeenCalledWith({
       accountId: 1, userId: 2, sourceFileId: 40, fieldKey: 'nextInspection', extractedDate: '2027-03-04', chosenDate: '2027-04-03', evidenceId: 70,
     });
   });
 
-  it('date retenue identique, abstention (proposition) ou hors enabled : aucune révision', async () => {
+  it('date retenue identique ou abstention (proposition) : aucune révision', async () => {
     const reviseDate = vi.fn(async () => ({}));
     h.choix = 0;
-    await run('enabled', reviseDate);
+    await run(reviseDate);
     __resetTemporalCacheForTests();
     h.choix = null;
-    const [p] = await run('enabled', reviseDate);
+    const [p] = await run(reviseDate);
     expect(p).toMatchObject({ action: 'propose', reasonCode: 'TEMPORAL_AMBIGUITY' });
-    __resetTemporalCacheForTests();
-    h.choix = 1;
-    await run('shadow', reviseDate);
-    await run('legacy', reviseDate);
     expect(reviseDate).not.toHaveBeenCalled();
   });
 
   it('sans champ d’origine (événement sans champ de bien) : aucune révision', async () => {
     const reviseDate = vi.fn(async () => ({}));
-    await run('enabled', reviseDate, { ...cand, originFieldKey: undefined });
+    await run(reviseDate, { ...cand, originFieldKey: undefined });
     expect(reviseDate).not.toHaveBeenCalled();
   });
 
   it('jamais bloquant : une erreur de révision n’empêche pas la décision agenda', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const reviseDate = vi.fn(async () => { throw new Error('boom'); });
-    const [d] = await run('enabled', reviseDate);
+    const [d] = await run(reviseDate);
     expect(d).toMatchObject({ date: '2027-04-03' });
     expect(d.action).not.toBe('propose');
   });

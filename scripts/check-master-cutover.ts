@@ -37,12 +37,14 @@ const args = process.argv.slice(2);
 const val = (n: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined; };
 const days = Number(val('--days') ?? 30);
 
-/** Commutateur de déploiement exigé par traitement (plan CDC 15, § Déploiement). */
+/**
+ * Commutateur de déploiement exigé par traitement (plan CDC 15, § Déploiement).
+ * T2 (`ASSISTANT_CANONICAL_READ`) et T4 (`AI_T4_EFFECTS`) : commutateurs
+ * retirés au lot 16b-2, leurs opérations dépréciées aussi.
+ */
 const SWITCH_BY_TREATMENT: Partial<Record<Treatment, Parameters<typeof getRolloutMode>[0]>> = {
   T1: 'AI_T1_ANALYSIS_MODE',
-  T2: 'ASSISTANT_CANONICAL_READ',
   T3: 'T3_NEGATIVE_RECONCILIATION',
-  T4: 'AI_T4_EFFECTS',
 };
 
 function walk(dir: string, out: string[] = [], withTests = false): string[] {
@@ -121,7 +123,7 @@ async function main() {
     activeArchitecture,
     switches: Object.fromEntries(Object.entries(SWITCH_BY_TREATMENT)
       .map(([t, name]) => [t, { name: name!, mode: getRolloutMode(name!) }])),
-    // Usage sans drapeau (T5, T6 depuis le lot 16b) : nouveau moteur seul.
+    // Usage sans drapeau (T2, T4, T5, T6 depuis le lot 16b) : nouveau moteur seul.
     flagOf: (op) => {
       const f = USE_CASE_FLAGS[op.useCaseCode];
       return f ? { name: f, mode: getFlagMode(f) } : { name: `${op.useCaseCode} (sans drapeau)`, mode: 'enabled' };

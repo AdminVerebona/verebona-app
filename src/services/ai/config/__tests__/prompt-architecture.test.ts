@@ -89,10 +89,11 @@ describe('getPromptArchitecture — version effective ou figée', () => {
   });
 
   it('version effective (TO_TEST en préprod) : lue par traitement', async () => {
-    __setConfigForTests({ versionId: 11, entries: [t1({ promptArchitecture: 'master' }), emptyTreatmentConfig('T2')] });
+    __setConfigForTests({ versionId: 11, entries: [t1({ promptArchitecture: 'master' }), emptyTreatmentConfig('T3')] });
     expect(await getPromptArchitecture('T1')).toBe('master');
-    expect(await getPromptArchitecture('T2')).toBe('steps');
     expect(await getPromptArchitecture('T3')).toBe('steps');
+    // Lot 16b-2 : T2 et T4 en master seul, quelle que soit la version.
+    expect(await getPromptArchitecture('T2')).toBe('master');
   });
 
   it('job de file : version figée au démarrage (VER-015), pas l’effective', async () => {
@@ -200,11 +201,10 @@ describe('alerte master déclaré mais non appliqué (commutateur ≠ enabled)',
     expect(promptArchitectureWarning('T1', 'steps', 'legacy')).toBeNull();
     expect(promptArchitectureWarning('T1', 'master', 'enabled')).toBeNull();
     expect(promptArchitectureWarning('T5', 'master', 'legacy')).toBeNull();
-    // Lot 15 : T2 en master mais AI_INTELLIGENT_ASSISTANT ≠ enabled ⇒ aucun appel modèle.
-    expect(promptArchitectureWarning('T2', 'master', 'legacy')).toMatchObject({
-      treatment: 'T2', code: 'MASTER_ENGINE_NOT_ENABLED', switchName: 'AI_INTELLIGENT_ASSISTANT',
-    });
-    expect(promptArchitectureWarning('T2', 'master', 'enabled')).toBeNull();
+    // Lot 16b-2 : AI_INTELLIGENT_ASSISTANT et AI_AGENDA_ENGINE retirés — T2 et
+    // T4 n'ont plus de drapeau moteur, aucun écart possible.
+    expect(promptArchitectureWarning('T2', 'master', 'legacy')).toBeNull();
+    expect(promptArchitectureWarning('T4', 'master', 'legacy')).toBeNull();
     for (const mode of ['legacy', 'shadow']) {
       expect(promptArchitectureWarning('T1', 'master', mode)).toMatchObject({
         treatment: 'T1', code: 'MASTER_NOT_APPLIED', switchName: 'AI_T1_ANALYSIS_MODE', switchMode: mode,
@@ -249,19 +249,13 @@ describe('alerte master déclaré mais non appliqué (commutateur ≠ enabled)',
     }
   });
 
-  it('T4 en master : alerte si AI_AGENDA_ENGINE ≠ enabled ; AI_T4_EFFECTS ne conditionne pas le master (lot 14)', async () => {
-    expect(promptArchitectureWarning('T4', 'master', 'legacy')).toMatchObject({
-      treatment: 'T4', code: 'MASTER_ENGINE_NOT_ENABLED', switchName: 'AI_AGENDA_ENGINE',
-      message: expect.stringMatching(/CLASSIFY_EVENT/),
-    });
-    expect(promptArchitectureWarning('T4', 'master', 'enabled')).toBeNull();
+  it('lot 16b-2 : seuls AI_T1_ANALYSIS_MODE et AI_RECONCILIATION_ENGINE sont lus', async () => {
     const lus: string[] = [];
     await promptArchitectureWarnings({
       readMode: (n) => { lus.push(n); return 'enabled'; },
       readArchitecture: async () => 'master',
     });
-    expect(lus).toContain('AI_AGENDA_ENGINE');
-    expect(lus).not.toContain('AI_T4_EFFECTS');
+    expect(lus.sort()).toEqual(['AI_RECONCILIATION_ENGINE', 'AI_T1_ANALYSIS_MODE']);
   });
 
   it('bascule T3 → master permise en Brouillon (master déclaré)', () => {
@@ -316,7 +310,7 @@ describe('T2-43 : variable retirée VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', () =>
 });
 
 describe('lot 16b — T5 et T6 : master seul', () => {
-  it('lus `master` quelle que soit la valeur stockée ; T1–T4 inchangés', () => {
+  it('lus `master` quelle que soit la valeur stockée ; T1, T3 inchangés', () => {
     for (const t of ['T5', 'T6'] as const) {
       expect(promptArchitectureOf({ treatment: t, promptArchitecture: 'steps' }), t).toBe('master');
       expect(promptArchitectureOf({ treatment: t }), t).toBe('master');
@@ -369,6 +363,50 @@ describe('lot 16b — T5 et T6 : master seul', () => {
     const sql = readFileSync(join(process.cwd(), 'src/db/migrations/0231_ai_config_t5_t6_master_only.sql'), 'utf8');
     expect(sql).toMatch(/UPDATE ai_config_entries\s+SET prompt_architecture = 'master'\s+WHERE treatment IN \('T5', 'T6'\)\s+AND prompt_architecture IS DISTINCT FROM 'master'/);
     expect(sql).toMatch(/SET LOCAL lock_timeout/);
+    expect(sql).not.toMatch(/master_prompt\s*=/);
+  });
+});
+
+describe('lot 16b-2 — T2 et T4 : master seul', () => {
+  it('lus `master` quelle que soit la valeur stockée, par défaut aussi', async () => {
+    for (const t of ['T2', 'T4'] as const) {
+      expect(promptArchitectureOf({ treatment: t, promptArchitecture: 'steps' }), t).toBe('master');
+      expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
+    }
+    __setConfigForTests({ versionId: 4, entries: [
+      { ...emptyTreatmentConfig('T2'), promptArchitecture: 'steps' },
+      { ...emptyTreatmentConfig('T4'), promptArchitecture: 'steps' },
+    ] });
+    expect(await getPromptArchitecture('T2')).toBe('master');
+    expect(await getPromptArchitecture('T4')).toBe('master');
+    // Sans version : les opérations T2/T4 sont résolues en master.
+    __setConfigForTests(null);
+    expect(await resolveOperationConfig('t2_answer')).toMatchObject({ promptArchitecture: 'master' });
+    expect(await resolveOperationConfig('t4_classify_event')).toMatchObject({ promptArchitecture: 'master' });
+  });
+
+  it('master T2 de la version appliqué même si la ligne stockée dit `steps`', async () => {
+    const texte = 'MASTER T2 de la version {{TASK}}';
+    __setConfigForTests({ versionId: 5, entries: [{ ...emptyTreatmentConfig('T2'), promptArchitecture: 'steps', masterPrompt: texte }] });
+    expect(await resolveOperationConfig('t2_answer')).toMatchObject({ promptArchitecture: 'master', masterPromptText: texte });
+  });
+
+  it('`steps` refusé à l’enregistrement et bloquant à la promotion', () => {
+    for (const t of ['T2', 'T4'] as const) {
+      expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: t, from: 'master', to: 'steps' }))
+        .toMatchObject({ allowed: false, code: 'MASTER_ONLY_TREATMENT' });
+      const issues = masterConfigIssues({ ...emptyTreatmentConfig(t), promptArchitecture: 'steps' });
+      expect(issues.some((i) => i.field === 'promptArchitecture' && i.blocking), t).toBe(true);
+    }
+  });
+
+  it('migration 0232 : aligne la donnée stockée, idempotente, sans toucher au texte master', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const sql = readFileSync(join(process.cwd(), 'src/db/migrations/0232_ai_config_t2_t4_master_only.sql'), 'utf8');
+    expect(sql).toMatch(/UPDATE ai_config_entries\s+SET prompt_architecture = 'master'\s+WHERE treatment IN \('T2', 'T4'\)\s+AND prompt_architecture IS DISTINCT FROM 'master'/);
+    expect(sql).toMatch(/SET LOCAL lock_timeout/);
+    expect(sql).toMatch(/column_name = 'prompt_architecture'/);
     expect(sql).not.toMatch(/master_prompt\s*=/);
   });
 });

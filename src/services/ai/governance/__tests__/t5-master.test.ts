@@ -74,9 +74,10 @@ describe('t5_master_v1 — contrat §27', () => {
 describe('dépréciation (D-02)', () => {
   it('étapes avec migratesTo et relais legacy_* : dépréciés ; masters et déterministes : non', () => {
     const codes = listDeprecatedOperations().map((o) => o.operationCode);
-    expect(codes).toEqual(expect.arrayContaining(['extract_source', 'generate_answer', 'resolve_ambiguity', 'classify_event',
-      'legacy_document_analysis', 'legacy_intelligent_search']));
-    for (const c of ['t1_analyze_document', 't2_answer', 't5_modify', 'collect_evidence', 'evaluate_prompt']) expect(codes).not.toContain(c);
+    expect(codes).toEqual(expect.arrayContaining(['extract_source', 'resolve_ambiguity', 'legacy_document_analysis', 'legacy_asset_suggest']));
+    for (const c of ['t1_analyze_document', 't2_answer', 't4_classify_event', 't5_modify', 'collect_evidence', 'evaluate_prompt']) expect(codes).not.toContain(c);
+    // Lot 16b-2 : plus aucune opération dépréciée pour T2 et T4 (retirées).
+    expect(listDeprecatedOperations().filter((o) => o.useCaseCode === 'INTELLIGENT_ASSISTANT' || o.useCaseCode === 'AGENDA_INTELLIGENCE')).toEqual([]);
     expect(operationDeprecation(AI_OPERATIONS.legacy_asset_suggest)).toMatchObject({ reason: 'LEGACY_RELAY', replacedBy: null });
   });
 });
@@ -86,7 +87,9 @@ describe('Prompt Control conscient des masters', () => {
     const v = version({ promptArchitecture: 'master', masterPrompt: null });
     const texts = await targetTexts(v as never);
     expect(texts.get('T1')).toMatchObject({ field: 'masterPrompt', fromFile: true, masterPromptCode: 't1_master_v1' });
-    expect(texts.get('T2')).toMatchObject({ field: 'prompt' });
+    expect(texts.get('T3')).toMatchObject({ field: 'prompt' });
+    // Lot 16b-2 : T2 n'a plus que son master (fichier du dépôt si vide).
+    expect(texts.get('T2')).toMatchObject({ field: 'masterPrompt', fromFile: true, masterPromptCode: 't2_master_v1' });
     const txt = formatCurrentPrompts(v as never, texts);
     expect(txt).toContain('PROMPT MAÎTRE t1_master_v1 (branches TASK : GROUP_UPLOAD, ANALYZE_DOCUMENT)');
     expect(txt).toContain(T1_MASTER.trim().slice(0, 200));

@@ -81,7 +81,6 @@ scenario('E2E-14', 'Immatriculation — fiche, colonne et export identiques', ({
   // couverte par `canonical-write.e2e.ts` (« E2E-14 : fiche = colonne = vue canonique… »).
   it('T2 répond la même immatriculation que la fiche (L15, ASSISTANT_CANONICAL_READ=enabled), colonne vide comprise', async () => {
     const avant = process.env.ASSISTANT_CANONICAL_READ;
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     try {
       const compte = await make.account();
       const bien = await make.asset(compte, {

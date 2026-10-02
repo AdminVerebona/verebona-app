@@ -86,8 +86,8 @@ export interface AgendaDecision {
    */
   classification?: AgendaClassification & { requiresQualification: boolean };
   // ── Sémantique T4 recopiée du candidat (CDC 15 T4-04, T4-07, T4-08) ──────
-  // Renseignée seulement sous AI_T4_EFFECTS=enabled, depuis les candidats du
-  // registre (C) : B en tire la clé fonctionnelle et les liens source.
+  // Renseignée depuis les candidats du registre (C) : B en tire la clé
+  // fonctionnelle et les liens source.
   /** Nature du registre : fait passé ou échéance à venir. */
   nature?: 'HISTORICAL' | 'DEADLINE' | null;
   /** Type métier de l'EVENT_CATALOG. */

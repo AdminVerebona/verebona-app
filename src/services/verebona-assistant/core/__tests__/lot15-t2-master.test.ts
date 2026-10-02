@@ -5,9 +5,8 @@
  * la classification.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { createHash } from 'crypto';
 import { fakeProvider } from '@/test/setup';
 
 vi.mock('@/db', () => ({
@@ -25,9 +24,6 @@ const { createAiCallBudget } = await import('../ai-call-budget');
 const { routeForIntent } = await import('../intent-router.service');
 const { validateGeneratedAnswer } = await import('../response-validator.service');
 const { answerFormatFor, lengthRuleText } = await import('../../prompts/answer-format');
-const { ACCOUNT_TIMELINE_PROMPT } = await import('../../prompts/account-timeline');
-const { ACCOUNT_TIMELINE_PROMPT_V31 } = await import('../../prompts/account-lists-v31');
-const { intentTaskFor } = await import('../../prompts/intent-tasks');
 const { AI_OPERATIONS } = await import('@/services/ai/registry/operations');
 const { resolveMasterPrompt, renderMasterPrompt, inspectMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');
 const { T2AnswerOutput, T2UnderstandOutput, T2RevalidateOutput } = await import('@/services/ai/assistant/master/t2-contract');
@@ -42,7 +38,6 @@ const MASTER = readFileSync(join(process.cwd(), 'src/services/ai/prompts/assista
 const master = () => __setConfigForTests({ versionId: 15, entries: [{ ...emptyTreatmentConfig('T2'), promptArchitecture: 'master' }] });
 afterEach(() => {
   __setConfigForTests(null);
-  delete process.env.ASSISTANT_CANONICAL_READ;
 });
 
 const repond = (...sorties: unknown[]) => {
@@ -73,8 +68,10 @@ describe('contrat §24 — t2_master_v1', () => {
       expect(AI_OPERATIONS[op]).toMatchObject({ masterPromptCode: 't2_master_v1', taskField: 'mode', billable: op !== 't2_understand' });
       expect(AI_OPERATIONS[op].defaultMaxOutputTokens).toBe(500);
     }
-    expect(AI_OPERATIONS.generate_answer.migratesTo).toMatchObject({ task: 'ANSWER', operationCode: 't2_answer' });
-    expect(AI_OPERATIONS.understand_request.migratesTo).toMatchObject({ task: 'UNDERSTAND', operationCode: 't2_understand' });
+    // Lot 16b-2 : opérations d'étapes et relais de T2 retirés du registre.
+    for (const op of ['understand_request', 'generate_answer', 'generate_answer_canonical', 'revalidate_fact', 'legacy_semantic_search', 'legacy_intelligent_search']) {
+      expect(AI_OPERATIONS[op], op).toBeUndefined();
+    }
   });
 
   it('MODE est fixé par le serveur : jamais par l’appelant', async () => {
@@ -111,12 +108,11 @@ describe('T2-36 — règle de longueur unique par intention', () => {
     expect(lengthRuleText('ACCOUNT_SUMMARY')).toBe('Tu réponds en 4 phrases maximum.');
   });
 
-  it('lecture canonique : plus de contradiction « 4 phrases » (v3.1) ; legacy : texte v3.0 intact', () => {
-    expect(ACCOUNT_TIMELINE_PROMPT_V31).not.toMatch(/4 phrases/);
-    expect(ACCOUNT_TIMELINE_PROMPT_V31).toContain(lengthRuleText('ACCOUNT_TIMELINE'));
-    expect(ACCOUNT_TIMELINE_PROMPT).toMatch(/pas tenu par la limite de 4 phrases/);
-    expect(intentTaskFor('ACCOUNT_TIMELINE', { canonical: true }).promptVersion).toBe('account-timeline-v3.1');
-    expect(intentTaskFor('ACCOUNT_TIMELINE').promptVersion).toBe('account-timeline-v3.0');
+  it('plus aucune consigne concaténée par intention (lot 16b-2) : règle du registre seule', () => {
+    for (const f of ['intent-tasks', 'account-timeline', 'account-lists-v31', 'account-summary', 'account-comparison', 'product-help', 'rights-layer']) {
+      expect(existsSync(join(process.cwd(), `src/services/verebona-assistant/prompts/${f}.ts`)), f).toBe(false);
+    }
+    expect(lengthRuleText('ACCOUNT_TIMELINE')).not.toMatch(/4 phrases/);
   });
 
   it('le validateur applique le registre', () => {
@@ -209,73 +205,28 @@ describe('branche ANSWER (master) dans generation.adapter', () => {
   });
 });
 
-describe('legacy : texte envoyé au modèle identique au tag lot14b', () => {
-  const sha = (t: string) => createHash('sha256').update(t).digest('hex');
-  // Empreintes relevées sur lot14b (`git show lot14b:…`).
-  const LOT14B = {
-    generateAnswerV4: '6a1e29cc2f671782ad710a6d9b0716e0211c7120115df55529a4e6854b137ff9',
-    ACCOUNT_SUMMARY: '4ecc42d26d288e2fd17badef642557ed6d1b97f3d0368b85a8c3acd48cf98b73',
-    ACCOUNT_COMPARISON: '5ebabc0ed1325a9e54ae329b80bcab5b7e4a2c5d46a32de9930e10ab96b8f496',
-    ACCOUNT_TIMELINE: '4d3f7961c8a89a1c22b33d3d92fb1cf8a9e5847f418bdd67dad16581d8aa6220',
-    PRODUCT_HELP_HOW_TO: '4a8c141ce5abc895bd3e21ac10534f1c848caa890e21f699b6c2ae7dd2e07b31',
-  } as const;
-
-  it('generate_answer_v4.txt et consignes v3.0 : octet pour octet', () => {
-    expect(sha(readFileSync(join(process.cwd(), 'src/services/ai/prompts/assistant/generate_answer_v4.txt'), 'utf8'))).toBe(LOT14B.generateAnswerV4);
-    for (const i of ['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACCOUNT_TIMELINE', 'PRODUCT_HELP_HOW_TO'] as const) {
-      expect(sha(intentTaskFor(i).intentVariable), i).toBe(LOT14B[i]);
-    }
-    expect(AI_OPERATIONS.generate_answer.promptCode).toBe('generate_answer_v4');
-    expect(AI_OPERATIONS.generate_answer_canonical.promptCode).toBe('generate_answer_v5');
-  });
-
-  it('prompt réellement envoyé : v4 + consigne v3.0 en legacy ; v5 + v3.1 en lecture canonique', async () => {
-    const V4 = readFileSync(join(process.cwd(), 'src/services/ai/prompts/assistant/generate_answer_v4.txt'), 'utf8');
-    const r8v4 = V4.split('\n').find((l) => l.startsWith('R8 '))!;
-    const sortie = { schemaVersion: 'assistant-response-v1.0', intent: 'ACCOUNT_TIMELINE', supportLevel: 'supported', claims: [], status: 'answered', actionIntents: [] };
-    repond(sortie);
-    await generateAssistantAnswerDetailed(routeForIntent('ACCOUNT_TIMELINE', 'PREMIUM', 'test'), sources, input({ aiBudget: createAiCallBudget(1) }));
-    const legacy = fakeProvider.calls[0].prompt;
-    expect(legacy).toContain(`${r8v4}\n`);
-    expect(legacy).toContain(intentTaskFor('ACCOUNT_TIMELINE').intentVariable);
-    expect(legacy).not.toContain('elle prime alors');
-
-    fakeProvider.reset();
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
-    repond(sortie);
-    await generateAssistantAnswerDetailed(routeForIntent('ACCOUNT_TIMELINE', 'PREMIUM', 'test'), sources, input({ aiBudget: createAiCallBudget(1) }));
-    const canonique = fakeProvider.calls[0].prompt;
-    expect(canonique).toContain('elle prime alors');
-    expect(canonique).toContain('account-timeline-v3.1');
-  });
-});
-
-describe('T2-31 sur le chemin historique : derrière ASSISTANT_CANONICAL_READ', () => {
-  const legacy = {
-    schemaVersion: 'assistant-response-v1.0', intent: 'ACCOUNT_FACT_DOCUMENT', supportLevel: 'supported',
-    claims: [
-      { text: 'La facture s’élève à 129,90 €.', sourceIds: ['doc_88'], factual: true },
-      { text: 'Elle a été réglée 150 €.', sourceIds: ['doc_88'], factual: true },
-    ],
-    status: 'answered', actionIntents: [],
-  };
-
-  it('legacy : comportement inchangé (sourceId valide suffit)', async () => {
-    repond(legacy);
-    const r = await generateAssistantAnswerDetailed(routeForIntent('ACCOUNT_FACT_DOCUMENT', 'PREMIUM', 'test'), sources, input());
+describe('master T2 seul (lot 16b-2)', () => {
+  it('sans version de configuration : la branche ANSWER du master est appelée (plus d’architecture « steps »)', async () => {
+    repond({ mode: 'ANSWER', format: 'claims', status: 'answered', claims: [{ text: 'La facture du 24/04/2026 s’élève à 129,90 €.', sourceIds: ['doc_88'], factual: true }] });
+    const r = await generateAssistantAnswerDetailed(routeForIntent('ACCOUNT_FACT_DOCUMENT', 'PREMIUM', 'test'), sources, input({ message: 'Combien a coûté la draisienne ?' }));
     if ('failed' in r) throw new Error(r.reason);
-    expect(r.claims).toHaveLength(2);
-    expect(fakeProvider.calls[0].prompt).not.toContain('MODE = ANSWER');
+    expect(r.architecture).toBe('master');
+    expect(fakeProvider.calls[0].prompt).toContain('MODE = ANSWER');
   });
 
-  it('enabled : la phrase non soutenue (150 €) est rejetée et tracée', async () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
-    repond(legacy);
-    const r = await generateAssistantAnswerDetailed(routeForIntent('ACCOUNT_FACT_DOCUMENT', 'PREMIUM', 'test'), sources, input());
+  it('T2-31 : la phrase non soutenue (150 €) est rejetée et tracée, sans commutateur', async () => {
+    repond({
+      mode: 'ANSWER', format: 'claims', status: 'answered',
+      claims: [
+        { text: 'La facture s’élève à 129,90 €.', sourceIds: ['doc_88'], factual: true },
+        { text: 'Elle a été réglée 150 €.', sourceIds: ['doc_88'], factual: true },
+      ],
+    });
+    const r = await generateAssistantAnswerDetailed(routeForIntent('ACCOUNT_FACT_DOCUMENT', 'PREMIUM', 'test'), sources, input({ message: 'Combien a coûté la draisienne ?' }));
     if ('failed' in r) throw new Error(r.reason);
     expect(r.claims.map((c) => c.text)).toEqual(['La facture s’élève à 129,90 €.']);
     expect(r.supportLevel).toBe('partial');
-    expect(r.generationEvents).toContain('CLAIM_UNSUPPORTED:DATA_NOT_IN_SOURCES:1');
+    expect(r.generationEvents?.some((e) => e.startsWith('CLAIM_UNSUPPORTED:DATA_NOT_IN_SOURCES'))).toBe(true);
   });
 });
 

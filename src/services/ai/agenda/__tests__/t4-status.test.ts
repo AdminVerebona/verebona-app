@@ -1,8 +1,9 @@
 /**
  * CDC 15 T4-12 à T4-14, P-T4-02, P-T4-03 — réalisation d'une échéance :
  * quatre états, preuve par type documentaire (completionProofs), fenêtre
- * d'occurrence, protection des événements manuels, aiguillage
- * (AI_T4_EFFECTS / architecture master), chemin historique inchangé.
+ * d'occurrence, protection des événements manuels. Lot 16b-2 : décision à
+ * quatre états et branche VERIFY_COMPLETION du master seules (`decideStatus`
+ * historique et AI_T4_EFFECTS retirés).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'fs';
@@ -14,7 +15,7 @@ vi.mock('../../telemetry/ai-trace.service', async (orig) => ({
   recordCallTrace: async (t: Record<string, unknown>) => { traces.push(t); },
 }));
 
-const { decideCompletion, matchOccurrence, decideStatus } = await import('../status-reconciler');
+const { decideCompletion, matchOccurrence } = await import('../status-reconciler');
 const { reconcileStatus } = await import('../status-reconciliation.service');
 const { translateVerifyCompletion } = await import('../master/verify-completion');
 const { FakeProvider, setAiProvider } = await import('../../gateway/providers');
@@ -107,32 +108,32 @@ describe('VERIFY_COMPLETION : traduction serveur', () => {
   });
 });
 
-describe('reconcileStatus : aiguillage', () => {
+describe('reconcileStatus', () => {
   const e = ev(P2.context.evidence);
 
-  it('legacy + steps : decideStatus historique, strictement inchangé', async () => {
-    const r = await reconcileStatus(ITEM, e, { accountId: 1, mode: 'legacy', architecture: 'steps' });
-    expect(r).toEqual({ engine: 'legacy', ...decideStatus(ITEM, e) });
+  it('cas tranché par la décision déterministe : aucun appel modèle', async () => {
+    const r = await reconcileStatus(ITEM, null, { accountId: 1 });
+    expect(r).toMatchObject({ engine: 'completion_v2', status: 'not_proven' });
     expect(fake.calls).toHaveLength(0);
   });
 
-  it('AI_T4_EFFECTS=enabled, steps : quatre états, sans appel modèle', async () => {
-    const r = await reconcileStatus(ITEM, e, { accountId: 1, mode: 'enabled', architecture: 'steps' });
-    expect(r).toMatchObject({ engine: 'completion_v2', status: 'unknown' });
-    expect(fake.calls).toHaveLength(0);
-  });
-
-  it('master : cas indéterminé → t4_verify_completion (P-T4-02)', async () => {
+  it('cas indéterminé → t4_verify_completion (P-T4-02)', async () => {
     fake.onAny(() => ({ rawText: JSON.stringify(P2.recording.output), inputTokens: 1, outputTokens: 1 }));
-    const r = await reconcileStatus(ITEM, e, { accountId: 1, mode: 'legacy', architecture: 'master' });
+    const r = await reconcileStatus(ITEM, e, { accountId: 1 });
     expect(r).toMatchObject({ engine: 'completion_v2', status: 'not_proven', reasonCode: 'MODEL_INSUFFICIENT' });
     expect(fake.calls[0].prompt).toContain('TASK = VERIFY_COMPLETION');
     expect(fake.calls[0].prompt).toContain('FACTURE_ACQUITTEE_PRESTATION_DATEE');
     expect(traces[0]).toMatchObject({ operationCode: 't4_verify_completion', task: 'VERIFY_COMPLETION' });
   });
 
-  it('master, modèle indisponible : décision déterministe conservée', async () => {
+  it('modèle indisponible : décision déterministe conservée', async () => {
     fake.onAny(() => { throw new Error('503'); });
-    expect(await reconcileStatus(ITEM, e, { accountId: 1, mode: 'enabled', architecture: 'master' })).toMatchObject({ status: 'unknown', decision: 'keep' });
+    expect(await reconcileStatus(ITEM, e, { accountId: 1 })).toMatchObject({ status: 'unknown', decision: 'keep' });
+  });
+
+  it('événement manuel : jamais d’appel modèle', async () => {
+    const r = await reconcileStatus({ ...ITEM, manual: true }, e, { accountId: 1 });
+    expect(r.decision).toBe('keep');
+    expect(fake.calls).toHaveLength(0);
   });
 });

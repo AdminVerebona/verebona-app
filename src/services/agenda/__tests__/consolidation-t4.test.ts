@@ -55,8 +55,11 @@ describe('persistAgendaDecisions — consolidation', () => {
       detailJson: { reasonCode: 'EXACT_DUPLICATE', date: '2026-11-15', sourceFileId: 9 },
     });
     expect(inserts[0]).not.toHaveProperty('title');
-    // Contrôle borné au compte et au couple (échéance, fichier source).
-    expect(unsafe.mock.calls[0][1]).toEqual([7, 1, CONSOLIDATED_EVENT, '9']);
+    // Contrôle borné au compte et au couple (échéance, fichier source). Les
+    // autres requêtes (colonnes 0223, plan de synchronisation de la source,
+    // toujours actif depuis le lot 16b-2) ne portent pas sur la consolidation.
+    const controle = unsafe.mock.calls.find((c) => Array.isArray(c[1]) && (c[1] as unknown[]).includes(CONSOLIDATED_EVENT));
+    expect(controle?.[1]).toEqual([7, 1, CONSOLIDATED_EVENT, '9']);
   });
 
   it('occurrences de récurrence déjà présentes : jamais comptées comme consolidations', async () => {

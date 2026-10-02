@@ -4,7 +4,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  * LES FLAGS DU §39 ÉTAIENT DÉCLARÉS, JAMAIS LUS
  *
- * Seuls `VEREBONA_ASSISTANT_ENABLED` et `AI_INTELLIGENT_ASSISTANT` agissaient ;
+ * Seuls `VEREBONA_ASSISTANT_ENABLED` et `AI_INTELLIGENT_ASSISTANT` (retiré au
+ * lot 16b-2) agissaient ;
  * `product_help`, `account_ai`, `fallback_model`, `sources` et
  * `semantic_retrieval` n'étaient lus nulle part. Chacun est désormais lu À
  * CHAQUE DEMANDE (aucun cache) et produit l'effet de rollback du §39 :

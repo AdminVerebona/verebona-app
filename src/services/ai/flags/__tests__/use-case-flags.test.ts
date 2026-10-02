@@ -32,47 +32,54 @@ describe('correspondance usage ⇄ drapeau', () => {
     expect(new Set(flags)).toEqual(new Set(AI_FLAGS));
   });
 
-  it('renvoie le drapeau attendu pour chaque usage ; T5 et T6 n’en ont plus (lot 16b)', () => {
+  it('renvoie le drapeau attendu pour chaque usage ; T2, T4, T5 et T6 n’en ont plus (lot 16b)', () => {
     expect(getUseCaseFlag('SOURCE_ANALYSIS')).toBe('AI_UNIFIED_SOURCE_ANALYSIS');
-    expect(getUseCaseFlag('AI_GOVERNANCE')).toBeNull();
-    expect(getUseCaseFlag('HOME_MASCOT')).toBeNull();
-    expect(AI_FLAGS as readonly string[]).not.toContain('AI_PROMPT_GOVERNANCE');
-    expect(AI_FLAGS as readonly string[]).not.toContain('AI_HOME_MASCOT');
+    expect(getUseCaseFlag('DATA_RECONCILIATION')).toBe('AI_RECONCILIATION_ENGINE');
+    for (const u of ['INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT'] as const) {
+      expect(getUseCaseFlag(u), u).toBeNull();
+    }
+    for (const retire of ['AI_PROMPT_GOVERNANCE', 'AI_HOME_MASCOT', 'AI_INTELLIGENT_ASSISTANT', 'AI_AGENDA_ENGINE']) {
+      expect(AI_FLAGS as readonly string[]).not.toContain(retire);
+    }
   });
 });
 
 describe('état de bascule', () => {
-  it('sans variable d\'environnement, seuls les usages sans drapeau (T5, T6) tournent', () => {
-    expect(listRunningUseCases()).toEqual(['AI_GOVERNANCE', 'HOME_MASCOT']);
+  it('sans variable d\'environnement, seuls les usages sans drapeau (T2, T4, T5, T6) tournent', () => {
+    expect(listRunningUseCases()).toEqual(['INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT']);
     expect(isAnyUseCaseRunning()).toBe(true);
     expect(getUseCaseMode('SOURCE_ANALYSIS')).toBe('legacy');
-    expect(getUseCaseMode('AI_GOVERNANCE')).toBe('enabled');
-    expect(getUseCaseMode('HOME_MASCOT')).toBe('enabled');
+    for (const u of ['INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT'] as const) {
+      expect(getUseCaseMode(u), u).toBe('enabled');
+    }
   });
 
   it('compte le mode observation comme actif — il consomme des appels modèles', () => {
     process.env.AI_RECONCILIATION_ENGINE = 'shadow';
     expect(isUseCaseRunning('DATA_RECONCILIATION')).toBe(true);
-    expect(listRunningUseCases()).toEqual(['DATA_RECONCILIATION', 'AI_GOVERNANCE', 'HOME_MASCOT']);
+    expect(listRunningUseCases()).toEqual(['DATA_RECONCILIATION', 'INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT']);
   });
 
   it('n\'active que l\'usage dont le drapeau est positionné', () => {
     process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
-    expect(listRunningUseCases()).toEqual(['SOURCE_ANALYSIS', 'AI_GOVERNANCE', 'HOME_MASCOT']);
-    expect(isUseCaseRunning('AGENDA_INTELLIGENCE')).toBe(false);
+    expect(listRunningUseCases()).toEqual(['SOURCE_ANALYSIS', 'INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT']);
+    expect(isUseCaseRunning('DATA_RECONCILIATION')).toBe(false);
   });
 
   it('conserve l\'ordre du CDC dans la liste des usages actifs', () => {
-    process.env.AI_AGENDA_ENGINE = 'enabled';
+    process.env.AI_RECONCILIATION_ENGINE = 'enabled';
     process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
-    expect(listRunningUseCases()).toEqual(['SOURCE_ANALYSIS', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT']);
+    expect(listRunningUseCases()).toEqual(['SOURCE_ANALYSIS', 'DATA_RECONCILIATION', 'INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT']);
   });
 
   it('expose un instantané complet pour l\'administration', () => {
-    process.env.AI_AGENDA_ENGINE = 'shadow';
+    process.env.AI_RECONCILIATION_ENGINE = 'shadow';
+    // Variable retirée encore posée : sans effet (lot 16b-2).
+    process.env.AI_AGENDA_ENGINE = 'legacy';
     const snap = snapshotUseCaseModes();
     expect(Object.keys(snap)).toHaveLength(6);
-    expect(snap.AGENDA_INTELLIGENCE).toBe('shadow');
+    expect(snap.DATA_RECONCILIATION).toBe('shadow');
+    expect(snap.AGENDA_INTELLIGENCE).toBe('enabled');
     expect(snap.SOURCE_ANALYSIS).toBe('legacy');
   });
 });

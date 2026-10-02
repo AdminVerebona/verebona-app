@@ -76,7 +76,7 @@ export type PromptArchitectureDecision =
  *     version À tester qui en sera promue portera la bascule en préproduction,
  *     jamais une Active éditée en place ;
  *   · `master` exige un prompt maître déclaré au registre pour ce traitement ;
- *   · T5 et T6 n'ont plus d'architecture `steps` (lot 16b) : la demander est
+ *   · T2, T4, T5 et T6 n'ont plus d'architecture `steps` (lot 16b) : la demander est
  *     refusé, quel que soit le statut de la version.
  */
 export function checkPromptArchitectureChange(input: {
@@ -164,8 +164,8 @@ export function checkMasterProposal(treatment: Treatment, text: string): string[
  *     préparé avant la bascule, ignoré tant qu'elle n'a pas eu lieu) ;
  *   · architecture `master` : master déclaré au registre ; texte vide ⇒
  *     fichier du dépôt, signalé sans bloquer ;
- *   · T5 et T6 portant `steps` (valeur brute, ligne antérieure à la migration
- *     0231 ou package ancien) : BLOQUANT — leur architecture `steps` est retirée.
+ *   · T2, T4, T5 ou T6 portant `steps` (valeur brute, ligne antérieure aux
+ *     migrations 0231/0232 ou package ancien) : BLOQUANT — leur architecture `steps` est retirée.
  */
 export function masterConfigIssues(
   c: TreatmentConfig,
@@ -184,7 +184,7 @@ export function masterConfigIssues(
   if (isMasterOnlyTreatment(c.treatment) && c.promptArchitecture === 'steps') {
     out.push({
       field: 'promptArchitecture',
-      message: `Architecture « steps » retirée pour ${c.treatment} : seul son prompt maître existe (lot 16b, migration 0231).`,
+      message: `Architecture « steps » retirée pour ${c.treatment} : seul son prompt maître existe (lot 16b, migrations 0231 et 0232).`,
       blocking: true,
     });
   }
@@ -241,21 +241,15 @@ export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MO
  * (`legacy`) ou n'applique rien (`shadow`) — le master VALUE_CONFLICT n'a
  * donc aucun effet. Le départage des liens, lui, passe par le master dans
  * tous les cas.
+ *
+ * Lot 16b-2 : `AI_INTELLIGENT_ASSISTANT` (T2) et `AI_AGENDA_ENGINE` (T4) sont
+ * supprimés — l'assistant et l'agenda tournent toujours sur leur master.
  */
-export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT'>> = {
+export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_ENGINE'>> = {
   T3: 'AI_RECONCILIATION_ENGINE',
-  // Lot 15 : T2 en `master` mais `AI_INTELLIGENT_ASSISTANT` ≠ `enabled` ⇒
-  // l'assistant n'appelle aucun modèle (port de génération indéfini) : le
-  // master UNDERSTAND/ANSWER n'est jamais utilisé.
-  T2: 'AI_INTELLIGENT_ASSISTANT',
-  // Lot 14 : T4 en `master` mais `AI_AGENDA_ENGINE` ≠ `enabled` ⇒ le moteur
-  // agenda qui appelle CLASSIFY_EVENT ne tourne pas (`legacy`) ou n'écrit
-  // rien (`shadow`), et le chemin manuel garde le classifieur historique. `AI_T4_EFFECTS` ne conditionne PAS le master (il gouverne
-  // les effets d'écriture T4-04/07/08) : aucune alerte sur lui.
-  T4: 'AI_AGENDA_ENGINE',
 };
 
-export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT';
+export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE';
 
 export interface PromptArchitectureWarning {
   treatment: Treatment;
@@ -289,14 +283,8 @@ export function promptArchitectureWarning(
     const effet = switchMode === 'shadow'
       ? 'tourne en observation, sans rien appliquer'
       : 'ne tourne pas (moteur historique)';
-    const portee = treatment === 'T3'
-      ? `L'arbitrage de valeur (VALUE_CONFLICT) ${effet} ; seul le départage des liens passe par le prompt maître `
-        + `(passer ${flag}=enabled pour appliquer l'arbitrage).`
-      : treatment === 'T2'
-        ? `L'assistant n'appelle aucun modèle : le prompt maître (UNDERSTAND/ANSWER) n'est pas utilisé `
-          + `(passer ${flag}=enabled).`
-      : `La classification des échéances par le prompt maître (CLASSIFY_EVENT) ${effet}, et la création manuelle `
-        + `reste sur le classifieur historique (passer ${flag}=enabled).`;
+    const portee = `L'arbitrage de valeur (VALUE_CONFLICT) ${effet} ; seul le départage des liens passe par le prompt maître `
+      + `(passer ${flag}=enabled pour appliquer l'arbitrage).`;
     return {
       treatment, code: 'MASTER_ENGINE_NOT_ENABLED', switchName: flag, switchMode,
       message:

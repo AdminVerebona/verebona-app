@@ -128,7 +128,8 @@ describe('garde d’activation (dépendances injectées)', () => {
     tableReady: async () => ready,
   });
   const version = (t1: Record<string, unknown> = {}) => ({
-    entries: [{ ...emptyTreatmentConfig('T1'), promptArchitecture: 'master' as const, ...t1 }, emptyTreatmentConfig('T2')],
+    // T3 : encore en `steps` possible (T2 et T4 sont master seul depuis le lot 16b-2).
+    entries: [{ ...emptyTreatmentConfig('T1'), promptArchitecture: 'master' as const, ...t1 }, emptyTreatmentConfig('T3')],
   });
   const texte = `${read('t1_master_v1')}\nRègle ajoutée.`;
   const shaV = masterTextFingerprint(texte);
@@ -175,6 +176,12 @@ describe('garde d’activation (dépendances injectées)', () => {
   it('fichier master illisible : refus explicite, jamais un passage', async () => {
     const r = await checkMasterActivation(version(), { ...deps([run()]), readMasterFile: () => { throw new Error('introuvable'); } });
     expect(r).toMatchObject({ allowed: false, entries: [expect.objectContaining({ status: 'MASTER_FILE_MISSING' })] });
+  });
+
+  it('lot 16b-2 : T2 et T4 (master seul) exigent leur corpus, même sans architecture posée', async () => {
+    const r = await checkMasterActivation({ entries: [emptyTreatmentConfig('T2'), emptyTreatmentConfig('T4')] }, deps([]));
+    expect(r.allowed).toBe(false);
+    expect(r.entries.map((e) => [e.treatment, e.status])).toEqual([['T2', 'NO_RUN'], ['T4', 'NO_RUN']]);
   });
 
   it('T5 : toujours le fichier du dépôt (non administrable), même si un texte traîne dans la ligne', async () => {

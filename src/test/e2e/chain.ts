@@ -23,8 +23,8 @@ export const TARGET_SWITCHES: Readonly<Record<string, string>> = {
   AI_T1_ANALYSIS_MODE: 'enabled',
   CANONICAL_WRITE_MODE: 'enabled',
   T3_NEGATIVE_RECONCILIATION: 'enabled',
-  AI_T4_EFFECTS: 'enabled',
-  ASSISTANT_CANONICAL_READ: 'enabled',
+  // AI_T4_EFFECTS et ASSISTANT_CANONICAL_READ : retirés au lot 16b-2
+  // (toujours actifs).
   EXPORTS_CANONICAL_SOURCE: 'enabled',
 };
 

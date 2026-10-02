@@ -14,7 +14,7 @@
  * appartiennent au compte (§11.4) ; un identifiant étranger lève
  * `DocumentLinkOwnershipError` sans rien écrire.
  *
- * Lecteurs : l'assistant (lot 15, `ASSISTANT_CANONICAL_READ`) et les
+ * Lecteurs : l'assistant (lot 15, lecture canonique) et les
  * exports — dossiers V12, export brut, transmission, aperçu admin (lot 16,
  * `EXPORTS_CANONICAL_SOURCE` en shadow / enabled) — par `listAssetDocuments`
  * (liens ACTIFS seulement ; PROPOSED, REJECTED et REMOVED exclus).

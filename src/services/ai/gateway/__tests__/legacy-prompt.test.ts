@@ -248,9 +248,9 @@ describe('garde d’exploitation', () => {
   });
 
   it('traitement du module désactivé : bloqué pour lui seul', async () => {
-    setRuntimeSnapshotLoader(async () => ({ emergencyStop: false, states: { T4: 'DISABLED' } }));
+    setRuntimeSnapshotLoader(async () => ({ emergencyStop: false, states: { T1: 'DISABLED' } }));
     fake.onAny(() => ({ rawText: 'action', inputTokens: 1, outputTokens: 1 }));
-    await expect(call({ useCaseCode: 'AGENDA_INTELLIGENCE', operationCode: 'legacy_classify_home_category' }))
+    await expect(call({ useCaseCode: 'SOURCE_ANALYSIS', operationCode: 'legacy_document_analysis' }))
       .rejects.toMatchObject({ code: 'AI_BLOCKED' });
     await expect(call()).resolves.toMatchObject({ data: 'action' });
   });

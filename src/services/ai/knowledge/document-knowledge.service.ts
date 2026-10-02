@@ -38,8 +38,6 @@ import type { TableCellRow } from './document-tables';
 import type { ExtractedTableCell, ExtractedField } from '../source-analysis/types';
 import { documentFactsCanonicalReady } from '../evidence/canonical-columns';
 import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
-import { t4EffectsMode } from '@/services/canonical/rollout';
-import { shouldRunNewEngine } from '../flags/ai-feature-flags';
 
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
@@ -576,7 +574,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
   const { notifyCoherenceEvent } = await import('../reconciliation/account-reconciliation.service');
   notifyCoherenceEvent(p.accountId, { event: 'document_linked', objectType: 'asset', objectId: p.assetId });
 
-  // T4-05 (lot 14, derrière AI_T4_EFFECTS) : candidats agenda reconstruits
+  // T4-05 (lot 14) : candidats agenda reconstruits
   // depuis les faits persistés — récurrence comprise (T4-06) — par LE MÊME
   // constructeur que l'analyse, puis passés par le chemin agenda existant
   // (file T4). Même document rattaché avant ou après analyse → même état
@@ -650,19 +648,8 @@ async function rebuildAgendaAfterLink(p: {
   accountId: number; userId: number; fileId: number; assetId: number;
   knowledge: KnowledgeForAgenda; allowReassign: boolean;
 }): Promise<void> {
-  const mode = t4EffectsMode();
-  if (mode === 'legacy') return;
   const candidates = lateLinkAgendaCandidates(p);
-  if (mode === 'shadow') {
-    console.info('[t4-shadow] rattachement tardif', JSON.stringify({
-      fileId: p.fileId, assetId: p.assetId,
-      candidats: candidates.map((c) => `${c.businessType}:${c.nature}`).sort(),
-    }));
-    return;
-  }
-  // Même garde que l'abonné d'analyse : T4 n'est mis en file que si son
-  // moteur est actif (§10.4).
-  if (candidates.length === 0 || !shouldRunNewEngine('AI_AGENDA_ENGINE')) return;
+  if (candidates.length === 0) return;
   const { enqueueT4Candidates } = await import('../agenda');
   await enqueueT4Candidates({
     accountId: p.accountId, userId: p.userId, assetId: p.assetId, leadSourceId: p.fileId, candidates,

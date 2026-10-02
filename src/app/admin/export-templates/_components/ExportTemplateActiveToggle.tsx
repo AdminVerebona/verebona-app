@@ -1,13 +1,12 @@
 "use client"
 
 /**
- * Activation globale d'un modèle d'export — CDC Back-Office V1 EXP-003,
- * EXP-004, UX-002.
+ * Activation globale d'un modèle d'export (dossier V12).
  *
- * Seule mutation admise sur un modèle d'export. Effet immédiat : un modèle
- * désactivé n'est plus proposé à la génération ; les exports déjà produits
- * restent intacts (EXP-005). Confirmation explicite avant l'appel, état relu
- * depuis le serveur après l'action (ERR-003).
+ * Seule mutation admise sur un modèle. Effet immédiat : un modèle désactivé
+ * n'est plus proposé ni généré pour aucun compte ; les exports déjà produits
+ * restent intacts. La DÉSACTIVATION demande une confirmation explicite ;
+ * l'activation est directe. État relu depuis le serveur après l'action.
  */
 import { useState } from 'react';
 import { Switch } from '@/components/ui/switch';
@@ -24,12 +23,12 @@ import {
 import { toast } from 'sonner';
 
 export function ExportTemplateActiveToggle({
-  templateId,
+  code,
   label,
   isActive,
   onChanged,
 }: {
-  templateId: number;
+  code: string;
   label: string;
   isActive: boolean;
   onChanged: () => void;
@@ -41,7 +40,7 @@ export function ExportTemplateActiveToggle({
   const apply = async () => {
     setSaving(true);
     try {
-      const response = await fetch(`/api/admin/export-templates/${templateId}`, {
+      const response = await fetch(`/api/admin/export-templates/${encodeURIComponent(code)}`, {
         credentials: 'include',
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -65,7 +64,8 @@ export function ExportTemplateActiveToggle({
         <Switch
           checked={isActive}
           disabled={saving}
-          onCheckedChange={() => setConfirmOpen(true)}
+          // Désactiver : confirmation explicite ; activer : direct.
+          onCheckedChange={() => (isActive ? setConfirmOpen(true) : void apply())}
           aria-label={isActive ? `Désactiver ${label}` : `Activer ${label}`}
         />
         <span className="text-sm text-muted-foreground">{isActive ? 'Actif' : 'Inactif'}</span>
@@ -73,19 +73,15 @@ export function ExportTemplateActiveToggle({
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{target ? `Activer « ${label} » ?` : `Désactiver « ${label} » ?`}</AlertDialogTitle>
+            <AlertDialogTitle>{`Désactiver « ${label} » ?`}</AlertDialogTitle>
             <AlertDialogDescription>
-              {target
-                ? 'Le modèle sera de nouveau proposé pour la génération des exports, pour tous les comptes.'
-                : "Le modèle ne sera plus proposé pour la génération des exports, pour tous les comptes, dès maintenant. Les exports déjà produits ne sont pas affectés."}
-              {' '}Action journalisée.
+              Ce dossier ne sera plus proposé ni généré, pour tous les comptes, dès maintenant. Les exports déjà
+              produits ne sont pas affectés. Action journalisée.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={saving}>Annuler</AlertDialogCancel>
-            <AlertDialogAction onClick={apply} disabled={saving}>
-              {target ? 'Activer' : 'Désactiver'}
-            </AlertDialogAction>
+            <AlertDialogAction onClick={apply} disabled={saving}>Désactiver</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

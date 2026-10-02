@@ -38,7 +38,7 @@ describe('colonne 0220 présente', () => {
   it('lecture réelle de la colonne', async () => {
     lignes = [
       { treatment: 'T1', prompt: 'Préambule', prompt_architecture: 'master', master_prompt: 'MASTER {{TASK}}' },
-      { treatment: 'T2', prompt: '', prompt_architecture: 'steps', master_prompt: '  ' },
+      { treatment: 'T3', prompt: '', prompt_architecture: 'steps', master_prompt: '  ' },
     ];
     const e = await repo.getEntries(3);
     expect(calls.find((c) => /FROM ai_config_entries/.test(c.q))?.q).toMatch(/cascade, prompt_architecture, master_prompt\s/);

@@ -3,12 +3,14 @@
  * T4-05 (DOD-05), T4-06, §13 ; corpus synthétique D-08.
  * Fonctions PURES : projection → champs → candidats, sans base ni modèle.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { describe, it, expect } from 'vitest';
 import { T1AnalyzeDocumentOutput, type T1Fact } from '../../master/t1-contract';
 import { checkFactEvidence } from '../../master/fact-evidence';
 import { projectDocumentFacts, type ProjectionContext } from '../../projection/document-projection';
 import { projectedFactToExtractedField } from '../persist-evidence.step';
-import { buildAgendaCandidatesT4, buildAgendaCandidates, selectAgendaCandidates, type T4CandidateContext } from '../build-agenda-candidates.step';
+import { buildAgendaCandidatesT4, buildAgendaCandidates, type T4CandidateContext } from '../build-agenda-candidates.step';
 import { loadT1Fixture, type T1Fixture } from '../../__fixtures__/t1/load';
 import { toAssetFamily, type AssetFamily } from '@/services/canonical/registry';
 import { toFact, factsToExtractedFields } from '../../../knowledge/document-knowledge';
@@ -166,19 +168,14 @@ describe('T4-05 / DOD-05 — rattachement tardif : même état final', () => {
   });
 });
 
-describe('AI_T4_EFFECTS', () => {
-  const legacy = [{ title: 'L', date: '2026-01-01', confidence: 'certain' as const, excerpt: 'e' }];
-  const f = loadT1Fixture('p-t1-02-ticket-draisienne.json');
-
-  it('legacy : candidats historiques, strictement', () => {
-    expect(selectAgendaCandidates(legacy, champs(f).fields, ctxDe(f), 'legacy')).toBe(legacy);
+describe('pipeline : candidats du registre seuls (lot 16b-2, AI_T4_EFFECTS retiré)', () => {
+  it('runSourceAnalysis retient `buildAgendaCandidatesT4`, plus de sélection selon un mode', () => {
+    const src = readFileSync(join(process.cwd(), 'src/services/ai/source-analysis/pipeline.ts'), 'utf8');
+    expect(src).toContain('result.agendaCandidates = buildAgendaCandidatesT4(result.extractedFields');
+    // Absence du commutateur : gardée par `npm run ai:check-legacy`.
   });
-  it('shadow : calcul journalisé, candidats historiques retenus', () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    expect(selectAgendaCandidates(legacy, champs(f).fields, ctxDe(f), 'shadow')).toBe(legacy);
-    expect(info).toHaveBeenCalledWith('[t4-shadow] candidats agenda', expect.stringContaining('purchase:HISTORICAL'));
-  });
-  it('enabled : candidats du registre', () => {
-    expect(selectAgendaCandidates(legacy, champs(f).fields, ctxDe(f), 'enabled')[0].nature).toBe('HISTORICAL');
+  it('ticket draisienne : candidat HISTORICAL du registre', () => {
+    const f = loadT1Fixture('p-t1-02-ticket-draisienne.json');
+    expect(buildAgendaCandidatesT4(champs(f).fields, ctxDe(f))[0].nature).toBe('HISTORICAL');
   });
 });

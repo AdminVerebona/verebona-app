@@ -68,25 +68,22 @@ describe('1. branche master de la compréhension (classification.adapter)', () =
     expect(r!.allowedActionTypes.length).toBeGreaterThan(0);
   });
 
-  it('indices du modèle : filtrés (« page: », 10 au plus) en lecture canonique seulement ; legacy inchangé', async () => {
+  it('indices du modèle : filtrés (« page: », 10 au plus) — lecture canonique seule (lot 16b-2)', async () => {
     const { toIntentRoute } = await import('../classification.adapter');
     const hints = [{ type: 'asset' as const, value: 'page:5' }, ...Array.from({ length: 11 }, (_, i) => ({ type: 'asset' as const, value: `Bien ${i}` }))];
     const plan = { intent: 'ACCOUNT_SEARCH_ASSET', confidence: 'probable' as const, entityHints: hints, reason: '' };
-    expect(toIntentRoute(plan, 'PREMIUM').entityHints).toEqual(hints);
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const r = toIntentRoute(plan, 'PREMIUM').entityHints;
     expect(r).toHaveLength(10);
     expect(r.some((h) => h.value.startsWith('page:'))).toBe(false);
   });
 
-  it('master indisponible → null (intention inconnue) ; steps : t2_understand jamais appelé', async () => {
-    archi.value = 'master';
+  it('master indisponible → null (intention inconnue) ; version ancienne en « steps » : master quand même', async () => {
     comprendre.fn.mockResolvedValue(null);
     expect(await classifyAssistantIntent('x', input('x'))).toBeNull();
     archi.value = 'steps';
     comprendre.fn.mockClear();
     await classifyAssistantIntent('x', input('x'));
-    expect(comprendre.fn).not.toHaveBeenCalled();
+    expect(comprendre.fn).toHaveBeenCalledOnce();
   });
 
   it('prompt de Z : indices `period` admis, noms littéraux (A3), jamais « page: »', () => {
@@ -157,7 +154,6 @@ describe('2. chronologie structurée (events[]) jusqu’au client', () => {
   });
 
   it('orchestrateur : gen.events → résultat → API (sans identifiant interne) ; repli planifié aussi', async () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const plan = {
       kind: 'timeline' as const, assets: [{ id: 1, name: 'Clio' }], budget: { sources: 8, events: 60 }, sources: [CHUNK],
       timeline: { events: [{ date: '2024-03-02', label: 'Vidange', kind: 'agenda' as const, ref: 'agenda_12', assetName: 'Clio', detail: 'réalisé' }], totalEvents: 1, truncated: false },
@@ -208,16 +204,13 @@ describe('3. budget d’événements dans assistant-config', () => {
 });
 
 describe('4. confirmation d’une commande : valeur canonique (T2-40)', () => {
-  it('enabled : état du bien lu par commandAssetState (X) ; legacy : lecture historique', async () => {
+  it('état du bien lu par commandAssetState (X), variable retirée sans effet', async () => {
     const etat = { id: 3, name: 'Polo', city: null, category: 'VEHICULE', status: null, lockState: null, characteristics: { acquisitionDate: '2021-05-25' } };
     etatCommande.fn.mockResolvedValue(etat);
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     expect(await sqlLookup.getAssetState!(1, 3)).toBe(etat);
     expect(etatCommande.fn).toHaveBeenCalledWith(1, 3);
     process.env.ASSISTANT_CANONICAL_READ = 'legacy';
-    etatCommande.fn.mockClear();
-    expect(await sqlLookup.getAssetState!(1, 3)).toBeNull();
-    expect(etatCommande.fn).not.toHaveBeenCalled();
+    expect(await sqlLookup.getAssetState!(1, 3)).toBe(etat);
   });
 });
 

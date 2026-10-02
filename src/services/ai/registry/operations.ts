@@ -397,16 +397,6 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   },
 
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────
-  understand_request: {
-    operationCode: 'understand_request', useCaseCode: 'INTELLIGENT_ASSISTANT',
-    migratesTo: { masterPromptCode: T2_MASTER, task: 'UNDERSTAND', operationCode: 't2_understand' },
-    label: "Compréhension de la question et sélection des outils",
-    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'understand_request_v1', timeoutMs: 12_000,
-    outputSchema: 'ToolPlanOutput', active: true, billable: false,
-    // CDC Assistant §13.9 / §31.2 (budget V1 : 500), CDC 15 T2-43.
-    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
-  },
   retrieve_data: {
     operationCode: 'retrieve_data', useCaseCode: 'INTELLIGENT_ASSISTANT',
     label: 'Exécution des outils de lecture bornés au compte',
@@ -419,49 +409,14 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     provider: 'none', primaryModel: 'none', fallbackModels: [],
     timeoutMs: 8_000, outputSchema: 'none', active: true, billable: false,
   },
-  // Revalidation ciblée d'un fait (T2) : relit le contenu persisté ou la
-  // page utile de la source pour UNE question — jamais une analyse T1
-  // complète. Coût imputé à l'assistant, qui l'a déclenchée.
-  revalidate_fact: {
-    operationCode: 'revalidate_fact', useCaseCode: 'INTELLIGENT_ASSISTANT',
-    migratesTo: { masterPromptCode: T2_MASTER, task: 'REVALIDATE', operationCode: 't2_revalidate' },
-    label: 'Revalidation ciblée d’un fait documentaire',
-    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'revalidate_fact_v1', timeoutMs: 20_000,
-    outputSchema: 'RevalidationOutput', active: true, billable: true,
-    // CDC Assistant §13.9 / §31.2 (budget V1 : 500), CDC 15 T2-43.
-    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
-  },
-  generate_answer: {
-    operationCode: 'generate_answer', useCaseCode: 'INTELLIGENT_ASSISTANT',
-    migratesTo: { masterPromptCode: T2_MASTER, task: 'ANSWER', operationCode: 't2_answer' },
-    label: 'Génération de la réponse sourcée',
-    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'generate_answer_v4', timeoutMs: 12_000,
-    outputSchema: 'AssistantAnswerOutput', active: true, billable: true,
-    // CDC Assistant §13.9 / §31.2 (budget V1 : 500), CDC 15 T2-43.
-    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
-  },
-  // Lot 15 (T2-36) : même étape, prompt `generate_answer_v5` (règle de
-  // longueur de l'intention prioritaire). Sélectionnée SEULEMENT avec
-  // ASSISTANT_CANONICAL_READ=enabled ; en legacy, `generate_answer` et
-  // `generate_answer_v4` restent inchangés (jamais deux textes sous un nom).
-  generate_answer_canonical: {
-    operationCode: 'generate_answer_canonical', useCaseCode: 'INTELLIGENT_ASSISTANT',
-    migratesTo: { masterPromptCode: T2_MASTER, task: 'ANSWER', operationCode: 't2_answer' },
-    label: 'Génération de la réponse sourcée (lecture canonique)',
-    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'generate_answer_v5', timeoutMs: 12_000,
-    outputSchema: 'AssistantAnswerOutput', active: true, billable: true,
-    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
-  },
-
   // ── T2 — prompt maître (CDC 15 §24, T2-31, T2-35, T2-36, D-03, D-04) ─────
-  // Exécutées seulement quand la version de configuration bascule T2 en
-  // architecture `master` (`getPromptArchitecture('T2')`). Mêmes modèles,
-  // délais, plafond de sortie (min(BO, 500), T2-43) et facturation que les
-  // étapes qu'elles remplacent ; déclarées APRÈS elles. Sortie discriminée
-  // par `mode` (§24), et non `task`.
+  // Seul moteur de T2 depuis le lot 16b-2 : `understand_request`,
+  // `generate_answer`, `generate_answer_canonical`, `revalidate_fact` et les
+  // relais `legacy_*_search` sont retirés, et T2 n'a plus d'architecture
+  // `steps`. Plafond de sortie min(BO, 500) (T2-43). Sortie discriminée par
+  // `mode` (§24), et non `task`. La revalidation ciblée d'un fait relit le
+  // contenu persisté ou la page utile de la source pour UNE question —
+  // jamais une analyse T1 complète ; coût imputé à l'assistant.
   t2_understand: {
     operationCode: 't2_understand', useCaseCode: 'INTELLIGENT_ASSISTANT',
     label: 'T2 master — compréhension de la demande (MODE=UNDERSTAND)',
@@ -497,34 +452,18 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     provider: 'none', primaryModel: 'none', fallbackModels: [],
     timeoutMs: 5_000, outputSchema: 'none', active: true, billable: false,
   },
-  classify_event: {
-    operationCode: 'classify_event', useCaseCode: 'AGENDA_INTELLIGENCE',
-    migratesTo: { masterPromptCode: T4_MASTER, task: 'CLASSIFY_EVENT', operationCode: 't4_classify_event' },
-    label: 'Classification action / information (cas ambigus uniquement)',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'classify_event_v2', timeoutMs: 15_000,
-    outputSchema: 'ClassifyEventOutput', active: true, billable: false,
-  },
   deduplicate_event: {
     operationCode: 'deduplicate_event', useCaseCode: 'AGENDA_INTELLIGENCE',
     label: 'Détection de doublon (déterministe)',
     provider: 'none', primaryModel: 'none', fallbackModels: [],
     timeoutMs: 5_000, outputSchema: 'none', active: true, billable: false,
   },
-  reconcile_status: {
-    operationCode: 'reconcile_status', useCaseCode: 'AGENDA_INTELLIGENCE',
-    migratesTo: { masterPromptCode: T4_MASTER, task: 'VERIFY_COMPLETION', operationCode: 't4_verify_completion' },
-    label: "Mise à jour du statut d'un événement sous preuve explicite",
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'reconcile_status_v1', timeoutMs: 15_000,
-    outputSchema: 'ReconcileStatusOutput', active: true, billable: false,
-  },
 
   // ── T4 — prompt maître (CDC 15 §26, T4-10 à T4-14, D-04) ─────────────────
-  // Exécutées seulement quand la version de configuration bascule T4 en
-  // architecture `master` (`getPromptArchitecture('T4')`). Mêmes modèles et
-  // même facturation que les étapes qu'elles remplacent ; déclarées APRÈS
-  // elles. TEMPORAL_AMBIGUITY : appelée depuis le lot 18 (R5).
+  // Seul moteur de T4 depuis le lot 16b-2 : `classify_event`,
+  // `reconcile_status` et le relais `legacy_classify_home_category` sont
+  // retirés, et T4 n'a plus d'architecture `steps`. TEMPORAL_AMBIGUITY :
+  // appelée depuis le lot 18 (R5).
   t4_classify_event: {
     operationCode: 't4_classify_event', useCaseCode: 'AGENDA_INTELLIGENCE',
     label: 'T4 master — classification action / information (TASK=CLASSIFY_EVENT)',
@@ -542,8 +481,8 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     outputSchema: 'T4VerifyCompletionOutput', active: true, billable: false,
   },
   // Active depuis le lot 18 (R5) : appelée par T4 (`resoudreAmbiguiteTemporelle`)
-  // quand une date est incertaine (jj/mm ↔ mm/jj, mention relative), sous T4
-  // `master` et AI_T4_EFFECTS=enabled. Abstention → carte AGENDA-PROPOSAL.
+  // quand une date est incertaine (jj/mm ↔ mm/jj, mention relative).
+  // Abstention → carte AGENDA-PROPOSAL.
   t4_temporal_ambiguity: {
     operationCode: 't4_temporal_ambiguity', useCaseCode: 'AGENDA_INTELLIGENCE',
     label: 'T4 master — arbitrage d’une ambiguïté temporelle (TASK=TEMPORAL_AMBIGUITY)',
@@ -656,34 +595,6 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     active: true, billable: true,
   },
 
-  // T2 — recherche historique (usages 6 et 7), famille de modèles assistant
-  // (§15.10). Délais repris des modules (course contre un minuteur).
-  legacy_semantic_search: {
-    operationCode: 'legacy_semantic_search', useCaseCode: 'INTELLIGENT_ASSISTANT',
-    label: 'Recherche sémantique historique (repli de la recherche classique)',
-    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'legacy_semantic_search_v1', timeoutMs: 30_000,
-    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
-    active: true, billable: false,
-  },
-  legacy_intelligent_search: {
-    operationCode: 'legacy_intelligent_search', useCaseCode: 'INTELLIGENT_ASSISTANT',
-    label: 'Réponse générative historique de la recherche intelligente',
-    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'legacy_intelligent_search_v1', timeoutMs: 25_000,
-    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
-    active: true, billable: true,
-  },
-
-  // T4 — classement action / information d'une échéance (usage historique 8).
-  legacy_classify_home_category: {
-    operationCode: 'legacy_classify_home_category', useCaseCode: 'AGENDA_INTELLIGENCE',
-    label: "Classement action / information d'une échéance (moteur historique)",
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'legacy_classify_home_category_v1', timeoutMs: 30_000,
-    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
-    active: true, billable: false,
-  },
 };
 
 export type AiOperationCode = keyof typeof AI_OPERATIONS;

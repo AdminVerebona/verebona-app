@@ -48,7 +48,6 @@ scenario('T4-L14-T404', 'Échéance d’une source non autoritaire : À traiter,
      WHERE account_id = ${accountId} AND target_type = 'DOCUMENT' AND target_id = ${fileId} AND rule_code = 'AGENDA-PROPOSAL' ORDER BY id`;
 
   it('devis daté : carte, aucun élément ; « Oui » : élément créé et lié ; annulation ; réanalyse sans nouvelle carte', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER' });
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -88,7 +87,6 @@ scenario('T4-L14-T404', 'Échéance d’une source non autoritaire : À traiter,
   });
 
   it('« Non » : carte close, pas reproposée sans changement ; une nouvelle date la rouvre', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER' });
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -105,8 +103,7 @@ scenario('T4-L14-T404', 'Échéance d’une source non autoritaire : À traiter,
     expect(await items(compte.id)).toHaveLength(0);
   });
 
-  it('élément existant de même clé : jamais mis à jour par une source non autoritaire ; legacy inchangé', async () => {
-    process.env.AI_T4_EFFECTS = 'enabled';
+  it('élément existant de même clé : jamais mis à jour par une source non autoritaire', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER' });
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -117,10 +114,11 @@ scenario('T4-L14-T404', 'Échéance d’une source non autoritaire : À traiter,
     const [apres] = await sql<{ id: number; d: string }[]>`SELECT id, start_date::text AS d FROM agenda_items WHERE account_id = ${compte.id}`;
     expect(apres).toEqual(avant);
 
+    // Lot 16b-2 : variable retirée encore posée — sans effet (carte, aucune création).
     process.env.AI_T4_EFFECTS = 'legacy';
     const doc2 = await make.assetFile(compte, { assetId: bien.id });
     await persist([devis(doc2.id)], compte.id, bien.id);
-    expect(await cartes(compte.id, doc2.id)).toHaveLength(0);
-    expect(await sql`SELECT 1 FROM agenda_items WHERE account_id = ${compte.id} AND origin_ref_id = ${doc2.id}`).toHaveLength(1);
+    expect(await cartes(compte.id, doc2.id)).toHaveLength(1);
+    expect(await sql`SELECT 1 FROM agenda_items WHERE account_id = ${compte.id} AND origin_ref_id = ${doc2.id}`).toHaveLength(0);
   });
 });

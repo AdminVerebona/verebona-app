@@ -1,6 +1,6 @@
 /**
  * Cibles de la demande — `ResolvedTarget`, CDC 15 T2-08, T2-17, T2-19 à T2-21
- * (lot 15, ASSISTANT_CANONICAL_READ=enabled).
+ * (lot 15).
  *
  * Une question vise un OBJET avant de viser des mots : le document ouvert à
  * l'écran (« quel est le montant ? »), l'élément cité dans le fil (« et sa

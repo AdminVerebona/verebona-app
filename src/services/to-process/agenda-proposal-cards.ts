@@ -2,8 +2,8 @@
  * Échéance lue dans une source NON AUTORITAIRE — carte « À traiter »
  * AGENDA-PROPOSAL (CDC 15 T4-04 ; lot 14, volet B).
  *
- * Recette : « proposition / À traiter, pas création automatique ». Sous
- * AI_T4_EFFECTS=enabled, une décision T4 `propose` de motif
+ * Recette : « proposition / À traiter, pas création automatique ». Une
+ * décision T4 `propose` de motif
  * `SOURCE_TYPE_NOT_AUTHORIZED` ou `SOURCE_TYPE_UNKNOWN` (devis, document de
  * type inconnu…) ne crée AUCUN élément d'agenda : elle ouvre cette carte.
  *

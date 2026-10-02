@@ -7,10 +7,9 @@
  */
 import { pgClient } from '@/db';
 import { SQL_IS_RENTED } from '@/lib/assets/occupancy';
-import type { AccountDataPort, AgendaRow, AssetRow, DocumentHit, ExportRow, FactHit } from './data-answer.service';
+import type { AccountDataPort, AssetRow, DocumentHit, ExportRow, FactHit } from './data-answer.service';
 import { searchDocumentFacts, searchDocumentText, searchTableCells } from '@/services/ai/knowledge/document-knowledge.service';
-import { canonicalReadEnabled } from '../canonical/mode';
-import { createCanonicalAccountDataRepository } from '../canonical/repository';
+import { createCanonicalAccountDataRepository, type BaseAccountDataPort } from '../canonical/repository';
 
 const rows = <T>(r: unknown) => r as unknown as T[];
 
@@ -30,8 +29,12 @@ function todayParis(): string {
 const ASSET_COLS = `a.id, a.name, a.category, a.subtype, to_char(a.purchase_date, 'YYYY-MM-DD') AS "purchaseDate", ${SQL_IS_RENTED('a')} AS "isRented",
   a.city, a.address, a.registration_number AS "registrationNumber"`;
 
-/** Lecture HISTORIQUE (ASSISTANT_CANONICAL_READ=legacy), inchangée. */
-export const legacyAccountDataRepository: AccountDataPort & Required<Pick<AccountDataPort, 'listDocuments' | 'findDocument' | 'listExports' | 'searchTableCells'>> = {
+/**
+ * Lectures de BASE (SQL direct, bornées au compte), décorées par la couche
+ * canonique (`canonical/repository.ts`) — jamais utilisées seules depuis le
+ * lot 16b-2 (lecture historique `ASSISTANT_CANONICAL_READ=legacy` retirée).
+ */
+const baseAccountDataRepository: BaseAccountDataPort = {
   today: todayParis,
 
   async findAssets(accountId, words) {
@@ -74,17 +77,6 @@ export const legacyAccountDataRepository: AccountDataPort & Required<Pick<Accoun
     return rows<AssetRow>(r);
   },
 
-  async countDocuments(accountId, opts = {}) {
-    const ids = opts.assetIds?.length ? opts.assetIds : null;
-    const r = await pgClient.unsafe(
-      `SELECT count(*)::int AS n FROM asset_files f
-        WHERE f.account_id = $1 AND f.deleted_at IS NULL
-          AND ($2::int[] IS NULL OR f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))`,
-      [accountId, ids] as never[],
-    );
-    return rows<{ n: number }>(r)[0]?.n ?? 0;
-  },
-
   async countAgenda(accountId, opts = {}) {
     const ids = opts.assetIds?.length ? opts.assetIds : null;
     const r = await pgClient.unsafe(
@@ -96,43 +88,6 @@ export const legacyAccountDataRepository: AccountDataPort & Required<Pick<Accoun
       [accountId, opts.futureOnly ?? false, todayParis(), ids] as never[],
     );
     return rows<{ n: number }>(r)[0]?.n ?? 0;
-  },
-
-  async upcomingAgenda(accountId, opts = {}) {
-    const ids = opts.assetIds?.length ? opts.assetIds : null;
-    const terms = (opts.terms ?? []).filter((t) => t.length >= 3).slice(0, 6);
-    const termSql = terms.map((_, i) => `unaccent(lower(i.title || ' ' || coalesce(i.description,''))) LIKE unaccent(lower($${i + 5}))`).join(' AND ');
-    const r = await pgClient.unsafe(
-      `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date,
-              (i.occurrence_nature = 'FORECAST') AS forecast,
-              coalesce(array_remove(array_agg(DISTINCT a.name), NULL), '{}') AS "assetNames"
-         FROM agenda_items i
-         LEFT JOIN agenda_asset_links l ON l.agenda_item_id = i.id
-         LEFT JOIN assets a ON a.id = l.asset_id AND a.deleted_at IS NULL
-        WHERE i.account_id = $1 AND i.manual_status IS NULL
-          AND i.start_date >= $2::date
-          AND ($3::int[] IS NULL OR l.asset_id = ANY($3::int[]))
-          ${termSql ? `AND ${termSql}` : ''}
-        GROUP BY i.id
-        ORDER BY i.start_date ASC, i.id ASC
-        LIMIT $4`,
-      [accountId, todayParis(), ids, Math.min(opts.limit ?? 3, 20), ...terms.map((t) => `%${t}%`)] as never[],
-    );
-    return rows<AgendaRow>(r);
-  },
-
-  async sumDocumentAmounts(accountId, opts = {}) {
-    const ids = opts.assetIds?.length ? opts.assetIds : null;
-    const r = await pgClient.unsafe(
-      `SELECT coalesce(sum(f.amount_cents), 0)::bigint AS s, count(f.amount_cents)::int AS n
-         FROM asset_files f
-        WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.amount_cents IS NOT NULL
-          AND ($2::int[] IS NULL OR f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))
-          AND ($3::int IS NULL OR extract(year FROM f.document_date) = $3)`,
-      [accountId, ids, opts.year ?? null] as never[],
-    );
-    const row = rows<{ s: string; n: number }>(r)[0];
-    return { sumCents: Number(row?.s ?? 0), count: row?.n ?? 0 };
   },
 
   async searchFacts(accountId, terms, assetId) {
@@ -149,23 +104,6 @@ export const legacyAccountDataRepository: AccountDataPort & Required<Pick<Accoun
 
   async searchTableCells(accountId, terms, assetId) {
     return searchTableCells(accountId, terms, { assetId: assetId ?? null });
-  },
-
-  async listDocuments(accountId, { assetIds, limit = 10 }) {
-    if (assetIds.length === 0) return [];
-    const r = await pgClient.unsafe(
-      `SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
-              to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms",
-              f.analysis_state AS "analysisState"
-         FROM asset_files f
-         LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
-        WHERE f.account_id = $1 AND f.deleted_at IS NULL
-          AND (f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))
-        ORDER BY f.document_date DESC NULLS LAST, f.id DESC
-        LIMIT $3`,
-      [accountId, assetIds, Math.min(limit, 50)] as never[],
-    );
-    return rows<DocumentHit>(r);
   },
 
   // Statut d'un document désigné (§12.2) : borné au compte, non supprimé.
@@ -248,44 +186,11 @@ export const legacyAccountDataRepository: AccountDataPort & Required<Pick<Accoun
 };
 
 // ══════════════════════════════════════════════════════════════════════════
-// CDC 15 §9 (lot 15) — LECTURE CANONIQUE, COMMUTATEUR ASSISTANT_CANONICAL_READ
+// CDC 15 §9 (lot 15) — LECTURE CANONIQUE
 //
-// `accountDataRepository` choisit, À CHAQUE APPEL, la lecture historique
-// (legacy, défaut ; `shadow` = legacy, l'assistant n'a pas de mode
-// observation) ou la couche canonique (`canonical/repository.ts` : fiche
-// canonique, documents N-N, agenda sans historique, dépenses qualifiées…).
-// Les lectures nouvelles n'existent qu'en enabled (méthodes optionnelles du
-// port : `data-answer` ne les appelle que si elles sont présentes).
+// `accountDataRepository` lit la couche canonique (`canonical/repository.ts` :
+// fiche canonique, documents N-N, agenda sans historique, dépenses
+// qualifiées…). Depuis le lot 16b-2, c'est la seule lecture : le commutateur
+// ASSISTANT_CANONICAL_READ et la lecture historique sont retirés.
 // ══════════════════════════════════════════════════════════════════════════
-const canonicalRepository = createCanonicalAccountDataRepository(legacyAccountDataRepository);
-
-const choisir = (): AccountDataPort => (canonicalReadEnabled() ? canonicalRepository : legacyAccountDataRepository);
-
-export const accountDataRepository: AccountDataPort = {
-  today: () => choisir().today(),
-  findAssets: (...a) => choisir().findAssets(...a),
-  listAssets: (...a) => choisir().listAssets(...a),
-  countDocuments: (...a) => choisir().countDocuments(...a),
-  countAgenda: (...a) => choisir().countAgenda(...a),
-  upcomingAgenda: (...a) => choisir().upcomingAgenda(...a),
-  sumDocumentAmounts: (...a) => choisir().sumDocumentAmounts(...a),
-  searchFacts: (...a) => choisir().searchFacts(...a),
-  searchTableCells: (...a) => choisir().searchTableCells!(...a),
-  searchDocuments: (...a) => choisir().searchDocuments(...a),
-  listDocuments: (...a) => choisir().listDocuments!(...a),
-  findDocument: (...a) => choisir().findDocument!(...a),
-  listExports: (...a) => choisir().listExports!(...a),
-  // Lectures canoniques : appelées par `data-answer` seulement en enabled.
-  readAssetField: (...a) => canonicalRepository.readAssetField!(...a),
-  sumQualifiedExpenses: (...a) => canonicalRepository.sumQualifiedExpenses!(...a),
-  listMissingInformation: (...a) => canonicalRepository.listMissingInformation!(...a),
-  listUpcomingAgenda: (...a) => canonicalRepository.listUpcomingAgenda!(...a),
-};
-
-/**
- * Port selon le mode courant — les lectures canoniques optionnelles
- * (`readAssetField`, `sumQualifiedExpenses`…) n'y figurent qu'en enabled.
- */
-export function accountDataPortForMode(): AccountDataPort {
-  return choisir();
-}
+export const accountDataRepository: AccountDataPort = createCanonicalAccountDataRepository(baseAccountDataRepository);

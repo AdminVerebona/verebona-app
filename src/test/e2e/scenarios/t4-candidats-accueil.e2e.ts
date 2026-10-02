@@ -4,9 +4,9 @@
  *   · DOD-05 : un document analysé SANS bien, persisté (document_facts),
  *     relu puis rattaché → mêmes candidats que s'il avait été rattaché au
  *     dépôt (récurrence comprise) ;
- *   · rattachement tardif en `enabled` : les candidats partent dans la file T4 ;
+ *   · rattachement tardif : les candidats partent dans la file T4 ;
  *   · accueil : « Prochaines échéances » sans HISTORICAL (D-14), échéances
- *     automatiques lues en `enabled`, requête historique en `legacy`.
+ *     automatiques lues (AI_T4_EFFECTS retiré au lot 16b-2).
  */
 import { it, expect, afterEach } from 'vitest';
 import { scenario } from '../scenario';
@@ -88,7 +88,7 @@ scenario('T4-L14', 'Candidats T4, rattachement tardif, accueil', ({ sql, make })
     expect(apres.find((c) => c.nature === 'DEADLINE')?.recurrence).toMatchObject({ mode: 'EXPLICIT_SOURCE', frequency: 'yearly' });
   });
 
-  it('rattachement tardif en enabled : les candidats partent dans la file T4 ; legacy : rien', async () => {
+  it('rattachement tardif : les candidats partent dans la file T4', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'OBJECT', name: 'Draisienne' });
     const fichier = await make.assetFile(compte);
@@ -100,19 +100,14 @@ scenario('T4-L14', 'Candidats T4, rattachement tardif, accueil', ({ sql, make })
     const jobs = async () => sql<{ payload: { candidates: Array<{ nature?: string; businessType?: string }> } }[]>`
       SELECT payload FROM ai_job_queue WHERE treatment = 'T4' AND account_id = ${compte.id}`;
 
-    process.env.AI_T4_EFFECTS = 'legacy';
-    await projectDocumentKnowledgeToAsset({ accountId: compte.id, userId: compte.ownerUserId, fileId: fichier.id, assetId: bien.id });
-    expect(await jobs()).toHaveLength(0);
-
-    process.env.AI_T4_EFFECTS = 'enabled';
-    process.env.AI_AGENDA_ENGINE = 'enabled';
+    // Lot 16b-2 : rattachement tardif toujours suivi de la file T4 (plus de legacy).
     await projectDocumentKnowledgeToAsset({ accountId: compte.id, userId: compte.ownerUserId, fileId: fichier.id, assetId: bien.id });
     const j = await jobs();
     expect(j).toHaveLength(1);
     expect(j[0].payload.candidates.map((c) => `${c.businessType}:${c.nature}`).sort()).toEqual(['maintenance:DEADLINE', 'purchase:HISTORICAL']);
   });
 
-  it('accueil : prochaines échéances sans HISTORICAL (enabled), requête historique en legacy', async () => {
+  it('accueil : prochaines échéances sans HISTORICAL ; variable retirée sans effet', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { name: 'Clio' });
     const dans = (j: number) => new Date(Date.now() + j * 86_400_000).toISOString().slice(0, 10);
@@ -127,13 +122,11 @@ scenario('T4-L14', 'Candidats T4, rattachement tardif, accueil', ({ sql, make })
     await element('Rendez-vous garage', dans(5), null, false);
 
     const { buildHomeSummary } = await import('@/services/home/HomeSummaryService');
-    process.env.AI_T4_EFFECTS = 'enabled';
     const t4 = (await buildHomeSummary(compte.id)).blocks.upcoming.items.map((i) => i.title);
     expect(t4).toEqual(['Rendez-vous garage', 'Contrôle technique — Clio']);
 
     process.env.AI_T4_EFFECTS = 'legacy';
-    const legacy = (await buildHomeSummary(compte.id)).blocks.upcoming.items.map((i) => i.title);
-    // Historique : automatiques exclus (hors prévisions) — comportement inchangé.
-    expect(legacy).toEqual(['Rendez-vous garage']);
+    const reste = (await buildHomeSummary(compte.id)).blocks.upcoming.items.map((i) => i.title);
+    expect(reste).toEqual(t4);
   });
 });

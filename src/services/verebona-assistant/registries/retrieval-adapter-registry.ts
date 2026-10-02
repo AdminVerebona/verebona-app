@@ -36,18 +36,10 @@ export interface RetrievalQuery {
    * qui savent tolérer davantage l'honorent (préfixe plus court).
    */
   tolerant?: boolean;
-  /**
-   * Lecture canonique (CDC 15 §9, lot 15 — ASSISTANT_CANONICAL_READ=enabled).
-   * Absent ou faux : comportement historique, STRICTEMENT inchangé. Vrai :
-   * filtres structurés (type de document, lien N-N, statut d'analyse,
-   * fournisseur — T2-13, T2-14), cible bien appliquée à tous les
-   * adaptateurs relationnels (T2-16, T2-17), fournisseurs dédoublonnés (T2-05).
-   */
-  canonical?: boolean;
-  /** Filtres structurés d'une recherche de documents (T2-14), mode canonique. */
+  /** Filtres structurés d'une recherche de documents (T2-14). */
   documentFilters?: import('../core/query-terms').DocumentSearchFilters;
   /**
-   * Types de document demandés, appliqués en FILTRE (T2-13), mode canonique :
+   * Types de document demandés, appliqués en FILTRE (T2-13) :
    * racines canoniques (« facture », « devis »…). `documentTypes` reste le
    * bonus historique.
    */
@@ -62,8 +54,8 @@ export interface RetrievalAdapter {
   code: 'structured' | 'full_text' | 'semantic';
   enabled: boolean;
   /**
-   * Types de sources que l'adaptateur peut produire (CDC 15 T2-07) : en mode
-   * canonique, `retrieve()` n'interroge que les adaptateurs dont un type est
+   * Types de sources que l'adaptateur peut produire (CDC 15 T2-07) :
+   * `retrieve()` n'interroge que les adaptateurs dont un type est
    * attendu par l'intention (`expectedSourceTypes`). Absent : adaptateur
    * interrogé seulement en repli (intention sans contrat de sources).
    */

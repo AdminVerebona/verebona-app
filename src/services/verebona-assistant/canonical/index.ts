@@ -3,7 +3,6 @@
  * Point d'entrée public pour Y (recherche, routage) et Z (vérification).
  * Voir `repository.ts` pour l'ensemble, et chaque module pour sa règle.
  */
-export { assistantReadMode, canonicalReadEnabled, type AssistantReadMode } from './mode';
 export {
   readCanonicalField, readCanonicalEntityField, EntityReadCache, openFieldConflicts, formatCanonicalValue, canonicalKeyOf, ORIGIN_LABELS,
   assetFieldSource, assetFieldSourceId, parseAssetFieldSourceId,

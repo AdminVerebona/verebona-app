@@ -177,8 +177,11 @@ export function resetAssistantConfigForTests(): void {
   _cached = null;
 }
 
-/** Opérations passerelle de l'assistant (source unique des modèles). */
-export const ASSISTANT_OPERATIONS = ['understand_request', 'revalidate_fact', 'generate_answer'] as const;
+/**
+ * Opérations passerelle de l'assistant (source unique des modèles) : les
+ * branches du master T2 — seul moteur depuis le lot 16b-2.
+ */
+export const ASSISTANT_OPERATIONS = ['t2_understand', 't2_revalidate', 't2_answer'] as const;
 
 /** Modèles d'une opération, tels que la contrôle le démarrage. */
 export interface OperationModels { primaryModel: string; fallbackModels: string[] }

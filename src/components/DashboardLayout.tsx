@@ -10,24 +10,21 @@
  */
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 
 const DocumentDrawer = dynamic(
   () => import('@/components/assets/DocumentDrawer').then(m => ({ default: m.DocumentDrawer })),
   { ssr: false }
 );
-import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { TrialBanner } from '@/components/subscription/TrialBanner';
 import { isUnpaid } from '@/lib/trial-status';
 import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
-import { Sun, Moon, User, LogOut, X, HelpCircle, CalendarDays } from 'lucide-react';
 import { BottomNavigation } from './mobile/bottom-navigation';
 import { MobileActionsSheet } from './mobile/mobile-actions-sheet';
 import { TopBar } from './TopBar';
-import { NotificationBell } from './NotificationBell';
+import { MobileAccountPanel } from './mobile/mobile-account-panel';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useSession, User as SessionUser } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
@@ -407,7 +404,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
 
           {/* Fil d'Ariane : rendu une fois ici, jamais sur l'accueil (§3.1). */}
           {!isHome && <DashboardBreadcrumb items={breadcrumbItems} />}
-          <main className={isHome ? 'w-full flex-1' : 'w-full flex-1 p-4 pb-32 md:p-6 md:pb-6 lg:p-8'}>
+          {/* pb-36 : la barre basse (onglets + « + » détaché, 2b) mesure ~144 px. */}
+          <main className={isHome ? 'w-full flex-1' : 'w-full flex-1 p-4 pb-36 md:p-6 md:pb-6 lg:p-8'}>
             {/* `overflow-x-clip` et non `hidden` : `hidden` fait de ce bloc un
                 conteneur de défilement, et un élément « sticky » d'une page
                 (résumé de la préparation d'un dossier) ne collait plus. */}
@@ -420,101 +418,30 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     </div>
 
     {/* ══════════════════════════════════════════════════════════════
-        PANNEAU DU COMPTE — MOBILE
+        PANNEAU DU COMPTE — MOBILE (avatar de la barre haute)
 
-        Ce qui relève du compte seulement : la navigation est dans la barre
-        basse, masquée pendant l'ouverture (deux navigations actives en même
-        temps étaient le défaut).
+        Direction D v2, maquette mobile : la barre haute porte le champ
+        Verebona et l'avatar ; la barre basse porte les CINQ onglets (Agenda
+        compris, répartition 2b) et le « + ». Ce panneau ne contient donc que
+        le compte : identité, notifications, Mon compte, aide, administration
+        (si admin), thème, déconnexion confirmée. La mascotte accueille,
+        comme sur l'accueil.
         ══════════════════════════════════════════════════════════════ */}
-    {isMobileMenuOpen && (
-      <div className="fixed inset-0 z-[60] md:hidden">
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)} />
-        <aside className="fixed inset-y-0 right-0 w-[85%] max-w-sm overflow-y-auto border-l border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] shadow-relief-2xl" aria-label="Compte et réglages">
-          <div className="flex h-full flex-col">
-            <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] p-5 pt-[max(20px,env(safe-area-inset-top))]">
-              <Link href="/accueil" onClick={() => setIsMobileMenuOpen(false)} className="select-none">
-                <Logo size={26} withText={true} withBaseline={false} />
-              </Link>
-              <div className="flex items-center gap-1">
-                <NotificationBell />
-                <button
-                  onClick={() => setIsMobileMenuOpen(false)}
-                  aria-label="Fermer"
-                  className="rounded-lg p-2 text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)]"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="border-b border-[color:var(--border-subtle)] p-5">
-              <div className="flex items-center gap-3">
-                <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-sm font-semibold text-white">
-                  {getUserInitials}
-                </span>
-                <div className="min-w-0">
-                  {/* Le nom de la personne, non celui du compte. */}
-                  <p className="truncate text-sm font-semibold text-[color:var(--text-primary)]">
-                    {user ? `${user.firstName} ${user.lastName.charAt(0)}.` : ''}
-                  </p>
-                  <span className="mt-1 inline-block rounded-full bg-[color:var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[color:var(--accent)]">
-                    {statutAbonnement}
-                  </span>
-                  {plusieursEspaces && user?.accountName && (
-                    <p className="mt-1 truncate text-xs text-[color:var(--text-muted)]">{user.accountName}</p>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <nav className="flex-1 space-y-1 p-3">
-              {/* La barre basse garde ses 5 entrées (§4.1) : l'agenda est ici. */}
-              <Link
-                href="/agenda"
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="flex items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
-              >
-                <CalendarDays className="h-5 w-5 flex-shrink-0" />
-                <span className="text-sm">Mon agenda</span>
-              </Link>
-              <Link
-                href="/mon-compte"
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="flex items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
-              >
-                <User className="h-5 w-5 flex-shrink-0" />
-                <span className="text-sm">Mon compte</span>
-              </Link>
-              <button
-                onClick={() => { setIsMobileMenuOpen(false); setHelpModalOpen(true); }}
-                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
-              >
-                <HelpCircle className="h-5 w-5 flex-shrink-0" />
-                <span className="text-sm">Besoin d&apos;aide ?</span>
-              </button>
-              <button
-                onClick={toggleTheme}
-                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)]"
-              >
-                {theme === 'blue' ? <Sun className="h-5 w-5 flex-shrink-0" /> : <Moon className="h-5 w-5 flex-shrink-0" />}
-                <span className="text-sm">{theme === 'blue' ? 'Thème clair' : 'Thème sombre'}</span>
-              </button>
-            </nav>
-
-            {/* Isolé en bas : une déconnexion mêlée aux réglages s'atteint par mégarde. */}
-            <div className="border-t border-[color:var(--border-subtle)] p-3">
-              <button
-                onClick={() => { setIsMobileMenuOpen(false); handleLogout(); }}
-                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]"
-              >
-                <LogOut className="h-5 w-5 flex-shrink-0" />
-                <span className="text-sm">Se déconnecter</span>
-              </button>
-            </div>
-          </div>
-        </aside>
-      </div>
-    )}
+    <MobileAccountPanel
+      open={isMobileMenuOpen}
+      onClose={() => setIsMobileMenuOpen(false)}
+      pathname={pathname}
+      greetingName={user.username?.trim() || user.firstName || ''}
+      personName={`${user.firstName} ${user.lastName.charAt(0)}.`}
+      initials={getUserInitials}
+      planLabel={statutAbonnement}
+      accountName={plusieursEspaces ? user.accountName : null}
+      isAdmin={isAdmin}
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      onOpenHelp={() => setHelpModalOpen(true)}
+      onLogout={handleLogout}
+    />
 
     {/* Navigation basse flottante — mobile (§4.1) */}
     {!isMobileMenuOpen && <BottomNavigation toProcessCount={aTraiterCount} />}

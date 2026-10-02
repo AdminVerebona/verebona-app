@@ -34,7 +34,7 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? 
  */
 export interface TileOptions {
   /**
-   * CDC 15 T4-12 (AI_T4_EFFECTS=enabled) : une échéance passée sans statut est
+   * CDC 15 T4-12 : une échéance passée sans statut est
    * NON PROUVÉE, pas « non réalisée ». Tuile ambre « à confirmer », nature
    * `verify` (pose `questioning`), au lieu de rouge « en retard »
    * (`alert-folder`). Absent / false : comportement historique.
@@ -274,7 +274,7 @@ function kindOf(x: MascotParagraph): NonNullable<MascotTile['kind']> {
  *   rien à traiter → `success-check` ;
  *   discours indisponible → `neutral` (jamais « tout est à jour » sur une panne).
  *
- * Cohérence avec les 4 statuts de T4 (CDC 15 T4-12, AI_T4_EFFECTS=enabled) :
+ * Cohérence avec les 4 statuts de T4 (CDC 15 T4-12) :
  *   · completed     → l'élément est réalisé, il ne remonte plus ;
  *   · not_completed → jamais écrit : PROPOSÉ via « À traiter » (carte ATP,
  *                     pose `questioning` ou `reminder-bell` selon la carte) ;

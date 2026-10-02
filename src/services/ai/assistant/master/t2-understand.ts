@@ -2,12 +2,12 @@
  * Branche UNDERSTAND du master T2 — CDC 15 §24 (A1–A6), T2-08.
  *
  * Fournie au propriétaire de la classification (Y) : `classification.adapter`
- * l'appelle À LA PLACE de `understand_request` quand
- * `getPromptArchitecture('T2') === 'master'`, puis construit la route avec
- * son propre `toIntentRoute(result.plan, planType)` — les droits restent
- * ceux du registre des intentions, jamais ceux du modèle.
+ * l'appelle (seul moteur depuis le lot 16b-2, `understand_request` retiré),
+ * puis construit la route avec son propre `toIntentRoute(result.plan,
+ * planType)` — les droits restent ceux du registre des intentions, jamais
+ * ceux du modèle.
  *
- * Même enveloppe que l'étape historique : question masquée (§29.4), budget
+ * Enveloppe : question masquée (§29.4), budget
  * du message (CA-07 : réparation OU escalade), plafond de sortie et délais
  * par `executeWithinBudget`, clé d'idempotence propre (`t2_understand`).
  * Contrôles serveur APRÈS validation : `requestedFacts` restreint aux clés

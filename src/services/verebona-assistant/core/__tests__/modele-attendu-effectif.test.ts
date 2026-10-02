@@ -36,17 +36,18 @@ afterEach(() => { delete process.env.VEREBONA_ASSISTANT_MODEL_ASSISTANT_DEFAULT;
 
 describe('modèle attendu = chaîne effective', () => {
   it('aliasForRank : la chaîne résolue prime sur la configuration statique', () => {
-    const chaine = { operationCode: 'generate_answer', default: 'gemini-bo-principal', escalation: 'gemini-bo-repli' };
-    expect(aliasForRank(0, 'generate_answer', chaine).expectedModel).toBe('gemini-bo-principal');
-    expect(aliasForRank(1, 'generate_answer', chaine).expectedModel).toBe('gemini-bo-repli');
-    expect(aliasForRank(0, 'generate_answer').expectedModel).toBe('gemini-statique');
+    const chaine = { operationCode: 't2_answer', default: 'gemini-bo-principal', escalation: 'gemini-bo-repli' };
+    expect(aliasForRank(0, 't2_answer', chaine).expectedModel).toBe('gemini-bo-principal');
+    expect(aliasForRank(1, 't2_answer', chaine).expectedModel).toBe('gemini-bo-repli');
+    expect(aliasForRank(0, 't2_answer').expectedModel).toBe('gemini-statique');
   });
 
   it('l’appel réel trace le modèle de la version BO comme attendu : aucun écart', async () => {
-    fakeProvider.onAny(() => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fakeProvider.onAny(() => ({ rawText: '{"mode":"ANSWER","format":"claims","status":"answered","claims":[]}', inputTokens: 1, outputTokens: 1 }));
+    const { t2MasterVariables } = await import('@/services/ai/assistant/master/t2-answer');
     await executeWithinBudget(createAiCallBudget(2), {
-      useCaseCode: 'INTELLIGENT_ASSISTANT', operationCode: 'generate_answer', accountId: 1,
-      promptVariables: { QUESTION: 'q' }, outputSchema: z.object({ ok: z.boolean() }), idempotencyKey: `k-${Math.random()}`,
+      useCaseCode: 'INTELLIGENT_ASSISTANT', operationCode: 't2_answer', accountId: 1,
+      promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q', INTENT: 'ACCOUNT_SUMMARY' }), outputSchema: z.object({ mode: z.literal('ANSWER') }).passthrough(), idempotencyKey: `k-${Math.random()}`,
     }, { requestId: 'req-bo', routeReason: 'x', promptId: 'p', promptVersion: 'v' });
     await awaitAiRuns('req-bo');
     const insertion = h.unsafe.mock.calls.find(([sql]) => /INSERT INTO verebona_ai_runs/.test(String(sql)))!;

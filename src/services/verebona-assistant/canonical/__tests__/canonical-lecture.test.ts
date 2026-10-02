@@ -1,11 +1,10 @@
 /**
  * Couche de lecture canonique de l'assistant (CDC 15 §9, lot 15) — règles
- * pures : commutateur, champ et source de niveau champ, statut d'agenda,
+ * pures : champ et source de niveau champ, statut d'agenda,
  * dépenses qualifiées, complétude, fournisseurs, règles d'offre, synthèse,
  * détection des questions.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { assistantReadMode, __resetAssistantReadModeForTests } from '../mode';
+import { describe, it, expect } from 'vitest';
 import {
   formatCanonicalValue, assetFieldSource, assetFieldSourceId, parseAssetFieldSourceId, type CanonicalFieldReading,
 } from '../field-reader';
@@ -18,21 +17,12 @@ import { boundedExcerpt, synthesisSourceContent } from '../synthesis-content';
 import { findReadableField, isFieldQuestion, upcomingAgendaRequest, fieldAnswer } from '../structured-answers';
 import { unchangedSinceConfirmation } from '../commands';
 import { attachCanonical } from '../repository';
-import { assistantCanonicalReadMode, rolloutSnapshot } from '@/services/canonical/rollout';
+import { rolloutSnapshot, ROLLOUT_SWITCHES } from '@/services/canonical/rollout';
 
-afterEach(() => __resetAssistantReadModeForTests());
-
-describe('commutateur ASSISTANT_CANONICAL_READ', () => {
-  it('legacy par défaut ; enabled ; shadow = legacy (pas de mode observation), signalé une fois', () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    expect(assistantReadMode({})).toBe('legacy');
-    expect(assistantReadMode({ ASSISTANT_CANONICAL_READ: 'enabled' })).toBe('enabled');
-    expect(assistantReadMode({ ASSISTANT_CANONICAL_READ: 'shadow' })).toBe('legacy');
-    expect(assistantReadMode({ ASSISTANT_CANONICAL_READ: 'shadow' })).toBe('legacy');
-    expect(info).toHaveBeenCalledTimes(1);
-    expect(assistantCanonicalReadMode({ ASSISTANT_CANONICAL_READ: 'shadow' })).toBe('legacy');
-    expect(rolloutSnapshot({}).find((s) => s.name === 'ASSISTANT_CANONICAL_READ')?.wired).toBe(true);
-    info.mockRestore();
+describe('lecture canonique seule (lot 16b-2)', () => {
+  it('commutateur ASSISTANT_CANONICAL_READ retiré : ni déclaré, ni dans l’instantané', () => {
+    expect(Object.keys(ROLLOUT_SWITCHES)).not.toContain('ASSISTANT_CANONICAL_READ');
+    expect(rolloutSnapshot({ ASSISTANT_CANONICAL_READ: 'legacy' } as never).map((x) => x.name)).not.toContain('ASSISTANT_CANONICAL_READ');
   });
 });
 

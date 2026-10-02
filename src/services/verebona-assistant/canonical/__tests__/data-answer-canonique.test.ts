@@ -1,7 +1,7 @@
 /**
  * Réponses exactes de l'assistant en lecture canonique (CDC 15 T2-02, T2-04,
- * T2-15, T2-22, T2-23, T2-24, T2-32 ; lot 15) — et legacy strictement
- * inchangé : mêmes questions, stratégies historiques.
+ * T2-15, T2-22, T2-23, T2-24, T2-32 ; lot 15). Lot 16b-2 : lecture
+ * canonique seule (ASSISTANT_CANONICAL_READ et lecture historique retirés).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
@@ -57,11 +57,9 @@ const ask = (message: string, p: Port = port()) =>
 
 afterEach(() => { delete process.env.ASSISTANT_CANONICAL_READ; });
 
-describe('ASSISTANT_CANONICAL_READ=enabled', () => {
-  const on = () => { process.env.ASSISTANT_CANONICAL_READ = 'enabled'; };
+describe('lecture canonique', () => {
 
   it('T2-22 / T2-32 : un champ du registre, source de niveau champ', async () => {
-    on();
     const r = await ask('Quel est le kilométrage de la Clio ?');
     expect(r.strategy).toBe('structured.asset_field');
     expect(r.answer).toBe('Kilométrage de Clio : 45 000 km. Valeur retenue après rapprochement de vos documents.');
@@ -70,7 +68,6 @@ describe('ASSISTANT_CANONICAL_READ=enabled', () => {
   });
 
   it('T2-23 : date d’achat lue dans acquisitionDate canonique', async () => {
-    on();
     const r = await ask('Quand ai-je acheté la Clio ?');
     expect(r.strategy).toBe('structured.asset_field');
     expect(r.answer).toContain('Vous avez acheté Clio le 25 mai 2021');
@@ -78,7 +75,6 @@ describe('ASSISTANT_CANONICAL_READ=enabled', () => {
   });
 
   it('T2-24 : dépenses d’entretien qualifiées, couverture incomplète et exclus signalés', async () => {
-    on();
     const r = await ask('Combien ai-je dépensé en entretien pour la Clio ?');
     expect(r.strategy).toBe('structured.sum_qualified');
     expect(r.answer).toMatch(/^Dépenses de entretien documentées pour Clio : 450,00\s€ \(2 documents\)\./);
@@ -87,13 +83,11 @@ describe('ASSISTANT_CANONICAL_READ=enabled', () => {
   });
 
   it('T2-24 : aucun document qualifié mais des non qualifiés → pas de total affirmé', async () => {
-    on();
     const r = await ask('Combien ai-je dépensé en assurance pour la Clio ?');
     expect(r.answer).toContain('Je ne peux pas isoler vos dépenses de assurance');
   });
 
   it('T2-15 : échéances à venir sur une fenêtre ; « bientôt » = 30 jours', async () => {
-    on();
     const r = await ask('Quelles échéances arrivent bientôt pour la Clio ?');
     expect(r.strategy).toBe('structured.upcoming_agenda');
     expect(r.answer).toContain('dans les 30 prochains jours');
@@ -103,7 +97,6 @@ describe('ASSISTANT_CANONICAL_READ=enabled', () => {
   });
 
   it('T2-04 : informations manquantes depuis le registre', async () => {
-    on();
     const r = await ask('Qu’est-ce qui manque sur la fiche de la Clio ?');
     expect(r.strategy).toBe('structured.missing_information');
     expect(r.answer).toContain('à renseigner : immatriculation');
@@ -111,7 +104,6 @@ describe('ASSISTANT_CANONICAL_READ=enabled', () => {
   });
 
   it('T2-02 : la valeur canonique prime sur un fait T1 divergent', async () => {
-    on();
     const fait = {
       id: 1, fileId: 9, factKey: 'mileage', subject: 'Clio', attribute: 'compteur', label: null, valueText: '44 000', valueNumber: 44000,
       valueUnit: 'km', confidence: 'certain', excerpt: 'Kilométrage : 44 000', documentTitle: 'PV CT', matchedTerms: 1,
@@ -124,25 +116,10 @@ describe('ASSISTANT_CANONICAL_READ=enabled', () => {
   });
 });
 
-describe('legacy : strictement inchangé', () => {
-  it('mêmes questions, stratégies et lectures historiques ; aucune lecture canonique', async () => {
-    const p = port();
-    const spies = {
-      readAssetField: vi.spyOn(p, 'readAssetField'), sum: vi.spyOn(p, 'sumQualifiedExpenses'),
-      missing: vi.spyOn(p, 'listMissingInformation'), upcoming: vi.spyOn(p, 'listUpcomingAgenda'),
-    };
-    expect((await ask('Quand ai-je acheté la Clio ?', p)).strategy).toBe('structured.purchase_date');
-    const sum = await ask('Combien ai-je dépensé en entretien pour la Clio ?', p);
-    expect(sum.strategy).toBe('structured.sum_amounts');
-    expect(sum.answer).toMatch(/1\s234,00/);
-    expect((await ask('Quel est le kilométrage de la Clio ?', p)).strategy).not.toBe('structured.asset_field');
-    for (const s of Object.values(spies)) expect(s).not.toHaveBeenCalled();
-  });
-
-  it('shadow = legacy', async () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'shadow';
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    expect((await ask('Quand ai-je acheté la Clio ?')).strategy).toBe('structured.purchase_date');
+describe('variable retirée encore posée : sans effet', () => {
+  it('ASSISTANT_CANONICAL_READ=legacy : lecture canonique quand même', async () => {
+    process.env.ASSISTANT_CANONICAL_READ = 'legacy';
+    expect((await ask('Quand ai-je acheté la Clio ?')).strategy).not.toBe('structured.purchase_date');
   });
 });
 
@@ -151,16 +128,11 @@ describe('contrat de sources de l’intention au niveau 2 (T2-07, corpus §15 E2
   const avecDoc = port({ searchDocuments: async () => [doc] as never });
   const demande = (intent: string) => answerFromData({ port: avecDoc, accountId: 1, message: 'Retrouve le contrôle technique', thresholds: DEFAULT_THRESHOLDS, intent });
 
-  it('enabled : une intention sans document au contrat n’obtient jamais un document ; la recherche documentaire, si', async () => {
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
+  it('une intention sans document au contrat n’obtient jamais un document ; la recherche documentaire, si', async () => {
     const agenda = await demande('ACCOUNT_SEARCH_AGENDA');
     expect(agenda.handled).toBe(false);
     expect(agenda.sources).toEqual([]);
     expect((await demande('ACCOUNT_SEARCH_DOCUMENT')).strategy).toBe('retrieval.document');
-  });
-
-  it('legacy : inchangé', async () => {
-    expect((await demande('ACCOUNT_SEARCH_AGENDA')).strategy).toBe('retrieval.document');
   });
 
   it('intentionSansDocuments : contrat vide ou absent → non', async () => {

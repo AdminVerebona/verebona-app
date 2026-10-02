@@ -18,7 +18,6 @@ const { toApiPayload } = await import('../api-payload');
 const { cachedRetrieve, retrievalCacheKey, invalidateRetrievalCacheForAccount, clearRetrievalCache, setCacheVersionStoreForTests } = await import('../retrieval-cache');
 const { capabilityAllows, isAiEligibleFor, capabilitiesForPlan } = await import('../../registries/capability-registry');
 const { routeForIntent } = await import('../intent-router.service');
-const { describeAccountRights } = await import('../../prompts/rights-layer');
 type Ports = import('../assistant-orchestrator.service').OrchestratorPorts;
 type Input = import('../../types/contracts').AssistantRequestInput;
 type Result = import('../../types/contracts').AssistantRunResult;
@@ -220,12 +219,5 @@ describe('§25.6 — éligibilité lue dans le registre des capacités', () => {
   it('intention sans capacité : pas de restriction propre ; capacité désactivée : refus', () => {
     expect(capabilityAllows('GREETING', 'STANDARD')).toBe(true);
     expect(capabilitiesForPlan('PREMIUM').closed.map((c) => c.code)).toContain('voice_io');
-  });
-
-  it('couche « droits et offre » : Standard sans réponses rédigées, fin d’essai signalée', () => {
-    const t = describeAccountRights({ planType: 'STANDARD', planLimit: 'TRIAL_EXPIRED' });
-    expect(t).toMatch(/Offre effective : Standard/);
-    expect(t).toMatch(/Réponses rédigées à partir des documents : non incluses/);
-    expect(t).toMatch(/Essai terminé/);
   });
 });

@@ -93,14 +93,14 @@ export function isPromptArchitecture(v: unknown): v is PromptArchitecture {
   return typeof v === 'string' && (PROMPT_ARCHITECTURES as readonly string[]).includes(v);
 }
 
-/** Architecture par défaut d'un traitement : `master` pour T5 et T6 (lot 16b), `steps` sinon. */
+/** Architecture par défaut d'un traitement : `master` pour T2, T4, T5 et T6 (lot 16b), `steps` sinon. */
 export function defaultPromptArchitectureFor(treatment: Treatment): PromptArchitecture {
   return isMasterOnlyTreatment(treatment) ? 'master' : DEFAULT_PROMPT_ARCHITECTURE;
 }
 
 /**
  * Architecture effective d'une entrée : absente ou illisible ⇒ `steps`.
- * T5 et T6 (traitement connu de l'entrée) : TOUJOURS `master`, quelle que
+ * T2, T4, T5 et T6 (traitement connu de l'entrée) : TOUJOURS `master`, quelle que
  * soit la valeur stockée — leur architecture `steps` est retirée (lot 16b).
  */
 export function promptArchitectureOf(

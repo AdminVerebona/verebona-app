@@ -104,11 +104,9 @@ const eslintConfig = [
       'src/app/api/assets/*/ai-suggestions/route.ts',       // lot 3
       'src/app/api/documents/*/analyze/route.ts',           // lot 2
       'src/app/api/documents/*/commit/route.ts',            // lot 2
-      'src/app/api/search/intelligent/route.ts',            // lot 5
-      'src/app/api/search/route.ts',                        // lot 5
-      'src/lib/gemini-search.ts',                           // lot 5
-      'src/lib/intelligent-search.ts',                      // lot 5
-      'src/services/agenda/AgendaClassificationService.ts', // lot 4
+      // Lot 16b-2 : recherche Gemini (D-H2) et classifieur agenda historique
+      // supprimés — `search/intelligent`, `search/route.ts`, `gemini-search`,
+      // `intelligent-search`, `AgendaClassificationService` sortis de la liste.
       'src/services/document-ai/apply-ai-suggestions.ts',   // lot 3
       'src/services/document-ai/enrich-and-coherence.service.ts', // lot 3
       'src/services/document-ai/gemini-client.ts',          // lot 7

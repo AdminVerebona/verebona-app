@@ -77,6 +77,12 @@ export async function enqueueGeneration(params: {
     return { ok: false, status: 422, code: 'NOT_ELIGIBLE', message: CIL_NOT_ELIGIBLE_MESSAGE };
   }
 
+  // Modèle désactivé depuis le back-office (BO « Modèles d'export »).
+  const { loadInactiveDossiers, DOSSIER_UNAVAILABLE_MESSAGE } = await import('@/services/exports/dossier-availability');
+  if ((await loadInactiveDossiers()).has(code)) {
+    return { ok: false, status: 409, code: 'DOSSIER_UNAVAILABLE', message: DOSSIER_UNAVAILABLE_MESSAGE };
+  }
+
   // Dossiers prêts à l'emploi : Premium et Premium Duo (essai compris).
   const decision = await canUsePremiumFeature(asset.accountId);
   if (!decision.allowed) {

@@ -141,7 +141,6 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     expect(fiche.sections.common.acquisitionDate).toBe('2021-05-25');
 
     // T2 : lecture canonique de l'assistant.
-    process.env.ASSISTANT_CANONICAL_READ = 'enabled';
     const { readCanonicalField } = await import('@/services/verebona-assistant/canonical/field-reader');
     const t2 = await readCanonicalField(compte.id, bien.id, 'acquisitionDate');
     expect(t2?.value).toBe('2021-05-25');

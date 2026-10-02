@@ -3,8 +3,7 @@
  * lot 18).
  *
  * Appelée par T4 (`processAgendaCandidates`) quand `detectTemporalAmbiguity`
- * signale une date incertaine (lecture jj/mm ↔ mm/jj, mention relative),
- * SEULEMENT si T4 est en architecture `master` et `AI_T4_EFFECTS=enabled`.
+ * signale une date incertaine (lecture jj/mm ↔ mm/jj, mention relative).
  * Candidat certain de la liste fournie → appliqué ; abstention, hors liste
  * ou échec → carte AGENDA-PROPOSAL avec les dates possibles, sans création.
  */

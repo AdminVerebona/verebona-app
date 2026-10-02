@@ -89,11 +89,12 @@ describe('T5 choisit les cibles', () => {
     getVersion.mockResolvedValue(version());
     execute.mockResolvedValue(sortie({ targets: [
       { treatment: 'T1', reason: 'titre', proposedContent: NEW('T1') },
-      { treatment: 'T2', reason: 'citation', proposedContent: NEW('T2') },
+      // T3 (encore en `steps` possible) ; T2 et T4 n'ont plus que leur master (lot 16b-2).
+      { treatment: 'T3', reason: 'citation', proposedContent: NEW('T3') },
     ] }));
     const r = await modify(demande());
     expect(savePrompt).toHaveBeenCalledTimes(2);
-    expect(r.changes.map((c) => [c.treatment, c.applied])).toEqual([['T1', true], ['T2', true]]);
+    expect(r.changes.map((c) => [c.treatment, c.applied])).toEqual([['T1', true], ['T3', true]]);
     expect(r).toMatchObject({ applied: true, draftId: 1, mode: 'modify' });
     expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't5_modify' });
     expect(Object.keys(execute.mock.calls[0][0].promptVariables).sort()).toEqual(['CURRENT_MASTER_PROMPTS', 'INSTRUCTION']);
