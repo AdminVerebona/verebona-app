@@ -29,7 +29,7 @@ const { isHelpPath } = await import('@/lib/help-center/open');
 const { suggestionsForRoute } = await import('../../registries/capability-registry');
 
 const art = (over: Partial<HelpCorpusArticle>): HelpCorpusArticle => ({
-  id: 'AID-X', title: 'Titre', path: '/aide/titre', category: 'c', categoryName: 'C', summary: '',
+  id: 'AID-X', title: 'Titre', status: 'published', validatedAt: '2026-09-01', path: '/aide/titre', category: 'c', categoryName: 'C', summary: '',
   offers: ['standard', 'premium', 'premium_duo'], offersLabel: 'Toutes les offres', offersNote: null,
   synonyms: [], sections: [], ...over,
 });
@@ -38,17 +38,17 @@ const CORPUS: HelpCorpus = {
   schema: 'verebona-help-t2-v1', version: 't', environment: 'preprod',
   articles: [
     art({
-      id: 'AID-DOC-001', title: 'Ajouter un document', path: '/aide/ajouter-un-document', synonyms: ['déposer', 'importer'],
+      id: 'AID-DOC-001', title: 'Ajouter un document', status: 'published', validatedAt: '2026-09-01', path: '/aide/ajouter-un-document', synonyms: ['déposer', 'importer'],
       screens: ['Mes documents'], platforms: ['web', 'mobile'],
       sections: [{ anchor: 'procedure', heading: 'Procédure', text: 'Ouvrez Documents puis choisissez Ajouter un document. Sélectionnez le fichier, 25 Mo maximum par document, puis validez.' }],
     }),
     art({
-      id: 'AID-ASSET-010', title: 'Ajouter un document à un bien', path: '/aide/ajouter-document-bien', synonyms: ['déposer', 'importer'],
+      id: 'AID-ASSET-010', title: 'Ajouter un document à un bien', status: 'published', validatedAt: '2026-09-01', path: '/aide/ajouter-document-bien', synonyms: ['déposer', 'importer'],
       screens: ['Fiche bien', 'Fiche bien > Documents'], objectTypes: ['bien'],
       sections: [{ anchor: 'procedure', heading: 'Procédure', text: 'Depuis la fiche du bien, onglet Documents, choisissez Ajouter un document puis sélectionnez le fichier.' }],
     }),
     art({
-      id: 'AID-MOB-001', title: 'Scanner un document sur mobile', path: '/aide/scanner-mobile', platforms: ['mobile'],
+      id: 'AID-MOB-001', title: 'Scanner un document sur mobile', status: 'published', validatedAt: '2026-09-01', path: '/aide/scanner-mobile', platforms: ['mobile'],
       sections: [{ anchor: 'procedure', heading: 'Procédure', text: 'Sur mobile, touchez Scanner pour ajouter un document photographié.' }],
     }),
   ],

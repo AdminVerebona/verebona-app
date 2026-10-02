@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { checkAssistantRateLimit } from '@/lib/verebona/rate-limit';
+import { clientIp } from '@/lib/verebona/api-guard';
 import { ensureMigrations } from '@/db';
 import { getEntitlements } from '@/services/entitlements.service';
 import { refuserSiPasDIA } from '@/lib/write-access-guard';
@@ -76,7 +77,7 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
   // 2. Rate limit (§6.6) : `VEREBONA_ASSISTANT_RATE_LIMIT_PER_MINUTE` par
   //    utilisateur (10 par défaut) et 3× par compte — limiteur DÉDIÉ, qui ne
   //    partage plus son quota avec le téléversement de fichiers.
-  const rl = checkAssistantRateLimit(session.userId, accountId, cfg.rateLimitPerMinute);
+  const rl = await checkAssistantRateLimit(session.userId, accountId, undefined, undefined, clientIp(req));
   if (!rl.allowed) {
     return NextResponse.json(
       { error: { code: 'RATE_LIMITED', message: 'Vous avez posé beaucoup de questions en peu de temps. Réessayez dans un instant.', recoverable: true } },

@@ -6,7 +6,7 @@
  * clarification éventuelle avec ses choix).
  */
 import type { AssistantApiResponse, AssistantRunResult } from '../types/contracts';
-import { isAssistantFlagOn } from '../config/assistant-flags';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
 
 export function toApiPayload(result: AssistantRunResult, conversationId?: number | null): AssistantApiResponse {
   const sourcesOn = isAssistantFlagOn('sources');

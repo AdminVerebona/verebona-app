@@ -13,6 +13,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { openDrawerFromLink } from '@/lib/drawers';
+import { trackAssistantUsage } from '@/lib/verebona/usage-events';
 import { formatSourceMeta, sourcesToggleLabel, type SourceRow } from '@/lib/verebona/assistant-ui';
 
 export interface VerebonaSourcesProps {
@@ -99,7 +100,7 @@ export function VerebonaSources({ messageId, count, open: openProp, onOpenChange
                 {r.href && (
                   <Link
                     href={r.href}
-                    onClick={(e) => openDrawerFromLink(e, r.href)}
+                    onClick={(e) => { trackAssistantUsage({ type: 'SOURCE_OPEN', sourceType: r.source_type }); openDrawerFromLink(e, r.href); }}
                     className="mt-1 inline-block text-primary underline"
                   >
                     Ouvrir

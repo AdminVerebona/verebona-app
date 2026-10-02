@@ -13,13 +13,19 @@ vi.mock('@/db', () => ({
 vi.mock('../../events/business-events', () => ({ emitBusinessEvent: vi.fn(async () => {}) }));
 
 const {
-  loadHelpCorpus, helpCorpusHealth, resetHelpCorpusCacheForTests, setHelpCorpusStoreForTests,
+  loadHelpCorpus, helpCorpusHealth, resetHelpCorpusCacheForTests, setHelpCorpusStoreForTests, searchHelpCorpus,
 } = await import('../help-corpus.service');
+
+/** Ancien format (avant D-O) : ni statut ni date de validation. */
+const ancien = (version: string) => {
+  const c = corpus(version) as unknown as { articles: Array<Record<string, unknown>> };
+  return { ...c, articles: c.articles.map(({ status: _s, validatedAt: _v, ...a }) => a) };
+};
 
 const corpus = (version: string, environment = 'preprod'): HelpCorpus => ({
   schema: 'verebona-help-t2-v1', version, environment,
   articles: [{
-    id: 'AID-1', title: 'Ajouter un document', path: '/aide/ajouter-un-document', category: 'documents',
+    id: 'AID-1', title: 'Ajouter un document', status: 'published', validatedAt: '2026-09-01', path: '/aide/ajouter-un-document', category: 'documents',
     categoryName: 'Documents', summary: 's', offers: ['standard'], offersLabel: 'Toutes', offersNote: null,
     synonyms: [], sections: [{ anchor: 'a', heading: 'h', text: 't' }],
   }],
@@ -129,6 +135,41 @@ describe('PUB-01 — dernier corpus valide', () => {
     const { isReservedIdempotencyKey, NOT_RESERVED_IDEMPOTENCY_KEY_SQL } = await import('@/services/ai/idempotency/idempotency.service');
     expect(isReservedIdempotencyKey(`${HELP_CORPUS_STORE_KEY_PREFIX}production`)).toBe(true);
     expect(NOT_RESERVED_IDEMPOTENCY_KEY_SQL).toContain(`NOT LIKE '${HELP_CORPUS_STORE_KEY_PREFIX}%'`);
+  });
+
+  it('D-O : corpus publié avec des articles mais AUCUN citable → invalide, « à republier », repli, jamais enregistré', async () => {
+    reponse = json(corpus('v1'));
+    await loadHelpCorpus();
+    await vi.waitFor(() => expect(store.write).toHaveBeenCalledTimes(1));
+    reponse = json(ancien('v2'));
+    expect((await relire())?.version).toBe('v1');
+    expect(helpCorpusHealth()).toMatchObject({ status: 'warning', source: 'last_valid_memory', alert: { code: 'HELP_CORPUS_INVALID' } });
+    expect(helpCorpusHealth().alert!.message).toMatch(/corpus d’aide à republier/);
+    expect(store.write).toHaveBeenCalledTimes(1);
+    expect((memoire.get('preprod')!.corpus as { version: string }).version).toBe('v1');
+  });
+
+  it('transition : copie EN BASE à l’ancien format servie avec l’ancienne règle (jamais vidée), alerte « à republier »', async () => {
+    memoire.set('preprod', { corpus: ancien('v0'), at: '2026-09-01T00:00:00.000Z' });
+    reponse = json(ancien('v2'));
+    const c = await loadHelpCorpus();
+    expect(c?.version).toBe('v0');
+    expect(c?.articles).toHaveLength(1);
+    expect(c?.legacyPublication).toBe(true);
+    expect(searchHelpCorpus(c!, 'ajouter un document')).toHaveLength(1);
+    expect(helpCorpusHealth()).toMatchObject({ status: 'warning', source: 'last_valid_db' });
+    expect(helpCorpusHealth().alert!.message).toMatch(/ancien format.*corpus d’aide à republier/);
+    // Relecture suivante (mémoire) : toujours signalé.
+    reponse = async () => { throw new Error('ECONNRESET'); };
+    expect((await relire())?.version).toBe('v0');
+    expect(helpCorpusHealth().alert!.message).toMatch(/à republier/);
+    expect(store.write).not.toHaveBeenCalled();
+  });
+
+  it('corpus en direct à l’ancien format : jamais servi avec l’ancienne règle', async () => {
+    reponse = json(ancien('v2'));
+    expect(await loadHelpCorpus()).toBeNull();
+    expect(helpCorpusHealth()).toMatchObject({ status: 'warning', source: 'none' });
   });
 });
 

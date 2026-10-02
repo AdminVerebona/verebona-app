@@ -74,11 +74,16 @@ export interface PurgeReport {
   feedbackDeleted: number;
   /** Traces de demandes et d'appels modèle de l'assistant (§29.7 : 90 j). */
   assistantRunsDeleted: number;
+  /** Événements d'usage anonymes (§32.3, D-J7 : rétention des agrégats, 13 mois). */
+  usageEventsDeleted?: number;
   durationMs: number;
 }
 
 export async function purgeAssistantData(now = new Date()): Promise<PurgeReport> {
   const startedAt = Date.now();
+  // D-J1 : durée d'historique administrée dans le BO, relue avant la purge.
+  const { refreshAssistantSettings } = await import('@/services/verebona-assistant/config/assistant-settings');
+  await refreshAssistantSettings(true);
   const RETENTION = retentionPolicy();
 
   // 1. Conversations expirées : purge complète (messages, citations,
@@ -138,6 +143,15 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
     await deleteWhere('verebona_request_runs', `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`).catch(() => 0)
     + await deleteWhere('verebona_ai_runs', `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`).catch(() => 0);
 
+  // 7. Indicateurs d'usage anonymes (§32.3, D-J7) : même rétention que les
+  //    agrégats et le feedback (13 mois) ; compteurs du limiteur partagé
+  //    (D-J2) au-delà de 10 minutes (le limiteur purge aussi au fil de l'eau).
+  const usageEvents = await deleteWhere(
+    'verebona_usage_events',
+    `created_at < NOW() - INTERVAL '${RETENTION.feedbackMonths} months'`,
+  ).catch(() => 0);
+  await deleteWhere('verebona_rate_limit_counters', `window_start < NOW() - INTERVAL '10 minutes'`).catch(() => 0);
+
   return {
     messagesDeleted: messages,
     conversationsDeleted: conversations,
@@ -145,6 +159,7 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
     technicalLogsDeleted: technical,
     feedbackDeleted: feedback,
     assistantRunsDeleted: assistantRuns,
+    usageEventsDeleted: usageEvents,
     durationMs: Date.now() - startedAt,
   };
 }

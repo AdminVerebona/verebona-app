@@ -553,16 +553,19 @@ describe('§8.2 — suggestions : page > compte > générique', () => {
 // ── §10.4 — articles archivés et questions sans réponse ───────────────────
 
 describe('§10.4 — articles archivés filtrés, questions sans réponse remontées', () => {
-  const article = (id: string, status?: string) => ({
+  const article = (id: string, status?: string, validatedAt: string | null = '2026-09-01') => ({
     id, title: 'Ajouter un document', path: `/aide/${id.toLowerCase()}`, category: 'documents', categoryName: 'Documents',
     summary: 'Déposer un fichier.', offers: ['standard'], offersLabel: 'Toutes', offersNote: null, synonyms: ['déposer'],
     sections: [{ anchor: 'p', heading: 'Procédure', text: 'Ouvrez Documents puis Ajouter un document.' }], ...(status ? { status } : {}),
+    ...(validatedAt ? { validatedAt } : {}),
   });
-  it('seuls les articles publiés (ou sans statut) sont des sources', () => {
+  it('seuls les articles publiés ET validés sont des sources (§10.3, D-O)', () => {
     const c = parseHelpCorpus({ schema: 'verebona-help-t2-v1', version: 'v', environment: 'preprod', articles: [
       article('AID-1'), article('AID-2', 'published'), article('AID-3', 'archived'), article('AID-4', 'draft'),
+      article('AID-5', 'published', null), article('AID-6', 'published', '2999-01-01'), article('AID-7', 'published', '01/09/2026'),
     ] })!;
-    expect(c.articles.map((a) => a.id)).toEqual(['AID-1', 'AID-2']);
+    // Sans statut, sans date, date future ou illisible : jamais une source.
+    expect(c.articles.map((a) => a.id)).toEqual(['AID-2']);
     // Double garde : même un corpus non filtré ne fait pas remonter l'archivé.
     const brut = { schema: 'verebona-help-t2-v1' as const, version: 'v', environment: 'preprod', articles: [article('AID-3', 'archived')] };
     expect(searchHelpCorpus(brut, 'ajouter un document')).toHaveLength(0);

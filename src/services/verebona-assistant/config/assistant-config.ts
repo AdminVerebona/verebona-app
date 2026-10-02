@@ -6,15 +6,23 @@
  * locale, idempotence et conservation sont obligatoires (§43).
  */
 
-import { isAssistantFlagOn } from './assistant-flags';
+import { isAssistantFlagOn } from './assistant-flags.server';
+import { onAssistantSettingsChange, overrideForEnv } from './assistant-settings';
 import { ASSISTANT_MAX_OUTPUT_TOKENS } from '@/services/ai/registry/operations';
 
+// D-J1 (lot 21) : une valeur administrée dans le BO (`assistant-settings.ts`)
+// prime sur la variable d'environnement, qui reste la valeur initiale et le
+// repli documenté.
 function num(name: string, def: number): number {
+  const o = overrideForEnv(name);
+  if (typeof o === 'number') return o;
   const v = process.env[name];
   const n = v == null ? NaN : Number(v);
   return Number.isFinite(n) ? n : def;
 }
 function bool(name: string, def: boolean): boolean {
+  const o = overrideForEnv(name);
+  if (typeof o === 'boolean') return o;
   const v = process.env[name];
   if (v == null) return def;
   return v === 'true' || v === '1';
@@ -39,6 +47,8 @@ export function flagOnByDefault(raw: string | undefined): boolean {
  * tests peuvent le basculer sans réinitialiser la configuration.
  */
 export function areWriteCommandsEnabled(): boolean {
+  const o = overrideForEnv('VEREBONA_ASSISTANT_WRITE_COMMANDS');
+  if (typeof o === 'boolean') return o;
   return flagOnByDefault(process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS);
 }
 
@@ -117,7 +127,7 @@ export function loadAssistantConfig(): AssistantConfig {
     // résolus au moment de l'appel ; le contrôle du registre (§15.14) tourne
     // au démarrage et à chaque changement de configuration
     // (`core/model-startup-check.ts`).
-    writeCommandsEnabled: flagOnByDefault(process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS),
+    writeCommandsEnabled: areWriteCommandsEnabled(),
     maxAiCallsPerRequest: num('VEREBONA_ASSISTANT_MAX_AI_CALLS_PER_REQUEST', 2),
     maxInputTokens: num('VEREBONA_ASSISTANT_MAX_INPUT_TOKENS', 12000),
     // `maxOutputTokens` retiré (CDC 15 T2-43) : la configuration IA effective
@@ -156,6 +166,8 @@ export function loadAssistantConfig(): AssistantConfig {
 }
 
 let _cached: AssistantConfig | null = null;
+// Réglages administrés modifiés (cette instance ou une autre) : relecture.
+onAssistantSettingsChange(() => { _cached = null; });
 export function getAssistantConfig(): AssistantConfig {
   if (!_cached) _cached = loadAssistantConfig();
   return _cached;

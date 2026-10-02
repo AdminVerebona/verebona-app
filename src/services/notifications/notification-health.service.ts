@@ -92,8 +92,10 @@ export async function getNotificationHealth(
       SELECT channel                                              AS canal,
              count(*)::int                                        AS total,
              count(*) FILTER (WHERE status = 'sent')::int         AS envoyees,
-             count(*) FILTER (WHERE status = 'failed')::int       AS echouees
-      FROM notification_deliveries
+             count(*) FILTER (WHERE status = 'failed' AND NOT EXISTS (
+               SELECT 1 FROM notification_outbox o
+               WHERE o.id = d.outbox_id AND o.status = 'reemitted'))::int AS echouees
+      FROM notification_deliveries d
       WHERE created_at > now() - ${depuis}::interval
       GROUP BY channel ORDER BY total DESC
     `,

@@ -74,6 +74,17 @@ export type T2ContentResult =
   | { ok: false; code: 'REASON_REQUIRED' | 'FORBIDDEN' | 'NOT_FOUND' | 'EXPIRED'; message: string };
 
 async function logAccess(adminUserId: number, requestId: string, accountId: number | null, reason: string, result: string): Promise<void> {
+  // §32.7 « journalisation des consultations sensibles » (D-J1, lot 21) :
+  // aussi au journal des actions administrateur, avec le résultat — la
+  // consultation refusée est tracée comme la consultation accordée.
+  await import('@/lib/admin-audit').then(({ logAdminAction }) => logAdminAction({
+    adminId: adminUserId,
+    action: 'ASSISTANT_CONTENT_READ',
+    targetType: 'ASSISTANT_REQUEST',
+    targetId: null,
+    result: result === 'GRANTED' ? 'SUCCESS' : result === 'DENIED' ? 'DENIED' : 'FAILURE',
+    details: { requestId: requestId.slice(0, 80), accountId, result, reason: reason.slice(0, 500) },
+  })).catch((e: Error) => console.error('[t2-content] journal admin non écrit :', e.message));
   await pgClient.unsafe(
     `INSERT INTO ai_t2_content_access_log (admin_user_id, request_id, account_id, reason, result)
      VALUES ($1, $2, $3, $4, $5)`,
@@ -124,3 +135,24 @@ export async function readT2Content(p: { adminUserId: number; requestId: string;
     })),
   };
 }
+
+/** Journal des consultations sensibles (§32.7) — écran Configuration IA › Assistant. */
+export async function listT2ContentAccesses(limit = 50): Promise<Array<{
+  at: string; adminUserId: number; adminEmail: string | null; requestId: string; result: string; reason: string;
+}>> {
+  const rows = (await pgClient.unsafe(
+    `SELECT l.created_at, l.admin_user_id, u.email, l.request_id, l.result, l.reason
+       FROM ai_t2_content_access_log l LEFT JOIN users u ON u.id = l.admin_user_id
+      ORDER BY l.created_at DESC LIMIT $1`,
+    [Math.min(Math.max(limit, 1), 200)] as never[],
+  )) as unknown as Row[];
+  return rows.map((r) => ({
+    at: new Date(String(r.created_at)).toISOString(),
+    adminUserId: Number(r.admin_user_id),
+    adminEmail: r.email == null ? null : String(r.email),
+    requestId: String(r.request_id),
+    result: String(r.result),
+    reason: String(r.reason),
+  }));
+}
+

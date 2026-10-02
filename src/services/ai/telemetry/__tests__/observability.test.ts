@@ -537,3 +537,26 @@ describe('T2 — indicateurs techniques §32.2 (lot 19)', () => {
   });
 });
 
+describe('T2 — indicateurs d’usage §32.3 (lot 21)', () => {
+  it('ouvertures, clics sur l’action principale, sources, copies, retours ; par offre, sans compte', async () => {
+    responses = [
+      [/AS traced/, [{ total: 10, traced: 10 }]],
+      [/FROM verebona_usage_events/, [
+        { type: 'ASSISTANT_OPEN', value: '—', plan: 'PREMIUM', n: 12 },
+        { type: 'ACTION_CLICK', value: 'primary', plan: 'PREMIUM', n: 4 },
+        { type: 'ACTION_CLICK', value: 'secondary', plan: 'STANDARD', n: 1 },
+        { type: 'SOURCE_OPEN', value: '—', plan: 'PREMIUM', n: 3 },
+        { type: 'ANSWER_COPY', value: '—', plan: 'STANDARD', n: 2 },
+        { type: 'FEEDBACK', value: 'helpful', plan: 'PREMIUM', n: 5 },
+        { type: 'FEEDBACK', value: 'not_helpful', plan: 'PREMIUM', n: 1 },
+      ]],
+    ];
+    const r = await getObservability({ domain: 'T2', days: 7 }, NOW);
+    expect([val(r, 'usage_opens'), val(r, 'usage_primary_clicks'), val(r, 'usage_primary_click_rate')]).toEqual([12, 4, 40]);
+    expect([val(r, 'usage_other_clicks'), val(r, 'usage_source_opens'), val(r, 'usage_source_open_rate')]).toEqual([1, 3, 30]);
+    expect([val(r, 'usage_copies'), val(r, 'usage_feedback_positive'), val(r, 'usage_feedback_negative')]).toEqual([2, 5, 1]);
+    expect(table(r, 't2_usage_by_plan')).toContainEqual({ plan: 'PREMIUM', opens: 12, clicks: 4, sources: 3, copies: 0, feedback: 6 });
+    expect(calls.find((c) => /verebona_usage_events/.test(c.sql))!.sql).not.toMatch(/account|user/);
+  });
+});
+

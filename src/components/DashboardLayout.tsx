@@ -25,6 +25,7 @@ import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
 import { Sun, Moon, User, LogOut, X, HelpCircle, CalendarDays } from 'lucide-react';
 import { BottomNavigation } from './mobile/bottom-navigation';
+import { MobileActionsSheet } from './mobile/mobile-actions-sheet';
 import { TopBar } from './TopBar';
 import { NotificationBell } from './NotificationBell';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -309,15 +310,14 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     : false;
 
   // ══════════════════════════════════════════════════════════════════════
-  // PAS DE « + AJOUTER » GLOBAL SUR ORDINATEUR (Direction D v2 §3.1)
+  // « + AJOUTER » EN TÊTE DU MENU LATÉRAL (ORDINATEUR)
   //
-  // La spécification ne prévoit ni bouton « + » dans le menu latéral, ni
-  // dans le header : les ajouts se font depuis les pages (« Mes biens »,
-  // « Mes documents », « Mon agenda »), l'accueil (compte vide, tuiles de la
-  // mascotte) et, sur mobile, le « + » central de la barre basse (qui porte
-  // ses propres fenêtres et sa propre garde d'écriture). Les fenêtres d'ajout
-  // que la coquille montait pour l'ancien bouton sont retirées.
+  // Rétabli à la demande produit (il avait été retiré avec la Direction D v2
+  // §3.1). Il ouvre le même panneau que le « + » central de la barre basse
+  // mobile (`MobileActionsSheet`, document / échéance / bien), avec la même
+  // garde d'écriture (`useWriteGuard`) : refus annoncé avant la saisie.
   // ══════════════════════════════════════════════════════════════════════
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -362,6 +362,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         initials={getUserInitials}
         planLabel={statutAbonnement}
         footerSlot={<SidebarPlanCard trialDaysLeft={user.subscription?.trialDaysLeft ?? null} />}
+        onAdd={() => setAddSheetOpen(true)}
       />
 
       {/* Colonne de la page : header, espace de réponse superposé, contenu */}
@@ -373,6 +374,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
           onLogout={handleLogout}
           isAdmin={isAdmin}
           onOpenHelp={() => setHelpModalOpen(true)}
+          showBrand={sidebarCollapsed}
         />
 
         {/* ══════════════════════════════════════════════════════════════
@@ -516,6 +518,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
 
     {/* Navigation basse flottante — mobile (§4.1) */}
     {!isMobileMenuOpen && <BottomNavigation toProcessCount={aTraiterCount} />}
+
+    {/* Panneau du « + Ajouter » du menu latéral (ordinateur) */}
+    <MobileActionsSheet open={addSheetOpen} onOpenChange={setAddSheetOpen} allViewports />
 
     {/* Espace de réponse mobile, plein écran (§6.3) */}
     <VerebonaMobileSpace />

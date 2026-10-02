@@ -30,7 +30,7 @@ async function lire(
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   // §27 : lectures limitées elles aussi (limiteur dédié de l'assistant).
-  const limite = readRateLimited(session.userId, accountId, httpId);
+  const limite = await readRateLimited(session.userId, accountId, httpId, req);
   if (limite) return limite;
 
   await ensureMigrations();

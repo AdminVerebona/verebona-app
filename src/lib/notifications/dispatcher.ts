@@ -19,6 +19,7 @@ import { renderContent } from './content-renderer';
 import { resolveChannels } from './policy-resolver';
 import { applyChannelActivation, loadDisabledChannels, CHANNEL_DISABLED_ERROR_CODE } from './channel-activation';
 import { deliverBell, deliverEmail, deliverWebPush, type DeliveryOutcome, type DeliveryContext } from './channels';
+import { lireRestrictionReemission, appliquerRestrictionReemission } from './reemission-restriction';
 import { claimByIds, claimPending, markProcessed, releaseOrFail, type OutboxRow } from './outbox';
 
 export interface DispatchSummary {
@@ -59,8 +60,11 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     return 'failed';
   }
 
-  const payload = row.payload_json ?? {};
-  const resolved = await resolveChannels(row.recipient_user_id, entry);
+  // Réémission (§20.3) : seuls les canaux en échec de la ligne d'origine sont
+  // servis — une cloche, même obligatoire, déjà livrée ne l'est pas deux fois.
+  // La clé technique est retirée avant le rendu.
+  const { payload, restriction } = lireRestrictionReemission(row.payload_json ?? {});
+  const resolved = appliquerRestrictionReemission(await resolveChannels(row.recipient_user_id, entry), restriction);
   const rendered = renderContent(entry, payload, row.deep_link);
 
   // CDC BO COM-011 / REC-MOD-01 : un canal désactivé depuis le BO n'est pas
@@ -83,6 +87,7 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     payload,
     dedupeKey: row.dedupe_key,
     mustDeliverBell: !!row.mandatory_bell || entry.mandatoryBell,
+    ...(restriction?.pushSubscriptionIds ? { pushSubscriptionIds: restriction.pushSubscriptionIds } : {}),
   };
 
   const outcomes: DeliveryOutcome['status'][] = [];

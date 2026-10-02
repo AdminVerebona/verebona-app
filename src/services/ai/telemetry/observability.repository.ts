@@ -828,6 +828,54 @@ async function t2Technical(s: Scope, p: [string, string], total: number, errors:
   };
 }
 
+/**
+ * Indicateurs d'usage — CDC Assistant §32.3 (lot 21, D-J7) : ouvertures,
+ * clics sur l'action principale et les autres, ouvertures de source, copies,
+ * retours. Événements ANONYMES (`verebona_usage_events`) : aucun compte.
+ * Taux rapportés au nombre de demandes de la période.
+ */
+async function t2Usage(p: [string, string], total: number, errors: string[]): Promise<DomainResult> {
+  const rows = await tryMany(
+    `SELECT event_type AS type, COALESCE(value, '—') AS value, COALESCE(plan, '—') AS plan, COUNT(*)::int AS n
+       FROM verebona_usage_events WHERE created_at >= $1 AND created_at < $2
+      GROUP BY 1, 2, 3 ORDER BY n DESC LIMIT 200`,
+    p, errors, 'Indicateurs d’usage',
+  );
+  const r: Row | null = rows ? {} : null;
+  const compte = (type: string, value?: string) => (rows ?? [])
+    .filter((x) => x.type === type && (value === undefined || x.value === value)).reduce((a, x) => a + n(x.n), 0);
+  const taux = (k: number) => (total > 0 ? Math.round((k / total) * 1000) / 10 : null);
+  const parOffre = new Map<string, Record<string, number>>();
+  for (const x of rows ?? []) {
+    const o = parOffre.get(String(x.plan)) ?? {};
+    o[String(x.type)] = (o[String(x.type)] ?? 0) + n(x.n);
+    parOffre.set(String(x.plan), o);
+  }
+  return {
+    metrics: [
+      M('usage_opens', 'Ouvertures de Verebona', r, () => compte('ASSISTANT_OPEN')),
+      M('usage_primary_clicks', 'Clics sur l’action principale', r, () => compte('ACTION_CLICK', 'primary')),
+      M('usage_primary_click_rate', 'Réponses menant à l’action principale', r, () => taux(compte('ACTION_CLICK', 'primary')), 'percent', 'Aucune demande sur la période.'),
+      M('usage_other_clicks', 'Clics sur une autre action', r, () => compte('ACTION_CLICK', 'secondary')),
+      M('usage_source_opens', 'Ouvertures de source', r, () => compte('SOURCE_OPEN')),
+      M('usage_source_open_rate', 'Taux d’ouverture d’une source', r, () => taux(compte('SOURCE_OPEN')), 'percent', 'Aucune demande sur la période.'),
+      M('usage_copies', 'Réponses copiées', r, () => compte('ANSWER_COPY')),
+      M('usage_feedback_positive', 'Retours positifs', r, () => compte('FEEDBACK', 'helpful')),
+      M('usage_feedback_negative', 'Retours négatifs', r, () => compte('FEEDBACK', 'not_helpful')),
+    ],
+    tables: rows ? [{
+      key: 't2_usage_by_plan', label: 'Usage par offre (§32.3, anonyme)',
+      columns: [{ key: 'plan', label: 'Offre' }, { key: 'opens', label: 'Ouvertures' }, { key: 'clicks', label: 'Clics' },
+        { key: 'sources', label: 'Sources' }, { key: 'copies', label: 'Copies' }, { key: 'feedback', label: 'Retours' }],
+      rows: [...parOffre.entries()].map(([plan, o]) => ({
+        plan, opens: o.ASSISTANT_OPEN ?? 0, clicks: o.ACTION_CLICK ?? 0, sources: o.SOURCE_OPEN ?? 0,
+        copies: o.ANSWER_COPY ?? 0, feedback: o.FEEDBACK ?? 0,
+      })),
+    }] : [],
+    notes: ['Indicateurs d’usage : événements anonymes envoyés par l’application (aucun compte, aucun utilisateur), conservés 13 mois.'],
+  };
+}
+
 async function domainT2(s: Scope, errors: string[]): Promise<DomainResult> {
   const usage = await usageMetrics('INTELLIGENT_ASSISTANT', s, errors);
   const p = bp(s);
@@ -923,6 +971,8 @@ async function domainT2(s: Scope, errors: string[]): Promise<DomainResult> {
   }
   // §32.2 (lot 19) : indicateurs techniques et compteurs d'instance.
   const tech = await t2Technical(s, p, total, errors);
+  // §32.3 (lot 21, D-J7) : indicateurs d'usage anonymes.
+  const usage32 = await t2Usage(p, total, errors);
   return {
     metrics: [
       M('requests', 'Demandes', t, (x) => n(x.total)),
@@ -935,9 +985,10 @@ async function domainT2(s: Scope, errors: string[]): Promise<DomainResult> {
       M('avg_sources', 'Sources par demande (moyenne)', t, (x) => (x.avg_sources == null ? null : Math.round(Number(x.avg_sources) * 100) / 100), 'decimal'),
       ...usage,
       ...tech.metrics,
+      ...usage32.metrics,
     ],
-    tables: [...tables, ...tech.tables],
-    notes: [...notes, ...tech.notes],
+    tables: [...tables, ...tech.tables, ...usage32.tables],
+    notes: [...notes, ...tech.notes, ...usage32.notes],
   };
 }
 

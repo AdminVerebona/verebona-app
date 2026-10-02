@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin } from '@/lib/auth-guards';
+import { logNotificationAction, requireAdminContext } from '../_shared';
 import { db } from '@/db';
 import { notificationOutbox, notificationDeliveries } from '@/db/schema';
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
@@ -11,11 +11,8 @@ import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
  * Query: ?userId=&type=&limit=
  */
 export async function GET(request: NextRequest) {
-  try {
-    await requireAdmin(request);
-  } catch {
-    return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
-  }
+  const guard = await requireAdminContext(request);
+  if (!guard.ok) return guard.response;
 
   const url = new URL(request.url);
   const userId = url.searchParams.get('userId');
@@ -62,6 +59,9 @@ export async function GET(request: NextRequest) {
     (byEvent[d.outboxId] ??= []).push({ channel: d.channel, status: d.status, count: Number(d.count) });
   }
 
+  await logNotificationAction(guard, 'NOTIFICATION_SEARCH', 'SUCCESS', {
+    criteres: { userId: userId && /^\d+$/.test(userId) ? Number(userId) : null, type: type ?? null, limit }, resultats: events.length,
+  });
   return NextResponse.json({
     events: events.map((e) => ({ ...e, deliveries: byEvent[e.id] ?? [] })),
     count: events.length,

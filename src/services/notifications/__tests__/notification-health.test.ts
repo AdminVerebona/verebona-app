@@ -81,10 +81,13 @@ describe('§20.3 — les cinq conditions de la réémission', () => {
     expect(REEMISSION).not.toMatch(/mandatoryEmail: true/);
   });
 
-  it('crée une nouvelle ligne au lieu de modifier l’originale', () => {
-    // Modifier la ligne d'origine effacerait l'historique de l'incident.
+  it('crée une nouvelle ligne ; l’originale ne change que de statut (« réémise »)', () => {
+    // Modifier le contenu de la ligne d'origine effacerait l'historique de
+    // l'incident : seul son statut passe à `reemitted` (revue lot 21).
     expect(REEMISSION).toMatch(/insert\(notificationOutbox\)/);
-    expect(REEMISSION).not.toMatch(/update\(notificationOutbox\)/);
+    const maj = REEMISSION.match(/update\(notificationOutbox\)[\s\S]{0,80}/g) ?? [];
+    expect(maj).toHaveLength(1);
+    expect(maj[0]).toMatch(/\.set\(\{ status: 'reemitted' \}\)/);
   });
 
   it('emploie une clé de déduplication distincte', () => {
@@ -93,9 +96,9 @@ describe('§20.3 — les cinq conditions de la réémission', () => {
     expect(REEMISSION).toMatch(/reemis/);
   });
 
-  it('consigne une trace d’audit', () => {
-    expect(REEMISSION).toContain('adminAuditLog');
-    expect(REEMISSION).toContain('NOTIFICATION_REEMISSION');
+  it('consigne une trace d’audit (journal commun, D-L lot 21)', () => {
+    expect(REEMISSION).toContain('logAdminAction');
+    expect(REEMISSION).toContain('NOTIFICATION_REEMIT');
   });
 
   it('n’interrompt pas la réémission si l’audit échoue', () => {

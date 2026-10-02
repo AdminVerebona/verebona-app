@@ -101,7 +101,7 @@ scenario('AI-OBS-T2', 'Observabilité assistant : §32.2, §32.5, PUB-01', ({ sq
     const corpus = {
       schema: 'verebona-help-t2-v1' as const, version: 'e2e-v1', environment: 'local',
       articles: [{
-        id: 'AID-E2E', title: 'Ajouter un document', path: '/aide/ajouter-un-document', category: 'documents',
+        id: 'AID-E2E', title: 'Ajouter un document', status: 'published', validatedAt: '2026-09-01', path: '/aide/ajouter-un-document', category: 'documents',
         categoryName: 'Documents', summary: 's', offers: ['standard'], offersLabel: 'Toutes', offersNote: null,
         synonyms: [], sections: [{ anchor: 'a', heading: 'h', text: 't' }],
       }],

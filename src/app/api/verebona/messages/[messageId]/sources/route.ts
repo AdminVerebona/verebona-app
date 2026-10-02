@@ -19,7 +19,7 @@ import { MessageParamsSchema, SourcesQuerySchema } from '@/lib/verebona/api-sche
 import { marquerDisponibilite } from '@/services/verebona-assistant/core/source-availability.service';
 import type { ResolvedSource, SourceType } from '@/services/verebona-assistant/types/sources';
 import { TYPE_LABELS } from '@/services/verebona-assistant/core/source-resolver.service';
-import { isAssistantFlagOn } from '@/services/verebona-assistant/config/assistant-flags';
+import { isAssistantFlagOn } from '@/services/verebona-assistant/config/assistant-flags.server';
 
 /** Sources par page (§19.3 : 5 affichées directement, §27.8 : pagination au-delà). */
 const PAGE_SIZE = 5;
@@ -44,7 +44,7 @@ async function lire(
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   // §27 : lectures limitées elles aussi (limiteur dédié de l'assistant).
-  const limite = readRateLimited(session.userId, accountId, httpId);
+  const limite = await readRateLimited(session.userId, accountId, httpId, req);
   if (limite) return limite;
 
   await ensureMigrations();

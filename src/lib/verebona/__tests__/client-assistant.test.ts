@@ -35,11 +35,11 @@ describe('limitation de débit dédiée (§6.6)', () => {
     expect(refus.retryAfterMs).toBeGreaterThan(0);
     expect(l.take('u', 10, 62_000).allowed).toBe(true);
   });
-  it('par utilisateur, puis par compte (3×)', () => {
+  it('par utilisateur, puis par compte (3×)', async () => {
     const t = 5_000_000;
-    for (let i = 0; i < 10; i++) expect(checkAssistantRateLimit(101, 900, 10, t).allowed).toBe(true);
-    expect(checkAssistantRateLimit(101, 900, 10, t)).toMatchObject({ allowed: false, scope: 'user' });
-    for (let u = 102; u < 104; u++) for (let i = 0; i < 10; i++) checkAssistantRateLimit(u, 900, 10, t);
-    expect(checkAssistantRateLimit(104, 900, 10, t)).toMatchObject({ allowed: false, scope: 'account' });
+    for (let i = 0; i < 10; i++) expect((await checkAssistantRateLimit(101, 900, 10, t)).allowed).toBe(true);
+    expect(await checkAssistantRateLimit(101, 900, 10, t)).toMatchObject({ allowed: false, scope: 'user' });
+    for (let u = 102; u < 104; u++) for (let i = 0; i < 10; i++) await checkAssistantRateLimit(u, 900, 10, t);
+    expect(await checkAssistantRateLimit(104, 900, 10, t)).toMatchObject({ allowed: false, scope: 'account' });
   });
 });

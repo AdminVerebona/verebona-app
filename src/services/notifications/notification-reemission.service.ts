@@ -19,14 +19,26 @@
  * ── UNE RÉÉMISSION N'EST PAS UN RENVOI ────────────────────────────────────
  *
  * Elle crée une NOUVELLE ligne, avec sa propre clé de déduplication et sa
- * propre trace. Modifier la ligne d'origine effacerait l'historique de
- * l'incident — or c'est précisément ce qu'on veut conserver : il y a eu un
- * échec, puis une réémission décidée par quelqu'un.
+ * propre trace. Le contenu de la ligne d'origine n'est pas modifié : ce serait
+ * effacer l'historique de l'incident (il y a eu un échec, puis une réémission
+ * décidée par quelqu'un). Seul son statut passe à `reemitted` (« réémise »),
+ * ce qui la retire de la santé des notifications et interdit une seconde
+ * réémission du même échec.
+ *
+ * ── SEULS LES CANAUX EN ÉCHEC SONT RÉÉMIS (revue lot 21) ──────────────────
+ *
+ * Un canal déjà livré (cloche, e-mail, appareil push) ne l'est pas deux fois :
+ * la nouvelle ligne porte dans `payload_json._reemission` la liste des canaux
+ * (et des appareils push) à servir, que le dispatcher applique — y compris à
+ * une cloche obligatoire déjà livrée. Ligne jamais distribuée (aucune
+ * livraison journalisée) : tous les canaux, selon les règles habituelles.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db, pgClient } from '@/db';
-import { notificationOutbox, newsConsents, adminAuditLog } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { notificationOutbox, newsConsents } from '@/db/schema';
+import { logAdminAction } from '@/lib/admin-audit';
+import { and, eq, notInArray } from 'drizzle-orm';
+import { REEMISSION_KEY, type ReemissionRestriction, type ReemissionChannel } from '@/lib/notifications/reemission-restriction';
 
 export class ReemissionError extends Error {
   constructor(readonly code: string, message: string) {
@@ -51,6 +63,37 @@ export interface ReemissionResult {
   nouvelleId: string;
   eventType: string;
   destinataire: number | null;
+  /** Canaux réémis ; `null` = tous (ligne d'origine jamais distribuée). */
+  canaux: ReemissionChannel[] | null;
+}
+
+export interface DeliveryTrace {
+  channel: string;
+  status: string;
+  pushSubscriptionId: string | null;
+}
+
+/**
+ * Canaux à réémettre d'après le journal de livraison de la ligne d'origine.
+ *
+ * - aucune livraison journalisée → `null` : rien n'est parti, tout est réémis ;
+ * - cloche / e-mail : réémis s'ils ont échoué et n'ont jamais été livrés ;
+ * - push : seuls les appareils en échec (jamais livrés) sont visés.
+ * Résultat vide (`canaux: []`) : tout a été livré, rien à réémettre.
+ */
+export function canauxAReemettre(traces: DeliveryTrace[]): ReemissionRestriction | null {
+  if (traces.length === 0) return null;
+  const livre = (c: string, sub: string | null = null) =>
+    traces.some((t) => t.channel === c && t.status === 'sent' && (sub === null || t.pushSubscriptionId === sub));
+  const echoue = (c: string) => traces.some((t) => t.channel === c && t.status === 'failed');
+  const canaux: ReemissionChannel[] = [];
+  for (const c of ['bell', 'email'] as const) if (echoue(c) && !livre(c)) canaux.push(c);
+  const appareils = [...new Set(traces
+    .filter((t) => t.channel === 'push' && t.status === 'failed' && t.pushSubscriptionId)
+    .map((t) => t.pushSubscriptionId as string))]
+    .filter((sub) => !livre('push', sub));
+  if (appareils.length > 0) canaux.push('push');
+  return { canaux, ...(appareils.length > 0 ? { pushSubscriptionIds: appareils } : {}) };
 }
 
 /** Types dont la réémission suppose un consentement en vigueur (§20.3). */
@@ -92,6 +135,12 @@ export async function reemettreNotification(
   if (!origine) {
     throw new ReemissionError('INTROUVABLE', `Événement ${input.outboxId} introuvable.`);
   }
+  if (origine.status === 'reemitted') {
+    throw new ReemissionError('DEJA_REEMISE', 'Cet événement a déjà été réémis : réémettre la nouvelle ligne si besoin.');
+  }
+  if (origine.status === 'processing') {
+    throw new ReemissionError('EN_COURS', 'Événement en cours de distribution : réessayer dans un instant.');
+  }
 
   // ── Condition 5 : consentement aux actualités ───────────────────────────
   const soumisAConsentement = TYPES_SOUMIS_A_CONSENTEMENT.some((t) =>
@@ -117,12 +166,38 @@ export async function reemettreNotification(
   // Les indicateurs `mandatory_*` sont recopiés tels quels. Les forcer à
   // `true` pour « être sûr que ça parte » transformerait une réémission en
   // contournement des préférences de l'utilisateur.
+  // ── Canaux encore à servir ─────────────────────────────────────────────
+  const traces = await pgClient<DeliveryTrace[]>`
+    SELECT channel, status, push_subscription_id AS "pushSubscriptionId"
+    FROM notification_deliveries WHERE outbox_id = ${origine.id}::uuid
+  `;
+  const restriction = canauxAReemettre([...traces]);
+  if (restriction && restriction.canaux.length === 0) {
+    throw new ReemissionError('RIEN_A_REEMETTRE', 'Tous les canaux de cet événement ont été livrés : rien à réémettre.');
+  }
+  const payloadOrigine = (origine.payloadJson ?? {}) as Record<string, unknown>;
+  const payloadJson = restriction
+    ? { ...payloadOrigine, [REEMISSION_KEY]: { origine: origine.id, ...restriction } }
+    : { ...payloadOrigine };
+
   const now = new Date();
   // Clé distincte de l'originale : sans quoi la déduplication rejetterait
   // silencieusement la réémission, qui paraîtrait avoir réussi.
   const dedupeKey = `${origine.dedupeKey}:reemis:${now.getTime()}`;
 
-  const [nouvelle] = await db
+  // Insertion et changement de statut de l'origine dans une même transaction ;
+  // le changement est conditionnel : deux réémissions concurrentes du même
+  // échec n'en produisent qu'une.
+  const nouvelle = await db.transaction(async (tx) => {
+    const marquee = await tx
+      .update(notificationOutbox)
+      .set({ status: 'reemitted' })
+      .where(and(eq(notificationOutbox.id, origine.id), notInArray(notificationOutbox.status, ['reemitted', 'processing'])))
+      .returning({ id: notificationOutbox.id });
+    if (marquee.length === 0) {
+      throw new ReemissionError('DEJA_REEMISE', 'Cet événement vient d’être réémis ou est en cours de distribution.');
+    }
+    const [ligne] = await tx
     .insert(notificationOutbox)
     .values({
       eventType: origine.eventType,
@@ -136,6 +211,7 @@ export async function reemettreNotification(
       priority: origine.priority,
       mandatoryBell: origine.mandatoryBell,
       mandatoryEmail: origine.mandatoryEmail,
+      payloadJson,
       dedupeKey,
       scheduledFor: now,
       status: 'pending',
@@ -143,28 +219,26 @@ export async function reemettreNotification(
       createdAt: now,
     })
     .returning({ id: notificationOutbox.id });
+    return ligne;
+  });
 
   // ── Condition 2 : opération auditée ─────────────────────────────────────
   //
-  // Hors transaction avec l'insertion : une trace d'audit qui ferait échouer
-  // la réémission serait pire que son absence. On la consigne, et un échec
-  // est journalisé sans interrompre.
+  // Journal commun des actions administrateur (`logAdminAction`, D-L lot 21) :
+  // auteur, date, résultat, origine et nouvelle ligne. Hors transaction avec
+  // l'insertion : une trace d'audit qui ferait échouer la réémission serait
+  // pire que son absence (`logAdminAction` ne lève jamais).
   try {
-    await db.insert(adminAuditLog).values({
-      adminUserId: input.actorUserId,
+    await logAdminAction({
+      adminId: input.actorUserId,
       adminEmail: input.actorEmail,
-      actionType: 'NOTIFICATION_REEMISSION',
-      targetType: 'notification_outbox',
+      action: 'NOTIFICATION_REEMIT',
+      targetType: 'NOTIFICATION',
       // `targetId` est un entier ; l'identifiant de la file est un UUID.
       // Il figure donc dans `details`, où il reste exploitable.
       targetId: null,
-      details: JSON.stringify({
-        origine: origine.id,
-        nouvelle: nouvelle.id,
-        eventType: origine.eventType,
-        motif: input.motif ?? null,
-      }),
-      timestamp: now,
+      result: 'SUCCESS',
+      details: { origine: origine.id, nouvelle: nouvelle.id, eventType: origine.eventType, canaux: restriction?.canaux ?? 'tous', motif: input.motif ?? null },
     });
   } catch (e) {
     console.error('[reemission] trace d\'audit non écrite :', (e as Error).message);
@@ -174,6 +248,7 @@ export async function reemettreNotification(
     nouvelleId: nouvelle.id,
     eventType: origine.eventType,
     destinataire: origine.recipientUserId,
+    canaux: restriction?.canaux ?? null,
   };
 }
 

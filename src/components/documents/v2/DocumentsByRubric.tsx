@@ -63,6 +63,8 @@ import {
   hasActiveFilters,
   isToClassify,
   limitGroups,
+  libelleResultats,
+  parseSearchResults,
   sortDocuments,
   sortOptionsFor,
   toggleFilter,
@@ -339,6 +341,17 @@ export function DocumentsByRubric({
     });
   }, [context]);
 
+  // ── Résultats de recherche de l'assistant (Mes documents seulement) ──────
+  const [resultIds, setResultIds] = useState<number[] | null>(null);
+  useEffect(() => {
+    if (assetId || typeof window === 'undefined') return;
+    setResultIds(parseSearchResults(new URLSearchParams(window.location.search).get('resultats')));
+  }, [assetId]);
+  const effacerResultats = () => {
+    setResultIds(null);
+    window.history.replaceState(null, '', window.location.pathname);
+  };
+
   // ── Filtres (jamais mémorisés) et état local ───────────────────────────
   const [filters, setFilters] = useState<ViewFilters>(EMPTY_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -395,7 +408,15 @@ export function DocumentsByRubric({
 
   // ── Données dérivées ───────────────────────────────────────────────────
   // Réponse inattendue (session expirée, proxy) : une page vide, pas une erreur d'affichage.
-  const scope = useMemo(() => (page?.groups ?? []).flatMap((g) => g.documents ?? []), [page]);
+  const tous = useMemo(() => (page?.groups ?? []).flatMap((g) => g.documents ?? []), [page]);
+  // Résultats d'une recherche de l'assistant (OPEN_SEARCH_RESULTS, §22.4) :
+  // `?resultats=12,34`, posé par `/api/verebona/search-results` APRÈS
+  // revérification dans le compte. Ce n'est pas un champ de recherche local
+  // (UX-01) : un filtre retirable, comme les autres.
+  const scope = useMemo(
+    () => (resultIds ? tous.filter((d) => resultIds.includes(d.id)) : tous),
+    [tous, resultIds],
+  );
   const rubrics = useMemo<RubricRef[]>(
     () => (page?.groups ?? []).filter((g) => g.code !== UNFILED).map((g) => ({ code: g.code, label: g.label })),
     [page],
@@ -497,6 +518,16 @@ export function DocumentsByRubric({
           options={options}
           onToggle={(dim, value) => changeFilters(toggleFilter(filters, dim, value))}
         />
+      )}
+      {resultIds && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-secondary)]" data-testid="search-results-filter">
+          {/* Compte des documents réellement trouvés dans la liste, pas des identifiants de l'URL. */}
+          <span>
+            Résultats de la recherche Verebona
+            {page ? ` · ${libelleResultats(scope.length)}` : ''}
+          </span>
+          <Button size="sm" variant="ghost" onClick={effacerResultats}>Tout afficher</Button>
+        </div>
       )}
       <ActiveFilterChips
         chips={chips}

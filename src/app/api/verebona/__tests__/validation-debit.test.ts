@@ -104,17 +104,17 @@ describe('§31.10 — limiteur sur toutes les routes qui écrivent', () => {
   });
 
   it('annulation d’une demande et effacement d’un fil sont limités', async () => {
-    for (let i = 0; i < 30; i++) checkAssistantMutationRateLimit(h.userId, 7, 'cancel');
+    for (let i = 0; i < 30; i++) await checkAssistantMutationRateLimit(h.userId, 7, 'cancel');
     const r = await requests.DELETE(req('http://x/r', 'DELETE'), { params: Promise.resolve({ requestId: 'abc' }) });
     expect(r.status).toBe(429);
-    for (let i = 0; i < 30; i++) checkAssistantMutationRateLimit(h.userId, 7, 'conversation');
+    for (let i = 0; i < 30; i++) await checkAssistantMutationRateLimit(h.userId, 7, 'conversation');
     expect((await conversation.DELETE(req('http://x/c', 'DELETE'))).status).toBe(429);
   });
 
-  it('quotas séparés : les avis ne consomment pas celui des fils', () => {
-    for (let i = 0; i < 30; i++) checkAssistantMutationRateLimit(h.userId, 7, 'feedback');
-    expect(checkAssistantMutationRateLimit(h.userId, 7, 'feedback').allowed).toBe(false);
-    expect(checkAssistantMutationRateLimit(h.userId, 7, 'conversation').allowed).toBe(true);
+  it('quotas séparés : les avis ne consomment pas celui des fils', async () => {
+    for (let i = 0; i < 30; i++) await checkAssistantMutationRateLimit(h.userId, 7, 'feedback');
+    expect((await checkAssistantMutationRateLimit(h.userId, 7, 'feedback')).allowed).toBe(false);
+    expect((await checkAssistantMutationRateLimit(h.userId, 7, 'conversation')).allowed).toBe(true);
   });
 });
 

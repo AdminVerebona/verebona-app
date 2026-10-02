@@ -25,7 +25,7 @@ export async function POST(
   // §27 : identifiant et corps validés par schéma ; §31.10 : limiteur des
   // routes qui écrivent.
   const httpId = httpRequestId(req);
-  const limite = mutationRateLimited(session.userId, accountId, 'feedback', httpId);
+  const limite = await mutationRateLimited(session.userId, accountId, 'feedback', httpId, req);
   if (limite) return limite;
   const p = parseWith(MessageParamsSchema, await params, httpId);
   if (!p.ok) return p.response;

@@ -267,6 +267,21 @@ export async function GET(req: NextRequest) {
       /* indicatif */
     }
 
+    // D-J2 : compteur de débit partagé illisible → repli mémoire (cette instance).
+    try {
+      const { rateLimiterHealth } = await import('@/lib/verebona/rate-limit');
+      const rl = rateLimiterHealth();
+      if (rl.degraded) {
+        alerts.push({
+          severity: 'warning',
+          message: `Limiteur de débit de l’assistant en repli mémoire depuis ${rl.degradedSince?.slice(11, 16) ?? '?'} UTC (${rl.lastError ?? 'base indisponible'}) : plafonds appliqués par instance.`,
+          href: '/admin/ai-config',
+        });
+      }
+    } catch {
+      /* indicatif */
+    }
+
     // Aucune Active : état initial bloquant, avec indication de bootstrap.
     if (!active) {
       alerts.push({

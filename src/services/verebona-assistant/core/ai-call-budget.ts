@@ -25,7 +25,7 @@ import { AiGatewayError } from '@/services/ai/gateway/errors';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import type { AiGatewayRequest, AiGatewayResponse } from '@/services/ai/gateway/types';
 import { assistantMaxOutputTokensCap, getAssistantConfig } from '../config/assistant-config';
-import { isAssistantFlagOn } from '../config/assistant-flags';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { hashPromptVariables, recordAiRun, type AiRunContext } from './usage-tracking.service';
 import { aliasForRank, resolveAliases } from '../registries/model-registry';
 

@@ -32,6 +32,7 @@ import {
   LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, moveActive, navMatches, toLiveResults, type LiveResult,
 } from '@/lib/verebona/live-search';
 import { openDrawer } from '@/lib/drawers';
+import { trackAssistantUsage } from '@/lib/verebona/usage-events';
 import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import { useIsDesktop, useReducedMotion } from '@/hooks/useMediaQuery';
 
@@ -219,6 +220,8 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   const open = useCallback(() => {
     setIsOpen(true);
     focusInput();
+    // §32.3 (D-J7) : ouverture de Verebona (anonyme).
+    trackAssistantUsage({ type: 'ASSISTANT_OPEN' });
   }, [focusInput]);
 
   const close = useCallback(() => {

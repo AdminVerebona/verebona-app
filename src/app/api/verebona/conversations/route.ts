@@ -42,7 +42,7 @@ async function creer(req: NextRequest, httpId: string): Promise<NextResponse> {
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   // §31.10 : créer un fil est une écriture — limiteur dédié.
-  const limite = mutationRateLimited(session.userId, accountId, 'conversation', httpId);
+  const limite = await mutationRateLimited(session.userId, accountId, 'conversation', httpId, req);
   if (limite) return limite;
   // Corps facultatif, validé (§27) : aucun paramètre n'est lu.
   const b = parseWith(CreateConversationSchema, (await readJson(req)) ?? {}, httpId);

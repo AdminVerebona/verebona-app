@@ -9,7 +9,7 @@ import { sql } from 'drizzle-orm';
  *    0100_verebona_assistant.sql via ensureMigrations().
  */
 import {
-  pgTable, serial, integer, text, boolean, real, jsonb, index, uniqueIndex,
+  pgTable, serial, bigserial, integer, text, boolean, real, jsonb, index, uniqueIndex, check,
   timestamp as pgTimestamp, primaryKey,
 } from 'drizzle-orm/pg-core';
 
@@ -257,4 +257,68 @@ export const verebonaPresentedEntities = pgTable('verebona_presented_entities', 
   presentedAt: pgTimestamp('presented_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   convIdx: index('verebona_presented_entities_conv_idx').on(t.conversationId, t.messageId, t.position),
+}));
+
+// ── Migration 0230 (lot 21 — D-J1, D-J2, D-J7) ───────────────────────────────
+// Déclarées pour drizzle-kit (protection contre `db:push`) ; lues et écrites
+// en SQL direct (`config/assistant-settings.ts`, `lib/verebona/shared-rate-limit.ts`,
+// `core/usage-events.ts`). Alignement vérifié par `assistant-admin-schema.test.ts`.
+
+/** Seuils et interrupteurs de l'assistant administrés dans le BO (§6.6, §32.6, CA-30). */
+export const verebonaAssistantSettings = pgTable('verebona_assistant_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedBy: integer('updated_by'),
+  updatedAt: pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Double validation d'un réglage sensible (§32.7). */
+export const verebonaAssistantSettingRequests = pgTable('verebona_assistant_setting_requests', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull(),
+  value: jsonb('value').notNull(),
+  requestedBy: integer('requested_by'),
+  requestedAt: pgTimestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+  decidedBy: integer('decided_by'),
+  decidedAt: pgTimestamp('decided_at', { withTimezone: true }),
+  status: text('status').notNull().default('PENDING'),
+}, (t) => ({
+  pendingUidx: uniqueIndex('verebona_assistant_setting_requests_pending_uidx').on(t.key).where(sql`status = 'PENDING'`),
+  statusCheck: check('verebona_assistant_setting_requests_status_check', sql`${t.status} IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')`),
+}));
+
+/**
+ * Limiteur de débit partagé (§31.10, D-J2).
+ *
+ * ⚠ Table UNLOGGED (migration 0230 : `CREATE UNLOGGED TABLE` puis
+ * `ALTER TABLE … SET UNLOGGED`). Drizzle ne connaît pas cette propriété :
+ * NE PAS recréer la table par `db:push` (ni la supprimer pour la laisser
+ * recréer) — elle le serait journalisée, chaque requête de l'assistant
+ * écrirait alors dans le WAL. La migration 0230 fait foi ; si la table a été
+ * recréée par erreur, rejouer `ALTER TABLE verebona_rate_limit_counters SET UNLOGGED`.
+ * Son contenu (compteurs de la minute) est jetable : vidé après un arrêt brutal.
+ */
+export const verebonaRateLimitCounters = pgTable('verebona_rate_limit_counters', {
+  bucketKey: text('bucket_key').notNull(),
+  windowStart: pgTimestamp('window_start', { withTimezone: true }).notNull(),
+  hits: integer('hits').notNull().default(0),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.bucketKey, t.windowStart] }),
+  windowIdx: index('verebona_rate_limit_counters_window_idx').on(t.windowStart),
+}));
+
+/** Indicateurs d'usage anonymes (§32.3, D-J7). */
+export const verebonaUsageEvents = pgTable('verebona_usage_events', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  eventType: text('event_type').notNull(),
+  actionType: text('action_type'),
+  sourceType: text('source_type'),
+  intent: text('intent'),
+  plan: text('plan'),
+  value: text('value'),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  createdIdx: index('verebona_usage_events_created_idx').on(t.createdAt),
+  typeCheck: check('verebona_usage_events_type_check',
+    sql`${t.eventType} IN ('ASSISTANT_OPEN', 'ACTION_CLICK', 'SOURCE_OPEN', 'ANSWER_COPY', 'FEEDBACK')`),
 }));

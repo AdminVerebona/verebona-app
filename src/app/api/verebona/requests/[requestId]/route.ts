@@ -33,7 +33,7 @@ async function lire(
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   // §27 : lectures limitées elles aussi (le client interroge l'état en boucle).
-  const limite = readRateLimited(session.userId, accountId, httpId);
+  const limite = await readRateLimited(session.userId, accountId, httpId, req);
   if (limite) return limite;
 
   await ensureMigrations();
@@ -64,7 +64,7 @@ export async function DELETE(
   const accountId = session.currentAccountId;
   // §31.10 : l'annulation est une écriture — limiteur dédié ; §27 : schéma.
   const httpId = httpRequestId(req);
-  const limite = mutationRateLimited(session.userId, accountId, 'cancel', httpId);
+  const limite = await mutationRateLimited(session.userId, accountId, 'cancel', httpId, req);
   if (limite) return limite;
   const p = parseWith(RequestParamsSchema, await params, httpId);
   if (!p.ok) return p.response;

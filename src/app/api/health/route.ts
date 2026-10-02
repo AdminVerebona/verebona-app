@@ -81,6 +81,12 @@ interface HealthCheckResult {
      * valide en mémoire ou en base, ou aucun). Avertissement : ne dégrade pas
      * le statut global.
      */
+    /**
+     * Limiteur de débit de l'assistant (D-J2) : compteur partagé en base
+     * indisponible → repli sur la mémoire de l'instance (`warning`, statut
+     * global inchangé : l'assistant reste servi). État en mémoire seulement.
+     */
+    assistantRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
     helpCorpus?: Omit<import('@/services/verebona-assistant/core/help-corpus.service').HelpCorpusHealth, 'status'> & {
       /** `not_loaded` : aucune lecture du corpus sur cette instance depuis son démarrage. */
       status: 'ok' | 'warning' | 'not_loaded';
@@ -201,6 +207,15 @@ export async function GET(request: NextRequest) {
     }
   } catch {
     /* contrôle indicatif : jamais bloquant pour la sonde */
+  }
+
+  // Check 6: limiteur de débit partagé de l'assistant (D-J2), état mémoire.
+  try {
+    const { rateLimiterHealth } = await import('@/lib/verebona/rate-limit');
+    const h = rateLimiterHealth();
+    result.checks.assistantRateLimiter = { status: h.degraded ? 'warning' : 'ok', mode: h.mode, degradedSince: h.degradedSince, lastError: h.lastError };
+  } catch {
+    /* contrôle indicatif */
   }
 
   // Check 5: corpus d'aide de l'assistant (PUB-01). État EN MÉMOIRE

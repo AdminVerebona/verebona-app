@@ -45,7 +45,7 @@ async function traiter(
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   // §31.10 : limiteur des routes qui écrivent.
-  const limite = mutationRateLimited(session.userId, accountId, 'command', httpId);
+  const limite = await mutationRateLimited(session.userId, accountId, 'command', httpId, req);
   if (limite) return limite;
 
   // Défaire écrit : même interrupteur que la confirmation.

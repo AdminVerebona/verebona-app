@@ -69,6 +69,42 @@ export async function readJson(req: Pick<NextRequest, 'json'>): Promise<unknown>
   return req.json().catch(() => ({}));
 }
 
+/**
+ * Corps JSON borné : refuse AVANT analyse un corps de plus de `maxBytes`
+ * (en-tête `Content-Length` d'abord, puis lecture du flux interrompue dès le
+ * dépassement — un corps sans longueur annoncée n'est jamais lu en entier).
+ * `{ tooLarge: true }` → répondre 413 ; JSON illisible → `{ value: {} }`.
+ */
+export async function readBoundedJson(
+  req: Pick<Request, 'headers' | 'body'>,
+  maxBytes: number,
+): Promise<{ tooLarge: true } | { tooLarge: false; value: unknown }> {
+  const annonce = Number(req.headers.get('content-length'));
+  if (Number.isFinite(annonce) && annonce > maxBytes) return { tooLarge: true };
+  if (!req.body) return { tooLarge: false, value: {} };
+  const reader = req.body.getReader();
+  const morceaux: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { tooLarge: true };
+    }
+    morceaux.push(value);
+  }
+  const octets = new Uint8Array(total);
+  let pos = 0;
+  for (const m of morceaux) { octets.set(m, pos); pos += m.byteLength; }
+  try {
+    return { tooLarge: false, value: JSON.parse(new TextDecoder().decode(octets)) };
+  } catch {
+    return { tooLarge: false, value: {} };
+  }
+}
+
 /** Paramètres de la chaîne de requête, sous forme d'objet simple. */
 export function queryObject(req: Pick<NextRequest, 'url'>): Record<string, string> {
   return Object.fromEntries(new URL(req.url).searchParams.entries());
@@ -77,22 +113,52 @@ export function queryObject(req: Pick<NextRequest, 'url'>): Record<string, strin
 /**
  * Limiteur des routes qui écrivent (§31.10). Rend une réponse 429
  * `RATE_LIMITED` à renvoyer telle quelle, ou `null` si la demande passe.
+ * Limiteur partagé entre instances (D-J2), par utilisateur, compte et IP.
  */
-export function mutationRateLimited(
+export async function mutationRateLimited(
   userId: number,
   accountId: number,
   bucket: MutationBucket,
   requestId: string,
-): NextResponse | null {
-  return rateLimitedResponse(checkAssistantMutationRateLimit(userId, accountId, bucket), requestId);
+  req?: Pick<NextRequest, 'headers'>,
+): Promise<NextResponse | null> {
+  return rateLimitedResponse(await checkAssistantMutationRateLimit(userId, accountId, bucket, clientIp(req)), requestId);
 }
 
 /**
  * Limiteur des routes de lecture (§27) : explication, sources, historique,
  * état d'une demande, suggestions. Même réponse 429 que les écritures.
  */
-export function readRateLimited(userId: number, accountId: number, requestId: string): NextResponse | null {
-  return rateLimitedResponse(checkAssistantReadRateLimit(userId, accountId), requestId);
+export async function readRateLimited(
+  userId: number, accountId: number, requestId: string, req?: Pick<NextRequest, 'headers'>,
+): Promise<NextResponse | null> {
+  return rateLimitedResponse(await checkAssistantReadRateLimit(userId, accountId, clientIp(req)), requestId);
+}
+
+/**
+ * Nombre de proxys de confiance devant l'application (`TRUSTED_PROXY_HOPS`,
+ * défaut 1 : le routeur Scalingo, qui AJOUTE l'adresse du client en fin de
+ * `X-Forwarded-For` — à vérifier sur l'hébergement réel). 0 : aucun proxy,
+ * l'en-tête n'est pas fiable et n'est pas lu.
+ */
+export function trustedProxyHops(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.TRUSTED_PROXY_HOPS);
+  return Number.isInteger(n) && n >= 0 && n <= 10 ? n : 1;
+}
+
+/**
+ * Adresse du client pour le limiteur (D-J2) : l'entrée de `X-Forwarded-For`
+ * posée par le proxy de confiance — la N-ième en partant de la FIN (N =
+ * `TRUSTED_PROXY_HOPS`). Les entrées de tête sont fournies par le client,
+ * donc falsifiables : jamais retenues. `null` si rien de fiable.
+ */
+export function clientIp(req?: Pick<NextRequest, 'headers'>, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (!req?.headers) return null;
+  const hops = trustedProxyHops(env);
+  if (hops === 0) return null;
+  const chaine = (req.headers.get('x-forwarded-for') ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const ip = chaine.length ? chaine[Math.max(0, chaine.length - hops)] : null;
+  return ip && /^[0-9a-fA-F:.]{2,64}$/.test(ip) ? ip : null;
 }
 
 function rateLimitedResponse(d: RateDecision, requestId: string): NextResponse | null {

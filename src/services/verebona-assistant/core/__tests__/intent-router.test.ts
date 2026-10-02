@@ -160,7 +160,7 @@ describe('§9.4 étape 7 — base d’aide avant classification', () => {
   const CORPUS: HelpCorpus = {
     schema: 'verebona-help-t2-v1', version: 'test', environment: 'test',
     articles: [{
-      id: 'AID-CPT-002', title: 'Changer son mot de passe', path: '/aide/changer-mot-de-passe',
+      id: 'AID-CPT-002', title: 'Changer son mot de passe', status: 'published', validatedAt: '2026-09-01', path: '/aide/changer-mot-de-passe',
       category: 'compte', categoryName: 'Compte', summary: 'Modifier le mot de passe de connexion.',
       offers: ['standard', 'premium', 'premium_duo'], offersLabel: 'Toutes les offres', offersNote: null,
       synonyms: ['mot de passe', 'identifiant', 'connexion'],

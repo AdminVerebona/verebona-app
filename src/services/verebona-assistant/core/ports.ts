@@ -48,6 +48,7 @@ import { accountDataRepository } from './account-data.repository';
 import { loadCascadeThresholds } from './cascade-thresholds';
 import { loadHelpCorpus } from './help-corpus.service';
 import { DEFAULT_ACTION_BY_INTENT, findNavigationTarget, helpPrimaryAction } from './navigation-targets';
+import { extractSearchTerms } from './query-terms';
 
 /** Vérificateurs d'accès câblés sur les tables réelles du repo (§22.7). */
 function buildAccessChecker(): AccessChecker {
@@ -131,6 +132,13 @@ export function construireActionIntents(
     aideCiblee = true;
   }
 
+  // §22.4 (D-J3) : plusieurs résultats d'une recherche → « Voir les
+  // résultats », qui ouvre Mes documents (ou l'agenda) filtrés sur CES
+  // résultats. En tête : c'est l'action utile d'une liste ; le résolveur
+  // scelle les identifiants dans un jeton signé, lié au compte.
+  const recherche = searchResultsIntent(route.intent, sources);
+  if (recherche && autorisees.has('OPEN_SEARCH_RESULTS')) intents.push(recherche);
+
   for (const source of sources) {
     const ref = parseEntityRef(source.id);
     if (!ref) continue;
@@ -187,9 +195,14 @@ export function construireActionIntents(
   }
 
   const repli = DEFAULT_ACTION_BY_INTENT[route.intent];
-  if (repli && autorisees.has(repli) && !exigeUneCible(repli) && !(repli === 'OPEN_HELP' && aideCiblee)) intents.push({ type: repli });
-  // Question d'aide sans article : l'aveu s'accompagne du contact (T2-03).
-  if (isHelpIntent(route.intent) && aideSources.length === 0 && autorisees.has('OPEN_CONTACT')) {
+  const aideSansArticle = isHelpIntent(route.intent) && aideSources.length === 0;
+  if (repli && autorisees.has(repli) && !exigeUneCible(repli) && !(repli === 'OPEN_HELP' && aideCiblee)) {
+    // Question d'aide sans article (D-J4, §10.6, CDC 14 T2-03) : « Ouvrir
+    // l'aide » D'ABORD, sur la recherche du Centre d'aide avec les mots de la
+    // question — puis le support, en second.
+    intents.push(repli === 'OPEN_HELP' && aideSansArticle ? helpSearchIntent(input.message) : { type: repli });
+  }
+  if (aideSansArticle && autorisees.has('OPEN_CONTACT')) {
     intents.push({ type: 'OPEN_CONTACT' });
   }
 
@@ -376,3 +389,43 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     },
   };
 }
+
+/** Seuil : en dessous, chaque résultat a déjà son bouton (« Ouvrir le document »). */
+export const SEARCH_RESULTS_MIN = 2;
+
+/**
+ * Intention OPEN_SEARCH_RESULTS d'une recherche (documents, biens, agenda)
+ * ayant trouvé au moins `SEARCH_RESULTS_MIN` objets de la portée. Pur.
+ */
+export function searchResultsIntent(intent: string, sources: RetrievedSource[]): ActionIntent | null {
+  const assetOf = (s: RetrievedSource): number | null => {
+    const a = Number(s.meta?.assetId);
+    return Number.isSafeInteger(a) && a > 0 ? a : null;
+  };
+  const refs = sources.map((s) => ({ s, ref: parseEntityRef(s.id) })).filter((x) => x.ref);
+  if (intent === 'ACCOUNT_SEARCH_DOCUMENT' || intent === 'ACCOUNT_SEARCH_ASSET') {
+    const docs = refs.filter((x) => x.ref!.kind === 'document');
+    if (docs.length < SEARCH_RESULTS_MIN) return null;
+    const assets = [...new Set(docs.map((x) => assetOf(x.s)).filter((a): a is number => a !== null))];
+    return { type: 'OPEN_SEARCH_RESULTS', params: { scope: 'documents', ids: docs.map((x) => x.ref!.id).join(','), assets: assets.join(',') } };
+  }
+  if (intent === 'ACCOUNT_SEARCH_AGENDA') {
+    const items = refs.filter((x) => x.ref!.kind === 'agenda_item');
+    if (items.length < SEARCH_RESULTS_MIN) return null;
+    const assets = [...new Set(items.map((x) => assetOf(x.s)).filter((a): a is number => a !== null))];
+    if (assets.length === 0) return null;
+    return { type: 'OPEN_SEARCH_RESULTS', params: { scope: 'agenda', ids: items.map((x) => x.ref!.id).join(','), assets: assets.join(',') } };
+  }
+  return null;
+}
+
+/**
+ * « Ouvrir l'aide » sur la recherche du Centre d'aide (`/aide?q=`), avec les
+ * MOTS UTILES de la question (sans mots vides, 80 caractères au plus) — sans
+ * mot utile, l'accueil du Centre d'aide. Pur.
+ */
+export function helpSearchIntent(message: string): ActionIntent {
+  const q = extractSearchTerms(message).join(' ').slice(0, 80).trim();
+  return { type: 'OPEN_HELP', params: { path: q ? `/aide?q=${encodeURIComponent(q)}` : '/aide', search: true } };
+}
+

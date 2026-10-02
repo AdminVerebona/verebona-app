@@ -60,7 +60,7 @@ export const AI_UNAVAILABLE_NOTICE =
 import { createAiCallBudget, type AiCallBudget } from './ai-call-budget';
 import { findNavigationTarget } from './navigation-targets';
 import { assistantErrorMessage } from '@/lib/verebona/error-messages';
-import { isAssistantFlagOn } from '../config/assistant-flags';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { buildResultGroups } from './result-groups';
 import { foundWithoutInfoMessage } from './document-status';
 import { getIntentDefinition } from '../registries/intent-registry';

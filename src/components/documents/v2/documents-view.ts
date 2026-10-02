@@ -377,3 +377,18 @@ export function countLabel(shown: number, scopeTotal: number, filtered: boolean,
 export function emptyRubricsLine(labels: readonly string[]): string {
   return labels.length ? `Rubriques sans document : ${labels.join(', ')}.` : '';
 }
+
+/** `?resultats=12,34` → identifiants (50 au plus), ou `null`. Pur. */
+/** Bandeau des résultats de l'assistant : nombre de documents réellement trouvés. */
+export function libelleResultats(n: number): string {
+  return n === 0 ? 'aucun résultat' : `${n} document${n > 1 ? 's' : ''}`;
+}
+
+export function parseSearchResults(raw: string | null): number[] | null {
+  if (!raw) return null;
+  // Tous les documents trouvés ont disparu depuis la recherche : filtre vide.
+  if (raw === 'aucun') return [];
+  const ids = raw.split(',').map(Number).filter((n) => Number.isSafeInteger(n) && n > 0).slice(0, 50);
+  return ids.length ? ids : null;
+}
+

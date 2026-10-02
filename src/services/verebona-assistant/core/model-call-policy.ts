@@ -26,7 +26,7 @@ import type { AiGatewayRequest, AiGatewayResponse } from '@/services/ai/gateway/
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import { executeWithinBudget, type AiCallBudget } from './ai-call-budget';
 import type { AiRunContext } from './usage-tracking.service';
-import { isAssistantFlagOn } from '../config/assistant-flags';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
 
 export type ModelFailureKind =
   | 'EMPTY_OUTPUT'

@@ -34,6 +34,8 @@ export interface DeliveryContext {
   payload: any;
   dedupeKey: string;
   mustDeliverBell: boolean;
+  /** Réémission : seuls ces appareils push sont visés (ceux en échec). */
+  pushSubscriptionIds?: string[];
 }
 
 export interface BellOutcome extends DeliveryOutcome {
@@ -129,7 +131,7 @@ export async function deliverWebPush(
   rendered: RenderResult,
   notificationId?: number,
 ): Promise<PushDeliveryResult[]> {
-  const subs = await db
+  const actifs = await db
     .select({
       id: pushSubscriptions.id,
       endpoint: pushSubscriptions.endpoint,
@@ -139,6 +141,8 @@ export async function deliverWebPush(
     })
     .from(pushSubscriptions)
     .where(and(eq(pushSubscriptions.userId, ctx.userId), eq(pushSubscriptions.status, 'active')));
+  const cibles = ctx.pushSubscriptionIds;
+  const subs = cibles ? actifs.filter((r) => cibles.includes(r.id)) : actifs;
 
   if (subs.length === 0) return [];
 

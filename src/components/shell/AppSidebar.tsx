@@ -3,13 +3,17 @@
  * Menu latéral — Direction D v2 §3.1.
  *
  * 240 px, repliable à 64 px par le bouton en tête, à droite du logo
- * (« Réduire le menu » / « Déployer le menu »). Replié : logo masqué, icônes
- * seules, libellés en infobulle, pastille « À traiter » sur l'icône.
+ * (« Réduire le menu » / « Déployer le menu »). Replié : icônes seules,
+ * libellés en infobulle, pastille « À traiter » sur l'icône ; le logo et le
+ * nom Verebona passent alors en tête du header (TopBar `showBrand`) : la
+ * marque reste toujours visible en haut à gauche.
+ * En tête de la navigation, le bouton « + Ajouter » (document, échéance, bien),
+ * qui ouvre le même panneau que le « + » de la barre basse mobile.
  * Élément actif : fond `accent-soft`, texte accent, bordure gauche 2 px.
  * Pied : avatar, nom, offre.
  */
 import Link from 'next/link';
-import { CalendarDays, CircleAlert, FileText, House, Package, type LucideIcon } from 'lucide-react';
+import { CalendarDays, CircleAlert, FileText, House, Package, Plus, type LucideIcon } from 'lucide-react';
 import { Logo } from '@/components/Logo';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { badgeLabel, sidebarToggleLabel, sidebarWidth } from '@/lib/shell/sidebar-state';
@@ -58,9 +62,11 @@ interface AppSidebarProps {
   planLabel: string;
   /** Carte d'essai, affichée menu déplié. */
   footerSlot?: React.ReactNode;
+  /** Bouton « + Ajouter » en tête de la navigation (absent si non fourni). */
+  onAdd?: () => void;
 }
 
-export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, userName, initials, planLabel, footerSlot }: AppSidebarProps) {
+export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, userName, initials, planLabel, footerSlot, onAdd }: AppSidebarProps) {
   const label = sidebarToggleLabel(collapsed);
   const badge = badgeLabel(toProcessCount);
 
@@ -91,6 +97,26 @@ export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, user
           <TooltipContent side="right">{label}</TooltipContent>
         </Tooltip>
       </div>
+
+      {onAdd && (
+        <div className="flex-shrink-0 px-2.5 pb-3 pt-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onAdd}
+                aria-label={collapsed ? 'Ajouter un document, une échéance ou un bien' : undefined}
+                className={`flex h-10 w-full items-center gap-2 whitespace-nowrap rounded-xl text-[14px] font-semibold text-white shadow-sm transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--sidebar)] ${collapsed ? 'justify-center px-0' : 'justify-center px-3'}`}
+                style={{ background: 'linear-gradient(135deg, var(--vb-blue-500), var(--vb-blue-700))' }}
+              >
+                <Plus className="h-[18px] w-[18px] flex-shrink-0" strokeWidth={2.4} aria-hidden />
+                {!collapsed && <span>Ajouter</span>}
+              </button>
+            </TooltipTrigger>
+            {collapsed && <TooltipContent side="right">Ajouter</TooltipContent>}
+          </Tooltip>
+        </div>
+      )}
 
       <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2.5">
         {NAV_ENTRIES.map((item) => {

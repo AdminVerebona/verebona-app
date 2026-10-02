@@ -8,10 +8,8 @@
  * `GET ?id=…` rend l'aperçu qui précède la confirmation.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { SessionService } from '@/lib/session-service';
-import { ensureMigrations } from '@/db';
+import { reemettre, requireAdminContext } from '../_shared';
 import {
-  reemettreNotification,
   apercuReemission,
   ReemissionError,
 } from '@/services/notifications/notification-reemission.service';
@@ -21,27 +19,15 @@ export const dynamic = 'force-dynamic';
 /**
  * Habilitation (§20.3 condition 1) : garde admin serveur commune du BO
  * (CDC BO GEN-002), qui relit le rôle en base si le jeton est antérieur à une
- * promotion. La session est ensuite relue pour tracer l'e-mail de l'acteur.
+ * promotion. Chaque réémission — réussie, refusée ou en échec — est
+ * journalisée (`logAdminAction`, D-L lot 21).
  */
-async function exigerAdmin(req: NextRequest) {
-  await SessionService.requireAdmin(req);
-  return SessionService.getSession(req);
-}
-
 export async function GET(req: NextRequest) {
-  try {
-    await exigerAdmin(req);
-  } catch (e) {
-    if (e instanceof ReemissionError) {
-      return NextResponse.json({ error: e.message, code: e.code }, { status: 403 });
-    }
-    return SessionService.handleSessionError(e);
-  }
+  const guard = await requireAdminContext(req);
+  if (!guard.ok) return guard.response;
 
   const id = req.nextUrl.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'Paramètre `id` requis.' }, { status: 400 });
-
-  await ensureMigrations();
 
   try {
     return NextResponse.json(await apercuReemission(id));
@@ -54,46 +40,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  let session;
-  try {
-    session = await exigerAdmin(req);
-  } catch (e) {
-    if (e instanceof ReemissionError) {
-      return NextResponse.json({ error: e.message, code: e.code }, { status: 403 });
-    }
-    return SessionService.handleSessionError(e);
-  }
-
-  await ensureMigrations();
-
-  let body: Record<string, unknown>;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: 'Corps invalide.' }, { status: 400 });
-  }
-
-  if (typeof body.outboxId !== 'string') {
-    return NextResponse.json({ error: '`outboxId` requis.' }, { status: 400 });
-  }
-
-  try {
-    const resultat = await reemettreNotification({
-      outboxId: body.outboxId,
-      actorUserId: session.userId,
-      actorEmail: session.email ?? `user:${session.userId}`,
-      // §20.3 condition 4 : la confirmation vient du client, explicitement.
-      // Elle n'est jamais déduite de la présence de la requête.
-      confirme: body.confirme === true,
-      motif: typeof body.motif === 'string' ? body.motif : undefined,
-    });
-    return NextResponse.json(resultat);
-  } catch (e) {
-    if (e instanceof ReemissionError) {
-      const status = e.code === 'INTROUVABLE' ? 404 : 409;
-      return NextResponse.json({ error: e.message, code: e.code }, { status });
-    }
-    console.error('[reemission] échec :', (e as Error).message);
-    return NextResponse.json({ error: 'Erreur interne.', code: 'INTERNAL_ERROR' }, { status: 500 });
-  }
+  const guard = await requireAdminContext(req);
+  if (!guard.ok) return guard.response;
+  return reemettre(req, guard, 'NOTIFICATION_REEMIT');
 }

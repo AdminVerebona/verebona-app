@@ -59,19 +59,19 @@ const CORPUS: HelpCorpus = {
   schema: 'verebona-help-t2-v1', version: 'eval', environment: 'preprod',
   articles: [
     {
-      id: 'AID-DOC-001', title: 'Ajouter un document', path: '/aide/ajouter-un-document', category: 'documents', categoryName: 'Documents',
+      id: 'AID-DOC-001', title: 'Ajouter un document', status: 'published', validatedAt: '2026-09-01', path: '/aide/ajouter-un-document', category: 'documents', categoryName: 'Documents',
       summary: 'Déposer un fichier dans Verebona.', offers: ['standard', 'premium', 'premium_duo'], offersLabel: 'Toutes les offres', offersNote: null,
       synonyms: ['déposer', 'importer', 'upload', 'téléverser'],
       sections: [{ anchor: 'procedure', heading: 'Procédure', text: 'Ouvrez Documents puis choisissez Ajouter un document. Sélectionnez le fichier puis validez.' }],
     },
     {
-      id: 'AID-TODO-001', title: 'Comprendre « À traiter »', path: '/aide/comprendre-a-traiter', category: 'accueil', categoryName: 'Accueil',
+      id: 'AID-TODO-001', title: 'Comprendre « À traiter »', status: 'published', validatedAt: '2026-09-01', path: '/aide/comprendre-a-traiter', category: 'accueil', categoryName: 'Accueil',
       summary: 'La page À traiter rassemble ce qui demande votre attention.', offers: ['standard', 'premium', 'premium_duo'], offersLabel: 'Toutes les offres', offersNote: null,
       synonyms: ['à traiter', 'priorités'],
       sections: [{ anchor: 'presentation', heading: 'Présentation', text: 'À traiter rassemble les documents à vérifier et les échéances proches.' }],
     },
     {
-      id: 'AID-ASSET-003', title: 'Compléter la fiche d’un bien', path: '/aide/completer-fiche-bien', category: 'biens', categoryName: 'Biens',
+      id: 'AID-ASSET-003', title: 'Compléter la fiche d’un bien', status: 'published', validatedAt: '2026-09-01', path: '/aide/completer-fiche-bien', category: 'biens', categoryName: 'Biens',
       summary: 'Renseigner les informations d’un bien.', offers: ['standard', 'premium', 'premium_duo'], offersLabel: 'Toutes les offres', offersNote: null,
       synonyms: ['fiche', 'compléter'],
       sections: [{ anchor: 'procedure', heading: 'Procédure', text: 'Depuis la fiche du bien, choisissez Modifier puis complétez les champs.' }],

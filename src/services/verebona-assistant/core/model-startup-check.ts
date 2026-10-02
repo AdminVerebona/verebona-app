@@ -26,7 +26,7 @@
  */
 import { AI_OPERATIONS, type AiOperationDefinition } from '@/services/ai/registry/operations';
 import { ASSISTANT_OPERATIONS, assertConfigAtStartup } from '../config/assistant-config';
-import { isAssistantFlagOn } from '../config/assistant-flags';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { configuredAliases, isPreviewModel, MODEL_REGISTRY_VERSION, resolveAliases, type ResolvedAliases } from '../registries/model-registry';
 
 export interface RegistrySnapshot {

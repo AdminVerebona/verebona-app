@@ -31,6 +31,7 @@ import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { formatDate, formatDateTime, formatMoney } from '@/lib/admin/format';
 import { relevantPreviewContexts } from '@/lib/admin/communication-contexts';
 import { toast } from 'sonner';
+import { NotificationsOps } from './_components/NotificationsOps';
 import { Bell, Eye, Loader2, Lock, Mail, MessageSquare, RefreshCw, Send, Smartphone } from 'lucide-react';
 
 type Channel = 'email' | 'push' | 'in_app';
@@ -338,6 +339,9 @@ export default function AdminCommunicationsPage() {
           </section>
         ))
       )}
+
+      {/* D-L (lot 21) : santé, recherche et réémission des notifications (CDC 3 §20). */}
+      <NotificationsOps />
 
       {/* COM-012 : confirmation explicite */}
       <AlertDialog open={!!pending} onOpenChange={(open) => { if (!open && !saving) setPending(null); }}>

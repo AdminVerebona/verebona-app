@@ -24,7 +24,7 @@ const CORPUS: HelpCorpus = {
   articles: [
     {
       id: 'AID-AGENDA-006', title: 'Synchroniser les échéances avec son agenda personnel',
-      path: '/aide/synchroniser-agenda-personnel', category: 'agenda-echeances', categoryName: 'Agenda et échéances',
+      status: 'published', validatedAt: '2026-09-01', path: '/aide/synchroniser-agenda-personnel', category: 'agenda-echeances', categoryName: 'Agenda et échéances',
       summary: 'Ajouter l’agenda Verebona à Apple Agenda, Google Agenda ou Outlook.',
       offers: ['premium', 'premium_duo'], offersLabel: 'Premium, Premium Duo', offersNote: null,
       synonyms: ['agenda', 'synchronisation', 'calendrier', 'google'],
@@ -34,7 +34,7 @@ const CORPUS: HelpCorpus = {
       ],
     },
     {
-      id: 'AID-DOC-001', title: 'Ajouter un document', path: '/aide/ajouter-un-document',
+      id: 'AID-DOC-001', title: 'Ajouter un document', status: 'published', validatedAt: '2026-09-01', path: '/aide/ajouter-un-document',
       category: 'documents', categoryName: 'Documents', summary: 'Importer un fichier ou un justificatif.',
       offers: ALL, offersLabel: 'Toutes les offres', offersNote: null,
       synonyms: ['importer', 'téléverser', 'fichier', 'justificatif'],

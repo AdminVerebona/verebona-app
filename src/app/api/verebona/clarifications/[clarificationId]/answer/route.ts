@@ -32,6 +32,7 @@ import { executerIssueClarification } from '@/services/verebona-assistant/core/c
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { assistantPlanFromEntitlements, assistantPlanLimit } from '@/services/verebona-assistant/core/plan-eligibility';
 import { checkAssistantRateLimit } from '@/lib/verebona/rate-limit';
+import { clientIp } from '@/lib/verebona/api-guard';
 import { httpRequestId, parseWith, readJson, withRequestId } from '@/lib/verebona/api-guard';
 import { ClarificationAnswerSchema, ClarificationParamsSchema } from '@/lib/verebona/api-schemas';
 
@@ -57,7 +58,7 @@ async function traiter(
 
   // La reprise relance le pipeline : même quota que l'envoi d'une question
   // (§6.6, §31.10).
-  const rl = checkAssistantRateLimit(session.userId, accountId, getAssistantConfig().rateLimitPerMinute);
+  const rl = await checkAssistantRateLimit(session.userId, accountId, undefined, undefined, clientIp(req));
   if (!rl.allowed) {
     return NextResponse.json(
       { error: { code: 'RATE_LIMITED', message: 'Vous avez posé beaucoup de questions en peu de temps. Réessayez dans un instant.', recoverable: true } },

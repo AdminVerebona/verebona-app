@@ -124,4 +124,28 @@ describe('GET /api/admin/ai/dashboard', () => {
     body = await (await call()).json();
     expect(body.alerts.some((a: { message: string }) => /corpus/i.test(a.message))).toBe(false);
   });
+  it('D-J2 : base trop lente (statement_timeout) → repli mémoire signalé au tableau de bord', async () => {
+    const { SharedRateLimiter, setAssistantRateLimiterForTests } = await import('@/lib/verebona/rate-limit');
+    const lent = {
+      hit: async () => { throw new Error('canceling statement due to statement timeout'); },
+      purge: async () => undefined,
+    };
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const l = new SharedRateLimiter(lent);
+    setAssistantRateLimiterForTests(l);
+    try {
+      const d = await l.check([{ key: 'u:1', limit: 5, scope: 'user' }]);
+      expect(d.allowed).toBe(true); // repli mémoire, la requête passe
+      const body = await (await call()).json();
+      expect(body.alerts).toContainEqual(expect.objectContaining({
+        severity: 'warning', message: expect.stringContaining('repli mémoire'),
+      }));
+      expect(body.alerts.find((a: { message: string }) => /repli mémoire/.test(a.message)).message).toContain('statement timeout');
+    } finally {
+      setAssistantRateLimiterForTests(null);
+      err.mockRestore();
+    }
+    const body = await (await call()).json();
+    expect(body.alerts.some((a: { message: string }) => /repli mémoire/.test(a.message))).toBe(false);
+  });
 });

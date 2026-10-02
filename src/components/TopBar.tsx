@@ -6,8 +6,10 @@
  * champ Verebona (le même sur toutes les pages) ; à droite, l'analyse en
  * cours, les notifications et l'avatar (menu du compte).
  *
- * Le logo vit dans le menu latéral (§3.1), et « Bonjour, … » seulement dans
- * la bulle de la mascotte, sur l'accueil (§2).
+ * Le logo vit dans le menu latéral (§3.1) ; menu replié (64 px, trop étroit
+ * pour le nom), il passe ici, à gauche (`showBrand`) : icône et nom Verebona
+ * restent toujours visibles. « Bonjour, … » seulement dans la bulle de la
+ * mascotte, sur l'accueil (§2).
  */
 import { useState } from 'react'
 import Link from 'next/link'
@@ -19,6 +21,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Logo } from './Logo'
 import { NotificationBell } from './NotificationBell'
 import { AnalysisBanner } from './AnalysisBanner'
 import { ConfirmLogoutDialog } from './ConfirmLogoutDialog'
@@ -47,9 +50,11 @@ interface TopBarProps {
   onLogout: () => void
   isAdmin: boolean
   onOpenHelp?: () => void
+  /** Logo + nom Verebona à gauche (quand le menu latéral est replié). */
+  showBrand?: boolean
 }
 
-export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHelp }: TopBarProps) {
+export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHelp, showBrand = false }: TopBarProps) {
   const [logoutConfirm, setLogoutConfirm] = useState(false)
 
   const displayName = user.username || `${user.firstName} ${user.lastName.charAt(0)}.`
@@ -58,6 +63,11 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHe
 
   return (
     <header className="relative z-[33] hidden h-[60px] flex-shrink-0 items-center gap-3.5 border-b border-[color:var(--border-subtle)] bg-[color:var(--bg-page)] px-7 md:flex">
+      {showBrand && (
+        <Link href="/accueil" className="flex-shrink-0 select-none whitespace-nowrap" aria-label="Verebona, accueil">
+          <Logo size={24} withText />
+        </Link>
+      )}
       <VerebonaHeaderField />
 
       <div className="relative z-[33] ml-auto flex items-center gap-2.5">

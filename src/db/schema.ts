@@ -2436,7 +2436,9 @@ export const notificationOutbox = pgTable('notification_outbox', {
   mandatoryEmail: boolean('mandatory_email').notNull().default(false),
   dedupeKey: text('dedupe_key').notNull().unique(),
   scheduledFor: tstzOptional('scheduled_for'),
-  status: text('status').notNull().default('pending'), // pending | processing | sent | partial | failed | cancelled
+  // pending | processing | sent | partial | failed | cancelled | reemitted
+  // (`reemitted` : échec réémis depuis le BO, §20.3 — hors santé, migration 0230).
+  status: text('status').notNull().default('pending'),
   attemptCount: integer('attempt_count').notNull().default(0),
   lastError: text('last_error'),
   createdAt: tstz('created_at'),
@@ -2448,7 +2450,7 @@ export const notificationOutbox = pgTable('notification_outbox', {
   priorityCheck: check('notification_outbox_priority_check',
     sql`${table.priority} IN ('low','normal','high')`),
   statusCheck: check('notification_outbox_status_check',
-    sql`${table.status} IN ('pending','processing','sent','partial','failed','cancelled')`),
+    sql`${table.status} IN ('pending','processing','sent','partial','failed','cancelled','reemitted')`),
 }));
 
 // §12.4 — Journal de livraison multicanal. Une ligne par canal et, pour le

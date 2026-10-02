@@ -48,4 +48,19 @@ describe('GET /api/health — corpus d’aide (PUB-01)', () => {
     etat.mockImplementationOnce(() => { throw new Error('x'); });
     expect((await GET(req())).status).toBe(200);
   });
+  it('D-J2 : limiteur en repli mémoire → assistantRateLimiter en warning', async () => {
+    etat.mockReturnValueOnce({ status: 'unknown', source: 'none', version: null, environment: null, lastValidAt: null, lastValidAgeSeconds: null, alert: null });
+    const { SharedRateLimiter, setAssistantRateLimiterForTests } = await import('@/lib/verebona/rate-limit');
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const l = new SharedRateLimiter({ hit: async () => { throw new Error('canceling statement due to statement timeout'); }, purge: async () => undefined });
+    setAssistantRateLimiterForTests(l);
+    try {
+      await l.check([{ key: 'u:1', limit: 5, scope: 'user' }]);
+      const body = await (await GET(req())).json();
+      expect(body.checks.assistantRateLimiter).toMatchObject({ status: 'warning', mode: 'shared', lastError: expect.stringContaining('statement timeout') });
+    } finally {
+      setAssistantRateLimiterForTests(null);
+      err.mockRestore();
+    }
+  });
 });

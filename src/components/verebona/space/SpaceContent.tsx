@@ -19,6 +19,7 @@ import {
   type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import { openDrawerFromLink } from '@/lib/drawers';
+import { trackAssistantUsage } from '@/lib/verebona/usage-events';
 import { VerebonaCommandPlan } from '../VerebonaCommandPlan';
 import { VerebonaSources } from '../VerebonaSources';
 import { VerebonaExplanation } from '../VerebonaExplanation';
@@ -131,6 +132,9 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
     }
   };
   const serverActions = (msg.actions ?? []).filter((a) => a.type !== 'SHOW_SOURCES' || msg.sourcesAvailable);
+  // §32.3 (D-J7) : clic sur une action — type et rang seulement.
+  const clicAction = (a: VerebonaAction, rang: number) =>
+    trackAssistantUsage({ type: 'ACTION_CLICK', actionType: a.type, value: rang === 0 ? 'primary' : 'secondary', intent: msg.intent ?? null });
   const report = () => {
     // Réponse enregistrée côté serveur : avis « pas utile » rattaché ; sinon
     // (panne réseau, pas d'identifiant serveur), le centre d'aide.
@@ -167,6 +171,7 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
         <p
           className={`m-0 whitespace-pre-line leading-normal ${variant === 'mobile' ? 'text-[15px]' : 'text-[14.5px]'}`}
           style={{ color: isError ? 'var(--on-red)' : 'var(--text-primary)' }}
+          onCopy={() => trackAssistantUsage({ type: 'ANSWER_COPY', intent: msg.intent ?? null })}
         >
           {msg.content}
         </p>
@@ -213,13 +218,13 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
           {(msg.local?.actions ?? []).map((a) => (
             <button key={a.id} type="button" className={pillClass(!!a.primary, variant)} onClick={() => api.runLocal(a.id)}>{a.label}</button>
           ))}
-          {serverActions.map((a) => (
+          {serverActions.map((a, rang) => (
             a.href ? (
-              <a key={a.actionId} href={a.href} data-analytics={a.analyticsCode} className={pillClass(false, variant)} onClick={(e) => { api.leaveForOverlay(); openDrawerFromLink(e, a.href); }}>
+              <a key={a.actionId} href={a.href} data-analytics={a.analyticsCode} className={pillClass(false, variant)} onClick={(e) => { clicAction(a, rang); api.leaveForOverlay(); openDrawerFromLink(e, a.href); }}>
                 {a.label}
               </a>
             ) : (
-              <button key={a.actionId} type="button" data-analytics={a.analyticsCode} className={pillClass(a.type === 'RETRY_REQUEST', variant)} onClick={() => onAction(a)}>
+              <button key={a.actionId} type="button" data-analytics={a.analyticsCode} className={pillClass(a.type === 'RETRY_REQUEST', variant)} onClick={() => { clicAction(a, rang); onAction(a); }}>
                 {a.label}
               </button>
             )
@@ -236,7 +241,7 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
       {msg.sourcesAvailable && (
         <VerebonaSources messageId={msg.id} count={msg.sourceCount ?? 0} open={sourcesOpen} onOpenChange={setSourcesOpen} />
       )}
-      {!isError && !msg.local && /^\d+$/.test(msg.id) && <Feedback id={msg.id} onFeedback={v.sendFeedback} />}
+      {!isError && !msg.local && /^\d+$/.test(msg.id) && <Feedback id={msg.id} onFeedback={(id, avis) => { trackAssistantUsage({ type: 'FEEDBACK', value: avis, intent: msg.intent ?? null }); return v.sendFeedback(id, avis); }} />}
     </div>
   );
 }

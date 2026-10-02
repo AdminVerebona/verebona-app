@@ -60,9 +60,23 @@ export type AdminActionType =
   // Demandes RGPD manuelles (CDC BO AUD-003 « réouverture RGPD », GDP-010, GDP-014, GDP-016).
   | 'GDPR_REQUEST_CREATE'
   | 'GDPR_REQUEST_UPDATE'
-  | 'GDPR_REQUEST_REOPEN';
+  | 'GDPR_REQUEST_REOPEN'
+  // Assistant : seuils et interrupteurs administrés (CDC Assistant §32.6,
+  // §32.7, CA-30 ; D-J1). Double validation : demande, accord, refus, annulation.
+  | 'ASSISTANT_SETTING_UPDATE'
+  | 'ASSISTANT_SETTING_REQUEST'
+  | 'ASSISTANT_SETTING_APPROVE'
+  | 'ASSISTANT_SETTING_REJECT'
+  | 'ASSISTANT_SETTING_CANCEL'
+  // Consultation sensible : contenu d'une conversation lu (§32.7, AI_T2_CONTENT_ADMIN_IDS).
+  | 'ASSISTANT_CONTENT_READ'
+  // Notifications (CDC 3 §20.2, §20.3 ; D-L) : recherche, réémission, renvoi.
+  | 'NOTIFICATION_SEARCH'
+  | 'NOTIFICATION_REEMIT'
+  | 'NOTIFICATION_RESEND';
 
-export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST';
+export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
+  | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

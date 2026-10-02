@@ -61,8 +61,8 @@ describe('une seule fenêtre pour toute l’application', () => {
   });
 
   it('les deux gardes recopiées passent par le contexte', () => {
-    // Direction D v2 : la coquille ne monte plus de « + » global sur
-    // ordinateur ; le « + » mobile porte ses fenêtres et sa garde.
+    // Le « + » mobile et le « + Ajouter » du menu latéral (ordinateur)
+    // ouvrent le même panneau, qui porte ses fenêtres et sa garde.
     for (const chemin of [
       'src/components/mobile/mobile-actions-sheet.tsx',
     ]) {

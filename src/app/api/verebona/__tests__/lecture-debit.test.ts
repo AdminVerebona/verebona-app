@@ -59,7 +59,7 @@ beforeEach(() => {
 });
 
 /** Épuise le quota de lecture de l'utilisateur courant. */
-const epuiser = () => { for (let i = 0; i < readRatePerMinute(); i++) checkAssistantReadRateLimit(h.userId, h.accountId); };
+const epuiser = async () => { const n = await readRatePerMinute(); for (let i = 0; i < n; i++) await checkAssistantReadRateLimit(h.userId, h.accountId); };
 
 describe('§27 — les lectures sont limitées en débit', () => {
   it.each([
@@ -70,7 +70,7 @@ describe('§27 — les lectures sont limitées en débit', () => {
     ['suggestions', () => suggestions.GET(get('http://x/api/verebona/suggestions?route=/'))],
   ] as const)('%s : quota épuisé → 429 RATE_LIMITED, Retry-After et x-request-id', async (_nom, appel) => {
     expect((await appel()).status).not.toBe(429);
-    epuiser();
+    await epuiser();
     const res = await appel();
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBeTruthy();
@@ -79,16 +79,16 @@ describe('§27 — les lectures sont limitées en débit', () => {
   });
 
   it('quota des lectures distinct de celui des écritures et des questions', async () => {
-    epuiser();
+    await epuiser();
     const { checkAssistantMutationRateLimit, checkAssistantRateLimit } = await import('@/lib/verebona/rate-limit');
-    expect(checkAssistantMutationRateLimit(h.userId, h.accountId, 'feedback').allowed).toBe(true);
-    expect(checkAssistantRateLimit(h.userId, h.accountId, 10).allowed).toBe(true);
+    expect((await checkAssistantMutationRateLimit(h.userId, h.accountId, 'feedback')).allowed).toBe(true);
+    expect((await checkAssistantRateLimit(h.userId, h.accountId, 10)).allowed).toBe(true);
   });
 
-  it('quota par compte : 3× le quota utilisateur, partagé par les membres', () => {
-    const n = readRatePerMinute();
-    for (let u = 0; u < 3; u++) for (let i = 0; i < n; i++) checkAssistantReadRateLimit(9000 + u, 99);
-    expect(checkAssistantReadRateLimit(9100, 99)).toMatchObject({ allowed: false, scope: 'account' });
+  it('quota par compte : 3× le quota utilisateur, partagé par les membres', async () => {
+    const n = await readRatePerMinute();
+    for (let u = 0; u < 3; u++) for (let i = 0; i < n; i++) await checkAssistantReadRateLimit(9000 + u, 99);
+    expect(await checkAssistantReadRateLimit(9100, 99)).toMatchObject({ allowed: false, scope: 'account' });
   });
 });
 

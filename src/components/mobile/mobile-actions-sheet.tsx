@@ -13,6 +13,11 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 interface MobileActionsSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Panneau aussi affiché sur ordinateur (bouton « + Ajouter » du menu
+   * latéral). Par défaut, mobile seulement (`md:hidden`).
+   */
+  allViewports?: boolean;
 }
 
 type ActionType = 'file' | 'agenda' | 'asset' | null;
@@ -44,7 +49,8 @@ const ACTIONS = [
   },
 ];
 
-export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetProps) {
+export function MobileActionsSheet({ open, onOpenChange, allViewports = false }: MobileActionsSheetProps) {
+  const viewport = allViewports ? '' : ' md:hidden';
   const { user } = useSession();
   const { entitlements, isRestricted } = useEntitlements();
   const [selectedAction, setSelectedAction] = useState<ActionType>(null);
@@ -123,7 +129,7 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm md:hidden"
+              className={`fixed inset-0 z-50 bg-black/60 backdrop-blur-sm${viewport}`}
               onClick={() => onOpenChange(false)}
             />
 
@@ -134,7 +140,7 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-              className="fixed inset-y-0 right-0 z-50 w-[85vw] max-w-sm md:hidden"
+              className={`fixed inset-y-0 right-0 z-50 w-[85vw] max-w-sm${viewport}`}
             >
               <div className="h-full overflow-y-auto bg-[color:var(--bg-card)] border-l border-[color:var(--border-subtle)] shadow-2xl pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
 
@@ -145,6 +151,7 @@ export function MobileActionsSheet({ open, onOpenChange }: MobileActionsSheetPro
                   </h2>
                   <button
                     onClick={() => onOpenChange(false)}
+                    aria-label="Fermer"
                     className="w-8 h-8 flex items-center justify-center rounded-full bg-[color:var(--bg-page)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
                   >
                     <X className="w-4 h-4" />

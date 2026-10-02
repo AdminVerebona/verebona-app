@@ -16,6 +16,7 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { HomeAssets, RecentDocuments, UpcomingEvents, VerebonaWork } from '../HomeBlocks';
 import { AppSidebar } from '@/components/shell/AppSidebar';
+import { TopBar } from '@/components/TopBar';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { VerebonaSpaceProvider } from '@/components/verebona/space/VerebonaSpaceProvider';
 import { VerebonaHeaderField, VerebonaMobileField } from '@/components/verebona/space/VerebonaField';
@@ -134,6 +135,30 @@ describe('menu latéral', () => {
     expect(html).not.toContain('>Mon agenda<');
     expect(html).toContain('aria-label="Mon agenda"');
     expect(html).not.toMatch(/bg-\[color:var\(--vb-red-500\)\]/);
+  });
+
+  it('« + Ajouter » en tête du menu, déplié comme replié', () => {
+    const ouvert = renderToStaticMarkup(h(TooltipProvider, null, h(AppSidebar, { ...props, collapsed: false, toProcessCount: 0, onAdd: noop })));
+    expect(ouvert).toContain('>Ajouter<');
+    expect(ouvert.indexOf('>Ajouter<')).toBeLessThan(ouvert.indexOf('Accueil'));
+    const replie = renderToStaticMarkup(h(TooltipProvider, null, h(AppSidebar, { ...props, collapsed: true, toProcessCount: 0, onAdd: noop })));
+    expect(replie).toContain('aria-label="Ajouter un document, une échéance ou un bien"');
+  });
+});
+
+describe('header : marque toujours visible', () => {
+  const user = { firstName: 'Léa', lastName: 'Martin', email: 'lea@example.com', subscription: { plan: 'premium' } };
+  const base = { user, theme: 'dark', onToggleTheme: noop, onLogout: noop, isAdmin: false };
+
+  it('menu replié : logo et nom Verebona dans le header', () => {
+    const html = renderToStaticMarkup(h(VerebonaSpaceProvider, null, h(TopBar, { ...base, showBrand: true })));
+    expect(html).toContain('aria-label="Verebona, accueil"');
+    expect(html).toContain('Verebona');
+  });
+
+  it('menu déplié : le logo est dans le menu, pas en double dans le header', () => {
+    const html = renderToStaticMarkup(h(VerebonaSpaceProvider, null, h(TopBar, base)));
+    expect(html).not.toContain('aria-label="Verebona, accueil"');
   });
 });
 

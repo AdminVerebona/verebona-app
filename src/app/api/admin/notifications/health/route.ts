@@ -5,8 +5,7 @@
  * ni clé push, ni contenu de notification (§20.2).
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { SessionService } from '@/lib/session-service';
-import { ensureMigrations } from '@/db';
+import { logNotificationAction, requireAdminContext } from '../_shared';
 import {
   getNotificationHealth,
   rechercherNotifications,
@@ -18,13 +17,8 @@ export async function GET(req: NextRequest) {
   // §20.3 condition 1, appliquée dès la consultation : un écran de santé
   // renseigne sur l'activité de tous les comptes. Garde admin serveur commune
   // du BO (CDC BO GEN-002).
-  try {
-    await SessionService.requireAdmin(req);
-  } catch (e) {
-    return SessionService.handleSessionError(e);
-  }
-
-  await ensureMigrations();
+  const guard = await requireAdminContext(req);
+  if (!guard.ok) return guard.response;
   const p = req.nextUrl.searchParams;
 
   // Mode recherche (§20.2) si un critère est fourni.
@@ -39,7 +33,10 @@ export async function GET(req: NextRequest) {
   const rechercheDemandee = Object.values(criteres).some((v) => v !== undefined);
 
   if (rechercheDemandee) {
-    return NextResponse.json({ resultats: await rechercherNotifications(criteres) });
+    const resultats = await rechercherNotifications(criteres);
+    // Recherche nominative possible (destinataire) : journalisée (D-L).
+    await logNotificationAction(guard, 'NOTIFICATION_SEARCH', 'SUCCESS', { criteres, resultats: resultats.length });
+    return NextResponse.json({ resultats });
   }
 
   const fenetre = Number(p.get('heures')) || 24;

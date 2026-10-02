@@ -26,13 +26,24 @@
  * positionner `VEREBONA_ASSISTANT_WRITE_COMMANDS=off` en production. En
  * lecture seule (fin d'essai, §6.5), aucune commande n'est préparée.
  *
- * Modification : par variable d'environnement (effet au prochain démarrage
- * des instances qui relisent l'environnement). Le §39 n'impose pas de
+ * Modification : dans le BO (Configuration IA › Assistant — D-J1, lot 21),
+ * sans redémarrage, toutes instances ; la variable d'environnement reste la
+ * valeur initiale et le repli (`assistant-settings.ts`). Historiquement : Le §39 n'impose pas de
  * modification sans redéploiement pour les flags ; il l'impose pour
  * « désactiver un modèle », ce que font l'arrêt d'urgence par traitement
  * (`ai_treatment_state`) et les versions de configuration du BO IA.
  * ══════════════════════════════════════════════════════════════════════════
  */
+
+/**
+ * Surcharge serveur des interrupteurs (valeurs administrées dans le BO,
+ * D-J1). Posée UNIQUEMENT par `assistant-flags.server.ts`.
+ */
+let surcharge: ((flag: AssistantFlag) => boolean | undefined) | null = null;
+
+export function setAssistantFlagOverrideProvider(fn: ((flag: AssistantFlag) => boolean | undefined) | null): void {
+  surcharge = fn;
+}
 
 export type AssistantFlag =
   | 'enabled'
@@ -75,6 +86,14 @@ function lire(raw: string | undefined, def: boolean): boolean {
  * variable historique à `false` coupe aussi). Lu à chaque appel.
  */
 export function isAssistantFlagOn(flag: AssistantFlag, env: NodeJS.ProcessEnv = process.env): boolean {
+  // D-J1 (lot 21) : interrupteur administré dans le BO — prime sur
+  // l'environnement, pour l'environnement réel du processus. Fournisseur
+  // posé par `assistant-flags.server.ts` (serveur seulement) : ce module reste
+  // PUR, importable côté client, qui garde les défauts et l'environnement.
+  if (env === process.env && surcharge) {
+    const o = surcharge(flag);
+    if (typeof o === 'boolean') return o;
+  }
   const { env: noms, def } = VARIABLES[flag];
   return noms.every((n) => lire(env[n], def));
 }

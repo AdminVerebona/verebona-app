@@ -45,6 +45,7 @@ import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
 import { MepPackages } from './_components/MepPackages';
+import { AssistantSettings } from './_components/AssistantSettings';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGuard';
@@ -1138,6 +1139,9 @@ export default function AiConfigPage() {
         onImported={load}
         onOpenVersion={(id) => guardUnsaved(() => openVersion(id))}
       />
+
+      {/* D-J1 (lot 21) : seuils et interrupteurs de l'assistant, administrés et journalisés. */}
+      <AssistantSettings />
 
       {/* Versions */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">

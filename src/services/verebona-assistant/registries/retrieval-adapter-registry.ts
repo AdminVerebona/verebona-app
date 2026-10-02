@@ -6,7 +6,7 @@
  * reste désactivée derrière le flag `verebona_assistant_semantic_retrieval`.
  */
 import type { RetrievedSource } from '../types/sources';
-import { isAssistantFlagOn } from '../config/assistant-flags';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
 
 export interface RetrievalQuery {
   accountId: number;

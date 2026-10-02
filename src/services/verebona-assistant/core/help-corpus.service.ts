@@ -51,16 +51,33 @@ export interface HelpCorpusArticle {
   objectTypes?: string[];
   platforms?: string[];
   /**
-   * Statut éditorial publié par le site (§10.4) : seul `published` est une
-   * source. Absent (corpus antérieur) : l'article est considéré publié.
+   * Contrat de publication (CDC Assistant §10.3 ; décision PO D-O, lot 21) :
+   * seul un article `published` AVEC une date de validation est une source.
+   * Statut ou date absents : l'article est ignoré (plus de « publié par
+   * défaut »).
    */
   status?: string;
+  /** Date de validation éditoriale (AAAA-MM-JJ), obligatoire pour être cité. */
+  validatedAt?: string | null;
+  /** Routes de l'application que l'article mentionne (§10.3). */
+  allowedRoutes?: string[];
+  /** Actions de l'assistant que l'article autorise (§10.3). */
+  allowedActions?: string[];
+  /** Version de l'application décrite (§10.3). */
+  appVersion?: string | null;
 }
 export interface HelpCorpus {
   schema: 'verebona-help-t2-v1';
   version: string;
   environment: string;
   articles: HelpCorpusArticle[];
+  /**
+   * Transition D-O (relecture lot 21) : copie de repli à l'ANCIEN format
+   * (articles sans `status` ni `validatedAt`), servie avec l'ancienne règle
+   * (« sans statut = publié ») tant que le corpus n'est pas republié.
+   * Jamais posé sur un corpus lu en direct.
+   */
+  legacyPublication?: boolean;
 }
 
 /** Intentions d'aide à l'utilisation : sources du Centre d'aide uniquement (§5). */
@@ -124,7 +141,7 @@ export function helpCorpusUrl(): string {
   return `${base}${HELP_T2_CORPUS_PATH}`;
 }
 
-export function parseHelpCorpus(json: unknown): HelpCorpus | null {
+export function parseHelpCorpus(json: unknown, opts: { legacy?: boolean } = {}): HelpCorpus | null {
   const c = json as Partial<HelpCorpus> | null;
   if (!c || c.schema !== 'verebona-help-t2-v1' || !Array.isArray(c.articles)) return null;
   const ok = c.articles.every((a) => a && typeof a.id === 'string' && typeof a.path === 'string'
@@ -132,12 +149,34 @@ export function parseHelpCorpus(json: unknown): HelpCorpus | null {
   if (!ok) return null;
   // §10.4 : un article archivé ou en brouillon n'est jamais une source — ni
   // cité, ni proposé en lien (`helpArticlePublished` lit ce même corpus).
-  return { ...(c as HelpCorpus), articles: c.articles.filter(articlePublie) };
+  const { legacyPublication: _ignore, ...base } = c as HelpCorpus;
+  void _ignore;
+  if (opts.legacy) {
+    return { ...base, legacyPublication: true, articles: c.articles.filter((a) => articlePublieAncienneRegle(a)) };
+  }
+  return { ...base, articles: c.articles.filter((a) => articlePublie(a)) };
 }
 
-/** Article citable : statut absent (corpus antérieur) ou `published`. */
-export function articlePublie(a: Pick<HelpCorpusArticle, 'status'>): boolean {
+/** Ancienne règle (avant D-O) : statut absent ou `published`. Repli de transition seulement. */
+export function articlePublieAncienneRegle(a: Pick<HelpCorpusArticle, 'status'>): boolean {
   return a.status == null || String(a.status).toLowerCase() === 'published';
+}
+
+/** Règle applicable à un corpus (repli de transition : ancienne règle). */
+const citable = (corpus: Pick<HelpCorpus, 'legacyPublication'>, a: HelpCorpusArticle) =>
+  (corpus.legacyPublication ? articlePublieAncienneRegle(a) : articlePublie(a));
+
+/**
+ * Article citable (§10.3, D-O) : statut `published` ET date de validation
+ * valide (AAAA-MM-JJ, pas dans le futur). Statut absent, brouillon, archivé
+ * ou bloqué, ou date absente : jamais une source, jamais proposé en lien.
+ */
+export function articlePublie(a: Pick<HelpCorpusArticle, 'status' | 'validatedAt'>, now: Date = new Date()): boolean {
+  if (String(a.status ?? '').toLowerCase() !== 'published') return false;
+  const d = typeof a.validatedAt === 'string' ? a.validatedAt : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const t = Date.parse(`${d}T00:00:00Z`);
+  return Number.isFinite(t) && t <= now.getTime();
 }
 
 // ── PUB-01 : dernier corpus valide ──────────────────────────────────────────
@@ -236,13 +275,24 @@ function retenirValide(corpus: HelpCorpus): void {
 async function dernierCorpusValide(): Promise<HelpCorpus | null> {
   if (dernierValide) {
     servi = dernierValide.origin === 'db' ? 'last_valid_db' : 'last_valid_memory';
+    if (dernierValide.corpus.legacyPublication) aRepublier();
     return dernierValide.corpus;
   }
   if (store) {
     try {
       const lu = await store.read(envApplication());
-      const corpus = lu ? parseHelpCorpus(lu.corpus) : null;
-      if (corpus && corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
+      let corpus = lu ? parseHelpCorpus(lu.corpus) : null;
+      // Transition D-O : copie enregistrée à l'ANCIEN format (sans statut ni
+      // date de validation) — servie avec l'ancienne règle, jamais vidée, et
+      // signalée « à republier ».
+      if (corpus && corpus.articles.length === 0 && lu) {
+        const ancien = parseHelpCorpus(lu.corpus, { legacy: true });
+        if (ancien && ancien.articles.length > 0) {
+          corpus = ancien;
+          aRepublier();
+        }
+      }
+      if (corpus && corpus.articles.length > 0 && corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
         dernierValide = { corpus, at: lu!.at, origin: 'db' };
         versionStockee = corpus.version;
         servi = 'last_valid_db';
@@ -256,8 +306,15 @@ async function dernierCorpusValide(): Promise<HelpCorpus | null> {
   return null;
 }
 
+/** Repli sur une copie à l'ancien format : l'alerte le dit (transition D-O). */
+function aRepublier(): void {
+  const suffixe = 'Repli sur une copie à l’ancien format (sans statut ni date de validation) : corpus d’aide à republier.';
+  if (alerte?.message.includes('corpus d’aide à republier') && alerte.message.includes('ancien format')) return;
+  signaler('HELP_CORPUS_INVALID', `${alerte?.message ?? 'Corpus d’aide refusé.'} ${suffixe}`);
+}
+
 function signaler(code: HelpCorpusAlertCode, message: string): void {
-  alerte = { code, message: message.slice(0, 300), at: new Date().toISOString() };
+  alerte = { code, message: message.slice(0, 500), at: new Date().toISOString() };
 }
 
 /** État du corpus d'aide de cette instance — `/api/health`, tableau de bord IA. */
@@ -300,9 +357,17 @@ export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
       brut = null;
     }
     const corpus = parseHelpCorpus(brut);
+    const bruts = Array.isArray((brut as { articles?: unknown } | null)?.articles) ? (brut as { articles: unknown[] }).articles.length : 0;
     let refus: { code: HelpCorpusAlertCode; message: string } | null = null;
     if (!corpus) {
       refus = { code: 'HELP_CORPUS_INVALID', message: 'Corpus d’aide publié invalide (schéma ou articles) : dernier corpus valide conservé.' };
+    } else if (bruts > 0 && corpus.articles.length === 0) {
+      // D-O : des articles, mais aucun citable (statut ou date de validation
+      // absents — ancien format) : le corpus doit être republié.
+      refus = {
+        code: 'HELP_CORPUS_INVALID',
+        message: `Corpus d’aide publié sans article citable (${bruts} article(s) sans statut « published » ni date de validation) : corpus d’aide à republier ; dernier corpus valide conservé.`,
+      };
     } else if (!corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
       // ENV-02 : la préproduction de l'application ne lit jamais le corpus de
       // production, et inversement.
@@ -318,7 +383,9 @@ export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
       cache = { at: Date.now() - ttlMs() + REESSAI_REFUS_MS, corpus: repli };
       return repli;
     }
-    retenirValide(corpus!);
+    // Jamais retenu comme « dernier valide » sans article citable.
+    if (corpus!.articles.length > 0) retenirValide(corpus!);
+    else { alerte = null; servi = 'live'; }
     cache = { at: Date.now(), corpus: corpus! };
     await noteHelpCorpusVersion(corpus!.version);
     return corpus;
@@ -386,7 +453,7 @@ export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4
   for (const a of corpus.articles) {
     // §10.4 : double garde — un corpus construit sans `parseHelpCorpus`
     // (tests, cache) ne fait pas remonter un article archivé.
-    if (!articlePublie(a)) continue;
+    if (!citable(corpus, a)) continue;
     const poids = contextWeight(a, ctx);
     if (poids === 0) continue;
     const head = new Set(terms(`${a.title} ${a.synonyms.join(' ')} ${a.summary}`));
@@ -539,14 +606,18 @@ const titreArticle = (s: RetrievedSource) => String(s.title).split(' — ')[0];
  * sources », sans la réponse elle-même — inutile en Standard, qui n'a pas
  * de rédaction par modèle. Désormais : l'extrait pertinent de la meilleure
  * section, puis le renvoi à l'article (bouton « Lire l'article », lien
- * profond construit par le serveur). Sans source : l'aveu explicite et le
- * renvoi au support (bouton « Contacter le support »).
+ * profond construit par le serveur). Sans source : l'aveu explicite, puis
+ * « Ouvrir l'aide » (recherche du Centre d'aide) et, en second, le support
+ * (décision PO D-J4).
  */
 export function fallbackFromHelpSources(sources: RetrievedSource[]): string {
   const aide = sources.filter((s) => s.type === 'help_entry');
   if (aide.length === 0) {
-    return 'Je ne peux pas répondre de façon fiable à cette question à partir du Centre d’aide. '
-      + 'Vous pouvez reformuler votre question ou contacter le support.';
+    // §10.6 et CDC 14 T2-03 (D-J4) : l'aveu, puis l'aide d'abord (bouton
+    // « Ouvrir l'aide », recherche du Centre d'aide), le support ensuite.
+    return 'Je ne peux pas répondre de façon fiable à cette question à partir du Centre d’aide : '
+      + 'je n’ai pas trouvé d’explication correspondant exactement à votre demande. '
+      + 'Vous pouvez consulter l’aide Verebona, ou contacter le support.';
   }
   const meilleure = aide[0];
   const extrait = helpExcerpt(String(meilleure.content).split('\n[Offre]')[0]);

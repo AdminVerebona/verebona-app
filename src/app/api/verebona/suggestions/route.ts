@@ -30,7 +30,7 @@ async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   catch (e) { return SessionService.handleSessionError(e); }
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
-  const limite = readRateLimited(session.userId, accountId, httpId);
+  const limite = await readRateLimited(session.userId, accountId, httpId, req);
   if (limite) return limite;
   const q = parseWith(SuggestionsQuerySchema, queryObject(req), httpId);
   if (!q.ok) return q.response;

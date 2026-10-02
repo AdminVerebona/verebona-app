@@ -23,6 +23,7 @@
  * pas une occasion d'essayer ailleurs.
  */
 import { randomUUID } from 'crypto';
+import { createSearchToken } from './search-token';
 import { DOSSIER_CODES, normalizeExportCode } from '@/services/exports/catalog';
 import type { ActionIntent, VerebonaAction, VerebonaActionType } from '../types/actions';
 import type { VerebonaIntent } from '../types/intents';
@@ -289,15 +290,28 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     const authorized = sansCible || await checkAccess(input.accountId, def.control, ref, slug, input.access, ai.params);
     if (!authorized) continue;
 
-    const href = buildHref(ai.type, ref, ai.params);
+    let href = buildHref(ai.type, ref, ai.params);
+    let token: string | null = null;
+    // §22.4 (D-J3) : résultats préparés par le serveur, scellés dans un jeton
+    // signé, court (30 min) et lié au compte — résolu par
+    // `GET /api/verebona/search-results`, qui revérifie chaque objet.
+    if (ai.type === 'OPEN_SEARCH_RESULTS') {
+      token = searchResultsToken(input.accountId, ai.params);
+      if (!token) continue;
+      href = `/api/verebona/search-results?t=${token}`;
+    }
 
     out.push({
       actionId: randomUUID(),
       type: ai.type,
       // Article précis : « Lire l'article » plutôt qu'un renvoi générique.
-      label: ai.type === 'OPEN_HELP' && href && href !== ROUTES.AIDE ? 'Lire l’article' : LABELS[ai.type],
+      // « Lire l'article » pour un article précis ; « Ouvrir l'aide » pour
+      // l'accueil ou la recherche du Centre d'aide (§10.6, D-J4).
+      label: ai.type === 'OPEN_HELP'
+        ? (ai.params?.search === true || !href || href === ROUTES.AIDE ? 'Ouvrir l’aide' : 'Lire l’article')
+        : LABELS[ai.type],
       href,
-      token: null,
+      token,
       requiresConfirmation: false, // aucune action destructrice en V1 (§22.10)
       expiresAt: ai.type === 'OPEN_SEARCH_RESULTS' ? new Date(Date.now() + 30 * 60_000).toISOString() : null,
       analyticsCode: `verebona.action.${ai.type.toLowerCase()}`,
@@ -352,3 +366,21 @@ async function checkAccess(
       return false;
   }
 }
+
+/** Jeton OPEN_SEARCH_RESULTS, ou `null` si les paramètres ne désignent rien. */
+function searchResultsToken(accountId: number, params: Record<string, unknown> | undefined): string | null {
+  const scope = params?.scope === 'agenda' ? 'agenda' : params?.scope === 'documents' ? 'documents' : null;
+  if (!scope) return null;
+  // Identifiants en liste « 12,34 » (paramètres d'action scalaires).
+  const liste = (v: unknown): string[] => (typeof v === 'string' ? v.split(',').filter(Boolean) : Array.isArray(v) ? v.map(String) : []);
+  const ids = liste(params?.ids);
+  const assets = liste(params?.assets);
+  if (ids.length === 0 && assets.length === 0) return null;
+  try {
+    return createSearchToken({ accountId, scope, ids, assets });
+  } catch (e) {
+    console.warn('[verebona] jeton de résultats non signé :', (e as Error).message);
+    return null;
+  }
+}
+

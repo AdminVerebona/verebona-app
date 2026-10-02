@@ -345,6 +345,39 @@ export async function validate(
   return { visibleNumber };
 }
 
+// ── §15.13, §32.7 — modèle preview en production (D-J1, lot 21) ────────────
+
+/**
+ * En PRODUCTION, une version qui utilise un modèle preview (primaire ou
+ * repli) n'est activée que si le réglage « Modèles preview en production »
+ * est accordé — réglage soumis à la double validation de deux
+ * administrateurs distincts (Configuration IA › Assistant). Hors production :
+ * aucun contrôle (la recette doit pouvoir les essayer).
+ *
+ * Portée : `activate` (WF-05) SEULEMENT. Le rollback (WF-06) n'y est PAS
+ * soumis, délibérément : il restaure une version qui a déjà été Active en
+ * production, souvent pendant un incident, et le bloquer sur un réglage
+ * retiré entre-temps empêcherait le retour arrière au pire moment. Le
+ * rollback reste journalisé (bascule, éventuelle dérogation corpus).
+ */
+export async function assertPreviewModelsApproved(
+  version: Pick<ConfigVersionWithEntries, 'entries'>, environment: string = getAiEnvironment(),
+): Promise<void> {
+  if (environment !== 'production') return;
+  const { isPreviewModel, refreshAssistantSettings, effectiveSetting } = await import('@/services/verebona-assistant/config/assistant-settings');
+  const previews = version.entries.flatMap((e) => [e.primaryModel, e.fallback1, e.fallback2]
+    .filter((m): m is string => isPreviewModel(m)).map((model) => ({ treatment: e.treatment, model })));
+  if (previews.length === 0) return;
+  await refreshAssistantSettings(true);
+  if (effectiveSetting('preview_models_allowed') === true) return;
+  throw new ConfigOperationRefused(
+    'PREVIEW_MODEL_NOT_APPROVED',
+    `Modèle preview en production (${previews.map((p) => `${p.treatment} : ${p.model}`).join(', ')}) : `
+    + 'activation soumise au réglage « Modèles preview en production », accordé par deux administrateurs (Configuration IA › Assistant).',
+    previews,
+  );
+}
+
 // ── WF-05 et WF-06 — Activation et restauration ─────────────────────────────
 
 export interface SwitchResult {
@@ -357,7 +390,9 @@ export interface SwitchResult {
 
 /** WF-05 — activation normale : n'interrompt aucune exécution en cours. */
 export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
-  await assertMasterCorpusGreen(await load(versionId));
+  const version = await load(versionId);
+  await assertMasterCorpusGreen(version);
+  await assertPreviewModelsApproved(version);
   const r = await switchActive(versionId, userId, 'activate');
   await invalidateCaches(`activate:${versionId}`);
   // WF-27 : les Brouillons dérivés de l'Active remplacée deviennent obsolètes
@@ -375,6 +410,9 @@ export async function activate(versionId: number, userId: number): Promise<Switc
  * exige d'arrêter immédiatement les exécutions concernées et de remettre les
  * jobs batch en tête de file, pour qu'ils reprennent depuis le début avec la
  * version restaurée.
+ *
+ * Pas de garde « modèle preview » (`assertPreviewModelsApproved`) : voir sa
+ * documentation — une version déjà Active doit pouvoir être restaurée.
  *
  * L'ordre compte. La bascule d'abord, la remise en file ensuite : un job remis
  * en tête avant la bascule pourrait être repris par une autre instance sous
