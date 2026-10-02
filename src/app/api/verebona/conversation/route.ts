@@ -48,7 +48,7 @@ async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   // §27 : lectures limitées elles aussi (limiteur dédié de l'assistant).
-  const limite = readRateLimited(session.userId, accountId, httpId);
+  const limite = await readRateLimited(session.userId, accountId, httpId, req);
   if (limite) return limite;
 
   await ensureMigrations();
@@ -115,7 +115,7 @@ async function effacer(req: NextRequest, httpId: string): Promise<NextResponse> 
   const accountId = session.currentAccountId;
   if (!accountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
   // §31.10 : limiteur des routes qui écrivent.
-  const limite = mutationRateLimited(session.userId, accountId, 'conversation', httpId);
+  const limite = await mutationRateLimited(session.userId, accountId, 'conversation', httpId, req);
   if (limite) return limite;
   const q = parseWith(ConversationQuerySchema, queryObject(req), httpId);
   if (!q.ok) return q.response;
