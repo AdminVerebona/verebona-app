@@ -285,26 +285,13 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     promptCode: 'classify_document_v2', timeoutMs: 30_000,
     outputSchema: 'ClassifyDocumentOutput', active: true, billable: false,
   },
-  classify_category: {
-    operationCode: 'classify_category', useCaseCode: 'SOURCE_ANALYSIS',
-    migratesTo: { masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', operationCode: 't1_analyze_document' },
-    label: 'Classement par catégorie documentaire',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'classify_category_v1', timeoutMs: 20_000,
-    // Non facturée : le §4.3 tranche déterministiquement la majorité des cas,
-    // et cet appel ne porte que sur les types réellement ambigus.
-    // CDC 15 ARCH-02 (lot 12) : fichier `classify_category_v1.txt` absent et
-    // aucun appelant — désactivée plutôt que de créer artificiellement le
-    // fichier. Conservée pour les traces historiques ; suppression au lot 16.
-    outputSchema: 'ClassifyCategoryOutput', active: false, billable: false,
-  },
   classify_rubric: {
     operationCode: 'classify_rubric', useCaseCode: 'SOURCE_ANALYSIS',
     migratesTo: { masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', operationCode: 't1_analyze_document' },
     label: 'Classement par Rubrique documentaire (CDC V2)',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: 'classify_rubric_v1', timeoutMs: 20_000,
-    // Non facturée, et sollicitée bien plus rarement que `classify_category` :
+    // Non facturée, et sollicitée bien plus rarement que l’ancien classement par catégorie :
     // le §2.2 rend la Rubrique déductible dès qu'un Type V2 est déterminé, ce
     // qui écarte l'appel modèle pour la majorité des documents.
     outputSchema: 'ClassifyRubricOutput', active: true, billable: false,
@@ -351,7 +338,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     // (`defaultMaxOutputTokens`) : le plafond de la version est PAR
     // TRAITEMENT, réglé pour les étapes courtes de T1 ; un JSON tronqué est
     // invalide sur toute la chaîne de modèles (coût ×3, aucun résultat).
-    // Même mécanisme que `control_prompts`. 32 768 < limite de sortie des
+    // Même mécanisme que `t5_modify`. 32 768 < limite de sortie des
     // modèles DOC (65 536).
     minOutputTokens: 32_768,
     outputSchema: 'T1AnalyzeDocumentOutput', active: true, billable: true,
@@ -567,42 +554,11 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   },
 
   // ── Usage 5 — Gouvernance (CDC §4.5.3) ────────────────────────────────────
-  analyze_instruction: {
-    operationCode: 'analyze_instruction', useCaseCode: 'AI_GOVERNANCE',
-    // CDC 15 §27 : T5 remplace `analyze_instruction`, `control_prompts` et
-    // `propose_change` par une seule gouvernance (t5_master_v1).
-    migratesTo: { masterPromptCode: T5_MASTER, task: 'MODIFY', operationCode: 't5_modify' },
-    label: "Analyse d'impact d'une instruction administrateur",
-    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
-    promptCode: 'analyze_instruction_v1', timeoutMs: 60_000,
-    outputSchema: 'InstructionAnalysisOutput', active: true, billable: false,
-  },
-  // Prompt Control (T5) — CDC BO IA SCR-06 : une demande en langage naturel,
-  // T5 choisit lui-même le ou les prompts T1–T4 à faire évoluer. Prompt propre
-  // (`prompt_control_v2`), distinct d'`analyze_instruction` qui sert encore la
-  // route historique `prompt-changes` avec un autre format de sortie.
-  control_prompts: {
-    operationCode: 'control_prompts', useCaseCode: 'AI_GOVERNANCE',
-    migratesTo: { masterPromptCode: T5_MASTER, task: 'MODIFY', operationCode: 't5_modify' },
-    label: 'Prompt Control — diagnostic et réécriture des prompts administrables',
-    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
-    promptCode: 'prompt_control_v2', timeoutMs: 120_000, minOutputTokens: 32_768,
-    outputSchema: 'PromptControlOutput', active: true, billable: false,
-  },
-  propose_change: {
-    operationCode: 'propose_change', useCaseCode: 'AI_GOVERNANCE',
-    migratesTo: { masterPromptCode: T5_MASTER, task: 'MODIFY', operationCode: 't5_modify' },
-    label: 'Proposition de modification de prompt (jamais appliquée directement)',
-    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
-    promptCode: 'propose_change_v1', timeoutMs: 60_000,
-    // CDC 15 ARCH-02, T5-01 (lot 12) : fichier `propose_change_v1.txt` absent
-    // et aucun appelant — désactivée, suppression au lot 16.
-    outputSchema: 'PromptChangeProposalOutput', active: false, billable: false,
-  },
   // ── T5 — prompt maître (CDC 15 §27, §29 étape 16, MP-16) ──────────────────
-  // Exécutées quand la version de configuration bascule T5 en `master`
-  // (D-04). Texte = fichier du dépôt, JAMAIS la version (T5 non
-  // administrable). Mêmes modèles et délais que `control_prompts`.
+  // Seul moteur de T5 depuis le lot 16b : `analyze_instruction`,
+  // `control_prompts` et `propose_change` sont retirés, et T5 n'a plus
+  // d'architecture `steps`. Texte = fichier du dépôt, JAMAIS la version (T5
+  // non administrable).
   t5_analyze: {
     operationCode: 't5_analyze', useCaseCode: 'AI_GOVERNANCE',
     label: 'T5 master — diagnostic (MODE=ANALYZE)',
@@ -632,19 +588,10 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // ── Usage 6 — Mascotte d'accueil (T6) ─────────────────────────────────────
   // Synchrone, hors file (BO-003). Délai court : l'accueil ne réessaie pas et
   // bascule sur le texte déterministe (RUN-002) — un modèle lent vaut un échec.
-  formulate_mascot: {
-    operationCode: 'formulate_mascot', useCaseCode: 'HOME_MASCOT',
-    migratesTo: { masterPromptCode: T6_MASTER, task: 'FORMULATE', operationCode: 't6_formulate' },
-    label: "Formulation du discours de la mascotte d'accueil",
-    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
-    promptCode: 'mascot_t6_v1', timeoutMs: 8_000,
-    outputSchema: 'MascotT6Output', active: true, billable: false,
-  },
   // T6 — prompt maître (CDC 15 §28), `T6_MASTER_OPERATION_SPEC` de
   // `home/mascot/t6-contract.ts`. Sortie sans discriminant (`taskField:
-  // 'none'`) : `schemaVersion` t6-output-v2 strict. Mêmes modèles, délai et
-  // facturation que `formulate_mascot` ; bascule par la version (D-04) et
-  // AI_HOME_MASCOT.
+  // 'none'`) : `schemaVersion` t6-output-v2 strict. Seul moteur de T6 depuis
+  // le lot 16b (`formulate_mascot` et `mascot_t6_v1` retirés).
   t6_formulate: {
     operationCode: 't6_formulate', useCaseCode: 'HOME_MASCOT',
     label: 'T6 master — formulation de la mascotte (MODE=FORMULATE)',

@@ -357,14 +357,10 @@ export function evaluateT6CorpusCase(
 }
 
 /**
- * Déclaration attendue de l'opération master T6 au registre
- * (`ai/registry/operations.ts`, propriétaire A) — à reporter telle quelle
- * quand le catalogue des schémas master connaîtra `T6FormulateOutput` et que
- * la passerelle validera une sortie master sans champ discriminant (§28 :
- * `{schemaVersion, messages}`, sans `mode`). Mêmes modèles, même délai (8 s)
- * et même facturation que `formulate_mascot`, qui reçoit alors
- * `migratesTo: { masterPromptCode: 't6_master_v1', task: 'FORMULATE', operationCode: 't6_formulate' }`.
- * Un test vérifie la cohérence avec le registre dès que l'entrée existe.
+ * Déclaration de l'opération master T6 au registre (`ai/registry/operations.ts`) :
+ * sortie master sans champ discriminant (§28 : `{schemaVersion, messages}`,
+ * sans `mode`), délai 8 s, non facturée. Seule opération de T6 depuis le lot
+ * 16b (`formulate_mascot` retirée). Un test vérifie la cohérence avec le registre.
  */
 export const T6_MASTER_OPERATION_SPEC = {
   operationCode: 't6_formulate',

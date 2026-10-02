@@ -45,10 +45,7 @@ export async function getMascotPresentation(
   // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
   const kinds = subjects.map((s) => tileFor(s, raw.today ?? parisDay(), tiles).kind);
   const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
-  // Le drapeau de recette coupé n'est pas un appel T6 : rien à journaliser.
-  if (outcome.status !== 'skipped') {
-    void logT6({ accountId, contextHash, mode, outcome, input });
-  }
+  void logT6({ accountId, contextHash, mode, outcome, input });
   return buildPresentation({
     subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles,
   });

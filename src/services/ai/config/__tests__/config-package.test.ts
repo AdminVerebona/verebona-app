@@ -23,14 +23,16 @@ vi.mock('@/db', () => ({
 const getVersion = vi.fn();
 const getActiveVersion = vi.fn(async () => null);
 let colonne0220 = true;
-const promptArchitectureInsert = vi.fn(async (arch: unknown, masterPrompt: unknown, _sql?: unknown) => {
-  if (!colonne0220 && (arch === 'master' || masterPrompt !== null)) throw new Error('migration 0220 non appliquée');
+const promptArchitectureInsert = vi.fn(async (arch: unknown, masterPrompt: unknown, _sql?: unknown, treatment?: unknown) => {
+  // Lot 16b : `master` est l'architecture par défaut de T5/T6 (relue sans colonne).
+  const parDefaut = treatment === 'T5' || treatment === 'T6' ? 'master' : 'steps';
+  if (!colonne0220 && (arch !== parDefaut || masterPrompt !== null)) throw new Error('migration 0220 non appliquée');
   return { column: colonne0220 };
 });
 vi.mock('../config-version.repository', () => ({
   getVersion: (id: number) => getVersion(id),
   getActiveVersion: () => getActiveVersion(),
-  promptArchitectureInsert: (a: unknown, b: unknown, c?: unknown) => promptArchitectureInsert(a, b, c),
+  promptArchitectureInsert: (a: unknown, b: unknown, c?: unknown, d?: unknown) => promptArchitectureInsert(a, b, c, d),
 }));
 vi.mock('../environment', async (orig) => ({
   ...(await orig<typeof import('../environment')>()),
@@ -117,10 +119,11 @@ describe('importPackage', () => {
     // Aucune écriture hors transaction.
     expect(unsafe).not.toHaveBeenCalled();
     // CDC 15 D-04 (0220) : l'architecture de chaque ligne est écrite dans le
-    // même INSERT (package sans champ ⇒ `steps`).
+    // même INSERT (package sans champ ⇒ `steps` ; T5/T6 : toujours `master`,
+    // lot 16b — un package ancien est ramené au master, jamais refusé).
     for (const l of lignes) {
       expect(l.sql).toMatch(/prompt_architecture, master_prompt/);
-      expect(l.params[14]).toBe('steps');
+      expect(l.params[14]).toBe(['T5', 'T6'].includes(String(l.params[1])) ? 'master' : 'steps');
       expect(l.params[15]).toBeNull();
     }
   });

@@ -28,7 +28,7 @@
  */
 import { listMasterPrompts, AI_OPERATIONS } from '../registry/operations';
 import { checkMasterTemplate, inspectMasterTemplate } from '../prompts/prompt-loader';
-import { treatmentForUseCase, type Treatment } from './treatments';
+import { treatmentForUseCase, isMasterOnlyTreatment, isPromptAdministrable, type Treatment } from './treatments';
 import {
   promptArchitectureOf, masterPromptOf, type PromptArchitecture, type TreatmentConfig,
 } from './config-types';
@@ -66,7 +66,7 @@ export function masterCapableTreatments(): Treatment[] {
 
 export type PromptArchitectureDecision =
   | { allowed: true }
-  | { allowed: false; code: 'VERSION_NOT_EDITABLE' | 'NO_MASTER_FOR_TREATMENT'; message: string };
+  | { allowed: false; code: 'VERSION_NOT_EDITABLE' | 'NO_MASTER_FOR_TREATMENT' | 'MASTER_ONLY_TREATMENT'; message: string };
 
 /**
  * Règle §29.1 / D-04 : un changement d'architecture est-il permis ?
@@ -75,7 +75,9 @@ export type PromptArchitectureDecision =
  *   · seule une version au statut Brouillon est modifiable (VER-002) : la
  *     version À tester qui en sera promue portera la bascule en préproduction,
  *     jamais une Active éditée en place ;
- *   · `master` exige un prompt maître déclaré au registre pour ce traitement.
+ *   · `master` exige un prompt maître déclaré au registre pour ce traitement ;
+ *   · T5 et T6 n'ont plus d'architecture `steps` (lot 16b) : la demander est
+ *     refusé, quel que soit le statut de la version.
  */
 export function checkPromptArchitectureChange(input: {
   status: ConfigVersionStatus;
@@ -83,6 +85,15 @@ export function checkPromptArchitectureChange(input: {
   from: PromptArchitecture | null | undefined;
   to: PromptArchitecture;
 }): PromptArchitectureDecision {
+  if (input.to === 'steps' && isMasterOnlyTreatment(input.treatment)) {
+    return {
+      allowed: false,
+      code: 'MASTER_ONLY_TREATMENT',
+      message:
+        `Architecture des prompts de ${input.treatment} : « steps » n'existe plus. Les étapes historiques de `
+        + `${input.treatment} ont été retirées ; son prompt maître est son seul moteur (lot 16b).`,
+    };
+  }
   const from = promptArchitectureOf({ promptArchitecture: input.from ?? undefined });
   if (from === input.to) return { allowed: true };
   if (input.status !== 'DRAFT') {
@@ -152,7 +163,9 @@ export function checkMasterProposal(treatment: Treatment, text: string): string[
  *     code) — BLOQUANT en `master`, simple avertissement en `steps` (texte
  *     préparé avant la bascule, ignoré tant qu'elle n'a pas eu lieu) ;
  *   · architecture `master` : master déclaré au registre ; texte vide ⇒
- *     fichier du dépôt, signalé sans bloquer.
+ *     fichier du dépôt, signalé sans bloquer ;
+ *   · T5 et T6 portant `steps` (valeur brute, ligne antérieure à la migration
+ *     0231 ou package ancien) : BLOQUANT — leur architecture `steps` est retirée.
  */
 export function masterConfigIssues(
   c: TreatmentConfig,
@@ -164,6 +177,14 @@ export function masterConfigIssues(
       field: 'prompt',
       message: 'Le préambule des étapes contient un prompt maître ({{TASK}} ou « BRANCHE TASK = ») : '
         + 'le texte master va dans sa zone dédiée (CDC 15 D-03).',
+      blocking: true,
+    });
+  }
+
+  if (isMasterOnlyTreatment(c.treatment) && c.promptArchitecture === 'steps') {
+    out.push({
+      field: 'promptArchitecture',
+      message: `Architecture « steps » retirée pour ${c.treatment} : seul son prompt maître existe (lot 16b, migration 0231).`,
       blocking: true,
     });
   }
@@ -186,7 +207,8 @@ export function masterConfigIssues(
   if (promptArchitectureOf(c) === 'master') {
     if (!master) {
       out.push({ field: 'promptArchitecture', message: `Architecture « master » sans prompt maître déclaré pour ${c.treatment}.`, blocking: true });
-    } else if (!texte) {
+    } else if (!texte && isPromptAdministrable(c.treatment)) {
+      // T5 : fichier du dépôt par construction (non administrable), rien à signaler.
       out.push({
         field: 'masterPrompt',
         message: `Texte master vide : le fichier ${master.masterPromptCode} du dépôt s'appliquera (valeur initiale, D-03).`,
@@ -207,11 +229,9 @@ export function masterConfigIssues(
  * T3 (lot 13) n'en a pas : sa bascule vers le master se fait par la seule
  * version de configuration (D-04).
  */
-export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MODE' | 'AI_HOME_MASCOT'>> = {
+export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MODE'>> = {
   T1: 'AI_T1_ANALYSIS_MODE',
-  // Lot 16 (C) : T6 en `master` n'est appliqué que si la mascotte tourne
-  // sur le nouveau moteur (AI_HOME_MASCOT=enabled) ; sinon texte déterministe.
-  T6: 'AI_HOME_MASCOT',
+  // T6 : AI_HOME_MASCOT retiré au lot 16b — le master T6 s'applique toujours.
 };
 
 /**
@@ -235,7 +255,7 @@ export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_EN
   T4: 'AI_AGENDA_ENGINE',
 };
 
-export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_HOME_MASCOT' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT';
+export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE' | 'AI_AGENDA_ENGINE' | 'AI_INTELLIGENT_ASSISTANT';
 
 export interface PromptArchitectureWarning {
   treatment: Treatment;
@@ -260,9 +280,7 @@ export function promptArchitectureWarning(
       treatment, code: 'MASTER_NOT_APPLIED', switchName: sw, switchMode,
       message:
         `${treatment} : la version de configuration effective déclare l'architecture « master », mais ${sw}=${switchMode}. `
-        + (treatment === 'T6'
-          ? 'Le prompt maître n\'est PAS appliqué : la mascotte affiche son texte déterministe '
-          : 'Le prompt maître n\'est PAS appliqué : les étapes historiques tournent avec leur préambule ')
+        + 'Le prompt maître n\'est PAS appliqué : les étapes historiques tournent avec leur préambule '
         + `(passer ${sw}=enabled, ou remettre la ligne ${treatment} en « steps »).`,
     };
   }

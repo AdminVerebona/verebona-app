@@ -36,6 +36,12 @@ function pricesFor(useCaseCode: AiUseCaseCode): CachedPrice[] {
   return [...seen.values()];
 }
 
+/**
+ * Lot 16b : T5 (gouvernance) et T6 (mascotte) n'ont plus de drapeau — leur
+ * nouveau moteur tourne toujours, leurs tarifs sont donc toujours exigés.
+ */
+const sansDrapeau = (): CachedPrice[] => [...pricesFor('AI_GOVERNANCE'), ...pricesFor('HOME_MASCOT')];
+
 beforeEach(() => {
   clearPricingCache();
   for (const f of AI_FLAGS) delete process.env[f];
@@ -50,22 +56,23 @@ afterEach(() => {
 });
 
 describe('périmètre du contrôle tarifaire', () => {
-  it('ne bloque pas quand aucun usage n\'est basculé, même en production', async () => {
+  it('ne bloque pas quand aucun usage à drapeau n\'est basculé, même en production', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    primePricingCache([]); // catalogue vide : aucun tarif connu
+    primePricingCache(sansDrapeau()); // seuls les tarifs de T5/T6, toujours actifs
 
     await expect(assertPricingReady()).resolves.toBeUndefined();
 
     const state = getPricingReadiness();
-    expect(state.runningUseCases).toEqual([]);
+    expect(state.runningUseCases).toEqual(['AI_GOVERNANCE', 'HOME_MASCOT']);
     expect(state.blocking).toBe(false);
-    // Le référentiel reste incomplet — c'est signalé, pas bloquant.
-    expect(state.missingOverall.length).toBeGreaterThan(0);
   });
 
   it('ignore les usages non basculés dans le périmètre restreint', () => {
-    primePricingCache([]);
+    primePricingCache(sansDrapeau());
     expect(listModelsWithoutPricing({ runningOnly: true })).toEqual([]);
+    // Sans aucun tarif, le référentiel complet est signalé incomplet.
+    clearPricingCache();
+    primePricingCache([]);
     expect(listModelsWithoutPricing()).not.toEqual([]);
   });
 
@@ -86,6 +93,13 @@ describe('périmètre du contrôle tarifaire', () => {
     await expect(assertPricingReady()).rejects.toThrow(/DATA_RECONCILIATION/);
   });
 
+  it('lot 16b : T5 et T6, sans drapeau, sont toujours dans le périmètre', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    primePricingCache([]);
+    expect(getPricingReadiness().runningUseCases).toEqual(['AI_GOVERNANCE', 'HOME_MASCOT']);
+    await expect(assertPricingReady()).rejects.toThrow(/sans tarif sur un usage actif/);
+  });
+
   it('ne bloque jamais hors production', async () => {
     vi.stubEnv('NODE_ENV', 'development');
     process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
@@ -97,7 +111,7 @@ describe('périmètre du contrôle tarifaire', () => {
   it('laisse démarrer quand les tarifs de l\'usage basculé sont connus', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
-    primePricingCache(pricesFor('SOURCE_ANALYSIS'));
+    primePricingCache([...pricesFor('SOURCE_ANALYSIS'), ...sansDrapeau()]);
 
     const state = getPricingReadiness();
     expect(state.missingForRunning).toEqual([]);

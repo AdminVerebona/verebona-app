@@ -23,7 +23,8 @@ const catalogues = (over: Partial<ConfigCatalogs> = {}): ConfigCatalogs => ({
 
 function valide(over: Partial<TreatmentConfig> = {}): TreatmentConfig {
   return {
-    ...emptyTreatmentConfig('T1'),
+    // Architecture par défaut DU traitement : `master` pour T5/T6 (lot 16b).
+    ...emptyTreatmentConfig(over.treatment ?? 'T1'),
     prompt: 'un prompt',
     primaryModel: 'm-principal',
     reasoningPrimary: 'standard',
@@ -307,5 +308,22 @@ describe('modèles retirés du catalogue (SCR-10)', () => {
   it('ignore les replis non configurés', () => {
     // `null` n'est pas un modèle retiré : le signaler noierait les vrais cas.
     expect(unavailableModels([valide({ fallback1: null, fallback2: null })], dispo)).toEqual([]);
+  });
+});
+
+describe('lot 16b — T5 et T6 : master seul', () => {
+  it('une ligne T5 ou T6 en « steps » (valeur brute : ligne ancienne, package) est bloquante', () => {
+    for (const t of ['T5', 'T6'] as const) {
+      const issues = bloquants(valide({ treatment: t, prompt: t === 'T5' ? '' : 'charte', triggers: [], promptArchitecture: 'steps' }));
+      expect(issues.some((i) => i.field === 'promptArchitecture'), t).toBe(true);
+    }
+  });
+
+  it('leur ligne par défaut est en « master », sans issue bloquante', () => {
+    for (const t of ['T5', 'T6'] as const) {
+      expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
+      expect(bloquants(valide({ treatment: t, prompt: t === 'T5' ? '' : 'charte', triggers: [] })), t).toEqual([]);
+    }
+    expect(emptyTreatmentConfig('T1').promptArchitecture).toBe('steps');
   });
 });

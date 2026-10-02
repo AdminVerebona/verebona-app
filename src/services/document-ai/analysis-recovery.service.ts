@@ -9,11 +9,10 @@
  *
  * Dans tous les cas, le compte doit avoir du crédit disponible (canConsumeAnalysis).
  *
- *   - UPLOADED bloqué > 10m   → mis en file puis perdu (redémarrage de la
- *                               file mémoire) — autrefois repris par
- *                               `/api/analysis/check-pending`, appelé par le
- *                               navigateur (E-06) : la reprise est désormais
- *                               exclusivement serveur.
+ *   - UPLOADED bloqué > 10m   → marqué « en file » sans job vivant (job
+ *                               abandonné définitivement, mise en file
+ *                               échouée) — la reprise est exclusivement
+ *                               serveur (E-06).
  *
  * Dans tous les cas, le compte doit avoir du crédit disponible (canConsumeAnalysis).
  *
@@ -25,20 +24,17 @@
  * ══════════════════════════════════════════════════════════════════════════
  * JAMAIS DEUX ANALYSES DU MÊME FICHIER (§10.4 — lot 3, bascule durable)
  *
- * La reprise appelait `analyzeFileSources` DIRECTEMENT, à côté de la file.
- * Avec `AI_DURABLE_QUEUE=enabled`, un fichier dont le job T1 attendait son
- * backoff (état ANALYSIS_FAILED ou UPLOADED) ou s'exécutait depuis plus de
- * dix minutes (ANALYZING, délai global de 15 min) était relancé une seconde
- * fois, hors file — et sous garde, le pipeline ne filtre plus les ANALYZING.
+ * La reprise appelait `analyzeFileSources` DIRECTEMENT, à côté de la file :
+ * un fichier dont le job T1 attendait son backoff (état ANALYSIS_FAILED ou
+ * UPLOADED) ou s'exécutait depuis plus de dix minutes (ANALYZING, délai
+ * global de 15 min) était relancé une seconde fois, hors file.
  *
- * Désormais :
+ * Désormais (file durable seule depuis le lot 16b) :
  *   · tout fichier ayant un job T1 VIVANT (PENDING ou RUNNING) est écarté,
  *     et son état n'est jamais réinitialisé ;
- *   · en file mémoire (`legacy`), un fichier encore connu de la file de ce
- *     processus est écarté de même ;
- *   · la relance passe par `enqueueFileAnalyses` — la file active, avec sa
- *     déduplication (WF-10 en durable, ensemble `connus` en mémoire) et sa
- *     concurrence bornée — au lieu d'un appel direct.
+ *   · la relance passe par `enqueueFileAnalyses` — la file durable, avec sa
+ *     déduplication (WF-10) et sa concurrence bornée — au lieu d'un appel
+ *     direct.
  */
 
 import { db } from '@/db';
@@ -47,7 +43,7 @@ import { eq, inArray, isNull, and, lt, or } from 'drizzle-orm';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { withJobLock } from '@/lib/job-lock';
 /** Un document en ANALYZING depuis plus de 10 min est considéré bloqué */
-const STUCK_THRESHOLD_MS = 10 * 60 * 1_000;
+export const STUCK_THRESHOLD_MS = 10 * 60 * 1_000;
 
 /**
  * Nom du bail et durée maximale d'un tour.
@@ -189,10 +185,10 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
         .where(inArray(assetFiles.id, stuckAnalyzingIds));
     }
 
-    // 6. Remettre en file, compte par compte. La file active (durable ou
-    //    mémoire) borne la concurrence et déduplique ; non facturé, comme
-    //    avant (la reprise n'est pas une nouvelle demande de l'utilisateur).
-    const { enqueueFileAnalyses } = await import('@/services/ai/source-analysis/analysis-queue');
+    // 6. Remettre en file, compte par compte. La file durable borne la
+    //    concurrence et déduplique ; non facturé, comme avant (la reprise
+    //    n'est pas une nouvelle demande de l'utilisateur).
+    const { enqueueFileAnalyses } = await import('@/services/ai/source-analysis/queue/t1-handler');
     for (const [accountId, ids] of byAccount) {
       try {
         const acceptes = await enqueueFileAnalyses(ids, accountId, {
@@ -216,9 +212,7 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
 }
 
 /**
- * Fichiers déjà pris en charge par une file : job T1 vivant dans la file
- * durable (quel que soit le mode : le lancement manuel T1 y passe toujours),
- * ou, en mode `legacy`, fichier connu de la file mémoire de ce processus.
+ * Fichiers déjà pris en charge : job T1 vivant dans la file durable.
  *
  * File durable illisible : on écarte TOUT — mieux vaut une reprise différée de
  * cinq minutes qu'une double analyse facturée deux fois au fournisseur.
@@ -233,12 +227,5 @@ async function fichiersEnFile(ids: number[]): Promise<Set<number>> {
     console.warn('[analysis-recovery] file durable illisible, reprise différée :', (e as Error).message);
     return new Set(ids);
   }
-  try {
-    const { isDurableQueueEnabled } = await import('@/services/ai/source-analysis/queue/t1-handler');
-    if (!isDurableQueueEnabled()) {
-      const { isFileQueuedInMemory } = await import('@/services/ai/source-analysis/analysis-queue');
-      for (const id of ids) if (isFileQueuedInMemory(id)) vivants.add(id);
-    }
-  } catch { /* file mémoire indisponible : rien de plus à écarter */ }
   return vivants;
 }

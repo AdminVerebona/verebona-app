@@ -13,21 +13,17 @@ export const AI_FLAGS = [
   'AI_RECONCILIATION_ENGINE',
   'AI_INTELLIGENT_ASSISTANT',
   'AI_AGENDA_ENGINE',
-  'AI_PROMPT_GOVERNANCE',
-  // T6 — mascotte d'accueil. `legacy` (défaut) : texte déterministe seul ;
-  // `enabled` : formulation T6. Pas de mode observation (voir plus bas).
-  'AI_HOME_MASCOT',
+  // Lot 16b (retrait de l'ancien moteur) : `AI_PROMPT_GOVERNANCE` (T5) et
+  // `AI_HOME_MASCOT` (T6) sont SUPPRIMÉS — comportement = ancien `enabled`.
+  // Leurs usages n'ont plus de drapeau (`USE_CASE_FLAGS`) et tournent toujours.
 ] as const;
 
 // ⚠️ N'AJOUTEZ PAS DE DRAPEAU ICI QUI NE SOIT PAS UN USAGE IA.
 //
-// `AI_FLAGS` signifie « un drapeau par usage du référentiel », et deux tests en
-// dépendent : la bijection usage ⇄ drapeau, et l'interprétation du rapport
-// d'inventaire. Une bascule technique — la file durable, par exemple — se pilote
-// par sa propre variable, lue là où elle sert.
-//
-// Essai du 18/09/2026 : y ajouter `AI_DURABLE_QUEUE` a fait tomber les deux
-// tests, à juste titre.
+// `AI_FLAGS` signifie « au plus un drapeau par usage du référentiel », et deux
+// tests en dépendent : l'injection drapeau → usage, et l'interprétation du
+// rapport d'inventaire. Une bascule technique se pilote par sa propre
+// variable, lue là où elle sert.
 
 export type AiFlag = (typeof AI_FLAGS)[number];
 
@@ -106,7 +102,7 @@ export function shouldRunLegacy(flag: AiFlag): boolean {
  * qu'il n'y a rien à mesurer.
  * ══════════════════════════════════════════════════════════════════════════
  */
-const SANS_MODE_OBSERVATION: readonly AiFlag[] = ['AI_INTELLIGENT_ASSISTANT', 'AI_HOME_MASCOT'];
+const SANS_MODE_OBSERVATION: readonly AiFlag[] = ['AI_INTELLIGENT_ASSISTANT'];
 
 /** Lève si un drapeau porte un mode qu'il ne sait pas honorer. */
 export function assertFlagModesSupported(): void {

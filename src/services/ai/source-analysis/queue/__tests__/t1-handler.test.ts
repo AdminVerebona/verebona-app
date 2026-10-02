@@ -1,49 +1,83 @@
 /**
- * CDC BO IA GEN-004, NFR-003, §10.4 — bascule de la file T1.
+ * CDC BO IA GEN-004, NFR-003, §10.4 — file T1 (lot 16b : file durable seule).
  *
- * Le dépôt de documents est un chemin critique : si la file durable se trompe,
- * plus aucune analyse ne part. Ces tests portent sur la bascule elle-même, pas
- * sur l'analyse — c'est elle qui décide quelle file s'exécute, et il ne doit
- * jamais y en avoir deux.
+ * La file en mémoire (`analysis-queue.ts`) et son drapeau `AI_DURABLE_QUEUE`
+ * sont retirés : toute mise en file T1 passe par `ai_job_queue`. Ces tests
+ * portent sur le point d'entrée unique des appelants, `enqueueFileAnalyses`.
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { isDurableQueueEnabled } from '../t1-handler';
-import { AI_FLAGS } from '@/services/ai/flags/ai-feature-flags';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 
-const initial = { ...process.env };
-afterEach(() => { process.env = { ...initial }; });
+const updates: Array<Record<string, unknown>> = [];
+vi.mock('@/db', () => ({
+  db: {
+    update: () => ({
+      set: (set: Record<string, unknown>) => ({ where: async () => { updates.push(set); } }),
+    }),
+  },
+  pgClient: { unsafe: async () => [] },
+}));
+const nudge = vi.fn();
+vi.mock('../../../queue/queue-worker', () => ({
+  registerJobHandler: () => {},
+  nudgeQueueWorker: () => nudge(),
+}));
+const enqueue = vi.fn(async (..._a: unknown[]) => ({ decision: 'create', jobId: 1 }));
+vi.mock('../../../queue/job-queue.repository', () => ({ enqueue: (...a: unknown[]) => enqueue(...a) }));
+const triggerActive = vi.fn(async (_t: string, _c: string) => true);
+vi.mock('../../../queue/triggers', () => ({ isTriggerActive: (t: string, c: string) => triggerActive(t, c) }));
 
-describe('bascule de file', () => {
-  it('reste sur la file en mémoire par défaut', () => {
-    // Une bascule ne s'active jamais par omission : un déploiement qui oublie
-    // la variable doit se comporter comme avant.
-    delete process.env.AI_DURABLE_QUEUE;
-    expect(isDurableQueueEnabled()).toBe(false);
-  });
+const { enqueueFileAnalyses, UPLOAD_ORIGIN } = await import('../t1-handler');
+const { AI_FLAGS } = await import('@/services/ai/flags/ai-feature-flags');
 
-  it('accepte les formes habituelles du dépôt', () => {
-    for (const v of ['enabled', 'true', '1', 'ENABLED']) {
-      process.env.AI_DURABLE_QUEUE = v;
-      expect(isDurableQueueEnabled(), v).toBe(true);
-    }
-  });
+const racine = process.cwd();
 
-  it("traite toute autre valeur comme un refus", () => {
-    // Y compris `shadow` : deux files analyseraient le même document deux fois,
-    // ce que le §10.4 interdit. Mieux vaut l'ignorer que le deviner.
-    for (const v of ['legacy', 'shadow', 'oui', '']) {
-      process.env.AI_DURABLE_QUEUE = v;
-      expect(isDurableQueueEnabled(), v).toBe(false);
-    }
-  });
+beforeEach(() => {
+  updates.length = 0;
+  nudge.mockClear();
+  enqueue.mockClear();
+  triggerActive.mockReset().mockResolvedValue(true);
+  vi.spyOn(console, 'info').mockImplementation(() => {});
 });
 
-describe('séparation des drapeaux', () => {
-  it("ne figure pas parmi les drapeaux d'usage IA", () => {
-    // `AI_FLAGS` signifie « un drapeau par usage du référentiel ». L'y ajouter a
-    // fait tomber la bijection usage ⇄ drapeau et le rapport d'inventaire, le
-    // 18/09/2026 — à juste titre : une bascule technique n'est pas un usage.
+describe('file T1 : durable seule', () => {
+  it('un dépôt : fichiers marqués « en file », un job durable par fichier, boucleur réveillé', async () => {
+    const r = await enqueueFileAnalyses([7, 8, 7], 5, { origin: UPLOAD_ORIGIN, userId: 3 });
+    expect(r).toEqual([7, 8]);
+    expect(updates).toEqual([expect.objectContaining({ analysisState: 'UPLOADED' })]);
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(enqueue.mock.calls[0][0]).toMatchObject({
+      treatment: 'T1', scope: { accountId: 5, targetType: 'asset_file', targetId: 7 },
+      triggerCode: 'source_uploaded', payload: { fileId: 7, userId: 3, origin: UPLOAD_ORIGIN },
+    });
+    expect(nudge).toHaveBeenCalledTimes(1);
+  });
+
+  it('T1-UI-08 : déclencheur « source_uploaded » inactif — rien n’est mis en file ni marqué', async () => {
+    triggerActive.mockResolvedValue(false);
+    expect(await enqueueFileAnalyses([7], 5, { origin: UPLOAD_ORIGIN })).toEqual([]);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+  });
+
+  it('reprise serveur : pas de filtre de déclencheur, non facturée', async () => {
+    triggerActive.mockResolvedValue(false);
+    expect(await enqueueFileAnalyses([9], 5, { origin: 'analysis-recovery', billable: false })).toEqual([9]);
+    expect(triggerActive).not.toHaveBeenCalled();
+    expect(enqueue.mock.calls[0][0]).toMatchObject({ payload: { billable: false } });
+  });
+
+  it('WF-10 : un fichier déjà en file n’est pas compté deux fois', async () => {
+    enqueue.mockResolvedValueOnce({ decision: 'skip', jobId: 4 });
+    expect(await enqueueFileAnalyses([7], 5, { origin: 'documents/analyze-batch' })).toEqual([]);
+    expect(nudge).not.toHaveBeenCalled();
+  });
+
+  it('plus de file en mémoire ni de drapeau AI_DURABLE_QUEUE (lot 16b)', () => {
+    expect(existsSync(join(racine, 'src/services/ai/source-analysis/analysis-queue.ts'))).toBe(false);
+    expect(existsSync(join(racine, 'src/app/api/analysis/check-pending/route.ts'))).toBe(false);
+    expect(readFileSync(join(racine, 'src/services/ai/source-analysis/queue/t1-handler.ts'), 'utf8')).not.toMatch(/process\.env\.AI_DURABLE_QUEUE/);
     expect(AI_FLAGS as readonly string[]).not.toContain('AI_DURABLE_QUEUE');
-    expect(AI_FLAGS).toHaveLength(6); // un par usage, mascotte T6 comprise
   });
 });

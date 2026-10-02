@@ -12,15 +12,15 @@
  * (planificateur serveur et passage planifié T1) ; le bandeau, lui, ne fait
  * plus que LIRE l'état, ici.
  *
- * Deux sources, parce que les deux modes coexistent jusqu'à la bascule :
- *   · l'état du fichier (`asset_files.analysis_state`), commun aux deux files
- *     — seule source en mode `legacy` ;
+ * Deux sources, toutes deux PERSISTANTES (file durable seule depuis le lot
+ * 16b) — l'état survit donc à un redémarrage et le polling du bandeau
+ * continue de fonctionner :
+ *   · l'état du fichier (`asset_files.analysis_state`) ;
  *   · la file durable (`ai_job_queue`) : un job T1 vivant fait foi, et donne
  *     l'heure de la prochaine tentative (backoff, report quota).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
-import { isDurableQueueEnabled } from './t1-handler';
 
 type Row = Record<string, unknown>;
 
@@ -33,7 +33,8 @@ export interface T1FileStatus {
 }
 
 export interface T1QueueStatus {
-  mode: 'durable' | 'legacy';
+  /** Toujours `durable` (lot 16b) ; conservé pour les clients qui le lisent. */
+  mode: 'durable';
   files: T1FileStatus[];
 }
 
@@ -41,7 +42,7 @@ export interface T1QueueStatus {
 const LIMIT = 200;
 
 export async function getT1QueueStatus(accountId: number): Promise<T1QueueStatus> {
-  const mode: T1QueueStatus['mode'] = isDurableQueueEnabled() ? 'durable' : 'legacy';
+  const mode: T1QueueStatus['mode'] = 'durable';
 
   const fichiers = await pgClient.unsafe(
     `SELECT id, analysis_state FROM asset_files
@@ -62,8 +63,7 @@ export async function getT1QueueStatus(accountId: number): Promise<T1QueueStatus
     });
   }
 
-  // Lue dans les deux modes : le lancement manuel T1 passe toujours par la
-  // file durable. Illisible (migration absente…) : l'état des fichiers suffit.
+  // Illisible (migration absente…) : l'état des fichiers suffit.
   try {
     const jobs = await pgClient.unsafe(
       `SELECT target_id, status, available_at FROM ai_job_queue

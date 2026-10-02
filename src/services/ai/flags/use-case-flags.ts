@@ -24,25 +24,27 @@ import { AI_USE_CASE_CODES, type AiUseCaseCode } from '../registry/use-cases';
 import { type AiFlag, type FlagMode, getFlagMode, shouldRunNewEngine } from './ai-feature-flags';
 
 /**
- * Un usage ⇄ un drapeau. La relation est bijective : c'est ce qui garantit
- * qu'aucun usage ne peut être basculé sans décision explicite, et qu'aucun
- * drapeau ne pilote deux usages à la fois.
+ * Un usage → au plus un drapeau, et un drapeau ne pilote qu'un usage. `null` :
+ * usage SANS drapeau, dont le nouveau moteur est le seul (lot 16b : T5
+ * gouvernance et T6 mascotte, anciens `AI_PROMPT_GOVERNANCE` et
+ * `AI_HOME_MASCOT` supprimés) — il tourne toujours (`enabled`).
  */
-export const USE_CASE_FLAGS: Record<AiUseCaseCode, AiFlag> = {
+export const USE_CASE_FLAGS: Record<AiUseCaseCode, AiFlag | null> = {
   SOURCE_ANALYSIS: 'AI_UNIFIED_SOURCE_ANALYSIS',
   DATA_RECONCILIATION: 'AI_RECONCILIATION_ENGINE',
   INTELLIGENT_ASSISTANT: 'AI_INTELLIGENT_ASSISTANT',
   AGENDA_INTELLIGENCE: 'AI_AGENDA_ENGINE',
-  AI_GOVERNANCE: 'AI_PROMPT_GOVERNANCE',
-  HOME_MASCOT: 'AI_HOME_MASCOT',
+  AI_GOVERNANCE: null,
+  HOME_MASCOT: null,
 };
 
-export function getUseCaseFlag(useCaseCode: AiUseCaseCode): AiFlag {
+export function getUseCaseFlag(useCaseCode: AiUseCaseCode): AiFlag | null {
   return USE_CASE_FLAGS[useCaseCode];
 }
 
 export function getUseCaseMode(useCaseCode: AiUseCaseCode): FlagMode {
-  return getFlagMode(USE_CASE_FLAGS[useCaseCode]);
+  const flag = USE_CASE_FLAGS[useCaseCode];
+  return flag ? getFlagMode(flag) : 'enabled';
 }
 
 /**
@@ -54,7 +56,8 @@ export function getUseCaseMode(useCaseCode: AiUseCaseCode): FlagMode {
  * même le seul moyen de chiffrer une bascule avant de la décider.
  */
 export function isUseCaseRunning(useCaseCode: AiUseCaseCode): boolean {
-  return shouldRunNewEngine(USE_CASE_FLAGS[useCaseCode]);
+  const flag = USE_CASE_FLAGS[useCaseCode];
+  return flag ? shouldRunNewEngine(flag) : true;
 }
 
 /** Usages dont le nouveau moteur s'exécute réellement, dans l'ordre du CDC. */

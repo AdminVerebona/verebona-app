@@ -26,6 +26,20 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
     return draft.id;
   }
 
+  /**
+   * Lot 16b : T5 et T6 sont TOUJOURS en master (fichier du dépôt) — leur
+   * corpus vert est donc exigé à chaque activation, comme celui de T1 ici.
+   */
+  async function corpusVertT5T6(versionId: number) {
+    const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
+    const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
+    const { recordCorpusRun } = await import('@/services/ai/governance/master-corpus/repository');
+    for (const run of await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T5', 'T6'] })) {
+      expect(run.status, run.masterPromptCode).toBe('PASSED');
+      await recordCorpusRun(run, { configVersionId: versionId, source: 'ci', environment: 'local', gitSha: 'e2e' });
+    }
+  }
+
   const refus = async (versionId: number, userId: number) => {
     const { activate } = await import('@/services/ai/config/config-version.service');
     try {
@@ -42,7 +56,11 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
 
     const r1 = await refus(versionId, user.id);
     expect(r1?.code).toBe('MASTER_CORPUS_NOT_GREEN');
-    expect(r1?.details?.entries).toEqual([expect.objectContaining({ treatment: 'T1', status: 'NO_RUN' })]);
+    // Lot 16b : T5 et T6, master seul, sont contrôlés comme T1.
+    expect(r1?.details?.entries?.map((e) => e.treatment)).toEqual(expect.arrayContaining(['T1', 'T5', 'T6']));
+    await corpusVertT5T6(versionId);
+    const r1b = await refus(versionId, user.id);
+    expect(r1b?.details?.entries?.filter((e) => e.status !== 'GREEN')).toEqual([expect.objectContaining({ treatment: 'T1', status: 'NO_RUN' })]);
 
     const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
@@ -53,7 +71,7 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
     // Un corpus ROUGE sur la même empreinte ne suffit pas.
     await recordCorpusRun({ ...t1, status: 'FAILED', branchesPassed: ['GROUP_UPLOAD'] },
       { configVersionId: versionId, source: 'ci', environment: 'local', gitSha: null });
-    expect((await refus(versionId, user.id))?.details?.entries?.[0].status).toBe('RUN_FAILED');
+    expect((await refus(versionId, user.id))?.details?.entries?.find((e) => e.treatment === 'T1')?.status).toBe('RUN_FAILED');
 
     await recordCorpusRun(t1, { configVersionId: versionId, source: 'ci', environment: 'local', gitSha: 'e2e' });
     expect(await refus(versionId, user.id)).toBeNull();
@@ -72,6 +90,7 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const texte = `${readMasterFileFromRepo('t1_master_v1')}\n\nRÈGLE AJOUTÉE (e2e) — Le titre commence par le type de document.`;
     const versionId = await versionT1Master(user.id, texte);
+    await corpusVertT5T6(versionId);
 
     const r = await refus(versionId, user.id);
     expect(r?.code).toBe('MASTER_CORPUS_NOT_GREEN');
@@ -85,9 +104,9 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
     expect(t1).toMatchObject({ status: 'PASSED', textSource: 'config' });
     // Rejeu vert, et même un rejeu `local` : insuffisant pour un texte de version.
     await recordCorpusRun(t1, { configVersionId: versionId, source: 'local', environment: 'local', gitSha: null });
-    expect((await refus(versionId, user.id))?.details?.entries?.[0].status).toBe('NO_RUN');
+    expect((await refus(versionId, user.id))?.details?.entries?.find((e) => e.treatment === 'T1')?.status).toBe('NO_RUN');
     await recordCorpusRun(t1, { configVersionId: versionId, source: 'preprod', environment: 'local', gitSha: null });
-    expect((await refus(versionId, user.id))?.details?.entries?.[0].status).toBe('LIVE_RUN_MISSING');
+    expect((await refus(versionId, user.id))?.details?.entries?.find((e) => e.treatment === 'T1')?.status).toBe('LIVE_RUN_MISSING');
     // Passage RÉEL en préprod (D-17) : la sortie du modèle est simulée ici par
     // les sorties enregistrées ; l'enregistrement est celui de `ai:corpus --live`.
     const { buildLiveRunner } = await import('@/services/ai/governance/master-corpus/live');

@@ -23,8 +23,8 @@ describe('taskField none', () => {
       .toThrow(/MODE=FORMULATE/);
   });
 
-  it('registre : t6_formulate en master sans discriminant ; formulate_mascot migre vers lui', () => {
+  it('registre : t6_formulate en master sans discriminant ; formulate_mascot retirée (lot 16b)', () => {
     expect(AI_OPERATIONS.t6_formulate).toMatchObject({ masterPromptCode: 't6_master_v1', task: 'FORMULATE', taskField: 'none', outputSchema: 'T6FormulateOutput' });
-    expect(AI_OPERATIONS.formulate_mascot.migratesTo).toEqual({ masterPromptCode: 't6_master_v1', task: 'FORMULATE', operationCode: 't6_formulate' });
+    expect(AI_OPERATIONS.formulate_mascot).toBeUndefined();
   });
 });

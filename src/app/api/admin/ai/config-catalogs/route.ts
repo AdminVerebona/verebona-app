@@ -18,7 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
 import { getCachedPrice, getCacheState, loadPricingCache } from '@/services/ai/gateway/pricing/pricing.repository';
 import { listGuardrails, listTriggers } from '@/services/ai/config/catalogs';
-import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
+import { TREATMENTS, TREATMENT_DEFINITIONS, isMasterOnlyTreatment } from '@/services/ai/config/treatments';
 import { REASONING_LEVELS, GUARDRAIL_REACTIONS, PROMPT_ARCHITECTURES } from '@/services/ai/config/config-types';
 import { masterPromptForTreatment, MASTER_ROLLOUT_SWITCH } from '@/services/ai/config/prompt-architecture';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
@@ -65,7 +65,11 @@ export async function GET(req: NextRequest) {
         // Commutateur d'environnement qui conditionne en plus le master
         // (T1 : AI_T1_ANALYSIS_MODE) ; `null` : la version suffit (T3, D-04).
         master: masterPromptForTreatment(t)
-          ? { ...masterPromptForTreatment(t)!, rolloutSwitch: MASTER_ROLLOUT_SWITCH[t] ?? null }
+          ? {
+            ...masterPromptForTreatment(t)!, rolloutSwitch: MASTER_ROLLOUT_SWITCH[t] ?? null,
+            // Lot 16b : T5 et T6 sans architecture `steps` (choix non proposé).
+            masterOnly: isMasterOnlyTreatment(t),
+          }
           : null,
       })),
     });

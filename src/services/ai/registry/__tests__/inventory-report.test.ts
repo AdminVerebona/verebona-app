@@ -49,8 +49,11 @@ describe('section déclarée', () => {
 
   it("joint l'état des drapeaux, sans lequel le rapport ne s'interprète pas", () => {
     const d = buildDeclaredSection();
-    expect(Object.keys(d.flags)).toHaveLength(6);
+    // Lot 16b : T5 et T6 n'ont plus de drapeau (nouveau moteur seul).
+    expect(Object.keys(d.flags)).toHaveLength(4);
     expect(d.flags).toHaveProperty('AI_INTELLIGENT_ASSISTANT');
+    expect(d.flags).not.toHaveProperty('AI_PROMPT_GOVERNANCE');
+    expect(d.flags).not.toHaveProperty('AI_HOME_MASCOT');
   });
 
   it('distingue les opérations déterministes de celles qui appellent un modèle', () => {

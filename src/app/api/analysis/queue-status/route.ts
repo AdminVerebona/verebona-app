@@ -6,7 +6,8 @@
  * `/api/analysis/check-pending` : ouvrir l'application ne déclenche plus
  * aucune analyse, la reprise est exclusivement serveur (analysis-recovery).
  *
- * Fonctionne dans les deux modes de file (`AI_DURABLE_QUEUE`).
+ * Lit l'état persistant (fichiers et file durable T1, seule file depuis le
+ * lot 16b).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';

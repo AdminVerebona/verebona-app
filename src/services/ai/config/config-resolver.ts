@@ -42,9 +42,9 @@
  * sans borne, elle attend la base sur le chemin d'appel.
  */
 import { getOperation, type AiOperationDefinition } from '../registry/operations';
-import { isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
+import { isPromptAdministrable, isMasterOnlyTreatment, treatmentForUseCase, type Treatment } from './treatments';
 import {
-  DEFAULT_PROMPT_ARCHITECTURE, promptArchitectureOf, masterPromptOf,
+  DEFAULT_PROMPT_ARCHITECTURE, defaultPromptArchitectureFor, promptArchitectureOf, masterPromptOf,
   type PromptArchitecture, type ReasoningLevel, type TreatmentConfig,
 } from './config-types';
 import { currentJobContext } from '../queue/job-context';
@@ -254,6 +254,15 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
  * l'opération du sien — le contrôle de promotion l'aurait refusée, mais une
  * version importée d'un environnement plus permissif pourrait passer.
  */
+/** Architecture du code pour l'opération (sans version) : `master` pour T5/T6 (lot 16b). */
+function architectureParDefaut(op: AiOperationDefinition): PromptArchitecture {
+  try {
+    return defaultPromptArchitectureFor(treatmentForUseCase(op.useCaseCode));
+  } catch {
+    return DEFAULT_PROMPT_ARCHITECTURE;
+  }
+}
+
 export async function resolveOperationConfig(
   operationCode: string,
 ): Promise<ResolvedOperationConfig> {
@@ -266,7 +275,8 @@ export async function resolveOperationConfig(
     reasoningPrimary: null,
     reasoningByRank: [],
     promptPreamble: null,
-    promptArchitecture: DEFAULT_PROMPT_ARCHITECTURE,
+    // T5/T6 : `master` même sans version (lot 16b).
+    promptArchitecture: architectureParDefaut(op),
     masterPromptText: null,
     configVersionId: null,
     visibleNumber: null,
@@ -343,6 +353,8 @@ function promptOf(entry: TreatmentConfig): Pick<ResolvedOperationConfig, 'prompt
  * base illisible : `steps`, le comportement historique. Ne lève jamais.
  */
 export async function getPromptArchitecture(treatment: Treatment): Promise<PromptArchitecture> {
+  // T5 et T6 : master seul (lot 16b), sans lecture de la version.
+  if (isMasterOnlyTreatment(treatment)) return 'master';
   try {
     const effective = await entriesForCurrentExecution();
     return promptArchitectureOf(effective.byTreatment.get(treatment));

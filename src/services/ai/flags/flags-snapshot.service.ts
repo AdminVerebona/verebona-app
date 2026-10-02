@@ -35,10 +35,8 @@ export interface FlagsSnapshot {
     /** Environnement IA déduit (`null` : illisible, démarrage refusé hors test). */
     aiEnvironment: AiEnvironment | null;
   };
-  /** Un drapeau par usage IA (`AI_FLAGS`). */
+  /** Un drapeau par usage IA encore basculable (`AI_FLAGS`). */
   aiFlags: FlagSnapshotEntry[];
-  /** Bascules techniques hors `AI_FLAGS` (file durable T1). */
-  technical: FlagSnapshotEntry[];
   /** Commutateurs de déploiement du CDC 15 (`canonical/rollout.ts`). */
   rollout: RolloutSnapshotEntry[];
   generatedAt: string;
@@ -48,8 +46,8 @@ const RECONNUES = new Set(['legacy', 'shadow', 'enabled', 'true', '1']);
 
 /** Libellé de l'usage piloté par chaque drapeau. */
 function flagDescription(flag: AiFlag): string {
-  const usage = (Object.entries(USE_CASE_FLAGS) as Array<[string, AiFlag]>).find(([, f]) => f === flag)?.[0];
-  const sansObservation = flag === 'AI_INTELLIGENT_ASSISTANT' || flag === 'AI_HOME_MASCOT';
+  const usage = (Object.entries(USE_CASE_FLAGS) as Array<[string, AiFlag | null]>).find(([, f]) => f === flag)?.[0];
+  const sansObservation = flag === 'AI_INTELLIGENT_ASSISTANT';
   return `Usage ${usage ?? '—'}${sansObservation ? ' — sans mode observation (shadow refusé au démarrage)' : ''}.`;
 }
 
@@ -66,20 +64,14 @@ function entry(name: string, raw: string | undefined, description: string): Flag
 
 /** Instantané des drapeaux et commutateurs de CE processus (pur, testable). */
 export function buildFlagsSnapshot(env: Env = process.env, now: Date = new Date()): FlagsSnapshot {
-  const durable = entry(
-    'AI_DURABLE_QUEUE', env.AI_DURABLE_QUEUE,
-    'File durable T1 (ai_job_queue) au lieu de la file en mémoire. Pas de mode observation.',
-  );
-  // `isDurableQueueEnabled` ne connaît que enabled/true/1 : `shadow` y vaut legacy.
-  if (durable.mode === 'shadow') durable.mode = 'legacy';
-
+  // Lot 16b : `AI_DURABLE_QUEUE` (file durable T1 seule), `AI_PROMPT_GOVERNANCE`
+  // et `AI_HOME_MASCOT` sont supprimés — plus rien à afficher pour eux.
   return {
     environment: {
       appEnv: env.NEXT_PUBLIC_APP_ENV ?? null,
       aiEnvironment: parseEnvironment(env.NEXT_PUBLIC_APP_ENV),
     },
     aiFlags: AI_FLAGS.map((f) => entry(f, env[f], flagDescription(f))),
-    technical: [durable],
     rollout: rolloutSnapshot(env),
     generatedAt: now.toISOString(),
   };

@@ -13,13 +13,15 @@ afterEach(() => {
 });
 
 describe('instantané des drapeaux', () => {
-  it('environnement, drapeaux AI_*, file durable et commutateurs', () => {
+  it('environnement, drapeaux AI_* et commutateurs ; drapeaux retirés au lot 16b absents', () => {
     const snap = buildFlagsSnapshot({
       NEXT_PUBLIC_APP_ENV: 'staging',
       AI_UNIFIED_SOURCE_ANALYSIS: 'enabled',
       AI_RECONCILIATION_ENGINE: 'shadow',
       AI_AGENDA_ENGINE: 'enabeld',
       AI_DURABLE_QUEUE: 'true',
+      AI_HOME_MASCOT: 'enabled',
+      AI_PROMPT_GOVERNANCE: 'enabled',
       CANONICAL_WRITE_MODE: 'shadow',
     }, new Date('2026-09-29T08:00:00Z'));
 
@@ -31,9 +33,11 @@ describe('instantané des drapeaux', () => {
     // Faute de frappe : visible, et appliquée comme legacy.
     expect(par.AI_AGENDA_ENGINE).toMatchObject({ mode: 'legacy', raw: 'enabeld', invalid: true });
     // Absente : défaut du code.
-    expect(par.AI_HOME_MASCOT).toMatchObject({ mode: 'legacy', raw: null, invalid: false });
-
-    expect(snap.technical).toEqual([expect.objectContaining({ name: 'AI_DURABLE_QUEUE', mode: 'enabled' })]);
+    expect(par.AI_INTELLIGENT_ASSISTANT).toMatchObject({ mode: 'legacy', raw: null, invalid: false });
+    // Lot 16b : variables retirées, même posées, ne figurent plus.
+    const noms = JSON.stringify(snap);
+    for (const retiree of ['AI_DURABLE_QUEUE', 'AI_HOME_MASCOT', 'AI_PROMPT_GOVERNANCE']) expect(noms).not.toContain(retiree);
+    expect(snap).not.toHaveProperty('technical');
     const cw = snap.rollout.find((r) => r.env === 'CANONICAL_WRITE_MODE');
     expect(cw).toMatchObject({ mode: 'shadow' });
     expect(snap.rollout.map((r) => r.env)).toEqual(expect.arrayContaining([
@@ -41,10 +45,6 @@ describe('instantané des drapeaux', () => {
       'AI_T4_EFFECTS', 'ASSISTANT_CANONICAL_READ', 'EXPORTS_CANONICAL_SOURCE',
     ]));
     expect(snap.generatedAt).toBe('2026-09-29T08:00:00.000Z');
-  });
-
-  it('file durable : « shadow » n’existe pas, lu legacy', () => {
-    expect(buildFlagsSnapshot({ AI_DURABLE_QUEUE: 'shadow' }).technical[0].mode).toBe('legacy');
   });
 
   it('environnement illisible : signalé, sans lever', () => {

@@ -20,7 +20,6 @@ beforeEach(() => {
   process.env.AI_RECONCILIATION_ENGINE = 'enabled';
   process.env.AI_INTELLIGENT_ASSISTANT = 'enabled';
   process.env.AI_AGENDA_ENGINE = 'enabled';
-  process.env.AI_PROMPT_GOVERNANCE = 'enabled';
 });
 
 afterEach(() => {

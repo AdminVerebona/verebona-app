@@ -1,6 +1,6 @@
 /**
  * Lot 3 — la reprise serveur et la file ne traitent jamais deux fois le même
- * fichier (§10.4), en particulier avec `AI_DURABLE_QUEUE=enabled`.
+ * fichier (§10.4). Lot 16b : la file durable est la seule file T1.
  *
  * La reprise appelait `analyzeFileSources` directement, à côté de la file :
  * un fichier dont le job T1 attendait son backoff, ou s'exécutait depuis plus
@@ -9,7 +9,7 @@
  * bornée). Elle reprend aussi les fichiers restés « En file » (E-06 : plus de
  * reprise déclenchée par le navigateur).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /** Résultats successifs des `db.select()` : comptes, puis candidats. */
 let selects: unknown[][] = [];
@@ -38,13 +38,8 @@ vi.mock('@/services/ai/queue/job-queue.repository', () => ({
   listLiveTargets: async () => { if (vivants instanceof Error) throw vivants; return vivants; },
 }));
 const enqueueFileAnalyses = vi.fn(async (ids: number[]) => ids);
-let enMemoire = new Set<number>();
-vi.mock('@/services/ai/source-analysis/analysis-queue', () => ({
-  enqueueFileAnalyses: (ids: number[], ...r: unknown[]) => enqueueFileAnalyses(ids, ...(r as [])),
-  isFileQueuedInMemory: (id: number) => enMemoire.has(id),
-}));
 vi.mock('@/services/ai/source-analysis/queue/t1-handler', () => ({
-  isDurableQueueEnabled: () => ['enabled', 'true', '1'].includes((process.env.AI_DURABLE_QUEUE ?? 'legacy').toLowerCase()),
+  enqueueFileAnalyses: (ids: number[], ...r: unknown[]) => enqueueFileAnalyses(ids, ...(r as [])),
 }));
 // Aucun appel direct du pipeline, quel que soit le mode.
 const analyzeDirect = vi.fn();
@@ -60,22 +55,16 @@ const candidats = [
   { id: 4, accountId: 6, analysisState: 'UPLOADED', updatedAt: vieux },
 ];
 
-const initial = { ...process.env };
 beforeEach(() => {
   selects = [[{ id: 5 }, { id: 6 }], candidats.map((c) => ({ ...c }))];
   updates.length = 0;
   vivants = new Set();
-  enMemoire = new Set();
   enqueueFileAnalyses.mockClear();
   analyzeDirect.mockClear();
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
-afterEach(() => { process.env = { ...initial }; });
-
-describe('file durable activée', () => {
-  beforeEach(() => { process.env.AI_DURABLE_QUEUE = 'enabled'; });
-
+describe('file durable (seule file T1)', () => {
   it('écarte les fichiers ayant un job T1 vivant — y compris un ANALYZING long, jamais réinitialisé', async () => {
     vivants = new Set(['2', '3']);
     const r = await runAnalysisRecovery();
@@ -105,22 +94,11 @@ describe('file durable activée', () => {
   });
 });
 
-describe('file mémoire (legacy, défaut)', () => {
-  beforeEach(() => { delete process.env.AI_DURABLE_QUEUE; });
-
-  it('écarte aussi les fichiers connus de la file mémoire de ce processus', async () => {
-    enMemoire = new Set([1, 4]);
-    vivants = new Set(['2']); // lancement manuel T1 : toujours en file durable
-    const r = await runAnalysisRecovery();
-    expect(r.found).toBe(1);
-    expect(enqueueFileAnalyses).toHaveBeenCalledTimes(1);
-    expect(enqueueFileAnalyses).toHaveBeenCalledWith([3], 5, { origin: 'analysis-recovery', billable: false });
-    expect(analyzeDirect).not.toHaveBeenCalled();
-  });
-
-  it('reprend les fichiers restés « En file » après un redémarrage (E-06, serveur seul)', async () => {
+describe('reprise serveur seule (E-06)', () => {
+  it('reprend les fichiers restés « En file » sans job vivant (job abandonné, mise en file échouée)', async () => {
     const r = await runAnalysisRecovery();
     expect(r.retried).toBe(4);
     expect(enqueueFileAnalyses).toHaveBeenCalledWith([4], 6, expect.anything());
+    expect(analyzeDirect).not.toHaveBeenCalled();
   });
 });

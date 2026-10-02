@@ -214,7 +214,7 @@ export async function GET(req: NextRequest) {
     AI_RECONCILIATION_ENGINE: getFlagMode('AI_RECONCILIATION_ENGINE'),
     AI_INTELLIGENT_ASSISTANT: getFlagMode('AI_INTELLIGENT_ASSISTANT'),
     AI_AGENDA_ENGINE: getFlagMode('AI_AGENDA_ENGINE'),
-    AI_PROMPT_GOVERNANCE: getFlagMode('AI_PROMPT_GOVERNANCE'),
+    // AI_PROMPT_GOVERNANCE et AI_HOME_MASCOT : supprimés (lot 16b).
   };
 
   // §10.1 : un usage à la fois. Basculer l'analyse ET la réconciliation

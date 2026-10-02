@@ -30,7 +30,7 @@ const v = (id: number, status: string, promptT1: string, visibleNumber: number |
 
 beforeEach(() => {
   execute.mockReset().mockResolvedValue({
-    data: { verdict: 'configuration', analysis: 'Le repli est trop fréquent.', targets: [], risks: [], recommendations: [] },
+    data: { mode: 'ANALYZE', verdict: 'configuration', analysis: 'Le repli est trop fréquent.', targets: [], risks: [], configurationRecommendations: [] },
     traceId: 't',
   });
   getVersion.mockReset().mockImplementation(async (id: number) => (id === 1
@@ -48,7 +48,8 @@ describe('T5 — contexte sur demande', () => {
     const r = await analyze(1, 'Les titres sont mauvais', 99, 7);
     expect(getErrorBreakdown).not.toHaveBeenCalled();
     expect(r.comparison ?? null).toBeNull();
-    expect(execute.mock.calls[0][0].promptVariables.EXTRA_CONTEXT).toBe('(aucun)');
+    // Master T5 : sans contexte demandé, INSTRUCTION est la demande seule.
+    expect(execute.mock.calls[0][0].promptVariables.INSTRUCTION).toBe('Les titres sont mauvais');
   });
 
   it('T5-010 : comparaison avec l’Active — diff rendu et transmis au modèle', async () => {
@@ -56,7 +57,7 @@ describe('T5 — contexte sur demande', () => {
     expect(r.comparison).toMatchObject({ versionId: 2, status: 'ACTIVE', label: 'v4' });
     expect(r.comparison!.diff.identical).toBe(false);
     expect(r.comparison!.diff.treatments.map((t) => t.treatment)).toEqual(['T1']);
-    expect(execute.mock.calls[0][0].promptVariables.EXTRA_CONTEXT).toMatch(/Comparaison demandée/);
+    expect(execute.mock.calls[0][0].promptVariables.INSTRUCTION).toMatch(/Comparaison demandée/);
   });
 
   it('T5-009 : journaux sur demande, synthèse bornée au traitement demandé', async () => {

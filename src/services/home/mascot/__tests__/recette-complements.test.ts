@@ -100,8 +100,7 @@ vi.mock('@/services/entitlements.service', () => ({ getEntitlements: (a: number)
 
 const execute = vi.fn();
 vi.mock('@/services/ai/gateway/ai-gateway', () => ({ AiGateway: { execute: (r: unknown) => execute(r) } }));
-vi.mock('@/services/ai/config/config-resolver', () => ({ resolveOperationConfig: async () => ({ promptPreamble: 'voix', configVersionId: 3 }) }));
-vi.mock('@/services/ai/prompts/prompt-loader', () => ({ resolvePrompt: async () => ({ text: '', version: 'mascot_t6_v1@file' }) }));
+vi.mock('@/services/ai/config/config-resolver', () => ({ resolveOperationConfig: async () => ({ masterPromptText: null, configVersionId: 3 }) }));
 vi.mock('@/services/ai/queue/job-queue.repository', () => ({ canStart: async () => true }));
 const opened: unknown[] = [];
 vi.mock('@/lib/drawers', () => ({ openDrawer: (d: unknown) => { opened.push(d); } }));
@@ -431,7 +430,7 @@ describe('traçabilité T6 (BO-009, LOG-005)', () => {
     fallbackText: 'Votre prochaine échéance est « Ramonage », le 15 octobre 2026.',
     allowedHighlight: '15 octobre 2026', occurrenceKey: 'DATE-NEXT:1', dedupeKeys: [], secondaryLabel: '',
   }]);
-  const deps = { flagEnabled: () => true, treatmentAvailable: async () => true, promptVersion: async () => 'v-bo009' };
+  const deps = { treatmentAvailable: async () => true, promptVersion: async () => 'v-bo009', execute: (r: Parameters<typeof execute>[0]) => execute(r) };
 
   beforeEach(() => { execute.mockReset(); resetT6Breaker(); });
 

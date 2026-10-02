@@ -21,7 +21,7 @@
  *
  * Le piège, et la raison pour laquelle le verdict ne peut pas porter sur
  * `use_case_code` : `ai-usage-tracker.ts` estampille les écritures des moteurs
- * HISTORIQUES via `resolveLegacyUseCase()`. Elles remontent donc sous les cinq
+ * HISTORIQUES via la correspondance de la migration 0110 (`ai_legacy_usage_mapping`). Elles remontent donc sous les cinq
  * codes cibles. Un `SELECT DISTINCT use_case_code` renverrait cinq usages et
  * conclurait à la conformité pendant que tout le chemin historique s'exécute —
  * exactement le « regroupement artificiel » que le critère n°24 interdit.

@@ -239,9 +239,9 @@ export async function POST(request: NextRequest) {
 
     // ── Analyse : un travail par fichier, via la file d'attente ──────────────
     // Chaque document est analysé comme s'il avait été déposé seul. Le
-    // parallélisme est borné par la file. Aucune analyse n'est lancée si le
-    // compte n'a pas de crédit : les fichiers restent « non analysés » et
-    // `check-pending` les reprendra.
+    // parallélisme est borné par la file durable T1. Aucune analyse n'est
+    // lancée si le compte n'a pas de crédit : les fichiers restent « non
+    // analysés » et la reprise serveur (`analysis-recovery`) les reprendra.
     if (accountId) {
       // §25.7, §31.7 : un événement par document, une seule invalidation
       // (toutes instances) pour la demande, avant la réponse. Ne lève jamais.
@@ -250,7 +250,7 @@ export async function POST(request: NextRequest) {
       try {
         const gate = await canConsumeAnalysis(accountId, 1);
         if (gate.allowed) {
-          const { enqueueFileAnalyses } = await import('@/services/ai/source-analysis/analysis-queue');
+          const { enqueueFileAnalyses } = await import('@/services/ai/source-analysis/queue/t1-handler');
           await enqueueFileAnalyses(confirmedIds, accountId, { userId, origin: 'files/confirm' });
         }
       } catch (e) {

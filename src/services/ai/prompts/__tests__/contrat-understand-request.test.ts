@@ -85,61 +85,6 @@ describe("les modèles de l'assistant sont tarifables", () => {
   });
 });
 
-describe('analyze_instruction — le prompt offre bien une issue autre que « modifier »', () => {
-  const prompt = lirePrompt('analyze_instruction_v1', 'governance');
-
-  it('demande un verdict parmi les quatre causes (T5-009)', () => {
-    // Sans cette issue, un modèle à qui l'on demande une modification de prompt
-    // en produira une — même quand le problème est dans le code ou les données.
-    for (const v of ['"prompt"', '"code"', '"donnees"', '"configuration"']) {
-      expect(prompt, v).toContain(v);
-    }
-  });
-
-  it('montre explicitement une réponse sans proposition', () => {
-    expect(prompt).toContain('"proposedContent": null');
-  });
-
-  it('demande les champs que le validateur exige', () => {
-    for (const champ of ['"verdict"', '"analysis"', '"proposedContent"', '"risks"', '"recommendations"']) {
-      expect(prompt, champ).toContain(champ);
-    }
-  });
-
-  it("ne demande plus l'ancien champ, qui n'est plus lu", () => {
-    expect(prompt).not.toContain('"impactAnalysis"');
-  });
-
-  it('reçoit le mode, et impose null en analyse (T5-006, SCR-06)', () => {
-    // Le service écarte de toute façon un texte rendu en analyse ; le dire au
-    // modèle évite de payer la réécriture d'un prompt qui ne sera pas lu.
-    expect(prompt).toContain('{{MODE}}');
-    expect(prompt).toMatch(/mode ANALYSE[^\n]*`proposedContent` vaut TOUJOURS `null`/);
-    expect(prompt).toContain('mode MODIFICATION');
-  });
-
-  it("ne prétend plus que rien n'est appliqué (E-01)", () => {
-    // Une demande de modification est désormais écrite dans le brouillon.
-    expect(prompt).not.toContain("TU N'APPLIQUES PAS");
-  });
-});
-
-describe('prompt_control_v2 — Prompt Control multi-cibles', () => {
-  const prompt = lirePrompt('prompt_control_v2', 'governance');
-
-  it('reçoit les quatre prompts et la demande, sans désigner de cible', () => {
-    for (const v of ['{{CURRENT_PROMPTS}}', '{{INSTRUCTION}}', '{{MODE}}']) expect(prompt, v).toContain(v);
-    expect(prompt).not.toContain('{{PROMPT_CODE}}');
-  });
-
-  it('demande les champs que le validateur lit', () => {
-    for (const champ of ['"verdict"', '"analysis"', '"targets"', '"treatment"', '"proposedContent"', '"risks"', '"recommendations"']) {
-      expect(prompt, champ).toContain(champ);
-    }
-  });
-
-  it('offre une issue sans cible (T5-009)', () => {
-    expect(prompt).toContain('"targets": []');
-    for (const v of ['"prompt"', '"code"', '"donnees"', '"configuration"']) expect(prompt, v).toContain(v);
-  });
-});
+// `analyze_instruction_v1` et `prompt_control_v2` retirés au lot 16b : le
+// contrat de sortie de T5 (verdicts, issue sans cible) est celui du master,
+// couvert par `governance/__tests__/t5-master.test.ts`.

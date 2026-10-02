@@ -24,7 +24,7 @@ import {
   dedupeKey, decideQueueing, afterFailure, afterDeferral, MAX_ATTEMPTS,
   type JobOrigin, type JobScope, type JobStatus, type QueueDecision,
 } from './queue-policy';
-import { abortLocalExecutions, abortMemoryExecutions } from './execution-control';
+import { abortLocalExecutions } from './execution-control';
 import { invalidateRuntimeGuardCache } from './runnable-guard';
 
 type Row = Record<string, unknown>;
@@ -530,11 +530,7 @@ export async function requeueRunning(treatment: Treatment, reason: string): Prom
   );
   const ids = (rows as unknown as Row[]).map((r) => Number(r.id));
   abortLocalExecutions(ids, reason);
-  // File mémoire T1 (chemin `legacy`) : aucune ligne en base, mais la même
-  // interruption — l'exécution locale est coupée et remise en tête de SA file
-  // (analysis-queue). Comptée avec les jobs remis en file.
-  const horsFile = abortMemoryExecutions(treatment, reason);
-  return ids.length + horsFile;
+  return ids.length;
 }
 
 /**

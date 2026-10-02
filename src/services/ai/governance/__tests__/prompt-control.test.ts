@@ -44,12 +44,14 @@ const version = (over: Record<string, unknown> = {}) => ({
   entries: ['T1', 'T2', 'T3', 'T4', 'T5'].map((t) => entree(t)),
   ...over,
 });
+// Sortie du master T5 (§27) — seul moteur de Prompt Control depuis le lot 16b.
 const sortie = (over: Record<string, unknown> = {}) => ({
   data: {
+    mode: 'MODIFY',
     verdict: 'prompt',
     analysis: 'Les titres reprennent le numéro de facture : T1 ne donne aucune règle de nommage.',
     targets: [{ treatment: 'T1', reason: 'Aucune règle de titre.', proposedContent: NEW('T1') }],
-    risks: [], recommendations: [],
+    requiredCodeChanges: [], requiredSchemaChanges: [], configurationRecommendations: [], risks: [], requiredTests: [],
     ...over,
   },
   traceId: 'trace-1',
@@ -67,11 +69,12 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('opération dédiée', () => {
-  it('utilise control_prompts, avec son propre prompt et un plancher de tokens', () => {
-    const op = AI_OPERATIONS.control_prompts;
-    expect(op.promptCode).toBe('prompt_control_v2');
+  it('utilise t5_modify (master T5), avec un plancher de tokens ; les opérations d’étapes sont retirées', () => {
+    const op = AI_OPERATIONS.t5_modify;
+    expect(op.promptCode).toBe('t5_master_v1');
     expect(op.useCaseCode).toBe('AI_GOVERNANCE');
     expect(op.minOutputTokens).toBeGreaterThanOrEqual(16_000);
+    for (const retiree of ['analyze_instruction', 'control_prompts', 'propose_change']) expect(AI_OPERATIONS[retiree]).toBeUndefined();
   });
 
   it('présente au modèle les quatre prompts administrables, jamais celui de T5', () => {
@@ -92,8 +95,8 @@ describe('T5 choisit les cibles', () => {
     expect(savePrompt).toHaveBeenCalledTimes(2);
     expect(r.changes.map((c) => [c.treatment, c.applied])).toEqual([['T1', true], ['T2', true]]);
     expect(r).toMatchObject({ applied: true, draftId: 1, mode: 'modify' });
-    expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 'control_prompts' });
-    expect(execute.mock.calls[0][0].promptVariables.MODE).toMatch(/^MODIFICATION/);
+    expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't5_modify' });
+    expect(Object.keys(execute.mock.calls[0][0].promptVariables).sort()).toEqual(['CURRENT_MASTER_PROMPTS', 'INSTRUCTION']);
   });
 
   it('T5-002 — écarte une cible T5 ou inconnue rendue par le modèle', async () => {
@@ -138,7 +141,7 @@ describe('analyse seule (T5-006)', () => {
     expect(r.changes).toEqual([expect.objectContaining({ treatment: 'T1', applied: false, diff: null })]);
     expect(savePrompt).not.toHaveBeenCalled();
     expect(createDraft).not.toHaveBeenCalled();
-    expect(execute.mock.calls[0][0].promptVariables.MODE).toMatch(/^ANALYSE/);
+    expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't5_analyze' });
   });
 });
 

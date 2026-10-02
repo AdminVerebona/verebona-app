@@ -66,7 +66,6 @@ describe('§22.3 : chaque étape T1 référence le master et une TASK explicite'
     group_sources: 'GROUP_UPLOAD',
     extract_source: 'ANALYZE_DOCUMENT',
     classify_document: 'ANALYZE_DOCUMENT',
-    classify_category: 'ANALYZE_DOCUMENT',
     classify_rubric: 'ANALYZE_DOCUMENT',
     identify_entities: 'ANALYZE_DOCUMENT',
     propose_links: 'ANALYZE_DOCUMENT',
@@ -92,9 +91,10 @@ describe('§22.3 : chaque étape T1 référence le master et une TASK explicite'
     }
   });
 
-  it('ARCH-02 : classify_category et propose_change (fichiers absents, sans appelant) désactivées', () => {
-    expect(getOperation('classify_category').active).toBe(false);
-    expect(getOperation('propose_change').active).toBe(false);
+  it('lot 16b : classify_category et propose_change (inactives, sans appelant) retirées du registre ; plus aucune opération inactive', () => {
+    expect(AI_OPERATIONS.classify_category).toBeUndefined();
+    expect(AI_OPERATIONS.propose_change).toBeUndefined();
+    expect(Object.values(AI_OPERATIONS).filter((o) => !o.active).map((o) => o.operationCode)).toEqual([]);
   });
 });
 

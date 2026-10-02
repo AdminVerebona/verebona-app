@@ -10,10 +10,6 @@ export type { TransitionEvent } from './state-machine';
 export { computeDiff, renderDiff } from './diff.service';
 export type { DiffSummary, DiffLine } from './diff.service';
 
-export { analyzeInstruction, hashContent } from './instruction-analyzer.service';
-export type { AnalysisProposal } from './instruction-analyzer.service';
-
-export { activateVersion, rollbackToPrevious, getActiveVersion, listVersions } from './activation.service';
 export { runTests } from './test-runner.service';
 export { runAllChecks, CHECK_THRESHOLDS } from './checks';
 

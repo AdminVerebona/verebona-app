@@ -51,7 +51,7 @@ export class ExecutionCancelledError extends Error {
  * file, qui remet le travail en attente sans compter de tentative.
  *
  * `AI_BLOCKED` n'est une interruption qu'À L'INTÉRIEUR d'une exécution de
- * file (contexte job-context : file durable, file mémoire T1). Hors file
+ * file (contexte job-context : file durable). Hors file
  * (route synchrone, appel T2), il n'y a rien à remettre en attente : les
  * appelants gardent leur repli sans IA (déterministe), comme avant.
  */
@@ -107,56 +107,13 @@ export function abortLocalExecutions(jobIds: number[], reason: string): number {
   return n;
 }
 
-// ── Exécutions HORS file durable (file mémoire T1, chemin `legacy`) ─────────
-//
-// La file mémoire n'a pas de ligne dans `ai_job_queue` : `requeueRunning` ne
-// la voyait pas, et un rollback laissait l'analyse en cours écrire ses
-// résultats avec la configuration abandonnée (audit final BO IA, ligne 1 —
-// VER-017, WF-06). Elle s'enregistre donc ici, par traitement, et
-// `requeueRunning` l'interrompt comme une exécution durable locale.
-//
-// ⚠️ Limite assumée : ce registre est propre au processus. Une file mémoire
-// sur une AUTRE instance n'est pas interrompue par la commande reçue ici ;
-// elle le sera au prochain appel modèle si l'IA est coupée (garde de la
-// passerelle), mais pas par un rollback. C'est l'une des raisons de basculer
-// sur la file durable (`AI_DURABLE_QUEUE=enabled`), où le jeton en base
-// couvre toutes les instances.
-
-const horsFile = new Map<string, Set<AbortController>>();
-
-/** Enregistre une exécution hors file ; rend la fonction de désinscription. */
-export function registerMemoryExecution(treatment: string, controller: AbortController): () => void {
-  let set = horsFile.get(treatment);
-  if (!set) { set = new Set(); horsFile.set(treatment, set); }
-  set.add(controller);
-  return () => { horsFile.get(treatment)?.delete(controller); };
-}
-
-/** Interrompt les exécutions hors file d'un traitement, dans ce processus. */
-export function abortMemoryExecutions(treatment: string, reason: string): number {
-  let n = 0;
-  for (const c of horsFile.get(treatment) ?? []) {
-    if (!c.signal.aborted) {
-      c.abort(new ExecutionCancelledError(reason));
-      n++;
-    }
-  }
-  return n;
-}
-
-/** Nombre d'exécutions hors file en cours (diagnostic, tests). */
-export function countMemoryExecutions(treatment: string): number {
-  return horsFile.get(treatment)?.size ?? 0;
-}
-
 /**
  * Attend la fin RÉELLE d'une exécution dont le délai global est dépassé, au
  * plus `maxMs`. Rend `true` si elle s'est terminée (succès ou erreur).
  *
  * Revue lot 3 : couper le chronomètre ne coupe pas le travail. Le moteur
  * historique T1 (`AI_UNIFIED_SOURCE_ANALYSIS=legacy`) ne connaît pas la garde
- * et continue d'écrire ; libérer tout de suite le job (ou la place de la file
- * mémoire) laissait une seconde exécution démarrer pendant que la première
+ * et continue d'écrire ; libérer tout de suite le job laissait une seconde exécution démarrer pendant que la première
  * tournait encore — double analyse, échéances et liens dupliqués. Le délai
  * dépassé déclenche donc l'interruption (signal, garde), puis on ATTEND que
  * l'exécution se termine vraiment avant de la déclarer en échec. La borne

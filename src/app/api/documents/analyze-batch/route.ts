@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
     // Un fichier par analyse, via la file : une sélection de documents
     // distincts ne doit pas passer par le regroupement IA, qui supprimait
     // les fichiers jugés « secondaires ».
-    import('@/services/ai/source-analysis/analysis-queue').then(({ enqueueFileAnalyses }) =>
+    import('@/services/ai/source-analysis/queue/t1-handler').then(({ enqueueFileAnalyses }) =>
       enqueueFileAnalyses(fileIds.filter(Number.isInteger).slice(0, 50), accountId, {
         userId: session.userId,
         origin: 'documents/analyze-batch',

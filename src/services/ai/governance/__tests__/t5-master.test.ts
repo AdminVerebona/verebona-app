@@ -39,7 +39,6 @@ const version = (t1: Record<string, unknown> = {}) => ({
   id: 1, status: 'DRAFT', environment: 'preprod', label: null, isStale: false, createdAt: new Date(),
   entries: [entree('T1', t1), entree('T2'), entree('T3'), entree('T4'), entree('T5'), entree('T6')],
 });
-const t5Master = () => __setConfigForTests({ versionId: 16, entries: [{ ...emptyTreatmentConfig('T5'), promptArchitecture: 'master' }] });
 
 beforeEach(() => { execute.mockReset(); saveEntry.mockClear(); recordT5Modification.mockClear(); getVersion.mockReset(); });
 afterEach(() => __setConfigForTests(null));
@@ -57,13 +56,11 @@ describe('t5_master_v1 — contrat §27', () => {
     expect(rendu).toContain('MODE = MODIFY');
   });
 
-  it('opérations t5_* et migration des chemins historiques (analyze_instruction, control_prompts, propose_change)', () => {
+  it('opérations t5_* seules : les chemins historiques (analyze_instruction, control_prompts, propose_change) sont retirés (lot 16b)', () => {
     expect(AI_OPERATIONS.t5_analyze).toMatchObject({ masterPromptCode: 't5_master_v1', task: 'ANALYZE', taskField: 'mode', active: true });
     expect(AI_OPERATIONS.t5_modify).toMatchObject({ masterPromptCode: 't5_master_v1', task: 'MODIFY', taskField: 'mode', active: true });
-    for (const op of ['analyze_instruction', 'control_prompts', 'propose_change']) {
-      expect(AI_OPERATIONS[op].migratesTo).toMatchObject({ masterPromptCode: 't5_master_v1', operationCode: 't5_modify' });
-      expect(operationDeprecation(AI_OPERATIONS[op])).toMatchObject({ reason: 'MIGRATED_TO_MASTER', replacedBy: 't5_modify' });
-    }
+    for (const op of ['analyze_instruction', 'control_prompts', 'propose_change']) expect(AI_OPERATIONS[op]).toBeUndefined();
+    expect(listDeprecatedOperations().filter((o) => o.useCaseCode === 'AI_GOVERNANCE')).toEqual([]);
   });
 
   it('sortie : cinq verdicts dont mixed ; mode discriminé', () => {
@@ -78,7 +75,7 @@ describe('dépréciation (D-02)', () => {
   it('étapes avec migratesTo et relais legacy_* : dépréciés ; masters et déterministes : non', () => {
     const codes = listDeprecatedOperations().map((o) => o.operationCode);
     expect(codes).toEqual(expect.arrayContaining(['extract_source', 'generate_answer', 'resolve_ambiguity', 'classify_event',
-      'control_prompts', 'legacy_document_analysis', 'legacy_intelligent_search']));
+      'legacy_document_analysis', 'legacy_intelligent_search']));
     for (const c of ['t1_analyze_document', 't2_answer', 't5_modify', 'collect_evidence', 'evaluate_prompt']) expect(codes).not.toContain(c);
     expect(operationDeprecation(AI_OPERATIONS.legacy_asset_suggest)).toMatchObject({ reason: 'LEGACY_RELAY', replacedBy: null });
   });
@@ -101,7 +98,7 @@ describe('Prompt Control conscient des masters', () => {
     getVersion.mockResolvedValue(version({ promptArchitecture: 'master', masterPrompt: null }));
     const nouveau = `${T1_MASTER}\n\nRÈGLE AJOUTÉE — titre par type de document.`;
     execute.mockResolvedValue({ data: {
-      verdict: 'prompt', analysis: 'Règle de titre absente.', risks: [], recommendations: [],
+      mode: 'MODIFY', verdict: 'prompt', analysis: 'Règle de titre absente.', risks: [], configurationRecommendations: [],
       targets: [{ treatment: 'T1', reason: 'titre', proposedContent: nouveau }],
     }, traceId: 't' });
     const r = await modify({ versionId: 1, instruction: 'titres', accountId: 1, userId: 7 });
@@ -117,7 +114,7 @@ describe('Prompt Control conscient des masters', () => {
     const casse = T1_MASTER.replace(/BRANCHE TASK = GROUP_UPLOAD/g, 'SECTION').replace(/\{\{DOCUMENT_CATALOG\}\}/g, '');
     expect(checkMasterProposal('T1', casse).length).toBeGreaterThan(0);
     execute.mockResolvedValue({ data: {
-      verdict: 'prompt', analysis: 'a', risks: [], recommendations: [],
+      mode: 'MODIFY', verdict: 'prompt', analysis: 'a', risks: [], configurationRecommendations: [],
       targets: [{ treatment: 'T1', reason: 'r', proposedContent: casse }],
     }, traceId: 't' });
     const r = await modify({ versionId: 1, instruction: 'x', accountId: 1, userId: 7 });
@@ -125,8 +122,7 @@ describe('Prompt Control conscient des masters', () => {
     expect(r.changes[0].rejected).toMatch(/Prompt maître proposé incomplet/);
   });
 
-  it('T5 en master : t5_modify, variables du §27, contexte complémentaire dans INSTRUCTION ; mixed ⇒ rien écrit', async () => {
-    t5Master();
+  it('T5 : t5_modify, variables du §27, contexte complémentaire dans INSTRUCTION ; mixed ⇒ rien écrit', async () => {
     getVersion.mockResolvedValue(version());
     execute.mockResolvedValue({ data: {
       mode: 'MODIFY', verdict: 'mixed', analysis: 'Prompt et code.', targets: [{ treatment: 'T1', reason: 'r', proposedContent: `${'x'.repeat(80)}` }],
@@ -140,16 +136,15 @@ describe('Prompt Control conscient des masters', () => {
     expect(r).toMatchObject({ verdict: 'mixed', architecture: 'master', requiredCodeChanges: ['corriger le rattachement'], recommendations: ['repli'] });
   });
 
-  it('T5 en master, ANALYZE : t5_analyze ; en steps : control_prompts inchangé', async () => {
+  it('T5, ANALYZE : t5_analyze, quelle que soit la ligne T5 de la version (plus de chemin steps)', async () => {
     getVersion.mockResolvedValue(version());
-    execute.mockResolvedValue({ data: { verdict: 'code', analysis: 'code', targets: [], risks: [], recommendations: [] }, traceId: 't' });
-    await analyze(1, 'demande', 1, 7);
-    expect((execute.mock.calls[0][0] as { operationCode: string }).operationCode).toBe('control_prompts');
-    t5Master();
-    execute.mockResolvedValue({ data: { mode: 'ANALYZE', verdict: 'code', analysis: 'code', targets: [],
-      requiredCodeChanges: [], requiredSchemaChanges: [], configurationRecommendations: [], risks: [], requiredTests: [] }, traceId: 't' });
-    const r = await analyze(1, 'demande', 1, 7);
-    expect((execute.mock.calls[1][0] as { operationCode: string }).operationCode).toBe('t5_analyze');
-    expect(r.architecture).toBe('master');
+    for (const arch of ['steps', 'master'] as const) {
+      __setConfigForTests({ versionId: 16, entries: [{ ...emptyTreatmentConfig('T5'), promptArchitecture: arch }] });
+      execute.mockResolvedValue({ data: { mode: 'ANALYZE', verdict: 'code', analysis: 'code', targets: [],
+        requiredCodeChanges: [], requiredSchemaChanges: [], configurationRecommendations: [], risks: [], requiredTests: [] }, traceId: 't' });
+      const r = await analyze(1, 'demande', 1, 7);
+      expect((execute.mock.calls.at(-1)![0] as { operationCode: string }).operationCode).toBe('t5_analyze');
+      expect(r.architecture).toBe('master');
+    }
   });
 });

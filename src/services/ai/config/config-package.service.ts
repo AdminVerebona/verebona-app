@@ -309,7 +309,7 @@ export async function importPackage(
       // annulée), jamais une bascule perdue.
       const architecture = promptArchitectureOf(e);
       const masterPrompt = masterPromptOf(normalizeTreatmentConfig(e));
-      const { column } = await promptArchitectureInsert(architecture, masterPrompt, t);
+      const { column } = await promptArchitectureInsert(architecture, masterPrompt, t, e.treatment);
       await t.unsafe(
         `INSERT INTO ai_config_entries (
            version_id, treatment, prompt, primary_model, fallback_1, fallback_2,

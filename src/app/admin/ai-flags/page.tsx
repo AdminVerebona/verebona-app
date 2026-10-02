@@ -41,7 +41,6 @@ interface RolloutEntry {
 interface Snapshot {
   environment: { appEnv: string | null; aiEnvironment: string | null };
   aiFlags: FlagEntry[];
-  technical: FlagEntry[];
   rollout: RolloutEntry[];
   generatedAt: string;
   /** CDC 15 D-04 : master déclaré par la configuration mais non appliqué. */
@@ -145,7 +144,7 @@ export default function AiFlagsPage() {
   }
   if (!data) return null;
 
-  const anomalies = [...data.aiFlags, ...data.technical, ...data.rollout].filter((l) => l.invalid).length;
+  const anomalies = [...data.aiFlags, ...data.rollout].filter((l) => l.invalid).length;
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -181,8 +180,7 @@ export default function AiFlagsPage() {
         </div>
       ))}
 
-      <Tableau titre="Drapeaux IA (un par usage)" lignes={data.aiFlags} />
-      <Tableau titre="Bascules techniques" lignes={data.technical} />
+      <Tableau titre="Drapeaux IA (par usage)" lignes={data.aiFlags} />
       <Tableau titre="Commutateurs de déploiement (CDC 15)" lignes={data.rollout.map((r) => ({ ...r, name: r.env }))} colonneLot />
       <Deprecies lignes={data.deprecatedOperations ?? []} />
     </div>

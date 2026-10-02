@@ -6,7 +6,6 @@
  *
  * Chaque issue défavorable rend `null` et l'accueil affiche le texte
  * déterministe, sans nouvel essai (RUN-002) :
- *   · drapeau AI_HOME_MASCOT hors `enabled` (bascule de recette, MIG-007) ;
  *   · arrêt d'urgence, T6 désactivé ou suspendu dans le BO (BO-006) ;
  *   · disjoncteur ouvert après des échecs consécutifs (BO-007) ;
  *   · délai dépassé, erreur fournisseur, sortie invalide.
@@ -22,6 +21,13 @@
  * Une génération lente n'est pas perdue : elle s'achève en arrière-plan et
  * écrit sous SA clé — jamais sous celle d'un contexte plus récent (RUN-010).
  * Le prochain affichage du même contexte en profite.
+ *
+ * ── UN SEUL MOTEUR : LE PROMPT MAÎTRE (CDC 15 §28, lot 16b) ──────────────
+ *
+ * T6 s'exécute par `t6_formulate` (`t6_master_v1`, sortie `t6-output-v2`).
+ * L'opération d'étapes `formulate_mascot` (`mascot_t6_v1`) et le drapeau
+ * AI_HOME_MASCOT sont retirés : la mascotte formule toujours par T6, et le
+ * texte déterministe reste le secours de toute issue défavorable.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { randomUUID } from 'crypto';
@@ -29,17 +35,14 @@ import { canonicalJson, sha256 } from './hash';
 import { pgClient } from '@/db';
 import { AiGateway } from '@/services/ai/gateway/ai-gateway';
 import { resolveOperationConfig } from '@/services/ai/config/config-resolver';
-import { resolvePrompt } from '@/services/ai/prompts/prompt-loader';
-import { getUseCaseMode } from '@/services/ai/flags/use-case-flags';
 import { canStart } from '@/services/ai/queue/job-queue.repository';
 import {
-  T6OutputSchema, T6_OUTPUT_SCHEMA_VERSION, validateT6Output,
+  T6_OUTPUT_SCHEMA_VERSION, validateT6Output,
   T6FormulateOutput, T6_MASTER_PROMPT_CODE, T6_OUTPUT_SCHEMA_VERSION_V2, validateT6MasterOutput,
   type T6Input, type T6Message, type T6SubjectKind,
 } from './t6-contract';
 
-export const T6_OPERATION = 'formulate_mascot';
-/** Branche FORMULATE du prompt maître T6 (CDC 15 §28). */
+/** Branche FORMULATE du prompt maître T6 (CDC 15 §28) — seule opération de T6. */
 export const T6_MASTER_OPERATION = 't6_formulate';
 /** Budget d'attente à l'affichage : au-delà, texte de secours (RUN-001, RUN-002). */
 export const T6_DISPLAY_BUDGET_MS = 6_000;
@@ -48,7 +51,7 @@ export const T6_PREGEN_BUDGET_MS = 30_000;
 
 export type T6Mode = 'display' | 'pregen';
 
-export type T6Status = 'generated' | 'cache_hit' | 'fallback' | 'validation_failed' | 'error' | 'disabled' | 'skipped';
+export type T6Status = 'generated' | 'cache_hit' | 'fallback' | 'validation_failed' | 'error' | 'disabled';
 
 export interface T6Outcome {
   status: T6Status;
@@ -61,8 +64,8 @@ export interface T6Outcome {
   traceId?: string | null;
   error?: string | null;
   output?: unknown;
-  /** Architecture du prompt (trace) : étapes historiques ou master (§28). */
-  architecture?: 'steps' | 'master';
+  /** Architecture du prompt (trace) : toujours le master depuis le lot 16b (§28). */
+  architecture?: 'master';
   /** Ajustements serveur du master : R11 (repli par sujet), R8 (formulation stable). */
   adjustments?: string[];
 }
@@ -71,6 +74,11 @@ export interface T6Outcome {
 
 export { canonicalJson, sha256 };
 
+/**
+ * `outputSchema` absent : `t6-output-v1` — clé des entrées antérieures au
+ * master, qui ne sont donc plus jamais relues (les générations écrivent sous
+ * `t6-output-v2`).
+ */
 export function t6CacheKey(p: { accountId: number; input: T6Input; promptVersion: string; outputSchema?: string }): string {
   return sha256(canonicalJson({
     accountId: p.accountId,
@@ -80,20 +88,6 @@ export function t6CacheKey(p: { accountId: number; input: T6Input; promptVersion
     inputSchema: p.input.schemaVersion,
     outputSchema: p.outputSchema ?? T6_OUTPUT_SCHEMA_VERSION,
   }));
-}
-
-/**
- * Version effective du prompt maître T6 : prompt technique (fichier ou version
- * active en base) + préambule administrable (charte de voix) + version de
- * configuration. Tout changement de l'un d'eux change la clé de cache.
- */
-export async function getT6PromptVersion(): Promise<string> {
-  const [config, prompt] = await Promise.all([
-    resolveOperationConfig(T6_OPERATION),
-    resolvePrompt('mascot_t6_v1', {}, 'HOME_MASCOT'),
-  ]);
-  const preambule = sha256(config.promptPreamble ?? '').slice(0, 12);
-  return `${prompt.version}|cfg:${config.configVersionId ?? 'code'}|voix:${preambule}`;
 }
 
 /**
@@ -111,16 +105,6 @@ export async function getT6MasterPromptVersion(): Promise<string> {
     masterPromptCode: T6_MASTER_PROMPT_CODE, configuredText: config.masterPromptText, configVersionId: config.configVersionId,
   });
   return `${version}|cfg:${config.configVersionId ?? 'code'}`;
-}
-
-/** Architecture des prompts de T6 pour l'appel courant (`steps` par défaut, ne lève jamais). */
-export async function getT6Architecture(): Promise<'steps' | 'master'> {
-  try {
-    const { getPromptArchitecture } = await import('@/services/ai/config/config-resolver');
-    return (await getPromptArchitecture('T6')) === 'master' ? 'master' : 'steps';
-  } catch {
-    return 'steps';
-  }
 }
 
 // ── Disjoncteur (BO-007) ─────────────────────────────────────────────────────
@@ -218,51 +202,6 @@ export function gatewayCallerMode(mode: T6Mode): 'displayed' | 'pregeneration' {
 /** Générations en cours, par clé : l'affichage et la pré-génération ne paient pas deux fois. */
 const inflight = new Map<string, Promise<T6Outcome>>();
 
-async function generate(p: {
-  accountId: number; input: T6Input; cacheKey: string; contextHash: string; promptVersion: string; mode: T6Mode;
-}): Promise<T6Outcome> {
-  const startedAt = Date.now();
-  try {
-    const res = await AiGateway.execute({
-      useCaseCode: 'HOME_MASCOT',
-      operationCode: T6_OPERATION,
-      accountId: p.accountId,
-      promptVariables: { INPUT_JSON: JSON.stringify(p.input) },
-      outputSchema: T6OutputSchema,
-      // Clé propre à la tentative : l'idempotence de la gateway rejouerait
-      // pendant une heure une sortie que la validation sémantique rejette.
-      // La déduplication est assurée ici (en cours) et par le cache du compte.
-      idempotencyKey: `mascot:${p.cacheKey}:${randomUUID()}`,
-      // BO-009 : Exécutions et Coûts distinguent génération affichée et
-      // pré-génération (le texte de secours se lit sur le statut de l'appel
-      // et sur `home_mascot_generations`, par `trace_id`).
-      callerMode: gatewayCallerMode(p.mode),
-    });
-    const base = {
-      promptVersion: p.promptVersion, model: res.model, usedFallbackModel: res.usedFallback,
-      latencyMs: Date.now() - startedAt, costMicros: res.fromCache ? 0 : res.costMicros, traceId: res.traceId,
-      output: res.data,
-    };
-    const v = validateT6Output(p.input, res.data);
-    if (!v.ok) {
-      if (!res.fromCache) breakerRecord(false);
-      return { ...base, status: 'validation_failed', messages: null, error: v.reason };
-    }
-    breakerRecord(true);
-    await writeT6Cache({
-      accountId: p.accountId, cacheKey: p.cacheKey, contextHash: p.contextHash,
-      promptVersion: p.promptVersion, messages: v.messages, model: res.model,
-    });
-    return { ...base, status: 'generated', messages: v.messages };
-  } catch (e) {
-    breakerRecord(false);
-    return {
-      status: 'error', messages: null, promptVersion: p.promptVersion,
-      latencyMs: Date.now() - startedAt, error: (e as Error).message?.slice(0, 500) ?? 'erreur',
-    };
-  }
-}
-
 // ── Master T6 (CDC 15 §28) ───────────────────────────────────────────────────
 
 /** Bulle précédente du compte, sous le même master : entrée transmise et sortie validée. */
@@ -326,7 +265,7 @@ export function previousWording(
 async function generateMaster(p: {
   accountId: number; input: T6Input; cacheKey: string; contextHash: string; promptVersion: string; mode: T6Mode;
   kinds?: Array<T6SubjectKind | undefined>; pinned: Map<number, T6Message>;
-}, execute: NonNullable<T6Dependencies['execute']>): Promise<T6Outcome> {
+}, execute: T6Dependencies['execute']): Promise<T6Outcome> {
   const startedAt = Date.now();
   try {
     const res = await execute({
@@ -370,23 +309,17 @@ async function generateMaster(p: {
 }
 
 export interface T6Dependencies {
-  flagEnabled: () => boolean;
   treatmentAvailable: () => Promise<boolean>;
+  /** Version effective du prompt maître (`getT6MasterPromptVersion`). */
   promptVersion: () => Promise<string>;
-  /** Architecture de T6 (`getPromptArchitecture('T6')`) ; absent : `steps`. */
-  architecture?: () => Promise<'steps' | 'master'>;
-  masterPromptVersion?: () => Promise<string>;
   previousBubbles?: (accountId: number, promptVersion: string) => Promise<T6PreviousBubble[]>;
   /** Appel passerelle du master (injectable pour les tests). */
-  execute?: (req: Parameters<typeof AiGateway.execute>[0]) => ReturnType<typeof AiGateway.execute>;
+  execute: (req: Parameters<typeof AiGateway.execute>[0]) => ReturnType<typeof AiGateway.execute>;
 }
 
 const defaultDeps: T6Dependencies = {
-  flagEnabled: () => getUseCaseMode('HOME_MASCOT') === 'enabled',
   treatmentAvailable: () => canStart('T6'),
-  promptVersion: getT6PromptVersion,
-  architecture: getT6Architecture,
-  masterPromptVersion: getT6MasterPromptVersion,
+  promptVersion: getT6MasterPromptVersion,
   previousBubbles: readPreviousBubbles,
   execute: (req) => AiGateway.execute(req),
 };
@@ -399,33 +332,24 @@ export async function formulateWithT6(
   p: { accountId: number; input: T6Input; contextHash: string; mode: T6Mode; kinds?: Array<T6SubjectKind | undefined> },
   deps: T6Dependencies = defaultDeps,
 ): Promise<T6Outcome> {
-  if (!deps.flagEnabled()) return { status: 'skipped', messages: null, promptVersion: null };
-
   let promptVersion: string;
-  let master = false;
   try {
     if (!(await deps.treatmentAvailable())) {
       return { status: 'disabled', messages: null, promptVersion: null, error: 'T6 désactivé, suspendu ou arrêt d’urgence' };
     }
-    // CDC 15 §28, D-04 : master seulement si la version de configuration le
-    // déclare pour T6 ; sinon chemin historique STRICTEMENT inchangé.
-    master = deps.architecture ? (await deps.architecture()) === 'master' : false;
-    promptVersion = master && deps.masterPromptVersion ? await deps.masterPromptVersion() : await deps.promptVersion();
+    promptVersion = await deps.promptVersion();
   } catch (e) {
     return { status: 'error', messages: null, promptVersion: null, error: (e as Error).message };
   }
 
-  const cacheKey = t6CacheKey({
-    accountId: p.accountId, input: p.input, promptVersion,
-    ...(master ? { outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2 } : {}),
-  });
+  const cacheKey = t6CacheKey({ accountId: p.accountId, input: p.input, promptVersion, outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2 });
   const cached = await readT6Cache(p.accountId, cacheKey, p.input);
-  if (cached) return { status: 'cache_hit', messages: cached, promptVersion, ...(master ? { architecture: 'master' as const } : {}) };
+  if (cached) return { status: 'cache_hit', messages: cached, promptVersion, architecture: 'master' };
 
-  // R8 dans le temps (master) : même état qu'une bulle précédente → mêmes
-  // textes, sans appel ; sujets inchangés → formulation conservée.
+  // R8 dans le temps : même état qu'une bulle précédente → mêmes textes,
+  // sans appel ; sujets inchangés → formulation conservée.
   let pinned = new Map<number, T6Message>();
-  if (master && deps.previousBubbles) {
+  if (deps.previousBubbles) {
     const prev = await deps.previousBubbles(p.accountId, promptVersion).catch(() => [] as T6PreviousBubble[]);
     const w = previousWording(p.input, prev, p.kinds);
     if (w.reuse) {
@@ -444,9 +368,7 @@ export async function formulateWithT6(
 
   let run = inflight.get(cacheKey);
   if (!run) {
-    run = (master && deps.execute
-      ? generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned }, deps.execute)
-      : generate({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode }))
+    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned }, deps.execute)
       .finally(() => inflight.delete(cacheKey));
     inflight.set(cacheKey, run);
     // La génération qui s'achève après le délai d'affichage est journalisée

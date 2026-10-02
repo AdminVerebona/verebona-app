@@ -346,7 +346,7 @@ export async function runUnifiedAnalysisPipeline(
 
   // ── Déduplication : ignorer les fichiers déjà en cours d'analyse ──────────
   // Évite qu'un même document ne soit analysé deux fois en parallèle
-  // (ex: double-clic, confirm + check-pending simultanés).
+  // (ex: double-clic, dépôt + reprise serveur simultanés).
   const currentStates = await db
     .select({ id: assetFiles.id, analysisState: assetFiles.analysisState })
     .from(assetFiles)

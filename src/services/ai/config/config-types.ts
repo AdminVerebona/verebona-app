@@ -5,7 +5,7 @@
  * arrêtés dans « BO IA — champs administrables par traitement » ; tout ce qui
  * n'y figure pas reste dans le code, et le §2.1 dit pourquoi pour chacun.
  */
-import { isPromptAdministrable, type Treatment } from './treatments';
+import { isPromptAdministrable, isMasterOnlyTreatment, type Treatment } from './treatments';
 import type { AiEnvironment } from './environment';
 import type { ConfigVersionStatus } from './version-state-machine';
 
@@ -93,8 +93,20 @@ export function isPromptArchitecture(v: unknown): v is PromptArchitecture {
   return typeof v === 'string' && (PROMPT_ARCHITECTURES as readonly string[]).includes(v);
 }
 
-/** Architecture effective d'une entrée : absente ou illisible ⇒ `steps`. */
-export function promptArchitectureOf(c: Pick<TreatmentConfig, 'promptArchitecture'> | null | undefined): PromptArchitecture {
+/** Architecture par défaut d'un traitement : `master` pour T5 et T6 (lot 16b), `steps` sinon. */
+export function defaultPromptArchitectureFor(treatment: Treatment): PromptArchitecture {
+  return isMasterOnlyTreatment(treatment) ? 'master' : DEFAULT_PROMPT_ARCHITECTURE;
+}
+
+/**
+ * Architecture effective d'une entrée : absente ou illisible ⇒ `steps`.
+ * T5 et T6 (traitement connu de l'entrée) : TOUJOURS `master`, quelle que
+ * soit la valeur stockée — leur architecture `steps` est retirée (lot 16b).
+ */
+export function promptArchitectureOf(
+  c: (Pick<TreatmentConfig, 'promptArchitecture'> & { treatment?: Treatment }) | null | undefined,
+): PromptArchitecture {
+  if (c?.treatment && isMasterOnlyTreatment(c.treatment)) return 'master';
   return isPromptArchitecture(c?.promptArchitecture) ? c.promptArchitecture : DEFAULT_PROMPT_ARCHITECTURE;
 }
 
@@ -223,7 +235,7 @@ export function emptyTreatmentConfig(treatment: Treatment): TreatmentConfig {
     guardrails: [],
     triggers: [],
     cascade: null,
-    promptArchitecture: DEFAULT_PROMPT_ARCHITECTURE,
+    promptArchitecture: defaultPromptArchitectureFor(treatment),
     masterPrompt: null,
   };
 }

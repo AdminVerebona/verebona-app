@@ -34,17 +34,14 @@
  *   avec la réponse, et transmis au modèle pour l'analyse.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * POURQUOI UNE NOUVELLE OPÉRATION (`control_prompts`, prompt `prompt_control_v2`)
+ * UN SEUL MOTEUR : LE PROMPT MAÎTRE T5 (CDC 15 §27, lot 16b)
  *
- * L'ancienne opération `analyze_instruction` lit d'abord la version ACTIVE
- * de son prompt en base (`ai_prompt_versions`), qui prime sur le fichier. Une
- * version antérieure au format « verdict » y est restée active : le modèle
- * rendait l'ancien format, la validation le refusait, et « Analyser »
- * échouait à chaque fois. Le nouveau code de prompt n'a aucune version en
- * base : c'est le fichier du dépôt qui fait foi.
+ * T5 s'exécute par `t5_analyze` / `t5_modify` (`t5_master_v1`, fichier du
+ * dépôt, jamais administrable). Les opérations d'étapes historiques
+ * (`analyze_instruction`, `control_prompts`, `propose_change`) et leurs
+ * prompts sont retirés : il n'y a plus d'architecture `steps` pour T5.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { z } from 'zod';
 import { AiGateway } from '../gateway/ai-gateway';
 import { computeDiff, type DiffSummary } from './diff.service';
 import { T5_TARGETS, type Treatment } from '../config/treatments';
@@ -70,47 +67,28 @@ export type Verdict = (typeof VERDICTS)[number];
 export const T5_MODES = ['analyze', 'modify'] as const;
 export type T5Mode = (typeof T5_MODES)[number];
 
-const MODE_PROMPT: Record<T5Mode, string> = {
-  analyze: 'ANALYSE — diagnostic uniquement : `proposedContent` vaut null pour chaque cible',
-  modify: 'MODIFICATION — pour chaque cible, renvoie le prompt complet réécrit',
-};
-
 /** Libellé de chaque prompt, tel que T5 et l'écran le présentent. */
 export const TARGET_LABELS: Record<string, string> = {
   T1: 'T1 — Sources (prompt maître)',
   T2: 'T2 — Assistant (socle commun)',
   T3: 'T3 — Rationalisation',
   T4: 'T4 — Échéances',
-  // CDC Mascotte BO-008 : T5 peut faire évoluer la charte de voix de T6, pas
-  // les règles du moteur de la mascotte, qui sont dans le code.
-  T6: 'T6 — Mascotte (charte de voix)',
+  // CDC Mascotte BO-008 : T5 fait évoluer le prompt maître de T6 (charte de
+  // voix comprise, T6-009), jamais les règles du moteur, qui sont dans le code.
+  T6: 'T6 — Mascotte (prompt maître)',
 };
 
-/**
- * Sortie du modèle, tolérante sur la forme : une valeur hors bornes ne doit
- * pas faire échouer tout l'appel quand elle peut être ramenée à une valeur
- * sûre. Seul le contenu d'un prompt reste strict (au moins 50 caractères).
- */
-const TargetOut = z.object({
-  treatment: z.string(),
-  reason: z.string().default('').transform((s) => s.slice(0, 1000)),
-  proposedContent: z.string().nullable().default(null),
-});
-const PromptControlOutput = z.object({
-  // Le prompt d'étapes (`prompt_control_v2`) n'annonce que quatre verdicts.
-  verdict: z.enum(['prompt', 'code', 'donnees', 'configuration']),
-  analysis: z.string().min(1).transform((s) => s.slice(0, 4000)),
-  targets: z.array(TargetOut).max(8).default([]),
-  risks: z.array(z.string()).default([]).transform((a) => a.slice(0, 10).map((s) => s.slice(0, 400))),
-  recommendations: z.array(z.string()).default([]).transform((a) => a.slice(0, 10).map((s) => s.slice(0, 400))),
-});
-/** Forme interne commune (étapes et master) : `verdict` peut valoir `mixed`. */
-type PromptControlOut = Omit<z.infer<typeof PromptControlOutput>, 'verdict'> & {
+/** Forme interne de la sortie du master T5, ramenée à ce que `interpret` lit. */
+interface PromptControlOut {
   verdict: Verdict;
+  analysis: string;
+  targets: Array<{ treatment: string; reason: string; proposedContent: string | null }>;
+  risks: string[];
+  recommendations: string[];
   requiredCodeChanges?: string[];
   requiredSchemaChanges?: string[];
   requiredTests?: string[];
-};
+}
 
 export interface T5Change {
   treatment: Treatment;
@@ -149,8 +127,8 @@ export interface T5Result {
   requiredSchemaChanges?: string[];
   /** §27 R8 : tests minimums à ajouter au corpus. */
   requiredTests?: string[];
-  /** Architecture de T5 qui a produit la réponse. */
-  architecture?: 'steps' | 'master';
+  /** Architecture de T5 qui a produit la réponse (toujours le master depuis le lot 16b). */
+  architecture?: 'master';
 }
 
 /** Contexte complémentaire demandé par l'administrateur (T5-009, T5-010). */
@@ -404,55 +382,37 @@ export function interpret(
 async function callModel(
   mode: T5Mode, version: ConfigVersionWithEntries | null, instruction: string, accountId: number, userId: number,
   extra = '(aucun)', texts?: Map<Treatment, TargetText>,
-): Promise<{ output: PromptControlOut; traceId: string; architecture: 'steps' | 'master' }> {
-  // T5 suit sa ligne de la version effective (D-04) : `master` ⇒ t5_master_v1
-  // (fichier du dépôt, jamais administrable), sinon `control_prompts`.
-  const { getPromptArchitecture } = await import('../config/config-resolver');
-  if ((await getPromptArchitecture('T5')) === 'master') {
-    const res = await AiGateway.execute<T5MasterOutput>({
-      useCaseCode: 'AI_GOVERNANCE',
-      operationCode: mode === 'analyze' ? 't5_analyze' : 't5_modify',
-      accountId,
-      userId,
-      promptVariables: {
-        CURRENT_MASTER_PROMPTS: formatCurrentPrompts(version, texts),
-        // T5-009 / T5-010 : le contexte demandé suit la demande, délimité —
-        // le §27 n'a pas d'emplacement dédié.
-        INSTRUCTION: extra && extra !== '(aucun)'
-          ? `${instruction}\n\nContexte complémentaire demandé par l'administrateur :\n${extra}`
-          : instruction,
-      },
-      outputSchema: (mode === 'analyze' ? T5AnalyzeOutput : T5ModifyOutput) as never,
-    });
-    const o = res.data;
-    return {
-      output: {
-        verdict: o.verdict, analysis: o.analysis, targets: o.targets, risks: o.risks,
-        recommendations: o.configurationRecommendations,
-        requiredCodeChanges: o.requiredCodeChanges, requiredSchemaChanges: o.requiredSchemaChanges, requiredTests: o.requiredTests,
-      },
-      traceId: res.traceId,
-      architecture: 'master',
-    };
-  }
-  const res = await AiGateway.execute({
+): Promise<{ output: PromptControlOut; traceId: string; architecture: 'master' }> {
+  // T5 = t5_master_v1 seul (fichier du dépôt, jamais administrable).
+  const res = await AiGateway.execute<T5MasterOutput>({
     useCaseCode: 'AI_GOVERNANCE',
-    operationCode: 'control_prompts',
+    operationCode: mode === 'analyze' ? 't5_analyze' : 't5_modify',
     accountId,
     userId,
     promptVariables: {
-      MODE: MODE_PROMPT[mode],
-      CURRENT_PROMPTS: formatCurrentPrompts(version, texts),
-      INSTRUCTION: instruction,
-      EXTRA_CONTEXT: extra,
+      CURRENT_MASTER_PROMPTS: formatCurrentPrompts(version, texts),
+      // T5-009 / T5-010 : le contexte demandé suit la demande, délimité —
+      // le §27 n'a pas d'emplacement dédié.
+      INSTRUCTION: extra && extra !== '(aucun)'
+        ? `${instruction}\n\nContexte complémentaire demandé par l'administrateur :\n${extra}`
+        : instruction,
     },
-    outputSchema: PromptControlOutput,
+    outputSchema: (mode === 'analyze' ? T5AnalyzeOutput : T5ModifyOutput) as never,
   });
-  return { output: res.data, traceId: res.traceId, architecture: 'steps' };
+  const o = res.data;
+  return {
+    output: {
+      verdict: o.verdict, analysis: o.analysis, targets: o.targets, risks: o.risks,
+      recommendations: o.configurationRecommendations,
+      requiredCodeChanges: o.requiredCodeChanges, requiredSchemaChanges: o.requiredSchemaChanges, requiredTests: o.requiredTests,
+    },
+    traceId: res.traceId,
+    architecture: 'master',
+  };
 }
 
-/** Champs §27 transmis au résultat (vides en architecture steps). */
-function extras(o: PromptControlOut, architecture: 'steps' | 'master') {
+/** Champs §27 transmis au résultat. */
+function extras(o: PromptControlOut, architecture: 'master') {
   return {
     requiredCodeChanges: o.requiredCodeChanges ?? [], requiredSchemaChanges: o.requiredSchemaChanges ?? [],
     requiredTests: o.requiredTests ?? [], architecture,

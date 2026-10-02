@@ -29,7 +29,7 @@ import { getAiEnvironment, type AiEnvironment } from './environment';
 import { TREATMENTS, type Treatment } from './treatments';
 import {
   emptyTreatmentConfig, normalizeTreatmentConfig, promptArchitectureOf, isPromptArchitecture, masterPromptOf,
-  DEFAULT_PROMPT_ARCHITECTURE,
+  DEFAULT_PROMPT_ARCHITECTURE, defaultPromptArchitectureFor,
   type ConfigVersion, type ConfigVersionWithEntries, type PromptArchitecture, type TreatmentConfig,
 } from './config-types';
 
@@ -71,10 +71,12 @@ function toEntry(r: Row): TreatmentConfig {
     // personne n'a rendu.
     cascade: (r.cascade ?? null) as TreatmentConfig['cascade'],
     // CDC 15 D-04 : colonne absente (migration non passée) ou valeur
-    // inconnue ⇒ `steps`, le comportement historique.
-    promptArchitecture: isPromptArchitecture(r.prompt_architecture)
-      ? r.prompt_architecture
-      : DEFAULT_PROMPT_ARCHITECTURE,
+    // inconnue ⇒ `steps`, le comportement historique ; T5 et T6 : toujours
+    // `master` (lot 16b, `promptArchitectureOf`).
+    promptArchitecture: promptArchitectureOf({
+      treatment: r.treatment as Treatment,
+      promptArchitecture: isPromptArchitecture(r.prompt_architecture) ? r.prompt_architecture : DEFAULT_PROMPT_ARCHITECTURE,
+    }),
     // CDC 15 D-03 : texte master distinct du préambule (0220).
     masterPrompt: r.master_prompt == null || String(r.master_prompt).trim() === '' ? null : String(r.master_prompt),
   };
@@ -305,9 +307,13 @@ export function __resetPromptArchitectureColumnForTests(): void {
  */
 export async function promptArchitectureInsert(
   arch: PromptArchitecture, masterPrompt: string | null, sql: SqlLike = pgClient as unknown as SqlLike,
+  treatment?: Treatment,
 ): Promise<{ column: boolean }> {
   const column = await hasPromptArchitectureColumn(sql);
-  if (!column && (arch !== DEFAULT_PROMPT_ARCHITECTURE || masterPrompt !== null)) {
+  // T5/T6 (lot 16b) : `master` est leur architecture par défaut, relue telle
+  // quelle sans colonne — rien n'est perdu à ne pas l'écrire.
+  const parDefaut = treatment ? defaultPromptArchitectureFor(treatment) : DEFAULT_PROMPT_ARCHITECTURE;
+  if (!column && (arch !== parDefaut || masterPrompt !== null)) {
     throw new Error(
       '[config] Architecture « master » ou texte master impossible à enregistrer : les colonnes '
       + '`ai_config_entries.prompt_architecture` / `master_prompt` n\'existent pas (migration 0220 non appliquée, CDC 15 D-04).',
@@ -323,7 +329,7 @@ async function upsertEntry(versionId: number, config: TreatmentConfig, userId: n
   const architecture = promptArchitectureOf(c);
   // Avant l'écriture : une bascule refusée ne laisse pas une ligne à moitié écrite.
   const masterPrompt = masterPromptOf(c);
-  const { column } = await promptArchitectureInsert(architecture, masterPrompt);
+  const { column } = await promptArchitectureInsert(architecture, masterPrompt, undefined, c.treatment);
   await pgClient.unsafe(
     `INSERT INTO ai_config_entries (
        version_id, treatment, prompt, primary_model, fallback_1, fallback_2,

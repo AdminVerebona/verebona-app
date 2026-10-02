@@ -5,7 +5,7 @@
  * POURQUOI LE VERDICT NE PORTE PAS SUR `use_case_code`
  *
  * `ai-usage-tracker.ts` estampille les écritures des moteurs HISTORIQUES via
- * `resolveLegacyUseCase()`. Elles remontent donc dans `ai_usage_event` sous les
+ * la correspondance de la migration 0110 (`ai_legacy_usage_mapping`). Elles remontent donc dans `ai_usage_event` sous les
  * cinq codes cibles. Un `SELECT DISTINCT use_case_code` renverrait cinq usages
  * et conclurait à la conformité pendant que tout le chemin historique
  * s'exécute — exactement le « regroupement artificiel » que le critère n°24

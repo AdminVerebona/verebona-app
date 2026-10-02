@@ -40,16 +40,14 @@ describe('prompt maître t6_master_v1 (§28) et registre', () => {
     expect(() => renderMasterPrompt(MASTER, { masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: 'x', MODE: 'AUTRE' } })).toThrow();
   });
 
-  it('opération t6_formulate : déclaration attendue cohérente (8 s, INPUT_JSON) ; conforme au registre dès qu’elle y figure', () => {
+  it('opération t6_formulate : déclaration cohérente (8 s, INPUT_JSON) et conforme au registre ; formulate_mascot retirée (lot 16b)', () => {
     const spec = C.T6_MASTER_OPERATION_SPEC;
     expect(spec).toMatchObject({ masterPromptCode: 't6_master_v1', task: 'FORMULATE', timeoutMs: 8_000, outputSchema: 'T6FormulateOutput' });
-    expect(spec.timeoutMs).toBe(AI_OPERATIONS.formulate_mascot.timeoutMs);
     // Emplacements du master = variables déclarées (hors MODE, fixé par le serveur).
     const places = [...new Set([...MASTER.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))].filter((p) => p !== 'MODE');
     expect(places).toEqual([...spec.promptVariables]);
-    const op = (AI_OPERATIONS as Record<string, unknown>).t6_formulate;
-    if (op) expect(op).toMatchObject(spec);
-    expect(AI_OPERATIONS.formulate_mascot).toMatchObject({ timeoutMs: 8_000, promptCode: 'mascot_t6_v1', active: true });
+    expect(AI_OPERATIONS.t6_formulate).toMatchObject(spec);
+    expect(AI_OPERATIONS.formulate_mascot).toBeUndefined();
   });
 });
 
@@ -151,12 +149,11 @@ describe('contrat t6-output-v2 et règles serveur', () => {
   });
 });
 
-describe('branchement : master si la configuration le déclare, sinon chemin historique inchangé', () => {
+describe('exécution : master seul (lot 16b)', () => {
   const execute = vi.fn();
   const base = {
-    flagEnabled: () => true, treatmentAvailable: async () => true,
-    promptVersion: async () => 'mascot_t6_v1@file|cfg:3|voix:x',
-    masterPromptVersion: async () => 't6_master_v1@file|cfg:3',
+    treatmentAvailable: async () => true,
+    promptVersion: async () => 't6_master_v1@file|cfg:3',
     previousBubbles: async () => [] as import('../t6-runner').T6PreviousBubble[],
     execute: (r: unknown) => execute(r),
   };
@@ -165,8 +162,7 @@ describe('branchement : master si la configuration le déclare, sinon chemin his
 
   it('master : opération t6_formulate, sortie validée (v2 + R8/R9/R11), cache sous une clé v2', async () => {
     execute.mockResolvedValue(res(OK));
-    const o = await R.formulateWithT6({ accountId: 7, input: INPUT, contextHash: 'h1', mode: 'display', kinds: KINDS },
-      { ...base, architecture: async () => 'master' });
+    const o = await R.formulateWithT6({ accountId: 7, input: INPUT, contextHash: 'h1', mode: 'display', kinds: KINDS }, base);
     expect(o).toMatchObject({ status: 'generated', architecture: 'master', promptVersion: 't6_master_v1@file|cfg:3' });
     expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't6_formulate', callerMode: 'displayed', promptVariables: { INPUT_JSON: JSON.stringify(INPUT) } });
     expect(execute.mock.calls[0][0].promptVariables).not.toHaveProperty('MODE');
@@ -178,22 +174,21 @@ describe('branchement : master si la configuration le déclare, sinon chemin his
 
   it('master : sortie v1 ou R9 violée → texte de secours (messages null)', async () => {
     execute.mockResolvedValue(res({ ...OK, schemaVersion: 't6-output-v1' }));
-    const o = await R.formulateWithT6({ accountId: 7, input: INPUT, contextHash: 'h2', mode: 'pregen', kinds: KINDS }, { ...base, architecture: async () => 'master' });
+    const o = await R.formulateWithT6({ accountId: 7, input: INPUT, contextHash: 'h2', mode: 'pregen', kinds: KINDS }, base);
     expect(o).toMatchObject({ status: 'validation_failed', messages: null, error: 'schema_v2' });
   });
 
-  it('étapes (défaut) : prompt historique, jamais le master', async () => {
-    const o = await R.formulateWithT6({ accountId: 7, input: INPUT, contextHash: 'h3', mode: 'display' },
-      { ...base, architecture: async () => 'steps' });
-    expect(execute).not.toHaveBeenCalled();
-    expect(o.architecture).toBeUndefined();
+  it('plus de chemin d’étapes : aucune dépendance d’architecture, budget d’affichage inchangé', async () => {
+    expect(Object.keys(R)).not.toContain('getT6Architecture');
+    expect(Object.keys(R)).not.toContain('T6_OPERATION');
+    expect(R.T6_MASTER_OPERATION).toBe('t6_formulate');
     expect(R.T6_DISPLAY_BUDGET_MS).toBe(6_000);
   });
 
   it('R8 dans le temps : même état qu’une bulle précédente → mêmes textes, sans appel ; sujet inchangé → formulation conservée', async () => {
     const prev = [{ input: INPUT, output: OK }];
     const o = await R.formulateWithT6({ accountId: 7, input: INPUT, contextHash: 'h4', mode: 'display', kinds: KINDS },
-      { ...base, architecture: async () => 'master', previousBubbles: async () => prev });
+      { ...base, previousBubbles: async () => prev });
     expect(o).toMatchObject({ status: 'cache_hit', adjustments: ['r8_reused'] });
     expect(o.messages?.map((m) => m.text)).toEqual(OK.messages.map((m: { text: string }) => m.text));
     expect(execute).not.toHaveBeenCalled();
@@ -208,7 +203,7 @@ describe('branchement : master si la configuration le déclare, sinon chemin his
     expect(w.reuse).toBeNull();
     expect([...w.pinned.keys()]).toEqual([0]);
     const o2 = await R.formulateWithT6({ accountId: 7, input: change, contextHash: 'h5', mode: 'display', kinds: KINDS },
-      { ...base, architecture: async () => 'master', previousBubbles: async () => prev });
+      { ...base, previousBubbles: async () => prev });
     expect(o2.status).toBe('generated');
     expect(o2.messages?.[0].text).toBe(OK.messages[0].text);
     expect(o2.adjustments).toContain('r8_pinned:0');

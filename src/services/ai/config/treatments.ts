@@ -66,6 +66,19 @@ export function isPromptAdministrable(code: Treatment): boolean {
   return code !== 'T5';
 }
 
+/**
+ * Traitements SANS architecture `steps` (lot 16b, retrait de l'ancien moteur) :
+ * leur prompt maître est leur seul moteur — T5 (`t5_master_v1`) et T6
+ * (`t6_master_v1`). Leur ligne de configuration est lue `master` quelle que
+ * soit la valeur stockée, et une demande `steps` est refusée
+ * (`checkPromptArchitectureChange`, `masterConfigIssues`). Migration 0231.
+ */
+export const MASTER_ONLY_TREATMENTS: readonly Treatment[] = ['T5', 'T6'];
+
+export function isMasterOnlyTreatment(code: Treatment): boolean {
+  return MASTER_ONLY_TREATMENTS.includes(code);
+}
+
 /** Traitements dont T5 peut modifier le prompt (T5-001) : tous sauf lui-même. */
 export const T5_TARGETS: readonly Treatment[] = TREATMENTS.filter(isPromptAdministrable);
 

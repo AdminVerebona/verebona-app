@@ -10,8 +10,7 @@ const execute = vi.fn();
 const unsafe = vi.fn(async (_sql: string, _p?: unknown[]): Promise<unknown[]> => []);
 vi.mock('@/services/ai/gateway/ai-gateway', () => ({ AiGateway: { execute: (r: unknown) => execute(r) } }));
 vi.mock('@/db', () => ({ pgClient: { unsafe: (s: string, p: unknown[]) => unsafe(s, p) } }));
-vi.mock('@/services/ai/config/config-resolver', () => ({ resolveOperationConfig: async () => ({ promptPreamble: 'voix', configVersionId: 3 }) }));
-vi.mock('@/services/ai/prompts/prompt-loader', () => ({ resolvePrompt: async () => ({ text: '', version: 'mascot_t6_v1@file' }) }));
+vi.mock('@/services/ai/config/config-resolver', () => ({ resolveOperationConfig: async () => ({ masterPromptText: null, configVersionId: 3 }) }));
 vi.mock('@/services/ai/queue/job-queue.repository', () => ({ canStart: async () => true }));
 
 const { buildT6Input, validateT6Output } = await import('../t6-contract');
@@ -36,7 +35,7 @@ const deux = buildT6Input([
   { ...subject('ATP:x', { question: 'Quel est le type ?' }, 'Quel est le type ?'), sourceCode: 'ATP-DOC-TYP' as const },
 ]);
 const ok = (text = 'Votre prochain rendez-vous, le ramonage, est fixé au 15 octobre 2026.', highlight: string | null = '15 octobre 2026') =>
-  ({ schemaVersion: 't6-output-v1', messages: [{ subjectId: 'DATE-NEXT:1', text, highlight }] });
+  ({ schemaVersion: 't6-output-v2', messages: [{ subjectId: 'DATE-NEXT:1', text, highlight }] });
 
 describe('validation de sortie (T6-011, JSON-001 à JSON-003)', () => {
   it('T6-01 — un sujet, un paragraphe, aucun fait ajouté', () => {
@@ -102,9 +101,11 @@ describe('cache (RUN-003 à RUN-006)', () => {
 });
 
 describe('exécution et repli (RUN-001, RUN-002, BO-006, BO-007)', () => {
+  // Master T6 seul (lot 16b) : `t6_formulate`, sortie t6-output-v2.
   const deps = (over: Partial<Parameters<typeof formulateWithT6>[1]> = {}) => ({
-    flagEnabled: () => true, treatmentAvailable: async () => true, promptVersion: async () => 'v1', ...over,
-  });
+    treatmentAvailable: async () => true, promptVersion: async () => 'v1',
+    execute: (r: unknown) => execute(r), ...over,
+  }) as NonNullable<Parameters<typeof formulateWithT6>[1]>;
   const p = { accountId: 7, input, contextHash: 'h', mode: 'display' as const };
 
   beforeEach(() => { execute.mockReset(); unsafe.mockClear(); resetT6Breaker(); });
@@ -113,6 +114,7 @@ describe('exécution et repli (RUN-001, RUN-002, BO-006, BO-007)', () => {
     execute.mockResolvedValue({ data: ok(), model: 'm', usedFallback: false, costMicros: 1, traceId: 't' });
     const o = await formulateWithT6(p, deps());
     expect(o.status).toBe('generated');
+    expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't6_formulate' });
     expect(o.messages?.[0].text).toContain('15 octobre 2026');
     expect(unsafe.mock.calls.some(([sql]) => /INSERT INTO home_mascot_cache/.test(sql))).toBe(true);
   });
@@ -140,10 +142,13 @@ describe('exécution et repli (RUN-001, RUN-002, BO-006, BO-007)', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('bascule de recette (MIG-007) : drapeau coupé, déterministe seul', async () => {
-    const o = await formulateWithT6(p, deps({ flagEnabled: () => false }));
-    expect(o.status).toBe('skipped');
-    expect(execute).not.toHaveBeenCalled();
+  it('lot 16b : plus de drapeau AI_HOME_MASCOT — T6 formule dès que le traitement est disponible', async () => {
+    execute.mockResolvedValue({ data: ok(), model: 'm', usedFallback: false, costMicros: 1, traceId: 't' });
+    // Autre version de prompt : clé de cache distincte de la génération
+    // restée en suspens du test de délai (T6-05).
+    const o = await formulateWithT6({ ...p, contextHash: 'sans-drapeau' }, deps({ promptVersion: async () => 'v-sans-drapeau' }));
+    expect(o.status).toBe('generated');
+    expect(read('src/services/home/mascot/t6-runner.ts')).not.toMatch(/AI_HOME_MASCOT'|getUseCaseMode|flagEnabled/);
   });
 
   it('BO-007 — disjoncteur : après trois échecs, plus d’appel', async () => {
@@ -190,8 +195,9 @@ describe('télémétrie et gouvernance', () => {
     expect(src).not.toMatch(/richMessage\??:|let situationMessage|message: situationMessage/);
   });
 
-  it('le prompt T6 porte le contrat : un paragraphe par sujet, dates absolues, vouvoiement', () => {
-    const p = read('src/services/ai/prompts/mascot/mascot_t6_v1.txt');
-    for (const s of ['{{INPUT_JSON}}', '"t6-output-v1"', '"messages"', '"subjectId"', '"highlight"', 'Vouvoiement', 'Aucun emoji']) expect(p).toContain(s);
+  it('le prompt T6 (master, seul depuis le lot 16b) porte le contrat : sortie v2, sujets, mise en valeur', () => {
+    const p = read('src/services/ai/prompts/mascot/t6_master_v1.txt');
+    for (const s of ['{{INPUT_JSON}}', 't6-output-v2', '"messages"', '"subjectId"', '"highlight"']) expect(p).toContain(s);
+    expect(() => read('src/services/ai/prompts/mascot/mascot_t6_v1.txt')).toThrow();
   });
 });

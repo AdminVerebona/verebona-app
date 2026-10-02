@@ -91,8 +91,8 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
   // T1 dépendait de l'ouverture d'une session. Elle est désormais
   // exclusivement serveur (analysis-recovery : planificateur, passage planifié
   // T1, qui reprend aussi les documents d'un compte redevenu créditeur) ; ce
-  // point d'entrée est en lecture seule et marche avec les deux files
-  // (`AI_DURABLE_QUEUE`). Le suivi de fin reste le polling ci-dessous.
+  // point d'entrée est en lecture seule, sur l'état persistant (file durable
+  // T1). Le suivi de fin reste le polling ci-dessous.
   useEffect(() => {
     let annule = false;
     fetch('/api/analysis/queue-status', { credentials: 'include' })
