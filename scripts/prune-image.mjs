@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 /**
  * Allège l'image Scalingo après `next build` (limite : 2048 Mo).
- * Lancé par `postbuild`, UNIQUEMENT sur un build Scalingo (STACK=scalingo-*) ou
- * avec PRUNE_IMAGE=1 : en local, le cache de build est conservé.
+ * Actif UNIQUEMENT sur un build Scalingo (STACK=scalingo-*) ou avec
+ * PRUNE_IMAGE=1 : en local, le cache de build est conservé.
+ *
+ * DEUX DÉCLENCHEURS (idempotents : le second ne trouve plus rien à supprimer) :
+ *   · `postbuild` — hook npm, juste après `next build` ;
+ *   · `scalingo-cleanup` — hook du buildpack Node.js Scalingo, lancé par le
+ *     buildpack lui-même en fin de build (après « Pruning devDependencies »),
+ *     indépendamment des hooks npm.
+ * Le 2 oct. 2026, un déploiement de preprod a été refusé (image 2561 Mo) : le
+ * `postbuild` n'avait pas tourné et `.next/cache/webpack` (≈ 1,1 Go) était
+ * resté dans l'image. Le second déclencheur évite qu'un seul hook manquant
+ * fasse de nouveau dépasser la limite (garde-fou : image-scalingo.test.ts).
  *
  * Supprime ce qui ne sert qu'à la compilation et n'est jamais lu à l'exécution :
  *   · .next/cache/webpack, .next/cache/swc, .next/cache/eslint (cache de build

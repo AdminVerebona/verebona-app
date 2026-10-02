@@ -225,9 +225,12 @@ Reprise de l'existant :
    `fonts-dejavu-core` (glyphes de repli). Pas de GTK, xvfb ni paquets `-dev` :
    inutiles au headless-shell et responsables d'un dépassement de la limite
    d'image Scalingo (2048 Mo).
-2 bis. `postbuild` (`scripts/prune-image.mjs`, builds Scalingo uniquement) : retire
-   de l'image le cache de compilation Next (`.next/cache/webpack|swc|eslint`), la
-   documentation des paquets apt et le ffmpeg de Playwright.
+2 bis. `scripts/prune-image.mjs` (builds Scalingo uniquement), lancé par `postbuild`
+   ET par `scalingo-cleanup` (hook du buildpack, en fin de build) : retire de
+   l'image le cache de compilation Next (`.next/cache/webpack|swc|eslint`, ≈ 1,1 Go),
+   la documentation des paquets apt et le ffmpeg de Playwright. Sans lui, l'image
+   dépasse la limite (2561 Mo le 2 oct. 2026). Le log de build doit afficher
+   `[prune-image] supprimé .next/cache/webpack (… Mo)`.
 3. Installation de Chromium par le `postinstall` (`scripts/install-chromium.mjs`) :
    automatique sur tout build Scalingo (`STACK=scalingo-*`), ou forcée par
    **`EXPORTS_INSTALL_CHROMIUM=1`** ; `chromium-headless-shell` est installé dans
