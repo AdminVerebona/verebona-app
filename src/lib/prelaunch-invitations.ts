@@ -36,7 +36,8 @@ export type SignupInvitation =
   | { valid: true; kind: 'transmission'; transmissionId: number }
   | { valid: false; code: InvitationError };
 
-const DUO_ACTIVE_STATUSES = ['ACTIVE', 'PAST_DUE_GRACE'];
+/** Duo à jour : seul état où un second utilisateur peut rejoindre (APP-FUNC-31). */
+const DUO_ACTIVE_STATUSES = ['ACTIVE'];
 
 function sameEmail(expected: string | null | undefined, email: string): boolean {
   if (!expected) return true;

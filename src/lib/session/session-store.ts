@@ -54,10 +54,12 @@ export interface User {
     isTrial?: boolean;
   };
   duoId?: number;
-  duoStatus?: 'ACTIVE' | 'PAST_DUE_GRACE' | 'UNPAID_RECOVERY' | 'CANCELED';
+  /** UNPAID_RECOVERY : impayé Duo, restreint dès l'échec (aucune grâce). */
+  duoStatus?: 'ACTIVE' | 'UNPAID_RECOVERY' | 'CANCELED';
   duoRole?: 'BILLING_OWNER' | 'MEMBER';
   duoActivatedAt?: string;
-  graceDeadlineAt?: string;
+  /** Impayé Duo : fin du délai de récupération des biens. N'ouvre aucun droit. */
+  unpaidRecoveryEndsAt?: string;
   duoEntitlement?: boolean;
   isInRecovery?: boolean;
 }

@@ -272,3 +272,246 @@ export async function applyMigrationFiles(
   }
   return out;
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// EXÉCUTION COORDONNÉE ET ÉTAT DU SCHÉMA (APP-PERF-16)
+//
+// Ce module reste SANS IMPORT : il est chargé tel quel par l'étape de
+// migration du déploiement (`scripts/migrate.mjs`, Node sans `tsx` — les
+// devDependencies sont élaguées sur Scalingo) grâce au retrait des types de
+// Node. N'y utiliser que de la syntaxe TypeScript effaçable (ni `enum`, ni
+// `namespace`, ni propriété de paramètre).
+//
+// Contrat :
+//   · un seul exécutant à la fois, toutes instances confondues : verrou
+//     consultatif de SESSION `MIGRATION_RUNNER_LOCK_KEY`, attendu au plus
+//     `lockWaitMs`. Les autres processus n'appliquent rien et relisent l'état ;
+//   · chaque instruction DDL est bornée par `lock_timeout` (une ALTER TABLE
+//     en file derrière une longue requête bloquerait tout le trafic) ;
+//     `statement_timeout` est réglable, sans limite par défaut (une migration
+//     de données légitime peut être longue) ;
+//   · la réparation des index invalides (longue) est distincte : `repairIndexes`,
+//     activée par l'étape de déploiement, désactivée au démarrage web ;
+//   · criticité d'un fichier (`migrationCriticality`) : un index NON unique
+//     construit CONCURRENTLY n'est qu'une optimisation → `optional` (mode
+//     dégradé) ; tout le reste — tables, colonnes, contraintes, index UNIQUE
+//     (cibles d'ON CONFLICT) — est `critical` : son absence fait échouer des
+//     requêtes, la version ne doit pas être mise en service.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Clé du verrou consultatif de l'exécutant (texte haché par PostgreSQL). */
+export const MIGRATION_RUNNER_LOCK_KEY = 'verebona:migrations';
+
+export type MigrationCriticality = 'critical' | 'optional';
+
+/** Criticité d'un fichier de migration (voir le contrat ci-dessus). */
+export function migrationCriticality(sql: string): MigrationCriticality {
+  if (!concurrentIndexName(sql)) return 'critical';
+  return /^CREATE\s+UNIQUE\s/i.test(sansCommentaires(sql)) ? 'critical' : 'optional';
+}
+
+export interface MigrationFile {
+  filename: string;
+  sql: string;
+}
+
+export interface MigrationCatalogEntry {
+  filename: string;
+  criticality: MigrationCriticality;
+}
+
+export function migrationCatalog(files: MigrationFile[]): MigrationCatalogEntry[] {
+  return files.map((f) => ({ filename: f.filename, criticality: migrationCriticality(f.sql) }));
+}
+
+/** Fichiers `.sql` du dossier de migrations, triés (ordre d'application). */
+export async function readMigrationFiles(dir?: string): Promise<MigrationFile[]> {
+  const { readdir, readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const d = dir ?? join(process.cwd(), 'src', 'db', 'migrations');
+  const noms = (await readdir(d)).filter((f) => f.endsWith('.sql')).sort();
+  return Promise.all(noms.map(async (filename) => ({ filename, sql: await readFile(join(d, filename), 'utf-8') })));
+}
+
+export interface SchemaState {
+  /** Table `_migrations` présente. */
+  tracked: boolean;
+  pendingCritical: string[];
+  pendingOptional: string[];
+}
+
+/**
+ * Fichiers non marqués appliqués, par criticité. Lecture seule (une requête).
+ * Lève si la base ne répond pas — sauf table `_migrations` absente (`42P01`),
+ * qui signifie « rien d'appliqué ».
+ */
+export async function readSchemaState(client: SqlRunner, catalog: MigrationCatalogEntry[]): Promise<SchemaState> {
+  let appliquees = new Set<string>();
+  let tracked = true;
+  try {
+    const rows = (await client.unsafe(`SELECT filename FROM _migrations`)) as Array<{ filename: string }>;
+    appliquees = new Set(rows.map((r) => r.filename));
+  } catch (e) {
+    if ((e as { code?: string }).code !== '42P01') throw e;
+    tracked = false;
+  }
+  const pendingCritical: string[] = [];
+  const pendingOptional: string[] = [];
+  for (const m of catalog) {
+    if (appliquees.has(m.filename)) continue;
+    (m.criticality === 'critical' ? pendingCritical : pendingOptional).push(m.filename);
+  }
+  return { tracked, pendingCritical, pendingOptional };
+}
+
+/**
+ * `ready` : tout est appliqué. `degraded` : seuls des fichiers optionnels
+ * manquent. `waiting` : des fichiers critiques manquent mais un autre
+ * exécutant détient le verrou (ou construit l'index) — état à relire.
+ * `failed` : des fichiers critiques manquent alors que cet exécutant avait
+ * la main — la version ne doit pas recevoir de trafic.
+ */
+export type MigrationRunOutcome = 'ready' | 'degraded' | 'waiting' | 'failed';
+
+export interface MigrationRunFailure extends MigrationFileFailure {
+  criticality: MigrationCriticality;
+}
+
+export interface MigrationRunReport {
+  outcome: MigrationRunOutcome;
+  lockAcquired: boolean;
+  lockWaitMs: number;
+  durationMs: number;
+  applied: string[];
+  deferred: string[];
+  failures: MigrationRunFailure[];
+  /** Premier échec CRITIQUE dans l'ordre d'application : la cause à corriger d'abord. */
+  firstCriticalFailure: MigrationRunFailure | null;
+  repair: IndexRepairReport | null;
+  pendingCritical: string[];
+  pendingOptional: string[];
+}
+
+type MigrationLog = { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
+
+export interface MigrationRunOptions {
+  lockKey?: string;
+  /** Attente maximale du verrou de l'exécutant (ms). */
+  lockWaitMs?: number;
+  lockPollMs?: number;
+  /** `lock_timeout` de chaque instruction (ex. `10s`). */
+  lockTimeout?: string;
+  /** `statement_timeout` de chaque instruction (`0` : aucun). */
+  statementTimeout?: string;
+  /** Réparation des index invalides après les migrations (opération longue). */
+  repairIndexes?: boolean;
+  log?: MigrationLog;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+export const MIGRATION_DEFAULT_LOCK_TIMEOUT = '10s';
+
+/** Durée PostgreSQL acceptée dans un `SET` (aucune interpolation libre). */
+export function isPgDuration(v: string): boolean {
+  return /^\d{1,7}(ms|s|min)?$/.test(v);
+}
+
+/**
+ * Applique les migrations en attente sous verrou exclusif inter-processus.
+ * Ne lève que si la base est injoignable (connexion, verrou) ; un fichier en
+ * échec est rapporté dans `failures`, jamais levé.
+ */
+export async function runMigrations(
+  client: SqlRunner,
+  files: MigrationFile[],
+  opts: MigrationRunOptions = {},
+): Promise<MigrationRunReport> {
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const log = opts.log ?? console;
+  const lockKey = opts.lockKey ?? MIGRATION_RUNNER_LOCK_KEY;
+  const lockWaitMs = Math.max(0, opts.lockWaitMs ?? 30_000);
+  const lockPollMs = Math.max(10, opts.lockPollMs ?? 500);
+  const lockTimeout = opts.lockTimeout ?? MIGRATION_DEFAULT_LOCK_TIMEOUT;
+  const statementTimeout = opts.statementTimeout ?? '0';
+  for (const [nom, v] of [['lockTimeout', lockTimeout], ['statementTimeout', statementTimeout]] as const) {
+    if (!isPgDuration(v)) throw new Error(`[db] ${nom} invalide : « ${v} » (attendu : 500ms, 10s, 2min, 0).`);
+  }
+  const catalog = migrationCatalog(files);
+  const criticite = new Map(catalog.map((m) => [m.filename, m.criticality]));
+  const debut = now();
+
+  // Connexion DÉDIÉE : le verrou de session, les `SET` et toutes les
+  // instructions passent par elle. Exposée sans `reserve` : `runMigrationSql`
+  // reste sur cette connexion (verrou d'index compris) et n'y touche pas aux
+  // délais posés ici.
+  const cnx = client.reserve ? await client.reserve() : null;
+  const c: SqlRunner = cnx ? { unsafe: (q, p) => cnx.unsafe(q, p) } : client;
+  let verrou = false;
+  let attente = 0;
+  const report: MigrationRunReport = {
+    outcome: 'failed', lockAcquired: false, lockWaitMs: 0, durationMs: 0,
+    applied: [], deferred: [], failures: [], firstCriticalFailure: null, repair: null,
+    pendingCritical: [], pendingOptional: [],
+  };
+  try {
+    const attenteDebut = now();
+    for (;;) {
+      const [r] = (await c.unsafe(
+        `SELECT pg_try_advisory_lock(hashtext($1)) AS ok`, [lockKey] as never[],
+      )) as Array<{ ok: boolean }>;
+      if (r?.ok === true) { verrou = true; break; }
+      if (now() - attenteDebut >= lockWaitMs) break;
+      await sleep(lockPollMs);
+    }
+    attente = now() - attenteDebut;
+    report.lockAcquired = verrou;
+    report.lockWaitMs = attente;
+
+    if (!verrou) {
+      log.warn(`[db] migrations : verrou détenu par un autre exécutant après ${attente} ms — aucune modification, état relu.`);
+    } else {
+      if (cnx) {
+        await c.unsafe(`SET lock_timeout = '${lockTimeout}'`);
+        await c.unsafe(`SET statement_timeout = '${statementTimeout}'`);
+      }
+      await c.unsafe(`
+        CREATE TABLE IF NOT EXISTS _migrations (
+          id         SERIAL PRIMARY KEY,
+          filename   TEXT        NOT NULL UNIQUE,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )`);
+      const res = await applyMigrationFiles(c, files, log);
+      report.applied = res.applied;
+      report.deferred = res.deferred;
+      report.failures = res.failures.map((f) => ({ ...f, criticality: criticite.get(f.filename) ?? 'critical' }));
+      if (opts.repairIndexes) report.repair = await repairInvalidMigrationIndexes(c, files);
+    }
+
+    const etat = await readSchemaState(c, catalog);
+    report.pendingCritical = etat.pendingCritical;
+    report.pendingOptional = etat.pendingOptional;
+  } finally {
+    if (cnx) {
+      await cnx.unsafe('RESET lock_timeout').catch(() => undefined);
+      await cnx.unsafe('RESET statement_timeout').catch(() => undefined);
+    }
+    if (verrou) {
+      await c.unsafe(`SELECT pg_advisory_unlock(hashtext($1))`, [lockKey] as never[]).catch(() => undefined);
+    }
+    cnx?.release();
+  }
+
+  report.firstCriticalFailure = report.failures.find((f) => f.criticality === 'critical') ?? null;
+  if (report.pendingCritical.length === 0) {
+    const reparationIncomplete = (report.repair?.requeued.length ?? 0) > 0;
+    report.outcome = report.pendingOptional.length > 0 || reparationIncomplete ? 'degraded' : 'ready';
+  } else if (!verrou || report.pendingCritical.every((f) => report.deferred.includes(f))) {
+    report.outcome = 'waiting';
+  } else {
+    report.outcome = 'failed';
+  }
+  report.durationMs = now() - debut;
+  return report;
+}

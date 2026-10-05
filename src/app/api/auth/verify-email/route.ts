@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -107,7 +108,9 @@ export async function GET(request: NextRequest) {
     try {
       const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
 
-      const isSubscribedOrTrialing = !!defaultAccount && ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'].includes(defaultAccount.subscriptionStatus);
+      // Indication informative du jeton, jamais une source de droits : un
+      // impayé reste connectable sans « abonnement actif » (APP-FUNC-31).
+      const isSubscribedOrTrialing = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);
 
       const tokenPayload = {
         id: user.id,

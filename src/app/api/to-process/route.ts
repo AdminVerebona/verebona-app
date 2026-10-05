@@ -42,8 +42,10 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json(
     { total },
-    // Même durée que /api/v2/to-process : deux caches de durées différentes
-    // afficheraient un compteur en retard sur l'écran.
-    { headers: { 'Cache-Control': 'private, max-age=15, stale-while-revalidate=60' } },
+    // APP-PERF-22 : aucun cache navigateur. La pastille est relue après une
+    // action (« À traiter » résolue) : `max-age=15` + revalidation différée de 60 s
+    // pouvait la laisser affichée jusqu'à 75 s après la résolution. Le calcul
+    // est un simple COUNT indexé.
+    { headers: { 'Cache-Control': 'private, no-cache' } },
   );
 }

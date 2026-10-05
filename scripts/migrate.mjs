@@ -1,0 +1,137 @@
+#!/usr/bin/env node
+/**
+ * Étape de migration du déploiement (APP-PERF-16).
+ *
+ *   node scripts/migrate.mjs            applique, puis répare les index invalides
+ *   node scripts/migrate.mjs --check    lecture seule : état du schéma
+ *   node scripts/migrate.mjs --no-repair
+ *
+ * Lancée par Scalingo via le Procfile (`postdeploy`) : APRÈS le build, AVANT
+ * que la nouvelle version reçoive du trafic. Code de sortie non nul → le
+ * déploiement échoue et l'ancienne version continue de servir (CA-01).
+ *
+ *   0  schéma prêt (ou seulement des index optionnels manquants : dégradé)
+ *   1  migration critique non appliquée, ou verrou non obtenu avec du
+ *      critique en attente
+ *   2  configuration / connexion impossible
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POURQUOI DU JAVASCRIPT QUI CHARGE DU TYPESCRIPT
+ *
+ * Sur Scalingo les devDependencies (dont `tsx`) sont élaguées. Le moteur de
+ * migration (`src/db/migration-index.ts`) est volontairement SANS IMPORT et en
+ * syntaxe TypeScript effaçable : Node le charge directement par retrait des
+ * types (natif à partir de Node 22.18, option `--experimental-strip-types`
+ * à partir de 22.6 — ajoutée ici automatiquement au besoin). C'est le MÊME
+ * code que le démarrage web : aucune seconde implémentation à faire diverger.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Variables : DATABASE_URL (obligatoire), MIGRATION_LOCK_WAIT_MS (défaut
+ * 600000 ici), MIGRATION_LOCK_TIMEOUT (10s), MIGRATION_STATEMENT_TIMEOUT (0).
+ * Recette seulement : MIGRATIONS_DIR (dossier des fichiers), MIGRATIONS_SCHEMA
+ * (search_path de la connexion).
+ */
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ici = path.dirname(fileURLToPath(import.meta.url));
+const racine = path.resolve(ici, '..');
+const args = new Set(process.argv.slice(2));
+const log = (m) => console.log(`[migrate] ${m}`);
+
+// Retrait des types : natif (Node ≥ 22.18) ou via l'option (≥ 22.6).
+if (!process.features?.typescript && !process.env.__VEREBONA_MIGRATE_REEXEC) {
+  const [maj, min] = process.versions.node.split('.').map(Number);
+  if (maj < 22 || (maj === 22 && min < 6)) {
+    console.error(`[migrate] Node ${process.versions.node} : 22.6 au minimum est requis (retrait des types TypeScript).`);
+    process.exit(2);
+  }
+  const r = spawnSync(
+    process.execPath,
+    ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+    { stdio: 'inherit', env: { ...process.env, __VEREBONA_MIGRATE_REEXEC: '1' } },
+  );
+  process.exit(r.status ?? 2);
+}
+
+// Poste local : `.env.local` / `.env` si DATABASE_URL n'est pas déjà posée.
+if (!process.env.DATABASE_URL) {
+  for (const f of ['.env.local', '.env']) {
+    const p = path.join(racine, f);
+    if (existsSync(p)) { try { process.loadEnvFile(p); } catch { /* ignoré */ } }
+    if (process.env.DATABASE_URL) break;
+  }
+}
+const url = process.env.DATABASE_URL;
+if (!url) {
+  console.error('[migrate] DATABASE_URL absente.');
+  process.exit(2);
+}
+
+const moteur = await import(path.join(racine, 'src/db/migration-index.ts'));
+const { default: postgres } = await import('postgres');
+
+const entier = (nom, defaut) => {
+  const brut = (process.env[nom] ?? '').trim();
+  if (!brut) return defaut;
+  const n = Number(brut);
+  if (!Number.isInteger(n) || n < 0) { console.error(`[migrate] ${nom}=« ${brut} » invalide.`); process.exit(2); }
+  return n;
+};
+const schema = (process.env.MIGRATIONS_SCHEMA ?? '').trim();
+if (schema && !/^[a-z_][a-z0-9_]*$/.test(schema)) {
+  console.error(`[migrate] MIGRATIONS_SCHEMA=« ${schema} » invalide.`);
+  process.exit(2);
+}
+
+const sql = postgres(url, {
+  max: 2,
+  prepare: false,
+  connect_timeout: 15,
+  onnotice: () => undefined,
+  connection: { application_name: 'verebona-migrate', ...(schema ? { search_path: schema } : {}) },
+});
+
+let code = 0;
+try {
+  const fichiers = await moteur.readMigrationFiles(process.env.MIGRATIONS_DIR || undefined);
+  const catalogue = moteur.migrationCatalog(fichiers);
+  if (args.has('--check')) {
+    const st = await moteur.readSchemaState(sql, catalogue);
+    log(`${fichiers.length} fichier(s) ; en attente : ${st.pendingCritical.length} critique(s), ${st.pendingOptional.length} optionnel(s).`);
+    for (const f of st.pendingCritical) log(`  critique  ${f}`);
+    for (const f of st.pendingOptional) log(`  optionnel ${f}`);
+    code = st.pendingCritical.length > 0 ? 1 : 0;
+  } else {
+    const r = await moteur.runMigrations(sql, fichiers, {
+      lockWaitMs: entier('MIGRATION_LOCK_WAIT_MS', 600_000),
+      lockTimeout: process.env.MIGRATION_LOCK_TIMEOUT?.trim() || undefined,
+      statementTimeout: process.env.MIGRATION_STATEMENT_TIMEOUT?.trim() || undefined,
+      repairIndexes: !args.has('--no-repair'),
+      log: { info: log, warn: (m) => console.warn(`[migrate] ${m}`), error: (m) => console.error(`[migrate] ${m}`) },
+    });
+    for (const i of r.repair?.repaired ?? []) log(`index invalide ${i} reconstruit.`);
+    for (const q of r.repair?.requeued ?? []) console.error(`[migrate] index ${q.index} non reconstruit (${q.reason}) : ${q.filename} remis en file.`);
+    for (const i of r.repair?.unknown ?? []) console.error(`[migrate] index INVALIDE hors migrations : ${i} (DROP INDEX CONCURRENTLY puis recréer).`);
+    if (r.firstCriticalFailure) {
+      const f = r.firstCriticalFailure;
+      console.error(`[migrate] PREMIÈRE CAUSE : ${f.filename} (${f.code ?? 'sans code'}) : ${f.message}`);
+    }
+    // Mesures (APP-PERF-16 §MESURES) : une ligne JSON exploitable.
+    console.log(`[migrate] ${JSON.stringify({
+      outcome: r.outcome, durationMs: r.durationMs, lockWaitMs: r.lockWaitMs, lockAcquired: r.lockAcquired,
+      applied: r.applied.length, deferred: r.deferred.length, failures: r.failures.length,
+      pendingCritical: r.pendingCritical.length, pendingOptional: r.pendingOptional.length,
+      commit: process.env.APP_COMMIT || process.env.SOURCE_VERSION || process.env.CONTAINER_VERSION || null,
+    })}`);
+    code = r.outcome === 'ready' || r.outcome === 'degraded' ? 0 : 1;
+  }
+} catch (e) {
+  console.error(`[migrate] impossible : ${e?.message ?? e}`);
+  code = 2;
+} finally {
+  await sql.end({ timeout: 5 }).catch(() => undefined);
+}
+process.exit(code);

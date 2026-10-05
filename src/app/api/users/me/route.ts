@@ -6,7 +6,7 @@ import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { db, pgClient } from '@/db';
 import { users, accounts, accountMemberships, duoAccounts, duoMemberships } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
-import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
+import { serverCacheGet, serverCacheSet, userCacheKey, wantsFreshRead } from '@/lib/server-cache';
 import { getTrialState } from '@/services/trial.service';
 import { handleCloseAccount } from './deletion/close-account';
 
@@ -37,12 +37,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Cache serveur 30s : /api/users/me est appelé sur chaque page dashboard
-    const cacheKey = `users:me:${payload.userId}`;
-    const cached = serverCacheGet<object>(cacheKey);
+    // Cache serveur 30s : /api/users/me est appelé sur chaque page dashboard.
+    // APP-PERF-22 : clé par utilisateur ET compte courant de la session (le
+    // même utilisateur peut basculer d'espace), invalidée par ses écritures
+    // et par la synchronisation d'abonnement ; contournée sur demande de
+    // fraîcheur. Pas de cache HTTP navigateur (non cloisonné par session).
+    const cacheKey = userCacheKey(payload.userId, 'me', payload.currentAccountId ?? 0);
+    const cached = wantsFreshRead(request.headers) ? null : serverCacheGet<object>(cacheKey);
     if (cached) {
       const meResponse = NextResponse.json(cached);
-      meResponse.headers.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
+      meResponse.headers.set('Cache-Control', 'private, no-cache');
       return meResponse;
     }
 
@@ -62,8 +66,6 @@ export async function GET(request: NextRequest) {
           accountName: accounts.name,
           accountId: accounts.id,
           subscriptionStatus: accounts.subscriptionStatus,
-          pastDueGraceStartedAt: accounts.pastDueGraceStartedAt,
-          pastDueGraceEndsAt: accounts.pastDueGraceEndsAt,
         })
         .from(users)
         .leftJoin(accountMemberships, and(
@@ -80,7 +82,7 @@ export async function GET(request: NextRequest) {
           slot: duoMemberships.slot,
           duoSubscriptionStatus: duoAccounts.subscriptionStatus,
           duoActivatedAt: duoAccounts.activatedAt,
-          graceDeadlineAt: duoAccounts.graceDeadlineAt,
+          unpaidRecoveryEndsAt: duoAccounts.unpaidRecoveryEndsAt,
           billingOwnerUserId: duoAccounts.billingOwnerUserId,
         })
         .from(duoMemberships)
@@ -118,18 +120,11 @@ export async function GET(request: NextRequest) {
       ? duoInfo.duoSubscriptionStatus
       : userData.subscriptionStatus;
 
-    let finalSubscriptionStatus = rawSubscriptionStatus || 'NONE';
-
-    if (!isDuoGuest && userData.subscriptionStatus === 'PAST_DUE_GRACE' && userData.pastDueGraceEndsAt && userData.accountId) {
-      const now = new Date();
-      if (now > userData.pastDueGraceEndsAt) {
-        await db
-          .update(accounts)
-          .set({ subscriptionStatus: 'EXPIRED', updatedAt: now })
-          .where(eq(accounts.id, userData.accountId));
-        finalSubscriptionStatus = 'EXPIRED';
-      }
-    }
+    // Statut AFFICHÉ, jamais une source de droits (entitlements). Aucune
+    // écriture ici : la fin du délai de régularisation d'un impayé est
+    // traitée par le balayage `billing-unpaid` (APP-FUNC-31), plus par une
+    // lecture de profil qui passait le compte en EXPIRED.
+    const finalSubscriptionStatus = rawSubscriptionStatus || 'NONE';
 
     // ══════════════════════════════════════════════════════════════════════
     // LE CORPS EST CONSTRUIT AVANT LA RÉPONSE, PAS RELU DEPUIS ELLE
@@ -222,7 +217,7 @@ export async function GET(request: NextRequest) {
       duoStatus: duoInfo?.duoSubscriptionStatus ?? null,
       duoRole: duoInfo ? (duoInfo.billingOwnerUserId === payload.userId ? 'BILLING_OWNER' : 'MEMBER') : null,
       duoActivatedAt: duoInfo?.duoActivatedAt ?? null,
-      graceDeadlineAt: duoInfo?.graceDeadlineAt ?? null,
+      unpaidRecoveryEndsAt: duoInfo?.unpaidRecoveryEndsAt ?? null,
       isInRecovery: duoInfo?.duoSubscriptionStatus === 'UNPAID_RECOVERY',
       duoEntitlement,
       effectivePlan,
@@ -233,7 +228,7 @@ export async function GET(request: NextRequest) {
     serverCacheSet(cacheKey, corps, 30_000);
 
     const meResponse = NextResponse.json(corps);
-    meResponse.headers.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
+    meResponse.headers.set('Cache-Control', 'private, no-cache');
     return meResponse;
   } catch (error) {
     // Vérification de session impossible (base injoignable) : 503 explicite,

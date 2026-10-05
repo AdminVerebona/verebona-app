@@ -219,9 +219,9 @@ export async function enforceStandardLimits(
  *     (`left_at`) et offre affichée ramenée à celle de son propre compte ;
  *   - aucun bien n'est supprimé.
  *
- * Sans effet pendant un impayé Duo (PAST_DUE_GRACE, UNPAID_RECOVERY) : le
- * membre doit alors pouvoir récupérer des biens vers son propre espace
- * (mode récupération), ce qui suppose qu'il reste membre.
+ * Sans effet pendant un impayé Duo (UNPAID_RECOVERY) : le membre doit alors
+ * pouvoir récupérer des biens vers son propre espace (mode récupération),
+ * ce qui suppose qu'il reste membre.
  */
 export async function endDuoSharing(ownerUserId: number): Promise<void> {
   const [duo] = await db.select({ id: duoAccounts.id, status: duoAccounts.subscriptionStatus })

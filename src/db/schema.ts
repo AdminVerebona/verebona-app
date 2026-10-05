@@ -855,10 +855,17 @@ export const accounts = pgTable('accounts', {
   calendarShareTokenCreatedAt: tstzOptional('calendar_share_token_created_at'),
   trialConfirmationEmailSentAt: tstzOptional('trial_confirmation_email_sent_at'),
   trialEndsAt: tstzOptional('trial_ends_at'),
-  pastDueGraceStartedAt: tstzOptional('past_due_grace_started_at'),
-  pastDueGraceEndsAt: tstzOptional('past_due_grace_ends_at'),
+  // Cycle d'impayé (0250, APP-FUNC-31) : J0 et fin du délai de
+  // régularisation/conservation (J+90). Aucun droit normal pendant le cycle.
+  // Les anciennes colonnes `past_due_grace_*` restent en base, synchronisées
+  // par déclencheur, jusqu'à la migration de contraction : ne pas les lire.
+  unpaidStartedAt: tstzOptional('unpaid_started_at'),
+  unpaidRecoveryEndsAt: tstzOptional('unpaid_recovery_ends_at'),
   checkoutSessionId: text('checkout_session_id'),
   checkoutSessionCreatedAt: tstzOptional('checkout_session_created_at'),
+  // Paiement en attente : réconciliation durable (0251, APP-PERF-18).
+  checkoutCheckAttempts: integer('checkout_check_attempts').notNull().default(0),
+  checkoutNextCheckAt: tstzOptional('checkout_next_check_at'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -866,7 +873,11 @@ export const accounts = pgTable('accounts', {
   stripeCustomerIdIdx: index('accounts_stripe_customer_id_idx').on(table.stripeCustomerId),
   subscriptionStatusIdx: index('accounts_subscription_status_idx').on(table.subscriptionStatus),
   planTypeCheck: check('accounts_plan_type_check', sql`${table.planType} IN ('STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO')`),
-  subscriptionStatusCheck: check('accounts_subscription_status_check', sql`${table.subscriptionStatus} IN ('NONE','ACTIVE','CANCELED','EXPIRED','PAST_DUE','PAST_DUE_GRACE','UNPAID_RECOVERY','TRIALING','WITHDRAWN')`),
+  // Statuts : voir `lib/billing/subscription-status.ts` (0250 : plus de
+  // PAST_DUE_GRACE ni d'UNPAID_RECOVERY sur le compte — impayé = PAST_DUE).
+  subscriptionStatusCheck: check('accounts_subscription_status_check', sql`${table.subscriptionStatus} IN ('NONE','TRIALING','ACTIVE','CANCELED','PAST_DUE','EXPIRED','WITHDRAWN')`),
+  unpaidStartedAtIdx: index('accounts_unpaid_started_at_idx').on(table.unpaidStartedAt).where(sql`unpaid_started_at IS NOT NULL`),
+  pendingCheckoutIdx: index('accounts_pending_checkout_idx').on(table.checkoutNextCheckAt).where(sql`checkout_session_id IS NOT NULL`),
 }));
 
 export const accountMemberships = pgTable('account_memberships', {
@@ -918,10 +929,16 @@ export const accountAuditLog = pgTable('account_audit_log', {
 export const duoAccounts = pgTable('duo_accounts', {
   id: serial('id').primaryKey(),
   billingOwnerUserId: integer('billing_owner_user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  // ACTIVE | UNPAID_RECOVERY (impayé : restreint, récupération ouverte au
+  // membre) | CANCELED (+ TRIALING / EXPIRED hérités). Plus de PAST_DUE_GRACE
+  // (0250) — voir `lib/billing/subscription-status.ts`.
   subscriptionStatus: text('subscription_status').notNull().default('ACTIVE'),
   activatedAt: tstzOptional('activated_at'),
   firstPaymentFailedAt: tstzOptional('first_payment_failed_at'),
-  graceDeadlineAt: tstzOptional('grace_deadline_at'),
+  // Impayé Duo (0250) : fin du délai de récupération = échéance du cycle du
+  // compte payeur. Remplace `grace_deadline_at` (15 j de grâce, retirée ;
+  // colonne conservée en base jusqu'à la contraction, plus lue).
+  unpaidRecoveryEndsAt: tstzOptional('unpaid_recovery_ends_at'),
   stripeSubscriptionId: text('stripe_subscription_id').unique(),
   stripeCustomerId: text('stripe_customer_id'),
   pendingInviteEmail: text('pending_invite_email'),

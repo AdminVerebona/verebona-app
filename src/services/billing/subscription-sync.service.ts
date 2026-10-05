@@ -43,7 +43,7 @@ import {
   resolvePlanFromPriceId,
   type BillingPeriod,
 } from '@/lib/stripe-prices';
-import { serverCacheDelete, serverCacheGet, serverCacheSet } from '@/lib/server-cache';
+import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/server-cache';
 import { markTrialConverted } from '@/services/trial.service';
 import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/lib/email/billing-emails';
 import { endDuoSharing, enforceStandardLimits } from '@/lib/plan-enforcement';
@@ -73,7 +73,8 @@ export function getInvoicePriceId(invoice: Stripe.Invoice): string | null {
 
 // ─── Correspondances d'état ───────────────────────────────────────────────────
 
-type AccountStatus = 'ACTIVE' | 'CANCELED' | 'EXPIRED' | 'PAST_DUE_GRACE' | 'WITHDRAWN';
+/** Statuts de compte écrits ici — voir `lib/billing/subscription-status.ts`. */
+type AccountStatus = 'ACTIVE' | 'CANCELED' | 'EXPIRED' | 'PAST_DUE' | 'WITHDRAWN';
 type SubscriptionRowStatus = 'active' | 'past_due' | 'canceled' | 'readonly';
 
 const PLAN_TYPE: Record<PlanTier, 'STANDARD' | 'PREMIUM' | 'PREMIUM_DUO'> = {
@@ -82,7 +83,11 @@ const PLAN_TYPE: Record<PlanTier, 'STANDARD' | 'PREMIUM' | 'PREMIUM_DUO'> = {
   premium_duo: 'PREMIUM_DUO',
 };
 
-/** États Stripe qui donnent accès à l'offre payée. */
+/**
+ * États Stripe où l'offre payée est EN PLACE (offre, périodicité, dates
+ * synchronisées). `past_due` en fait partie, mais n'ouvre AUCUN droit : la
+ * ligne d'abonnement passe `past_due` (mode restreint immédiat, APP-FUNC-31).
+ */
 const PAID_STATUSES: Stripe.Subscription.Status[] = ['active', 'trialing', 'past_due'];
 /** États Stripe qui mettent fin à l'offre. */
 const TERMINAL_STATUSES: Stripe.Subscription.Status[] = ['canceled', 'unpaid', 'incomplete_expired'];
@@ -223,13 +228,18 @@ async function findAccount(
   return byCustomer ?? null;
 }
 
+/**
+ * Lectures en cache du compte et de ses membres oubliées (cette instance) :
+ * l'offre et le statut affichés suivent la synchronisation (APP-PERF-22).
+ */
 async function invalidateSessions(accountId: number): Promise<void> {
+  invalidateAccountReadCache(accountId);
   const members = await db
     .select({ userId: accountMemberships.userId })
     .from(accountMemberships)
     .where(eq(accountMemberships.accountId, accountId));
   for (const m of members) {
-    if (m.userId) serverCacheDelete(`users:me:${m.userId}`);
+    if (m.userId) invalidateUserReadCache(m.userId);
   }
 }
 
@@ -332,9 +342,10 @@ async function synchroniserAbonnement(
   if (isPaid) {
     newPlanType = PLAN_TYPE[planTier];
     rowStatus = status === 'past_due' ? 'past_due' : 'active';
+    // `past_due` : impayé, restreint dès maintenant — aucune grâce.
     newStatus =
       status === 'past_due'
-        ? 'PAST_DUE_GRACE'
+        ? 'PAST_DUE'
         : subscription.cancel_at_period_end
           ? 'CANCELED' // résiliée, accès conservé jusqu'à la fin de période
           : 'ACTIVE';
@@ -394,13 +405,14 @@ async function synchroniserAbonnement(
         // arrive `past_due` avant le webhook `invoice.payment_failed`
         // (ordre non garanti). J0 n'est jamais déplacé.
         ...(isPaid && status !== 'past_due'
-          ? { pastDueGraceStartedAt: null, pastDueGraceEndsAt: null }
+          ? { unpaidStartedAt: null, unpaidRecoveryEndsAt: null }
           : {}),
-        ...(status === 'past_due' && !account.pastDueGraceStartedAt
-          ? { pastDueGraceStartedAt: now, pastDueGraceEndsAt: unpaidDeadline(now) }
+        ...(status === 'past_due' && !account.unpaidStartedAt
+          ? { unpaidStartedAt: now, unpaidRecoveryEndsAt: unpaidDeadline(now) }
           : {}),
         ...(planTier === 'premium_duo' && isPaid ? { maxMembers: 2, duoAccountId } : {}),
-        ...(isPaid ? { checkoutSessionId: null, checkoutSessionCreatedAt: null } : {}),
+        // Paiement appliqué : fin du suivi du paiement en attente (APP-PERF-18).
+        ...(isPaid ? { checkoutSessionId: null, checkoutSessionCreatedAt: null, checkoutCheckAttempts: 0, checkoutNextCheckAt: null } : {}),
         updatedAt: now,
       })
       .where(eq(accounts.id, account.id));
@@ -429,13 +441,17 @@ async function synchroniserAbonnement(
       .where(eq(users.id, account.ownerUserId));
 
     if (planTier === 'premium_duo' && duoAccountId) {
+      // Impayé Duo : UNPAID_RECOVERY immédiatement (restreint, récupération
+      // ouverte au membre) avec l'échéance du cycle du compte payeur.
+      const cycleEndsAt = account.unpaidRecoveryEndsAt ?? unpaidDeadline(account.unpaidStartedAt ?? now);
       await tx
         .update(duoAccounts)
         .set({
           stripeSubscriptionId: subscription.id,
           stripeCustomerId: customerId,
-          subscriptionStatus: isPaid ? (status === 'past_due' ? 'PAST_DUE_GRACE' : 'ACTIVE') : 'CANCELED',
-          ...(isPaid && status !== 'past_due' ? { firstPaymentFailedAt: null, graceDeadlineAt: null } : {}),
+          subscriptionStatus: isPaid ? (status === 'past_due' ? 'UNPAID_RECOVERY' : 'ACTIVE') : 'CANCELED',
+          ...(isPaid && status !== 'past_due' ? { firstPaymentFailedAt: null, unpaidRecoveryEndsAt: null } : {}),
+          ...(status === 'past_due' ? { unpaidRecoveryEndsAt: cycleEndsAt } : {}),
           updatedAt: now,
         })
         .where(eq(duoAccounts.id, duoAccountId));
@@ -573,7 +589,7 @@ const RANG_OFFRE: Record<string, number> = {
 };
 
 /** Statuts de compte qui signifient « une offre payante était en place ». */
-const STATUTS_AVEC_OFFRE = ['ACTIVE', 'PAST_DUE_GRACE', 'CANCELED'];
+const STATUTS_AVEC_OFFRE = ['ACTIVE', 'PAST_DUE', 'CANCELED'];
 
 /**
  * Prévient le client que le statut de son compte a changé.
@@ -664,9 +680,28 @@ export async function syncSubscriptionById(
   return syncSubscriptionFromStripe({ ...options, subscription });
 }
 
+/**
+ * Synchronisation depuis un événement `customer.subscription.*`.
+ *
+ * L'objet porté par l'événement est un INSTANTANÉ : Stripe ne garantit ni
+ * l'ordre ni l'unicité des livraisons. Un `updated` ancien (« active »)
+ * reçu après un `updated` plus récent (« past_due ») rouvrait les droits
+ * d'un compte en impayé (APP-FUNC-31, CA-17). L'état COURANT est relu chez
+ * Stripe ; si la relecture échoue, l'erreur remonte et Stripe relivre
+ * l'événement plus tard — jamais de synchronisation sur un instantané.
+ */
+export async function syncSubscriptionFromEvent(
+  eventSubscription: Pick<Stripe.Subscription, 'id'>,
+  options: Omit<SubscriptionSyncInput, 'subscription'>,
+  retrieve: (id: string) => Promise<Stripe.Subscription> = (id) => getStripeServer().subscriptions.retrieve(id),
+): Promise<SubscriptionSyncResult | null> {
+  const current = await retrieve(eventSubscription.id);
+  return syncSubscriptionFromStripe({ ...options, subscription: current });
+}
+
 export type CheckoutSyncOutcome =
   | { status: 'synced'; result: SubscriptionSyncResult }
-  | { status: 'ignored'; reason: 'NOT_OWNED' | 'NOT_COMPLETE' | 'NO_SUBSCRIPTION' | 'NOT_SYNCED' };
+  | { status: 'ignored'; reason: 'NOT_OWNED' | 'NOT_COMPLETE' | 'EXPIRED' | 'NO_SUBSCRIPTION' | 'NOT_SYNCED' };
 
 /**
  * Retour de Stripe Checkout : synchronise sans attendre le webhook.
@@ -707,6 +742,8 @@ export async function syncFromCheckoutSession(params: {
     );
     return { status: 'ignored', reason: 'NOT_OWNED' };
   }
+  // Session expirée : le paiement n'aura jamais lieu (Stripe : 24 h max).
+  if (session.status === 'expired') return { status: 'ignored', reason: 'EXPIRED' };
   if (session.status !== 'complete') return { status: 'ignored', reason: 'NOT_COMPLETE' };
 
   const subscription = session.subscription;
@@ -720,67 +757,9 @@ export async function syncFromCheckoutSession(params: {
   return result ? { status: 'synced', result } : { status: 'ignored', reason: 'NOT_SYNCED' };
 }
 
-/** Délai pendant lequel une session Checkout ouverte peut encore aboutir. */
-const CHECKOUT_PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-/** Au plus une interrogation de Stripe par compte sur cette durée. */
-const CHECKOUT_PENDING_THROTTLE_MS = 20_000;
-
-/**
- * Filet de sécurité : applique un paiement dont le retour n'a pas été traité.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * PAYÉ CHEZ STRIPE, TOUJOURS EN ESSAI DANS VEREBONA
- *
- * L'état payé n'était écrit que par deux chemins : le webhook et la page de
- * retour. Si le webhook n'est pas configuré sur l'environnement (ou échoue)
- * ET que la page de retour n'est pas atteinte (adresse de retour erronée,
- * onglet fermé, application mobile), le compte restait en essai
- * indéfiniment alors que le client avait payé.
- *
- * La création de session mémorise son identifiant sur le compte
- * (`checkout_session_id`). Tant qu'il est présent et récent, la lecture des
- * droits vérifie ici — au plus toutes les 20 s — si la session a abouti, et
- * synchronise le compte le cas échéant. La synchronisation efface
- * l'identifiant : la vérification cesse d'elle-même.
- *
- * Ne lève jamais : la lecture des droits ne doit pas échouer pour autant.
- * ══════════════════════════════════════════════════════════════════════════
- */
-export async function syncPendingCheckoutForAccount(accountId: number): Promise<boolean> {
-  const cle = `checkout-pending:${accountId}`;
-  if (serverCacheGet<boolean>(cle)) return false;
-  serverCacheSet(cle, true, CHECKOUT_PENDING_THROTTLE_MS);
-
-  try {
-    const [account] = await db
-      .select({
-        checkoutSessionId: accounts.checkoutSessionId,
-        checkoutSessionCreatedAt: accounts.checkoutSessionCreatedAt,
-        ownerUserId: accounts.ownerUserId,
-      })
-      .from(accounts)
-      .where(eq(accounts.id, accountId))
-      .limit(1);
-
-    if (!account?.checkoutSessionId || !account.checkoutSessionCreatedAt) return false;
-    const age = Date.now() - new Date(account.checkoutSessionCreatedAt).getTime();
-    if (age > CHECKOUT_PENDING_MAX_AGE_MS) return false;
-
-    const outcome = await syncFromCheckoutSession({
-      sessionId: account.checkoutSessionId,
-      accountId,
-      userId: account.ownerUserId,
-    });
-    if (outcome.status === 'synced') {
-      console.info(`[subscription-sync] paiement en attente appliqué au compte ${accountId}`);
-      return true;
-    }
-    return false;
-  } catch (e) {
-    console.error(`[subscription-sync] vérification du paiement en attente (compte ${accountId}) :`, (e as Error).message);
-    return false;
-  }
-}
+// Filet « paiement effectué mais non appliqué » : voir
+// `pending-checkout.service.ts` (réconciliation durable, APP-PERF-18). Il
+// n'est plus exécuté pendant la lecture des droits.
 
 /**
  * Resynchronisation manuelle d'un compte (admin) : retient l'abonnement en

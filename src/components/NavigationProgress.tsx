@@ -3,16 +3,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 
+/**
+ * Indicateur de navigation — UN seul, monté par ClientShell (APP-PERF-39).
+ *
+ * Les étapes de progression posaient quatre minuteurs dans une seule
+ * référence : seul le dernier était annulé au changement de page suivant ou
+ * au démontage, et les autres écrivaient ensuite un état obsolète (barre
+ * relancée, jamais refermée lors d'une navigation rapide). Tous sont
+ * désormais suivis et annulés ensemble.
+ */
 export function NavigationProgress() {
   const pathname = usePathname();
   const [width, setWidth] = useState(0);
   const [visible, setVisible] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const isFirstRender = useRef(true);
-
-  const clear = () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-  };
 
   useEffect(() => {
     if (isFirstRender.current) {
@@ -20,15 +25,19 @@ export function NavigationProgress() {
       return;
     }
 
+    const timers = timersRef.current;
+    const later = (fn: () => void, ms: number) => { timers.push(setTimeout(fn, ms)); };
+    const clear = () => { timers.forEach(clearTimeout); timers.length = 0; };
+
     clear();
     setVisible(true);
     setWidth(20);
 
-    timerRef.current = setTimeout(() => setWidth(60), 80);
-    timerRef.current = setTimeout(() => setWidth(80), 300);
-    timerRef.current = setTimeout(() => {
+    later(() => setWidth(60), 80);
+    later(() => setWidth(80), 300);
+    later(() => {
       setWidth(100);
-      timerRef.current = setTimeout(() => {
+      later(() => {
         setVisible(false);
         setWidth(0);
       }, 250);

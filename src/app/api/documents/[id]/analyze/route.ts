@@ -21,7 +21,9 @@
 import { NextRequest } from 'next/server';
 import type { RunSourceAnalysisOutput } from '@/services/ai/source-analysis/pipeline';
 
-export const maxDuration = 300; // 5 minutes — Vercel only
+// Indication de segment Next.js ; sans effet sur Scalingo (`next start`), où
+// seule la coupure du routeur HTTP de l'hébergeur borne la requête.
+export const maxDuration = 300;
 import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';

@@ -1,4 +1,9 @@
-export type DuoSubscriptionStatus = 'ACTIVE' | 'PAST_DUE_GRACE' | 'UNPAID_RECOVERY' | 'CANCELED';
+/**
+ * Statut d'un abonnement Premium Duo (`duo_accounts.subscription_status`).
+ * UNPAID_RECOVERY : impayé — restreint dès l'échec de paiement, le membre
+ * garde l'accès pour récupérer ses biens. Plus de PAST_DUE_GRACE (0250).
+ */
+export type DuoSubscriptionStatus = 'ACTIVE' | 'UNPAID_RECOVERY' | 'CANCELED';
 export type DuoMembershipStatus = 'INVITED' | 'ACTIVE' | 'LEFT';
 export type DuoRole = 'BILLING_OWNER' | 'MEMBER';
 export type AssetLockState = 'NONE' | 'PENDING_MOVE' | 'PENDING_DELETE';
@@ -15,7 +20,8 @@ export interface DuoAccount {
   subscriptionStatus: DuoSubscriptionStatus;
   activatedAt: string | null;
   firstPaymentFailedAt: string | null;
-  graceDeadlineAt: string | null;
+  /** Impayé : fin du délai de récupération (= échéance du cycle du payeur). */
+  unpaidRecoveryEndsAt: string | null;
   stripeSubscriptionId: string | null;
   stripeCustomerId: string | null;
   createdAt: string;
@@ -88,7 +94,8 @@ export interface DuoUserInfo {
   duoStatus: DuoSubscriptionStatus | null;
   duoRole: DuoRole | null;
   duoActivatedAt: string | null;
-  graceDeadlineAt: string | null;
+  /** Impayé Duo : fin du délai de récupération des biens. */
+  unpaidRecoveryEndsAt: string | null;
   isInRecovery: boolean;
   duoEntitlement: boolean;
 }

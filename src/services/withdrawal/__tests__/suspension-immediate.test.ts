@@ -17,7 +17,7 @@ vi.mock('@/db', () => ({
 vi.mock('@/lib/stripe', () => ({ getStripeServer: () => { order.push('stripe'); throw new Error('Stripe indisponible'); } }));
 vi.mock('@/services/account/scheduled-deletion.service', () => ({ scheduleDeletion: async () => { order.push('suppression-planifiée'); return { scheduledAt: new Date() }; } }));
 vi.mock('../withdrawal-journal.service', () => ({ recordWithdrawalEvent: async (e: { eventType: string }) => { order.push(`journal:${e.eventType}`); } }));
-vi.mock('@/lib/server-cache', () => ({ serverCacheDeleteByPrefix: () => 0 }));
+vi.mock('@/lib/server-cache', () => ({ serverCacheDeleteByPrefix: () => 0, invalidateAccountReadCache: () => 0 }));
 
 const { processWithdrawal } = await import('../withdrawal-processor.service');
 

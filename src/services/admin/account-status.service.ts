@@ -25,7 +25,7 @@
 import { db, revokeAllUserSessions } from '@/db';
 import { accountMemberships, accounts } from '@/db/schema';
 import { and, eq, isNotNull, or } from 'drizzle-orm';
-import { serverCacheDelete } from '@/lib/server-cache';
+import { invalidateUserReadCache, serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 
 export type AccountStatusOutcome =
@@ -56,7 +56,7 @@ export async function revokeUserSessionsNow(userId: number, reason: string): Pro
   serverCacheDelete(sessionCutoffCacheKey(userId));
   // `/api/users/me` garde 30 s une réponse en cache : sans cela, l'interface
   // continuerait d'afficher le profil d'une session déjà révoquée.
-  serverCacheDelete(`users:me:${userId}`);
+  invalidateUserReadCache(userId);
   return cutoff;
 }
 

@@ -29,7 +29,9 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { useSession, User as SessionUser } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
 import { unsubscribeCurrentDevice } from '@/lib/push/push-client';
-import { NavigationProgress } from './NavigationProgress';
+import { useMountedOnce } from '@/hooks/useMountedOnce';
+import { useToProcessCount } from '@/hooks/useToProcessCount';
+import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
 import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
 const UploadQueueIndicator = dynamic(() => import('./documents/UploadQueueIndicator').then(m => ({ default: m.UploadQueueIndicator })), { ssr: false });
@@ -135,76 +137,19 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     };
   }, []);
 
-  const [availableAssets, setAvailableAssets] = useState<{ id: number; name: string }[]>([]);
-  const [aTraiterCount, setATraiterCount] = useState<number | null>(null);
-
-  // Data fetching non-critique différé via requestIdleCallback :
-  // les assets pour le dropdown "Ajouter" et le compteur "À traiter"
-  // ne doivent pas bloquer le rendu initial de la page.
-  useEffect(() => {
-    if (!user) return;
-    const idle = typeof window.requestIdleCallback === 'function'
-      ? window.requestIdleCallback
-      : (cb: IdleRequestCallback) => setTimeout(cb, 200);
-
-    idle(() => {
-      apiClient.get<{ data: any[] }>('/api/assets?limit=20', { useCache: true }).then(res => {
-        setAvailableAssets(res.data || []);
-      }).catch(() => {});
-    });
-  }, [user]);
-
-  const fetchATraiterCount = useCallback(() => {
-    const idle = typeof window.requestIdleCallback === 'function'
-      ? window.requestIdleCallback
-      : (cb: IdleRequestCallback) => setTimeout(cb, 500);
-
-    idle(() => {
-      apiClient.get<{ total: number } | { items: any[] }>('/api/to-process', { useCache: true })
-        .then(res => {
-          const count = 'total' in res ? res.total : ('items' in res ? (res.items?.length ?? 0) : 0);
-          setATraiterCount(count);
-        })
-        .catch(() => {
-          // Fallback to old route
-          apiClient.get<{ documents: any[]; agendaItems: any[]; equipements: any[] }>('/api/dashboard/a-traiter', { useCache: true })
-            .then(main => {
-              const count =
-                (main.documents?.length ?? 0) +
-                (main.agendaItems?.length ?? 0) +
-                (main.equipements?.length ?? 0);
-              setATraiterCount(count);
-            })
-            .catch(() => {});
-        });
-    });
-  }, []);
-
-  useEffect(() => {
-    if (user) fetchATraiterCount();
-  }, [user, fetchATraiterCount]);
-
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (typeof detail === 'number') {
-        setATraiterCount(detail);
-      } else {
-        fetchATraiterCount();
-      }
-    };
-    window.addEventListener('update-a-traiter-count', handler);
-    return () => window.removeEventListener('update-a-traiter-count', handler);
-  }, [fetchATraiterCount]);
-
-  useEffect(() => {
-    window.addEventListener('document-added', fetchATraiterCount);
-    window.addEventListener('refresh-a-traiter', fetchATraiterCount);
-    return () => {
-      window.removeEventListener('document-added', fetchATraiterCount);
-      window.removeEventListener('refresh-a-traiter', fetchATraiterCount);
-    };
-  }, [fetchATraiterCount]);
+  // ══════════════════════════════════════════════════════════════════════
+  // BLOCS SECONDAIRES — APP-PERF-39
+  //
+  // La pastille « À traiter » et la décision du guide de bienvenue sont lues
+  // quand le navigateur est libre, indépendamment du contenu de la page :
+  // une panne ou une lenteur n'y retient rien. Leurs effets dépendent de
+  // l'IDENTITÉ de l'utilisateur (`user.id`), plus de l'objet session : un
+  // remplacement à l'identique (relecture de la session) ne relance plus
+  // les lectures. Les rappels différés sont annulés au démontage.
+  // ══════════════════════════════════════════════════════════════════════
+  const userId = user?.id ?? null;
+  const aTraiterCount = useToProcessCount(userId);
+  const welcomeNeed = useWelcomeOnboardingNeed(userId);
 
   useEffect(() => {
     const handler = async (e: Event) => {
@@ -337,6 +282,13 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // ══════════════════════════════════════════════════════════════════════
   const [addSheetOpen, setAddSheetOpen] = useState(false);
 
+  // Panneaux et fenêtres montés à leur première ouverture seulement
+  // (APP-PERF-05) : un composant `dynamic` MONTÉ demande son chunk dès
+  // l'entrée, même fermé. Une fois ouverts, ils restent montés (animation de
+  // sortie, formulaire choisi depuis le panneau).
+  const addSheetMounted = useMountedOnce(addSheetOpen);
+  const helpMounted = useMountedOnce(helpModalOpen);
+
   if (logoutState !== 'idle') {
     return <LogoutStatusScreen state={logoutState} onRetry={handleLogout} onLeave={quitterVersSite} />;
   }
@@ -379,7 +331,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       onOpenHelp={() => setHelpModalOpen(true)}
     >
     <div className="flex h-screen overflow-hidden bg-[color:var(--bg-page)]">
-      <NavigationProgress />
+      {/* Indicateur de navigation : un seul, monté par ClientShell (APP-PERF-39). */}
 
       {/* Menu latéral — desktop (§3.1) */}
       <AppSidebar
@@ -476,7 +428,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     {!isMobileMenuOpen && <BottomNavigation toProcessCount={aTraiterCount} />}
 
     {/* Panneau du « + Ajouter » du menu latéral (ordinateur) */}
-    <MobileActionsSheet open={addSheetOpen} onOpenChange={setAddSheetOpen} allViewports />
+    {addSheetMounted && <MobileActionsSheet open={addSheetOpen} onOpenChange={setAddSheetOpen} allViewports />}
 
     {/* Espace de réponse mobile, plein écran (§6.3) */}
     <VerebonaMobileSpace />
@@ -508,17 +460,19 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     <UploadQueueIndicator userId={user?.id ?? null} />
 
     {/* Modale "Besoin d'aide ?" */}
-    <HelpModal open={helpModalOpen} onOpenChange={setHelpModalOpen} />
+    {helpMounted && <HelpModal open={helpModalOpen} onOpenChange={setHelpModalOpen} />}
 
-    {/* Modal d'accueil / onboarding */}
-    {user?.id && (
+    {/* Modal d'accueil / onboarding : montée (et son code chargé) seulement
+        si elle doit s'afficher — compte sans bien, guide jamais fermé — ou
+        sur relance manuelle depuis l'aide. */}
+    {user?.id && (welcomeNeed === 'show' || onboardingForceOpen) && (
       <WelcomeOnboardingModal
         userId={user.id}
         plan={user.subscription.plan}
         duoRole={user.duoRole}
         forceOpen={onboardingForceOpen}
         onClose={() => setOnboardingForceOpen(false)}
-        hasItems={availableAssets.length > 0}
+        hasItems={welcomeNeed === 'skip'}
       />
     )}
     </VerebonaSpaceProvider>

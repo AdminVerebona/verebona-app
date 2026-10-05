@@ -1,10 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import { buildHomeSummary } from '@/services/home/HomeSummaryService';
-import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
-import { FRESH_HEADER } from '@/lib/data-freshness';
+import { buildHomeSummary, type HomeSummaryPayload } from '@/services/home/HomeSummaryService';
+import { accountCacheKey, serverCacheGet, serverCacheSet, wantsFreshRead } from '@/lib/server-cache';
+import { createKeyedSingleFlight } from '@/lib/home/summary-single-flight';
 
 const HOME_SUMMARY_CACHE_TTL_MS = 30_000; // 30s cache serveur
+
+/**
+ * Un calcul par compte à la fois (APP-PERF-09) : les demandes rapprochées
+ * — deux onglets, un compte Duo sur deux appareils, une rafale d'événements
+ * — partagent le calcul en cours ; une demande « fraîche » arrivée pendant
+ * un calcul en programme au plus UN nouveau. Le résultat est remis en cache.
+ */
+const summaryFlight = createKeyedSingleFlight<HomeSummaryPayload>(async (key) => {
+  const accountId = Number(key);
+  const payload = await buildHomeSummary(accountId);
+  serverCacheSet(accountCacheKey(accountId, 'home-summary'), payload, HOME_SUMMARY_CACHE_TTL_MS);
+  return payload;
+});
 
 export async function GET(req: NextRequest) {
   try {
@@ -26,8 +39,10 @@ export async function GET(req: NextRequest) {
     // Après une modification, le client envoie `x-verebona-fresh: 1` : le
     // résumé est recalculé (puis remis en cache), au lieu de servir l'état
     // d'avant l'action pendant jusqu'à 30 s. Voir `lib/data-freshness.ts`.
-    const cacheKey = `home:summary:${accountId}`;
-    const wantsFresh = req.headers.get(FRESH_HEADER) === '1';
+    // Clé isolée par compte, invalidée par toute écriture du compte sur
+    // cette instance (APP-PERF-22, `lib/server-cache.ts`).
+    const cacheKey = accountCacheKey(accountId, 'home-summary');
+    const wantsFresh = wantsFreshRead(req.headers);
     const cached = wantsFresh ? null : serverCacheGet<object>(cacheKey);
     if (cached) {
       return NextResponse.json(cached, {
@@ -35,8 +50,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const payload = await buildHomeSummary(accountId);
-    serverCacheSet(cacheKey, payload, HOME_SUMMARY_CACHE_TTL_MS);
+    const payload = await summaryFlight.run(String(accountId), { fresh: wantsFresh });
 
     return NextResponse.json(payload, {
       headers: { 'Cache-Control': 'private, no-cache' },

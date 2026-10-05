@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db, isTokenRevoked, hashToken, getUserSessionCutoff, isIssuedBefore } from '@/db';
 import { clearSessionCookies } from '@/lib/auth/session-tokens';
 import { users } from '@/db/schema';
@@ -119,7 +120,9 @@ export async function POST(request: NextRequest) {
       }
       const defaultAccount = resolution.account;
 
-      const isSubscribedOrTrialing = !!defaultAccount && ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'].includes(defaultAccount.subscriptionStatus);
+      // Indication informative du jeton, jamais une source de droits : un
+      // impayé reste connectable sans « abonnement actif » (APP-FUNC-31).
+      const isSubscribedOrTrialing = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);
 
     // ══════════════════════════════════════════════════════════════════════
     // CDC §5.5 — ROTATION : L'ANCIEN JETON EST INVALIDÉ D'ABORD

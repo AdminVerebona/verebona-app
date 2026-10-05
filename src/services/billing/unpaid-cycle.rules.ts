@@ -133,3 +133,26 @@ export function unpaidRestrictionMessage(deadlineAt: Date | null): string {
       : "Régularisez votre paiement pour retrouver l'usage normal.")
   );
 }
+
+/** Statuts Stripe d'un abonnement établi dont un paiement est en échec. */
+const UNPAID_STRIPE_STATUSES = new Set(['past_due', 'unpaid']);
+
+/**
+ * Un `invoice.payment_failed` doit-il ouvrir (ou confirmer) le cycle d'impayé,
+ * vu l'état ACTUEL de l'abonnement chez Stripe ? Pure (APP-FUNC-31, CA-17).
+ *
+ *   - `past_due` / `unpaid`            → oui : restriction immédiate ;
+ *   - `active` / `trialing`            → non : événement périmé (paiement
+ *     régularisé depuis, événement reçu en retard ou rejoué) — ouvrir le
+ *     cycle restreindrait un client à jour ;
+ *   - `incomplete`, `canceled`…        → non : pas d'abonnement établi (1er
+ *     paiement jamais abouti) ou déjà terminé (le cycle éventuel est déjà
+ *     ouvert et suit son cours) ;
+ *   - inconnu (`null`, Stripe injoignable, facture hors abonnement)
+ *                                      → oui : l'échec est confirmé par
+ *     l'événement lui-même ; un paiement ultérieur referme le cycle.
+ */
+export function failedPaymentOpensCycle(currentStripeStatus: string | null | undefined): boolean {
+  if (!currentStripeStatus) return true;
+  return UNPAID_STRIPE_STATUSES.has(currentStripeStatus);
+}

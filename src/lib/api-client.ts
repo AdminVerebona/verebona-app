@@ -1,6 +1,6 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 import { clearLegacyAuthStorage } from '@/lib/auth-migration';
-import { isDataMutation, markAccountDataMutated } from './data-freshness';
+import { FRESH_HEADER, isDataMutation, markAccountDataMutated, mutatedSince, resetDataFreshness } from './data-freshness';
 import {
   beginSessionTransition,
   getSessionEpoch,
@@ -171,18 +171,78 @@ function observe(o: HttpObservation): void {
   try { observer(o); } catch { /* un collecteur défaillant ne casse pas l'appel */ }
 }
 
-// ── Cache des réponses terminées ───────────────────────────────────────────
+// ── Cache des réponses terminées — APP-PERF-22 ─────────────────────────────
+//
+// ══════════════════════════════════════════════════════════════════════════
+// POLITIQUE (navigateur, mémoire de l'onglet, `useCache: true` seulement)
+//
+//   · CLÉ : version de format + ÉPOQUE de session + méthode + URL complète
+//     (paramètres compris). Une réponse d'un autre contexte d'identité
+//     (connexion, déconnexion, changement de compte) n'est jamais relue ; le
+//     cache est de plus vidé à chaque transition.
+//   · DURÉE par ressource (`RESPONSE_CACHE_POLICIES`) : compteurs et
+//     résumés 15–30 s, comme leur cache serveur ; liens de fichiers signés
+//     60 s ; référentiels et fiches 5 min (inchangé).
+//   · INVALIDATION : toute écriture réussie (`apiClient` POST/PUT/PATCH/DELETE)
+//     ou événement métier (`data-freshness`) rend périmées TOUTES les
+//     réponses antérieures — elles ne sont plus servies, la relecture suivante
+//     va au serveur. Pas de liste d'URL à tenir à jour : tout est privé.
+//   · FRAÎCHEUR EXPLICITE : `cache: 'no-cache' | 'reload' | 'no-store'`
+//     demandé par l'appelant, ou en-tête `x-verebona-fresh: 1`, contourne la
+//     lecture du cache. Après une écriture, les lectures des routes qui ont
+//     un cache serveur (`SERVER_CACHED_READS`) portent automatiquement
+//     `x-verebona-fresh: 1`, une fois : le serveur ne ressert pas non plus
+//     l'état d'avant, quelle que soit l'instance qui répond.
+//
+// Un autre utilisateur du même compte (Premium Duo) qui modifie des données
+// n'émet rien dans CET onglet : convergence à l'expiration (≤ 30 s pour les
+// compteurs et l'accueil, cache serveur compris).
+// ══════════════════════════════════════════════════════════════════════════
 
 interface CacheEntry<T> {
   data: T;
   timestamp: number;
+  ttlMs: number;
 }
 
 const requestCache = new Map<string, CacheEntry<any>>();
+/** Version du format des clés ; la changer rend les anciennes illisibles. */
+const RESPONSE_CACHE_VERSION = 'v2';
+/** Durée par défaut (fiches, référentiels) — inchangée, jamais allongée. */
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+/** Durée de conservation par ressource (préfixe d'URL, premier trouvé). */
+export const RESPONSE_CACHE_POLICIES: ReadonlyArray<{ prefix: string; ttlMs: number }> = [
+  { prefix: '/api/to-process', ttlMs: 15_000 },
+  { prefix: '/api/v2/to-process', ttlMs: 15_000 },
+  { prefix: '/api/dashboard/a-traiter', ttlMs: 15_000 },
+  { prefix: '/api/home/summary', ttlMs: 30_000 },
+  { prefix: '/api/users/me', ttlMs: 30_000 },
+  { prefix: '/api/billing/', ttlMs: 30_000 },
+  { prefix: '/api/files/', ttlMs: 60_000 },
+];
+
+/** Routes servies depuis un cache serveur, à relire « fraîches » après une écriture. */
+export const SERVER_CACHED_READS: ReadonlyArray<string> = [
+  '/api/home/summary',
+  '/api/dashboard/a-traiter',
+  '/api/to-process/suppliers',
+  '/api/users/me',
+];
+
+/** Durée de conservation d'une réponse pour cette URL. */
+export function responseCacheTtl(url: string): number {
+  const path = url.split('?')[0];
+  return RESPONSE_CACHE_POLICIES.find((p) => path.startsWith(p.prefix))?.ttlMs ?? CACHE_TTL;
+}
+
+/** Clé du cache de réponses : format, époque de session, méthode, URL. */
+export function responseCacheKey(url: string, method: string, epoch: number = getSessionEpoch()): string {
+  return `${RESPONSE_CACHE_VERSION}|e${epoch}|${method}|${url}`;
+}
+
 function getCacheKey(url: string, method: string): string {
-  return `${method}:${url}`;
+  return responseCacheKey(url, method);
 }
 
 function getCachedData<T>(key: string): T | null {
@@ -190,7 +250,8 @@ function getCachedData<T>(key: string): T | null {
   if (!cached) return null;
 
   const now = Date.now();
-  if (now - cached.timestamp > CACHE_TTL) {
+  // Expirée, ou antérieure à une écriture : n'est plus servie.
+  if (now - cached.timestamp > cached.ttlMs || mutatedSince(cached.timestamp)) {
     requestCache.delete(key);
     return null;
   }
@@ -198,11 +259,46 @@ function getCachedData<T>(key: string): T | null {
   return cached.data as T;
 }
 
-function setCachedData<T>(key: string, data: T): void {
+function setCachedData<T>(key: string, url: string, data: T, timestamp: number): void {
+  // Réponse partie AVANT une écriture survenue entre-temps : non conservée.
+  if (mutatedSince(timestamp)) return;
   requestCache.set(key, {
     data,
-    timestamp: Date.now(),
+    timestamp,
+    ttlMs: responseCacheTtl(url),
   });
+}
+
+/** L'appelant demande-t-il explicitement un état frais ? */
+function wantsFresh(options: ApiClientOptions): boolean {
+  if (options.cache === 'no-cache' || options.cache === 'reload' || options.cache === 'no-store') return true;
+  if (!options.headers) return false;
+  return new Headers(options.headers).get(FRESH_HEADER) === '1';
+}
+
+/** Dernière lecture aboutie de chaque route à cache serveur (début de requête). */
+const lastServerCachedRead = new Map<string, number>();
+
+function serverCachedPath(url: string): string | null {
+  const path = url.split('?')[0];
+  return SERVER_CACHED_READS.find((p) => path === p) ?? null;
+}
+
+/**
+ * Après une écriture, la première relecture d'une route à cache serveur
+ * demande un état frais (`x-verebona-fresh: 1`). Rend les options à utiliser.
+ */
+function withFreshnessAfterMutation(url: string, options: ApiClientOptions): ApiClientOptions {
+  const path = serverCachedPath(url);
+  if (!path) return options;
+  const last = lastServerCachedRead.get(path) ?? 0;
+  if (!mutatedSince(last)) return options;
+  const headers = new Headers(options.headers);
+  if (headers.get(FRESH_HEADER) === '1') return options;
+  headers.set(FRESH_HEADER, '1');
+  const plain: Record<string, string> = {};
+  headers.forEach((v, k) => { plain[k] = v; });
+  return { ...options, headers: plain };
 }
 
 // ── Annulation combinée : appelant + délai ─────────────────────────────────
@@ -390,6 +486,7 @@ function navigate(target: string): void {
 // lectures partagées : rien de l'ancien contexte ne doit être resservi.
 onSessionTransition(() => {
   requestCache.clear();
+  lastServerCachedRead.clear();
   for (const entry of inflight.values()) entry.controller.abort();
   inflight.clear();
 });
@@ -402,11 +499,16 @@ export const apiClient = {
     const method = (options.method || 'GET').toUpperCase();
     const { useCache = false } = options;
 
-    if (useCache && method === 'GET') {
-      const cachedData = getCachedData<T>(getCacheKey(url, method));
-      if (cachedData) {
-        return cachedData;
+    if (method === 'GET') {
+      // Fraîcheur demandée par l'appelant : le cache n'est pas lu (APP-PERF-22).
+      if (useCache && !wantsFresh(options)) {
+        const cachedData = getCachedData<T>(getCacheKey(url, method));
+        if (cachedData) {
+          return cachedData;
+        }
       }
+      // Après une écriture, la route à cache serveur est relue fraîche.
+      options = withFreshnessAfterMutation(url, options);
     }
 
     if (method === 'GET' && !options.body && (options.dedupe ?? useCache)) {
@@ -595,6 +697,7 @@ export const apiClient = {
 
         // Écriture réussie : les écrans qui résument le compte (accueil)
         // demanderont un état frais au prochain chargement.
+        // Les réponses antérieures en cache deviennent périmées (`mutatedSince`).
         if (isDataMutation(method, url)) {
           markAccountDataMutated();
           // Mascotte d'accueil : un changement validé prépare sa prochaine prise
@@ -615,8 +718,12 @@ export const apiClient = {
           const data = await untilAborted(response.json(), attempt.signal);
           parseMs += Date.now() - parseStart;
 
+          if (method === 'GET') {
+            const path = serverCachedPath(url);
+            if (path) lastServerCachedRead.set(path, Math.max(lastServerCachedRead.get(path) ?? 0, startedAt));
+          }
           if (useCache && method === 'GET' && getSessionEpoch() === epochAtStart) {
-            setCachedData(getCacheKey(url, method), data);
+            setCachedData(responseCacheKey(url, method, epochAtStart), url, data, startedAt);
           }
 
           report('ok');
@@ -880,13 +987,15 @@ export const apiClient = {
   },
 
   invalidateCache(url: string): void {
-    requestCache.delete(`GET:${url}`);
+    requestCache.delete(getCacheKey(url, 'GET'));
   },
 };
 
 /** Réservé aux tests : remet à zéro l'état du module. */
 export function __resetApiClientForTests(): void {
   requestCache.clear();
+  lastServerCachedRead.clear();
+  resetDataFreshness();
   for (const entry of inflight.values()) entry.controller.abort();
   inflight.clear();
   pendingRefresh = null;

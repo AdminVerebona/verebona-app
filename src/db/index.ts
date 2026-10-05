@@ -1,7 +1,11 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "@/db/schema";
-import { applyMigrationFiles, repairInvalidMigrationIndexes, type SqlRunner } from "@/db/migration-index";
+import {
+  migrationCatalog, readMigrationFiles, readSchemaState, runMigrations,
+  type MigrationCatalogEntry, type MigrationCriticality, type SqlRunner,
+} from "@/db/migration-index";
+import { resolveMigrationRuntimeConfig, type MigrationBootMode } from "@/db/migration-config";
 import { describePoolConfig, resolvePoolConfig } from "@/db/pool-config";
 
 const connectionString = process.env.DATABASE_URL!;
@@ -57,74 +61,255 @@ export interface MigrationFailure {
   filename: string;
   message: string;
   code?: string;
+  criticality?: MigrationCriticality;
 }
-let _migrationFailures: MigrationFailure[] = [];
+
+// ══════════════════════════════════════════════════════════════════════════
+// ÉTAT DES MIGRATIONS — PARTAGÉ PAR PROCESSUS (APP-PERF-16)
+//
+// Deux défauts corrigés :
+//   · `_migrated` passait à true AVANT l'exécution : un second appelant
+//     concurrent repartait aussitôt, sur un schéma encore incomplet, et
+//     « commencé » se confondait avec « réussi » ;
+//   · l'état vivait dans le module. Next.js compile l'instrumentation et les
+//     routes dans des couches (bundles) distinctes, qui peuvent chacune porter
+//     SA copie de `@/db` : le premier `ensureMigrations()` d'une route pouvait
+//     alors relancer toute la chaîne à la requête, et `/api/health` lire des
+//     échecs jamais renseignés dans sa copie.
+//
+// Désormais l'état et la promesse en cours sont portés par `globalThis` (une
+// instance par processus) : un seul passage, partagé, aux phases distinctes.
+// Les appels à la requête (`await ensureMigrations()` dans les routes)
+// attendent ce passage ou rendent immédiatement son résultat ; ils ne
+// déclenchent jamais de DDL une fois le démarrage passé.
+// ══════════════════════════════════════════════════════════════════════════
+
+export type MigrationPhase =
+  /** Aucun passage dans ce processus. */
+  | 'idle'
+  | 'running'
+  /** Tout est appliqué. */
+  | 'ready'
+  /** Seuls des index optionnels manquent : servi, signalé. */
+  | 'degraded'
+  /** Critique manquant, un autre exécutant a la main : à relire. */
+  | 'waiting'
+  /** Critique manquant : la version ne doit pas recevoir de trafic. */
+  | 'failed'
+  /** État illisible (base injoignable, configuration invalide). */
+  | 'unknown'
+  /** MIGRATIONS_ON_BOOT=off : rien au démarrage. */
+  | 'skipped';
+
+export interface MigrationStatus {
+  phase: MigrationPhase;
+  mode: MigrationBootMode | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  lockWaitMs: number | null;
+  applied: string[];
+  pendingCritical: string[];
+  pendingOptional: string[];
+  failures: MigrationFailure[];
+  /** Première cause utile : premier échec critique, sinon erreur du lanceur. */
+  firstFailure: MigrationFailure | null;
+  error: string | null;
+}
+
+interface MigrationGlobalState {
+  status: MigrationStatus;
+  promise: Promise<MigrationStatus> | null;
+  catalog: MigrationCatalogEntry[] | null;
+  recheck: Promise<void> | null;
+  recheckedAt: number;
+}
+
+const ETAT_MIGRATIONS = Symbol.for('verebona.db.migrations');
+
+function statutInitial(): MigrationStatus {
+  return {
+    phase: 'idle', mode: null, startedAt: null, finishedAt: null, durationMs: null, lockWaitMs: null,
+    applied: [], pendingCritical: [], pendingOptional: [], failures: [], firstFailure: null, error: null,
+  };
+}
+
+function etatMigrations(): MigrationGlobalState {
+  const g = globalThis as unknown as Record<symbol, MigrationGlobalState | undefined>;
+  return (g[ETAT_MIGRATIONS] ??= { status: statutInitial(), promise: null, catalog: null, recheck: null, recheckedAt: 0 });
+}
+
+/** Tests uniquement : oublie l'état partagé du processus. */
+export function resetMigrationStateForTests(): void {
+  const g = globalThis as unknown as Record<symbol, MigrationGlobalState | undefined>;
+  delete g[ETAT_MIGRATIONS];
+}
+
+export function getMigrationStatus(): MigrationStatus {
+  const s = etatMigrations().status;
+  return { ...s, applied: [...s.applied], pendingCritical: [...s.pendingCritical], pendingOptional: [...s.pendingOptional], failures: [...s.failures] };
+}
+
 export function getMigrationFailures(): MigrationFailure[] {
-  return [..._migrationFailures];
+  return [...etatMigrations().status.failures];
 }
 
-let _migrated = false;
-export async function ensureMigrations() {
-  if (_migrated) return;
-  _migrated = true;
-  _migrationFailures = [];
+const runner = () => client as unknown as SqlRunner;
+
+async function executerMigrations(): Promise<MigrationStatus> {
+  const etat = etatMigrations();
+  const s = etat.status;
+  const debut = Date.now();
+  s.phase = 'running';
+  s.startedAt = new Date(debut).toISOString();
   try {
-    await client`
-      CREATE TABLE IF NOT EXISTS _migrations (
-        id         SERIAL PRIMARY KEY,
-        filename   TEXT        NOT NULL UNIQUE,
-        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `;
-    const { readdir, readFile } = await import('fs/promises');
-    const { join } = await import('path');
-    const migrationsDir = join(process.cwd(), 'src', 'db', 'migrations');
-    const allFiles = await readdir(migrationsDir);
-    const sqlFiles = allFiles.filter(f => f.endsWith('.sql')).sort();
-    const fichiers = await Promise.all(
-      sqlFiles.map(async (f) => ({ filename: f, sql: await readFile(join(migrationsDir, f), 'utf-8') })),
-    );
-
-    // ══════════════════════════════════════════════════════════════════════
-    // UN ECHEC N'INTERROMPT PLUS LA CHAINE (`applyMigrationFiles`)
-    //
-    // Chaque fichier a son propre `try`. Un echec est journalise, enregistre
-    // dans `_migrationFailures`, et la chaine se poursuit. Le fichier en echec
-    // n'est PAS marque comme applique : il sera retente au prochain demarrage,
-    // dans l'ordre lexicographique (un `_idx_N` apres son fichier principal).
-    // Index CONCURRENTLY : reprise d'un index invalide et controle de validite
-    // avant de marquer le fichier applique (`migration-index.ts`).
-    // ══════════════════════════════════════════════════════════════════════
-    const res = await applyMigrationFiles(client as unknown as SqlRunner, fichiers);
-    _migrationFailures.push(...res.failures);
-
-    // Index invalides (construction CONCURRENTLY interrompue) : jamais
-    // utilisés, toujours maintenus. Ceux d'un fichier de migration connu —
-    // même déjà marqué appliqué (0217…) — sont reconstruits tout de suite ;
-    // sinon leur fichier est remis en file (`migration-index.ts`).
-    const rep = await repairInvalidMigrationIndexes(client as unknown as SqlRunner, fichiers);
-    for (const i of rep.repaired) console.warn(`[db] index invalide ${i} reconstruit.`);
-    for (const q of rep.requeued) {
-      console.error(`[db] index INVALIDE ${q.index} non reconstruit (${q.reason}) : ${q.filename} sera rejoue au prochain demarrage.`);
+    const cfg = resolveMigrationRuntimeConfig();
+    s.mode = cfg.mode;
+    if (cfg.mode === 'off') {
+      s.phase = 'skipped';
+      return s;
     }
-    if (rep.unknown.length > 0) {
-      console.error(
-        `[db] ${rep.unknown.length} index INVALIDE(S) hors migrations connues : ${rep.unknown.join(', ')}. ` +
-        'A supprimer (DROP INDEX CONCURRENTLY <nom>) puis recreer a la main.',
-      );
-    }
+    const fichiers = await readMigrationFiles();
+    etat.catalog = migrationCatalog(fichiers);
 
-    if (_migrationFailures.length > 0) {
-      console.error(
-        `[db] ${_migrationFailures.length} migration(s) en echec : ` +
-        `${_migrationFailures.map(f => f.filename).join(', ')}. ` +
-        'Le schema peut etre incomplet — corrigez avant toute mise en service.',
-      );
+    if (cfg.mode === 'check') {
+      const st = await readSchemaState(runner(), etat.catalog);
+      s.pendingCritical = st.pendingCritical;
+      s.pendingOptional = st.pendingOptional;
+      s.phase = st.pendingCritical.length > 0 ? 'failed' : st.pendingOptional.length > 0 ? 'degraded' : 'ready';
+      if (st.pendingCritical.length > 0) {
+        s.firstFailure = { filename: st.pendingCritical[0], message: 'migration critique non appliquée (étape de déploiement absente ou en échec)', criticality: 'critical' };
+      }
+    } else {
+      // Index invalides (construction CONCURRENTLY interrompue) : la
+      // réparation est longue, elle relève de l'étape de déploiement ;
+      // au démarrage seulement sur demande (MIGRATIONS_REPAIR_ON_BOOT).
+      const r = await runMigrations(runner(), fichiers, {
+        lockWaitMs: cfg.lockWaitMs, lockTimeout: cfg.lockTimeout, statementTimeout: cfg.statementTimeout,
+        repairIndexes: cfg.repairOnBoot,
+      });
+      s.phase = r.outcome;
+      s.lockWaitMs = r.lockWaitMs;
+      s.applied = r.applied;
+      s.pendingCritical = r.pendingCritical;
+      s.pendingOptional = r.pendingOptional;
+      s.failures = r.failures;
+      s.firstFailure = r.firstCriticalFailure ?? r.failures[0] ?? null;
+      for (const i of r.repair?.repaired ?? []) console.warn(`[db] index invalide ${i} reconstruit.`);
+      for (const q of r.repair?.requeued ?? []) {
+        console.error(`[db] index INVALIDE ${q.index} non reconstruit (${q.reason}) : ${q.filename} sera rejoue.`);
+      }
+      if ((r.repair?.unknown.length ?? 0) > 0) {
+        console.error(
+          `[db] ${r.repair!.unknown.length} index INVALIDE(S) hors migrations connues : ${r.repair!.unknown.join(', ')}. ` +
+          'A supprimer (DROP INDEX CONCURRENTLY <nom>) puis recreer a la main.',
+        );
+      }
+      if (r.outcome === 'failed' || r.outcome === 'waiting') {
+        console.error(
+          `[db] ${r.pendingCritical.length} migration(s) CRITIQUE(S) non appliquee(s) (${r.outcome}) : ` +
+          `${r.pendingCritical.slice(0, 10).join(', ')}${r.pendingCritical.length > 10 ? '…' : ''}. ` +
+          (s.firstFailure ? `Premiere cause : ${s.firstFailure.filename} (${s.firstFailure.code ?? 'sans code'}) ${s.firstFailure.message}` : ''),
+        );
+      }
     }
   } catch (e) {
-    console.error('[db] ensureMigrations error:', (e as Error).message);
-    // Don't rethrow — allow app to start even if migration runner fails
+    // Base injoignable, configuration invalide… : on ne conclut pas — ni
+    // prêt, ni échec de migration. La readiness relira l'état.
+    s.phase = 'unknown';
+    s.error = (e as Error).message;
+    s.firstFailure = s.firstFailure ?? { filename: '(lanceur)', message: s.error, code: (e as { code?: string }).code };
+    console.error('[db] ensureMigrations : etat du schema indetermine —', s.error);
+  } finally {
+    s.finishedAt = new Date().toISOString();
+    s.durationMs = Date.now() - debut;
+    if (s.phase !== 'skipped') {
+      console.info(
+        `[db] migrations (${s.mode ?? '?'}) : ${s.phase} en ${s.durationMs} ms` +
+        `${s.lockWaitMs != null ? `, attente verrou ${s.lockWaitMs} ms` : ''}, ${s.applied.length} appliquee(s), ` +
+        `${s.pendingCritical.length} critique(s) / ${s.pendingOptional.length} optionnelle(s) en attente.`,
+      );
+    }
   }
+  return s;
+}
+
+/**
+ * Passage unique des migrations pour ce processus (voir l'en-tête). Ne lève
+ * jamais : le résultat est dans le statut rendu (`phase`).
+ */
+export async function ensureMigrations(): Promise<MigrationStatus> {
+  const etat = etatMigrations();
+  if (!etat.promise) etat.promise = executerMigrations().then(() => getMigrationStatus());
+  await etat.promise;
+  return getMigrationStatus();
+}
+
+export interface SchemaReadiness {
+  /** Prérequis critiques du schéma satisfaits. */
+  ready: boolean;
+  phase: MigrationPhase;
+  pendingCritical: number;
+  pendingOptional: number;
+  /** Fichier et code de la première cause — jamais le message SQL. */
+  firstFailure: { filename: string; code?: string } | null;
+}
+
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`délai de ${ms} ms dépassé`)), ms);
+    t.unref?.();
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
+/**
+ * Disponibilité du schéma pour la readiness. `ready` / `degraded` acquis au
+ * démarrage : rendus sans requête (un schéma ne régresse pas). Sinon l'état
+ * est RELU en base — une seule relecture en vol, au plus une par `maxAgeMs`,
+ * bornée par `timeoutMs` — pour qu'une migration achevée ailleurs (étape de
+ * déploiement, autre instance) rende la version disponible.
+ */
+export async function getSchemaReadiness(opts: { timeoutMs?: number; maxAgeMs?: number } = {}): Promise<SchemaReadiness> {
+  const etat = etatMigrations();
+  const s = etat.status;
+  const relisible = s.phase === 'waiting' || s.phase === 'failed' || s.phase === 'unknown' || s.phase === 'skipped' || s.phase === 'idle';
+  if (relisible && Date.now() - etat.recheckedAt >= (opts.maxAgeMs ?? 15_000)) {
+    if (!etat.recheck) {
+      etat.recheck = (async () => {
+        try {
+          if (!etat.catalog) etat.catalog = migrationCatalog(await readMigrationFiles());
+          const st = await readSchemaState(runner(), etat.catalog);
+          if (s.phase === 'running') return;
+          s.pendingCritical = st.pendingCritical;
+          s.pendingOptional = st.pendingOptional;
+          // Échecs résolus depuis (appliqués ailleurs) : retirés du diagnostic.
+          const enAttente = new Set([...st.pendingCritical, ...st.pendingOptional]);
+          s.failures = s.failures.filter((f) => enAttente.has(f.filename));
+          if (s.firstFailure && s.firstFailure.filename !== '(lanceur)' && !enAttente.has(s.firstFailure.filename)) {
+            s.firstFailure = s.failures.find((f) => f.criticality === 'critical') ?? s.failures[0] ?? null;
+          }
+          if (st.pendingCritical.length === 0) {
+            if (s.firstFailure?.filename === '(lanceur)') s.firstFailure = s.failures[0] ?? null;
+            s.phase = st.pendingOptional.length > 0 ? 'degraded' : 'ready';
+            s.error = null;
+          }
+        } finally {
+          etat.recheckedAt = Date.now();
+          etat.recheck = null;
+        }
+      })();
+    }
+    await withDeadline(etat.recheck, opts.timeoutMs ?? 1_500).catch(() => undefined);
+  }
+  const f = s.firstFailure;
+  return {
+    ready: s.phase === 'ready' || s.phase === 'degraded',
+    phase: s.phase,
+    pendingCritical: s.pendingCritical.length,
+    pendingOptional: s.pendingOptional.length,
+    firstFailure: f ? { filename: f.filename, code: f.code } : null,
+  };
 }
 
 let _unaccentReady = false;
@@ -144,6 +329,14 @@ let _revokedTableReady = false;
 
 export async function ensureRevokedTokensTable(): Promise<void> {
   if (_revokedTableReady) return;
+  // Tables créées par la migration 0243 (critique) : schéma prêt → aucune DDL
+  // à la requête. Repli historique ci-dessous seulement si l'état des
+  // migrations est inconnu dans ce processus (script, démarrage sans base).
+  const phase = etatMigrations().status.phase;
+  if (phase === 'ready' || phase === 'degraded') {
+    _revokedTableReady = true;
+    return;
+  }
   try {
     await client`
       CREATE TABLE IF NOT EXISTS revoked_tokens (

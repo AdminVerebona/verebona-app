@@ -151,7 +151,8 @@ async function main() {
   } else {
     ko(`${orphans.length}/${rows.length} compte(s) pointent vers un client introuvable en mode ${apiMode}`);
     for (const o of orphans) {
-      const warn = ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'].includes((o.subscriptionStatus ?? '').toUpperCase())
+      // Abonnement en cours ou impayé en cycle (PAST_DUE) : à revoir à la main.
+      const warn = ['ACTIVE', 'TRIALING', 'PAST_DUE'].includes((o.subscriptionStatus ?? '').toUpperCase())
         ? '  ⚠ statut d\'abonnement actif à revoir manuellement'
         : '';
       info(`compte ${o.id} → ${o.stripeCustomerId} (statut ${o.subscriptionStatus ?? 'NONE'})${warn}`);

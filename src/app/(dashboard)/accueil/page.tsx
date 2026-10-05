@@ -14,45 +14,32 @@ import dynamic from 'next/dynamic';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import type { WriteBlockedInfo } from '@/lib/write-blocked';
-import { PendingCheckoutModal } from '@/components/subscription/PendingCheckoutModal';
 import { MascotSpeaks } from '@/components/home/MascotSpeaks';
 import { HomeAssets, RecentDocuments, UpcomingEvents, VerebonaWork } from '@/components/home/HomeBlocks';
 import { useSession } from '@/hooks/useSession';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
-import { apiClient } from '@/lib/api-client';
-import { FRESH_HEADER, markAccountDataMutated, mutatedSince } from '@/lib/data-freshness';
+import { markAccountDataMutated } from '@/lib/data-freshness';
 import { useRouter } from 'next/navigation';
 import { duoJoinErrorMessage, joinDuo, takePendingDuoJoin } from '@/lib/duo/pending-duo-join';
-import type { HomeSummaryPayload } from '@/services/home/HomeSummaryService';
+import { useHomeSummary } from '@/components/home/useHomeSummary';
+// Mêmes chunks et même préchargement que le panneau « Ajouter » (APP-PERF-05).
+import { LazyAssetFormDialog as AssetFormDialog, LazyUnifiedDocumentDialog as UnifiedDocumentDialog } from '@/components/mobile/add-forms';
 import { orderByRecentViews, readRecentAssetIds } from '@/lib/home/recent-assets';
 import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 
-// ⚡ Lazy load des dialogs lourds
-const UnifiedDocumentDialog = dynamic(
-  () => import('@/components/documents/unified-document-dialog').then(mod => ({ default: mod.UnifiedDocumentDialog })),
+// Fenêtre affichée seulement après un retour de paiement interrompu : son
+// code n'a rien à faire dans le chargement initial de l'accueil.
+const PendingCheckoutModal = dynamic(
+  () => import('@/components/subscription/PendingCheckoutModal').then(mod => ({ default: mod.PendingCheckoutModal })),
   { ssr: false }
 );
-
-const AssetFormDialog = dynamic(
-  () => import('@/components/AssetFormDialog').then(mod => ({ default: mod.AssetFormDialog })),
-  { ssr: false }
-);
-
-/**
- * Instant du dernier chargement du résumé, conservé entre deux visites de
- * l'accueil (navigation client) : une modification faite ailleurs depuis
- * déclenche un résumé frais. Voir `lib/data-freshness.ts`.
- */
-let lastHomeSummaryLoadAt = 0;
 
 export default function DashboardPage() {
   const router = useRouter();
   const { user, isLoading: isSessionLoading } = useSession({ required: true });
   const { setBreadcrumbs } = useBreadcrumb();
 
-  const [summary, setSummary] = useState<HomeSummaryPayload | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [pendingCheckoutPlan, setPendingCheckoutPlan] = useState<'premium' | 'premium_duo' | null>(null);
 
   // Dialogs
@@ -70,60 +57,23 @@ export default function DashboardPage() {
 
   // ── Chargement ────────────────────────────────────────────────────────────
 
-  // Plus de cache client sur le résumé : il masquait toute action faite sur
-  // une autre page (jusqu'à 5 min). Un résumé frais est demandé au serveur
-  // dès qu'une modification a eu lieu depuis le dernier chargement.
-  const loadSummary = useCallback(async () => {
-    try {
-      const startedAt = Date.now();
-      const fresh = mutatedSince(lastHomeSummaryLoadAt);
-      const data = await apiClient.get<HomeSummaryPayload>('/api/home/summary', {
-        headers: fresh ? { [FRESH_HEADER]: '1' } : undefined,
-      });
-      lastHomeSummaryLoadAt = startedAt;
-      setSummary(data);
-    } catch (error) {
-      console.error('Error loading home summary:', error);
-      toast.error('Erreur lors du chargement');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  // Lancé dès le montage, sans attendre la résolution de la session : le
+  // résumé et la session partent en parallèle. Les événements métier
+  // (document, agenda, « À traiter »…) sont écoutés par le hook et
+  // REGROUPÉS : une action qui en émet plusieurs ne coûte qu'une relecture,
+  // et une réponse plus ancienne n'écrase jamais une plus récente
+  // (APP-PERF-09). Un résumé frais n'est demandé qu'après une modification.
+  const { summary, status, refreshing, refreshError, invalidate, retry } = useHomeSummary();
 
   useEffect(() => {
     setBreadcrumbs([]);
   }, [setBreadcrumbs]);
 
-  // Lance le fetch immédiatement si un token existe, sans attendre la résolution de la session.
-  useEffect(() => {
-    const hasToken = typeof window !== 'undefined' && true;
-    if (hasToken) loadSummary();
-  }, [loadSummary]);
-
-  /** Après une action : l'état a changé, on recharge un résumé frais. */
+  /** Après une action : l'état a changé, on relit un résumé frais (regroupé). */
   const refreshSummary = useCallback(() => {
     markAccountDataMutated();
-    void loadSummary();
-  }, [loadSummary]);
-
-  // Re-fetch sur événements (la modification est notée par data-freshness)
-  useEffect(() => {
-    const handler = () => refreshSummary();
-    window.addEventListener('document-added', handler);
-    window.addEventListener('document-deleted', handler);
-    window.addEventListener('document-analysis-complete', handler);
-    window.addEventListener('agenda-mutated', handler);
-    window.addEventListener('notifications-refresh', handler);
-    window.addEventListener('refresh-a-traiter', handler);
-    return () => {
-      window.removeEventListener('document-added', handler);
-      window.removeEventListener('document-deleted', handler);
-      window.removeEventListener('document-analysis-complete', handler);
-      window.removeEventListener('agenda-mutated', handler);
-      window.removeEventListener('notifications-refresh', handler);
-      window.removeEventListener('refresh-a-traiter', handler);
-    };
-  }, [refreshSummary]);
+    invalidate();
+  }, [invalidate]);
 
   // Synchronisation Stripe à la volée si session_id est présent
   useEffect(() => {
@@ -187,12 +137,12 @@ export default function DashboardPage() {
     void joinDuo(duoToken).then((result) => {
       if (result.ok) {
         toast.success('Vous avez rejoint l’espace Premium Duo.');
-        loadSummary();
+        refreshSummary();
       } else {
         toast.error(duoJoinErrorMessage(result.error));
       }
     });
-  }, [user, loadSummary]);
+  }, [user, refreshSummary]);
 
   // Transfer token
   useEffect(() => {
@@ -210,7 +160,7 @@ export default function DashboardPage() {
       .then(data => {
         if (data.success) {
           toast.success('Un bien vous a été transmis et ajouté à votre portefeuille !');
-          loadSummary();
+          refreshSummary();
         } else if (data.error === 'RECIPIENT_EMAIL_MISMATCH' || data.conflict) {
           // L'acceptation est faite par la session, et seulement si son
           // adresse est celle invitée. Un refus (autre adresse, doublon) est
@@ -220,7 +170,7 @@ export default function DashboardPage() {
         }
       })
       .catch(() => {});
-  }, [user, loadSummary]);
+  }, [user, refreshSummary]);
 
   // ⚠️ L'ancienne fenêtre locale annonçait « limite de 3 biens du plan
   // gratuit » et « Passer à Premium » quel que soit le motif — y compris pour
@@ -270,7 +220,23 @@ export default function DashboardPage() {
           onUploadDocument={(assetId) => { setUploadAssetId(assetId ?? null); setShowUploadDialog(true); }}
         />
 
-        {isLoading || !summary ? (
+        {status === 'error' && !summary ? (
+          /* Erreur sans données : état explicite et reprise, jamais un
+             squelette permanent (APP-PERF-39). La mascotte, au-dessus, a son
+             propre chargement et reste affichée. */
+          <div role="alert" className="flex flex-col items-start gap-3 rounded-[18px] border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-5">
+            <p className="text-sm text-[color:var(--text-primary)]">
+              Impossible de charger vos biens et documents pour le moment.
+            </p>
+            <button
+              type="button"
+              onClick={retry}
+              className="rounded-full bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-white"
+            >
+              Réessayer
+            </button>
+          </div>
+        ) : !summary ? (
           <div className="flex flex-col gap-6 md:gap-8" aria-busy="true">
             <div className="grid grid-cols-3 gap-3" style={{ gridAutoRows: '132px' }}>
               <Skeleton className="row-span-2 rounded-[18px]" />
@@ -289,7 +255,17 @@ export default function DashboardPage() {
              dessous (tablette, bureau étroit, mobile), elle s'empile, les
              échéances d'abord, comme sur mobile.
              ══════════════════════════════════════════════════════════════ */
-          <div className="@container flex flex-col gap-[26px] md:gap-9">
+          <div className="@container flex flex-col gap-[26px] md:gap-9" aria-busy={refreshing || undefined}>
+            {/* Revalidation en échec : les données affichées restent, un
+                message discret le signale (APP-PERF-39). */}
+            {refreshError && (
+              <p role="status" className="flex items-center gap-3 text-xs text-[color:var(--text-muted)]">
+                Actualisation impossible, affichage des dernières données reçues.
+                <button type="button" onClick={retry} className="font-medium text-[color:var(--accent)] underline-offset-2 hover:underline">
+                  Réessayer
+                </button>
+              </p>
+            )}
             <HomeAssets assets={orderedAssets} onAddAsset={() => setShowAssetDialog(true)} />
             <div className="flex flex-col gap-[26px] md:gap-9 @min-[1040px]:grid @min-[1040px]:grid-cols-2 @min-[1040px]:items-start @min-[1040px]:gap-8">
               <VerebonaWork className="order-2 @min-[1040px]:order-none" items={summary.blocks.verebonaWork?.items ?? []} onNavigate={(href) => router.push(href)} />

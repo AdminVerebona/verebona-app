@@ -51,7 +51,6 @@ describe('CA-01 — mapping identique des erreurs de session', () => {
     ['ACCOUNT_PENDING_DELETION', 403, 'ACCOUNT_PENDING_DELETION'],
     ['INSUFFICIENT_PERMISSIONS', 403, 'INSUFFICIENT_PERMISSIONS'],
     ['FORBIDDEN', 403, 'ACCESS_DENIED'],
-    ['TRIAL_ACTIVATION_PENDING', 403, 'TRIAL_ACTIVATION_PENDING'],
     [SESSION_UNAVAILABLE_CODE, 503, SESSION_UNAVAILABLE_CODE],
   ])('%s → %i %s, message et requestId', async (levee, status, code) => {
     const res = sessionErrorToResponse(new Error(levee), 'req-1');

@@ -6,15 +6,19 @@
  * ══════════════════════════════════════════════════════════════════════════
  * OÙ VIT LE CYCLE
  *
- *   accounts.past_due_grace_started_at   J0 (NULL hors cycle)
- *   accounts.past_due_grace_ends_at      J+90
+ *   accounts.unpaid_started_at           J0 (NULL hors cycle)
+ *   accounts.unpaid_recovery_ends_at     J+90 : fin du délai de
+ *                                        régularisation/conservation
+ *   accounts.subscription_status         'PAST_DUE' (impayé)
  *   account_subscriptions.status         'past_due' → droits restreints
  *                                        (entitlements : lecture, export,
  *                                        transmission ; ni écriture ni IA)
  *
- * Les colonnes « grace » portaient une période de grâce de 15 jours pendant
- * laquelle tout restait permis — contraire à la règle cible (suspension dès
- * J0). Elles portent désormais le cycle de 90 jours.
+ * Aucune période de grâce (APP-FUNC-31) : les colonnes `past_due_grace_*` et
+ * le statut PAST_DUE_GRACE de l'ancien modèle — 15 jours pendant lesquels
+ * tout restait permis — ont été migrés vers ce modèle (0250). Le délai J+90
+ * n'ouvre AUCUN droit : il laisse le temps de régulariser ou de récupérer
+ * ses données.
  *
  * Ouverture : webhook `invoice.payment_failed` (et, si l'ordre des
  * événements l'inverse, synchronisation d'un abonnement `past_due`).
@@ -36,10 +40,10 @@ import {
 } from '@/services/account/scheduled-deletion.service';
 import { syncSubscriptionFromStripe } from '@/services/billing/subscription-sync.service';
 import { buildFingerprint, reportAnomaly } from '@/services/admin/anomaly.service';
-import { computeUnpaidCycle, decideAtDeadline, unpaidDeadline, UNPAID_CYCLE_DAYS } from './unpaid-cycle.rules';
+import { computeUnpaidCycle, decideAtDeadline, failedPaymentOpensCycle, unpaidDeadline, UNPAID_CYCLE_DAYS } from './unpaid-cycle.rules';
 
-/** Statuts de compte qu'un échec de paiement fait passer en cycle d'impayé. */
-const PAID_ACCOUNT_STATUSES = ['ACTIVE', 'PAST_DUE', 'PAST_DUE_GRACE', 'CANCELED'];
+/** Statuts de compte qu'un échec de paiement fait passer en impayé (PAST_DUE). */
+const PAID_ACCOUNT_STATUSES = ['ACTIVE', 'PAST_DUE', 'CANCELED'];
 
 /**
  * Ouvre le cycle (J0) s'il ne l'est pas déjà, et restreint les droits.
@@ -54,21 +58,21 @@ export async function startUnpaidCycle(
   const rows = await db
     .update(accounts)
     .set({
-      pastDueGraceStartedAt: sql`COALESCE(${accounts.pastDueGraceStartedAt}, ${atIso}::timestamptz)`,
+      unpaidStartedAt: sql`COALESCE(${accounts.unpaidStartedAt}, ${atIso}::timestamptz)`,
       // Cycle déjà ouvert : échéance inchangée (elle a pu être reportée par
-      // la migration 0182 pour les cycles antérieurs à la règle).
-      pastDueGraceEndsAt: sql`CASE WHEN ${accounts.pastDueGraceStartedAt} IS NULL
+      // les migrations 0182 / 0250 pour les cycles antérieurs à la règle).
+      unpaidRecoveryEndsAt: sql`CASE WHEN ${accounts.unpaidStartedAt} IS NULL
         THEN ${atIso}::timestamptz + make_interval(days => ${UNPAID_CYCLE_DAYS})
-        ELSE COALESCE(${accounts.pastDueGraceEndsAt}, ${accounts.pastDueGraceStartedAt} + make_interval(days => ${UNPAID_CYCLE_DAYS})) END`,
+        ELSE COALESCE(${accounts.unpaidRecoveryEndsAt}, ${accounts.unpaidStartedAt} + make_interval(days => ${UNPAID_CYCLE_DAYS})) END`,
       // Un compte rétracté ou déjà expiré garde son statut propre.
       subscriptionStatus: sql`CASE WHEN ${accounts.subscriptionStatus} IN (${sql.join(
         PAID_ACCOUNT_STATUSES.map((s) => sql`${s}`),
         sql`, `,
-      )}) THEN 'PAST_DUE_GRACE' ELSE ${accounts.subscriptionStatus} END`,
+      )}) THEN 'PAST_DUE' ELSE ${accounts.subscriptionStatus} END`,
       updatedAt: at,
     })
     .where(eq(accounts.id, accountId))
-    .returning({ startedAt: accounts.pastDueGraceStartedAt, endsAt: accounts.pastDueGraceEndsAt });
+    .returning({ startedAt: accounts.unpaidStartedAt, endsAt: accounts.unpaidRecoveryEndsAt });
 
   const startedAt = rows[0]?.startedAt;
   if (!startedAt) return null;
@@ -111,13 +115,13 @@ async function loadCandidates(): Promise<Candidate[]> {
     .select({
       accountId: accounts.id,
       ownerUserId: accounts.ownerUserId,
-      startedAt: accounts.pastDueGraceStartedAt,
-      deadlineAt: accounts.pastDueGraceEndsAt,
+      startedAt: accounts.unpaidStartedAt,
+      deadlineAt: accounts.unpaidRecoveryEndsAt,
       accountStatus: accounts.subscriptionStatus,
       stripeCustomerId: accounts.stripeCustomerId,
     })
     .from(accounts)
-    .where(isNotNull(accounts.pastDueGraceStartedAt));
+    .where(isNotNull(accounts.unpaidStartedAt));
   return rows.filter((r): r is Candidate => r.startedAt !== null);
 }
 
@@ -127,6 +131,26 @@ export interface UnpaidSweepDeps {
 }
 
 const defaultDeps: UnpaidSweepDeps = { stripe: getStripeServer };
+
+/**
+ * L'échec de paiement reçu est-il toujours d'actualité ? Relit l'état COURANT
+ * de l'abonnement chez Stripe : un événement en retard, rejoué ou désordonné
+ * ne restreint pas un client régularisé entre-temps (CA-17). Voir
+ * `failedPaymentOpensCycle`.
+ */
+export async function isPaymentFailureCurrent(
+  subscriptionId: string | null,
+  deps: UnpaidSweepDeps = defaultDeps,
+): Promise<boolean> {
+  if (!subscriptionId) return failedPaymentOpensCycle(null);
+  try {
+    const sub = await deps.stripe().subscriptions.retrieve(subscriptionId);
+    return failedPaymentOpensCycle(sub.status);
+  } catch (e) {
+    console.warn(`[unpaid-cycle] abonnement ${subscriptionId} illisible, échec retenu : ${(e as Error).message}`);
+    return failedPaymentOpensCycle(null);
+  }
+}
 
 /** Clé de déduplication d'un rappel : une par cycle et par étape. */
 export function unpaidReminderDedupeKey(accountId: number, startedAt: Date, stage: string): string {
@@ -211,7 +235,7 @@ export async function runUnpaidCycleSweep(
 export async function closeUnpaidCycle(accountId: number, now: Date = new Date()): Promise<void> {
   await db
     .update(accounts)
-    .set({ pastDueGraceStartedAt: null, pastDueGraceEndsAt: null, updatedAt: now })
+    .set({ unpaidStartedAt: null, unpaidRecoveryEndsAt: null, updatedAt: now })
     .where(eq(accounts.id, accountId));
 }
 

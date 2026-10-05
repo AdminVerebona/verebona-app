@@ -23,7 +23,7 @@ import { getStripeServer } from '@/lib/stripe';
 import {
   getInvoiceSubscriptionId,
   syncSubscriptionById,
-  syncSubscriptionFromStripe,
+  syncSubscriptionFromEvent,
 } from '@/services/billing/subscription-sync.service';
 import { applyScheduledChange } from '@/services/plan-change.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
@@ -36,7 +36,8 @@ import {
   recordCheckoutPromoRedemptions,
   recordSubscriptionPromoRedemptions,
 } from '@/services/billing/promo-redemption.service';
-import { startUnpaidCycle } from '@/services/billing/unpaid-cycle.service';
+import { isPaymentFailureCurrent, startUnpaidCycle } from '@/services/billing/unpaid-cycle.service';
+import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
@@ -289,8 +290,9 @@ async function handleSubscriptionUpdated(
 ) {
   // État complet (offre, statut, périodicité, dates, identifiants) et effets
   // du changement d'offre (historique, emails, limites) : service commun.
-  const result = await syncSubscriptionFromStripe({
-    subscription,
+  // État COURANT relu chez Stripe : un événement ancien ou rejoué ne rouvre
+  // jamais les droits d'un compte en impayé (APP-FUNC-31, CA-17).
+  const result = await syncSubscriptionFromEvent(subscription, {
     source: `webhook:${eventType}`,
   });
 
@@ -380,8 +382,8 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   // Les droits se lisent sur `account_subscriptions` (entitlements) : sans
   // cette écriture, un abonnement terminé restait `active` et continuait
   // d'ouvrir l'écriture. Une rétractation (`readonly`) garde son statut.
-  // Un cycle d'impayé en cours se poursuit (colonnes past_due_grace_*
-  // inchangées) jusqu'à régularisation ou J+90.
+  // Un cycle d'impayé en cours se poursuit (colonnes unpaid_* inchangées)
+  // jusqu'à régularisation ou J+90.
   await db
     .update(accountSubscriptions)
     .set({ status: 'canceled', updatedAt: new Date() })
@@ -534,22 +536,25 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
  * J0 du cycle d'impayé de 90 jours (Centre d'aide GAP-06, AID-BILL-008).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * AVANT : période de grâce de 15 jours pendant laquelle tout restait permis,
- * puis rien — ni restriction, ni suppression.
+ * AUCUNE PÉRIODE DE GRÂCE (APP-FUNC-31)
  *
- * RÈGLE CIBLE : dès l'échec, les fonctions normales et payantes sont
- * suspendues (entitlements : `past_due` = lecture, export, transmission) ;
- * le compte reste accessible ; régularisation possible jusqu'à J+90 ; à
- * J+90, suppression (cron `billing/unpaid-cycle`).
+ * Dès l'échec, les fonctions normales et payantes sont suspendues
+ * (entitlements : `past_due` = lecture, export, transmission) ; le compte
+ * reste accessible ; régularisation possible jusqu'à J+90 ; à J+90,
+ * suppression (balayage `billing-unpaid`). Le délai ne rouvre aucun droit.
  *
  * Le cycle s'ouvre UNE fois (J0 jamais déplacé par une nouvelle tentative
- * échouée) — y compris si `customer.subscription.updated` (past_due) est
- * arrivé avant : la condition porte sur la date J0, plus sur le statut, qui
- * pouvait déjà valoir PAST_DUE_GRACE et faisait sauter la notification.
+ * échouée ni par un événement rejoué) — y compris si
+ * `customer.subscription.updated` (past_due) est arrivé avant.
  *
- * Duo : le mécanisme de récupération Duo (PAST_DUE_GRACE → UNPAID_RECOVERY)
- * est conservé tel quel ; le cycle général s'applique en plus au compte du
- * titulaire de facturation (AID-BILL-008 : « Offres : toutes »).
+ * Événement périmé (paiement régularisé depuis, livraison tardive) : l'état
+ * courant de l'abonnement est relu chez Stripe et l'échec n'est retenu que
+ * s'il est toujours d'actualité (`isPaymentFailureCurrent`).
+ *
+ * Duo : passage IMMÉDIAT en UNPAID_RECOVERY (plus de 15 jours de grâce) —
+ * le membre reste membre pour récupérer ses biens jusqu'à la même échéance
+ * que le cycle du compte payeur, auquel le cycle général s'applique
+ * (AID-BILL-008 : « Offres : toutes »).
  * ══════════════════════════════════════════════════════════════════════════
  */
 async function handlePaymentFailed(invoice: Stripe.Invoice) {
@@ -557,6 +562,11 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
   const subscriptionId = getInvoiceSubscriptionId(invoice);
 
   if (!customerId) return;
+
+  if (!(await isPaymentFailureCurrent(subscriptionId))) {
+    console.info(`[Webhook] payment_failed ${invoice.id} ignoré : abonnement ${subscriptionId} à jour (événement périmé)`);
+    return;
+  }
 
   // ── DUO payment failed ──
   if (subscriptionId) {
@@ -567,27 +577,6 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
       .limit(1);
 
     if (duoAccount) {
-      if (!duoAccount.firstPaymentFailedAt) {
-        const now = new Date();
-        const graceDeadline = new Date(now.getTime() + 15 * 24 * 60 * 60 * 1000);
-
-        await db
-          .update(duoAccounts)
-          .set({
-            subscriptionStatus: 'PAST_DUE_GRACE',
-            firstPaymentFailedAt: now,
-            graceDeadlineAt: graceDeadline,
-            updatedAt: now,
-          })
-          .where(eq(duoAccounts.id, duoAccount.id));
-
-        await db.insert(dunningEvents).values({
-          duoId: duoAccount.id,
-          stage: 'T0',
-          sentAt: now,
-        }).onConflictDoNothing();
-      }
-
       // Compte payeur du Duo : cycle général de 90 jours.
       const [payer] = await db
         .select({ id: accounts.id })
@@ -598,6 +587,26 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
         ?? (await db.select({ id: accounts.id }).from(accounts)
           .where(eq(accounts.ownerUserId, duoAccount.billingOwnerUserId)).limit(1))[0]?.id;
       const cycle = payerAccountId ? await startUnpaidCycle(payerAccountId) : null;
+
+      if (!duoAccount.firstPaymentFailedAt || duoAccount.subscriptionStatus !== 'UNPAID_RECOVERY') {
+        const now = new Date();
+        const failedAt = duoAccount.firstPaymentFailedAt ?? now;
+        await db
+          .update(duoAccounts)
+          .set({
+            subscriptionStatus: 'UNPAID_RECOVERY',
+            firstPaymentFailedAt: failedAt,
+            unpaidRecoveryEndsAt: cycle?.deadlineAt ?? unpaidDeadline(failedAt),
+            updatedAt: now,
+          })
+          .where(eq(duoAccounts.id, duoAccount.id));
+
+        await db.insert(dunningEvents).values({
+          duoId: duoAccount.id,
+          stage: 'T0',
+          sentAt: now,
+        }).onConflictDoNothing();
+      }
 
       // Incident de paiement obligatoire pour le titulaire de la facturation Duo.
       // Dédupliqué par facture : les nouvelles tentatives ne renotifient pas.
@@ -703,8 +712,8 @@ async function activateDuoOnAccount(duoAccountId: number) {
       const ds = duo?.duoSubscriptionStatus;
       if (ds === 'ACTIVE') return 'ACTIVE';
       if (ds === 'TRIALING') return 'TRIALING';
-      if (ds === 'PAST_DUE_GRACE') return 'PAST_DUE_GRACE';
-      if (ds === 'UNPAID_RECOVERY') return 'UNPAID_RECOVERY';
+      // Impayé Duo → impayé du compte payeur (aucune grâce, APP-FUNC-31).
+      if (ds === 'UNPAID_RECOVERY') return 'PAST_DUE';
       if (ds === 'CANCELED') return 'CANCELED';
       if (ds === 'EXPIRED') return 'EXPIRED';
       return account.subscriptionStatus || 'TRIALING'; // fallback for initial activation during trial

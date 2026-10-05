@@ -1,23 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db, getMigrationFailures } from '@/db';
-import { sql } from 'drizzle-orm';
-import { ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { classifyS3Error, getS3Bucket, getS3Client, s3ConfigDiagnostics } from '@/lib/s3-config';
+import { getMigrationFailures } from '@/db';
+import { getBuildIdentity } from '@/lib/runtime-identity';
+import {
+  NO_STORE_HEADERS, isDiagnosticAuthorized, probeDatabase, probeS3, probeSchema,
+} from '@/lib/health/probes';
 
-/** Délai maximal de la sonde de stockage (ms). */
-const S3_PROBE_TIMEOUT_MS = 5_000;
+export const dynamic = 'force-dynamic';
 
 interface HealthCheckResult {
   status: 'ok' | 'degraded' | 'down';
   version: string;
   commit?: string;
+  /** Variable d'où provient le commit (APP_COMMIT, SOURCE_VERSION…). */
+  commitSource?: string;
+  /** `true` : réponse avec détails (en-tête de diagnostic valide). */
+  detailed: boolean;
   timestamp: string;
   uptime: number;
   checks: {
     database: {
       status: 'ok' | 'error';
       responseTime?: number;
+      /** Code public (TIMEOUT, UNAVAILABLE) ; message SQL en mode détaillé. */
       error?: string;
+    };
+    /** Disponibilité critique, même contrat que `/api/health/ready`. */
+    readiness: {
+      ready: boolean;
+      phase: string;
+      pendingCritical: number;
+      pendingOptional: number;
     };
     s3: {
       status: 'ok' | 'error';
@@ -38,6 +50,8 @@ interface HealthCheckResult {
       status: 'ok' | 'error';
       /** Noms seuls, pour la compatibilité des sondes existantes. */
       failed?: string[];
+      /** Phase du passage des migrations de ce processus (APP-PERF-16). */
+      phase?: string;
       /**
        * Cause de chaque échec.
        *
@@ -47,7 +61,7 @@ interface HealthCheckResult {
        * possible, et jamais immédiat. Le premier échec suffit presque
        * toujours à expliquer les suivants.
        */
-      failures?: Array<{ filename: string; code?: string; message: string }>;
+      failures?: Array<{ filename: string; code?: string; message?: string }>;
       /**
        * Migration à corriger EN PREMIER.
        *
@@ -55,7 +69,7 @@ interface HealthCheckResult {
        * table absente en fait échouer dix autres qui la référencent. Seul le
        * premier échec, dans l'ordre d'application, désigne la cause réelle.
        */
-      firstFailure?: { filename: string; code?: string; message: string };
+      firstFailure?: { filename: string; code?: string; message?: string };
     };
     /**
      * Lot 16b : variables retirées (anciens drapeaux et commutateurs IA)
@@ -89,123 +103,84 @@ interface HealthCheckResult {
 }
 
 /**
- * GET /api/health
- * Health check endpoint pour monitoring
- * 
- * Vérifie :
- * - Connexion base de données (SELECT 1)
- * - Connexion S3 (list bucket avec limit 1)
- * 
- * Retourne :
- * - status: 'ok' | 'degraded' | 'down'
- * - version: Version de l'app
- * - checks: Résultats des checks individuels
+ * GET /api/health — DIAGNOSTIC (endpoint historique, conservé pour la
+ * transition des sondes ; contrats : `src/lib/health/probes.ts`).
+ *
+ * Contrôles bornés, en parallèle et partagés entre appels : base (SELECT 1),
+ * schéma critique, stockage S3 (appel réseau réel, résultat gardé 30 s).
+ *
+ * Codes : 200 `ok` | `degraded` (schéma incomplet, S3 configuré mais en
+ * échec — l'application sert encore), 503 `down` (base injoignable).
+ * Sans en-tête `x-health-token` valide : codes et noms de fichiers seulement,
+ * jamais de message SQL, de cause S3 ni de nom de variable.
  */
 export async function GET(request: NextRequest) {
-  const startTime = Date.now();
-  
+  const detailed = isDiagnosticAuthorized(request.headers);
+  const id = getBuildIdentity();
+
   const result: HealthCheckResult = {
     status: 'ok',
-    version: process.env.APP_VERSION || '1.0.0',
-    commit: process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || undefined,
+    version: id.version,
+    commit: id.commit ?? undefined,
+    commitSource: id.commitSource ?? undefined,
+    detailed,
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     checks: {
-      database: {
-        status: 'ok',
-      },
-      s3: {
-        status: 'ok',
-      },
-      migrations: {
-        status: 'ok',
-      },
-      aiPromptArchitecture: {
-        status: 'ok',
-      },
+      database: { status: 'ok' },
+      readiness: { ready: true, phase: 'idle', pendingCritical: 0, pendingOptional: 0 },
+      s3: { status: 'ok' },
+      migrations: { status: 'ok' },
+      aiPromptArchitecture: { status: 'ok' },
     },
   };
 
-  // Check 1: Database
-  try {
-    const dbStart = Date.now();
-    await db.execute(sql`SELECT 1`);
-    result.checks.database.responseTime = Date.now() - dbStart;
-    result.checks.database.status = 'ok';
-  } catch (error) {
-    console.error('[HEALTH] Database check failed:', error);
+  const [base, schema, s3] = await Promise.all([probeDatabase(), probeSchema(), probeS3()]);
+
+  // Check 1: base
+  result.checks.database.responseTime = base.responseTime;
+  if (base.status !== 'ok') {
     result.checks.database.status = 'error';
-    result.checks.database.error = error instanceof Error ? error.message : 'Unknown error';
-    result.status = 'degraded';
+    result.checks.database.error = detailed && base.detail ? `${base.code} : ${base.detail}` : base.code;
   }
 
-  // Check 2: S3 — configuration centrale (APP-PERF-26). Appel RÉSEAU réel
-  // (une signature locale ne prouve rien), borné et annulé au délai.
-  const s3Diag = s3ConfigDiagnostics();
-  // Configuration partielle (au moins une variable posée, ou valeur invalide).
-  const s3Touched = !s3Diag.configured
-    && (s3Diag.errors.some((e) => e.code !== 'MISSING') || s3Diag.errors.length < 4);
-  if (s3Diag.warnings.length > 0 || s3Diag.errors.length > 0) {
-    result.checks.s3.config = {
-      errors: s3Diag.errors.map((e) => e.message),
-      warnings: s3Diag.warnings.map((w) => w.message),
-    };
+  // Check 2: stockage S3 (dépendance optionnelle).
+  if (detailed && (s3.configWarnings.length > 0 || s3.configErrors.length > 0)) {
+    result.checks.s3.config = { errors: s3.configErrors, warnings: s3.configWarnings };
   }
-  if (s3Diag.configured) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), S3_PROBE_TIMEOUT_MS);
-    try {
-      const s3Start = Date.now();
-      await getS3Client('interactive').send(
-        new ListObjectsV2Command({ Bucket: getS3Bucket(), MaxKeys: 1 }),
-        { abortSignal: controller.signal },
-      );
-      result.checks.s3.responseTime = Date.now() - s3Start;
-      result.checks.s3.status = 'ok';
-    } catch (error) {
-      const info = classifyS3Error(error);
-      const kind = controller.signal.aborted ? 'TIMEOUT' : info.kind;
-      console.error(`[HEALTH] S3 check failed: ${kind} (${info.name})`);
-      result.checks.s3.status = 'error';
-      result.checks.s3.error = `${kind} (${info.name}${info.httpStatus ? `, HTTP ${info.httpStatus}` : ''})`;
-      result.status = 'degraded';
-    } finally {
-      clearTimeout(timer);
-    }
+  if (s3.status === 'ok') {
+    result.checks.s3.responseTime = s3.responseTime;
   } else {
     result.checks.s3.status = 'error';
-    result.checks.s3.error = 'S3 not configured';
-    // Configuration partielle ou contradictoire : dégradé. Stockage
-    // simplement absent (environnement sans S3) : pas dégradé.
-    if (s3Touched) result.status = 'degraded';
+    if (s3.responseTime) result.checks.s3.responseTime = s3.responseTime;
+    result.checks.s3.error = !s3.configured
+      ? (s3.misconfigured ? 'S3 misconfigured' : 'S3 not configured')
+      : detailed && s3.detail ? `${s3.code} (${s3.detail})` : s3.code;
   }
 
-  // Check 3: migrations appliquees au demarrage
+  // Check 3: schéma — migrations du démarrage et disponibilité critique.
+  result.checks.readiness = {
+    ready: schema.ready, phase: schema.phase,
+    pendingCritical: schema.pendingCritical, pendingOptional: schema.pendingOptional,
+  };
   const migrationFailures = getMigrationFailures();
-  if (migrationFailures.length > 0) {
+  result.checks.migrations.phase = schema.phase;
+  if (migrationFailures.length > 0 || !schema.ready) {
     result.checks.migrations.status = 'error';
-    result.checks.migrations.failed = migrationFailures.map((f) => f.filename);
-
-    // Le message est tronqué : certaines erreurs PostgreSQL embarquent la
-    // requête entière, ce qui rendrait la réponse illisible.
-    result.checks.migrations.failures = migrationFailures.map((f) => ({
-      filename: f.filename,
-      code: f.code,
-      message: (f.message ?? '').slice(0, 300),
-    }));
-
-    // Les migrations sont appliquées dans l'ordre lexical : la première en
-    // échec est celle qui a rompu la chaîne. Les suivantes en découlent
-    // souvent — une table absente en fait échouer toutes celles qui la
-    // référencent.
-    const premier = migrationFailures[0];
-    result.checks.migrations.firstFailure = {
-      filename: premier.filename,
-      code: premier.code,
-      message: (premier.message ?? '').slice(0, 300),
-    };
-
-    result.status = 'degraded';
+    if (migrationFailures.length > 0) {
+      result.checks.migrations.failed = migrationFailures.map((f) => f.filename);
+      // Message tronqué (certaines erreurs PostgreSQL embarquent la requête
+      // entière) et réservé au diagnostic autorisé.
+      const vue = (f: { filename: string; code?: string; message?: string }) => ({
+        filename: f.filename, code: f.code, ...(detailed ? { message: (f.message ?? '').slice(0, 300) } : {}),
+      });
+      result.checks.migrations.failures = migrationFailures.map(vue);
+      // Ordre lexical : le premier échec CRITIQUE est celui qui a rompu la chaîne.
+      const premier = migrationFailures.find((f) => f.criticality !== 'optional') ?? migrationFailures[0];
+      result.checks.migrations.firstFailure = vue(premier);
+    } else if (schema.firstFailure) {
+      result.checks.migrations.firstFailure = { ...schema.firstFailure };
+    }
   }
 
   // Check 4: variables IA retirées encore posées (CDC 15 T2-43 ; lot 16b :
@@ -242,26 +217,22 @@ export async function GET(request: NextRequest) {
     /* contrôle indicatif */
   }
 
-  // Déterminer le status global
+  // Statut global
   if (result.checks.database.status === 'error') {
     result.status = 'down';
-  } else if (result.checks.migrations.status === 'error') {
-    // Schema potentiellement incomplet : degrade, jamais 'ok'.
+  } else if (!schema.ready || migrationFailures.some((f) => f.criticality !== 'optional')) {
+    // Schéma critique incomplet : dégradé, jamais `ok` (readiness à 503).
     result.status = 'degraded';
-  } else if (result.checks.s3.status === 'error' && (s3Diag.configured || s3Touched)) {
-    // Seulement degraded si S3 est configuré (même partiellement) mais ne répond pas
+  } else if (result.checks.s3.status === 'error' && (s3.configured || s3.misconfigured)) {
+    // Stockage configuré (même partiellement) mais en échec : dégradé.
+    result.status = 'degraded';
+  } else if (migrationFailures.length > 0 || schema.phase === 'degraded') {
+    // Index optionnels manquants : signalé, service rendu.
     result.status = 'degraded';
   }
 
-  // Return appropriate status code
-  const statusCode = result.status === 'ok' ? 200 : result.status === 'degraded' ? 200 : 503;
-
-  return NextResponse.json(result, { 
-    status: statusCode,
-    headers: {
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      'Expires': '0',
-    },
+  return NextResponse.json(result, {
+    status: result.status === 'down' ? 503 : 200,
+    headers: NO_STORE_HEADERS,
   });
 }

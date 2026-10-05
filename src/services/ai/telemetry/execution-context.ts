@@ -22,6 +22,7 @@
  * compte rapidement — et se vide explicitement à chaque changement d'Active.
  */
 import type { AiEnvironment } from '../config/environment';
+import { getBuildIdentity } from '@/lib/runtime-identity';
 
 export interface ExecutionContext {
   /** Version IA effective au moment de l'appel. */
@@ -32,18 +33,13 @@ export interface ExecutionContext {
 }
 
 /**
- * Commit déployé, lu dans l'environnement.
- *
- * Scalingo expose `SOURCE_VERSION`, Vercel `VERCEL_GIT_COMMIT_SHA`. On accepte
- * aussi une variable explicite, pour les déploiements qui n'en posent aucune.
- * Absence = `null` : inventer une valeur rendrait la trace trompeuse.
+ * Commit déployé — même source que `/api/health` (`getBuildIdentity`,
+ * APP-PERF-37) : APP_COMMIT, puis les variables Scalingo. Plus aucune
+ * variable Vercel. Absence = `null` : inventer une valeur rendrait la trace
+ * trompeuse.
  */
 export function getAppVersion(): string | null {
-  const raw = process.env.APP_COMMIT
-    ?? process.env.SOURCE_VERSION
-    ?? process.env.VERCEL_GIT_COMMIT_SHA
-    ?? null;
-  return raw ? raw.slice(0, 40) : null;
+  return getBuildIdentity().commit;
 }
 
 const CACHE_TTL_MS = 30_000;

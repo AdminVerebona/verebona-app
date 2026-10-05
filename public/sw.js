@@ -1,8 +1,22 @@
 // Service Worker pour Verebona PWA
-// Version 5.0.0 — Web Push (push, notificationclick, pushsubscriptionchange)
-//                 + gestion robuste des chunks Next.js obsolètes
+// Version 5.1.0 — Web Push (push, notificationclick, pushsubscriptionchange)
+//                 + signalement des chunks Next.js manquants (APP-PERF-10)
+//
+// 5.1.0 (APP-PERF-10) :
+//   · un 404/410 sur `/_next/static/` (version retirée par un déploiement)
+//     est signalé aux onglets (`CHUNK_LOAD_ERROR`, reason `missing`) : ce
+//     n'est pas un rejet réseau, l'ancien `catch` ne le voyait pas ;
+//   · un échec de transport est signalé à part (reason `network`) et rendu
+//     comme une vraie erreur réseau (plus de faux 408) ;
+//   · la décision (recharger une fois, proposer, attendre le réseau)
+//     appartient à la page (`src/lib/pwa/chunk-recovery.ts`) ;
+//   · `CLEAR_CACHE` ne vide plus que les caches de ce SW (`verebona-*`),
+//     plus toute l'origine.
+// Les chunks ne sont JAMAIS mis en cache ici (réseau seul) ; les fichiers
+// hashés restent cacheables par HTTP, leur nom change avec leur contenu.
 
-const CACHE_VERSION = 'v5.0.0';
+const CACHE_VERSION = 'v5.1.0';
+const CACHE_PREFIX = 'verebona-';
 const CACHE_NAME = `verebona-${CACHE_VERSION}`;
 const STATIC_CACHE = `verebona-static-${CACHE_VERSION}`;
 
@@ -24,7 +38,8 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
-          .filter((name) => name !== CACHE_NAME && name !== STATIC_CACHE)
+          // Seulement les anciennes versions de CE service worker.
+          .filter((name) => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME && name !== STATIC_CACHE)
           .map((name) => caches.delete(name))
       );
     }).then(() => self.clients.claim())
@@ -50,14 +65,19 @@ self.addEventListener('fetch', (event) => {
   const isApiRoute = url.pathname.startsWith('/api/');
 
   if (isHtml || isNextChunk || isApiRoute) {
-    // Network-only, avec fallback de rechargement propre pour les chunks manquants
-    if (isNextChunk) {
+    // Network-only. Pour le code de l'application (`/_next/static/`), le
+    // statut HTTP et l'échec de transport sont signalés séparément.
+    if (isNextChunk && url.pathname.startsWith('/_next/static/')) {
       event.respondWith(
-        fetch(request).catch(async () => {
-          // Chunk introuvable → notifier tous les onglets ouverts
-          const clients = await self.clients.matchAll({ type: 'window' });
-          clients.forEach(client => client.postMessage({ type: 'CHUNK_LOAD_ERROR' }));
-          return new Response(null, { status: 408 });
+        fetch(request).then((response) => {
+          if (response.status === 404 || response.status === 410) {
+            notifyChunkProblem('missing', response.status, url.pathname);
+          }
+          return response;
+        }, (error) => {
+          notifyChunkProblem('network', 0, url.pathname);
+          // Vraie erreur réseau pour la page (et non une réponse inventée).
+          throw error;
         })
       );
     }
@@ -81,6 +101,22 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// Un signalement par ressource et par période : une page qui retente ne
+// submerge pas les onglets de messages.
+const recentChunkNotices = new Map();
+const CHUNK_NOTICE_TTL_MS = 10000;
+
+async function notifyChunkProblem (reason, status, path) {
+  const now = Date.now();
+  const key = `${reason}:${path}`;
+  const last = recentChunkNotices.get(key);
+  if (last && now - last < CHUNK_NOTICE_TTL_MS) return;
+  recentChunkNotices.set(key, now);
+  if (recentChunkNotices.size > 100) recentChunkNotices.clear();
+  const clients = await self.clients.matchAll({ type: 'window' });
+  clients.forEach((client) => client.postMessage({ type: 'CHUNK_LOAD_ERROR', reason, status, path }));
+}
+
 // Messages du client
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') {
@@ -89,7 +125,9 @@ self.addEventListener('message', (event) => {
 
   if (event.data?.type === 'CLEAR_CACHE') {
     event.waitUntil(
-      caches.keys().then((names) => Promise.all(names.map((n) => caches.delete(n))))
+      caches.keys().then((names) => Promise.all(
+        names.filter((n) => n.startsWith(CACHE_PREFIX)).map((n) => caches.delete(n))
+      ))
     );
   }
 });

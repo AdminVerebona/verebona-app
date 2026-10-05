@@ -148,7 +148,10 @@ export async function getEntitlements(
   // « dès l'échec de paiement, les fonctions normales et payantes sont
   // suspendues, mais le compte reste accessible » — lecture, export et
   // transmission (routes non gardées par `canWrite`) restent ouvertes.
-  // Auparavant `past_due` laissait tout écrire pendant 15 jours de grâce.
+  // Aucune période de grâce (APP-FUNC-31) : `past_due` est restreint dès le
+  // premier échec, quel que soit le délai de régularisation restant. C'est
+  // ICI, et nulle part ailleurs (ni session, ni statut de compte), que se
+  // décident les droits.
   if (status === 'readonly' || status === 'canceled' || status === 'past_due') {
     return {
       plan: 'none', status, quotas: NO_QUOTAS,
@@ -232,7 +235,7 @@ export async function restrictedRefusal(
   // possible et la date limite de régularisation.
   if (status === 'past_due' || status === 'canceled') {
     const [row] = await db
-      .select({ startedAt: accounts.pastDueGraceStartedAt, endsAt: accounts.pastDueGraceEndsAt })
+      .select({ startedAt: accounts.unpaidStartedAt, endsAt: accounts.unpaidRecoveryEndsAt })
       .from(accounts)
       .where(eq(accounts.id, accountId))
       .limit(1);

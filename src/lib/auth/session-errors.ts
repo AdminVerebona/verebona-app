@@ -7,8 +7,11 @@
  *   authentification (401) : AUTH_REQUIRED, INVALID_TOKEN — le client tente
  *                            UN renouvellement, puis renvoie à la connexion ;
  *   autorisation     (403) : ACCOUNT_SUSPENDED, ACCOUNT_PENDING_DELETION,
- *                            INSUFFICIENT_PERMISSIONS, ACCESS_DENIED,
- *                            TRIAL_ACTIVATION_PENDING — jamais une déconnexion ;
+ *                            INSUFFICIENT_PERMISSIONS, ACCESS_DENIED —
+ *                            jamais une déconnexion. (TRIAL_ACTIVATION_PENDING,
+ *                            refus de l'ancienne « fin de grâce », n'existe
+ *                            plus : les droits d'abonnement ne sont pas une
+ *                            question de session — APP-FUNC-31.)
  *   ressource absente (404): hors de ce module (routes) ;
  *   indisponibilité  (503) : SESSION_UNAVAILABLE — la vérification de session
  *                            n'a pas pu être faite (base injoignable). Ni
@@ -49,7 +52,6 @@ export const SESSION_ERRORS: Readonly<Record<string, SessionErrorSpec>> = {
   [ACCOUNT_PENDING_DELETION_CODE]: { status: 403, code: ACCOUNT_PENDING_DELETION_CODE, error: 'Forbidden', message: ACCOUNT_PENDING_DELETION_MESSAGE },
   INSUFFICIENT_PERMISSIONS: { status: 403, code: 'INSUFFICIENT_PERMISSIONS', error: 'Insufficient permissions', message: 'Vous n’avez pas les droits nécessaires pour cette action.' },
   FORBIDDEN: { status: 403, code: 'ACCESS_DENIED', error: 'Access denied', message: 'Accès refusé à cette ressource.' },
-  TRIAL_ACTIVATION_PENDING: { status: 403, code: 'TRIAL_ACTIVATION_PENDING', error: 'Forbidden', message: 'Votre période de grâce a expiré. Veuillez activer votre abonnement pour continuer.' },
   [SESSION_UNAVAILABLE_CODE]: { status: 503, code: SESSION_UNAVAILABLE_CODE, error: 'Service Unavailable', message: 'Vérification de session momentanément impossible. Réessayez dans un instant.' },
 };
 

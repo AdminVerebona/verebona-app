@@ -138,7 +138,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(paginatedResponse, {
       status: 200,
-      headers: { 'Cache-Control': 'private, max-age=30, stale-while-revalidate=60' },
+      // APP-PERF-22 : pas de réutilisation par le cache HTTP du navigateur
+      // (non cloisonné par compte, non invalidé par les écritures).
+      headers: { 'Cache-Control': 'private, no-cache' },
     });
   } catch (error) {
     console.error('GET error:', error);

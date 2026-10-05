@@ -14,7 +14,9 @@ node_modules
 .history
 .history/
 
-docs
+# Documents de travail privés ; seule la documentation d'exploitation est versionnée.
+docs/*
+!docs/exploitation/
 
 *.tsbuildinfo
 .orchids

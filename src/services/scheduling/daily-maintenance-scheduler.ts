@@ -52,6 +52,12 @@
  *                           seulement à l'ouverture de l'écran Supervision :
  *                           un planificateur arrêté passait inaperçu tant que
  *                           personne ne regardait ;
+ *   · pending-checkout    — À CHAQUE TOUR (bail de 25 min, de 5 h à minuit) :
+ *                           paiements Checkout engagés mais non appliqués
+ *                           (webhook absent, retour interrompu) — rattrapage
+ *                           durable, APP-PERF-18 ; même traitement que
+ *                           GET /api/cron/billing-pending-checkouts ;
+ *                           PENDING_CHECKOUT_RECONCILE=off la retire ;
  *   · coherence-maintenance — HORAIRE (bail de 55 min, de 5 h à minuit) :
  *                           phases déterministes de l'ancienne route
  *                           /api/cron/hourly-enrichment, supprimée au lot
@@ -283,6 +289,26 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
       run: async () => {
         const { purgePendingBlobs } = await import('@/services/storage/blob-purge.service');
         console.info('[daily-jobs] blob-purge :', JSON.stringify(await purgePendingBlobs()));
+      },
+    });
+  }
+
+  // Paiement en attente (APP-PERF-18) : un paiement validé chez Stripe dont
+  // ni le webhook ni la page de retour n'ont été traités est appliqué ici,
+  // une fois, sans que la lecture des droits attende Stripe. Bail court :
+  // exécuté à chaque tour (30 min), hors de la fenêtre de sauvegarde de nuit
+  // (1 h – 5 h) ; la nuit, la lecture des droits déclenche elle-même la
+  // vérification due d'un client actif. Recul et réservation par compte en
+  // base (`checkout_next_check_at`) : charge Stripe bornée.
+  if (!['off', 'false', '0'].includes((env.PENDING_CHECKOUT_RECONCILE ?? '').trim().toLowerCase())) {
+    tasks.push({
+      lock: 'frequent-pending-checkout',
+      window: [5, 24],
+      leaseMs: 25 * 60 * 1000,
+      run: async () => {
+        const { reconcilePendingCheckouts } = await import('@/services/billing/pending-checkout.service');
+        const r = await reconcilePendingCheckouts();
+        if (r.scanned > 0) console.info('[daily-jobs] pending-checkout :', JSON.stringify(r));
       },
     });
   }

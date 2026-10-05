@@ -30,13 +30,26 @@ describe('commit applicatif (GEN-008)', () => {
     // elle serait crue.
     delete process.env.APP_COMMIT;
     delete process.env.SOURCE_VERSION;
-    delete process.env.VERCEL_GIT_COMMIT_SHA;
+    delete process.env.CONTAINER_VERSION;
+    delete process.env.APP_BUILD_COMMIT;
     expect(getAppVersion()).toBeNull();
   });
 
   it('borne la longueur', () => {
-    process.env.APP_COMMIT = 'x'.repeat(200);
+    process.env.APP_COMMIT = 'a'.repeat(64);
     expect(getAppVersion()!.length).toBe(40);
+  });
+
+  it('APP-PERF-37 : valeur hors format ignorée, variables Vercel sans effet', () => {
+    delete process.env.SOURCE_VERSION;
+    delete process.env.CONTAINER_VERSION;
+    process.env.APP_COMMIT = 'x'.repeat(200);
+    expect(getAppVersion()).toBeNull();
+    delete process.env.APP_COMMIT;
+    process.env.VERCEL_GIT_COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567';
+    expect(getAppVersion()).toBeNull();
+    process.env.CONTAINER_VERSION = '0123456789abcdef0123456789abcdef01234567';
+    expect(getAppVersion()).toBe('0123456789abcdef0123456789abcdef01234567');
   });
 });
 

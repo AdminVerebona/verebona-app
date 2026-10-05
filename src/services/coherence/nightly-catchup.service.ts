@@ -212,7 +212,7 @@ export async function runNightlyCatchup(): Promise<NightlyCatchupResult> {
 
   // ── Phase 2: Process pending impacts ──────────────────────────────────────
   // Process in batches until the queue is mostly empty, respecting time budget
-  const MAX_PROCESSING_TIME_MS = 8 * 60 * 1000; // 8 minutes max (Vercel limit is 15)
+  const MAX_PROCESSING_TIME_MS = 8 * 60 * 1000; // budget de 8 minutes par passage
   let batchCount = 0;
 
   while (Date.now() - startAt < MAX_PROCESSING_TIME_MS) {

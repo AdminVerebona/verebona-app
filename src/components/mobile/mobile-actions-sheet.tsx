@@ -3,11 +3,14 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CalendarDays, FileText, Package, X } from 'lucide-react';
-import { UnifiedDocumentDialog } from '@/components/documents/unified-document-dialog';
-import { CreateAgendaItemDrawer } from '@/components/agenda/CreateAgendaItemDrawer';
-import { AssetFormDialog } from '@/components/AssetFormDialog';
 import { useSession } from '@/hooks/useSession';
-import { useEntitlements } from '@/hooks/useEntitlements';
+// Formulaires chargés à l'usage, jamais dans le JavaScript initial (APP-PERF-05).
+import {
+  LazyAssetFormDialog,
+  LazyCreateAgendaItemDrawer,
+  LazyUnifiedDocumentDialog,
+  preloadAddForm,
+} from './add-forms';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { ACCEPT_DEPOT } from '@/lib/upload-limits';
 
@@ -53,7 +56,6 @@ const ACTIONS = [
 export function MobileActionsSheet({ open, onOpenChange, allViewports = false }: MobileActionsSheetProps) {
   const viewport = allViewports ? '' : ' md:hidden';
   const { user } = useSession();
-  const { entitlements, isRestricted } = useEntitlements();
   const [selectedAction, setSelectedAction] = useState<ActionType>(null);
 
   /**
@@ -81,6 +83,8 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
     if (action === 'agenda' && refuserEcriture()) return;
 
     if (action === 'file') {
+      // Le chunk du dialogue se charge pendant le choix du fichier.
+      preloadAddForm('file');
       const input = document.createElement('input');
       input.type = 'file';
       // Même liste que le dialogue, dérivée du contrat de dépôt (APP-PERF-28).
@@ -157,6 +161,12 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: i * 0.05, duration: 0.2 }}
                       onClick={() => handleActionSelect(action.id)}
+                      // Préchargement sur intention : pointeur, toucher ou
+                      // focus clavier sur l'action — pas à l'ouverture du
+                      // panneau, ni au chargement de la page.
+                      onPointerEnter={() => preloadAddForm(action.id)}
+                      onTouchStart={() => preloadAddForm(action.id)}
+                      onFocus={() => preloadAddForm(action.id)}
                       className="w-full flex items-center gap-4 px-4 py-4 rounded-2xl bg-[color:var(--bg-page)] border border-[color:var(--border-subtle)] active:scale-[0.98] transition-all hover:border-[color:var(--accent)]/40 hover:bg-[color:var(--accent-soft)] group"
                     >
                       {/* Icon bubble */}
@@ -187,9 +197,10 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
         )}
       </AnimatePresence>
 
-      {/* Sub-dialogs (rendered outside the sheet so they don't get clipped) */}
+      {/* Formulaires (hors du panneau pour ne pas être rognés), montés
+          seulement une fois l'action choisie ET autorisée par la garde. */}
       {selectedAction === 'file' && capturedFiles.length > 0 && (
-        <UnifiedDocumentDialog
+        <LazyUnifiedDocumentDialog
           open={true}
           onOpenChange={(v) => { if (!v) handleCloseAction(); }}
           initialFiles={capturedFiles}
@@ -199,7 +210,7 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
       )}
 
       {selectedAction === 'agenda' && (
-        <CreateAgendaItemDrawer
+        <LazyCreateAgendaItemDrawer
           open={true}
           onClose={handleCloseAction}
           onMutated={handleCloseAction}
@@ -207,7 +218,7 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
       )}
 
       {selectedAction === 'asset' && user?.id && (
-        <AssetFormDialog
+        <LazyAssetFormDialog
           open={true}
           onOpenChange={(v) => { if (!v) handleCloseAction(); }}
           userId={user.id}

@@ -4,7 +4,7 @@ import { supplierReviewItems, suppliers, assetFiles, accounts } from '@/db/schem
 import { eq, and, isNotNull } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
-import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
+import { accountCacheKey, serverCacheGet, serverCacheSet, wantsFreshRead } from '@/lib/server-cache';
 
 // GET /api/to-process/suppliers — list review items (iban excluded from cards)
 export async function GET(request: NextRequest) {
@@ -15,12 +15,14 @@ export async function GET(request: NextRequest) {
     const accountId = session.currentAccountId;
     if (!accountId) return apiError(401, 'UNAUTHORIZED', 'No account selected');
 
-    // Cache serveur 30s pour les suppliers à traiter (rarement modifiés)
-    const cacheKey = `to-process:suppliers:${accountId}`;
-    const cached = serverCacheGet<object>(cacheKey);
+    // Cache serveur 30s pour les suppliers à traiter (rarement modifiés).
+    // APP-PERF-22 : clé isolée par compte, invalidée par les écritures du
+    // compte, contournée par une demande de fraîcheur.
+    const cacheKey = accountCacheKey(accountId, 'to-process-suppliers');
+    const cached = wantsFreshRead(request.headers) ? null : serverCacheGet<object>(cacheKey);
     if (cached) {
       return NextResponse.json(cached, {
-        headers: { 'Cache-Control': 'private, max-age=30, stale-while-revalidate=120' },
+        headers: { 'Cache-Control': 'private, no-cache' },
       });
     }
 
@@ -74,7 +76,7 @@ export async function GET(request: NextRequest) {
     serverCacheSet(cacheKey, responseData, 30_000);
 
     return NextResponse.json(responseData, {
-      headers: { 'Cache-Control': 'private, max-age=30, stale-while-revalidate=120' },
+      headers: { 'Cache-Control': 'private, no-cache' },
     });
   } catch (err) {
     return SessionService.handleSessionError(err);

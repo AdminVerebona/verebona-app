@@ -423,10 +423,11 @@ export async function enterRecoveryMode(accountId: number): Promise<boolean> {
     .set({ subscriptionStatus: 'WITHDRAWN', updatedAt: new Date() })
     .where(eq(accounts.id, accountId));
 
-  // Droits en cache (60 s) : invalidés pour que le refus soit immédiat.
-  const { serverCacheDeleteByPrefix } = await import('@/lib/server-cache');
-  serverCacheDeleteByPrefix(`verebona:entitlements:${accountId}`);
-  serverCacheDeleteByPrefix(`grace:${accountId}`);
+  // Les droits ne sont pas mis en cache (lus à chaque contrôle) ; les
+  // lectures en cache du compte sur cette instance sont oubliées pour que
+  // l'accueil et les compteurs reflètent tout de suite la récupération.
+  const { invalidateAccountReadCache } = await import('@/lib/server-cache');
+  invalidateAccountReadCache(accountId);
 
   return before?.s !== 'WITHDRAWN';
 }

@@ -1,6 +1,4 @@
 // @ts-check
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 /** Origine du site public de l'environnement (Centre d'aide). */
 const PUBLIC_SITE_ORIGIN = (() => {
@@ -11,13 +9,6 @@ const PUBLIC_SITE_ORIGIN = (() => {
   }
 })();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const LOADER = path.resolve(
-  __dirname,
-  "src/visual-edits/component-tagger-loader.js",
-);
-
 /** @type {import("next").NextConfig} */
 const nextConfig = {
   transpilePackages: ["@verebona/ui"],
@@ -25,7 +16,14 @@ const nextConfig = {
   // chargé tel quel par Node côté serveur, jamais empaqueté (binaires,
   // `require` dynamiques) ni exposé au navigateur.
   serverExternalPackages: ["playwright-core"],
-  allowedDevOrigins: ["*.orchids.cloud", "orchids.cloud"],
+  // Commit du build figé dans l'image (APP-PERF-37) : Scalingo pose
+  // SOURCE_VERSION pendant le build. Lu par `src/lib/runtime-identity.ts`.
+  env: {
+    APP_BUILD_COMMIT: process.env.SOURCE_VERSION || "",
+  },
+  // APP-PERF-38 : plus d'origines de développement Orchids (`allowedDevOrigins`),
+  // ni de chargeur Turbopack « visual-edits » (identité, résidu de l'éditeur
+  // Orchids). Inventaire : docs/exploitation/residus-historiques.md.
   async headers () {
     return [
       {
@@ -80,6 +78,9 @@ const nextConfig = {
   },
   compress: true,
   images: {
+    // Stockage OVH (Scalingo/PostgreSQL/OVH). Domaines Supabase et Orchids
+    // retirés (APP-PERF-38) : aucun visuel servi par l'application n'y pointe
+    // — contrôle des URL stockées avant mise en production dans l'inventaire.
     remotePatterns: [
       {
         protocol: "https",
@@ -95,30 +96,11 @@ const nextConfig = {
       },
       {
         protocol: "https",
-        hostname: "slelguoygbfzlpylpxfs.supabase.co",
-      },
-      {
-        protocol: "https",
-        hostname: "*.supabase.co",
-      },
-      {
-        protocol: "https",
-        hostname: "*.orchids.cloud",
-      },
-      {
-        protocol: "https",
         hostname: "*.googleusercontent.com",
       },
     ],
     imageSizes: [90, 110, 128, 256, 384],
     minimumCacheTTL: 3600,
-  },
-  turbopack: {
-    rules: {
-      "./src/app/**/*.{jsx,tsx}": {
-        loaders: [LOADER],
-      },
-    },
   },
 };
 

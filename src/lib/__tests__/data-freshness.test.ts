@@ -40,9 +40,12 @@ describe('câblage', () => {
   });
 
   it('l’accueil n’utilise plus le cache client et demande un résumé frais', () => {
+    // Chargement déplacé dans `useHomeSummary` (APP-PERF-09).
     const page = read('src/app/(dashboard)/accueil/page.tsx');
-    expect(page).not.toMatch(/'\/api\/home\/summary',\s*\{\s*useCache: true/);
-    expect(page).toContain('[FRESH_HEADER]');
+    const hook = read('src/components/home/useHomeSummary.ts');
+    expect(page).toContain('useHomeSummary()');
+    expect(hook).not.toMatch(/'\/api\/home\/summary',\s*\{[^}]*useCache: true/);
+    expect(hook).toContain('[FRESH_HEADER]');
   });
 
   it('le serveur ignore son cache quand un résumé frais est demandé', () => {

@@ -21,6 +21,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { House, Package, CalendarDays, FileText, CircleAlert, Plus } from 'lucide-react';
 import { MobileActionsSheet } from './mobile-actions-sheet';
+import { useMountedOnce } from '@/hooks/useMountedOnce';
 import { badgeLabel } from '@/lib/shell/sidebar-state';
 
 export const NAV_ITEMS = [
@@ -39,6 +40,9 @@ function isActive(id: string, href: string, pathname: string): boolean {
 export function BottomNavigation({ toProcessCount }: { toProcessCount?: number | null }) {
   const pathname = usePathname() ?? '';
   const [showActionsSheet, setShowActionsSheet] = useState(false);
+  // Panneau monté à sa première ouverture seulement (APP-PERF-05), puis
+  // conservé : le formulaire choisi y vit après la fermeture du panneau.
+  const sheetMounted = useMountedOnce(showActionsSheet);
   const badge = badgeLabel(toProcessCount);
 
   const item = (it: typeof NAV_ITEMS[number]) => {
@@ -93,7 +97,7 @@ export function BottomNavigation({ toProcessCount }: { toProcessCount?: number |
         </div>
       </div>
 
-      <MobileActionsSheet open={showActionsSheet} onOpenChange={setShowActionsSheet} />
+      {sheetMounted && <MobileActionsSheet open={showActionsSheet} onOpenChange={setShowActionsSheet} />}
     </>
   );
 }

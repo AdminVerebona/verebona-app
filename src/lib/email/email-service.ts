@@ -7,6 +7,23 @@ import { isTransactionalEmailActive } from '@/lib/notifications/channel-activati
 // Couleur Verebona fixe
 const VEREBONA_PRIMARY_COLOR = '#3B82F6';
 
+/**
+ * Logo de repli des emails (APP-PERF-38) : ressource MAÎTRISÉE servie par
+ * l'application (`public/brand`, PNG 480×120 — les clients de messagerie
+ * n'affichent pas le SVG). Remplace une image hébergée sur un stockage
+ * Supabase hérité de l'outil de génération du projet.
+ */
+export const EMAIL_LOGO_FALLBACK_PATH = '/brand/verebona-logo-email.png';
+
+/** URL du logo d'en-tête : la candidate, sauf absente ou SVG → repli. */
+export function resolveEmailLogoUrl(candidate: string | null | undefined, fallback: string): string {
+  const url = (candidate ?? '').trim();
+  if (!url) return fallback;
+  const chemin = url.split(/[?#]/)[0].toLowerCase();
+  if (chemin.endsWith('.svg') || url.toLowerCase().startsWith('data:image/svg')) return fallback;
+  return url;
+}
+
 type LogoResult = {
   content: string;
   type: 'url' | 'html' | 'none';
@@ -229,13 +246,10 @@ class EmailService {
         </div>
       `;
     } else {
-      let logoUrl = computedLogo.content || settings.logoUrlLight || settings.logoUrl;
-      logoUrl = this.makeAbsoluteUrl(logoUrl);
-
-      // Fallback robuste si SVG ou manquant
-      if (!logoUrl || logoUrl.toLowerCase().endsWith('.svg')) {
-        logoUrl = 'https://slelguoygbfzlpylpxfs.supabase.co/storage/v1/object/public/project-uploads/5da8aa09-2540-4b03-96bf-bb17130a3250/generated_images/verebona-logo-on-transparent-background--55a5d30d-20251121000738.jpg';
-      }
+      const logoUrl = resolveEmailLogoUrl(
+        this.makeAbsoluteUrl(computedLogo.content || settings.logoUrlLight || settings.logoUrl),
+        this.makeAbsoluteUrl(EMAIL_LOGO_FALLBACK_PATH)!,
+      );
 
       headerLogoHtml = `
         <div style="text-align: center; width: 100%;">

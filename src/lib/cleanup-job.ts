@@ -8,7 +8,7 @@
  * Usage :
  * - (La route admin POST /api/admin/cleanup a été retirée : CDC BO GEN-001.)
  * - Cron externe : bun run cleanup
- * - Job serverless (ex: Vercel Cron)
+ * - Planificateur de l'hébergement (Scalingo Scheduler)
  */
 
 import { DeleteObjectCommand } from '@aws-sdk/client-s3';

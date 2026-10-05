@@ -67,6 +67,8 @@ describe('API', () => {
     '/api/auth/verify-email',
     '/api/auth/reset-password',
     '/api/health',
+    '/api/health/live',
+    '/api/health/ready',
     '/api/users',
     '/api/calendar/0123abcd.ics',
     '/api/transmission/jeton-de-transmission',

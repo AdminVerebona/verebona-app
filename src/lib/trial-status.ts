@@ -41,6 +41,26 @@ export interface TrialStatusPayload {
   isRestricted?: boolean;
   canWrite?: boolean;
   unpaid?: UnpaidCyclePayload | null;
+  /** Paiement Checkout engagé, pas encore constaté (APP-PERF-18). N'ouvre aucun droit. */
+  pendingPayment?: { since: string } | null;
+}
+
+/** Au-delà, un paiement engagé non constaté n'est plus annoncé (session abandonnée). */
+export const PENDING_PAYMENT_NOTICE_MS = 60 * 60 * 1000;
+
+/**
+ * Un paiement vient-il d'être engagé sans être encore confirmé ? Sert à
+ * l'annoncer (« en cours de confirmation »), jamais à accorder un droit.
+ * Limité à la dernière heure : une session Checkout abandonnée reste
+ * suivie jusqu'à son expiration, sans qu'il faille l'annoncer comme payée.
+ */
+export function isRecentPendingPayment(
+  data: TrialStatusPayload | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  const since = data?.pendingPayment?.since ? Date.parse(data.pendingPayment.since) : NaN;
+  if (Number.isNaN(since)) return false;
+  return now - since <= PENDING_PAYMENT_NOTICE_MS;
 }
 
 /**

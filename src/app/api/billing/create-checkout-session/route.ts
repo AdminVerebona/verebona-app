@@ -14,6 +14,8 @@ import { resolvePriceId, isBillingPeriod, type BillingPeriod } from '@/lib/strip
 import Stripe from 'stripe';
 import { getAppBaseUrl } from '@/lib/app-url';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
+import { blocksNewCheckout, isUnpaidAccountStatus } from '@/lib/billing/subscription-status';
+import { PENDING_CHECKOUT_FIRST_CHECK_DELAY_MS } from '@/services/billing/pending-checkout.service';
 
 /**
  * POST /api/billing/create-checkout-session
@@ -138,12 +140,24 @@ export async function POST(request: NextRequest) {
         // vers la modification d'abonnement (`SUBSCRIPTION_CHANGE_REQUIRED`).
         // ══════════════════════════════════════════════════════════════════
 
-        // Renforcer la règle d'éligibilité : si subscriptionStatus est ACTIVE, TRIALING, ou PAST_DUE_GRACE, interdire la souscription.
+        // Règle d'éligibilité : un abonnement en cours (ACTIVE, TRIALING) ou un
+        // impayé (PAST_DUE, à régulariser depuis le portail de facturation)
+        // interdit d'ouvrir une seconde souscription. Un impayé n'est pas un
+        // abonnement actif (APP-FUNC-31) mais ne doit pas être doublé.
         const normalizedAccountPlan = account.planType?.toUpperCase();
-        const activeStatuses = ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'];
         const currentStatus = account.subscriptionStatus?.toUpperCase() || 'NONE';
 
-        if (activeStatuses.includes(currentStatus)) {
+        if (isUnpaidAccountStatus(currentStatus)) {
+            return NextResponse.json(
+                {
+                    code: 'PAYMENT_REGULARIZATION_REQUIRED',
+                    message: 'Un paiement de votre abonnement a échoué : régularisez-le depuis la gestion de votre abonnement pour retrouver l\'usage normal de votre compte.',
+                },
+                { status: 400 }
+            );
+        }
+
+        if (blocksNewCheckout(currentStatus)) {
             if (normalizedAccountPlan === normalizedRequestedPlan) {
                 return NextResponse.json(
                     {
@@ -432,6 +446,11 @@ export async function POST(request: NextRequest) {
             .set({
                 checkoutSessionId: checkoutSession.id,
                 checkoutSessionCreatedAt: new Date(),
+                // Suivi du paiement en attente (APP-PERF-18) : première
+                // vérification de rattrapage après le délai laissé au webhook
+                // et à la page de retour.
+                checkoutCheckAttempts: 0,
+                checkoutNextCheckAt: new Date(Date.now() + PENDING_CHECKOUT_FIRST_CHECK_DELAY_MS),
                 updatedAt: new Date(),
             })
             .where(eq(accounts.id, account.id));

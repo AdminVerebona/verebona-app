@@ -41,19 +41,23 @@ export const SUBSCRIPTION_TIERS = ['free', 'premium', 'pro'] as const;
 export type SubscriptionTier = typeof SUBSCRIPTION_TIERS[number];
 
 /**
- * subscriptionStatus — état du cycle de vie de l'abonnement Stripe.
+ * accounts.subscriptionStatus — état du cycle de vie de l'abonnement.
  * Convention : SCREAMING_SNAKE_CASE pour cohérence avec USER_STATUSES.
  * Valeur canonique : CANCELED (orthographe Stripe/américaine, pas CANCELLED).
+ *
+ * Signification, attribution, droits et transitions de chaque statut :
+ * `lib/billing/subscription-status.ts`. PAST_DUE_GRACE et UNPAID_RECOVERY
+ * n'existent plus sur le compte (migration 0250, APP-FUNC-31) : un impayé est
+ * PAST_DUE, restreint dès l'échec de paiement.
  */
 export const SUBSCRIPTION_STATUSES = [
   'NONE',
+  'TRIALING',
   'ACTIVE',
   'CANCELED',
-  'EXPIRED',
   'PAST_DUE',
-  'PAST_DUE_GRACE',
-  'UNPAID_RECOVERY',
-  'TRIALING',
+  'EXPIRED',
+  'WITHDRAWN',
 ] as const;
 export type SubscriptionStatus = typeof SUBSCRIPTION_STATUSES[number];
 

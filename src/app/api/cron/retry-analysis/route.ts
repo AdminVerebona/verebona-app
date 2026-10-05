@@ -3,7 +3,7 @@
  * Relance l'analyse IA sur les documents en échec ou bloqués.
  * Protégé par CRON_SECRET (même pattern que les autres crons).
  *
- * Usage cron (Vercel, crontab, etc.) :
+ * Usage cron (Scalingo Scheduler, crontab…) :
  *   GET /api/cron/retry-analysis
  *   Authorization: Bearer <CRON_SECRET>
  *

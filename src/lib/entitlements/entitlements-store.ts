@@ -58,6 +58,8 @@ export interface EntitlementsState {
   };
   /** Cycle d'impayé en cours (paiement échoué), `null` sinon. */
   unpaid?: { startedAt: string; deadlineAt: string; daysLeft: number } | null;
+  /** Paiement engagé non encore constaté (APP-PERF-18) — aucun droit associé. */
+  pendingPayment?: { since: string } | null;
 }
 
 export type EntitlementsStatus = 'unknown' | 'known' | 'unavailable';

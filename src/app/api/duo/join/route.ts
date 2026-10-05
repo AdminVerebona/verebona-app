@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isDuoJoinable } from '@/lib/billing/subscription-status';
 import { signalerDroitsModifies } from '@/services/duo/duo-exit.service';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
@@ -37,7 +38,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'EXPIRED_TOKEN' }, { status: 410 });
   }
 
-  if (duo.subscriptionStatus !== 'ACTIVE' && duo.subscriptionStatus !== 'PAST_DUE_GRACE') {
+  // Rejoindre un Duo est une écriture : refusée pendant un impayé
+  // (UNPAID_RECOVERY), comme toute écriture — aucune grâce (APP-FUNC-31).
+  if (!isDuoJoinable(duo.subscriptionStatus)) {
     return NextResponse.json({ error: 'SUBSCRIPTION_INACTIVE' }, { status: 403 });
   }
 
@@ -83,7 +86,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'EXPIRED_TOKEN' }, { status: 410 });
     }
 
-    if (duo.subscriptionStatus !== 'ACTIVE' && duo.subscriptionStatus !== 'PAST_DUE_GRACE') {
+    if (!isDuoJoinable(duo.subscriptionStatus)) {
       return NextResponse.json({ error: 'SUBSCRIPTION_INACTIVE' }, { status: 403 });
     }
 

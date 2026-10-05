@@ -4,6 +4,7 @@ import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
+import { invalidateUserReadCache } from '@/lib/server-cache';
 
 export async function POST(request: NextRequest) {
   const token = extractAccessToken(request);
@@ -32,6 +33,9 @@ export async function POST(request: NextRequest) {
         updatedAt: new Date(),
       })
       .where(eq(users.id, payload.userId));
+    // `/api/users/me` porte `hasSeenUploadNotice` (cache 30 s) : sans cette
+    // invalidation, l'avis réapparaissait au chargement suivant (APP-PERF-22).
+    invalidateUserReadCache(payload.userId);
 
     return NextResponse.json({ success: true });
   } catch (error) {

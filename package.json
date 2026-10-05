@@ -19,6 +19,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:diagnose": "tsx scripts/diagnose-migrations.ts",
+    "db:deploy-migrate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/migrate.mjs",
+    "db:deploy-check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/migrate.mjs --check",
     "db:merge-rooms": "tsx scripts/merge-rooms-into-substructures.ts",
     "db:fix-constraints": "tsx scripts/fix-constraints.ts",
     "db:studio": "drizzle-kit studio",

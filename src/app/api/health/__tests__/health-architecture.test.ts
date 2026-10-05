@@ -6,7 +6,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
-vi.mock('@/db', () => ({ db: { execute: async () => [] }, getMigrationFailures: () => [] }));
+vi.mock('@/db', () => ({
+  db: { execute: async () => [] }, getMigrationFailures: () => [],
+  getSchemaReadiness: async () => ({ ready: true, phase: 'ready', pendingCritical: 0, pendingOptional: 0, firstFailure: null }),
+}));
 const warnings = vi.fn(async () => [] as unknown[]);
 vi.mock('@/services/ai/config/prompt-architecture', () => ({ promptArchitectureWarnings: () => warnings() }));
 vi.mock('@/services/verebona-assistant/core/help-corpus.service', () => ({

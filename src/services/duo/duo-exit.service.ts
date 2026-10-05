@@ -23,6 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, inArray, or } from 'drizzle-orm';
+import { isDuoUnpaidStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
 import {
   accountMemberships, accountSubscriptions, assetDeleteRequests, assetMoveRequests,
@@ -50,9 +51,12 @@ export const DUO_EXIT_MESSAGES: Record<DuoExitError, string> = {
     'Le second utilisateur ne peut pas être retiré pendant un impayé : il doit pouvoir récupérer ses biens. Régularisez d’abord le paiement.',
 };
 
-/** Impayé Duo : le membre garde l'accès pour le mode récupération. */
-export const isDuoUnpaid = (status: string | null | undefined): boolean =>
-  status === 'PAST_DUE_GRACE' || status === 'UNPAID_RECOVERY';
+/**
+ * Impayé Duo (UNPAID_RECOVERY, dès le premier échec — aucune grâce) : le
+ * membre garde l'accès pour le mode récupération (sortie, déplacement ou
+ * copie de ses biens), même si l'écriture normale est suspendue.
+ */
+export const isDuoUnpaid = (status: string | null | undefined): boolean => isDuoUnpaidStatus(status);
 
 const fail = (error: DuoExitError): DuoExitResult => ({ ok: false, error, message: DUO_EXIT_MESSAGES[error] });
 

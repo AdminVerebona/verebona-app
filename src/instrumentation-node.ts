@@ -39,11 +39,18 @@ export async function registerNode(): Promise<void> {
   emailVerificationSecret();
   resetSecret();
 
-  // 1. Schéma. `ensureMigrations()` est idempotent, journalise chaque fichier
-  //    appliqué et n'interrompt pas le démarrage en cas d'échec — les
-  //    contrôles qui suivent tolèrent une table absente et le signalent.
+  // 1. Schéma (APP-PERF-16). L'étape de référence est le hook `postdeploy`
+  //    (`scripts/migrate.mjs`) : il précède la mise en service. Ici, filet
+  //    coordonné (verrou inter-processus, une seule exécution par processus,
+  //    voir `src/db/migration-config.ts`). Contrat :
+  //      · migration CRITIQUE en échec → le démarrage échoue (politique
+  //        `block`, défaut) : la version ne reçoit pas de trafic ;
+  //      · index optionnel manquant → mode dégradé signalé, démarrage normal ;
+  //      · autre exécutant en cours / base injoignable → démarrage, readiness
+  //        à 503 jusqu'à relecture d'un schéma prêt (`/api/health/ready`).
   const { ensureMigrations } = await import('@/db');
-  await ensureMigrations();
+  const { assertMigrationBootPolicy } = await import('@/db/migration-boot');
+  assertMigrationBootPolicy(await ensureMigrations());
 
   //    CDC 15 DP-05 : colonnes de trace de la migration 0217. Absentes, les
   //    traces IA continuent sans TASK ni prompt maître — signalé ici, au
@@ -141,11 +148,6 @@ export async function registerNode(): Promise<void> {
   registerAssistantBusinessEventHandlers();
   await runAssistantStartupCheck('startup').catch((e) =>
     console.error('[startup] contrôle du registre de l’assistant impossible :', (e as Error).message));
-
-  // Lot 23 (§32.6) : invalidations de caches demandées depuis le BO,
-  // appliquées sur CETTE instance (versions `cache:%` relues toutes les 5 s).
-  const { startSharedCacheInvalidation } = await import('@/services/ai/cache/cache-admin');
-  startSharedCacheInvalidation();
 
   // L'agenda reçoit ses accès base par injection : le module reste testable
   // sans démarrer l'application.

@@ -52,7 +52,7 @@ describe('useSession — premier rendu', () => {
       const s = useSession({ required: true });
       return createElement('span', null, `${s.status}|${s.isLoading}|${s.user ? s.user.id : 'aucun'}`);
     }
-    const html = renderToStaticMarkup(createElement(SessionProvider, { store, children: createElement(Sonde) }));
+    const html = renderToStaticMarkup(createElement(SessionProvider, { store } as Parameters<typeof SessionProvider>[0], createElement(Sonde)));
     expect(html).toContain('checking|true|aucun');
   });
 });

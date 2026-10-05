@@ -49,8 +49,8 @@ export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
   none: 'Aucun paiement',
 };
 
-/** Statuts du compte (webhooks) qui signalent un paiement en échec. */
-export const FAILED_ACCOUNT_STATUSES = ['PAST_DUE', 'PAST_DUE_GRACE', 'UNPAID_RECOVERY'] as const;
+/** Statuts du compte (webhooks) qui signalent un paiement en échec (0250 : PAST_DUE seul). */
+export const FAILED_ACCOUNT_STATUSES = ['PAST_DUE'] as const;
 /** Statuts de facture (Stripe) qui signalent un paiement en échec. */
 export const FAILED_INVOICE_STATUSES = ['uncollectible', 'payment_failed', 'failed'] as const;
 
@@ -67,7 +67,7 @@ export interface SubscriptionSourceRow {
   trialEndsAt: Date | null;
   currentPeriodEndAt: Date | null;
   firstBilledAt: Date | null;
-  /** `accounts.subscription_status` (PAST_DUE_GRACE…). */
+  /** `accounts.subscription_status` (PAST_DUE = impayé…). */
   accountSubscriptionStatus: string | null;
   /** Statut de la facture la plus récente du compte, si connue. */
   lastInvoiceStatus: string | null;

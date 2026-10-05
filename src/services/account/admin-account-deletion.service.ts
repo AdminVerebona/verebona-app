@@ -88,7 +88,8 @@ export function hasBillingStripeSubscription(sub: {
 
 /** Statuts locaux (colonnes `accounts` / `duo_accounts`) d'un abonnement qui facture. */
 const LOCAL_BILLING_STATUSES: ReadonlySet<string> = new Set([
-  'ACTIVE', 'TRIALING', 'PAST_DUE', 'PAST_DUE_GRACE', 'UNPAID_RECOVERY',
+  // Comptes : PAST_DUE = impayé ; Duo : UNPAID_RECOVERY = impayé (0250).
+  'ACTIVE', 'TRIALING', 'PAST_DUE', 'UNPAID_RECOVERY',
   'active', 'trialing', 'past_due', 'unpaid',
 ]);
 

@@ -141,7 +141,8 @@ export async function GET(
         equipments: parseInt(c.eq_count),
       },
     });
-    res.headers.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
+    // APP-PERF-22 : pas de réutilisation par le cache HTTP du navigateur.
+    res.headers.set('Cache-Control', 'private, no-cache');
     return res;
   } catch (error) {
     console.error('GET /overview error:', error);

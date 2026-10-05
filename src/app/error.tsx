@@ -1,7 +1,14 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import {
+  handleChunkError,
+  isChunkLoadError,
+  manualReload,
+  recoveryMessage,
+  type RecoveryDecision,
+} from '@/lib/pwa/chunk-recovery';
 
 export default function Error({
   error,
@@ -13,23 +20,20 @@ export default function Error({
   const pathname = usePathname();
   const timestamp = new Date().toISOString();
   const shortRef = error.digest?.slice(0, 8) ?? btoa(error.message).slice(0, 8).toUpperCase();
-  const autoRetried = useRef(false);
+  const handled = useRef(false);
+  const [recovery, setRecovery] = useState<RecoveryDecision | null>(null);
 
-  // ChunkLoadError = chunk JS obsolète après déploiement → reload automatique
-  const isChunkError = error.name === 'ChunkLoadError'
-    || error.message?.includes('Failed to load chunk')
-    || error.message?.includes('Loading chunk')
-    || error.message?.includes('dynamically imported module');
+  // Erreur de chunk (version retirée par un déploiement, réseau coupé) :
+  // règle unique de reprise (APP-PERF-10) — au plus un rechargement
+  // automatique par incident, mémorisé au-delà du rechargement ; sinon
+  // reprise explicite. Plus de purge des caches de l'origine.
+  const isChunkError = isChunkLoadError(error);
 
   useEffect(() => {
-    if (isChunkError && !autoRetried.current) {
-      autoRetried.current = true;
-      // Vider le cache SW si présent, puis recharger
-      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_CACHE' });
-        setTimeout(() => window.location.reload(), 300);
-      } else {
-        window.location.reload();
+    if (isChunkError) {
+      if (!handled.current) {
+        handled.current = true;
+        setRecovery(handleChunkError({ inline: true }));
       }
       return;
     }
@@ -44,8 +48,38 @@ export default function Error({
 
   const isDev = process.env.NODE_ENV === 'development';
 
-  // Pour les erreurs de chunk : afficher un écran de rechargement propre
+  // Pour les erreurs de chunk : rechargement en cours, ou reprise explicite
   if (isChunkError) {
+    const msg = recovery ? recoveryMessage(recovery) : null;
+    if (msg && recovery?.action !== 'reload') {
+      return (
+        <div role="alert" style={{
+          minHeight: '100vh', display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          background: '#020617', color: '#f8fafc',
+          fontFamily: 'system-ui, sans-serif', gap: '12px', padding: '24px', textAlign: 'center',
+        }}>
+          <h1 style={{ fontSize: '18px', fontWeight: 600, margin: 0 }}>{msg.title}</h1>
+          <p style={{ fontSize: '14px', color: '#94a3b8', margin: 0, maxWidth: '420px' }}>{msg.detail}</p>
+          <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+            {msg.button && (
+              <button
+                onClick={manualReload}
+                style={{ padding: '10px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: 500, cursor: 'pointer' }}
+              >
+                {msg.button}
+              </button>
+            )}
+            <a
+              href="/accueil"
+              style={{ padding: '10px 20px', background: '#1e293b', color: '#cbd5e1', borderRadius: '8px', textDecoration: 'none', fontSize: '14px', fontWeight: 500 }}
+            >
+              Tableau de bord
+            </a>
+          </div>
+        </div>
+      );
+    }
     return (
       <div style={{
         minHeight: '100vh', display: 'flex', flexDirection: 'column',

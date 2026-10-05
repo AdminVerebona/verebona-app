@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Clock, AlertTriangle } from 'lucide-react';
+import { Clock, AlertTriangle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { libelleEssai } from './trial-label';
 import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
-import { isUnpaid, type TrialStatusPayload, type UnpaidCyclePayload } from '@/lib/trial-status';
+import { isUnpaid, isRecentPendingPayment, type TrialStatusPayload, type UnpaidCyclePayload } from '@/lib/trial-status';
+import { useEntitlements } from '@/hooks/useEntitlements';
 
 /**
  * Bandeau d'essai (CDC §9.2).
@@ -16,7 +16,9 @@ import { isUnpaid, type TrialStatusPayload, type UnpaidCyclePayload } from '@/li
  *  - essai expire  : message de fin d'essai et invitation a choisir une offre.
  *
  * Toutes les valeurs viennent du serveur (/api/billing/trial-status) :
- * le composant n'effectue aucun calcul de droits.
+ * le composant n'effectue aucun calcul de droits. Lecture PARTAGÉE
+ * (`useEntitlements`, APP-PERF-18) : le bandeau ne relance plus sa propre
+ * lecture des droits à chaque chargement.
  */
 
 interface TrialStatus extends TrialStatusPayload {
@@ -34,31 +36,10 @@ interface TrialStatus extends TrialStatusPayload {
 
 export function TrialBanner() {
   const router = useRouter();
-  const [data, setData] = useState<TrialStatus | null>(null);
+  const { entitlements } = useEntitlements();
+  const data = entitlements as TrialStatus | null;
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const res = await fetch('/api/billing/trial-status', {
-      credentials: 'include',
-        });
-        if (!res.ok) return;
-        const json = (await res.json()) as TrialStatus;
-        if (!cancelled) setData(json);
-      } catch {
-        // silencieux : le bandeau ne doit jamais casser la page
-      }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (!data) return null;
+  if (!data?.trial) return null;
 
   const { trial, isRestricted } = data;
 
@@ -86,6 +67,22 @@ export function TrialBanner() {
   // date limite, régularisation) — voir `isUnpaid`.
   if (isUnpaid(data)) {
     return <UnpaidPaymentNotice unpaid={data.unpaid} variant="banner" />;
+  }
+
+  // Paiement engagé récemment, pas encore confirmé (APP-PERF-18) : signalé,
+  // sans aucun droit — ils s'appliqueront dès la confirmation du paiement.
+  if (isRecentPendingPayment(data)) {
+    return (
+      <div className="flex flex-wrap items-center gap-3 border-b border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-4 py-2.5">
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[color:var(--text-muted)]" aria-hidden />
+        <p className="flex-1 text-sm text-[color:var(--text-primary)]">
+          <span className="font-medium">Si vous venez de régler votre abonnement, le paiement est en cours de confirmation.</span>{' '}
+          <span className="text-[color:var(--text-muted)]">
+            Votre offre s&apos;appliquera dès sa validation par notre prestataire de paiement.
+          </span>
+        </p>
+      </div>
+    );
   }
 
   // Essai déjà consommé par cette adresse (§3.4). Ce n'est pas une panne :

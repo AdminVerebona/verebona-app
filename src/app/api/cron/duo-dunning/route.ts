@@ -1,12 +1,29 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/db';
 import { duoAccounts, dunningEvents } from '@/db/schema';
-import { eq, and, lt } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 
 /**
  * GET /api/cron/duo-dunning
- * Cron quotidien pour gérer le dunning des comptes Duo
- * Devrait être appelé via une tâche planifiée (ex: Vercel Cron)
+ * Suivi quotidien des impayés Premium Duo. Appelé par le planificateur externe
+ * de l'hébergement (Scalingo Scheduler, crontab…) avec CRON_SECRET — non
+ * planifié dans le dépôt (voir .env.example).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * PLUS DE PÉRIODE DE GRÂCE (APP-FUNC-31)
+ *
+ * Cette tâche faisait passer un Duo de PAST_DUE_GRACE (15 jours pendant
+ * lesquels tout restait permis) à UNPAID_RECOVERY une fois la « grâce »
+ * échue. Le passage est désormais IMMÉDIAT, au premier échec de paiement
+ * (webhook `invoice.payment_failed` ou synchronisation `past_due`) : il n'y a
+ * plus rien à faire basculer ici.
+ *
+ * Reste le jalonnement du délai de récupération (`unpaid_recovery_ends_at`,
+ * = échéance du cycle du compte payeur) : étapes D14 / D7 / D1 consignées
+ * dans `dunning_events` (une fois par étape). Les rappels envoyés aux
+ * clients (J-7, J-1) et la fin du délai relèvent du balayage du cycle
+ * d'impayé (`billing-unpaid`), pas de cette tâche.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 export async function GET(request: Request) {
   // Vérification de la clé secrète pour éviter les appels malveillants
@@ -18,83 +35,38 @@ export async function GET(request: Request) {
   }
 
   const now = new Date();
-  const results = {
-    recovery: 0,
-    d1: 0,
-    d7: 0,
-    d14: 0,
-  };
+  const results = { d1: 0, d7: 0, d14: 0 };
 
   try {
-    // 1. Passage en RECOVERY
-    const recoveryAccounts = await db
+    const unpaidDuos = await db
       .select()
       .from(duoAccounts)
-      .where(
-        and(
-          eq(duoAccounts.subscriptionStatus, 'PAST_DUE_GRACE'),
-          lt(duoAccounts.graceDeadlineAt, now)
-        )
-      );
+      .where(eq(duoAccounts.subscriptionStatus, 'UNPAID_RECOVERY'));
 
-    for (const account of recoveryAccounts) {
-      await db
-        .update(duoAccounts)
-        .set({
-          subscriptionStatus: 'UNPAID_RECOVERY',
-          updatedAt: now,
-        })
-        .where(eq(duoAccounts.id, account.id));
-      
-      await db.insert(dunningEvents).values({
-        duoId: account.id,
-        stage: 'RECOVERY',
-        sentAt: now,
-      }).onConflictDoNothing();
+    for (const account of unpaidDuos) {
+      if (!account.unpaidRecoveryEndsAt) continue;
 
-      results.recovery++;
-      // TODO: Envoyer email de passage en recovery
-    }
-
-    // 2. Dunning progressif (D1, D7, D14)
-    const activeGraceAccounts = await db
-      .select()
-      .from(duoAccounts)
-      .where(eq(duoAccounts.subscriptionStatus, 'PAST_DUE_GRACE'));
-
-    for (const account of activeGraceAccounts) {
-      if (!account.graceDeadlineAt) continue;
-
-      const deadline = new Date(account.graceDeadlineAt);
+      const deadline = new Date(account.unpaidRecoveryEndsAt);
       const diffDays = Math.ceil((deadline.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
       let stage: 'D1' | 'D7' | 'D14' | null = null;
       if (diffDays <= 1) stage = 'D1';
       else if (diffDays <= 7) stage = 'D7';
       else if (diffDays <= 14) stage = 'D14';
+      if (!stage) continue;
 
-      if (stage) {
-        // Vérifier si déjà envoyé pour ce stage
-          const [existing] = await db
-            .select()
-            .from(dunningEvents)
-            .where(and(eq(dunningEvents.duoId, account.id), eq(dunningEvents.stage, stage)))
-            .limit(1);
+      // Une seule fois par étape (index unique duo / étape).
+      const [existing] = await db
+        .select({ id: dunningEvents.id })
+        .from(dunningEvents)
+        .where(and(eq(dunningEvents.duoId, account.id), eq(dunningEvents.stage, stage)))
+        .limit(1);
+      if (existing) continue;
 
-          if (!existing) {
-            await db.insert(dunningEvents).values({
-            duoId: account.id,
-            stage,
-            sentAt: now,
-          });
-
-          if (stage === 'D1') results.d1++;
-          else if (stage === 'D7') results.d7++;
-          else if (stage === 'D14') results.d14++;
-
-          // TODO: Envoyer email dunning correspondant
-        }
-      }
+      await db.insert(dunningEvents).values({ duoId: account.id, stage, sentAt: now }).onConflictDoNothing();
+      if (stage === 'D1') results.d1++;
+      else if (stage === 'D7') results.d7++;
+      else results.d14++;
     }
 
     return NextResponse.json({ success: true, results });

@@ -8,7 +8,7 @@ import { eq, and, or, isNull, count } from 'drizzle-orm';
 import { getTrialState, hasUsedTrial } from '@/services/trial.service';
 import { getEntitlements, quotaUsage } from '@/services/entitlements.service';
 import { getScheduledChange } from '@/services/plan-change.service';
-import { syncPendingCheckoutForAccount } from '@/services/billing/subscription-sync.service';
+import { kickPendingCheckoutReconciliation, pendingCheckoutState } from '@/services/billing/pending-checkout.service';
 import { computeUnpaidCycle } from '@/services/billing/unpaid-cycle.rules';
 
 /**
@@ -44,72 +44,80 @@ export async function GET(request: NextRequest) {
     // pas ceux appliqués.
     const accountId = session.currentAccountId ?? membership.accountId;
 
-    // Paiement effectué mais pas encore appliqué (webhook absent, retour
-    // de paiement non atteint) : on le constate ici, avant de lire les droits.
-    await syncPendingCheckoutForAccount(accountId);
-
-    const [trial, entitlements, scheduled] = await Promise.all([
+    // ══════════════════════════════════════════════════════════════════
+    // LECTURE LOCALE, SANS STRIPE (APP-PERF-18)
+    //
+    // Cette route attendait la vérification Stripe d'un paiement en attente
+    // avant de lire les droits. Les droits se lisent désormais dans la base
+    // uniquement ; le paiement en attente est SIGNALÉ (`pendingPayment`),
+    // sans aucun droit, et sa vérification est confiée à la réconciliation
+    // durable (`pending-checkout.service`) — déclenchée ici sans être
+    // attendue quand elle est due. Lectures indépendantes en parallèle.
+    // ══════════════════════════════════════════════════════════════════
+    const now = new Date();
+    const [trial, entitlements, scheduled, [sub], [accountRow], [assetRow], [docRow]] = await Promise.all([
       getTrialState(accountId),
-      getEntitlements(accountId),
+      getEntitlements(accountId, now),
       getScheduledChange(accountId),
+      // Details d'abonnement pour l'ecran « Mon abonnement » (CDC §9.1)
+      db
+        .select({
+          planCode: accountSubscriptions.planCode,
+          billingPeriod: accountSubscriptions.billingPeriod,
+          currentPeriodEndAt: accountSubscriptions.currentPeriodEndAt,
+          cancelAtPeriodEnd: accountSubscriptions.cancelAtPeriodEnd,
+          stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
+        })
+        .from(accountSubscriptions)
+        .where(eq(accountSubscriptions.accountId, accountId))
+        .limit(1),
+      // Cycle d'impayé (GAP-06, AID-BILL-008) et paiement en attente : l'écran
+      // doit distinguer l'impayé d'une fin d'essai et afficher l'échéance.
+      db
+        .select({
+          unpaidStartedAt: accounts.unpaidStartedAt,
+          unpaidRecoveryEndsAt: accounts.unpaidRecoveryEndsAt,
+          checkoutSessionId: accounts.checkoutSessionId,
+          checkoutSessionCreatedAt: accounts.checkoutSessionCreatedAt,
+          checkoutNextCheckAt: accounts.checkoutNextCheckAt,
+        })
+        .from(accounts)
+        .where(eq(accounts.id, accountId))
+        .limit(1),
+      // Consommation reelle (biens et documents non supprimes)
+      db
+        .select({ value: count() })
+        .from(assets)
+        .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt))),
+      // ══════════════════════════════════════════════════════════════════
+      // ⚠️ CE COMPTEUR VOYAIT DES DOCUMENTS QUI N'EXISTENT PAS
+      //
+      // Il comptait TOUTES les lignes `asset_files` non supprimées, sans
+      // regarder `upload_status`. Or `/api/files/presign` crée la ligne AVANT
+      // le téléversement : un envoi abandonné, échoué ou interrompu laisse une
+      // ligne `PENDING` derrière lui. Même filtre partout que la page « Mes
+      // documents » et le contrôle de quota du presign : un document est une
+      // ligne téléversée.
+      // ══════════════════════════════════════════════════════════════════
+      db
+        .select({ value: count() })
+        .from(assetFiles)
+        .where(and(
+          eq(assetFiles.accountId, accountId),
+          isNull(assetFiles.deletedAt),
+          or(
+            eq(assetFiles.uploadStatus, 'COMPLETED'),
+            isNull(assetFiles.uploadStatus),
+          ),
+        )),
     ]);
 
-    // Details d'abonnement pour l'ecran « Mon abonnement » (CDC §9.1)
-    const [sub] = await db
-      .select({
-        planCode: accountSubscriptions.planCode,
-        billingPeriod: accountSubscriptions.billingPeriod,
-        currentPeriodEndAt: accountSubscriptions.currentPeriodEndAt,
-        cancelAtPeriodEnd: accountSubscriptions.cancelAtPeriodEnd,
-        stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
-      })
-      .from(accountSubscriptions)
-      .where(eq(accountSubscriptions.accountId, accountId))
-      .limit(1);
-
-    // Cycle d'impayé de 90 jours (GAP-06, AID-BILL-008) : l'écran doit
-    // distinguer l'impayé d'une fin d'essai et afficher l'échéance.
-    const [cycleRow] = await db
-      .select({ startedAt: accounts.pastDueGraceStartedAt, endsAt: accounts.pastDueGraceEndsAt })
-      .from(accounts)
-      .where(eq(accounts.id, accountId))
-      .limit(1);
-    const unpaidCycle = cycleRow?.startedAt
-      ? computeUnpaidCycle(cycleRow.startedAt, new Date(), cycleRow.endsAt)
+    const unpaidCycle = accountRow?.unpaidStartedAt
+      ? computeUnpaidCycle(accountRow.unpaidStartedAt, now, accountRow.unpaidRecoveryEndsAt)
       : null;
 
-    // Consommation reelle (biens et documents non supprimes)
-    const [assetRow] = await db
-      .select({ value: count() })
-      .from(assets)
-      .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt)));
-
-    // ══════════════════════════════════════════════════════════════════
-    // ⚠️ CE COMPTEUR VOYAIT DES DOCUMENTS QUI N'EXISTENT PAS
-    //
-    // Il comptait TOUTES les lignes `asset_files` non supprimées, sans
-    // regarder `upload_status`. Or `/api/files/presign` crée la ligne AVANT
-    // le téléversement : un envoi abandonné, échoué ou interrompu laisse une
-    // ligne `PENDING` derrière lui. Les vignettes de biens passent par le
-    // même chemin.
-    //
-    // L'écran annonçait donc « 2 documents » à un compte dont la page
-    // « Mes documents » affiche « 0 document » — cette page-là, comme le
-    // contrôle de quota du presign, filtre sur `upload_status`.
-    //
-    // Même filtre partout : un document est une ligne téléversée.
-    // ══════════════════════════════════════════════════════════════════
-    const [docRow] = await db
-      .select({ value: count() })
-      .from(assetFiles)
-      .where(and(
-        eq(assetFiles.accountId, accountId),
-        isNull(assetFiles.deletedAt),
-        or(
-          eq(assetFiles.uploadStatus, 'COMPLETED'),
-          isNull(assetFiles.uploadStatus),
-        ),
-      ));
+    const pending = pendingCheckoutState(accountRow, now);
+    if (pending?.due) kickPendingCheckoutReconciliation(accountId);
 
     const assetsUsed = assetRow?.value ?? 0;
     const documentsUsed = docRow?.value ?? 0;
@@ -152,6 +160,9 @@ export async function GET(request: NextRequest) {
           : null,
         hasStripeSubscription: Boolean(sub?.stripeSubscriptionId),
       },
+      // Paiement Checkout engagé mais pas encore constaté : affiché comme tel,
+      // AUCUN droit associé tant que le paiement n'est pas appliqué.
+      pendingPayment: pending ? { since: pending.since.toISOString() } : null,
       unpaid: unpaidCycle
         ? {
             startedAt: unpaidCycle.startedAt.toISOString(),

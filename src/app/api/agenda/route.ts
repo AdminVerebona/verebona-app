@@ -29,7 +29,9 @@ export async function GET(req: NextRequest) {
 
     const items = await getAgendaItems({ accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated });
     return NextResponse.json({ items }, {
-      headers: { 'Cache-Control': 'private, max-age=30, stale-while-revalidate=120' },
+      // APP-PERF-22 : pas de réutilisation par le cache HTTP du navigateur
+      // (non cloisonné par compte, non invalidé par les écritures).
+      headers: { 'Cache-Control': 'private, no-cache' },
     });
   } catch (err) {
     console.error('GET /api/agenda error:', err);

@@ -6,7 +6,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
-vi.mock('@/db', () => ({ db: { execute: async () => [] }, getMigrationFailures: () => [] }));
+vi.mock('@/db', () => ({
+  db: { execute: async () => [] }, getMigrationFailures: () => [],
+  getSchemaReadiness: async () => ({ ready: true, phase: 'ready', pendingCritical: 0, pendingOptional: 0, firstFailure: null }),
+}));
 vi.mock('@/services/ai/config/prompt-architecture', () => ({ promptArchitectureWarnings: async () => [] }));
 const etat = vi.fn();
 const charge = vi.fn(async () => null);

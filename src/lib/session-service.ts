@@ -3,9 +3,9 @@ import { verifyToken } from './jwt';
 import { sessionErrorToResponse } from './auth/session-errors';
 import type { PlanType, UserRole, UserStatus } from '@/types/domain';
 import { db } from '@/db';
-import { users, accounts } from '@/db/schema';
+import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { serverCacheGet, serverCacheSet } from './server-cache';
+import { invalidateAccountReadCache, invalidateUserReadCache, isMutatingMethod } from './server-cache';
 import { isRevokedByCutoff } from './auth/session-guard';
 import {
   ACCOUNT_PENDING_DELETION_CODE,
@@ -104,45 +104,24 @@ export class SessionService {
       throw new Error('INVALID_TOKEN');
     }
 
-    // Contrôle de fin de grâce réactive — cache 60s pour éviter une query DB
-    // sur chaque appel API. Le JWT contient déjà userId, currentAccountId, planType, hasActiveAccount.
-    if (payload.currentAccountId) {
-      const graceCacheKey = `grace:${payload.currentAccountId}`;
-      const graceExpired = serverCacheGet<boolean>(graceCacheKey);
+    // ══════════════════════════════════════════════════════════════════════
+    // AUCUN CONTRÔLE D'ABONNEMENT ICI (APP-FUNC-31)
+    //
+    // Un contrôle de « fin de grâce » (cache par compte, passage en
+    // EXPIRED, refus TRIAL_ACTIVATION_PENDING) vivait ici. Il a été retiré :
+    // la session dit QUI appelle, pas ce qu'il a le droit de faire. Un compte
+    // en impayé reste authentifiable ; ses droits (lecture/export oui,
+    // écriture non) viennent de `entitlements.service`, et la fin du délai de
+    // régularisation est traitée par le balayage `billing-unpaid`.
+    // ══════════════════════════════════════════════════════════════════════
 
-      if (graceExpired === undefined) {
-        // Cache froid : vérifier DB
-        const [account] = await db
-          .select({
-            subscriptionStatus: accounts.subscriptionStatus,
-            pastDueGraceEndsAt: accounts.pastDueGraceEndsAt,
-          })
-          .from(accounts)
-          .where(eq(accounts.id, payload.currentAccountId))
-          .limit(1);
-
-        if (account) {
-          if (account.subscriptionStatus === 'PAST_DUE_GRACE') {
-            const now = new Date();
-            if (account.pastDueGraceEndsAt && now > account.pastDueGraceEndsAt) {
-              await db
-                .update(accounts)
-                .set({ subscriptionStatus: 'EXPIRED', updatedAt: now })
-                .where(eq(accounts.id, payload.currentAccountId));
-              serverCacheSet(graceCacheKey, true, 60_000);
-              throw new Error('TRIAL_ACTIVATION_PENDING');
-            }
-            // Grace pas encore expirée → cacher qu'elle est toujours valide
-            serverCacheSet(graceCacheKey, false, 60_000);
-          } else {
-            // Pas en grace → cacher l'absence de problème
-            serverCacheSet(graceCacheKey, false, 60_000);
-          }
-        }
-      } else if (graceExpired === true) {
-        throw new Error('TRIAL_ACTIVATION_PENDING');
-      }
-      // graceExpired === false : rien à faire, la grâce n'est pas expirée
+    // Écriture authentifiée : les lectures mises en cache pour ce compte sur
+    // CETTE instance ne sont plus servies (APP-PERF-22). Les autres instances
+    // convergent par la demande de fraîcheur du client et par leurs durées
+    // courtes — voir `lib/server-cache.ts`.
+    if (isMutatingMethod(request.method)) {
+      if (payload.currentAccountId) invalidateAccountReadCache(payload.currentAccountId);
+      invalidateUserReadCache(payload.userId);
     }
 
     return {

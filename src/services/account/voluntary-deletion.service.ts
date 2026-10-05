@@ -76,7 +76,7 @@ import {
 import { getStripeServer } from '@/lib/stripe';
 import { emit } from '@/lib/notifications';
 import { emailService } from '@/lib/email/email-service';
-import { serverCacheDelete } from '@/lib/server-cache';
+import { invalidateUserReadCache, serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { PENDING_DELETION_STATUS } from '@/lib/auth/account-closure';
 import { endDuoSharing } from '@/lib/plan-enforcement';
@@ -845,7 +845,7 @@ export const defaultDeps: VoluntaryDeletionDeps = {
   cancelUserDeletion,
   async markClosed(userId, now) {
     await db.update(users).set({ status: PENDING_DELETION_STATUS, updatedAt: now }).where(eq(users.id, userId));
-    serverCacheDelete(`users:me:${userId}`);
+    invalidateUserReadCache(userId);
   },
   billing: {
     async stopRenewal(userId) {
@@ -869,7 +869,7 @@ export const defaultDeps: VoluntaryDeletionDeps = {
   async revokeSessions(userId, reason) {
     const cutoff = await revokeAllUserSessions(userId, reason);
     serverCacheDelete(sessionCutoffCacheKey(userId));
-    serverCacheDelete(`users:me:${userId}`);
+    invalidateUserReadCache(userId);
     return cutoff;
   },
   async notify({ type, userId, scheduleId, scheduledAt, daysLeft }) {

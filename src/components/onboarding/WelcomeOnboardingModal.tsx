@@ -5,13 +5,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { ChevronRight, Package, FileText, CalendarDays, ShieldCheck, Search, FolderOutput, Users, Plus } from 'lucide-react';
 import type { PlanType } from '@/types/domain';
-
-// ── Storage ───────────────────────────────────────────────────────────────────
-const DISMISSED_KEY_PREFIX = 'onboarding_dismissed_';
-
-function getDismissedKey(userId: number) {
-  return `${DISMISSED_KEY_PREFIX}${userId}`;
-}
+import { getWelcomeDismissedKey as getDismissedKey } from '@/lib/onboarding/welcome-state';
 
 // ── Étapes par plan ───────────────────────────────────────────────────────────
 

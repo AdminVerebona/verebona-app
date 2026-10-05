@@ -7,6 +7,7 @@
 import type { NextResponse } from 'next/server';
 import { generateAccessToken, generateRefreshToken } from '@/lib/jwt';
 import { AccountService } from '@/services/account-service';
+import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
 
 export interface SessionUser {
@@ -19,8 +20,9 @@ export interface SessionUser {
 
 export async function issueSessionTokens(user: SessionUser): Promise<{ accessToken: string; refreshToken: string }> {
   const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
-  const hasActiveAccount = !!defaultAccount
-    && ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'].includes(defaultAccount.subscriptionStatus);
+  // Indication informative (abonnement actif), jamais une source de droits ;
+  // un compte en impayé reste authentifiable (APP-FUNC-31).
+  const hasActiveAccount = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);
   const claims = {
     id: user.id,
     email: user.email,

@@ -330,7 +330,8 @@ export default function AccountDetailPage() {
     : subscription?.billingPeriod === 'yearly' ? 'Annuel'
     : '—';
   const renewalValue = subscription?.currentPeriodEndAt ?? account.planRenewalDate;
-  const duoIsActive = duoAccount && ['ACTIVE', 'PAST_DUE_GRACE'].includes(duoAccount.subscriptionStatus);
+  // Duo en cours (à jour ou en impayé avec récupération ouverte).
+  const duoIsActive = duoAccount && ['ACTIVE', 'UNPAID_RECOVERY'].includes(duoAccount.subscriptionStatus);
   const activeMembers = data.members.filter(m => m.status === 'active');
   const pendingMembers = data.members.filter(m => m.status === 'pending');
   const lastPayment = payments[0] ?? null;

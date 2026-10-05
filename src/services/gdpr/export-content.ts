@@ -54,7 +54,7 @@ const OMITTED_COLUMNS_BY_TABLE: Record<string, ReadonlySet<string>> = {
     'internal_comment', 'last_error', 'created_by', 'updated_by', 'reopened_by', 'source_ref',
   ]),
   users: new Set(['role', 'feature_flags']),
-  accounts: new Set(['feature_flags', 'checkout_session_id', 'checkout_session_created_at']),
+  accounts: new Set(['feature_flags', 'checkout_session_id', 'checkout_session_created_at', 'checkout_check_attempts', 'checkout_next_check_at']),
   asset_files: new Set(['category_confidence', 'type_confidence']),
 };
 

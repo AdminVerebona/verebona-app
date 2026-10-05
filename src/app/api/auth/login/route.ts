@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
 import bcrypt from 'bcrypt';
 import { generateAccessToken, generateRefreshToken } from '@/lib/jwt';
@@ -193,7 +194,9 @@ export async function POST(request: NextRequest) {
     // Login réussi → réinitialiser le compteur pour cette IP
     resetAuthRateLimit(ip);
 
-    const isSubscribedOrTrialing = !!defaultAccount && ['ACTIVE', 'TRIALING', 'PAST_DUE_GRACE'].includes(defaultAccount.subscriptionStatus);
+    // Indication informative du jeton, jamais une source de droits : un
+    // impayé reste connectable sans « abonnement actif » (APP-FUNC-31).
+    const isSubscribedOrTrialing = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);
 
     const [accessToken, refreshToken] = await Promise.all([
       generateAccessToken({

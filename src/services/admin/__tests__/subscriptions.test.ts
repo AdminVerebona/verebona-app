@@ -61,8 +61,8 @@ describe('statut de paiement dérivé (SUB-003, SUB-010)', () => {
     expect(derivePaymentStatus(row({ status: 'past_due' }))).toBe('failed');
   });
 
-  it('échec : compte en période de grâce ou recouvrement (webhooks)', () => {
-    for (const s of ['PAST_DUE', 'PAST_DUE_GRACE', 'UNPAID_RECOVERY', 'past_due_grace']) {
+  it('échec : compte en impayé (webhooks) — statut unique PAST_DUE, sans grâce (APP-FUNC-31)', () => {
+    for (const s of ['PAST_DUE', 'past_due']) {
       expect(derivePaymentStatus(row({ accountSubscriptionStatus: s }))).toBe('failed');
     }
   });
@@ -116,7 +116,7 @@ describe('synthèse (SUB-001)', () => {
       row({ accountId: 4, status: 'trialing', firstBilledAt: null, trialEndsAt: day(4), lastInvoiceStatus: null }),
       row({ accountId: 5, status: 'trialing', firstBilledAt: null, trialEndsAt: day(-4), lastInvoiceStatus: null }),
       row({ accountId: 6, status: 'canceled' }),
-      row({ accountId: 7, accountSubscriptionStatus: 'PAST_DUE_GRACE' }),
+      row({ accountId: 7, accountSubscriptionStatus: 'PAST_DUE' }),
     ], NOW);
     expect(summary).toEqual({ active: 4, trials: 1, scheduledEnds: 1, failedPayments: 2 });
   });

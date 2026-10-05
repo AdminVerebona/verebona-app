@@ -208,6 +208,8 @@ export async function middleware(request: NextRequest) {
       '/api/auth/forgot-password',
       '/api/auth/reset-password',
       '/api/health',
+      '/api/health/live',  // vitalité, sans E/S (APP-PERF-37)
+      '/api/health/ready', // disponibilité critique (APP-PERF-37)
       '/api/users', // Public pour signup
       '/api/billing/stripe-webhook', // Stripe signe ses propres requêtes — pas de JWT
       '/api/referral/validate', // Validation publique du code parrainage

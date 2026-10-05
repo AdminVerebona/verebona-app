@@ -106,6 +106,8 @@ export async function ensureStripeCustomer(
       stripeSubscriptionId: null,
       checkoutSessionId: null,
       checkoutSessionCreatedAt: null,
+      checkoutCheckAttempts: 0,
+      checkoutNextCheckAt: null,
       updatedAt: new Date(),
     })
     .where(eq(accounts.id, accountId));

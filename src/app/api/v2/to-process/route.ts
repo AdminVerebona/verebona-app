@@ -72,8 +72,8 @@ export async function GET(req: NextRequest) {
   });
 
   return NextResponse.json(page, {
-    // Court, et identique à celui de la pastille : deux durées différentes
-    // afficheraient un compteur en désaccord avec l'écran.
-    headers: { 'Cache-Control': 'private, max-age=15, stale-while-revalidate=60' },
+    // Identique à la pastille (APP-PERF-22) : aucun cache navigateur, pour
+    // qu'une action résolue disparaisse de la liste et du compteur ensemble.
+    headers: { 'Cache-Control': 'private, no-cache' },
   });
 }

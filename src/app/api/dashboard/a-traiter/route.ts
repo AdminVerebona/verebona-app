@@ -22,7 +22,7 @@ import { assetFiles, equipments, documentLotItems, assets } from '@/db/schema';
 import { eq, and, isNull, isNotNull, or, desc, notInArray } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaAttentionItems } from '@/services/agenda/AgendaQueryService';
-import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
+import { accountCacheKey, serverCacheGet, serverCacheSet, wantsFreshRead } from '@/lib/server-cache';
 
 export async function GET(req: NextRequest) {
   try {
@@ -40,11 +40,15 @@ export async function GET(req: NextRequest) {
 
     // Cache serveur 15s : le badge "À traiter" est affiché sur toutes les pages
     // via DashboardLayout. Sans cache, chaque navigation déclenche 3 queries DB.
-    const cacheKey = `a-traiter:${accountId}`;
-    const cached = serverCacheGet<object>(cacheKey);
+    // APP-PERF-22 : clé isolée par compte, invalidée par les écritures du
+    // compte ; une demande de fraîcheur (`x-verebona-fresh: 1`, envoyée par le
+    // client après une action) le contourne. Pas de cache HTTP navigateur :
+    // la revalidation différée laissait voir un compteur ancien jusqu'à 75 s.
+    const cacheKey = accountCacheKey(accountId, 'a-traiter');
+    const cached = wantsFreshRead(req.headers) ? null : serverCacheGet<object>(cacheKey);
     if (cached) {
       return NextResponse.json(cached, {
-        headers: { 'Cache-Control': 'private, max-age=15, stale-while-revalidate=60' },
+        headers: { 'Cache-Control': 'private, no-cache' },
       });
     }
 
@@ -212,7 +216,7 @@ export async function GET(req: NextRequest) {
     serverCacheSet(cacheKey, responseData, 15_000);
 
     return NextResponse.json(responseData, {
-      headers: { 'Cache-Control': 'private, max-age=15, stale-while-revalidate=60' },
+      headers: { 'Cache-Control': 'private, no-cache' },
     });
 
   } catch (error) {
