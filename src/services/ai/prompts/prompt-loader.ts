@@ -267,13 +267,34 @@ export function checkMasterTemplate(text: string, tasks: readonly string[]): str
 }
 
 /**
+ * Variables OPTIONNELLES d'un master : ajoutées après coup au contrat d'un
+ * prompt maître, elles peuvent manquer dans le texte d'une version de
+ * configuration antérieure (D-03 : master porté par la version BO). Sans leur
+ * emplacement, elles sont IGNORÉES au rendu (jamais concaténées, §22.3) au
+ * lieu de faire échouer chaque appel ; le contrôle BO le signale sans bloquer
+ * (`masterConfigIssues`). La règle métier correspondante reste appliquée par
+ * le serveur (T1 : garde-fou de sortie `enforceT1Capabilities`, gardes T3/T4).
+ * Toute autre variable sans emplacement reste refusée.
+ */
+export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[]>> = {
+  // T1 : capacités du compte (pièces, équipements), lot 24.
+  t1_master_v1: ['ACCOUNT_CAPABILITIES'],
+};
+
+/** Variable optionnelle pour ce master (`OPTIONAL_MASTER_VARIABLES`). */
+export function isOptionalMasterVariable(masterPromptCode: string, name: string): boolean {
+  return (OPTIONAL_MASTER_VARIABLES[masterPromptCode] ?? []).includes(name);
+}
+
+/**
  * Rendu PUR d'un master : injecte `{{TASK}}` et les variables structurées.
  *
  * Refuse :
  *   · une TASK hors des branches autorisées ou sans section dans le texte ;
  *   · une variable `TASK` fournie par l'appelant (elle est fixée ici) ;
  *   · une variable qui ne correspond à aucun emplacement du master — seul
- *     moyen de glisser des consignes hors du texte administré (§22.3) ;
+ *     moyen de glisser des consignes hors du texte administré (§22.3) —
+ *     sauf variable optionnelle (`OPTIONAL_MASTER_VARIABLES`), ignorée ;
  *   · un emplacement sans valeur (`undefined`) — jamais de `{{X}}` au modèle.
  * `null` est une valeur (JSON `null`) ; une chaîne est insérée telle quelle,
  * tout autre valeur sérialisée en JSON. Substitution en une passe : une
@@ -301,7 +322,10 @@ export function renderMasterPrompt(
     throw new MasterPromptError('TASK_BRANCH_MISSING', code,
       `section « ${masterBranchMarker(task, cle)} » absente du master.`);
   }
-  const undeclared = Object.keys(variables).filter((k) => variables[k] !== undefined && !info.placeholders.includes(k));
+  // Variable optionnelle sans emplacement (texte de version antérieur) :
+  // ignorée — ni refusée, ni concaténée.
+  const undeclared = Object.keys(variables).filter((k) => variables[k] !== undefined && !info.placeholders.includes(k)
+    && !isOptionalMasterVariable(code, k));
   if (undeclared.length > 0) {
     throw new MasterPromptError('UNDECLARED_VARIABLE', code,
       `variable(s) sans emplacement dans le master : ${undeclared.join(', ')} — concaténation de consignes interdite (CDC 15 §22.3).`);

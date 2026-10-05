@@ -1,54 +1,42 @@
 "use client"
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
+import { apiClient } from '@/lib/api-client';
+import { useSession } from '@/hooks/useSession';
 
 interface UploadNoticeBannerProps {
   onClose?: () => void;
 }
 
+/**
+ * Avis de dépôt affiché une fois. L'état vient de la session partagée
+ * (`useSession`, APP-PERF-04) : plus de lecture propre de `/api/users/me` à
+ * chaque ouverture du dialogue. Une fois l'avis affiché, il est marqué vu
+ * côté serveur et la session locale est mise à jour (`user-profile-updated`) :
+ * il ne réapparaît pas à la prochaine ouverture.
+ */
 export function UploadNoticeBanner({ onClose }: UploadNoticeBannerProps) {
+  const { user } = useSession();
   const [visible, setVisible] = useState(false);
-  const [hasMarkedAsSeen, setHasMarkedAsSeen] = useState(false);
-
-  const markAsSeen = useCallback(async () => {
-    if (hasMarkedAsSeen) return;
-    
-    setHasMarkedAsSeen(true);
-    
-    try {
-      await fetch('/api/users/me/upload-notice', {
-      credentials: 'include',
-        method: 'POST',
-      });
-    } catch (error) {
-      console.error('[UploadNoticeBanner] Error marking notice as seen:', error);
-    }
-  }, [hasMarkedAsSeen]);
+  const affiche = useRef(false);
 
   useEffect(() => {
-    const checkUserStatus = async () => {
-      try {
-        const response = await fetch('/api/users/me', {
-      credentials: 'include',
-        });
-
-        if (response.ok) {
-          const userData = await response.json();
-          if (userData.hasSeenUploadNotice === false) {
-            setVisible(true);
-            markAsSeen();
-          }
-        }
-      } catch (error) {
-        console.error('[UploadNoticeBanner] Error checking user status:', error);
-      }
-    };
-
-    checkUserStatus();
-  }, [markAsSeen]);
+    if (affiche.current || !user || user.hasSeenUploadNotice !== false) return;
+    affiche.current = true;
+    setVisible(true);
+    const id = user.id;
+    apiClient
+      .post('/api/users/me/upload-notice', undefined, { onAuthFailure: 'silent' })
+      .then(() => {
+        window.dispatchEvent(new CustomEvent('user-profile-updated', { detail: { id, hasSeenUploadNotice: true } }));
+      })
+      .catch((error) => {
+        console.error('[UploadNoticeBanner] Error marking notice as seen:', error);
+      });
+  }, [user]);
 
   const handleClose = () => {
     setVisible(false);

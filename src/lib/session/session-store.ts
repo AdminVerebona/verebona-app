@@ -62,6 +62,8 @@ export interface User {
   unpaidRecoveryEndsAt?: string;
   duoEntitlement?: boolean;
   isInRecovery?: boolean;
+  /** Avis de dépôt (CGVU) déjà affiché — servi par `/api/users/me`. */
+  hasSeenUploadNotice?: boolean;
 }
 
 export type SessionStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'temporarily-unavailable';

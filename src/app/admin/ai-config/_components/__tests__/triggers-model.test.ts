@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  splitTriggers, selectTrigger, setTriggerActive, removeTrigger, emptyListExplanation, type CatalogTrigger,
+  splitTriggers, selectTrigger, setTriggerActive, removeTrigger, emptyListExplanation, removalEmptiesWarning, type CatalogTrigger,
 } from '../triggers-model';
 
 const catalog: CatalogTrigger[] = [
@@ -41,5 +41,24 @@ describe('déclencheurs du BO — rien d’enregistré n’est invisible', () =>
   it('liste vide : expliquée comme les défauts du code, pas comme « aucune exécution »', () => {
     expect(emptyListExplanation(['source_analyzed'], catalog)).toMatch(/par défaut du code s’appliquent \(Analyse de source terminée\)/);
     expect(emptyListExplanation(['source_analyzed'], catalog)).toMatch(/ne désactive pas/);
+  });
+});
+
+describe('supprimer la dernière entrée : prévenu que les défauts s’appliqueront', () => {
+  const hourly = { kind: 'schedule' as const, code: 'schedule_hourly', active: false };
+  const src = { kind: 'event' as const, code: 'source_analyzed', active: true };
+  it('dernière entrée (T4, schedule_hourly seul) : avertissement nommant source_analyzed', () => {
+    const w = removalEmptiesWarning([hourly], 'schedule_hourly', ['source_analyzed'], catalog);
+    expect(w).toMatch(/déclencheurs par défaut du code s’appliqueront \(Analyse de source terminée\)/);
+  });
+  it('liste non vidée, ou aucun défaut : rien', () => {
+    expect(removalEmptiesWarning([hourly, src], 'schedule_hourly', ['source_analyzed'], catalog)).toBeNull();
+    expect(removalEmptiesWarning([hourly], 'schedule_hourly', [], catalog)).toBeNull();
+  });
+  it('affiché dans l’éditeur, sur « Supprimer de la configuration » comme sur « Retirer »', async () => {
+    const { readFileSync } = await import('node:fs');
+    const ed = readFileSync('src/app/admin/ai-config/_components/TriggersEditor.tsx', 'utf8');
+    expect(ed).toContain('removalEmptiesWarning(saved, code, defaults, catalog)');
+    expect(ed.match(/videLaListe\((def|setting)\.code\)/g)?.length).toBeGreaterThanOrEqual(4);
   });
 });

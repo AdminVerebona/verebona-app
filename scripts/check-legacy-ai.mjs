@@ -53,7 +53,8 @@ const flag = (name) => process.argv.includes(`--${name}`);
 // Phase par défaut : variable d'environnement, sinon 1 (chantier en cours).
 // Lue dans le script et non dans le script npm : `${VAR:-1}` n'est pas
 // interprété par cmd.exe, et l'équipe développe sous Windows.
-const PHASE = Number(arg('phase', process.env.AI_MIGRATION_PHASE ?? '1'));
+// Variable présente mais vide (`AI_MIGRATION_PHASE=`) : défaut 1, pas 0 (lot 24).
+const PHASE = Number(arg('phase', process.env.AI_MIGRATION_PHASE?.trim() || '1'));
 const BASELINE_PATH = join(SCRIPT_DIR, arg('baseline', 'ai-legacy-baseline.json'));
 const UPDATE = flag('update-baseline');
 const STRICT = flag('strict');

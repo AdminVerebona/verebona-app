@@ -32,7 +32,7 @@ import {
   promoteToTest, demoteToDraft, validateVersion as commitValidation,
   switchActive, archiveVersion, listVersions, markStaleDrafts,
 } from './config-version.repository';
-import { promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
+import { normalizeTreatmentConfig, promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
 import { checkPromptArchitectureChange } from './prompt-architecture';
 
 /** Refus fonctionnel — distinct d'une erreur technique. */
@@ -99,7 +99,7 @@ export async function saveTreatmentConfig(
   versionId: number,
   config: TreatmentConfig,
   userId: number,
-): Promise<void> {
+): Promise<{ before: TreatmentConfig | null; after: TreatmentConfig }> {
   // CDC 15 §29.1, D-04 : bascule d'architecture seulement dans un Brouillon,
   // et seulement vers un master déclaré. `saveEntry` refuse déjà toute
   // édition hors Brouillon ; ce contrôle rend le motif explicite.
@@ -121,7 +121,8 @@ export async function saveTreatmentConfig(
   }
   // Même règle pour le texte master (D-03) : omis ⇒ celui en place.
   const masterPrompt = config.masterPrompt === undefined ? (current?.masterPrompt ?? null) : config.masterPrompt;
-  await saveEntry(versionId, { ...config, promptArchitecture: next, masterPrompt }, userId);
+  const enregistree: TreatmentConfig = { ...config, promptArchitecture: next, masterPrompt };
+  await saveEntry(versionId, enregistree, userId);
   // CFG-01 (CDC 15) : une édition ne touche qu'un Brouillon (`saveEntry`
   // refuse tout autre statut), jamais la version effective. La clé partagée
   // est tout de même incrémentée : le coût est un rechargement par instance,
@@ -129,6 +130,9 @@ export async function saveTreatmentConfig(
   // dépend plus de ce que la machine à états autorise aujourd'hui.
   const { bumpConfigVersionCounter } = await import('./config-cache-version');
   await bumpConfigVersionCounter(`edit:${versionId}:${config.treatment}`);
+  // Valeurs avant / après (après = ce que `upsertEntry` écrit réellement,
+  // normalisation T5 comprise) : la route les journalise (tickets T4 / T5).
+  return { before: current ?? null, after: normalizeTreatmentConfig(enregistree) };
 }
 
 // ── Diff et contrôles, sans transition ──────────────────────────────────────

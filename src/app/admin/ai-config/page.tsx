@@ -28,7 +28,7 @@
  * Les champs sont désactivés, et l'écran propose de créer un Brouillon.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -50,6 +50,10 @@ import { ModelRegistry } from './_components/ModelRegistry';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGuard';
+import { TriggersEditor } from './_components/TriggersEditor';
+import { createEditTracker } from './_components/edit-tracker';
+import type { CatalogTrigger } from './_components/triggers-model';
+import { T5_REPOSITORY_PROMPT_MESSAGE, T5_LEGACY_TEXT_MESSAGE, hasLegacyPromptText } from '@/services/ai/config/t5-messages';
 import { useRouter } from 'next/navigation';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
@@ -58,7 +62,7 @@ type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
 type Status = 'DRAFT' | 'TO_TEST' | 'ACTIVE' | 'VALIDATED' | 'ARCHIVED';
 
 interface GuardrailDef { code: string; label: string; description: string; unit: string }
-interface TriggerDef { code: string; label: string; kind: 'event' | 'schedule' }
+interface TriggerDef { code: string; label: string; kind: 'event' | 'schedule'; help?: string | null }
 
 interface TreatmentCatalog {
   code: Treatment;
@@ -66,6 +70,8 @@ interface TreatmentCatalog {
   batch: boolean;
   guardrails: GuardrailDef[];
   triggers: TriggerDef[];
+  /** Déclencheurs appliqués quand la liste enregistrée est vide (queue/triggers.ts). */
+  defaultTriggers?: string[];
   /** CDC 15 D-04 : prompt maître déclaré pour ce traitement, sinon `null`. */
   master?: { masterPromptCode: string; tasks: string[] } | null;
 }
@@ -78,6 +84,20 @@ interface Catalogs {
   reasoningLevels: string[];
   guardrailReactions: string[];
   treatments: TreatmentCatalog[];
+  /**
+   * Catalogue COMPLET des déclencheurs (libellés, applicabilité, retraits) :
+   * sert à nommer et expliquer une entrée enregistrée incompatible.
+   */
+  triggerCatalog?: CatalogTrigger[];
+}
+
+/**
+ * Catalogue des déclencheurs exploitable pour ce traitement ? Absent ou
+ * malformé (réponse partielle, serveur antérieur) : le BO affiche une erreur
+ * et « Réessayer » — jamais une liste vide présentée comme valide.
+ */
+function triggerCatalogAvailable(catalog: TreatmentCatalog, catalogs: Catalogs): boolean {
+  return Array.isArray(catalog.triggers) && Array.isArray(catalogs.triggerCatalog);
 }
 
 interface Cascade {
@@ -486,13 +506,17 @@ const selectClass =
 // ─── Éditeur d'un traitement ──────────────────────────────────────────────────
 
 function TreatmentEditor({
-  entry, catalog, catalogs, readOnly, onChange,
+  entry, saved, catalog, catalogs, readOnly, onChange, onRetryCatalogs,
 }: {
   entry: Entry;
+  /** Ligne enregistrée (relue du serveur) : un texte hérité T5 s'y lit. */
+  saved: Entry | undefined;
   catalog: TreatmentCatalog;
   catalogs: Catalogs;
   readOnly: boolean;
   onChange: (next: Entry) => void;
+  /** Relit le catalogue (déclencheurs) sans recharger la version. */
+  onRetryCatalogs: () => void;
 }) {
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) => onChange({ ...entry, [key]: value });
 
@@ -526,13 +550,6 @@ function TreatmentEditor({
       : [...entry.guardrails, { code, threshold: 0, reaction: catalogs.guardrailReactions[0] }]);
   };
 
-  const toggleTrigger = (t: TriggerDef) => {
-    const present = entry.triggers.find((x) => x.code === t.code);
-    set('triggers', present
-      ? entry.triggers.filter((x) => x.code !== t.code)
-      : [...entry.triggers, { kind: t.kind, code: t.code, active: true }]);
-  };
-
   return (
     <div className="space-y-6">
       {/*
@@ -560,11 +577,20 @@ function TreatmentEditor({
         CDC 15 D-03 : texte COMPLET du prompt maître. Vide : fichier du dépôt
         (valeur initiale).
       */}
-      {catalog.master && !isPromptAdministrable(entry.treatment) ? (
+      {!isPromptAdministrable(entry.treatment) ? (
         <p className="text-xs text-[color:var(--text-muted)]">
-          Prompt maître {catalog.master.masterPromptCode} : fichier du dépôt, non modifiable — Prompt Control
-          ne se modifie jamais lui-même (CDC 15 §27).
+          {T5_REPOSITORY_PROMPT_MESSAGE}
+          {catalog.master ? ` (${catalog.master.masterPromptCode})` : ''}
         </p>
+      ) : null}
+      {/*
+        Ticket T5 : un ancien texte stocké (préambule, ancien master) est
+        ignoré à l'exécution. Information NON bloquante, lue sur la ligne
+        ENREGISTRÉE : elle disparaît une fois le brouillon enregistré (le
+        serveur vide ces champs) et relu.
+      */}
+      {!isPromptAdministrable(entry.treatment) && saved && hasLegacyPromptText(saved) ? (
+        <p role="status" className="text-xs text-amber-500">{T5_LEGACY_TEXT_MESSAGE}</p>
       ) : null}
       {catalog.master && isPromptAdministrable(entry.treatment) ? (
         <details className="rounded-lg border border-[color:var(--border-subtle)] p-3" open>
@@ -598,8 +624,7 @@ function TreatmentEditor({
         </p>
       ) : (
         <p className="text-xs text-[color:var(--text-muted)]">
-          Le comportement de Prompt Control est défini dans le code : il n&apos;a pas de
-          prompt modifiable. Seuls ses réglages de modèle se configurent ici.
+          Seuls ses réglages de modèle se configurent ici.
         </p>
       )}
 
@@ -749,32 +774,35 @@ function TreatmentEditor({
         </div>
       )}
 
-      {catalog.batch ? (
-        <div className="space-y-2">
-          <span className="text-sm font-medium text-[color:var(--text-primary)]">Déclencheurs</span>
-          {catalog.triggers.map((t) => {
-            const chosen = entry.triggers.find((x) => x.code === t.code);
-            return (
-              <div key={t.code} className="flex items-center gap-2.5">
-                <input type="checkbox" checked={Boolean(chosen)} disabled={readOnly}
-                  onChange={() => toggleTrigger(t)} />
-                <span className="text-sm text-[color:var(--text-primary)] flex-1">{t.label}</span>
-                {chosen && (
-                  <label className="flex items-center gap-1.5 text-xs text-[color:var(--text-muted)]">
-                    <input type="checkbox" checked={chosen.active} disabled={readOnly}
-                      onChange={() => set('triggers', entry.triggers.map((x) =>
-                        x.code === t.code ? { ...x, active: !x.active } : x))} />
-                    actif
-                  </label>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      {/*
+        Ticket BO IA / T4 : tout déclencheur ENREGISTRÉ est visible et
+        corrigeable — disponibles (sélectionner, activer, désactiver,
+        retirer) et enregistrés incompatibles (motif, « Supprimer de la
+        configuration »). Catalogue indisponible : erreur et « Réessayer » ;
+        la liste enregistrée n'est jamais remplacée par une liste vide.
+      */}
+      {triggerCatalogAvailable(catalog, catalogs) ? (
+        <TriggersEditor
+          treatment={entry.treatment}
+          batch={catalog.batch}
+          saved={entry.triggers}
+          applicable={catalog.triggers}
+          catalog={catalogs.triggerCatalog}
+          defaults={catalog.defaultTriggers ?? []}
+          readOnly={readOnly}
+          onChange={(next) => set('triggers', next)}
+        />
       ) : (
-        <p className="text-sm text-[color:var(--text-muted)]">
-          Ce traitement répond aux demandes en direct : il n&apos;a pas de déclencheur.
-        </p>
+        <div role="alert" className="space-y-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+          <p className="text-sm font-medium text-[color:var(--text-primary)]">Déclencheurs</p>
+          <p className="text-sm text-[color:var(--text-secondary)]">
+            Le catalogue des déclencheurs n&apos;a pas pu être chargé : les déclencheurs ne sont pas modifiables pour
+            l&apos;instant. La configuration enregistrée est conservée telle quelle.
+          </p>
+          <Button size="sm" variant="outline" onClick={onRetryCatalogs}>
+            <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Réessayer
+          </Button>
+        </div>
       )}
     </div>
   );
@@ -834,6 +862,16 @@ export default function AiConfigPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Ticket T4 : « Réessayer » du bloc Déclencheurs — relit le catalogue seul,
+  // sans recharger la version ni perdre une saisie en cours.
+  const reloadCatalogs = useCallback(async () => {
+    try {
+      setCatalogs(await apiClient.get<Catalogs>('/api/admin/ai/config-catalogs'));
+    } catch {
+      toast.error('Le catalogue est toujours indisponible. Réessayez dans un instant.');
+    }
+  }, []);
 
   // État des traitements : lu une fois, puis mis à jour par chaque commande.
   // Silencieux en cas d'échec : la configuration reste utilisable sans lui.
@@ -952,19 +990,38 @@ export default function AiConfigPage() {
   const navigateTo = useCallback((href: string) => router.push(href), [router]);
   useUnsavedNavigationGuard(dirty.size > 0, askLeave, navigateTo);
 
+  // Saisies faites PENDANT un enregistrement : jamais écrasées par la réponse.
+  const edits = useRef(createEditTracker()).current;
+
   const saveTreatment = async (t: Treatment): Promise<boolean> => {
     if (!current) return false;
     const entry = drafts[t];
+    const repere = edits.mark(t);
     try {
       await apiClient.put(`/api/admin/ai/config-versions/${current.id}/entries/${t}`, entry);
-      setDirty((d) => { const n = new Set(d); n.delete(t); return n; });
+      // Modifié de nouveau pendant l'envoi : reste « non enregistré ».
+      if (edits.unchangedSince(t, repere)) setDirty((d) => { const n = new Set(d); n.delete(t); return n; });
       setDiff(null);
       toast.success(`${t} enregistré`);
-      return true;
     } catch {
       toast.error(`${t} n'a pas pu être enregistré.`);
       return false;
     }
+    // Relecture de ce qui est RÉELLEMENT enregistré (tickets T4 / T5) : la
+    // liste de déclencheurs telle que persistée, et un texte T5 hérité retiré
+    // par le serveur — l'information correspondante disparaît.
+    try {
+      const v = await apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${current.id}`);
+      const relue = v.entries.find((e) => e.treatment === t);
+      // Seulement si le traitement n'a pas été modifié depuis l'envoi : sinon
+      // la saisie en cours est conservée (la ligne enregistrée est tout de
+      // même relue dans `current`).
+      if (relue && edits.unchangedSince(t, repere)) setDrafts((d) => ({ ...d, [t]: relue }));
+      setCurrent((c) => (c && c.id === v.id ? { ...c, entries: v.entries } : c));
+    } catch {
+      // Enregistré ; seule la relecture a échoué — l'écran garde la saisie.
+    }
+    return true;
   };
 
   const saveAllDirty = async () => {
@@ -1068,6 +1125,12 @@ export default function AiConfigPage() {
   }
 
   const readOnly = current ? current.status !== 'DRAFT' : true;
+  /** T5 : ancien texte encore enregistré (retiré au prochain enregistrement). */
+  const legacyT5 = (t: Treatment) => {
+    if (isPromptAdministrable(t)) return false;
+    const e = current?.entries.find((x) => x.treatment === t);
+    return Boolean(e && hasLegacyPromptText(e));
+  };
   const issuesFor = (t: Treatment) => diff?.validation.issues.filter((i) => i.treatment === t) ?? [];
 
   return (
@@ -1257,11 +1320,14 @@ export default function AiConfigPage() {
                   {drafts[t.code] && (
                     <TreatmentEditor
                       entry={drafts[t.code]}
+                      saved={current.entries.find((e) => e.treatment === t.code)}
                       catalog={t}
                       catalogs={catalogs}
                       readOnly={readOnly}
+                      onRetryCatalogs={reloadCatalogs}
                       onChange={(next) => {
                         setDrafts((d) => ({ ...d, [t.code]: next }));
+                        edits.bump(t.code);
                         setDirty((s) => new Set(s).add(t.code));
                       }}
                     />
@@ -1272,7 +1338,13 @@ export default function AiConfigPage() {
                       <Button size="sm" variant="ghost" onClick={() => resetTreatment(t.code)} disabled={!dirty.has(t.code) || busy}>
                         <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Réinitialiser
                       </Button>
-                      <Button size="sm" onClick={() => saveTreatment(t.code)} disabled={!dirty.has(t.code) || busy}>
+                      {/*
+                        T5 : un texte hérité se retire en ENREGISTRANT le
+                        brouillon — le bouton reste disponible sans autre
+                        modification (aucune manipulation SQL ni JSON).
+                      */}
+                      <Button size="sm" onClick={() => saveTreatment(t.code)}
+                        disabled={(!dirty.has(t.code) && !legacyT5(t.code)) || busy}>
                         <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer {t.code}
                       </Button>
                     </div>

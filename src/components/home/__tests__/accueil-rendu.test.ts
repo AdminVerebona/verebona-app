@@ -73,6 +73,11 @@ describe('Ce que j’ai fait', () => {
     expect(html).toContain('aria-label="J’ai identifié une nouvelle échéance. — Voir dans l’agenda"');
     expect(html).not.toContain('>Voir dans l’agenda<');
     expect(html.match(/<button/g)?.length).toBe(1);
+    // Accessibilité clavier : bouton natif (Tab, Entrée / Espace), jamais
+    // retiré de l'ordre de tabulation, focus visible.
+    expect(html).toContain('<button type="button"');
+    expect(html).not.toContain('tabindex="-1"');
+    expect(html).toMatch(/focus-visible:ring-2 focus-visible:ring-\[color:var\(--accent\)\]/);
     expect(html).toContain('Aujourd’hui');
   });
 

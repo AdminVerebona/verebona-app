@@ -41,6 +41,7 @@ import { randomUUID } from 'crypto';
 import type { QueuedJob } from '../queue/job-queue.repository';
 import type { ExecutionGuard } from '../queue/execution-control';
 import type { T3Trigger } from './account-reconciliation.service';
+import { envNumber } from '@/lib/env-number';
 
 /** Types de cible T3 dans la file. */
 export const T3_TARGET_ASSET = 'asset';
@@ -63,7 +64,7 @@ export const T3_EVENT_TRIGGERS: Readonly<Record<string, string>> = {
 };
 
 /** Temporisation d'un contrôle compte après un événement (ancien `T3_EVENT_DEBOUNCE_MS`). */
-export const T3_EVENT_DELAY_SECONDS = Math.round(Number(process.env.T3_EVENT_DEBOUNCE_MS ?? 10 * 60_000) / 1000);
+export const T3_EVENT_DELAY_SECONDS = Math.round(envNumber('T3_EVENT_DEBOUNCE_MS', 10 * 60_000, { min: 0 }) / 1000);
 
 export interface T3QueueDeps {
   enqueue: typeof import('../queue/job-queue.repository').enqueue;

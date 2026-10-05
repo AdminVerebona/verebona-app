@@ -26,6 +26,7 @@ import {
 } from './queue-policy';
 import { abortLocalExecutions } from './execution-control';
 import { invalidateRuntimeGuardCache } from './runnable-guard';
+import { envNumber } from '@/lib/env-number';
 
 type Row = Record<string, unknown>;
 
@@ -236,13 +237,13 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
 // ── Prélèvement et fin d'exécution ──────────────────────────────────────────
 
 /** Durée du bail d'exécution, renouvelé par l'exécutant tant qu'il travaille. */
-export const LEASE_SECONDS = Number(process.env.AI_QUEUE_LEASE_SECONDS ?? 300);
+export const LEASE_SECONDS = envNumber('AI_QUEUE_LEASE_SECONDS', 300, { min: 1 });
 
 /**
  * Délai au-delà duquel un RUNNING SANS bail (ligne antérieure à la migration
  * 0141) est considéré abandonné.
  */
-const LEGACY_STALE_SECONDS = Number(process.env.AI_QUEUE_LEGACY_STALE_SECONDS ?? 3600);
+const LEGACY_STALE_SECONDS = envNumber('AI_QUEUE_LEGACY_STALE_SECONDS', 3600, { min: 1 });
 
 /**
  * Prélève le prochain job d'un traitement, ou `null`.

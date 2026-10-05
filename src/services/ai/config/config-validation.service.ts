@@ -38,6 +38,7 @@ import {
   type TreatmentConfig, type ConfigFieldKey,
 } from './config-types';
 import { masterConfigIssues } from './prompt-architecture';
+import { T5_LEGACY_TEXT_MESSAGE, hasLegacyPromptText } from './t5-messages';
 
 export interface ValidationIssue {
   treatment: Treatment;
@@ -381,18 +382,9 @@ export function unavailableModels(
   return out;
 }
 
-/** Information permanente du BO : le prompt de T5 vient du dépôt. */
-export const T5_REPOSITORY_PROMPT_MESSAGE =
-  'Le prompt de Prompt Control est défini dans le dépôt. Il n’est pas modifiable depuis cette configuration.';
-
-/** Texte hérité encore présent dans une configuration T5 (non bloquant). */
-export const T5_LEGACY_TEXT_MESSAGE =
-  'Un ancien texte de configuration est présent mais n’est pas utilisé par T5. Il sera retiré lors de l’enregistrement du brouillon.';
-
-/** Un préambule ou un ancien texte master est-il stocké (non vide) ? */
-export function hasLegacyPromptText(c: Pick<TreatmentConfig, 'prompt'> & { masterPrompt?: string | null }): boolean {
-  return Boolean(c.prompt && c.prompt.trim() !== '') || Boolean(c.masterPrompt && c.masterPrompt.trim() !== '');
-}
+// Messages T5 et détection d'un texte hérité : module PUR partagé avec l'écran
+// du BO (aucune dépendance serveur), même texte des deux côtés.
+export { T5_REPOSITORY_PROMPT_MESSAGE, T5_LEGACY_TEXT_MESSAGE, hasLegacyPromptText } from './t5-messages';
 
 export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssue[] {
   const out: ValidationIssue[] = [];

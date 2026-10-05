@@ -33,7 +33,13 @@ import { FusionSuggestionModal } from './FusionSuggestionModal';
 import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
 import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
-import { messageSelonStatut } from '@/lib/upload-http';
+import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
+
+const jsonPost = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
 
 /**
  * Traduit une réponse d'erreur en exception lisible.
@@ -134,48 +140,35 @@ interface ContexteDepot {
 /** Associations et création d'événement, puis signaux de rafraîchissement. */
 async function associerEtSignaler(ctx: ContexteDepot, fileIds: number[]): Promise<void> {
   if (fileIds.length === 0) return;
+  // Couche HTTP du dépôt (`fetchDepot`, lot 24 #12) : budget de la politique
+  // `write`, renouvellement de session sur 401, aucune nouvelle tentative.
+  // Échecs d'association toujours silencieux (le document est enregistré).
   for (const eventId of ctx.selectedEventIds) {
-    await fetch(`/api/events/${eventId}/documents`, {
-      credentials: 'include',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileIds }),
-    }).catch(() => {});
+    await fetchDepot(`/api/events/${eventId}/documents`, jsonPost({ fileIds })).catch(() => {});
   }
   if (ctx.createEvent && ctx.assetId && ctx.assetId !== '0') {
     if (ctx.evenementCreeId === undefined) {
       ctx.evenementCreeId = null;
-      const userStr = localStorage.getItem('user');
-      if (userStr) {
-        const user = JSON.parse(userStr);
-        const eventResponse = await fetch('/api/events', {
-          credentials: 'include',
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId: user.id, assetId: parseInt(ctx.assetId),
-            substructureId: ctx.substructureId,
-            equipmentId: ctx.equipmentId,
-            categorie: ctx.eventType, title: ctx.eventTitle,
-            date: ctx.documentDate,
-            provider: ctx.supplier || null,
-            costCents: ctx.amountCents,
-            notes: ctx.title || (ctx.isWl ? ctx.webLinkTitle : ctx.premierFichier?.name),
-          }),
-        }).catch(() => null);
-        if (eventResponse?.ok) {
-          const { event } = await eventResponse.json();
-          ctx.evenementCreeId = event.id;
-        }
+      // L'auteur est celui de la session (lu par le serveur) : plus de
+      // dépendance à une copie `localStorage.user`, qui pouvait manquer et
+      // empêcher silencieusement la création de l'événement.
+      const eventResponse = await fetchDepot('/api/events', jsonPost({
+        assetId: parseInt(ctx.assetId),
+        substructureId: ctx.substructureId,
+        equipmentId: ctx.equipmentId,
+        categorie: ctx.eventType, title: ctx.eventTitle,
+        date: ctx.documentDate,
+        provider: ctx.supplier || null,
+        costCents: ctx.amountCents,
+        notes: ctx.title || (ctx.isWl ? ctx.webLinkTitle : ctx.premierFichier?.name),
+      })).catch(() => null);
+      if (eventResponse?.ok) {
+        const { event } = await eventResponse.json();
+        ctx.evenementCreeId = event.id;
       }
     }
     if (ctx.evenementCreeId) {
-      await fetch(`/api/events/${ctx.evenementCreeId}/documents`, {
-        credentials: 'include',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileIds }),
-      }).catch(() => {});
+      await fetchDepot(`/api/events/${ctx.evenementCreeId}/documents`, jsonPost({ fileIds })).catch(() => {});
     }
   }
 
@@ -348,14 +341,13 @@ export function UnifiedDocumentDialog({
       setLoadingTypes(true);
       setLoadingData(true);
       try {
-        const headers = {};
-
-        const dtResponse = await fetch('/api/document-types', { headers });
-        if (dtResponse.ok) {
-          const data = await dtResponse.json();
-          if (data.documentTypes) {
-            setDocumentTypes(data.documentTypes.filter((dt: DocumentType) => dt.isActive && !dt.hideFromPicker));
-          }
+        // Lecture via la couche commune (budget `read`, renouvellement) ; un
+        // échec n'empêche pas le chargement des biens, comme avant.
+        const data = await apiClient
+          .get<{ documentTypes?: DocumentType[] }>('/api/document-types')
+          .catch(() => null);
+        if (data?.documentTypes) {
+          setDocumentTypes(data.documentTypes.filter((dt: DocumentType) => dt.isActive && !dt.hideFromPicker));
         }
 
         if (!providedAssets) {
@@ -654,21 +646,16 @@ export function UnifiedDocumentDialog({
     // ── Création du lien web ──────────────────────────────────────────────
     setIsSubmittingLink(true);
     try {
-      const wlRes = await fetch('/api/web-links', {
-        credentials: 'include',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          url: webLinkUrl,
-          title: webLinkTitle,
-          documentType,
-          assetId: ctx.targetAssetId,
-          documentDate: documentDate || null,
-          description: title || null,
-          supplier: supplier || null,
-          amountCents: ctx.amountCents || null,
-        }),
-      });
+      const wlRes = await fetchDepot('/api/web-links', jsonPost({
+        url: webLinkUrl,
+        title: webLinkTitle,
+        documentType,
+        assetId: ctx.targetAssetId,
+        documentDate: documentDate || null,
+        description: title || null,
+        supplier: supplier || null,
+        amountCents: ctx.amountCents || null,
+      }));
       if (!wlRes.ok) {
         throw await reponseEnErreur(wlRes, `Erreur ${wlRes.status}`);
       }

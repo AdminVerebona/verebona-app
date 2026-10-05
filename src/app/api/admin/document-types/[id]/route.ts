@@ -7,11 +7,12 @@ import { normalizeExportCode } from '@/services/exports/catalog';
 import { db } from '@/db';
 import { documentTypes, documentTypeAssetAssociations, documentTypeExportAssociations, assetTypes, assetTypeSubcategories } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { requireAdmin } from '@/lib/auth-guards';
+import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { sessionErrorToResponse } from '@/lib/auth/session-errors';
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    await await requireAdmin(request);
+    await requireAdmin(request);
 
     const { id } = await params;
 
@@ -97,17 +98,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       exportAssociations,
     }, { status: 200 });
 
-  } catch (error: any) {
-    if (error.message === 'Unauthorized') {
-      return NextResponse.json({ 
-        error: 'Admin access required',
-        code: 'UNAUTHORIZED' 
-      }, { status: 403 });
-    }
-    console.error('GET document type error:', error);
-    return NextResponse.json({ 
-      error: 'Internal server error: ' + error.message 
-    }, { status: 500 });
+  } catch (error) {
+    // Refus de garde (non connecté, non administrateur, session révoquée…) :
+    // 401/403/503 typés du contrat commun (APP-PERF-20). Erreur inattendue :
+    // 500 journalisé avec `requestId`, sans message technique au client.
+    if (isSessionError(error)) return sessionErrorResponse(error);
+    return sessionErrorToResponse(error, undefined, 'GET /api/admin/document-types/[id]');
   }
 }
 

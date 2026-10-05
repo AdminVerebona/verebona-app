@@ -151,6 +151,62 @@ export function helpCorpusUrl(): string {
   return `${base}${HELP_T2_CORPUS_PATH}`;
 }
 
+// ── Encadrés éditoriaux « Limites et points d'attention » ──────────────────
+//
+// Consignes de rédaction (« le Centre d'aide ne doit pas promettre de
+// contournement »…) publiées par erreur dans d'anciens corpus : jamais citées
+// par l'assistant. Elles apparaissent soit comme section (intitulé), soit
+// comme paragraphe encadré DANS le texte d'une section
+// (« \nLimites et points d'attention — … »). Les deux formes sont retirées à
+// la lecture, y compris du dernier corpus valide relu en base ou gardé en
+// mémoire (tous passent par `parseHelpCorpus`). Le site public refuse
+// désormais cet encadré au build ; ce filtre couvre les corpus déjà publiés.
+
+/** « Limite(s) et point(s) d'attention », casse et apostrophe indifférentes. */
+const EDITORIAL_LABEL = String.raw`limites?\s+et\s+points?\s+d['’‘ʼ]\s*attention`;
+const EDITORIAL_HEADING_RE = new RegExp(`^\\s*${EDITORIAL_LABEL}\\s*[:.]?\\s*$`, 'i');
+/** Début d'un encadré éditorial : « Limites et points d'attention — … ». */
+const EDITORIAL_START_RE = new RegExp(`^[ \\t]*${EDITORIAL_LABEL}\\s*(?:—|–|-|:)`, 'i');
+/**
+ * Début d'un AUTRE bloc, qui termine l'encadré : intitulé Markdown, étape
+ * numérotée, puce, citation, ou encadré « Libellé — texte » (« Résultat
+ * attendu — », « À savoir — »…).
+ */
+const NEXT_BLOCK_RE = /^\s*(?:#{1,6}\s|\d+[.)]\s|[-*•]\s|>\s|[^\n—–]{1,60}\s[—–]\s)/;
+
+/** Section éditoriale (intitulé exact « Limites et points d'attention »). */
+export function isEditorialSection(s: Pick<HelpCorpusSection, 'heading'>): boolean {
+  return typeof s.heading === 'string' && EDITORIAL_HEADING_RE.test(s.heading.normalize('NFC'));
+}
+
+/** Texte d'une section sans les paragraphes encadrés éditoriaux. */
+export function stripEditorialParagraphs(text: string): string {
+  if (typeof text !== 'string') return text;
+  // Paragraphe ENTIER : de l'intitulé jusqu'à la ligne vide ou au début du
+  // bloc suivant (une consigne peut courir sur plusieurs lignes).
+  const out: string[] = [];
+  let dansEncadre = false;
+  for (const ligne of text.split('\n')) {
+    if (EDITORIAL_START_RE.test(ligne.normalize('NFC'))) { dansEncadre = true; continue; }
+    if (dansEncadre) {
+      if (ligne.trim() === '') { dansEncadre = false; continue; }
+      if (!NEXT_BLOCK_RE.test(ligne)) continue;
+      dansEncadre = false;
+    }
+    out.push(ligne);
+  }
+  return out.join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+function sansEncadresEditoriaux(a: HelpCorpusArticle): HelpCorpusArticle {
+  const sections = a.sections
+    .filter((s) => !isEditorialSection(s))
+    .map((s) => ({ ...s, text: stripEditorialParagraphs(s.text) }))
+    // Une section qui ne contenait que l'encadré n'a plus rien à citer.
+    .filter((s) => typeof s.text !== 'string' || s.text.trim().length > 0);
+  return { ...a, sections };
+}
+
 export function parseHelpCorpus(json: unknown, opts: { legacy?: boolean } = {}): HelpCorpus | null {
   const c = json as Partial<HelpCorpus> | null;
   if (!c || c.schema !== 'verebona-help-t2-v1' || !Array.isArray(c.articles)) return null;
@@ -162,9 +218,12 @@ export function parseHelpCorpus(json: unknown, opts: { legacy?: boolean } = {}):
   const { legacyPublication: _ignore, ...base } = c as HelpCorpus;
   void _ignore;
   if (opts.legacy) {
-    return { ...base, legacyPublication: true, articles: c.articles.filter((a) => articlePublieAncienneRegle(a)) };
+    return {
+      ...base, legacyPublication: true,
+      articles: c.articles.filter((a) => articlePublieAncienneRegle(a)).map(sansEncadresEditoriaux),
+    };
   }
-  return { ...base, articles: c.articles.filter((a) => articlePublie(a)) };
+  return { ...base, articles: c.articles.filter((a) => articlePublie(a)).map(sansEncadresEditoriaux) };
 }
 
 /** Ancienne règle (avant D-O) : statut absent ou `published`. Repli de transition seulement. */

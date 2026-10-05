@@ -7,6 +7,7 @@ import {
 } from "@/db/migration-index";
 import { resolveMigrationRuntimeConfig, type MigrationBootMode } from "@/db/migration-config";
 import { describePoolConfig, resolvePoolConfig } from "@/db/pool-config";
+import { instrumentPgClient, startPoolMetricsLog } from "@/db/pool-metrics";
 
 const connectionString = process.env.DATABASE_URL!;
 
@@ -47,6 +48,10 @@ const client = postgres(connectionString, {
     application_name: 'verebona',
   },
 });
+// Mesures du pool (APP-PERF-01 §MESURES, lot 24) : attente d'acquisition et
+// temps SQL, séparés, agrégés sans requête ni paramètre (`pool-metrics.ts`).
+instrumentPgClient(client);
+if (process.env.NODE_ENV !== 'test') startPoolMetricsLog(poolConfig.role, poolConfig.max);
 export const db = drizzle(client, { schema });
 export { client as pgClient };
 export type Database = typeof db;

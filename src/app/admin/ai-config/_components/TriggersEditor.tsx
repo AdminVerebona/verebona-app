@@ -2,7 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import {
-  splitTriggers, selectTrigger, setTriggerActive, removeTrigger, emptyListExplanation,
+  splitTriggers, selectTrigger, setTriggerActive, removeTrigger, emptyListExplanation, removalEmptiesWarning,
   type ApplicableTrigger, type CatalogTrigger, type TriggerSetting,
 } from './triggers-model';
 
@@ -28,6 +28,9 @@ export function TriggersEditor({
   onChange: (next: TriggerSetting[]) => void;
 }) {
   const { available, incompatible } = splitTriggers({ treatment, batch, saved, applicable, catalog });
+  // Supprimer la DERNIÈRE entrée applique les défauts du code : prévenu au
+  // moment du geste, pas après l'enregistrement.
+  const videLaListe = (code: string) => (readOnly ? null : removalEmptiesWarning(saved, code, defaults, catalog));
 
   return (
     <div className="space-y-3">
@@ -68,6 +71,9 @@ export function TriggersEditor({
                     </>
                   )}
                 </div>
+                {setting && videLaListe(def.code) && (
+                  <p className="mt-2 text-xs text-amber-500">{videLaListe(def.code)}</p>
+                )}
               </li>
             ))}
           </ul>
@@ -94,6 +100,9 @@ export function TriggersEditor({
                     <span className="block text-xs text-[color:var(--text-muted)]">
                       Le désactiver ne suffit pas : la validation contrôle aussi les déclencheurs inactifs.
                     </span>
+                  )}
+                  {videLaListe(setting.code) && (
+                    <span className="block text-xs text-amber-500">{videLaListe(setting.code)}</span>
                   )}
                 </span>
                 <Button size="sm" variant="outline" disabled={readOnly}

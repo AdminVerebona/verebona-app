@@ -5,8 +5,8 @@ import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getS3Config, logS3Error, S3ConfigError, signGetUrl } from '@/lib/s3-config';
 import { FileLogger } from '@/lib/file-logger';
-import { SessionService } from '@/lib/session-service';
-import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { getSession, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { accessErrorResponse, sessionErrorToResponse } from '@/lib/auth/session-errors';
 import { viewableFileCondition } from '@/services/documents/grouped-sources';
 
 /**
@@ -28,16 +28,14 @@ export async function GET(
   const userAgent = request.headers.get('user-agent') || null;
 
   try {
-    // Get session with accountId
-    const session = await SessionService.getSession(request);
+    // Garde de session commune (révocation comprise) ; refus typés du
+    // contrat `lib/auth/session-errors` (APP-PERF-20, lot 24).
+    const session = await getSession(request);
     const accountId = session.currentAccountId;
     const userId = session.userId;
 
     if (!accountId) {
-      return NextResponse.json(
-        { error: 'UNAUTHORIZED', message: 'Authentication required' },
-        { status: 401 }
-      );
+      return accessErrorResponse('no-account', requestId, { headers: NO_STORE });
     }
 
     const fileId = parseInt(params.id);
@@ -72,20 +70,20 @@ export async function GET(
         action: 'VIEW',
         error: 'FILE_NOT_FOUND',
       });
-      return NextResponse.json(
-        { error: 'File not found or has been deleted', code: 'FILE_NOT_FOUND' },
-        { status: 404 }
-      );
+      return accessErrorResponse('not-found', requestId, {
+        code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.', headers: NO_STORE,
+      });
     }
 
     const file = fileRecords[0];
 
-    // Check ownership by accountId (not userId)
+    // Fichier d'un autre compte : 404, comme le proxy et les miniatures
+    // (`services/documents/file-access`) — son existence n'est pas confirmée.
     if (file.accountId !== accountId) {
-      return NextResponse.json(
-        { error: 'FORBIDDEN', message: 'Access denied' },
-        { status: 403 }
-      );
+      FileLogger.blocked({ requestId, ip, userAgent, userId, fileId: fileIdInt, action: 'VIEW', error: 'FILE_NOT_FOUND' });
+      return accessErrorResponse('not-found', requestId, {
+        code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.', headers: NO_STORE,
+      });
     }
 
     if (file.uploadStatus !== 'COMPLETED' && file.uploadStatus !== null) {
@@ -175,42 +173,25 @@ export async function GET(
     }, { status: 200, headers: NO_STORE });
 
   } catch (error) {
-    // Refus de session (absente, invalide, révoquée…) : 401/403 du contrat
-    // commun, non journalisés comme panne (APP-PERF-20).
+    // Refus de session (absente, invalide, révoquée…) ou vérification
+    // impossible : 401/403/503 du contrat commun, non journalisés comme panne.
     if (isSessionError(error)) return sessionErrorResponse(error, requestId);
     if (error instanceof S3ConfigError) {
       logS3Error('GET /api/files/[id]/view', error);
       return NextResponse.json(
-        { error: 'Storage configuration error', code: 'S3_CONFIG_INVALID' },
-        { status: 500 }
+        { error: 'Storage configuration error', code: 'S3_CONFIG_INVALID', requestId },
+        { status: 500, headers: { 'x-request-id': requestId } }
       );
     }
-    console.error('GET /api/files/[id]/view error:', (error as Error)?.name, (error as Error)?.message);
     FileLogger.error({
       requestId,
       ip,
       userAgent,
       userId: 0,
       action: 'VIEW',
-      error: (error as Error).message,
+      error: (error as Error)?.message ?? String(error),
     });
-    
-    if ((error as Error).message === 'Unauthorized') {
-      return NextResponse.json(
-        { error: 'UNAUTHORIZED', message: 'Non authentifié' },
-        { status: 401 }
-      );
-    }
-    if ((error as Error).message === 'Access denied') {
-      return NextResponse.json(
-        { error: 'FORBIDDEN', message: 'Accès refusé' },
-        { status: 403 }
-      );
-    }
-    
-    return NextResponse.json(
-      { error: 'INTERNAL_ERROR', message: 'Erreur serveur interne' },
-      { status: 500 }
-    );
+    // Erreur inattendue : 500 journalisé avec `requestId`, sans détail technique au client.
+    return sessionErrorToResponse(error, requestId, 'files/view');
   }
 }

@@ -27,7 +27,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { listMasterPrompts, AI_OPERATIONS } from '../registry/operations';
-import { checkMasterTemplate, inspectMasterTemplate } from '../prompts/prompt-loader';
+import { checkMasterTemplate, inspectMasterTemplate, isOptionalMasterVariable } from '../prompts/prompt-loader';
 import { treatmentForUseCase, isMasterOnlyTreatment, isPromptAdministrable, type Treatment } from './treatments';
 import { retiredVariablesSet } from './retired-variables';
 import {
@@ -138,12 +138,27 @@ export function checkMasterProposal(treatment: Treatment, text: string): string[
   if (attendus.length) {
     const info = inspectMasterTemplate(text);
     const presents = info.placeholders.filter((p) => p !== info.discriminant);
-    const manquants = attendus.filter((v) => !presents.includes(v));
+    // Variable optionnelle absente (texte antérieur) : signalée sans bloquer
+    // par `missingOptionalMasterVariables`, jamais un échec d'appel.
+    const manquants = attendus.filter((v) => !presents.includes(v) && !isOptionalMasterVariable(master.masterPromptCode, v));
     const inconnus = presents.filter((v) => !attendus.includes(v));
     if (manquants.length) out.push(`emplacement(s) supprimé(s) : ${manquants.map((m) => `{{${m}}}`).join(', ')}`);
     if (inconnus.length) out.push(`emplacement(s) inconnu(s) du code : ${inconnus.map((m) => `{{${m}}}`).join(', ')}`);
   }
   return out;
+}
+
+/**
+ * Emplacements OPTIONNELS (`OPTIONAL_MASTER_VARIABLES`) absents d'un texte
+ * master proposé : le rendu les ignore, la règle reste appliquée par le
+ * serveur — avertissement non bloquant au BO.
+ */
+export function missingOptionalMasterVariables(treatment: Treatment, text: string): string[] {
+  const master = masterPromptForTreatment(treatment);
+  if (!master) return [];
+  const info = inspectMasterTemplate(text);
+  return declaredMasterVariables(master.masterPromptCode)
+    .filter((v) => isOptionalMasterVariable(master.masterPromptCode, v) && !info.placeholders.includes(v));
 }
 
 /**
@@ -200,6 +215,16 @@ export function masterConfigIssues(
   if (texte && master) {
     for (const a of checkMasterProposal(c.treatment, texte)) {
       out.push({ field: 'masterPrompt', message: `Prompt maître incomplet (${a}) : le master doit être complet (D-03).`, blocking: true });
+    }
+    const optionnels = missingOptionalMasterVariables(c.treatment, texte);
+    if (optionnels.length) {
+      out.push({
+        field: 'masterPrompt',
+        message: `Emplacement(s) ${optionnels.map((v) => `{{${v}}}`).join(', ')} absent(s) du texte master : la donnée n’est pas `
+          + `transmise au modèle, mais la règle reste appliquée par le serveur. Reprenez le texte du dépôt `
+          + `(${master.masterPromptCode}) pour l’ajouter.`,
+        blocking: false,
+      });
     }
   }
 

@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from '@/hooks/useSession';
+import { useEntitlements } from '@/hooks/useEntitlements';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
@@ -83,7 +84,7 @@ const offers = [
 export default function OffresPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user } = useSession();
+  const { user, refetch: relireSession } = useSession();
   const { setBreadcrumbs } = useBreadcrumb();
 
   useEffect(() => {
@@ -113,9 +114,6 @@ export default function OffresPage() {
   const [essaiTermine, setEssaiTermine] = useState(false);
   /** Cycle d'impayé en cours : message et mise à jour du moyen de paiement. */
   const [impaye, setImpaye] = useState<UnpaidCyclePayload | null>(null);
-  // Incrémenté pour relire l'état après une montée en gamme (retour Stripe).
-  const [etatVersion, setEtatVersion] = useState(0);
-
   useEffect(() => {
     // CDC §17 : consultation des offres
     void fetch('/api/analytics/track', {
@@ -126,37 +124,33 @@ export default function OffresPage() {
     }).catch(() => undefined);
   }, []);
 
+  // État du compte : celui de l'`EntitlementsProvider` (APP-PERF-12), lu une
+  // fois pour toute l'application — plus de lecture propre de trial-status.
+  // La réponse porte aussi le bloc `subscription` (offre Stripe, période).
+  const { entitlements, refresh: relireDroits } = useEntitlements();
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/billing/trial-status', { credentials: 'include' });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (cancelled) return;
-        setHasSubscription(Boolean(data.subscription?.hasStripeSubscription));
-        setActivePeriod(data.subscription?.billingPeriod ?? null);
-        // `data.plan` vient des droits effectifs : 'trial' | 'standard' |
-        // 'premium' | 'premium_duo' | 'none'. Un essai n'est pas une offre.
-        setOffreActive(
-          data.plan === 'standard' ? 'STANDARD'
-          : data.plan === 'premium' ? 'PREMIUM'
-          : data.plan === 'premium_duo' ? 'PREMIUM_DUO'
-          : null,
-        );
-        // `isRestricted` couvre aussi l'abonnement résilié : c'est bien « vous
-        // n'avez plus accès », pas seulement « votre essai a expiré ». Mais
-        // PAS l'impayé : critère partagé `isTrialOver` (même que le bandeau),
-        // l'impayé a son propre encadré ci-dessous.
-        setEssaiTermine(isTrialOver(data));
-        setImpaye(isUnpaid(data) ? data.unpaid : null);
-        if (data.subscription?.billingPeriod) setBillingPeriod(data.subscription.billingPeriod);
-      } catch {
-        // Sans cette information, on reste sur le comportement de souscription.
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [etatVersion]);
+    const data = entitlements as (typeof entitlements & {
+      subscription?: { hasStripeSubscription?: boolean; billingPeriod?: 'monthly' | 'yearly' | null };
+    }) | null;
+    if (!data) return;
+    setHasSubscription(Boolean(data.subscription?.hasStripeSubscription));
+    setActivePeriod(data.subscription?.billingPeriod ?? null);
+    // `data.plan` vient des droits effectifs : 'trial' | 'standard' |
+    // 'premium' | 'premium_duo' | 'none'. Un essai n'est pas une offre.
+    setOffreActive(
+      data.plan === 'standard' ? 'STANDARD'
+      : data.plan === 'premium' ? 'PREMIUM'
+      : data.plan === 'premium_duo' ? 'PREMIUM_DUO'
+      : null,
+    );
+    // `isRestricted` couvre aussi l'abonnement résilié : c'est bien « vous
+    // n'avez plus accès », pas seulement « votre essai a expiré ». Mais
+    // PAS l'impayé : critère partagé `isTrialOver` (même que le bandeau),
+    // l'impayé a son propre encadré ci-dessous.
+    setEssaiTermine(isTrialOver(data));
+    setImpaye(isUnpaid(data) ? (data.unpaid ?? null) : null);
+    if (data.subscription?.billingPeriod) setBillingPeriod(data.subscription.billingPeriod);
+  }, [entitlements]);
 
   // ══════════════════════════════════════════════════════════════════════
   // RETOUR DE STRIPE APRÈS UNE MONTÉE EN GAMME
@@ -165,29 +159,40 @@ export default function OffresPage() {
   // réglé. L'offre est synchronisée sans attendre le webhook, la session est
   // rafraîchie (menus, droits), puis l'état de la page est relu.
   // ══════════════════════════════════════════════════════════════════════
+  // Une seule synchronisation par retour de Stripe, même si l'effet est
+  // rejoué (dépendances recréées, StrictMode) : un rejeu l'annulait et la
+  // relançait (lot 24, revue).
+  const retourStripeTraite = useRef(false);
+  const monte = useRef(true);
+  useEffect(() => { monte.current = true; return () => { monte.current = false; }; }, []);
   useEffect(() => {
-    if (searchParams?.get('changement') !== 'confirme') return;
-    let cancelled = false;
+    if (searchParams?.get('changement') !== 'confirme' || retourStripeTraite.current) return;
+    retourStripeTraite.current = true;
     (async () => {
       try {
-        const sync = await fetch('/api/billing/sync-subscription', { method: 'POST', credentials: 'include' });
-        await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' }).catch(() => undefined);
-        if (cancelled) return;
+        let synchronise = false;
+        try {
+          await apiClient.post('/api/billing/sync-subscription', undefined, { onAuthFailure: 'silent' });
+          synchronise = true;
+        } catch { /* le webhook Stripe mettra l'offre à jour */ }
+        // Renouvellement partagé et borné (offre à jour dans le jeton).
+        await apiClient.refreshToken().catch(() => undefined);
+        if (!monte.current) return;
         // Un échec de synchronisation n'est pas annoncé comme un succès : le
         // webhook Stripe mettra l'offre à jour, la page se relira alors.
-        if (sync.ok) toast.success('Votre offre a été mise à jour.');
+        if (synchronise) toast.success('Votre offre a été mise à jour.');
         else toast.info('Paiement confirmé. La mise à jour de votre offre peut prendre quelques instants.');
-      } catch {
-        // Le webhook Stripe mettra l'offre à jour de son côté.
       } finally {
-        if (!cancelled) {
-          setEtatVersion((v) => v + 1);
+        if (monte.current) {
+          // Rafraîchissement EXPLICITE après paiement : droits et session
+          // relus une fois, pour toute l'application.
+          void relireDroits();
+          void relireSession();
           router.replace('/mon-compte/offres');
         }
       }
     })();
-    return () => { cancelled = true; };
-  }, [searchParams, router]);
+  }, [searchParams, router, relireDroits, relireSession]);
 
   /**
    * Montée en gamme d'un compte abonné : prise d'effet immédiate.

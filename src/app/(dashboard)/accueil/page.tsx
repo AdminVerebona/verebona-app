@@ -17,6 +17,7 @@ import type { WriteBlockedInfo } from '@/lib/write-blocked';
 import { MascotSpeaks } from '@/components/home/MascotSpeaks';
 import { HomeAssets, RecentDocuments, UpcomingEvents, VerebonaWork } from '@/components/home/HomeBlocks';
 import { useSession } from '@/hooks/useSession';
+import { apiClient } from '@/lib/api-client';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
 import { markAccountDataMutated } from '@/lib/data-freshness';
@@ -82,29 +83,17 @@ export default function DashboardPage() {
     const sessionId = params.get('session_id');
     if (!sessionId) return;
 
+    // Retour de paiement : constat côté serveur, puis renouvellement du jeton
+    // (offre à jour dans la session). Le rechargement complet ci-dessous est
+    // le rafraîchissement explicite : session (`SessionProvider`) et droits
+    // (`EntitlementsProvider`) sont relus une fois, par leurs fournisseurs —
+    // plus de lecture directe de `/api/users/me` ni de copie locale ici.
     const syncPayment = async () => {
       try {
-        const res = await fetch(`/api/billing/me?session_id=${encodeURIComponent(sessionId)}`, {
-          credentials: 'include',
+        await apiClient.get(`/api/billing/me?session_id=${encodeURIComponent(sessionId)}`, {
+          onAuthFailure: 'silent',
         });
-        if (res.ok) {
-          const refreshRes = await fetch('/api/auth/refresh', {
-            credentials: 'include',
-            method: 'POST',
-          });
-          if (refreshRes.ok) {
-            const refreshData = await refreshRes.json();
-            if (refreshData.accessToken) {
-              const userRes = await fetch('/api/users/me', {
-                credentials: 'include',
-              });
-              if (userRes.ok) {
-                const userData = await userRes.json();
-                localStorage.setItem('user', JSON.stringify(userData));
-              }
-            }
-          }
-        }
+        await apiClient.refreshToken();
       } catch (err) {
         console.error('[Accueil Sync] Failed to sync payment:', err);
       } finally {

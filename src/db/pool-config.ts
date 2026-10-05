@@ -24,18 +24,25 @@
  *     3 par défaut), le worker d'exports V12 (une génération à la fois), la
  *     sauvegarde quotidienne et les tâches planifiées internes ;
  *   · migrations au démarrage (`ensureMigrations`) : même pool ;
+ *   · étape `postdeploy` (`scripts/migrate.mjs`, Procfile) : conteneur
+ *     ponctuel, pool propre de 2 connexions (`max: 2` : verrou consultatif
+ *     de session + exécution), PENDANT que les anciens conteneurs web
+ *     servent encore — à compter avec eux ;
  *   · scripts ponctuels (`src/db/run-migration.ts`, `check-*.ts`,
  *     `scalingo run …`) : 1 connexion chacun (`max: 1`) ;
  *   · administration humaine (psql, console de l'hébergeur) : 1 à 2.
  *
- *   total = conteneurs_web × DB_POOL_MAX + scripts ponctuels + administration
+ *   total = conteneurs_web × DB_POOL_MAX + 2 (postdeploy) + scripts ponctuels
+ *           + administration
  *
  * Ce total doit rester SOUS la limite de connexions de l'offre PostgreSQL de
  * l'environnement, avec une marge (connexions réservées au superutilisateur,
  * déploiement en recouvrement : pendant un déploiement Scalingo, l'ancien et le
  * nouveau conteneur coexistent — compter deux fois les conteneurs web).
  * Exemple : 2 conteneurs web, DB_POOL_MAX=5, recouvrement → 2 × 2 × 5 = 20,
- * + 3 ponctuelles = 23, à comparer à la limite de l'offre.
+ * + 2 (postdeploy) + 3 ponctuelles = 25, à comparer à la limite de l'offre.
+ * Mesures (attente d'acquisition, temps SQL) : `pool-metrics.ts` (lot 24).
+ * Détail : docs/exploitation/migrations-et-sondes.md §3.
  *
  * ⚠️ Ne pas augmenter arbitrairement (20, 50…) : au-delà du nombre de cœurs
  * de la base, des connexions supplémentaires dégradent PostgreSQL. Aucun gain

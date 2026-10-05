@@ -207,6 +207,27 @@ describe('compatibilité d’un texte de version antérieur', () => {
       variables: { SOURCES: '[]', AUTRE: 'x' } })).toThrow(/sans emplacement/);
   });
 
+  it('contrôle BO : texte master T1 sans {{ACCOUNT_CAPABILITIES}} → avertissement NON bloquant ; autre emplacement manquant → bloquant', async () => {
+    const { masterConfigIssues, checkMasterProposal } = await import('@/services/ai/config/prompt-architecture');
+    const { emptyTreatmentConfig } = await import('@/services/ai/config/config-types');
+    const depot = read('src/services/ai/prompts/source-analysis/t1_master_v1.txt');
+    const sansCaps = depot.replaceAll('{{ACCOUNT_CAPABILITIES}}', '');
+    expect(checkMasterProposal('T1', depot)).toEqual([]);
+    expect(checkMasterProposal('T1', sansCaps)).toEqual([]);
+    const issues = masterConfigIssues({ ...emptyTreatmentConfig('T1'), primaryModel: 'm', masterPrompt: sansCaps });
+    const avert = issues.filter((i) => i.field === 'masterPrompt');
+    expect(avert).toHaveLength(1);
+    expect(avert[0].blocking).toBe(false);
+    expect(avert[0].message).toContain('{{ACCOUNT_CAPABILITIES}}');
+    // Un emplacement obligatoire supprimé reste bloquant.
+    const sansSources = depot.replaceAll('{{SOURCES}}', '');
+    expect(masterConfigIssues({ ...emptyTreatmentConfig('T1'), primaryModel: 'm', masterPrompt: sansSources })
+      .some((i) => i.blocking && /SOURCES/.test(i.message))).toBe(true);
+    // Texte du dépôt : aucun avertissement.
+    expect(masterConfigIssues({ ...emptyTreatmentConfig('T1'), primaryModel: 'm', masterPrompt: depot })
+      .filter((i) => i.field === 'masterPrompt')).toEqual([]);
+  });
+
   it('le texte du dépôt porte l’emplacement et la règle', () => {
     const t = read('src/services/ai/prompts/source-analysis/t1_master_v1.txt');
     expect(t).toContain('{{ACCOUNT_CAPABILITIES}}');

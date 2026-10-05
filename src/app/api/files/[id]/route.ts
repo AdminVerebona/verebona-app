@@ -7,6 +7,8 @@ import { randomUUID } from 'crypto';
 import { FileLogger } from '@/lib/file-logger';
 import { ApiErrors } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { accessErrorResponse, sessionErrorToResponse } from '@/lib/auth/session-errors';
 
 export async function GET(
   request: NextRequest,
@@ -60,31 +62,30 @@ export async function GET(
       return ApiErrors.notFound('File');
     }
 
-    // Check ownership by accountId (not userId)
+    // Fichier d'un autre compte : 404 comme view/download/proxy — son
+    // existence n'est pas confirmée (lot 24, APP-PERF-20).
     if (file.accountId !== accountId) {
-      return ApiErrors.forbidden();
+      return accessErrorResponse('not-found', requestId, { code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.' });
     }
 
     return NextResponse.json(file, { status: 200 });
   } catch (error) {
-    console.error('GET file error:', error);
+    // Refus de session (absente, invalide, révoquée…) ou vérification
+    // impossible : 401/403/503 du contrat commun (APP-PERF-20), non
+    // journalisés comme panne. Les comparaisons à « Unauthorized » /
+    // « Access denied » ne correspondaient à aucun code levé : un refus
+    // normal devenait un 500.
+    if (isSessionError(error)) return sessionErrorResponse(error, requestId);
     FileLogger.error({
       requestId,
       ip,
       userAgent,
       userId: 0,
       action: 'QUOTA_CHECK',
-      error: (error as Error).message,
+      error: (error as Error)?.message ?? String(error),
     });
-    
-    if ((error as Error).message === 'Unauthorized') {
-      return ApiErrors.unauthorized();
-    }
-    if ((error as Error).message === 'Access denied') {
-      return ApiErrors.forbidden();
-    }
-    
-    return ApiErrors.internalError((error as Error).message);
+    // Erreur inattendue : 500 journalisé avec `requestId`, sans détail technique au client.
+    return sessionErrorToResponse(error, requestId, 'GET /api/files/[id]');
   }
 }
 
@@ -143,8 +144,9 @@ export async function DELETE(
     }
 
     // Check ownership by accountId (bypass for admins)
+    // Passe-droit administrateur conservé ; sinon 404 (existence non confirmée).
     if (!isAdmin && file.accountId !== accountId) {
-      return ApiErrors.forbidden();
+      return accessErrorResponse('not-found', requestId, { code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.' });
     }
 
     // Check if already deleted
@@ -216,23 +218,21 @@ export async function DELETE(
       { status: 200 }
     );
   } catch (error) {
-    console.error('DELETE file error:', error);
+    // Refus de session (absente, invalide, révoquée…) ou vérification
+    // impossible : 401/403/503 du contrat commun (APP-PERF-20), non
+    // journalisés comme panne. Les comparaisons à « Unauthorized » /
+    // « Access denied » ne correspondaient à aucun code levé : un refus
+    // normal devenait un 500.
+    if (isSessionError(error)) return sessionErrorResponse(error, requestId);
     FileLogger.error({
       requestId,
       ip,
       userAgent,
       userId: 0,
       action: 'DELETE',
-      error: (error as Error).message,
+      error: (error as Error)?.message ?? String(error),
     });
-    
-    if ((error as Error).message === 'Unauthorized') {
-      return ApiErrors.unauthorized();
-    }
-    if ((error as Error).message === 'Access denied') {
-      return ApiErrors.forbidden();
-    }
-    
-    return ApiErrors.internalError((error as Error).message);
+    // Erreur inattendue : 500 journalisé avec `requestId`, sans détail technique au client.
+    return sessionErrorToResponse(error, requestId, 'DELETE /api/files/[id]');
   }
 }

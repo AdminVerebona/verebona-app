@@ -68,6 +68,7 @@ import { runInJobContext, executionTimeoutMs } from './job-context';
 import { isAiBlocked } from './runnable-guard';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { envNumber } from '@/lib/env-number';
 
 /** Identité de ce processus, portée par les jobs qu'il prélève (supervision). */
 export const WORKER_ID = `${(() => { try { return hostname(); } catch { return 'local'; } })()}:${process.pid}:${randomUUID().slice(0, 8)}`;
@@ -497,7 +498,7 @@ export function __resetPoolForTests(): void {
   delete g[POOL_KEY];
 }
 
-const INTERVAL_MS = Number(process.env.AI_QUEUE_INTERVAL_MS ?? 15_000);
+const INTERVAL_MS = envNumber('AI_QUEUE_INTERVAL_MS', 15_000, { min: 1_000 });
 const LOCK_NAME = 'ai-job-queue';
 /**
  * Bail de l'ENTRETIEN seulement (reprise, sondes, planifications) : les

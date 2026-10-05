@@ -55,6 +55,8 @@
 import { computeFileSha256, normalizeMimeType } from '@/lib/file-validation';
 import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
+import { registerReloadBlocker } from '@/lib/pwa/chunk-recovery';
+import { onSessionTransition } from '@/lib/session/session-lifecycle';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -298,6 +300,34 @@ export class FileDepot {
       .filter((e) => estActif(e) || e.etape === 'interrompu' || (e.etape === 'echec' && e.reprise !== null))
       .map(({ progression: _p, fichierDisponible: _f, erreur: _e, ...reste }) => reste);
     try { this.stockage.enregistrer(aGarder); } catch { /* stockage plein ou interdit : sans effet */ }
+  }
+
+  /**
+   * Fin du contexte de session (déconnexion, session refusée, connexion,
+   * changement de compte) — APP-PERF-21 CA-02, lot 24 #25.
+   *
+   * Rien de l'utilisateur précédent ne doit rester dans la file : ni
+   * éléments affichés, ni fichiers en mémoire, ni bilans de lot à venir (qui
+   * rattacheraient des documents sous la NOUVELLE session), ni transfert en
+   * cours qui continuerait avec les cookies d'un autre compte.
+   *
+   * Le stockage est détaché AVANT l'annulation : l'état reprenable déjà
+   * enregistré pour l'ancien utilisateur (`verebona:depots:<id>`) n'est pas
+   * écrasé par « annulé » ; il sera proposé « interrompu » à SA prochaine
+   * connexion — contrat explicite et isolé par utilisateur (aucun jeton,
+   * aucune URL signée). Les tâches annulées qui se terminent ensuite
+   * n'agissent que sur des objets détachés.
+   */
+  purger(): void {
+    this.stockage = null;
+    const controleurs = [...this.controleurs.values()];
+    this.ordre = [];
+    this.elements = new Map();
+    this.fichiers = new Map();
+    this.lots = new Map();
+    this.controleurs = new Map();
+    for (const c of controleurs) c.abort();
+    this.publier(false);
   }
 
   // ── Commandes ──────────────────────────────────────────────────────────
@@ -741,5 +771,25 @@ export function stockageLocal(userId: number | string): StockageDepot {
   };
 }
 
+/** Nom de la garde de rechargement déclarée par la file (APP-PERF-10/29). */
+export const GARDE_RECHARGEMENT_DEPOT = 'envoi';
+
+/**
+ * Déclare la file comme garde contre le rechargement AUTOMATIQUE de la
+ * reprise PWA (`lib/pwa/chunk-recovery`) : tant qu'un fichier est actif
+ * (préparation → confirmation), une erreur de chunk ou une nouvelle version
+ * ne recharge pas la page — la reprise est PROPOSÉE avec l'avertissement
+ * « un envoi est en cours ». Un fichier interrompu ou en échec ne bloque
+ * pas : son état est déjà conservé (stockage local) et reprenable.
+ * Retourne la fonction de retrait.
+ */
+export function declarerGardeRechargement(file: FileDepot): () => void {
+  return registerReloadBlocker(GARDE_RECHARGEMENT_DEPOT, () => file.getSnapshot().enCours > 0);
+}
+
 /** File unique de l'application (navigateur). */
 export const fileDepot = new FileDepot({ transport: transportNavigateur });
+declarerGardeRechargement(fileDepot);
+// Toute transition de session vide la file (voir `purger`) ; l'indicateur
+// rattache ensuite le stockage du nouvel utilisateur (`utiliserStockage`).
+onSessionTransition(() => fileDepot.purger());

@@ -113,9 +113,11 @@ export interface HttpPolicy {
  * Budgets par classe d'opération. Les valeurs reprennent les délais
  * existants (15 s lecture, 20 s écriture, 250 s Prompt Control) : les 6-8 s
  * évoquées dans les audits ne sont pas des objectifs validés et ne seront
- * fixées qu'après mesure. Les envois de fichiers ont leur propre couche
- * (`upload-http.ts`) et le renouvellement de session son délai
- * (`REFRESH_TIMEOUT_MS`).
+ * fixées qu'après mesure. Les appels d'API du dépôt (presign / confirm,
+ * `upload-http.ts`) appliquent la politique `write` (lot 24) ; le PUT vers
+ * le stockage garde son délai d'inactivité propre (pas de plafond total : un
+ * gros fichier sur un réseau lent n'est pas une panne) et le renouvellement
+ * de session son délai (`REFRESH_TIMEOUT_MS`).
  */
 export const HTTP_POLICIES: Record<HttpPolicyName, HttpPolicy> = {
   // Lecture interactive : 15 s par tentative, une nouvelle tentative, 30 s au total.
@@ -303,9 +305,9 @@ function withFreshnessAfterMutation(url: string, options: ApiClientOptions): Api
 
 // ── Annulation combinée : appelant + délai ─────────────────────────────────
 
-type AbortCause = 'caller' | 'timeout';
+export type AbortCause = 'caller' | 'timeout';
 
-interface AttemptSignal {
+export interface AttemptSignal {
   signal: AbortSignal;
   cause: () => AbortCause | null;
   dispose: () => void;
@@ -315,7 +317,7 @@ interface AttemptSignal {
  * Signal d'une tentative : abandonné par l'appelant OU par le délai, avec la
  * cause retenue. Sans `AbortSignal.any` (navigateurs ciblés : iOS 16 ne l'a pas).
  */
-function attemptSignal(caller: AbortSignal | null | undefined, timeoutMs: number): AttemptSignal {
+export function attemptSignal(caller: AbortSignal | null | undefined, timeoutMs: number): AttemptSignal {
   const controller = new AbortController();
   let cause: AbortCause | null = null;
   const abort = (c: AbortCause) => {
@@ -348,7 +350,7 @@ function abortError(): Error {
  * du corps : selon l'implémentation de `fetch`, l'abandon n'interrompt pas
  * toujours un `response.json()` déjà commencé.
  */
-function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+export function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
     p.catch(() => undefined);
     return Promise.reject(abortError());

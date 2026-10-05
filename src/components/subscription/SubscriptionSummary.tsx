@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { toast } from 'sonner';
 import { useSession } from '@/hooks/useSession';
+import { useEntitlements } from '@/hooks/useEntitlements';
+import { apiClient, ApiClientError, isRequestAborted } from '@/lib/api-client';
 import { ReferralBlock } from '@/components/account/ReferralBlock';
 import { DuoInvitationPanel } from './DuoInvitationPanel';
 import { DuoLeaveButton } from './DuoLeaveButton';
@@ -23,7 +25,7 @@ import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
  * quotas, acces aux factures et resiliation.
  *
  * Aucune donnee n'est deduite cote client : tout provient de
- * /api/billing/trial-status.
+ * /api/billing/trial-status, lu par l'`EntitlementsProvider` (lot 24).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * BLOC UNIQUE D'ABONNEMENT
@@ -131,47 +133,39 @@ export function SubscriptionSummary() {
   const router = useRouter();
   const { user } = useSession();
   const isDuoMember = user?.duoRole === 'MEMBER';
-  const [data, setData] = useState<StatusResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  // État du compte : celui de l'`EntitlementsProvider` (une lecture de
+  // `/api/billing/trial-status` partagée par la garde, le layout et cette
+  // page — APP-PERF-12), plus de lecture propre au montage. La réponse porte
+  // aussi le bloc `subscription` affiché ici.
+  const { entitlements, isLoading, refresh } = useEntitlements();
+  const servi = entitlements && 'subscription' in entitlements ? (entitlements as unknown as StatusResponse) : null;
+  // Annulation d'un changement programmé : affichée tout de suite, en
+  // attendant la relecture des droits.
+  const [changementAnnule, setChangementAnnule] = useState(false);
+  const data: StatusResponse | null = servi && changementAnnule
+    ? { ...servi, subscription: { ...servi.subscription, scheduledChange: null } }
+    : servi;
+  const loading = isLoading && !servi;
   const [portalLoading, setPortalLoading] = useState(false);
   const [cancelLoading, setCancelLoading] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/billing/trial-status', { credentials: 'include' });
-        if (!res.ok) return;
-        const json = (await res.json()) as StatusResponse;
-        if (!cancelled) setData(json);
-      } catch {
-        // Silencieux : le reste de la page reste utilisable.
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    // Relecture servie : l'état serveur fait foi de nouveau.
+    setChangementAnnule(false);
+  }, [entitlements]);
 
   const cancelChange = async () => {
     setCancelLoading(true);
     try {
-      const res = await fetch('/api/billing/schedule-change', {
-      credentials: 'include',
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        toast.success('Changement programmé annulé.');
-        setData((d) =>
-          d ? { ...d, subscription: { ...d.subscription, scheduledChange: null } } : d,
-        );
-      } else {
-        toast.error('Impossible d\'annuler le changement.');
-      }
-    } catch {
-      toast.error('Une erreur est survenue.');
+      await apiClient.delete('/api/billing/schedule-change');
+      toast.success('Changement programmé annulé.');
+      setChangementAnnule(true);
+      void refresh();
+    } catch (err) {
+      if (isRequestAborted(err)) return;
+      toast.error(err instanceof ApiClientError && err.status > 0
+        ? 'Impossible d\'annuler le changement.'
+        : 'Une erreur est survenue.');
     } finally {
       setCancelLoading(false);
     }

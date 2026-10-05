@@ -93,6 +93,8 @@ interface HealthCheckResult {
      * indisponible → repli sur la mémoire de l'instance (`warning`, statut
      * global inchangé : l'assistant reste servi). État en mémoire seulement.
      */
+    /** Diagnostic autorisé : pool PostgreSQL du processus (lot 24, APP-PERF-01). */
+    dbPool?: { status: 'ok'; role: string; max: number; maxSource: string } & import('@/db/pool-metrics').PoolMetricsSnapshot;
     assistantRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
     helpCorpus?: Omit<import('@/services/verebona-assistant/core/help-corpus.service').HelpCorpusHealth, 'status'> & {
       /** `not_loaded` : aucune lecture du corpus sur cette instance depuis son démarrage. */
@@ -193,6 +195,20 @@ export async function GET(request: NextRequest) {
     }
   } catch {
     /* contrôle indicatif : jamais bloquant pour la sonde */
+  }
+
+  // Check 7 (diagnostic autorisé seulement) : pool PostgreSQL de CE processus
+  // — attente d'acquisition et temps SQL séparés, agrégats depuis le démarrage
+  // (APP-PERF-01 §MESURES). Aucune requête, aucun paramètre, aucune URL.
+  if (detailed) {
+    try {
+      const { getPoolMetrics } = await import('@/db/pool-metrics');
+      const { resolvePoolConfig } = await import('@/db/pool-config');
+      const c = resolvePoolConfig();
+      result.checks.dbPool = { status: 'ok', role: c.role, max: c.max, maxSource: c.maxSource, ...getPoolMetrics().snapshot() };
+    } catch {
+      /* contrôle indicatif */
+    }
   }
 
   // Check 6: limiteur de débit partagé de l'assistant (D-J2), état mémoire.

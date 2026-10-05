@@ -10,7 +10,8 @@
  * En tête de la navigation, le bouton « + Ajouter » (document, échéance, bien),
  * qui ouvre le même panneau que le « + » de la barre basse mobile.
  * Élément actif : fond `accent-soft`, texte accent, bordure gauche 2 px.
- * Pied : avatar, nom, offre.
+ * Pas de pied de compte (bouton bas-gauche retiré le 5 oct. 2026, doublon de
+ * l'avatar du header) : le compte s'ouvre par l'avatar du header.
  */
 import Link from 'next/link';
 import { CalendarDays, CircleAlert, FileText, House, Package, Plus, type LucideIcon } from 'lucide-react';

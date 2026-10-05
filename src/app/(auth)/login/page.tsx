@@ -15,6 +15,7 @@ import { ForceTheme } from '@/components/ForceTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
 import { safeReturnUrl } from '@/lib/safe-redirect';
+import { isNetworkError, postLogin } from '@/lib/auth/login-request';
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -32,7 +33,8 @@ function LoginForm() {
       ? 'Votre session a expiré. Merci de vous reconnecter.'
       : '',
   );
-  const [errorCode, setErrorCode] = useState('');
+  // Code d'erreur conservé pour le diagnostic (non affiché).
+  const [, setErrorCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   // Si une session valide existe deja (cookie HttpOnly), ne pas afficher le
@@ -60,12 +62,9 @@ function LoginForm() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/auth/login', {
-      credentials: 'include',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
+      // Une reprise automatique sur coupure réseau (mobile), journalisée sans
+      // identifiants — voir `login-request.ts` (rejouer la connexion est sûr).
+      const response = await postLogin({ email, password });
 
       let data: Record<string, string> = {};
       try { data = await response.json(); } catch { /* body vide ou non-JSON */ }
@@ -94,7 +93,7 @@ function LoginForm() {
       credentials: 'include',
         });
         if (meRes.ok) {
-          const meData = await meRes.json();
+          await meRes.json();
         }
       } catch { /* silently ignore — useSession refera l'appel */ }
 
@@ -103,9 +102,10 @@ function LoginForm() {
       const loggedUser = (data as { user?: { status?: string } }).user;
       router.push(loggedUser?.status === 'PENDING_DELETION' ? '/compte-en-suppression' : returnUrl);
     } catch (err) {
-      console.error('[Login] Error:', err);
-      // `fetch` ne lève qu'en cas de coupure réseau (serveur injoignable,
-      // redémarrage, perte de connexion) : le dire plutôt qu'un message vague.
+      // Coupure réseau persistante (déjà journalisée et reprise une fois par
+      // `postLogin`) : le dire plutôt qu'un message vague. Toute autre
+      // erreur est journalisée ici (jamais les identifiants).
+      if (!isNetworkError(err)) console.error('[Login] Error:', (err as Error)?.name ?? 'Error', (err as Error)?.message ?? '');
       setError('Connexion au serveur impossible. Vérifiez votre réseau puis réessayez.');
       setErrorCode('NETWORK_ERROR');
       setIsLoading(false);

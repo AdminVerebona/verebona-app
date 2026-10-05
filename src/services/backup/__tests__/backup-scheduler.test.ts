@@ -1,0 +1,52 @@
+/**
+ * Sauvegarde quotidienne — fenêtre de nuit et câblage.
+ */
+import { describe, it, expect } from 'vitest';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { dansLaFenetreDeNuit, heureDeParis } from '@/services/backup/database-backup-scheduler';
+
+const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
+
+describe('fenêtre de nuit (heure de Paris)', () => {
+  it('lit l’heure de Paris, pas celle du serveur', () => {
+    // 01:30 UTC en septembre = 03:30 à Paris (heure d'été).
+    expect(heureDeParis(new Date('2026-09-17T01:30:00Z'))).toBe(3);
+    // 00:30 UTC en janvier = 01:30 à Paris (heure d'hiver).
+    expect(heureDeParis(new Date('2026-01-15T00:30:00Z'))).toBe(1);
+  });
+
+  it('ne lance la sauvegarde qu’entre 1 h et 5 h', () => {
+    expect(dansLaFenetreDeNuit(new Date('2026-09-17T01:30:00Z'))).toBe(true); // 03:30
+    expect(dansLaFenetreDeNuit(new Date('2026-09-17T12:00:00Z'))).toBe(false); // 14:00
+    expect(dansLaFenetreDeNuit(new Date('2026-09-17T03:00:00Z'))).toBe(false); // 05:00
+  });
+});
+
+describe('la sauvegarde est réellement branchée', () => {
+  it('le planificateur est démarré au lancement du serveur', () => {
+    // L'amorçage Node vit dans `instrumentation-node.ts`, chargé par `instrumentation.ts`.
+    expect(read('src/instrumentation.ts')).toMatch(/instrumentation-node/);
+    expect(read('src/instrumentation-node.ts')).toMatch(/startDatabaseBackupScheduler\(\)/);
+  });
+
+  it('le manifeste, lu par le tableau de bord, est écrit en dernier sous backups/', () => {
+    const src = read('src/services/backup/database-backup.service.ts');
+    expect(src).toMatch(/Key: `\$\{BACKUP_PREFIX\}\$\{stamp\}\.json`/);
+    expect(src.indexOf('envoi.terminer()')).toBeLessThan(src.indexOf('`${BACKUP_PREFIX}${stamp}.json`'));
+    // La lecture du dernier manifeste vit dans le service (partagée avec le
+    // contrôle quotidien d'ancienneté) ; le tableau de bord l'appelle.
+    expect(src).toMatch(/export async function latestBackupAt[\s\S]*?Prefix: BACKUP_PREFIX/);
+    expect(read('src/app/api/admin/dashboard/route.ts')).toMatch(/checkBackupFreshness\(await latestBackupAt\(\)\)/);
+  });
+
+  it('l’écran Backups est absorbé par la Supervision (CDC BO §15, GEN-001) : plus de page ni de déclenchement BO', () => {
+    expect(read('src/components/AdminSidebar.tsx')).not.toMatch(/href: '\/admin\/backups'/);
+    expect(read('src/app/admin/backups/page.tsx')).toMatch(/redirect\('\/admin\?tab=supervision'\)/);
+    expect(existsSync(join(process.cwd(), 'src/app/api/admin/backups/route.ts'))).toBe(false);
+  });
+
+  it('le déclenchement planifié reste protégé', () => {
+    expect(read('src/app/api/cron/backup/route.ts')).toMatch(/CRON_SECRET/);
+  });
+});

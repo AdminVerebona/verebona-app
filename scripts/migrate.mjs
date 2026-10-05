@@ -24,6 +24,11 @@
  * types (natif à partir de Node 22.18, option `--experimental-strip-types`
  * à partir de 22.6 — ajoutée ici automatiquement au besoin). C'est le MÊME
  * code que le démarrage web : aucune seconde implémentation à faire diverger.
+ *
+ * Poste de développement en Node 20.12+ (lot 24) : pas de retrait natif des
+ * types ; le fichier est alors transpilé par le paquet `typescript`
+ * (devDependency, présent après `npm install`) — voir `chargerMoteur`. Sur
+ * Scalingo (Node 24, devDeps élaguées) c'est le retrait natif qui sert.
  * ══════════════════════════════════════════════════════════════════════════
  *
  * Variables : DATABASE_URL (obligatoire), MIGRATION_LOCK_WAIT_MS (défaut
@@ -32,28 +37,58 @@
  * (search_path de la connexion).
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ici = path.dirname(fileURLToPath(import.meta.url));
 const racine = path.resolve(ici, '..');
 const args = new Set(process.argv.slice(2));
 const log = (m) => console.log(`[migrate] ${m}`);
 
-// Retrait des types : natif (Node ≥ 22.18) ou via l'option (≥ 22.6).
+// Retrait des types : natif (Node ≥ 22.18), via l'option (≥ 22.6, ré-exécution),
+// sinon transpilation locale (poste Node 20.12+, voir chargerMoteur).
 if (!process.features?.typescript && !process.env.__VEREBONA_MIGRATE_REEXEC) {
   const [maj, min] = process.versions.node.split('.').map(Number);
-  if (maj < 22 || (maj === 22 && min < 6)) {
-    console.error(`[migrate] Node ${process.versions.node} : 22.6 au minimum est requis (retrait des types TypeScript).`);
+  if (maj > 22 || (maj === 22 && min >= 6)) {
+    const r = spawnSync(
+      process.execPath,
+      ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+      { stdio: 'inherit', env: { ...process.env, __VEREBONA_MIGRATE_REEXEC: '1' } },
+    );
+    process.exit(r.status ?? 2);
+  }
+}
+
+/**
+ * Charge le moteur de migration. Retrait des types disponible → import direct.
+ * Sinon (poste local Node 20.12–22.5) : transpilation du fichier par le
+ * paquet `typescript` (devDependency) puis import en module ESM `data:`.
+ * Possible car le moteur n'a AUCUN import statique (seulement des `node:*`
+ * dynamiques, autorisés depuis une URL `data:`). On n'enregistre pas de
+ * chargeur global (tsx) : Node 20.19+ (require(esm)) le fait échouer.
+ */
+async function chargerMoteur() {
+  const fichier = path.join(racine, 'src/db/migration-index.ts');
+  if (process.features?.typescript || process.env.__VEREBONA_MIGRATE_REEXEC) {
+    // URL de fichier : un chemin absolu Windows (C:\…) n'est pas un spécifier ESM valide.
+    return import(pathToFileURL(fichier).href);
+  }
+  let ts;
+  try {
+    ts = (await import('typescript')).default;
+  } catch (e) {
+    console.error(
+      `[migrate] Node ${process.versions.node} : pas de retrait natif des types et paquet \`typescript\` absent `
+      + `(lancez \`npm install\`, ou utilisez Node ≥ 22.6). ${e?.message ?? e}`,
+    );
     process.exit(2);
   }
-  const r = spawnSync(
-    process.execPath,
-    ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', fileURLToPath(import.meta.url), ...process.argv.slice(2)],
-    { stdio: 'inherit', env: { ...process.env, __VEREBONA_MIGRATE_REEXEC: '1' } },
-  );
-  process.exit(r.status ?? 2);
+  const { outputText } = ts.transpileModule(readFileSync(fichier, 'utf-8'), {
+    fileName: fichier,
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, verbatimModuleSyntax: false },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText, 'utf-8').toString('base64')}`);
 }
 
 // Poste local : `.env.local` / `.env` si DATABASE_URL n'est pas déjà posée.
@@ -70,7 +105,7 @@ if (!url) {
   process.exit(2);
 }
 
-const moteur = await import(path.join(racine, 'src/db/migration-index.ts'));
+const moteur = await chargerMoteur();
 const { default: postgres } = await import('postgres');
 
 const entier = (nom, defaut) => {
@@ -96,7 +131,7 @@ const sql = postgres(url, {
 
 let code = 0;
 try {
-  const fichiers = await moteur.readMigrationFiles(process.env.MIGRATIONS_DIR || undefined);
+  const fichiers = await moteur.readMigrationFiles(process.env.MIGRATIONS_DIR || path.join(racine, 'src', 'db', 'migrations'));
   const catalogue = moteur.migrationCatalog(fichiers);
   if (args.has('--check')) {
     const st = await moteur.readSchemaState(sql, catalogue);

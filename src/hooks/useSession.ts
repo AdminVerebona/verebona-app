@@ -16,7 +16,7 @@
  * le rendu. Une lenteur ou une panne laisse l'état `temporarily-unavailable`,
  * réessayable, sans effacer l'identité.
  */
-import { useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { apiClient } from '@/lib/api-client';
 import { useSessionStore } from '@/contexts/SessionContext';
 import {
@@ -73,13 +73,18 @@ export function useSession(
     void apiClient.handleAuthFailure({ code: error?.code });
   }, [required, status, error]);
 
+  // Référence STABLE (lot 24) : une fonction recréée à chaque rendu, placée
+  // dans les dépendances d'un effet, relançait cet effet à chaque rendu
+  // (ex. retour Stripe de « Offres » : synchronisation lancée plusieurs fois).
+  const refetch = useCallback(() => store.refetch(), [store]);
+
   return {
     user: snapshot.user,
     isLoading: status === 'checking',
     error: error?.message ?? null,
     status,
     sessionError: error,
-    refetch: () => store.refetch(),
+    refetch,
   };
 }
 

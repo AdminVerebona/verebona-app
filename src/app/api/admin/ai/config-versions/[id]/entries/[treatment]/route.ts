@@ -15,7 +15,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { saveTreatmentConfig } from '@/services/ai/config/config-version.service';
-import { isTreatment, type Treatment } from '@/services/ai/config/treatments';
+import { isPromptAdministrable, isTreatment, type Treatment } from '@/services/ai/config/treatments';
+import { recordConfigEntrySave } from '@/services/ai/config/config-entry.audit';
+import { hasLegacyPromptText } from '@/services/ai/config/t5-messages';
 import { REASONING_LEVELS, GUARDRAIL_REACTIONS, PROMPT_ARCHITECTURES } from '@/services/ai/config/config-types';
 import { requireAdminContext, parseVersionId, invalidId, toErrorResponse } from '../../../_shared';
 
@@ -94,11 +96,22 @@ export async function PUT(
   }
 
   try {
-    await saveTreatmentConfig(
+    const { before, after } = await saveTreatmentConfig(
       versionId,
       { treatment: treatment as Treatment, ...parsed.data },
       guard.ctx.adminUserId,
     );
+    // Traçabilité (tickets T4 / T5) : utilisateur, version, champs modifiés
+    // avant / après — retrait d'un déclencheur incompatible, nettoyage d'un
+    // ancien texte T5. Rien à tracer si rien n'a changé (seconde sauvegarde).
+    await recordConfigEntrySave({
+      adminUserId: guard.ctx.adminUserId,
+      versionId,
+      treatment,
+      before,
+      after,
+      legacyPromptCleared: !isPromptAdministrable(treatment as Treatment) && Boolean(before && hasLegacyPromptText(before)),
+    });
     return NextResponse.json({ saved: true, treatment });
   } catch (e) {
     return toErrorResponse(e, 'PUT /api/admin/ai/config-versions/[id]/entries/[treatment]');

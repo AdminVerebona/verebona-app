@@ -54,6 +54,9 @@ export type AdminActionType =
   // Renvoi d'une invitation réémissible (CDC BO USR-A01).
   | 'USER_INVITATION_RESEND'
   | 'EXPORT_TEMPLATE_TOGGLE'
+  // Prévisualisation d'un modèle d'export sur un bien du compte administrateur
+  // (BO modèles d'export : dossier, bien, résultat ; colonne texte libre).
+  | 'EXPORT_TEMPLATE_PREVIEW'
   | 'COMMUNICATION_CHANNEL_TOGGLE'
   // Résolution manuelle d'une anomalie de supervision (CDC BO AUD-003, SUP-007).
   | 'ANOMALY_RESOLVE'

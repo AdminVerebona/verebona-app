@@ -73,3 +73,19 @@ export function emptyListExplanation(defaults: string[], catalog: CatalogTrigger
     + `${libelles.join(', ')}). Une liste vide ne désactive pas les exécutions automatiques : `
     + 'pour couper un déclencheur, sélectionnez-le puis désactivez-le.';
 }
+
+/**
+ * Avertissement à montrer AVANT de supprimer / retirer `code` lorsque cette
+ * suppression viderait la liste : une liste vide n'arrête rien, elle
+ * applique les défauts du code (pour T4 : `source_analyzed` redevient actif).
+ * `null` si la liste ne sera pas vide ou si le traitement n'a aucun défaut.
+ */
+export function removalEmptiesWarning(
+  saved: TriggerSetting[], code: string, defaults: string[], catalog: CatalogTrigger[] | undefined,
+): string | null {
+  if (defaults.length === 0) return null;
+  if (removeTrigger(saved, code).length > 0) return null;
+  const libelles = defaults.map((c) => catalog?.find((d) => d.code === c)?.label ?? c);
+  return 'Après cette suppression, aucun déclencheur ne sera enregistré : les déclencheurs par défaut du code '
+    + `s’appliqueront (${libelles.join(', ')}). Pour couper un déclencheur, sélectionnez-le puis désactivez-le.`;
+}

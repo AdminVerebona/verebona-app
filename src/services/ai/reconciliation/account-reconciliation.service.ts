@@ -29,6 +29,7 @@ import { pgClient } from '@/db';
 import type { ReconcileInput } from './reconciliation-engine';
 import type { ReconciliationRun } from './types';
 import { isExecutionCancelled } from '../queue/execution-control';
+import { envNumber } from '@/lib/env-number';
 
 export type T3TriggerType = 'manual' | 'scheduled' | 'event';
 
@@ -301,7 +302,7 @@ export async function reconcileAccount(
  * Délai laissé à la réconciliation locale post-T1 avant un contrôle global.
  * Appliqué par la file durable (`t3-queue.ts`, `delaySeconds`).
  */
-export const EVENT_DEBOUNCE_MS = Number(process.env.T3_EVENT_DEBOUNCE_MS ?? 10 * 60_000);
+export const EVENT_DEBOUNCE_MS = envNumber('T3_EVENT_DEBOUNCE_MS', 10 * 60_000, { min: 0 });
 
 /**
  * Demande une exécution T3 suite à un événement métier.

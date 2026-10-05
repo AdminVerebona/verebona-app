@@ -188,13 +188,15 @@ export function VerebonaWork({ items, onNavigate, className = '' }: { items: Ver
           {items.slice(0, 3).map((w, i) => (
             // Toute la ligne ouvre l'élément (document, échéance, fiche du
             // bien) : plus de bouton « Ouvrir… » sous le texte (2 oct. 2026).
-            // Le libellé d'action reste annoncé aux lecteurs d'écran.
+            // Le libellé d'action reste annoncé aux lecteurs d'écran. Bouton
+            // natif : atteint au clavier (Tab), activé par Entrée / Espace,
+            // focus visible (fond + anneau accent).
             <li key={w.id} className={i >= 2 ? 'hidden md:block' : 'block'}>
               <button
                 type="button"
                 onClick={() => openWork(w, onNavigate)}
                 aria-label={`${w.text} — ${w.cta}`}
-                className="group -mx-2 flex w-[calc(100%+1rem)] gap-3 rounded-xl px-2 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none md:gap-3.5"
+                className="group -mx-2 flex w-[calc(100%+1rem)] gap-3 rounded-xl px-2 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] md:gap-3.5"
               >
                 <span className="flex w-3 flex-shrink-0 flex-col items-center self-stretch" aria-hidden>
                   <span

@@ -93,3 +93,34 @@ export function sessionErrorToResponse(error: unknown, requestId: string = newRe
     message: 'Une erreur inattendue est survenue. Réessayez dans un instant.',
   }, requestId);
 }
+
+// ── Refus d'accès et ressources absentes (routes) — lot 24, #21/#24 ─────────
+
+/**
+ * Réponse d'un refus constaté PAR LA ROUTE (pas par la garde de session),
+ * au même format que le contrat (code stable, message français, `requestId`
+ * dans le corps et l'en-tête) :
+ *   · `no-account` : session sans compte courant → 401 AUTH_REQUIRED ;
+ *   · `forbidden`  : 403 ACCESS_DENIED ;
+ *   · `not-found`  : 404 (code de la ressource, ex. FILE_NOT_FOUND). Préféré
+ *     à 403 pour une ressource d'un AUTRE compte : ne confirme pas son existence.
+ * Refus normal : jamais journalisé comme une panne.
+ */
+export function accessErrorResponse(
+  kind: 'no-account' | 'forbidden' | 'not-found',
+  requestId: string = newRequestId(),
+  opts: { code?: string; message?: string; headers?: Record<string, string> } = {},
+): NextResponse {
+  let res: NextResponse;
+  if (kind === 'no-account') {
+    const s = SESSION_ERRORS.AUTH_REQUIRED;
+    res = json(s.status, { error: s.error, code: s.code, message: opts.message ?? s.message }, requestId);
+  } else if (kind === 'forbidden') {
+    const s = SESSION_ERRORS.FORBIDDEN;
+    res = json(s.status, { error: s.error, code: opts.code ?? s.code, message: opts.message ?? s.message }, requestId);
+  } else {
+    res = json(404, { error: 'Not found', code: opts.code ?? 'NOT_FOUND', message: opts.message ?? 'Ressource introuvable.' }, requestId);
+  }
+  for (const [k, v] of Object.entries(opts.headers ?? {})) res.headers.set(k, v);
+  return res;
+}
