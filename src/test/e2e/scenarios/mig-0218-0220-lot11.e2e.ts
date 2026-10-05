@@ -87,7 +87,7 @@ scenario('MIG-L12', 'Migrations 0218-0220 sur schéma lot 11', ({ sql }) => {
       // Contrôle de démarrage : fichier déjà marqué appliqué → reconstruit tout de suite.
       await cnx.unsafe(`INSERT INTO _migrations (filename) VALUES ($1)`, [f]);
       const rep = await repairInvalidMigrationIndexes(runner, [{ filename: f, sql: texte }]);
-      expect(rep).toEqual({ repaired: ['field_evidence_target_idx'], requeued: [], unknown: [] });
+      expect(rep).toEqual({ repaired: ['field_evidence_target_idx'], requeued: [], unknown: [], skipped: [] });
       expect(await indexValidity(runner, 'field_evidence_target_idx')).toBe(true);
     } finally {
       await cnx.unsafe(`SET search_path TO public`);

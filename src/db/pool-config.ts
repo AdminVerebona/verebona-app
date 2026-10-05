@@ -129,3 +129,20 @@ export function describePoolConfig(c: PoolConfig): string {
   return `[db] pool PostgreSQL — rôle=${c.role} max=${c.max} (${c.maxSource}) ` +
     `idle_timeout=${c.idleTimeoutS}s max_lifetime=${c.maxLifetimeS}s connect_timeout=${c.connectTimeoutS}s`;
 }
+
+/**
+ * `application_name` des connexions (lot 24b) : rend lisibles, dans
+ * `pg_stat_activity` et le diagnostic des constructions d'index bloquées,
+ * le processus qui tient une transaction — `verebona:<rôle>`, le rôle étant
+ * celui du pool (`DB_PROCESS_ROLE`, sinon `CONTAINER` posé par Scalingo :
+ * `web-1`, `one-off-1234`…, sinon `web`). L'étape de déploiement se nomme
+ * `verebona-migrate:<conteneur>` (`scripts/migrate.mjs`).
+ *
+ * Paramètre de DÉMARRAGE de la connexion (pas un `SET`) : compatible avec
+ * `prepare: false` et un pooler transactionnel. Aucune donnée sensible :
+ * seulement le rôle, filtré, ≤ 63 octets (limite PostgreSQL).
+ */
+export function resolveApplicationName(role: string): string {
+  const r = role.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40);
+  return r ? `verebona:${r}` : 'verebona';
+}

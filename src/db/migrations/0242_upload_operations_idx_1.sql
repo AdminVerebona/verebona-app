@@ -7,4 +7,14 @@
 -- s'exécuter dans une transaction ; aucun verrou bloquant les dépôts pendant
 -- la construction. Idempotente ; un index laissé INVALIDE est reconstruit au
 -- démarrage (`migration-index.ts`).
+--
+-- INDEX OPTIONNEL (lot 24b) — bien qu'UNIQUE, il n'est qu'un filet :
+-- l'unicité « une opération = une ligne » est garantie par le code, sous
+-- verrou consultatif transactionnel (`uploadOperationLockKey`) avec relecture
+-- avant insertion (`/api/files/presign`) et avant d'attacher la clé
+-- (`/api/files/confirm`). Aucune requête n'en dépend (pas d'ON CONFLICT sur
+-- ces colonnes ; le 23505 éventuel est traité comme une reprise). Son absence
+-- (construction différée au déploiement) ne crée ni doublon ni erreur 500 ;
+-- il est construit plus tard en arrière-plan.
+-- verebona:optional-index
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS asset_files_user_upload_operation_uidx ON asset_files (user_id, upload_operation_id) WHERE upload_operation_id IS NOT NULL;

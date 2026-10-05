@@ -48,9 +48,15 @@ export async function registerNode(): Promise<void> {
   //      · index optionnel manquant → mode dégradé signalé, démarrage normal ;
   //      · autre exécutant en cours / base injoignable → démarrage, readiness
   //        à 503 jusqu'à relecture d'un schéma prêt (`/api/health/ready`).
-  const { ensureMigrations } = await import('@/db');
+  //    Lot 24b : le démarrage web ne construit aucun index CONCURRENTLY et,
+  //    si l'étape de déploiement a la main, attend (borné) un schéma critique
+  //    prêt au lieu d'appliquer lui-même. Les index restés en attente sont
+  //    construits ensuite en arrière-plan (`startIndexMaintenance`, après le
+  //    postdeploy sur Scalingo), sans bloquer le démarrage.
+  const { ensureMigrations, startIndexMaintenance } = await import('@/db');
   const { assertMigrationBootPolicy } = await import('@/db/migration-boot');
   assertMigrationBootPolicy(await ensureMigrations());
+  startIndexMaintenance();
 
   //    CDC 15 DP-05 : colonnes de trace de la migration 0217. Absentes, les
   //    traces IA continuent sans TASK ni prompt maître — signalé ici, au

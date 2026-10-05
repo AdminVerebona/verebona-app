@@ -31,8 +31,23 @@
  * Scalingo (Node 24, devDeps élaguées) c'est le retrait natif qui sert.
  * ══════════════════════════════════════════════════════════════════════════
  *
- * Variables : DATABASE_URL (obligatoire), MIGRATION_LOCK_WAIT_MS (défaut
- * 600000 ici), MIGRATION_LOCK_TIMEOUT (10s), MIGRATION_STATEMENT_TIMEOUT (0).
+ * ══════════════════════════════════════════════════════════════════════════
+ * BUDGET DE TEMPS ET INDEX (lot 24b)
+ *
+ * Scalingo arrête un postdeploy au bout de 20 minutes (statut -128 : le
+ * déploiement échoue). Tout le passage tient donc dans un budget
+ * (`MIGRATION_DEPLOY_BUDGET_MS`, 15 min par défaut) : attente du verrou de
+ * l'exécutant et délai de chaque construction CONCURRENTLY en sont bornés.
+ * Les constructions ont un délai LONG (`MIGRATION_INDEX_LOCK_TIMEOUT`, 10min) :
+ * elles attendent la fin des transactions de l'ancienne version, qui sert
+ * encore. Un index OPTIONNEL qui ne se construit pas dans ce cadre ne fait
+ * pas échouer le déploiement (`degraded`, code 0) : l'application le
+ * construira en arrière-plan une fois l'ancienne version arrêtée.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Variables (aucune obligatoire hormis DATABASE_URL) : MIGRATION_LOCK_WAIT_MS
+ * (défaut 600000 ici), MIGRATION_LOCK_TIMEOUT (10s), MIGRATION_STATEMENT_TIMEOUT
+ * (0), MIGRATION_INDEX_LOCK_TIMEOUT (10min), MIGRATION_DEPLOY_BUDGET_MS (900000).
  * Recette seulement : MIGRATIONS_DIR (dossier des fichiers), MIGRATIONS_SCHEMA
  * (search_path de la connexion).
  */
@@ -121,12 +136,27 @@ if (schema && !/^[a-z_][a-z0-9_]*$/.test(schema)) {
   process.exit(2);
 }
 
+const debut = Date.now();
+// Budget : sous les 20 min du postdeploy Scalingo (19 min au plus).
+const budgetMs = Math.min(entier('MIGRATION_DEPLOY_BUDGET_MS', 900_000), 1_140_000);
+const indexLockTimeout = process.env.MIGRATION_INDEX_LOCK_TIMEOUT?.trim() || moteur.MIGRATION_INDEX_LOCK_TIMEOUT_DEPLOY;
+if (!moteur.isPgDuration(indexLockTimeout)) {
+  console.error(`[migrate] MIGRATION_INDEX_LOCK_TIMEOUT=« ${indexLockTimeout} » invalide (attendu : 500ms, 10s, 10min, 0).`);
+  process.exit(2);
+}
+
+// Nom visible dans pg_stat_activity (diagnostic des index bloqués) : rôle et
+// conteneur seulement (`CONTAINER` posé par Scalingo, ex. postdeploy-1).
+const conteneur = (process.env.DB_PROCESS_ROLE || process.env.CONTAINER || '').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40);
 const sql = postgres(url, {
   max: 2,
   prepare: false,
   connect_timeout: 15,
   onnotice: () => undefined,
-  connection: { application_name: 'verebona-migrate', ...(schema ? { search_path: schema } : {}) },
+  connection: {
+    application_name: conteneur ? `verebona-migrate:${conteneur}` : 'verebona-migrate',
+    ...(schema ? { search_path: schema } : {}),
+  },
 });
 
 let code = 0;
@@ -140,15 +170,22 @@ try {
     for (const f of st.pendingOptional) log(`  optionnel ${f}`);
     code = st.pendingCritical.length > 0 ? 1 : 0;
   } else {
+    log(`budget ${Math.round(budgetMs / 1000)} s ; délai des constructions d'index ${indexLockTimeout} (borné par le budget).`);
     const r = await moteur.runMigrations(sql, fichiers, {
       lockWaitMs: entier('MIGRATION_LOCK_WAIT_MS', 600_000),
       lockTimeout: process.env.MIGRATION_LOCK_TIMEOUT?.trim() || undefined,
       statementTimeout: process.env.MIGRATION_STATEMENT_TIMEOUT?.trim() || undefined,
+      indexLockTimeout,
+      deadline: debut + budgetMs,
       repairIndexes: !args.has('--no-repair'),
       log: { info: log, warn: (m) => console.warn(`[migrate] ${m}`), error: (m) => console.error(`[migrate] ${m}`) },
     });
     for (const i of r.repair?.repaired ?? []) log(`index invalide ${i} reconstruit.`);
-    for (const q of r.repair?.requeued ?? []) console.error(`[migrate] index ${q.index} non reconstruit (${q.reason}) : ${q.filename} remis en file.`);
+    for (const q of r.repair?.requeued ?? []) console.warn(`[migrate] index ${q.index} non reconstruit (${q.reason}) : ${q.filename} remis en file (maintenance en arrière-plan).`);
+    if (r.pendingCritical.length === 0 && r.pendingOptional.length > 0) {
+      log(`${r.pendingOptional.length} index optionnel(s) en attente (${r.pendingOptional.join(', ')}) : déploiement NON bloqué, `
+        + 'construction en arrière-plan par l\'application une fois l\'ancienne version arrêtée.');
+    }
     for (const i of r.repair?.unknown ?? []) console.error(`[migrate] index INVALIDE hors migrations : ${i} (DROP INDEX CONCURRENTLY puis recréer).`);
     if (r.firstCriticalFailure) {
       const f = r.firstCriticalFailure;
@@ -158,6 +195,7 @@ try {
     console.log(`[migrate] ${JSON.stringify({
       outcome: r.outcome, durationMs: r.durationMs, lockWaitMs: r.lockWaitMs, lockAcquired: r.lockAcquired,
       applied: r.applied.length, deferred: r.deferred.length, failures: r.failures.length,
+      budgetMs, indexLockTimeout,
       pendingCritical: r.pendingCritical.length, pendingOptional: r.pendingOptional.length,
       commit: process.env.APP_COMMIT || process.env.SOURCE_VERSION || process.env.CONTAINER_VERSION || null,
     })}`);

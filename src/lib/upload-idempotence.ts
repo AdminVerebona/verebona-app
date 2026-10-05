@@ -7,7 +7,8 @@
  * Le client tire un identifiant d'opération (`operationId`, UUID) par
  * fichier déposé et le présente à `presign` puis à `confirm`. Il est stocké
  * sur la ligne `asset_files` (`upload_operation_id`, unique par
- * utilisateur — migration 0241) avec l'empreinte de la demande.
+ * utilisateur — verrou `uploadOperationLockKey` + relecture ; index unique
+ * 0242_idx_1 en filet optionnel) avec l'empreinte de la demande.
  *
  *   · presign rejoué, même demande : même `fileId`, nouvelle URL signée pour
  *     la même clé S3 (ligne PENDING) ou « déjà confirmé » (COMPLETED) ;
@@ -22,6 +23,20 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'crypto';
+
+/**
+ * Clé du verrou consultatif transactionnel d'une opération de dépôt (lot 24b).
+ *
+ * L'unicité « une opération = une ligne » est garantie par le CODE, sous ce
+ * verrou : `presign` relit l'opération puis insère dans la même transaction,
+ * `confirm` vérifie qu'aucune autre ligne ne porte déjà la clé avant de
+ * l'attacher. L'index unique partiel de la migration 0242_idx_1 n'est plus
+ * qu'un filet (et une optimisation de la relecture) : il est OPTIONNEL — son
+ * absence (construction différée au déploiement) ne crée ni doublon ni 500.
+ */
+export function uploadOperationLockKey(userId: number, operationId: string): string {
+  return `upload_op:${userId}:${operationId}`;
+}
 
 /** Clé d'opération acceptée : UUID ou jeton opaque court, sans espace. */
 const CLE_OPERATION = /^[A-Za-z0-9_-]{16,64}$/;

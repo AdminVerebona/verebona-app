@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
-import { eq, and, inArray, isNull } from 'drizzle-orm';
+import { eq, and, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
@@ -16,7 +16,7 @@ import {
   type StorageQuotaDecision,
 } from '@/lib/storage-quota';
 import { verifierFichier, verifierLot, MAX_DOCUMENTS_PAR_DEPOT } from '@/lib/upload-limits';
-import { deciderConfirm, empreinteConfirm, estCleOperation } from '@/lib/upload-idempotence';
+import { deciderConfirm, empreinteConfirm, estCleOperation, uploadOperationLockKey } from '@/lib/upload-idempotence';
 import { verificationObjetActive, verifierObjetDepose } from '@/lib/upload-object-check';
 
 type LigneFichier = typeof assetFiles.$inferSelect;
@@ -325,6 +325,23 @@ export async function POST(request: NextRequest) {
         const d = deciderConfirm(f, operationId, empreinte);
         if (d.kind === 'refus') return { kind: 'refus', status: d.status, code: d.code, message: d.message };
         if (d.kind === 'deja_confirme') return { kind: 'replay', files: [f] };
+      }
+      // Lot 24b : la clé d'opération est attachée ici à une ligne préparée
+      // sans elle. Unicité garantie par le code, sans l'index 0242_idx_1
+      // (optionnel) : sous le verrou de l'opération, aucune AUTRE ligne de
+      // l'utilisateur ne doit déjà la porter — sinon 409 explicite (avec
+      // l'index, c'était une violation 23505 et une erreur 500).
+      if (operationId && actuels.some((f) => !f.uploadOperationId)) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${uploadOperationLockKey(userId, operationId)}))`);
+        const [autre] = await tx.select({ id: assetFiles.id }).from(assetFiles)
+          .where(and(eq(assetFiles.userId, userId), eq(assetFiles.uploadOperationId, operationId), notInArray(assetFiles.id, idsDemandes)))
+          .limit(1);
+        if (autre) {
+          return {
+            kind: 'refus', status: 409, code: 'IDEMPOTENCY_KEY_REUSED',
+            message: 'Cet identifiant d’opération a déjà servi pour un autre fichier.',
+          };
+        }
       }
       if (accountForGuard) {
         const decision = await checkAccountStorageQuota(accountForGuard, cumul, tx);

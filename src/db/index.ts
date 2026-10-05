@@ -2,11 +2,12 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "@/db/schema";
 import {
-  migrationCatalog, readMigrationFiles, readSchemaState, runMigrations,
+  migrationCatalog, readMigrationFiles, readSchemaState, runBootMigrations, runIndexMaintenance,
   type MigrationCatalogEntry, type MigrationCriticality, type SqlRunner,
 } from "@/db/migration-index";
 import { resolveMigrationRuntimeConfig, type MigrationBootMode } from "@/db/migration-config";
-import { describePoolConfig, resolvePoolConfig } from "@/db/pool-config";
+import { scheduleIndexMaintenance, type MaintenanceRoundResult, type MaintenanceScheduler } from "@/db/migration-maintenance";
+import { describePoolConfig, resolveApplicationName, resolvePoolConfig } from "@/db/pool-config";
 import { instrumentPgClient, startPoolMetricsLog } from "@/db/pool-metrics";
 
 const connectionString = process.env.DATABASE_URL!;
@@ -43,9 +44,11 @@ const client = postgres(connectionString, {
   // Inchangé : ne pas réactiver les requêtes préparées sans valider le mode
   // d'accès PostgreSQL (pooler transactionnel éventuel) séparément.
   prepare: false,
-  // Reconnexion automatique en cas de coupure
+  // Nom visible dans pg_stat_activity (diagnostic des constructions d'index
+  // bloquées, lot 24b) : `verebona:web-1`… Paramètre de démarrage de la
+  // connexion, compatible `prepare: false`.
   connection: {
-    application_name: 'verebona',
+    application_name: resolveApplicationName(poolConfig.role),
   },
 });
 // Mesures du pool (APP-PERF-01 §MESURES, lot 24) : attente d'acquisition et
@@ -128,6 +131,8 @@ interface MigrationGlobalState {
   catalog: MigrationCatalogEntry[] | null;
   recheck: Promise<void> | null;
   recheckedAt: number;
+  /** Maintenance des index en arrière-plan (une par processus). */
+  maintenance: MaintenanceScheduler | null;
 }
 
 const ETAT_MIGRATIONS = Symbol.for('verebona.db.migrations');
@@ -141,12 +146,13 @@ function statutInitial(): MigrationStatus {
 
 function etatMigrations(): MigrationGlobalState {
   const g = globalThis as unknown as Record<symbol, MigrationGlobalState | undefined>;
-  return (g[ETAT_MIGRATIONS] ??= { status: statutInitial(), promise: null, catalog: null, recheck: null, recheckedAt: 0 });
+  return (g[ETAT_MIGRATIONS] ??= { status: statutInitial(), promise: null, catalog: null, recheck: null, recheckedAt: 0, maintenance: null });
 }
 
 /** Tests uniquement : oublie l'état partagé du processus. */
 export function resetMigrationStateForTests(): void {
   const g = globalThis as unknown as Record<symbol, MigrationGlobalState | undefined>;
+  g[ETAT_MIGRATIONS]?.maintenance?.stop();
   delete g[ETAT_MIGRATIONS];
 }
 
@@ -186,12 +192,16 @@ async function executerMigrations(): Promise<MigrationStatus> {
         s.firstFailure = { filename: st.pendingCritical[0], message: 'migration critique non appliquée (étape de déploiement absente ou en échec)', criticality: 'critical' };
       }
     } else {
-      // Index invalides (construction CONCURRENTLY interrompue) : la
-      // réparation est longue, elle relève de l'étape de déploiement ;
-      // au démarrage seulement sur demande (MIGRATIONS_REPAIR_ON_BOOT).
-      const r = await runMigrations(runner(), fichiers, {
-        lockWaitMs: cfg.lockWaitMs, lockTimeout: cfg.lockTimeout, statementTimeout: cfg.statementTimeout,
-        repairIndexes: cfg.repairOnBoot,
+      // Lot 24b : AUCUN index CONCURRENTLY au démarrage web (ni construction,
+      // ni réparation) — l'étape de déploiement et la maintenance en
+      // arrière-plan s'en chargent. Verrou détenu par un autre exécutant
+      // (postdeploy) : attente bornée d'un schéma critique prêt, sans rien
+      // appliquer (`runBootMigrations`).
+      for (const v of cfg.obsolete) {
+        console.warn(`[db] ${v} est obsolète (lot 24b) et ignorée : la réparation des index est faite par l'étape de déploiement puis en arrière-plan.`);
+      }
+      const r = await runBootMigrations(runner(), fichiers, {
+        waitMs: cfg.bootWaitMs, lockTimeout: cfg.lockTimeout, statementTimeout: cfg.statementTimeout,
       });
       s.phase = r.outcome;
       s.lockWaitMs = r.lockWaitMs;
@@ -200,14 +210,10 @@ async function executerMigrations(): Promise<MigrationStatus> {
       s.pendingOptional = r.pendingOptional;
       s.failures = r.failures;
       s.firstFailure = r.firstCriticalFailure ?? r.failures[0] ?? null;
-      for (const i of r.repair?.repaired ?? []) console.warn(`[db] index invalide ${i} reconstruit.`);
-      for (const q of r.repair?.requeued ?? []) {
-        console.error(`[db] index INVALIDE ${q.index} non reconstruit (${q.reason}) : ${q.filename} sera rejoue.`);
-      }
-      if ((r.repair?.unknown.length ?? 0) > 0) {
-        console.error(
-          `[db] ${r.repair!.unknown.length} index INVALIDE(S) hors migrations connues : ${r.repair!.unknown.join(', ')}. ` +
-          'A supprimer (DROP INDEX CONCURRENTLY <nom>) puis recreer a la main.',
+      if (r.skipped.length > 0) {
+        console.info(
+          `[db] ${r.skipped.length} fichier(s) d'index laissé(s) à l'étape de déploiement / à la maintenance en arrière-plan : ` +
+          `${r.skipped.slice(0, 10).join(', ')}${r.skipped.length > 10 ? '…' : ''}.`,
         );
       }
       if (r.outcome === 'failed' || r.outcome === 'waiting') {
@@ -248,6 +254,66 @@ export async function ensureMigrations(): Promise<MigrationStatus> {
   if (!etat.promise) etat.promise = executerMigrations().then(() => getMigrationStatus());
   await etat.promise;
   return getMigrationStatus();
+}
+
+/** Échéance d'un passage de maintenance : borne chaque construction (1 h). */
+const MAINTENANCE_ROUND_BUDGET_MS = 60 * 60_000;
+
+/**
+ * Un passage de maintenance des index (lot 24b) : index optionnels en
+ * attente ou invalides, délai long, en arrière-plan. Met à jour l'état du
+ * processus (une phase `degraded` devient `ready`). Exporté pour les tests.
+ */
+export async function runIndexMaintenanceRound(): Promise<MaintenanceRoundResult> {
+  const etat = etatMigrations();
+  const cfg = resolveMigrationRuntimeConfig();
+  const fichiers = await readMigrationFiles();
+  etat.catalog = migrationCatalog(fichiers);
+  const r = await runIndexMaintenance(runner(), fichiers, {
+    indexLockTimeout: cfg.indexLockTimeout, lockTimeout: cfg.lockTimeout, statementTimeout: cfg.statementTimeout,
+    deadline: Date.now() + MAINTENANCE_ROUND_BUDGET_MS,
+  });
+  if (r.kind === 'busy') return 'busy';
+  const s = etat.status;
+  if (s.phase !== 'running') {
+    s.pendingCritical = r.pendingCritical;
+    s.pendingOptional = r.pendingOptional;
+    const enAttente = new Set([...r.pendingCritical, ...r.pendingOptional]);
+    s.failures = s.failures.filter((f) => enAttente.has(f.filename));
+    if (s.firstFailure && s.firstFailure.filename !== '(lanceur)' && !enAttente.has(s.firstFailure.filename)) {
+      s.firstFailure = s.failures.find((f) => f.criticality === 'critical') ?? s.failures[0] ?? null;
+    }
+    if (r.pendingCritical.length === 0 && s.phase !== 'skipped') {
+      s.phase = r.pendingOptional.length > 0 ? 'degraded' : 'ready';
+    }
+  }
+  if (r.built.length > 0 || (r.repair?.repaired.length ?? 0) > 0) {
+    console.info(`[db] maintenance des index : ${r.built.length} construit(s), ${r.repair?.repaired.length ?? 0} réparé(s), ${r.pendingOptional.length} en attente.`);
+  }
+  return r.kind;
+}
+
+/**
+ * Démarre la maintenance des index en arrière-plan (une fois par processus).
+ * Seulement en `MIGRATIONS_ON_BOOT=run` : `check` / `off` interdisent toute
+ * DDL depuis un conteneur web. Ne bloque jamais le démarrage.
+ */
+export function startIndexMaintenance(): void {
+  const etat = etatMigrations();
+  if (etat.maintenance) return;
+  let cfg;
+  try {
+    cfg = resolveMigrationRuntimeConfig();
+  } catch (e) {
+    console.error('[db] maintenance des index non démarrée :', (e as Error).message);
+    return;
+  }
+  if (cfg.mode !== 'run' || cfg.indexMaintenance.intervalMs === 0) return;
+  etat.maintenance = scheduleIndexMaintenance({ ...cfg.indexMaintenance, run: runIndexMaintenanceRound });
+  console.info(
+    `[db] maintenance des index en arrière-plan : premier passage dans ${Math.round(cfg.indexMaintenance.firstDelayMs / 1000)} s, ` +
+    `délai de construction ${cfg.indexLockTimeout}.`,
+  );
 }
 
 export interface SchemaReadiness {

@@ -101,13 +101,41 @@ scenario('APP-PERF-30', 'Dépôt reprenable et idempotent (presign, confirm, fil
     expect(await lignes(id)).toHaveLength(1);
   });
 
-  it('presign simultanés, même clé : une seule ligne (index unique 0241)', async () => {
+  it('presign simultanés, même clé : une seule ligne (verrou + relecture ; index unique 0242_idx_1 en filet)', async () => {
     await compte();
     const id = op();
     const [a, b] = await Promise.all([presign({ operationId: id }), presign({ operationId: id })]);
     expect([a.status, b.status].sort()).toEqual([200, 201]);
     expect(a.body.fileId).toBe(b.body.fileId);
     expect(await lignes(id)).toHaveLength(1);
+  });
+
+  it('lot 24b : SANS l’index unique 0242_idx_1 (optionnel, construction différée) — ni doublon ni 500', async () => {
+    await sql.unsafe(`DROP INDEX IF EXISTS asset_files_user_upload_operation_uidx`);
+    try {
+      await compte();
+      // presign simultanés, même clé : sérialisés par le verrou de l'opération, relecture avant insertion.
+      const id = op();
+      const rs = await Promise.all(Array.from({ length: 6 }, () => presign({ operationId: id })));
+      expect(rs.map((r) => r.status).sort()).toEqual([200, 200, 200, 200, 200, 201]);
+      expect(new Set(rs.map((r) => r.body.fileId)).size).toBe(1);
+      expect(await lignes(id)).toHaveLength(1);
+
+      // Clé attachée à la confirmation d'un dépôt préparé sans clé, alors qu'une
+      // autre ligne la porte déjà : 409 explicite, rien n'est réécrit.
+      const { body: sansCle } = await presign({});
+      expect(await confirmer({ fileId: sansCle.fileId, operationId: id }))
+        .toMatchObject({ status: 409, body: { code: 'IDEMPOTENCY_KEY_REUSED' } });
+      expect(await lignes(id)).toHaveLength(1);
+      // Clé neuve : acceptée normalement.
+      const neuve = op();
+      expect((await confirmer({ fileId: sansCle.fileId, operationId: neuve })).status).toBe(200);
+      expect(await lignes(neuve)).toHaveLength(1);
+    } finally {
+      await sql.unsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS asset_files_user_upload_operation_uidx ON asset_files (user_id, upload_operation_id) WHERE upload_operation_id IS NOT NULL`,
+      );
+    }
   });
 
   it('T-01 : réponse de confirmation perdue, rejeu ⇒ document existant, ni événement ni analyse en plus', async () => {

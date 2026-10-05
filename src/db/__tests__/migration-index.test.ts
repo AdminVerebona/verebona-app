@@ -29,6 +29,8 @@ function fakeClient(etat: Etat, avecReserve = true) {
     const p = (params ?? []) as unknown as string[];
     calls.push(q.trim().split('\n')[0]);
     if (q.includes('pg_try_advisory_lock')) return [{ ok: !etat.verrousAilleurs.has(p[0]) }];
+    if (q.includes("current_setting('lock_timeout')")) return [{ v: '0' }];
+    if (q.includes('clock_timestamp()::text')) return [{ t: '2026-10-05 17:28:00+00' }];
     if (q.includes('pg_advisory_unlock')) return [{ ok: true }];
     if (q.includes('pg_stat_progress_create_index')) return etat.enConstruction.has(p[0]) ? [{ '?column?': 1 }] : [];
     if (q.includes('FROM pg_class c JOIN pg_index')) return etat.index.has(p[0]) ? [{ valid: etat.index.get(p[0]) }] : [];
@@ -110,24 +112,35 @@ describe('runMigrationSql', () => {
   });
 });
 
-describe('lock_timeout sur la connexion réservée (relecture lot 17)', () => {
-  it('SET avant DROP / CREATE CONCURRENTLY, RESET avant de rendre la connexion', async () => {
+describe('lock_timeout sur la connexion réservée (relecture lot 17, lot 24b)', () => {
+  it('SET avant DROP / CREATE CONCURRENTLY (défaut court), valeur PRÉCÉDENTE rétablie avant de rendre la connexion', async () => {
     const e = etat({ index: new Map([['field_evidence_target_idx', false]]) });
     const { client, calls } = fakeClient(e);
     await runMigrationSql(client, FICHIER);
     const set = calls.indexOf(`SET lock_timeout = '${MIGRATION_INDEX_LOCK_TIMEOUT}'`);
     const drop = calls.findIndex((c) => c.startsWith('DROP INDEX CONCURRENTLY'));
     const create = calls.findIndex((c) => c.startsWith('-- Migration 0219')); // le fichier lui-même (première ligne)
-    const reset = calls.indexOf('RESET lock_timeout');
+    const restore = calls.findIndex((c) => c.startsWith("SELECT set_config('lock_timeout'"));
     expect(set).toBeGreaterThanOrEqual(0);
     expect(set).toBeLessThan(drop);
     expect(drop).toBeLessThan(create);
-    expect(reset).toBeGreaterThan(create);
+    expect(restore).toBeGreaterThan(create);
+    expect(calls).not.toContain('RESET lock_timeout');
   });
-  it('échec de construction : RESET quand même ; sans connexion réservable : aucun SET (connexion du pool intacte)', async () => {
+  it('délai fourni (`indexLockTimeout`) ; connexion dédiée sans reserve : posé et rétabli', async () => {
+    const a = fakeClient(etat());
+    await runMigrationSql(a.client, FICHIER, { indexLockTimeout: '10min' });
+    expect(a.calls).toContain("SET lock_timeout = '10min'");
+    const b = fakeClient(etat(), false);
+    await runMigrationSql(b.client, FICHIER, { indexLockTimeout: '2min', dedicated: true });
+    expect(b.calls).toContain("SET lock_timeout = '2min'");
+    expect(b.calls.some((c) => c.startsWith("SELECT set_config('lock_timeout'"))).toBe(true);
+    await expect(runMigrationSql(b.client, FICHIER, { indexLockTimeout: "1s'; --" })).rejects.toThrow(/indexLockTimeout invalide/);
+  });
+  it('échec de construction : valeur rétablie quand même ; sans connexion réservable : aucun SET (connexion du pool intacte)', async () => {
     const a = fakeClient(etat({ buildLeavesInvalid: true }));
     await expect(runMigrationSql(a.client, FICHIER)).rejects.toThrow();
-    expect(a.calls).toContain('RESET lock_timeout');
+    expect(a.calls.some((c) => c.startsWith("SELECT set_config('lock_timeout'"))).toBe(true);
     const b = fakeClient(etat(), false);
     await runMigrationSql(b.client, FICHIER);
     expect(b.calls.some((c) => /lock_timeout/.test(c))).toBe(false);
@@ -144,7 +157,7 @@ describe('repairInvalidMigrationIndexes — contrôle de démarrage', () => {
   it('fichier DÉJÀ appliqué (0217) : index reconstruit tout de suite', async () => {
     const e = etat({ index: new Map([['ai_usage_event_task_idx', false], ['b_idx', true]]), migrations: new Set(['0217_ai_trace_master_fields_idx_1.sql']) });
     const { client } = fakeClient(e);
-    expect(await repairInvalidMigrationIndexes(client, fichiers)).toEqual({ repaired: ['ai_usage_event_task_idx'], requeued: [], unknown: [] });
+    expect(await repairInvalidMigrationIndexes(client, fichiers)).toEqual({ repaired: ['ai_usage_event_task_idx'], requeued: [], unknown: [], skipped: [] });
     expect(e.index.get('ai_usage_event_task_idx')).toBe(true);
     expect(e.migrations.has('0217_ai_trace_master_fields_idx_1.sql')).toBe(true);
   });

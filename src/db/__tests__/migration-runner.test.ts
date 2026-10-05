@@ -102,7 +102,8 @@ describe('runMigrations — exécution coordonnée', () => {
     const r = await runMigrations(client, FICHIERS, { ...opts, lockTimeout: '5s', statementTimeout: '0' });
     expect(r.outcome).toBe('ready');
     expect(r.lockAcquired).toBe(true);
-    expect(r.applied).toEqual(['0001_table.sql', '0001_table_idx_1.sql', '0002_unique.sql']);
+    // Lot 24b : index OPTIONNELS en dernier, après tous les fichiers critiques.
+    expect(r.applied).toEqual(['0001_table.sql', '0002_unique.sql', '0001_table_idx_1.sql']);
     expect(sur.pool).toEqual([]);
     expect(sur.reserved).toEqual(expect.arrayContaining([
       "SET lock_timeout = '5s'", "SET statement_timeout = '0'", 'RESET lock_timeout', 'RESET statement_timeout',

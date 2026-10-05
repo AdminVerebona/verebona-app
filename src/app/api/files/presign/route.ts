@@ -6,7 +6,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { sanitizeFilename, validateExtension, ALLOWED_MIME_TYPES, estEmpreinteSha256 } from '@/lib/file-validation';
 import { verifierFichier, MAX_FICHIERS_COMPTE, MAX_FICHIERS_PAR_BIEN } from '@/lib/upload-limits';
-import { estCleOperation, empreintePresign, deciderPresignRejoue } from '@/lib/upload-idempotence';
+import { estCleOperation, empreintePresign, deciderPresignRejoue, uploadOperationLockKey } from '@/lib/upload-idempotence';
 import { generateS3Key } from '@/lib/s3-naming';
 import { rateLimiter } from '@/lib/rate-limiter';
 import { getSession } from '@/lib/auth-guards';
@@ -387,34 +387,64 @@ export async function POST(request: NextRequest) {
     const now = new Date();
     const tempS3Key = 'temp'; // Temporary value, will be updated after getting fileId
     
+    type Executeur = Pick<typeof db, 'insert'>;
+    const inserer = (x: Executeur) => x.insert(assetFiles)
+      .values({
+        uploadOperationId: cleOperation,
+        uploadRequestFingerprint: cleOperation ? empreinteDemande : null,
+        userId: userId,
+        accountId: currentAccountId,
+        assetId: assetIdInt, // Can be null for unassigned files
+        filename: sanitizedFilename,
+        originalFilename: filename,
+        retainedTitle: filename, // nom du fichier = titre par défaut
+        mimeType: mimeType,
+        fileExtension: fileExtension,
+        size: sizeInt,
+        sha256Hash: sha256Hash,
+        s3Key: tempS3Key,
+        s3Bucket: S3_BUCKET,
+        s3Region: S3_REGION,
+        uploadStatus: 'PENDING',
+        uploadedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    // ══════════════════════════════════════════════════════════════════════
+    // UNE OPÉRATION = UNE LIGNE, GARANTI SANS L'INDEX UNIQUE (lot 24b)
+    //
+    // Deux préparations simultanées de la même opération sont sérialisées par
+    // un verrou consultatif transactionnel (utilisateur, opération) ; sous ce
+    // verrou, l'opération est RELUE avant l'insertion. La seconde trouve la
+    // ligne de la première et la reprend. L'index unique 0242_idx_1 n'est
+    // qu'un filet : sa construction peut être différée au déploiement
+    // (index optionnel) sans doublon ni erreur 500.
+    // ══════════════════════════════════════════════════════════════════════
     let newFile: Array<typeof assetFiles.$inferSelect>;
     try {
-      newFile = await db.insert(assetFiles)
-        .values({
-          uploadOperationId: cleOperation,
-          uploadRequestFingerprint: cleOperation ? empreinteDemande : null,
-          userId: userId,
-          accountId: currentAccountId,
-          assetId: assetIdInt, // Can be null for unassigned files
-          filename: sanitizedFilename,
-          originalFilename: filename,
-          retainedTitle: filename, // nom du fichier = titre par défaut
-          mimeType: mimeType,
-          fileExtension: fileExtension,
-          size: sizeInt,
-          sha256Hash: sha256Hash,
-          s3Key: tempS3Key,
-          s3Bucket: S3_BUCKET,
-          s3Region: S3_REGION,
-          uploadStatus: 'PENDING',
-          uploadedAt: now,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+      if (cleOperation) {
+        const cree = await db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${uploadOperationLockKey(userId, cleOperation)}))`);
+          const [deja] = await tx.select({ id: assetFiles.id })
+            .from(assetFiles)
+            .where(and(eq(assetFiles.userId, userId), eq(assetFiles.uploadOperationId, cleOperation)))
+            .limit(1);
+          return deja ? null : inserer(tx);
+        });
+        if (cree === null) {
+          const reprise = await reprendre();
+          if (reprise) return reprise;
+          throw new Error('opération de dépôt introuvable après relecture');
+        }
+        newFile = cree;
+      } else {
+        newFile = await inserer(db);
+      }
     } catch (e) {
-      // Deux préparations simultanées de la même opération : l'index unique
-      // (0241) a refusé la seconde ligne — on rend celle de la première.
+      // Filet : l'index unique (0242_idx_1), s'il existe, a refusé une
+      // seconde ligne — on rend celle de la première.
       // Drizzle enveloppe l'erreur du pilote : le code est sur `cause`.
       const code = (e as { code?: string })?.code ?? (e as { cause?: { code?: string } })?.cause?.code;
       if (code === '23505' && cleOperation) {
