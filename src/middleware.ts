@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { verifyToken, extractToken } from '@/lib/jwt';
-import { verifyRequestOrigin } from '@/lib/csrf';
+import { verifyRequestOrigin, CSRF_REJECTED_MESSAGE } from '@/lib/csrf';
 import {
   ACCOUNT_PENDING_DELETION_CODE,
   ACCOUNT_PENDING_DELETION_MESSAGE,
@@ -170,9 +170,11 @@ export async function middleware(request: NextRequest) {
         method: request.method,
         reason: csrf.reason,
         origin: csrf.origin,
+        host: request.headers.get('x-forwarded-host') ?? request.headers.get('host'),
+        proto: request.headers.get('x-forwarded-proto'),
       });
       return NextResponse.json(
-        { error: 'Origine non autorisee', code: 'CSRF_ORIGIN_REJECTED' },
+        { error: 'Origine non autorisee', code: 'CSRF_ORIGIN_REJECTED', message: CSRF_REJECTED_MESSAGE },
         { status: 403 },
       );
     }

@@ -31,7 +31,7 @@ const fait = (over: Partial<ProjectedFact>): ProjectedFact => ({
 
 scenario('T1-04', 'Faits ciblés et cycle de vie des preuves', ({ sql, make }) => {
   it('multi-biens, équipement, non rattaché, puis réanalyse', async () => {
-    const compte = await make.account();
+    const compte = await make.account({ plan: 'premium' });
     const v1 = await make.asset(compte, { category: 'VEHICULE' });
     const v2 = await make.asset(compte, { category: 'VEHICULE' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER' });

@@ -49,6 +49,8 @@ import { AssistantSettings } from './_components/AssistantSettings';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGuard';
+import { TriggersEditor } from './_components/TriggersEditor';
+import type { CatalogTrigger } from './_components/triggers-model';
 import { useRouter } from 'next/navigation';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
@@ -57,7 +59,7 @@ type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
 type Status = 'DRAFT' | 'TO_TEST' | 'ACTIVE' | 'VALIDATED' | 'ARCHIVED';
 
 interface GuardrailDef { code: string; label: string; description: string; unit: string }
-interface TriggerDef { code: string; label: string; kind: 'event' | 'schedule' }
+interface TriggerDef { code: string; label: string; kind: 'event' | 'schedule'; help?: string | null }
 
 interface TreatmentCatalog {
   code: Treatment;
@@ -65,6 +67,8 @@ interface TreatmentCatalog {
   batch: boolean;
   guardrails: GuardrailDef[];
   triggers: TriggerDef[];
+  /** Déclencheurs appliqués quand la liste est vide (défauts du code). */
+  defaultTriggers?: string[];
   /** CDC 15 D-04 : prompt maître déclaré pour ce traitement, sinon `null`. */
   master?: { masterPromptCode: string; tasks: string[] } | null;
 }
@@ -77,6 +81,8 @@ interface Catalogs {
   reasoningLevels: string[];
   guardrailReactions: string[];
   treatments: TreatmentCatalog[];
+  /** Catalogue complet des déclencheurs (libellés des entrées incompatibles). */
+  triggerCatalog?: CatalogTrigger[];
 }
 
 interface Cascade {
@@ -525,13 +531,6 @@ function TreatmentEditor({
       : [...entry.guardrails, { code, threshold: 0, reaction: catalogs.guardrailReactions[0] }]);
   };
 
-  const toggleTrigger = (t: TriggerDef) => {
-    const present = entry.triggers.find((x) => x.code === t.code);
-    set('triggers', present
-      ? entry.triggers.filter((x) => x.code !== t.code)
-      : [...entry.triggers, { kind: t.kind, code: t.code, active: true }]);
-  };
-
   return (
     <div className="space-y-6">
       {/*
@@ -559,11 +558,19 @@ function TreatmentEditor({
         CDC 15 D-03 : texte COMPLET du prompt maître. Vide : fichier du dépôt
         (valeur initiale).
       */}
-      {catalog.master && !isPromptAdministrable(entry.treatment) ? (
-        <p className="text-xs text-[color:var(--text-muted)]">
-          Prompt maître {catalog.master.masterPromptCode} : fichier du dépôt, non modifiable — Prompt Control
-          ne se modifie jamais lui-même (CDC 15 §27).
-        </p>
+      {!isPromptAdministrable(entry.treatment) ? (
+        <div className="space-y-1">
+          <p className="text-xs text-[color:var(--text-muted)]">
+            Le prompt de Prompt Control est défini dans le dépôt
+            {catalog.master ? ` (${catalog.master.masterPromptCode})` : ''}. Il n&apos;est pas modifiable depuis cette configuration.
+          </p>
+          {(entry.prompt?.trim() || entry.masterPrompt?.trim()) ? (
+            <p className="text-xs text-amber-500">
+              Un ancien texte de configuration est présent mais n&apos;est pas utilisé par T5. Il sera retiré lors de
+              l&apos;enregistrement du brouillon.
+            </p>
+          ) : null}
+        </div>
       ) : null}
       {catalog.master && isPromptAdministrable(entry.treatment) ? (
         <details className="rounded-lg border border-[color:var(--border-subtle)] p-3" open>
@@ -595,12 +602,7 @@ function TreatmentEditor({
           Architecture « master » : le prompt de ce traitement est le texte master ci-dessus. Le préambule et les
           prompts techniques des étapes ne sont plus utilisés ni proposés.
         </p>
-      ) : (
-        <p className="text-xs text-[color:var(--text-muted)]">
-          Le comportement de Prompt Control est défini dans le code : il n&apos;a pas de
-          prompt modifiable. Seuls ses réglages de modèle se configurent ici.
-        </p>
-      )}
+      ) : null}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Modèle principal">
@@ -748,33 +750,16 @@ function TreatmentEditor({
         </div>
       )}
 
-      {catalog.batch ? (
-        <div className="space-y-2">
-          <span className="text-sm font-medium text-[color:var(--text-primary)]">Déclencheurs</span>
-          {catalog.triggers.map((t) => {
-            const chosen = entry.triggers.find((x) => x.code === t.code);
-            return (
-              <div key={t.code} className="flex items-center gap-2.5">
-                <input type="checkbox" checked={Boolean(chosen)} disabled={readOnly}
-                  onChange={() => toggleTrigger(t)} />
-                <span className="text-sm text-[color:var(--text-primary)] flex-1">{t.label}</span>
-                {chosen && (
-                  <label className="flex items-center gap-1.5 text-xs text-[color:var(--text-muted)]">
-                    <input type="checkbox" checked={chosen.active} disabled={readOnly}
-                      onChange={() => set('triggers', entry.triggers.map((x) =>
-                        x.code === t.code ? { ...x, active: !x.active } : x))} />
-                    actif
-                  </label>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="text-sm text-[color:var(--text-muted)]">
-          Ce traitement répond aux demandes en direct : il n&apos;a pas de déclencheur.
-        </p>
-      )}
+      <TriggersEditor
+        treatment={entry.treatment}
+        batch={catalog.batch}
+        saved={entry.triggers}
+        applicable={catalog.triggers}
+        catalog={catalogs.triggerCatalog}
+        defaults={catalog.defaultTriggers ?? []}
+        readOnly={readOnly}
+        onChange={(next) => set('triggers', next)}
+      />
     </div>
   );
 }
@@ -957,8 +942,20 @@ export default function AiConfigPage() {
     try {
       await apiClient.put(`/api/admin/ai/config-versions/${current.id}/entries/${t}`, entry);
       setDirty((d) => { const n = new Set(d); n.delete(t); return n; });
-      setDiff(null);
       toast.success(`${t} enregistré`);
+      // Relecture : l'écran montre ce qui est réellement enregistré (texte T5
+      // hérité retiré, déclencheurs corrigés) et les contrôles sont recalculés
+      // sur cette version — ils ne disparaissent pas jusqu'au prochain diff.
+      try {
+        const v = await apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${current.id}`);
+        const relu = v.entries.find((e) => e.treatment === t);
+        setCurrent(v);
+        if (relu) setDrafts((d) => ({ ...d, [t]: relu }));
+        if (diff) setDiff(await apiClient.get<DiffResponse>(`/api/admin/ai/config-versions/${current.id}/diff`));
+        else setDiff(null);
+      } catch {
+        setDiff(null);
+      }
       return true;
     } catch {
       toast.error(`${t} n'a pas pu être enregistré.`);

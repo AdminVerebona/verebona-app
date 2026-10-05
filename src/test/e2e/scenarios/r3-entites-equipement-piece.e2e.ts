@@ -78,7 +78,7 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     sourceType: 'file' as const, sourceIds: [fileId], accountId, userId, mimeTypes: [], displayNames: [],
   });
   const maison = async () => {
-    const compte = await make.account();
+    const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const [eq] = await sql<{ id: number }[]>`INSERT INTO equipments (asset_id, name, type) VALUES (${bien.id}, 'Chaudière', 'BOILER') RETURNING id`;
     // Pièce = sous-structure (D-G, lot 20).
@@ -165,7 +165,7 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
       evidence: expect.objectContaining({ fileId: doc.id, excerpt: 'N° de série : FR-2024-0077' }),
     })]);
     expect(await readCanonicalEntityField(m.compte.id, m.equipement, 'finGarantie')).toMatchObject({ key: 'warrantyEndDate', value: '2031-03-01', display: '1 mars 2031' });
-    const autre = await make.account();
+    const autre = await make.account({ plan: 'premium' });
     expect(await readCanonicalEntityField(autre.id, m.equipement, 'serialNumber')).toBeNull();
     const { answerFromTarget } = await import('@/services/verebona-assistant/core/target-answer');
     const rep = await answerFromTarget(m.compte.id, 'numéro de série de la chaudière ?', {

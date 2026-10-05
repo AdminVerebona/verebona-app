@@ -99,6 +99,10 @@ const T1_MASTER = 't1_master_v1';
 export const T1_MASTER_VARIABLES = [
   'SOURCES', 'EXISTING_TITLES', 'EXTRACTED_CONTENT', 'KNOWN_TARGET',
   'FIELD_CATALOG', 'DOCUMENT_CATALOG', 'EVENT_CATALOG', 'ENTITY_CONTEXT',
+  // Capacités effectives du compte (pièces, équipements) — jamais l'offre.
+  // Variable OPTIONNELLE pour un texte de version antérieur qui ne la porte
+  // pas (`OPTIONAL_MASTER_VARIABLES`, prompt-loader).
+  'ACCOUNT_CAPABILITIES',
 ] as const;
 
 /** Prompt maître T3 (CDC 15 §25, §29.1) — même valeur que `T3_MASTER_PROMPT_CODE`. */

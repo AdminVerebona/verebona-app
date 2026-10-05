@@ -32,7 +32,14 @@ export const metadata: Metadata = {
   },
   appleWebApp: {
     capable: true,
-    statusBarStyle: 'default',
+    // `black-translucent` : la page s'étend sous la barre d'état et iOS
+    // renseigne `env(safe-area-inset-top)`, que la barre haute mobile, le
+    // panneau du compte et l'espace Verebona réservent déjà. Avec `default`,
+    // iOS 26 affiche la page sous la barre d'état SANS renseigner l'encart :
+    // le champ « Demander à Verebona » et l'avatar passaient sous l'heure et
+    // la batterie (préprod, 4 oct. 2026). La barre d'état prend la couleur
+    // du fond de la barre haute (`--bg-page`).
+    statusBarStyle: 'black-translucent',
     title: 'Verebona',
   },
   formatDetection: {

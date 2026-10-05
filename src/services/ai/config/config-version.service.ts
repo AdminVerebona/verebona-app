@@ -24,7 +24,7 @@
 import { getAiEnvironment, allowsTestVersions } from './environment';
 import { diffVersions, type ConfigDiff } from './config-diff.service';
 import {
-  validateVersion, type ConfigCatalogs, type ValidationResult,
+  validateVersion, hasLegacyPromptText, type ConfigCatalogs, type ValidationResult,
 } from './config-validation.service';
 import { guardrailCodes, triggerCodes } from './catalogs';
 import {
@@ -32,7 +32,8 @@ import {
   promoteToTest, demoteToDraft, validateVersion as commitValidation,
   switchActive, archiveVersion, listVersions, markStaleDrafts,
 } from './config-version.repository';
-import { promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
+import { promptArchitectureOf, normalizeTreatmentConfig, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
+import { isPromptAdministrable } from './treatments';
 import { checkPromptArchitectureChange } from './prompt-architecture';
 
 /** Refus fonctionnel — distinct d'une erreur technique. */
@@ -121,7 +122,17 @@ export async function saveTreatmentConfig(
   }
   // Même règle pour le texte master (D-03) : omis ⇒ celui en place.
   const masterPrompt = config.masterPrompt === undefined ? (current?.masterPrompt ?? null) : config.masterPrompt;
-  await saveEntry(versionId, { ...config, promptArchitecture: next, masterPrompt }, userId);
+  // Ordre du ticket T5 : normalisation des champs non administrables, puis
+  // écriture (`saveEntry` → `upsertEntry` normalise de nouveau, point de
+  // passage unique). La trace porte la valeur réellement enregistrée.
+  const saved = normalizeTreatmentConfig({ ...config, promptArchitecture: next, masterPrompt });
+  await saveEntry(versionId, saved, userId);
+  const { recordConfigEntrySave } = await import('./config-entry.audit');
+  await recordConfigEntrySave({
+    adminUserId: userId, versionId, treatment: config.treatment,
+    before: current, after: saved,
+    legacyPromptCleared: Boolean(current) && !isPromptAdministrable(config.treatment) && hasLegacyPromptText(current!),
+  });
   // CFG-01 (CDC 15) : une édition ne touche qu'un Brouillon (`saveEntry`
   // refuse tout autre statut), jamais la version effective. La clé partagée
   // est tout de même incrémentée : le coût est un rechargement par instance,

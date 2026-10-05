@@ -70,7 +70,7 @@ describe('T5 — pas de prompt administrable (T5-003, E-02)', () => {
     const issues = validateTreatment(valide({ treatment: 'T5', prompt: 'ancien texte', triggers: [] }), catalogues());
     const prompt = issues.find((i) => i.field === 'prompt');
     expect(prompt?.blocking).toBe(false);
-    expect(prompt?.message).toMatch(/pas administrable/);
+    expect(prompt?.message).toMatch(/n’est pas utilisé par T5. Il sera retiré lors de l’enregistrement du brouillon/);
   });
 
   it('lot 16b : plus de préambule exigé de T1 à T4 (masters seuls)', () => {

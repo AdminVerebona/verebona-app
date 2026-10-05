@@ -126,6 +126,11 @@ export interface T4CandidateContext {
   /** Type documentaire canonique (V1 / DOCUMENT_CATALOG) ou type V2. */
   documentType?: string | null;
   documentTypeCode?: string | null;
+  /**
+   * Capacités du compte : sans `equipments`, une cible ÉQUIPEMENT n'est jamais
+   * un candidat — et elle n'est pas réattribuée au bien (garde-fou T4).
+   */
+  capabilities?: import('@/services/account-capabilities.service').AccountCapabilities;
 }
 
 /** Libellé d'un événement réalisé, par type métier (§13). */
@@ -200,6 +205,8 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
     let cible: NonNullable<AgendaCandidate['target']> = { type: 'ASSET', id: ctx.documentAssetId };
     if (t) {
       if (t.targetType === 'EQUIPMENT') {
+        // Équipements hors capacités du compte : aucun candidat, ni ciblé ni reporté sur le bien.
+        if (ctx.capabilities && !ctx.capabilities.equipments) continue;
         // Corpus §15 E2E-17 (lot 17) : l'échéance d'un ÉQUIPEMENT (fin de
         // garantie d'une chaudière) devient un candidat CIBLÉ sur lui — la
         // persistance le lie à l'équipement (`agenda_equipment_links`). Elle

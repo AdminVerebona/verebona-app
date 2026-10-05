@@ -239,6 +239,7 @@ export async function runSourceAnalysis(
         documentDate: result.document.date?.value ?? null,
         documentType: result.document.type?.value ?? null,
         documentTypeCode: result.document.rubric?.documentTypeCode ?? null,
+        capabilities: ctx.capabilities,
       });
 
       // ⚠️ Point de contrôle essentiel : l'appel IA a pu répondre APRÈS un
@@ -330,6 +331,7 @@ export async function runSourceAnalysis(
         input,
         leadSourceId,
         facts: master.facts,
+        capabilities: ctx.capabilities,
         documentType: result.document.type?.value,
         documentDate: result.document.date?.value,
         trace: result.operationTrace,
@@ -741,7 +743,10 @@ async function loadAnalysisContext(
 
   const assetIds = assetRows.map((a) => a.id);
 
-  const [roomRows, equipRows, titleRows] = await Promise.all([
+  // Capacités du compte AU MOMENT de l'analyse (pièces, équipements) :
+  // contexte T1 filtré, sortie T1 contrôlée, gardes T3 / T4 (account-capabilities).
+  const { getAccountCapabilities } = await import('@/services/account-capabilities.service');
+  const [roomRows, equipRows, titleRows, capabilities] = await Promise.all([
     assetIds.length
       // D-G (lot 20, 0229) : pièces = sous-structures ; les identifiants proposés
       // au modèle (puis revérifiés) sont des `substructures.id`.
@@ -756,6 +761,7 @@ async function loadAnalysisContext(
       .from(assetFiles)
       .where(and(eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)))
       .limit(100),
+    getAccountCapabilities(accountId),
   ]);
 
   return {
@@ -766,5 +772,6 @@ async function loadAnalysisContext(
     equipments: equipRows as AnalysisContext['equipments'],
     existingTitles: titleRows.map((t) => t.title).filter((t): t is string => Boolean(t)),
     linkedAssetId,
+    capabilities,
   };
 }

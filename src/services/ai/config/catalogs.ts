@@ -116,6 +116,8 @@ export interface TriggerDefinition {
    * sur toute version dont la liste était déjà renseignée.
    */
   activeUnlessDeclared?: boolean;
+  /** Texte d'aide affiché au BO, par traitement (le même code peut servir T3 et T4). */
+  help?: Readonly<Partial<Record<string, string>>>;
 }
 
 /**
@@ -167,7 +169,13 @@ export const TRIGGER_CATALOG: readonly TriggerDefinition[] = [
   // paramètre du BO sans effet est retiré (DOD-19). Reconnu pour les versions
   // existantes, jamais appliqué.
   { code: 'web_link_added', label: 'Ajout d\'un lien web (retiré, sans effet)', kind: 'event', treatments: ['T1'], retired: true },
-  { code: 'source_analyzed', label: 'Analyse de source terminée', kind: 'event', treatments: ['T3', 'T4'] },
+  {
+    code: 'source_analyzed', label: 'Analyse de source terminée', kind: 'event', treatments: ['T3', 'T4'],
+    help: {
+      T3: 'Lance T3 à partir des résultats d’une analyse de source, pour rationaliser les données du compte.',
+      T4: 'Lance T4 à partir des résultats d’une analyse de source, pour traiter les informations ayant un effet sur l’agenda.',
+    },
+  },
   { code: 'document_linked', label: 'Rattachement d\'un document à un bien', kind: 'event', treatments: ['T3'] },
   { code: 'asset_updated', label: 'Modification d\'un bien', kind: 'event', treatments: ['T3'] },
   { code: 'arbitration_resolved', label: 'Arbitrage « À traiter » résolu', kind: 'event', treatments: ['T3'] },
@@ -212,4 +220,24 @@ export function retiredTriggerCodes(): Set<string> {
 
 export function triggerCodes(): Set<string> {
   return new Set(TRIGGER_CATALOG.map((t) => t.code));
+}
+
+/**
+ * Motif pour lequel un déclencheur ENREGISTRÉ dans une configuration n'est pas
+ * applicable au traitement, ou `null` s'il l'est (BO IA, ticket T4 : « tout
+ * paramètre enregistré qui bloque la validation doit être visible et
+ * corrigeable »). Même référentiel que la validation (`isTriggerApplicable`).
+ */
+export function triggerIncompatibility(
+  code: string,
+  treatment: string,
+  batch: boolean,
+): { reason: 'synchronous' | 'unknown' | 'not_applicable' | 'retired'; label: string } | null {
+  const def = TRIGGER_CATALOG.find((d) => d.code === code);
+  const label = def?.label ?? code;
+  if (!batch) return { reason: 'synchronous', label };
+  if (!def) return { reason: 'unknown', label };
+  if (def.treatments && !def.treatments.includes(treatment)) return { reason: 'not_applicable', label };
+  if (def.retired) return { reason: 'retired', label };
+  return null;
 }

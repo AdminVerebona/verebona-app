@@ -46,6 +46,8 @@ const BUILDERS: Record<string, Builder> = {
         displayNames: names, mimeTypes: x.mimeTypes ?? names.map(() => 'application/pdf'), extractedContent: x.extractedContent,
       } as never,
       groupIndices: [0], ctx: fixtureAnalysisContext(c as never), v2Families: [],
+      // Corpus : compte Premium (pièces et équipements), cas des fixtures.
+      capabilities: { rooms: true, equipments: true },
     }) as unknown as Vars;
   },
   async t2_understand(c) {

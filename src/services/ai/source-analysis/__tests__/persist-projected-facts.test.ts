@@ -19,6 +19,10 @@ const db = vi.hoisted(() => ({
   rooms: new Map([[3, 11]]),
 }));
 
+// Compte Premium : pièces et équipements autorisés (capacités du compte).
+vi.mock('@/services/account-capabilities.service', async (orig) => ({
+  ...(await orig<object>()), getAccountCapabilities: async () => ({ rooms: true, equipments: true }),
+}));
 vi.mock('@/db', () => {
   const unsafe = vi.fn(async (sql: string, params: unknown[] = []) => {
       db.calls.push({ sql, params });

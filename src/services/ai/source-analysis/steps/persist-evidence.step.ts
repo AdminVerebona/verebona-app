@@ -27,6 +27,7 @@
  *    est RENDU à l'appelant (DOD-01 : zéro perte silencieuse). Puis les
  *    preuves antérieures de la même source passent SUPERSEDED (§14.4).
  */
+import { getAccountCapabilities, isTargetForbidden, type AccountCapabilities } from '@/services/account-capabilities.service';
 import {
   recordEvidence, supersedePriorSourceEvidence, EvidenceSchemaNotReadyError,
 } from '../../evidence/field-evidence.service';
@@ -172,6 +173,11 @@ export interface PersistProjectedFactsInput {
   analysisRunId?: number | null;
   /** Version du prompt tracée sur la preuve (défaut : code du master T1). */
   promptVersion?: string;
+  /**
+   * Capacités du compte (pièces, équipements). Absentes : relues en base dès
+   * qu'un fait vise une pièce ou un équipement (garde-fou T3 jamais contourné).
+   */
+  capabilities?: AccountCapabilities;
 }
 
 /** Motif pour lequel un fait n'a pas produit de preuve de champ. */
@@ -193,7 +199,9 @@ export type ProjectedFactSkipReason =
   /** Cible équipement/pièce alors que la migration 0219 manque. */
   | 'SCHEMA_NOT_READY'
   /** Écriture en échec (journalisée). */
-  | 'WRITE_FAILED';
+  | 'WRITE_FAILED'
+  /** Cible pièce / équipement hors capacités du compte : jamais projetée (T3). */
+  | 'CAPABILITY_FORBIDDEN';
 
 export interface PersistProjectedFactsResult {
   /** Preuves écrites, indexées par `canonicalKey@TYPE:entityId`. */
@@ -244,6 +252,19 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
     const hasProof = visual ? !!fact.visualEvidence?.description?.trim() : !!fact.evidence.excerpt?.trim();
     if (!hasProof && fact.origin !== 'DETERMINISTIC_RULE') { skip(fact, 'NO_EVIDENCE'); continue; }
     eligible.push({ fact, type: fact.target.targetType, entityId: fact.target.targetEntityId });
+  }
+
+  // 1 bis. Garde-fou T3 : aucune preuve projetable sur une pièce / un
+  // équipement hors capacités du compte (le garde-fou T1 a déjà requalifié
+  // ces faits ; ceci couvre tout autre appelant).
+  if (eligible.some((e) => e.type !== 'ASSET')) {
+    const caps = p.capabilities ?? await getAccountCapabilities(p.input.accountId);
+    for (let i = eligible.length - 1; i >= 0; i--) {
+      if (isTargetForbidden(eligible[i].type, caps)) {
+        skip(eligible[i].fact, 'CAPABILITY_FORBIDDEN');
+        eligible.splice(i, 1);
+      }
+    }
   }
 
   // 2. Revérification en base (compte) et bien porteur.

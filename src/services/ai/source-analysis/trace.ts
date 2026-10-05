@@ -34,7 +34,9 @@ export function mergeTrace<T>(
 }
 
 export function combineTraces(...traces: AiOperationTrace[]): AiOperationTrace {
-  return traces.reduce((acc, t) => ({
+  // Capacités T1 : celles de la dernière trace qui en porte (une par analyse).
+  const capacites = [...traces].reverse().find((t) => t.accountCapabilities)?.accountCapabilities;
+  const combined = traces.reduce((acc, t) => ({
     traceIds: [...acc.traceIds, ...t.traceIds],
     operationCodes: [...acc.operationCodes, ...t.operationCodes],
     totalInputTokens: acc.totalInputTokens + t.totalInputTokens,
@@ -44,4 +46,5 @@ export function combineTraces(...traces: AiOperationTrace[]): AiOperationTrace {
     usedFallback: acc.usedFallback || t.usedFallback,
     models: [...new Set([...acc.models, ...t.models])],
   }), emptyTrace());
+  return capacites ? { ...combined, accountCapabilities: capacites } : combined;
 }

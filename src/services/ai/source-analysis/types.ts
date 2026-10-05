@@ -272,7 +272,9 @@ export type AnalysisWarningCode =
    */
   | 'MASTER_FALLBACK_STEPS'
   /** Nombre d'articles d'un ticket non établi : prix d'acquisition gardé en proposition — T1-02. */
-  | 'LINE_COUNT_UNKNOWN';
+  | 'LINE_COUNT_UNKNOWN'
+  /** Fait ciblé sur une pièce / un équipement hors capacités du compte : connaissance générique. */
+  | 'FORBIDDEN_TARGET_REQUALIFIED';
 
 export interface AnalysisWarning {
   code: AnalysisWarningCode;
@@ -298,6 +300,22 @@ export interface AiOperationTrace {
   totalDurationMs: number;
   usedFallback: boolean;
   models: string[];
+  /**
+   * T1 : capacités du compte appliquées à l'analyse et compteurs de filtrage
+   * (aucune valeur métier). Absent hors chemin master.
+   */
+  accountCapabilities?: T1CapabilityTrace;
+}
+
+export interface T1CapabilityTrace {
+  rooms: boolean;
+  equipments: boolean;
+  forbiddenTargetsReturned: number;
+  forbiddenTargetsRequalified: number;
+  forbiddenEntitiesDropped: number;
+  roomsFilteredFromContext: number;
+  equipmentsFilteredFromContext: number;
+  fieldsFilteredByCapabilities: number;
 }
 
 /**
@@ -356,4 +374,9 @@ export interface AnalysisContext {
   equipments: Array<{ id: number; name: string; type: string | null; assetId: number }>;
   existingTitles: string[];
   linkedAssetId: number | null;
+  /**
+   * Capacités effectives du compte (pièces, équipements), résolues côté
+   * serveur au moment de l'analyse. Absentes : relues par l'étape T1.
+   */
+  capabilities?: import('@/services/account-capabilities.service').AccountCapabilities;
 }

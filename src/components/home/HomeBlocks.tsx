@@ -186,23 +186,28 @@ export function VerebonaWork({ items, onNavigate, className = '' }: { items: Ver
       ) : (
         <ol className="m-0 flex list-none flex-col p-0 pl-1 md:pl-1.5 md:pt-1.5">
           {items.slice(0, 3).map((w, i) => (
-            <li key={w.id} className={`gap-3 md:flex md:gap-3.5 ${i >= 2 ? 'hidden' : 'flex'}`}>
-              <div className="flex w-3 flex-shrink-0 flex-col items-center" aria-hidden>
-                <span
-                  className="mt-[5px] h-2.5 w-2.5 rounded-full"
-                  style={{ background: WORK_DOTS[w.tone], boxShadow: `0 0 0 4px color-mix(in srgb, ${WORK_DOTS[w.tone]} 18%, transparent)` }}
-                />
-                <span className="mt-1.5 w-0.5 flex-1 rounded-sm bg-[color:var(--border-subtle)]" />
-              </div>
-              <div className="min-w-0 flex-1 pb-4 md:pb-[18px]">
-                <p className="m-0 text-[13.5px] leading-[1.45] text-[color:var(--text-primary)] [text-wrap:pretty] md:leading-normal">{w.text}</p>
-                <div className="mt-1 flex gap-2.5 text-[12px] text-[color:var(--text-muted)] md:mt-[5px]">
-                  <span>{relativeAgo(w.at, now)}</span>
-                  <button type="button" onClick={() => openWork(w, onNavigate)} className="font-medium text-[color:var(--accent)] hover:text-[#60A5FA] focus-visible:outline-none focus-visible:underline">
-                    {w.cta}
-                  </button>
-                </div>
-              </div>
+            // Toute la ligne ouvre l'élément (document, échéance, fiche du
+            // bien) : plus de bouton « Ouvrir… » sous le texte (2 oct. 2026).
+            // Le libellé d'action reste annoncé aux lecteurs d'écran.
+            <li key={w.id} className={i >= 2 ? 'hidden md:block' : 'block'}>
+              <button
+                type="button"
+                onClick={() => openWork(w, onNavigate)}
+                aria-label={`${w.text} — ${w.cta}`}
+                className="group -mx-2 flex w-[calc(100%+1rem)] gap-3 rounded-xl px-2 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none md:gap-3.5"
+              >
+                <span className="flex w-3 flex-shrink-0 flex-col items-center self-stretch" aria-hidden>
+                  <span
+                    className="mt-[5px] h-2.5 w-2.5 rounded-full"
+                    style={{ background: WORK_DOTS[w.tone], boxShadow: `0 0 0 4px color-mix(in srgb, ${WORK_DOTS[w.tone]} 18%, transparent)` }}
+                  />
+                  <span className="mt-1.5 w-0.5 flex-1 rounded-sm bg-[color:var(--border-subtle)]" />
+                </span>
+                <span className="block min-w-0 flex-1 pb-4 md:pb-[18px]">
+                  <span className="block text-[13.5px] leading-[1.45] text-[color:var(--text-primary)] [text-wrap:pretty] group-hover:text-[color:var(--accent)] md:leading-normal">{w.text}</span>
+                  <span className="mt-1 block text-[12px] text-[color:var(--text-muted)] md:mt-[5px]">{relativeAgo(w.at, now)}</span>
+                </span>
+              </button>
             </li>
           ))}
         </ol>

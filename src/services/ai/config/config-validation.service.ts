@@ -34,7 +34,7 @@
 import { TREATMENTS, getTreatment, isPromptAdministrable, type Treatment } from './treatments';
 import { TRIGGER_CATALOG, activeUnlessDeclaredCodes } from './catalogs';
 import {
-  REASONING_LEVELS, GUARDRAIL_REACTIONS, FIELD_LABELS,
+  REASONING_LEVELS, GUARDRAIL_REACTIONS, FIELD_LABELS, normalizeTreatmentConfig,
   type TreatmentConfig, type ConfigFieldKey,
 } from './config-types';
 import { masterConfigIssues } from './prompt-architecture';
@@ -241,8 +241,18 @@ function validateTriggers(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIs
     // T3-003, T4-016 : un déclencheur n'est sélectionnable que pour les
     // traitements auxquels le catalogue l'applique — il est désormais lu au
     // runtime (queue/triggers.ts), un code hors périmètre ne ferait rien.
+    const def = TRIGGER_CATALOG.find((d) => d.code === tr.code);
     if (!isTriggerApplicable(tr.code, t)) {
-      out.push(issue(t, 'triggers', `Le déclencheur « ${tr.code} » ne s'applique pas à ${t}.`));
+      // Actif ou non : une entrée inapplicable reste enregistrée et bloque.
+      // Le BO la liste dans « Déclencheurs enregistrés incompatibles », avec
+      // l'action « Supprimer de la configuration ».
+      out.push(issue(
+        t, 'triggers',
+        `Le déclencheur « ${tr.code} » ne s'applique pas à ${t} : supprimez-le de la configuration`
+          + ` (« ${def?.label ?? tr.code} », la désactivation ne suffit pas).`,
+      ));
+    } else if (def && def.kind !== tr.kind) {
+      out.push(issue(t, 'triggers', `Déclencheur « ${tr.code} » : nature « ${tr.kind} » au lieu de « ${def.kind} » (catalogue).`));
     }
     if (vus.has(tr.code)) {
       out.push(issue(t, 'triggers', `Déclencheur « ${tr.code} » déclaré deux fois.`));
@@ -250,7 +260,7 @@ function validateTriggers(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIs
     vus.add(tr.code);
     // CDC 15 CFG-04, DOD-19 : code retiré, sans effet — signalé, pas bloquant
     // (versions existantes).
-    if (TRIGGER_CATALOG.find((d) => d.code === tr.code)?.retired) {
+    if (def?.retired) {
       out.push(issue(t, 'triggers', `Le déclencheur « ${tr.code} » est retiré : il est ignoré à l'exécution.`, false));
     }
   }
@@ -371,19 +381,28 @@ export function unavailableModels(
   return out;
 }
 
+/** Information permanente du BO : le prompt de T5 vient du dépôt. */
+export const T5_REPOSITORY_PROMPT_MESSAGE =
+  'Le prompt de Prompt Control est défini dans le dépôt. Il n’est pas modifiable depuis cette configuration.';
+
+/** Texte hérité encore présent dans une configuration T5 (non bloquant). */
+export const T5_LEGACY_TEXT_MESSAGE =
+  'Un ancien texte de configuration est présent mais n’est pas utilisé par T5. Il sera retiré lors de l’enregistrement du brouillon.';
+
+/** Un préambule ou un ancien texte master est-il stocké (non vide) ? */
+export function hasLegacyPromptText(c: Pick<TreatmentConfig, 'prompt'> & { masterPrompt?: string | null }): boolean {
+  return Boolean(c.prompt && c.prompt.trim() !== '') || Boolean(c.masterPrompt && c.masterPrompt.trim() !== '');
+}
+
 export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssue[] {
   const out: ValidationIssue[] = [];
   if (!isPromptAdministrable(c.treatment)) {
-    // T5-003, E-02 : le comportement de T5 est dans le code. Un texte hérité
-    // d'une version antérieure est ignoré à l'exécution ; on le signale sans
-    // bloquer, puisque l'administrateur n'a plus de champ pour le vider — le
-    // prochain enregistrement de l'onglet T5 le fera.
-    if (c.prompt && c.prompt.trim() !== '') {
-      out.push(issue(
-        c.treatment, 'prompt',
-        "Le prompt de Prompt Control n'est pas administrable : ce texte hérité est ignoré.",
-        false,
-      ));
+    // T5-003, E-02 : le comportement de T5 est dans le code (prompt maître du
+    // dépôt). Un texte hérité — préambule ou ancien master — est ignoré à
+    // l'exécution : information NON bloquante, et le prochain enregistrement
+    // du brouillon le retire (`normalizeTreatmentConfig`).
+    if (hasLegacyPromptText(c)) {
+      out.push(issue(c.treatment, 'prompt', T5_LEGACY_TEXT_MESSAGE, false));
     }
   }
   // Lot 16b : le préambule des étapes (`prompt`) n'est plus OBLIGATOIRE — il
@@ -393,7 +412,14 @@ export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): Vali
   // CDC 15 D-03, D-04, §29.1 : préambule sans master, texte master complet,
   // architecture master cohérente — `steps` refusé pour TOUS les traitements
   // (lot 16b, migrations 0231 à 0234).
-  for (const m of masterConfigIssues(c)) out.push(issue(c.treatment, m.field, m.message, m.blocking));
+  //
+  // Contrôle porté sur ce qui S'EXÉCUTE : pour T5, la configuration normalisée
+  // (préambule vide, aucun master stocké), même règle que l'écriture en base
+  // et que la résolution à l'exécution. Un ancien texte ignoré ne peut plus
+  // bloquer par son contenu (« le texte master va dans sa zone dédiée », zone
+  // qui n'existe pas pour T5) ; l'architecture et le master du dépôt restent
+  // contrôlés.
+  for (const m of masterConfigIssues(normalizeTreatmentConfig(c))) out.push(issue(c.treatment, m.field, m.message, m.blocking));
   out.push(...validateModels(c, cat));
   out.push(...validateReasoning(c));
   out.push(...validateTokens(c, cat));

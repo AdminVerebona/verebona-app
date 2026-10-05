@@ -231,7 +231,7 @@ scenario('CORPUS-DOCS', 'Corpus §15 — documents de bout en bout (enabled / ma
   });
 
   it('E2E-17 — facture équipement (enabled/master) : faits sur l’équipement, aucune pollution du bien parent', async () => {
-    const compte = await make.account();
+    const compte = await make.account({ plan: 'premium' });
     const appart = await make.asset(compte, { category: 'IMMOBILIER', name: 'Appartement Lyon' });
     const [eq] = await sql<{ id: number }[]>`
       INSERT INTO equipments (asset_id, name, type) VALUES (${appart.id}, 'Chaudière Frisquet', 'BOILER') RETURNING id`;

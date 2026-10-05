@@ -59,6 +59,34 @@ function toOrigin(value: string | null): string | null {
   }
 }
 
+/**
+ * Origine publique de la requête telle que l'a reçue le routeur Scalingo.
+ *
+ * Derrière le proxy, `request.nextUrl.origin` peut valoir `http://…` (TLS
+ * terminé en amont) ou l'hôte interne. Une requête de MÊME origine — l'app
+ * servie sur le domaine préprod, ou sur un domaine secondaire — était alors
+ * refusée dès que `NEXT_PUBLIC_APP_URL` désignait un autre domaine : la
+ * connexion et le dépôt de document échouaient sans motif lisible.
+ *
+ * Comparer `Origin` à l'hôte effectivement visé reste une vérification de
+ * même origine : un site tiers ne peut ni forger `Origin` ni choisir l'hôte
+ * vers lequel le navigateur envoie la requête.
+ */
+function forwardedOrigins(request: NextRequest): string[] {
+  const out: string[] = [];
+  const first = (v: string | null) => v?.split(',')[0]?.trim() || null;
+  const host = first(request.headers.get('x-forwarded-host')) ?? first(request.headers.get('host'));
+  if (!host || !/^[a-z0-9.-]+(:\d+)?$/i.test(host)) return out;
+  const proto = first(request.headers.get('x-forwarded-proto'));
+  if (proto === 'https' || proto === 'http') out.push(`${proto}://${host}`);
+  else out.push(`https://${host}`);
+  return out;
+}
+
+/** Message affiché lorsqu'une requête est refusée par la vérification d'origine. */
+export const CSRF_REJECTED_MESSAGE =
+  'Requête refusée : origine non reconnue. Rechargez la page puis réessayez.';
+
 export interface CsrfVerdict {
   allowed: boolean;
   /** Motif du refus, journalisable sans exposer de secret. */
@@ -88,7 +116,7 @@ export function verifyRequestOrigin(request: NextRequest): CsrfVerdict {
     return { allowed: false, reason: 'MISSING_ORIGIN', origin: null };
   }
 
-  const permitted = new Set([...allowedOrigins(), request.nextUrl.origin]);
+  const permitted = new Set([...allowedOrigins(), request.nextUrl.origin, ...forwardedOrigins(request)]);
   if (!permitted.has(origin)) {
     return { allowed: false, reason: 'FOREIGN_ORIGIN', origin };
   }

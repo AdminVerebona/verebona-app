@@ -39,13 +39,21 @@ export function factories(sql: Sql) {
       return { id: u.id, email };
     },
 
-    /** Compte avec son titulaire (créé si absent) et l'adhésion `owner`. */
-    async account(over: { owner?: UserRow; name?: string } = {}): Promise<AccountRow & { owner: UserRow }> {
+    /**
+     * Compte avec son titulaire (créé si absent) et l'adhésion `owner`.
+     * `plan` : abonnement actif à cette offre (droits effectifs, capacités
+     * pièces / équipements) ; absent, aucun abonnement (comme avant).
+     */
+    async account(over: { owner?: UserRow; name?: string; plan?: 'standard' | 'premium' | 'premium_duo' | 'premium_pro' } = {}): Promise<AccountRow & { owner: UserRow }> {
       const owner = over.owner ?? await this.user();
       const [a] = await sql<{ id: number }[]>`
         INSERT INTO accounts (name, owner_user_id) VALUES (${over.name ?? uid('compte')}, ${owner.id}) RETURNING id`;
       await sql`INSERT INTO account_memberships (account_id, user_id, role, status)
                 VALUES (${a.id}, ${owner.id}, 'owner', 'active')`;
+      if (over.plan) {
+        await sql`INSERT INTO account_subscriptions (account_id, plan_code, status, first_billed_at)
+                  VALUES (${a.id}, ${over.plan}, 'active', now())`;
+      }
       return { id: a.id, ownerUserId: owner.id, owner };
     },
 

@@ -25,7 +25,10 @@ import {
   type T1Fact,
 } from '../master/t1-contract';
 import { T1AnalyzeDocumentTolerantOutput, splitNormalisation } from '../master/tolerant-output';
-import { buildAnalyzeDocumentVariables } from '../master/prompt-context';
+import { buildAnalyzeDocumentVariables, catalogForCapabilities, contextFilterStats, knownTargetFamily } from '../master/prompt-context';
+import { enforceT1Capabilities } from '../master/capability-guard';
+import { getAccountCapabilities } from '@/services/account-capabilities.service';
+import { catalogForPrompts } from '@/services/canonical/registry';
 import { checkFactEvidence, factLabel } from '../master/fact-evidence';
 import { verifyCandidates, type VerifiableEntity } from '../identifier-verifier';
 import { loadAssetFamilies } from '../master/rubric-rules';
@@ -66,6 +69,10 @@ export async function analyzeDocument(
   // DOCUMENT_CATALOG restreint aux familles du bien connu (toutes sinon).
   const v2Families: V2AssetFamily[] = await loadAssetFamilies(knownAssetId ? [knownAssetId] : []);
 
+  // Capacités du compte AU MOMENT de l'analyse (pièces, équipements) : elles
+  // filtrent le contexte transmis ET la sortie (garde-fou ci-dessous).
+  const capabilities = ctx.capabilities ?? await getAccountCapabilities(ctx.accountId);
+
   const res = await AiGateway.execute({
     useCaseCode: 'SOURCE_ANALYSIS',
     operationCode: T1_ANALYZE_DOCUMENT_OPERATION,
@@ -74,13 +81,37 @@ export async function analyzeDocument(
     accountId: input.accountId,
     userId: input.userId,
     sourceIds: groupIndices.map((i) => input.sourceIds[i]),
-    promptVariables: buildAnalyzeDocumentVariables({ input, groupIndices, ctx, v2Families }),
+    promptVariables: buildAnalyzeDocumentVariables({ input, groupIndices, ctx, v2Families, capabilities }),
     attachments: buildAttachments(input, groupIndices),
     // Normalisation tolérante AVANT le contrat strict (`master/tolerant-output`).
     outputSchema: T1AnalyzeDocumentTolerantOutput,
     sourceVersion: input.sourceVersion,
   });
-  const { output: out, report } = splitNormalisation(res.data);
+  const { output: brut, report } = splitNormalisation(res.data);
+
+  // ── Capacités du compte : garde-fou serveur (le modèle n'est pas une garantie) ──
+  // Avant vérification des identifiants, projection et persistance : une cible
+  // pièce / équipement hors capacités devient une connaissance générique
+  // (rien n'est perdu, rien n'est reporté sur le bien) ; entités écartées.
+  const { output: out, counters } = enforceT1Capabilities(brut, capabilities);
+  if (counters.forbiddenTargetsRequalified > 0) {
+    warnings.push({
+      code: 'FORBIDDEN_TARGET_REQUALIFIED',
+      message: `${counters.forbiddenTargetsRequalified} information(s) sur une pièce ou un équipement conservée(s) comme connaissance générique (fonctionnalité non incluse dans l’offre).`,
+      target: 't1-master:capabilities',
+    });
+  }
+  const capabilityTrace = {
+    rooms: capabilities.rooms,
+    equipments: capabilities.equipments,
+    ...counters,
+    ...contextFilterStats(ctx, capabilities),
+    fieldsFilteredByCapabilities: catalogForCapabilities(catalogForPrompts({ family: knownTargetFamily(ctx) }), capabilities).fieldsFiltered,
+  };
+  if (counters.forbiddenTargetsReturned > 0 || counters.forbiddenEntitiesDropped > 0) {
+    // Observabilité : compteurs seulement, aucune valeur métier.
+    console.info(`[t1-capabilities] compte ${ctx.accountId} ${JSON.stringify(capabilityTrace)}`);
+  }
   if (report?.truncatedFacts) {
     warnings.push({
       code: 'FACTS_TRUNCATED',
@@ -231,7 +262,7 @@ export async function analyzeDocument(
     verifiedIds,
     documentAssetId,
     warnings,
-    trace: mergeTrace(emptyTrace(), res, T1_ANALYZE_DOCUMENT_OPERATION),
+    trace: { ...mergeTrace(emptyTrace(), res, T1_ANALYZE_DOCUMENT_OPERATION), accountCapabilities: capabilityTrace },
     promptVersion: res.promptVersion,
   };
 }

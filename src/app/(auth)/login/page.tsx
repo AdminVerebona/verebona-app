@@ -104,7 +104,9 @@ function LoginForm() {
       router.push(loggedUser?.status === 'PENDING_DELETION' ? '/compte-en-suppression' : returnUrl);
     } catch (err) {
       console.error('[Login] Error:', err);
-      setError('Une erreur est survenue. Veuillez réessayer.');
+      // `fetch` ne lève qu'en cas de coupure réseau (serveur injoignable,
+      // redémarrage, perte de connexion) : le dire plutôt qu'un message vague.
+      setError('Connexion au serveur impossible. Vérifiez votre réseau puis réessayez.');
       setErrorCode('NETWORK_ERROR');
       setIsLoading(false);
     }

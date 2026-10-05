@@ -17,7 +17,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
 import { getCachedPrice, getCacheState, loadPricingCache } from '@/services/ai/gateway/pricing/pricing.repository';
-import { listGuardrails, listTriggers } from '@/services/ai/config/catalogs';
+import { listGuardrails, listTriggers, TRIGGER_CATALOG } from '@/services/ai/config/catalogs';
+import { DEFAULT_TRIGGERS } from '@/services/ai/queue/triggers';
 import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
 import { REASONING_LEVELS, GUARDRAIL_REACTIONS } from '@/services/ai/config/config-types';
 import { masterPromptForTreatment } from '@/services/ai/config/prompt-architecture';
@@ -56,11 +57,23 @@ export async function GET(req: NextRequest) {
       guardrailReactions: GUARDRAIL_REACTIONS,
       // Lot 16b : `master` seule architecture (`steps` retiré).
       promptArchitectures: ['master'],
+      // Catalogue COMPLET (libellés, applicabilité, retraits) : le BO affiche
+      // les déclencheurs enregistrés qui ne s'appliquent plus au traitement,
+      // pour qu'ils restent visibles et supprimables (ticket BO IA / T4).
+      triggerCatalog: TRIGGER_CATALOG.map((d) => ({
+        code: d.code, label: d.label, kind: d.kind, treatments: d.treatments ?? null, retired: d.retired ?? false,
+      })),
       treatments: TREATMENTS.map((t) => ({
         ...TREATMENT_DEFINITIONS[t],
         guardrails: listGuardrails(t),
         // Vide pour T2 et T5 : synchrones, hors file globale (GEN-004).
-        triggers: TREATMENT_DEFINITIONS[t].batch ? listTriggers(t) : [],
+        // Texte d'aide propre au traitement (`help`), sans exposer la table entière.
+        triggers: TREATMENT_DEFINITIONS[t].batch
+          ? listTriggers(t).map(({ code, label, kind, help }) => ({ code, label, kind, help: help?.[t] ?? null }))
+          : [],
+        // Déclencheurs appliqués quand la liste est VIDE (queue/triggers.ts) :
+        // le BO l'explique — une liste vide ne coupe pas les exécutions.
+        defaultTriggers: (DEFAULT_TRIGGERS as Record<string, readonly string[]>)[t] ?? [],
         // CDC 15 D-04 : master déclaré au registre. Lot 16b : tous les
         // traitements en master seul, sans choix d'architecture ni commutateur.
         master: masterPromptForTreatment(t),

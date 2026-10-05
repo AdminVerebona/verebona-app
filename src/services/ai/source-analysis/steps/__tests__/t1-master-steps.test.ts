@@ -12,6 +12,10 @@ import { z } from 'zod';
 import { loadT1Fixture, fixtureAnalysisContext, type T1Fixture } from '../../__fixtures__/t1/load';
 import type { LinkCandidate, SourceInput } from '../../types';
 
+// Compte Premium : pièces et équipements autorisés (capacités du compte).
+vi.mock('@/services/account-capabilities.service', async (orig) => ({
+  ...(await orig<object>()), getAccountCapabilities: async () => ({ rooms: true, equipments: true }),
+}));
 vi.mock('@/services/ai/telemetry/ai-trace.service', async (orig) => ({
   ...(await orig<typeof import('@/services/ai/telemetry/ai-trace.service')>()),
   recordCallTrace: async () => {},

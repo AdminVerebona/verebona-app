@@ -20,6 +20,7 @@
  * client réel — et fausserait précisément la mesure qu'elle sert à produire.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { capabilitiesForPlan } from '@/services/account-capabilities.service';
 import { AiGateway } from '../../gateway/ai-gateway';
 import { T1_MASTER_PROMPT_CODE, type T1AnalyzeDocumentOutput } from '../../source-analysis/master/t1-contract';
 import { T1AnalyzeDocumentTolerantOutput, splitNormalisation } from '../../source-analysis/master/tolerant-output';
@@ -168,6 +169,9 @@ export function createAnalysisRunner(
           linkedAssetId: null,
         },
         v2Families: [],
+        // Corpus : prompt complet (pièces et équipements autorisés), comme un
+        // compte Premium — la mesure porte sur le master, pas sur l'offre.
+        capabilities: capabilitiesForPlan('premium'),
       });
 
       const analyse = await AiGateway.execute({

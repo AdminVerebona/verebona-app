@@ -137,8 +137,8 @@ describe('fils : suppression et accès à toutes les demandes', () => {
 
 describe('coquille', () => {
   const layout = read('src/components/DashboardLayout.tsx');
-  it('mobile : « Mon agenda » dans le panneau du compte', () => {
-    expect(layout).toMatch(/href="\/agenda"[^]*?Mon agenda/);
+  it('mobile : l’agenda est un onglet de la barre basse (maquette Direction D v2)', () => {
+    expect(read('src/components/mobile/bottom-navigation.tsx')).toMatch(/href: '\/agenda'/);
   });
   it('pas de « + » global desktop (spécification) : plus de fenêtres d’ajout mortes', () => {
     expect(layout).not.toMatch(/AssetFormDialog|UnifiedDocumentDialog|CreateAgendaItemDrawer/);

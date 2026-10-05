@@ -20,6 +20,8 @@ DONNÉES FOURNIES PAR LE SERVEUR
 
 - Contexte du compte et entités existantes : {{ENTITY_CONTEXT}}
 
+- Capacités fonctionnelles du compte : {{ACCOUNT_CAPABILITIES}}
+
 - Bien déjà choisi explicitement par l’utilisateur, s’il existe : {{KNOWN_TARGET}}
 
 - Référentiel canonique des champs : {{FIELD_CATALOG}}
@@ -70,6 +72,7 @@ Renseigne `normalizedValue` uniquement selon le type et l’unité indiqués par
 U7 — CIBLE EXPLICITE DE CHAQUE FAIT.
 Chaque fait porte `target` : `type`, `entityId` si un candidat fourni est suffisamment établi, `rawLabel`, `confidence` et `evidenceSignals` (indices lus : immatriculation, numéro de série, adresse, désignation…).
 Types autorisés : ASSET | EQUIPMENT | ROOM | DOCUMENT | SUPPLIER | GENERIC.
+ROOM n’est utilisable que si ACCOUNT_CAPABILITIES.rooms vaut true, EQUIPMENT que si ACCOUNT_CAPABILITIES.equipments vaut true. Sinon, un fait concernant une pièce ou un équipement reste une connaissance générique : `target.type: GENERIC`, `entityId: null`, `rawLabel` = la pièce ou l’équipement lu, `canonicalKey: null`, `subject` et `attribute` renseignés, valeur, preuve et confiance conservées ; il n’est JAMAIS reporté sur le bien (« Chaudière — N° de série ABC123 » ne devient pas le numéro de série du bien). Dans ce cas, `entities.rooms` et/ou `entities.equipments` restent vides ; les mentions restent dans la transcription, les observations et les tableaux.
 N’applique jamais implicitement un fait d’équipement au bien parent : la garantie d’une chaudière, le numéro de série d’un appareil ou la puissance d’un équipement restent sur l’EQUIPMENT.
 FIELD_CATALOG décrit les champs de la fiche d’un BIEN : pour un fait dont la cible n’est pas un ASSET (équipement, pièce, document, fournisseur), mets `canonicalKey: null` et décris-le avec `rawKey`, `label`, `subject` et `attribute`.
 

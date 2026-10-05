@@ -165,13 +165,22 @@ export function masterConfigIssues(
   c: TreatmentConfig,
 ): Array<{ field: 'prompt' | 'promptArchitecture' | 'masterPrompt'; message: string; blocking: boolean }> {
   const out: Array<{ field: 'prompt' | 'promptArchitecture' | 'masterPrompt'; message: string; blocking: boolean }> = [];
+  // Prompt non administrable (T5) : ses textes stockés sont ignorés à
+  // l'exécution — ils ne sont pas inspectés comme des textes actifs. Seuls
+  // l'architecture et le master du DÉPÔT sont contrôlés.
+  const administrable = isPromptAdministrable(c.treatment);
+  if (!administrable) c = { ...c, prompt: '', masterPrompt: null };
   const pre = inspectMasterTemplate(c.prompt ?? '');
   if (pre.hasTaskPlaceholder || /BRANCHE\s+(?:TASK|MODE)\s*=/.test(c.prompt ?? '')) {
+    // Lot 16b : le préambule n'est plus appliqué (aucune opération par étapes)
+    // ni éditable au BO. Le laisser BLOQUANT enfermait l'administrateur : un
+    // paramètre qui bloque doit être corrigeable depuis l'écran (ticket BO IA).
+    // Signalé, non bloquant : le master se saisit dans sa zone dédiée.
     out.push({
       field: 'prompt',
-      message: 'Le préambule des étapes contient un prompt maître ({{TASK}} ou « BRANCHE TASK = ») : '
-        + 'le texte master va dans sa zone dédiée (CDC 15 D-03).',
-      blocking: true,
+      message: 'Un ancien préambule contient un prompt maître ({{TASK}} ou « BRANCHE TASK = ») : il n’est plus '
+        + 'utilisé. Le texte master se saisit dans sa zone dédiée (CDC 15 D-03).',
+      blocking: false,
     });
   }
 

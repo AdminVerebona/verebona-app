@@ -27,6 +27,7 @@ import { FusionSuggestionModal } from './FusionSuggestionModal';
 import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
 import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { messageSelonStatut, fetchDepot } from '@/lib/upload-http';
 
 /**
  * Echec de la demande d'URL signee.
@@ -56,7 +57,7 @@ async function reponseEnErreur(res: Response, repli: string): Promise<Error> {
     notifyWriteBlocked(refus);
     return new WriteBlockedError(refus);
   }
-  return new Error((body as { message?: string })?.message || repli);
+  return new Error((body as { message?: string })?.message || messageSelonStatut(res.status, repli));
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -347,8 +348,7 @@ export function UnifiedDocumentDialog({
     if (signal.aborted) throw new Error('Upload annulé');
     const sha256Hash = await calculateHash(file);
 
-    const presignResponse = await fetch('/api/files/presign', {
-      credentials: 'include',
+    const presignResponse = await fetchDepot('/api/files/presign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -395,8 +395,7 @@ export function UnifiedDocumentDialog({
       );
     }
 
-    const confirmResponse = await fetch('/api/files/confirm', {
-      credentials: 'include',
+    const confirmResponse = await fetchDepot('/api/files/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

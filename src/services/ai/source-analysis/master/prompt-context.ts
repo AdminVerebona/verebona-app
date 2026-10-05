@@ -8,8 +8,14 @@
  * sérialisation complète des enregistrements).
  *
  * Le prompt-loader refuse toute variable sans emplacement et tout emplacement
- * sans valeur : chaque branche fournit donc EXACTEMENT les huit variables
+ * sans valeur : chaque branche fournit donc EXACTEMENT les variables
  * ci-dessous (TASK est fixée par le serveur, jamais par l'appelant).
+ *
+ * CAPACITÉS DU COMPTE (Pièces, Équipements) : T1 reçoit les capacités
+ * effectives (`ACCOUNT_CAPABILITIES`), jamais le nom de l'offre. Sans la
+ * capacité, ENTITY_CONTEXT ne transmet aucune pièce / aucun équipement et
+ * FIELD_CATALOG retire la cible correspondante (un champ sans cible restante
+ * n'est pas transmis). Le registre canonique, lui, n'est jamais modifié.
  */
 import {
   catalogForPrompts,
@@ -23,11 +29,14 @@ import {
   type AssetFamily as V2AssetFamily,
 } from '@/lib/referential/v2';
 import type { AnalysisContext, SourceInput } from '../types';
+import type { AccountCapabilities } from '@/services/account-capabilities.service';
+import type { PromptCatalogDTO } from '@/services/canonical/registry/types';
 
 /** Emplacements du master `t1_master_v1` (hors `{{TASK}}`). */
 export const T1_PROMPT_VARIABLES = [
   'SOURCES', 'ENTITY_CONTEXT', 'KNOWN_TARGET', 'FIELD_CATALOG',
   'EVENT_CATALOG', 'DOCUMENT_CATALOG', 'EXISTING_TITLES', 'EXTRACTED_CONTENT',
+  'ACCOUNT_CAPABILITIES',
 ] as const;
 export type T1PromptVariables = Record<(typeof T1_PROMPT_VARIABLES)[number], string>;
 
@@ -55,17 +64,48 @@ export function describeSources(input: SourceInput, indices: number[]): string {
   })));
 }
 
-/** ENTITY_CONTEXT : identifiants et libellés bornés. */
-export function describeEntities(ctx: AnalysisContext): string {
+/**
+ * ENTITY_CONTEXT : identifiants et libellés bornés. Sans la capacité, aucune
+ * pièce / aucun équipement (le modèle ne reçoit jamais leurs identifiants).
+ */
+export function describeEntities(ctx: AnalysisContext, caps: AccountCapabilities): string {
   return JSON.stringify({
     assets: ctx.assets.slice(0, MAX_ASSETS).map((a) => ({
       id: a.id, name: a.name, family: toAssetFamily(a.category) ?? null, subtype: a.subtype ?? null,
     })),
-    rooms: ctx.rooms.slice(0, MAX_ROOMS).map((r) => ({ id: r.id, name: r.name, assetId: r.assetId })),
-    equipments: ctx.equipments.slice(0, MAX_EQUIPMENTS).map((e) => ({
-      id: e.id, name: e.name, type: e.type ?? null, assetId: e.assetId,
-    })),
+    rooms: caps.rooms ? ctx.rooms.slice(0, MAX_ROOMS).map((r) => ({ id: r.id, name: r.name, assetId: r.assetId })) : [],
+    equipments: caps.equipments
+      ? ctx.equipments.slice(0, MAX_EQUIPMENTS).map((e) => ({ id: e.id, name: e.name, type: e.type ?? null, assetId: e.assetId }))
+      : [],
   });
+}
+
+/**
+ * FIELD_CATALOG selon les capacités : cibles ROOM / EQUIPMENT retirées sans la
+ * capacité ; un champ sans cible restante n'est pas transmis ; les clés
+ * d'événement suivent. Rend aussi le nombre de champs retirés (trace).
+ */
+export function catalogForCapabilities(
+  catalog: PromptCatalogDTO,
+  caps: AccountCapabilities,
+): { catalog: PromptCatalogDTO; fieldsFiltered: number } {
+  const fields = catalog.fields.flatMap((f) => {
+    const targets = f.targets.filter((t) => (t === 'ROOM' ? caps.rooms : t === 'EQUIPMENT' ? caps.equipments : true));
+    return targets.length ? [{ ...f, targets }] : [];
+  });
+  const keys = new Set(fields.map((f) => f.key));
+  return {
+    catalog: { ...catalog, fields, events: catalog.events.map((e) => ({ ...e, fieldKeys: e.fieldKeys.filter((k) => keys.has(k)) })) },
+    fieldsFiltered: catalog.fields.length - fields.length,
+  };
+}
+
+/** Compteurs de filtrage du contexte (trace T1, aucune valeur métier). */
+export function contextFilterStats(ctx: AnalysisContext, caps: AccountCapabilities) {
+  return {
+    roomsFilteredFromContext: caps.rooms ? 0 : Math.min(ctx.rooms.length, MAX_ROOMS),
+    equipmentsFilteredFromContext: caps.equipments ? 0 : Math.min(ctx.equipments.length, MAX_EQUIPMENTS),
+  };
 }
 
 /** KNOWN_TARGET : le bien choisi explicitement au dépôt, ou `null`. */
@@ -117,13 +157,16 @@ export function buildAnalyzeDocumentVariables(p: {
   ctx: AnalysisContext;
   /** Familles V2 des biens connus (vide : toutes). */
   v2Families: V2AssetFamily[];
+  /** Capacités effectives du compte (résolues côté serveur). */
+  capabilities: AccountCapabilities;
 }): T1PromptVariables {
   // T1-01 : registre canonique filtré par la famille du bien connu ; sans
   // bien connu, le registre complet (le modèle ne sait pas encore la cible).
-  const catalog = catalogForPrompts({ family: knownTargetFamily(p.ctx) });
+  // Puis filtré par les capacités du compte (cibles ROOM / EQUIPMENT).
+  const { catalog } = catalogForCapabilities(catalogForPrompts({ family: knownTargetFamily(p.ctx) }), p.capabilities);
   return {
     SOURCES: describeSources(p.input, p.groupIndices),
-    ENTITY_CONTEXT: describeEntities(p.ctx),
+    ENTITY_CONTEXT: describeEntities(p.ctx, p.capabilities),
     KNOWN_TARGET: describeKnownTarget(p.ctx),
     FIELD_CATALOG: JSON.stringify({ version: catalog.version, family: catalog.family, fields: catalog.fields }),
     EVENT_CATALOG: JSON.stringify(catalog.events),
@@ -132,6 +175,8 @@ export function buildAnalyzeDocumentVariables(p: {
     // Donnée DÉLIMITÉE (chaîne JSON) : un contenu de page web ne peut pas se
     // faire passer pour une consigne du master (injection).
     EXTRACTED_CONTENT: JSON.stringify(p.input.extractedContent ?? ''),
+    // Capacités effectives, jamais le nom de l'offre.
+    ACCOUNT_CAPABILITIES: JSON.stringify({ rooms: p.capabilities.rooms, equipments: p.capabilities.equipments }),
   };
 }
 
@@ -150,5 +195,6 @@ export function buildGroupUploadVariables(input: SourceInput): T1PromptVariables
     DOCUMENT_CATALOG: NON_UTILISE,
     EXISTING_TITLES: NON_UTILISE,
     EXTRACTED_CONTENT: NON_UTILISE,
+    ACCOUNT_CAPABILITIES: NON_UTILISE,
   };
 }

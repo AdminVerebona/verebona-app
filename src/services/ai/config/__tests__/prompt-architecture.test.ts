@@ -155,10 +155,10 @@ describe('diff et contrôles de promotion', () => {
       .toEqual([expect.objectContaining({ field: 'promptArchitecture', blocking: true })]);
   });
 
-  it('refuse un préambule qui contient un master ({{TASK}} ou « BRANCHE TASK = »)', () => {
+  it('signale sans bloquer un ancien préambule qui contient un master ({{TASK}} ou « BRANCHE TASK = ») : plus éditable ni appliqué', () => {
     for (const prompt of ['Contexte {{TASK}}', 'BRANCHE TASK = VALUE_CONFLICT\n…', MASTER_T3]) {
       expect(validateTreatment(t3({ prompt, maxOutputTokens: 1000 }), cat)).toContainEqual(expect.objectContaining({
-        field: 'prompt', blocking: true, message: expect.stringMatching(/préambule des étapes contient un prompt maître/),
+        field: 'prompt', blocking: false, message: expect.stringMatching(/ancien préambule contient un prompt maître/),
       }));
     }
     expect(masterConfigIssues(t3({ prompt: 'Sois précis. La tâche est décrite plus bas.', masterPrompt: MASTER_T3 }))).toEqual([]);

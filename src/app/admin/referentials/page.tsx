@@ -59,7 +59,7 @@ function sortRows(rows: Row[], sort: Sort, dir: 'asc' | 'desc'): Row[] {
 function RowsTable({ rows, detailLabel, sort, dir, onSort, withStatus }: {
   rows: Row[]; detailLabel: string | null; sort: Sort; dir: 'asc' | 'desc'; onSort: (k: Sort) => void; withStatus: boolean;
 }) {
-  if (rows.length === 0) return <p className="text-sm text-muted-foreground py-6 text-center">Aucune valeur.</p>;
+  if (!rows || rows.length === 0) return <p className="text-sm text-muted-foreground py-6 text-center">Aucune valeur.</p>;
   return (
     <div className="rounded-xl border bg-card overflow-x-auto">
       <Table>
