@@ -30,7 +30,15 @@ export type AiErrorCode =
    * `{{TASK}}` ou sans la section de la branche, variable non déclarée ou
    * emplacement sans valeur. Identique sur tous les modèles : non récupérable.
    */
-  | 'MASTER_PROMPT_INVALID';
+  | 'MASTER_PROMPT_INVALID'
+  /**
+   * Lot 22 : plafond mensuel de coût IA du compte atteint (offre ou
+   * dérogation, `account-cost-cap`). Refusé AVANT tout contact fournisseur,
+   * jamais récupérable dans la période : la file durable reporte le travail
+   * au début de la période suivante, les usages synchrones prennent leur
+   * repli sans IA.
+   */
+  | 'COST_CAP_REACHED';
 
 export class AiGatewayError extends Error {
   readonly code: AiErrorCode;
@@ -62,6 +70,46 @@ export class AiGatewayError extends Error {
 
 export function isAiGatewayError(e: unknown): e is AiGatewayError {
   return e instanceof AiGatewayError;
+}
+
+/**
+ * Plafond mensuel de coût IA du compte atteint (lot 22). Porte la date de
+ * reprise (début de la période suivante, Europe/Paris) : la file durable y
+ * reporte le travail, l'analyse l'affiche à l'utilisateur.
+ */
+export class AiCostCapReachedError extends AiGatewayError {
+  constructor(
+    operationCode: string,
+    readonly accountId: number,
+    readonly capMicros: number,
+    readonly spentMicros: number,
+    readonly resumeAt: Date,
+  ) {
+    super('COST_CAP_REACHED', operationCode,
+      `Plafond IA du mois atteint pour le compte ${accountId} (${spentMicros} / ${capMicros} micro-unités) — reprise le ${resumeAt.toISOString()}.`);
+    this.name = 'AiCostCapReachedError';
+  }
+}
+
+/**
+ * Refus pour plafond de coût du compte ? Reconnu par son code (l'erreur peut
+ * traverser une frontière de module ou être enveloppée une fois : `cause`).
+ */
+export function isCostCapReached(e: unknown): boolean {
+  const code = (x: unknown) => (typeof x === 'object' && x !== null ? (x as { code?: unknown }).code : undefined);
+  if (code(e) === 'COST_CAP_REACHED') return true;
+  const cause = typeof e === 'object' && e !== null ? (e as { cause?: unknown }).cause : undefined;
+  return code(cause) === 'COST_CAP_REACHED';
+}
+
+/** Date de reprise portée par un refus pour plafond (`null` : inconnue). */
+export function costCapResumeAt(e: unknown): Date | null {
+  for (const x of [e, typeof e === 'object' && e !== null ? (e as { cause?: unknown }).cause : undefined]) {
+    const r = typeof x === 'object' && x !== null ? (x as { resumeAt?: unknown }).resumeAt : undefined;
+    if (r instanceof Date && !Number.isNaN(r.getTime())) return r;
+    if (typeof r === 'string' && !Number.isNaN(Date.parse(r))) return new Date(r);
+  }
+  return null;
 }
 
 /**

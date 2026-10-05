@@ -26,6 +26,7 @@ import { treatmentForUseCase, isPromptAdministrable } from '../config/treatments
 import { assertTreatmentRunnable } from '../queue/runnable-guard';
 import { noteGatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
 import { currentJobContext } from '../queue/job-context';
+import { assertAccountCostCap } from './account-cost-cap';
 import type { ModelRank } from '../telemetry/execution-context';
 import type { ProviderCallOutput } from './providers/provider.port';
 
@@ -118,6 +119,17 @@ export class AiGateway {
     const provider = getAiProvider();
     const traceId = randomUUID();
     const startedAt = Date.now();
+
+    // ── Plafond mensuel de coût IA du compte (lot 22) ──────────────────────
+    // Point unique : tout appel modèle d'un compte passe ici. Après le cache
+    // d'idempotence (un résultat déjà payé reste servi), avant tout contact
+    // fournisseur. Exemptés : appels sans compte, T5 (administration),
+    // campagnes de mesure (`costCapExempt`). Refus `COST_CAP_REACHED`, non
+    // récupérable : la file reporte au mois suivant, les usages synchrones
+    // prennent leur repli sans IA. Voir `account-cost-cap.ts`.
+    await assertAccountCostCap({
+      accountId: req.accountId, useCaseCode: op.useCaseCode, operationCode, exempt: req.costCapExempt,
+    });
 
     // Attendu : la clé administrée (BO) est résolue en base, avec cache (WF-21).
     if (!(await provider.isConfigured())) {

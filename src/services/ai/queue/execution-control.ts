@@ -54,6 +54,13 @@ export class ExecutionCancelledError extends Error {
  * file (contexte job-context : file durable). Hors file
  * (route synchrone, appel T2), il n'y a rien à remettre en attente : les
  * appelants gardent leur repli sans IA (déterministe), comme avant.
+ *
+ * Lot 22 — `COST_CAP_REACHED` (plafond mensuel de coût du compte) N'EST PAS
+ * une interruption (décision PO, revue lot 22) : T3 et T4 appliquent leur
+ * repli déterministe existant, en file comme hors file (T4 : proposition /
+ * abstention comme en échec modèle ; T3 : conflit ouvert / abstention). Seul
+ * T1 le traite explicitement (`pipeline`, `isCostCapReached`) : report du
+ * job au début de la période suivante.
  */
 export function isExecutionCancelled(e: unknown): boolean {
   if (e instanceof ExecutionCancelledError) return true;

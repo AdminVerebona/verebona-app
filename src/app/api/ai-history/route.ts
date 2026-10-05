@@ -1,13 +1,21 @@
 /**
  * GET /api/ai-history
  * Retourne l'historique des modifications automatiques IA pour le compte courant.
+ *
+ * Lot 22 : les écritures sur un ÉQUIPEMENT ou une PIÈCE du bien (cible 0236)
+ * y figurent, libellé « Champ (nom de l'entité) » ; `assetId` / `assetName`
+ * restent ceux du bien porteur (filtre « Bien » inchangé).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { aiFieldUpdates, assets, assetFiles } from '@/db/schema';
-import { eq, desc, count, and, gte, lte, inArray } from 'drizzle-orm';
+import { eq, desc, count, and, gte, lte } from 'drizzle-orm';
+import { aiFieldUpdatesTargetReady } from '@/services/canonical/entity-state/entity-schema';
+import {
+  entityScopedLabel, fieldUpdateTargetColumns, registryFieldLabel, visibleFieldUpdatesWhere,
+} from '@/services/canonical/entity-state/ai-field-updates-target';
 
 // Labels lisibles pour les clés de champs
 // Ensemble des champs visibles par l'utilisateur dans l'UI (AssetDetailsTab)
@@ -87,12 +95,14 @@ export async function GET(request: NextRequest) {
     const filterDateFrom = url.searchParams.get('dateFrom') ? new Date(url.searchParams.get('dateFrom')!) : null;
     const filterDateTo = url.searchParams.get('dateTo') ? new Date(url.searchParams.get('dateTo')! + 'T23:59:59') : null;
 
+    const cible = await aiFieldUpdatesTargetReady();
+    const cibleCols = fieldUpdateTargetColumns(cible);
     const conditions = [
       eq(aiFieldUpdates.accountId, accountId),
       ...(filterAssetId ? [eq(aiFieldUpdates.assetId, filterAssetId)] : []),
       ...(filterDateFrom ? [gte(aiFieldUpdates.createdAt, filterDateFrom)] : []),
       ...(filterDateTo ? [lte(aiFieldUpdates.createdAt, filterDateTo)] : []),
-      inArray(aiFieldUpdates.fieldKey, [...VISIBLE_FIELDS]),
+      visibleFieldUpdatesWhere(cible, [...VISIBLE_FIELDS]),
     ];
     const whereClause = conditions.length === 1 ? conditions[0] : and(...conditions);
 
@@ -107,6 +117,9 @@ export async function GET(request: NextRequest) {
         assetName:   assets.name,
         assetFileId: aiFieldUpdates.assetFileId,
         docTitle:    assetFiles.retainedTitle,
+        targetType:  cibleCols.targetType,
+        targetId:    cibleCols.targetId,
+        entityName:  cibleCols.entityName,
       })
       .from(aiFieldUpdates)
       .leftJoin(assets, eq(aiFieldUpdates.assetId, assets.id))
@@ -122,13 +135,19 @@ export async function GET(request: NextRequest) {
       .map(r => ({
       id:          r.id,
       fieldKey:    r.fieldKey,
-      fieldLabel:  FIELD_LABELS[r.fieldKey] ?? r.fieldKey,
+      fieldLabel:  r.targetType
+        ? entityScopedLabel(FIELD_LABELS[r.fieldKey] ?? registryFieldLabel(r.fieldKey), r.entityName ?? (r.targetType === 'ROOM' ? 'pièce supprimée' : 'équipement supprimé'))
+        : FIELD_LABELS[r.fieldKey] ?? r.fieldKey,
       oldValue:    r.oldValue,
       newValue:    r.newValue,
       createdAt:   r.createdAt,
       assetId:     r.assetId,
       assetName:   r.assetName ?? 'Bien inconnu',
       docTitle:    r.docTitle ?? null,
+      // Cible (lot 22) : null pour un champ du bien.
+      entityType:  r.targetType ?? null,
+      entityId:    r.targetId ?? null,
+      entityName:  r.entityName ?? null,
     }));
 
     return NextResponse.json({ items, total });

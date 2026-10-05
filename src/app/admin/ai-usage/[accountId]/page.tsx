@@ -3,6 +3,8 @@
 /**
  * Admin — Suivi IA > Détail compte
  * Vue complète : opérations récentes, coûts, pipeline steps, versions d'analyse, audit
+ * Lot 22 : plafond IA du mois (cumul / plafond effectif, offre ou dérogation),
+ * dérogation modifiable (PATCH …/quota, auditée).
  */
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -22,8 +24,14 @@ import {
 } from '@/types/ai-usage';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
+
+/** Montants du plafond IA : micro-USD, comme les réglages administrés (lot 22). */
+function fmtUsd(micros: number | null | undefined) {
+  return `${((micros ?? 0) / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`;
+}
 
 function fmtDate(v: any) {
   if (!v) return '—';
@@ -294,6 +302,7 @@ export default function AdminAiUsageAccountPage() {
   const [loading, setLoading] = useState(true);
   const [unlockDialog, setUnlockDialog] = useState({ open: false, reason: '' });
   const [actionLoading, setActionLoading] = useState(false);
+  const [capDialog, setCapDialog] = useState({ open: false, value: '', reason: '' });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -317,6 +326,21 @@ export default function AdminAiUsageAccountPage() {
     finally { setActionLoading(false); }
   };
 
+  // Lot 22 : dérogation au plafond IA de l'offre (montant en $ ; vide = retour à l'offre).
+  const handleCap = async (retourOffre: boolean) => {
+    const brut = capDialog.value.trim().replace(',', '.');
+    const montant = retourOffre || brut === '' ? null : Math.round(Number(brut) * 1_000_000);
+    if (montant !== null && (!Number.isFinite(montant) || montant < 0)) { toast.error('Montant invalide.'); return; }
+    setActionLoading(true);
+    try {
+      await apiClient.patch(`/api/admin/ai/accounts/${accountId}/quota`, { monthlyCostCapMicros: montant, reason: capDialog.reason });
+      toast.success(montant === null ? 'Plafond de l’offre rétabli' : 'Dérogation enregistrée');
+      setCapDialog({ open: false, value: '', reason: '' });
+      load();
+    } catch { toast.error('Erreur'); }
+    finally { setActionLoading(false); }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24">
@@ -328,6 +352,11 @@ export default function AdminAiUsageAccountPage() {
   if (!data) return null;
 
   const docsPct = quotaPercent(data.documentsAnalyzedCount, data.documentsAnalyzedQuota);
+  const cap = data.costCap as null | {
+    capMicros: number | null; spentMicros: number | null; source: 'override' | 'offer' | null; plan: string;
+    overrideMicros: number | null; offerCapMicros: number | null; periodKey: string; resumeAt: string; level: string;
+  };
+  const capPct = cap?.capMicros ? quotaPercent(cap.spentMicros ?? 0, cap.capMicros) : 0;
   const activeLocks = (data.activeSecurityLocks ?? []).filter((l: any) => !l.isResolved);
 
   return (
@@ -354,7 +383,7 @@ export default function AdminAiUsageAccountPage() {
       </div>
 
       {/* Compteurs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3 space-y-1.5">
           <p className="text-xs text-[color:var(--text-muted)]">Documents analysés ({data.periodYear})</p>
           <p className="text-xl font-bold text-[color:var(--text-primary)]">
@@ -368,6 +397,36 @@ export default function AdminAiUsageAccountPage() {
             />
           </div>
         </div>
+        {cap && (
+          <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3 space-y-1.5" data-testid="ai-cost-cap">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-[color:var(--text-muted)]">Plafond IA ({cap.periodKey})</p>
+              <button
+                type="button"
+                className="text-[10px] text-violet-400 hover:underline"
+                onClick={() => setCapDialog({ open: true, value: cap.overrideMicros != null ? String(cap.overrideMicros / 1_000_000) : '', reason: '' })}
+              >
+                Modifier
+              </button>
+            </div>
+            <p className="text-xl font-bold text-[color:var(--text-primary)]">
+              {fmtUsd(cap.spentMicros)}
+              <span className="text-sm font-normal text-[color:var(--text-muted)]"> / {cap.capMicros ? fmtUsd(cap.capMicros) : 'sans plafond'}</span>
+            </p>
+            {cap.capMicros ? (
+              <div className="h-1.5 rounded-full bg-[color:var(--border-subtle)] overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${capPct >= 100 ? 'bg-red-500' : capPct >= 80 ? 'bg-amber-500' : 'bg-violet-500'}`}
+                  style={{ width: `${capPct}%` }}
+                />
+              </div>
+            ) : null}
+            <p className="text-[10px] text-[color:var(--text-muted)]">
+              {cap.source === 'override' ? 'Dérogation du compte' : `Offre ${cap.plan}`}
+              {cap.level === 'reached' ? ` · atteint, reprise le ${fmtDate(cap.resumeAt)}` : ''}
+            </p>
+          </div>
+        )}
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
           <p className="text-xs text-[color:var(--text-muted)]">Coût total (année)</p>
           <p className="text-xl font-bold text-[color:var(--text-warning)]">{formatCostMicros(data.totalCostMicrosThisYear)}</p>
@@ -646,6 +705,43 @@ export default function AdminAiUsageAccountPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Dialog Plafond IA (lot 22) */}
+      <Dialog open={capDialog.open} onOpenChange={o => setCapDialog(p => ({ ...p, open: o }))}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Plafond IA mensuel du compte</DialogTitle>
+            <DialogDescription>
+              Dérogation au plafond de l’offre ({cap?.offerCapMicros ? fmtUsd(cap.offerCapMicros) : 'sans plafond'}), en $ par mois civil.
+              0 : aucun plafond pour ce compte. Cette action est auditée.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            type="number"
+            min={0}
+            step={0.01}
+            aria-label="Plafond mensuel ($)"
+            placeholder="Plafond de l’offre"
+            value={capDialog.value}
+            onChange={e => setCapDialog(p => ({ ...p, value: e.target.value }))}
+          />
+          <Textarea
+            placeholder="Motif (optionnel)"
+            value={capDialog.reason}
+            onChange={e => setCapDialog(p => ({ ...p, reason: e.target.value }))}
+            rows={2}
+          />
+          <DialogFooter>
+            {cap?.overrideMicros != null && (
+              <Button variant="ghost" onClick={() => handleCap(true)} disabled={actionLoading}>Revenir à l’offre</Button>
+            )}
+            <Button variant="outline" onClick={() => setCapDialog({ open: false, value: '', reason: '' })}>Annuler</Button>
+            <Button onClick={() => handleCap(false)} disabled={actionLoading || capDialog.value.trim() === ''}>
+              {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Enregistrer'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog Unlock */}
       <Dialog open={unlockDialog.open} onOpenChange={o => setUnlockDialog(p => ({ ...p, open: o }))}>

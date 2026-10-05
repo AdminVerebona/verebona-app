@@ -341,15 +341,14 @@ async function forecastsFor(
  *     modèle — décision `propose` TEMPORAL_AMBIGUITY avec la date déduite
  *     (carte AGENDA-PROPOSAL, aucune création) ;
  *   · plusieurs candidats (jj/mm ↔ mm/jj) : branche TEMPORAL_AMBIGUITY, en
- *     cache par (source, clé fonctionnelle, extrait) — une réanalyse de la
- *     même ambiguïté ne rappelle pas le modèle. Candidat certain de la liste →
+ *     cache par (compte, source, clé fonctionnelle, extrait) — une réanalyse
+ *     de la même ambiguïté ne rappelle pas le modèle, sur AUCUNE instance
+ *     (cache partagé en base depuis le lot 22, 24 h :
+ *     `master/temporal-ambiguity-cache.ts`). Candidat certain de la liste →
  *     date remplacée ; abstention, hors liste ou échec → `propose`.
  * Date certaine : candidat inchangé, aucun appel.
  */
-type ChoixTemporel = { chosen: { candidateId: number; date: string; interpretation: string } | null; warning: string | null };
-const CACHE_TEMPOREL = new Map<string, { at: number; r: ChoixTemporel }>();
-const CACHE_TEMPOREL_TTL_MS = 24 * 3600_000;
-const CACHE_TEMPOREL_MAX = 500;
+type ChoixTemporel = import('./master/temporal-ambiguity-cache').TemporalChoice;
 
 /** Clé du cache : source, clé fonctionnelle (champ d'origine, cible, occurrence), extrait. */
 export function cleCacheTemporel(c: AgendaCandidate, sourceFileId: number | null | undefined): string {
@@ -358,8 +357,11 @@ export function cleCacheTemporel(c: AgendaCandidate, sourceFileId: number | null
   return createHash('sha256').update(`${sourceFileId ?? '-'}|${fonctionnelle}|${c.excerpt}`).digest('hex');
 }
 
-/** Réservé aux tests. */
-export function __resetTemporalCacheForTests(): void { CACHE_TEMPOREL.clear(); }
+/** Réservé aux tests : vide le cache (mémoire, et lignes partagées si une base est configurée). */
+export async function __resetTemporalCacheForTests(): Promise<void> {
+  const { clearTemporalChoicesForTests } = await import('./master/temporal-ambiguity-cache');
+  await clearTemporalChoicesForTests();
+}
 
 export async function resoudreAmbiguiteTemporelle(
   candidate: AgendaCandidate,
@@ -389,11 +391,12 @@ export async function resoudreAmbiguiteTemporelle(
       ? `date déduite de la mention relative « ${ambig.mention} »`
       : date === candidate.date ? `lecture mois/jour de « ${ambig.mention} »` : `lecture jour/mois de « ${ambig.mention} »`,
   }));
-  const cle = cleCacheTemporel(candidate, input.sourceFileId);
-  const enCache = CACHE_TEMPOREL.get(cle);
+  const cache = await import('./master/temporal-ambiguity-cache');
+  const cle = cache.temporalCacheKey(input.accountId, cleCacheTemporel(candidate, input.sourceFileId));
+  const enCache = await cache.readTemporalChoice(cle);
   let r: ChoixTemporel;
-  if (enCache && Date.now() - enCache.at < CACHE_TEMPOREL_TTL_MS) {
-    r = enCache.r;
+  if (enCache) {
+    r = enCache;
   } else {
     r = await (deps.resolve ?? resolveTemporalAmbiguityMaster)(
       { title: candidate.title, excerpt: candidate.excerpt.slice(0, 500), extractedDate: candidate.date, kind: ambig.kind, mention: ambig.mention },
@@ -401,10 +404,7 @@ export async function resoudreAmbiguiteTemporelle(
       { accountId: input.accountId, userId: input.userId, sourceFileId: input.sourceFileId ?? null },
     );
     // Un échec du modèle n'est pas mis en cache : la prochaine analyse réessaie.
-    if (r.warning !== 'MODEL_UNAVAILABLE') {
-      if (CACHE_TEMPOREL.size >= CACHE_TEMPOREL_MAX) CACHE_TEMPOREL.delete(CACHE_TEMPOREL.keys().next().value as string);
-      CACHE_TEMPOREL.set(cle, { at: Date.now(), r });
-    }
+    if (r.warning !== 'MODEL_UNAVAILABLE') await cache.writeTemporalChoice(cle, r);
   }
   if (r.chosen && ambig.dates.includes(r.chosen.date)) return { kind: 'keep', candidate: { ...candidate, date: r.chosen.date } };
   const p = proposer(ambig.dates);

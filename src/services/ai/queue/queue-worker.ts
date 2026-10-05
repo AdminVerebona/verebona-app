@@ -55,9 +55,10 @@
 import type { Treatment } from '../config/treatments';
 import { listBatchTreatments } from '../config/treatments';
 import {
-  claimNext, completeJob, failJob, deferJob, renewLease, recoverAbandonedJobs, isExecutionActive, LEASE_SECONDS,
+  claimNext, completeJob, failJob, deferJob, deferJobUntil, renewLease, recoverAbandonedJobs, isExecutionActive, LEASE_SECONDS,
   releaseInterruptedJob, type QueuedJob,
 } from './job-queue.repository';
+import { isCostCapReached, costCapResumeAt } from '../gateway/errors';
 import { isJobDeferred } from './queue-policy';
 import {
   createExecutionGuard, registerLocalExecution, unregisterLocalExecution,
@@ -98,7 +99,11 @@ export type JobOutcome =
   | { kind: 'done' }
   | { kind: 'failed'; permanent: boolean; timedOut: boolean; error: string }
   | { kind: 'interrupted'; reason: string }
-  | { kind: 'deferred'; permanent: boolean; reason: string };
+  | {
+    kind: 'deferred'; permanent: boolean; reason: string;
+    /** Lot 22 : report jusqu'à cette date (plafond de coût du compte), ISO. */
+    until?: string;
+  };
 
 /**
  * Suites d'une exécution, propres au traitement — l'état métier que le
@@ -265,6 +270,20 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
       const { permanent, stale } = await failJob(job.id, (e as Error).message, job.executionId);
       if (!stale) outcome = { kind: 'failed', permanent, timedOut: true, error: (e as Error).message };
       console.error(`[queue] ${treatment} job ${job.id} : ${(e as Error).message}${permanent ? ' — échec définitif' : ''}.`);
+    } else if (treatment === 'T1' && isCostCapReached(e) && !controller.signal.aborted) {
+      // Lot 22 : plafond mensuel de coût IA du compte atteint (refus de la
+      // passerelle, avant tout appel). T1 SEULEMENT (T3/T4 appliquent leur
+      // repli déterministe et ne lèvent pas ce refus). Ni échec ni
+      // interruption : le job est reporté UNE fois au début de la période
+      // suivante (aucune tentative consommée, aucune boucle de relance). Rien
+      // n'a été écrit par l'analyse : la reprise rejoue tout. Date inconnue
+      // (ne devrait pas arriver) : 1 h.
+      const until = costCapResumeAt(e) ?? new Date(Date.now() + 3_600_000);
+      const { costCapAnalysisReason } = await import('../gateway/account-cost-cap');
+      const reason = costCapAnalysisReason(until);
+      const r = await deferJobUntil(job.id, reason, until, job.executionId);
+      if (!r.stale) outcome = { kind: 'deferred', permanent: false, reason, until: until.toISOString() };
+      console.warn(`[queue] ${treatment} job ${job.id} reporté au ${until.toISOString()} — plafond IA du compte ${job.accountId ?? '?'} atteint.`);
     } else if (isJobDeferred(e) && !controller.signal.aborted) {
       // Report (quota épuisé…) : ni échec, ni succès — voir `JobDeferredError`.
       const r = await deferJob(job.id, (e as Error).message, job.executionId);

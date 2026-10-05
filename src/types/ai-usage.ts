@@ -368,11 +368,17 @@ export const AI_SEARCH_RESPONSE_MODE_LABELS: Record<AiSearchResponseMode, string
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Formate un coût en micro-euros vers euros lisible */
+/**
+ * Coût IA lisible. Les coûts sont calculés dans la devise de la grille
+ * tarifaire du fournisseur : USD (`calcCostMicros`, catalogue Gemini). Le
+ * libellé « € » était faux (revue lot 22) : même devise et même format
+ * fr-FR que le plafond IA et les réglages du BO.
+ */
 export function formatCostMicros(micros: number): string {
-  if (!micros) return '0,00 €';
-  const euros = micros / 1_000_000;
-  if (euros < 0.01) return `< 0,01 €`;
-  return euros.toLocaleString('fr-FR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  if (!micros) return '0,00 $';
+  const usd = micros / 1_000_000;
+  if (usd < 0.01) return `< 0,01 $`;
+  return `${usd.toLocaleString('fr-FR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} $`;
 }
 
 /** Calcule le pourcentage d'un quota (0–100, capped) */

@@ -96,11 +96,14 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
     if (allAccounts.length === 0) return result;
 
     // 2. Pour chaque compte, vérifier le quota avant d'inclure ses docs
+    //    Lot 22 : un compte au plafond IA du mois est écarté — ses documents
+    //    seront repris à la période suivante (aucune remise en file inutile).
+    const { costCapReachedFor } = await import('@/services/ai/gateway/account-cost-cap');
     const eligibleAccountIds: number[] = [];
     await Promise.all(allAccounts.map(async (acc) => {
       try {
         const gate = await canConsumeAnalysis(acc.id, 1);
-        if (gate.allowed) eligibleAccountIds.push(acc.id);
+        if (gate.allowed && !(await costCapReachedFor(acc.id))) eligibleAccountIds.push(acc.id);
       } catch { /* ignorer les erreurs par compte */ }
     }));
 

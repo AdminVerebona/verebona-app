@@ -39,18 +39,38 @@ export function isReservedIdempotencyKey(key: string): boolean {
   return RESERVED_IDEMPOTENCY_KEY_PREFIXES.some((p) => key.startsWith(p));
 }
 
+/** Taille d'un lot de suppression et borne de temps totale de la purge. */
+export const PURGE_BATCH_SIZE = 5000;
+export const PURGE_MAX_DURATION_MS = 60_000;
+
 /**
  * Purge des résultats expirés — SANS JAMAIS toucher aux clés réservées
  * (garde-fou PUB-01 : une purge globale ne doit pas faire perdre le dernier
  * corpus d'aide valide). Rend le nombre de lignes supprimées.
+ *
+ * Lot 22 : PAR LOTS (`PURGE_BATCH_SIZE` lignes, chacun sa propre instruction
+ * donc sa transaction implicite, comptés par `.count`, sans `RETURNING`),
+ * jusqu'à épuisement ou `maxDurationMs`. La première exécution sur une table
+ * jamais purgée ne fait ni transaction longue ni résultat massif en mémoire ;
+ * le reliquat éventuel part au passage suivant.
  */
-export async function purgeExpiredIdempotency(): Promise<number> {
-  const rows = (await pgClient.unsafe(
-    `DELETE FROM ai_operation_idempotency
-      WHERE expires_at <= now() AND ${NOT_RESERVED_IDEMPOTENCY_KEY_SQL}
-      RETURNING 1`,
-  )) as unknown as unknown[];
-  return rows.length;
+export async function purgeExpiredIdempotency(
+  opts: { batchSize?: number; maxDurationMs?: number } = {},
+): Promise<number> {
+  const lot = opts.batchSize ?? PURGE_BATCH_SIZE;
+  const fin = Date.now() + (opts.maxDurationMs ?? PURGE_MAX_DURATION_MS);
+  let total = 0;
+  for (;;) {
+    const r = (await pgClient.unsafe(
+      `DELETE FROM ai_operation_idempotency
+        WHERE ctid IN (SELECT ctid FROM ai_operation_idempotency
+                        WHERE expires_at <= now() AND ${NOT_RESERVED_IDEMPOTENCY_KEY_SQL}
+                        LIMIT ${Math.max(1, Math.floor(lot))})`,
+    )) as unknown as { count?: number };
+    const n = r.count ?? 0;
+    total += n;
+    if (n < lot || Date.now() >= fin) return total;
+  }
 }
 
 const DEFAULT_TTL_SECONDS = 3600;

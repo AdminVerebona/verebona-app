@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { documentSuppliers, assetFiles, suppliers } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 
@@ -107,6 +107,12 @@ export async function DELETE(
       eq(documentSuppliers.documentId, documentId),
       eq(documentSuppliers.supplierId, supplierId),
     ));
+    // Lot 22 : trace du retrait par l'utilisateur — une réanalyse ne recrée
+    // jamais ce lien (`supplier-from-analysis.ts` ignore un fichier dont le
+    // fournisseur a été modifié à la main) et ne réécrit pas `asset_files.supplier`.
+    await db.update(assetFiles)
+      .set({ userEditedFields: sql`coalesce(${assetFiles.userEditedFields}, '{}'::jsonb) || '{"supplier": true}'::jsonb` })
+      .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountId)));
 
     await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
     return NextResponse.json({ success: true });

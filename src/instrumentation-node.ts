@@ -148,6 +148,11 @@ export async function registerNode(): Promise<void> {
     await import('@/services/agenda/agenda-persistence');
   registerAgendaHandlers(loadExistingAgendaItems, persistAgendaDecisions);
 
+  // Référentiel fournisseurs (lot 22) : alimenté par le fournisseur (nom,
+  // SIRET) que T1 lit dans chaque document — abonné à l'analyse comme T3/T4.
+  const { registerSupplierReferentialHandler } = await import('@/services/suppliers/supplier-from-analysis');
+  await registerSupplierReferentialHandler();
+
   // 6. Reprise automatique des analyses.
   //
   // ══════════════════════════════════════════════════════════════════════════

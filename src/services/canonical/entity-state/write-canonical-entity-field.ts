@@ -21,11 +21,13 @@
  *      sous-structure depuis D-G, migration 0229) ;
  *   5. journal 0216 `canonical_field_writes`, une ligne par clé, avec
  *      `target_type` / `target_id` (0227) et `asset_id` = bien porteur ;
+ *      une origine AUTOMATIQUE écrite alimente aussi `ai_field_updates`
+ *      (accueil « Ce que j'ai fait », historique des enrichissements,
+ *      annulation) AVEC sa cible (`target_type` / `target_id`, migration
+ *      0236, lot 22) — `asset_id` = bien porteur. Sans la 0236 : pas de
+ *      ligne (une ligne sans cible serait lue comme un champ du BIEN) ;
  *   6. après validation, ASSET_UPDATED (bien porteur) invalide les caches de
  *      l'assistant.
- *
- * Pas de ligne `ai_field_updates` : cette table (accueil « Ce que j'ai
- * fait ») ne porte pas de cible et lirait la valeur comme un champ du BIEN.
  *
  * Lot 16b-3 : commutateur `CANONICAL_WRITE_MODE` supprimé — la primitive
  * écrit toujours (comportement de l'ancien `enabled`).
@@ -42,7 +44,7 @@ import {
   ENTITY_MIRRORS, buildCanonicalEntityState, fieldTargetsEntity, loadEntityRow, mirrorId, readEntityFieldState,
   resolveEntityDef,
 } from './entity-view';
-import { entityCanonicalColumnsReady } from './entity-schema';
+import { aiFieldUpdatesTargetReady, entityCanonicalColumnsReady } from './entity-schema';
 import type {
   CanonicalEntityRow, CanonicalEntityState, CanonicalEntityTarget, CanonicalEntityWriteResult, EntityMirrorColumn,
   WriteCanonicalEntityFieldInput, WriteCanonicalEntityFieldsInput,
@@ -202,6 +204,48 @@ async function journal(
   );
 }
 
+const texte = (v: unknown): string | null =>
+  v === null || v === undefined ? null : typeof v === 'string' ? v : JSON.stringify(v);
+
+/**
+ * Écriture AUTOMATIQUE appliquée : ligne `ai_field_updates` avec sa cible
+ * (0236) — même forme que pour un bien (`traceAutomatic` de la primitive du
+ * bien), lue par « Ce que j'ai fait » et annulable (`/api/ai-history/[id]/
+ * revert`).
+ */
+async function traceAutomatic(
+  t: SqlRunner,
+  input: WriteCanonicalEntityFieldsInput,
+  assetId: number,
+  results: CanonicalFieldWriteResult[],
+): Promise<void> {
+  if (isHumanOrigin(input.origin)) return;
+  const ecrites = results.filter((r) => r.outcome === 'written');
+  if (ecrites.length === 0) return;
+  const docId = input.source?.type === 'document' && Number.isInteger(Number(input.source.id)) ? Number(input.source.id) : null;
+  const lignes = ecrites.map((r) => {
+    const tr = input.writes.find((w) => w.key === r.requestedKey)?.trace;
+    const extra: Record<string, unknown> = {
+      evidence_id: tr?.evidenceId, decision_type: tr?.decisionType, reason_code: tr?.reasonCode,
+      provider: tr?.provider, model: tr?.model, prompt_version: tr?.promptVersion, confidence: tr?.confidence,
+    };
+    return {
+      base: [input.accountId, assetId, input.target.type, input.target.id, docId, r.key, texte(r.previousValue), texte(r.nextValue) ?? ''],
+      extra,
+    };
+  });
+  // Colonnes de la migration 0103 : seulement celles qu'un appelant renseigne.
+  const extraCols = ['evidence_id', 'decision_type', 'reason_code', 'provider', 'model', 'prompt_version', 'confidence']
+    .filter((c) => lignes.some((l) => l.extra[c] !== undefined && l.extra[c] !== null));
+  const cols = ['account_id', 'asset_id', 'target_type', 'target_id', 'asset_file_id', 'field_key', 'old_value', 'new_value', ...extraCols];
+  const params: unknown[] = [];
+  const tuples = lignes.map((l) => {
+    const v = [...l.base, ...extraCols.map((c) => l.extra[c] ?? null)];
+    return `(${v.map((x) => { params.push(x); return `$${params.length}`; }).join(', ')})`;
+  });
+  await t.unsafe(`INSERT INTO ai_field_updates (${cols.join(', ')}) VALUES ${tuples.join(', ')}`, params as never[]);
+}
+
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
 const vide = (
@@ -224,6 +268,8 @@ export async function writeCanonicalEntityFields(
 ): Promise<CanonicalEntityWriteResult> {
   if (!(await entityCanonicalColumnsReady())) return vide(input.target, { skipped: true, schemaNotReady: true });
   const ctx = { origin: input.origin, now: new Date().toISOString() };
+  // Trace « Ce que j'ai fait » : origine automatique et migration 0236 présente.
+  const tracer = !isHumanOrigin(input.origin) && (await aiFieldUpdatesTargetReady());
 
   let out = vide(input.target);
   await run.begin(async (t) => {
@@ -232,6 +278,7 @@ export async function writeCanonicalEntityFields(
     const plan = planEntityWrites(row, input.writes, ctx);
     if (plan.changed) await persist(t, row, plan);
     await journal(t, input, row.assetId, plan.results);
+    if (tracer) await traceAutomatic(t, input, row.assetId, plan.results);
     out = { target: input.target, assetId: row.assetId, skipped: false, notFound: false, fields: plan.results };
   });
   if (out.assetId && input.emitEvent !== false && out.fields.some((f) => f.outcome === 'written')) {

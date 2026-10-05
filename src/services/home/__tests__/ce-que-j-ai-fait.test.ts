@@ -34,6 +34,29 @@ describe('frise à la 1re personne', () => {
     expect(e.target).toEqual({ kind: 'asset', assetId: 3, fieldKey: 'vin' });
   });
 
+  it('lot 22 : champ d’un équipement ou d’une pièce — libellé de l’entité, onglet de l’entité', () => {
+    const [seul] = deriveVerebonaWork({ ...vide, fieldUpdates: [
+      { assetId: 3, assetName: 'Maison', fieldKey: 'serialNumber', fieldLabel: 'numéro de série', createdAt: '2026-09-22T10:00:00Z', entityLabel: 'Chaudière', entityTab: 'equipments' },
+    ] });
+    expect(seul.text).toBe('J’ai complété une information sur Maison : numéro de série (Chaudière).');
+    expect(seul.target).toEqual({ kind: 'asset', assetId: 3, fieldKey: null, tab: 'equipments' });
+
+    const [mixte] = deriveVerebonaWork({ ...vide, fieldUpdates: [
+      { assetId: 3, assetName: 'Maison', fieldKey: 'dpeClass', fieldLabel: 'classe DPE', createdAt: '2026-09-22T10:00:00Z' },
+      { assetId: 3, assetName: 'Maison', fieldKey: 'roomArea', fieldLabel: 'surface de la pièce', createdAt: '2026-09-22T10:00:01Z', entityLabel: 'Salon', entityTab: 'rooms' },
+    ] });
+    expect(mixte.text).toBe('J’ai complété deux informations sur Maison : classe DPE et surface de la pièce (Salon).');
+    expect(mixte.target).toEqual({ kind: 'asset', assetId: 3, fieldKey: null });
+  });
+
+  it('lot 22 : l’accueil lit la cible des lignes (0236) et ouvre l’onglet de l’entité', () => {
+    const svc = readFileSync(join(process.cwd(), 'src/services/home/HomeSummaryService.ts'), 'utf8');
+    expect(svc).toMatch(/visibleFieldUpdatesWhere\(cible, ENRICH_VISIBLE_FIELDS\)/);
+    expect(svc).toMatch(/entityLabel: r\.targetType \? r\.entityName : null/);
+    const ui = readFileSync(join(process.cwd(), 'src/components/home/HomeBlocks.tsx'), 'utf8');
+    expect(ui).toMatch(/else if \(t\.tab\) push\(`\/assets\/\$\{t\.assetId\}\?tab=\$\{t\.tab\}`\)/);
+  });
+
   it('échéance lue dans un document', () => {
     const [e] = deriveVerebonaWork({
       ...vide,

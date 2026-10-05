@@ -180,6 +180,8 @@ export function createAnalysisRunner(
         // Même normalisation tolérante que la production (`analyze-document.step`).
         outputSchema: T1AnalyzeDocumentTolerantOutput,
         idempotencyKey: `corpus:${campagne}:${corpusCase.caseId}:analyze`,
+        // Lot 22 : campagne de mesure du BO, hors plafond de coût du compte.
+        costCapExempt: true,
       });
       const { output } = splitNormalisation(analyse.data);
 

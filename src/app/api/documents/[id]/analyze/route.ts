@@ -155,6 +155,21 @@ async function streamUnifiedAnalysis(args: {
     return;
   }
 
+  // Lot 22 : plafond IA du mois du compte atteint — rien n'est lancé ; le
+  // document (déjà reporté, ou reporté par le pipeline ci-dessous) sera
+  // analysé automatiquement au début du mois suivant.
+  try {
+    const { costCapReachedFor, costCapAnalysisReason } = await import('@/services/ai/gateway/account-cost-cap');
+    const cap = await costCapReachedFor(accountId);
+    if (cap) {
+      const { listLiveTargets } = await import('@/services/ai/queue/job-queue.repository');
+      if ((await listLiveTargets('T1', 'asset_file', [assetFileId])).size > 0) {
+        await write({ type: 'error', code: 'ANALYSIS_COST_CAP_REACHED', message: costCapAnalysisReason(cap.resumeAt) });
+        return;
+      }
+    }
+  } catch { /* plafond illisible : le pipeline le contrôle de nouveau */ }
+
   // Revue 3a : un job T1 vivant (en attente ou en cours, par exemple remis en
   // file après un échec) traitera ce document — une analyse directe en
   // parallèle doublerait l'appel au master. Refus explicite, motif affiché.
@@ -195,16 +210,22 @@ async function streamUnifiedAnalysis(args: {
       quota: 'ANALYSIS_QUOTA_REACHED',
       already_running: 'ALREADY_ANALYZING',
       no_valid_source: 'NOT_FOUND',
+      cost_cap: 'ANALYSIS_COST_CAP_REACHED',
     };
 
     const SKIP_MESSAGES: Record<NonNullable<RunSourceAnalysisOutput['skippedReason']>, string> = {
       quota: 'Quota d’analyse atteint : le document n’a pas été analysé.',
       already_running: 'Ce document est déjà en cours d’analyse : le résultat s’affichera à la fin.',
       no_valid_source: 'Document introuvable ou non analysable.',
+      cost_cap: 'Plafond IA du mois atteint : l’analyse sera lancée automatiquement le 1er du mois.',
     };
 
     if (outcome?.skippedReason) {
-      await write({ type: 'error', code: SKIP_CODES[outcome.skippedReason], message: SKIP_MESSAGES[outcome.skippedReason] });
+      // Lot 22 : motif daté (« reprise le 1er novembre »), comme sur le document.
+      const message = outcome.skippedReason === 'cost_cap' && outcome.costCap
+        ? (await import('@/services/ai/gateway/account-cost-cap')).costCapAnalysisReason(new Date(outcome.costCap.resumeAt))
+        : SKIP_MESSAGES[outcome.skippedReason];
+      await write({ type: 'error', code: SKIP_CODES[outcome.skippedReason], message });
       return;
     }
 

@@ -1,6 +1,7 @@
 /**
  * GET /api/admin/ai/accounts/[accountId]
- * Détail d'un compte — historique opérations, coûts, blocages, audit
+ * Détail d'un compte — historique opérations, coûts, blocages, audit ;
+ * lot 22 : plafond IA du mois (`costCap` : cumul, plafond effectif, source).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db, pgClient } from '@/db';
@@ -214,6 +215,16 @@ export async function GET(
 
     if (!account) return NextResponse.json({ error: 'Compte introuvable' }, { status: 404 });
 
+    // Lot 22 : plafond IA du mois — cumul (Europe/Paris, hors T5), plafond
+    // effectif (dérogation du compte, sinon offre) et date de reprise.
+    let costCap: unknown = null;
+    try {
+      const { getAccountCostCapStatus } = await import('@/services/ai/gateway/account-cost-cap');
+      costCap = await getAccountCostCapStatus(accountId, { withSpent: true });
+    } catch (e) {
+      console.warn('[GET /api/admin/ai/accounts/[accountId]] plafond IA illisible :', (e as Error).message);
+    }
+
     const planKey = account.planType.toLowerCase();
     const planQuota = ANALYSIS_QUOTAS[planKey] ?? ANALYSIS_QUOTAS['standard'];
     const planSubKey = account.planType.toUpperCase() as keyof typeof SUBSCRIPTION_LIMITS;
@@ -244,6 +255,7 @@ export async function GET(
         successCount: r.successCount,
         totalCostMicros: r.totalCostMicros,
       })),
+      costCap,
       auditLogs,
       searchLogs,
       searchStats,

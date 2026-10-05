@@ -41,6 +41,9 @@ import { applyV2Classification } from '@/services/documents/apply-v2-classificat
  */
 const PIPELINE_VERSION = 'source-analysis-v1';
 
+/** Préfixe du motif de report pour plafond (`account-cost-cap#costCapAnalysisReason`). */
+const COST_CAP_REASON_PREFIX = 'Plafond IA du mois atteint';
+
 import { buildAgendaCandidatesT4, attachEvidenceToCandidates } from './steps/build-agenda-candidates.step';
 import { persistProjectedFacts } from './steps/persist-evidence.step';
 import { persistAnalysisResult } from './persistence/analysis-result.repository';
@@ -51,6 +54,7 @@ import type {
   SourceInput, SourceType, SourceAnalysisResult, AnalysisContext,
 } from './types';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
+import { isCostCapReached, costCapResumeAt } from '../gateway/errors';
 import { markSourcesGrouped } from '@/services/documents/grouped-sources';
 // Prompt maître T1 — seul moteur depuis le lot 16b-3 (CDC 15 §23, §29).
 import { analyseGroupWithMaster, type MasterGroupAnalysis } from './master/analyse-group-master';
@@ -78,7 +82,20 @@ export interface RunSourceAnalysisInput {
 export interface RunSourceAnalysisOutput {
   results: SourceAnalysisResult[];
   analysedCount: number;
-  skippedReason?: 'quota' | 'already_running' | 'no_valid_source';
+  skippedReason?: 'quota' | 'already_running' | 'no_valid_source' | 'cost_cap';
+  /**
+   * Lot 22 — `skippedReason: 'cost_cap'` : plafond mensuel de coût IA du
+   * compte atteint, analyse NON lancée (aucun état touché, aucun crédit).
+   * `resumeAt` : début de la période suivante, où le travail est repris.
+   */
+  costCap?: { resumeAt: string; capMicros: number; spentMicros: number };
+  /**
+   * Lot 22 — sources NON analysées pour plafond (contrôle préalable : toutes ;
+   * plafond franchi en cours d'analyse hors file : le groupe en cours et les
+   * suivants). Remises « en file » avec le motif, jamais en échec ; l'appelant
+   * hors file les confie à la file durable au 1er.
+   */
+  costCapSourceIds?: number[];
   /**
    * Sources dont l'analyse a ÉCHOUÉ pendant cette exécution (master T1 en
    * échec sur toute sa chaîne de modèles, sortie inexploitable, persistance
@@ -124,6 +141,23 @@ export async function runSourceAnalysis(
     if (!gate.allowed) return { results: [], analysedCount: 0, skippedReason: 'quota', failedSourceIds: [] };
   }
 
+  // Lot 22 — plafond mensuel de coût IA du compte : contrôlé AVANT d'ouvrir
+  // le lot et de passer les sources en ANALYZING (la passerelle refuserait de
+  // toute façon chaque appel). Rien n'est écrit : l'appelant reporte (file
+  // durable) ou remet en file au 1er (hors file). Un plafond franchi PENDANT
+  // l'analyse est refusé par la passerelle (`COST_CAP_REACHED`).
+  {
+    const { costCapReachedFor } = await import('../gateway/account-cost-cap');
+    const cap = await costCapReachedFor(req.accountId);
+    if (cap) {
+      return {
+        results: [], analysedCount: 0, skippedReason: 'cost_cap', failedSourceIds: [],
+        costCap: { resumeAt: cap.resumeAt.toISOString(), capMicros: cap.capMicros, spentMicros: cap.spentMicros },
+        costCapSourceIds: pendingIds,
+      };
+    }
+  }
+
   const guard = req.guard;
   await guard?.assertActive('ouverture du lot');
   const lotId = await openLot(req.accountId, pendingIds);
@@ -167,8 +201,11 @@ export async function runSourceAnalysis(
   const failedSourceIds: number[] = [];
   const definitiveFailedSourceIds: number[] = [];
   let analysedCount = 0;
+  // Lot 22 : plafond franchi en cours d'analyse (hors file) — groupe en cours
+  // et suivants non analysés, remis « en file » avec le motif.
+  let plafond: { resumeAt: Date; capMicros: number; spentMicros: number; sourceIds: number[] } | null = null;
 
-  for (const groupIndices of groups) {
+  for (const [gi, groupIndices] of groups.entries()) {
     const leadSourceId = input.sourceIds[groupIndices[0]];
     const groupSourceIds = groupIndices.map((i) => input.sourceIds[i]);
 
@@ -179,7 +216,8 @@ export async function runSourceAnalysis(
       try {
         master = await analyseGroupWithMaster(input, groupIndices, ctx, groupTrace);
       } catch (e) {
-        if (isExecutionCancelled(e)) throw e;
+        // Lot 22 : un refus pour plafond n'est jamais un échec du master.
+        if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
         throw new T1MasterAnalysisError((e as Error).message, {
           // Revue 3a : le code de la passerelle n'est plus écrasé — il
           // distingue une sortie invalide (définitif) d'une panne (transitoire).
@@ -409,6 +447,24 @@ export async function runSourceAnalysis(
       // Interruption : aucune écriture (pas même l'échec) — la nouvelle
       // exécution reprendra ces sources avec la configuration restaurée.
       if (isExecutionCancelled(e)) throw e;
+      // Lot 22 — plafond mensuel de coût IA du compte franchi pendant
+      // l'analyse. Jamais `failSources` (ni ANALYSIS_FAILED, ni compteur) :
+      //   · sous la file : le refus remonte, le boucleur reporte le job au 1er ;
+      //   · hors file : ce groupe et les suivants repassent « en file » avec
+      //     le motif ; l'appelant les confie à la file au 1er (même chemin que
+      //     le contrôle préalable).
+      if (isCostCapReached(e)) {
+        if (guard) throw e;
+        const restants = groups.slice(gi).flatMap((g) => g.map((i) => input.sourceIds[i]));
+        const resumeAt = costCapResumeAt(e) ?? new Date(Date.now() + 3_600_000);
+        await markCostCapped(restants, resumeAt);
+        plafond = {
+          resumeAt, sourceIds: restants,
+          capMicros: Number((e as { capMicros?: number }).capMicros ?? 0),
+          spentMicros: Number((e as { spentMicros?: number }).spentMicros ?? 0),
+        };
+        break;
+      }
       console.warn(`[source-analysis] analyse T1 en échec pour la source ${leadSourceId} :`, (e as Error).message);
       const definitif = e instanceof T1MasterAnalysisError && e.definitive;
       await failSources(groupSourceIds, failReason(e), lotId, { definitive: definitif });
@@ -451,7 +507,25 @@ export async function runSourceAnalysis(
     console.error('[source-analysis] notification de fin de lot impossible :', (e as Error).message);
   }
 
-  return { results, analysedCount, failedSourceIds, definitiveFailedSourceIds };
+  return {
+    results, analysedCount, failedSourceIds, definitiveFailedSourceIds,
+    ...(plafond ? {
+      ...(analysedCount === 0 && results.length === 0 && failedSourceIds.length === 0 ? { skippedReason: 'cost_cap' as const } : {}),
+      costCap: { resumeAt: plafond.resumeAt.toISOString(), capMicros: plafond.capMicros, spentMicros: plafond.spentMicros },
+      costCapSourceIds: plafond.sourceIds,
+    } : {}),
+  };
+}
+
+/** Lot 22 : sources non analysées pour plafond — « en file » avec le motif daté. */
+async function markCostCapped(ids: number[], resumeAt: Date): Promise<void> {
+  if (ids.length === 0) return;
+  const { costCapAnalysisReason } = await import('../gateway/account-cost-cap');
+  const motif = costCapAnalysisReason(resumeAt);
+  await db.update(assetFiles)
+    .set({ analysisState: 'UPLOADED', analysisFailReason: motif, updatedAt: new Date() })
+    .where(inArray(assetFiles.id, ids));
+  for (const id of ids) broadcast(id, { type: 'state_update', analysisState: 'UPLOADED' });
 }
 
 /**
@@ -583,6 +657,9 @@ async function setState(ids: number[], state: string): Promise<void> {
   if (ids.length === 0) return;
 
   const patch: Record<string, unknown> = { analysisState: state, updatedAt: new Date() };
+  // Lot 22 : le motif « plafond IA du mois atteint » n'est plus d'actualité
+  // dès que l'analyse reprend (les autres motifs sont conservés).
+  patch.analysisFailReason = sql`CASE WHEN ${assetFiles.analysisFailReason} LIKE ${COST_CAP_REASON_PREFIX + '%'} THEN NULL ELSE ${assetFiles.analysisFailReason} END`;
   // Seul un aboutissement efface l'ardoise. Un début d'analyse ne prouve rien.
   if (ETATS_ABOUTIS.includes(state)) patch.analysisRetryCount = 0;
 

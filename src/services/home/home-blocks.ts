@@ -7,7 +7,8 @@
  * « CE QUE J'AI FAIT » NE DIT QUE CE QUI EST TRACÉ
  *
  * Trois sources existent, et elles seules :
- *   · `ai_field_updates` : champs d'un bien complétés par l'analyse ;
+ *   · `ai_field_updates` : champs d'un bien — ou d'un de ses équipements /
+ *     de ses pièces (cible 0236, lot 22) — complétés par l'analyse ;
  *   · `agenda_items` d'origine `qualified_document` : échéances lues dans un
  *     document (et acceptées) ;
  *   · `asset_files.analysis_state` / `last_analysis_at` : documents analysés.
@@ -23,7 +24,7 @@ import { formatDateFr } from './mascot/signals';
 export type WorkTone = 'blue' | 'green' | 'violet' | 'amber';
 
 export type WorkTarget =
-  | { kind: 'asset'; assetId: number; fieldKey?: string | null }
+  | { kind: 'asset'; assetId: number; fieldKey?: string | null; tab?: 'equipments' | 'rooms' }
   | { kind: 'agenda'; id: number }
   | { kind: 'document'; id: number };
 
@@ -48,6 +49,19 @@ export interface WorkFieldUpdateRow {
   /** Document dont l'analyse a produit la valeur, s'il est connu. */
   assetFileId?: number | null;
   createdAt: string;
+  /**
+   * Champ d'un ÉQUIPEMENT ou d'une PIÈCE du bien (lot 22) : nom de l'entité,
+   * accolé au libellé du champ (« numéro de série (Chaudière) »).
+   */
+  entityLabel?: string | null;
+  /** Onglet de la fiche du bien qui montre l'entité. */
+  entityTab?: 'equipments' | 'rooms' | null;
+}
+
+/** Libellé affiché d'une ligne : celui du champ, suivi de l'entité s'il y en a une. */
+function libelle(r: WorkFieldUpdateRow): string {
+  const nom = r.entityLabel?.trim();
+  return nom ? `${r.fieldLabel} (${nom})` : r.fieldLabel;
 }
 
 export interface WorkDeadlineRow {
@@ -110,7 +124,7 @@ function fieldEvents(rows: WorkFieldUpdateRow[]): VerebonaWorkItem[] {
   return [...groupes.values()].map((g) => {
     const recent = [...g].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     // Libellés dans l'ordre où les champs ont été complétés.
-    const labels = [...new Set([...recent].reverse().map((r) => r.fieldLabel))];
+    const labels = [...new Set([...recent].reverse().map(libelle))];
     const n = labels.length;
     const combien = n === 1 ? 'une information' : `${NOMBRES[n] ?? n} informations`;
     const a = recent[0];
@@ -121,7 +135,11 @@ function fieldEvents(rows: WorkFieldUpdateRow[]): VerebonaWorkItem[] {
       at: a.createdAt,
       tone: 'blue' as const,
       cta: 'Voir les modifications',
-      target: { kind: 'asset' as const, assetId: a.assetId, fieldKey: n === 1 ? a.fieldKey : null },
+      // Une seule information : surlignée dans la fiche (champ du bien) ou
+      // onglet de l'entité (équipement, pièce).
+      target: n === 1 && a.entityTab
+        ? { kind: 'asset' as const, assetId: a.assetId, fieldKey: null, tab: a.entityTab }
+        : { kind: 'asset' as const, assetId: a.assetId, fieldKey: n === 1 && !a.entityTab ? a.fieldKey : null },
     };
   });
 }

@@ -116,7 +116,7 @@ const ligneEquipement = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('writeCanonicalEntityFields — écriture réelle seule (lot 16b-3)', () => {
-  beforeEach(() => { es.__resetEntityColumnsForTests(true); emitBusinessEvent.mockClear(); });
+  beforeEach(() => { es.__resetEntityColumnsForTests(true); es.__resetAiFieldUpdatesTargetForTests(false); emitBusinessEvent.mockClear(); });
 
   it('0227 absente : rien (schemaNotReady)', async () => {
     es.__resetEntityColumnsForTests(false);
@@ -175,6 +175,56 @@ describe('writeCanonicalEntityFields — écriture réelle seule (lot 16b-3)', (
     }, run as never);
     expect(res).toMatchObject({ notFound: true, field: null });
     expect(run.calls).toHaveLength(1);
+  });
+});
+
+describe('« Ce que j’ai fait » : trace ai_field_updates avec la cible (0236, lot 22)', () => {
+  beforeEach(() => { es.__resetEntityColumnsForTests(true); es.__resetAiFieldUpdatesTargetForTests(true); });
+  const trace = (run: ReturnType<typeof runner>) => run.calls.find((c) => c.q.includes('INSERT INTO ai_field_updates'));
+
+  it('écriture automatique : une ligne par clé écrite, cible + bien porteur + document source + trace IA', async () => {
+    const run = runner(ligneEquipement({ kc: { serialNumber: 'ANCIEN', serialNumber__origin: 'RECONCILIATION' }, sn: 'ANCIEN', specId: 4 }));
+    await es.writeCanonicalEntityFields({
+      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION',
+      source: { type: 'document', id: 55 },
+      writes: [
+        { key: 'serialNumber', value: 'NOUVEAU', trace: { evidenceId: 9, reasonCode: 'HIGHER_AUTHORITY' } },
+        { key: 'warrantyEndDate', value: '2031-03-01' },
+        { key: 'roomArea', value: 12 }, // refusé (cible) : pas de trace
+      ],
+    }, run as never);
+    const t = trace(run)!;
+    expect(t.q).toContain('(account_id, asset_id, target_type, target_id, asset_file_id, field_key, old_value, new_value, evidence_id, reason_code)');
+    expect(t.p).toEqual([
+      7, 3, 'EQUIPMENT', 11, 55, 'serialNumber', 'ANCIEN', 'NOUVEAU', 9, 'HIGHER_AUTHORITY',
+      7, 3, 'EQUIPMENT', 11, 55, 'warrantyEndDate', null, '2031-03-01', null, null,
+    ]);
+  });
+
+  it('pièce (sous-structure) : cible ROOM', async () => {
+    const run = runner({ id: 21, assetId: 3, accountId: 7, name: 'Salon', kc: {}, area: null });
+    await es.writeCanonicalEntityFields({
+      target: { type: 'ROOM', id: 21 }, accountId: 7, origin: 'RECONCILIATION', writes: [{ key: 'roomArea', value: 18.5 }],
+    }, run as never);
+    expect(trace(run)!.p.slice(0, 8)).toEqual([7, 3, 'ROOM', 21, null, 'roomArea', null, '18.5']);
+  });
+
+  it('origine humaine, valeur protégée ou inchangée : aucune trace', async () => {
+    const r1 = runner(ligneEquipement());
+    await es.writeCanonicalEntityField({ target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'USER', key: 'serialNumber', value: 'X' }, r1 as never);
+    expect(trace(r1)).toBeUndefined();
+    const r2 = runner(ligneEquipement({ kc: { serialNumber: 'A', serialNumber__origin: 'USER' } }));
+    const res = await es.writeCanonicalEntityField({ target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION', key: 'serialNumber', value: 'B' }, r2 as never);
+    expect(res.field?.outcome).toBe('protected');
+    expect(trace(r2)).toBeUndefined();
+  });
+
+  it('migration 0236 absente : aucune trace (une ligne sans cible serait lue comme un champ du bien)', async () => {
+    es.__resetAiFieldUpdatesTargetForTests(false);
+    const run = runner(ligneEquipement());
+    const res = await es.writeCanonicalEntityField({ target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION', key: 'serialNumber', value: 'X' }, run as never);
+    expect(res.field?.outcome).toBe('written');
+    expect(trace(run)).toBeUndefined();
   });
 });
 

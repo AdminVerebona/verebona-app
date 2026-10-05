@@ -1372,6 +1372,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       ) : null}
                     </div>
 
+                    {/* Lot 22 : analyse reportée (plafond IA du mois du compte) — motif et date de reprise. */}
+                    {analysisState === 'UPLOADED' && fullData?.analysisFailReason?.startsWith('Plafond IA du mois atteint') && (
+                      <p className="text-[10px] text-muted-foreground/70 leading-relaxed pl-1">
+                        {fullData.analysisFailReason}
+                      </p>
+                    )}
+
                     {!showDetectedInfo && analysisState === 'VALIDATION_REQUIRED' && (
                       <p className="text-[10px] text-muted-foreground/70 pl-1">
                         Cliquez sur <span className="font-medium text-[#8b5cf6]">Appliquer</span> pour enregistrer les informations détectées automatiquement.

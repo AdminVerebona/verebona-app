@@ -20,6 +20,11 @@ export function analyzeErrorFeedback(evt: { code?: unknown; message?: unknown })
   if (code === 'ALREADY_ANALYZING') {
     return { level: 'info', message: message ?? 'Ce document est déjà en cours d’analyse.' };
   }
+  // Lot 22 : plafond IA du mois du compte atteint — l'analyse est reportée
+  // (reprise automatique le 1er), ce n'est pas une erreur.
+  if (code === 'ANALYSIS_COST_CAP_REACHED') {
+    return { level: 'info', message: message ?? 'Plafond IA du mois atteint : l’analyse reprendra automatiquement le 1er du mois.' };
+  }
   if (code === 'ANALYSIS_QUOTA_REACHED') {
     return { level: 'error', message: message ?? 'Quota d’analyse atteint.' };
   }

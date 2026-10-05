@@ -20,6 +20,10 @@ import {
 import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { getRubric } from '@/lib/referential/v2';
+import { aiFieldUpdatesTargetReady } from '@/services/canonical/entity-state/entity-schema';
+import {
+  fieldUpdateTargetColumns, registryFieldLabel, visibleFieldUpdatesWhere,
+} from '@/services/canonical/entity-state/ai-field-updates-target';
 
 // Champs visibles par l'utilisateur dans l'UI — les autres champs (techniques)
 // sont filtrés de « Ce que j'ai fait ».
@@ -95,6 +99,11 @@ function dateIn(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** « Fin de garantie » → « fin de garantie » (un sigle en tête garde sa casse). */
+function minusculeLibelle(t: string): string {
+  return /^[A-ZÀ-Ý][a-zà-ÿ’' ]/.test(t) ? t.charAt(0).toLowerCase() + t.slice(1) : t;
+}
+
 function dateMinus(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
@@ -112,6 +121,9 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   // prévisions), faute de nature pour écarter les faits passés.
   const filtreT4 = await upcomingDeadlinesSqlFilter('agenda_items');
   const t4 = filtreT4 !== '';
+  // Cible des lignes `ai_field_updates` (0236, lot 22) : équipements et pièces.
+  const cible = await aiFieldUpdatesTargetReady();
+  const cibleCols = fieldUpdateTargetColumns(cible);
 
   const [
     accountRows,
@@ -219,13 +231,16 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       .orderBy(desc(assetFiles.uploadedAt), desc(assetFiles.id))
       .limit(4),
 
-    // « Ce que j'ai fait » (§3.4) — champs complétés par l'analyse (30 jours).
+    // « Ce que j'ai fait » (§3.4) — champs complétés par l'analyse (30 jours),
+    // ceux du bien et ceux de ses équipements / pièces (lot 22).
     db.select({
       assetId: aiFieldUpdates.assetId,
       assetName: assets.name,
       fieldKey: aiFieldUpdates.fieldKey,
       assetFileId: aiFieldUpdates.assetFileId,
       createdAt: aiFieldUpdates.createdAt,
+      targetType: cibleCols.targetType,
+      entityName: cibleCols.entityName,
     })
       .from(aiFieldUpdates)
       .innerJoin(assets, eq(aiFieldUpdates.assetId, assets.id))
@@ -233,7 +248,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         eq(aiFieldUpdates.accountId, accountId),
         gte(aiFieldUpdates.createdAt, new Date(dateMinus(30) + 'T00:00:00')),
         isNull(assets.deletedAt),
-        inArray(aiFieldUpdates.fieldKey, ENRICH_VISIBLE_FIELDS),
+        visibleFieldUpdatesWhere(cible, ENRICH_VISIBLE_FIELDS),
       ))
       .orderBy(desc(aiFieldUpdates.createdAt))
       .limit(40),
@@ -415,13 +430,16 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   const isoOf = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : new Date(0).toISOString());
 
   const verebonaWork = deriveVerebonaWork({
-    fieldUpdates: workFieldRows.map((r) => ({
+    // Ligne d'entité dont l'équipement / la pièce n'existe plus : rien à montrer.
+    fieldUpdates: workFieldRows.filter((r) => !r.targetType || r.entityName != null).map((r) => ({
       assetId: r.assetId,
       assetName: r.assetName,
       fieldKey: r.fieldKey,
-      fieldLabel: KC_LABELS[r.fieldKey] ?? r.fieldKey,
+      fieldLabel: KC_LABELS[r.fieldKey] ?? minusculeLibelle(registryFieldLabel(r.fieldKey)),
       assetFileId: r.assetFileId ?? null,
       createdAt: isoOf(r.createdAt),
+      entityLabel: r.targetType ? r.entityName : null,
+      entityTab: r.targetType === 'EQUIPMENT' ? 'equipments' as const : r.targetType === 'ROOM' ? 'rooms' as const : null,
     })),
     deadlines: workDeadlineRows.map((r) => ({
       id: r.id,

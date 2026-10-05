@@ -11,6 +11,10 @@
  * preview en production) passe par une demande, accordée par un second
  * administrateur. Historique des modifications et journal des consultations
  * sensibles en bas de section.
+ *
+ * Lot 22 : le groupe « Plafond IA mensuel par compte » (un montant par offre,
+ * tous traitements) passe par les mêmes réglages, journal et propagation ;
+ * la dérogation d'un compte se pose dans Suivi IA > compte.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -55,7 +59,7 @@ function affiche(s: Pick<Setting, 'type'>, v: unknown): string {
   if (typeof v === 'boolean') return v ? 'activé' : 'désactivé';
   if (typeof v !== 'number') return '—';
   if (s.type === 'ratio') return `${Math.round(v * 100)} %`;
-  if (s.type === 'usd_micros') return `${(v / 1_000_000).toFixed(2)} $`;
+  if (s.type === 'usd_micros') return `${(v / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`;
   if (s.type === 'usd') return `${v} $`;
   return v.toLocaleString('fr-FR');
 }
@@ -117,7 +121,7 @@ export function AssistantSettings() {
   return (
     <details className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]" data-testid="assistant-settings">
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-[color:var(--text-primary)]">
-        Assistant · seuils et interrupteurs
+        Assistant · seuils et interrupteurs · plafond IA par compte
         {enAttente.length > 0 && <span className="ml-2 text-xs text-amber-500">• {enAttente.length} demande(s) à valider</span>}
         {data?.rateLimiter.degraded && <span className="ml-2 text-xs text-red-400">• limiteur de débit en repli mémoire</span>}
       </summary>

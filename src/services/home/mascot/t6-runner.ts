@@ -34,6 +34,7 @@ import { randomUUID } from 'crypto';
 import { canonicalJson, sha256 } from './hash';
 import { pgClient } from '@/db';
 import { AiGateway } from '@/services/ai/gateway/ai-gateway';
+import { isCostCapReached } from '@/services/ai/gateway/errors';
 import { resolveOperationConfig } from '@/services/ai/config/config-resolver';
 import { canStart } from '@/services/ai/queue/job-queue.repository';
 import {
@@ -300,6 +301,15 @@ async function generateMaster(p: {
     });
     return { ...base, status: 'generated', messages, adjustments };
   } catch (e) {
+    // Lot 22 : plafond IA du mois du compte atteint — texte de secours
+    // déterministe, sans compter d'échec au disjoncteur T6 (partagé par tous
+    // les comptes : un compte au plafond ne doit pas couper la mascotte des autres).
+    if (isCostCapReached(e)) {
+      return {
+        status: 'fallback', messages: null, promptVersion: p.promptVersion, architecture: 'master',
+        latencyMs: Date.now() - startedAt, error: 'plafond IA du mois du compte atteint',
+      };
+    }
     breakerRecord(false);
     return {
       status: 'error', messages: null, promptVersion: p.promptVersion, architecture: 'master',

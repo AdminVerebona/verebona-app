@@ -33,6 +33,7 @@
 import { registerJobHandler, nudgeQueueWorker, type JobOutcome } from '../../queue/queue-worker';
 import { enqueue, type QueuedJob } from '../../queue/job-queue.repository';
 import { JobDeferredError } from '../../queue/queue-policy';
+import { AiCostCapReachedError } from '../../gateway/errors';
 import { REQUEUE_ORIGIN_SUFFIX } from '../failure-policy';
 
 /**
@@ -107,6 +108,8 @@ export async function enqueueFileAnalyses(
     userId?: number; origin: string; billable?: boolean;
     /** Premier prélèvement différé (remise en file après un échec hors file). */
     delaySeconds?: number;
+    /** Lot 22 : report pour plafond de coût du compte, jusqu'à cette date (ISO). */
+    costCapDeferredUntil?: string;
   },
 ): Promise<number[]> {
   if (options.origin === UPLOAD_ORIGIN && !(await t1TriggerActive('source_uploaded'))) {
@@ -133,6 +136,11 @@ export async function enqueueDurableFileAnalyses(
     billable?: boolean;
     /** Premier prélèvement différé, en secondes. */
     delaySeconds?: number;
+    /**
+     * Lot 22 : travail reporté pour plafond de coût du compte, jusqu'à cette
+     * date (ISO) — porté dans le contexte comme par `deferJobUntil`.
+     */
+    costCapDeferredUntil?: string;
   },
 ): Promise<number[]> {
   const acceptes: number[] = [];
@@ -149,6 +157,7 @@ export async function enqueueDurableFileAnalyses(
         payload: {
           fileId, userId: options.userId ?? null, origin: options.origin,
           ...(options.billable === false ? { billable: false } : {}),
+          ...(options.costCapDeferredUntil ? { costCapDeferredUntil: options.costCapDeferredUntil } : {}),
         },
         ...(options.delaySeconds ? { delaySeconds: options.delaySeconds } : {}),
       });
@@ -239,6 +248,17 @@ export function registerSourceAnalysisHandler(): void {
       throw new JobDeferredError('quota d’analyse du compte épuisé');
     }
 
+    // Lot 22 — plafond mensuel de coût IA du compte atteint : rien n'a été
+    // lancé. Le boucleur REPORTE le job au début de la période suivante
+    // (`deferJobUntil` : une seule reprise, aucune tentative consommée) ; le
+    // fichier reste « en file » avec le motif (`onT1JobSettled`).
+    if (outcome?.skippedReason === 'cost_cap' && outcome.costCap) {
+      throw new AiCostCapReachedError(
+        't1_analyze_document', job.accountId, outcome.costCap.capMicros, outcome.costCap.spentMicros,
+        new Date(outcome.costCap.resumeAt),
+      );
+    }
+
     // Lot 16b-3 — échec du master T1 (plus de repli « étapes ») : le fichier
     // est en ANALYSIS_FAILED avec son motif, aucun crédit consommé. Le job
     // échoue pour que la file le REPRENNE avec son backoff (MOD-005) ; au
@@ -318,6 +338,10 @@ export async function analyseConcurrenteEnCours(
  *                                      échec par le pipeline (master T1 en
  *                                      échec, lot 16b-3) garde son motif précis
  *   interrupted (rollback, arrêt…)     `ANALYZING` → `UPLOADED` (remis en tête)
+ *   deferred jusqu'à une date (plafond `UPLOADED`/`ANALYZING` → `UPLOADED` avec
+ *   de coût du compte, lot 22)         le motif « plafond IA du mois atteint,
+ *                                      reprise le 1er … » ; le job attend la
+ *                                      période suivante (aucune relance avant)
  *
  * Seuls les états transitoires sont touchés : un fichier déjà ANALYZED (ou
  * supprimé) n'est jamais réécrit.
@@ -333,6 +357,12 @@ export async function onT1JobSettled(job: QueuedJob, outcome: JobOutcome): Promi
       await setFileState(fileId, job.accountId, ['UPLOADED'], { analysisState: null });
       return;
     case 'deferred':
+      if (outcome.until) {
+        await setFileState(fileId, job.accountId, ['UPLOADED', 'ANALYZING'], {
+          analysisState: 'UPLOADED', analysisFailReason: outcome.reason,
+        });
+        return;
+      }
       await setFileState(fileId, job.accountId, ['UPLOADED', 'ANALYZING'], { analysisState: null });
       return;
     case 'interrupted':

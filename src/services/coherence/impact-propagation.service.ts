@@ -11,6 +11,32 @@
  *   7. Marking exports as stale
  *
  * This replaces the heavy nightly AI batch with targeted, event-driven processing.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 22 (chantier B) — ÉCRITURE PAR LA PRIMITIVE CANONIQUE
+ *
+ * Une valeur propagée ne s'écrit plus par un `UPDATE assets` direct (fiche
+ * JSON et colonnes à la main, sans origine ni journal) mais par
+ * `writeCanonicalAssetField`, origine `SYSTEM_RULE` (règle déterministe —
+ * jamais USER) :
+ *   · lecture de la valeur en place par la vue canonique (fiche, alias,
+ *     colonne miroir) — une valeur saisie dans une colonne n'est plus vue
+ *     « vide » ;
+ *   · clés hors registre (`category`, `name`…) ou hors famille : jamais
+ *     écrites ; règle de transformation non implémentée (`extract_city`,
+ *     `doc_type_to_category`…) : rien n'est écrit (la valeur brute de la
+ *     source n'est pas la valeur cible) ;
+ *   · préséance : une valeur USER/ADMIN n'est JAMAIS remplacée — la
+ *     primitive la protège (`protected`), et une valeur changée entre la
+ *     lecture et l'écriture est refusée (`expectedCurrent` → `conflict`) ;
+ *     dans les deux cas, et quand la valeur en place diffère, un conflit
+ *     ouvert est inscrit (`inconsistency_registry`, source `reconciliation`)
+ *     et apparaît dans « À traiter » (À arbitrer), au lieu d'une écriture ;
+ *   · journal 0216, `ai_field_updates` (« Ce que j'ai fait »), colonnes
+ *     miroirs et ASSET_UPDATED : ceux de la primitive.
+ * Aucune cible d'équipement ou de pièce dans le graphe de dépendances : la
+ * primitive d'entité (`writeCanonicalEntityField`) n'a pas d'appelant ici.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { db } from '@/db';
@@ -22,6 +48,33 @@ import { computeHash, recordVersion } from './version-tracker.service';
 import { determineAction, createInconsistency, autoResolveForField } from './inconsistency.service';
 import { isFieldAllowedForCategory } from '@/lib/field-validator';
 import { acceptDetailDate } from '@/lib/asset-detail-rules';
+import { getCanonicalAssetState, resolveDefForFamily, writeCanonicalAssetField } from '@/services/canonical/asset-state';
+import { isExcludedKey } from '@/services/canonical/registry';
+
+/** Origine des écritures du moteur de propagation : règle déterministe, jamais USER. */
+export const PROPAGATION_ORIGIN = 'SYSTEM_RULE' as const;
+
+/**
+ * Règles de transformation appliquées à la valeur source. Une règle absente
+ * de cette liste n'a jamais été implémentée (la valeur brute était recopiée
+ * telle quelle — une adresse complète dans `city`) : la dépendance n'écrit rien.
+ *
+ * Non implémentées faute d'entrée sûre (revue lot 22) :
+ *   · `extract_city` (supplier → acquisitionLocation) : la valeur source est le
+ *     NOM du fournisseur (T1 ne lit ni son adresse ni sa ville) — aucune
+ *     ville à extraire ;
+ *   · `extract_city_from_address` / `postal_code_to_city` : `address1` est une
+ *     ligne libre (la ville n'y figure pas forcément) et un code postal
+ *     couvre souvent plusieurs communes — deviner serait écrire une valeur
+ *     fausse avec une origine automatique.
+ */
+const TRANSFORMS: Record<string, (v: unknown) => unknown> = {
+  copy_date: (v) => v,
+  cents_to_euros: (v) => {
+    const n = Number(v);
+    return Number.isInteger(n) ? n / 100 : null;
+  },
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -456,33 +509,43 @@ async function handleFieldPropagation(
   newValue: unknown,
   result: PropagationResult,
 ): Promise<void> {
-  // Get the current value from keyCharacteristics or asset-level columns
-  const currentValue = getCurrentFieldValue(asset, targetField);
+  // Valeur cible : transformation de la valeur source (règle connue seulement).
+  const transform = dep.transformRule ? TRANSFORMS[dep.transformRule] : (v: unknown) => v;
+  if (!transform) return;
+  const proposed = transform(newValue);
+  if (isEmptyValue(proposed)) return;
+
+  // Valeur en place lue par la vue canonique ; clé hors registre : rien.
+  const cible = await readCanonicalTarget(asset, targetField);
+  if (!cible) return;
+  const { key, currentValue } = cible;
 
   // Determine what action to take
   const { action, reason } = await determineAction(
-    asset.id, targetField, currentValue, newValue, dep.confidence as 'certain' | 'probable' | 'conflictual',
+    asset.id, key, currentValue, proposed, dep.confidence as 'certain' | 'probable' | 'conflictual',
   );
 
   switch (action) {
-    case 'apply':
+    case 'apply': {
       // Auto-apply: update the field value
       if (reason === 'values_match') {
         // No change needed
         return;
       }
-      await applyFieldValue(asset, targetField, newValue, dep.sourceField);
-      result.fieldsApplied++;
+      const issue = await applyFieldValue(asset, key, proposed, dep, currentValue);
+      if (issue === 'written') result.fieldsApplied++;
+      else if (issue === 'conflict') result.fieldsConflicted++;
       break;
+    }
 
     case 'propose':
       // Create a proposal for user validation
       await createInconsistency({
         accountId: asset.accountId,
         assetId: asset.id,
-        fieldKey: targetField,
-        currentValue: currentValue != null ? String(currentValue) : null,
-        proposedValue: String(newValue),
+        fieldKey: key,
+        currentValue: currentValue != null ? texte(currentValue) : null,
+        proposedValue: texte(proposed),
         sourceType: 'ai_extraction',
         sourceDetail: `from "${dep.sourceField}" (confidence: ${dep.confidence})`,
         inconsistencyType: 'probable',
@@ -491,101 +554,113 @@ async function handleFieldPropagation(
       break;
 
     case 'conflict':
-      // Create a real conflict
-      await createInconsistency({
-        accountId: asset.accountId,
-        assetId: asset.id,
-        fieldKey: targetField,
-        currentValue: currentValue != null ? String(currentValue) : null,
-        proposedValue: String(newValue),
-        sourceType: 'ai_extraction',
-        sourceDetail: `from "${dep.sourceField}" (confidence: ${dep.confidence}) — conflict with existing value`,
-        inconsistencyType: 'conflictual',
-      });
+      // Valeur en place différente (souvent saisie par l'utilisateur) : jamais
+      // remplacée — conflit à arbitrer dans « À traiter ».
+      await ouvrirConflit(asset, key, currentValue, proposed, dep, 'conflict with existing value');
       result.fieldsConflicted++;
       break;
   }
 }
 
-function getCurrentFieldValue(asset: AssetData, fieldKey: string): unknown {
-  // Check asset-level columns
-  const assetColumnMap: Record<string, keyof typeof assets> = {
-    name: 'name',
-    address: 'address',
-    city: 'city',
-    postalCode: 'postalCode',
-    registrationNumber: 'registrationNumber',
-  };
+const texte = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v));
 
-  const dbColumn = assetColumnMap[fieldKey];
-  if (dbColumn) {
-    const raw = asset[dbColumn as keyof AssetData] as unknown;
-    if (!isEmptyValue(raw)) return raw;
-  }
-
-  // Check keyCharacteristics
-  if (fieldKey in asset.keyCharacteristics) {
-    return asset.keyCharacteristics[fieldKey];
-  }
-
-  return null;
+/**
+ * Clé canonique applicable au bien et sa valeur en place (vue canonique :
+ * fiche, alias, colonne miroir). `null` : clé exclue, hors registre, hors
+ * famille ou hors cible BIEN — jamais écrite par le moteur.
+ */
+async function readCanonicalTarget(
+  asset: AssetData,
+  fieldKey: string,
+): Promise<{ key: string; currentValue: unknown } | null> {
+  if (isExcludedKey(fieldKey)) return null;
+  // Protection historique : jamais un champ étranger à la catégorie du bien.
+  if (!isFieldAllowedForCategory(fieldKey, asset.category)) return null;
+  const etat = await getCanonicalAssetState(asset.id, asset.accountId);
+  if (!etat) return null;
+  const def = resolveDefForFamily(fieldKey, etat.family);
+  if (!def || !def.families.includes(etat.family)) return null;
+  const cibles = def.targetTypes ?? [def.targetType ?? 'ASSET'];
+  if (!cibles.includes('ASSET')) return null;
+  return { key: def.key, currentValue: etat.fields[def.key]?.value ?? null };
 }
 
+/** Conflit ouvert, visible dans « À traiter » (À arbitrer) — source `reconciliation`. */
+async function ouvrirConflit(
+  asset: AssetData,
+  fieldKey: string,
+  currentValue: unknown,
+  proposed: unknown,
+  dep: DependencyRule,
+  motif: string,
+): Promise<void> {
+  await createInconsistency({
+    accountId: asset.accountId,
+    assetId: asset.id,
+    fieldKey,
+    currentValue: currentValue != null ? texte(currentValue) : null,
+    proposedValue: texte(proposed),
+    sourceType: 'reconciliation',
+    sourceDetail: `from "${dep.sourceField}" (confidence: ${dep.confidence}) — ${motif}`,
+    inconsistencyType: 'conflictual',
+  });
+}
+
+/**
+ * Écrit une valeur propagée par la primitive canonique (origine SYSTEM_RULE).
+ * `expected` : valeur lue avant la décision — une valeur changée entre-temps
+ * (saisie concurrente) est refusée. Valeur humaine protégée ou changée :
+ * conflit ouvert à la place, rien n'est écrit.
+ */
 async function applyFieldValue(
   asset: AssetData,
   fieldKey: string,
   value: unknown,
-  sourceField: string,
-): Promise<void> {
-  // Protection : ne jamais écrire un champ qui n'appartient pas à la catégorie du bien
-  if (fieldKey !== 'name' && !isFieldAllowedForCategory(fieldKey, asset.category)) return;
-
+  dep: DependencyRule,
+  expected: unknown,
+): Promise<'written' | 'unchanged' | 'conflict' | 'skipped'> {
   const normalized = normalizeFieldValue(fieldKey, value);
-  if (normalized === null) return;
+  if (normalized === null) return 'skipped';
 
-  // Auto-resolve any existing inconsistency for this field
-  await autoResolveForField(asset.id, fieldKey);
-
-  // Apply to asset-level columns
-  const assetColumnUpdates: Record<string, unknown> = {};
-  const assetColumnMap: Record<string, string> = {
-    name: 'name',
-    address: 'address',
-    city: 'city',
-    postalCode: 'postalCode',
-    registrationNumber: 'registrationNumber',
-  };
-
-  if (assetColumnMap[fieldKey]) {
-    assetColumnUpdates[assetColumnMap[fieldKey]] = normalized;
-  }
-
-  // Apply to keyCharacteristics
-  const updatedKc = { ...asset.keyCharacteristics };
-  if (!assetColumnMap[fieldKey]) {
-    updatedKc[fieldKey] = normalized;
-  }
-  assetColumnUpdates.keyCharacteristics = JSON.stringify(updatedKc);
-  assetColumnUpdates.updatedAt = new Date();
-
-  // Also trigger propagation for updated fields (chain reaction)
-  // This field itself becomes the source for downstream dependencies
-
-  await db.update(assets)
-    .set(assetColumnUpdates as any)
-    .where(and(eq(assets.id, asset.id), eq(assets.accountId, asset.accountId)));
-
-  // Enqueue chained impacts for downstream fields
-  const changedFields: Record<string, unknown> = {};
-  changedFields[fieldKey] = normalized;
-  await enqueue({
-    accountId: asset.accountId,
+  const res = await writeCanonicalAssetField({
     assetId: asset.id,
-    triggerType: 'asset_updated',
-    source: `impact_propagation:${sourceField}→${fieldKey}`,
-    metadata: { changedFields },
-    priority: -1, // Chained impacts run at lower priority
+    accountId: asset.accountId,
+    key: fieldKey,
+    value: normalized,
+    origin: PROPAGATION_ORIGIN,
+    expectedCurrent: expected ?? null,
+    source: { type: 'impact_propagation', id: dep.sourceField },
   });
+  const f = res.field;
+  if (res.notFound || !f) return 'skipped';
+
+  switch (f.outcome) {
+    case 'written': {
+      // Auto-resolve any existing inconsistency for this field
+      await autoResolveForField(asset.id, f.key);
+      // Enqueue chained impacts for downstream fields
+      // This field itself becomes the source for downstream dependencies
+      await enqueue({
+        accountId: asset.accountId,
+        assetId: asset.id,
+        triggerType: 'asset_updated',
+        source: `impact_propagation:${dep.sourceField}→${f.key}`,
+        metadata: { changedFields: { [f.key]: f.nextValue } },
+        priority: -1, // Chained impacts run at lower priority
+      });
+      return 'written';
+    }
+    case 'protected':
+    case 'conflict':
+      await ouvrirConflit(asset, f.key, f.previousValue, normalized, dep,
+        f.outcome === 'protected' ? `valeur ${f.previousOrigin ?? 'USER'} protégée` : 'valeur modifiée entre-temps');
+      return 'conflict';
+    case 'unchanged':
+      return 'unchanged';
+    default:
+      console.warn(`[impact-propagation] ${f.key} non écrit (${f.reason ?? f.outcome}) pour le bien ${asset.id}`);
+      return 'skipped';
+  }
 }
 
 async function queueRecalculation(

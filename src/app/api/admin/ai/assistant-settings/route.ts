@@ -7,7 +7,8 @@
  *          modifications (journal admin), journal des consultations
  *          sensibles, état du limiteur de débit de l'instance.
  *   PUT  : { key, value } — appliqué tout de suite (toutes instances en
- *          ≤ 5 s), ou mis en attente d'un second administrateur.
+ *          ≤ 5 s), ou mis en attente d'un second administrateur. Lot 22 :
+ *          y compris le plafond IA mensuel de chaque offre.
  *
  * Administrateurs seulement ; chaque modification est journalisée.
  */
@@ -69,7 +70,18 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: 'INVALID_BODY', message: '`key` et `value` sont requis.' }, { status: 400 });
   }
   try {
-    return NextResponse.json(await updateAssistantSetting({ key: body.key, value: body.value, adminId: guard.ctx.adminUserId }));
+    const r = await updateAssistantSetting({ key: body.key, value: body.value, adminId: guard.ctx.adminUserId });
+    // Lot 22 : plafond d'offre modifié — définitions relues, travaux reportés
+    // pour plafond remis en file (un plafond relevé n'attend pas le 1er ; un
+    // compte toujours au plafond est simplement reporté de nouveau).
+    if (r.status === 'APPLIED' && body.key.startsWith('ai_cost_cap_')) {
+      const [{ resetCostCapCache }, { releaseCostCapDeferredJobs }] = await Promise.all([
+        import('@/services/ai/gateway/account-cost-cap'), import('@/services/ai/queue/job-queue.repository'),
+      ]);
+      resetCostCapCache();
+      await releaseCostCapDeferredJobs(null).catch((e: Error) => console.warn('[assistant-settings] travaux reportés non remis en file :', e.message));
+    }
+    return NextResponse.json(r);
   } catch (e) {
     if (e instanceof AssistantSettingRefused) return NextResponse.json({ error: e.code, message: e.message }, { status: e.status });
     return toErrorResponse(e, 'PUT /api/admin/ai/assistant-settings');

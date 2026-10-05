@@ -43,6 +43,7 @@ import type { SourceType } from './types';
 import type { RunSourceAnalysisOutput } from './pipeline';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
 import { REQUEUE_ORIGIN_SUFFIX } from './failure-policy';
+import { isCostCapReached } from '../gateway/errors';
 
 export interface AnalyzeFileSourcesOptions {
   /** Déduit du premier fichier si absent — l'ancienne signature ne le portait pas. */
@@ -114,7 +115,57 @@ export async function analyzeFileSources(
   ) {
     await requeueFailedSources(outcome.failedSourceIds, accountId, options);
   }
+
+  // Lot 22 — hors file, plafond mensuel de coût IA du compte atteint : rien
+  // n'a été lancé. Les fichiers sont confiés à la file durable, différés au
+  // début de la période suivante (même facturation que la demande) : ils
+  // seront analysés automatiquement le 1er, sans relance entre-temps.
+  if (
+    outcome?.costCap && (outcome.costCapSourceIds?.length ?? 0) > 0
+    && !options.guard && options.retryOnFailure !== false
+    && (options.sourceType === undefined || options.sourceType === 'file')
+  ) {
+    // Contrôle préalable (toutes les sources) ou plafond franchi en cours
+    // d'analyse (groupe en cours et suivants) : même chemin.
+    await deferToNextPeriod(outcome.costCapSourceIds!, accountId, options, outcome.costCap.resumeAt);
+  }
   return outcome;
+}
+
+/** Remise en file durable, différée au début de la période suivante (plafond de coût). */
+async function deferToNextPeriod(
+  ids: number[],
+  accountId: number,
+  options: AnalyzeFileSourcesOptions,
+  resumeAt: string,
+): Promise<void> {
+  try {
+    const [{ enqueueFileAnalyses }, { costCapAnalysisReason }, { and, eq, inArray }] = await Promise.all([
+      import('./queue/t1-handler'),
+      import('../gateway/account-cost-cap'),
+      import('drizzle-orm'),
+    ]);
+    const until = new Date(resumeAt);
+    const acceptes = await enqueueFileAnalyses(ids, accountId, {
+      userId: options.userId,
+      origin: options.origin ?? 'inconnue',
+      ...(options.billable === false ? { billable: false } : {}),
+      // Même marge de 60 s que `deferJobUntil`.
+      delaySeconds: Math.max(1, Math.ceil((until.getTime() - Date.now()) / 1000) + 60),
+      costCapDeferredUntil: until.toISOString(),
+    });
+    // Motif lisible (tiroir du document) : « en file », reprise le 1er.
+    await db.update(assetFiles)
+      .set({ analysisFailReason: costCapAnalysisReason(until), updatedAt: new Date() })
+      .where(and(inArray(assetFiles.id, ids), eq(assetFiles.accountId, accountId), eq(assetFiles.analysisState, 'UPLOADED')));
+    console.info(
+      `[source-analysis] plafond IA du compte ${accountId} atteint : ${acceptes.length}/${ids.length} source(s) `
+      + `reportée(s) au ${until.toISOString()} (origine : ${options.origin ?? 'inconnue'}).`,
+    );
+  } catch (e) {
+    // La reprise serveur (`analysis-recovery`) retrouvera ces sources à la période suivante.
+    console.error('[source-analysis] report des sources (plafond IA) impossible :', (e as Error).message);
+  }
 }
 
 /** Remise en file durable des sources en échec d'une analyse hors file. */
@@ -192,6 +243,10 @@ function mergeOutcomes(issues: Array<RunSourceAnalysisOutput | null>): RunSource
     failedSourceIds: ok.flatMap((i) => i.failedSourceIds),
     definitiveFailedSourceIds: ok.flatMap((i) => i.definitiveFailedSourceIds ?? []),
     ...(ok.length === issues.length && ok.every((i) => i.skippedReason) ? { skippedReason: ok[0].skippedReason } : {}),
+    ...(ok.find((i) => i.costCap)?.costCap ? {
+      costCap: ok.find((i) => i.costCap)!.costCap,
+      costCapSourceIds: ok.flatMap((i) => i.costCapSourceIds ?? []),
+    } : {}),
   };
 }
 
@@ -229,6 +284,9 @@ async function runUnified(
     // Une interruption n'est pas un échec : elle remonte à la file, qui ne
     // clôt pas le job (déjà remis en attente pour une reprise propre).
     if (isExecutionCancelled(e)) throw e;
+    // Lot 22 : plafond IA du compte franchi pendant une analyse EN FILE — la
+    // file reporte le job au 1er (le pipeline ne lève ce refus que sous garde).
+    if (options.guard && isCostCapReached(e)) throw e;
     console.error(
       `[source-analysis] Échec du pipeline d'analyse (origine : ${options.origin ?? 'inconnue'}) :`,
       (e as Error).message,

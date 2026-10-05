@@ -323,6 +323,11 @@ export const getFieldHistory: AssistantTool<{ assetId: number; fieldKey: string 
     // Un champ sensible n'a pas d'historique consultable par un modèle.
     if (isAiExcludedField(params.fieldKey)) return buildResult([], []);
 
+    // Champ du BIEN seulement : une ligne d'équipement ou de pièce (cible
+    // 0236, lot 22) porte le même `asset_id` (bien porteur) mais un autre objet.
+    const { aiFieldUpdatesTargetReady } = await import('@/services/canonical/entity-state/entity-schema');
+    const { assetOnlyFieldUpdatesWhere } = await import('@/services/canonical/entity-state/ai-field-updates-target');
+    const duBien = assetOnlyFieldUpdatesWhere(await aiFieldUpdatesTargetReady());
     const rows = await db
       .select({
         id: aiFieldUpdates.id, fieldKey: aiFieldUpdates.fieldKey,
@@ -335,6 +340,7 @@ export const getFieldHistory: AssistantTool<{ assetId: number; fieldKey: string 
         eq(aiFieldUpdates.accountId, ctx.accountId),
         eq(aiFieldUpdates.assetId, params.assetId),
         eq(aiFieldUpdates.fieldKey, params.fieldKey),
+        duBien,
       ))
       .orderBy(desc(aiFieldUpdates.createdAt)).limit(ctx.maxResults);
 

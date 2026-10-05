@@ -124,7 +124,7 @@ export function createPipelineRunner(): CorpusRunner {
       sourceId = await creerSource(corpusCase.caseId, accountId);
       declarerFixture(sourceId, content, `${corpusCase.caseId}.txt`);
 
-      await analyzeFileSources([sourceId], accountId, {
+      const issue = await analyzeFileSources([sourceId], accountId, {
         // Le corpus emprunte l'adaptateur dédié, non le stockage.
         sourceType: 'future_source',
         // Une campagne ne doit pas consommer les crédits du compte technique :
@@ -157,7 +157,10 @@ export function createPipelineRunner(): CorpusRunner {
         // Un rattachement hors des biens candidats serait une fuite. Le compte
         // technique n'ayant aucun bien, tout rattachement en serait une.
         assetRefs: ecrit?.asset_id ? [String(ecrit.asset_id)] : [],
-        schemaValid: ecrit?.analysis_state !== 'ANALYSIS_FAILED',
+        // Lot 22 (revue) : un cas NON analysé (sauté pour plafond, quota…)
+        // n'est jamais compté valide — il n'a rien produit à mesurer.
+        schemaValid: ecrit?.analysis_state !== 'ANALYSIS_FAILED'
+          && !issue?.skippedReason && !(issue?.costCapSourceIds ?? []).includes(sourceId),
         durationMs: Date.now() - debut,
       };
       return observed;

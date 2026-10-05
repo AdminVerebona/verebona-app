@@ -14,4 +14,6 @@ export {
   planEntityWrites, recordManualEntityEdit, writeCanonicalEntityField, writeCanonicalEntityFields,
   type EntityWritePlan,
 } from './write-canonical-entity-field';
-export { entityCanonicalColumnsReady, __resetEntityColumnsForTests } from './entity-schema';
+export {
+  aiFieldUpdatesTargetReady, entityCanonicalColumnsReady, __resetAiFieldUpdatesTargetForTests, __resetEntityColumnsForTests,
+} from './entity-schema';

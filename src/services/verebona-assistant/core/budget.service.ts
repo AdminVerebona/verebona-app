@@ -58,6 +58,17 @@ export async function monthlyCostMicros(accountId: number, now = new Date()): Pr
 }
 
 export async function checkMonthlyBudget(accountId: number): Promise<MonthlyBudgetStatus> {
+  // Lot 22 : plafond mensuel de coût IA du COMPTE, tous traitements (offre ou
+  // dérogation, `account-cost-cap`) — atteint, même repli déterministe
+  // « sources seules » et même message que le plafond de l'assistant. La
+  // passerelle le refuserait de toute façon ; le lire ici évite un appel voué
+  // au refus et affiche le motif.
+  try {
+    const { costCapReachedFor } = await import('@/services/ai/gateway/account-cost-cap');
+    const cap = await costCapReachedFor(accountId);
+    if (cap) return { allowed: false, usedMicros: cap.spentMicros, limitMicros: cap.capMicros, alert: true };
+  } catch { /* échec ouvert : le plafond de l'assistant ci-dessous s'applique seul */ }
+
   const cfg = getAssistantConfig();
   if (!cfg.monthlyBudgetMicros) return { allowed: true, usedMicros: 0, limitMicros: 0, alert: false };
   let used = 0;

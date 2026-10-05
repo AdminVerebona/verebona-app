@@ -84,7 +84,12 @@ vi.mock('@/services/export-manifest.service', () => ({ buildExportManifest: () =
 vi.mock('@/services/export-zip.service', () => ({ buildExportZip: async () => Buffer.from('zip') }));
 
 const { isChromiumAvailable, closeBrowser } = await import('@/services/exports/v12/render/browser');
-const enabled = process.env.EXPORTS_CHROMIUM_TESTS !== '0' && (await isChromiumAvailable());
+// Lecture du PDF par pdfjs-dist 5 : il lui faut `process.getBuiltinModule`
+// (Node ≥ 20.16 / 22.3) pour son polyfill DOMMatrix. Sous Node 20.12 (poste
+// de développement, lot 22) : ignoré au lieu d'échouer — la CI (Node 22) l'exécute.
+const pdfjsLisible = typeof (process as { getBuiltinModule?: unknown }).getBuiltinModule === 'function'
+  || typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix !== 'undefined';
+const enabled = process.env.EXPORTS_CHROMIUM_TESTS !== '0' && pdfjsLisible && (await isChromiumAvailable());
 
 const { POST: prepareRoute } = await import('../[id]/exports/prepare/route');
 const { POST: estimateRoute } = await import('../[id]/exports/estimate/route');

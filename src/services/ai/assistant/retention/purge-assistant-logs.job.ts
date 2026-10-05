@@ -76,6 +76,12 @@ export interface PurgeReport {
   assistantRunsDeleted: number;
   /** Événements d'usage anonymes (§32.3, D-J7 : rétention des agrégats, 13 mois). */
   usageEventsDeleted?: number;
+  /**
+   * Résultats en cache expirés de `ai_operation_idempotency` (réponses modèle,
+   * arbitrages T4 TEMPORAL_AMBIGUITY partagés — lot 22) ; clés réservées
+   * (`help-corpus:last-valid:`) jamais touchées.
+   */
+  expiredCacheDeleted?: number;
   durationMs: number;
 }
 
@@ -152,6 +158,12 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
   ).catch(() => 0);
   await deleteWhere('verebona_rate_limit_counters', `window_start < NOW() - INTERVAL '10 minutes'`).catch(() => 0);
 
+  // 8. Résultats en cache expirés (lot 22) : jamais relus (`expires_at >
+  //    now()` à la lecture), ils n'étaient supprimés par aucune tâche. La
+  //    purge épargne les clés réservées (PUB-01, `purgeExpiredIdempotency`).
+  const { purgeExpiredIdempotency } = await import('@/services/ai/idempotency/idempotency.service');
+  const expiredCache = await purgeExpiredIdempotency().catch(() => 0);
+
   return {
     messagesDeleted: messages,
     conversationsDeleted: conversations,
@@ -160,6 +172,7 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
     feedbackDeleted: feedback,
     assistantRunsDeleted: assistantRuns,
     usageEventsDeleted: usageEvents,
+    expiredCacheDeleted: expiredCache,
     durationMs: Date.now() - startedAt,
   };
 }

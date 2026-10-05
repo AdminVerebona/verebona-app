@@ -60,6 +60,16 @@ export async function POST(
   if (outcome.skippedReason === 'quota') {
     return NextResponse.json({ error: 'QUOTA_EXCEEDED' }, { status: 402 });
   }
+  // Lot 22 : plafond IA du mois du compte atteint — rien n'est lancé.
+  if (outcome.skippedReason === 'cost_cap') {
+    const { resumeLabel } = await import('@/services/ai/gateway/account-cost-cap');
+    return NextResponse.json({
+      error: 'AI_COST_CAP_REACHED',
+      message: outcome.costCap
+        ? `Plafond IA du mois atteint : l’analyse de ce lien sera possible à partir du ${resumeLabel(new Date(outcome.costCap.resumeAt))}.`
+        : 'Plafond IA du mois atteint.',
+    }, { status: 429 });
+  }
   if (outcome.skippedReason === 'already_running') {
     return NextResponse.json({ status: 'ANALYZING' }, { status: 202 });
   }

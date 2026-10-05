@@ -81,7 +81,7 @@ scenario('R5-TEMPORAL', 'Ambiguïté temporelle T4 (enabled / master)', ({ sql, 
   it('R5 (enabled/master) — abstention puis réanalyse qui tranche : la carte devient sans objet (OBSOLETE), une seule échéance', async () => {
     const premier = await analyser({ task: 'TEMPORAL_AMBIGUITY', decision: 'abstain', candidateId: null, confidence: 'ambiguous', reason: 'x' });
     expect(premier.cartes.map((c) => c.resolved)).toEqual([false]);
-    (await import('@/services/ai/agenda/agenda-intelligence.service')).__resetTemporalCacheForTests();
+    await (await import('@/services/ai/agenda/agenda-intelligence.service')).__resetTemporalCacheForTests();
     const second = await analyser({ task: 'TEMPORAL_AMBIGUITY', decision: 'choose', candidateId: 2, confidence: 'probable', reason: 'y' }, premier);
     expect(await echeances(premier.maison.id)).toEqual(['2027-04-03']);
     expect(second.cartes.map((c) => [c.resolved, c.reason])).toEqual([[true, 'OBSOLETE']]);

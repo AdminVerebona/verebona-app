@@ -39,7 +39,7 @@ async function logAdminAction(e: AdminActionEntry): Promise<void> {
   await log(e);
 }
 
-export type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles';
+export type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles' | 'plafond_compte';
 export type SettingType = 'int' | 'ratio' | 'usd' | 'usd_micros' | 'bool';
 export type SettingValue = number | boolean;
 
@@ -65,6 +65,7 @@ export const SETTING_GROUP_LABELS: Readonly<Record<SettingGroup, string>> = {
   interrupteurs: 'Interrupteurs (§39)',
   historique: 'Historique',
   modeles: 'Modèles',
+  plafond_compte: 'Plafond IA mensuel par compte — toutes IA, par offre (lot 22)',
 };
 
 const int = (key: string, env: string, group: SettingGroup, label: string, description: string, def: number, min: number, max: number): AssistantSettingDef =>
@@ -104,6 +105,23 @@ export const ASSISTANT_SETTINGS: readonly AssistantSettingDef[] = [
     description: 'Autorise l’activation, en production, d’une version de configuration utilisant un modèle preview (§15.13, §32.7). '
       + 'Activation soumise à la validation d’un second administrateur.',
     type: 'bool', default: false, doubleValidation: (v) => v === true },
+  // Lot 22 — plafond mensuel de coût IA par compte, TOUS traitements (hors
+  // administration T5), appliqué par la passerelle (`account-cost-cap`). Un
+  // réglage par offre ; 0 = sans plafond (défaut : comportement inchangé tant
+  // que le PO n'a pas fixé les montants). Dérogation par compte : Suivi IA >
+  // compte. Les clés sont aussi celles de `COST_CAP_SETTING_KEYS`.
+  ...([
+    ['standard', 'STANDARD', 'Offre Standard'],
+    ['premium', 'PREMIUM', 'Offre Premium'],
+    ['premium_duo', 'PREMIUM_DUO', 'Offre Premium Duo'],
+    ['premium_pro', 'PREMIUM_PRO', 'Offre Premium Pro'],
+  ] as const).map(([plan, env, label]): AssistantSettingDef => ({
+    key: `ai_cost_cap_${plan}_micros`, env: `VEREBONA_AI_COST_CAP_${env}_MICROS`, group: 'plafond_compte', label,
+    description: 'Coût IA maximal d’un compte par mois civil (Europe/Paris), tous traitements hors administration ; '
+      + 'alerte à 80 %, à 100 % analyses reportées au 1er et assistant/mascotte sans IA (0 : sans plafond).',
+    // Même borne que la dérogation par compte (`COST_CAP_MAX_MICROS`, testé).
+    type: 'usd_micros', default: 0, min: 0, max: 1_000_000_000,
+  })),
 ];
 
 const PAR_CLE = new Map(ASSISTANT_SETTINGS.map((d) => [d.key, d]));

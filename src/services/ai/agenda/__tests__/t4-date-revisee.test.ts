@@ -44,7 +44,7 @@ describe('D-M — date tranchée par T4', () => {
     const reviseDate = vi.fn(async () => ({}));
     h.choix = 0;
     await run(reviseDate);
-    __resetTemporalCacheForTests();
+    await __resetTemporalCacheForTests();
     h.choix = null;
     const [p] = await run(reviseDate);
     expect(p).toMatchObject({ action: 'propose', reasonCode: 'TEMPORAL_AMBIGUITY' });

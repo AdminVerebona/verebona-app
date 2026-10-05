@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=20.12.2"
   },
   "scripts": {
     "predev": "node scripts/sync-pdf-worker.mjs",

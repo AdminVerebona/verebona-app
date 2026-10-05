@@ -52,3 +52,37 @@ export function __resetEntityColumnsForTests(ready: boolean | null = null): void
   etat = ready === null ? null : { ready, checkedAt: Date.now() };
   signale = false;
 }
+
+/* ── Cible des lignes `ai_field_updates` (migration 0236, lot 22) ───────── */
+
+let etatTrace: { ready: boolean; checkedAt: number } | null = null;
+
+/**
+ * Colonnes `ai_field_updates.target_type / target_id` (0236) présentes ?
+ * Absentes : aucune écriture d'entité n'est tracée pour « Ce que j'ai
+ * fait » (comportement antérieur au lot 22) et les lecteurs n'y font pas
+ * référence. Même cache que ci-dessus (présence définitive, absence
+ * recontrôlée toutes les 5 min). Ne lève jamais.
+ */
+export async function aiFieldUpdatesTargetReady(): Promise<boolean> {
+  if (etatTrace && (etatTrace.ready || Date.now() - etatTrace.checkedAt < RECONTROLE_MS)) return etatTrace.ready;
+  let ready = false;
+  try {
+    const { pgClient } = await import('@/db');
+    const rows = (await pgClient.unsafe(
+      `SELECT column_name AS c FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'ai_field_updates'
+          AND column_name IN ('target_type', 'target_id')`,
+    )) as unknown as Array<{ c: string }>;
+    ready = rows.length === 2;
+  } catch {
+    ready = false;
+  }
+  etatTrace = { ready, checkedAt: Date.now() };
+  return ready;
+}
+
+/** Réservé aux tests. */
+export function __resetAiFieldUpdatesTargetForTests(ready: boolean | null = null): void {
+  etatTrace = ready === null ? null : { ready, checkedAt: Date.now() };
+}

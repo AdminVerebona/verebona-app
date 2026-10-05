@@ -18,6 +18,10 @@
  *   · l'état du fichier (`asset_files.analysis_state`) ;
  *   · la file durable (`ai_job_queue`) : un job T1 vivant fait foi, et donne
  *     l'heure de la prochaine tentative (backoff, report quota).
+ *
+ * Lot 22 : un fichier dont le job est reporté au mois suivant (plafond IA du
+ * compte atteint) n'est pas compté — le bandeau n'affiche pas une analyse
+ * « en cours » pendant des semaines ; le motif est porté par le fichier.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -66,7 +70,9 @@ export async function getT1QueueStatus(accountId: number): Promise<T1QueueStatus
   // Illisible (migration absente…) : l'état des fichiers suffit.
   try {
     const jobs = await pgClient.unsafe(
-      `SELECT target_id, status, available_at FROM ai_job_queue
+      `SELECT target_id, status, available_at,
+              (status = 'PENDING' AND payload ? 'costCapDeferredUntil' AND available_at > NOW()) AS reporte_plafond
+         FROM ai_job_queue
         WHERE treatment = 'T1' AND account_id = $1 AND target_type = 'asset_file'
           AND status IN ('PENDING', 'RUNNING')
         ORDER BY created_at
@@ -76,6 +82,12 @@ export async function getT1QueueStatus(accountId: number): Promise<T1QueueStatus
     for (const j of jobs as unknown as Row[]) {
       const fileId = Number(j.target_id);
       if (!Number.isInteger(fileId)) continue;
+      // Lot 22 : reporté au mois suivant (plafond IA du compte) — ni « en
+      // cours » ni « en file » pour le bandeau : le motif est sur le fichier.
+      if (j.reporte_plafond === true) {
+        parFichier.delete(fileId);
+        continue;
+      }
       parFichier.set(fileId, {
         fileId,
         state: j.status === 'RUNNING' ? 'analyzing' : 'queued',

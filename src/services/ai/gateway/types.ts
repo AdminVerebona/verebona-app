@@ -121,6 +121,13 @@ export interface AiGatewayRequest<T> {
    * — `legacy` pour un prompt historique relayé (`legacyPrompt`), `new` sinon.
    */
   engine?: AiEngine;
+  /**
+   * Lot 22 : appel d'ADMINISTRATION non soumis au plafond mensuel de coût du
+   * compte (`account-cost-cap`) — campagnes de mesure du BO (corpus). T5 et
+   * les appels sans compte en sont exemptés d'office ; ne jamais le poser
+   * pour un usage déclenché par l'utilisateur.
+   */
+  costCapExempt?: boolean;
 }
 
 /** Moteur d'une exécution (CDC 15 CFG-05) : relais historique ou nouveau moteur. */

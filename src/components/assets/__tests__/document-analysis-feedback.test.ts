@@ -21,6 +21,13 @@ describe('analyzeErrorFeedback', () => {
     expect(analyzeErrorFeedback({ code: 'PLAN_UPGRADE_REQUIRED', message: 'x' }).message).toMatch(/Premium/);
     expect(analyzeErrorFeedback({ code: 'INTERNAL_ERROR' })).toEqual({ level: 'error', message: "Impossible de lancer l'analyse. Veuillez réessayer." });
   });
+  it('lot 22 — plafond IA du mois atteint : information (analyse reportée), motif daté conservé', () => {
+    const motif = 'Plafond IA du mois atteint, reprise le 1er novembre : l’analyse sera lancée automatiquement.';
+    expect(analyzeErrorFeedback({ code: 'ANALYSIS_COST_CAP_REACHED', message: motif })).toEqual({ level: 'info', message: motif });
+    expect(analyzeErrorFeedback({ code: 'ANALYSIS_COST_CAP_REACHED' }).message).toMatch(/Plafond IA du mois atteint/);
+    const src = readFileSync(join(process.cwd(), 'src/components/assets/DocumentDrawer.tsx'), 'utf8');
+    expect(src).toMatch(/analysisState === 'UPLOADED' && fullData\?\.analysisFailReason\?\.startsWith\('Plafond IA du mois atteint'\)/);
+  });
   it('le tiroir rend le retour par toast et affiche le motif d’échec existant', () => {
     const src = readFileSync(join(process.cwd(), 'src/components/assets/DocumentDrawer.tsx'), 'utf8');
     expect(src).toMatch(/analysisFeedback\?\.level === 'info'\) toast\.info\(analysisError/);

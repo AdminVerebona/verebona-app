@@ -10,12 +10,20 @@ const h = vi.hoisted(() => ({
   deleted: 0,
   write: vi.fn(async () => ({ field: { outcome: 'written' } })),
   entry: { id: 5, accountId: 7, assetId: 1, fieldKey: 'acquisitionDate', oldValue: '2020-01-01' as string | null },
+  cible: null as null | { type: string; targetId: number },
+  entityWrite: vi.fn(async () => ({ notFound: false, skipped: false, field: { outcome: 'written' } })),
+  pgQueries: [] as Array<{ q: string; p: unknown[] }>,
 }));
+vi.mock('@/services/canonical/entity-state/entity-schema', () => ({ aiFieldUpdatesTargetReady: async () => h.cible !== null }));
+vi.mock('@/services/canonical/entity-state', () => ({ writeCanonicalEntityField: h.entityWrite }));
 vi.mock('@/lib/auth-guards', () => ({ getSession: async () => ({ currentAccountId: 7, userId: 3 }) }));
 vi.mock('@/services/canonical/asset-state', () => ({ writeCanonicalAssetField: h.write }));
 vi.mock('@/db', async () => {
   const { getTableName } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
   return {
+    pgClient: {
+      unsafe: async (q: string, p: unknown[]) => { h.pgQueries.push({ q, p }); return h.cible ? [h.cible] : []; },
+    },
     db: {
       select: () => {
         let table = '';
@@ -35,7 +43,10 @@ vi.mock('@/db', async () => {
 import { POST } from '../route';
 
 const call = () => POST(new Request('http://x', { method: 'POST' }) as never, { params: Promise.resolve({ id: '5' }) });
-afterEach(() => { delete process.env.CANONICAL_WRITE_MODE; h.updates = []; h.write.mockClear(); });
+afterEach(() => {
+  delete process.env.CANONICAL_WRITE_MODE; h.updates = []; h.write.mockClear(); h.entityWrite.mockClear();
+  h.cible = null; h.deleted = 0; h.pgQueries = [];
+});
 
 describe('POST /api/ai-history/[id]/revert', () => {
   it('clé hors registre : valeur restaurée avec origine USER et date (plus d’autorité de preuve)', async () => {
@@ -59,5 +70,36 @@ describe('POST /api/ai-history/[id]/revert', () => {
       expect(h.write.mock.calls[0]).not.toContainEqual(expect.objectContaining({ mode: expect.anything() }));
       expect(h.updates).toHaveLength(0);
     }
+  });
+
+  it('lot 22 : ligne d’un équipement (cible 0236) → fiche de l’ENTITÉ restaurée en USER, jamais le bien', async () => {
+    h.cible = { type: 'EQUIPMENT', targetId: 11 };
+    h.entry.fieldKey = 'serialNumber';
+    h.entry.oldValue = 'SN-ANCIEN';
+    try {
+      const res = await call();
+      expect(res.status).toBe(200);
+    } finally {
+      h.entry.fieldKey = 'acquisitionDate';
+      h.entry.oldValue = '2020-01-01';
+    }
+    expect(h.pgQueries[0].q).toContain('target_type');
+    expect(h.pgQueries[0].p).toEqual([5, 7]);
+    expect(h.entityWrite).toHaveBeenCalledWith(expect.objectContaining({
+      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, key: 'serialNumber', value: 'SN-ANCIEN', origin: 'USER', actorUserId: 3,
+      source: { type: 'ai_history_revert', id: 5 },
+    }));
+    expect(h.write).not.toHaveBeenCalled();
+    expect(h.updates).toHaveLength(0);
+    expect(h.deleted).toBe(1);
+  });
+
+  it('lot 22 : entité introuvable → 404, la ligne d’historique reste', async () => {
+    h.cible = { type: 'ROOM', targetId: 21 };
+    h.entityWrite.mockResolvedValueOnce({ notFound: true, skipped: false, field: null } as never);
+    const res = await call();
+    expect(res.status).toBe(404);
+    expect(h.deleted).toBe(0);
+    expect(h.write).not.toHaveBeenCalled();
   });
 });

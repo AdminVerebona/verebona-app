@@ -1,6 +1,12 @@
 /**
  * Supplier Service — CDC Fournisseurs V1
  * Normalization, candidate matching, coordinate consolidation, and scope propagation.
+ *
+ * Lot 22 (chantier B) : `findCandidates`, `assessMatch` et
+ * `consolidateCoordinates` sont de nouveau appelés — alimentation du
+ * référentiel depuis la projection T1 (`supplier-from-analysis.ts`). Ils
+ * acceptent un exécutant (`q`) pour s'exécuter dans la transaction de
+ * l'appelant (pool à une connexion sous `next start`).
  */
 
 import { db } from '@/db';
@@ -11,6 +17,9 @@ import {
   assetFiles,
 } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+
+/** Exécutant drizzle : `db`, ou la transaction en cours. */
+export type SupplierQueryRunner = Pick<typeof db, 'select' | 'insert' | 'update'>;
 
 // ─── Name normalization ───────────────────────────────────────────────────────
 
@@ -142,8 +151,9 @@ export async function findCandidates(
   siren?: string | null,
   siret?: string | null,
   vatNumber?: string | null,
+  q: SupplierQueryRunner = db,
 ): Promise<Candidate[]> {
-  const rows = await db
+  const rows = await q
     .select({
       id: suppliers.id,
       publicId: suppliers.publicId,
@@ -223,8 +233,18 @@ export function assessMatch(candidates: Candidate[], extractedData: ExtractedSup
 export async function consolidateCoordinates(
   supplierId: number,
   observation: ExtractedSupplierData,
+  opts: {
+    q?: SupplierQueryRunner;
+    /**
+     * Remplir les champs VIDES (défaut : oui). Faux : seulement relever les
+     * conflits — fiche saisie par l'utilisateur, jamais complétée en silence.
+     * Un champ renseigné n'est, lui, JAMAIS remplacé (conflit à la place).
+     */
+    fill?: boolean;
+  } = {},
 ): Promise<ConsolidationResult> {
-  const [supplier] = await db
+  const q = opts.q ?? db;
+  const [supplier] = await q
     .select()
     .from(suppliers)
     .where(eq(suppliers.id, supplierId))
@@ -277,6 +297,7 @@ export async function consolidateCoordinates(
     const norm = normalizers[key] ?? ((v: string) => v.trim());
 
     if (!current) {
+      if (opts.fill === false) continue;
       // Champ vide → remplir avec la valeur normalisée
       // Exception : si on a un SIREN détecté et un SIRET déjà stocké (compatible), on ne touche pas au SIREN
       if (key === 'siren' && supplier.siret && isSirenSiretCompatible(observed, supplier.siret)) {
@@ -298,7 +319,7 @@ export async function consolidateCoordinates(
 
   if (Object.keys(updates).length > 0) {
     updates.updatedAt = new Date();
-    await db.update(suppliers).set(updates).where(eq(suppliers.id, supplierId));
+    await q.update(suppliers).set(updates).where(eq(suppliers.id, supplierId));
   }
 
   return { updated: Object.keys(updates).length > 0, conflicts };

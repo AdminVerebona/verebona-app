@@ -54,7 +54,8 @@ export const ALLOWED_ESCALATION_REASONS: readonly EscalationReason[] = [
  */
 export function classifyModelFailure(e: unknown): { kind: ModelFailureKind; errors: string[] } {
   if (!isAiGatewayError(e)) return { kind: 'UNAVAILABLE', errors: [] };
-  if (e.code === 'QUOTA_EXCEEDED') return { kind: 'BUDGET_EXHAUSTED', errors: [] };
+  // Lot 22 : plafond mensuel de coût IA du compte atteint pendant la demande.
+  if (e.code === 'QUOTA_EXCEEDED' || e.code === 'COST_CAP_REACHED') return { kind: 'BUDGET_EXHAUSTED', errors: [] };
   if (e.code === 'AI_BLOCKED') return { kind: 'BLOCKED', errors: [] };
   if (e.code === 'TIMEOUT') return { kind: 'TIMEOUT', errors: [] };
   const msg = e.message ?? '';

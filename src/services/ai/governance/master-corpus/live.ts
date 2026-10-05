@@ -170,6 +170,8 @@ export async function buildLiveRunner(cases: MasterCorpusCase[], account: { acco
         accountId: account.accountId, userId: account.userId,
         promptVariables: variables, outputSchema: schema,
         idempotencyKey: `master-corpus-live:${c.id}:${Date.now()}`,
+        // Lot 22 : campagne de mesure du BO, hors plafond de coût du compte.
+        costCapExempt: true,
       });
       return res.data;
     },

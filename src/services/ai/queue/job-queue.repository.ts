@@ -164,7 +164,13 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
     }
     if (input.payload && input.payloadOnDedupe === 'replace') {
       await pgClient.unsafe(
-        `UPDATE ai_job_queue SET payload = $2::jsonb WHERE id = $1`,
+        // Lot 22 (revue) : le marqueur de report pour plafond survit au
+        // remplacement — sinon `releaseCostCapDeferredJobs` oublierait le job.
+        `UPDATE ai_job_queue
+            SET payload = $2::jsonb || CASE WHEN payload ? 'costCapDeferredUntil'
+                  THEN jsonb_build_object('costCapDeferredUntil', payload->'costCapDeferredUntil')
+                  ELSE '{}'::jsonb END
+          WHERE id = $1`,
         [existingId, JSON.stringify(input.payload)] as never[],
       );
     } else if (input.payload && input.payloadOnDedupe === 'append_events') {
@@ -459,6 +465,74 @@ export async function deferJob(
   );
   if ((upd as unknown as Row[]).length === 0) return { permanent: false, stale: true };
   return { permanent: outcome.status === 'FAILED', retryInSeconds: outcome.retryInSeconds, deferrals: outcome.deferrals };
+}
+
+/**
+ * Report jusqu'à une DATE — plafond mensuel de coût IA du compte atteint
+ * (lot 22, `account-cost-cap`).
+ *
+ * Différent de `deferJob` : la cause a une fin connue (début de la période
+ * suivante), le job est donc reporté UNE fois jusqu'à cette date, sans
+ * backoff ni plafond de reports (aucune boucle de relance : au plus un
+ * contrôle, sans appel modèle, par job et par période). Marge de 60 s après
+ * le début de la période : une horloge d'instance légèrement en retard ne
+ * doit pas le reprendre encore dans l'ancienne période. T1 seulement. Tentative rendue
+ * (MOD-005), motif lisible au SCR-08, date portée dans le contexte
+ * (`payload.costCapDeferredUntil`) — le bandeau d'analyse ne compte pas ces
+ * jobs comme « en cours ». Conditionné au jeton, comme `failJob`.
+ */
+export async function deferJobUntil(
+  jobId: number,
+  reason: string,
+  until: Date,
+  executionId: string | null = null,
+): Promise<{ stale?: boolean }> {
+  const upd = await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET status = 'PENDING', last_error = $2,
+            attempts = GREATEST(attempts - 1, 0),
+            available_at = GREATEST($3::timestamptz + interval '60 seconds', NOW()),
+            finished_at = NULL, started_at = NULL,
+            execution_id = NULL, worker_id = NULL, lease_expires_at = NULL,
+            payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{costCapDeferredUntil}', to_jsonb($5::text))
+      WHERE id = $1 AND status = 'RUNNING'
+        AND ($4::uuid IS NULL OR execution_id = $4::uuid)
+      RETURNING id`,
+    [jobId, reason.slice(0, 2000), until.toISOString(), executionId, until.toISOString()] as never[],
+  );
+  if ((upd as unknown as Row[]).length === 0) return { stale: true };
+  return {};
+}
+
+/**
+ * Remet tout de suite en file les jobs reportés pour plafond de coût — d'un
+ * compte (dérogation modifiée) ou de tous (plafond d'une offre modifié). Un
+ * compte toujours au plafond est simplement reporté de nouveau. Rend le
+ * nombre de jobs remis.
+ */
+export async function releaseCostCapDeferredJobs(accountId: number | null): Promise<number> {
+  // Repérés par le marqueur ET par le motif (filet de sécurité : un contexte
+  // remplacé par un chemin qui ne conserverait pas la clé).
+  const rows = (await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET available_at = NOW(), payload = COALESCE(payload, '{}'::jsonb) - 'costCapDeferredUntil'
+      WHERE status = 'PENDING'
+        AND (payload ? 'costCapDeferredUntil' OR last_error LIKE 'Plafond IA du mois atteint%')
+        AND ($1::int IS NULL OR account_id = $1::int)
+      RETURNING id, treatment, target_type, target_id, account_id`,
+    [accountId] as never[],
+  )) as unknown as Row[];
+  // Le motif « plafond » des fichiers remis en file n'est plus d'actualité.
+  const fichiers = rows.filter((r) => r.treatment === 'T1' && r.target_type === 'asset_file').map((r) => Number(r.target_id))
+    .filter((id) => Number.isInteger(id));
+  if (fichiers.length > 0) {
+    await pgClient.unsafe(
+      `UPDATE asset_files SET analysis_fail_reason = NULL, updated_at = NOW()
+        WHERE id = ANY($1::int[]) AND analysis_fail_reason LIKE 'Plafond IA du mois atteint%'`,
+      [fichiers] as never[],
+    );
+  }
+  return rows.length;
 }
 
 /**

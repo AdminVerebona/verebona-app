@@ -1,22 +1,37 @@
 /**
  * PATCH /api/admin/ai/accounts/[accountId]/quota
- * Modifie le quota IA d'un compte (admin uniquement) — action auditée
+ *
+ * Dérogation du compte au PLAFOND MENSUEL DE COÛT IA de son offre (lot 22,
+ * chantier A) — admin uniquement, action auditée dans la même transaction
+ * (`ai_admin_audit_log`, visible dans l'onglet Audit du compte). Compte
+ * inexistant : 404.
+ *
+ * Avant le lot 22, cette route écrivait un quota documentaire annuel
+ * (`ai_usage_account_counter`) que plus rien ne lisait depuis la suppression
+ * d'`ai-usage-tracker` : une modification sans effet. Elle fixe désormais la
+ * dérogation lue par la passerelle (`account-cost-cap`) :
+ *
+ *   { monthlyCostCapMicros: number | null, reason?: string }
+ *     · entier ≥ 1 : plafond propre au compte (micro-USD par mois civil) ;
+ *     · 0          : aucun plafond pour ce compte ;
+ *     · null       : dérogation retirée, le plafond de l'offre s'applique.
+ *
+ * Les travaux reportés pour plafond sont remis en file (un plafond relevé
+ * n'attend pas le 1er). Rend l'état du plafond après modification.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { aiUsageAccountCounter, aiAdminAuditLog, users } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { requireAdmin } from '@/lib/auth-guards';
+import {
+  COST_CAP_MAX_MICROS, getAccountCostCapStatus, setAccountCostCapOverride,
+} from '@/services/ai/gateway/account-cost-cap';
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ accountId: string }> }
 ) {
   try {
-    // Garde serveur commune à /api/admin (CDC BO GEN-002, BO IA GEN-013) :
-    // `requireAdmin` relit le rôle en base si le jeton est antérieur à une
-    // promotion, ce que la comparaison manuelle du rôle ne faisait pas.
+    // Garde serveur commune à /api/admin (CDC BO GEN-002, BO IA GEN-013).
     let adminUserId: number;
     try {
       adminUserId = await requireAdmin(request);
@@ -26,59 +41,36 @@ export async function PATCH(
     const session = await SessionService.getSession(request);
 
     const { accountId: accountIdStr } = await params;
-    const accountId = parseInt(accountIdStr);
-    if (isNaN(accountId)) return NextResponse.json({ error: 'ID invalide' }, { status: 400 });
+    if (!/^\d+$/.test(accountIdStr)) return NextResponse.json({ error: 'ID invalide' }, { status: 400 });
+    const accountId = Number(accountIdStr);
 
-    const body = await request.json();
-    const { documentsAnalyzedQuota, trialDocumentsQuota, reason } = body;
-
-    const currentYear = new Date().getFullYear();
-
-    // Récupère le compteur existant
-    const existing = await db
-      .select()
-      .from(aiUsageAccountCounter)
-      .where(and(eq(aiUsageAccountCounter.accountId, accountId), eq(aiUsageAccountCounter.periodYear, currentYear)))
-      .limit(1)
-      .then(r => r[0]);
-
-    const beforeValue = existing
-      ? { documentsAnalyzedQuota: existing.documentsAnalyzedQuota, trialDocumentsQuota: existing.trialDocumentsQuota }
-      : null;
-
-    if (existing) {
-      await db.update(aiUsageAccountCounter)
-        .set({
-          ...(documentsAnalyzedQuota !== undefined ? { documentsAnalyzedQuota } : {}),
-          ...(trialDocumentsQuota !== undefined ? { trialDocumentsQuota } : {}),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(aiUsageAccountCounter.accountId, accountId), eq(aiUsageAccountCounter.periodYear, currentYear)));
-    } else {
-      await db.insert(aiUsageAccountCounter).values({
-        accountId,
-        periodYear: currentYear,
-        documentsAnalyzedQuota: documentsAnalyzedQuota ?? 0,
-        trialDocumentsQuota: trialDocumentsQuota ?? 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+    const body = (await request.json().catch(() => null)) as { monthlyCostCapMicros?: unknown; reason?: unknown } | null;
+    if (!body || typeof body !== 'object' || !('monthlyCostCapMicros' in body)) {
+      return NextResponse.json(
+        { error: 'INVALID_BODY', message: '`monthlyCostCapMicros` requis (entier ≥ 0 en micro-USD, ou null pour revenir au plafond de l’offre).' },
+        { status: 400 },
+      );
     }
+    // Validation stricte : un nombre entier (jamais une chaîne), mêmes bornes
+    // que le réglage d'offre.
+    const v = body.monthlyCostCapMicros;
+    if (v !== null && !(typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= COST_CAP_MAX_MICROS)) {
+      return NextResponse.json(
+        { error: 'INVALID_VALUE', message: `Plafond invalide : entier de 0 à ${COST_CAP_MAX_MICROS} (micro-USD) ou null.` },
+        { status: 400 },
+      );
+    }
+    if (body.reason !== undefined && body.reason !== null && typeof body.reason !== 'string') {
+      return NextResponse.json({ error: 'INVALID_VALUE', message: '`reason` doit être un texte.' }, { status: 400 });
+    }
+    const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 1000) : null;
 
-    // Audit
-    const adminUser = await db.select({ email: users.email }).from(users).where(eq(users.id, adminUserId)).limit(1).then(r => r[0]);
-    await db.insert(aiAdminAuditLog).values({
-      adminUserId: adminUserId,
-      adminEmail: adminUser?.email ?? session.email,
-      actionType: 'modify_quota',
-      targetAccountId: accountId,
-      beforeValue: beforeValue ?? {},
-      afterValue: { documentsAnalyzedQuota, trialDocumentsQuota },
-      reason: reason ?? null,
-      createdAt: new Date(),
-    });
+    // Dérogation et audit dans une même transaction.
+    const issue = await setAccountCostCapOverride(accountId, v as number | null, { id: adminUserId, email: session.email ?? null }, reason);
+    if (!issue) return NextResponse.json({ error: 'NOT_FOUND', message: 'Compte introuvable.' }, { status: 404 });
 
-    return NextResponse.json({ success: true });
+    const costCap = await getAccountCostCapStatus(accountId, { withSpent: true }).catch(() => null);
+    return NextResponse.json({ success: true, costCap });
   } catch (error: any) {
     console.error('[PATCH /api/admin/ai/accounts/[accountId]/quota]', error);
     return NextResponse.json({ error: 'Erreur serveur' }, { status: 500 });

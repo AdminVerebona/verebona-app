@@ -39,7 +39,12 @@ if (!process.env.PLAYWRIGHT_BROWSERS_PATH && !process.env.CHROMIUM_EXECUTABLE_PA
 }
 
 const { isChromiumAvailable, closeBrowser } = await import('../render/browser');
-const enabled = process.env.EXPORTS_CHROMIUM_TESTS !== '0' && (await isChromiumAvailable());
+// Lecture du PDF par pdfjs-dist 5 : il lui faut `process.getBuiltinModule`
+// (Node ≥ 20.16 / 22.3) pour son polyfill DOMMatrix. Sous Node 20.12 (poste
+// de développement, lot 22) : ignoré au lieu d'échouer — la CI (Node 22) l'exécute.
+const pdfjsLisible = typeof (process as { getBuiltinModule?: unknown }).getBuiltinModule === 'function'
+  || typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix !== 'undefined';
+const enabled = process.env.EXPORTS_CHROMIUM_TESTS !== '0' && pdfjsLisible && (await isChromiumAvailable());
 
 async function pdfText(bytes: Buffer): Promise<string[]> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
