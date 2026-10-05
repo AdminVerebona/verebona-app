@@ -32,6 +32,8 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'ai_usage_event', 'ai_usage_events', 'ai_usage_account_counter',
   'verebona_ai_runs', 'verebona_request_runs', 'ai_pipeline_step', 'ai_pipeline_version',
   'field_origin_migration_audit', 'home_mascot_cache', 'home_mascot_generations',
+  // Miniatures des documents : dérivés techniques régénérables (0241).
+  'asset_file_thumbnails',
   // L'export lui-même (clés de stockage)
   'gdpr_exports',
 ]);

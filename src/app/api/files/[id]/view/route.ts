@@ -2,22 +2,21 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
+import { getS3Config, logS3Error, S3ConfigError, signGetUrl } from '@/lib/s3-config';
 import { FileLogger } from '@/lib/file-logger';
 import { SessionService } from '@/lib/session-service';
+import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { viewableFileCondition } from '@/services/documents/grouped-sources';
 
-const s3Client = new S3Client({
-  region: process.env.OVH_S3_REGION || 'gra',
-  endpoint: process.env.OVH_S3_ENDPOINT || 'https://s3.gra.io.cloud.ovh.net',
-  credentials: {
-    accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY || '',
-  },
-  forcePathStyle: false,
-});
+/**
+ * Lecture directe (APP-PERF-13) : droits contrôlés ici, puis URL signée de
+ * la configuration S3 canonique (APP-PERF-26). Durée : `OVH_S3_SIGNED_URL_TTL_S`
+ * (3600 s par défaut) — le visualiseur PDF relit l'URL par plages pendant
+ * la consultation ; au-delà, le client redemande une URL, ce qui refait le
+ * contrôle de droits.
+ */
+const NO_STORE = { 'Cache-Control': 'private, no-store' };
 
 export async function GET(
   request: NextRequest,
@@ -144,14 +143,14 @@ export async function GET(
     }
 
     // Use inline disposition for viewing in browser
-      const command = new GetObjectCommand({
-        Bucket: file.s3Bucket ?? undefined,
-        Key: file.s3Key ?? undefined,
-        ResponseContentDisposition: 'inline',
-        ResponseContentType: file.mimeType ?? undefined,
-      });
-
-    const viewUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    const expiresIn = getS3Config().signedUrlTtlSeconds;
+    const viewUrl = await signGetUrl({
+      bucket: file.s3Bucket,
+      key: file.s3Key,
+      responseContentDisposition: 'inline',
+      responseContentType: file.mimeType ?? undefined,
+      expiresIn,
+    });
 
     FileLogger.success({
       requestId,
@@ -172,11 +171,21 @@ export async function GET(
       viewUrl,
       filename: file.originalFilename,
       mimeType: file.mimeType,
-      expiresIn: 3600,
-    }, { status: 200 });
+      expiresIn,
+    }, { status: 200, headers: NO_STORE });
 
   } catch (error) {
-    console.error('GET /api/files/[id]/view error:', error);
+    // Refus de session (absente, invalide, révoquée…) : 401/403 du contrat
+    // commun, non journalisés comme panne (APP-PERF-20).
+    if (isSessionError(error)) return sessionErrorResponse(error, requestId);
+    if (error instanceof S3ConfigError) {
+      logS3Error('GET /api/files/[id]/view', error);
+      return NextResponse.json(
+        { error: 'Storage configuration error', code: 'S3_CONFIG_INVALID' },
+        { status: 500 }
+      );
+    }
+    console.error('GET /api/files/[id]/view error:', (error as Error)?.name, (error as Error)?.message);
     FileLogger.error({
       requestId,
       ip,

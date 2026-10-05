@@ -5,18 +5,8 @@ import { eq, and, isNull, desc, lt, inArray, or } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-
-const s3Client = new S3Client({
-  region: process.env.OVH_S3_REGION || 'gra',
-  endpoint: process.env.OVH_S3_ENDPOINT || 'https://s3.gra.io.cloud.ovh.net',
-  credentials: {
-    accessKeyId: process.env.OVH_S3_ACCESS_KEY || '',
-    secretAccessKey: process.env.OVH_S3_SECRET_KEY || '',
-  },
-});
-const s3Bucket = process.env.OVH_S3_BUCKET || '';
+import { logS3Error, signGetUrl } from '@/lib/s3-config';
+import { isThumbnailCandidate } from '@/services/documents/thumbnails/thumbnail-spec';
 
 // GET /api/files - List files for current account (FIXED: use accountId)
 export async function GET(request: NextRequest) {
@@ -88,24 +78,26 @@ export async function GET(request: NextRequest) {
 
     const paginatedResponse = buildPaginationResponse(results, limit);
 
-    // Generate signed preview URLs for images
+    // URL signées des images (configuration S3 canonique, APP-PERF-26).
+    // Un échec de signature n'est plus masqué : il est journalisé (typé, sans
+    // secret) et signalé par `previewError`. `thumbnailUrl` désigne la
+    // miniature autorisée (APP-PERF-06/27), à préférer pour les listes.
+    let signatureKo: string | null = null;
     const itemsWithPreviews = await Promise.all(
       paginatedResponse.data.map(async (file: any) => {
         const isImage = file.mimeType?.startsWith('image/');
         let previewUrl: string | null = null;
-        if (isImage && file.s3Key) {
+        let previewError: string | undefined;
+        if (isImage && file.s3Key && !signatureKo) {
           try {
-            const command = new GetObjectCommand({
-              Bucket: file.s3Bucket || s3Bucket,
-              Key: file.s3Key,
-              ResponseContentDisposition: 'inline',
-            });
-            previewUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
-          } catch {
-            previewUrl = null;
+            previewUrl = await signGetUrl({ bucket: file.s3Bucket, key: file.s3Key, responseContentDisposition: 'inline' });
+          } catch (e) {
+            signatureKo = logS3Error('GET /api/files (signature aperçu)', e).kind;
           }
         }
-        return { ...file, previewUrl };
+        if (isImage && file.s3Key && !previewUrl && signatureKo) previewError = `S3_${signatureKo}`;
+        const thumbnailUrl = isThumbnailCandidate(file) ? `/api/files/${file.id}/thumbnail` : null;
+        return { ...file, previewUrl, thumbnailUrl, ...(previewError ? { previewError } : {}) };
       })
     );
 

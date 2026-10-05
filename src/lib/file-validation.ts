@@ -1,3 +1,5 @@
+import { Sha256, enHex } from '@/lib/sha256-incremental';
+
 /**
  * File validation utilities for security
  * - Magic bytes verification (not just client-provided MIME)
@@ -273,26 +275,86 @@ export function validateExtension(filename: string, mimeType: string): boolean {
   return magicInfo.extensions.includes(extension);
 }
 
+/** Empreinte SHA-256 hexadécimale (64 caractères minuscules). */
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
 /**
- * Compute SHA-256 hash of a File in chunks to avoid loading large files
- * entirely into memory at once (important for files > 100 MB).
+ * Vraie empreinte SHA-256 ? Écarte les valeurs de repli (« placeholder-hash »
+ * d'anciens dépôts) et toute chaîne arbitraire : une valeur commune à
+ * plusieurs fichiers ferait passer des documents distincts pour des doublons.
  */
-export async function computeFileSha256(file: File): Promise<string> {
-  const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB per chunk
-  const chunks: Uint8Array[] = [];
-  let offset = 0;
-  while (offset < file.size) {
-    const slice = file.slice(offset, offset + CHUNK_SIZE);
-    const buf = await slice.arrayBuffer();
-    chunks.push(new Uint8Array(buf));
-    offset += CHUNK_SIZE;
+export function estEmpreinteSha256(valeur: unknown): valeur is string {
+  return typeof valeur === 'string' && SHA256_HEX.test(valeur);
+}
+
+/** Échec du calcul d'empreinte : jamais remplacé par une valeur de repli. */
+export class EmpreinteIndisponibleError extends Error {
+  constructor(cause?: unknown) {
+    super("Impossible de calculer l'empreinte du fichier. Réessayez ; si le problème persiste, resélectionnez le fichier.");
+    this.name = 'EmpreinteIndisponibleError';
+    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
   }
-  const total = new Uint8Array(chunks.reduce((acc, c) => acc + c.byteLength, 0));
-  let pos = 0;
-  for (const chunk of chunks) {
-    total.set(chunk, pos);
-    pos += chunk.byteLength;
+}
+
+/** Taille des tranches lues pour l'empreinte : la seule mémoire retenue. */
+export const TRANCHE_EMPREINTE = 4 * 1024 * 1024;
+
+/**
+ * Empreinte SHA-256 d'un fichier, mémoire bornée — APP-PERF-24.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * L'ANCIENNE VERSION N'ÉTAIT PAS INCRÉMENTALE
+ *
+ * Elle lisait des tranches de 8 Mo, les CONSERVAIT toutes, allouait un
+ * tableau de la taille du fichier et les y recopiait avant un `digest`
+ * unique : deux copies complètes simultanées (≈ 200 Mo pour une vidéo de
+ * 100 Mo), malgré son commentaire.
+ *
+ * Désormais :
+ *   · fichier ≤ une tranche : `crypto.subtle.digest` natif sur l'unique
+ *     tampon lu (une seule copie, de taille bornée par la tranche) ;
+ *   · au-delà : SHA-256 incrémental (`sha256-incremental.ts`), une tranche
+ *     lue à la fois puis relâchée — mémoire bornée à `TRANCHE_EMPREINTE`.
+ *
+ * L'annulation (`signal`) est contrôlée entre deux tranches ; la progression
+ * (`onProgress`, 0 → 1) permet d'afficher une préparation mesurable.
+ * Une erreur de lecture lève `EmpreinteIndisponibleError` : AUCUNE valeur de
+ * repli n'est renvoyée.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export async function computeFileSha256(
+  file: Blob,
+  options: { signal?: AbortSignal; onProgress?: (fraction: number) => void; trancheOctets?: number } = {},
+): Promise<string> {
+  const tranche = Math.max(64, options.trancheOctets ?? TRANCHE_EMPREINTE);
+  const verifierAnnulation = () => {
+    if (options.signal?.aborted) {
+      const e = new Error('Upload annulé');
+      e.name = 'AbortError';
+      throw e;
+    }
+  };
+  verifierAnnulation();
+  try {
+    const subtle = globalThis.crypto?.subtle;
+    if (file.size <= tranche && subtle) {
+      const buf = await file.arrayBuffer();
+      verifierAnnulation();
+      const digest = await subtle.digest('SHA-256', buf);
+      options.onProgress?.(1);
+      return enHex(new Uint8Array(digest));
+    }
+    const h = new Sha256();
+    for (let offset = 0; offset < file.size; offset += tranche) {
+      const buf = await file.slice(offset, Math.min(offset + tranche, file.size)).arrayBuffer();
+      verifierAnnulation();
+      h.update(new Uint8Array(buf));
+      options.onProgress?.(Math.min(1, (offset + buf.byteLength) / file.size));
+    }
+    if (file.size === 0) options.onProgress?.(1);
+    return h.digestHex();
+  } catch (e) {
+    if ((e as Error)?.name === 'AbortError') throw e;
+    throw new EmpreinteIndisponibleError(e);
   }
-  const hashBuffer = await crypto.subtle.digest('SHA-256', total);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }

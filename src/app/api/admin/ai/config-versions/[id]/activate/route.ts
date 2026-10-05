@@ -23,7 +23,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     const r = await activate(versionId, guard.ctx.adminUserId);
-    return NextResponse.json({ activated: true, previousVersionId: r.previousId, interrupts: false });
+    return NextResponse.json({ activated: true, previousVersionId: r.previousId, interrupts: false, warnings: r.warnings ?? [] });
   } catch (e) {
     return toErrorResponse(e, 'POST /api/admin/ai/config-versions/[id]/activate');
   }

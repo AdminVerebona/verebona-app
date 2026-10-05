@@ -35,6 +35,7 @@
 import { createHash } from 'crypto';
 import type { AlertInput } from '@/services/ai/alerts/alerts.repository';
 import { configuredAliases, configuredDeprecations, resolveAliases } from '../registries/model-registry';
+import { findDeclaredModel } from '@/services/ai/registry/models';
 import { getAssistantConfig } from '../config/assistant-config';
 
 type Row = Record<string, unknown>;
@@ -218,8 +219,8 @@ export function evaluateAssistantAlertRules(
       severity: jours <= 0 ? 'critical' : 'warning',
       key: `model_deprecation:${d.model}`,
       message: jours <= 0
-        ? `Assistant : le modèle ${d.model} (${d.alias}) est déprécié depuis le ${d.date} — remplacement à tester et activer.`
-        : `Assistant : le modèle ${d.model} (${d.alias}) est annoncé déprécié le ${d.date} (dans ${jours} j) — remplacement à tester.`,
+        ? `IA : le modèle ${d.model} (${d.alias}) est déprécié depuis le ${d.date} — remplacement à tester et activer.`
+        : `IA : le modèle ${d.model} (${d.alias}) est annoncé déprécié le ${d.date} (dans ${jours} j) — remplacement à tester.`,
       details: { model: d.model, alias: d.alias, date: d.date, daysLeft: jours },
     });
   }
@@ -296,6 +297,12 @@ export async function measureAssistantAlertMetrics(deps: Pick<AssistantAlertDeps
     ).catch((): Row[] => [])
     : [];
   const dates = new Map<string, string>(catalogue.map((r) => [String(r.model), String(r.date)]));
+  // Lot 23 : date de fin déclarée au registre des modèles (§15.12), puis
+  // configuration (prioritaire).
+  for (const a of actifs) {
+    const d = findDeclaredModel(a.model)?.retiresOn;
+    if (d) dates.set(a.model, d);
+  }
   for (const [m, d] of saisies) dates.set(m, d);
   const deprecations = actifs
     .filter((a) => dates.has(a.model))
@@ -326,13 +333,36 @@ const defaultDeps: AssistantAlertDeps = {
   async raiseAlert(a) {
     return (await import('@/services/ai/alerts/alerts.repository')).raiseAlert(a);
   },
+  /**
+   * Modèles ACTIFS de tous les traitements (T1-T6, chaîne effective : version
+   * de configuration, sinon code) — lot 23, §15.13 : la veille de
+   * dépréciation ne se limite plus aux alias de l'assistant. Un modèle
+   * utilisé par plusieurs opérations n'est signalé qu'une fois (usages
+   * regroupés dans `alias`).
+   */
   async resolveActiveModels() {
     const r = await resolveAliases('t2_answer');
     const a = configuredAliases();
-    return [
-      ...(r.default ? [{ model: r.default, alias: a.default }] : []),
-      ...(r.escalation ? [{ model: r.escalation, alias: a.escalation }] : []),
-    ];
+    const usages = new Map<string, string[]>();
+    const noter = (model: string | null | undefined, usage: string) => {
+      if (!model) return;
+      const l = usages.get(model) ?? [];
+      if (!l.includes(usage)) l.push(usage);
+      usages.set(model, l);
+    };
+    noter(r.default, a.default);
+    noter(r.escalation, a.escalation);
+    const [{ AI_OPERATIONS }, { treatmentForUseCase }, { resolveOperationConfig }] = await Promise.all([
+      import('@/services/ai/registry/operations'), import('@/services/ai/config/treatments'), import('@/services/ai/config/config-resolver'),
+    ]);
+    for (const op of Object.values(AI_OPERATIONS)) {
+      if (op.provider === 'none' || op.active === false || op.useCaseCode === 'INTELLIGENT_ASSISTANT') continue;
+      let t: string;
+      try { t = treatmentForUseCase(op.useCaseCode); } catch { continue; }
+      const c = await resolveOperationConfig(op.operationCode).catch(() => ({ primaryModel: op.primaryModel, fallbackModels: op.fallbackModels }));
+      for (const m of [c.primaryModel, ...c.fallbackModels]) noter(m, t);
+    }
+    return [...usages].map(([model, l]) => ({ model, alias: l.join(', ') }));
   },
 };
 

@@ -118,15 +118,15 @@ describe('Documents récents', () => {
 });
 
 describe('menu latéral', () => {
-  const props = { pathname: '/accueil', onToggle: noop, userName: 'Léa Martin', initials: 'LM', planLabel: 'Premium Duo' };
+  const props = { pathname: '/accueil', onToggle: noop };
 
-  it('déplié : logo, entrées, pastille, pied avatar + nom + offre', () => {
+  it('déplié : logo, entrées, pastille ; plus de pied avatar + nom + offre (doublon de l’avatar)', () => {
     const html = renderToStaticMarkup(h(TooltipProvider, null, h(AppSidebar, { ...props, collapsed: false, toProcessCount: 2 })));
     expect(html).toContain('aria-label="Réduire le menu"');
     expect(html).toContain('Mon agenda');
     expect(html).toContain('aria-current="page"');
-    expect(html).toContain('Léa Martin');
-    expect(html).toContain('Premium Duo');
+    expect(html).not.toContain('href="/mon-compte"');
+    expect(html).not.toContain('Aucune offre');
     expect(html).toMatch(/>2</);
     expect(html).toContain('width:240px');
   });

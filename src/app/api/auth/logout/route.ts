@@ -15,6 +15,9 @@ export async function POST(request: NextRequest) {
   // La revocation cote serveur est indispensable : effacer le cookie ne suffit pas.
   const refreshToken = request.cookies.get('refresh_token')?.value;
 
+  // Résultat RÉEL de la révocation, rendu au client (APP-PERF-21) : effacer
+  // les cookies ne révoque pas la session. `none` : aucun jeton à révoquer.
+  let revocation: 'revoked' | 'none' | 'failed' = 'none';
   if (refreshToken) {
     try {
       const payload = await verifyToken(refreshToken);
@@ -24,9 +27,12 @@ export async function POST(request: NextRequest) {
           ? new Date(payload.exp * 1000)
           : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
         await revokeToken(tokenHash, payload.userId, expiresAt);
+        revocation = 'revoked';
       }
     } catch {
-      // Non-fatal : on efface les cookies même si la révocation échoue
+      // Non-fatal : on efface les cookies même si la révocation échoue —
+      // mais on ne l'annonce pas comme réussie.
+      revocation = 'failed';
     }
   }
 
@@ -39,6 +45,7 @@ export async function POST(request: NextRequest) {
   const response = NextResponse.json({
     success: true,
     message: 'Logged out successfully',
+    revocation,
   });
 
   // Clear access token cookie

@@ -29,9 +29,16 @@
  * §4.6 et §16.3 : le compteur porte sur l'ensemble filtré, pas sur l'aperçu
  * affiché. Le calculer à partir de `documents.length` le plafonnerait à la
  * taille de la page, et une Rubrique de 40 documents en annoncerait 6.
+ *
+ * ── CHARGEMENT PROGRESSIF (DOC-PERF) ──────────────────────────────────────
+ *
+ * Le périmètre n'est plus transmis d'un bloc (`pageSize=all`, 2 000
+ * documents au plus) : tri et filtres sont appliqués ici, sur tout le
+ * périmètre, puis la liste est découpée en lots par curseur (voir
+ * `document-cursor.ts`). Les compteurs accompagnent le premier lot.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles, assetTypes, assets } from '@/db/schema';
 import { isRentedFromCharacteristics } from '@/lib/assets/occupancy';
@@ -40,162 +47,259 @@ import {
   getDocumentType,
   getVisibleRubrics,
   type AssetFamily,
-  type RubricDefinition,
 } from '@/lib/referential/v2';
-
-import { MAX_LOADED_DOCUMENTS, rubricsForPage } from '@/lib/documents/rubric-page';
-
-export { MAX_LOADED_DOCUMENTS };
+import { RUBRICS } from '@/lib/referential/v2/rubrics';
+import { rubricsForPage } from '@/lib/documents/rubric-page';
+import {
+  FEED_NO_ASSET,
+  FEED_NO_TYPE,
+  FEED_UNFILED,
+  type FeedDocument,
+  type FeedFacet,
+  type FeedFilters,
+  type FeedMeta,
+  type FeedParams,
+  type FeedResponse,
+} from '@/lib/documents/document-feed';
+import {
+  UNFILED_RANK,
+  UNKNOWN_RUBRIC_RANK,
+  decodeFeedCursor,
+  encodeFeedCursor,
+  keyComponents,
+  keysetCondition,
+  orderSignature,
+  type FeedKey,
+  type KeysetNode,
+} from './document-cursor';
 
 /** Identifiant de la zone « Sans rubrique ». Jamais un code de Rubrique (§2.1). */
-export const UNFILED_GROUP = '__UNFILED__';
+export const UNFILED_GROUP = FEED_UNFILED;
 
-export interface RubricDocumentView {
-  /** Identifiant numérique, attendu par la suppression groupée existante. */
-  id: number;
-  publicId: string;
-  title: string;
-  /** Nom du fichier d'origine — en-tête du tiroir document. */
-  originalFilename: string | null;
-  /** Bien rattaché, `null` pour un document non rattaché. */
-  assetId: number | null;
-  /** Rubrique de classement, `null` pour « Sans rubrique ». */
-  rubricCode: string | null;
-  documentTypeCode: string | null;
-  /** `null` ⇒ la carte affiche « Type à compléter » (§4.3). */
-  documentTypeLabel: string | null;
-  documentDate: string | null;
-  /**
-   * Date d'ajout (ISO 8601). Le tri « Date d'ajout » et la date affichée sur
-   * la ligne s'en servent : sans elle, la page ne pourrait trier que dans
-   * l'ordre reçu, pas à travers les Rubriques.
-   */
-  uploadedAt: string | null;
-  mimeType: string | null;
-  assetNames: string[];
+/** Document d'un lot (contrat partagé avec l'écran). */
+export type RubricDocumentView = FeedDocument;
+
+/** Curseur illisible ou d'un autre tri : la route répond 400, sans deviner. */
+export class InvalidCursorError extends Error {
+  constructor() {
+    super('INVALID_CURSOR');
+    this.name = 'InvalidCursorError';
+  }
 }
 
-export interface RubricGroupView {
-  code: string;
-  label: string;
-  count: number;
-  documents: RubricDocumentView[];
-  hasMore: boolean;
-}
-
-/** Types réellement présents dans le périmètre — §4.6, filtre contextuel. */
-export interface TypeOption {
-  code: string;
-  label: string;
-}
-
-export interface RubricDocumentsPage {
-  groups: RubricGroupView[];
-  /** « Le filtre Type ne propose que les Types pertinents dans le contexte. » */
-  typeOptions: TypeOption[];
-  /** Compteur global, « Sans rubrique » inclus (§4.6). */
-  total: number;
-  unfiledCount: number;
-}
-
-export type DocumentSort = 'uploadedAt' | 'documentDate' | 'title';
-export type SortDirection = 'asc' | 'desc';
-
-export interface RubricQuery {
+export interface DocumentFeedQuery extends Omit<FeedParams, 'cursor'> {
   accountId: number;
-  /** Vide = page globale ; un ou plusieurs identifiants = onglet de bien(s). */
-  assetIds?: number[];
-  typeCodes?: string[];
-  /**
-   * Aperçu par Rubrique, ou `'all'` pour recevoir tout le périmètre (dans la
-   * limite de chargement ci-dessous). « Mes documents » demande `'all'` : le
-   * tri y est global et le regroupement optionnel, ce qui suppose d'avoir
-   * l'ensemble des documents côté page et non six par Rubrique.
-   */
-  pageSize?: number | 'all';
-  /** §4.6 — un tri unique s'applique à TOUTES les Rubriques. */
-  sort?: DocumentSort;
-  direction?: SortDirection;
-  /**
-   * Décalage par code de groupe, pour « Voir les N autres ».
-   *
-   * Par groupe et non global : chaque Rubrique se déplie indépendamment, et un
-   * décalage commun ferait avancer toutes les autres en même temps.
-   */
-  offsets?: Record<string, number>;
+  cursor?: string | null;
+  /** Compteurs et options de filtre : par défaut avec le premier lot seulement. */
+  withMeta?: boolean;
 }
+
+// ── Expressions SQL des composantes d'ordre ──────────────────────────────
 
 /**
- * Tri appliqué en base — §4.6.
- *
- * Le défaut est « date d'ajout décroissante, document le plus récent en
- * premier ». Les documents sans date de document passent en dernier quand on
- * trie par cette date : les remonter en tête ferait croire à une donnée
- * récente là où il n'y a pas de donnée du tout.
+ * Rang de Rubrique en SQL — même règle que `rubricRank` (document-cursor).
+ * Littéraux et non paramètres : les codes viennent du référentiel versionné,
+ * et un paramètre non typé dans un CASE ferait échouer l'inférence de type.
  */
-function orderClause(sort: DocumentSort, direction: SortDirection) {
-  const column =
-    sort === 'documentDate' ? assetFiles.documentDate
-      : sort === 'title' ? assetFiles.retainedTitle
-        : assetFiles.uploadedAt;
-  return direction === 'asc'
-    ? sql`${column} ASC NULLS LAST`
-    : sql`${column} DESC NULLS LAST`;
+const literal = (v: string) => `'${v.replace(/'/g, "''")}'`;
+const RUBRIC_RANK_SQL = sql.raw(
+  `(CASE WHEN "asset_files"."rubric_code" IS NULL THEN ${UNFILED_RANK} `
+  + RUBRICS.map((r, i) => `WHEN "asset_files"."rubric_code" = ${literal(r.code)} THEN ${i} `).join('')
+  + `ELSE ${UNKNOWN_RUBRIC_RANK} END)`,
+);
+
+/** Le titre trié est celui affiché (repli compris), sans tenir compte de la casse. */
+const TITLE_SQL = sql`lower(COALESCE(${assetFiles.retainedTitle}, ${assetFiles.originalFilename}, ${assetFiles.filename}, 'Document'))`;
+
+const KEY_SQL: Record<FeedKey, { expr: SQL; cast: string }> = {
+  rubricRank: { expr: RUBRIC_RANK_SQL, cast: 'int' },
+  rubricCode: { expr: sql`COALESCE(${assetFiles.rubricCode}, '')`, cast: 'text' },
+  uploadedAt: { expr: sql`${assetFiles.uploadedAt}`, cast: 'timestamptz' },
+  documentDate: { expr: sql`${assetFiles.documentDate}`, cast: 'date' },
+  title: { expr: TITLE_SQL, cast: 'text' },
+  assetName: { expr: sql`lower(${assets.name})`, cast: 'text' },
+  id: { expr: sql`${assetFiles.id}`, cast: 'int' },
+};
+
+/** Traduit l'arbre de condition du curseur en SQL (valeurs liées, typées). */
+function keysetSql(node: KeysetNode, keys: FeedKey[], values: Array<string | null>): SQL {
+  switch (node.op) {
+    case 'false': return sql`FALSE`;
+    case 'and': return sql`(${sql.join(node.items.map((n) => keysetSql(n, keys, values)), sql` AND `)})`;
+    case 'or': return sql`(${sql.join(node.items.map((n) => keysetSql(n, keys, values)), sql` OR `)})`;
+    case 'isNull': return sql`${KEY_SQL[keys[node.index]].expr} IS NULL`;
+    case 'cmp': {
+      const { expr, cast } = KEY_SQL[keys[node.index]];
+      return sql`${expr} ${sql.raw(node.cmp)} ${values[node.index]}::${sql.raw(cast)}`;
+    }
+  }
 }
 
-/**
- * Ordonne les groupes — §3.3 et §4.4.
- *
- * Fonction pure et exportée : l'ordre est une règle du CDC, pas une propriété
- * d'affichage, et c'est la première chose qu'une refonte de l'écran casserait
- * sans s'en apercevoir.
- */
-export function orderGroups(
-  rubricGroups: RubricGroupView[],
-  visibleRubrics: readonly RubricDefinition[],
-  unfiled: RubricGroupView | null,
-): RubricGroupView[] {
-  const order = new Map<string, number>(
-    visibleRubrics.map((r, index) => [r.code as string, index]),
-  );
-  const sorted = [...rubricGroups].sort(
-    (a, b) => (order.get(a.code) ?? 998) - (order.get(b.code) ?? 998),
-  );
-  // « Sans rubrique » toujours avant les Rubriques, et seulement s'il contient
-  // au moins un document (§4.4). « Autres documents » est déjà dernier par son
-  // `displayOrder`, ce qui évite un cas particulier ici.
-  return unfiled && unfiled.count > 0 ? [unfiled, ...sorted] : sorted;
-}
+// ── Périmètre et filtres ─────────────────────────────────────────────────
 
-export async function getDocumentsByRubric(
-  query: RubricQuery,
-): Promise<RubricDocumentsPage> {
-  const pageSize = query.pageSize === 'all' ? Number.POSITIVE_INFINITY : (query.pageSize ?? 6);
-  const assetIds = query.assetIds ?? [];
-
+/** Périmètre : compte courant, non supprimé, biens de l'onglet, résultats de recherche. */
+function scopeConditions(query: { accountId: number; assetIds: number[]; ids: number[] | null }): SQL[] {
   const scope = [eq(assetFiles.accountId, query.accountId), isNull(assetFiles.deletedAt)];
-  if (assetIds.length > 0) {
+  if (query.assetIds.length > 0) {
     scope.push(
       or(
-        inArray(assetFiles.assetId, assetIds),
-        inArray(assetFiles.linkedAssetId, assetIds),
+        inArray(assetFiles.assetId, query.assetIds),
+        inArray(assetFiles.linkedAssetId, query.assetIds),
       )!,
     );
   }
-  if (query.typeCodes?.length) {
-    scope.push(inArray(assetFiles.documentTypeCode, query.typeCodes));
+  if (query.ids) scope.push(inArray(assetFiles.id, query.ids));
+  return scope;
+}
+
+/** Une dimension : OU entre ses valeurs, la valeur spéciale désignant l'absence. */
+function dimension(values: string[], absent: string, column: SQL, nullColumn: SQL, toValue: (v: string) => unknown): SQL | null {
+  if (values.length === 0) return null;
+  const present = values.filter((v) => v !== absent).map(toValue);
+  const parts: SQL[] = [];
+  if (present.length) parts.push(sql`${column} IN (${sql.join(present.map((v) => sql`${v}`), sql`, `)})`);
+  if (values.includes(absent)) parts.push(sql`${nullColumn} IS NULL`);
+  return parts.length === 1 ? parts[0] : sql`(${sql.join(parts, sql` OR `)})`;
+}
+
+/** Filtres combinés : ET entre dimensions, OU à l'intérieur — comme l'écran. */
+function filterConditions(f: FeedFilters): SQL[] {
+  return [
+    dimension(f.biens, FEED_NO_ASSET, sql`${assetFiles.assetId}`, sql`${assetFiles.assetId}`, Number),
+    dimension(f.rubrics, FEED_UNFILED, sql`${assetFiles.rubricCode}`, sql`${assetFiles.rubricCode}`, String),
+    dimension(f.types, FEED_NO_TYPE, sql`${assetFiles.documentTypeCode}`, sql`${assetFiles.documentTypeCode}`, String),
+  ].filter((c): c is SQL => c !== null);
+}
+
+/** Même règle que `filterConditions`, sur une ligne agrégée (compteurs). */
+export function matchesFilters(
+  row: { assetId: number | null; rubricCode: string | null; documentTypeCode: string | null },
+  f: FeedFilters,
+): boolean {
+  const bien = row.assetId ? String(row.assetId) : FEED_NO_ASSET;
+  const rubric = row.rubricCode ?? FEED_UNFILED;
+  const type = row.documentTypeCode ?? FEED_NO_TYPE;
+  return (f.biens.length === 0 || f.biens.includes(bien))
+    && (f.rubrics.length === 0 || f.rubrics.includes(rubric))
+    && (f.types.length === 0 || f.types.includes(type));
+}
+
+// ── Compteurs ────────────────────────────────────────────────────────────
+
+export interface ScopeCountRow {
+  assetId: number | null;
+  assetName: string | null;
+  rubricCode: string | null;
+  documentTypeCode: string | null;
+  count: number;
+}
+
+/**
+ * Compteurs globaux à partir d'une seule agrégation du périmètre.
+ *
+ * Les trois filtres portent sur des colonnes de la clé d'agrégation (bien,
+ * Rubrique, Type) : l'ensemble filtré se déduit donc des mêmes lignes, sans
+ * seconde requête, et ne peut pas diverger des options proposées. Fonction
+ * pure et exportée, testée sans base.
+ */
+export function buildFeedMeta(
+  rows: readonly ScopeCountRow[],
+  filters: FeedFilters,
+  context: { families: AssetFamily[]; hasRentedAsset: boolean },
+): FeedMeta {
+  const scopeByRubric = new Map<string, number>();
+  const filteredByRubric = new Map<string, number>();
+  const biens = new Map<string, FeedFacet>();
+  const types = new Map<string, FeedFacet>();
+  let scopeTotal = 0;
+  let total = 0;
+  for (const row of rows) {
+    const rubric = row.rubricCode ?? FEED_UNFILED;
+    scopeTotal += row.count;
+    scopeByRubric.set(rubric, (scopeByRubric.get(rubric) ?? 0) + row.count);
+    if (matchesFilters(row, filters)) {
+      total += row.count;
+      filteredByRubric.set(rubric, (filteredByRubric.get(rubric) ?? 0) + row.count);
+    }
+    const bien = row.assetId ? String(row.assetId) : FEED_NO_ASSET;
+    const b = biens.get(bien) ?? { value: bien, label: row.assetId ? row.assetName : null, count: 0 };
+    b.count += row.count;
+    biens.set(bien, b);
+    const type = row.documentTypeCode ?? FEED_NO_TYPE;
+    const t = types.get(type) ?? { value: type, label: getDocumentType(row.documentTypeCode)?.label ?? null, count: 0 };
+    t.count += row.count;
+    types.set(type, t);
   }
 
-  const [counts, documents, context] = await Promise.all([
-    // Compteurs sur l'ensemble filtré, agrégés en base (§16.3).
-    db
-      .select({
-        rubricCode: assetFiles.rubricCode,
-        count: sql<number>`COUNT(*)::int`,
-      })
-      .from(assetFiles)
-      .where(and(...scope))
-      .groupBy(assetFiles.rubricCode),
+  const visibleRubrics = getVisibleRubrics({
+    families: context.families,
+    hasRentedAsset: context.hasRentedAsset,
+    // Un historique locatif reste consultable même si plus aucun bien n'est
+    // loué (§6.2, RENT-03) : le compteur suffit à le prouver.
+    hasRentalDocuments: (scopeByRubric.get('RENTAL_MANAGEMENT') ?? 0) > 0,
+  });
+  // Toute Rubrique contenant un document est rendue, même hors du périmètre de
+  // visibilité — sinon ses documents seraient comptés mais inatteignables.
+  const pageRubrics = rubricsForPage(visibleRubrics, scopeByRubric, true);
+
+  return {
+    total,
+    scopeTotal,
+    rubrics: pageRubrics.map((r) => ({
+      code: r.code,
+      label: r.label,
+      count: filteredByRubric.get(r.code) ?? 0,
+      scopeCount: scopeByRubric.get(r.code) ?? 0,
+    })),
+    unfiledCount: filteredByRubric.get(FEED_UNFILED) ?? 0,
+    facets: {
+      biens: [...biens.values()],
+      rubrics: [...scopeByRubric.entries()].map(([value, count]) => ({ value, label: null, count })),
+      types: [...types.values()],
+    },
+  };
+}
+
+// ── Lot ──────────────────────────────────────────────────────────────────
+
+/**
+ * Un lot de documents, trié et filtré sur TOUT le périmètre, puis découpé.
+ *
+ * `limit + 1` lignes sont lues : la ligne en trop dit s'il reste une suite,
+ * sans requête de comptage. Le curseur suivant est construit à partir des
+ * valeurs de tri du dernier document rendu, lues en base sous forme de texte
+ * (`::text`) — une date convertie en `Date` JavaScript perdrait ses
+ * microsecondes, et deux documents ajoutés dans la même milliseconde
+ * sortiraient de la pagination.
+ */
+export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedResponse> {
+  const components = keyComponents(query.sort, query.direction, query.grouped);
+  const keys = components.map((c) => c.key);
+  const signature = orderSignature(query.sort, query.direction, query.grouped);
+  const values = query.cursor ? decodeFeedCursor(query.cursor, signature, components.length) : null;
+  if (query.cursor && !values) throw new InvalidCursorError();
+  const withMeta = query.withMeta ?? !query.cursor;
+
+  // `?resultats=aucun` : périmètre vide, inutile d'interroger la base.
+  if (query.ids && query.ids.length === 0) {
+    return {
+      documents: [],
+      nextCursor: null,
+      hasMore: false,
+      limit: query.limit,
+      ...(withMeta ? { meta: buildFeedMeta([], query.filters, await loadVisibilityContext(query.accountId, query.assetIds)) } : {}),
+    };
+  }
+
+  const scope = scopeConditions(query);
+  const where = [...scope, ...filterConditions(query.filters)];
+  if (values) where.push(keysetSql(keysetCondition(components, values), keys, values));
+
+  const keyColumns = Object.fromEntries(
+    keys.map((k, i) => [`k${i}`, sql<string | null>`(${KEY_SQL[k].expr})::text`]),
+  ) as Record<string, SQL<string | null>>;
+
+  const [rows, meta] = await Promise.all([
     db
       .select({
         id: assetFiles.id,
@@ -210,33 +314,26 @@ export async function getDocumentsByRubric(
         mimeType: assetFiles.mimeType,
         assetId: assetFiles.assetId,
         assetName: assets.name,
+        ...keyColumns,
       })
       .from(assetFiles)
       .leftJoin(assets, eq(assetFiles.assetId, assets.id))
-      .where(and(...scope))
-      // Tri par défaut : date d'ajout décroissante (§4.6).
-      .orderBy(orderClause(query.sort ?? 'uploadedAt', query.direction ?? 'desc'))
-      .limit(MAX_LOADED_DOCUMENTS),
-    loadVisibilityContext(query.accountId, assetIds),
+      .where(and(...where))
+      .orderBy(...components.map((c) => sql`${KEY_SQL[c.key].expr} ${sql.raw(c.dir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`))
+      .limit(query.limit + 1),
+    withMeta ? loadMeta(query, scope) : Promise.resolve(undefined),
   ]);
 
-  const countByRubric = new Map(counts.map((c) => [c.rubricCode ?? UNFILED_GROUP, c.count]));
-  const unfiledCount = countByRubric.get(UNFILED_GROUP) ?? 0;
+  const hasMore = rows.length > query.limit;
+  const page = hasMore ? rows.slice(0, query.limit) : rows;
+  const last = page[page.length - 1] as Record<string, unknown> | undefined;
+  const nextCursor = hasMore && last
+    ? encodeFeedCursor(signature, keys.map((_, i) => (last[`k${i}`] as string | null) ?? null))
+    : null;
 
-  const visibleRubrics = getVisibleRubrics({
-    families: context.families,
-    hasRentedAsset: context.hasRentedAsset,
-    // Un historique locatif reste consultable même si plus aucun bien n'est
-    // loué (§6.2, RENT-03) : le compteur suffit à le prouver.
-    hasRentalDocuments: (countByRubric.get('RENTAL_MANAGEMENT') ?? 0) > 0,
-  });
-
-  const byGroup = new Map<string, RubricDocumentView[]>();
-  for (const row of documents) {
-    const key = row.rubricCode ?? UNFILED_GROUP;
-    const bucket = byGroup.get(key) ?? [];
+  const documents: RubricDocumentView[] = page.map((row) => {
     const type = getDocumentType(row.documentTypeCode);
-    bucket.push({
+    return {
       id: row.id,
       publicId: row.publicId,
       // §4.3 : jamais le nom de fichier comme titre principal, mais un repli
@@ -253,59 +350,30 @@ export async function getDocumentsByRubric(
         : (row.uploadedAt ?? null),
       mimeType: row.mimeType,
       assetNames: row.assetName ? [row.assetName] : [],
-    });
-    byGroup.set(key, bucket);
-  }
-
-  // §3.3 : les Rubriques métier pertinentes restent listées même à 0.
-  const offsets = query.offsets ?? {};
-  const take = (code: string, all: RubricDocumentView[], count: number) => {
-    // `offset + pageSize` et non une fenêtre glissante : « Voir les N autres »
-    // AJOUTE à ce qui est déjà affiché. Une fenêtre remplacerait la page
-    // précédente, et l'utilisateur perdrait le document qu'il venait de voir.
-    const shown = (offsets[code] ?? 0) + pageSize;
-    return { documents: all.slice(0, shown), hasMore: count > shown };
-  };
-
-  // Page complète : toute Rubrique contenant un document est rendue, même hors
-  // du périmètre de visibilité — sinon ses documents seraient comptés dans le
-  // total mais inatteignables (voir `rubricsForPage`).
-  const pageRubrics = rubricsForPage(visibleRubrics, countByRubric, query.pageSize === 'all');
-  const rubricGroups: RubricGroupView[] = pageRubrics.map((rubric) => {
-    const all = byGroup.get(rubric.code) ?? [];
-    const count = countByRubric.get(rubric.code) ?? 0;
-    return { code: rubric.code, label: rubric.label, count, ...take(rubric.code, all, count) };
+    };
   });
 
-  const unfiledDocuments = byGroup.get(UNFILED_GROUP) ?? [];
-  const unfiled: RubricGroupView = {
-    code: UNFILED_GROUP,
-    label: 'Sans rubrique',
-    count: unfiledCount,
-    ...take(UNFILED_GROUP, unfiledDocuments, unfiledCount),
-  };
+  return { documents, nextCursor, hasMore, limit: query.limit, ...(meta ? { meta } : {}) };
+}
 
-  // §4.6 : seuls les Types réellement présents sont proposés au filtre. Lister
-  // les 94 Types du référentiel obligerait à chercher dans une liste dont
-  // l'immense majorité ne renverrait aucun document.
-  const typeOptions: TypeOption[] = [
-    ...new Map(
-      documents
-        .map((d) => getDocumentType(d.documentTypeCode))
-        .filter((t): t is NonNullable<typeof t> => !!t)
-        .map((t) => [t.code, { code: t.code, label: t.label }]),
-    ).values(),
-  ].sort((a, b) => a.label.localeCompare(b.label, 'fr'));
-
-  return {
-    // L'ordre de `pageRubrics` est déjà celui du référentiel (visibles comprises).
-    groups: query.pageSize === 'all'
-      ? (unfiled.count > 0 ? [unfiled, ...rubricGroups] : rubricGroups)
-      : orderGroups(rubricGroups, visibleRubrics, unfiled),
-    typeOptions,
-    total: [...countByRubric.values()].reduce((sum, n) => sum + n, 0),
-    unfiledCount,
-  };
+/** Compteurs du premier lot : une agrégation du périmètre, agrégée en base (§16.3). */
+async function loadMeta(query: DocumentFeedQuery, scope: SQL[]): Promise<FeedMeta> {
+  const [rows, context] = await Promise.all([
+    db
+      .select({
+        assetId: assetFiles.assetId,
+        assetName: assets.name,
+        rubricCode: assetFiles.rubricCode,
+        documentTypeCode: assetFiles.documentTypeCode,
+        count: sql<number>`COUNT(*)::int`,
+      })
+      .from(assetFiles)
+      .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .where(and(...scope))
+      .groupBy(assetFiles.assetId, assets.name, assetFiles.rubricCode, assetFiles.documentTypeCode),
+    loadVisibilityContext(query.accountId, query.assetIds),
+  ]);
+  return buildFeedMeta(rows.map((r) => ({ ...r, count: Number(r.count) })), query.filters, context);
 }
 
 /**

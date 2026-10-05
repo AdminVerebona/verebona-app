@@ -26,11 +26,15 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { AI_OPERATIONS } from '@/services/ai/registry/operations';
+import {
+  DECLARED_MODELS_VERSION, declaredModelStatus, findDeclaredModel, isPreviewModel as statutPreviewDeclare,
+  type ModelCapability, type ModelLifecycleStatus,
+} from '@/services/ai/registry/models';
 
 export type ModelAliasRole = 'default' | 'escalation';
 
 /** Version du registre (tracée avec les contrôles de démarrage). */
-export const MODEL_REGISTRY_VERSION = 'model-registry-v1.0' as const;
+export const MODEL_REGISTRY_VERSION = 'model-registry-v2.0' as const;
 
 export interface ModelAliasEntry {
   role: ModelAliasRole;
@@ -117,11 +121,12 @@ export async function resolveAliases(
 }
 
 /**
- * Statut stable / preview d'un modèle (§15.12) : un identifiant qui annonce
- * `preview`, `exp` ou `experimental` n'est pas un modèle stable.
+ * Statut preview d'un modèle (§15.12) — lot 23 : STATUT DÉCLARÉ au registre
+ * (`services/ai/registry/models.ts`), plus déduit du nom. Repli prudent : un
+ * modèle absent du registre est traité comme preview.
  */
 export function isPreviewModel(model: string): boolean {
-  return /(preview|-exp\b|experimental)/i.test(model);
+  return statutPreviewDeclare(model);
 }
 
 /**
@@ -138,3 +143,75 @@ export function configuredDeprecations(raw = process.env.VEREBONA_ASSISTANT_MODE
   }
   return out;
 }
+
+// ── Vue du registre par alias (§15.12, BO en lecture seule) ─────────────────
+
+export interface ModelRegistryRow {
+  role: ModelAliasRole;
+  /** Alias fonctionnel (§15.11). */
+  alias: string;
+  provider: string;
+  /** Identifiant exact du modèle résolu (chaîne effective). */
+  model: string | null;
+  status: ModelLifecycleStatus | 'unknown';
+  activatedOn: string | null;
+  /** Date de fin : registre, sinon configuration (§15.13), sinon catalogue du fournisseur. */
+  retiresOn: string | null;
+  capabilities: readonly ModelCapability[];
+  /** Prix en USD par million de tokens (catalogue central, §15.9) ; `null` : absent. */
+  price: { inputPerMillion: number; outputPerMillion: number; source: string | null } | null;
+  contextWindowTokens: number | null;
+  maxOutputTokens: number | null;
+  rateLimits: { requestsPerMinute: number | null; tokensPerMinute: number | null };
+  compatiblePrompts: readonly string[];
+  /** Schémas de sortie des opérations de l'assistant dont le prompt est compatible. */
+  compatibleSchemas: string[];
+  rollbackModel: string | null;
+  /** Limites appliquées par Verebona avant appel (§31.1, §31.2). */
+  limits: { maxInputTokens: number; maxOutputTokens: number | null; timeoutMs: number; maxCallsPerMessage: number };
+  note: string | null;
+}
+
+export interface RegistryViewDeps {
+  /** Prix connu (micros/token ≡ $/million) ou `null`. */
+  price: (provider: string, model: string) => { inputMicros: number; outputMicros: number; sourceReference?: string | null } | null;
+  /** Limites et date de fin listées par le fournisseur (`ai_model_catalog`). */
+  providerCatalog: Map<string, { inputTokenLimit: number | null; outputTokenLimit: number | null; deprecationDate: string | null }>;
+  limits: { maxInputTokens: number; maxOutputTokens: number | null; timeoutMs: number; maxCallsPerMessage: number };
+}
+
+/** Lignes du registre pour les alias de l'assistant (pur si `chaine` et `deps` fournis). */
+export function modelRegistryRows(chaine: ResolvedAliases, deps: RegistryViewDeps): ModelRegistryRow[] {
+  const aliases = configuredAliases();
+  const saisies = configuredDeprecations();
+  const op = AI_OPERATIONS[chaine.operationCode];
+  const ops = Object.values(AI_OPERATIONS).filter((o) => o.useCaseCode === 'INTELLIGENT_ASSISTANT');
+  return (['default', 'escalation'] as const).map((role) => {
+    const model = role === 'default' ? chaine.default : chaine.escalation;
+    const d = findDeclaredModel(model);
+    const fournisseur = model ? deps.providerCatalog.get(model) : undefined;
+    const prix = model ? deps.price(op?.provider ?? 'gemini', model) : null;
+    const compatibles = d?.compatiblePrompts ?? [];
+    return {
+      role,
+      alias: aliases[role],
+      provider: d?.provider ?? op?.provider ?? 'gemini',
+      model,
+      status: model ? declaredModelStatus(model) : 'unknown',
+      activatedOn: d?.activatedOn ?? null,
+      retiresOn: d?.retiresOn ?? (model ? saisies.get(model) ?? fournisseur?.deprecationDate ?? null : null),
+      capabilities: d?.capabilities ?? [],
+      price: prix ? { inputPerMillion: prix.inputMicros, outputPerMillion: prix.outputMicros, source: prix.sourceReference ?? null } : null,
+      contextWindowTokens: d?.contextWindowTokens ?? fournisseur?.inputTokenLimit ?? null,
+      maxOutputTokens: d?.maxOutputTokens ?? fournisseur?.outputTokenLimit ?? null,
+      rateLimits: d?.rateLimits ?? { requestsPerMinute: null, tokensPerMinute: null },
+      compatiblePrompts: compatibles,
+      compatibleSchemas: [...new Set(ops.filter((o) => o.masterPromptCode && compatibles.includes(o.masterPromptCode)).map((o) => o.outputSchema))],
+      rollbackModel: d?.rollbackModel ?? null,
+      limits: deps.limits,
+      note: d?.note ?? null,
+    };
+  });
+}
+
+export { DECLARED_MODELS_VERSION };

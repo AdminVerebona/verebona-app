@@ -1,26 +1,31 @@
 /**
- * GET /api/v2/documents — documents regroupés par Rubrique (CDC V2.0 §4, §13.5).
+ * GET /api/v2/documents — documents par lots, tri et filtres globaux
+ * (CDC V2.0 §4, §13.5 ; ticket DOC-PERF « chargement progressif »).
  *
  * Une seule route pour les deux écrans : sans `?assets=`, c'est « Mes
  * documents » ; avec, c'est l'onglet « Documents » d'un bien. Le §4.1 exige ce
  * contrat commun, et deux routes auraient fini par calculer deux compteurs
  * différents pour la même chose.
  *
+ *   ?limit=50               taille du lot (défaut 50, plafond serveur 100)
+ *   ?cursor=…               curseur opaque renvoyé par le lot précédent
+ *   ?sort=added|docDate|title|bien|rubric  &  ?direction=asc|desc
+ *   ?grouped=1              ordre « Rubrique, puis tri » (regroupement)
  *   ?assets=12,45           restreint au périmètre d'un ou plusieurs biens
- *   ?types=DPE,WORKS_QUOTE  filtre par Type (§4.6)
- *   ?sort=uploadedAt|documentDate|title  &  ?direction=asc|desc
- *   ?offsets=MEDIA:6,OTHER_DOCUMENTS:12  décalage par groupe, pour « Voir les N autres »
- *   ?pageSize=6             aperçu par Rubrique avant repli
- *   ?pageSize=all           tout le périmètre (« Mes documents » : tri global,
- *                           regroupement optionnel, filtres appliqués sur la page)
+ *   ?biens=12,__NO_ASSET__  ?rubrics=MEDIA,__UNFILED__  ?types=DPE,__NO_TYPE__
+ *   ?ids=3,4 | none         résultats d'une recherche de l'assistant
+ *
+ * Réponse : `{ documents, nextCursor, hasMore, limit, meta? }` ; `meta`
+ * (compteurs globaux, options de filtre) accompagne le premier lot. En fin de
+ * liste, `nextCursor: null, hasMore: false`.
+ *
+ * `pageSize=all` n'existe plus : le navigateur ne reçoit jamais tout le
+ * périmètre d'un bloc.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import {
-  getDocumentsByRubric,
-  type DocumentSort,
-  type SortDirection,
-} from '@/services/documents/rubric-query.service';
+import { parseFeedParams } from '@/lib/documents/document-feed';
+import { InvalidCursorError, getDocumentFeed } from '@/services/documents/rubric-query.service';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,45 +42,43 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'NO_ACCOUNT_SELECTED' }, { status: 400 });
   }
 
-  const p = req.nextUrl.searchParams;
-  const assetIds = (p.get('assets') ?? '')
-    .split(',')
-    .map((v) => Number(v.trim()))
-    .filter((v) => Number.isInteger(v) && v > 0);
-  const typeCodes = (p.get('types') ?? '')
-    .split(',')
-    .map((v) => v.trim())
-    .filter(Boolean);
-  const pageSize: number | 'all' = p.get('pageSize') === 'all'
-    ? 'all'
-    : Math.min(Math.max(Number(p.get('pageSize')) || 6, 1), 50);
+  const params = parseFeedParams(req.nextUrl.searchParams);
+  const phase = params.cursor ? 'next' : 'first';
+  const started = performance.now();
 
-  const sortParam = p.get('sort');
-  const sort: DocumentSort =
-    sortParam === 'documentDate' || sortParam === 'title' ? sortParam : 'uploadedAt';
-  const direction: SortDirection = p.get('direction') === 'asc' ? 'asc' : 'desc';
-
-  // `CODE:12,AUTRE:6` — un décalage par groupe. Les valeurs non numériques
-  // sont ignorées plutôt que rejetées : un décalage illisible doit rendre la
-  // première page, pas une erreur.
-  const offsets: Record<string, number> = {};
-  for (const pair of (p.get('offsets') ?? '').split(',')) {
-    const [code, raw] = pair.split(':');
-    const value = Number(raw);
-    if (code && Number.isInteger(value) && value > 0) offsets[code.trim()] = value;
+  try {
+    const page = await getDocumentFeed({ ...params, accountId });
+    const body = JSON.stringify(page);
+    // Observabilité (DOC-PERF) : durée, volume et taille du lot. Jamais le
+    // contenu des documents, ni le curseur, ni une URL.
+    console.info('[documents/feed]', JSON.stringify({
+      phase,
+      ms: Math.round(performance.now() - started),
+      count: page.documents.length,
+      bytes: body.length,
+      hasMore: page.hasMore,
+      limit: params.limit,
+      sort: params.sort,
+      grouped: params.grouped,
+      filtered: params.filters.biens.length + params.filters.rubrics.length + params.filters.types.length > 0,
+    }));
+    return new NextResponse(body, {
+      headers: {
+        'Content-Type': 'application/json',
+        // Pas de cache partagé ni de réponse servie périmée : un lot obsolète
+        // pourrait chevaucher le lot suivant (doublon) après un ajout.
+        'Cache-Control': 'private, no-store',
+      },
+    });
+  } catch (e) {
+    if (e instanceof InvalidCursorError) {
+      return NextResponse.json({ error: 'INVALID_CURSOR' }, { status: 400 });
+    }
+    console.error('[documents/feed]', JSON.stringify({
+      phase,
+      ms: Math.round(performance.now() - started),
+      error: e instanceof Error ? e.name : 'Error',
+    }));
+    return NextResponse.json({ error: 'DOCUMENTS_UNAVAILABLE' }, { status: 500 });
   }
-
-  const page = await getDocumentsByRubric({
-    accountId,
-    assetIds,
-    typeCodes: typeCodes.length > 0 ? typeCodes : undefined,
-    pageSize,
-    sort,
-    direction,
-    offsets,
-  });
-
-  return NextResponse.json(page, {
-    headers: { 'Cache-Control': 'private, max-age=15, stale-while-revalidate=60' },
-  });
 }

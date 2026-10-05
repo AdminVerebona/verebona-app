@@ -158,6 +158,11 @@ function substitute(template: string, variables: Record<string, unknown>): strin
   });
 }
 
+/** Entrées du cache des prompts de cette instance (état des caches, lot 23). */
+export function promptCacheSize(): number {
+  return cache.size;
+}
+
 /** Invalide le cache après activation d'une nouvelle version (lot 6). */
 export function invalidatePromptCache(promptCode?: string): void {
   if (!promptCode) { cache.clear(); return; }
@@ -262,17 +267,6 @@ export function checkMasterTemplate(text: string, tasks: readonly string[]): str
 }
 
 /**
- * Variables de DONNÉES ajoutées après la mise en service de masters déjà
- * administrés : un texte de version de configuration antérieur peut ne pas
- * porter leur emplacement. Elles sont alors simplement NON TRANSMISES (jamais
- * concaténées au texte) au lieu de faire échouer le traitement. Réservé à des
- * données dont la sûreté ne dépend pas du prompt (garde-fous serveur).
- *   · ACCOUNT_CAPABILITIES (T1) : capacités pièces / équipements — le
- *     contexte filtré et le garde-fou de sortie s'appliquent quoi qu'il arrive.
- */
-export const OPTIONAL_MASTER_VARIABLES: ReadonlySet<string> = new Set(['ACCOUNT_CAPABILITIES']);
-
-/**
  * Rendu PUR d'un master : injecte `{{TASK}}` et les variables structurées.
  *
  * Refuse :
@@ -307,8 +301,7 @@ export function renderMasterPrompt(
     throw new MasterPromptError('TASK_BRANCH_MISSING', code,
       `section « ${masterBranchMarker(task, cle)} » absente du master.`);
   }
-  const undeclared = Object.keys(variables).filter((k) =>
-    variables[k] !== undefined && !info.placeholders.includes(k) && !OPTIONAL_MASTER_VARIABLES.has(k));
+  const undeclared = Object.keys(variables).filter((k) => variables[k] !== undefined && !info.placeholders.includes(k));
   if (undeclared.length > 0) {
     throw new MasterPromptError('UNDECLARED_VARIABLE', code,
       `variable(s) sans emplacement dans le master : ${undeclared.join(', ')} — concaténation de consignes interdite (CDC 15 §22.3).`);

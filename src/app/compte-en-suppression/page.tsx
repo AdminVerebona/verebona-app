@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { apiClient } from '@/lib/api-client';
 import { AlertTriangle, CalendarClock, Loader2, LogOut, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -97,8 +98,8 @@ export default function AccountPendingDeletionPage() {
   };
 
   const logout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined);
-    try { localStorage.removeItem('user'); } catch { /* stockage indisponible */ }
+    // Procédure de sortie unique et bornée (APP-PERF-21).
+    await apiClient.signOut();
     window.location.assign('/login');
   };
 

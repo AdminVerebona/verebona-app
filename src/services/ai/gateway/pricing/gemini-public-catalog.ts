@@ -93,8 +93,11 @@ export const GEMINI_PUBLIC_CATALOG: readonly CatalogEntry[] = [
     model: 'gemini-2.5-pro',
     inputPerMillion: 1.25,
     outputPerMillion: 10.0,
-    retiresOn: '2026-10-16',
-    note: 'Au-delà de 200 000 tokens : 2,50 $ / 15,00 $. Non modélisé.',
+    // Lot 23 (revue) : la date du 2026-10-16 relevée le 30/07 n'est plus
+    // annoncée par la page officielle des dépréciations ; l'accès est limité
+    // aux comptes existants (404 « no longer available to new users »).
+    note: 'Au-delà de 200 000 tokens : 2,50 $ / 15,00 $. Non modélisé. '
+      + 'Accès limité aux comptes existants (à vérifier sur la clé) ; aucune date d’arrêt annoncée.',
   },
   { model: 'gemini-2.5-flash', inputPerMillion: 0.3, outputPerMillion: 2.5 },
   {

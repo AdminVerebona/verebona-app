@@ -43,7 +43,9 @@ export async function POST(request: NextRequest) {
     const isPasswordCorrect = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!isPasswordCorrect) {
       return NextResponse.json(
-        { error: 'Mot de passe incorrect', message: 'L\'ancien mot de passe est incorrect.' },
+        // Code stable : un 401 de saisie n'est pas une session expirée, le
+        // client ne doit pas renouveler la session pour autant (APP-PERF-20).
+        { error: 'Mot de passe incorrect', code: 'INVALID_CURRENT_PASSWORD', message: 'L\'ancien mot de passe est incorrect.' },
         { status: 401 }
       );
     }

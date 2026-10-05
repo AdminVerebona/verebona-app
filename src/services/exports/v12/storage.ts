@@ -33,38 +33,19 @@ export const downloadUrlTtlSeconds = (): number => {
 
 export type UploadFn = (localPath: string, key: string, contentType: string) => Promise<void>;
 
-/** Délais du client S3 des générations (ms) : établissement de connexion, inactivité de la requête. */
-export const s3Timeouts = (): { connectionTimeout: number; requestTimeout: number } => {
-  const num = (name: string, def: number) => {
-    const n = Number(process.env[name]);
-    return Number.isFinite(n) && n >= 1_000 ? Math.floor(n) : def;
-  };
-  return { connectionTimeout: num('EXPORTS_S3_CONNECT_TIMEOUT_MS', 10_000), requestTimeout: num('EXPORTS_S3_REQUEST_TIMEOUT_MS', 60_000) };
-};
-
 type S3ClientType = import('@aws-sdk/client-s3').S3Client;
-let exportClient: Promise<{ client: S3ClientType; bucket: string }> | null = null;
 
 /**
- * Client S3 DÉDIÉ aux générations : même configuration que `@/lib/s3-client`
- * (OVH, style chemin), mais avec délais de connexion et d'inactivité — un
- * stockage qui ne répond plus fait échouer l'étape (erreur transitoire,
- * nouvelle tentative) au lieu de bloquer le worker indéfiniment.
+ * Client S3 des générations : profil `worker` de la fabrique centrale
+ * (`@/lib/s3-config`, APP-PERF-26) — même endpoint, région, bucket et mode
+ * d'adressage que le reste de l'application, avec délais de connexion et
+ * d'inactivité et 3 tentatives : un stockage qui ne répond plus fait échouer
+ * l'étape (erreur transitoire, nouvelle tentative) au lieu de bloquer le
+ * worker indéfiniment.
  */
-export function exportS3(): Promise<{ client: S3ClientType; bucket: string }> {
-  exportClient ??= (async () => {
-    const [{ S3_BUCKET, S3_ENDPOINT, S3_REGION }, { S3Client }] = await Promise.all([import('@/lib/s3-client'), import('@aws-sdk/client-s3')]);
-    const client = new S3Client({
-      region: S3_REGION,
-      endpoint: S3_ENDPOINT,
-      credentials: { accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID!, secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY! },
-      forcePathStyle: true,
-      maxAttempts: 3,
-      requestHandler: s3Timeouts(),
-    });
-    return { client, bucket: S3_BUCKET! };
-  })().catch((e) => { exportClient = null; throw e; });
-  return exportClient;
+export async function exportS3(): Promise<{ client: S3ClientType; bucket: string }> {
+  const { getS3Client, getS3Bucket } = await import('@/lib/s3-config');
+  return { client: getS3Client('worker'), bucket: getS3Bucket() };
 }
 
 /** Envoi S3 en flux (taille connue : pas de mise en mémoire). */
@@ -89,11 +70,12 @@ export function attachmentDisposition(fileName: string): string {
 
 /** URL signée de courte durée, avec nom de fichier de téléchargement. */
 export async function shortLivedDownloadUrl(key: string, fileName: string, contentType: string): Promise<string> {
-  const [{ s3Client, S3_BUCKET }, { GetObjectCommand }, { getSignedUrl }] = await Promise.all([
-    import('@/lib/s3-client'), import('@aws-sdk/client-s3'), import('@aws-sdk/s3-request-presigner'),
+  const [{ getS3Client, getS3Bucket }, { GetObjectCommand }, { getSignedUrl }] = await Promise.all([
+    import('@/lib/s3-config'), import('@aws-sdk/client-s3'), import('@aws-sdk/s3-request-presigner'),
   ]);
+  const s3Client = getS3Client('interactive');
   const command = new GetObjectCommand({
-    Bucket: S3_BUCKET,
+    Bucket: getS3Bucket(),
     Key: key,
     ResponseContentDisposition: attachmentDisposition(fileName),
     ResponseContentType: contentType,

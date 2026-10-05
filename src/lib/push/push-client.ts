@@ -99,18 +99,24 @@ export async function subscribeCurrentDevice(deviceLabel?: string): Promise<Subs
 /**
  * Désassocie l'appareil courant côté serveur (déconnexion, §10.2). On conserve
  * la souscription navigateur locale pour un rattachement propre ultérieur.
+ *
+ * Best-effort, mais BORNÉ (APP-PERF-21) : `signal` interrompt l'appel réseau.
+ * La procédure de sortie (`apiClient.signOut`) lui accorde
+ * PUSH_UNSUBSCRIBE_TIMEOUT_MS ; un service worker ou un réseau qui ne répond
+ * pas ne retient plus la déconnexion.
  */
-export async function unsubscribeCurrentDevice(): Promise<void> {
+export async function unsubscribeCurrentDevice(signal?: AbortSignal): Promise<void> {
   try {
-    if (!('serviceWorker' in navigator)) return;
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
     const registration = await navigator.serviceWorker.getRegistration();
     const subscription = await registration?.pushManager.getSubscription();
-    if (!subscription) return;
+    if (!subscription || signal?.aborted) return;
     await fetch('/api/push/subscriptions/current', {
       credentials: 'include',
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ endpoint: subscription.endpoint }),
+      signal,
     }).catch(() => undefined);
   } catch {
     /* best-effort */

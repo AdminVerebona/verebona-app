@@ -57,16 +57,13 @@ interface AppSidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   toProcessCount: number | null;
-  userName: string;
-  initials: string;
-  planLabel: string;
   /** Carte d'essai, affichée menu déplié. */
   footerSlot?: React.ReactNode;
   /** Bouton « + Ajouter » en tête de la navigation (absent si non fourni). */
   onAdd?: () => void;
 }
 
-export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, userName, initials, planLabel, footerSlot, onAdd }: AppSidebarProps) {
+export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, footerSlot, onAdd }: AppSidebarProps) {
   const label = sidebarToggleLabel(collapsed);
   const badge = badgeLabel(toProcessCount);
 
@@ -161,21 +158,10 @@ export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, user
 
       {!collapsed && footerSlot}
 
-      <Link
-        href="/mon-compte"
-        aria-label={collapsed ? `${userName}, ${planLabel} — Mon compte` : undefined}
-        className={`mt-auto flex items-center gap-2.5 whitespace-nowrap border-t border-[color:var(--border-subtle)] py-3.5 transition-colors hover:bg-[color:var(--accent-soft)] ${collapsed ? 'justify-center px-2' : 'px-3.5'}`}
-      >
-        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-[13px] font-semibold text-white">
-          {initials}
-        </span>
-        {!collapsed && (
-          <span className="min-w-0">
-            <span className="block truncate text-[13px] font-medium text-[color:var(--text-primary)]">{userName}</span>
-            <span className="block truncate text-[11px] font-medium text-[color:var(--accent)]">{planLabel}</span>
-          </span>
-        )}
-      </Link>
+      {/* Pied du menu (avatar, nom, offre) retiré le 5 oct. 2026 : doublon de
+          l'avatar du header, et il affichait « Aucune offre » tant que les
+          droits n'étaient pas chargés. Le compte s'ouvre par l'avatar. */}
+      <div className="mt-auto" />
     </aside>
   );
 }

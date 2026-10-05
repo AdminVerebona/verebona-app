@@ -9,6 +9,7 @@ import { AssetFormDialog } from '@/components/AssetFormDialog';
 import { useSession } from '@/hooks/useSession';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { ACCEPT_DEPOT } from '@/lib/upload-limits';
 
 interface MobileActionsSheetProps {
   open: boolean;
@@ -82,21 +83,10 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
     if (action === 'file') {
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = [
-        'image/*',
-        'video/mp4',
-        'video/quicktime',
-        'video/x-msvideo',
-        'video/webm',
-        'video/x-matroska',
-        'application/pdf',
-        'application/msword',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'text/plain',
-        'text/csv',
-      ].join(',');
+      // Même liste que le dialogue, dérivée du contrat de dépôt (APP-PERF-28).
+      // Le fichier choisi passe ensuite par le même tri que toute autre
+      // entrée (taille, type, lot) avant tout transfert.
+      input.accept = ACCEPT_DEPOT;
       input.onchange = (e) => {
         const file = (e.target as HTMLInputElement).files?.[0];
         if (file) {

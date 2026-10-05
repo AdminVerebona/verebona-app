@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "@/db/schema";
 import { applyMigrationFiles, repairInvalidMigrationIndexes, type SqlRunner } from "@/db/migration-index";
+import { describePoolConfig, resolvePoolConfig } from "@/db/pool-config";
 
 const connectionString = process.env.DATABASE_URL!;
 
@@ -16,14 +17,26 @@ if (!connectionString && process.env.NODE_ENV !== 'test') {
     'systeme. Hors serveur Next, importez `@/lib/load-env` avant `@/db`.',
   );
 }
-const isServerless = process.env.VERCEL === '1' || process.env.NEXT_RUNTIME === 'nodejs';
+// Pool dimensionné explicitement (APP-PERF-01, `pool-config.ts`) : plus de
+// détection VERCEL / NEXT_RUNTIME. Une valeur invalide de DB_POOL_MAX fait
+// échouer le démarrage avec un message clair plutôt qu'une taille devinée.
+const poolConfig = resolvePoolConfig();
+if (process.env.NODE_ENV !== 'test') {
+  console.info(describePoolConfig(poolConfig));
+  if (poolConfig.maxSource === 'défaut' && process.env.NODE_ENV === 'production') {
+    console.warn(
+      `[db] DB_POOL_MAX absente : ${poolConfig.max} connexions par défaut. ` +
+      'Fixez-la selon le budget de connexions de l’environnement (voir src/db/pool-config.ts).',
+    );
+  }
+}
 const client = postgres(connectionString, {
-  // Dev: 8 connexions pour gérer les appels concurrents (pre-warm + load + tabs)
-  // Serverless: 1 connexion par invocation
-  max: isServerless ? 1 : 8,
-  idle_timeout: isServerless ? 10 : 20,
-  connect_timeout: 20,
-  max_lifetime: isServerless ? 60 : 60 * 10,
+  max: poolConfig.max,
+  idle_timeout: poolConfig.idleTimeoutS,
+  connect_timeout: poolConfig.connectTimeoutS,
+  max_lifetime: poolConfig.maxLifetimeS,
+  // Inchangé : ne pas réactiver les requêtes préparées sans valider le mode
+  // d'accès PostgreSQL (pooler transactionnel éventuel) séparément.
   prepare: false,
   // Reconnexion automatique en cas de coupure
   connection: {

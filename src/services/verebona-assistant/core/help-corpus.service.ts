@@ -125,6 +125,16 @@ export async function noteHelpCorpusVersion(version: string | null | undefined):
   return true;
 }
 
+/**
+ * Invalidation demandée depuis le BO (lot 23, §32.6) : le corpus est relu
+ * auprès du Centre d'aide au prochain accès. Le DERNIER CORPUS VALIDE
+ * (PUB-01, mémoire et base) est conservé : il reste le repli si la relecture
+ * échoue ou si le corpus publié est refusé.
+ */
+export function invalidateHelpCorpusCache(): void {
+  cache = null;
+}
+
 /** Réservé aux tests. */
 export function resetHelpCorpusCacheForTests(): void {
   cache = null;
@@ -141,18 +151,6 @@ export function helpCorpusUrl(): string {
   return `${base}${HELP_T2_CORPUS_PATH}`;
 }
 
-/**
- * Sections ÉDITORIALES, jamais citées à l'utilisateur (2 oct. 2026) : les
- * encadrés « Limites et points d'attention » sont des consignes de rédaction
- * (« Le Centre d'aide ne doit pas promettre de contournement »), pas de l'aide.
- * Ils sont retirés des articles sur le site ; ce filtre garantit que
- * l'assistant ne les cite pas, même depuis un corpus encore publié avec eux.
- */
-const EDITORIAL_HEADING = /^\s*limites?\s+et\s+points?\s+d['’]attention\s*$/i;
-export function isEditorialSection(s: Pick<HelpCorpusSection, 'heading'>): boolean {
-  return EDITORIAL_HEADING.test(s.heading ?? '');
-}
-
 export function parseHelpCorpus(json: unknown, opts: { legacy?: boolean } = {}): HelpCorpus | null {
   const c = json as Partial<HelpCorpus> | null;
   if (!c || c.schema !== 'verebona-help-t2-v1' || !Array.isArray(c.articles)) return null;
@@ -163,11 +161,10 @@ export function parseHelpCorpus(json: unknown, opts: { legacy?: boolean } = {}):
   // cité, ni proposé en lien (`helpArticlePublished` lit ce même corpus).
   const { legacyPublication: _ignore, ...base } = c as HelpCorpus;
   void _ignore;
-  const sansEditorial = (a: HelpCorpusArticle): HelpCorpusArticle => ({ ...a, sections: a.sections.filter((x) => !isEditorialSection(x)) });
   if (opts.legacy) {
-    return { ...base, legacyPublication: true, articles: c.articles.filter((a) => articlePublieAncienneRegle(a)).map(sansEditorial) };
+    return { ...base, legacyPublication: true, articles: c.articles.filter((a) => articlePublieAncienneRegle(a)) };
   }
-  return { ...base, articles: c.articles.filter((a) => articlePublie(a)).map(sansEditorial) };
+  return { ...base, articles: c.articles.filter((a) => articlePublie(a)) };
 }
 
 /** Ancienne règle (avant D-O) : statut absent ou `published`. Repli de transition seulement. */

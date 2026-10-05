@@ -18,7 +18,13 @@
  *      depuis le lot 16b-2 —, sinon signalé) ;
  *   4. compatibilité avec les sorties structurées (schéma JSON déclaré,
  *      modèle Gemini) ;
- *   5. défaut ≠ escalade sans décision explicite.
+ *   5. défaut ≠ escalade sans décision explicite ;
+ *   6. (lot 23, §15.12) cohérence avec le registre déclaratif des modèles :
+ *      statut DÉCLARÉ (inconnu = preview), prompt maître déclaré compatible,
+ *      modèle de rollback existant et stable ; un modèle déprécié est
+ *      signalé. Un modèle preview est admis si le flag d'environnement
+ *      `VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS` OU le réglage BO « Modèles
+ *      preview en production » (double validation, lot 21) l'autorise.
  *
  * Le DERNIER REGISTRE VALIDE est conservé (alias → modèles, date) : en cas
  * d'échec, il est journalisé et joint à l'alerte, pour un rollback direct.
@@ -28,6 +34,7 @@ import { AI_OPERATIONS, type AiOperationDefinition } from '@/services/ai/registr
 import { ASSISTANT_OPERATIONS, assertConfigAtStartup } from '../config/assistant-config';
 import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { configuredAliases, isPreviewModel, MODEL_REGISTRY_VERSION, resolveAliases, type ResolvedAliases } from '../registries/model-registry';
+import { checkModelUses, declaredModelStatus } from '@/services/ai/registry/models';
 
 export interface RegistrySnapshot {
   checkedAt: string;
@@ -49,6 +56,24 @@ export interface RegistryCheckDeps {
   hasPrice?: (provider: string, model: string) => boolean;
   /** Un prix manquant bloque-t-il ? (production) */
   pricingBlocking?: () => boolean;
+  /** Modèles preview autorisés (flag d'environnement ou réglage BO accordé). */
+  previewAllowed?: () => boolean | Promise<boolean>;
+}
+
+/**
+ * Modèles preview autorisés pour l'assistant : flag d'environnement, sinon
+ * réglage BO accordé par double validation (lot 21). Même règle au démarrage
+ * et à la validation / activation d'une version (lot 23, revue I-1).
+ */
+export async function assistantPreviewModelsAllowed(): Promise<boolean> {
+  if (/^(on|true|1)$/i.test(process.env.VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS ?? '')) return true;
+  try {
+    const { refreshAssistantSettings, effectiveSetting } = await import('../config/assistant-settings');
+    await refreshAssistantSettings();
+    return effectiveSetting('preview_models_allowed') === true;
+  } catch {
+    return false;
+  }
 }
 
 async function defaultHasPrice(): Promise<(provider: string, model: string) => boolean> {
@@ -71,7 +96,7 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
   const warnings: string[] = [];
   const resolved: ResolvedAliases[] = [];
   const escaladeActive = isAssistantFlagOn('fallback_model');
-  const previewPermis = /^(on|true|1)$/i.test(process.env.VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS ?? '');
+  const previewPermis = await (deps.previewAllowed ?? assistantPreviewModelsAllowed)();
 
   for (const code of ASSISTANT_OPERATIONS) {
     const op = operations[code];
@@ -88,7 +113,11 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
       // 2. Modèles autorisés.
       if (/latest/i.test(m)) errors.push(`${code} : alias fournisseur « latest » interdit (${m}) (§15.13)`);
       if (/-pro\b/i.test(m)) errors.push(`${code} : modèle Pro interdit (${m}) (§15.6)`);
-      if (isPreviewModel(m) && !previewPermis) errors.push(`${code} : modèle preview sans flag (${m}) (§15.12)`);
+      if (isPreviewModel(m) && !previewPermis) {
+        errors.push(declaredModelStatus(m) === 'unknown'
+          ? `${code} : modèle ${m} absent du registre des modèles, traité comme preview — non autorisé sans flag (§15.12)`
+          : `${code} : modèle preview sans flag (${m}) (§15.12)`);
+      }
       // 3. Prix.
       if (!hasPrice(op.provider, m)) {
         (pricingBlocking ? errors : warnings).push(`${code} : aucun prix connu pour ${op.provider}/${m} (§15.14)`);
@@ -98,6 +127,11 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
     }
     if (!op.outputSchema || op.outputSchema === 'none' || op.outputFormat === 'text') {
       errors.push(`${code} : aucun schéma de sortie structurée déclaré (§18.1)`);
+    }
+    // 6. Registre déclaratif : prompt compatible, rollback existant et stable.
+    for (const issue of checkModelUses(modeles.map((m) => ({ where: code, model: m, promptCode: op.masterPromptCode ?? op.promptCode ?? null })))) {
+      if (issue.code === 'UNKNOWN_MODEL') continue; // couvert par le contrôle preview ci-dessus
+      (issue.level === 'error' ? errors : warnings).push(`${issue.message} (§15.12)`);
     }
     // 5. Défaut et escalade identiques.
     if (r.default && r.default === r.escalation && process.env.VEREBONA_ASSISTANT_ALLOW_SAME_MODEL !== 'true') {

@@ -1,23 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
+import { isS3Configured, logS3Error, S3ConfigError, signGetUrl } from '@/lib/s3-config';
 import { FileLogger } from '@/lib/file-logger';
 import { SessionService } from '@/lib/session-service';
 import { contentDisposition, downloadFilename } from '@/lib/download-filename';
+import { viewableFileCondition } from '@/services/documents/grouped-sources';
 
-const s3Client = new S3Client({
-  region: process.env.OVH_S3_REGION || 'gra',
-  endpoint: process.env.OVH_S3_ENDPOINT || 'https://s3.gra.io.cloud.ovh.net',
-  credentials: {
-    accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY || '',
-  },
-  forcePathStyle: false,
-});
+/** Durée de l'URL de téléchargement (s) : immédiatement suivie par le navigateur. */
+const DOWNLOAD_URL_TTL_S = 3600;
 
 
 export async function GET(
@@ -58,7 +51,9 @@ export async function GET(
       .where(
         and(
           eq(assetFiles.id, fileIdInt),
-          isNull(assetFiles.deletedAt)
+          // Même garde que view/proxy (APP-PERF-13) : supprimé = introuvable,
+          // sauf source secondaire d'un document existant (preuves, 0143).
+          viewableFileCondition,
         )
       )
       .limit(1);
@@ -184,8 +179,8 @@ export async function GET(
       );
     }
 
-    if (!process.env.OVH_S3_ACCESS_KEY_ID || !process.env.OVH_S3_SECRET_ACCESS_KEY) {
-      console.error('GET download URL error: Missing S3 credentials in environment');
+    if (!isS3Configured()) {
+      console.error('GET download URL error: S3 configuration invalid (voir /api/health)');
       FileLogger.error({
         requestId,
         ip,
@@ -210,14 +205,13 @@ export async function GET(
     // (voir src/lib/download-filename.ts).
       const downloadName = downloadFilename(file);
 
-      const command = new GetObjectCommand({
-        Bucket: file.s3Bucket ?? undefined,
-        Key: file.s3Key ?? undefined,
-        ResponseContentDisposition: contentDisposition(downloadName),
-        ResponseContentType: file.mimeType ?? undefined,
-      });
-
-    const downloadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    const downloadUrl = await signGetUrl({
+      bucket: file.s3Bucket,
+      key: file.s3Key,
+      responseContentDisposition: contentDisposition(downloadName),
+      responseContentType: file.mimeType ?? undefined,
+      expiresIn: DOWNLOAD_URL_TTL_S,
+    });
 
     // Log success
     FileLogger.success({
@@ -238,11 +232,18 @@ export async function GET(
     return NextResponse.json({
       downloadUrl,
       filename: downloadName,
-      expiresIn: 3600,
-    }, { status: 200 });
+      expiresIn: DOWNLOAD_URL_TTL_S,
+    }, { status: 200, headers: { 'Cache-Control': 'private, no-store' } });
 
   } catch (error) {
-    console.error('GET /api/files/[id]/download error:', error);
+    if (error instanceof S3ConfigError) {
+      logS3Error('GET /api/files/[id]/download', error);
+      return NextResponse.json(
+        { error: 'Storage configuration error', code: 'S3_CONFIG_INVALID' },
+        { status: 500 }
+      );
+    }
+    console.error('GET /api/files/[id]/download error:', (error as Error)?.name, (error as Error)?.message);
     FileLogger.error({
       requestId,
       ip,

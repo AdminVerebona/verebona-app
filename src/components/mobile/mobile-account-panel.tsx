@@ -91,9 +91,11 @@ export function MobileAccountPanel({
                 <span className="block truncate text-sm font-semibold text-[color:var(--text-primary)]">
                   {personName}
                 </span>
-                <span className="mt-1 inline-block rounded-full bg-[color:var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[color:var(--accent)]">
-                  {planLabel}
-                </span>
+                {planLabel && (
+                  <span className="mt-1 inline-block rounded-full bg-[color:var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[color:var(--accent)]">
+                    {planLabel}
+                  </span>
+                )}
                 {accountName && (
                   <span className="mt-1 block truncate text-xs text-[color:var(--text-muted)]">{accountName}</span>
                 )}

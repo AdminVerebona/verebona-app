@@ -48,6 +48,7 @@ import {
   GetObjectCommand,
 } from '@aws-sdk/client-s3';
 import { db } from '@/db';
+import { getS3Bucket, getS3Client, isS3Configured } from '@/lib/s3-config';
 
 export const BACKUP_PREFIX = 'backups/';
 /** Nombre de jours conservés. */
@@ -72,20 +73,13 @@ export interface BackupManifest {
   environment: string;
 }
 
+/** Client du profil `worker` de la configuration centrale (APP-PERF-26). */
 function s3(): S3Client {
-  return new S3Client({
-    region: process.env.OVH_S3_REGION || 'gra',
-    endpoint: process.env.OVH_S3_ENDPOINT || 'https://s3.gra.io.cloud.ovh.net',
-    credentials: {
-      accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID || '',
-      secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY || '',
-    },
-    forcePathStyle: true,
-  });
+  return getS3Client('worker');
 }
 
 function bucket(): string {
-  return process.env.OVH_S3_BUCKET || 'verebona-files';
+  return getS3Bucket();
 }
 
 /** Horodatage utilisable dans une clé : 2026-09-17T02-00-00Z. */
@@ -327,7 +321,7 @@ export async function listDatabaseBackups(limit = 60): Promise<BackupListItem[]>
  * administrateur ouvre la Supervision.
  */
 export async function latestBackupAt(timeoutMs = 5000): Promise<Date | null | undefined> {
-  if (!process.env.OVH_S3_ACCESS_KEY_ID) return undefined;
+  if (!isS3Configured()) return undefined;
   try {
     const result = await Promise.race([
       s3().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: BACKUP_PREFIX, MaxKeys: 1000 })),

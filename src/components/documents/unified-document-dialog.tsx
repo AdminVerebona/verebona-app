@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,25 +22,18 @@ import { useFeatureFlags } from '@/hooks/useFeatureFlags';
 import { apiClient } from '@/lib/api-client';
 import { Substructure, Equipment, assetSupportsStructuralFeatures } from '@/types/domain';
 import { PICKER_DOCUMENT_TYPES } from '@/lib/document-type-constants';
-import { normalizeMimeType, computeFileSha256 } from '@/lib/file-validation';
+import { normalizeMimeType } from '@/lib/file-validation';
+import {
+  ACCEPT_DEPOT, MAX_DOCUMENTS_PAR_DEPOT, TAILLE_MAX_LOT, enMo, trierFichiersPourDepot,
+} from '@/lib/upload-limits';
+import { fileDepot, estActif, type BilanLot, type MetaConfirmation } from '@/lib/upload-queue';
+import { useFileDepot } from '@/hooks/useFileDepot';
+import { UploadQueuePanel } from './UploadQueueIndicator';
 import { FusionSuggestionModal } from './FusionSuggestionModal';
 import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
 import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
-import { messageSelonStatut, fetchDepot } from '@/lib/upload-http';
-
-/**
- * Echec de la demande d'URL signee.
- *
- * ⚠️ LE MOTIF DU REFUS ETAIT PERDU. Les deux appels a `/api/files/presign`
- * levaient « Échec de la préparation du téléchargement » sans lire le corps
- * de la reponse. Un refus de droits — essai termine, quota documentaire
- * atteint — arrivait donc a l'utilisateur sous la forme d'une panne
- * technique, sans indication ni moyen d'agir.
- */
-async function presignError(res: Response): Promise<Error> {
-  return reponseEnErreur(res, 'Échec de la préparation du téléchargement');
-}
+import { messageSelonStatut } from '@/lib/upload-http';
 
 /**
  * Traduit une réponse d'erreur en exception lisible.
@@ -109,12 +102,113 @@ const EVENT_CATEGORIES = [
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 /**
- * Limites de dépôt — alignées sur `api/files/presign` et `api/files/confirm`.
- * Le serveur fait autorité ; ces valeurs évitent un aller-retour inutile.
+ * Limites de dépôt : contrat unique `@/lib/upload-limits`, partagé avec
+ * `api/files/presign` et `api/files/confirm` (APP-PERF-28). Le serveur fait
+ * autorité ; les appliquer ici évite un transfert voué au refus.
  */
-const MAX_DOCUMENTS_PAR_DEPOT = 10;
-const MAX_TAILLE_FICHIER = 25_000_000;
-const MAX_TAILLE_LOT = 100_000_000;
+
+/** Contexte d'un dépôt figé à l'envoi : la fin du lot peut survenir panneau fermé. */
+interface ContexteDepot {
+  isWl: boolean;
+  isPremium: boolean;
+  selectedEventIds: number[];
+  createEvent: boolean;
+  assetId: string;
+  eventType: string;
+  eventTitle: string;
+  substructureId: number | null;
+  equipmentId: number | null;
+  documentType: string;
+  documentDate: string;
+  supplier: string;
+  title: string;
+  amountCents: number | null;
+  targetAssetId: number | null;
+  webLinkTitle: string;
+  webLinkUrl: string;
+  premierFichier: { name: string; size: number; mimeType: string } | null;
+  /** Événement créé au premier bilan : les reprises tardives s'y rattachent. */
+  evenementCreeId?: number | null;
+}
+
+/** Associations et création d'événement, puis signaux de rafraîchissement. */
+async function associerEtSignaler(ctx: ContexteDepot, fileIds: number[]): Promise<void> {
+  if (fileIds.length === 0) return;
+  for (const eventId of ctx.selectedEventIds) {
+    await fetch(`/api/events/${eventId}/documents`, {
+      credentials: 'include',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileIds }),
+    }).catch(() => {});
+  }
+  if (ctx.createEvent && ctx.assetId && ctx.assetId !== '0') {
+    if (ctx.evenementCreeId === undefined) {
+      ctx.evenementCreeId = null;
+      const userStr = localStorage.getItem('user');
+      if (userStr) {
+        const user = JSON.parse(userStr);
+        const eventResponse = await fetch('/api/events', {
+          credentials: 'include',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.id, assetId: parseInt(ctx.assetId),
+            substructureId: ctx.substructureId,
+            equipmentId: ctx.equipmentId,
+            categorie: ctx.eventType, title: ctx.eventTitle,
+            date: ctx.documentDate,
+            provider: ctx.supplier || null,
+            costCents: ctx.amountCents,
+            notes: ctx.title || (ctx.isWl ? ctx.webLinkTitle : ctx.premierFichier?.name),
+          }),
+        }).catch(() => null);
+        if (eventResponse?.ok) {
+          const { event } = await eventResponse.json();
+          ctx.evenementCreeId = event.id;
+        }
+      }
+    }
+    if (ctx.evenementCreeId) {
+      await fetch(`/api/events/${ctx.evenementCreeId}/documents`, {
+        credentials: 'include',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileIds }),
+      }).catch(() => {});
+    }
+  }
+
+  if (ctx.isPremium) {
+    // Le pipeline tourne côté serveur (mis en file par /api/files/confirm,
+    // un travail par document) : il ne dépend plus du client ouvert.
+    window.dispatchEvent(new CustomEvent('document-added'));
+    // Un signal par document : chacun a sa propre analyse, et la bannière
+    // affiche « N analyses en cours ».
+    for (const fileId of fileIds) {
+      window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId } }));
+    }
+    window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
+  } else {
+    // Standard — pas d'analyse IA
+    const f = ctx.premierFichier;
+    window.dispatchEvent(new CustomEvent('document-added', { detail: { file: {
+      id: fileIds[0],
+      fileName: ctx.isWl ? ctx.webLinkTitle : (f?.name ?? ctx.title ?? 'Document'),
+      retainedTitle: ctx.isWl ? ctx.webLinkTitle : (ctx.title || f?.name || null),
+      mimeType: ctx.isWl ? 'application/x-web-link' : (f?.mimeType ?? 'application/octet-stream'),
+      fileSize: ctx.isWl ? null : (f?.size ?? null),
+      documentType: ctx.documentType || null,
+      documentDate: ctx.documentDate || null,
+      supplier: ctx.supplier || null,
+      amountCents: ctx.amountCents || null,
+      assetId: ctx.targetAssetId,
+      webLinkUrl: ctx.isWl ? ctx.webLinkUrl : null,
+      createdAt: new Date().toISOString(),
+      analysisState: null,
+    }}}));
+  }
+}
 
 export function UnifiedDocumentDialog({
   open,
@@ -136,13 +230,30 @@ export function UnifiedDocumentDialog({
   const isMobile = useIsMobile();
   const { isPremium } = useFeatureFlags();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploadAbortRef = useRef<AbortController | null>(null);
+  // ── Dépôt confié à la file globale (APP-PERF-29) ────────────────────────
+  // Le panneau ne porte plus l'envoi : il suit le lot qu'il a lancé. Fermer
+  // le panneau ne l'annule pas ; « Annuler l'envoi » l'annule explicitement.
+  const lotRef = useRef<string | null>(null);
+  const [lotId, setLotIdState] = useState<string | null>(null);
+  const setLotId = (id: string | null) => { lotRef.current = id; setLotIdState(id); };
+  const monteRef = useRef(true);
+  useEffect(() => { monteRef.current = true; return () => { monteRef.current = false; }; }, []);
+  const depot = useFileDepot();
+  const elementsLot = useMemo(
+    () => (lotId ? depot.elements.filter((e) => e.lotId === lotId) : []),
+    [depot, lotId],
+  );
+  const lotActif = elementsLot.some(estActif);
 
   // ── Mode ────────────────────────────────────────────────────────────────────
   const [mode, setMode] = useState<'file' | 'weblink'>('file');
   const [isDragging, setIsDragging] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
+  /** Création d'un lien web en cours (les fichiers passent par la file). */
+  const [isSubmittingLink, setIsSubmittingLink] = useState(false);
+  const isUploading = isSubmittingLink || lotActif;
+  const uploadProgress = elementsLot.length > 0
+    ? { current: elementsLot.filter((e) => !estActif(e)).length, total: elementsLot.length }
+    : null;
 
   // ── Files (pending, not yet uploaded) ───────────────────────────────────────
   const [files, setFiles] = useState<FileWithPreview[]>([]);
@@ -223,12 +334,11 @@ export function UnifiedDocumentDialog({
   useEffect(() => {
     if (!open) return;
 
-    // Load initial files
+    // Fichiers initiaux (menu mobile, appareil photo) : même contrôle que
+    // le sélecteur et le glisser-déposer (APP-PERF-28) — ils contournaient
+    // `addFiles` et n'étaient refusés qu'au serveur, après transfert.
     if (initialFiles && initialFiles.length > 0) {
-      setFiles(initialFiles.map(file => ({
-        file,
-        preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-      })));
+      addFiles(initialFiles, []);
     }
     if (initialSource) {
       setMode(initialSource === 'weblink' ? 'weblink' : 'file');
@@ -318,170 +428,48 @@ export function UnifiedDocumentDialog({
   }, [preselectedAssetId]);
 
 
-  // ── File helpers ────────────────────────────────────────────────────────────
-  const calculateHash = async (file: File): Promise<string> => {
-    try { return await computeFileSha256(file); } catch { return 'placeholder-hash'; }
-  };
-
-  // ── IA analysis — fire & forget after drawer closes ─────────────────────────
-
   const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').trim();
 
-  // ── Envoi d'UN fichier : presign → PUT stockage → confirmation ─────────────
-  //
-  // ══════════════════════════════════════════════════════════════════════════
-  // UN DÉPÔT DE N FICHIERS = N DÉPÔTS D'UN FICHIER
-  //
-  // Les fichiers partaient en parallèle vers le stockage, puis UNE seule
-  // confirmation portait tout le lot. Le serveur ne confirmait que le premier
-  // et lançait une analyse groupée qui pouvait fusionner des documents
-  // distincts : seul le premier était « analysé et enregistré ».
-  //
-  // Chaque fichier suit maintenant le parcours complet d'un dépôt unitaire,
-  // l'un après l'autre. Le serveur met chaque analyse en file d'attente.
-  // ══════════════════════════════════════════════════════════════════════════
-  const envoyerUnFichier = useCallback(async (
-    file: File,
-    signal: AbortSignal,
-    meta: { targetAssetId: number | null; amountCents: number | null; seul: boolean },
-  ): Promise<number> => {
-    if (signal.aborted) throw new Error('Upload annulé');
-    const sha256Hash = await calculateHash(file);
-
-    const presignResponse = await fetchDepot('/api/files/presign', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        filename: file.name,
-        mimeType: normalizeMimeType(file),
-        size: file.size,
-        sha256Hash,
-        assetId: meta.targetAssetId,
-      }),
-      signal,
-    });
-    if (!presignResponse.ok) throw await presignError(presignResponse);
-    const { uploadUrl, fileId } = await presignResponse.json();
-
-    // Délai propre à ce fichier : il ne doit pas annuler les suivants.
-    const delai = new AbortController();
-    const minuterie = setTimeout(() => delai.abort(), 120_000);
-    const annulerSiParent = () => delai.abort();
-    signal.addEventListener('abort', annulerSiParent);
-    let uploadResponse: Response;
-    try {
-      uploadResponse = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': normalizeMimeType(file) },
-        signal: delai.signal,
-      });
-    } catch (e) {
-      if (signal.aborted) throw new Error('Upload annulé');
-      if ((e as Error).name === 'AbortError') {
-        throw new Error(`${file.name} : le téléversement a dépassé deux minutes.`);
-      }
-      // Un TypeError nu sur le stockage signale presque toujours une origine
-      // non autorisée sur le bucket (CORS).
-      throw new Error(`${file.name} : le stockage a refusé le fichier (réseau ou CORS).`);
-    } finally {
-      clearTimeout(minuterie);
-      signal.removeEventListener('abort', annulerSiParent);
-    }
-    if (!uploadResponse.ok) {
-      throw new Error(
-        `${file.name} : le stockage a refusé le fichier (${uploadResponse.status}).` +
-        (uploadResponse.status === 403 ? ' Réessayez.' : ''),
-      );
-    }
-
-    const confirmResponse = await fetchDepot('/api/files/confirm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fileId,
-        assetId: meta.targetAssetId,
-        substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
-        equipmentId: selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
-        documentType,
-        documentDate: documentDate || null,
-        // Titre, fournisseur et montant saisis ne valent que pour un dépôt
-        // d'un seul fichier : sur plusieurs documents, ils seraient faux
-        // pour tous sauf un. L'analyse les renseigne document par document.
-        description: meta.seul ? (title || null) : null,
-        supplier: meta.seul ? (supplier || null) : null,
-        amountCents: meta.seul ? meta.amountCents : null,
-      }),
-      signal,
-    });
-    if (!confirmResponse.ok) {
-      throw await reponseEnErreur(confirmResponse, `${file.name} : échec de l'enregistrement.`);
-    }
-    return fileId as number;
-  }, [selectedSubstructureId, selectedEquipmentId, documentType, documentDate, title, supplier]);
-
-  const addFiles = (newFiles: File[]) => {
+  const addFiles = (newFiles: File[], existants: FileWithPreview[] = files) => {
     // ══════════════════════════════════════════════════════════════════════
-    // REFUSER AVANT L'ENVOI, PAS APRÈS
+    // REFUSER AVANT L'ENVOI, PAS APRÈS — contrat `@/lib/upload-limits`
     //
-    // Le serveur applique les mêmes limites — il fait seul autorité. Mais les
-    // annoncer ici évite d'attendre un téléversement de 200 Mo pour apprendre
-    // qu'il est refusé.
-    //
-    // Les vidéos sont exemptées de la limite par fichier : elles ne sont pas
-    // analysées, et le serveur leur accorde 500 Mo.
+    // Le serveur applique les mêmes limites — il fait seul autorité. Les
+    // annoncer ici évite d'attendre un transfert pour apprendre qu'il est
+    // refusé. Fichier vide, type non pris en charge, taille (document ou
+    // vidéo), nombre et taille cumulée : tous bloquants, tous annoncés.
     // ══════════════════════════════════════════════════════════════════════
-    const tropGros = newFiles.filter(
-      (f) => !f.type.startsWith('video/') && f.size > MAX_TAILLE_FICHIER,
-    );
-    if (tropGros.length > 0) {
-      toast.error(
-        `${tropGros.length === 1 ? 'Ce document dépasse' : 'Ces documents dépassent'} ` +
-        `${MAX_TAILLE_FICHIER / 1_000_000} Mo : ${tropGros.map((f) => f.name).join(', ')}. ` +
-        'Au-delà, l\'analyse automatique échouerait.',
-      );
+    const decrire = (f: File) => ({ name: f.name, size: f.size, mimeType: normalizeMimeType(f) });
+    const tri = trierFichiersPourDepot(existants.map((x) => decrire(x.file)), newFiles, decrire);
+
+    // Regroupés par motif : un message par cause, avec les fichiers concernés.
+    const parMotif = new Map<string, string[]>();
+    for (const { fichier, refus } of tri.refuses) {
+      parMotif.set(refus.message, [...(parMotif.get(refus.message) ?? []), fichier.name]);
     }
-
-    const retenus = newFiles.filter((f) => !tropGros.includes(f));
-
-    // Calcul hors de `setFiles` : un effet de bord (bandeau) dans la fonction
-    // de mise à jour est rejoué en mode strict et s'affichait deux fois.
-    const place = MAX_DOCUMENTS_PAR_DEPOT - files.length;
-    if (retenus.length > place) {
-      const ecartes = retenus.length - Math.max(0, place);
+    for (const [motif, noms] of parMotif) {
+      toast.error(`${motif} ${noms.length === 1 ? 'Fichier écarté' : 'Fichiers écartés'} : ${noms.join(', ')}.`);
+    }
+    if (tri.horsNombre.length > 0) {
+      const ecartes = tri.horsNombre.length;
       toast.error(
         `Vous pouvez déposer ${MAX_DOCUMENTS_PAR_DEPOT} documents à la fois. ` +
         `${ecartes} ${ecartes === 1 ? 'a été écarté' : 'ont été écartés'}.`,
       );
     }
-    const candidats = retenus.slice(0, Math.max(0, place));
-
-    // La taille cumulée est désormais BLOQUANTE : le serveur refuserait le
-    // dépôt. On retient les fichiers dans l'ordre tant que le total reste
-    // sous le plafond, et on annonce ceux qui sont écartés.
-    let cumul = files.reduce((t, x) => t + x.file.size, 0);
-    const ajoutes: File[] = [];
-    const tropLourds: string[] = [];
-    for (const f of candidats) {
-      if (cumul + f.size > MAX_TAILLE_LOT) {
-        tropLourds.push(f.name);
-        continue;
-      }
-      cumul += f.size;
-      ajoutes.push(f);
-    }
-    if (tropLourds.length > 0) {
+    if (tri.horsLot.length > 0) {
       toast.error(
-        `Un dépôt ne peut pas dépasser ${MAX_TAILLE_LOT / 1_000_000} Mo. ` +
-        `${tropLourds.length === 1 ? 'Ce fichier a été écarté' : 'Ces fichiers ont été écartés'} : ${tropLourds.join(', ')}.`,
+        `Un dépôt ne peut pas dépasser ${enMo(TAILLE_MAX_LOT)}. ` +
+        `${tri.horsLot.length === 1 ? 'Ce fichier a été écarté' : 'Ces fichiers ont été écartés'} : ${tri.horsLot.map((f) => f.name).join(', ')}.`,
       );
     }
-    if (ajoutes.length === 0) return;
+    if (tri.retenus.length === 0) return;
 
-    setFiles(prev => [...prev, ...ajoutes.map(file => ({
+    const ajouts = tri.retenus.map(file => ({
       file,
       preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-    }))]);
+    }));
+    setFiles(prev => (existants === files ? [...prev, ...ajouts] : [...existants, ...ajouts]));
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -520,18 +508,93 @@ export function UnifiedDocumentDialog({
     setMode('file');
     setWebLinkUrl('');
     setWebLinkTitle('');
-    setUploadProgress(null);
+    setLotId(null);
   };
 
+  // ══════════════════════════════════════════════════════════════════════
+  // FERMER N'EST PLUS ANNULER (APP-PERF-29)
+  //
+  // `handleClose` annulait l'envoi et vidait le formulaire. L'envoi est
+  // désormais porté par la file globale : fermer masque le panneau, le
+  // transfert continue et reste visible (`UploadQueueIndicator`). Annuler
+  // est l'action explicite « Annuler l'envoi ».
+  // ══════════════════════════════════════════════════════════════════════
   const handleClose = () => {
-    if (isUploading) {
-      uploadAbortRef.current?.abort();
-      uploadAbortRef.current = null;
-      setIsUploading(false);
-      setUploadProgress(null);
+    if (lotActif) {
+      toast.info("L'envoi continue. Suivez-le dans le panneau « Envoi de documents ».");
     }
     resetForm();
     onOpenChange(false);
+  };
+
+  const annulerEnvoi = () => {
+    if (lotRef.current) fileDepot.annulerLot(lotRef.current);
+  };
+
+  /** Contexte figé du dépôt : la fin du lot peut survenir panneau fermé. */
+  const contexteDepot = (): ContexteDepot => {
+    const targetAssetId = assetId && assetId !== '0' ? parseInt(assetId) : null;
+    const categoryLabel = EVENT_CATEGORIES.find(c => c.value === eventType)?.label;
+    const premier = files[0]?.file;
+    return {
+      isWl: mode === 'weblink',
+      isPremium: !!isPremium,
+      selectedEventIds: [...selectedEventIds],
+      createEvent,
+      assetId,
+      eventType,
+      eventTitle: categoryLabel || documentTypes.find(dt => dt.code === documentType)?.label || 'Document ajouté',
+      substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
+      equipmentId: selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
+      documentType,
+      documentDate,
+      supplier,
+      title,
+      amountCents: amount ? Math.round(parseFloat(amount) * 100) : null,
+      targetAssetId,
+      webLinkTitle,
+      webLinkUrl,
+      premierFichier: premier ? { name: premier.name, size: premier.size, mimeType: normalizeMimeType(premier) } : null,
+    };
+  };
+
+  /** Ce panneau suit-il encore ce lot ? (il a pu être fermé ou réutilisé) */
+  const suitLeLot = (id: string) => monteRef.current && lotRef.current === id;
+
+  /**
+   * Fin d'un lot : associations, signaux, messages. Exécutée même panneau
+   * fermé ou démonté (la file appelle cette fermeture) ; le formulaire n'est
+   * réinitialisé et fermé que si le panneau suit encore ce lot.
+   */
+  const surFinLot = (ctx: ContexteDepot) => async (bilan: BilanLot) => {
+    if (bilan.ecritureBloquee) {
+      // La fenêtre de fin d'essai est ouverte : on ferme le dépôt pour la
+      // laisser lisible, sans message d'erreur par-dessus.
+      if (suitLeLot(bilan.lotId)) { resetForm(); onOpenChange(false); }
+      return;
+    }
+    if (bilan.fileIds.length > 0) {
+      await associerEtSignaler(ctx, bilan.fileIds);
+      onFilesUploaded?.(bilan.fileIds);
+      const n = bilan.fileIds.length;
+      toast.success(n > 1 ? `${n} documents ajoutés` : '1 document ajouté');
+    }
+    if (bilan.tardif) return;
+    if (bilan.echecs.length > 0) {
+      toast.error(
+        bilan.fileIds.length === 0 && bilan.echecs.length === 1
+          ? bilan.echecs[0].erreur
+          : `${bilan.echecs.length} document${bilan.echecs.length > 1 ? 's' : ''} non ajouté${bilan.echecs.length > 1 ? 's' : ''} : ` +
+            `${bilan.echecs.map((e) => e.erreur).join(' · ')}. Vous pouvez les reprendre depuis le panneau d'envoi.`,
+        { duration: 10000 },
+      );
+      return; // Le panneau reste ouvert sur l'état du lot (reprise possible).
+    }
+    if (bilan.fileIds.length > 0 && suitLeLot(bilan.lotId)) {
+      onSuccess?.();
+      resetForm();
+      onOpenChange(false);
+    }
   };
 
   // ── Submit ───────────────────────────────────────────────────────────────────
@@ -557,177 +620,76 @@ export function UnifiedDocumentDialog({
       return;
     }
 
-    setIsUploading(true);
-    const targetAssetId = assetId && assetId !== '0' ? parseInt(assetId) : null;
-    const amountCents = amount ? Math.round(parseFloat(amount) * 100) : null;
+    const ctx = contexteDepot();
 
+    if (mode === 'file') {
+      // ════════════════════════════════════════════════════════════════════
+      // UN DÉPÔT DE N FICHIERS = N DÉPÔTS D'UN FICHIER (file globale)
+      //
+      // Chaque fichier suit le parcours complet d'un dépôt unitaire —
+      // empreinte, presign, PUT, SA confirmation — avec une concurrence
+      // bornée (`upload-queue.ts`). Jamais de confirmation groupée : elle
+      // avait fusionné des documents distincts.
+      // ════════════════════════════════════════════════════════════════════
+      const meta: MetaConfirmation = {
+        assetId: ctx.targetAssetId,
+        substructureId: ctx.substructureId,
+        equipmentId: ctx.equipmentId,
+        documentType,
+        documentDate: documentDate || null,
+        description: title || null,
+        supplier: supplier || null,
+        amountCents: ctx.amountCents,
+      };
+      const aEnvoyer = files.map((f) => f.file);
+      // Le formulaire est vidé : les fichiers appartiennent désormais à la
+      // file. Un second clic ne peut pas renvoyer un fichier déjà parti.
+      files.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
+      setFiles([]);
+      const id = fileDepot.ajouterLot(aEnvoyer, meta, { surFin: surFinLot(ctx) });
+      setLotId(id);
+      return;
+    }
+
+    // ── Création du lien web ──────────────────────────────────────────────
+    setIsSubmittingLink(true);
     try {
-      let uploadedFileIds: number[] = [];
-
-      if (mode === 'weblink') {
-        // ── Création du lien web ──────────────────────────────────────────────
-        const wlRes = await fetch('/api/web-links', {
-      credentials: 'include',
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            url: webLinkUrl,
-            title: webLinkTitle,
-            documentType,
-            assetId: targetAssetId,
-            documentDate: documentDate || null,
-            description: title || null,
-            supplier: supplier || null,
-            amountCents: amountCents || null,
-          }),
-        });
-        if (!wlRes.ok) {
-          throw await reponseEnErreur(wlRes, `Erreur ${wlRes.status}`);
-        }
-        const { webLink } = await wlRes.json();
-        uploadedFileIds.push(webLink.id);
-
-      } else {
-        uploadAbortRef.current = new AbortController();
-        const abortSignal = uploadAbortRef.current.signal;
-        const total = files.length;
-        setUploadProgress({ current: 0, total });
-
-        // File d'attente côté client : un fichier après l'autre. Un échec
-        // n'arrête pas les suivants, sauf un refus de droits (tous seraient
-        // refusés) ou une annulation.
-        const echecs: string[] = [];
-        for (let i = 0; i < total; i++) {
-          try {
-            const id = await envoyerUnFichier(files[i].file, abortSignal, {
-              targetAssetId,
-              amountCents,
-              seul: total === 1,
-            });
-            uploadedFileIds.push(id);
-          } catch (e) {
-            if (isWriteBlockedError(e) || abortSignal.aborted) throw e;
-            console.error('Upload error:', e);
-            echecs.push((e as Error).message);
-          }
-          setUploadProgress({ current: i + 1, total });
-        }
-
-        if (uploadedFileIds.length === 0) {
-          throw new Error(echecs[0] ?? "Erreur lors de l'ajout du document");
-        }
-        if (echecs.length > 0) {
-          toast.error(
-            `${echecs.length} document${echecs.length > 1 ? 's' : ''} non ajouté${echecs.length > 1 ? 's' : ''} : ${echecs.join(' · ')}`,
-            { duration: 10000 },
-          );
-        }
-      }
-
-      // Associate with events
-      for (const eventId of selectedEventIds) {
-        await fetch(`/api/events/${eventId}/documents`, {
-      credentials: 'include',
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json'},
-          body: JSON.stringify({ fileIds: uploadedFileIds }),
-        }).catch(() => {});
-      }
-
-      // Create new event
-      if (createEvent && assetId && assetId !== '0') {
-        const userStr = localStorage.getItem('user');
-        if (userStr) {
-          const user = JSON.parse(userStr);
-          const categoryLabel = EVENT_CATEGORIES.find(c => c.value === eventType)?.label;
-          const eventTitle = categoryLabel || documentTypes.find(dt => dt.code === documentType)?.label || 'Document ajouté';
-          const eventResponse = await fetch('/api/events', {
-      credentials: 'include',
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              userId: user.id, assetId: parseInt(assetId),
-              substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
-              equipmentId: selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
-              categorie: eventType, title: eventTitle,
-              date: documentDate,
-              provider: supplier || null,
-              costCents: amountCents,
-              notes: title || (mode === 'weblink' ? webLinkTitle : files[0].file.name),
-            }),
-          });
-          if (eventResponse.ok) {
-            const { event } = await eventResponse.json();
-            await fetch(`/api/events/${event.id}/documents`, {
-      credentials: 'include',
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json'},
-              body: JSON.stringify({ fileIds: uploadedFileIds }),
-            }).catch(() => {});
-          }
-        }
-      }
-
-      onFilesUploaded?.(uploadedFileIds);
-
-      if (isPremium) {
-        // Upload terminé — le pipeline unifié tourne déjà en arrière-plan côté serveur
-        // (déclenché par /api/files/confirm avec fileIds[]).
-        // On signal le début d'analyse (bannière) et on ferme le dialog.
-        const count = uploadedFileIds.length;
-        const isWl = mode === 'weblink';
-        toast.success(isWl ? 'Lien web ajouté' : count > 1 ? `${count} documents ajoutés` : '1 document ajouté');
-        window.dispatchEvent(new CustomEvent('document-added'));
-        // Signal une seule fois pour l'ensemble du batch (bannière d'analyse)
-        // On passe le premier fileId pour permettre l'ouverture du drawer via "Voir →"
-        // Un signal par document : chacun a sa propre analyse, et la
-        // bannière affiche « N analyses en cours ».
-        for (const fileId of uploadedFileIds) {
-          window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId } }));
-        }
-        window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
-        onSuccess?.();
-        resetForm();
-        onOpenChange(false);
-      } else {
-        // Standard — pas d'analyse IA
-        const isWl = mode === 'weblink';
-        const singleFileId = uploadedFileIds[0];
-        const nb = uploadedFileIds.length;
-        toast.success(isWl ? 'Lien web ajouté' : nb > 1 ? `${nb} documents ajoutés` : '1 document ajouté');
-        resetForm();
-        window.dispatchEvent(new CustomEvent('document-added', { detail: { file: {
-          id: singleFileId,
-          fileName: isWl ? webLinkTitle : (files[0]?.file?.name ?? title ?? 'Document'),
-          retainedTitle: isWl ? webLinkTitle : (title || files[0]?.file?.name || null),
-          mimeType: isWl ? 'application/x-web-link' : (files[0]?.file ? normalizeMimeType(files[0].file) : 'application/octet-stream'),
-          fileSize: isWl ? null : (files[0]?.file?.size ?? null),
-          documentType: documentType || null,
+      const wlRes = await fetch('/api/web-links', {
+        credentials: 'include',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          url: webLinkUrl,
+          title: webLinkTitle,
+          documentType,
+          assetId: ctx.targetAssetId,
           documentDate: documentDate || null,
+          description: title || null,
           supplier: supplier || null,
-          amountCents: amountCents || null,
-          assetId: targetAssetId,
-          webLinkUrl: isWl ? webLinkUrl : null,
-          createdAt: new Date().toISOString(),
-          analysisState: null,
-        }}}));
-        onSuccess?.();
-        onOpenChange(false);
+          amountCents: ctx.amountCents || null,
+        }),
+      });
+      if (!wlRes.ok) {
+        throw await reponseEnErreur(wlRes, `Erreur ${wlRes.status}`);
       }
+      const { webLink } = await wlRes.json();
+      const ids = [webLink.id as number];
+      await associerEtSignaler(ctx, ids);
+      onFilesUploaded?.(ids);
+      toast.success('Lien web ajouté');
+      onSuccess?.();
+      resetForm();
+      onOpenChange(false);
     } catch (error) {
-      const isAbort = (error as Error)?.name === 'AbortError' || (error as Error)?.message === 'Upload annulé';
       if (isWriteBlockedError(error)) {
-        // La fenêtre de fin d'essai est ouverte : on ferme le dépôt pour la
-        // laisser lisible, sans message d'erreur par-dessus.
         resetForm();
         onOpenChange(false);
-      } else if (!isAbort) {
-        console.error('Upload error:', error);
+      } else {
+        console.error('Web link error:', error);
         toast.error((error as Error)?.message || 'Erreur lors de l\'ajout du document');
       }
     } finally {
-      uploadAbortRef.current = null;
-      setIsUploading(false);
+      setIsSubmittingLink(false);
     }
   };
 
@@ -741,27 +703,31 @@ export function UnifiedDocumentDialog({
     <div className="flex flex-col gap-5">
       <UploadNoticeBanner />
 
-      {/* Upload progress banner */}
-      {isUploading && (
-        <div className="flex flex-col gap-1.5 px-3 py-2.5 rounded-xl bg-white/5 border border-white/10">
+      {/* Progression du dépôt lancé depuis ce panneau (file globale) */}
+      {(isUploading || elementsLot.length > 0) && (
+        <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl bg-white/5 border border-white/10">
           <div className="flex items-center gap-2 text-sm">
-            <Loader2 className="w-4 h-4 text-white/60 animate-spin flex-shrink-0" />
+            {isUploading
+              ? <Loader2 className="w-4 h-4 text-white/60 animate-spin flex-shrink-0" />
+              : <Check className="w-4 h-4 text-white/60 flex-shrink-0" />}
             <span className="text-white/80 font-medium">
-              {uploadProgress && uploadProgress.total > 1
-                ? `Envoi ${uploadProgress.current}/${uploadProgress.total}…`
-                : 'Envoi en cours…'}
+              {isSubmittingLink
+                ? 'Envoi en cours…'
+                : uploadProgress && uploadProgress.total > 1
+                  ? `${isUploading ? 'Envoi' : 'Terminé'} ${uploadProgress.current}/${uploadProgress.total}${isUploading ? '…' : ''}`
+                  : isUploading ? 'Envoi en cours…' : 'Envoi terminé'}
             </span>
-            {uploadProgress && uploadProgress.total > 1 && (
-              <span className="text-white/40 text-xs ml-auto">{Math.round((uploadProgress.current / uploadProgress.total) * 100)}%</span>
-            )}
           </div>
-          {uploadProgress && uploadProgress.total > 1 && (
-            <div className="h-1 rounded-full bg-[#7c3aed]/20 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-[#7c3aed] transition-all duration-500"
-                style={{ width: `${Math.round((uploadProgress.current / uploadProgress.total) * 100)}%` }}
-              />
-            </div>
+          {elementsLot.length > 0 && (
+            <UploadQueuePanel
+              elements={elementsLot}
+              mobile={isMobile}
+              onAnnuler={(id) => fileDepot.annuler(id)}
+              onReprendre={(id) => { try { fileDepot.reprendre(id); } catch (err) { toast.error((err as Error).message); } }}
+            />
+          )}
+          {isUploading && !isSubmittingLink && (
+            <p className="text-[11px] text-white/50">Vous pouvez fermer ce panneau : l’envoi continue et reste visible en bas de l’écran.</p>
           )}
         </div>
       )}
@@ -805,7 +771,7 @@ export function UnifiedDocumentDialog({
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/*,video/mp4,video/quicktime,video/x-msvideo,video/webm,video/x-matroska,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv"
+            accept={ACCEPT_DEPOT}
             className="hidden"
             onChange={handleFileSelect}
           />
@@ -980,9 +946,20 @@ export function UnifiedDocumentDialog({
             </span>
           </button>
         </div>
-        <Button type="button" variant="ghost" size="sm" onClick={handleClose} className="w-full text-muted-foreground">
-          {isUploading ? 'Annuler l\'envoi' : 'Annuler'}
-        </Button>
+        {lotActif ? (
+          <div className="grid grid-cols-2 gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={handleClose} className="text-muted-foreground">
+              Fermer (l'envoi continue)
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={annulerEnvoi} className="text-muted-foreground">
+              Annuler l'envoi
+            </Button>
+          </div>
+        ) : (
+          <Button type="button" variant="ghost" size="sm" onClick={handleClose} className="w-full text-muted-foreground">
+            {elementsLot.length > 0 ? 'Fermer' : 'Annuler'}
+          </Button>
+        )}
       </div>
     );
   })();

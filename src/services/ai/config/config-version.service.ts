@@ -24,7 +24,7 @@
 import { getAiEnvironment, allowsTestVersions } from './environment';
 import { diffVersions, type ConfigDiff } from './config-diff.service';
 import {
-  validateVersion, hasLegacyPromptText, type ConfigCatalogs, type ValidationResult,
+  validateVersion, type ConfigCatalogs, type ValidationResult,
 } from './config-validation.service';
 import { guardrailCodes, triggerCodes } from './catalogs';
 import {
@@ -32,8 +32,7 @@ import {
   promoteToTest, demoteToDraft, validateVersion as commitValidation,
   switchActive, archiveVersion, listVersions, markStaleDrafts,
 } from './config-version.repository';
-import { promptArchitectureOf, normalizeTreatmentConfig, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
-import { isPromptAdministrable } from './treatments';
+import { promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
 import { checkPromptArchitectureChange } from './prompt-architecture';
 
 /** Refus fonctionnel — distinct d'une erreur technique. */
@@ -122,17 +121,7 @@ export async function saveTreatmentConfig(
   }
   // Même règle pour le texte master (D-03) : omis ⇒ celui en place.
   const masterPrompt = config.masterPrompt === undefined ? (current?.masterPrompt ?? null) : config.masterPrompt;
-  // Ordre du ticket T5 : normalisation des champs non administrables, puis
-  // écriture (`saveEntry` → `upsertEntry` normalise de nouveau, point de
-  // passage unique). La trace porte la valeur réellement enregistrée.
-  const saved = normalizeTreatmentConfig({ ...config, promptArchitecture: next, masterPrompt });
-  await saveEntry(versionId, saved, userId);
-  const { recordConfigEntrySave } = await import('./config-entry.audit');
-  await recordConfigEntrySave({
-    adminUserId: userId, versionId, treatment: config.treatment,
-    before: current, after: saved,
-    legacyPromptCleared: Boolean(current) && !isPromptAdministrable(config.treatment) && hasLegacyPromptText(current!),
-  });
+  await saveEntry(versionId, { ...config, promptArchitecture: next, masterPrompt }, userId);
   // CFG-01 (CDC 15) : une édition ne touche qu'un Brouillon (`saveEntry`
   // refuse tout autre statut), jamais la version effective. La clé partagée
   // est tout de même incrémentée : le coût est un rechargement par instance,
@@ -341,7 +330,7 @@ export const ROLLBACK_JUSTIFICATION_MIN = 15;
 export async function validate(
   versionId: number,
   userId: number,
-): Promise<{ visibleNumber: number }> {
+): Promise<{ visibleNumber: number; warnings: string[] }> {
   const version = await load(versionId);
   const validation = validateVersion(version.entries, await buildCatalogs());
   if (!validation.valid) {
@@ -353,9 +342,11 @@ export async function validate(
   }
   // La validation fait de la version l'ACTIVE (préproduction) : garde §30.
   await assertMasterCorpusGreen(version);
+  // Lot 23 (§15.12) : modèles cohérents avec le registre déclaratif.
+  const avertissements = await assertModelRegistryCoherence(version);
   const { visibleNumber } = await commitValidation(versionId, userId);
   await invalidateCaches(`validate:${versionId}`);
-  return { visibleNumber };
+  return { visibleNumber, warnings: avertissements.map((i) => i.message) };
 }
 
 // ── §15.13, §32.7 — modèle preview en production (D-J1, lot 21) ────────────
@@ -391,6 +382,76 @@ export async function assertPreviewModelsApproved(
   );
 }
 
+// ── §15.12, §15.14 — cohérence avec le registre des modèles (lot 23) ────────
+
+/**
+ * Contrôle de cohérence d'une version avec le registre déclaratif des modèles
+ * (`registry/models.ts`), à la validation (qui rend la version Active en
+ * préproduction) et à l'activation :
+ *   · chaque modèle (principal, repli 1, repli 2) doit être déclaré
+ *     compatible avec le prompt maître du traitement — un modèle Pro n'est
+ *     jamais compatible avec l'assistant ni la mascotte (§15.6) ;
+ *   · son modèle de rollback doit exister au registre et être stable.
+ *   · T2 (assistant) : un modèle preview OU INCONNU du registre n'est admis
+ *     que si le flag `VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS` ou le réglage
+ *     « Modèles preview en production » l'autorise — MÊME règle que le
+ *     contrôle de démarrage de l'assistant (revue I-1) : une version acceptée
+ *     ici ne peut plus rendre l'assistant indisponible (503) au contrôle
+ *     suivant.
+ * Bloquant (`MODEL_REGISTRY_INCOHERENT`, message clair, détail par
+ * traitement), dans tous les environnements. Un modèle INCONNU du registre
+ * n'est pas une incohérence : il est traité comme preview, et c'est la garde
+ * preview (`assertPreviewModelsApproved`, production) qui décide. Les
+ * avertissements (modèle déprécié, inconnu) sont rendus à l'appelant.
+ *
+ * Pas appliqué au rollback (WF-06), pour la même raison que la garde preview.
+ */
+export async function assertModelRegistryCoherence(
+  version: Pick<ConfigVersionWithEntries, 'entries'>,
+  deps: { previewAllowed?: () => boolean | Promise<boolean> } = {},
+): Promise<import('../registry/models').CoherenceIssue[]> {
+  const [{ checkModelUses, isPreviewModel, declaredModelStatus }, { AI_OPERATIONS }, { treatmentForUseCase }] = await Promise.all([
+    import('../registry/models'), import('../registry/operations'), import('./treatments'),
+  ]);
+  const masterDe = new Map<string, string>();
+  for (const op of Object.values(AI_OPERATIONS)) {
+    if (!op.masterPromptCode) continue;
+    try {
+      const t = treatmentForUseCase(op.useCaseCode);
+      if (!masterDe.has(t)) masterDe.set(t, op.masterPromptCode);
+    } catch { /* usage sans traitement : hors configuration versionnée */ }
+  }
+  const uses = version.entries.flatMap((e) => [e.primaryModel, e.fallback1, e.fallback2]
+    .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
+    .map((model) => ({ where: e.treatment, model, promptCode: masterDe.get(e.treatment) ?? null })));
+  const issues = checkModelUses(uses);
+  // T2 : même règle preview que le contrôle de démarrage de l'assistant.
+  const previewsT2 = uses.filter((u) => u.where === 'T2' && isPreviewModel(u.model));
+  if (previewsT2.length > 0) {
+    const permis = await (deps.previewAllowed ?? (async () =>
+      (await import('@/services/verebona-assistant/core/model-startup-check')).assistantPreviewModelsAllowed()))();
+    if (!permis) {
+      for (const u of previewsT2) {
+        issues.push({
+          level: 'error', code: 'PREVIEW_NOT_ALLOWED', where: u.where, model: u.model,
+          message: declaredModelStatus(u.model) === 'unknown'
+            ? `T2 : le modèle « ${u.model} » est absent du registre des modèles (traité comme preview) : non autorisé pour l’assistant sans le réglage « Modèles preview en production » ou le flag VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS — l’assistant serait indisponible.`
+            : `T2 : le modèle preview « ${u.model} » n’est pas autorisé pour l’assistant sans le réglage « Modèles preview en production » ou le flag VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS — l’assistant serait indisponible.`,
+        });
+      }
+    }
+  }
+  const erreurs = issues.filter((i) => i.level === 'error');
+  if (erreurs.length > 0) {
+    throw new ConfigOperationRefused(
+      'MODEL_REGISTRY_INCOHERENT',
+      `Configuration incohérente avec le registre des modèles : ${erreurs.map((i) => i.message).join(' ')}`,
+      erreurs,
+    );
+  }
+  return issues.filter((i) => i.level === 'warning');
+}
+
 // ── WF-05 et WF-06 — Activation et restauration ─────────────────────────────
 
 export interface SwitchResult {
@@ -399,12 +460,15 @@ export interface SwitchResult {
   interrupts: boolean;
   /** Nombre de travaux remis en tête de file. Nul pour une activation normale. */
   requeuedJobs: number;
+  /** Avertissements du registre des modèles (déprécié, inconnu) — lot 23. */
+  warnings?: string[];
 }
 
 /** WF-05 — activation normale : n'interrompt aucune exécution en cours. */
 export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
   const version = await load(versionId);
   await assertMasterCorpusGreen(version);
+  const avertissements = await assertModelRegistryCoherence(version);
   await assertPreviewModelsApproved(version);
   const r = await switchActive(versionId, userId, 'activate');
   await invalidateCaches(`activate:${versionId}`);
@@ -413,7 +477,7 @@ export async function activate(versionId: number, userId: number): Promise<Switc
   if (r.previousId) await markStaleDrafts(r.previousId);
   // WF-05 : « aucune interruption des exécutions en cours ». Elles se terminent
   // avec leur configuration ; seuls les démarrages suivants utilisent celle-ci.
-  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0 };
+  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, warnings: avertissements.map((i) => i.message) };
 }
 
 /**

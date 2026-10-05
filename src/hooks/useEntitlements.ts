@@ -35,120 +35,136 @@
  * Les droits sont maintenant relus :
  *   · a chaque changement de page tant qu'ils sont inconnus ou anciens ;
  *   · au retour sur l'application (onglet ou PWA remise au premier plan) ;
- *   · sur l'evenement `entitlements:refresh` (connexion, souscription…).
+ *   · sur l'evenement `entitlements:refresh` (connexion, souscription…) ;
+ *   · apres une ecriture reussie (quotas), regroupees ;
+ *   · a chaque transition de session (connexion, changement de compte) ;
+ *     une deconnexion les vide.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * UN SEUL ETAT POUR TOUS — APP-PERF-12
+ *
+ * Ces relectures sont portees UNE fois par `EntitlementsProvider` (monte dans
+ * `ClientShell`, au-dessus de la garde d'ecriture) sur un magasin partage
+ * (`lib/entitlements/entitlements-store.ts`). Chaque `useEntitlements` lit ce
+ * meme etat : une lecture pour la garde, le layout, les panneaux et les pages.
+ * La lecture passe par le client HTTP commun : renouvellement de session
+ * partage et budget borne — un 401 provisoire (PWA reveillee, cookie d'acces
+ * expire) ne fige plus des droits `null` jusqu'a la prochaine navigation.
  * ══════════════════════════════════════════════════════════════════════════
  */
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, createElement, useContext, useEffect, useSyncExternalStore } from 'react';
 import { usePathname } from 'next/navigation';
 import { isUnpaid } from '@/lib/trial-status';
+import { apiClient } from '@/lib/api-client';
+import { onSessionTransition } from '@/lib/session/session-lifecycle';
+import { isPageSansSession } from '@/contexts/SessionContext';
+import {
+  DUREE_VALIDITE_MS,
+  EntitlementsStore,
+  INITIAL_ENTITLEMENTS_SNAPSHOT,
+  type EntitlementsState,
+} from '@/lib/entitlements/entitlements-store';
+
+export type { EntitlementsState, QuotaUsage, EntitlementsStatus } from '@/lib/entitlements/entitlements-store';
 
 /** Evenement a emettre apres un changement de droits (connexion, offre). */
 export const ENTITLEMENTS_REFRESH_EVENT = 'entitlements:refresh';
 
-/** Au-dela, les droits sont relus au prochain changement de page. */
-const DUREE_VALIDITE_MS = 60_000;
+/** Regroupement des relectures apres une rafale d'ecritures. */
+const DELAI_APRES_ECRITURE_MS = 2_000;
 
-/** Pages publiques : inutile d'interroger les droits sans session. */
-const PAGES_SANS_SESSION = ['/login', '/signup', '/forgot-password', '/reset-password'];
+let defaultStore: EntitlementsStore | null = null;
 
-export interface QuotaUsage {
-  used: number;
-  limit: number;
-  ratio: number;
-  label: string;
-  shouldWarn: boolean;
-  isFull: boolean;
+/** Magasin du navigateur (un par onglet). */
+export function getEntitlementsStore(): EntitlementsStore {
+  if (defaultStore) return defaultStore;
+  const store = new EntitlementsStore({
+    // Lecture partagée ; `silent` : sur une page publique sans session, un
+    // refus ne doit pas déclencher de redirection — les droits restent inconnus.
+    fetchEntitlements: (signal) => apiClient.get<EntitlementsState>('/api/billing/trial-status', {
+      signal, dedupe: true, onAuthFailure: 'silent',
+    }),
+  });
+  defaultStore = store;
+  return store;
 }
 
-export interface EntitlementsState {
-  plan: string;
-  status: string;
-  canWrite: boolean;
-  isRestricted: boolean;
-  premiumFeatures: boolean;
-  quotas: {
-    assets: QuotaUsage;
-    documents: QuotaUsage;
-    users: { limit: number };
-  };
-  trial: {
-    status: 'none' | 'active' | 'expired' | 'converted';
-    daysRemaining: number;
-    endsAt: string | null;
-    isUrgent: boolean;
-    dejaConsomme: boolean;
-  };
-  /** Cycle d'impayé en cours (paiement échoué), `null` sinon. */
-  unpaid?: { startedAt: string; deadlineAt: string; daysLeft: number } | null;
+const EntitlementsContext = createContext<EntitlementsStore | null>(null);
+
+function useEntitlementsStore(): EntitlementsStore {
+  return useContext(EntitlementsContext) ?? getEntitlementsStore();
 }
 
-export function useEntitlements() {
+/**
+ * Fournisseur unique des droits. Porte toutes les relectures ; les
+ * consommateurs ne font que lire.
+ */
+export function EntitlementsProvider({ children, store: injected }: { children: React.ReactNode; store?: EntitlementsStore }) {
+  const store = injected ?? getEntitlementsStore();
   const pathname = usePathname();
-  const [data, setData] = useState<EntitlementsState | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const chargeLe = useRef(0);
-  const enCours = useRef(false);
-  const monte = useRef(true);
-
-  const refresh = useCallback(async () => {
-    if (enCours.current) return;
-    enCours.current = true;
-    try {
-      const r = await fetch('/api/billing/trial-status', { credentials: 'include', cache: 'no-store' });
-      const d = r.ok ? await r.json() : null;
-      if (!monte.current) return;
-      if (d && !d.error) {
-        setData(d as EntitlementsState);
-        chargeLe.current = Date.now();
-      } else if (r.status === 401) {
-        // Deconnecte : les droits precedents ne valent plus.
-        setData(null);
-        chargeLe.current = 0;
-      }
-    } catch {
-      /* reseau : on garde la derniere valeur connue */
-    } finally {
-      enCours.current = false;
-      if (monte.current) setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    monte.current = true;
-    return () => { monte.current = false; };
-  }, []);
 
   // Premier chargement, puis a chaque page tant que les droits sont
   // inconnus ou anciens.
   useEffect(() => {
-    if (pathname && PAGES_SANS_SESSION.some((p) => pathname.startsWith(p))) {
-      setIsLoading(false);
+    if (isPageSansSession(pathname)) {
+      store.markIdle();
       return;
     }
-    if (Date.now() - chargeLe.current > DUREE_VALIDITE_MS) void refresh();
-  }, [pathname, refresh]);
+    void store.refreshIfStale(DUREE_VALIDITE_MS);
+  }, [pathname, store]);
 
-  // Retour sur l'application et demande explicite.
+  // Transitions de session : aucun droit de l'ancien contexte n'est conservé.
+  useEffect(() => onSessionTransition((t) => {
+    const sortie = t.reason === 'logout' || t.reason === 'auth-failure';
+    store.reset({ idle: sortie });
+    if (!sortie && !isPageSansSession(window.location.pathname)) void store.refresh();
+  }), [store]);
+
+  // Retour sur l'application, demande explicite, ecritures reussies.
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const onVisible = () => {
-      if (!document.hidden && Date.now() - chargeLe.current > DUREE_VALIDITE_MS) void refresh();
+      if (!document.hidden && !isPageSansSession(window.location.pathname)) void store.refreshIfStale(DUREE_VALIDITE_MS);
     };
-    const onRefresh = () => { void refresh(); };
+    const onRefresh = () => { void store.refresh(); };
+    const onMutated = () => {
+      // Quota consommé ou libéré : droits périmés, relus une fois la rafale passée.
+      store.markStale();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { if (!document.hidden) void store.refreshIfStale(0); }, DELAI_APRES_ECRITURE_MS);
+    };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener(ENTITLEMENTS_REFRESH_EVENT, onRefresh);
+    window.addEventListener('online', onVisible);
+    window.addEventListener('verebona:data-mutated', onMutated);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener(ENTITLEMENTS_REFRESH_EVENT, onRefresh);
+      window.removeEventListener('online', onVisible);
+      window.removeEventListener('verebona:data-mutated', onMutated);
+      if (timer) clearTimeout(timer);
     };
-  }, [refresh]);
+  }, [store]);
+
+  return createElement(EntitlementsContext.Provider, { value: store }, children);
+}
+
+const serverSnapshot = () => INITIAL_ENTITLEMENTS_SNAPSHOT;
+
+export function useEntitlements() {
+  const store = useEntitlementsStore();
+  const { data, isLoading, status } = useSyncExternalStore(store.subscribe, store.getSnapshot, serverSnapshot);
 
   return {
     entitlements: data,
     isLoading,
+    /** Droits inconnus (`unknown`), servis (`known`) ou derniere lecture en echec (`unavailable`). */
+    status,
     /** Relit les droits aupres du serveur. */
-    refresh,
+    refresh: store.refreshBound,
     /** Ecriture bloquee par les droits (essai termine, offre resiliee, impaye). */
     isRestricted: data?.isRestricted ?? false,
     /** Restriction due a un paiement echoue (≠ fin d'essai) — voir `isUnpaid`. */

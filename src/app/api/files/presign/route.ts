@@ -4,36 +4,68 @@ import { assetFiles, assets } from '@/db/schema';
 import { eq, and, isNull, or, sql } from 'drizzle-orm';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { sanitizeFilename, validateExtension, ALLOWED_MIME_TYPES } from '@/lib/file-validation';
+import { sanitizeFilename, validateExtension, ALLOWED_MIME_TYPES, estEmpreinteSha256 } from '@/lib/file-validation';
+import { verifierFichier, MAX_FICHIERS_COMPTE, MAX_FICHIERS_PAR_BIEN } from '@/lib/upload-limits';
+import { estCleOperation, empreintePresign, deciderPresignRejoue } from '@/lib/upload-idempotence';
 import { generateS3Key } from '@/lib/s3-naming';
 import { rateLimiter } from '@/lib/rate-limiter';
 import { getSession } from '@/lib/auth-guards';
 import { canAddDocument } from '@/services/entitlements.service';
 import { SessionService } from '@/lib/session-service';
-import { s3Client, S3_BUCKET } from '@/lib/s3-client';
+import { s3Client, S3_BUCKET, S3_REGION } from '@/lib/s3-client';
 import { checkAccountStorageQuota, storageQuotaExceededResponse } from '@/lib/storage-quota';
 
-// Constants
-const MAX_FILE_SIZE_VIDEO = 500_000_000; // 500 MB for videos
+// ══════════════════════════════════════════════════════════════════════════
+// LIMITES DE TAILLE ET DE NOMBRE : `@/lib/upload-limits` (APP-PERF-28)
+//
+// Document analysé 25 Mo (contrainte du fournisseur d'analyse : au-delà,
+// l'analyse échouerait après un transfert inutile), vidéo et lot selon le
+// contrat partagé avec le dialogue et `/api/files/confirm`. L'ancien plafond
+// vidéo de 500 Mo propre à cette route laissait passer des fichiers que la
+// confirmation refusait ensuite.
+// ══════════════════════════════════════════════════════════════════════════
+const MAX_FILES_PER_USER = MAX_FICHIERS_COMPTE;
+const MAX_FILES_PER_ASSET = MAX_FICHIERS_PAR_BIEN;
+const PRESIGNED_URL_EXPIRATION = 3600; // 1 hour
 
 /**
- * ══════════════════════════════════════════════════════════════════════════
- * TAILLE MAXIMALE D'UN DOCUMENT ANALYSÉ
- *
- * Contrainte du fournisseur, pas la nôtre : Gemini plafonne autour de 20 Mo
- * pour un PDF. Sans ce contrôle, un fichier de 80 Mo est accepté, téléversé,
- * puis ÉCHOUE à l'analyse — l'utilisateur a attendu pour rien.
- *
- * Refuser avant le téléversement, avec un motif clair, coûte moins cher que
- * de le décevoir après.
- *
- * Les vidéos gardent leur plafond de 500 Mo : elles ne sont pas analysées.
- * ══════════════════════════════════════════════════════════════════════════
+ * URL signée de dépôt.
+ * NOTE: ContentLength intentionally omitted — signing it causes browsers to fail
+ * when they upload via fetch(url, { body: File }) without an explicit Content-Length
+ * header (OVH S3 rejects the PUT because the signed length doesn't match chunked transfer).
+ * La taille réelle est vérifiée à la confirmation (`upload-object-check.ts`).
  */
-const MAX_FILE_SIZE_DOCUMENT = 25_000_000; // 25 Mo
-const MAX_FILES_PER_USER = 1000;
-const MAX_FILES_PER_ASSET = 100;
-const PRESIGNED_URL_EXPIRATION = 3600; // 1 hour
+async function signerDepot(d: {
+  s3Key: string; mimeType: string; userId: number; assetId: number | null; fileId: number; sha256Hash: string;
+}): Promise<string> {
+  const command = new PutObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: d.s3Key,
+    ContentType: d.mimeType,
+    Metadata: {
+      userId: d.userId.toString(),
+      assetId: d.assetId ? d.assetId.toString() : 'unassigned',
+      fileId: d.fileId.toString(),
+      sha256: d.sha256Hash,
+    },
+  });
+  return getSignedUrl(s3Client, command, { expiresIn: PRESIGNED_URL_EXPIRATION });
+}
+
+/**
+ * Fixe la clé S3 définitive d'une ligne encore provisoire (`temp`) et rend
+ * la clé effectivement retenue : deux préparations simultanées de la même
+ * opération signent ainsi la MÊME clé.
+ */
+async function fixerCleS3(fileId: number, cle: string): Promise<string> {
+  const [maj] = await db.update(assetFiles)
+    .set({ s3Key: cle })
+    .where(and(eq(assetFiles.id, fileId), eq(assetFiles.s3Key, 'temp')))
+    .returning({ s3Key: assetFiles.s3Key });
+  if (maj?.s3Key) return maj.s3Key;
+  const [actuelle] = await db.select({ s3Key: assetFiles.s3Key }).from(assetFiles).where(eq(assetFiles.id, fileId)).limit(1);
+  return actuelle?.s3Key ?? cle;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -64,7 +96,8 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { assetId, filename, mimeType, size, sha256Hash } = body;
+    const { assetId, filename, mimeType, size, operationId } = body;
+    const sha256Hash = typeof body.sha256Hash === 'string' ? body.sha256Hash.toLowerCase() : body.sha256Hash;
 
     // Validate required fields - assetId is now optional (can be 0 or null)
     if (!filename) {
@@ -95,6 +128,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // APP-PERF-24 : une valeur de repli (« placeholder-hash ») n'est pas une
+    // empreinte. Commune à plusieurs fichiers, elle les ferait passer pour
+    // des doublons exacts. Le client signale un échec de calcul au lieu de
+    // l'envoyer.
+    if (!estEmpreinteSha256(sha256Hash)) {
+      return NextResponse.json(
+        { error: 'INVALID_HASH', message: 'Empreinte SHA-256 invalide (64 caractères hexadécimaux attendus).' },
+        { status: 400 }
+      );
+    }
+
+    if (operationId !== undefined && operationId !== null && !estCleOperation(operationId)) {
+      return NextResponse.json(
+        { error: 'INVALID_OPERATION_ID', message: 'Identifiant d’opération invalide.' },
+        { status: 400 }
+      );
+    }
+
     // Parse assetId - null or 0 means unassigned
     let assetIdInt: number | null = null;
     if (assetId && assetId !== 0) {
@@ -107,65 +158,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Validate size is a number
-    const sizeInt = parseInt(size);
-    if (isNaN(sizeInt)) {
-      return NextResponse.json(
-        { error: 'INVALID_SIZE', message: 'File size must be a valid number' },
-        { status: 400 }
-      );
-    }
-
-    // ✅ CORRECTION CRITIQUE: Validation fichier vide (0 bytes)
-    if (sizeInt === 0) {
-      return NextResponse.json(
-        { 
-          error: 'FILE_EMPTY',
-          message: 'Les fichiers de taille 0 bytes sont refusés'
-        },
-        { status: 400 }
-      );
-    }
-
-    const isVideo = typeof mimeType === 'string' && mimeType.startsWith('video/');
-
-    if (!isVideo && sizeInt > MAX_FILE_SIZE_DOCUMENT) {
+    // ── Contrat de dépôt (APP-PERF-28) : taille exacte en octets et type ──
+    // Mêmes règles que le dialogue et la confirmation (`verifierFichier`) :
+    // plafond inclus, plafond + 1 octet refusé, fichier vide refusé.
+    const refusFichier = verifierFichier(size, mimeType);
+    if (refusFichier) {
       return NextResponse.json(
         {
-          error: 'FILE_TOO_LARGE',
-          message:
-            `Document trop volumineux (max ${MAX_FILE_SIZE_DOCUMENT / 1_000_000} Mo). ` +
-            'Au-delà, l\'analyse automatique échouerait.',
-          maxSize: MAX_FILE_SIZE_DOCUMENT,
-          providedSize: sizeInt,
+          error: refusFichier.code,
+          message: refusFichier.message,
+          ...(refusFichier.max !== undefined ? { maxSize: refusFichier.max, providedSize: Number(size) } : {}),
+          ...(refusFichier.code === 'INVALID_MIME_TYPE' ? { allowedTypes: ALLOWED_MIME_TYPES } : {}),
         },
         { status: 400 },
       );
     }
-
-    if (isVideo && sizeInt > MAX_FILE_SIZE_VIDEO) {
-      return NextResponse.json(
-        {
-          error: 'FILE_TOO_LARGE',
-          message: `Vidéo trop volumineuse (max ${MAX_FILE_SIZE_VIDEO / 1_000_000}MB)`,
-          maxSize: MAX_FILE_SIZE_VIDEO,
-          providedSize: sizeInt
-        },
-        { status: 400 }
-      );
-    }
-
-    // Validate MIME type - strict server-side check
-    if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
-      return NextResponse.json(
-        { 
-          error: 'INVALID_MIME_TYPE',
-          message: 'Type de fichier non autorisé. Seuls les documents, images et fichiers texte sont autorisés.',
-          allowedTypes: ALLOWED_MIME_TYPES
-        },
-        { status: 400 }
-      );
-    }
+    const sizeInt = Number(size);
 
     // Sanitize filename - strict ASCII-safe
     const sanitizedFilename = sanitizeFilename(filename);
@@ -218,6 +226,58 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // REPRISE D'UNE OPÉRATION DÉJÀ PRÉPARÉE (APP-PERF-30)
+    //
+    // Même `operationId`, même demande : la ligne existante est réutilisée —
+    // nouvelle URL signée pour la MÊME clé S3 si le dépôt est en attente,
+    // « déjà confirmé » (sans URL) s'il est COMPLETED. Aucun nouveau
+    // document, aucun nouveau contrôle de quota (la confirmation, sous
+    // verrou, reste le contrôle qui fait foi). Même clé, autre demande : 409.
+    // ══════════════════════════════════════════════════════════════════════
+    const cleOperation: string | null = estCleOperation(operationId) ? operationId : null;
+    const empreinteDemande = empreintePresign({
+      accountId: currentAccountId, assetId: assetIdInt, filename, mimeType, size: sizeInt, sha256Hash,
+    });
+    const reprendre = async (): Promise<NextResponse | null> => {
+      if (!cleOperation) return null;
+      const [ligne] = await db.select()
+        .from(assetFiles)
+        .where(and(eq(assetFiles.userId, userId), eq(assetFiles.uploadOperationId, cleOperation)))
+        .limit(1);
+      if (!ligne) return null;
+      const decision = deciderPresignRejoue(ligne, empreinteDemande);
+      if (decision.kind === 'refus') {
+        return NextResponse.json({ error: decision.code, code: decision.code, message: decision.message }, { status: decision.status });
+      }
+      if (decision.kind === 'completed') {
+        return NextResponse.json(
+          { fileId: ligne.id, uploadStatus: 'COMPLETED', reprise: true },
+          { status: 200 },
+        );
+      }
+      let cle = ligne.s3Key;
+      if (!cle || cle === 'temp') {
+        cle = generateS3Key({
+          userId, assetId: ligne.assetId, fileId: ligne.id, timestamp: Date.now(), sanitizedFilename,
+        });
+        cle = await fixerCleS3(ligne.id, cle);
+      }
+      return NextResponse.json(
+        {
+          uploadUrl: await signerDepot({ s3Key: cle, mimeType, userId, assetId: ligne.assetId, fileId: ligne.id, sha256Hash }),
+          fileId: ligne.id,
+          s3Key: cle,
+          expiresIn: PRESIGNED_URL_EXPIRATION,
+          uploadStatus: 'PENDING',
+          reprise: true,
+        },
+        { status: 200 },
+      );
+    };
+    const repriseExistante = await reprendre();
+    if (repriseExistante) return repriseExistante;
 
       // Quota checks - count total files for account (where deletedAt is null)
       const accountFileCount = await db.select({ count: sql<number>`count(*)` })
@@ -327,8 +387,12 @@ export async function POST(request: NextRequest) {
     const now = new Date();
     const tempS3Key = 'temp'; // Temporary value, will be updated after getting fileId
     
-      const newFile = await db.insert(assetFiles)
+    let newFile: Array<typeof assetFiles.$inferSelect>;
+    try {
+      newFile = await db.insert(assetFiles)
         .values({
+          uploadOperationId: cleOperation,
+          uploadRequestFingerprint: cleOperation ? empreinteDemande : null,
           userId: userId,
           accountId: currentAccountId,
           assetId: assetIdInt, // Can be null for unassigned files
@@ -341,13 +405,24 @@ export async function POST(request: NextRequest) {
           sha256Hash: sha256Hash,
           s3Key: tempS3Key,
           s3Bucket: S3_BUCKET,
-          s3Region: process.env.OVH_S3_REGION || 'gra',
+          s3Region: S3_REGION,
           uploadStatus: 'PENDING',
           uploadedAt: now,
           createdAt: now,
           updatedAt: now,
         })
         .returning();
+    } catch (e) {
+      // Deux préparations simultanées de la même opération : l'index unique
+      // (0241) a refusé la seconde ligne — on rend celle de la première.
+      // Drizzle enveloppe l'erreur du pilote : le code est sur `cause`.
+      const code = (e as { code?: string })?.code ?? (e as { cause?: { code?: string } })?.cause?.code;
+      if (code === '23505' && cleOperation) {
+        const reprise = await reprendre();
+        if (reprise) return reprise;
+      }
+      throw e;
+    }
 
     if (newFile.length === 0) {
       throw new Error('Failed to create file record');
@@ -365,38 +440,20 @@ export async function POST(request: NextRequest) {
       sanitizedFilename: sanitizedFilename,
     });
 
-    // Update the file record with the real S3 key
-    await db.update(assetFiles)
-      .set({ s3Key: s3Key })
-      .where(eq(assetFiles.id, fileId));
+    // Update the file record with the real S3 key — sauf si une reprise
+    // concurrente de la même opération l'a déjà fixée : on signe alors CELLE-LÀ.
+    const s3KeyRetenue = await fixerCleS3(fileId, s3Key);
 
-    // Generate presigned URL
-    // NOTE: ContentLength intentionally omitted — signing it causes browsers to fail
-    // when they upload via fetch(url, { body: File }) without an explicit Content-Length
-    // header (OVH S3 rejects the PUT because the signed length doesn't match chunked transfer).
-    const command = new PutObjectCommand({
-      Bucket: S3_BUCKET,
-      Key: s3Key,
-      ContentType: mimeType,
-      Metadata: {
-        userId: userId.toString(),
-        assetId: assetIdInt ? assetIdInt.toString() : 'unassigned',
-        fileId: fileId.toString(),
-        sha256: sha256Hash,
-      },
-    });
-
-    const uploadUrl = await getSignedUrl(s3Client, command, {
-      expiresIn: PRESIGNED_URL_EXPIRATION,
-    });
+    const uploadUrl = await signerDepot({ s3Key: s3KeyRetenue, mimeType, userId, assetId: assetIdInt, fileId, sha256Hash });
 
     // Return success response
     return NextResponse.json(
       {
         uploadUrl,
         fileId: fileId,
-        s3Key,
+        s3Key: s3KeyRetenue,
         expiresIn: PRESIGNED_URL_EXPIRATION,
+        uploadStatus: 'PENDING',
       },
       { status: 201 }
     );

@@ -367,6 +367,14 @@ export const assetFiles = pgTable('asset_files', {
   s3Bucket: text('s3_bucket'),
   s3Region: text('s3_region'),
   uploadStatus: text('upload_status').default('COMPLETED'),
+  // ── Dépôt reprenable et idempotent (APP-PERF-30, migration 0241) ────────
+  /** Clé d'opération fournie par le client (unique par utilisateur). */
+  uploadOperationId: text('upload_operation_id'),
+  /** Empreinte de la demande presign associée à la clé. */
+  uploadRequestFingerprint: text('upload_request_fingerprint'),
+  /** Empreinte des métadonnées de la confirmation réussie. */
+  confirmFingerprint: text('confirm_fingerprint'),
+  // ── fin APP-PERF-30 ─────────────────────────────────────────────────────
   /**
    * Type documentaire. NULLABLE depuis la migration 0119 : le défaut `AUTRE`
    * rendait indiscernables « type Autre choisi » et « pas encore classé »
@@ -468,6 +476,10 @@ export const assetFiles = pgTable('asset_files', {
   // Le regroupement par Rubrique est calculé côté serveur (§16.3) : c'est le
   // filtre le plus fréquent des deux pages documentaires.
   rubricCodeIdx: index('asset_files_rubric_code_idx').on(table.accountId, table.rubricCode),
+  // APP-PERF-30 (migration 0242_idx_1) : une opération de dépôt = une ligne.
+  uploadOperationUidx: uniqueIndex('asset_files_user_upload_operation_uidx')
+    .on(table.userId, table.uploadOperationId)
+    .where(sql`upload_operation_id IS NOT NULL`),
   scopeCheck: check('asset_files_scope_check', sql`${table.scope} IN ('personal', 'duo')`),
 }));
 
@@ -1296,6 +1308,41 @@ export const pendingBlobDeletions = pgTable('pending_blob_deletions', {
 }, (table) => ({
   scheduledForIdx: index('pending_blob_deletions_scheduled_for_idx').on(table.scheduledFor),
   processedAtIdx: index('pending_blob_deletions_processed_at_idx').on(table.processedAt),
+}));
+
+/**
+ * Miniatures des documents (migration 0241, APP-PERF-06/27).
+ *
+ * Une ligne par (document, variante). `sourceKey` = clé S3 de l'original lors
+ * de la génération : si elle diffère de `asset_files.s3_key`, le dérivé est
+ * périmé et n'est jamais servi. Disparition de la ligne ou changement de
+ * `s3Key` → ancien objet mis en file de purge par déclencheur.
+ */
+export const assetFileThumbnails = pgTable('asset_file_thumbnails', {
+  id: serial('id').primaryKey(),
+  fileId: integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  variant: text('variant').notNull().default('list'),
+  /** PENDING | PROCESSING | READY | FAILED | UNSUPPORTED */
+  status: text('status').notNull().default('PENDING'),
+  sourceKey: text('source_key').notNull(),
+  sourceSize: integer('source_size'),
+  s3Key: text('s3_key'),
+  format: text('format'),
+  width: integer('width'),
+  height: integer('height'),
+  bytes: integer('bytes'),
+  attempts: integer('attempts').notNull().default(0),
+  errorCode: text('error_code'),
+  leaseUntil: tstzOptional('lease_until'),
+  generatedAt: tstzOptional('generated_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  fileVariantUidx: uniqueIndex('asset_file_thumbnails_file_variant_uidx').on(t.fileId, t.variant),
+  accountIdx: index('asset_file_thumbnails_account_idx').on(t.accountId),
+  statusCheck: check('asset_file_thumbnails_status_check',
+    sql`${t.status} IN ('PENDING', 'PROCESSING', 'READY', 'FAILED', 'UNSUPPORTED')`),
 }));
 
 export const assetCustomFields = pgTable('asset_custom_fields', {

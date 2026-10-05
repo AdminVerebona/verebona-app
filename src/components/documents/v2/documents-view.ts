@@ -139,50 +139,93 @@ export interface FilterOption {
   active: boolean;
 }
 
+/** Compteur d'une valeur de filtre sur le périmètre (calculé en base, DOC-PERF). */
+export interface FacetCount {
+  value: string;
+  /** `null` : libellé par défaut (« Type à compléter », Rubrique du référentiel). */
+  label: string | null;
+  count: number;
+}
+
+export interface FilterFacets {
+  biens: FacetCount[];
+  rubrics: FacetCount[];
+  types: FacetCount[];
+}
+
+/**
+ * Compteurs de filtre d'une liste de documents ENTIÈREMENT connue. Avec le
+ * chargement progressif, l'écran reçoit ces compteurs du serveur : les
+ * calculer sur les seuls documents chargés les plafonnerait au lot.
+ */
+export function facetsFromDocuments(scope: readonly DocumentItem[]): FilterFacets {
+  const compter = (key: (d: DocumentItem) => string, label: (d: DocumentItem) => string | null) => {
+    const m = new Map<string, FacetCount>();
+    for (const d of scope) {
+      const k = key(d);
+      const f = m.get(k) ?? { value: k, label: label(d), count: 0 };
+      f.count += 1;
+      if (f.label === null) f.label = label(d);
+      m.set(k, f);
+    }
+    return [...m.values()];
+  };
+  return {
+    biens: compter(bienKey, (d) => (d.assetId ? bienLabel(d) : null)),
+    rubrics: compter(rubricKey, () => null),
+    types: compter(typeKey, (d) => d.documentTypeLabel),
+  };
+}
+
 /**
  * Options de filtre, comptées sur le périmètre (pas sur le résultat filtré) :
  * le compteur dit ce que l'on obtiendrait en cochant la seule option. Une
  * option à 0 n'est pas proposée — sauf si elle est déjà active, pour pouvoir
  * la retirer.
  */
-export function buildFilterOptions(
-  scope: readonly DocumentItem[],
+export function filterOptionsFromFacets(
+  facets: FilterFacets | null | undefined,
   f: ViewFilters,
   rubrics: readonly RubricRef[],
 ): { biens: FilterOption[]; rubrics: FilterOption[]; types: FilterOption[] } {
-  const compter = (key: (d: DocumentItem) => string) => {
-    const m = new Map<string, number>();
-    for (const d of scope) m.set(key(d), (m.get(key(d)) ?? 0) + 1);
-    return m;
-  };
   const garder = (o: FilterOption) => o.count > 0 || o.active;
-
-  const parBien = compter(bienKey);
-  const nomsBiens = new Map<string, string>();
-  for (const d of scope) if (d.assetId && bienLabel(d)) nomsBiens.set(bienKey(d), bienLabel(d)!);
-  const biens: FilterOption[] = [...nomsBiens.entries()]
-    .sort((a, b) => a[1].localeCompare(b[1], 'fr', { sensitivity: 'base' }))
-    .map(([value, label]) => ({ value, label, count: parBien.get(value) ?? 0, active: f.biens.includes(value) }));
-  if ((parBien.get(NO_ASSET) ?? 0) > 0 || f.biens.includes(NO_ASSET)) {
-    biens.push({ value: NO_ASSET, label: 'Sans bien', count: parBien.get(NO_ASSET) ?? 0, active: f.biens.includes(NO_ASSET) });
+  const parBien = new Map((facets?.biens ?? []).map((b) => [b.value, b]));
+  const biens: FilterOption[] = [...parBien.values()]
+    .filter((b) => b.value !== NO_ASSET && b.label)
+    .sort((a, b) => a.label!.localeCompare(b.label!, 'fr', { sensitivity: 'base' }))
+    .map((b) => ({ value: b.value, label: b.label!, count: b.count, active: f.biens.includes(b.value) }));
+  const sansBien = parBien.get(NO_ASSET)?.count ?? 0;
+  if (sansBien > 0 || f.biens.includes(NO_ASSET)) {
+    biens.push({ value: NO_ASSET, label: 'Sans bien', count: sansBien, active: f.biens.includes(NO_ASSET) });
   }
 
-  const parRubrique = compter(rubricKey);
+  const parRubrique = new Map((facets?.rubrics ?? []).map((r) => [r.value, r.count]));
   const rubricOptions: FilterOption[] = [
     { value: UNFILED, label: MICROCOPY.unfiledZone },
     ...rubrics.map((r) => ({ value: r.code, label: r.label })),
   ].map((o) => ({ ...o, count: parRubrique.get(o.value) ?? 0, active: f.rubrics.includes(o.value) }))
     .filter(garder);
 
-  const parType = compter(typeKey);
-  const nomsTypes = new Map<string, string>();
-  for (const d of scope) nomsTypes.set(typeKey(d), typeLabel(d));
-  const types: FilterOption[] = [...nomsTypes.entries()]
-    .sort((a, b) => a[1].localeCompare(b[1], 'fr', { sensitivity: 'base' }))
-    .map(([value, label]) => ({ value, label, count: parType.get(value) ?? 0, active: f.types.includes(value) }))
+  // Une valeur active absente du périmètre reste proposée (à 0) pour pouvoir la retirer.
+  const typeFacets = [...(facets?.types ?? [])];
+  for (const v of f.types) {
+    if (!typeFacets.some((t) => t.value === v)) typeFacets.push({ value: v, label: v === NO_TYPE ? null : v, count: 0 });
+  }
+  const types: FilterOption[] = typeFacets
+    .map((t) => ({ value: t.value, label: t.label ?? MICROCOPY.missingType, count: t.count, active: f.types.includes(t.value) }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'fr', { sensitivity: 'base' }))
     .filter(garder);
 
   return { biens: biens.filter(garder), rubrics: rubricOptions, types };
+}
+
+/** Options de filtre d'une liste entièrement connue (compteurs calculés localement). */
+export function buildFilterOptions(
+  scope: readonly DocumentItem[],
+  f: ViewFilters,
+  rubrics: readonly RubricRef[],
+): { biens: FilterOption[]; rubrics: FilterOption[]; types: FilterOption[] } {
+  return filterOptionsFromFacets(facetsFromDocuments(scope), f, rubrics);
 }
 
 /** Pastilles « Filtré par … », dans l'ordre Bien, Rubrique, Type. */

@@ -19,6 +19,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { isS3Configured } from '@/lib/s3-config';
+
 /** Clé de stockage d'une version. Unique et non réutilisable (§14.1). */
 export function buildLegalStorageKey(documentType: string, versionCode: string): string {
   return `legal/${documentType.toLowerCase()}/${versionCode}.html`;
@@ -26,12 +28,8 @@ export function buildLegalStorageKey(documentType: string, versionCode: string):
 
 /** Le stockage objet est-il configuré sur cet environnement ? */
 export function isObjectStorageConfigured(): boolean {
-  return Boolean(
-    process.env.OVH_S3_ACCESS_KEY_ID &&
-    process.env.OVH_S3_SECRET_ACCESS_KEY &&
-    process.env.OVH_S3_BUCKET &&
-    process.env.OVH_S3_ENDPOINT,
-  );
+  // Contrat unique et validé (APP-PERF-26).
+  return isS3Configured();
 }
 
 export type MirrorResult =

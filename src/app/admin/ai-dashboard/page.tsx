@@ -60,6 +60,7 @@ import {
 } from '@/lib/admin/ai-dashboard';
 import { EmergencyStopControl } from './_components/AiEnvBanner';
 import { ObservabilityPanel } from './_components/ObservabilityPanel';
+import { CachesPanel } from './_components/CachesPanel';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
 type State = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
@@ -401,6 +402,10 @@ export default function AiDashboardPage() {
           filtre de version et d'environnement — section repliée, chargée à
           l'ouverture. */}
       <ObservabilityPanel days={days} versions={data.versions} environment={data.environment} />
+
+      {/* Lot 23 (§32.6) : état et invalidation des caches, export CSV des
+          métriques agrégées — section repliée, chargée à l'ouverture. */}
+      <CachesPanel />
 
       {/* Versions */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">

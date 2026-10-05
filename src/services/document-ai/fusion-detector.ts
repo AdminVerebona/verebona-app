@@ -12,6 +12,7 @@
 import { db } from '@/db';
 import { assetFiles, documentAnalysisProposals } from '@/db/schema';
 import { eq, and, isNull, ne, desc } from 'drizzle-orm';
+import { estEmpreinteSha256 } from '@/lib/file-validation';
 
 export interface FusionCandidate {
   fileId: number;
@@ -89,8 +90,10 @@ export async function detectFusionCandidates(
 
   const candidates: FusionCandidate[] = [];
 
-  // 1. Doublon exact par sha256Hash
-  if (file.sha256Hash) {
+  // 1. Doublon exact par sha256Hash — seulement sur une VRAIE empreinte :
+  //    une valeur de repli commune (« placeholder-hash ») faisait de tous les
+  //    fichiers concernés des « doublons exacts » les uns des autres.
+  if (estEmpreinteSha256(file.sha256Hash)) {
     const exactMatches = await db.select({
       id: assetFiles.id,
       originalFilename: assetFiles.originalFilename,

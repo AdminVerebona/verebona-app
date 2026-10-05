@@ -26,6 +26,8 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { apiClient } from '@/lib/api-client';
+import { unsubscribeCurrentDevice } from '@/lib/push/push-client';
 
 /**
  * Navigation cible du back-office — CDC Back-Office V1 §3, REC-NAV-01/02/03.
@@ -73,15 +75,13 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
   const handleLogout = async () => {
     onNavigate?.();
-    try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-    } catch (error) {
-      console.error('Logout error:', error);
-    } finally {
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user');
-      router.push('/');
+    // Procédure de sortie unique et bornée (APP-PERF-21) : nettoyage local,
+    // désinscription push, déconnexion serveur dont le résultat est vérifié.
+    const result = await apiClient.signOut({ unsubscribePush: unsubscribeCurrentDevice });
+    if (result.server === 'failed' || result.server === 'timeout') {
+      console.error('[logout] déconnexion serveur non confirmée :', result.server);
     }
+    router.push('/');
   };
 
   return (

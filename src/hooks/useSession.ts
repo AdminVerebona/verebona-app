@@ -1,170 +1,85 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+/**
+ * Identité de l'utilisateur connecté — lecture du `SessionProvider`.
+ *
+ * Signature publique conservée (`user`, `isLoading`, `error`, `refetch`) pour
+ * les consommateurs existants ; s'y ajoutent l'état explicite (`status`) et
+ * l'erreur typée (`sessionError`) — APP-PERF-02 / APP-PERF-04.
+ *
+ * Le hook ne lance plus de lecture propre : il s'abonne au magasin partagé et
+ * déclenche au besoin son chargement initial (une seule lecture pour tous).
+ *
+ * `required` : sur un refus d'authentification DÉFINITIF seulement, la
+ * procédure de sortie unique (`apiClient.handleAuthFailure`) renvoie à la
+ * connexion, chemin et paramètres conservés — depuis un effet, jamais pendant
+ * le rendu. Une lenteur ou une panne laisse l'état `temporarily-unavailable`,
+ * réessayable, sans effacer l'identité.
+ */
+import { useEffect, useSyncExternalStore } from 'react';
 import { apiClient } from '@/lib/api-client';
-import type { UserRole, PlanType, SubscriptionStatus } from '@/types/domain';
+import { useSessionStore } from '@/contexts/SessionContext';
+import {
+  INITIAL_SESSION_SNAPSHOT,
+  SIGNED_OUT_CODE,
+  type SessionError,
+  type SessionStatus,
+  type User,
+} from '@/lib/session/session-store';
 
-export interface User {
-  id: number;
-  email: string;
-  firstName: string;
-  lastName: string;
-  username?: string | null;
-  accountName?: string;
-  role: UserRole;
-  subscription: {
-    plan: PlanType;
-    status: SubscriptionStatus;
-    /** État d'essai servi par `/api/users/me`. N'accorde aucun droit. */
-    trialStatus?: 'none' | 'active' | 'expired' | 'converted';
-    trialDaysLeft?: number | null;
-    isTrial?: boolean;
-  };
-  duoId?: number;
-  duoStatus?: 'ACTIVE' | 'PAST_DUE_GRACE' | 'UNPAID_RECOVERY' | 'CANCELED';
-  duoRole?: 'BILLING_OWNER' | 'MEMBER';
-  duoActivatedAt?: string;
-  graceDeadlineAt?: string;
-  duoEntitlement?: boolean;
-  isInRecovery?: boolean;
-}
+export type { User, SessionError, SessionStatus } from '@/lib/session/session-store';
 
 interface UseSessionOptions {
   required?: boolean;
+  /**
+   * Conservé pour compatibilité. La destination d'un refus définitif est
+   * celle de la procédure de sortie unique (`/login?expired=1&returnUrl=…`).
+   */
   redirectTo?: string;
 }
 
 interface UseSessionReturn {
   user: User | null;
   isLoading: boolean;
+  /** Message lisible de la dernière erreur, ou `null`. */
   error: string | null;
+  /** État explicite de la session. */
+  status: SessionStatus;
+  /** Erreur typée (refus définitif ou indisponibilité temporaire). */
+  sessionError: SessionError | null;
   refetch: () => Promise<void>;
 }
 
-function getCachedUser(): User | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem('user');
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    // Reject cache if it doesn't have the expected nested shape from /api/users/me
-    if (!parsed?.subscription?.plan) return null;
-    return parsed as User;
-  } catch {
-    return null;
-  }
-}
+const serverSnapshot = () => INITIAL_SESSION_SNAPSHOT;
 
 export function useSession(
   options: UseSessionOptions = {}
 ): UseSessionReturn {
-  const { required = false, redirectTo = '/login' } = options;
-  const router = useRouter();
+  const { required = false } = options;
+  const store = useSessionStore();
+  // Premier rendu identique côté serveur et client (`checking`) : aucune
+  // identité lue dans le localStorage avant hydratation.
+  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, serverSnapshot);
 
-  // Initialise synchronously from localStorage so the first render is instant
-  const [user, setUser] = useState<User | null>(() => getCachedUser());
-  const [isLoading, setIsLoading] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    const hasToken = true;
-    // Only skip loading if we have a valid cached user (correct shape)
-    return !(hasToken && getCachedUser() !== null);
-  });
-  const [error, setError] = useState<string | null>(null);
+  // Chargement initial partagé : le premier consommateur le lance, les
+  // suivants le rejoignent.
+  useEffect(() => store.retain(), [store]);
 
-  const fetchUser = async () => {
-    const hasToken = typeof window !== 'undefined' && true;
-
-    if (!hasToken) {
-      setUser(null);
-      localStorage.removeItem('user');
-      setIsLoading(false);
-      setError('No token found');
-
-      if (required) {
-        const currentPath = window.location.pathname;
-        if (
-          currentPath === redirectTo ||
-          currentPath.startsWith('/login') ||
-          currentPath.startsWith('/signup') ||
-          currentPath.startsWith('/forgot-password')
-        ) {
-          return;
-        }
-        const returnUrl = encodeURIComponent(currentPath);
-        router.push(`${redirectTo}?returnUrl=${returnUrl}`);
-      }
-      return;
-    }
-
-    try {
-      setError(null);
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Session timeout')), 4000)
-      );
-      const userData = await Promise.race([
-        apiClient.get<User>('/api/users/me', { useCache: true }),
-        timeoutPromise,
-      ]);
-
-      setUser(userData);
-      localStorage.setItem('user', JSON.stringify(userData));
-      setIsLoading(false);
-    } catch (err) {
-      const isAuthError =
-        (err instanceof Error && (
-          err.message.includes('UNAUTHORIZED') ||
-          err.message.includes('401') ||
-          err.message.includes('AUTH_REQUIRED')
-        ));
-
-      if (isAuthError) {
-        setUser(null);
-        localStorage.removeItem('user');
-      }
-      // On errors other than auth (network, timeout, 500…), keep cached user if available
-      setIsLoading(false);
-
-      if (err instanceof Error) {
-        setError(err.message);
-      }
-
-      if (required && isAuthError) {
-        const currentPath = window.location.pathname;
-        if (
-          currentPath === redirectTo ||
-          currentPath.startsWith('/login') ||
-          currentPath.startsWith('/signup') ||
-          currentPath.startsWith('/forgot-password')
-        ) {
-          return;
-        }
-        const returnUrl = encodeURIComponent(currentPath);
-        router.push(`${redirectTo}?returnUrl=${returnUrl}`);
-      }
-    }
-  };
-
+  const { status, error } = snapshot;
   useEffect(() => {
-    fetchUser();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Instant update when profile is saved elsewhere
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const updated = (e as CustomEvent<User>).detail;
-      if (updated) setUser(prev => prev ? { ...prev, ...updated } : updated);
-    };
-    window.addEventListener('user-profile-updated', handler);
-    return () => window.removeEventListener('user-profile-updated', handler);
-  }, []);
+    if (!required || status !== 'unauthenticated') return;
+    // Déconnexion volontaire : la procédure de sortie gère déjà la suite.
+    if (error?.code === SIGNED_OUT_CODE || apiClient.isSigningOut()) return;
+    void apiClient.handleAuthFailure({ code: error?.code });
+  }, [required, status, error]);
 
   return {
-    user,
-    isLoading,
-    error,
-    refetch: fetchUser,
+    user: snapshot.user,
+    isLoading: status === 'checking',
+    error: error?.message ?? null,
+    status,
+    sessionError: error,
+    refetch: () => store.refetch(),
   };
 }
 

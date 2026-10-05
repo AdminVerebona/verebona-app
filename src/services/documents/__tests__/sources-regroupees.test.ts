@@ -43,7 +43,9 @@ describe('cleanup et accès', () => {
 
   it('une secondaire reste consultable depuis les preuves du document', () => {
     expect(read('src/app/api/files/[id]/view/route.ts')).toContain('viewableFileCondition');
-    expect(read('src/app/api/files/[id]/proxy/route.ts')).toContain('grouped_into_file_id IS NOT NULL');
+    // Proxy et miniatures : garde commune (APP-PERF-13), même condition que view.
+    expect(read('src/app/api/files/[id]/proxy/route.ts')).toContain('loadReadableFile');
+    expect(read('src/services/documents/file-access.ts')).toContain('viewableFileCondition');
     expect(read('src/app/api/documents/[id]/knowledge/route.ts')).toContain('groupedSources');
   });
 

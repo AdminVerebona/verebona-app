@@ -9,6 +9,7 @@ import { join } from 'path';
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 const ONGLET = read('src/components/assets/AssetDocumentsTab.tsx');
 const VUE = read('src/components/documents/v2/DocumentsByRubric.tsx');
+const FLUX = read('src/components/documents/v2/useDocumentsFeed.ts');
 
 describe('onglet Documents d’un bien', () => {
   it('réutilise le composant de « Mes documents », restreint au bien', () => {
@@ -17,10 +18,10 @@ describe('onglet Documents d’un bien', () => {
     expect(existsSync(join(process.cwd(), 'src/components/asset-documents-panel.tsx'))).toBe(false);
   });
 
-  it('même source de données : regroupement par Rubrique filtré sur le bien', () => {
-    expect(VUE).toMatch(/if \(assetId\) params\.set\('assets', String\(assetId\)\)/);
-    expect(VUE).toMatch(/params\.set\('pageSize', 'all'\)/);
-    expect(VUE).toMatch(/\/api\/v2\/documents\?\$\{query\}/);
+  it('même source de données : lots par Rubrique restreints au bien (DOC-PERF)', () => {
+    expect(VUE).toMatch(/assetIds: assetId \? \[assetId\] : \[\]/);
+    expect(VUE).not.toMatch(/pageSize/);
+    expect(FLUX).toMatch(/\/api\/v2\/documents\?\$\{buildFeedQuery\(\{ \.\.\.q, cursor, limit \}\)\}/);
   });
 
   it('ajout rattaché au bien, gardé en lecture seule', () => {

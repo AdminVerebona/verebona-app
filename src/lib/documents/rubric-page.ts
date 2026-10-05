@@ -9,14 +9,6 @@ import { RUBRICS } from '@/lib/referential/v2/rubrics';
 import type { RubricDefinition } from '@/lib/referential/v2/types';
 
 /**
- * Plafond de chargement d'une page (`pageSize=all`). Au-delà, les compteurs
- * (calculés en base) restent exacts, mais seuls les documents les plus
- * pertinents selon le tri demandé sont transmis. L'écran compare le nombre
- * reçu à ce plafond — et non au total — pour savoir si la liste est tronquée.
- */
-export const MAX_LOADED_DOCUMENTS = 2_000;
-
-/**
  * Rubriques à rendre dans la page.
  *
  * ══════════════════════════════════════════════════════════════════════════
@@ -28,7 +20,7 @@ export const MAX_LOADED_DOCUMENTS = 2_000;
  * modifié). Avec l'aperçu paginé, il n'apparaissait nulle part alors que le
  * total le comptait.
  *
- * Quand toute la page est demandée (`includePresent`), chaque Rubrique qui
+ * Pour les pages documentaires (`includePresent`), chaque Rubrique qui
  * contient au moins un document est rendue, à sa place dans l'ordre du
  * référentiel ; les Rubriques vides restent soumises à la visibilité. Un
  * code inconnu du référentiel est rendu en dernier, sous son code.

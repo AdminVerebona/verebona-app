@@ -77,9 +77,17 @@ describe('dépôt multiple', () => {
   const DIALOGUE = read('src/components/documents/unified-document-dialog.tsx');
   const CONFIRM = read('src/app/api/files/confirm/route.ts');
 
-  it('le client confirme chaque fichier séparément, en séquence', () => {
-    expect(DIALOGUE).toMatch(/for \(let i = 0; i < total; i\+\+\)/);
+  // APP-PERF-25 : la séquence stricte est remplacée par une file à
+  // concurrence BORNÉE (`upload-queue.ts`), mais chaque fichier garde son
+  // cycle complet et SA confirmation — jamais de confirmation groupée.
+  const FILE = read('src/lib/upload-queue.ts');
+
+  it('le client confirme chaque fichier séparément, avec une concurrence bornée', () => {
+    expect(DIALOGUE).toMatch(/fileDepot\.ajouterLot\(/);
     expect(DIALOGUE).not.toMatch(/Promise\.all\(files\.map/);
+    expect(FILE).toMatch(/this\.transfertsActifs < this\.concurrenceTransferts/);
+    // Corps de confirmation : UN fichier, avec sa clé d'opération.
+    expect(FILE).toMatch(/const body = \{\s*fileId: e\.fileId,\s*operationId: e\.operationId,/);
   });
 
   it('le serveur confirme tous les fichiers reçus et passe par la file', () => {

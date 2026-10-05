@@ -1,0 +1,217 @@
+"use client";
+
+/**
+ * Suivi global des dépôts de documents — APP-PERF-29.
+ *
+ * Monté une fois dans le gabarit de l'application : la progression d'un
+ * envoi reste visible après la fermeture du panneau d'ajout ou un
+ * changement de page. Chaque fichier peut être annulé, repris (à l'étape où
+ * il s'est arrêté) ou retiré de la liste.
+ *
+ * ⚠️ Aucune promesse d'envoi en arrière-plan : la continuité d'un transfert
+ * quand le téléphone se verrouille ou que la PWA est suspendue n'est pas
+ * démontrée. Le message mobile le dit, et la reprise est proposée au retour.
+ */
+import { useEffect, useRef, useState } from 'react';
+import { Loader2, Check, X, RotateCcw, FileUp, ChevronDown, AlertTriangle } from 'lucide-react';
+import { toast } from 'sonner';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { useFileDepot } from '@/hooks/useFileDepot';
+import { fileDepot, stockageLocal, estActif, type ElementDepot } from '@/lib/upload-queue';
+import { ACCEPT_DEPOT } from '@/lib/upload-limits';
+
+export function libelleEtape(e: ElementDepot): string {
+  switch (e.etape) {
+    case 'attente': return 'En attente';
+    case 'preparation': return `Préparation ${Math.round(e.progression * 100)} %`;
+    case 'pret': return 'En attente de transfert';
+    case 'transfert': return `Envoi ${Math.round(e.progression * 100)} %`;
+    case 'confirmation': return 'Enregistrement…';
+    case 'termine': return 'Ajouté';
+    case 'annule': return 'Annulé';
+    case 'interrompu': return 'Interrompu';
+    case 'echec': return 'Échec';
+  }
+}
+
+export const MESSAGE_MOBILE =
+  'Sur téléphone, gardez l’application ouverte pendant l’envoi : s’il est interrompu ' +
+  '(mise en veille, fermeture), vous pourrez le reprendre ici.';
+
+interface PanelProps {
+  elements: ElementDepot[];
+  mobile?: boolean;
+  onAnnuler: (operationId: string) => void;
+  onReprendre: (operationId: string) => void;
+  /** Absent : resélection impossible depuis cette vue. */
+  onChoisirFichier?: (operationId: string) => void;
+  onRetirer?: (operationId: string) => void;
+}
+
+/** Liste des fichiers d'un dépôt avec leurs actions (réutilisée par le dialogue). */
+export function UploadQueuePanel({ elements, mobile, onAnnuler, onReprendre, onChoisirFichier, onRetirer }: PanelProps) {
+  const actifs = elements.some(estActif);
+  return (
+    <div className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-1.5">
+        {elements.map((e) => {
+          const reprenableSansFichier = e.reprise === 'confirmation';
+          const peutReprendre = (e.etape === 'echec' || e.etape === 'interrompu') && e.reprise !== null
+            && (e.fichierDisponible || reprenableSansFichier);
+          const doitChoisir = (e.etape === 'echec' || e.etape === 'interrompu') && e.reprise !== null && !peutReprendre;
+          const enCours = estActif(e);
+          return (
+            <li key={e.operationId} className="flex flex-col gap-1 rounded-lg border border-[color:var(--border-subtle)] px-2.5 py-2">
+              <div className="flex items-center gap-2 min-w-0">
+                {enCours
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-[color:var(--text-muted)]" />
+                  : e.etape === 'termine'
+                    ? <Check className="w-3.5 h-3.5 flex-shrink-0 text-emerald-500" />
+                    : e.etape === 'annule'
+                      ? <X className="w-3.5 h-3.5 flex-shrink-0 text-[color:var(--text-muted)]" />
+                      : <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 text-amber-500" />}
+                <span className="text-xs font-medium truncate flex-1 text-[color:var(--text-primary)]">{e.nom}</span>
+                <span className="text-[10px] text-[color:var(--text-muted)] flex-shrink-0">{libelleEtape(e)}</span>
+              </div>
+              {(e.etape === 'preparation' || e.etape === 'transfert') && (
+                <div className="h-1 rounded-full bg-[#7c3aed]/20 overflow-hidden">
+                  <div className="h-full rounded-full bg-[#7c3aed] transition-all duration-300" style={{ width: `${Math.round(e.progression * 100)}%` }} />
+                </div>
+              )}
+              {e.erreur && (e.etape === 'echec' || e.etape === 'interrompu') && (
+                <p className="text-[11px] leading-snug text-[color:var(--text-muted)]">{e.erreur}</p>
+              )}
+              <div className="flex items-center gap-3 text-[11px]">
+                {enCours && (
+                  <button type="button" className="underline text-[color:var(--text-muted)]" onClick={() => onAnnuler(e.operationId)}>Annuler</button>
+                )}
+                {peutReprendre && (
+                  <button type="button" className="inline-flex items-center gap-1 underline text-[color:var(--accent)]" onClick={() => onReprendre(e.operationId)}>
+                    <RotateCcw className="w-3 h-3" />Reprendre
+                  </button>
+                )}
+                {doitChoisir && onChoisirFichier && (
+                  <button type="button" className="inline-flex items-center gap-1 underline text-[color:var(--accent)]" onClick={() => onChoisirFichier(e.operationId)}>
+                    <FileUp className="w-3 h-3" />Choisir le fichier
+                  </button>
+                )}
+                {!enCours && onRetirer && (
+                  <button type="button" className="underline text-[color:var(--text-muted)]" onClick={() => onRetirer(e.operationId)}>
+                    {e.etape === 'echec' || e.etape === 'interrompu' ? 'Abandonner' : 'Retirer'}
+                  </button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {mobile && actifs && (
+        <p className="text-[11px] leading-snug text-[color:var(--text-muted)]">{MESSAGE_MOBILE}</p>
+      )}
+    </div>
+  );
+}
+
+export function UploadQueueIndicator({ userId }: { userId?: number | null }) {
+  const { elements, enCours } = useFileDepot();
+  const isMobile = useIsMobile();
+  const [replie, setReplie] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cibleRef = useRef<string | null>(null);
+  const echouesMasque = useRef(new Set<string>());
+
+  // Dépôts non terminés de CET utilisateur (stockage local, 24 h).
+  useEffect(() => {
+    fileDepot.utiliserStockage(userId ? stockageLocal(userId) : null);
+  }, [userId]);
+
+  // Fermeture ou rechargement de l'onglet pendant un envoi : avertissement
+  // du navigateur (la navigation interne, elle, n'interrompt rien).
+  useEffect(() => {
+    if (enCours === 0) return;
+    const avertir = (ev: BeforeUnloadEvent) => { ev.preventDefault(); ev.returnValue = ''; };
+    window.addEventListener('beforeunload', avertir);
+    return () => window.removeEventListener('beforeunload', avertir);
+  }, [enCours]);
+
+  // Échec survenu application masquée (veille, PWA suspendue) : une reprise
+  // automatique au retour, sur la même opération — jamais de doublon.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (document.visibilityState === 'hidden') {
+      for (const e of elements) {
+        if (e.etape === 'echec' && e.reprise !== null && (e.fichierDisponible || e.reprise === 'confirmation')) {
+          echouesMasque.current.add(e.operationId);
+        }
+      }
+    }
+  }, [elements]);
+  useEffect(() => {
+    const surRetour = () => {
+      if (document.visibilityState !== 'visible') return;
+      const ids = [...echouesMasque.current];
+      echouesMasque.current.clear();
+      for (const id of ids) { try { fileDepot.reprendre(id); } catch { /* reprise manuelle */ } }
+    };
+    document.addEventListener('visibilitychange', surRetour);
+    return () => document.removeEventListener('visibilitychange', surRetour);
+  }, []);
+
+  if (elements.length === 0) return null;
+
+  const termines = elements.filter((e) => !estActif(e)).length;
+  const reprendre = (id: string, fichier?: File) => {
+    try { fileDepot.reprendre(id, fichier); } catch (err) { toast.error((err as Error).message); }
+  };
+  const choisir = (id: string) => { cibleRef.current = id; inputRef.current?.click(); };
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`fixed z-40 ${isMobile ? 'left-3 right-3 bottom-24' : 'right-4 bottom-4 w-[360px]'} rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] shadow-lg`}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={ACCEPT_DEPOT}
+        className="hidden"
+        onChange={(ev) => {
+          const f = ev.target.files?.[0];
+          const id = cibleRef.current;
+          ev.target.value = '';
+          cibleRef.current = null;
+          if (f && id) reprendre(id, f);
+        }}
+      />
+      <div className="flex items-center gap-2 px-3 py-2">
+        {enCours > 0
+          ? <Loader2 className="w-4 h-4 animate-spin text-[color:var(--text-muted)]" />
+          : <Check className="w-4 h-4 text-[color:var(--text-muted)]" />}
+        <span className="text-sm font-medium flex-1 text-[color:var(--text-primary)]">
+          Envoi de documents {termines}/{elements.length}
+        </span>
+        <button type="button" aria-label={replie ? 'Déplier' : 'Replier'} onClick={() => setReplie((v) => !v)} className="p-1 rounded hover:bg-muted/40">
+          <ChevronDown className={`w-4 h-4 transition-transform ${replie ? '' : 'rotate-180'}`} />
+        </button>
+        {enCours === 0 && (
+          <button type="button" aria-label="Masquer" onClick={() => fileDepot.retirerTermines()} className="p-1 rounded hover:bg-muted/40">
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+      {!replie && (
+        <div className="max-h-[40vh] overflow-y-auto px-3 pb-3">
+          <UploadQueuePanel
+            elements={elements}
+            mobile={isMobile}
+            onAnnuler={(id) => fileDepot.annuler(id)}
+            onReprendre={(id) => reprendre(id)}
+            onChoisirFichier={choisir}
+            onRetirer={(id) => fileDepot.retirer(id)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from './jwt';
-import { ApiErrors } from './api-errors';
+import { sessionErrorToResponse } from './auth/session-errors';
 import type { PlanType, UserRole, UserStatus } from '@/types/domain';
 import { db } from '@/db';
 import { users, accounts } from '@/db/schema';
@@ -9,7 +9,6 @@ import { serverCacheGet, serverCacheSet } from './server-cache';
 import { isRevokedByCutoff } from './auth/session-guard';
 import {
   ACCOUNT_PENDING_DELETION_CODE,
-  ACCOUNT_PENDING_DELETION_MESSAGE,
   isApiAllowedWhilePendingDeletion,
   isPendingDeletion,
 } from './auth/account-closure';
@@ -99,6 +98,8 @@ export class SessionService {
     // tard 60 s après.
     // ══════════════════════════════════════════════════════════════════════
     // Même contrôle que `lib/auth/session-guard` (routes hors SessionService).
+    // Base injoignable : `SESSION_UNAVAILABLE` (503), jamais un faux
+    // « non révoqué » (APP-PERF-20).
     if (await isRevokedByCutoff(payload)) {
       throw new Error('INVALID_TOKEN');
     }
@@ -216,37 +217,11 @@ export class SessionService {
   /**
    * Helper pour convertir les erreurs SessionService en réponses HTTP.
    * Utiliser dans les routes API avec try/catch.
+   *
+   * Contrat unique (APP-PERF-20, `lib/auth/session-errors.ts`) : codes publics
+   * inchangés, message lisible, `requestId` ; `SESSION_UNAVAILABLE` → 503.
    */
-  static handleSessionError(error: unknown): NextResponse {
-    const errorMessage = (error as Error).message;
-
-    switch (errorMessage) {
-      case 'AUTH_REQUIRED':
-        return ApiErrors.authRequired();
-      case 'INVALID_TOKEN':
-        return ApiErrors.invalidToken();
-      case 'ACCOUNT_SUSPENDED':
-        return ApiErrors.accountSuspended();
-      case ACCOUNT_PENDING_DELETION_CODE:
-        return NextResponse.json(
-          { error: 'Forbidden', code: ACCOUNT_PENDING_DELETION_CODE, message: ACCOUNT_PENDING_DELETION_MESSAGE },
-          { status: 403 },
-        );
-      case 'INSUFFICIENT_PERMISSIONS':
-        return ApiErrors.insufficientPermissions();
-      case 'FORBIDDEN':
-        return ApiErrors.accessDenied('Access denied to this resource');
-      case 'TRIAL_ACTIVATION_PENDING':
-        return NextResponse.json(
-          {
-            error: 'Forbidden',
-            code: 'TRIAL_ACTIVATION_PENDING',
-            message: 'Votre période de grâce a expiré. Veuillez activer votre abonnement pour continuer.',
-          },
-          { status: 403 }
-        );
-      default:
-        return ApiErrors.internalError('An unexpected error occurred');
-    }
+  static handleSessionError(error: unknown, requestId?: string): NextResponse {
+    return sessionErrorToResponse(error, requestId);
   }
 }

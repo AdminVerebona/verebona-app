@@ -40,8 +40,10 @@ import { and, eq, isNull, lt, inArray } from 'drizzle-orm';
 
 /**
  * Délai de grâce. Un téléversement en cours ne doit jamais être purgé sous
- * les pieds de l'utilisateur : 24 h laissent largement de quoi finir une
- * vidéo de 500 Mo sur une connexion lente, reprise comprise.
+ * les pieds de l'utilisateur : 24 h laissent largement de quoi finir un
+ * dépôt au plafond du contrat (`@/lib/upload-limits`) sur une connexion
+ * lente, reprise comprise. La file client conserve l'état d'un dépôt
+ * reprenable pendant la même durée (`upload-queue.ts`, `DUREE_REPRISE_MS`).
  */
 const DEFAULT_GRACE_HOURS = 24;
 

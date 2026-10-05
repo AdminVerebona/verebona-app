@@ -300,7 +300,7 @@ describe('préférences d’affichage mémorisées', () => {
 });
 
 describe('page complète : aucun document classé inatteignable', async () => {
-  const { rubricsForPage, MAX_LOADED_DOCUMENTS } = await import('@/lib/documents/rubric-page');
+  const { rubricsForPage } = await import('@/lib/documents/rubric-page');
   const { readFileSync } = await import('fs');
   const { join } = await import('path');
   const visibles = RUBRICS.filter((r) => r.code !== 'RENTAL_MANAGEMENT' && r.code !== 'MEDIA');
@@ -329,13 +329,13 @@ describe('page complète : aucun document classé inatteignable', async () => {
     expect(groups[0].label).toBe('Photos et vidéos');
   });
 
-  it('requête bornée et limitée au compte ; troncature jugée sur le plafond', () => {
+  it('requête limitée au compte, découpée en lots ; plus aucun chargement complet (DOC-PERF)', () => {
     const service = readFileSync(join(process.cwd(), 'src/services/documents/rubric-query.service.ts'), 'utf-8');
     expect(service).toMatch(/const scope = \[eq\(assetFiles\.accountId, query\.accountId\), isNull\(assetFiles\.deletedAt\)\]/);
-    expect(service).toMatch(/\.limit\(MAX_LOADED_DOCUMENTS\)/);
-    expect(service).toMatch(/rubricsForPage\(visibleRubrics, countByRubric, query\.pageSize === 'all'\)/);
-    expect(MAX_LOADED_DOCUMENTS).toBe(2000);
+    expect(service).toMatch(/\.limit\(query\.limit \+ 1\)/);
+    expect(service).toMatch(/rubricsForPage\(visibleRubrics, scopeByRubric, true\)/);
+    expect(service).not.toMatch(/MAX_LOADED_DOCUMENTS|query\.pageSize/);
     const vue = readFileSync(join(process.cwd(), 'src/components/documents/v2/DocumentsByRubric.tsx'), 'utf-8');
-    expect(vue).toMatch(/scope\.length >= MAX_LOADED_DOCUMENTS && page\.total > scope\.length/);
+    expect(vue).not.toMatch(/params\.set\('pageSize'|MAX_LOADED_DOCUMENTS/);
   });
 });

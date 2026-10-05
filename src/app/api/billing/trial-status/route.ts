@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
+import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
+import { newRequestId } from '@/lib/auth/session-errors';
 import { db } from '@/db';
 import { accountMemberships, accounts, assets, assetFiles, accountSubscriptions } from '@/db/schema';
 import { eq, and, or, isNull, count } from 'drizzle-orm';
@@ -30,7 +32,10 @@ export async function GET(request: NextRequest) {
       .limit(1);
 
     if (!membership) {
-      return NextResponse.json({ error: 'User has no account' }, { status: 404 });
+      return NextResponse.json(
+        { error: 'User has no account', code: 'ACCOUNT_NOT_FOUND', message: 'Aucun compte n’est rattaché à cet utilisateur.' },
+        { status: 404 },
+      );
     }
 
     // Compte de la session d'abord : c'est celui que les routes d'écriture
@@ -164,10 +169,15 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('[trial-status] erreur:', error);
+    // Refus de session (absente, invalide, révoquée, compte suspendu) : 401 /
+    // 403 normaux, non journalisés comme panne (APP-PERF-20). Ils étaient
+    // tous rendus en 500, ce qui empêchait le client de renouveler la session.
+    const requestId = newRequestId();
+    if (isSessionError(error)) return sessionErrorResponse(error, requestId);
+    console.error(`[trial-status][${requestId}] erreur:`, error instanceof Error ? error.message : error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 },
+      { error: 'INTERNAL_ERROR', code: 'INTERNAL_ERROR', message: 'Droits momentanément indisponibles. Réessayez dans un instant.', requestId },
+      { status: 500, headers: { 'x-request-id': requestId } },
     );
   }
 }

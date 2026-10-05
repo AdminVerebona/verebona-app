@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
 import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { SessionService } from '@/lib/session-service';
+import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { db, pgClient } from '@/db';
 import { users, accounts, accountMemberships, duoAccounts, duoMemberships } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
@@ -235,6 +236,9 @@ export async function GET(request: NextRequest) {
     meResponse.headers.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
     return meResponse;
   } catch (error) {
+    // Vérification de session impossible (base injoignable) : 503 explicite,
+    // que le client traite comme une indisponibilité, pas une déconnexion.
+    if (isSessionError(error)) return sessionErrorResponse(error);
     return NextResponse.json(
       { error: 'SERVER_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }

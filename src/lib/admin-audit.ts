@@ -54,8 +54,6 @@ export type AdminActionType =
   // Renvoi d'une invitation réémissible (CDC BO USR-A01).
   | 'USER_INVITATION_RESEND'
   | 'EXPORT_TEMPLATE_TOGGLE'
-  // Prévisualisation d'un modèle d'export par un administrateur (journalisation technique).
-  | 'EXPORT_TEMPLATE_PREVIEW'
   | 'COMMUNICATION_CHANNEL_TOGGLE'
   // Résolution manuelle d'une anomalie de supervision (CDC BO AUD-003, SUP-007).
   | 'ANOMALY_RESOLVE'
@@ -75,10 +73,15 @@ export type AdminActionType =
   // Notifications (CDC 3 §20.2, §20.3 ; D-L) : recherche, réémission, renvoi.
   | 'NOTIFICATION_SEARCH'
   | 'NOTIFICATION_REEMIT'
-  | 'NOTIFICATION_RESEND';
+  | 'NOTIFICATION_RESEND'
+  // Caches de l'assistant et de l'IA : invalidation (CDC Assistant §32.6 ;
+  // lot 23) — auteur, date, cache, motif.
+  | 'AI_CACHE_INVALIDATE'
+  // Export CSV des métriques agrégées (§32.6, §32.7 consultation tracée ; lot 23).
+  | 'AI_METRICS_EXPORT';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
-  | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION';
+  | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

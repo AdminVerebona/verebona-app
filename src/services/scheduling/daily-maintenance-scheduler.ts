@@ -305,6 +305,24 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
     },
   });
 
+  // Rattrapage borné des miniatures de documents (APP-PERF-06/27) : au plus
+  // 100 documents existants sans miniature à jour par passage, mis dans la
+  // file en mémoire de l'instance (parallélisme borné, sans appel IA).
+  // Désactivable par THUMBNAILS_BACKFILL=off ou THUMBNAILS_ENABLED=false.
+  if (!['off', 'false', '0'].includes((env.THUMBNAILS_BACKFILL ?? '').trim().toLowerCase())
+    && !['off', 'false', '0', 'no'].includes((env.THUMBNAILS_ENABLED ?? '').trim().toLowerCase())) {
+    tasks.push({
+      lock: 'hourly-thumbnails-backfill',
+      window: [5, 24],
+      leaseMs: 55 * 60 * 1000,
+      run: async () => {
+        const { runThumbnailBackfill } = await import('@/services/documents/thumbnails/thumbnail.service');
+        const r = await runThumbnailBackfill({ limit: 100 });
+        if (r.enqueued > 0) console.info(`[daily-jobs] thumbnails-backfill : ${r.enqueued} document(s) en file.`);
+      },
+    });
+  }
+
   return tasks;
 }
 

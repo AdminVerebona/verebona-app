@@ -28,11 +28,11 @@ import {
   PutBucketCorsCommand,
   type CORSRule,
 } from '@aws-sdk/client-s3';
-import { s3Client } from '@/lib/s3-client';
+import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 
 export const dynamic = 'force-dynamic';
 
-const BUCKET = process.env.OVH_S3_BUCKET ?? '';
+const BUCKET = S3_BUCKET;
 
 /**
  * Origines autorisées.

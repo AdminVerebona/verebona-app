@@ -498,7 +498,9 @@ export async function listAssistantSettingRequests(limit = 20): Promise<StoredRe
   return s ? s.listRequests(Math.min(Math.max(limit, 1), 100)) : [];
 }
 
-/** Modèle preview (§15.13) : nom portant « preview » ou « -exp ». */
-export function isPreviewModel(model: string | null | undefined): boolean {
-  return typeof model === 'string' && /(^|[-_.])(preview|exp|experimental)([-_.]|$)/i.test(model);
-}
+/**
+ * Modèle preview (§15.12, §15.13) — lot 23 : statut DÉCLARÉ au registre des
+ * modèles (`services/ai/registry/models.ts`) ; un modèle inconnu du registre
+ * est traité comme preview (repli prudent).
+ */
+export { isPreviewModel } from '@/services/ai/registry/models';

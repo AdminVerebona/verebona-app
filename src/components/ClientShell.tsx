@@ -6,6 +6,8 @@ import { ScrollToTop } from '@/components/ScrollToTop';
 import { NavigationProgress } from '@/components/NavigationProgress';
 import { ServiceWorkerRegistration } from '@/components/ServiceWorkerRegistration';
 import { WriteGuardProvider } from '@/contexts/WriteGuardContext';
+import { SessionProvider } from '@/contexts/SessionContext';
+import { EntitlementsProvider } from '@/hooks/useEntitlements';
 
 function ChunkErrorHandler() {
   useEffect(() => {
@@ -60,10 +62,17 @@ export function ClientShell({ children }: { children: ReactNode }) {
       <ChunkErrorHandler />
       <ServiceWorkerRegistration />
       <NavigationProgress />
-      {/* Garde d'écriture montée à la racine : une seule fenêtre pour les
+      {/* Session et droits : UN fournisseur chacun pour toute l'application
+          (APP-PERF-04, APP-PERF-12) — une lecture partagée de l'identité et
+          des droits, quels que soient les composants montés.
+          Garde d'écriture montée à la racine : une seule fenêtre pour les
           douze actions qui peuvent être refusées. La monter plus bas en
           ouvrirait plusieurs, potentiellement en même temps. */}
-      <WriteGuardProvider>{children}</WriteGuardProvider>
+      <SessionProvider>
+        <EntitlementsProvider>
+          <WriteGuardProvider>{children}</WriteGuardProvider>
+        </EntitlementsProvider>
+      </SessionProvider>
       <Toaster closeButton position="top-center" richColors />
       <ScrollToTop />
     </>

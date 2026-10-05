@@ -63,8 +63,11 @@ describe('choix d’affichage — maquette 1a « Flux continu »', () => {
     expect(BARRE).toMatch(/<Switch checked=\{grouped\} onCheckedChange=\{onGroupedChange\} \/>\s*Par rubrique/);
     expect(BARRE).toMatch(/aria-label="Trier par"/);
     expect(BARRE).toMatch(/Ordre décroissant/);
-    expect(VUE).toMatch(/sortDocuments\(filterDocuments\(scope, filters\), sort, prefs\.dir, rubrics\)/);
-    expect(VUE).toMatch(/groupDocuments\(visibles, rubrics, prefs\.grouped\)/);
+    // DOC-PERF : tri et filtres côté serveur, sur tout le périmètre ; l'écran
+    // ne retrie jamais un lot, il le découpe en sections.
+    expect(VUE).toMatch(/sort,\s*direction: prefs\.dir,\s*grouped: prefs\.grouped,\s*filters,/);
+    expect(VUE).not.toMatch(/sortDocuments\(/);
+    expect(VUE).toMatch(/groupDocuments\(charges, rubrics, prefs\.grouped\)/);
   });
 
   it('les rubriques sont des titres de section, plus des boîtes', () => {
@@ -127,7 +130,8 @@ describe('offres : libellé des boutons', () => {
 
 describe('vignettes avec aperçu du document', () => {
   it('le fond de la vignette est un aperçu réel (image ou 1re page PDF)', () => {
-    expect(VUE).toMatch(/src=\{`\/api\/files\/\$\{document\.id\}\/proxy`\}/);
+    // Miniature serveur (APP-PERF-06), jamais l'original dans une liste.
+    expect(VUE).toMatch(/src=\{`\/api\/files\/\$\{document\.id\}\/thumbnail`\}/);
     expect(VUE).toMatch(/<PdfThumbnail\s+fileId=\{String\(document\.id\)\}/);
   });
 
@@ -145,6 +149,8 @@ describe('vignettes avec aperçu du document', () => {
   it('l’aperçu PDF est rendu à la demande et mémorisé', () => {
     const pdf = read('src/components/ui/pdf-thumbnail.tsx');
     expect(pdf).toContain('IntersectionObserver');
+    // Miniature serveur d'abord ; repli navigateur mémorisé (cache borné, APP-PERF-07).
     expect(pdf).toMatch(/rendus\.set\(fileId, dataUrl\)/);
+    expect(pdf).toMatch(/\/api\/files\/\$\{fileId\}\/thumbnail/);
   });
 });

@@ -1,8 +1,20 @@
 /**
  * Sauvegarde — contenu réellement produit (stockage et base simulés).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { gunzipSync } from 'zlib';
+
+// Configuration S3 canonique (APP-PERF-26) : client simulé ci-dessous, aucun appel réseau.
+const envPose = vi.hoisted(() => {
+  const valeurs: Record<string, string> = {
+    OVH_S3_ENDPOINT: 'http://127.0.0.1:9', OVH_S3_BUCKET: 'test-bucket',
+    OVH_S3_ACCESS_KEY_ID: 'test', OVH_S3_SECRET_ACCESS_KEY: 'test',
+  };
+  const poses = Object.keys(valeurs).filter((k) => process.env[k] === undefined);
+  for (const k of poses) process.env[k] = valeurs[k];
+  return poses;
+});
+afterAll(() => { for (const k of envPose) delete process.env[k]; });
 
 const { envois, tables, echecSur } = vi.hoisted(() => ({
   echecSur: { table: '' },

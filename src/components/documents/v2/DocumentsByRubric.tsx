@@ -18,11 +18,16 @@
  * document : … »), ce qui garde visible la structure du référentiel (§3.3)
  * sans la faire peser sur la page.
  *
- * ── LE TRI EST GLOBAL ─────────────────────────────────────────────────────
+ * ── LE TRI EST GLOBAL, LE CHARGEMENT PROGRESSIF (DOC-PERF) ─────────────────
  *
- * Le périmètre entier est chargé (`pageSize=all`) puis trié d'un bloc ;
- * regrouper ne fait que découper la liste triée. Filtres, tri et regroupement
- * sont calculés dans `documents-view.ts` (fonctions pures, testées).
+ * Le serveur trie et filtre TOUT le périmètre, puis le découpe en lots de
+ * 50 ; le lot suivant part quand une sentinelle approche du bas de la liste
+ * (`IntersectionObserver`). Aucun numéro de page, aucun « Page suivante ».
+ * Regroupé, l'ordre serveur est « Rubrique, puis tri » : les lots remplissent
+ * les sections de haut en bas, et regrouper ne fait que découper la liste
+ * reçue. Les compteurs (sections, filtres, total) viennent du serveur et
+ * portent sur l'ensemble filtré, pas sur les documents déjà chargés. État du
+ * chargement : `documents-feed.ts` ; retour sur l'écran : `list-restore.ts`.
  *
  * ── CE QUI NE CHANGE PAS ──────────────────────────────────────────────────
  *
@@ -32,7 +37,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { ChevronDown, Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
@@ -42,7 +47,6 @@ import { Button } from '@/components/ui/button';
 import { PdfThumbnail } from '@/components/ui/pdf-thumbnail';
 import { apiClient } from '@/lib/api-client';
 import { rubricColors } from '@/lib/referential/v2/rubrics';
-import { MAX_LOADED_DOCUMENTS } from '@/lib/documents/rubric-page';
 import { DocumentDrawer, type DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 import { ActiveFilterChips, DocumentsFilterPanel } from './DocumentsFilterPanel';
 import { DocumentsToolbar } from './DocumentsToolbar';
@@ -51,21 +55,18 @@ import {
   UNFILED,
   activeFilterChips,
   activeFilterCount,
-  buildFilterOptions,
   countLabel,
   defaultDirection,
   displayedDate,
   documentSubtitle,
   effectiveSort,
   emptyRubricsLine,
-  filterDocuments,
+  filterOptionsFromFacets,
   groupDocuments,
   hasActiveFilters,
   isToClassify,
-  limitGroups,
   libelleResultats,
   parseSearchResults,
-  sortDocuments,
   sortOptionsFor,
   toggleFilter,
   type DocumentItem,
@@ -75,6 +76,8 @@ import {
   type ViewFilters,
 } from './documents-view';
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type ViewPrefs } from './view-prefs';
+import { saveListSnapshot, takeListSnapshot, type ListSnapshot } from './list-restore';
+import { useDocumentsFeed, type FeedQuery } from './useDocumentsFeed';
 
 /**
  * Le téléversement RÉUTILISE le dialogue existant, il n'est pas réécrit.
@@ -88,23 +91,6 @@ const UnifiedDocumentDialog = dynamic(
   ),
   { ssr: false },
 );
-
-interface GroupResponse {
-  code: string;
-  label: string;
-  count: number;
-  documents: DocumentItem[];
-  hasMore: boolean;
-}
-
-interface PageResponse {
-  groups: GroupResponse[];
-  total: number;
-  unfiledCount: number;
-}
-
-/** Nombre de documents rendus d'un coup ; « Afficher plus » ajoute la suite. */
-const RENDER_STEP = 150;
 
 /** Lignes de la mini-page (maquette) : quelques longueurs, choisies par document. */
 const LINES = [[92, 78, 85, 40], [70, 88, 60, 82, 45], [85, 85, 55], [60, 90, 90, 70, 30], [88, 45, 80, 75]];
@@ -191,9 +177,9 @@ function DocumentRow({
       >
         <span className="relative h-[38px] w-[30px] shrink-0 overflow-hidden rounded bg-white shadow-[0_1px_3px_rgba(0,0,0,.5)]">
           {isImage && !imageKo ? (
-            // eslint-disable-next-line @next/next/no-img-element -- flux authentifié, pas d'optimisation Next
+            // eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), placeholder si absente
             <img
-              src={`/api/files/${document.id}/proxy`}
+              src={`/api/files/${document.id}/thumbnail`}
               alt=""
               loading="lazy"
               decoding="async"
@@ -227,9 +213,10 @@ function DocumentRow({
  * sortant d'un classeur, titre et sous-titre SOUS l'aperçu.
  *
  * L'aperçu est réel quand il peut l'être :
- *   - image : le fichier lui-même, plein cadre (`/api/files/:id/proxy`) ;
- *   - PDF : la première page (`PdfThumbnail`, rendue à l'approche de
- *     l'écran puis gardée en mémoire) ;
+ *   - image : sa miniature serveur, plein cadre (`/api/files/:id/thumbnail`,
+ *     APP-PERF-06) — jamais l'original ; mini-page tant qu'elle manque ;
+ *   - PDF : la première page (`PdfThumbnail` : miniature serveur, sinon
+ *     rendu navigateur borné à l'approche de l'écran) ;
  *   - autre (lien web, bureautique…) : la mini-page stylisée et l'extension.
  */
 function DocumentTile({
@@ -254,9 +241,9 @@ function DocumentTile({
       >
         <span className="relative flex aspect-[4/3] w-full items-end justify-center overflow-hidden rounded-xl border border-[rgba(148,163,184,.3)] bg-[color:var(--bg-card)] px-[18px] pt-3.5 [.theme-beige_&]:bg-[#F1F5F9]">
           {isImage && !imageKo ? (
-            // eslint-disable-next-line @next/next/no-img-element -- flux authentifié, pas d'optimisation Next
+            // eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), placeholder si absente
             <img
-              src={`/api/files/${document.id}/proxy`}
+              src={`/api/files/${document.id}/thumbnail`}
               alt=""
               loading="lazy"
               decoding="async"
@@ -317,10 +304,9 @@ export function DocumentsByRubric({
   const ajouter = () => garder(() => setUploadOpen(true), 'documents');
   const idBase = useId();
   const filtersPanelId = `${idBase}-filtres`;
+  /** Instantané de retour propre à l'écran (Mes documents, ou ce bien). */
+  const restoreScope = assetId ? `bien-${assetId}` : 'mes-documents';
 
-  const [page, setPage] = useState<PageResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
   const [documentOuvert, setDocumentOuvert] = useState<DocumentDrawerItem | null>(null);
   const [documentDrawerOpen, setDocumentDrawerOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -329,10 +315,32 @@ export function DocumentsByRubric({
   // ── Préférences d'affichage (mémorisées par contexte) ──────────────────
   // Lues après le montage : le rendu serveur ne connaît pas le stockage du
   // navigateur, et les lire pendant le rendu désaccorderait l'hydratation.
+  // Aucun lot ne part avant (`ready`) : sinon le premier serait demandé avec
+  // le tri par défaut, puis aussitôt jeté.
   const [prefs, setPrefs] = useState<ViewPrefs>(DEFAULT_PREFS);
+  const [ready, setReady] = useState(false);
+  const restoreRef = useRef<ListSnapshot | null>(null);
+  // ── Résultats de recherche de l'assistant (Mes documents seulement) ──────
+  const [resultIds, setResultIds] = useState<number[] | null>(null);
+  // ── Filtres (jamais mémorisés d'une visite à l'autre) et état local ──────
+  const [filters, setFilters] = useState<ViewFilters>(EMPTY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
+
   useEffect(() => {
     setPrefs(loadPrefs(context));
-  }, [context]);
+    if (!assetId && typeof window !== 'undefined') {
+      setResultIds(parseSearchResults(new URLSearchParams(window.location.search).get('resultats')));
+    }
+    // Retour depuis une fiche : filtres et lots déjà chargés repris (borné).
+    const snapshot = takeListSnapshot(restoreScope);
+    if (snapshot) {
+      restoreRef.current = snapshot;
+      setFilters(snapshot.filters);
+    }
+    setReady(true);
+  }, [context, assetId, restoreScope]);
+
   const updatePrefs = useCallback((patch: Partial<ViewPrefs>) => {
     setPrefs((current) => {
       const next = { ...current, ...patch };
@@ -341,61 +349,62 @@ export function DocumentsByRubric({
     });
   }, [context]);
 
-  // ── Résultats de recherche de l'assistant (Mes documents seulement) ──────
-  const [resultIds, setResultIds] = useState<number[] | null>(null);
-  useEffect(() => {
-    if (assetId || typeof window === 'undefined') return;
-    setResultIds(parseSearchResults(new URLSearchParams(window.location.search).get('resultats')));
-  }, [assetId]);
   const effacerResultats = () => {
     setResultIds(null);
     window.history.replaceState(null, '', window.location.pathname);
   };
+  const changeFilters = (next: ViewFilters) => setFilters(next);
 
-  // ── Filtres (jamais mémorisés) et état local ───────────────────────────
-  const [filters, setFilters] = useState<ViewFilters>(EMPTY_FILTERS);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
-  const [limit, setLimit] = useState(RENDER_STEP);
-  const changeFilters = (next: ViewFilters) => {
-    setFilters(next);
-    setLimit(RENDER_STEP);
-  };
-
-  const query = useMemo(() => {
-    const params = new URLSearchParams();
-    if (assetId) params.set('assets', String(assetId));
-    params.set('pageSize', 'all');
-    return params.toString();
-  }, [assetId]);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setPage(await apiClient.get<PageResponse>(`/api/v2/documents?${query}`));
-      setLoadError(false);
-    } catch {
-      setLoadError(true);
-    } finally {
-      setLoading(false);
-    }
-  }, [query]);
+  // ── Requête : tri, filtres et recherche appliqués CÔTÉ SERVEUR ───────────
+  // Tout changement produit une nouvelle clé : liste vidée, curseur oublié,
+  // premier lot des nouveaux critères (`useDocumentsFeed`).
+  const sort = effectiveSort(prefs.sort, prefs.grouped, context);
+  const query = useMemo<FeedQuery | null>(() => (ready ? {
+    assetIds: assetId ? [assetId] : [],
+    sort,
+    direction: prefs.dir,
+    grouped: prefs.grouped,
+    filters,
+    ids: resultIds,
+  } : null), [ready, assetId, sort, prefs.dir, prefs.grouped, filters, resultIds]);
+  const feed = useDocumentsFeed(query, restoreRef);
+  const { documents: charges, meta, state: feedState } = feed;
+  const load = feed.refresh;
 
   useEffect(() => {
     // Dans l'onglet d'un bien, le fil d'Ariane est posé par la page du bien.
     if (!assetId) setBreadcrumbs([{ label: 'Mes documents' }]);
   }, [assetId, setBreadcrumbs]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  // Un document ajouté ailleurs (barre d'actions, assistant) apparaît ici aussi.
+  // Un document ajouté ailleurs (barre d'actions, assistant) apparaît ici aussi,
+  // à la place que lui donnent le tri et les filtres actifs.
   useEffect(() => {
     const recharger = () => { void load(); };
     window.addEventListener('document-added', recharger);
     return () => window.removeEventListener('document-added', recharger);
   }, [load]);
+
+  // Suppression (tiroir) : le document disparaît tout de suite, les compteurs
+  // suivent, la position est conservée — pas de rechargement complet. Le
+  // tiroir appelle ensuite `onRefresh` : cet appel-là est sauté.
+  const suppressionRecente = useRef(false);
+  useEffect(() => {
+    const retirer = (e: Event) => {
+      const id = Number((e as CustomEvent<{ fileId?: number }>).detail?.fileId);
+      if (!Number.isInteger(id)) return;
+      suppressionRecente.current = true;
+      feed.remove(id);
+    };
+    window.addEventListener('document-deleted', retirer);
+    return () => window.removeEventListener('document-deleted', retirer);
+  }, [feed.remove]); // eslint-disable-line react-hooks/exhaustive-deps
+  const apresModification = () => {
+    if (suppressionRecente.current) {
+      suppressionRecente.current = false;
+      return;
+    }
+    void load();
+  };
 
   // Biens proposés au dialogue d'ajout : inutile dans l'onglet d'un bien.
   useEffect(() => {
@@ -406,51 +415,102 @@ export function DocumentsByRubric({
       .catch(() => setAssetOptions([]));
   }, [assetId]);
 
-  // ── Données dérivées ───────────────────────────────────────────────────
+  // ── Position de défilement : suivie, sauvegardée au départ, restaurée ────
+  const scrollTopRef = useRef(0);
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+  useEffect(() => {
+    const conteneur = scrollContainer();
+    const cible: HTMLElement | Window = conteneur ?? window;
+    const suivre = () => { scrollTopRef.current = conteneur ? conteneur.scrollTop : window.scrollY; };
+    cible.addEventListener('scroll', suivre, { passive: true });
+    const sauver = () => {
+      const s = feed.snapshot();
+      if (s) saveListSnapshot(restoreScope, { ...s, filters: filtersRef.current, scrollTop: scrollTopRef.current, savedAt: Date.now() });
+    };
+    window.addEventListener('pagehide', sauver);
+    return () => {
+      cible.removeEventListener('scroll', suivre);
+      window.removeEventListener('pagehide', sauver);
+      sauver();
+    };
+  }, [restoreScope]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const restoredScrollTop = feed.restoredScrollTop;
+  useEffect(() => {
+    if (restoredScrollTop === null) return;
+    // Après le rendu des lots restaurés ; `instant` : le conteneur défile en
+    // douceur par défaut, et une animation depuis le haut serait un saut.
+    const frame = requestAnimationFrame(() => {
+      const conteneur = scrollContainer();
+      if (conteneur) conteneur.scrollTo({ top: restoredScrollTop, behavior: 'instant' as ScrollBehavior });
+      else window.scrollTo({ top: restoredScrollTop, behavior: 'instant' as ScrollBehavior });
+      feed.clearRestoredScroll();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [restoredScrollTop]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Sentinelle : le lot suivant part à l'approche du bas ─────────────────
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [sentinelVisible, setSentinelVisible] = useState(false);
+  const [observerOk, setObserverOk] = useState(true);
+  const hasDocuments = charges.length > 0;
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setObserverOk(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setSentinelVisible(entry.isIntersecting),
+      // Placée sous la liste, elle « s'allume » 600 px avant d'être visible :
+      // le lot suivant arrive avant que l'utilisateur n'atteigne le bas.
+      { root: scrollContainer(), rootMargin: '0px 0px 600px 0px' },
+    );
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      // Liste vidée (nouveaux critères) : l'ancienne visibilité ne vaut plus.
+      setSentinelVisible(false);
+    };
+  }, [hasDocuments]);
+  // Après chaque lot : si la sentinelle est encore en vue (grand écran,
+  // section repliée), le suivant part — l'observateur, lui, ne se manifeste
+  // qu'aux changements.
+  useEffect(() => {
+    if (sentinelVisible && feed.canLoadMore) void feed.loadNext();
+  }, [sentinelVisible, feed.canLoadMore, charges.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Données dérivées (compteurs : serveur, ensemble filtré complet) ──────
   // Réponse inattendue (session expirée, proxy) : une page vide, pas une erreur d'affichage.
-  const tous = useMemo(() => (page?.groups ?? []).flatMap((g) => g.documents ?? []), [page]);
-  // Résultats d'une recherche de l'assistant (OPEN_SEARCH_RESULTS, §22.4) :
-  // `?resultats=12,34`, posé par `/api/verebona/search-results` APRÈS
-  // revérification dans le compte. Ce n'est pas un champ de recherche local
-  // (UX-01) : un filtre retirable, comme les autres.
-  const scope = useMemo(
-    () => (resultIds ? tous.filter((d) => resultIds.includes(d.id)) : tous),
-    [tous, resultIds],
-  );
   const rubrics = useMemo<RubricRef[]>(
-    () => (page?.groups ?? []).filter((g) => g.code !== UNFILED).map((g) => ({ code: g.code, label: g.label })),
-    [page],
+    () => (meta?.rubrics ?? []).map((r) => ({ code: r.code, label: r.label })),
+    [meta],
   );
   const rubricLabels = useMemo(() => new Map(rubrics.map((r) => [r.code, r.label])), [rubrics]);
-  const sort = effectiveSort(prefs.sort, prefs.grouped, context);
+  const groupCounts = useMemo(() => {
+    const m = new Map<string, number>((meta?.rubrics ?? []).map((r) => [r.code, r.count]));
+    m.set(UNFILED, meta?.unfiledCount ?? 0);
+    return m;
+  }, [meta]);
   const filtered = hasActiveFilters(filters);
-  const options = useMemo(() => buildFilterOptions(scope, filters, rubrics), [scope, filters, rubrics]);
+  const options = useMemo(() => filterOptionsFromFacets(meta?.facets, filters, rubrics), [meta, filters, rubrics]);
   const chips = activeFilterChips(filters, options);
-  const visibles = useMemo(
-    () => sortDocuments(filterDocuments(scope, filters), sort, prefs.dir, rubrics),
-    [scope, filters, sort, prefs.dir, rubrics],
+  // Les documents arrivent triés et filtrés par le serveur, sur tout le
+  // périmètre : l'écran ne retrie jamais un lot, il le découpe en sections.
+  const { groups: allGroups } = useMemo(
+    () => groupDocuments(charges, rubrics, prefs.grouped),
+    [charges, rubrics, prefs.grouped],
   );
-  const { groups: allGroups, emptyRubrics } = useMemo(
-    () => groupDocuments(visibles, rubrics, prefs.grouped),
-    [visibles, rubrics, prefs.grouped],
-  );
-  // Un groupe replié ne compte pas dans le plafond de rendu.
-  const { groups, hidden } = useMemo(() => {
-    const ouverts = allGroups.map((g) => (closed.has(g.code) ? { ...g, docs: [] } : g));
-    const limited = limitGroups(ouverts, limit);
-    return {
-      groups: allGroups.map((g) => ({
-        ...g,
-        docs: limited.groups.find((l) => l.code === g.code)?.docs ?? [],
-      })).filter((g) => closed.has(g.code) || g.docs.length > 0),
-      hidden: limited.hidden,
-    };
-  }, [allGroups, closed, limit]);
+  const groups = allGroups;
+  const total = meta?.total ?? 0;
+  const scopeTotal = meta?.scopeTotal ?? 0;
 
   // Rubriques vides : seulement sans filtre. Filtré, une Rubrique « sans
   // document » le serait par l'effet du filtre, et la ligne mentirait.
-  const emptyLine = prefs.grouped && showEmptyRubrics && !filtered && scope.length > 0
-    ? emptyRubricsLine(emptyRubrics)
+  const emptyLine = prefs.grouped && showEmptyRubrics && !filtered && scopeTotal > 0
+    ? emptyRubricsLine((meta?.rubrics ?? []).filter((r) => r.scopeCount === 0).map((r) => r.label))
     : '';
 
   const toggleGroup = (code: string) =>
@@ -479,9 +539,10 @@ export function DocumentsByRubric({
     setDocumentDrawerOpen(true);
   };
 
-  // Tronquée seulement si le serveur a atteint son plafond de chargement : le
-  // total seul ne suffit pas (il peut différer pour d'autres raisons).
-  const tronque = !!page && scope.length >= MAX_LOADED_DOCUMENTS && page.total > scope.length;
+  const premierChargement = !meta && feedState.status !== 'error';
+  const erreurInitiale = feedState.error === 'first' && !meta;
+  const chargementSuite = feedState.pending?.kind === 'next';
+  const erreurSuite = feedState.error === 'next';
 
   return (
     <div className="w-full max-w-full overflow-x-hidden">
@@ -494,7 +555,7 @@ export function DocumentsByRubric({
       )}
 
       <DocumentsToolbar
-        countLabel={loading && !page ? ' ' : countLabel(visibles.length, scope.length, filtered, context)}
+        countLabel={!meta ? ' ' : countLabel(total, scopeTotal, filtered, context)}
         grouped={prefs.grouped}
         onGroupedChange={(v) => updatePrefs({ grouped: v })}
         view={prefs.view}
@@ -521,10 +582,10 @@ export function DocumentsByRubric({
       )}
       {resultIds && (
         <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-secondary)]" data-testid="search-results-filter">
-          {/* Compte des documents réellement trouvés dans la liste, pas des identifiants de l'URL. */}
+          {/* Compte des documents réellement trouvés dans le compte, pas des identifiants de l'URL. */}
           <span>
             Résultats de la recherche Verebona
-            {page ? ` · ${libelleResultats(scope.length)}` : ''}
+            {meta ? ` · ${libelleResultats(scopeTotal)}` : ''}
           </span>
           <Button size="sm" variant="ghost" onClick={effacerResultats}>Tout afficher</Button>
         </div>
@@ -535,21 +596,21 @@ export function DocumentsByRubric({
         onClear={() => changeFilters(EMPTY_FILTERS)}
       />
 
-      {loading && !page && (
-        <div className="flex items-center gap-2 py-8 text-sm text-[color:var(--text-muted)]">
+      {premierChargement && (
+        <div role="status" className="flex items-center gap-2 py-8 text-sm text-[color:var(--text-muted)]">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           Chargement des documents…
         </div>
       )}
 
-      {loadError && !page && (
+      {erreurInitiale && (
         <div className="flex flex-col items-center gap-3 py-12 text-center text-sm text-[color:var(--text-muted)]">
           <p>Vos documents n&apos;ont pas pu être chargés.</p>
-          <Button size="sm" variant="outline" onClick={() => void load()}>Réessayer</Button>
+          <Button size="sm" variant="outline" onClick={feed.retry}>Réessayer</Button>
         </div>
       )}
 
-      {page && scope.length === 0 && (
+      {meta && scopeTotal === 0 && (
         <div className="py-12 text-center">
           <p className="text-sm font-medium">
             {assetId ? 'Aucun document rattaché à ce bien pour le moment.' : 'Aucun document pour le moment.'}
@@ -560,7 +621,7 @@ export function DocumentsByRubric({
         </div>
       )}
 
-      {page && scope.length > 0 && visibles.length === 0 && (
+      {meta && scopeTotal > 0 && total === 0 && (
         <p className="py-12 text-center text-sm text-[color:var(--text-muted)]">
           Aucun document ne correspond à ces filtres.
         </p>
@@ -570,7 +631,8 @@ export function DocumentsByRubric({
         {groups.map((group) => {
           const ouvert = !closed.has(group.code);
           const listId = `${idBase}-groupe-${group.code}`;
-          const total = allGroups.find((g) => g.code === group.code)?.docs.length ?? 0;
+          // Compteur de section : ensemble filtré complet, pas les seuls documents chargés.
+          const count = groupCounts.get(group.code) ?? group.docs.length;
           return (
             <section key={group.code} className="flex flex-col gap-3" aria-label={group.showHeader ? undefined : 'Tous les documents'}>
               {group.showHeader && (
@@ -590,7 +652,7 @@ export function DocumentsByRubric({
                       {group.label}
                     </span>
                     <span className="text-[11px] text-[color:var(--text-muted)] opacity-70">
-                      <span className="sr-only">, </span>{total}<span className="sr-only"> document{total > 1 ? 's' : ''}</span>
+                      <span className="sr-only">, </span>{count}<span className="sr-only"> document{count > 1 ? 's' : ''}</span>
                     </span>
                     <span aria-hidden className="h-px flex-1 bg-[color:var(--border-subtle)]" />
                   </button>
@@ -624,21 +686,42 @@ export function DocumentsByRubric({
           );
         })}
 
-        {hidden > 0 && (
-          <Button variant="outline" size="sm" className="self-center" onClick={() => setLimit((l) => l + RENDER_STEP)}>
-            Afficher {Math.min(hidden, RENDER_STEP)} documents de plus
-          </Button>
+        {/* Bas de liste : sentinelle (invisible), indicateur discret, erreur
+            locale. Hauteur réservée : l'apparition de l'indicateur ne fait
+            pas sauter le contenu. Aucun numéro de page. */}
+        {hasDocuments && (
+          <div className="flex min-h-[40px] flex-col items-center justify-center gap-2" data-testid="documents-bas-de-liste">
+            <div ref={sentinelRef} aria-hidden className="h-px w-full" />
+            {chargementSuite && (
+              <p role="status" aria-live="polite" className="flex items-center gap-2 text-xs text-[color:var(--text-muted)]">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                Chargement des documents…
+              </p>
+            )}
+            {erreurSuite && (
+              <div role="alert" className="flex flex-wrap items-center justify-center gap-2 text-xs text-[color:var(--text-muted)]">
+                <span>Impossible de charger les documents suivants.</span>
+                <Button size="sm" variant="outline" onClick={feed.retry}>Réessayer</Button>
+              </div>
+            )}
+            {/* Secours : sans observateur, ou au clavier (visible au focus).
+                Le parcours normal reste le chargement automatique. */}
+            {feed.canLoadMore && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void feed.loadNext()}
+                className={observerOk ? 'sr-only focus:not-sr-only' : ''}
+              >
+                Charger les documents suivants
+              </Button>
+            )}
+          </div>
         )}
 
-        {emptyLine && (
+        {emptyLine && feedState.status === 'end' && (
           <p className="border-t border-dashed border-[color:var(--border-subtle)] pt-1.5 text-xs text-[color:var(--text-muted)]">
             {emptyLine}
-          </p>
-        )}
-
-        {tronque && (
-          <p className="text-xs text-[color:var(--text-muted)]">
-            Seuls les {scope.length.toLocaleString('fr-FR')} documents les plus récents sont affichés ici.
           </p>
         )}
       </div>
@@ -652,7 +735,7 @@ export function DocumentsByRubric({
           if (!ouvert) setDocumentOuvert(null);
         }}
         document={documentOuvert}
-        onRefresh={() => void load()}
+        onRefresh={apresModification}
       />
 
       {uploadOpen && (assetId ? (
@@ -677,4 +760,9 @@ export function DocumentsByRubric({
       ))}
     </div>
   );
+}
+
+/** Conteneur de défilement du tableau de bord (`DashboardLayout`), sinon la fenêtre. */
+function scrollContainer(): HTMLElement | null {
+  return typeof document !== 'undefined' ? document.getElementById('main-scroll-container') : null;
 }

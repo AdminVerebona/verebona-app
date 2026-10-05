@@ -62,7 +62,9 @@ interface WriteGuardValue {
 const Contexte = createContext<WriteGuardValue | null>(null);
 
 export function WriteGuardProvider({ children }: { children: React.ReactNode }) {
-  const { entitlements, isLoading, isRestricted, refresh } = useEntitlements();
+  // État partagé par `EntitlementsProvider` (APP-PERF-12) : la garde, le
+  // layout et les panneaux lisent les mêmes droits, issus d'une seule lecture.
+  const { entitlements, isLoading, isRestricted, refresh, status } = useEntitlements();
   const [info, setInfo] = useState<WriteBlockedInfo | null>(null);
   const [open, setOpen] = useState(false);
   // Lu par l'écouteur d'événement sans le réabonner à chaque rendu.
@@ -116,7 +118,9 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       // on laisse passer — le serveur refusera et la fenêtre s'ouvrira via
       // `WRITE_BLOCKED_EVENT` — mais on relance la lecture pour la suite.
       if (!entitlements) {
-        setTimeout(() => { void refresh(); }, 0);
+        // Relance seulement après un échec TEMPORAIRE : des droits inconnus
+        // faute de session (refus définitif) ne se relisent pas à chaque rendu.
+        if (status === 'unavailable') setTimeout(() => { void refresh(); }, 0);
         return null;
       }
 
@@ -140,7 +144,7 @@ export function WriteGuardProvider({ children }: { children: React.ReactNode }) 
       }
       return null;
     },
-    [entitlements, isLoading, isRestricted, refresh],
+    [entitlements, isLoading, isRestricted, refresh, status],
   );
 
   const valeur = useMemo<WriteGuardValue>(

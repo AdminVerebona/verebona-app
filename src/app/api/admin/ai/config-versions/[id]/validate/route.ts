@@ -19,8 +19,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (versionId === null) return invalidId(id);
 
   try {
-    const { visibleNumber } = await validate(versionId, guard.ctx.adminUserId);
-    return NextResponse.json({ activated: true, visibleNumber });
+    const { visibleNumber, warnings } = await validate(versionId, guard.ctx.adminUserId);
+    return NextResponse.json({ activated: true, visibleNumber, warnings });
   } catch (e) {
     return toErrorResponse(e, 'POST /api/admin/ai/config-versions/[id]/validate');
   }

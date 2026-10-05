@@ -1,130 +1,71 @@
+/**
+ * GET /api/files/[id]/proxy — lecture de même origine d'un fichier.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * FLUX BORNÉ, MÊMES DROITS QUE LA LECTURE DIRECTE (APP-PERF-13)
+ *
+ * La voie normale de lecture est `/api/files/[id]/view` (droits contrôlés,
+ * puis URL signée lue directement sur le stockage). Ce proxy reste pour les
+ * usages qui l'imposent : lecture par `fetch` de même origine (CORS du
+ * stockage, lien signé expiré), aperçu PDF en repli, ouverture dans un
+ * nouvel onglet.
+ *
+ *   · droits : `loadReadableFile` — session `SessionService` (en-tête ou
+ *     cookie ; le paramètre `?token=` n'est plus accepté : un jeton n'a rien
+ *     à faire dans une URL), compte courant, fichiers supprimés et sources
+ *     regroupées traités comme `view` (`viewableFileCondition`,
+ *     grouped_into_file_id IS NOT NULL) ;
+ *   · corps relayé en flux (`streamS3Object`) : plus de concaténation de
+ *     l'objet complet ; Range/206/416 ; client parti → flux S3 fermé ;
+ *   · cache PRIVÉ revalidé à chaque usage (`private, no-cache` + ETag) : un
+ *     changement de compte ou une suppression est vu dès la lecture suivante
+ *     (304 seulement après recontrôle des droits) ;
+ *   · client S3 de la configuration canonique (APP-PERF-26), délais bornés.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import * as jose from 'jose';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { getS3Client } from '@/lib/s3-config';
+import { streamS3Object, type S3GetFn } from '@/lib/storage/s3-object-stream';
+import { loadReadableFile } from '@/services/documents/file-access';
 
-const s3Client = new S3Client({
-  region: process.env.OVH_S3_REGION || 'gra',
-  endpoint: process.env.OVH_S3_ENDPOINT || 'https://s3.gra.io.cloud.ovh.net',
-  credentials: {
-    accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY || '',
-  },
-  forcePathStyle: false,
-});
+export const dynamic = 'force-dynamic';
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-change-in-production'
-);
+/** Délai maximal avant les en-têtes du stockage (ms). */
+const HEADERS_TIMEOUT_MS = 15_000;
+
+const s3Get: S3GetFn = (input, signal) =>
+  getS3Client('interactive').send(new GetObjectCommand(input), { abortSignal: signal }) as ReturnType<S3GetFn>;
 
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   const params = await context.params;
-
   try {
-    const { searchParams } = new URL(request.url);
-    const queryToken = searchParams.get('token');
+    const access = await loadReadableFile(request, params.id);
+    if (!access.ok) return access.response;
+    const { file } = access;
 
-    let token: string | null = queryToken;
-
-    // ⚠️ CHAÎNE DE REPLI RÉTABLIE — le codemod l'avait supprimée.
-    //
-    // Elle est désormais le SEUL chemin fonctionnel. Le paramètre `?token=`
-    // a été retiré des appels côté navigateur — un jeton n'a rien à faire
-    // dans une URL, qui finit dans l'historique, les en-têtes `Referer` et
-    // les journaux du proxy. Sans ce repli sur le cookie, chaque
-    // prévisualisation d'image ou de PDF renverrait 401.
-    if (!token) {
-      const authHeader = request.headers.get('authorization');
-      if (authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);
-    }
-    if (!token) {
-      const cookieToken = request.cookies.get('access_token')?.value;
-      if (cookieToken) token = cookieToken;
+    if (file.isWebLink || !file.s3Key || !file.s3Bucket || file.s3Bucket === 'weblink') {
+      return NextResponse.json({ error: 'NO_STORED_OBJECT' }, { status: 404, headers: { 'Cache-Control': 'private, no-store' } });
     }
 
-    if (!token) {
-      return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
-    }
-
-    let accountId: number | undefined;
-    try {
-      const { payload } = await jose.jwtVerify(token, JWT_SECRET);
-      accountId = payload.currentAccountId as number | undefined;
-      if (!accountId) {
-        return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 401 });
-      }
-    } catch {
-      return NextResponse.json({ error: 'INVALID_TOKEN' }, { status: 401 });
-    }
-
-    const fileId = parseInt(params.id);
-    if (isNaN(fileId)) {
-      return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
-    }
-
-    // Use raw SQL to avoid Drizzle schema mismatch issues
-    const rows = await db.$client`
-      SELECT id, account_id, s3_bucket, s3_key, mime_type, deleted_at
-      FROM asset_files
-      WHERE id = ${fileId}
-        AND (
-          deleted_at IS NULL
-          -- Source secondaire regroupée : consultable tant que son document
-          -- principal existe (preuves, migration 0143).
-          OR (grouped_into_file_id IS NOT NULL AND EXISTS (
-                SELECT 1 FROM asset_files lead
-                 WHERE lead.id = asset_files.grouped_into_file_id AND lead.deleted_at IS NULL))
-        )
-      LIMIT 1
-    `;
-
-    if (!rows || rows.length === 0) {
-      return NextResponse.json({ error: 'FILE_NOT_FOUND' }, { status: 404 });
-    }
-
-    const file = rows[0];
-
-    if (file.account_id !== accountId) {
-      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
-    }
-
-    if (!file.s3_bucket || !file.s3_key) {
-      return NextResponse.json({ error: 'S3_CONFIG_MISSING' }, { status: 500 });
-    }
-
-    const command = new GetObjectCommand({
-      Bucket: file.s3_bucket,
-      Key: file.s3_key,
-    });
-
-    const s3Response = await s3Client.send(command);
-
-    if (!s3Response.Body) {
-      return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 500 });
-    }
-
-    const mimeType = (file.mime_type as string) ?? 'application/octet-stream';
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of s3Response.Body as AsyncIterable<Uint8Array>) {
-      chunks.push(chunk);
-    }
-    const buffer = Buffer.concat(chunks);
-
-    return new NextResponse(buffer, {
-      status: 200,
-      headers: {
-        'Content-Type': mimeType,
-        'Content-Disposition': 'inline',
-        'Content-Length': buffer.length.toString(),
-        'Cache-Control': 'private, max-age=3600',
-        'X-Frame-Options': 'SAMEORIGIN',
-      },
+    return await streamS3Object({
+      bucket: file.s3Bucket,
+      key: file.s3Key,
+      request,
+      get: s3Get,
+      contentType: file.mimeType ?? 'application/octet-stream',
+      disposition: 'inline',
+      knownSize: file.size,
+      cacheControl: 'private, no-cache',
+      where: 'GET /api/files/[id]/proxy',
+      headersTimeoutMs: HEADERS_TIMEOUT_MS,
     });
   } catch (error) {
-    console.error('[proxy] Error:', error);
-    return NextResponse.json({ error: 'INTERNAL_ERROR', details: String(error) }, { status: 500 });
+    // Aucun détail technique dans la réponse (ni URL, ni message SDK).
+    console.error('[proxy] Error:', (error as Error)?.name, (error as Error)?.message);
+    return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }

@@ -1,51 +1,24 @@
-import { S3Client } from "@aws-sdk/client-s3";
-
-// Validate required environment variables
-if (!process.env.OVH_S3_ACCESS_KEY_ID) {
-  throw new Error('OVH_S3_ACCESS_KEY_ID manquant dans .env');
-}
-
-if (!process.env.OVH_S3_SECRET_ACCESS_KEY) {
-  throw new Error('OVH_S3_SECRET_ACCESS_KEY manquant dans .env');
-}
-
-if (!process.env.OVH_S3_BUCKET) {
-  throw new Error('OVH_S3_BUCKET manquant dans .env');
-}
-
-if (!process.env.OVH_S3_ENDPOINT) {
-  throw new Error('OVH_S3_ENDPOINT manquant dans .env');
-}
-
 /**
- * S3 Client configured for OVH Object Storage
- * 
- * Configuration Notes:
- * - forcePathStyle: true is REQUIRED for OVH S3 compatibility
- * - Endpoint: https://s3.gra.io.cloud.ovh.net (Gravelines region)
- * - Region: gra (must match endpoint)
+ * Client S3 applicatif — façade de compatibilité sur `@/lib/s3-config`
+ * (APP-PERF-26).
+ *
+ * La configuration (variables, validation, mode d'adressage, délais) est
+ * définie UNIQUEMENT dans `s3-config.ts`. Ce module conserve les exports
+ * historiques (`s3Client`, `S3_BUCKET`, …) pour les appelants existants et,
+ * comme avant, lève à l'import si la configuration est invalide — les
+ * modules qui doivent survivre à un stockage absent l'importent
+ * dynamiquement ou utilisent directement `getS3Client()`.
+ *
+ * Le commentaire « forcePathStyle: true is REQUIRED for OVH » n'est plus une
+ * règle : le style est un réglage (`OVH_S3_FORCE_PATH_STYLE`, défaut true).
  */
-export const s3Client = new S3Client({
-  region: process.env.OVH_S3_REGION || "gra",
-  endpoint: process.env.OVH_S3_ENDPOINT,
-  credentials: {
-    accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID,
-    secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY,
-  },
-  forcePathStyle: true, // CRITICAL for OVH S3
-});
+import { getS3Client, getS3Config } from '@/lib/s3-config';
 
-// Export bucket configuration
-export const S3_BUCKET = process.env.OVH_S3_BUCKET;
-export const S3_ENDPOINT = process.env.OVH_S3_ENDPOINT;
-export const S3_REGION = process.env.OVH_S3_REGION || "gra";
+const config = getS3Config();
 
-/**
- * Generate public URL for an S3 object
- * Format: https://verebona-files.s3.gra.io.cloud.ovh.net/path/to/file
- */
-export function getS3PublicUrl(key: string): string {
-  const bucketName = S3_BUCKET;
-  const region = S3_REGION;
-  return `https://${bucketName}.s3.${region}.io.cloud.ovh.net/${key}`;
-}
+/** Client du profil `interactive` (délais courts, 2 tentatives). */
+export const s3Client = getS3Client('interactive');
+
+export const S3_BUCKET = config.bucket;
+export const S3_ENDPOINT = config.endpoint;
+export const S3_REGION = config.region;

@@ -25,13 +25,26 @@ import { verifyAccessToken, type AccessTokenPayload } from '@/lib/jwt';
 import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from './session-cutoff';
 import { isApiAllowedWhilePendingDeletion, isPendingDeletion } from './account-closure';
+import { SESSION_UNAVAILABLE_CODE } from './session-errors';
 
-/** Jeton émis avant la révocation globale de son utilisateur ? (borne en cache 60 s) */
+/**
+ * Jeton émis avant la révocation globale de son utilisateur ? (borne en cache 60 s)
+ *
+ * ⚠️ Base injoignable : lève `SESSION_UNAVAILABLE` (APP-PERF-20). L'échec de
+ * lecture était transformé en « aucune révocation » ET mis en cache 60 s : un
+ * jeton révoqué redevenait valable pendant une panne. Rien n'est mis en cache
+ * sur un échec ; la requête obtient un 503 explicite, ni succès, ni refus.
+ */
 export async function isRevokedByCutoff(payload: { userId: number; iat?: number; iatMs?: number }): Promise<boolean> {
   const key = sessionCutoffCacheKey(payload.userId);
   let cutoffMs = serverCacheGet<number>(key);
   if (cutoffMs == null) {
-    const cutoff = await getUserSessionCutoff(payload.userId).catch(() => null);
+    let cutoff: Date | null;
+    try {
+      cutoff = await getUserSessionCutoff(payload.userId);
+    } catch {
+      throw new Error(SESSION_UNAVAILABLE_CODE);
+    }
     cutoffMs = cutoff ? cutoff.getTime() : 0;
     serverCacheSet(key, cutoffMs, 60_000);
   }
@@ -48,6 +61,8 @@ export function sessionStatusAllows(status: string | null | undefined, pathname:
 /**
  * Remplace `verifyAccessToken(token)` dans une route : `null` si le jeton est
  * invalide, révoqué, ou si le statut de la session n'autorise pas la requête.
+ * Lève `SESSION_UNAVAILABLE` si la borne de révocation ne peut pas être lue
+ * (à traduire en 503 par `sessionErrorToResponse`).
  */
 export async function verifySessionAccessToken(
   token: string | null | undefined,

@@ -14,6 +14,7 @@
 import { acquireJobLock, releaseJobLock } from '@/lib/job-lock';
 import { runDatabaseBackup } from './database-backup.service';
 import { reportBackupFailure, resolveBackupFailure } from '@/services/admin/anomaly.service';
+import { isS3Configured } from '@/lib/s3-config';
 
 const TOUR_MS = 30 * 60 * 1000;
 const DELAI_INITIAL_MS = 2 * 60 * 1000;
@@ -44,8 +45,8 @@ export function startDatabaseBackupScheduler(): void {
     console.info('[backup-scheduler] désactivé (BACKUP_DISABLED=true).');
     return;
   }
-  if (!process.env.OVH_S3_ACCESS_KEY_ID || !process.env.OVH_S3_SECRET_ACCESS_KEY) {
-    console.warn('[backup-scheduler] identifiants de stockage absents : sauvegarde quotidienne inactive.');
+  if (!isS3Configured()) {
+    console.warn('[backup-scheduler] stockage non configuré (voir /api/health, check s3) : sauvegarde quotidienne inactive.');
     return;
   }
 

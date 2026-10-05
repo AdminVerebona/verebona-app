@@ -10,7 +10,7 @@
  */
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 
 const DocumentDrawer = dynamic(
   () => import('@/components/assets/DocumentDrawer').then(m => ({ default: m.DocumentDrawer })),
@@ -30,7 +30,9 @@ import { useSession, User as SessionUser } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
 import { unsubscribeCurrentDevice } from '@/lib/push/push-client';
 import { NavigationProgress } from './NavigationProgress';
+import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
+const UploadQueueIndicator = dynamic(() => import('./documents/UploadQueueIndicator').then(m => ({ default: m.UploadQueueIndicator })), { ssr: false });
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
@@ -52,12 +54,19 @@ interface DashboardLayoutProps {
 
 export function DashboardLayout({ children, user: userProp }: DashboardLayoutProps) {
   const pathname = usePathname();
-  const router = useRouter();
 
-  // Si user est passé en prop, on l'utilise directement sans refaire un appel API
+  // Si user est passé en prop, on l'utilise directement sans refaire un appel API.
+  // Sinon : identité du `SessionProvider`, partagée avec les pages et panneaux.
+  // `required` : un refus d'authentification DÉFINITIF renvoie à la connexion
+  // depuis un effet du hook — jamais pendant le rendu (APP-PERF-02).
   const sessionResult = useSession(userProp ? {} : { required: true });
   const user = userProp ?? sessionResult.user;
   const isLoading = userProp ? false : sessionResult.isLoading;
+  const [retryingSession, setRetryingSession] = useState(false);
+  const retrySession = useCallback(() => {
+    setRetryingSession(true);
+    void sessionResult.refetch().finally(() => setRetryingSession(false));
+  }, [sessionResult]);
   const { theme, toggleTheme, mounted: themeMounted } = useThemeToggle();
 
   const [mounted, setMounted] = useState(true);
@@ -232,24 +241,34 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     });
   }, []);
 
-      const handleLogout = useCallback(async () => {
-
-    // Désassocier le push de cet appareil AVANT d'invalider la session (§10.2) :
-    // un appareil partagé ne doit plus recevoir les notifications de ce compte.
-    try { await unsubscribeCurrentDevice(); } catch { /* best-effort */ }
-
-    try {
-      await apiClient.post('/api/auth/logout');
-    } catch (error) {
-      console.error('Logout error:', error);
-    } finally {
-      // Nettoyer complètement le localStorage
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user');
-      // Deconnexion : retour au site vitrine (cross-domain)
-      window.location.href = publicSiteUrl('/');
+  // ══════════════════════════════════════════════════════════════════════
+  // DÉCONNEXION BORNÉE — APP-PERF-21
+  //
+  // Une seule procédure (`apiClient.signOut`) : nettoyage local immédiat
+  // (identité, droits, caches, données privées), désassociation push de
+  // l'appareil AVANT d'invalider la session (§10.2, un appareil partagé ne
+  // doit plus recevoir les notifications de ce compte), puis déconnexion
+  // serveur. Chaque étape a son délai : un service worker ou une route qui
+  // ne répond pas ne retient plus la sortie.
+  //
+  // Si le serveur n'a pas confirmé (panne, délai), on ne fait pas croire à
+  // une révocation : l'utilisateur choisit de réessayer ou de quitter.
+  // ══════════════════════════════════════════════════════════════════════
+  const [logoutState, setLogoutState] = useState<'idle' | 'pending' | 'failed'>('idle');
+  const quitterVersSite = useCallback(() => {
+    // Deconnexion : retour au site vitrine (cross-domain)
+    window.location.href = publicSiteUrl('/');
+  }, []);
+  const handleLogout = useCallback(async () => {
+    setLogoutState('pending');
+    const result = await apiClient.signOut({ unsubscribePush: unsubscribeCurrentDevice });
+    if (result.server === 'failed' || result.server === 'timeout') {
+      console.error('[logout] déconnexion serveur non confirmée :', result.server);
+      setLogoutState('failed');
+      return;
     }
-  }, [router]);
+    quitterVersSite();
+  }, [quitterVersSite]);
 
   const getUserDisplayName = useMemo(() => {
     if (!user) return '';
@@ -288,6 +307,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   const statutAbonnement = useMemo(() => {
     // Impayé d'abord : sinon un abonné dont le paiement a échoué lisait
     // « Essai terminé » ou le nom de son offre, comme si tout allait bien.
+    // Droits pas encore lus : rien plutôt que « Aucune offre », qui est faux.
+    if (!entitlements) return '';
     if (isUnpaid(entitlements)) return 'Paiement à régulariser';
     if (entitlements?.trial.status === 'active') return 'Essai en cours';
     if (entitlements?.trial.status === 'expired') return 'Essai terminé';
@@ -316,6 +337,10 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // ══════════════════════════════════════════════════════════════════════
   const [addSheetOpen, setAddSheetOpen] = useState(false);
 
+  if (logoutState !== 'idle') {
+    return <LogoutStatusScreen state={logoutState} onRetry={handleLogout} onLeave={quitterVersSite} />;
+  }
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
@@ -324,12 +349,20 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     );
   }
 
-  // Session terminée et loading fini → rediriger vers login
   if (!user) {
-    if (typeof window !== 'undefined') {
-      const returnUrl = encodeURIComponent(window.location.pathname);
-      window.location.href = `/login?returnUrl=${returnUrl}`;
+    // Lenteur, panne, réseau : la session n'est pas en cause. Reprise
+    // explicite plutôt qu'un retour injustifié à la connexion.
+    if (!userProp && sessionResult.status === 'temporarily-unavailable') {
+      return (
+        <SessionUnavailableScreen
+          onRetry={retrySession}
+          retrying={retryingSession}
+          requestId={sessionResult.sessionError?.requestId}
+        />
+      );
     }
+    // Refus définitif : la redirection vers la connexion est déjà lancée
+    // (une seule fois) par la procédure de sortie unique.
     return (
       <div className="min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
         <LogoLoader size={52} />
@@ -338,7 +371,6 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   }
 
   const isHome = pathname === '/accueil';
-  const nomAffiche = user ? `${user.firstName} ${user.lastName}`.trim() : '';
 
   return (
     <AnalysisBannerProvider>
@@ -355,9 +387,6 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         collapsed={sidebarCollapsed}
         onToggle={toggleCollapsed}
         toProcessCount={aTraiterCount}
-        userName={nomAffiche}
-        initials={getUserInitials}
-        planLabel={statutAbonnement}
         footerSlot={<SidebarPlanCard trialDaysLeft={user.subscription?.trialDaysLeft ?? null} />}
         onAdd={() => setAddSheetOpen(true)}
       />
@@ -474,6 +503,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
 
     {/* Échéance, équipement, pièce : tiroirs ouverts depuis n'importe quel écran (src/lib/drawers.ts). */}
     <GlobalDrawerHost />
+
+    {/* Suivi des dépôts de documents : survit à la fermeture du panneau d'ajout (APP-PERF-29). */}
+    <UploadQueueIndicator userId={user?.id ?? null} />
 
     {/* Modale "Besoin d'aide ?" */}
     <HelpModal open={helpModalOpen} onOpenChange={setHelpModalOpen} />

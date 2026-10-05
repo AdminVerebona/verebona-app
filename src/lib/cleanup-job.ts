@@ -11,7 +11,8 @@
  * - Job serverless (ex: Vercel Cron)
  */
 
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { getS3Bucket, getS3Client, isS3Configured } from '@/lib/s3-config';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { and, lt, isNotNull, sql } from 'drizzle-orm';
@@ -19,18 +20,9 @@ import { purgeEligibleCondition } from '@/services/documents/grouped-sources';
 
 const SOFT_DELETE_RETENTION_DAYS = 30;
 
-// S3 Client configuration
-const s3Client = new S3Client({
-  region: process.env.OVH_S3_REGION || 'gra',
-  endpoint: process.env.OVH_S3_ENDPOINT || 'https://s3.gra.io.cloud.ovh.net',
-  credentials: {
-    accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY || '',
-  },
-  forcePathStyle: false,
-});
-
-const bucketName = process.env.OVH_S3_BUCKET || 'verebona-files';
+// Client S3 : profil `worker` de la configuration centrale (APP-PERF-26),
+// résolu à l'usage — une configuration absente fait échouer la suppression
+// (référence conservée, nouvelle tentative), jamais le chargement du module.
 
 export interface CleanupResult {
   success: boolean;
@@ -49,7 +41,7 @@ export interface CleanupResult {
 export type DeleteObjectFn = (bucket: string, key: string) => Promise<void>;
 
 const defaultDeleteObject: DeleteObjectFn = async (bucket, key) => {
-  await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  await getS3Client('worker').send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 };
 
 /** Objet déjà absent du stockage : la suppression est acquise. */
@@ -149,7 +141,7 @@ export async function runCleanupJob(deps: { deleteObject?: DeleteObjectFn } = {}
         // 1. Suppression S3 (rien à supprimer pour un lien web sans objet).
         if (file.s3Key) {
           try {
-            await deleteObject(file.s3Bucket || bucketName, file.s3Key);
+            await deleteObject(file.s3Bucket || (isS3Configured() ? getS3Bucket() : ''), file.s3Key);
             result.filesDeletedFromS3++;
           } catch (s3Error) {
             if (!isAlreadyGone(s3Error)) {

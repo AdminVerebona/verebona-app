@@ -1,19 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db, getMigrationFailures } from '@/db';
 import { sql } from 'drizzle-orm';
-import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { classifyS3Error, getS3Bucket, getS3Client, s3ConfigDiagnostics } from '@/lib/s3-config';
 
-const s3Client = new S3Client({
-  region: process.env.OVH_S3_REGION || 'gra',
-  endpoint: process.env.OVH_S3_ENDPOINT || 'https://s3.gra.io.cloud.ovh.net',
-  credentials: {
-    accessKeyId: process.env.OVH_S3_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.OVH_S3_SECRET_ACCESS_KEY || '',
-  },
-  forcePathStyle: false,
-});
-
-const bucketName = process.env.OVH_S3_BUCKET || 'verebona-files';
+/** Délai maximal de la sonde de stockage (ms). */
+const S3_PROBE_TIMEOUT_MS = 5_000;
 
 interface HealthCheckResult {
   status: 'ok' | 'degraded' | 'down';
@@ -31,6 +23,8 @@ interface HealthCheckResult {
       status: 'ok' | 'error';
       responseTime?: number;
       error?: string;
+      /** Variables en cause / incohérences (noms seuls, jamais de valeur). */
+      config?: { errors: string[]; warnings: string[] };
     };
     /**
      * Migrations que le lanceur n'a pas pu appliquer au demarrage.
@@ -145,27 +139,45 @@ export async function GET(request: NextRequest) {
     result.status = 'degraded';
   }
 
-  // Check 2: S3 (optional - ne pas faire échouer le health check si S3 n'est pas configuré)
-  if (process.env.OVH_S3_ACCESS_KEY_ID && process.env.OVH_S3_SECRET_ACCESS_KEY) {
+  // Check 2: S3 — configuration centrale (APP-PERF-26). Appel RÉSEAU réel
+  // (une signature locale ne prouve rien), borné et annulé au délai.
+  const s3Diag = s3ConfigDiagnostics();
+  // Configuration partielle (au moins une variable posée, ou valeur invalide).
+  const s3Touched = !s3Diag.configured
+    && (s3Diag.errors.some((e) => e.code !== 'MISSING') || s3Diag.errors.length < 4);
+  if (s3Diag.warnings.length > 0 || s3Diag.errors.length > 0) {
+    result.checks.s3.config = {
+      errors: s3Diag.errors.map((e) => e.message),
+      warnings: s3Diag.warnings.map((w) => w.message),
+    };
+  }
+  if (s3Diag.configured) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), S3_PROBE_TIMEOUT_MS);
     try {
       const s3Start = Date.now();
-      const command = new ListObjectsV2Command({
-        Bucket: bucketName,
-        MaxKeys: 1,
-      });
-      await s3Client.send(command);
+      await getS3Client('interactive').send(
+        new ListObjectsV2Command({ Bucket: getS3Bucket(), MaxKeys: 1 }),
+        { abortSignal: controller.signal },
+      );
       result.checks.s3.responseTime = Date.now() - s3Start;
       result.checks.s3.status = 'ok';
     } catch (error) {
-      console.error('[HEALTH] S3 check failed:', error);
+      const info = classifyS3Error(error);
+      const kind = controller.signal.aborted ? 'TIMEOUT' : info.kind;
+      console.error(`[HEALTH] S3 check failed: ${kind} (${info.name})`);
       result.checks.s3.status = 'error';
-      result.checks.s3.error = error instanceof Error ? error.message : 'Unknown error';
+      result.checks.s3.error = `${kind} (${info.name}${info.httpStatus ? `, HTTP ${info.httpStatus}` : ''})`;
       result.status = 'degraded';
+    } finally {
+      clearTimeout(timer);
     }
   } else {
     result.checks.s3.status = 'error';
-    result.checks.s3.error = 'S3 credentials not configured';
-    // Ne pas marquer comme degraded si S3 n'est simplement pas configuré
+    result.checks.s3.error = 'S3 not configured';
+    // Configuration partielle ou contradictoire : dégradé. Stockage
+    // simplement absent (environnement sans S3) : pas dégradé.
+    if (s3Touched) result.status = 'degraded';
   }
 
   // Check 3: migrations appliquees au demarrage
@@ -236,8 +248,8 @@ export async function GET(request: NextRequest) {
   } else if (result.checks.migrations.status === 'error') {
     // Schema potentiellement incomplet : degrade, jamais 'ok'.
     result.status = 'degraded';
-  } else if (result.checks.s3.status === 'error' && process.env.OVH_S3_ACCESS_KEY_ID) {
-    // Seulement degraded si S3 est configuré mais ne répond pas
+  } else if (result.checks.s3.status === 'error' && (s3Diag.configured || s3Touched)) {
+    // Seulement degraded si S3 est configuré (même partiellement) mais ne répond pas
     result.status = 'degraded';
   }
 

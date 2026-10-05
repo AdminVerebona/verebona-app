@@ -142,6 +142,11 @@ export async function registerNode(): Promise<void> {
   await runAssistantStartupCheck('startup').catch((e) =>
     console.error('[startup] contrôle du registre de l’assistant impossible :', (e as Error).message));
 
+  // Lot 23 (§32.6) : invalidations de caches demandées depuis le BO,
+  // appliquées sur CETTE instance (versions `cache:%` relues toutes les 5 s).
+  const { startSharedCacheInvalidation } = await import('@/services/ai/cache/cache-admin');
+  startSharedCacheInvalidation();
+
   // L'agenda reçoit ses accès base par injection : le module reste testable
   // sans démarrer l'application.
   const { loadExistingAgendaItems, persistAgendaDecisions } =

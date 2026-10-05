@@ -18,6 +18,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '@/db';
+import { getS3Bucket, isS3Configured } from '@/lib/s3-config';
 import {
   assets,
   assetFiles,
@@ -203,7 +204,7 @@ export async function deleteAssetCompletely(asset: {
   thumbnailUrl?: string | null;
 }): Promise<{ blobsScheduled: number; fileIds: number[] }> {
   const assetId = asset.id;
-  const bucket = process.env.OVH_S3_BUCKET ?? null;
+  const bucket = isS3Configured() ? getS3Bucket() : null;
 
   return db.transaction(async (tx) => {
     const roomIds = tx.select({ id: rooms.id }).from(rooms).where(eq(rooms.assetId, assetId));
