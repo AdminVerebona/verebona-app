@@ -58,8 +58,14 @@ describe('trace d’un appel de l’assistant', () => {
   });
 
   it('les autres usages gardent leur extrait expurgé', async () => {
-    fake.onAny(() => ({ rawText: '{"title":"Facture","amountCents":1}', inputTokens: 1, outputTokens: 1 }));
-    await AiGateway.execute(req('SOURCE_ANALYSIS', 'classify_document', z.object({ title: z.string(), amountCents: z.number() })));
-    expect(h.traces.at(-1)!.outputPreview).toBe('{"title":"Facture","amountCents":1}');
+    // Lot 16b-3 : opération T1 réelle (branche GROUP_UPLOAD du master).
+    const { T1_TEST_OPERATION, t1TestVariables, t1Out, t1Schema } = await import('./t1-master-request');
+    const sortie = t1Out({ title: 'Facture', amountCents: 1 });
+    fake.onAny(() => ({ rawText: sortie, inputTokens: 1, outputTokens: 1 }));
+    await AiGateway.execute({
+      ...req('SOURCE_ANALYSIS', T1_TEST_OPERATION, t1Schema({ title: z.string(), amountCents: z.number() })),
+      promptVariables: t1TestVariables(),
+    });
+    expect(h.traces.at(-1)!.outputPreview).toBe(sortie);
   });
 });

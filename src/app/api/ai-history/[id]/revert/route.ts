@@ -11,8 +11,9 @@
  * même preuve et annulerait l'annulation. Limite connue : une restauration
  * vers « vide » reste un champ vide, que T3 peut de nouveau remplir (la
  * matrice traite un champ vide sans regarder l'origine).
- * `CANONICAL_WRITE_MODE=enabled` et clé du registre : `writeCanonicalAssetField`
- * (origine USER, colonnes miroirs, journal).
+ * Clé du registre : `writeCanonicalAssetField` (origine USER, colonnes
+ * miroirs, journal) — toujours depuis le lot 16b-3 (commutateur
+ * `CANONICAL_WRITE_MODE` supprimé). Clé hors registre : keyCharacteristics.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
@@ -58,13 +59,12 @@ export async function POST(
         await db.update(assets).set({ name: restoredValue, updatedAt: new Date() }).where(eq(assets.id, entry.assetId));
       }
     } else {
-      const { canonicalWriteMode } = await import('@/services/canonical/rollout');
       const { isRegistryKey } = await import('@/services/ai/reconciliation/apply-decision');
-      if (canonicalWriteMode() === 'enabled' && isRegistryKey(entry.fieldKey)) {
+      if (isRegistryKey(entry.fieldKey)) {
         const { writeCanonicalAssetField } = await import('@/services/canonical/asset-state');
         await writeCanonicalAssetField({
           assetId: entry.assetId, accountId, key: entry.fieldKey, value: restoredValue, origin: 'USER',
-          actorUserId: session.userId, source: { type: 'ai_history_revert', id: updateId }, mode: 'enabled',
+          actorUserId: session.userId, source: { type: 'ai_history_revert', id: updateId },
         });
       } else {
         if (restoredValue === null) {

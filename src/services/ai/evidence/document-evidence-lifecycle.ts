@@ -11,12 +11,9 @@
  * par la phase négative (T3-04), retire ou remplace les valeurs automatiques
  * qui ne sont plus prouvées.
  *
- * Commutateur `T3_NEGATIVE_RECONCILIATION` (ces transitions changent des
- * décisions) :
- *   legacy   rien (comportement historique) ;
- *   shadow   journal structuré de ce qui SERAIT retiré (`t3.evidence_lifecycle`,
- *            dryRun), sans écriture ni mise en file ;
- *   enabled  transitions et réconciliation des biens touchés.
+ * Lot 16b-3 : commutateur `T3_NEGATIVE_RECONCILIATION` supprimé — transitions
+ * et réconciliation des biens touchés toujours appliquées (comportement de
+ * l'ancien `enabled`).
  *
  * DÉPLACEMENT A → B : retrait sur A ici ; la reprojection sur B reste celle
  * des routes (`projectDocumentKnowledgeToAsset` depuis `document_facts` quand
@@ -27,8 +24,6 @@
  * Ne lève jamais : un document supprimé ou déplacé ne doit pas échouer parce
  * que le cycle de vie des preuves n'a pas pu suivre (journalisé).
  */
-import { t3NegativeMode } from '@/services/canonical/rollout';
-import type { RolloutMode } from '@/services/canonical/rollout';
 import {
   withdrawEvidence, listActiveEvidenceAssets, type EvidenceWithdrawalReason, type WithdrawEvidenceResult,
 } from './field-evidence.service';
@@ -41,7 +36,6 @@ export interface LinkDeps {
 }
 
 export interface LifecycleDeps {
-  mode: () => RolloutMode;
   withdraw: typeof withdrawEvidence;
   enqueue: (input: { accountId: number; userId: number; assetIds: number[]; sourceFileId?: number | null; reason: string }) => Promise<unknown>;
   links?: LinkDeps;
@@ -55,7 +49,7 @@ export interface LifecycleDeps {
   /**
    * Lot 18 (R3) : équipements et pièces dont des preuves viennent d'être
    * retirées — réconciliation ciblée de leur fiche (retrait des valeurs
-   * automatiques qui ne sont plus prouvées). Mode `enabled` seulement.
+   * automatiques qui ne sont plus prouvées).
    */
   entityTargets?: (accountId: number, evidenceIds: number[]) => Promise<Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number }>>;
   enqueueEntities?: (input: {
@@ -65,7 +59,6 @@ export interface LifecycleDeps {
 }
 
 const defaultDeps: LifecycleDeps = {
-  mode: () => t3NegativeMode(),
   withdraw: withdrawEvidence,
   enqueue: async (input) => {
     const { enqueueT3ForAssets } = await import('../reconciliation/t3-queue');
@@ -143,13 +136,12 @@ async function retirerAgenda(deps: LifecycleDeps, accountId: number, sourceFileI
 }
 
 export interface LifecycleOutcome {
-  mode: RolloutMode;
   withdrawn: number;
   assetIds: number[];
   dryRun: boolean;
 }
 
-const RIEN = (mode: RolloutMode): LifecycleOutcome => ({ mode, withdrawn: 0, assetIds: [], dryRun: true });
+const RIEN = (): LifecycleOutcome => ({ withdrawn: 0, assetIds: [], dryRun: true });
 
 async function transition(
   p: {
@@ -158,21 +150,19 @@ async function transition(
   },
   deps: LifecycleDeps,
 ): Promise<LifecycleOutcome> {
-  const mode = deps.mode();
-  if (mode === 'legacy') return RIEN(mode);
   try {
     const r: WithdrawEvidenceResult = await deps.withdraw({
-      accountId: p.accountId, sourceIds: p.sourceIds, assetId: p.assetId ?? null, reason: p.reason, mode,
+      accountId: p.accountId, sourceIds: p.sourceIds, assetId: p.assetId ?? null, reason: p.reason,
     });
     const assetIds = [...new Set([...r.assetIds, ...(p.alsoReconcile ?? [])])];
-    if (mode === 'enabled' && assetIds.length) {
+    if (assetIds.length) {
       await deps.enqueue({
         accountId: p.accountId, userId: p.userId, assetIds,
         sourceFileId: p.sourceIds.length === 1 ? p.sourceIds[0] : null, reason: p.reason,
       });
     }
     // Équipements et pièces dont des preuves sont retirées (lot 18, R3).
-    if (mode === 'enabled' && r.evidenceIds.length && deps.entityTargets && deps.enqueueEntities) {
+    if (r.evidenceIds.length && deps.entityTargets && deps.enqueueEntities) {
       try {
         const targets = await deps.entityTargets(p.accountId, r.evidenceIds);
         if (targets.length) {
@@ -185,10 +175,10 @@ async function transition(
         console.error(`[t3-lifecycle] cibles équipement / pièce (sources ${p.sourceIds.join(',')}) :`, (e as Error).message);
       }
     }
-    return { mode, withdrawn: r.evidenceIds.length, assetIds, dryRun: r.dryRun };
+    return { withdrawn: r.evidenceIds.length, assetIds, dryRun: r.dryRun };
   } catch (e) {
     console.error(`[t3-lifecycle] ${p.reason} (sources ${p.sourceIds.join(',')}) :`, (e as Error).message);
-    return RIEN(mode);
+    return RIEN();
   }
 }
 
@@ -197,7 +187,7 @@ export function onDocumentsDeleted(
   p: { accountId: number; userId: number; fileIds: number[] },
   deps: LifecycleDeps = defaultDeps,
 ): Promise<LifecycleOutcome> {
-  if (p.fileIds.length === 0) return Promise.resolve(RIEN(deps.mode()));
+  if (p.fileIds.length === 0) return Promise.resolve(RIEN());
   return (async () => {
     const r = await transition({ accountId: p.accountId, userId: p.userId, sourceIds: p.fileIds, reason: 'DOCUMENT_DELETED' }, deps);
     await retirerAgenda(deps, p.accountId, p.fileIds, null);
@@ -214,10 +204,10 @@ export async function onDocumentAssetChanged(
   p: { accountId: number; userId: number; fileId: number; fromAssetId: number | null; toAssetId: number | null },
   deps: LifecycleDeps = defaultDeps,
 ): Promise<LifecycleOutcome & { unlinked: number }> {
-  if (!p.fromAssetId || p.fromAssetId === p.toAssetId) return { ...RIEN(deps.mode()), unlinked: 0 };
+  if (!p.fromAssetId || p.fromAssetId === p.toAssetId) return { ...RIEN(), unlinked: 0 };
   const from = p.fromAssetId;
 
-  // ── Relation N-N (0221, X-01) — HORS commutateur ─────────────────────────
+  // ── Relation N-N (0221, X-01) ─────────────────────────────────────────────
   // Les liens LEGACY_COLUMN suivent `asset_files` (déclencheur). Les liens
   // USER, AI et MIGRATION qui visent A (le bien, ses pièces, ses équipements)
   // sont retirés (REMOVED) : le document n'appartient plus à A. Aucun écran
@@ -252,14 +242,14 @@ export async function onDocumentAssetChanged(
   // avec lui (B les reçoit par la reprojection / réanalyse de la route).
   await retirerAgenda(deps, p.accountId, [p.fileId], from);
 
-  // ── Biens SECONDAIRES qui ne sont plus liés (sous le commutateur) ──────────
+  // ── Biens SECONDAIRES qui ne sont plus liés ───────────────────────────────
   // Un bien qui porte encore des preuves de ce document mais n'a plus AUCUN
   // lien actif vers lui (ni vers ses pièces / équipements), et n'est pas la
   // nouvelle cible : ses preuves sont retirées. Seulement si la relation N-N
   // est renseignée pour ce document (au moins un lien actif) — sans elle, on
   // ne sait rien et on ne retire rien (documents non rattrapés).
-  let secondaires: LifecycleOutcome = RIEN(principal.mode);
-  if (principal.mode !== 'legacy' && linksAfter && linksAfter.length > 0 && deps.evidenceAssets) {
+  let secondaires: LifecycleOutcome = RIEN();
+  if (linksAfter && linksAfter.length > 0 && deps.evidenceAssets) {
     try {
       const lies = new Set(linksAfter.map((l) => l.assetId).filter((a): a is number => a != null));
       if (p.toAssetId) lies.add(p.toAssetId);
@@ -300,11 +290,9 @@ export function onAssetDeleted(
         // Le bien supprimé n'est plus à réconcilier.
         enqueue: (i) => deps.enqueue({ ...i, assetIds: i.assetIds.filter((a) => a !== p.assetId) }),
       })
-      : RIEN(deps.mode());
-    const mode = deps.mode();
-    if (mode === 'legacy') return docs;
+      : RIEN();
     try {
-      const own = await deps.withdraw({ accountId: p.accountId, assetId: p.assetId, reason: 'ASSET_DELETED', mode });
+      const own = await deps.withdraw({ accountId: p.accountId, assetId: p.assetId, reason: 'ASSET_DELETED' });
       return { ...docs, withdrawn: docs.withdrawn + own.evidenceIds.length };
     } catch (e) {
       console.error(`[t3-lifecycle] ASSET_DELETED (bien ${p.assetId}) :`, (e as Error).message);

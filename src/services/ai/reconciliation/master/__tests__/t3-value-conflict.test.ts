@@ -2,7 +2,7 @@
  * CDC 15 §25 (VALUE_CONFLICT), T3-06, U2, P-T3-01 — arbitrage d'une valeur
  * par le master T3 : données serveur (autorité calculée, dates, origine,
  * protection), ordre neutre, protection USER/ADMIN revérifiée par le serveur,
- * chemin `steps` inchangé.
+ * master seul depuis le lot 16b-3 (chemin `steps` supprimé).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'fs';
@@ -37,7 +37,7 @@ const base = { accountId: 1, assetId: 5, decision: DECISION, candidates: CANDS, 
 
 let fake: InstanceType<typeof FakeProvider>;
 const repond = (o: unknown) => fake.onAny(() => ({ rawText: JSON.stringify(o), inputTokens: 1, outputTokens: 1 }));
-const T3 = (arch: 'steps' | 'master') => __setConfigForTests({
+const T3 = (arch: 'master' = 'master') => __setConfigForTests({
   versionId: 31, entries: [{ ...emptyTreatmentConfig('T3'), primaryModel: 'm-a', promptArchitecture: arch }],
 });
 
@@ -120,19 +120,10 @@ describe('branchement selon l’architecture T3', () => {
     expect(await resolveAmbiguity(base)).toMatchObject({ action: 'create_conflict' });
   });
 
-  it('steps : resolve_ambiguity historique, format historique, aucune TASK', async () => {
-    T3('steps');
-    repond({ chosenEvidenceId: 4213, confidence: 'certain', reason: 'acte' });
-    const d = await resolveAmbiguity(base);
-    expect(d).toMatchObject({ action: 'apply', proposedValue: '78.4' });
-    expect(traces[0]).toMatchObject({ operationCode: 'resolve_ambiguity', task: null, masterPromptCode: null });
-    expect(fake.calls[0].prompt).toContain('R3 — RESPECTE L\'AUTORITÉ DOCUMENTAIRE');
-  });
-
-  it('sans version de configuration : steps', async () => {
-    repond({ chosenEvidenceId: null, confidence: 'conflictual', reason: 'égalité' });
+  it('sans version de configuration : master quand même (lot 16b-3), jamais resolve_ambiguity', async () => {
+    repond({ task: 'VALUE_CONFLICT', decision: 'abstain', chosenEvidenceId: null, confidence: 'conflictual', reason: 'égalité' });
     await resolveAmbiguity(base);
-    expect(traces[0].operationCode).toBe('resolve_ambiguity');
+    expect(traces[0]).toMatchObject({ operationCode: 't3_value_conflict', task: 'VALUE_CONFLICT', masterPromptCode: 't3_master_v1' });
     expect(z.string().safeParse(traces[0].promptVersion).success).toBe(true);
   });
 });

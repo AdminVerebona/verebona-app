@@ -18,10 +18,4 @@ export type { AiUseCaseCode, AiOperationDefinition } from './registry';
 export { recordEvidence, getActiveEvidence, supersedeEvidence } from './evidence/field-evidence.service';
 export type { EvidenceValue, FieldEvidence, FieldOrigin } from './evidence/evidence.types';
 
-export {
-  AI_FLAGS, getFlagMode, isEnabled, isShadow, shouldRunNewEngine, shouldWrite,
-  shouldRunLegacy, snapshotFlags,
-} from './flags/ai-feature-flags';
-export type { AiFlag, FlagMode } from './flags/ai-feature-flags';
-
 export { getAiProvider, setAiProvider, FakeProvider } from './gateway/providers';

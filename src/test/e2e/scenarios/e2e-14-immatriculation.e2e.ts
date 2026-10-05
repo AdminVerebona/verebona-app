@@ -13,13 +13,15 @@
  * `writeCanonicalAssetField` (src/services/canonical/asset-state) et lire la
  * fiche par `CanonicalAssetView` dès que la primitive est livrée ; lecture T2
  * ajoutée au lot 15 (`ASSISTANT_CANONICAL_READ`) ; export canonique ajouté
- * au lot 16 (`EXPORTS_CANONICAL_SOURCE=enabled` : la fiche fait foi, D-10).
+ * au lot 16 (la fiche fait foi, D-10). Lot 16b-3 : `EXPORTS_CANONICAL_SOURCE`
+ * retiré — l'export lit TOUJOURS la source canonique ; le cas « l'export lit
+ * la colonne » n'existe plus.
  */
 import { it, expect } from 'vitest';
 import { scenario } from '../scenario';
 
 scenario('E2E-14', 'Immatriculation — fiche, colonne et export identiques', ({ sql, make }) => {
-  it('E2E-14 (legacy/colonne) — nominal : fiche, colonne et source d’export portent la même immatriculation', async () => {
+  it('E2E-14 — nominal : fiche, colonne et source d’export portent la même immatriculation', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, {
       category: 'VEHICULE', registrationNumber: 'AB-123-CD',
@@ -40,7 +42,7 @@ scenario('E2E-14', 'Immatriculation — fiche, colonne et export identiques', ({
     expect(source.asset.registrationNumber).toBe('AB-123-CD');
   });
 
-  it('limite (comportement actuel) : fiche seule, colonne vide — l’export lit la colonne', async () => {
+  it('export canonique (source unique depuis le lot 16b-3) : fiche seule, colonne vide — l’export porte la valeur de la fiche', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, {
       category: 'VEHICULE', registrationNumber: null,
@@ -50,31 +52,8 @@ scenario('E2E-14', 'Immatriculation — fiche, colonne et export identiques', ({
     const source = await loadExportSource({
       assetId: bien.id, accountId: compte.id, userId: compte.ownerUserId, exportType: 'DOSSIER_COMPLET',
     });
-    // Divergence constatée (X-02) : la colonne est vide, la valeur n'existe
-    // que dans la fiche. Le rendu la rattrape (`mappers/common.ts` :
-    // colonne ?? fiche) ; la cible D-10 est une colonne miroir remplie.
-    expect(source.asset.registrationNumber).toBeNull();
-    expect(source.asset.characteristics.registrationNumber ?? null).toBe('EF-456-GH');
-  });
-
-  it('export canonique (L16, EXPORTS_CANONICAL_SOURCE=enabled) : fiche seule, colonne vide — l’export porte la valeur de la fiche', async () => {
-    const avant = process.env.EXPORTS_CANONICAL_SOURCE;
-    process.env.EXPORTS_CANONICAL_SOURCE = 'enabled';
-    try {
-      const compte = await make.account();
-      const bien = await make.asset(compte, {
-        category: 'VEHICULE', registrationNumber: null,
-        keyCharacteristics: { registrationNumber: 'EF-456-GH' },
-      });
-      const { loadExportSource } = await import('@/services/exports/v12/data/source');
-      const source = await loadExportSource({
-        assetId: bien.id, accountId: compte.id, userId: compte.ownerUserId, exportType: 'DOSSIER_COMPLET',
-      });
-      expect(source.asset.registrationNumber).toBe('EF-456-GH');
-      expect(source.sourceTrace?.source).toBe('canonical');
-    } finally {
-      if (avant === undefined) delete process.env.EXPORTS_CANONICAL_SOURCE; else process.env.EXPORTS_CANONICAL_SOURCE = avant;
-    }
+    expect(source.asset.registrationNumber).toBe('EF-456-GH');
+    expect(source.sourceTrace?.source).toBe('canonical');
   });
 
   // Écriture par writeCanonicalAssetField (colonne miroir = fiche, D-10) :

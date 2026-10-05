@@ -552,6 +552,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
     fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), p.assetId, { allowReassign, previousAssetId: ancien }),
     documentType: (knowledge.extraction.metadata?.legacyDocumentType as string | undefined) ?? undefined,
     documentDate: knowledge.extraction.documentDate ?? undefined,
+    promptVersion: knowledge.extraction.promptVersion ?? null,
     trace: {
       traceIds: [], operationCodes: ['knowledge_projection'], totalInputTokens: 0, totalOutputTokens: 0,
       totalCostMicros: 0, totalDurationMs: 0, usedFallback: false,
@@ -738,82 +739,5 @@ export function lateLinkAllowsReassignment(
   return true;
 }
 
-// ── Moteur historique ──────────────────────────────────────────────────────
-
-/**
- * Représentation minimale issue du moteur historique (`AI_UNIFIED_SOURCE_ANALYSIS`
- * ≠ `enabled`).
- *
- * Ce moteur ne produit ni faits génériques ni extraits justificatifs : seuls
- * le contenu source (texte brut, titre, description, date, émetteur,
- * montant) est repris, depuis ses propositions et `asset_files`. C'est
- * suffisant pour que T2 réponde sur le texte d'un document sans le relire ;
- * les faits génériques arriveront avec le moteur unifié.
- */
-export async function persistKnowledgeFromLegacyRun(p: {
-  accountId: number;
-  fileId: number;
-  runId: number;
-}): Promise<number | null> {
-  const [file] = (await pgClient.unsafe(
-    `SELECT extracted_text AS "extractedText", coalesce(asset_id, linked_asset_id) AS "assetId",
-            retained_title AS "retainedTitle", description, supplier, amount_cents::int AS "amountCents",
-            to_char(document_date, 'YYYY-MM-DD') AS "documentDate", rubric_code AS "rubricCode",
-            document_type_code AS "documentTypeCode", document_type AS "documentType"
-       FROM asset_files WHERE id = $1 AND account_id = $2`,
-    [p.fileId, p.accountId] as never[],
-  )) as unknown as Array<Record<string, string | number | null>>;
-  if (!file) return null;
-
-  const proposals = (await pgClient.unsafe(
-    `SELECT target_key AS "targetKey", proposed_value_json AS "value", confidence
-       FROM document_analysis_proposals WHERE run_id = $1 AND proposal_type IN ('field', 'derived_date')`,
-    [p.runId] as never[],
-  )) as unknown as Array<{ targetKey: string; value: string; confidence: string | null }>;
-  const [run] = (await pgClient.unsafe(
-    `SELECT model, prompt_version AS "promptVersion" FROM document_analysis_runs WHERE id = $1`,
-    [p.runId] as never[],
-  )) as unknown as Array<{ model: string | null; promptVersion: string | null }>;
-
-  const proposed = (key: string): unknown => {
-    const row = proposals.find((r) => r.targetKey === key);
-    if (!row) return undefined;
-    try { return JSON.parse(row.value); } catch { return row.value; }
-  };
-  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
-  const date = str(proposed('documentDate')) ?? (file.documentDate as string | null);
-  const amount = proposed('amountCents');
-
-  return persistDocumentKnowledge({
-    extraction: {
-      accountId: p.accountId,
-      fileId: p.fileId,
-      analysisRunId: p.runId,
-      assetIdAtAnalysis: (file.assetId as number | null) ?? null,
-      engine: 'legacy',
-      sourceType: 'asset_file',
-      sourceVersion: null,
-      title: str(proposed('retainedTitle')) ?? (file.retainedTitle as string | null),
-      description: str(proposed('description')) ?? (file.description as string | null),
-      documentDate: date && /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : null,
-      supplierName: str(proposed('supplier')) ?? (file.supplier as string | null),
-      supplierSiret: null,
-      amountCents: typeof amount === 'number' ? Math.round(amount) : (file.amountCents as number | null),
-      currency: 'EUR',
-      fullText: (file.extractedText as string | null)?.trim() || null,
-      // L'ancien moteur ne distinguait pas le visuel : rien n'est reconstruit.
-      visualSummary: null,
-      visualObservations: [],
-      documentTypeCode: (file.documentTypeCode as string | null) ?? null,
-      rubricCode: (file.rubricCode as string | null) ?? null,
-      hasExploitableContent: true,
-      structuralEvidence: {},
-      metadata: { legacyDocumentType: file.documentType ?? null, genericFacts: 'unavailable_in_legacy_engine' },
-      provider: 'gemini',
-      model: run?.model ?? null,
-      promptVersion: run?.promptVersion ?? null,
-      operationTraceId: null,
-    },
-    facts: [],
-  });
-}
+// Lot 16b-3 : la représentation minimale issue du moteur historique T1
+// (`engine: 'legacy'`) n'est plus produite ; ce moteur est supprimé.

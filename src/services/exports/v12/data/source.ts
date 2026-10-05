@@ -122,9 +122,8 @@ export interface SourceEquipment {
   model: string | null;
   energyType: string | null;
   /**
-   * Lecture canonique (EXPORTS_CANONICAL_SOURCE = enabled, lot 18) : champs
-   * renseignés de la fiche de l'équipement — valeur, origine, preuve active.
-   * Absent en lecture historique.
+   * Lecture canonique (lot 18) : champs renseignés de la fiche de
+   * l'équipement — valeur, origine, preuve active.
    */
   fields?: SourceEquipmentField[];
 }
@@ -287,50 +286,16 @@ type LoadParams = { assetId: number; accountId: number; userId: number; exportTy
  * Lit les données d'un bien pour un dossier. `accountId` est le compte du
  * bien, déjà vérifié par l'appelant (`findAccessibleAssetForExport`).
  *
- * Commutateur `EXPORTS_CANONICAL_SOURCE` (CDC 15 X-02, lot 16 — voir
- * `canonical-source.ts`) :
- *   · legacy  : lecture historique, strictement inchangée ;
- *   · shadow  : lecture historique UTILISÉE, lecture canonique calculée en
- *               plus (données seulement, aucun rendu), rapport d'écarts sans
- *               valeur journalisé ; un échec du calcul canonique n'affecte
- *               jamais le dossier ;
- *   · enabled : lecture canonique.
- * Toujours : `sourceTrace` (source utilisée, version du registre).
+ * Source canonique (CDC 15 X-02, lot 16 — voir `canonical-source.ts`) ;
+ * lot 16b-3 : commutateur `EXPORTS_CANONICAL_SOURCE` et mode d'observation
+ * (rapport d'écarts) supprimés. Toujours : `sourceTrace` (source utilisée,
+ * version du registre).
  */
 export async function loadExportSource(params: LoadParams): Promise<ExportSource> {
-  const { exportsSourceMode, traceOf } = await import('./canonical-source');
-  const mode = exportsSourceMode();
-  const { source: legacy, snapshot } = await loadLegacyExportSource(params);
-  if (mode === 'legacy') return { ...legacy, sourceTrace: traceOf(mode, 'legacy') };
-  if (mode === 'enabled') {
-    const { source, documentPaths, unconfirmed } = await buildCanonicalExportSource(params, legacy, snapshot);
-    return { ...source, sourceTrace: traceOf(mode, 'canonical', { documentPaths, unconfirmedDocuments: unconfirmed }) };
-  }
-  // shadow
-  try {
-    const { source: canonical, documentPaths, today, unconfirmed } = await buildCanonicalExportSource(params, legacy, snapshot);
-    const { diffExportSources } = await import('./source-diff');
-    const diff = diffExportSources(legacy, canonical, { today, documentPaths, unconfirmed });
-    // Journal structuré, SANS VALEUR : noms de champs, identifiants, clés.
-    console.info('[exports:canonical-shadow]', JSON.stringify({
-      assetId: params.assetId, accountId: params.accountId, exportType: params.exportType, ...diff,
-    }));
-    return {
-      ...legacy,
-      sourceTrace: traceOf(mode, 'legacy', {
-        shadowDiff: {
-          fields: diff.fields.length, documentsOnlyLegacy: diff.documents.onlyLegacy.length,
-          documentsOnlyCanonical: diff.documents.onlyCanonical.length, events: diff.events.length,
-          addedConfirmed: diff.documents.addedInCanonical.confirmed, addedUnconfirmed: diff.documents.addedInCanonical.unconfirmed,
-        },
-      }),
-    };
-  } catch (err) {
-    console.warn('[exports:canonical-shadow] calcul canonique en échec', {
-      assetId: params.assetId, exportType: params.exportType, error: err instanceof Error ? err.message : String(err),
-    });
-    return { ...legacy, sourceTrace: traceOf(mode, 'legacy', { shadowDiff: { fields: 0, documentsOnlyLegacy: 0, documentsOnlyCanonical: 0, events: 0, failed: true } }) };
-  }
+  const { traceOf } = await import('./canonical-source');
+  const { source: base, snapshot } = await loadLegacyExportSource(params);
+  const { source, documentPaths, unconfirmed } = await buildCanonicalExportSource(params, base, snapshot);
+  return { ...source, sourceTrace: traceOf('canonical', { documentPaths, unconfirmedDocuments: unconfirmed }) };
 }
 
 /**

@@ -80,25 +80,25 @@ describe('CFG-01 : clé de version partagée', () => {
     const b = await demarrerInstance();
 
     // Les deux instances chargent et mettent en cache la version 1.
-    expect((await a.resolver.resolveOperationConfig('extract_source')).configVersionId).toBe(1);
-    expect((await b.resolver.resolveOperationConfig('extract_source')).configVersionId).toBe(1);
+    expect((await a.resolver.resolveOperationConfig('t1_analyze_document')).configVersionId).toBe(1);
+    expect((await b.resolver.resolveOperationConfig('t1_analyze_document')).configVersionId).toBe(1);
     const lecturesAvant = partage.lectures;
 
     // Sans bascule : B sert son cache, aucune relecture de la version.
-    await b.resolver.resolveOperationConfig('extract_source');
+    await b.resolver.resolveOperationConfig('t1_analyze_document');
     expect(partage.lectures).toBe(lecturesAvant);
 
     // Promotion sur A : la base change, A incrémente la clé partagée.
     partage.effective = version(2, 'gemini-2.5-pro');
     await a.counter.bumpConfigVersionCounter('promote:2');
     // A la voit immédiatement (sa mémoire du compteur est vidée).
-    expect((await a.resolver.resolveOperationConfig('extract_source')).configVersionId).toBe(2);
+    expect((await a.resolver.resolveOperationConfig('t1_analyze_document')).configVersionId).toBe(2);
     // B : dans la seconde de mémoire du compteur, encore l'ancienne…
-    expect((await b.resolver.resolveOperationConfig('extract_source')).configVersionId).toBe(1);
+    expect((await b.resolver.resolveOperationConfig('t1_analyze_document')).configVersionId).toBe(1);
     // … puis la nouvelle dès l'expiration (≤ 1 s, contre 30 s de cache avant).
     avancer(b.counter.COUNTER_MEMO_MS);
 
-    const surB = await b.resolver.resolveOperationConfig('extract_source');
+    const surB = await b.resolver.resolveOperationConfig('t1_analyze_document');
     expect(surB.configVersionId).toBe(2);
     expect(surB.primaryModel).toBe('gemini-2.5-pro');
     expect(await b.resolver.resolveEffectiveVersionId()).toBe(2);
@@ -117,16 +117,16 @@ describe('CFG-01 : clé de version partagée', () => {
 
   it('clé illisible : repli sur le cache (TTL), jamais d’échec', async () => {
     const b = await demarrerInstance();
-    expect((await b.resolver.resolveOperationConfig('extract_source')).configVersionId).toBe(1);
+    expect((await b.resolver.resolveOperationConfig('t1_analyze_document')).configVersionId).toBe(1);
     partage.counterUnreadable = true;
     partage.effective = version(4, 'gemini-2.5-flash');
     // Dans le TTL, l'ancienne version reste servie : dégradé, pas cassé.
-    expect((await b.resolver.resolveOperationConfig('extract_source')).configVersionId).toBe(1);
+    expect((await b.resolver.resolveOperationConfig('t1_analyze_document')).configVersionId).toBe(1);
     // La clé redevient lisible (et a bougé entre-temps) : rechargement.
     partage.counterUnreadable = false;
     partage.counter += 1;
     avancer(b.counter.COUNTER_MEMO_MS);
-    expect((await b.resolver.resolveOperationConfig('extract_source')).configVersionId).toBe(4);
+    expect((await b.resolver.resolveOperationConfig('t1_analyze_document')).configVersionId).toBe(4);
   });
 });
 
@@ -134,11 +134,11 @@ describe('CFG-01 : coût de la clé partagée', () => {
   it('lecture mémorisée ~1 s et regroupée : une lecture pour une rafale d’appels', async () => {
     const b = await demarrerInstance();
     const read = vi.spyOn(store, 'read');
-    await Promise.all(Array.from({ length: 10 }, () => b.resolver.resolveOperationConfig('extract_source')));
-    await b.resolver.resolveOperationConfig('extract_source');
+    await Promise.all(Array.from({ length: 10 }, () => b.resolver.resolveOperationConfig('t1_analyze_document')));
+    await b.resolver.resolveOperationConfig('t1_analyze_document');
     expect(read).toHaveBeenCalledTimes(1);
     avancer(b.counter.COUNTER_MEMO_MS);
-    await b.resolver.resolveOperationConfig('extract_source');
+    await b.resolver.resolveOperationConfig('t1_analyze_document');
     expect(read).toHaveBeenCalledTimes(2);
     read.mockRestore();
   });

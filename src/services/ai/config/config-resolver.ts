@@ -42,9 +42,9 @@
  * sans borne, elle attend la base sur le chemin d'appel.
  */
 import { getOperation, type AiOperationDefinition } from '../registry/operations';
-import { isPromptAdministrable, isMasterOnlyTreatment, treatmentForUseCase, type Treatment } from './treatments';
+import { isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
 import {
-  DEFAULT_PROMPT_ARCHITECTURE, defaultPromptArchitectureFor, promptArchitectureOf, masterPromptOf,
+  DEFAULT_PROMPT_ARCHITECTURE, promptArchitectureOf, masterPromptOf,
   type PromptArchitecture, type ReasoningLevel, type TreatmentConfig,
 } from './config-types';
 import { currentJobContext } from '../queue/job-context';
@@ -254,15 +254,6 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
  * l'opération du sien — le contrôle de promotion l'aurait refusée, mais une
  * version importée d'un environnement plus permissif pourrait passer.
  */
-/** Architecture du code pour l'opération (sans version) : `master` pour T2, T4, T5 et T6 (lot 16b). */
-function architectureParDefaut(op: AiOperationDefinition): PromptArchitecture {
-  try {
-    return defaultPromptArchitectureFor(treatmentForUseCase(op.useCaseCode));
-  } catch {
-    return DEFAULT_PROMPT_ARCHITECTURE;
-  }
-}
-
 export async function resolveOperationConfig(
   operationCode: string,
 ): Promise<ResolvedOperationConfig> {
@@ -275,8 +266,8 @@ export async function resolveOperationConfig(
     reasoningPrimary: null,
     reasoningByRank: [],
     promptPreamble: null,
-    // T2, T4, T5, T6 : `master` même sans version (lot 16b).
-    promptArchitecture: architectureParDefaut(op),
+    // Lot 16b : `master` pour tous les traitements, même sans version.
+    promptArchitecture: DEFAULT_PROMPT_ARCHITECTURE,
     masterPromptText: null,
     configVersionId: null,
     visibleNumber: null,
@@ -329,8 +320,10 @@ export async function resolveOperationConfig(
 }
 
 /**
- * Textes administrables d'une ligne (CDC 15 D-03, D-04) : le préambule sert
- * TOUJOURS aux étapes ; le master n'est exposé qu'en architecture `master`.
+ * Textes administrables d'une ligne (CDC 15 D-03, D-04) : le texte master
+ * (toujours en architecture `master` depuis le lot 16b) ; le préambule n'est
+ * plus appliqué qu'à une opération hors master non dynamique — il n'en existe
+ * plus au référentiel.
  */
 function promptOf(entry: TreatmentConfig): Pick<ResolvedOperationConfig, 'promptPreamble' | 'promptArchitecture' | 'masterPromptText'> {
   const promptArchitecture = promptArchitectureOf(entry);
@@ -343,25 +336,6 @@ function promptOf(entry: TreatmentConfig): Pick<ResolvedOperationConfig, 'prompt
   };
 }
 
-/**
- * Architecture des prompts d'un traitement pour l'appel courant — CDC 15
- * D-04, §29 étape 14.
- *
- * `master` seulement si la version sous laquelle tourne l'appel (version figée
- * du job — VER-015 —, sinon version effective : TO_TEST en préproduction,
- * ACTIVE sinon) le déclare pour ce traitement. Sans version, ligne absente ou
- * base illisible : `steps`, le comportement historique. Ne lève jamais.
- */
-export async function getPromptArchitecture(treatment: Treatment): Promise<PromptArchitecture> {
-  // T2, T4, T5 et T6 : master seul (lot 16b), sans lecture de la version.
-  if (isMasterOnlyTreatment(treatment)) return 'master';
-  try {
-    const effective = await entriesForCurrentExecution();
-    return promptArchitectureOf(effective.byTreatment.get(treatment));
-  } catch {
-    return DEFAULT_PROMPT_ARCHITECTURE;
-  }
-}
 
 /**
  * Préambule administrable d'un traitement, ou `null`.

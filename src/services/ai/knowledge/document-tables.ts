@@ -17,11 +17,11 @@
  *     garantit pas.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import type { ExtractSourceOutput } from '../source-analysis/schemas';
+import type { T1AnalyzeDocumentOutput } from '../source-analysis/master/t1-contract';
 import type { EvidenceConfidence } from '../evidence/evidence.types';
 import type { ExtractedTable, ExtractedTableCell } from '../source-analysis/types';
 
-type RawTable = ExtractSourceOutput['tables'][number];
+type RawTable = T1AnalyzeDocumentOutput['tables'][number];
 
 const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 const weaker = (c: EvidenceConfidence): EvidenceConfidence => (c === 'certain' ? 'probable' : c);

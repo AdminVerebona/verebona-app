@@ -5,8 +5,9 @@
  * POURQUOI IL FALLAIT EN PASSER PAR LÀ
  *
  * Le harnais précédent appelait `AiGateway.execute` directement. Il ne
- * traversait donc jamais `entrypoint.ts`, seul endroit où
- * `AI_UNIFIED_SOURCE_ANALYSIS` aiguille.
+ * traversait donc jamais `entrypoint.ts` ni le pipeline complet (à l'époque,
+ * seul endroit où `AI_UNIFIED_SOURCE_ANALYSIS`, retiré au lot 16b-3,
+ * aiguillait).
  *
  * Conséquence observée : les deux campagnes ont rendu des résultats
  * identiques à un champ près — 4 conformes, 15 erreurs de type des deux

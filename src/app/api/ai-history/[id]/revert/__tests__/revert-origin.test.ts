@@ -1,5 +1,7 @@
 /**
  * CDC 15 T3-02 (lot 13) — la valeur restaurée par une annulation est USER.
+ * Lot 16b-3 : `CANONICAL_WRITE_MODE` retiré — clé du registre : primitive
+ * seule ; clé hors registre : fiche JSON.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
@@ -36,17 +38,26 @@ const call = () => POST(new Request('http://x', { method: 'POST' }) as never, { 
 afterEach(() => { delete process.env.CANONICAL_WRITE_MODE; h.updates = []; h.write.mockClear(); });
 
 describe('POST /api/ai-history/[id]/revert', () => {
-  it('legacy : valeur restaurée avec origine USER et date (plus d’autorité de preuve)', async () => {
-    await call();
+  it('clé hors registre : valeur restaurée avec origine USER et date (plus d’autorité de preuve)', async () => {
+    h.entry.fieldKey = 'x.y';
+    try {
+      await call();
+    } finally {
+      h.entry.fieldKey = 'acquisitionDate';
+    }
+    expect(h.write).not.toHaveBeenCalled();
     const kc = JSON.parse(h.updates[0].keyCharacteristics as string);
-    expect(kc).toMatchObject({ acquisitionDate: '2020-01-01', acquisitionDate__origin: 'USER', acquisitionDate__updatedAt: expect.any(String) });
-    expect(kc).not.toHaveProperty('acquisitionDate__authority');
+    expect(kc).toMatchObject({ 'x.y': '2020-01-01', 'x.y__origin': 'USER', 'x.y__updatedAt': expect.any(String) });
   });
 
-  it('enabled + clé du registre : writeCanonicalAssetField, origine USER', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    await call();
-    expect(h.write).toHaveBeenCalledWith(expect.objectContaining({ key: 'acquisitionDate', value: '2020-01-01', origin: 'USER', actorUserId: 3, mode: 'enabled' }));
-    expect(h.updates).toHaveLength(0);
+  it('clé du registre : writeCanonicalAssetField, origine USER — même avec le commutateur retiré posé à legacy', async () => {
+    for (const v of [undefined, 'legacy']) {
+      if (v) process.env.CANONICAL_WRITE_MODE = v;
+      h.write.mockClear();
+      await call();
+      expect(h.write).toHaveBeenCalledWith(expect.objectContaining({ key: 'acquisitionDate', value: '2020-01-01', origin: 'USER', actorUserId: 3 }));
+      expect(h.write.mock.calls[0]).not.toContainEqual(expect.objectContaining({ mode: expect.anything() }));
+      expect(h.updates).toHaveLength(0);
+    }
   });
 });

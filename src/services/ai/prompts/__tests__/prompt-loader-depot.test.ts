@@ -11,8 +11,10 @@ const { resolvePrompt } = await import('../prompt-loader');
 
 describe('prompt technique', () => {
   it('lu dans le fichier du dépôt, jamais en base', async () => {
-    const r = await resolvePrompt('classify_document_v2', {}, 'SOURCE_ANALYSIS');
-    expect(r.version).toBe('classify_document_v2@file');
+    // Lot 16b-3 : plus aucun prompt d'étape ; le chargeur lit le fichier du
+    // master (seul fichier restant du dossier).
+    const r = await resolvePrompt('t3_master_v1', {}, 'DATA_RECONCILIATION');
+    expect(r.version).toBe('t3_master_v1@file');
     expect(r.text).not.toContain('ANCIEN PROMPT EN BASE');
     expect(unsafe).not.toHaveBeenCalled();
   });

@@ -13,6 +13,7 @@ import {
 } from '../runnable-guard';
 import { AiGateway } from '../../gateway/ai-gateway';
 import { FakeProvider, setAiProvider } from '../../gateway/providers';
+import { T1_TEST_OPERATION, t1TestVariables, t1Out, t1Schema } from '../../gateway/__tests__/t1-master-request';
 
 const OUVERT: RuntimeSnapshot = { emergencyStop: false, states: {} };
 
@@ -70,19 +71,20 @@ describe('câblage dans la gateway', () => {
   beforeEach(() => {
     fake = new FakeProvider();
     setAiProvider(fake);
-    fake.onAny(() => ({ rawText: '{"title":"x","amountCents":1}', inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: t1Out({ title: 'x', amountCents: 1 }), inputTokens: 1, outputTokens: 1 }));
   });
 
+  // Lot 16b-3 : opération T1 réelle (branche GROUP_UPLOAD du master).
   const req = (useCaseCode: 'SOURCE_ANALYSIS' | 'INTELLIGENT_ASSISTANT', operationCode: string) => ({
-    useCaseCode, operationCode, accountId: 1, promptVariables: {},
-    outputSchema: z.object({ title: z.string(), amountCents: z.number() }),
+    useCaseCode, operationCode, accountId: 1, promptVariables: t1TestVariables(),
+    outputSchema: t1Schema({ title: z.string(), amountCents: z.number() }),
     idempotencyKey: `g-${Math.random()}`,
   });
 
   it('arrêt d’urgence : aucun appel fournisseur, AI_BLOCKED', async () => {
     const spy = vi.spyOn(fake, 'call');
     setRuntimeSnapshotLoader(async () => ({ emergencyStop: true, states: {} }));
-    await expect(AiGateway.execute(req('SOURCE_ANALYSIS', 'classify_document')))
+    await expect(AiGateway.execute(req('SOURCE_ANALYSIS', T1_TEST_OPERATION)))
       .rejects.toMatchObject({ code: 'AI_BLOCKED' });
     expect(spy).not.toHaveBeenCalled();
   });
@@ -91,7 +93,7 @@ describe('câblage dans la gateway', () => {
     setRuntimeSnapshotLoader(async () => ({ emergencyStop: false, states: { T2: 'DISABLED' } }));
     await expect(AiGateway.execute(req('INTELLIGENT_ASSISTANT', 't2_understand')))
       .rejects.toMatchObject({ code: 'AI_BLOCKED' });
-    await expect(AiGateway.execute(req('SOURCE_ANALYSIS', 'classify_document')))
+    await expect(AiGateway.execute(req('SOURCE_ANALYSIS', T1_TEST_OPERATION)))
       .resolves.toMatchObject({ data: { title: 'x' } });
   });
 });

@@ -8,14 +8,9 @@
  * (`assetId`), et rien du tout sans bien déterminé : les autres biens
  * garderaient des preuves jamais réconciliées. Chaque bien touché reçoit donc
  * son travail T3 (même déclencheur `source_analyzed`, même déduplication par
- * portée), sous le même drapeau que l'abonné.
- *
- * Même aiguillage que `emitSourceAnalyzed` (§10.4), bien par bien :
- *   · nouveau moteur autorisé (`shouldRunNewEngine`) → travail T3 en file ;
- *   · moteur historique autorisé (`shouldRunLegacy`) → même pont que
- *     l'abonné historique : `emitAssetUpdated(… 'document_analyzed')`.
+ * portée). Lot 16b-3 : plus de drapeau `AI_RECONCILIATION_ENGINE` ni de pont
+ * vers l'ancien moteur de cohérence.
  */
-import { shouldRunLegacy, shouldRunNewEngine } from '../../flags/ai-feature-flags';
 import { enqueueT3ForAnalyzedAsset } from '../../reconciliation/t3-queue';
 
 export async function enqueueT3ForAffectedAssets(p: {
@@ -25,50 +20,31 @@ export async function enqueueT3ForAffectedAssets(p: {
   affectedAssetIds: readonly number[];
   /** Bien déjà confié aux moteurs par `emitSourceAnalyzed` (évite le doublon d'appel). */
   documentAssetId: number | null;
-}): Promise<{ enqueued: number[]; legacy: number[] }> {
+}): Promise<{ enqueued: number[] }> {
   const ids = [...new Set(p.affectedAssetIds)].filter((id) => id !== p.documentAssetId);
   const enqueued: number[] = [];
-  const legacy: number[] = [];
-  if (ids.length === 0) return { enqueued, legacy };
+  if (ids.length === 0) return { enqueued };
 
-  if (shouldRunNewEngine('AI_RECONCILIATION_ENGINE')) {
-    for (const assetId of ids) {
-      try {
-        await enqueueT3ForAnalyzedAsset({ accountId: p.accountId, userId: p.userId, assetId, leadSourceId: p.leadSourceId });
-        enqueued.push(assetId);
-      } catch (e) {
-        // Non bloquant : les preuves sont écrites ; une réconciliation de compte les reprendra.
-        console.error(`[t1-master] mise en file T3 du bien ${assetId} impossible :`, (e as Error).message);
-      }
+  for (const assetId of ids) {
+    try {
+      await enqueueT3ForAnalyzedAsset({ accountId: p.accountId, userId: p.userId, assetId, leadSourceId: p.leadSourceId });
+      enqueued.push(assetId);
+    } catch (e) {
+      // Non bloquant : les preuves sont écrites ; une réconciliation de compte les reprendra.
+      console.error(`[t1-master] mise en file T3 du bien ${assetId} impossible :`, (e as Error).message);
     }
   }
 
-  if (shouldRunLegacy('AI_RECONCILIATION_ENGINE')) {
-    // Pont historique, identique à celui de `emitSourceAnalyzed`.
-    const { emitAssetUpdated } = await import('@/services/coherence/impact-propagation.service');
-    for (const assetId of ids) {
-      try {
-        await emitAssetUpdated(p.accountId, assetId, { _trigger: 'document_analyzed', _documentId: p.leadSourceId });
-        legacy.push(assetId);
-      } catch (e) {
-        console.error(`[t1-master] réconciliation historique du bien ${assetId} impossible :`, (e as Error).message);
-      }
-    }
+  if (enqueued.length === 0) {
+    console.warn(`[t1-master] source ${p.leadSourceId} : biens ${ids.join(', ')} touchés sans réconciliation (mise en file en échec).`);
   }
-
-  if (enqueued.length === 0 && legacy.length === 0) {
-    console.warn(`[t1-master] source ${p.leadSourceId} : biens ${ids.join(', ')} touchés sans réconciliation (moteurs désactivés ou en échec).`);
-  }
-  return { enqueued, legacy };
+  return { enqueued };
 }
 
 /**
  * Équipements et pièces touchés par un document (lot 18, volet R3, CDC 15
  * T1-04) : chaque cible reçoit son travail T3 ciblé — les valeurs lues pour
- * elle s'appliquent à SA fiche, jamais à celle du bien. Nouveau moteur
- * seulement (le moteur historique ne connaît pas les cibles) ; rien tant que
- * CANONICAL_WRITE_MODE et T3_NEGATIVE_RECONCILIATION sont `legacy`
- * (contrôle dans `enqueueT3ForEntities`, avant toute requête).
+ * elle s'appliquent à SA fiche, jamais à celle du bien.
  */
 export async function enqueueT3ForAffectedEntities(p: {
   accountId: number;
@@ -76,7 +52,7 @@ export async function enqueueT3ForAffectedEntities(p: {
   leadSourceId: number;
   targets: ReadonlyArray<{ type: 'EQUIPMENT' | 'ROOM'; id: number }>;
 }): Promise<number[]> {
-  if (p.targets.length === 0 || !shouldRunNewEngine('AI_RECONCILIATION_ENGINE')) return [];
+  if (p.targets.length === 0) return [];
   try {
     const { enqueueT3ForEntities } = await import('../../reconciliation/t3-queue');
     return await enqueueT3ForEntities({

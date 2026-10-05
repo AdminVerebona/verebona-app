@@ -19,7 +19,10 @@ const { __setConfigForTests } = await import('../../config/config-resolver');
 const { runInJobContext } = await import('../../queue/job-context');
 const { emptyTreatmentConfig } = await import('../../config/config-types');
 
-const Schema = z.object({ ok: z.boolean() });
+// Lot 16b-3 : opération T1 réelle (branche GROUP_UPLOAD du master).
+const { T1_TEST_OPERATION, t1TestVariables, t1Out, t1Schema } = await import('./t1-master-request');
+const Schema = t1Schema({ ok: z.boolean() });
+const OK = t1Out({ ok: true });
 let fake: InstanceType<typeof FakeProvider>;
 
 const PRIX = (model: string) => ({
@@ -37,9 +40,9 @@ function t1(primary: string, f1: string | null, f2: string | null, reasoning: Ar
 
 const req = () => ({
   useCaseCode: 'SOURCE_ANALYSIS' as const,
-  operationCode: 'classify_document',
+  operationCode: T1_TEST_OPERATION,
   accountId: 1,
-  promptVariables: {},
+  promptVariables: t1TestVariables(),
   outputSchema: Schema,
   idempotencyKey: `k-${Math.random()}`,
 });
@@ -62,7 +65,7 @@ describe('rang du modèle réellement utilisé', () => {
     __setConfigForTests({ versionId: 1, entries: [t1('m-a', 'm-b', 'm-c', [])] });
     fake.on('m-a', () => { throw new Error('503'); });
     fake.on('m-b', () => { throw new Error('503'); });
-    fake.on('m-c', () => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.on('m-c', () => ({ rawText: OK, inputTokens: 1, outputTokens: 1 }));
     const r = await AiGateway.execute(req());
     expect(r.model).toBe('m-c');
     expect(traces.map((t) => t.modelRank)).toEqual(['primary', 'fallback_1', 'fallback_2']);
@@ -74,7 +77,7 @@ describe('niveau de raisonnement par rang', () => {
   it('transmet le niveau du rang sollicité au fournisseur', async () => {
     __setConfigForTests({ versionId: 1, entries: [t1('m-a', 'm-b', null, ['minimal', 'étendu'])] });
     fake.on('m-a', () => { throw new Error('503'); });
-    fake.on('m-b', () => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.on('m-b', () => ({ rawText: OK, inputTokens: 1, outputTokens: 1 }));
     await AiGateway.execute(req());
     expect(fake.calls.map((c) => [c.model, c.reasoning])).toEqual([['m-a', 'minimal'], ['m-b', 'étendu']]);
   });
@@ -82,13 +85,13 @@ describe('niveau de raisonnement par rang', () => {
   it('un fallback 1 absent : le niveau du fallback 2 suit son modèle', async () => {
     __setConfigForTests({ versionId: 1, entries: [t1('m-a', null, 'm-c', ['standard', 'minimal', 'étendu'])] });
     fake.on('m-a', () => { throw new Error('503'); });
-    fake.on('m-c', () => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.on('m-c', () => ({ rawText: OK, inputTokens: 1, outputTokens: 1 }));
     await AiGateway.execute(req());
     expect(fake.calls.map((c) => [c.model, c.reasoning])).toEqual([['m-a', 'standard'], ['m-c', 'étendu']]);
   });
 
   it('sans version : aucun niveau transmis (défaut du modèle)', async () => {
-    fake.onAny(() => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: OK, inputTokens: 1, outputTokens: 1 }));
     await AiGateway.execute(req());
     expect(fake.calls[0].reasoning ?? null).toBeNull();
   });
@@ -101,7 +104,7 @@ describe('configuration figée par exécution (VER-015)', () => {
       { versionId: 2, entries: [t1('m-b', null, null, [])] },
       [{ versionId: 1, entries: [t1('m-a', null, null, [])] }],
     );
-    fake.onAny(() => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: OK, inputTokens: 1, outputTokens: 1 }));
     await runInJobContext({ jobId: 77, treatment: 'T1', configVersionId: 1 }, () => AiGateway.execute(req()));
     expect(fake.calls[0].model).toBe('m-a');
     expect(traces[0]).toMatchObject({ configVersionId: 1, jobId: 77 });
@@ -114,7 +117,7 @@ describe('configuration figée par exécution (VER-015)', () => {
 
   it('aucune version au démarrage : le code jusqu’au bout, même si une version est activée', async () => {
     __setConfigForTests({ versionId: 2, entries: [t1('m-b', null, null, [])] });
-    fake.onAny(() => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: OK, inputTokens: 1, outputTokens: 1 }));
     await runInJobContext({ jobId: 5, treatment: 'T1', configVersionId: null }, () => AiGateway.execute(req()));
     expect(fake.calls[0].model).not.toBe('m-b');
     expect(traces[0].configVersionId).toBeNull();
@@ -132,7 +135,7 @@ describe('coûts des appels', () => {
 
   it('COST-008 : modèle sans tarif → coût NULL, jamais 0', async () => {
     __setConfigForTests({ versionId: 1, entries: [t1('sans-tarif', null, null, [])] });
-    fake.on('sans-tarif', () => ({ rawText: '{"ok":true}', inputTokens: 10, outputTokens: 10 }));
+    fake.on('sans-tarif', () => ({ rawText: OK, inputTokens: 10, outputTokens: 10 }));
     const r = await AiGateway.execute(req());
     expect(traces[0].costMicros).toBeNull();
     // La réponse métier reste numérique : l'appelant n'a pas à gérer NULL.

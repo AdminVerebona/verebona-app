@@ -19,14 +19,16 @@ const { runInJobContext } = await import('../../queue/job-context');
 const { emptyTreatmentConfig } = await import('../../config/config-types');
 const { configMetadata } = await import('../../telemetry/ai-trace.service');
 
-const Schema = z.object({ ok: z.boolean() });
+// Lot 16b-3 : opération T1 réelle (branche GROUP_UPLOAD du master).
+const { T1_TEST_OPERATION, t1TestVariables, t1Out, t1Schema } = await import('./t1-master-request');
+const Schema = t1Schema({ ok: z.boolean() });
 let fake: InstanceType<typeof FakeProvider>;
 
 const req = (over: Record<string, unknown> = {}) => ({
   useCaseCode: 'SOURCE_ANALYSIS' as const,
-  operationCode: 'classify_document',
+  operationCode: T1_TEST_OPERATION,
   accountId: 1,
-  promptVariables: {},
+  promptVariables: t1TestVariables(),
   outputSchema: Schema,
   idempotencyKey: `k-${Math.random()}`,
   ...over,
@@ -49,11 +51,11 @@ describe('trace de la configuration appliquée', () => {
       }],
     });
     fake.on('m-a', () => { throw new Error('503'); });
-    fake.on('m-b', () => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.on('m-b', () => ({ rawText: t1Out({ ok: true }), inputTokens: 1, outputTokens: 1 }));
 
     await runInJobContext(
       { jobId: 12, treatment: 'T1', configVersionId: 5, triggerCode: 'source_uploaded' },
-      () => AiGateway.execute(req({ task: 'ANALYZE_DOCUMENT', masterPromptCode: 't1_master', masterPromptVersion: '1' })),
+      () => AiGateway.execute(req({ task: 'GROUP_UPLOAD', masterPromptCode: 't1_master_v1' })),
     );
 
     expect(traces.map((t) => [t.model, t.reasoning, t.maxOutputTokens])).toEqual([
@@ -62,7 +64,7 @@ describe('trace de la configuration appliquée', () => {
     for (const t of traces) {
       expect(t).toMatchObject({
         engine: 'new', triggerCode: 'source_uploaded',
-        task: 'ANALYZE_DOCUMENT', masterPromptCode: 't1_master', masterPromptVersion: '1',
+        task: 'GROUP_UPLOAD', masterPromptCode: 't1_master_v1', masterPromptVersion: expect.stringMatching(/^t1_master_v1@/),
       });
     }
   });
@@ -75,20 +77,16 @@ describe('trace de la configuration appliquée', () => {
         reasoningPrimary: 'minimal', reasoningFallback1: 'étendu',
       }],
     });
-    fake.on('m-b', () => ({ rawText: '{"ok":true}', inputTokens: 1, outputTokens: 1 }));
+    fake.on('m-b', () => ({ rawText: t1Out({ ok: true }), inputTokens: 1, outputTokens: 1 }));
     await AiGateway.execute(req({ firstModelIndex: 1 }));
     expect(fake.calls.map((c) => [c.model, c.reasoning])).toEqual([['m-b', 'étendu']]);
     expect(traces[0]).toMatchObject({ reasoning: 'étendu', modelRank: 'fallback_1' });
   });
 
-  it('prompt historique relayé → moteur legacy ; appel hors job → aucun déclencheur', async () => {
-    const { getOperation } = await import('../../registry/operations');
-    fake.on(getOperation('legacy_document_analysis').primaryModel, () => ({ rawText: 'texte libre', inputTokens: 1, outputTokens: 1 }));
-    await AiGateway.execute({
-      useCaseCode: 'SOURCE_ANALYSIS', operationCode: 'legacy_document_analysis', accountId: 1,
-      promptVariables: {}, outputSchema: z.string(), idempotencyKey: `k-${Math.random()}`,
-    });
-    expect(traces[0]).toMatchObject({ engine: 'legacy', triggerCode: null, task: null, masterPromptCode: null });
+  it('plus aucun relais historique (lot 16b-3) : moteur new ; appel hors job → aucun déclencheur', async () => {
+    fake.onAny(() => ({ rawText: t1Out({ ok: true }), inputTokens: 1, outputTokens: 1 }));
+    await AiGateway.execute(req());
+    expect(traces[0]).toMatchObject({ engine: 'new', triggerCode: null, masterPromptCode: 't1_master_v1' });
   });
 
   it('métadonnées : seules les valeurs connues sont écrites', () => {

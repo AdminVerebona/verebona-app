@@ -1,7 +1,8 @@
 /**
  * Moteur T3 du BIEN — décision PO D-M (lot 20) : une preuve révisée par une
- * date tranchée par T4 corrige la valeur automatique qu'elle remplace, quel
- * que soit T3_NEGATIVE_RECONCILIATION ; jamais une valeur USER/ADMIN.
+ * date tranchée par T4 corrige la valeur automatique qu'elle remplace ;
+ * jamais une valeur USER/ADMIN. Lot 16b-3 : réconciliation négative toujours
+ * active (commutateur supprimé).
  * Collecte, écriture, journal et file « À traiter » simulés.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -24,14 +25,13 @@ vi.mock('../reconciliation-run.repository', () => ({
   openRun: async () => 1, closeRun: async () => {}, failRun: async () => {}, recordDecisions: h.record,
 }));
 vi.mock('../ambiguity-resolver', () => ({ resolveAmbiguity: vi.fn() }));
-vi.mock('../../flags/ai-feature-flags', () => ({ shouldWrite: () => true }));
 vi.mock('@/services/to-process/reconciliation-bridge', () => ({ syncReconciliationToProcess: vi.fn(async () => ({})) }));
 
 import { reconcileAsset } from '../reconciliation-engine';
 
 const DOC = new Date('2026-03-04');
-const champ = (origin: 'RECONCILIATION' | 'USER', projectionRule?: string): CollectedField => ({
-  fieldKey: 'nextInspection', unproven: origin === 'RECONCILIATION',
+const champ = (origin: 'RECONCILIATION' | 'USER', projectionRule?: string, unproven = origin === 'RECONCILIATION'): CollectedField => ({
+  fieldKey: 'nextInspection', unproven,
   input: {
     fieldKey: 'nextInspection', isCritical: false,
     current: { value: '2027-03-04', normalized: '2027-03-04', origin, updatedAt: DOC, authorityScore: 90, sourceDate: DOC },
@@ -49,10 +49,10 @@ beforeEach(() => {
   h.record.mockClear();
   vi.spyOn(console, 'info').mockImplementation(() => {});
 });
-afterEach(() => { delete process.env.T3_NEGATIVE_RECONCILIATION; });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe('D-M — bien', () => {
-  it('négatif legacy : preuve révisée → mise à jour T4_DATE_REVISED, appliquée par la primitive (applyDecision)', async () => {
+  it('preuve révisée → mise à jour T4_DATE_REVISED, appliquée par la primitive (applyDecision)', async () => {
     h.state = { kc: { nextInspection: '2027-03-04', nextInspection__origin: 'RECONCILIATION' }, fields: [champ('RECONCILIATION', 'T4_TEMPORAL_RESOLUTION')] };
     const r = await run();
     expect(r.decisions.map((d) => [d.fieldKey, d.action, d.reasonCode, d.proposedValue])).toEqual([
@@ -61,15 +61,21 @@ describe('D-M — bien', () => {
     expect(h.apply).toHaveBeenCalledTimes(1);
   });
 
-  it('sans révision T4 (même autorité, même date) : conflit, comportement inchangé', async () => {
-    h.state = { kc: { nextInspection: '2027-03-04', nextInspection__origin: 'RECONCILIATION' }, fields: [champ('RECONCILIATION')] };
+  it('sans révision T4, valeur encore prouvée (même autorité, même date) : conflit, comportement inchangé', async () => {
+    h.state = { kc: { nextInspection: '2027-03-04', nextInspection__origin: 'RECONCILIATION' }, fields: [champ('RECONCILIATION', undefined, false)] };
     const r = await run();
     expect(r.decisions[0]).toMatchObject({ action: 'create_conflict' });
     expect(h.apply).not.toHaveBeenCalled();
   });
 
+  it('sans révision T4, valeur automatique qui n’est plus prouvée : remplacée (réconciliation négative, motif distinct)', async () => {
+    h.state = { kc: { nextInspection: '2027-03-04', nextInspection__origin: 'RECONCILIATION' }, fields: [champ('RECONCILIATION')] };
+    const r = await run();
+    expect(r.decisions[0]).toMatchObject({ action: 'update', reasonCode: 'STALE_AUTO_VALUE_REPLACED' });
+    expect(h.apply).toHaveBeenCalledTimes(1);
+  });
+
   it('valeur USER : jamais remplacée, même par une preuve révisée', async () => {
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     h.state = { kc: { nextInspection: '2027-03-04', nextInspection__origin: 'USER' }, fields: [champ('USER', 'T4_TEMPORAL_RESOLUTION')] };
     const r = await run();
     expect(r.decisions[0]).toMatchObject({ action: 'create_conflict', reasonCode: 'MANUAL_VALUE_CONTRADICTED' });

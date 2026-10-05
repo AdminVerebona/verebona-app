@@ -78,8 +78,10 @@ describe('inventaire du dépôt', () => {
     const files = await collectPromptFiles();
     const codes = files.map(f => f.promptCode);
 
-    expect(codes.length).toBeGreaterThanOrEqual(12);
-    expect(codes).toContain('reconcile_links_v1');
+    // Lot 16b-3 : plus que les six prompts maîtres (T1 à T6) sous ai/prompts.
+    expect(codes.length).toBeGreaterThanOrEqual(6);
+    expect(codes).toContain('t3_master_v1');
+    expect(codes).not.toContain('reconcile_links_v1');
     expect(codes).toEqual([...codes].sort());
   });
 

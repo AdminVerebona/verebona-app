@@ -5,14 +5,14 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { ExtractSourceOutput } from '../../source-analysis/schemas';
+import { t1Table, T1AnalyzeDocumentOutput } from '../../source-analysis/master/t1-contract';
 import { normalizeTables, normalizeTablesWithMap, cellAt, cellContext, renderTableText, findTableIntersection, type TableCellRow } from '../document-tables';
 import { buildKnowledgeFromSourceAnalysis } from '../document-knowledge';
 import { describeLocation, tableContextOf } from '@/services/verebona-assistant/core/revalidation.service';
 import type { SourceAnalysisResult } from '../../source-analysis/types';
 
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
-const T = (t: unknown) => ExtractSourceOutput.parse({ tables: [t] }).tables[0];
+const T = (t: unknown) => t1Table.parse(t);
 const at = (t: ReturnType<typeof normalizeTables>[number], r: number, c: number) => cellAt(t, r, c)?.value ?? null;
 
 const vehicules = T({
@@ -161,11 +161,10 @@ describe('T2 : intersection ligne / colonne', () => {
 });
 
 describe('garde-fous', () => {
-  it('prompt v4 : structure explicite, cellules vides, fusion, multi-pages, doute', () => {
-    const p = src('src/services/ai/prompts/source-analysis/extract_source_v5.txt');
-    for (const r of [/R2ter — TABLEAUX/, /`value: null` — ne l'omets pas/, /`colspan` \/ `rowspan`/, /UN seul tableau \(`pageStart`, `pageEnd`\)/, /ne reconstruis AUCUNE association/]) expect(p).toMatch(r);
-    const i = p.indexOf('{\n  "title"');
-    expect(() => ExtractSourceOutput.parse(JSON.parse(p.slice(i, p.lastIndexOf('}') + 1)))).not.toThrow();
+  it('prompt maître T1 : structure explicite, cellules vides, fusion, multi-pages, doute', () => {
+    const p = src('src/services/ai/prompts/source-analysis/t1_master_v1.txt');
+    for (const r of [/U10 — TABLEAUX/, /une cellule vide est rendue avec `value: null` sans décaler les suivantes/, /`colspan` \/ `rowspan`/, /UN seul tableau \(`pageStart`, `pageEnd`\)/, /au lieu de reconstruire arbitrairement/]) expect(p).toMatch(r);
+    expect(T1AnalyzeDocumentOutput.shape.tables).toBeDefined();
   });
   it('base : cellules à position unique, vide explicite', () => {
     const m = src('src/db/migrations/0162_document_tables.sql');

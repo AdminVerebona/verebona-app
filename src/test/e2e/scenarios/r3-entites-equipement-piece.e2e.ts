@@ -11,7 +11,7 @@
  *  · suppression du document → retrait des valeurs automatiques ;
  *  · pièce (= sous-structure depuis D-G, lot 20) : surface (`substructures.area`),
  *    jamais la surface habitable du bien ;
- *  · commutateurs : legacy = rien (aucun travail), shadow = journal seulement.
+ *  · commutateurs retirés au lot 16b-3 : posés à legacy / shadow, ils sont ignorés.
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -47,6 +47,7 @@ const fait = (cible: Cible, canonicalKey: string, value: string | number, excerp
   semanticEvent: null, recurrence: null, periodStart: null, periodEnd: null, origin: 'MODEL_CANONICAL', ruleCode: null,
   ...over,
 });
+// Commutateurs RETIRÉS (lots 16b-2 / 16b-3) : posés par un test pour vérifier qu'ils sont ignorés, puis restaurés.
 const SWITCHES = ['CANONICAL_WRITE_MODE', 'T3_NEGATIVE_RECONCILIATION', 'ASSISTANT_CANONICAL_READ', 'EXPORTS_CANONICAL_SOURCE'];
 
 scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à leur fiche', ({ sql, make }) => {
@@ -119,8 +120,6 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
   };
 
   it('facture de chaudière → numéro de série et fin de garantie sur l’équipement, fiche du bien intacte ; lecture et export', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     const m = await maison();
     const { doc, r } = await facture(m, [
       fait(m.equipement, 'serialNumber', 'FR-2024-0077', 'N° de série : FR-2024-0077'),
@@ -176,7 +175,6 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     expect(rep?.text).toContain('Numéro de série de Chaudière : FR-2024-0077.');
 
     // Export (section équipements) en lecture canonique.
-    process.env.EXPORTS_CANONICAL_SOURCE = 'enabled';
     const { loadExportSource } = await import('@/services/exports/v12/data/source');
     const src = await loadExportSource({ assetId: m.bien.id, accountId: m.compte.id, userId: m.compte.ownerUserId, exportType: 'DOSSIER_COMPLET' });
     const e = src.equipments.find((x) => x.id === m.equipement.id)!;
@@ -186,16 +184,16 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     ]));
     // Snapshot transmis : référence de la preuve, jamais l'extrait.
     expect(JSON.stringify(e.fields)).not.toContain('N° de série');
+    // Lot 16b-3 : EXPORTS_CANONICAL_SOURCE retiré — posé à legacy, il est ignoré.
     process.env.EXPORTS_CANONICAL_SOURCE = 'legacy';
-    const legacy = await loadExportSource({ assetId: m.bien.id, accountId: m.compte.id, userId: m.compte.ownerUserId, exportType: 'DOSSIER_COMPLET' });
-    expect(legacy.equipments.find((x) => x.id === m.equipement.id)?.fields).toBeUndefined();
+    const encore = await loadExportSource({ assetId: m.bien.id, accountId: m.compte.id, userId: m.compte.ownerUserId, exportType: 'DOSSIER_COMPLET' });
+    expect(encore.equipments.find((x) => x.id === m.equipement.id)?.fields).toEqual(e.fields);
   });
 
   it('valeur USER protégée : fiche de l’entité, colonne saisie à l’écran ; édition par la route → USER', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const m = await maison();
     // Saisie de l'utilisateur sur la fiche de l'équipement (primitive, origine USER).
-    await es.writeCanonicalEntityField({ target: m.equipement, accountId: m.compte.id, origin: 'USER', key: 'serialNumber', value: 'MANUEL-1', mode: 'enabled' });
+    await es.writeCanonicalEntityField({ target: m.equipement, accountId: m.compte.id, origin: 'USER', key: 'serialNumber', value: 'MANUEL-1' });
     const { r } = await facture(m, [
       fait(m.equipement, 'serialNumber', 'FR-2024-0077', 'N° de série : FR-2024-0077'),
       fait(m.equipement, 'acquisitionPrice', 1899, 'Total TTC 1 899 €'),
@@ -258,10 +256,8 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
   });
 
   it('suppression du document → retrait des valeurs automatiques de l’équipement (valeur USER conservée)', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     const m = await maison();
-    await es.writeCanonicalEntityField({ target: m.equipement, accountId: m.compte.id, origin: 'USER', key: 'brand', value: 'Frisquet', mode: 'enabled' });
+    await es.writeCanonicalEntityField({ target: m.equipement, accountId: m.compte.id, origin: 'USER', key: 'brand', value: 'Frisquet' });
     const { doc, r } = await facture(m, [
       fait(m.equipement, 'serialNumber', 'FR-2024-0077', 'N° de série : FR-2024-0077'),
       fait(m.equipement, 'warrantyEndDate', '2031-03-01', 'Garantie jusqu’au 01/03/2031', { valueType: 'date' }),
@@ -273,7 +269,7 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
 
     await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${doc.id}`;
     const out = await lifecycle.onDocumentsDeleted({ accountId: m.compte.id, userId: m.compte.ownerUserId, fileIds: [doc.id] });
-    expect(out).toMatchObject({ mode: 'enabled', withdrawn: 3 });
+    expect(out).toMatchObject({ withdrawn: 3, dryRun: false });
     expect(await executerFile(m.compte.id)).toEqual([`equipment:${m.equipement.id}`]);
 
     const eq = await kcEquipement(m.equipement.id);
@@ -287,8 +283,6 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
   });
 
   it('équipement déplacé vers un autre bien : preuves toujours lues, réconciliation et retrait corrects', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     const m = await maison();
     const studio = await make.asset(m.compte, { category: 'IMMOBILIER', name: 'Studio' });
     const { doc, r } = await facture(m, [
@@ -317,7 +311,6 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     expect((await readCanonicalField(m.compte.id, m.bien.id, 'serialNumber'))?.entities).toEqual([]);
 
     // Export du nouveau bien : preuve référencée.
-    process.env.EXPORTS_CANONICAL_SOURCE = 'enabled';
     const { loadExportSource } = await import('@/services/exports/v12/data/source');
     const src = await loadExportSource({ assetId: studio.id, accountId: m.compte.id, userId: m.compte.ownerUserId, exportType: 'DOSSIER_COMPLET' });
     expect(src.equipments.find((x) => x.id === m.equipement.id)?.fields).toEqual(expect.arrayContaining([
@@ -341,7 +334,6 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
   });
 
   it('pièce : surface appliquée à la pièce (`substructures.area`), jamais à la surface habitable du bien', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const m = await maison();
     const { r } = await facture(m, [fait(m.piece, 'roomArea', 18.5, 'Salon : 18,5 m²', { canonicalUnit: 'm2' })]);
     expect(r.affectedTargets).toEqual([expect.objectContaining({ type: 'ROOM', id: m.piece.id })]);
@@ -358,9 +350,8 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
   });
 
   it('lot 19 — conflit sur une pièce : carte ENTITY-FIELD-ROOM, libellé et bien porteur, résolution', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const m = await maison();
-    await es.writeCanonicalEntityField({ target: m.piece, accountId: m.compte.id, origin: 'USER', key: 'roomArea', value: 20, mode: 'enabled' });
+    await es.writeCanonicalEntityField({ target: m.piece, accountId: m.compte.id, origin: 'USER', key: 'roomArea', value: 20 });
     const { r } = await facture(m, [fait(m.piece, 'roomArea', 18.5, 'Salon : 18,5 m²', { canonicalUnit: 'm2' })]);
     await t3.enqueueT3ForEntities({ accountId: m.compte.id, userId: m.compte.ownerUserId, targets: r.affectedTargets });
     expect(await executerFile(m.compte.id)).toEqual([`room:${m.piece.id}`]);
@@ -384,24 +375,19 @@ scenario('R3-L18', 'Valeurs d’un équipement ou d’une pièce appliquées à 
     expect(apres.kc).toMatchObject({ roomArea: 18.5, roomArea__origin: 'USER' });
   });
 
-  it('commutateurs : legacy = aucun travail ni écriture ; shadow = journal dry_run, équipement intact', async () => {
-    delete process.env.CANONICAL_WRITE_MODE;
-    delete process.env.T3_NEGATIVE_RECONCILIATION;
+  it('commutateurs retirés (lot 16b-3) encore posés à legacy / shadow : ignorés — travail en file et écriture réelle', async () => {
+    process.env.CANONICAL_WRITE_MODE = 'legacy';
+    process.env.T3_NEGATIVE_RECONCILIATION = 'legacy';
     const m = await maison();
     const { r } = await facture(m, [fait(m.equipement, 'serialNumber', 'FR-2024-0077', 'N° de série : FR-2024-0077')]);
-    expect(await t3.enqueueT3ForEntities({ accountId: m.compte.id, userId: m.compte.ownerUserId, targets: r.affectedTargets })).toEqual([]);
-    const { reconcileEntity } = await import('@/services/ai/reconciliation/entity-reconciliation');
-    expect((await reconcileEntity({ accountId: m.compte.id, target: m.equipement, triggeredBy: 'document_analyzed' })).skipped).toBe(true);
-    expect((await kcEquipement(m.equipement.id)).kc).toEqual({});
-
+    expect(await t3.enqueueT3ForEntities({ accountId: m.compte.id, userId: m.compte.ownerUserId, targets: r.affectedTargets })).toHaveLength(1);
     process.env.CANONICAL_WRITE_MODE = 'shadow';
-    const res = await reconcileEntity({ accountId: m.compte.id, target: m.equipement, triggeredBy: 'document_analyzed' });
-    expect(res).toMatchObject({ applyMode: 'shadow', written: ['serialNumber'] });
+    expect(await executerFile(m.compte.id)).toEqual([`equipment:${m.equipement.id}`]);
     const eq = await kcEquipement(m.equipement.id);
-    expect(eq.kc).toEqual({});
-    expect(eq.sn).toBeNull();
+    expect(eq.kc).toMatchObject({ serialNumber: 'FR-2024-0077', serialNumber__origin: 'RECONCILIATION' });
+    expect(eq.sn).toBe('FR-2024-0077');
     const [j] = await sql<{ dry_run: boolean; target_type: string }[]>`
       SELECT dry_run, target_type FROM canonical_field_writes WHERE target_id = ${m.equipement.id} AND canonical_key = 'serialNumber'`;
-    expect(j).toEqual({ dry_run: true, target_type: 'EQUIPMENT' });
+    expect(j).toEqual({ dry_run: false, target_type: 'EQUIPMENT' });
   });
 });

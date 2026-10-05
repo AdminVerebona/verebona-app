@@ -5,7 +5,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { join } from 'path';
-import { z } from 'zod';
 
 const keys: string[] = [];
 vi.mock('../../idempotency/idempotency.service', async (orig) => ({
@@ -57,10 +56,12 @@ describe('idempotence des opérations master', () => {
     expect(new Set(keys).size).toBe(3);
   });
 
-  it('texte master préparé en steps : ignoré, même clé que le fichier', async () => {
-    version(null); await call();
+  it('lot 16b-3 : ligne T1 stockée « steps » lue master — même clé qu’en master', async () => {
+    version(master(3), 'master'); await call();
     version(master(3), 'steps'); await call();
+    version(null); await call();
     expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
   });
 
   it('clé fournie par l’appelant : suffixée par la version du master', async () => {
@@ -68,17 +69,6 @@ describe('idempotence des opérations master', () => {
     version(null); await call({ idempotencyKey: 'k-appelant' });
     expect(keys[0]).toMatch(/^k-appelant:t1_master_v1@cfg21:[0-9a-f]{12}$/);
     expect(keys[1]).toBe('k-appelant:t1_master_v1@file');
-  });
-
-  it('opération historique : clé fournie inchangée', async () => {
-    __setPromptsRootForTests(null);
-    version(master(1));
-    await AiGateway.execute({
-      useCaseCode: 'SOURCE_ANALYSIS', operationCode: 'group_sources', accountId: 1,
-      promptVariables: { FILES: '[]' }, outputSchema: z.unknown(),
-      idempotencyKey: 'k-hist',
-    });
-    expect(keys[0]).toBe('k-hist');
   });
 });
 

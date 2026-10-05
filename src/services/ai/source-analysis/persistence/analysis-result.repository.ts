@@ -14,7 +14,6 @@ import { db } from '@/db';
 import { documentAnalysisRuns, documentAnalysisProposals, assetFiles } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { SourceAnalysisResult, SourceInput } from '../types';
-import { EXTRACT_SOURCE_PROMPT_VERSION } from '../prompt-version';
 import { refineDocumentTitle } from '../document-title';
 
 export interface PersistResultInput {
@@ -24,11 +23,11 @@ export interface PersistResultInput {
   lotId: number | null;
   result: SourceAnalysisResult;
   /**
-   * Chemin master (CDC 15 lot 12) : route et version RÉELLEMENT résolue du
-   * prompt maître (fichier ou version de configuration, avec empreinte).
-   * Absent : chemin étapes, empreinte inchangée.
+   * Version RÉELLEMENT résolue du prompt maître T1 (fichier ou version de
+   * configuration, avec empreinte). Obligatoire depuis le lot 16b-3 : le
+   * master est le seul moteur.
    */
-  master?: { masterPromptVersion: string };
+  master: { masterPromptVersion: string };
 }
 
 export interface PersistedRun {
@@ -87,7 +86,7 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     assetFileId: p.leadSourceId,
     lotId: p.lotId ?? undefined,
     inputFileHash: inputHash,
-    promptVersion: p.master?.masterPromptVersion ?? EXTRACT_SOURCE_PROMPT_VERSION,
+    promptVersion: p.master.masterPromptVersion,
     provider: 'gemini',
     model: p.result.operationTrace.models[0] ?? 'unknown',
     status: 'completed',
@@ -218,18 +217,24 @@ async function updateSourceMetadata(p: PersistResultInput): Promise<void> {
  * Empreinte des entrées : sources, versions et type de source. Deux analyses de
  * la même version d'une même source produisent la même empreinte.
  *
- * Chemin master (CDC 15 lot 12) : la route et la version résolue du master
- * entrent dans l'empreinte — sinon le passage étapes → master (ou une
- * nouvelle version du master) retrouverait le run des étapes et ne
- * produirait rien. Chemin étapes : objet STRICTEMENT identique à l'historique,
- * donc même empreinte qu'avant.
+ * La route et la version résolue du master entrent dans l'empreinte : une
+ * nouvelle version du master ne retrouve jamais le run d'une autre.
+ *
+ * Lot 16b-3 : `prompt` garde la valeur figée de l'ancienne constante
+ * d'extraction (`HASH_PROMPT_LEGACY_SEED`) — sans rôle depuis la suppression
+ * des étapes, mais la changer modifierait l'empreinte de tous les runs master
+ * déjà écrits (idempotence d'une reprise sur une même version de source).
  */
 export function computeInputHash(p: Pick<PersistResultInput, 'groupSourceIds' | 'input' | 'master'>): string {
   return createHash('sha256').update(JSON.stringify({
     sources: [...p.groupSourceIds].sort((a, b) => a - b),
     type: p.input.sourceType,
     version: p.input.sourceVersion ?? null,
-    prompt: EXTRACT_SOURCE_PROMPT_VERSION,
-    ...(p.master ? { route: 'master', masterPrompt: p.master.masterPromptVersion } : {}),
+    prompt: HASH_PROMPT_LEGACY_SEED,
+    route: 'master',
+    masterPrompt: p.master.masterPromptVersion,
   })).digest('hex');
 }
+
+/** Graine figée de l'empreinte des runs (voir `computeInputHash`). */
+const HASH_PROMPT_LEGACY_SEED = 'extract_source_v5';

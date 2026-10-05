@@ -22,12 +22,10 @@ export function redact(input: string): string {
 
 /**
  * Masque récursivement les valeurs texte d'un objet de variables de prompt.
- * `exempt` : variables de premier niveau transmises telles quelles (liste
- * d'exemption déclarée par l'opération, jamais par l'appelant).
+ * Lot 16b : plus aucune exemption (relais historiques retirés).
  */
 export function redactVariables(
   vars: Record<string, unknown>,
-  exempt: readonly string[] = [],
 ): Record<string, unknown> {
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') return redact(v);
@@ -38,7 +36,7 @@ export function redactVariables(
     return v;
   };
   return Object.fromEntries(
-    Object.entries(vars).map(([k, v]) => [k, exempt.includes(k) ? v : walk(v)]),
+    Object.entries(vars).map(([k, v]) => [k, walk(v)]),
   );
 }
 

@@ -41,7 +41,9 @@ const Entry = z.object({
     semantic: z.number().min(0).max(1),
     semanticEnabled: z.boolean(),
   }).nullable().default(null),
-  // CDC 15 D-04 (lot 12). Absente d'un package antérieur : `steps`.
+  // CDC 15 D-04 (lot 12). Accepté pour lire un package ancien ; `steps`
+  // (ou absent) est RAMENÉ à `master` à l'import — architecture retirée au
+  // lot 16b (`config-package.service`, `promptArchitectureOf`).
   promptArchitecture: z.enum(['steps', 'master']).optional(),
   masterPrompt: z.string().nullable().optional(),
 });

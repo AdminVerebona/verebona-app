@@ -3,7 +3,6 @@
  */
 import type { FieldOrigin } from '@/services/ai/evidence/evidence.types';
 import type { AssetFamily } from '@/services/canonical/registry';
-import type { RolloutMode } from '@/services/canonical/rollout';
 
 /**
  * Origine d'une valeur canonique. Mêmes valeurs que l'origine structurée du
@@ -94,8 +93,6 @@ export interface WriteCanonicalAssetFieldInput {
   expectedCurrent?: unknown;
   sourceUnit?: string;
   trace?: AutomaticWriteTrace;
-  /** Force un mode (tests, rattrapages) ; défaut : `CANONICAL_WRITE_MODE`. */
-  mode?: RolloutMode;
   /** Publie ASSET_UPDATED après écriture (défaut : oui). */
   emitEvent?: boolean;
 }
@@ -130,11 +127,6 @@ export interface CanonicalFieldWriteResult {
 }
 
 export interface CanonicalWriteResult {
-  mode: RolloutMode;
-  /** true : rien n'a été écrit dans le bien (mode shadow ou legacy). */
-  dryRun: boolean;
-  /** Mode legacy : la primitive n'a rien fait. */
-  skipped: boolean;
   /** Bien introuvable dans le compte. */
   notFound: boolean;
   fields: CanonicalFieldWriteResult[];

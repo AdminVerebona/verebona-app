@@ -1,6 +1,7 @@
 /**
  * CDC 15 §22.3, §29 étape 11, §29.1, ARCH-02, ARCH-03, D-06 — opérations T1
- * master et rattachement des étapes historiques au master de leur traitement.
+ * master (seules depuis le lot 16b-3) et rattachement des étapes historiques
+ * restantes (T3) au master de leur traitement.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -11,26 +12,34 @@ import { assertMasterDeclaration } from '../index';
 import { MASTER_OUTPUT_SCHEMAS } from '../../gateway/master-output-schemas';
 import { T1_MASTER_PROMPT_CODE, T1_TASKS } from '../../source-analysis/master/t1-contract';
 
-describe('opérations T1 master', () => {
-  it('t1_group_upload : comme group_sources, TASK=GROUP_UPLOAD', () => {
-    const op = getOperation('t1_group_upload');
-    const ref = getOperation('group_sources');
-    expect(op).toMatchObject({
+describe('opérations T1 master (seules depuis le lot 16b-3)', () => {
+  const DOC = { primaryModel: 'gemini-3.1-flash-lite' };
+
+  it('t1_group_upload : TASK=GROUP_UPLOAD, non facturée', () => {
+    expect(getOperation('t1_group_upload')).toMatchObject({
       useCaseCode: 'SOURCE_ANALYSIS', promptCode: T1_MASTER_PROMPT_CODE, masterPromptCode: T1_MASTER_PROMPT_CODE,
-      task: 'GROUP_UPLOAD', timeoutMs: 45_000, billable: ref.billable, active: true,
-      primaryModel: ref.primaryModel, fallbackModels: ref.fallbackModels, outputSchema: 'T1GroupUploadOutput',
+      task: 'GROUP_UPLOAD', timeoutMs: 45_000, billable: false, active: true, ...DOC, outputSchema: 'T1GroupUploadOutput',
     });
   });
 
-  it('t1_analyze_document : comme extract_source, TASK=ANALYZE_DOCUMENT, plancher de sortie D-06', () => {
+  it('t1_analyze_document : TASK=ANALYZE_DOCUMENT, facturée, plancher de sortie D-06, mêmes modèles', () => {
     const op = getOperation('t1_analyze_document');
-    const ref = getOperation('extract_source');
     expect(op).toMatchObject({
       useCaseCode: 'SOURCE_ANALYSIS', promptCode: T1_MASTER_PROMPT_CODE, masterPromptCode: T1_MASTER_PROMPT_CODE,
-      task: 'ANALYZE_DOCUMENT', timeoutMs: 120_000, billable: ref.billable, active: true,
-      primaryModel: ref.primaryModel, fallbackModels: ref.fallbackModels, outputSchema: 'T1AnalyzeDocumentOutput',
+      task: 'ANALYZE_DOCUMENT', timeoutMs: 120_000, billable: true, active: true, ...DOC, outputSchema: 'T1AnalyzeDocumentOutput',
     });
+    expect(op.fallbackModels).toEqual(getOperation('t1_group_upload').fallbackModels);
     expect(op.minOutputTokens).toBeGreaterThanOrEqual(32_768);
+  });
+
+  it('étapes historiques et relais T1 retirés du registre', () => {
+    for (const retire of [
+      'group_sources', 'extract_source', 'classify_document', 'classify_rubric',
+      'identify_entities', 'propose_links', 'legacy_document_analysis',
+    ]) expect(AI_OPERATIONS[retire], retire).toBeUndefined();
+    const actives = listOperationsByUseCase('SOURCE_ANALYSIS').filter((o) => o.active && o.provider !== 'none');
+    expect(actives.map((o) => o.operationCode)).toEqual(['t1_group_upload', 't1_analyze_document']);
+    for (const op of actives) expect(isMasterOperation(op), op.operationCode).toBe(true);
   });
 
   it('les branches déclarées sont exactement celles du contrat', () => {
@@ -55,42 +64,13 @@ describe('opérations T1 master', () => {
     }
   });
 
-  it('déclarées après les étapes historiques (le disjoncteur sonde la première opération active)', () => {
+  it('le disjoncteur sonde la première opération active : le master T1 (GROUP_UPLOAD)', () => {
     const codes = listOperationsByUseCase('SOURCE_ANALYSIS').filter((o) => o.active).map((o) => o.operationCode);
-    expect(codes[0]).toBe('group_sources');
+    expect(codes[0]).toBe('t1_group_upload');
   });
 });
 
-describe('§22.3 : chaque étape T1 référence le master et une TASK explicite', () => {
-  const attendu: Record<string, string> = {
-    group_sources: 'GROUP_UPLOAD',
-    extract_source: 'ANALYZE_DOCUMENT',
-    classify_document: 'ANALYZE_DOCUMENT',
-    classify_rubric: 'ANALYZE_DOCUMENT',
-    identify_entities: 'ANALYZE_DOCUMENT',
-    propose_links: 'ANALYZE_DOCUMENT',
-  };
-
-  it('migratesTo déclaré, prompt effectif inchangé', () => {
-    for (const [code, task] of Object.entries(attendu)) {
-      const op = getOperation(code);
-      expect(op.migratesTo, code).toEqual({
-        masterPromptCode: T1_MASTER_PROMPT_CODE, task,
-        operationCode: task === 'GROUP_UPLOAD' ? 't1_group_upload' : 't1_analyze_document',
-      });
-      // Comportement de production inchangé : pas d'exécution master.
-      expect(isMasterOperation(op), code).toBe(false);
-      expect(op.promptCode).not.toBe(T1_MASTER_PROMPT_CODE);
-    }
-  });
-
-  it('toute opération LLM active de T1 est master ou rattachée (hors relais historique)', () => {
-    for (const op of listOperationsByUseCase('SOURCE_ANALYSIS')) {
-      if (op.provider === 'none' || !op.active || op.legacyPrompt) continue;
-      expect(isMasterOperation(op) || Boolean(op.migratesTo), op.operationCode).toBe(true);
-    }
-  });
-
+describe('opérations restantes', () => {
   it('lot 16b : classify_category et propose_change (inactives, sans appelant) retirées du registre ; plus aucune opération inactive', () => {
     expect(AI_OPERATIONS.classify_category).toBeUndefined();
     expect(AI_OPERATIONS.propose_change).toBeUndefined();
@@ -108,52 +88,37 @@ describe('assertMasterDeclaration', () => {
 
   it('refuse les déclarations incohérentes', () => {
     expect(refuse({ task: undefined })).toThrow(/vont ensemble/);
-    expect(refuse({ promptCode: 'group_sources_v2' })).toThrow(/doit être le master/);
-    expect(refuse({ legacyPrompt: true })).toThrow(/ni relayé ni dynamique/);
+    expect(refuse({ promptCode: 'resolve_ambiguity_v1' })).toThrow(/doit être le master/);
+    expect(refuse({ dynamicPrompt: true })).toThrow(/n'est pas dynamique/);
     expect(refuse({ masterPromptCode: 't1_master_v2', promptCode: 't1_master_v2' })).toThrow(/un seul prompt maître/);
-    expect(() => assertMasterDeclaration({
-      ...getOperation('extract_source'),
-      migratesTo: { masterPromptCode: 't1_master_v1', task: 'GROUP_UPLOAD', operationCode: 't1_analyze_document' },
-    })).toThrow(/migratesTo/);
   });
 });
 
-describe('opérations T3 master (CDC 15 §25, lot 13)', () => {
-  it('t3_value_conflict : comme resolve_ambiguity, TASK=VALUE_CONFLICT', () => {
-    const op = getOperation('t3_value_conflict');
-    const ref = getOperation('resolve_ambiguity');
-    expect(op).toMatchObject({
+describe('opérations T3 master (CDC 15 §25, lot 13 ; seules depuis le lot 16b-3)', () => {
+  it('t3_value_conflict : mêmes modèles et facturation que l’ancien resolve_ambiguity, TASK=VALUE_CONFLICT', () => {
+    expect(getOperation('t3_value_conflict')).toMatchObject({
       useCaseCode: 'DATA_RECONCILIATION', promptCode: 't3_master_v1', masterPromptCode: 't3_master_v1',
-      task: 'VALUE_CONFLICT', billable: ref.billable, primaryModel: ref.primaryModel, fallbackModels: ref.fallbackModels,
+      task: 'VALUE_CONFLICT', billable: true, primaryModel: 'gemini-3.1-flash-lite',
+      fallbackModels: ['gemini-3.5-flash', 'gemini-2.5-pro'], timeoutMs: 30_000,
       outputSchema: 'T3ValueConflictOutput', active: true,
     });
   });
 
-  it('t3_link_ambiguity : comme reconcile_links, TASK=LINK_AMBIGUITY', () => {
-    const op = getOperation('t3_link_ambiguity');
-    const ref = getOperation('reconcile_links');
-    expect(op).toMatchObject({
+  it('t3_link_ambiguity : mêmes modèles et facturation que l’ancien reconcile_links, TASK=LINK_AMBIGUITY', () => {
+    expect(getOperation('t3_link_ambiguity')).toMatchObject({
       useCaseCode: 'DATA_RECONCILIATION', promptCode: 't3_master_v1', masterPromptCode: 't3_master_v1',
-      task: 'LINK_AMBIGUITY', billable: ref.billable, primaryModel: ref.primaryModel,
+      task: 'LINK_AMBIGUITY', billable: false, primaryModel: 'gemini-3.1-flash-lite', timeoutMs: 30_000,
       outputSchema: 'T3LinkAmbiguityOutput', active: true,
     });
   });
 
-  it('étapes historiques rattachées au master T3, prompt effectif inchangé', () => {
-    expect(getOperation('resolve_ambiguity')).toMatchObject({
-      promptCode: 'resolve_ambiguity_v1',
-      migratesTo: { masterPromptCode: 't3_master_v1', task: 'VALUE_CONFLICT', operationCode: 't3_value_conflict' },
-    });
-    expect(getOperation('reconcile_links')).toMatchObject({
-      promptCode: 'reconcile_links_v1',
-      migratesTo: { masterPromptCode: 't3_master_v1', task: 'LINK_AMBIGUITY', operationCode: 't3_link_ambiguity' },
-    });
-    const actives = listOperationsByUseCase('DATA_RECONCILIATION').filter((o) => o.active && o.provider !== 'none');
-    expect(actives[0].operationCode).toBe('resolve_ambiguity');
-    for (const op of actives) {
-      if (op.legacyPrompt) continue;
-      expect(isMasterOperation(op) || Boolean(op.migratesTo), op.operationCode).toBe(true);
+  it('étapes et relais T3 retirés : seules les branches du master appellent un modèle (disjoncteur : t3_value_conflict)', () => {
+    for (const c of ['resolve_ambiguity', 'reconcile_links', 'legacy_asset_suggest', 'legacy_apply_suggestions', 'legacy_enrich_coherence']) {
+      expect(AI_OPERATIONS[c], c).toBeUndefined();
     }
+    const actives = listOperationsByUseCase('DATA_RECONCILIATION').filter((o) => o.active && o.provider !== 'none');
+    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity']);
+    for (const op of actives) expect(isMasterOperation(op), op.operationCode).toBe(true);
   });
 });
 

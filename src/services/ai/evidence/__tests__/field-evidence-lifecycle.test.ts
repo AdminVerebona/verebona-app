@@ -212,9 +212,9 @@ describe('supersedePriorSourceEvidence (§14.4)', () => {
 describe('withdrawEvidence (T3-03, lot 13)', () => {
   beforeEach(() => { vi.spyOn(console, 'info').mockImplementation(() => {}); });
 
-  it('enabled : UPDATE lifecycle WITHDRAWN + date, jamais status ni DELETE ; filtres source / bien / champs', async () => {
+  it('UPDATE lifecycle WITHDRAWN + date, jamais status ni DELETE ; filtres source / bien / champs', async () => {
     db.supersedeRows = [{ id: 4, assetId: 10 }, { id: 5, assetId: 10 }];
-    const r = await withdrawEvidence({ accountId: 1, sourceIds: [55], assetId: 10, fieldKeys: ['mileage'], reason: 'DOCUMENT_MOVED', mode: 'enabled' });
+    const r = await withdrawEvidence({ accountId: 1, sourceIds: [55], assetId: 10, fieldKeys: ['mileage'], reason: 'DOCUMENT_MOVED' });
     const q = db.calls.at(-1)!;
     expect(q.sql).toMatch(/^UPDATE field_evidence SET lifecycle_status = 'WITHDRAWN', superseded_at = now\(\)/);
     expect(q.sql).not.toMatch(/DELETE|\bstatus = /);
@@ -227,19 +227,21 @@ describe('withdrawEvidence (T3-03, lot 13)', () => {
     expect(r).toEqual({ evidenceIds: [4, 5], assetIds: [10], dryRun: false });
   });
 
-  it('shadow : SELECT seulement ; revalidation : SUPERSEDED ; 0219 absente : rien', async () => {
-    await withdrawEvidence({ accountId: 1, sourceIds: [55], reason: 'DOCUMENT_DELETED', mode: 'shadow' });
-    expect(db.calls.at(-1)!.sql).toMatch(/^SELECT id, asset_id/);
-    await withdrawEvidence({ accountId: 1, sourceIds: [55], reason: 'FACT_REVALIDATED', mode: 'enabled', lifecycle: 'SUPERSEDED' });
+  it('commutateur retiré posé : toujours UPDATE ; revalidation : SUPERSEDED ; 0219 absente : rien', async () => {
+    vi.stubEnv('CANONICAL_WRITE_MODE', 'shadow');
+    await withdrawEvidence({ accountId: 1, sourceIds: [55], reason: 'DOCUMENT_DELETED' });
+    expect(db.calls.at(-1)!.sql).toMatch(/^UPDATE field_evidence SET lifecycle_status = 'WITHDRAWN'/);
+    vi.unstubAllEnvs();
+    await withdrawEvidence({ accountId: 1, sourceIds: [55], reason: 'FACT_REVALIDATED', lifecycle: 'SUPERSEDED' });
     expect(db.calls.at(-1)!.sql).toMatch(/SET lifecycle_status = 'SUPERSEDED'/);
     db.calls = []; db.columnsReady = false; __resetCanonicalColumnsForTests(null);
-    expect(await withdrawEvidence({ accountId: 1, sourceIds: [55], reason: 'DOCUMENT_DELETED', mode: 'enabled' }))
+    expect(await withdrawEvidence({ accountId: 1, sourceIds: [55], reason: 'DOCUMENT_DELETED' }))
       .toEqual({ evidenceIds: [], assetIds: [], dryRun: true });
     expect(db.calls.some((c) => /UPDATE|SELECT id/.test(c.sql))).toBe(false);
   });
 
   it('ni source ni bien : rien', async () => {
-    expect((await withdrawEvidence({ accountId: 1, sourceIds: [], reason: 'DOCUMENT_DELETED', mode: 'enabled' })).evidenceIds).toEqual([]);
+    expect((await withdrawEvidence({ accountId: 1, sourceIds: [], reason: 'DOCUMENT_DELETED' })).evidenceIds).toEqual([]);
     expect(db.calls).toHaveLength(0);
   });
 
@@ -265,13 +267,13 @@ describe('relecture lot 13', () => {
 
   it('supersedeFieldEvidenceExcept (R4) : documents ET liens web', async () => {
     db.selectRows = [];
-    await supersedeFieldEvidenceExcept({ accountId: 1, sourceId: 55, assetId: 10, fieldKeys: ['acquisitionDate'], keepValue: 'x', mode: 'shadow' });
+    await supersedeFieldEvidenceExcept({ accountId: 1, sourceId: 55, assetId: 10, fieldKeys: ['acquisitionDate'], keepValue: 'x' });
     expect(db.calls.at(-1)!.sql).toMatch(/source_type IN \('document', 'web_link'\) AND source_id = \$2 AND asset_id = \$3/);
   });
 
   it('supersedeFieldEvidenceExcept : remplace seulement s’il existe une remplaçante de la valeur revalidée', async () => {
     db.selectRows = [{ id: 8, fieldKey: 'acquisitionDate', value: '2024-03-04' }, { id: 7, fieldKey: 'acquisitionDate', value: '2024-01-02' }];
-    const r = await supersedeFieldEvidenceExcept({ accountId: 1, sourceId: 55, assetId: 10, fieldKeys: ['acquisitionDate'], keepValue: '04/03/2024', mode: 'enabled' });
+    const r = await supersedeFieldEvidenceExcept({ accountId: 1, sourceId: 55, assetId: 10, fieldKeys: ['acquisitionDate'], keepValue: '04/03/2024' });
     expect(r.replacementId).toBe(8);
     const upd = db.calls.at(-1)!;
     expect(upd.sql).toMatch(/SET lifecycle_status = 'SUPERSEDED', superseded_at = now\(\), superseded_by_evidence_id = \$3/);
@@ -279,7 +281,7 @@ describe('relecture lot 13', () => {
 
     db.calls = [];
     db.selectRows = [{ id: 7, fieldKey: 'acquisitionDate', value: '2024-01-02' }];
-    expect(await supersedeFieldEvidenceExcept({ accountId: 1, sourceId: 55, assetId: 10, fieldKeys: ['acquisitionDate'], keepValue: '2024-03-04', mode: 'enabled' }))
+    expect(await supersedeFieldEvidenceExcept({ accountId: 1, sourceId: 55, assetId: 10, fieldKeys: ['acquisitionDate'], keepValue: '2024-03-04' }))
       .toEqual({ superseded: 0, replacementId: null });
     expect(db.calls.some((c) => c.sql.startsWith('UPDATE'))).toBe(false);
   });

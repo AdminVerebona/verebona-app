@@ -21,12 +21,7 @@ import type { CanonicalEntityState } from '@/services/canonical/entity-state';
 import type { FieldEvidence } from '../../evidence/evidence.types';
 import type { DecisionInput } from '../types';
 
-const env = { ...process.env };
-afterEach(() => {
-  for (const k of ['CANONICAL_WRITE_MODE', 'T3_NEGATIVE_RECONCILIATION']) {
-    if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k];
-  }
-});
+afterEach(() => { vi.restoreAllMocks(); });
 
 const TARGET = { type: 'EQUIPMENT' as const, id: 11 };
 const DOC_DATE = new Date('2026-03-04');
@@ -52,7 +47,7 @@ function etat(origin: 'RECONCILIATION' | 'USER' = 'RECONCILIATION', archived = f
 
 function deps(state: CanonicalEntityState, evidences: FieldEvidence[], over: Partial<EntityReconcileDeps> = {}) {
   const write = vi.fn(async (i: Parameters<EntityReconcileDeps['write']>[0]) => ({
-    mode: i.mode ?? 'enabled', target: i.target, assetId: 3, dryRun: i.mode !== 'enabled', skipped: false, notFound: false,
+    target: i.target, assetId: 3, skipped: false, notFound: false,
     fields: i.writes.map((w) => ({ key: w.key, requestedKey: w.key, outcome: 'written' as const, previousValue: null, previousOrigin: null, nextValue: w.value, origin: i.origin, mirrors: {} })),
   }));
   const d: EntityReconcileDeps = {
@@ -61,7 +56,6 @@ function deps(state: CanonicalEntityState, evidences: FieldEvidence[], over: Par
     activeEvidence: vi.fn(async (_a, k) => (k === 'warrantyEndDate' ? evidences : [preuve(9, '259000', { fieldKey: 'listingPrice' })])),
     retiredValues: vi.fn(async () => [{ fieldKey: 'warrantyEndDate', value: '2031-01-03' }]),
     write: write as never,
-    engineShadow: () => false,
     syncCards: vi.fn(async () => ({})),
     ...over,
   };
@@ -92,15 +86,13 @@ describe('D-M — preuve révisée par T4', () => {
     expect(decide(input([preuve(72, '2031-03-01')])).action).toBe('create_conflict');
   });
 
-  it('enabled, négatif legacy : la valeur automatique remplacée est corrigée (RECONCILIATION, contrôle optimiste)', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'legacy';
+  it('la valeur automatique remplacée est corrigée (RECONCILIATION, contrôle optimiste)', async () => {
     const { d, write } = deps(etat(), [revisee]);
     const r = await reconcileEntity({ accountId: 7, target: TARGET, triggeredBy: 'document_analyzed', sourceFileId: 40 }, d);
     expect(r.written).toEqual(['warrantyEndDate']);
     expect(r.decisions[0]).toMatchObject({ action: 'update', reasonCode: T4_REVISION_REASON, proposedValue: '2031-03-01' });
     expect(write.mock.calls[0][0]).toMatchObject({
-      origin: 'RECONCILIATION', mode: 'enabled',
+      origin: 'RECONCILIATION',
       writes: [{ key: 'warrantyEndDate', value: '2031-03-01', expectedCurrent: '2031-01-03', trace: { evidenceId: 71 } }],
     });
     // D-D : le champ de saisie seule présent dans les preuves n'est jamais lu ni écrit.
@@ -108,24 +100,19 @@ describe('D-M — preuve révisée par T4', () => {
     expect(write.mock.calls.flatMap((c) => c[0].writes.map((w) => w.key))).not.toContain('listingPrice');
   });
 
-  it('shadow : la correction n’est que journalisée', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'shadow';
-    const { d, write } = deps(etat(), [revisee]);
-    await reconcileEntity({ accountId: 7, target: TARGET, triggeredBy: 'document_analyzed' }, d);
-    expect(write.mock.calls.every((c) => c[0].mode === 'shadow')).toBe(true);
-  });
-
-  it('legacy (écriture et négatif) : rien, aucune requête', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'legacy';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'legacy';
-    const { d, write } = deps(etat(), [revisee]);
-    expect((await reconcileEntity({ accountId: 7, target: TARGET, triggeredBy: 'document_analyzed' }, d)).skipped).toBe(true);
-    expect(d.loadState).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
+  it('lot 16b-3 : un commutateur retiré encore posé (legacy, shadow) ne change rien — la correction est écrite', async () => {
+    for (const v of ['legacy', 'shadow']) {
+      vi.stubEnv('CANONICAL_WRITE_MODE', v);
+      vi.stubEnv('T3_NEGATIVE_RECONCILIATION', v);
+      const { d, write } = deps(etat(), [revisee]);
+      const r = await reconcileEntity({ accountId: 7, target: TARGET, triggeredBy: 'document_analyzed' }, d);
+      expect(r.written, v).toEqual(['warrantyEndDate']);
+      expect(write.mock.calls[0][0]).not.toHaveProperty('mode');
+    }
+    vi.unstubAllEnvs();
   });
 
   it('valeur USER : jamais remplacée par la preuve révisée (conflit)', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const { d, write } = deps(etat('USER'), [revisee]);
     const r = await reconcileEntity({ accountId: 7, target: TARGET, triggeredBy: 'document_analyzed' }, d);
     expect(write).not.toHaveBeenCalled();
@@ -134,9 +121,7 @@ describe('D-M — preuve révisée par T4', () => {
 });
 
 describe('D-P — équipement archivé : jamais réconcilié', () => {
-  it('écriture et négatif enabled, preuve révisée présente : aucune lecture de preuve, aucune écriture, aucun retrait, aucune carte', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
+  it('preuve révisée présente : aucune lecture de preuve, aucune écriture, aucun retrait, aucune carte', async () => {
     const { d, write } = deps(etat('RECONCILIATION', true), [revisee]);
     const r = await reconcileEntity({ accountId: 7, target: TARGET, triggeredBy: 'document_linked', sourceFileId: 40 }, d);
     expect(r).toMatchObject({ skipped: true, decisions: [], written: [], retracted: [] });
@@ -148,8 +133,6 @@ describe('D-P — équipement archivé : jamais réconcilié', () => {
   });
 
   it('même équipement non archivé : réconcilié (témoin)', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     const { d, write } = deps(etat('RECONCILIATION', false), [revisee]);
     const r = await reconcileEntity({ accountId: 7, target: TARGET, triggeredBy: 'document_linked' }, d);
     expect(r.skipped).toBe(false);
@@ -158,14 +141,12 @@ describe('D-P — équipement archivé : jamais réconcilié', () => {
 });
 
 describe('D-D — saisie seule jamais appliquée par T3', () => {
-  it('applyDecision : ignorée dans tous les modes, sans aucune requête', async () => {
+  it('applyDecision : ignorée, sans aucune requête', async () => {
     const decision = {
       fieldKey: 'prixAnnonce', currentValue: null, proposedValue: 259000, action: 'apply' as const,
       reasonCode: 'EMPTY_FIELD_SINGLE_CERTAIN', confidence: 'certain' as const, evidenceIds: [9], deterministic: true,
     };
-    for (const writeMode of ['legacy', 'shadow', 'enabled'] as const) {
-      expect(await applyDecision(decision, { accountId: 7, assetId: 3, sourceFileId: 40, writeMode }), writeMode).toBe('skipped');
-      expect(await applyDecision({ ...decision, fieldKey: 'listingPrice' }, { accountId: 7, assetId: 3, sourceFileId: 40, writeMode })).toBe('skipped');
-    }
+    expect(await applyDecision(decision, { accountId: 7, assetId: 3, sourceFileId: 40 })).toBe('skipped');
+    expect(await applyDecision({ ...decision, fieldKey: 'listingPrice' }, { accountId: 7, assetId: 3, sourceFileId: 40 })).toBe('skipped');
   });
 });

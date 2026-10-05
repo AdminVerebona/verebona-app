@@ -211,10 +211,8 @@ export async function registerNode(): Promise<void> {
   const { startExportWorker } = await import('@/services/exports/v12/generation/worker');
   startExportWorker();
 
-  const { listRunningUseCases } = await import('@/services/ai/flags/use-case-flags');
-  const running = listRunningUseCases();
-  console.info(
-    `[ai] domaine IA câblé — 5 usages déclarés, ${running.length} basculé(s)` +
-    (running.length > 0 ? ` : ${running.join(', ')}` : ' (tous en mode legacy)'),
-  );
+  // Lot 16b : plus aucun drapeau de bascule — tous les usages tournent sur
+  // leur prompt maître.
+  const { AI_USE_CASE_CODES } = await import('@/services/ai/registry/use-cases');
+  console.info(`[ai] domaine IA câblé — ${AI_USE_CASE_CODES.length} usages, prompts maîtres seuls.`);
 }

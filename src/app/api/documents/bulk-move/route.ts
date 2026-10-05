@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
       .returning();
 
     // CDC 15 T3-03 : déplacement A → B — retrait des preuves portées par A,
-    // réconciliation de A (T3_NEGATIVE_RECONCILIATION ; ne lève jamais).
+    // réconciliation de A (ne lève jamais).
     {
       const { onDocumentAssetChanged } = await import('@/services/ai/evidence/document-evidence-lifecycle');
       for (const d of updated) {

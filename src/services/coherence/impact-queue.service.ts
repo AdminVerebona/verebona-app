@@ -34,7 +34,6 @@ export interface EnqueueImpactInput {
   priority?: number;
   metadata?: Record<string, unknown>;
   scheduledFor?: Date;
-  requiresAiReview?: boolean;
 }
 
 export interface ImpactQueueItem {
@@ -67,9 +66,6 @@ const QUEUE_LOCK_TIMEOUT_MS = 300_000; // 5 min before another worker can pick u
  */
 export async function enqueue(input: EnqueueImpactInput): Promise<ImpactQueueItem> {
   const metadata = { ...(input.metadata ?? {}) };
-  if (input.requiresAiReview) {
-    metadata.requires_ai_review = true;
-  }
 
   const [row] = await db
     .insert(impactQueue)
@@ -121,100 +117,6 @@ export async function enqueueBatch(inputs: EnqueueImpactInput[]): Promise<number
 
   const result = await db.insert(impactQueue).values(values as any).returning({ id: impactQueue.id });
   return result.length;
-}
-
-/**
- * Convenience wrapper: enqueue an impact that requires an AI review pass.
- * These items get `requires_ai_review: true` in metadata so the hourly
- * enrichment cron can pick them up for targeted AI processing (rare).
- */
-export async function enqueueForAiReview(input: EnqueueImpactInput): Promise<ImpactQueueItem> {
-  return enqueue({ ...input, requiresAiReview: true });
-}
-
-/**
- * Une relecture IA est-elle déjà en attente pour ce bien ?
- *
- * ══════════════════════════════════════════════════════════════════════════
- * POURQUOI CE CONTRÔLE EXISTE
- *
- * La relecture IA écrit dans la fiche, ce qui émet un nouvel événement
- * d'impact, qui peut à son tour produire un conflit, qui demanderait une
- * nouvelle relecture. Sans garde, un bien durablement incohérent
- * déclencherait un appel modèle par tour de passe horaire, indéfiniment.
- *
- * Une seule relecture en attente par bien : les conflits suivants seront
- * traités par celle-là, ou par la suivante une fois qu'elle aura été
- * consommée.
- * ══════════════════════════════════════════════════════════════════════════
- */
-export async function hasPendingAiReviewForAsset(
-  accountId: number,
-  assetId: number,
-): Promise<boolean> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(impactQueue)
-    .where(
-      and(
-        eq(impactQueue.accountId, accountId),
-        eq(impactQueue.assetId, assetId),
-        or(eq(impactQueue.status, 'pending'), eq(impactQueue.status, 'processing')),
-        sql`metadata @> '{"requires_ai_review": true}'`,
-      ),
-    )
-    .limit(1);
-
-  return (row?.count ?? 0) > 0;
-}
-
-/**
- * Dequeue pending items that are flagged for AI review.
- * Only dequeues up to `limit` items. Used by the hourly enrichment cron
- * to perform targeted AI calls only on items explicitly marked.
- */
-export async function dequeueAiReviewItems(limit = 5): Promise<ImpactQueueItem[]> {
-  const now = new Date();
-  const lockUntil = new Date(now.getTime() + QUEUE_LOCK_TIMEOUT_MS);
-
-  // Find pending items with requires_ai_review flag in metadata
-  const rows = await db
-    .update(impactQueue)
-    .set({
-      status: 'processing',
-      lockedUntil: lockUntil,
-      attempts: sql`attempts + 1`,
-      updatedAt: now,
-    } as any)
-    .where(
-      and(
-        eq(impactQueue.status, 'pending'),
-        sql`metadata @> '{"requires_ai_review": true}'`,
-        or(isNull(impactQueue.lockedUntil), lt(impactQueue.lockedUntil, now)),
-        or(isNull(impactQueue.scheduledFor), lt(impactQueue.scheduledFor, sql`NOW()`)),
-      ),
-    )
-    .returning();
-
-  return rows.slice(0, limit).map(mapRow);
-}
-
-/**
- * Check if there are pending items flagged for AI review.
- */
-export async function hasAiReviewItems(): Promise<boolean> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(impactQueue)
-    .where(
-      and(
-        eq(impactQueue.status, 'pending'),
-        sql`metadata @> '{"requires_ai_review": true}'`,
-      ),
-    )
-    .limit(1);
-
-  return (row?.count ?? 0) > 0;
 }
 
 /**

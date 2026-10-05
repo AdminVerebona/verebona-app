@@ -47,12 +47,13 @@ describe('section déclarée', () => {
     expect(d.useCases).toHaveLength(6);
   });
 
-  it("joint l'état des drapeaux, sans lequel le rapport ne s'interprète pas", () => {
+  it('lot 16b : plus aucun drapeau à joindre, chaque opération modèle est une branche de master', () => {
     const d = buildDeclaredSection();
-    // Lot 16b : T2, T4, T5 et T6 n'ont plus de drapeau (nouveau moteur seul).
-    expect(Object.keys(d.flags).sort()).toEqual(['AI_RECONCILIATION_ENGINE', 'AI_UNIFIED_SOURCE_ANALYSIS']);
-    for (const retire of ['AI_INTELLIGENT_ASSISTANT', 'AI_AGENDA_ENGINE', 'AI_PROMPT_GOVERNANCE', 'AI_HOME_MASCOT']) {
-      expect(d.flags).not.toHaveProperty(retire);
+    expect(d).not.toHaveProperty('flags');
+    const ops = d.useCases.flatMap((u) => u.operations).filter((o) => !o.deterministic && o.active);
+    for (const o of ops) {
+      if (o.code === 'evaluate_prompt') continue; // évaluation d'une version candidate (texte soumis)
+      expect(o.masterPromptCode, o.code).toBeTruthy();
     }
   });
 

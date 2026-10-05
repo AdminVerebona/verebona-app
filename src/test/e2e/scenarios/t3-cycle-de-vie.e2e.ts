@@ -60,9 +60,10 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
   const t3 = (accountId: number, userId: number, assetId: number) =>
     reconcileAsset({ accountId, userId, assetId, triggeredBy: 'document_linked' });
 
-  for (const mode of ['legacy', 'enabled'] as const) {
-    it(`T3-02 (CANONICAL_WRITE_MODE=${mode}) : l’IA remplit A, l’utilisateur corrige B, un nouveau document propose A → B reste`, async () => {
-      process.env.CANONICAL_WRITE_MODE = mode;
+  // Lot 16b-3 : CANONICAL_WRITE_MODE retiré — posé à legacy, il est ignoré.
+  for (const mode of ['legacy', 'absent'] as const) {
+    it(`T3-02 (CANONICAL_WRITE_MODE retiré, ${mode}) : l’IA remplit A, l’utilisateur corrige B, un nouveau document propose A → B reste`, async () => {
+      if (mode === 'legacy') process.env.CANONICAL_WRITE_MODE = 'legacy'; else delete process.env.CANONICAL_WRITE_MODE;
       const compte = await make.account();
       const bien = await make.asset(compte, { category: 'VEHICULE' });
       const doc1 = await make.assetFile(compte, { assetId: bien.id });
@@ -85,7 +86,6 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
   }
 
   it('T3-01 : même valeur par la fiche et par T3 → même état (miroir compris), hors origine', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const compte = await make.account();
     const parUi = await make.asset(compte, { category: 'VEHICULE' });
     const parT3 = await make.asset(compte, { category: 'VEHICULE' });
@@ -102,8 +102,6 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
   });
 
   it('T3-03 : réanalyse d’une date puis déplacement A → B — une seule preuve active, aucune influence résiduelle sur A', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     const compte = await make.account();
     const A = await make.asset(compte, { category: 'VEHICULE' });
     const B = await make.asset(compte, { category: 'VEHICULE' });
@@ -120,7 +118,7 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
     // Déplacement A → B : retrait sur A, réconciliation de A, reprojection sur B.
     await sql`UPDATE asset_files SET asset_id = ${B.id} WHERE id = ${doc.id}`;
     const out = await lifecycle.onDocumentAssetChanged({ accountId: compte.id, userId: compte.ownerUserId, fileId: doc.id, fromAssetId: A.id, toAssetId: B.id });
-    expect(out).toMatchObject({ mode: 'enabled', withdrawn: 1 });
+    expect(out).toMatchObject({ withdrawn: 1, dryRun: false });
     await t3(compte.id, compte.ownerUserId, A.id); // travail mis en file, exécuté ici
     await persistProjectedFacts({ input: ent, leadSourceId: doc.id, trace, analysisRunId: 12, documentType: 'FACTURE', facts: [fait(B.id, '2024-03-04')] });
     await t3(compte.id, compte.ownerUserId, B.id);
@@ -138,8 +136,6 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
   });
 
   it('T3-04 : suppression du seul document preuve — le champ automatique disparaît, le champ USER reste', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'legacy';
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'VEHICULE' });
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -151,16 +147,8 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
     await t3(compte.id, compte.ownerUserId, bien.id);
     const avant = await kcDe(bien.id);
     expect(avant.kc.acquisitionDate).toBe('2024-01-02');
-    expect(avant.purchaseDate).toBe(null); // legacy : la colonne miroir n'était pas recopiée par T3
+    expect(avant.purchaseDate).toBe('2024-01-02'); // primitive canonique : miroir recopié
 
-    // Mode shadow : rien n'est retiré, seulement observé.
-    process.env.T3_NEGATIVE_RECONCILIATION = 'shadow';
-    const obs = await lifecycle.onDocumentsDeleted({ accountId: compte.id, userId: compte.ownerUserId, fileIds: [doc.id] });
-    expect(obs).toMatchObject({ mode: 'shadow', withdrawn: 2, dryRun: true });
-    const [{ n: actives0 }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM field_evidence WHERE source_id = ${doc.id} AND lifecycle_status = 'ACTIVE'`;
-    expect(actives0).toBe(2);
-
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
     await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${doc.id}`;
     await lifecycle.onDocumentsDeleted({ accountId: compte.id, userId: compte.ownerUserId, fileIds: [doc.id] });
     const run = await t3(compte.id, compte.ownerUserId, bien.id);
@@ -178,8 +166,7 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
     expect(journal).toMatchObject({ outcome: 'written', origin: 'RECONCILIATION' });
   });
 
-  it('T3-03 mode « étapes » : réanalyse remplacée sous verrou ; déplacement : liens N-N AI/USER vers A retirés', async () => {
-    process.env.T3_NEGATIVE_RECONCILIATION = 'enabled';
+  it('T3-03 déplacement : liens N-N AI/USER vers A retirés, preuves de A retirées', async () => {
     const compte = await make.account();
     const A = await make.asset(compte, { category: 'VEHICULE' });
     const B = await make.asset(compte, { category: 'VEHICULE' });
@@ -187,8 +174,10 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
     const { persistEvidence } = await import('@/services/ai/source-analysis/steps/persist-evidence.step');
     const champ = (v: string) => [{ fieldKey: 'acquisitionDate', value: v, confidence: 'certain' as const, excerpt: `Date : ${v}` }];
     const base = { input: input(compte.id, compte.ownerUserId, doc.id), leadSourceId: doc.id, assetId: A.id, trace, documentType: 'FACTURE' };
-    await persistEvidence({ ...base, fields: champ('2024-01-02'), supersede: { mode: 'enabled' } });
-    await persistEvidence({ ...base, fields: champ('2024-03-04'), supersede: { mode: 'enabled' } });
+    // Lot 16b-3 : la réanalyse passe par le master seul (remplacement sous
+    // verrou couvert par `t1-faits-cibles`) ; ici, preuve posée par le
+    // rattachement tardif (`persistEvidence`, sans remplacement).
+    await persistEvidence({ ...base, fields: champ('2024-03-04') });
     const actives = await sql<{ value: string }[]>`
       SELECT value_json #>> '{}' AS value FROM field_evidence WHERE source_id = ${doc.id} AND lifecycle_status = 'ACTIVE'`;
     expect(actives).toEqual([{ value: '2024-03-04' }]);

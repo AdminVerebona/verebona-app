@@ -34,14 +34,13 @@ import type { TriggerSetting } from '../config/config-types';
  * sa reprise périodique reste portée par `analysis-recovery-scheduler`.
  */
 export const DEFAULT_TRIGGERS: Readonly<Record<'T1' | 'T3' | 'T4', readonly string[]>> = {
-  // CDC 15 CFG-04 : `analysis_recovery` et `coherence_ai_review` gouvernent
-  // désormais la reprise T1 toutes les 5 min et la revue IA du cron de
-  // cohérence, qui partaient en dur ; actifs par défaut (comportement
-  // historique), y compris dans une liste renseignée qui ne les mentionne pas
+  // CDC 15 CFG-04 : `analysis_recovery` gouverne la reprise T1 toutes les
+  // 5 min, qui partait en dur ; actif par défaut (comportement historique), y
+  // compris dans une liste renseignée qui ne le mentionne pas
   // (`activeUnlessDeclared`). `web_link_added` retiré : il n'a jamais rien
-  // conditionné.
+  // conditionné ; `coherence_ai_review` retiré au lot 16b-3 (D-H1).
   T1: ['source_uploaded', 'analysis_recovery'],
-  T3: ['source_analyzed', 'document_linked', 'asset_updated', 'arbitration_resolved', 'schedule_daily', 'coherence_ai_review'],
+  T3: ['source_analyzed', 'document_linked', 'asset_updated', 'arbitration_resolved', 'schedule_daily'],
   T4: ['source_analyzed'],
 };
 

@@ -21,8 +21,6 @@
 import {
   listActiveUseCases, listOperationsByUseCase, listLlmOperations,
 } from './index';
-import { operationDeprecation } from './operations';
-import { snapshotFlags, type AiFlag, type FlagMode } from '../flags/ai-feature-flags';
 import {
   concludeExecutionInventory, knownOperationCodes,
   type InventoryVerdict,
@@ -50,17 +48,12 @@ export interface DeclaredSection {
       promptCode: string | null;
       /** CDC 15 §22.3, DP-05 : prompt maître exécuté (opération master). */
       masterPromptCode: string | null;
-      /** Branche TASK : exécutée (master) ou cible (étape historique). */
+      /** Branche TASK exécutée (master). */
       task: string | null;
-      /** Étape historique : opération master qui la remplace. */
-      migratesTo: string | null;
       active: boolean;
-      /** CDC 15 §29 étape 15, D-02 : opération dépréciée (conservée, retrait après bascule). */
-      deprecated: { reason: 'MIGRATED_TO_MASTER' | 'LEGACY_RELAY'; replacedBy: string | null } | null;
     }>;
   }>;
   totalLlmOperations: number;
-  flags: Record<AiFlag, FlagMode>;
 }
 
 export interface ObservedRow {
@@ -118,18 +111,12 @@ export function buildDeclaredSection(): DeclaredSection {
           model: o.provider === 'none' ? null : o.primaryModel,
           promptCode: o.promptCode ?? null,
           masterPromptCode: o.masterPromptCode ?? null,
-          task: o.task ?? o.migratesTo?.task ?? null,
-          migratesTo: o.migratesTo ? `${o.migratesTo.masterPromptCode}/${o.migratesTo.task}` : null,
+          task: o.task ?? null,
           active: o.active,
-          deprecated: (() => {
-            const d = operationDeprecation(o);
-            return d ? { reason: d.reason, replacedBy: d.replacedBy } : null;
-          })(),
         })),
       };
     }),
     totalLlmOperations: listLlmOperations().length,
-    flags: snapshotFlags(),
   };
 }
 

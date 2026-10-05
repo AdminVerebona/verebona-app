@@ -2,19 +2,46 @@
  * T1 master, branche GROUP_UPLOAD (opération `t1_group_upload`) — CDC 15
  * §23, P-T1-01.
  *
- * Même contrat que l'étape historique `groupSources` : un seul fichier ⇒
- * aucun appel ; sortie modèle corrigée par `sanitizeGroups` (chaque index
- * exactement une fois, aucun fichier perdu) ; échec non bloquant ⇒ chaque
- * fichier forme son propre document (§11.4).
+ * Un seul fichier ⇒ aucun appel ; sortie modèle corrigée par
+ * `sanitizeGroups` (chaque index exactement une fois, aucun fichier perdu) ;
+ * échec non bloquant ⇒ chaque fichier forme son propre document (§11.4).
+ * Lot 16b-3 : l'ancienne étape `groupSources` (`group_sources`) est supprimée.
  */
 import { AiGateway } from '../../gateway/ai-gateway';
 import { T1GroupUploadOutput, T1_MASTER_PROMPT_CODE } from '../master/t1-contract';
 import { buildGroupUploadVariables } from '../master/prompt-context';
-import { sanitizeGroups, type GroupSourcesResult } from './group-sources.step';
 import { emptyTrace, mergeTrace } from '../trace';
-import type { SourceInput } from '../types';
+import type { SourceInput, AiOperationTrace } from '../types';
 
 export const T1_GROUP_UPLOAD_OPERATION = 't1_group_upload';
+
+export interface GroupSourcesResult {
+  /** Groupes d'INDICES dans `input.sourceIds` ; chaque index exactement une fois. */
+  groups: number[][];
+  trace: AiOperationTrace;
+}
+
+/**
+ * Corrige une sortie modèle imparfaite : indices hors bornes, doublons,
+ * fichiers oubliés. Aucun fichier ne doit disparaître du traitement (§11.4).
+ */
+export function sanitizeGroups(groups: number[][], count: number): number[][] {
+  const seen = new Set<number>();
+  const cleaned: number[][] = [];
+
+  for (const group of groups) {
+    const valid = group.filter((i) => Number.isInteger(i) && i >= 0 && i < count && !seen.has(i));
+    valid.forEach((i) => seen.add(i));
+    if (valid.length > 0) cleaned.push(valid);
+  }
+
+  // Tout indice oublié par le modèle forme son propre groupe.
+  for (let i = 0; i < count; i++) {
+    if (!seen.has(i)) cleaned.push([i]);
+  }
+
+  return cleaned.length > 0 ? cleaned : [[0]];
+}
 
 export async function groupUpload(input: SourceInput): Promise<GroupSourcesResult> {
   const count = input.sourceIds.length;

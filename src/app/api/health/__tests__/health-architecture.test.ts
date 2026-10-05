@@ -18,10 +18,10 @@ const req = () => new NextRequest('http://localhost/api/health');
 
 describe('GET /api/health — cohérence architecture / commutateur', () => {
   it('écart : check en warning, statut global inchangé', async () => {
-    warnings.mockResolvedValueOnce([{ treatment: 'T1', code: 'MASTER_NOT_APPLIED', switchName: 'AI_T1_ANALYSIS_MODE', switchMode: 'shadow', message: 'm' }]);
+    warnings.mockResolvedValueOnce([{ treatment: 'T3', code: 'MASTER_ENGINE_NOT_ENABLED', switchName: 'AI_RECONCILIATION_ENGINE', switchMode: 'shadow', message: 'm' }]);
     const body = await (await GET(req())).json();
     expect(body.checks.aiPromptArchitecture).toEqual({
-      status: 'warning', warnings: [expect.objectContaining({ treatment: 'T1', switchMode: 'shadow' })],
+      status: 'warning', warnings: [expect.objectContaining({ treatment: 'T3', switchMode: 'shadow' })],
     });
     expect(body.status).toBe('ok');
   });

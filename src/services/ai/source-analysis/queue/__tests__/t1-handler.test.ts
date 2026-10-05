@@ -29,7 +29,6 @@ const triggerActive = vi.fn(async (_t: string, _c: string) => true);
 vi.mock('../../../queue/triggers', () => ({ isTriggerActive: (t: string, c: string) => triggerActive(t, c) }));
 
 const { enqueueFileAnalyses, UPLOAD_ORIGIN } = await import('../t1-handler');
-const { AI_FLAGS } = await import('@/services/ai/flags/ai-feature-flags');
 
 const racine = process.cwd();
 
@@ -78,6 +77,7 @@ describe('file T1 : durable seule', () => {
     expect(existsSync(join(racine, 'src/services/ai/source-analysis/analysis-queue.ts'))).toBe(false);
     expect(existsSync(join(racine, 'src/app/api/analysis/check-pending/route.ts'))).toBe(false);
     expect(readFileSync(join(racine, 'src/services/ai/source-analysis/queue/t1-handler.ts'), 'utf8')).not.toMatch(/process\.env\.AI_DURABLE_QUEUE/);
-    expect(AI_FLAGS as readonly string[]).not.toContain('AI_DURABLE_QUEUE');
+    // Lot 16b : plus aucun drapeau AI_* (module des drapeaux supprimé).
+    expect(existsSync(join(racine, 'src/services/ai/flags/ai-feature-flags.ts'))).toBe(false);
   });
 });

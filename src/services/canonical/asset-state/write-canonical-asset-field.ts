@@ -22,12 +22,10 @@
  *      « Ce que j'ai fait ») ;
  *   6. après validation, ASSET_UPDATED invalide les caches de l'assistant.
  *
- * Modes (`CANONICAL_WRITE_MODE`, voir `rollout.ts`) :
- *   legacy   la primitive ne fait rien (`skipped`) ; le chemin historique écrit ;
- *   shadow   rien n'est écrit dans le bien : la primitive calcule l'état final
- *            et le journalise `dry_run = true` (avec la divergence observée
- *            quand le chemin historique a écrit — `observeLegacyWrite`) ;
- *   enabled  la primitive écrit.
+ * Lot 16b-3 : le commutateur `CANONICAL_WRITE_MODE` et ses modes `legacy` /
+ * `shadow` (observation `dry_run` du chemin historique) sont supprimés : la
+ * primitive écrit toujours (comportement de l'ancien `enabled`). Les colonnes
+ * `dry_run` et `divergence` du journal 0216 restent, pour l'historique.
  */
 import { pgClient } from '@/db';
 import { canOverwrite, isHumanOrigin, writeOrigin } from '@/services/ai/reconciliation/field-origin';
@@ -35,7 +33,6 @@ import {
   eurToCents, getField, isExcludedKey, normalizeValue, resolveAlias, toMirrorValue,
   type AssetFamily, type CanonicalFieldDef,
 } from '@/services/canonical/registry';
-import { canonicalWriteMode, type RolloutMode } from '@/services/canonical/rollout';
 import {
   indexKcAliases, isEmptyValue, loadAssetRow, parseKc, readFieldState, rowFamily,
   type AssetRowJson, type SqlRunner,
@@ -58,18 +55,6 @@ export function sameCanonicalValue(key: string, a: unknown, b: unknown): boolean
   const na = normalizeValue(key, a);
   const nb = normalizeValue(key, b);
   return texte(na.ok ? na.value : a) === texte(nb.ok ? nb.value : b);
-}
-
-/** Égalité d'une valeur de colonne (dates `AAAA-MM-JJ`, nombres, texte). */
-function sameColumnValue(a: unknown, b: unknown): boolean {
-  const ea = isEmptyValue(a);
-  const eb = isEmptyValue(b);
-  if (ea || eb) return ea && eb;
-  if (typeof a === 'number' || typeof b === 'number') return Number(a) === Number(b);
-  const sa = String(a);
-  const sb = String(b);
-  if (/^\d{4}-\d{2}-\d{2}/.test(sa) && /^\d{4}-\d{2}-\d{2}/.test(sb)) return sa.slice(0, 10) === sb.slice(0, 10);
-  return sa === sb;
 }
 
 /* ── Plan (fonction pure) ────────────────────────────────────────────────── */
@@ -241,36 +226,6 @@ export function planCanonicalWrites(
   return { family, kc, columns, results, changed: results.some((r) => r.outcome === 'written') };
 }
 
-/* ── Divergence (mode shadow) ────────────────────────────────────────────── */
-
-export interface WriteDivergence {
-  value?: { legacy: unknown; canonical: unknown };
-  origin?: { legacy: CanonicalOrigin | null; canonical: CanonicalOrigin };
-  mirrors?: Record<string, { legacy: unknown; canonical: unknown }>;
-}
-
-/**
- * Écart entre l'état écrit par le chemin historique (`after`) et l'état que
- * la primitive aurait produit pour une clé. `null` : aucun écart.
- */
-export function divergenceOf(result: CanonicalFieldWriteResult, after: AssetRowJson): WriteDivergence | null {
-  const def = getField(result.key);
-  if (!def) return null;
-  const kc = parseKc(after.key_characteristics);
-  const st = readFieldState(def, kc, after, indexKcAliases(kc, rowFamily(after.category)).get(def.key));
-  const d: WriteDivergence = {};
-  if (!sameCanonicalValue(def.key, st?.value ?? null, result.nextValue)) {
-    d.value = { legacy: st?.value ?? null, canonical: result.nextValue };
-  }
-  if (result.outcome === 'written' && !isEmptyValue(result.nextValue) && st && st.origin !== result.origin) {
-    d.origin = { legacy: st.origin, canonical: result.origin };
-  }
-  for (const [col, v] of Object.entries(result.mirrors)) {
-    if (!sameColumnValue(after[col], v)) (d.mirrors ??= {})[col] = { legacy: after[col] ?? null, canonical: v };
-  }
-  return Object.keys(d).length ? d : null;
-}
-
 /* ── Persistance ─────────────────────────────────────────────────────────── */
 
 const COLONNE_SQL = /^[a-z_][a-z0-9_]*$/;
@@ -300,27 +255,26 @@ interface JournalContext {
   actorUserId?: number | null;
   source?: CanonicalWriteSource;
   traceId?: string | null;
-  dryRun: boolean;
 }
 
 const jsonb = (v: unknown) => (v === undefined ? null : JSON.stringify(v));
 
-/** Lignes du journal 0216 ; les écritures sans effet ne sont pas journalisées (sauf divergence). Un seul INSERT. */
+/** Lignes du journal 0216 ; les écritures sans effet ne sont pas journalisées. Un seul INSERT. */
 async function journal(
   t: SqlRunner,
   ctx: JournalContext,
-  rows: Array<{ r: CanonicalFieldWriteResult; divergence?: WriteDivergence | null }>,
+  rows: Array<{ r: CanonicalFieldWriteResult }>,
 ): Promise<void> {
-  const retenues = rows.filter(({ r, divergence }) => r.outcome !== 'unchanged' || divergence);
+  const retenues = rows.filter(({ r }) => r.outcome !== 'unchanged');
   if (retenues.length === 0) return;
   const params: unknown[] = [];
-  const tuples = retenues.map(({ r, divergence }) => {
+  const tuples = retenues.map(({ r }) => {
     const v = [
       ctx.accountId, ctx.assetId, r.key, jsonb(r.previousValue), jsonb(r.nextValue), ctx.origin,
       ctx.actorUserId ?? null, ctx.source?.type ?? null,
       ctx.source?.id === undefined || ctx.source?.id === null ? null : String(ctx.source.id),
-      ctx.traceId ?? null, r.outcome, ctx.dryRun,
-      divergence ? JSON.stringify(divergence) : null,
+      ctx.traceId ?? null, r.outcome, false,
+      null,
       Object.keys(r.mirrors).length ? JSON.stringify(r.mirrors) : null,
     ];
     const casts = ['', '', '', '::jsonb', '::jsonb', '', '', '', '', '', '', '', '::jsonb', '::jsonb'];
@@ -401,8 +355,8 @@ export interface WriteHooks {
   mutate?: (ctx: WriteHookContext) => Record<string, unknown> | void | Promise<Record<string, unknown> | void>;
 }
 
-const vide = (mode: RolloutMode, extra: Partial<CanonicalWriteResult> = {}): CanonicalWriteResult =>
-  ({ mode, dryRun: true, skipped: false, notFound: false, fields: [], ...extra });
+const vide = (extra: Partial<CanonicalWriteResult> = {}): CanonicalWriteResult =>
+  ({ notFound: false, fields: [], ...extra });
 
 async function emettre(accountId: number, assetId: number): Promise<void> {
   try {
@@ -425,30 +379,19 @@ export async function writeCanonicalAssetFields(
   hooks: WriteHooks = {},
   run: TxRunner = pgClient as unknown as TxRunner,
 ): Promise<CanonicalWriteResult> {
-  const mode = input.mode ?? canonicalWriteMode();
-  if (mode === 'legacy') return vide(mode, { skipped: true });
   const ctxPlan: PlanContext = {
     origin: input.origin, now: new Date().toISOString(), keepRequestedKey: hooks.keepRequestedKey,
     confirmUnchanged: hooks.confirmUnchanged,
   };
   const jctx: JournalContext = {
     accountId: input.accountId, assetId: input.assetId, origin: input.origin,
-    actorUserId: input.actorUserId, source: input.source, traceId: input.traceId, dryRun: mode !== 'enabled',
+    actorUserId: input.actorUserId, source: input.source, traceId: input.traceId,
   };
 
-  if (mode === 'shadow') {
-    // Observation : lecture sans verrou, journal `dry_run`, bien intact.
-    const row = await loadAssetRow(run, input.assetId, input.accountId);
-    if (!row) return vide(mode, { notFound: true });
-    const plan = planCanonicalWrites(row, input.writes, ctxPlan);
-    await journal(run, jctx, plan.results.map((r) => ({ r })));
-    return vide(mode, { fields: plan.results });
-  }
-
-  let out: CanonicalWriteResult = vide(mode, { dryRun: false });
+  let out: CanonicalWriteResult = vide();
   await run.begin(async (t) => {
     const row = await loadAssetRow(t, input.assetId, input.accountId, true);
-    if (!row) { out = vide(mode, { dryRun: false, notFound: true }); return; }
+    if (!row) { out = vide({ notFound: true }); return; }
     const plan = planCanonicalWrites(row, input.writes, ctxPlan);
     let extra: Record<string, unknown> = {};
     if (hooks.mutate) extra = (await hooks.mutate({ row, kc: plan.kc, results: plan.results, tx: t })) ?? {};
@@ -457,7 +400,7 @@ export async function writeCanonicalAssetFields(
     }
     await journal(t, jctx, plan.results.map((r) => ({ r })));
     await traceAutomatic(t, input, plan);
-    out = { mode, dryRun: false, skipped: false, notFound: false, fields: plan.results };
+    out = { notFound: false, fields: plan.results };
   });
 
   const ecrit = out.fields.some((f) => f.outcome === 'written') || (!!hooks.mutate && !out.notFound);
@@ -473,36 +416,4 @@ export async function writeCanonicalAssetField(
   const { key, value, expectedCurrent, sourceUnit, trace, ...rest } = input;
   const res = await writeCanonicalAssetFields({ ...rest, writes: [{ key, value, expectedCurrent, sourceUnit, trace }] }, {}, run);
   return { ...res, field: res.fields[0] ?? null };
-}
-
-/**
- * Mode shadow : le chemin historique vient d'écrire (`before` → `after`).
- * Calcule ce que la primitive aurait écrit à partir de `before`, et
- * journalise `dry_run = true` avec l'écart constaté. Ne lève jamais :
- * l'observation ne doit pas faire échouer l'écriture de l'utilisateur.
- */
-export async function observeLegacyWrite(
-  p: Omit<WriteCanonicalAssetFieldsInput, 'mode' | 'emitEvent'> & {
-    before: AssetRowJson;
-    after: AssetRowJson;
-    keepRequestedKey?: boolean;
-  },
-  run: SqlRunner = pgClient as unknown as SqlRunner,
-): Promise<Array<{ result: CanonicalFieldWriteResult; divergence: WriteDivergence | null }>> {
-  try {
-    const plan = planCanonicalWrites(p.before, p.writes, {
-      origin: p.origin, now: new Date().toISOString(), keepRequestedKey: p.keepRequestedKey,
-    });
-    const rows = plan.results.map((r) => ({ r, divergence: divergenceOf(r, p.after) }));
-    await journal(run, {
-      accountId: p.accountId, assetId: p.assetId, origin: p.origin, actorUserId: p.actorUserId,
-      source: p.source, traceId: p.traceId, dryRun: true,
-    }, rows);
-    const divergents = rows.filter((x) => x.divergence).length;
-    if (divergents) console.info(`[canonical][shadow] bien ${p.assetId} : ${divergents} divergence(s) journalisée(s)`);
-    return rows.map(({ r, divergence }) => ({ result: r, divergence: divergence ?? null }));
-  } catch (e) {
-    console.warn('[canonical][shadow] observation impossible (non bloquant) :', (e as Error).message);
-    return [];
-  }
 }

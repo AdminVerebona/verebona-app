@@ -3,7 +3,7 @@
  * conservées (stockage + base), consultables depuis les preuves, et jamais
  * visées par le cleanup générique tant que le document principal existe.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 
@@ -23,10 +23,11 @@ describe('regroupement', () => {
     expect(sets[0].deletedAt).toBeInstanceOf(Date);
   });
 
-  it('les trois chemins de regroupement l’utilisent (plus de simple deletedAt)', () => {
+  it('les chemins de regroupement l’utilisent (plus de simple deletedAt)', () => {
     expect(read('src/services/ai/source-analysis/pipeline.ts')).toContain('await markSourcesGrouped(leadId, ids)');
-    expect(read('src/services/document-ai/unified-analysis-pipeline.ts')).toContain('markSourcesGrouped(leadFile.id, secondaryIds)');
-    expect(read('src/services/document-ai/commit-engine.ts')).toContain('markSourcesGrouped(g.leadFileId, g.ids)');
+    // Lot 16b-3 : l'orchestrateur historique `unified-analysis-pipeline` et
+    // `commit-engine` (dont `commitLot`, code mort) sont supprimés.
+    expect(existsSync(join(process.cwd(), 'src/services/document-ai/commit-engine.ts'))).toBe(false);
   });
 });
 

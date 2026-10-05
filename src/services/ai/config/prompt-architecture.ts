@@ -15,33 +15,25 @@
  * D-03 : le texte COMPLET du master est porté par un champ distinct,
  * `masterPrompt` (colonne `master_prompt`, 0220) ; vide, le fichier
  * `tN_master_vK.txt` du dépôt s'applique. Le préambule (`prompt`) reste celui
- * des étapes, QUELLE QUE SOIT l'architecture : si une version `master` est
- * activée alors que le commutateur de déploiement (`AI_T1_ANALYSIS_MODE`)
- * n'est pas `enabled`, les étapes tournent avec leur préambule intact, et
- * l'écart est signalé (`promptArchitectureWarnings`, /api/health,
- * /admin/ai-flags).
+ * des étapes : la passerelle ne l'ajoute qu'aux opérations par étapes.
+ *
+ * Lot 16b : PLUS AUCUN traitement n'a d'architecture `steps`
+ * (`MASTER_ONLY_TREATMENTS` = T1 à T6, migrations 0231 à 0234) : la valeur
+ * n'est plus qu'une donnée héritée, refusée à l'enregistrement et à la
+ * promotion. Plus aucun commutateur ni drapeau ne gouverne les masters.
  *
  * Ce module ne dépend que du code (registre, types) : fonctions pures,
- * testées sans base. La lecture de la version effective est dans
- * `config-resolver#getPromptArchitecture`.
+ * testées sans base.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { listMasterPrompts, AI_OPERATIONS } from '../registry/operations';
 import { checkMasterTemplate, inspectMasterTemplate } from '../prompts/prompt-loader';
 import { treatmentForUseCase, isMasterOnlyTreatment, isPromptAdministrable, type Treatment } from './treatments';
+import { retiredVariablesSet } from './retired-variables';
 import {
   promptArchitectureOf, masterPromptOf, type PromptArchitecture, type TreatmentConfig,
 } from './config-types';
 import type { ConfigVersionStatus } from './version-state-machine';
-import { getRolloutMode } from '@/services/canonical/rollout';
-import { getFlagMode } from '../flags/ai-feature-flags';
-
-/**
- * Lecture de l'architecture effective d'un traitement pour l'appel courant
- * (version figée du job, sinon TO_TEST en préproduction / ACTIVE). Réexportée
- * ici pour que les pipelines n'aient qu'un point d'entrée.
- */
-export { getPromptArchitecture } from './config-resolver';
 
 /** Prompt maître d'un traitement et ses branches, tels que déclarés au registre. */
 export interface TreatmentMaster {
@@ -76,8 +68,8 @@ export type PromptArchitectureDecision =
  *     version À tester qui en sera promue portera la bascule en préproduction,
  *     jamais une Active éditée en place ;
  *   · `master` exige un prompt maître déclaré au registre pour ce traitement ;
- *   · T2, T4, T5 et T6 n'ont plus d'architecture `steps` (lot 16b) : la demander est
- *     refusé, quel que soit le statut de la version.
+ *   · aucun traitement n'a plus d'architecture `steps` (lot 16b) : la
+ *     demander est refusé, quel que soit le statut de la version.
  */
 export function checkPromptArchitectureChange(input: {
   status: ConfigVersionStatus;
@@ -94,7 +86,9 @@ export function checkPromptArchitectureChange(input: {
         + `${input.treatment} ont été retirées ; son prompt maître est son seul moteur (lot 16b).`,
     };
   }
-  const from = promptArchitectureOf({ promptArchitecture: input.from ?? undefined });
+  // Une ligne est lue `master` même absente ou stockée `steps` —
+  // l'enregistrer n'est pas une bascule.
+  const from = promptArchitectureOf({ treatment: input.treatment, promptArchitecture: input.from ?? undefined });
   if (from === input.to) return { allowed: true };
   if (input.status !== 'DRAFT') {
     return {
@@ -160,12 +154,12 @@ export function checkMasterProposal(treatment: Treatment, text: string): string[
  *     chaque prompt technique des étapes ;
  *   · texte master renseigné : seulement pour un traitement qui a un master,
  *     et complet (discriminant, une section par branche, emplacements du
- *     code) — BLOQUANT en `master`, simple avertissement en `steps` (texte
- *     préparé avant la bascule, ignoré tant qu'elle n'a pas eu lieu) ;
- *   · architecture `master` : master déclaré au registre ; texte vide ⇒
- *     fichier du dépôt, signalé sans bloquer ;
- *   · T2, T4, T5 ou T6 portant `steps` (valeur brute, ligne antérieure aux
- *     migrations 0231/0232 ou package ancien) : BLOQUANT — leur architecture `steps` est retirée.
+ *     code) — BLOQUANT ;
+ *   · master déclaré au registre ; texte vide ⇒ fichier du dépôt, signalé
+ *     sans bloquer ;
+ *   · ligne portant `steps` (valeur brute, ligne antérieure aux migrations
+ *     0231 à 0234 ou client ancien) : BLOQUANT — l'architecture `steps` est
+ *     retirée pour tous les traitements.
  */
 export function masterConfigIssues(
   c: TreatmentConfig,
@@ -184,122 +178,51 @@ export function masterConfigIssues(
   if (isMasterOnlyTreatment(c.treatment) && c.promptArchitecture === 'steps') {
     out.push({
       field: 'promptArchitecture',
-      message: `Architecture « steps » retirée pour ${c.treatment} : seul son prompt maître existe (lot 16b, migrations 0231 et 0232).`,
+      message: `Architecture « steps » retirée pour ${c.treatment} : seul son prompt maître existe (lot 16b, migrations 0231 à 0234).`,
       blocking: true,
     });
   }
 
   const master = masterPromptForTreatment(c.treatment);
   const texte = masterPromptOf(c);
-  // Revue lot 16 : un texte master préparé alors que le traitement est en
-  // `steps` n'est PAS utilisé — avertissement, jamais un blocage de promotion.
-  const enMaster = promptArchitectureOf(c) === 'master';
-  const ignore = enMaster ? '' : ` Champ ignoré tant que ${c.treatment} est en « steps ».`;
   if (texte && !master) {
-    out.push({ field: 'masterPrompt', message: `Aucun prompt maître n'est déclaré pour ${c.treatment} : texte master sans objet.${ignore}`, blocking: enMaster });
+    out.push({ field: 'masterPrompt', message: `Aucun prompt maître n'est déclaré pour ${c.treatment} : texte master sans objet.`, blocking: true });
   }
   if (texte && master) {
     for (const a of checkMasterProposal(c.treatment, texte)) {
-      out.push({ field: 'masterPrompt', message: `Prompt maître incomplet (${a}) : le master doit être complet (D-03).${ignore}`, blocking: enMaster });
+      out.push({ field: 'masterPrompt', message: `Prompt maître incomplet (${a}) : le master doit être complet (D-03).`, blocking: true });
     }
   }
 
-  if (promptArchitectureOf(c) === 'master') {
-    if (!master) {
-      out.push({ field: 'promptArchitecture', message: `Architecture « master » sans prompt maître déclaré pour ${c.treatment}.`, blocking: true });
-    } else if (!texte && isPromptAdministrable(c.treatment)) {
-      // T5 : fichier du dépôt par construction (non administrable), rien à signaler.
-      out.push({
-        field: 'masterPrompt',
-        message: `Texte master vide : le fichier ${master.masterPromptCode} du dépôt s'appliquera (valeur initiale, D-03).`,
-        blocking: false,
-      });
-    }
+  if (!master) {
+    out.push({ field: 'promptArchitecture', message: `Architecture « master » sans prompt maître déclaré pour ${c.treatment}.`, blocking: true });
+  } else if (!texte && isPromptAdministrable(c.treatment)) {
+    // T5 : fichier du dépôt par construction (non administrable), rien à signaler.
+    out.push({
+      field: 'masterPrompt',
+      message: `Texte master vide : le fichier ${master.masterPromptCode} du dépôt s'appliquera (valeur initiale, D-03).`,
+      blocking: false,
+    });
   }
   return out;
 }
 
-// ── Cohérence configuration / commutateur de déploiement ────────────────────
-
-/**
- * Commutateur de déploiement qui ouvre le chemin master d'un traitement
- * (plan CDC 15, § Déploiement ; `canonical/rollout.ts`). Lot 12 : T1.
- * Seul ce type de commutateur conditionne le master LUI-MÊME (affiché au BO).
- *
- * T3 (lot 13) n'en a pas : sa bascule vers le master se fait par la seule
- * version de configuration (D-04).
- */
-export const MASTER_ROLLOUT_SWITCH: Partial<Record<Treatment, 'AI_T1_ANALYSIS_MODE'>> = {
-  T1: 'AI_T1_ANALYSIS_MODE',
-  // T6 : AI_HOME_MASCOT retiré au lot 16b — le master T6 s'applique toujours.
-};
-
-/**
- * Drapeau `AI_*` du MOTEUR qui porte le chemin master (arbitrage lead,
- * lot 13) : T3 en `master` mais `AI_RECONCILIATION_ENGINE` ≠ `enabled` ⇒ le
- * moteur de réconciliation qui appelle l'arbitrage de valeur ne tourne pas
- * (`legacy`) ou n'applique rien (`shadow`) — le master VALUE_CONFLICT n'a
- * donc aucun effet. Le départage des liens, lui, passe par le master dans
- * tous les cas.
- *
- * Lot 16b-2 : `AI_INTELLIGENT_ASSISTANT` (T2) et `AI_AGENDA_ENGINE` (T4) sont
- * supprimés — l'assistant et l'agenda tournent toujours sur leur master.
- */
-export const MASTER_ENGINE_FLAG: Partial<Record<Treatment, 'AI_RECONCILIATION_ENGINE'>> = {
-  T3: 'AI_RECONCILIATION_ENGINE',
-};
-
-export type MasterSwitchName = 'AI_T1_ANALYSIS_MODE' | 'AI_RECONCILIATION_ENGINE';
+// ── Variables retirées encore posées (CDC 15 T2-43 ; lot 16b) ──────────────
 
 export interface PromptArchitectureWarning {
-  treatment: Treatment;
-  /** `RETIRED_ENV_VARIABLE` : variable retirée encore posée (T2-43), ignorée. */
-  code: 'MASTER_NOT_APPLIED' | 'MASTER_ENGINE_NOT_ENABLED' | 'RETIRED_ENV_VARIABLE';
+  treatment: Treatment | null;
+  /** `RETIRED_ENV_VARIABLE` : variable retirée encore posée, ignorée par le code. */
+  code: 'RETIRED_ENV_VARIABLE';
   switchName: string;
   switchMode: string;
   message: string;
 }
 
 /**
- * Écart pur : version en `master` mais commutateur (T1) ou drapeau moteur
- * (T3) ≠ `enabled`.
- */
-export function promptArchitectureWarning(
-  treatment: Treatment, architecture: PromptArchitecture, switchMode: string,
-): PromptArchitectureWarning | null {
-  if (architecture !== 'master' || switchMode === 'enabled') return null;
-  const sw = MASTER_ROLLOUT_SWITCH[treatment];
-  if (sw) {
-    return {
-      treatment, code: 'MASTER_NOT_APPLIED', switchName: sw, switchMode,
-      message:
-        `${treatment} : la version de configuration effective déclare l'architecture « master », mais ${sw}=${switchMode}. `
-        + 'Le prompt maître n\'est PAS appliqué : les étapes historiques tournent avec leur préambule '
-        + `(passer ${sw}=enabled, ou remettre la ligne ${treatment} en « steps »).`,
-    };
-  }
-  const flag = MASTER_ENGINE_FLAG[treatment];
-  if (flag) {
-    const effet = switchMode === 'shadow'
-      ? 'tourne en observation, sans rien appliquer'
-      : 'ne tourne pas (moteur historique)';
-    const portee = `L'arbitrage de valeur (VALUE_CONFLICT) ${effet} ; seul le départage des liens passe par le prompt maître `
-      + `(passer ${flag}=enabled pour appliquer l'arbitrage).`;
-    return {
-      treatment, code: 'MASTER_ENGINE_NOT_ENABLED', switchName: flag, switchMode,
-      message:
-        `${treatment} : la version de configuration effective déclare l'architecture « master », mais ${flag}=${switchMode}. `
-        + portee,
-    };
-  }
-  return null;
-}
-
-/**
  * CDC 15 T2-43 : `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` est RETIRÉE et
  * ignorée (source unique : configuration IA, bornée à 500). Encore posée,
- * elle est signalée dans /admin/ai-flags et /api/health : un environnement
- * qui s'en servait pour abaisser le plafond doit le voir.
+ * elle est signalée dans /api/health : un environnement qui s'en servait pour
+ * abaisser le plafond doit le voir.
  */
 export function retiredOutputTokensWarning(env: Record<string, string | undefined>): PromptArchitectureWarning | null {
   const v = env.VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS;
@@ -313,32 +236,26 @@ export function retiredOutputTokensWarning(env: Record<string, string | undefine
 }
 
 /**
- * Écarts de la version effective (ne lève jamais). `readMode` et
- * `readArchitecture` injectables pour les tests.
+ * Avertissements de configuration (ne lève jamais), pour /api/health : chaque
+ * variable RETIRÉE (drapeau `AI_*`, commutateur de déploiement, réglage
+ * historique — `retired-variables.ts`) encore posée dans l'environnement. Le
+ * code l'ignore ; elle est à supprimer chez l'hébergeur. Lot 16b : plus aucun
+ * écart « version master / commutateur » possible, il n'existe plus de
+ * commutateur.
  */
 export async function promptArchitectureWarnings(opts: {
-  readMode?: (name: MasterSwitchName) => string;
-  readArchitecture?: (t: Treatment) => Promise<PromptArchitecture>;
   env?: Record<string, string | undefined>;
 } = {}): Promise<PromptArchitectureWarning[]> {
+  const env = opts.env ?? process.env;
   const out: PromptArchitectureWarning[] = [];
-  const retiree = retiredOutputTokensWarning(opts.env ?? process.env);
-  if (retiree) out.push(retiree);
-  try {
-    const readMode = opts.readMode
-      ?? ((name: MasterSwitchName) => (name === 'AI_T1_ANALYSIS_MODE' ? getRolloutMode(name) : getFlagMode(name)));
-    const readArchitecture = opts.readArchitecture
-      ?? (async (t: Treatment) => (await import('./config-resolver')).getPromptArchitecture(t));
-    const surveilles = [
-      ...Object.entries(MASTER_ROLLOUT_SWITCH),
-      ...Object.entries(MASTER_ENGINE_FLAG),
-    ] as Array<[Treatment, MasterSwitchName]>;
-    for (const [t, sw] of surveilles) {
-      const w = promptArchitectureWarning(t, await readArchitecture(t), readMode(sw));
-      if (w) out.push(w);
-    }
-  } catch {
-    /* configuration illisible : rien à affirmer */
+  const tokens = retiredOutputTokensWarning(env);
+  if (tokens) out.push(tokens);
+  for (const v of retiredVariablesSet(env)) {
+    if (v.name === 'VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS') continue;
+    out.push({
+      treatment: null, code: 'RETIRED_ENV_VARIABLE', switchName: v.name, switchMode: v.value,
+      message: `${v.name}=${v.value} est posée mais IGNORÉE (retirée au ${v.lot} : ${v.now}). À supprimer chez l'hébergeur.`,
+    });
   }
   return out;
 }

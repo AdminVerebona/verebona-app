@@ -5,8 +5,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { ExtractSourceOutput } from '../schemas';
-import { splitByEvidence } from '../steps/extract-source.step';
+import { t1Fact, type T1Fact } from '../master/t1-contract';
+import { checkFactEvidence } from '../master/fact-evidence';
 import { buildAgendaCandidates } from '../steps/build-agenda-candidates.step';
 import { buildKnowledgeFromSourceAnalysis, factsToExtractedFields, toFact } from '../../knowledge/document-knowledge';
 import { evidenceText, type FactHit } from '@/services/verebona-assistant/core/data-answer.service';
@@ -14,36 +14,44 @@ import type { SourceAnalysisResult } from '../types';
 
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 
-const sortieChaudiere = ExtractSourceOutput.parse({
-  transcription: 'Modèle ABC\n24 kW',
-  visual: {
-    summary: 'Chaudière murale blanche installée au-dessus d’un évier.',
-    observations: [{ description: 'Chaudière fixée au mur, au-dessus d’un évier', subject: 'Chaudière', confidence: 'probable', page: 1 }],
-  },
-  fields: [
-    { fieldKey: 'boilerPower', provenance: 'TEXT_EXTRACTION', subject: 'Chaudière', attribute: 'puissance', value: 24, unit: 'kW', confidence: 'certain', excerpt: '24 kW', page: 1 },
-    { fieldKey: 'boilerInstallation', provenance: 'VISUAL_ANALYSIS', subject: 'Chaudière', attribute: 'installation', value: 'murale', confidence: 'probable',
-      // Faux extrait fourni par le modèle : il doit disparaître.
-      excerpt: 'chaudière murale',
-      visualEvidence: { description: 'Appareil fixé au mur', page: 1, imageIndex: 0, region: { x1: 0.2, y1: 0.1, x2: 0.7, y2: 0.6 } } },
-    { fieldKey: 'couleur', provenance: 'VISUAL_ANALYSIS', value: 'blanche', confidence: 'certain' },
-    { fieldKey: 'serie', value: 'X1', confidence: 'certain' },
-  ],
-});
+// Sortie ANALYZE_DOCUMENT du master T1 (seul moteur depuis le lot 16b-3).
+const fait = (f: Record<string, unknown>) => t1Fact.parse({ target: { type: 'EQUIPMENT', entityId: null }, ...f });
+const faitsChaudiere: T1Fact[] = [
+  fait({ canonicalKey: null, rawKey: 'boilerPower', provenance: 'TEXT_EXTRACTION', subject: 'Chaudière', attribute: 'puissance',
+    normalizedValue: 24, canonicalUnit: 'kW', confidence: 'certain', evidence: { excerpt: '24 kW', page: 1 } }),
+  fait({ canonicalKey: null, rawKey: 'boilerInstallation', provenance: 'VISUAL_ANALYSIS', subject: 'Chaudière', attribute: 'installation',
+    normalizedValue: 'murale', confidence: 'probable',
+    // Faux extrait fourni par le modèle : il doit disparaître.
+    evidence: { excerpt: 'chaudière murale' },
+    visualEvidence: { description: 'Appareil fixé au mur', page: 1, imageIndex: 0, region: { x1: 0.2, y1: 0.1, x2: 0.7, y2: 0.6 } } }),
+  fait({ canonicalKey: null, rawKey: 'couleur', provenance: 'VISUAL_ANALYSIS', normalizedValue: 'blanche', confidence: 'certain' }),
+  fait({ canonicalKey: null, rawKey: 'serie', normalizedValue: 'X1', confidence: 'certain' }),
+];
+const observations = [{ description: 'Chaudière fixée au mur, au-dessus d’un évier', subject: 'Chaudière', confidence: 'probable' as const, page: 1 }];
+
+/** Tri des faits par leur preuve (`checkFactEvidence`, comme `analyze-document.step`). */
+function trier(faits: T1Fact[]) {
+  const kept: T1Fact[] = [];
+  const rejected: string[] = [];
+  for (const f of faits) {
+    const r = checkFactEvidence(f);
+    if (r.ok) kept.push(r.fact); else rejected.push(f.rawKey ?? '?');
+  }
+  return { kept, rejected };
+}
 
 describe('sortie T1', () => {
-  it('schéma : provenance par défaut TEXT_EXTRACTION, visuel accepté sans extrait', () => {
-    expect(sortieChaudiere.fields[3].provenance).toBe('TEXT_EXTRACTION');
-    expect(sortieChaudiere.visual?.observations).toHaveLength(1);
+  it('schéma : provenance par défaut TEXT_EXTRACTION', () => {
+    expect(faitsChaudiere[3].provenance).toBe('TEXT_EXTRACTION');
   });
 
   it('chaque information garde la preuve de SA provenance, ou est écartée', () => {
-    const { kept, rejected } = splitByEvidence(sortieChaudiere.fields);
+    const { kept, rejected } = trier(faitsChaudiere);
     expect(rejected).toEqual(['couleur', 'serie']);
-    const visuel = kept.find((f) => f.fieldKey === 'boilerInstallation')!;
-    expect(visuel.excerpt).toBeUndefined();
+    const visuel = kept.find((f) => f.rawKey === 'boilerInstallation')!;
+    expect(visuel.evidence.excerpt).toBeUndefined();
     expect(visuel.visualEvidence?.description).toBe('Appareil fixé au mur');
-    expect(kept.find((f) => f.fieldKey === 'boilerPower')!.excerpt).toBe('24 kW');
+    expect(kept.find((f) => f.rawKey === 'boilerPower')!.evidence.excerpt).toBe('24 kW');
   });
 
   it('une date observée ne crée aucune échéance', () => {
@@ -53,10 +61,11 @@ describe('sortie T1', () => {
 
 describe('représentation durable', () => {
   const result = {
-    document: { transcription: 'Modèle ABC\n24 kW', visual: { summary: 'Chaudière murale blanche.', observations: sortieChaudiere.visual!.observations } },
-    extractedFields: splitByEvidence(sortieChaudiere.fields).kept.map((f) => ({
-      fieldKey: f.fieldKey, value: f.value, confidence: f.confidence, provenance: f.provenance,
-      excerpt: f.excerpt, visualEvidence: f.visualEvidence, subject: f.subject, attribute: f.attribute, unit: f.unit, page: f.page,
+    document: { transcription: 'Modèle ABC\n24 kW', visual: { summary: 'Chaudière murale blanche.', observations } },
+    extractedFields: trier(faitsChaudiere).kept.map((f) => ({
+      fieldKey: f.rawKey!, value: f.normalizedValue, confidence: f.confidence, provenance: f.provenance,
+      excerpt: f.evidence.excerpt, visualEvidence: f.visualEvidence, subject: f.subject ?? undefined,
+      attribute: f.attribute ?? undefined, unit: f.canonicalUnit ?? undefined, page: f.evidence.page ?? f.visualEvidence?.page,
     })),
     warnings: [], assetCandidates: [], roomCandidates: [], equipmentCandidates: [], agendaCandidates: [],
     sourceGroup: { sourceIds: [1] }, operationTrace: { usedFallback: false, models: ['m'], traceIds: ['t'] },
@@ -113,12 +122,11 @@ describe('T2 : citation ≠ observation', () => {
 });
 
 describe('garde-fous', () => {
-  it('prompt v4 : lu / observé, zéro invention, pas de faux extrait', () => {
-    const p = src('src/services/ai/prompts/source-analysis/extract_source_v5.txt');
+  it('prompt maître T1 : lu / observé, zéro invention, pas de faux extrait', () => {
+    const p = src('src/services/ai/prompts/source-analysis/t1_master_v1.txt');
     expect(p).toMatch(/explicitement LISIBLE ou directement OBSERVABLE/);
-    expect(p).toMatch(/Ne mets PAS d'`excerpt`/);
-    expect(p).toMatch(/Une photo sans texte n'a PAS de transcription/);
-    expect(src('src/services/ai/registry/operations.ts')).toMatch(/promptCode: EXTRACT_SOURCE_PROMPT_VERSION/);
+    expect(p).toMatch(/Aucun faux extrait : `evidence\.excerpt` est ABSENT/);
+    expect(src('src/services/ai/registry/operations.ts')).toMatch(/promptCode: T1_MASTER, masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT'/);
   });
   it('base : contraintes lu/vu, observation visuelle plafonnée en réconciliation', () => {
     const m = src('src/db/migrations/0161_t1_text_vs_visual_provenance.sql');

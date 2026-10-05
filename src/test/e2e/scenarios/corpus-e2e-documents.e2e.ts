@@ -6,9 +6,8 @@
  * durable, exécutés par l'exécutant de production → fiche, agenda, liens,
  * export V12 (`loadExportSource`) et réponse de l'assistant (`runAssistant`).
  *
- * État cible (enabled / master) : AI_T1_ANALYSIS_MODE, CANONICAL_WRITE_MODE,
- * T3_NEGATIVE_RECONCILIATION, AI_T4_EFFECTS, ASSISTANT_CANONICAL_READ,
- * EXPORTS_CANONICAL_SOURCE = enabled ; T1 en architecture `master`.
+ * État cible = seul état depuis le lot 16b-3 : plus aucun commutateur ;
+ * T1 à T6 en master seul.
  */
 import { expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';

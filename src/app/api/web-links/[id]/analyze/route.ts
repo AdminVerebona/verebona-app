@@ -63,6 +63,11 @@ export async function POST(
   if (outcome.skippedReason === 'already_running') {
     return NextResponse.json({ status: 'ANALYZING' }, { status: 202 });
   }
+  // Lot 16b-3 : échec du master T1 (plus de repli) — la source garde son
+  // motif (ANALYSIS_FAILED) ; l'appelant peut relancer.
+  if (outcome.failedSourceIds.includes(sourceId)) {
+    return NextResponse.json({ error: 'ANALYSIS_FAILED' }, { status: 502 });
+  }
   if (outcome.skippedReason === 'no_valid_source' || outcome.results.length === 0) {
     return NextResponse.json({ error: 'SOURCE_UNAVAILABLE' }, { status: 404 });
   }

@@ -115,53 +115,46 @@ const ligneEquipement = (over: Record<string, unknown> = {}) => ({
   specId: null, brand: null, model: null, sn: null, pkw: null, ...over,
 });
 
-describe('writeCanonicalEntityFields — modes', () => {
+describe('writeCanonicalEntityFields — écriture réelle seule (lot 16b-3)', () => {
   beforeEach(() => { es.__resetEntityColumnsForTests(true); emitBusinessEvent.mockClear(); });
-
-  it('legacy : aucune requête', async () => {
-    const run = runner(ligneEquipement());
-    const res = await es.writeCanonicalEntityFields({
-      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION', mode: 'legacy',
-      writes: [{ key: 'serialNumber', value: 'X' }],
-    }, run as never);
-    expect(res).toMatchObject({ skipped: true, dryRun: true });
-    expect(run.unsafe).not.toHaveBeenCalled();
-  });
 
   it('0227 absente : rien (schemaNotReady)', async () => {
     es.__resetEntityColumnsForTests(false);
     const run = runner(ligneEquipement());
     const res = await es.writeCanonicalEntityFields({
-      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION', mode: 'enabled',
+      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION',
       writes: [{ key: 'serialNumber', value: 'X' }],
     }, run as never);
     expect(res).toMatchObject({ skipped: true, schemaNotReady: true });
     expect(run.unsafe).not.toHaveBeenCalled();
   });
 
-  it('shadow : journal dry_run avec la cible, entité intacte', async () => {
-    const run = runner(ligneEquipement());
-    const res = await es.writeCanonicalEntityFields({
-      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION', mode: 'shadow',
-      writes: [{ key: 'serialNumber', value: 'X' }],
-    }, run as never);
-    expect(res.fields[0].outcome).toBe('written');
-    expect(res.dryRun).toBe(true);
-    expect(run.calls.some((c) => /^UPDATE|INSERT INTO equipment_cil_specs/.test(c.q.trim()))).toBe(false);
-    const j = run.calls.find((c) => c.q.includes('INSERT INTO canonical_field_writes'))!;
-    expect(j.q).toContain('target_type, target_id');
-    expect(j.p.slice(0, 5)).toEqual([7, 3, 'EQUIPMENT', 11, 'serialNumber']);
-    expect(j.p[13]).toBe(true); // dry_run
-    expect(emitBusinessEvent).not.toHaveBeenCalled();
+  it('commutateur retiré encore posé (legacy / shadow) : ignoré, écriture réelle journalisée avec la cible', async () => {
+    for (const v of ['legacy', 'shadow']) {
+      vi.stubEnv('CANONICAL_WRITE_MODE', v);
+      const run = runner(ligneEquipement());
+      const res = await es.writeCanonicalEntityFields({
+        target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION',
+        writes: [{ key: 'serialNumber', value: 'X' }],
+      }, run as never);
+      expect(res.fields[0].outcome).toBe('written');
+      expect(res).not.toHaveProperty('dryRun');
+      expect(run.calls.some((c) => c.q.trim().startsWith('UPDATE equipments'))).toBe(true);
+      const j = run.calls.find((c) => c.q.includes('INSERT INTO canonical_field_writes'))!;
+      expect(j.q).toContain('target_type, target_id');
+      expect(j.p.slice(0, 5)).toEqual([7, 3, 'EQUIPMENT', 11, 'serialNumber']);
+      expect(j.p[13]).toBe(false); // dry_run
+    }
+    vi.unstubAllEnvs();
   });
 
-  it('enabled : verrou, fiche + colonne équipement + caractéristiques (créées), journal, événement du bien porteur', async () => {
+  it('verrou, fiche + colonne équipement + caractéristiques (créées), journal, événement du bien porteur', async () => {
     const run = runner(ligneEquipement());
     const res = await es.writeCanonicalEntityFields({
-      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION', mode: 'enabled',
+      target: { type: 'EQUIPMENT', id: 11 }, accountId: 7, origin: 'RECONCILIATION',
       writes: [{ key: 'serialNumber', value: 'X1' }, { key: 'acquisitionPrice', value: 10 }],
     }, run as never);
-    expect(res).toMatchObject({ dryRun: false, assetId: 3 });
+    expect(res).toMatchObject({ assetId: 3 });
     const sel = run.calls[0];
     expect(sel.q).toContain('FOR UPDATE OF x');
     expect(sel.q).toContain('a.account_id = $2');
@@ -175,10 +168,10 @@ describe('writeCanonicalEntityFields — modes', () => {
     expect(emitBusinessEvent).toHaveBeenCalledWith({ type: 'ASSET_UPDATED', accountId: 7, entityId: 3 });
   });
 
-  it('enabled : entité d’un autre compte → introuvable, rien écrit', async () => {
+  it('entité d’un autre compte → introuvable, rien écrit', async () => {
     const run = runner(null);
     const res = await es.writeCanonicalEntityField({
-      target: { type: 'ROOM', id: 21 }, accountId: 99, origin: 'USER', mode: 'enabled', key: 'roomArea', value: 12,
+      target: { type: 'ROOM', id: 21 }, accountId: 99, origin: 'USER', key: 'roomArea', value: 12,
     }, run as never);
     expect(res).toMatchObject({ notFound: true, field: null });
     expect(run.calls).toHaveLength(1);

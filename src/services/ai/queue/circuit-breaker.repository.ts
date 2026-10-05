@@ -102,8 +102,14 @@ export async function recordModelAttempt(
  * à zéro, puisqu'il interrompt la série d'échecs complets consécutifs.
  */
 export async function recordChainOutcome(
-  treatment: Treatment, succeeded: boolean,
+  treatment: Treatment, succeeded: boolean, target: string | null = null,
 ): Promise<boolean> {
+  // Revue L16b-3 : un même document (cible) qui échoue encore et encore —
+  // reprise de file, relance depuis le tiroir — ne compte qu'UNE fois par
+  // fenêtre : seul, il ne peut pas suspendre le traitement pour tous les
+  // comptes. Un succès ne remet pas la mémoire à zéro (la série est déjà
+  // remise à zéro en base).
+  if (!succeeded && target && dejaCompte(treatment, target)) return false;
   if (succeeded) {
     await pgClient.unsafe(
       `UPDATE ai_treatment_state SET consecutive_chain_failures = 0
@@ -128,6 +134,26 @@ export async function recordChainOutcome(
     `${count} échecs complets consécutifs de la chaîne de modèles (seuil ${CHAIN_FAILURE_SUSPEND_THRESHOLD})`,
   );
 }
+
+/** Fenêtre pendant laquelle les échecs complets d'une même cible comptent une fois. */
+export const SAME_TARGET_WINDOW_MS = 6 * 60 * 60 * 1000;
+const ciblesComptees = new Map<string, number>();
+
+/**
+ * Cette cible a-t-elle déjà compté un échec complet dans la fenêtre ? Sinon
+ * elle est mémorisée. Mémoire PAR INSTANCE (sans migration) : avec N
+ * instances, un document compte au plus N fois par fenêtre.
+ */
+function dejaCompte(treatment: Treatment, target: string, now: number = Date.now()): boolean {
+  for (const [k, t] of ciblesComptees) if (now - t >= SAME_TARGET_WINDOW_MS) ciblesComptees.delete(k);
+  const cle = `${treatment}|${target}`;
+  if (ciblesComptees.has(cle)) return true;
+  ciblesComptees.set(cle, now);
+  return false;
+}
+
+/** Réservé aux tests. */
+export function __resetSameTargetMemoryForTests(): void { ciblesComptees.clear(); }
 
 /**
  * Ouvre le disjoncteur d'un traitement (WF-09 étape 50).
@@ -193,6 +219,11 @@ export interface GatewayOutcome {
    * blocage) — ni succès ni échec de disponibilité, le compteur n'est pas touché.
    */
   chainSucceeded: boolean | null;
+  /**
+   * Cible de l'appel (sources analysées) : ses échecs complets répétés ne
+   * comptent qu'une fois par fenêtre (`SAME_TARGET_WINDOW_MS`).
+   */
+  target?: string | null;
 }
 
 type OutcomeRecorder = (o: GatewayOutcome) => Promise<void>;
@@ -201,7 +232,7 @@ async function recordGatewayOutcome(o: GatewayOutcome): Promise<void> {
   for (const a of o.attempts) {
     await recordModelAttempt(o.treatment, a.model, a.succeeded);
   }
-  if (o.chainSucceeded !== null) await recordChainOutcome(o.treatment, o.chainSucceeded);
+  if (o.chainSucceeded !== null) await recordChainOutcome(o.treatment, o.chainSucceeded, o.target ?? null);
 }
 
 let injectedRecorder: OutcomeRecorder | null = null;

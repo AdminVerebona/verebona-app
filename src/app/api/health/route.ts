@@ -64,15 +64,14 @@ interface HealthCheckResult {
       firstFailure?: { filename: string; code?: string; message: string };
     };
     /**
-     * CDC 15 D-04 (revue lot 12) : version de configuration effective en
-     * architecture « master » alors que le commutateur de déploiement du
-     * traitement n'est pas `enabled` — le master n'est PAS appliqué, les
-     * étapes tournent. Avertissement : ne dégrade pas le statut global (le
-     * produit fonctionne), mais doit être vu en supervision.
+     * Lot 16b : variables retirées (anciens drapeaux et commutateurs IA)
+     * encore posées — ignorées par le code, à supprimer de l'hébergement
+     * (`RETIRED_ENV_VARIABLE`). Avertissement : ne dégrade pas le statut
+     * global, mais doit être vu en supervision.
      */
     aiPromptArchitecture: {
       status: 'ok' | 'warning';
-      warnings?: Array<{ treatment: string; code: string; switchName: string; switchMode: string; message: string }>;
+      warnings?: Array<{ treatment: string | null; code: string; switchName: string; switchMode: string; message: string }>;
     };
     /**
      * Corpus du Centre d'aide lu par l'assistant (CDC Centre d'aide PUB-01,
@@ -197,8 +196,8 @@ export async function GET(request: NextRequest) {
     result.status = 'degraded';
   }
 
-  // Check 4: cohérence architecture des prompts / commutateur (CDC 15 D-04).
-  // Ne lève jamais ; lecture de configuration bornée (1,5 s) et en cache.
+  // Check 4: variables IA retirées encore posées (CDC 15 T2-43 ; lot 16b :
+  // drapeaux AI_* et commutateurs supprimés). Ne lève jamais, sans base.
   try {
     const { promptArchitectureWarnings } = await import('@/services/ai/config/prompt-architecture');
     const warnings = await promptArchitectureWarnings();

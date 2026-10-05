@@ -42,7 +42,7 @@ beforeEach(() => {
   vi.spyOn(console, 'info').mockImplementation(() => {});
 });
 
-describe('chemin « étapes » (persistEvidence)', () => {
+describe('rattachement tardif (persistEvidence)', () => {
   it('D-C : `dateFinContrat` d’une LLD → leaseEndDate ; d’une facture → clé brute (historique inchangé)', async () => {
     const lld = await persistEvidence({ input, leadSourceId: 55, assetId: 10, fields: [champ('dateFinContrat', '2028-06-30')], documentType: 'CONTRAT_LLD', trace });
     expect(clesEcrites()).toEqual(['leaseEndDate']);

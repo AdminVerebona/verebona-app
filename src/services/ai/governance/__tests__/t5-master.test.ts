@@ -23,7 +23,7 @@ vi.mock('../../queue/job-queue.repository', () => ({ getEmergencyStop: async () 
 const { analyze, modify, formatCurrentPrompts, targetTexts } = await import('../prompt-control.service');
 const { __setConfigForTests } = await import('../../config/config-resolver');
 const { emptyTreatmentConfig } = await import('../../config/config-types');
-const { AI_OPERATIONS, operationDeprecation, listDeprecatedOperations } = await import('../../registry/operations');
+const { AI_OPERATIONS, listNonTargetOperations } = await import('../../registry/operations');
 const { inspectMasterTemplate, renderMasterPrompt } = await import('../../prompts/prompt-loader');
 const { T5ModifyOutput, T5AnalyzeOutput } = await import('../master/t5-contract');
 const { checkMasterProposal } = await import('../../config/prompt-architecture');
@@ -60,7 +60,7 @@ describe('t5_master_v1 — contrat §27', () => {
     expect(AI_OPERATIONS.t5_analyze).toMatchObject({ masterPromptCode: 't5_master_v1', task: 'ANALYZE', taskField: 'mode', active: true });
     expect(AI_OPERATIONS.t5_modify).toMatchObject({ masterPromptCode: 't5_master_v1', task: 'MODIFY', taskField: 'mode', active: true });
     for (const op of ['analyze_instruction', 'control_prompts', 'propose_change']) expect(AI_OPERATIONS[op]).toBeUndefined();
-    expect(listDeprecatedOperations().filter((o) => o.useCaseCode === 'AI_GOVERNANCE')).toEqual([]);
+    expect(listNonTargetOperations().filter((o) => o.useCaseCode === 'AI_GOVERNANCE')).toEqual([]);
   });
 
   it('sortie : cinq verdicts dont mixed ; mode discriminé', () => {
@@ -71,14 +71,15 @@ describe('t5_master_v1 — contrat §27', () => {
   });
 });
 
-describe('dépréciation (D-02)', () => {
-  it('étapes avec migratesTo et relais legacy_* : dépréciés ; masters et déterministes : non', () => {
-    const codes = listDeprecatedOperations().map((o) => o.operationCode);
-    expect(codes).toEqual(expect.arrayContaining(['extract_source', 'resolve_ambiguity', 'legacy_document_analysis', 'legacy_asset_suggest']));
-    for (const c of ['t1_analyze_document', 't2_answer', 't4_classify_event', 't5_modify', 'collect_evidence', 'evaluate_prompt']) expect(codes).not.toContain(c);
-    // Lot 16b-2 : plus aucune opération dépréciée pour T2 et T4 (retirées).
-    expect(listDeprecatedOperations().filter((o) => o.useCaseCode === 'INTELLIGENT_ASSISTANT' || o.useCaseCode === 'AGENDA_INTELLIGENCE')).toEqual([]);
-    expect(operationDeprecation(AI_OPERATIONS.legacy_asset_suggest)).toMatchObject({ reason: 'LEGACY_RELAY', replacedBy: null });
+describe('plus aucune opération dépréciée (D-02, lot 16b)', () => {
+  it('étapes historiques et relais legacy_* retirés : toutes les opérations modèle sont des masters (ou l’évaluation candidate)', () => {
+    expect(listNonTargetOperations()).toEqual([]);
+    for (const c of ['resolve_ambiguity', 'reconcile_links', 'legacy_asset_suggest', 'legacy_apply_suggestions', 'legacy_enrich_coherence']) {
+      expect(AI_OPERATIONS[c], c).toBeUndefined();
+    }
+    for (const c of ['t1_analyze_document', 't2_answer', 't3_value_conflict', 't3_link_ambiguity', 't4_classify_event', 't5_modify', 't6_formulate']) {
+      expect(AI_OPERATIONS[c].masterPromptCode, c).toBeTruthy();
+    }
   });
 });
 
@@ -87,7 +88,8 @@ describe('Prompt Control conscient des masters', () => {
     const v = version({ promptArchitecture: 'master', masterPrompt: null });
     const texts = await targetTexts(v as never);
     expect(texts.get('T1')).toMatchObject({ field: 'masterPrompt', fromFile: true, masterPromptCode: 't1_master_v1' });
-    expect(texts.get('T3')).toMatchObject({ field: 'prompt' });
+    // Lot 16b-3 : T3 aussi en master seul — même stockée sans architecture.
+    expect(texts.get('T3')).toMatchObject({ field: 'masterPrompt', masterPromptCode: 't3_master_v1' });
     // Lot 16b-2 : T2 n'a plus que son master (fichier du dépôt si vide).
     expect(texts.get('T2')).toMatchObject({ field: 'masterPrompt', fromFile: true, masterPromptCode: 't2_master_v1' });
     const txt = formatCurrentPrompts(v as never, texts);

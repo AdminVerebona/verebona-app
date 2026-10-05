@@ -6,6 +6,8 @@
  * quelle que soit la sortie du modèle — ces tests le vérifient.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 const getVersion = vi.fn();
 const getActiveVersion = vi.fn();
@@ -35,9 +37,13 @@ const { AI_OPERATIONS } = await import('../../registry/operations');
 const P = (t: string) => `Prompt ${t} actuel, suffisamment long pour être un vrai prompt de travail administrable.`;
 const NEW = (t: string) => `Prompt ${t} réécrit : nommer chaque document par son type et ce qu'il concerne, sans numéro.`;
 
-const entree = (treatment: string, prompt = P(treatment)) => ({
-  treatment, prompt, primaryModel: 'm1', fallback1: 'm2', guardrails: [{ code: 'g' }], triggers: [],
+const entree = (treatment: string, prompt = P(treatment), masterPrompt: string | null = null) => ({
+  treatment, prompt, masterPrompt, primaryModel: 'm1', fallback1: 'm2', guardrails: [{ code: 'g' }], triggers: [],
 });
+// Lot 16b-3 : T3 est master seul — T5 réécrit le master COMPLET (fichier du
+// dépôt présenté quand la version n'a pas de texte master).
+const FICHIER_T3 = readFileSync(join(process.cwd(), 'src/services/ai/prompts/reconciliation/t3_master_v1.txt'), 'utf8');
+const MASTER_T3 = `${FICHIER_T3}\nRègle ajoutée : citer le titre du document arbitré.`;
 const version = (over: Record<string, unknown> = {}) => ({
   id: 1, status: 'DRAFT', environment: 'preprod', label: null, isStale: false,
   createdAt: new Date('2026-09-20T10:00:00Z'),
@@ -50,7 +56,8 @@ const sortie = (over: Record<string, unknown> = {}) => ({
     mode: 'MODIFY',
     verdict: 'prompt',
     analysis: 'Les titres reprennent le numéro de facture : T1 ne donne aucune règle de nommage.',
-    targets: [{ treatment: 'T1', reason: 'Aucune règle de titre.', proposedContent: NEW('T1') }],
+    // Lot 16b-3 : tous les traitements sont master — la cible est le master complet.
+    targets: [{ treatment: 'T3', reason: 'Aucune règle de titre.', proposedContent: MASTER_T3 }],
     requiredCodeChanges: [], requiredSchemaChanges: [], configurationRecommendations: [], risks: [], requiredTests: [],
     ...over,
   },
@@ -87,13 +94,16 @@ describe('opération dédiée', () => {
 describe('T5 choisit les cibles', () => {
   it('écrit chaque prompt proposé, un ou plusieurs', async () => {
     getVersion.mockResolvedValue(version());
+    // Lot 16b-3 : T1 et T3 master seul — master COMPLET proposé pour chacun.
+    const masterT1 = `${readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis/t1_master_v1.txt'), 'utf8')}\nRègle ajoutée.`;
     execute.mockResolvedValue(sortie({ targets: [
-      { treatment: 'T1', reason: 'titre', proposedContent: NEW('T1') },
-      // T3 (encore en `steps` possible) ; T2 et T4 n'ont plus que leur master (lot 16b-2).
-      { treatment: 'T3', reason: 'citation', proposedContent: NEW('T3') },
+      { treatment: 'T1', reason: 'titre', proposedContent: masterT1 },
+      { treatment: 'T3', reason: 'citation', proposedContent: MASTER_T3 },
     ] }));
     const r = await modify(demande());
     expect(savePrompt).toHaveBeenCalledTimes(2);
+    expect(savePrompt).toHaveBeenCalledWith(expect.objectContaining({ treatment: 'T3', field: 'masterPrompt', next: MASTER_T3 }));
+    expect(savePrompt).toHaveBeenCalledWith(expect.objectContaining({ treatment: 'T1', field: 'masterPrompt', next: masterT1 }));
     expect(r.changes.map((c) => [c.treatment, c.applied])).toEqual([['T1', true], ['T3', true]]);
     expect(r).toMatchObject({ applied: true, draftId: 1, mode: 'modify' });
     expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't5_modify' });
@@ -105,7 +115,7 @@ describe('T5 choisit les cibles', () => {
     execute.mockResolvedValue(sortie({ targets: [
       { treatment: 'T5', reason: 'moi-même', proposedContent: NEW('T5') },
       { treatment: 'T9', reason: '?', proposedContent: NEW('T9') },
-      { treatment: 't3', reason: 'casse', proposedContent: NEW('T3') },
+      { treatment: 't3', reason: 'casse', proposedContent: MASTER_T3 },
     ] }));
     const r = await modify(demande());
     expect(r.changes.map((c) => c.treatment)).toEqual(['T3']);
@@ -119,7 +129,7 @@ describe('T5 choisit les cibles', () => {
     // Écriture conditionnelle de la SEULE zone prompt (revue lot 16) :
     // modèles, replis et garde-fous ne font pas partie de l'écriture.
     expect(savePrompt).toHaveBeenCalledWith({
-      versionId: 1, treatment: 'T1', field: 'prompt', expected: P('T1'), next: NEW('T1'), userId: 7,
+      versionId: 1, treatment: 'T3', field: 'masterPrompt', expected: null, next: MASTER_T3, userId: 7,
     });
   });
 
@@ -128,7 +138,7 @@ describe('T5 choisit les cibles', () => {
     execute.mockResolvedValue(sortie());
     await modify(demande());
     expect(recordT5Modification).toHaveBeenCalledWith(expect.objectContaining({
-      treatment: 'T1', before: P('T1'), after: NEW('T1'), traceId: 'trace-1', versionId: 1,
+      treatment: 'T3', before: FICHIER_T3, after: MASTER_T3, traceId: 'trace-1', versionId: 1, field: 'masterPrompt',
     }));
   });
 });
@@ -139,7 +149,7 @@ describe('analyse seule (T5-006)', () => {
     execute.mockResolvedValue(sortie());
     const r = await analyze(1, 'Pourquoi ces titres ?', 99, 7);
     expect(r.applied).toBe(false);
-    expect(r.changes).toEqual([expect.objectContaining({ treatment: 'T1', applied: false, diff: null })]);
+    expect(r.changes).toEqual([expect.objectContaining({ treatment: 'T3', applied: false, diff: null })]);
     expect(savePrompt).not.toHaveBeenCalled();
     expect(createDraft).not.toHaveBeenCalled();
     expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't5_analyze' });
@@ -200,7 +210,7 @@ describe('brouillon (T5-004, T5-007)', () => {
   it('n’écrase pas un prompt modifié pendant l’appel modèle', async () => {
     getVersion
       .mockResolvedValueOnce(version())
-      .mockResolvedValueOnce(version({ entries: [entree('T1', 'Texte enregistré entre-temps par un autre administrateur.')] }));
+      .mockResolvedValueOnce(version({ entries: [entree('T3', P('T3'), 'Texte master enregistré entre-temps par un autre administrateur.')] }));
     execute.mockResolvedValue(sortie());
     const r = await modify(demande());
     expect(savePrompt).not.toHaveBeenCalled();

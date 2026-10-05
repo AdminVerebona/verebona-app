@@ -3,11 +3,11 @@
  * effective, ou retirés de l'écran :
  *   · reprise T1 toutes les 5 min (`analysis-recovery-scheduler`) →
  *     déclencheur `analysis_recovery` ;
- *   · revue IA du cron `/api/cron/hourly-enrichment` → `coherence_ai_review` ;
+ *   · revue IA du cron `/api/cron/hourly-enrichment` → `coherence_ai_review`,
+ *     RETIRÉ au lot 16b-3 avec la route (reconnu, jamais actif) ;
  *   · `web_link_added`, jamais conditionnant → retiré (reconnu, ignoré).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NextRequest } from 'next/server';
 import { activeTriggerCodes, isTriggerActive, __setTriggerConfigLoader, DEFAULT_TRIGGERS } from '../triggers';
 import { listTriggers, triggerCodes, retiredTriggerCodes } from '../../config/catalogs';
 import { validateVersion } from '../../config/config-validation.service';
@@ -15,8 +15,6 @@ import { emptyTreatmentConfig } from '../../config/config-types';
 
 afterEach(() => {
   __setTriggerConfigLoader(null);
-  vi.doUnmock('@/services/ai/queue/triggers');
-  vi.doUnmock('@/services/document-ai/hourly-enrichment.service');
 });
 
 describe('catalogue et défauts', () => {
@@ -28,11 +26,13 @@ describe('catalogue et défauts', () => {
     expect(activeTriggerCodes('T1', [{ kind: 'event', code: 'web_link_added', active: true }]).has('web_link_added')).toBe(false);
   });
 
-  it('les deux déclenchements en dur deviennent des déclencheurs, actifs par défaut', () => {
+  it('analysis_recovery : déclencheur actif par défaut ; coherence_ai_review retiré (lot 16b-3), jamais actif', () => {
     expect(listTriggers('T1').map((t) => t.code)).toContain('analysis_recovery');
-    expect(listTriggers('T3').map((t) => t.code)).toContain('coherence_ai_review');
     expect(activeTriggerCodes('T1', []).has('analysis_recovery')).toBe(true);
-    expect(activeTriggerCodes('T3', null).has('coherence_ai_review')).toBe(true);
+    expect(listTriggers('T3').map((t) => t.code)).not.toContain('coherence_ai_review');
+    expect(retiredTriggerCodes().has('coherence_ai_review')).toBe(true);
+    expect(activeTriggerCodes('T3', null).has('coherence_ai_review')).toBe(false);
+    expect(activeTriggerCodes('T3', [{ kind: 'event', code: 'coherence_ai_review', active: true }]).has('coherence_ai_review')).toBe(false);
   });
 
   it('version antérieure, liste renseignée SANS le nouveau code : il reste actif (aucune coupure au déploiement)', async () => {
@@ -40,7 +40,7 @@ describe('catalogue et défauts', () => {
     expect(await isTriggerActive('T1', 'analysis_recovery')).toBe(true);
     expect(await isTriggerActive('T1', 'source_uploaded')).toBe(true);
     __setTriggerConfigLoader(async () => ({ triggers: [{ kind: 'event', code: 'source_analyzed', active: true }] }));
-    expect(await isTriggerActive('T3', 'coherence_ai_review')).toBe(true);
+    expect(await isTriggerActive('T3', 'coherence_ai_review')).toBe(false);
     // Les codes historiques gardent la règle « la liste fait foi ».
     expect(await isTriggerActive('T3', 'schedule_daily')).toBe(false);
   });
@@ -86,21 +86,10 @@ describe('reprise T1 toutes les 5 min', () => {
   });
 });
 
-describe('cron hourly-enrichment', () => {
-  it.each([[false, 'inactive'], [true, 'active']] as const)(
-    'déclencheur coherence_ai_review %s → phase IA %s', async (actif, libelle) => {
-      vi.resetModules();
-      const isActive = vi.fn(async () => actif);
-      const run = vi.fn(async () => ({ aiReviewItemsProcessed: 0 }));
-      vi.doMock('@/services/ai/queue/triggers', () => ({ isTriggerActive: isActive }));
-      vi.doMock('@/services/document-ai/hourly-enrichment.service', () => ({ runHourlyEnrichment: run }));
-      process.env.CRON_SECRET = 's3cret';
-      const { GET } = await import('@/app/api/cron/hourly-enrichment/route');
-      const res = await GET(new NextRequest('http://x/api/cron/hourly-enrichment', { headers: { authorization: 'Bearer s3cret' } }));
-      expect(res.status).toBe(200);
-      expect(isActive).toHaveBeenCalledWith('T3', 'coherence_ai_review');
-      expect(run).toHaveBeenCalledWith({ aiReview: actif });
-      expect((await res.json()).aiReviewTrigger).toBe(libelle);
-    },
-  );
+describe('cron hourly-enrichment (supprimé, lot 16b-3)', () => {
+  it('route et service absents', async () => {
+    const { existsSync } = await import('fs');
+    expect(existsSync('src/app/api/cron/hourly-enrichment/route.ts')).toBe(false);
+    expect(existsSync('src/services/document-ai/hourly-enrichment.service.ts')).toBe(false);
+  });
 });

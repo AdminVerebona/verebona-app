@@ -141,7 +141,7 @@ const tableCell = z.object({
   rowspan: z.number().int().positive().max(1000).optional(),
   confidence: confidence.optional(),
 });
-/** Même forme que `tableOutput` de `extract_source` (T1-08, U10). */
+/** Tableau structuré (T1-08, U10) : même forme que l'ancien `extract_source`, lue par `knowledge/document-tables`. */
 export const t1Table = z.object({
   title: z.string().max(300).optional(),
   pageStart: z.number().int().positive().optional(),

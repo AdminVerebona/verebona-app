@@ -44,6 +44,7 @@ const AgendaItemDrawer = dynamic(
   { ssr: false }
 );
 import { toast } from 'sonner';
+import { analyzeErrorFeedback, type AnalyzeFeedback } from './document-analysis-feedback';
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
@@ -52,6 +53,7 @@ import type { RoomDrawerItem } from '@/components/assets/RoomDrawer';
 import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { VerebonaMascot } from '@/components/verebona/VerebonaMascot';
 import {
   RubricTypeFields,
   effectiveRubric,
@@ -905,11 +907,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       });
       if (!startRes.ok || !startRes.body) {
         const err = await startRes.json().catch(() => ({}));
-        setAnalyzeError(
-          err.error === 'PLAN_UPGRADE_REQUIRED'
-            ? "L'analyse automatique nécessite un abonnement Premium."
-            : "Impossible de lancer l'analyse. Veuillez réessayer."
-        );
+        const retour = analyzeErrorFeedback({ code: err.error, message: err.message });
+        setAnalyzeError(retour.message);
+        toast.error(retour.message, { duration: 8000 });
         setIsAnalyzing(false);
         return;
       }
@@ -919,6 +919,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       const dec = new TextDecoder();
       let buf = '';
       let analysisError: string | null = null;
+      let analysisFeedback: AnalyzeFeedback | null = null;
       outer: while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -932,9 +933,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             if (evt.type === 'done') break outer;
             if (evt.type === 'progress' && evt.stage) setSseStage(evt.stage);
             if (evt.type === 'error') {
-              analysisError = evt.code === 'PLAN_UPGRADE_REQUIRED'
-                ? "L'analyse automatique nécessite un abonnement Premium."
-                : "Impossible de lancer l'analyse. Veuillez réessayer.";
+              // Lot 16b-3 : motif du serveur (échec motivé du master T1,
+              // analyse déjà en file…) rendu par un toast.
+              analysisFeedback = analyzeErrorFeedback(evt);
+              analysisError = analysisFeedback.message;
               break outer;
             }
           } catch { /* ignore malformed line */ }
@@ -944,6 +946,16 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       if (analysisError) {
         setAnalyzeError(analysisError);
         setIsAnalyzing(false);
+        if (analysisFeedback?.level === 'info') toast.info(analysisError, { duration: 6000 });
+        else toast.error(analysisError, { duration: 8000 });
+        // État relu : après un échec, le document est remis en file durable
+        // (« En file ») ou reste en échec motivé — jamais l'état local périmé.
+        const relu = await apiClient.get<any>(`/api/files/${doc.id}`).catch(() => null);
+        if (relu) {
+          const etat = relu.analysisState ?? relu.analysis_state ?? null;
+          setAnalysisState(etat);
+          setFullData(prev => prev ? { ...prev, analysisState: etat, analysisFailReason: relu.analysisFailReason ?? relu.analysis_fail_reason ?? null } : prev);
+        }
         window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId: doc.id } }));
         return;
       }
@@ -1062,6 +1074,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       if (bgToastIdRef.current !== null) {
         toast.error("Erreur lors de l'analyse", { id: bgToastIdRef.current, duration: 6000 });
         bgToastIdRef.current = null;
+      } else {
+        toast.error("Erreur lors de l'analyse. Veuillez réessayer.", { duration: 6000 });
       }
     }
   }, [doc, onRefresh]);
@@ -1137,6 +1151,27 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {isEditing ? editFilename || filename : filename}
                 </SheetTitle>
                 <Badge variant="outline" className="mt-1.5 text-xs">{typeLabel}</Badge>
+                {/* §23.3 : Verebona depuis le document — petite mascotte et
+                    « Demander à Verebona », qui ouvre l'assistant sur CE
+                    document (contexte `documentId`). Aucune ouverture
+                    automatique : l'utilisateur clique (§22.10). */}
+                {doc?.id != null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const documentId = doc.id;
+                      onOpenChange(false);
+                      window.dispatchEvent(new CustomEvent('verebona:open', {
+                        detail: { question: 'Quel est le statut de ce document ?', context: { documentId } },
+                      }));
+                    }}
+                    className="mt-2 flex items-center gap-1.5 rounded-full border border-[color:var(--border-subtle)] px-2.5 py-1 text-xs font-medium text-[color:var(--text-primary)] hover:bg-muted"
+                    aria-label="Demander à Verebona à propos de ce document"
+                  >
+                    <VerebonaMascot pose={isCurrentlyAnalyzing ? 'thinking' : 'idle'} size={18} />
+                    Demander à Verebona
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1388,6 +1423,11 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
                     {analysisState === 'ANALYSIS_FAILED' && !isAnalyzing && (
                       <div className="pl-1 space-y-1">
+                        {fullData?.analysisFailReason && (
+                          <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
+                            {fullData.analysisFailReason}
+                          </p>
+                        )}
 
                         {retryCount >= 2 ? (
                           <p className="text-[10px] text-muted-foreground/70 leading-relaxed">

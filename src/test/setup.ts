@@ -15,10 +15,9 @@ beforeEach(() => {
   process.env.GEMINI_API_KEY = 'test-key-not-used';
   // Aucun test unitaire ne doit ouvrir de connexion à la base.
   process.env.AI_IDEMPOTENCY_DISABLED = 'true';
-  // Bascule : tous les nouveaux moteurs actifs en test.
-  process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
-  process.env.AI_RECONCILIATION_ENGINE = 'enabled';
-  // AI_INTELLIGENT_ASSISTANT, AI_AGENDA_ENGINE : retirés (lot 16b-2).
+  // Plus aucun drapeau de moteur : AI_INTELLIGENT_ASSISTANT, AI_AGENDA_ENGINE
+  // (lot 16b-2), AI_UNIFIED_SOURCE_ANALYSIS et AI_RECONCILIATION_ENGINE
+  // (lot 16b-3) retirés.
 });
 
 afterEach(() => {

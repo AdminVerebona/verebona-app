@@ -1,7 +1,7 @@
 /**
  * CDC 15 §25 (LINK_AMBIGUITY), T3-07, P-T3-02 — départage des liens par le
  * master T3 : candidats en ordre neutre, relation par section (monde fermé),
- * marge minimale et abstention explicite, chemin `steps` inchangé.
+ * marge minimale et abstention explicite ; master seul depuis le lot 16b-3.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'fs';
@@ -22,7 +22,7 @@ const { emptyTreatmentConfig } = await import('../../../config/config-types');
 const FIXTURE = JSON.parse(readFileSync(join(__dirname, '..', '__fixtures__', 'p-t3-02-deux-candidats-equivalents.json'), 'utf8'));
 
 let fake: InstanceType<typeof FakeProvider>;
-const T3 = (arch: 'steps' | 'master') => __setConfigForTests({
+const T3 = (arch: 'master' = 'master') => __setConfigForTests({
   versionId: 32, entries: [{ ...emptyTreatmentConfig('T3'), primaryModel: 'm-a', promptArchitecture: arch }],
 });
 const match = (candidateId: number, score: number) => ({ candidateId, score, confidence: 'probable' as const, reason: 'signal' });
@@ -99,13 +99,10 @@ describe('P-T3-02 — deux candidats équivalents : aucune liaison automatique',
     expect(traces[0]).toMatchObject({ operationCode: 't3_link_ambiguity', task: 'LINK_AMBIGUITY', masterPromptCode: 't3_master_v1' });
   });
 
-  it('steps : reconcile_links historique, scores proches rendus tels quels (comportement inchangé)', async () => {
-    T3('steps');
-    fake.onAny(() => ({ rawText: JSON.stringify({ matches: [{ id: 9, score: 0.74, reason: 'a' }, { id: 12, score: 0.7, reason: 'b' }] }), inputTokens: 1, outputTokens: 1 }));
-    const r = await reconcileLinks({ accountId: 1, variables: FIXTURE.context.variables });
-    expect(r.matches.map((m) => m.id)).toEqual([9, 12]);
-    expect(r.ambiguities).toBeUndefined();
-    expect(traces[0]).toMatchObject({ operationCode: 'reconcile_links', task: null });
+  it('sans version de configuration : master quand même (lot 16b-3), jamais reconcile_links', async () => {
+    fake.onAny(() => ({ rawText: JSON.stringify({ task: 'LINK_AMBIGUITY', matches: [match(9, 0.74), match(12, 0.7)] }), inputTokens: 1, outputTokens: 1 }));
+    await reconcileLinks({ accountId: 1, variables: FIXTURE.context.variables });
+    expect(traces[0]).toMatchObject({ operationCode: 't3_link_ambiguity', task: 'LINK_AMBIGUITY' });
   });
 });
 

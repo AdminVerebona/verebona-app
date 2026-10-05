@@ -13,7 +13,7 @@
  * accident.
  *
  * Format d'un enregistrement (fichier JSON de `recordings/` ou objet) :
- *   { "operationCode": "extract_source", "task": "ANALYZE_DOCUMENT",
+ *   { "operationCode": "t1_analyze_document", "task": "ANALYZE_DOCUMENT",
  *     "output": { … } | "texte brut", "inputTokens": 1200, "outputTokens": 300 }
  * Plusieurs enregistrements pour la même clé sont rendus dans l'ordre ; le
  * dernier est réutilisé ensuite si `repeat` est vrai.

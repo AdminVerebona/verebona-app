@@ -1,14 +1,13 @@
 /**
- * Commutateur `AI_T1_ANALYSIS_MODE` dans le pipeline — CDC 15 §29, D-04,
- * D-18 ; plan § Déploiement.
+ * Pipeline T1 — prompt maître SEUL (lot 16b-3 ; CDC 15 §29, D-04).
  *
- *   · legacy (défaut) : chemin historique, aucune lecture de configuration
- *     master, aucune exécution master ;
- *   · shadow : chemin historique + observation sur échantillon, rien persisté
- *     par le master ;
- *   · enabled : master seulement si la version de configuration déclare T1 en
- *     `master` ; faits écrits par `persistProjectedFacts` ; crédits, lot,
- *     notification et événements aval identiques.
+ *   · GROUP_UPLOAD + ANALYZE_DOCUMENT master, faits écrits par
+ *     `persistProjectedFacts` sur leur cible ; crédits, lot, notification et
+ *     événements aval ;
+ *   · plus aucune lecture d'`AI_T1_ANALYSIS_MODE` ni de l'architecture de la
+ *     version : une variable retirée encore posée est sans effet ;
+ *   · échec du master : PAS de repli — sources en échec (`failedSourceIds`),
+ *     rien persisté, aucun crédit consommé, aucune notification de réussite.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SourceAnalysisResult, SourceInput } from '../types';
@@ -42,10 +41,9 @@ const resultat = (origine: string): SourceAnalysisResult => ({
 });
 
 const m = vi.hoisted(() => ({
-  groupSources: vi.fn(), groupUpload: vi.fn(), extractSource: vi.fn(), classifyDocument: vi.fn(),
-  identifyEntities: vi.fn(), classifyRubric: vi.fn(), analyseGroupWithMaster: vi.fn(), scheduleT1Shadow: vi.fn(),
-  persistEvidence: vi.fn(), persistProjectedFacts: vi.fn(), persistAnalysisResult: vi.fn(), emitSourceAnalyzed: vi.fn(),
-  consumeAnalysisCredits: vi.fn(), notifyLotCompleted: vi.fn(), getPromptArchitecture: vi.fn(),
+  groupUpload: vi.fn(), analyseGroupWithMaster: vi.fn(),
+  persistProjectedFacts: vi.fn(), persistAnalysisResult: vi.fn(), emitSourceAnalyzed: vi.fn(),
+  consumeAnalysisCredits: vi.fn(), notifyLotCompleted: vi.fn(),
   enqueueT3ForAffectedAssets: vi.fn(), writeMasterDocumentLinks: vi.fn(),
 }));
 
@@ -54,16 +52,9 @@ vi.mock('@/services/commercial-model.service', () => ({
   consumeAnalysisCredits: (...a: unknown[]) => m.consumeAnalysisCredits(...a),
 }));
 vi.mock('../adapters', () => ({ getSourceAdapter: () => ({ prepare: async () => input }) }));
-vi.mock('../steps/group-sources.step', () => ({ groupSources: (...a: unknown[]) => m.groupSources(...a) }));
 vi.mock('../steps/group-upload.step', () => ({ groupUpload: (...a: unknown[]) => m.groupUpload(...a) }));
-vi.mock('../steps/extract-source.step', () => ({ extractSource: (...a: unknown[]) => m.extractSource(...a) }));
-vi.mock('../steps/classify-document.step', () => ({ classifyDocument: (...a: unknown[]) => m.classifyDocument(...a) }));
-vi.mock('../steps/identify-entities.step', () => ({ identifyEntities: (...a: unknown[]) => m.identifyEntities(...a) }));
-vi.mock('../steps/classify-rubric.step', () => ({
-  classifyRubric: (...a: unknown[]) => m.classifyRubric(...a), loadAssetFamilies: async () => ['VEHICULE'],
-}));
+vi.mock('../master/rubric-rules', () => ({ loadAssetFamilies: async () => ['VEHICULE'] }));
 vi.mock('../steps/persist-evidence.step', () => ({
-  persistEvidence: (...a: unknown[]) => m.persistEvidence(...a),
   persistProjectedFacts: (...a: unknown[]) => m.persistProjectedFacts(...a),
 }));
 vi.mock('../master/analyse-group-master', () => ({ analyseGroupWithMaster: (...a: unknown[]) => m.analyseGroupWithMaster(...a) }));
@@ -75,8 +66,6 @@ vi.mock('../master/reconciliation-fanout', () => ({
   enqueueT3ForAffectedAssets: (...a: unknown[]) => m.enqueueT3ForAffectedAssets(...a),
   enqueueT3ForAffectedEntities: async () => [],
 }));
-vi.mock('../master/shadow', () => ({ scheduleT1Shadow: (...a: unknown[]) => m.scheduleT1Shadow(...a) }));
-vi.mock('@/services/ai/config/prompt-architecture', () => ({ getPromptArchitecture: (...a: unknown[]) => m.getPromptArchitecture(...a) }));
 vi.mock('../persistence/analysis-result.repository', () => ({ persistAnalysisResult: (...a: unknown[]) => m.persistAnalysisResult(...a) }));
 vi.mock('../events', () => ({ emitSourceAnalyzed: (...a: unknown[]) => m.emitSourceAnalyzed(...a) }));
 vi.mock('../lot-notification', () => ({ notifyLotCompleted: (...a: unknown[]) => m.notifyLotCompleted(...a) }));
@@ -93,16 +82,14 @@ vi.mock('@/services/document-ai/fusion-detector', () => ({ detectFusionCandidate
 const { runSourceAnalysis } = await import('../pipeline');
 
 const trace = resultat('x').operationTrace;
-const ENV = ['AI_T1_ANALYSIS_MODE', 'AI_T1_SHADOW_SAMPLE_RATE'];
+const ENV = ['AI_T1_ANALYSIS_MODE', 'AI_T1_SHADOW_SAMPLE_RATE', 'AI_UNIFIED_SOURCE_ANALYSIS', 'AI_RECONCILIATION_ENGINE'];
+const lancer = (extra: Record<string, unknown> = {}) => runSourceAnalysis({
+  sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12, ...extra,
+});
 
 beforeEach(() => {
   for (const f of Object.values(m)) f.mockReset();
-  m.groupSources.mockResolvedValue({ groups: [[0]], trace });
   m.groupUpload.mockResolvedValue({ groups: [[0]], trace });
-  m.extractSource.mockResolvedValue({ document: resultat('legacy').document, extractedFields: resultat('legacy').extractedFields, warnings: [], trace });
-  m.classifyDocument.mockResolvedValue({ trace });
-  m.identifyEntities.mockResolvedValue({ ...resultat('legacy'), warnings: [], trace });
-  m.classifyRubric.mockResolvedValue(null);
   m.analyseGroupWithMaster.mockResolvedValue({
     result: resultat('master'),
     facts: [{ canonicalKey: 'mileage', value: 78000, target: { targetType: 'ASSET', targetEntityId: 12, targetConfidence: 'certain' } }],
@@ -111,85 +98,28 @@ beforeEach(() => {
   knowledgeCtx.length = 0;
   m.persistAnalysisResult.mockResolvedValue({ runId: 77, deduplicated: false, proposalCount: 0 });
   m.persistProjectedFacts.mockResolvedValue({ affectedAssetIds: [12, 13] });
-  m.enqueueT3ForAffectedAssets.mockResolvedValue({ enqueued: [13], legacy: [] });
+  m.enqueueT3ForAffectedAssets.mockResolvedValue({ enqueued: [13] });
   m.writeMasterDocumentLinks.mockResolvedValue({ created: 0, removed: 0 });
-  m.getPromptArchitecture.mockResolvedValue('master');
-  for (const f of [m.persistEvidence, m.emitSourceAnalyzed, m.consumeAnalysisCredits, m.notifyLotCompleted]) f.mockResolvedValue(undefined);
+  for (const f of [m.emitSourceAnalyzed, m.consumeAnalysisCredits, m.notifyLotCompleted]) f.mockResolvedValue(undefined);
   for (const k of ENV) delete process.env[k];
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => { for (const k of ENV) delete process.env[k]; });
 
-/** Effets communs aux trois chemins (crédits, notification, moteurs aval). */
+/** Effets d'une analyse réussie (crédits, notification, moteurs aval). */
 function effetsCommuns() {
   expect(m.consumeAnalysisCredits).toHaveBeenCalledWith(1, 1);
   expect(m.notifyLotCompleted).toHaveBeenCalledWith(expect.objectContaining({ accountId: 1, analysedCount: 1, failedCount: 0 }));
   expect(m.emitSourceAnalyzed).toHaveBeenCalledWith(expect.objectContaining({ accountId: 1, assetId: 12, leadSourceId: 1000 }));
 }
 
-describe('AI_T1_ANALYSIS_MODE', () => {
-  it('legacy (défaut) : chemin historique seul, configuration master jamais lue', async () => {
-    const out = await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
-    expect(out.analysedCount).toBe(1);
-    expect(m.groupSources).toHaveBeenCalled();
-    expect(m.extractSource).toHaveBeenCalled();
-    expect(m.persistEvidence).toHaveBeenCalledWith(expect.objectContaining({ assetId: 12 }));
-    expect(m.getPromptArchitecture).not.toHaveBeenCalled();
-    expect(knowledgeCtx[0]).not.toHaveProperty('multiAsset');
-    // Legacy : aucune écriture de lien hors déclencheur.
-    expect(m.writeMasterDocumentLinks).not.toHaveBeenCalled();
-    expect(m.groupUpload).not.toHaveBeenCalled();
-    expect(m.analyseGroupWithMaster).not.toHaveBeenCalled();
-    expect(m.persistProjectedFacts).not.toHaveBeenCalled();
-    expect(m.scheduleT1Shadow).not.toHaveBeenCalled();
-    effetsCommuns();
-  });
-
-  it('valeur invalide : lue legacy', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'on';
-    await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
-    expect(m.analyseGroupWithMaster).not.toHaveBeenCalled();
-    expect(m.scheduleT1Shadow).not.toHaveBeenCalled();
-  });
-
-  it('shadow échantillonné : historique persisté, master observé sur le résultat historique, rien écrit par le master', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'shadow';
-    process.env.AI_T1_SHADOW_SAMPLE_RATE = '1';
-    await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
-    expect(m.extractSource).toHaveBeenCalled();
-    expect(m.persistEvidence).toHaveBeenCalled();
-    expect(m.scheduleT1Shadow).toHaveBeenCalledTimes(1);
-    expect(m.scheduleT1Shadow.mock.calls[0][0]).toMatchObject({ groupIndices: [0], legacy: { document: { title: { value: 'legacy' } } } });
-    expect(m.persistProjectedFacts).not.toHaveBeenCalled();
-    expect(m.getPromptArchitecture).not.toHaveBeenCalled();
-    effetsCommuns();
-  });
-
-  it('shadow hors échantillon : aucune observation', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'shadow';
-    process.env.AI_T1_SHADOW_SAMPLE_RATE = '0';
-    await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
-    expect(m.scheduleT1Shadow).not.toHaveBeenCalled();
-  });
-
-  it('enabled mais version de configuration en « steps » : chemin historique', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'enabled';
-    m.getPromptArchitecture.mockResolvedValue('steps');
-    await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
-    expect(m.getPromptArchitecture).toHaveBeenCalledWith('T1');
-    expect(m.extractSource).toHaveBeenCalled();
-    expect(m.analyseGroupWithMaster).not.toHaveBeenCalled();
-    effetsCommuns();
-  });
-
-  it('enabled et version « master » : GROUP_UPLOAD + ANALYZE_DOCUMENT master, faits écrits sur leur cible', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'enabled';
-    await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
+describe('pipeline T1 — master seul', () => {
+  it('GROUP_UPLOAD + ANALYZE_DOCUMENT master, faits écrits sur leur cible', async () => {
+    const out = await lancer();
+    expect(out).toMatchObject({ analysedCount: 1, failedSourceIds: [] });
     expect(m.groupUpload).toHaveBeenCalled();
-    expect(m.groupSources).not.toHaveBeenCalled();
-    expect(m.extractSource).not.toHaveBeenCalled();
     expect(m.analyseGroupWithMaster).toHaveBeenCalledTimes(1);
-    expect(m.persistEvidence).not.toHaveBeenCalled();
     expect(m.persistProjectedFacts).toHaveBeenCalledWith(expect.objectContaining({
       leadSourceId: 1000, analysisRunId: 77, facts: [{ canonicalKey: 'mileage', value: 78000, target: { targetType: 'ASSET', targetEntityId: 12, targetConfidence: 'certain' } }],
       // Version RÉELLEMENT résolue du master, pas le code en dur.
@@ -199,69 +129,93 @@ describe('AI_T1_ANALYSIS_MODE', () => {
     expect(run.result.document.title.value).toBe('master');
     expect(run.master).toEqual({ masterPromptVersion: 't1_master_v1@cfg8:abcdef123456' });
     expect(m.writeMasterDocumentLinks).toHaveBeenCalledWith(expect.objectContaining({ accountId: 1, fileId: 1000 }));
-    // Base de connaissance : multi-biens transmis en master.
-    expect(knowledgeCtx[0]).toMatchObject({ multiAsset: true });
+    // Base de connaissance : multi-biens et version du master transmis.
+    expect(knowledgeCtx[0]).toMatchObject({ multiAsset: true, promptVersion: 't1_master_v1@cfg8:abcdef123456' });
     effetsCommuns();
   });
 
-  it('enabled : T3 mis en file pour CHAQUE bien touché, pas seulement le bien du document', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'enabled';
-    await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
+  it('variables retirées encore posées (legacy / shadow) : sans effet, master seul', async () => {
+    process.env.AI_T1_ANALYSIS_MODE = 'legacy';
+    process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'legacy';
+    process.env.AI_T1_SHADOW_SAMPLE_RATE = '1';
+    process.env.AI_RECONCILIATION_ENGINE = 'legacy';
+    await lancer();
+    expect(m.analyseGroupWithMaster).toHaveBeenCalledTimes(1);
+    effetsCommuns();
+  });
+
+  it('T3 mis en file pour CHAQUE bien touché, pas seulement le bien du document', async () => {
+    await lancer();
     expect(m.enqueueT3ForAffectedAssets).toHaveBeenCalledWith({
       accountId: 1, userId: 2, leadSourceId: 1000, affectedAssetIds: [12, 13], documentAssetId: 12,
     });
   });
 
-  it('enabled, aucun fait : persistProjectedFacts appelé quand même (supersede des anciennes preuves)', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'enabled';
+  it('aucun fait : persistProjectedFacts appelé quand même (supersede des anciennes preuves)', async () => {
     m.analyseGroupWithMaster.mockResolvedValue({
       result: resultat('master'), facts: [], projection: {}, documentAssetId: 12, promptVersion: 't1_master_v1@file',
     });
-    await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
+    await lancer();
     expect(m.persistProjectedFacts).toHaveBeenCalledWith(expect.objectContaining({ facts: [], analysisRunId: 77 }));
   });
 
-  it('enabled, échec total du master : repli sur les étapes pour ce groupe, avertissement', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'enabled';
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('échec total du master : PAS de repli — source en échec, rien persisté, aucun crédit', async () => {
     m.analyseGroupWithMaster.mockRejectedValue(new Error('ALL_MODELS_FAILED'));
-    const out = await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
-    expect(out.analysedCount).toBe(1);
-    expect(m.extractSource).toHaveBeenCalled();
-    expect(m.persistEvidence).toHaveBeenCalled();
+    const out = await lancer();
+    expect(out).toMatchObject({ analysedCount: 0, failedSourceIds: [1000], results: [] });
+    expect(out.skippedReason).toBeUndefined();
+    expect(m.persistAnalysisResult).not.toHaveBeenCalled();
     expect(m.persistProjectedFacts).not.toHaveBeenCalled();
-    const run = m.persistAnalysisResult.mock.calls[0][0];
-    expect(run.master).toBeUndefined();
-    expect(run.result.warnings).toContainEqual(expect.objectContaining({ code: 'MASTER_FALLBACK_STEPS', target: 't1-master:fallback-steps' }));
-    expect(console.warn).toHaveBeenCalled();
-    effetsCommuns();
+    expect(m.emitSourceAnalyzed).not.toHaveBeenCalled();
+    // Facturation : rien pour un essai en échec (la reprise consommera une fois).
+    expect(m.consumeAnalysisCredits).not.toHaveBeenCalled();
+    expect(m.notifyLotCompleted).toHaveBeenCalledWith(expect.objectContaining({ analysedCount: 0, failedCount: 1 }));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('source 1000'), 'ALL_MODELS_FAILED');
   });
 
-  it('shadow : un job annulé avant persistance n’appelle pas le master', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'shadow';
-    process.env.AI_T1_SHADOW_SAMPLE_RATE = '1';
+  it('revue 3a : sortie invalide sur toute la chaîne → échec DÉFINITIF (code conservé) ; panne fournisseur → transitoire', async () => {
+    const { AiGatewayError } = await import('../../gateway/errors');
+    m.analyseGroupWithMaster.mockRejectedValue(new AiGatewayError('ALL_MODELS_FAILED', 't1_analyze_document', 'Tous les modèles ont échoué.',
+      { recoverable: true, lastFailureCode: 'INVALID_OUTPUT' }));
+    expect(await lancer()).toMatchObject({ failedSourceIds: [1000], definitiveFailedSourceIds: [1000] });
+    m.analyseGroupWithMaster.mockRejectedValue(new AiGatewayError('ALL_MODELS_FAILED', 't1_analyze_document', 'Tous les modèles ont échoué.',
+      { recoverable: true, lastFailureCode: 'PROVIDER_UNAVAILABLE' }));
+    expect(await lancer()).toMatchObject({ failedSourceIds: [1000], definitiveFailedSourceIds: [] });
+    const { T1MasterAnalysisError } = await import('../pipeline');
+    const e = new T1MasterAnalysisError('x', { lastFailureCode: 'INVALID_OUTPUT', definitive: true });
+    expect([e.lastFailureCode, e.definitive]).toEqual(['INVALID_OUTPUT', true]);
+  });
+
+  it('revue 3a : clôture du lot / notification en panne après persistance → l’exécution n’échoue pas (pas de rappel du master)', async () => {
+    m.notifyLotCompleted.mockRejectedValue(new Error('notifications indisponibles'));
+    const out = await lancer({ guard: { assertActive: async () => {} } as never });
+    expect(out).toMatchObject({ analysedCount: 1, failedSourceIds: [] });
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('notification de fin de lot'), 'notifications indisponibles');
+  });
+
+  it('échec du master sur un groupe : les autres groupes du lot sont analysés et facturés seuls', async () => {
+    m.groupUpload.mockResolvedValue({ groups: [[0], [0]], trace });
+    m.analyseGroupWithMaster
+      .mockRejectedValueOnce(new Error('sortie invalide'))
+      .mockResolvedValueOnce({ result: resultat('master'), facts: [], projection: {}, documentAssetId: 12, promptVersion: 't1_master_v1@file' });
+    const out = await lancer();
+    expect(out).toMatchObject({ analysedCount: 1, failedSourceIds: [1000] });
+    expect(m.consumeAnalysisCredits).toHaveBeenCalledWith(1, 1);
+  });
+
+  it('interruption (rollback) pendant l’appel : remontée telle quelle, aucune écriture d’échec', async () => {
+    const { ExecutionCancelledError } = await import('../../queue/execution-control');
+    m.analyseGroupWithMaster.mockRejectedValue(new ExecutionCancelledError('rollback'));
+    await expect(lancer({ guard: { assertActive: async () => {} } as never })).rejects.toBeInstanceOf(ExecutionCancelledError);
+    expect(m.notifyLotCompleted).not.toHaveBeenCalled();
+  });
+
+  it('un job annulé avant persistance n’écrit rien', async () => {
     const { ExecutionCancelledError } = await import('../../queue/execution-control');
     const guard = {
       assertActive: async (etape?: string) => { if (etape === 'persistance du résultat') throw new ExecutionCancelledError('rollback'); },
     };
-    await expect(runSourceAnalysis({
-      sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12, guard: guard as never,
-    })).rejects.toBeTruthy();
-    expect(m.scheduleT1Shadow).not.toHaveBeenCalled();
-  });
-
-  it('shadow en production : ignoré (D-18), comportement legacy', async () => {
-    process.env.AI_T1_ANALYSIS_MODE = 'shadow';
-    process.env.AI_T1_SHADOW_SAMPLE_RATE = '1';
-    const avant = process.env.NEXT_PUBLIC_APP_ENV;
-    process.env.NEXT_PUBLIC_APP_ENV = 'production';
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      await runSourceAnalysis({ sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2, linkedAssetId: 12 });
-    } finally {
-      if (avant === undefined) delete process.env.NEXT_PUBLIC_APP_ENV; else process.env.NEXT_PUBLIC_APP_ENV = avant;
-    }
-    expect(m.scheduleT1Shadow).not.toHaveBeenCalled();
-    expect(m.extractSource).toHaveBeenCalled();
+    await expect(lancer({ guard: guard as never })).rejects.toBeTruthy();
+    expect(m.persistAnalysisResult).not.toHaveBeenCalled();
   });
 });

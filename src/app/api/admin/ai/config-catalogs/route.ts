@@ -18,9 +18,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
 import { getCachedPrice, getCacheState, loadPricingCache } from '@/services/ai/gateway/pricing/pricing.repository';
 import { listGuardrails, listTriggers } from '@/services/ai/config/catalogs';
-import { TREATMENTS, TREATMENT_DEFINITIONS, isMasterOnlyTreatment } from '@/services/ai/config/treatments';
-import { REASONING_LEVELS, GUARDRAIL_REACTIONS, PROMPT_ARCHITECTURES } from '@/services/ai/config/config-types';
-import { masterPromptForTreatment, MASTER_ROLLOUT_SWITCH } from '@/services/ai/config/prompt-architecture';
+import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
+import { REASONING_LEVELS, GUARDRAIL_REACTIONS } from '@/services/ai/config/config-types';
+import { masterPromptForTreatment } from '@/services/ai/config/prompt-architecture';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { getCatalogState, selectableModels } from '@/services/ai/provider/model-catalog.service';
 
@@ -54,23 +54,16 @@ export async function GET(req: NextRequest) {
       catalogRefreshedAt: state.refreshedAt,
       reasoningLevels: REASONING_LEVELS,
       guardrailReactions: GUARDRAIL_REACTIONS,
-      promptArchitectures: PROMPT_ARCHITECTURES,
+      // Lot 16b : `master` seule architecture (`steps` retiré).
+      promptArchitectures: ['master'],
       treatments: TREATMENTS.map((t) => ({
         ...TREATMENT_DEFINITIONS[t],
         guardrails: listGuardrails(t),
         // Vide pour T2 et T5 : synchrones, hors file globale (GEN-004).
         triggers: TREATMENT_DEFINITIONS[t].batch ? listTriggers(t) : [],
-        // CDC 15 D-04 : master déclaré au registre, sinon `null` (architecture
-        // « master » non proposée pour ce traitement).
-        // Commutateur d'environnement qui conditionne en plus le master
-        // (T1 : AI_T1_ANALYSIS_MODE) ; `null` : la version suffit (T3, D-04).
-        master: masterPromptForTreatment(t)
-          ? {
-            ...masterPromptForTreatment(t)!, rolloutSwitch: MASTER_ROLLOUT_SWITCH[t] ?? null,
-            // Lot 16b : T2, T4, T5 et T6 sans architecture `steps` (choix non proposé).
-            masterOnly: isMasterOnlyTreatment(t),
-          }
-          : null,
+        // CDC 15 D-04 : master déclaré au registre. Lot 16b : tous les
+        // traitements en master seul, sans choix d'architecture ni commutateur.
+        master: masterPromptForTreatment(t),
       })),
     });
   } catch (e) {

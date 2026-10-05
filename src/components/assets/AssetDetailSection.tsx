@@ -9,7 +9,7 @@ import { DatePicker } from '@/components/ui/date-picker';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { ChevronDown, ChevronUp, Pencil, Check, X, Sparkles, Loader2, AlertTriangle } from 'lucide-react';
+import { ChevronDown, ChevronUp, Pencil, Check, X, Loader2, AlertTriangle } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -19,11 +19,6 @@ import { apiClient } from '@/lib/api-client';
 import { changedDetailFields, todayParis } from '@/lib/asset-detail-rules';
 import { toast } from 'sonner';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
-
-export interface AiSuggestion {
-  value: unknown;
-  confidence: 'high' | 'medium' | 'low';
-}
 
 export interface FieldDef {
   key: string;
@@ -46,11 +41,8 @@ interface Props {
   onRefresh: () => void;
   defaultOpen?: boolean;
   mobileOnly?: boolean;
-  // AI suggestions support
-  aiDraft?: Record<string, AiSuggestion>;
   forceOpen?: boolean;
   forceEdit?: boolean;
-  onAiDraftConsumed?: () => void;
   readOnly?: boolean;
   /** Field key to highlight (ring) in read mode */
   highlightField?: string;
@@ -63,15 +55,6 @@ interface Props {
   /** Called when user accepts a coherence alert suggestion — applies the value */
   onApplyAlert?: (field: string, suggestedValue: string) => void;
 }
-
-/** @deprecated Retiré — plus de distinction visuelle auto vs manuel pour l'utilisateur */
-const AiBadge = () => null;
-
-const CONFIDENCE_LABELS: Record<string, string> = {
-  high: 'Élevée',
-  medium: 'Moyenne',
-  low: 'Faible',
-};
 
 export function formatValue(value: unknown, field: FieldDef): string {
   if (value === null || value === undefined || value === '') return '—';
@@ -97,17 +80,9 @@ export function formatValue(value: unknown, field: FieldDef): string {
   return String(value);
 }
 
-function isValueEmpty(v: unknown): boolean {
-  return v === null || v === undefined || v === '' || (typeof v === 'string' && v.trim() === '');
-}
-
-function valuesAreEqual(a: unknown, b: unknown): boolean {
-  return String(a).trim() === String(b).trim();
-}
-
 export function AssetDetailSection({
   title, sectionKey, assetId, data, fields, onRefresh, defaultOpen = true, mobileOnly = false,
-  aiDraft, forceOpen, forceEdit, onAiDraftConsumed, readOnly = false, highlightField, headerActions,
+  forceOpen, forceEdit, readOnly = false, highlightField, headerActions,
   coherenceAlerts = [],
   onDismissAlert,
   onApplyAlert,
@@ -121,13 +96,6 @@ export function AssetDetailSection({
   const [isSaving, setIsSaving] = useState(false);
   // justSaved kept for potential future use but no longer triggers visual feedback
   const justSaved = false;
-
-  // aiInjected: fields pre-filled by AI (empty → injected) — drives badge in read mode
-  const [aiInjected, setAiInjected] = useState<Set<string>>(new Set());
-  // aiDisplayBadge: fields showing IA badge in read mode (cleared after save or manual edit)
-  const [aiDisplayBadge, setAiDisplayBadge] = useState<Set<string>>(new Set());
-  // aiConflict: fields where AI suggested a different value than existing — not injected, shown as alternative
-  const [aiConflicts, setAiConflicts] = useState<Record<string, AiSuggestion>>({});
 
   const forceEditApplied = useRef(false);
   // Prevents forceOpen/forceEdit from re-opening the section after a successful save
@@ -153,85 +121,16 @@ export function AssetDetailSection({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceEdit]);
 
-  // Apply AI draft — spec §13.1/§13.3
-  useEffect(() => {
-    if (!aiDraft || Object.keys(aiDraft).length === 0) {
-      if (!aiDraft) { setAiInjected(new Set()); setAiConflicts({}); }
-      return;
-    }
-    // New AI draft arriving → allow re-opening for this section again
-    savedRef.current = false;
-
-    setForm(prev => {
-      const next = { ...prev };
-      const injected = new Set<string>();
-      const conflicts: Record<string, AiSuggestion> = {};
-
-      for (const [key, suggestion] of Object.entries(aiDraft)) {
-        const aiVal = suggestion.value;
-        if (isValueEmpty(aiVal)) continue; // §R2 — skip empty
-
-        const existingVal = prev[key];
-
-        if (isValueEmpty(existingVal)) {
-          // §13.1 — field is empty → inject
-          next[key] = aiVal;
-          injected.add(key);
-        } else if (!valuesAreEqual(existingVal, aiVal)) {
-          // §13.3 — field has a different value → conflict, DO NOT overwrite
-          conflicts[key] = suggestion;
-        }
-        // §13.2 — same value → do nothing
-      }
-
-      setAiInjected(injected);
-      setAiDisplayBadge(injected); // show badge in read mode for injected fields
-      setAiConflicts(conflicts);
-      // Also update displayData so read-mode shows AI-injected values immediately
-      setDisplayData(prevDisplay => {
-        const d = { ...prevDisplay };
-        for (const key of injected) d[key] = next[key];
-        return d;
-      });
-      return next;
-    });
-
-    setDirty(true);
-  }, [aiDraft]);
-
   // Respond to parent forcing open (without edit)
   useEffect(() => {
     if (forceOpen && !savedRef.current) setOpen(true);
   }, [forceOpen]);
-
-  const handleApplyConflict = useCallback((key: string) => {
-    const suggestion = aiConflicts[key];
-    if (!suggestion) return;
-    setForm(prev => ({ ...prev, [key]: suggestion.value }));
-    setAiInjected(prev => new Set([...prev, key]));
-    setAiConflicts(prev => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-    setDirty(true);
-  }, [aiConflicts]);
-
-  const handleRejectConflict = useCallback((key: string) => {
-    setAiConflicts(prev => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-  }, []);
 
   // Les boutons « Modifier » des onglets informations passent tous par ici.
   const { garder } = useWriteGuard();
   const handleEdit = useCallback(() => {
     garder(() => {
       setForm({ ...data });
-      setAiInjected(new Set());
-      setAiConflicts({});
       setDirty(false);
       setEditing(true);
       setOpen(true);
@@ -259,34 +158,19 @@ export function AssetDetailSection({
       savedRef.current = true;
       setEditing(false);
       setDirty(false);
-      setAiInjected(new Set());
-      setAiDisplayBadge(new Set()); // clear badges after save
-      setAiConflicts({});
       setOpen(true);
       onRefresh();
-      onAiDraftConsumed?.();
     } catch (err: any) {
       toast.error(err?.message ?? 'Erreur lors de l\'enregistrement');
     } finally {
       setIsSaving(false);
     }
-  }, [assetId, sectionKey, data, form, onRefresh, onAiDraftConsumed]);
+  }, [assetId, sectionKey, data, form, onRefresh]);
 
   const setField = useCallback((key: string, value: unknown) => {
     setForm(prev => ({ ...prev, [key]: value }));
     setDirty(true);
-    // Remove AI badge when user manually edits the field
-    setAiInjected(prev => { const n = new Set(prev); n.delete(key); return n; });
-    setAiDisplayBadge(prev => { const n = new Set(prev); n.delete(key); return n; });
   }, []);
-
-  // Count visible suggestions for the collapsed badge
-  const suggestionCount = Object.keys(aiConflicts).length +
-    [...(aiDraft ? Object.keys(aiDraft) : [])].filter(k =>
-      aiInjected.has(k) || k in aiConflicts
-    ).length;
-  // Simpler: count fields with active AI state
-  const activeSuggestionCount = aiInjected.size + Object.keys(aiConflicts).length;
 
   return (
     <>
@@ -303,11 +187,6 @@ export function AssetDetailSection({
         >
           <div className="flex items-center gap-2 min-w-0">
             <span className="font-medium text-sm">{title}</span>
-            {activeSuggestionCount > 0 && (
-              <span className="text-[10px] font-medium text-primary bg-primary/10 rounded px-1.5 py-0.5 shrink-0">
-                {activeSuggestionCount} suggestion{activeSuggestionCount > 1 ? 's' : ''}
-              </span>
-            )}
             {coherenceAlerts.length > 0 && (
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-400 bg-amber-400/10 rounded px-1.5 py-0.5 shrink-0">
                 <AlertTriangle className="w-2.5 h-2.5" />
@@ -338,9 +217,6 @@ export function AssetDetailSection({
             {editing ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {fields.filter(f => !f.readonly).map(field => {
-                  const hasConflict = field.key in aiConflicts;
-                  const conflictSuggestion = aiConflicts[field.key];
-                  const confidence = aiDraft?.[field.key]?.confidence ?? conflictSuggestion?.confidence;
                   const isNa = field.notApplicableWhen?.(form) ?? false;
 
                   return (
@@ -409,35 +285,6 @@ export function AssetDetailSection({
                         />
                       )}
 
-                      {/* §13.3 Conflict banner — suggestion available but not injected */}
-                      {hasConflict && conflictSuggestion && (
-                        <div className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50/60 dark:bg-amber-900/10 px-3 py-2 text-xs mt-1">
-                          <Sparkles className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
-                          <div className="flex-1 min-w-0">
-                            <span className="font-medium text-amber-700 dark:text-amber-400">Suggestion :</span>
-                            <span className="ml-1 font-mono text-amber-800 dark:text-amber-300 break-all">
-                              {formatValue(conflictSuggestion.value, field)}
-                            </span>
-                            <span className="ml-1 text-muted-foreground">(valeur actuelle conservée)</span>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleRejectConflict(field.key)}
-                              className="text-muted-foreground hover:text-foreground font-medium hover:underline whitespace-nowrap"
-                            >
-                              Garder
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleApplyConflict(field.key)}
-                              className="text-amber-700 dark:text-amber-400 font-medium hover:underline whitespace-nowrap"
-                            >
-                              Appliquer
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -547,10 +394,6 @@ export function AssetDetailSection({
               setShowCancelConfirm(false);
               setEditing(false);
               setDirty(false);
-              setAiInjected(new Set());
-              setAiDisplayBadge(new Set()); // clear badges on cancel
-              setAiConflicts({});
-              onAiDraftConsumed?.();
             }}>
               Abandonner
             </AlertDialogAction>

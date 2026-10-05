@@ -1,39 +1,47 @@
 /**
  * CDC 15 D-03, D-04, §29 étape 14, §29.1 — architecture des prompts par
  * traitement, portée par la version de configuration IA.
+ *
+ * Lot 16b-3b : PLUS AUCUN traitement n'a d'architecture `steps` (T3, dernier,
+ * migration 0234). `master` est lu partout ; `steps` n'est plus qu'une donnée
+ * héritée, refusée à l'enregistrement et à la promotion.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   checkPromptArchitectureChange, masterConfigIssues, masterPromptForTreatment, masterCapableTreatments,
-  promptArchitectureWarning, promptArchitectureWarnings,
+  promptArchitectureWarnings,
 } from '../prompt-architecture';
 import {
   emptyTreatmentConfig, promptArchitectureOf, DEFAULT_PROMPT_ARCHITECTURE, type TreatmentConfig,
 } from '../config-types';
-import {
-  __setConfigForTests, getPromptArchitecture, resolveOperationConfig,
-} from '../config-resolver';
+import { __setConfigForTests, resolveOperationConfig } from '../config-resolver';
 import { diffVersions } from '../config-diff.service';
 import { validateTreatment, type ConfigCatalogs } from '../config-validation.service';
 import { runInJobContext } from '../../queue/job-context';
-import { T1_MASTER_VARIABLES } from '../../registry/operations';
+import { T3_MASTER_VARIABLES } from '../../registry/operations';
+import { MASTER_ONLY_TREATMENTS, TREATMENTS } from '../treatments';
 
-const MASTER_T1 = `{{TASK}}\n${T1_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = GROUP_UPLOAD\nBRANCHE TASK = ANALYZE_DOCUMENT\n`;
+const MASTER_T3 = `{{TASK}}\n${T3_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY\n`;
 /** Traitement fictif sans master (lot 16 : T1 à T6 en ont tous un). */
 const SANS_MASTER = 'T9' as never;
-const t1 = (over: Partial<TreatmentConfig> = {}): TreatmentConfig => ({
-  ...emptyTreatmentConfig('T1'), primaryModel: 'm-a', ...over,
+const t3 = (over: Partial<TreatmentConfig> = {}): TreatmentConfig => ({
+  ...emptyTreatmentConfig('T3'), primaryModel: 'm-a', ...over,
 });
 
 afterEach(() => __setConfigForTests(null));
 
 describe('valeur par défaut', () => {
-  it('steps, y compris pour une ligne antérieure au lot 12 (champ absent ou illisible)', () => {
-    expect(DEFAULT_PROMPT_ARCHITECTURE).toBe('steps');
-    expect(emptyTreatmentConfig('T1').promptArchitecture).toBe('steps');
-    expect(promptArchitectureOf({})).toBe('steps');
-    expect(promptArchitectureOf({ promptArchitecture: 'autre' as never })).toBe('steps');
-    expect(promptArchitectureOf(null)).toBe('steps');
+  it('master pour tous, y compris une ligne antérieure au lot 12 (champ absent, illisible ou `steps`)', () => {
+    expect(DEFAULT_PROMPT_ARCHITECTURE).toBe('master');
+    expect([...MASTER_ONLY_TREATMENTS]).toEqual([...TREATMENTS]);
+    for (const t of TREATMENTS) {
+      expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
+      expect(promptArchitectureOf({ treatment: t, promptArchitecture: 'steps' }), t).toBe('master');
+    }
+    expect(promptArchitectureOf({})).toBe('master');
+    expect(promptArchitectureOf({ promptArchitecture: 'steps' })).toBe('master');
+    expect(promptArchitectureOf({ promptArchitecture: 'autre' as never })).toBe('master');
+    expect(promptArchitectureOf(null)).toBe('master');
   });
 
   it('masters déclarés : T1 (lot 12), T3 (lot 13), T4 (lot 14), T2 (lot 15)', () => {
@@ -57,77 +65,51 @@ describe('valeur par défaut', () => {
 });
 
 describe('checkPromptArchitectureChange — §29.1', () => {
-  it('Brouillon : bascule steps → master permise pour T1', () => {
-    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T1', from: 'steps', to: 'master' }))
-      .toEqual({ allowed: true });
-    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T1', from: 'master', to: 'steps' }))
-      .toEqual({ allowed: true });
-  });
-
-  it('jamais en éditant une Active (ni À tester, Validée, Archivée)', () => {
-    for (const status of ['ACTIVE', 'TO_TEST', 'VALIDATED', 'ARCHIVED'] as const) {
-      expect(checkPromptArchitectureChange({ status, treatment: 'T1', from: 'steps', to: 'master' }))
-        .toMatchObject({ allowed: false, code: 'VERSION_NOT_EDITABLE' });
+  it('`steps` refusé pour TOUS les traitements, quel que soit le statut (lot 16b)', () => {
+    for (const t of TREATMENTS) {
+      for (const status of ['DRAFT', 'ACTIVE'] as const) {
+        expect(checkPromptArchitectureChange({ status, treatment: t, from: 'master', to: 'steps' }), `${t} ${status}`)
+          .toMatchObject({ allowed: false, code: 'MASTER_ONLY_TREATMENT' });
+      }
     }
   });
 
-  it('sans changement : toujours permis (enregistrement d’autres champs)', () => {
-    expect(checkPromptArchitectureChange({ status: 'ACTIVE', treatment: 'T1', from: undefined, to: 'steps' }))
-      .toEqual({ allowed: true });
-  });
-
-  // Lot 16 : T1 à T6 ont tous un master — traitement fictif pour le cas « sans master ».
-  it('master refusé pour un traitement sans prompt maître déclaré', () => {
-    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: SANS_MASTER, from: 'steps', to: 'master' }))
-      .toMatchObject({ allowed: false, code: 'NO_MASTER_FOR_TREATMENT' });
+  it('enregistrer `master` (ligne stockée `steps` ou absente) n’est pas une bascule : permis, même hors Brouillon', () => {
+    for (const status of ['DRAFT', 'ACTIVE', 'TO_TEST'] as const) {
+      expect(checkPromptArchitectureChange({ status, treatment: 'T3', from: 'steps', to: 'master' })).toEqual({ allowed: true });
+      expect(checkPromptArchitectureChange({ status, treatment: 'T3', from: undefined, to: 'master' })).toEqual({ allowed: true });
+    }
   });
 });
 
-describe('getPromptArchitecture — version effective ou figée', () => {
-  it('sans version : steps', async () => {
-    expect(await getPromptArchitecture('T1')).toBe('steps');
-  });
-
-  it('version effective (TO_TEST en préprod) : lue par traitement', async () => {
-    __setConfigForTests({ versionId: 11, entries: [t1({ promptArchitecture: 'master' }), emptyTreatmentConfig('T3')] });
-    expect(await getPromptArchitecture('T1')).toBe('master');
-    expect(await getPromptArchitecture('T3')).toBe('steps');
-    // Lot 16b-2 : T2 et T4 en master seul, quelle que soit la version.
-    expect(await getPromptArchitecture('T2')).toBe('master');
-  });
-
-  it('job de file : version figée au démarrage (VER-015), pas l’effective', async () => {
+describe('version figée d’un job (VER-015) : plus d’aiguillage steps / master', () => {
+  it('le texte master de la version FIGÉE s’applique, la ligne stockée `steps` ne change rien', async () => {
     __setConfigForTests(
-      { versionId: 12, entries: [t1({ promptArchitecture: 'master' })] },
-      [{ versionId: 10, entries: [t1({ promptArchitecture: 'steps' })] }],
+      { versionId: 12, entries: [t3({ masterPrompt: 'MASTER v12' })] },
+      [{ versionId: 10, entries: [t3({ promptArchitecture: 'steps', masterPrompt: 'MASTER v10' })] }],
     );
-    const arch = await runInJobContext(
-      { jobId: 1, treatment: 'T1', configVersionId: 10 },
-      () => getPromptArchitecture('T1'),
+    const cfg = await runInJobContext(
+      { jobId: 1, treatment: 'T3', configVersionId: 10 },
+      () => resolveOperationConfig('t3_value_conflict'),
     );
-    expect(arch).toBe('steps');
+    expect(cfg).toMatchObject({ promptArchitecture: 'master', masterPromptText: 'MASTER v10', configVersionId: 10 });
   });
 });
 
 describe('resolveOperationConfig — D-03 (texte master distinct du préambule)', () => {
-  it('master : le préambule sert TOUJOURS aux étapes, le master vient de son champ', async () => {
-    __setConfigForTests({ versionId: 13, entries: [t1({ prompt: 'Préambule', masterPrompt: MASTER_T1, promptArchitecture: 'master' })] });
-    expect(await resolveOperationConfig('t1_analyze_document'))
-      .toMatchObject({ promptArchitecture: 'master', masterPromptText: MASTER_T1, promptPreamble: 'Préambule' });
-    // Revue lot 12 : version master activée, commutateur ≠ enabled ⇒ les
-    // étapes tournent et gardent leur préambule.
-    expect((await resolveOperationConfig('extract_source')).promptPreamble).toBe('Préambule');
+  it('master : le texte vient de son champ, même si la ligne est stockée `steps` (lot 16b-3)', async () => {
+    __setConfigForTests({ versionId: 13, entries: [t3({ prompt: 'Préambule', masterPrompt: MASTER_T3, promptArchitecture: 'steps' })] });
+    expect(await resolveOperationConfig('t3_value_conflict'))
+      .toMatchObject({ promptArchitecture: 'master', masterPromptText: MASTER_T3 });
   });
 
-  it('steps : préambule comme avant ; un texte master préparé n’est pas exposé', async () => {
-    __setConfigForTests({ versionId: 14, entries: [t1({ prompt: 'Préambule', masterPrompt: MASTER_T1 })] });
-    expect(await resolveOperationConfig('extract_source'))
-      .toMatchObject({ promptArchitecture: 'steps', promptPreamble: 'Préambule', masterPromptText: null });
-  });
-
-  it('master sans texte : fichier du dépôt (masterPromptText null)', async () => {
-    __setConfigForTests({ versionId: 15, entries: [t1({ prompt: 'P', masterPrompt: '  ', promptArchitecture: 'master' })] });
-    expect((await resolveOperationConfig('t1_group_upload')).masterPromptText).toBeNull();
+  it('master sans texte : fichier du dépôt (masterPromptText null) ; sans version : master', async () => {
+    __setConfigForTests({ versionId: 15, entries: [t3({ prompt: 'P', masterPrompt: '  ' })] });
+    expect((await resolveOperationConfig('t3_link_ambiguity')).masterPromptText).toBeNull();
+    __setConfigForTests(null);
+    for (const op of ['t1_analyze_document', 't2_answer', 't3_value_conflict', 't4_classify_event', 't6_formulate']) {
+      expect(await resolveOperationConfig(op), op).toMatchObject({ promptArchitecture: 'master' });
+    }
   });
 });
 
@@ -137,58 +119,53 @@ describe('diff et contrôles de promotion', () => {
     guardrailCodes: new Set(), triggerCodes: new Set(),
   };
 
-  it('la bascule apparaît au diff ; une ligne sans champ vaut steps (pas de faux changement)', () => {
-    const avant = { ...t1() };
+  it('plus de « bascule » au diff : une ligne sans champ ou stockée `steps` vaut master (pas de faux changement)', () => {
+    const avant = { ...t3() };
     delete (avant as Partial<TreatmentConfig>).promptArchitecture;
     delete (avant as Partial<TreatmentConfig>).masterPrompt;
-    expect(diffVersions([avant], [t1()]).identical).toBe(true);
-    const d = diffVersions([avant], [t1({ promptArchitecture: 'master' })]);
-    expect(d.treatments[0].changes).toContainEqual(expect.objectContaining({
-      field: 'promptArchitecture', before: 'steps', after: 'master',
-    }));
+    expect(diffVersions([avant], [t3()]).identical).toBe(true);
+    expect(diffVersions([t3({ promptArchitecture: 'steps' })], [t3()]).identical).toBe(true);
   });
 
   it('le texte master apparaît au diff comme un champ distinct du prompt', () => {
-    const d = diffVersions([t1({ prompt: 'P' })], [t1({ prompt: 'P', masterPrompt: MASTER_T1 })]);
+    const d = diffVersions([t3({ prompt: 'P' })], [t3({ prompt: 'P', masterPrompt: MASTER_T3 })]);
     expect(d.treatments[0].changes).toEqual([expect.objectContaining({
-      field: 'masterPrompt', kind: 'added', before: null, after: MASTER_T1,
+      field: 'masterPrompt', kind: 'added', before: null, after: MASTER_T3,
     })]);
   });
 
-  it('master avec texte vide : fichier du dépôt, signalé sans bloquer ; le préambule reste obligatoire', () => {
-    const issues = validateTreatment(t1({ prompt: '', promptArchitecture: 'master', maxOutputTokens: 1000 }), cat);
+  it('texte master vide : fichier du dépôt, signalé sans bloquer ; le préambule n’est plus obligatoire (lot 16b)', () => {
+    const issues = validateTreatment(t3({ prompt: '', maxOutputTokens: 1000 }), cat);
     expect(issues).toContainEqual(expect.objectContaining({ field: 'masterPrompt', blocking: false }));
-    expect(issues).toContainEqual(expect.objectContaining({ field: 'prompt', blocking: true, message: 'Le prompt est obligatoire.' }));
+    expect(issues.filter((i) => i.field === 'prompt')).toEqual([]);
   });
 
-  it('texte master incomplet : bloquant en master ; en steps, avertissement (champ ignoré) — revue lot 16', () => {
-    for (const promptArchitecture of ['master', 'steps'] as const) {
-      const issues = masterConfigIssues(t1({ prompt: 'P', masterPrompt: 'Sois précis.', promptArchitecture }));
-      // {{TASK}}, deux sections, et (lot 16) les emplacements attendus par le code.
-      expect(issues.length).toBe(4);
-      expect(issues.every((i) => i.field === 'masterPrompt' && i.blocking === (promptArchitecture === 'master'))).toBe(true);
-      if (promptArchitecture === 'steps') expect(issues[0].message).toMatch(/ignoré tant que T1 est en « steps »/);
-      expect(issues[3].message).toMatch(/emplacement\(s\) supprimé/);
-      expect(issues[0].message).toMatch(/\{\{TASK\}\}/);
-    }
+  it('texte master incomplet : bloquant (plus de cas « champ ignoré en steps »)', () => {
+    const issues = masterConfigIssues(t3({ prompt: 'P', masterPrompt: 'Sois précis.' }));
+    // {{TASK}}, deux sections, et (lot 16) les emplacements attendus par le code.
+    expect(issues.length).toBe(4);
+    expect(issues.every((i) => i.field === 'masterPrompt' && i.blocking)).toBe(true);
+    expect(issues[3].message).toMatch(/emplacement\(s\) supprimé/);
+    expect(issues[0].message).toMatch(/\{\{TASK\}\}/);
   });
 
-  it('master complet : aucune anomalie ; steps sans texte : non concerné', () => {
-    expect(masterConfigIssues(t1({ prompt: 'P', masterPrompt: MASTER_T1, promptArchitecture: 'master' }))).toEqual([]);
-    expect(masterConfigIssues(t1({ prompt: 'P' }))).toEqual([]);
+  it('master complet : aucune anomalie ; ligne T3 stockée `steps` : bloquante (migration 0234 non passée)', () => {
+    expect(masterConfigIssues(t3({ prompt: 'P', masterPrompt: MASTER_T3 }))).toEqual([]);
+    expect(masterConfigIssues(t3({ prompt: 'P', masterPrompt: MASTER_T3, promptArchitecture: 'steps' })))
+      .toEqual([expect.objectContaining({ field: 'promptArchitecture', blocking: true })]);
   });
 
   it('refuse un préambule qui contient un master ({{TASK}} ou « BRANCHE TASK = »)', () => {
-    for (const prompt of ['Contexte {{TASK}}', 'BRANCHE TASK = GROUP_UPLOAD\n…', MASTER_T1]) {
-      expect(validateTreatment(t1({ prompt, maxOutputTokens: 1000 }), cat)).toContainEqual(expect.objectContaining({
+    for (const prompt of ['Contexte {{TASK}}', 'BRANCHE TASK = VALUE_CONFLICT\n…', MASTER_T3]) {
+      expect(validateTreatment(t3({ prompt, maxOutputTokens: 1000 }), cat)).toContainEqual(expect.objectContaining({
         field: 'prompt', blocking: true, message: expect.stringMatching(/préambule des étapes contient un prompt maître/),
       }));
     }
-    expect(masterConfigIssues(t1({ prompt: 'Sois précis. La tâche est décrite plus bas.' }))).toEqual([]);
+    expect(masterConfigIssues(t3({ prompt: 'Sois précis. La tâche est décrite plus bas.', masterPrompt: MASTER_T3 }))).toEqual([]);
   });
 
   it('master ou texte master sur un traitement sans master : bloquant', () => {
-    const c = { ...emptyTreatmentConfig(SANS_MASTER), prompt: 'x', promptArchitecture: 'master' as const, masterPrompt: MASTER_T1 };
+    const c = { ...emptyTreatmentConfig(SANS_MASTER), prompt: 'x', promptArchitecture: 'master' as const, masterPrompt: MASTER_T3 };
     // `masterConfigIssues` : le contrôle que `validateTreatment` applique à chaque ligne.
     const issues = masterConfigIssues(c);
     expect(issues).toContainEqual(expect.objectContaining({ field: 'promptArchitecture', blocking: true }));
@@ -196,79 +173,27 @@ describe('diff et contrôles de promotion', () => {
   });
 });
 
-describe('alerte master déclaré mais non appliqué (commutateur ≠ enabled)', () => {
-  it('fonction pure', () => {
-    expect(promptArchitectureWarning('T1', 'steps', 'legacy')).toBeNull();
-    expect(promptArchitectureWarning('T1', 'master', 'enabled')).toBeNull();
-    expect(promptArchitectureWarning('T5', 'master', 'legacy')).toBeNull();
-    // Lot 16b-2 : AI_INTELLIGENT_ASSISTANT et AI_AGENDA_ENGINE retirés — T2 et
-    // T4 n'ont plus de drapeau moteur, aucun écart possible.
-    expect(promptArchitectureWarning('T2', 'master', 'legacy')).toBeNull();
-    expect(promptArchitectureWarning('T4', 'master', 'legacy')).toBeNull();
-    for (const mode of ['legacy', 'shadow']) {
-      expect(promptArchitectureWarning('T1', 'master', mode)).toMatchObject({
-        treatment: 'T1', code: 'MASTER_NOT_APPLIED', switchName: 'AI_T1_ANALYSIS_MODE', switchMode: mode,
-      });
-    }
+describe('variables retirées encore posées (/api/health) — lot 16b : plus aucun commutateur', () => {
+  it('chaque drapeau / commutateur retiré posé est signalé, ignoré par le code', async () => {
+    const w = await promptArchitectureWarnings({ env: {
+      AI_RECONCILIATION_ENGINE: 'enabled', T3_NEGATIVE_RECONCILIATION: 'shadow', CANONICAL_WRITE_MODE: 'enabled',
+      EXPORTS_CANONICAL_SOURCE: 'legacy', AI_T1_ANALYSIS_MODE: 'enabled', GEMINI_API_KEY: 'x',
+    } });
+    expect(w.map((x) => x.switchName).sort()).toEqual([
+      'AI_RECONCILIATION_ENGINE', 'AI_T1_ANALYSIS_MODE', 'CANONICAL_WRITE_MODE', 'EXPORTS_CANONICAL_SOURCE', 'T3_NEGATIVE_RECONCILIATION',
+    ]);
+    expect(w.every((x) => x.code === 'RETIRED_ENV_VARIABLE')).toBe(true);
+    expect(w.find((x) => x.switchName === 'CANONICAL_WRITE_MODE')?.message).toMatch(/IGNORÉE.*L16b-3/);
   });
 
-  it('lit la version effective et le commutateur (rollout de C)', async () => {
-    __setConfigForTests({ versionId: 16, entries: [t1({ promptArchitecture: 'master' })] });
-    const avant = process.env.AI_T1_ANALYSIS_MODE;
-    try {
-      delete process.env.AI_T1_ANALYSIS_MODE;
-      expect(await promptArchitectureWarnings()).toEqual([expect.objectContaining({ treatment: 'T1', switchMode: 'legacy' })]);
-      process.env.AI_T1_ANALYSIS_MODE = 'enabled';
-      expect(await promptArchitectureWarnings()).toEqual([]);
-    } finally {
-      if (avant === undefined) delete process.env.AI_T1_ANALYSIS_MODE; else process.env.AI_T1_ANALYSIS_MODE = avant;
-    }
-  });
-
-  it('T3 en master : alerte si AI_RECONCILIATION_ENGINE ≠ enabled (arbitrage lead, lot 13)', async () => {
-    expect(promptArchitectureWarning('T3', 'steps', 'legacy')).toBeNull();
-    expect(promptArchitectureWarning('T3', 'master', 'enabled')).toBeNull();
-    expect(promptArchitectureWarning('T3', 'master', 'legacy')).toMatchObject({
-      treatment: 'T3', code: 'MASTER_ENGINE_NOT_ENABLED', switchName: 'AI_RECONCILIATION_ENGINE', switchMode: 'legacy',
-      message: expect.stringMatching(/ne tourne pas/),
-    });
-    expect(promptArchitectureWarning('T3', 'master', 'shadow')?.message).toMatch(/observation/);
-
-    __setConfigForTests({ versionId: 17, entries: [
-      { ...emptyTreatmentConfig('T1'), promptArchitecture: 'steps' },
-      { ...emptyTreatmentConfig('T3'), promptArchitecture: 'master' },
-    ] });
-    const avant = { t1: process.env.AI_T1_ANALYSIS_MODE, rec: process.env.AI_RECONCILIATION_ENGINE };
-    try {
-      delete process.env.AI_RECONCILIATION_ENGINE;
-      expect(await promptArchitectureWarnings()).toEqual([expect.objectContaining({ treatment: 'T3', switchMode: 'legacy' })]);
-      process.env.AI_RECONCILIATION_ENGINE = 'enabled';
-      expect(await promptArchitectureWarnings()).toEqual([]);
-    } finally {
-      if (avant.rec === undefined) delete process.env.AI_RECONCILIATION_ENGINE; else process.env.AI_RECONCILIATION_ENGINE = avant.rec;
-    }
-  });
-
-  it('lot 16b-2 : seuls AI_T1_ANALYSIS_MODE et AI_RECONCILIATION_ENGINE sont lus', async () => {
-    const lus: string[] = [];
-    await promptArchitectureWarnings({
-      readMode: (n) => { lus.push(n); return 'enabled'; },
-      readArchitecture: async () => 'master',
-    });
-    expect(lus.sort()).toEqual(['AI_RECONCILIATION_ENGINE', 'AI_T1_ANALYSIS_MODE']);
-  });
-
-  it('bascule T3 → master permise en Brouillon (master déclaré)', () => {
-    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T3', from: 'steps', to: 'master' })).toEqual({ allowed: true });
-  });
-
-  it('ne lève jamais', async () => {
-    expect(await promptArchitectureWarnings({ readArchitecture: async () => { throw new Error('base'); } })).toEqual([]);
+  it('rien de posé (ou valeur vide) : aucun avertissement ; ne lit jamais la base', async () => {
+    expect(await promptArchitectureWarnings({ env: {} })).toEqual([]);
+    expect(await promptArchitectureWarnings({ env: { AI_RECONCILIATION_ENGINE: '  ' } })).toEqual([]);
   });
 });
 
 describe('saveTreatmentConfig — §29.1 appliqué par le service', () => {
-  it('refuse master sur un traitement sans master ; conserve architecture et texte master omis', async () => {
+  it('refuse `steps` ; conserve architecture et texte master omis', async () => {
     vi.resetModules();
     const saveEntry = vi.fn(async (..._a: unknown[]) => undefined);
     const brouillon = {
@@ -280,8 +205,12 @@ describe('saveTreatmentConfig — §29.1 appliqué par le service', () => {
     vi.doMock('../config-cache-version', () => ({ bumpConfigVersionCounter: async () => true }));
     const svc = await import('../config-version.service');
 
-    await expect(svc.saveTreatmentConfig(5, { ...emptyTreatmentConfig(SANS_MASTER), promptArchitecture: 'master' }, 1))
-      .rejects.toMatchObject({ code: 'NO_MASTER_FOR_TREATMENT' });
+    // Lot 16b : `master` est l'architecture de toute ligne — l'enregistrer
+    // n'est pas une bascule ; un traitement sans master déclaré est bloqué à
+    // la PROMOTION (`masterConfigIssues`, test ci-dessus), et `steps` refusé.
+    await expect(svc.saveTreatmentConfig(5, { ...emptyTreatmentConfig('T3'), promptArchitecture: 'steps' }, 1))
+      .rejects.toMatchObject({ code: 'MASTER_ONLY_TREATMENT' });
+    saveEntry.mockClear();
 
     const sansChamp = { ...emptyTreatmentConfig('T1') };
     delete (sansChamp as Partial<TreatmentConfig>).promptArchitecture;
@@ -301,31 +230,20 @@ describe('T2-43 : variable retirée VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', () =>
     expect(retiredOutputTokensWarning({ VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS: '300' })).toMatchObject({
       treatment: 'T2', code: 'RETIRED_ENV_VARIABLE', switchName: 'VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', switchMode: '300',
     });
-    const w = await promptArchitectureWarnings({
-      env: { VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS: '300' }, readMode: () => 'enabled', readArchitecture: async () => 'steps',
-    });
+    const w = await promptArchitectureWarnings({ env: { VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS: '300' } });
     expect(w.map((x) => x.code)).toEqual(['RETIRED_ENV_VARIABLE']);
-    expect(await promptArchitectureWarnings({ env: {}, readMode: () => 'enabled', readArchitecture: async () => 'steps' })).toEqual([]);
+    expect(w[0].treatment).toBe('T2');
+    expect(await promptArchitectureWarnings({ env: {} })).toEqual([]);
   });
 });
 
 describe('lot 16b — T5 et T6 : master seul', () => {
-  it('lus `master` quelle que soit la valeur stockée ; T1, T3 inchangés', () => {
-    for (const t of ['T5', 'T6'] as const) {
+  it('lus `master` quelle que soit la valeur stockée (T3 aussi depuis le lot 16b-3)', () => {
+    for (const t of ['T5', 'T6', 'T3'] as const) {
       expect(promptArchitectureOf({ treatment: t, promptArchitecture: 'steps' }), t).toBe('master');
       expect(promptArchitectureOf({ treatment: t }), t).toBe('master');
       expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
     }
-    expect(promptArchitectureOf({ treatment: 'T1', promptArchitecture: 'steps' })).toBe('steps');
-  });
-
-  it('getPromptArchitecture : master pour T5/T6 même si la version dit `steps`', async () => {
-    __setConfigForTests({ versionId: 3, entries: [
-      { ...emptyTreatmentConfig('T5'), promptArchitecture: 'steps' },
-      { ...emptyTreatmentConfig('T6'), promptArchitecture: 'steps' },
-    ] });
-    expect(await getPromptArchitecture('T5')).toBe('master');
-    expect(await getPromptArchitecture('T6')).toBe('master');
   });
 
   it('master T6 de la version appliqué même si la ligne stockée dit `steps`', async () => {
@@ -341,7 +259,6 @@ describe('lot 16b — T5 et T6 : master seul', () => {
       expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: t, from: 'steps', to: 'master' }))
         .toEqual({ allowed: true });
     }
-    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T1', from: 'master', to: 'steps' })).toEqual({ allowed: true });
   });
 
   it('promotion : une ligne T5/T6 encore en `steps` (valeur brute) est bloquante', () => {
@@ -351,10 +268,6 @@ describe('lot 16b — T5 et T6 : master seul', () => {
     }
     // T5 en master, texte vide (fichier du dépôt par construction) : rien à signaler.
     expect(masterConfigIssues(emptyTreatmentConfig('T5'))).toEqual([]);
-  });
-
-  it('plus de commutateur AI_HOME_MASCOT pour T6 : aucun écart signalé', () => {
-    expect(promptArchitectureWarning('T6', 'master', 'legacy')).toBeNull();
   });
 
   it('migration 0231 : aligne la donnée stockée, idempotente', async () => {
@@ -373,12 +286,6 @@ describe('lot 16b-2 — T2 et T4 : master seul', () => {
       expect(promptArchitectureOf({ treatment: t, promptArchitecture: 'steps' }), t).toBe('master');
       expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
     }
-    __setConfigForTests({ versionId: 4, entries: [
-      { ...emptyTreatmentConfig('T2'), promptArchitecture: 'steps' },
-      { ...emptyTreatmentConfig('T4'), promptArchitecture: 'steps' },
-    ] });
-    expect(await getPromptArchitecture('T2')).toBe('master');
-    expect(await getPromptArchitecture('T4')).toBe('master');
     // Sans version : les opérations T2/T4 sont résolues en master.
     __setConfigForTests(null);
     expect(await resolveOperationConfig('t2_answer')).toMatchObject({ promptArchitecture: 'master' });
@@ -405,6 +312,58 @@ describe('lot 16b-2 — T2 et T4 : master seul', () => {
     const { join } = await import('path');
     const sql = readFileSync(join(process.cwd(), 'src/db/migrations/0232_ai_config_t2_t4_master_only.sql'), 'utf8');
     expect(sql).toMatch(/UPDATE ai_config_entries\s+SET prompt_architecture = 'master'\s+WHERE treatment IN \('T2', 'T4'\)\s+AND prompt_architecture IS DISTINCT FROM 'master'/);
+    expect(sql).toMatch(/SET LOCAL lock_timeout/);
+    expect(sql).toMatch(/column_name = 'prompt_architecture'/);
+    expect(sql).not.toMatch(/master_prompt\s*=/);
+  });
+});
+
+describe('lot 16b-3 — T1 : master seul', () => {
+  it('lu `master` quelle que soit la valeur stockée, par défaut aussi', async () => {
+    expect(promptArchitectureOf({ treatment: 'T1', promptArchitecture: 'steps' })).toBe('master');
+    expect(emptyTreatmentConfig('T1').promptArchitecture).toBe('master');
+    __setConfigForTests(null);
+    expect(await resolveOperationConfig('t1_analyze_document')).toMatchObject({ promptArchitecture: 'master' });
+    expect(await resolveOperationConfig('t1_group_upload')).toMatchObject({ promptArchitecture: 'master' });
+  });
+
+  it('master T1 de la version appliqué même si la ligne stockée dit `steps`', async () => {
+    const texte = 'MASTER T1 de la version {{TASK}}';
+    __setConfigForTests({ versionId: 7, entries: [{ ...emptyTreatmentConfig('T1'), promptArchitecture: 'steps', masterPrompt: texte }] });
+    expect(await resolveOperationConfig('t1_analyze_document')).toMatchObject({ promptArchitecture: 'master', masterPromptText: texte });
+  });
+
+  it('`steps` refusé à l’enregistrement et bloquant à la promotion', () => {
+    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T1', from: 'master', to: 'steps' }))
+      .toMatchObject({ allowed: false, code: 'MASTER_ONLY_TREATMENT' });
+    const issues = masterConfigIssues({ ...emptyTreatmentConfig('T1'), promptArchitecture: 'steps' });
+    expect(issues.some((i) => i.field === 'promptArchitecture' && i.blocking)).toBe(true);
+  });
+
+  it('migration 0233 : aligne la donnée stockée, idempotente, sans toucher au texte master', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const sql = readFileSync(join(process.cwd(), 'src/db/migrations/0233_ai_config_t1_master_only.sql'), 'utf8');
+    expect(sql).toMatch(/UPDATE ai_config_entries\s+SET prompt_architecture = 'master'\s+WHERE treatment IN \('T1'\)\s+AND prompt_architecture IS DISTINCT FROM 'master'/);
+    expect(sql).toMatch(/SET LOCAL lock_timeout/);
+    expect(sql).toMatch(/column_name = 'prompt_architecture'/);
+    expect(sql).not.toMatch(/master_prompt\s*=/);
+  });
+});
+
+describe('lot 16b-3b — T3 : master seul, dernier traitement', () => {
+  it('`steps` refusé à l’enregistrement et bloquant à la promotion', () => {
+    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T3', from: 'master', to: 'steps' }))
+      .toMatchObject({ allowed: false, code: 'MASTER_ONLY_TREATMENT' });
+    const issues = masterConfigIssues({ ...emptyTreatmentConfig('T3'), promptArchitecture: 'steps' });
+    expect(issues.some((i) => i.field === 'promptArchitecture' && i.blocking)).toBe(true);
+  });
+
+  it('migration 0234 : aligne la donnée stockée de TOUS les traitements, idempotente, sans toucher au texte master', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const sql = readFileSync(join(process.cwd(), 'src/db/migrations/0234_ai_config_t3_master_only.sql'), 'utf8');
+    expect(sql).toMatch(/UPDATE ai_config_entries\s+SET prompt_architecture = 'master'\s+WHERE treatment IN \('T1', 'T2', 'T3', 'T4', 'T5', 'T6'\)\s+AND prompt_architecture IS DISTINCT FROM 'master'/);
     expect(sql).toMatch(/SET LOCAL lock_timeout/);
     expect(sql).toMatch(/column_name = 'prompt_architecture'/);
     expect(sql).not.toMatch(/master_prompt\s*=/);

@@ -189,8 +189,8 @@ describe('persistProjectedFacts — cycle de vie (§14.4)', () => {
   });
 });
 
-describe('persistEvidence — mode « étapes » historique', () => {
-  it('champs sans cible : tous sur le bien du pipeline, INSERT historique, pas de supersede', async () => {
+describe('persistEvidence — rattachement tardif (seul usage depuis le lot 16b-3)', () => {
+  it('champs sans cible : tous sur le bien rattaché, INSERT historique, pas de supersede', async () => {
     const m = await persistEvidence({
       input, leadSourceId: 55, assetId: 10, trace,
       fields: [
@@ -218,38 +218,24 @@ describe('persistEvidence — mode « étapes » historique', () => {
   });
 });
 
-describe('persistEvidence — remplacement à la réanalyse (mode « étapes », lot 13)', () => {
-  const champs = [{ fieldKey: 'mileage', value: 1, confidence: 'certain' as const, excerpt: '1 km' }];
-  it('enabled : preuves antérieures de la source remplacées sous verrou (sans analyse datée, preuves écrites épargnées)', async () => {
-    const onResult = vi.fn();
-    await persistEvidence({ input, leadSourceId: 55, assetId: 10, trace, fields: champs, supersede: { mode: 'enabled', onResult } });
-    const sup = db.calls.find((c) => c.sql.includes('WITH remplacement'))!;
-    expect(sup.sql).toMatch(/o\.analysis_run_id IS NULL/);
-    expect(sup.params).toEqual([1, 'document', 55, [1000], true]);
-    expect(onResult).toHaveBeenCalledWith({ superseded: 1, linked: 0, assetIds: [12] });
-  });
-
-  it('écriture en échec : remplacement partiel (seulement ce qui a une remplaçante)', async () => {
-    db.failFieldKey = 'mileage';
-    await persistEvidence({ input, leadSourceId: 55, assetId: 10, trace, fields: champs, supersede: { mode: 'enabled' } });
-    expect(db.calls.find((c) => c.sql.includes('WITH remplacement'))!.params).toEqual([1, 'document', 55, [], false]);
-  });
-
-  it('shadow : lecture seule, rien n’est remplacé ; absent : rien', async () => {
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    await persistEvidence({ input, leadSourceId: 55, assetId: 10, trace, fields: champs, supersede: { mode: 'shadow' } });
-    expect(db.calls.some((c) => /WITH (remplacement|retenue)|^\s*UPDATE field_evidence/.test(c.sql))).toBe(false);
-    expect(db.calls.some((c) => /SELECT id, asset_id AS "assetId" FROM field_evidence/.test(c.sql))).toBe(true);
-    db.calls = [];
-    await persistEvidence({ input, leadSourceId: 55, assetId: 10, trace, fields: champs });
-    expect(db.calls.some((c) => /WITH (remplacement|retenue)|SELECT id, asset_id/.test(c.sql))).toBe(false);
-  });
-
-  it('pipeline, chemin étapes : option activée selon T3_NEGATIVE_RECONCILIATION (enabled / shadow), jamais en legacy', async () => {
+describe('persistEvidence — plus de remplacement à l’analyse (lot 16b-3)', () => {
+  it('le pipeline n’appelle plus que persistProjectedFacts (chemin « étapes » supprimé)', async () => {
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(`${process.cwd()}/src/services/ai/source-analysis/pipeline.ts`, 'utf8');
-    expect(src).toMatch(/const negMode = t3NegativeMode\(\);/);
-    expect(src).toMatch(/supersede: negMode === 'legacy' \? undefined : \{ mode: negMode/);
+    expect(src).not.toMatch(/\bpersistEvidence\(/);
+    expect(src).not.toMatch(/T3_NEGATIVE_RECONCILIATION/);
+    expect(src).toMatch(/await persistProjectedFacts\(/);
+  });
+
+  it('promptVersion : celle de la connaissance si fournie, sinon le master T1', async () => {
+    await persistEvidence({
+      input, leadSourceId: 55, assetId: 10, trace, promptVersion: 't1_master_v1@cfg3:abc',
+      fields: [{ fieldKey: 'mileage', value: 1, confidence: 'certain', excerpt: '1 km' }],
+    });
+    expect(inserts()[0].params).toContain('t1_master_v1@cfg3:abc');
+    db.calls = [];
+    await persistEvidence({ input, leadSourceId: 55, assetId: 10, trace, fields: [{ fieldKey: 'mileage', value: 1, confidence: 'certain', excerpt: '1 km' }] });
+    expect(inserts()[0].params).toContain('t1_master_v1');
   });
 });
 
@@ -279,19 +265,16 @@ describe('cibles équipement / pièce touchées (lot 18, R3)', () => {
   ];
   const lectureCiblesRemplacees = () => db.calls.filter((c) => c.sql.includes("target_type IN ('EQUIPMENT', 'ROOM')"));
 
-  it('preuves écrites sur un équipement et une pièce : cibles rendues ; legacy : aucune requête de plus', async () => {
-    delete process.env.CANONICAL_WRITE_MODE;
-    delete process.env.T3_NEGATIVE_RECONCILIATION;
+  it('preuves écrites sur un équipement et une pièce : cibles rendues', async () => {
     const r = await persistProjectedFacts({ input, leadSourceId: 55, trace, analysisRunId: 9, documentType: 'FACTURE', facts: chaudiere });
     expect(r.affectedTargets).toEqual([
       { type: 'EQUIPMENT', id: 7, assetId: 10 }, { type: 'ROOM', id: 3, assetId: 11 },
     ]);
-    expect(lectureCiblesRemplacees()).toHaveLength(0);
-    restaurer();
   });
 
-  it('commutateur actif : cibles des preuves sur le point d’être remplacées lues avant le remplacement', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
+  it('toujours (commutateurs retirés au lot 16b-3, même posés à legacy) : cibles des preuves sur le point d’être remplacées lues avant le remplacement', async () => {
+    process.env.CANONICAL_WRITE_MODE = 'legacy';
+    process.env.T3_NEGATIVE_RECONCILIATION = 'legacy';
     await persistProjectedFacts({ input, leadSourceId: 55, trace, analysisRunId: 9, documentType: 'FACTURE', facts: chaudiere });
     const lu = lectureCiblesRemplacees();
     expect(lu).toHaveLength(1);

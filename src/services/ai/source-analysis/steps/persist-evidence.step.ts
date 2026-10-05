@@ -11,14 +11,13 @@
  *
  * Deux chemins :
  *
- *  · `persistEvidence` (mode « étapes » historique) : tous les champs sur le
- *    bien déterminé par le pipeline — comportement inchangé pour un champ
- *    SANS cible. Un champ portant une cible VÉRIFIÉE (contrat enrichi) est
- *    écrit sur SA cible. Pas de supersede ici : ce chemin est appelé à
- *    l'analyse ET au rattachement tardif (`projectDocumentKnowledgeToAsset`),
- *    et le remplacement « déplacement A → B » relève du cycle de vie
- *    documentaire du lot 13 (T3-03) ; l'activer ici changerait le
- *    comportement historique sans commutateur.
+ *  · `persistEvidence` (rattachement tardif, `projectDocumentKnowledgeToAsset`) :
+ *    les champs de la connaissance documentaire sur le bien rattaché — un
+ *    champ portant une cible VÉRIFIÉE est écrit sur SA cible. Pas de
+ *    supersede ici : le remplacement « déplacement A → B » relève du cycle
+ *    de vie documentaire du lot 13 (T3-03). Lot 16b-3 : plus appelé à
+ *    l'analyse (chemin « étapes » supprimé), d'où le retrait de son option
+ *    de remplacement.
  *
  *  · `persistProjectedFacts` (branche maître T1, après projection
  *    déterministe) : chaque fait sur SA cible, jamais sur un bien unique ;
@@ -29,8 +28,7 @@
  *    preuves antérieures de la même source passent SUPERSEDED (§14.4).
  */
 import {
-  recordEvidence, supersedePriorSourceEvidence, previewPriorSourceEvidence, EvidenceSchemaNotReadyError,
-  type SupersedeBySourceResult,
+  recordEvidence, supersedePriorSourceEvidence, EvidenceSchemaNotReadyError,
 } from '../../evidence/field-evidence.service';
 import { fieldEvidenceCanonicalReady } from '../../evidence/canonical-columns';
 import { resolveFactTargets, isEvidenceTargetType, targetKey } from '../../evidence/fact-targets';
@@ -39,7 +37,6 @@ import type { FieldEvidenceInput, EvidenceLocation } from '../../evidence/eviden
 import type { ExtractedField, SourceInput, AiOperationTrace, PersistedFactTarget } from '../types';
 import type { ProjectedFact } from '../master/t1-contract';
 import { T1_MASTER_PROMPT_CODE } from '../master/t1-contract';
-import { EXTRACT_SOURCE_PROMPT_VERSION } from '../prompt-version';
 import { getField, isContextualAlias, isInputOnlyKey, resolveAlias } from '@/services/canonical/registry';
 
 export interface PersistEvidenceInput {
@@ -50,19 +47,8 @@ export interface PersistEvidenceInput {
   documentType?: string;
   documentDate?: string;
   trace: AiOperationTrace;
-  /**
-   * CDC 15 T3-03 (lot 13) — réanalyse en mode « étapes » : les preuves
-   * ACTIVE antérieures de la même source (sans analyse datée, hors preuves
-   * écrites maintenant) passent SUPERSEDED, sous verrou consultatif, avec
-   * les règles de `persistProjectedFacts` (remplacement partiel si une
-   * écriture échoue, lien vers la remplaçante de même clé/cible). Absent :
-   * aucun remplacement (rattachement tardif, comportement historique).
-   * `shadow` : ce qui serait remplacé est seulement journalisé.
-   */
-  supersede?: {
-    mode: 'shadow' | 'enabled';
-    onResult?: (r: SupersedeBySourceResult) => void;
-  };
+  /** Version du prompt qui a produit les champs (défaut : master T1). */
+  promptVersion?: string | null;
 }
 
 const evidenceSourceType = (input: SourceInput): FieldEvidenceInput['sourceType'] =>
@@ -99,8 +85,6 @@ export async function persistEvidence(p: PersistEvidenceInput): Promise<Map<stri
 
   // T1-04 : un champ dont la cible est vérifiable est écrit sur SA cible, pas
   // sur le bien du pipeline. Résolution groupée (une requête par type).
-  const written: number[] = [];
-  let failures = 0;
   const targeted = p.fields.map((f) => verifiableTarget(f.target)).filter((t): t is NonNullable<typeof t> => !!t);
   const resolved = targeted.length ? await resolveFactTargets(p.input.accountId, targeted) : new Map<string, { assetId: number }>();
 
@@ -154,7 +138,7 @@ export async function persistEvidence(p: PersistEvidenceInput): Promise<Map<stri
         documentDate: p.documentDate ? new Date(p.documentDate) : null,
         provider: 'gemini',
         model: p.trace.models[0],
-        promptVersion: EXTRACT_SOURCE_PROMPT_VERSION,
+        promptVersion: p.promptVersion ?? T1_MASTER_PROMPT_CODE,
         confidence: field.confidence,
         authorityScore,
         operationTraceId: p.trace.traceIds[0],
@@ -163,24 +147,10 @@ export async function persistEvidence(p: PersistEvidenceInput): Promise<Map<stri
       });
       byField.set(field0.fieldKey, evidenceId);
       if (contextuelle) byField.set(contextuelle, evidenceId);
-      written.push(evidenceId);
     } catch (e) {
-      failures += 1;
       // Une preuve manquante dégrade la réconciliation mais ne doit pas faire
       // échouer l'analyse du document (§11.4).
       console.error(`[persist-evidence] champ ${field.fieldKey} :`, (e as Error).message);
-    }
-  }
-
-  if (p.supersede) {
-    try {
-      const base = { accountId: p.input.accountId, sourceType: evidenceSourceType(p.input), sourceId: p.leadSourceId, keepIds: written };
-      const r = p.supersede.mode === 'enabled'
-        ? await supersedePriorSourceEvidence({ ...base, analysisRunId: null, complete: failures === 0 })
-        : await previewPriorSourceEvidence(base);
-      p.supersede.onResult?.(r);
-    } catch (e) {
-      console.error(`[persist-evidence] remplacement des preuves de la source ${p.leadSourceId} :`, (e as Error).message);
     }
   }
 
@@ -235,8 +205,6 @@ export interface PersistProjectedFactsResult {
   /**
    * Équipements et pièces touchés (nouvelles preuves ciblées ET preuves
    * ciblées remplacées) — réconciliation ciblée de leur fiche (lot 18, R3).
-   * Les preuves remplacées ne sont lues que si CANONICAL_WRITE_MODE ou
-   * T3_NEGATIVE_RECONCILIATION n'est pas `legacy` (sinon aucune requête).
    */
   affectedTargets: Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number; assetId: number }>;
   /** Preuves antérieures de la source passées SUPERSEDED, dont reliées à une remplaçante. */
@@ -353,15 +321,11 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
   // 4. Cycle de vie (§14.4) : les preuves antérieures de la source sont
   //    remplacées, jamais supprimées. Un échec ici n'annule pas les
   //    nouvelles preuves (elles restent ACTIVE) ; il est journalisé.
-  // Cibles des preuves sur le point d'être remplacées (lot 18) : lues seulement
-  // si l'application aux entités est active (aucune requête en legacy).
+  // Cibles des preuves sur le point d'être remplacées (lot 18).
   try {
-    const { canonicalWriteMode, t3NegativeMode } = await import('@/services/canonical/rollout');
-    if (canonicalWriteMode() !== 'legacy' || t3NegativeMode() !== 'legacy') {
-      const { listSourceEntityTargets } = await import('../../evidence/entity-evidence');
-      for (const c of await listSourceEntityTargets(p.input.accountId, evidenceSourceType(p.input), p.leadSourceId)) {
-        cibles.set(`${c.type}:${c.id}`, c);
-      }
+    const { listSourceEntityTargets } = await import('../../evidence/entity-evidence');
+    for (const c of await listSourceEntityTargets(p.input.accountId, evidenceSourceType(p.input), p.leadSourceId)) {
+      cibles.set(`${c.type}:${c.id}`, c);
     }
   } catch (e) {
     console.error(`[persist-evidence] cibles remplacées de la source ${p.leadSourceId} :`, (e as Error).message);

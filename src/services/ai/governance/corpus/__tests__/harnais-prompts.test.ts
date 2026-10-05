@@ -1,134 +1,82 @@
 /**
- * Harnais de corpus — accord avec les prompts réels.
+ * Harnais de corpus — accord avec le prompt réel.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * LA CAMPAGNE MESURAIT LE HARNAIS, PAS LE MOTEUR
  *
- * Résultat de la première campagne réelle : 2 conformes sur 28, tous les
- * champs `missing`, 26 erreurs de type, 28 replis.
+ * Première campagne réelle : 2 conformes sur 28 — le harnais envoyait des
+ * variables que le gabarit ne connaissait pas, lisait `fields` sous une forme
+ * que le prompt ne rendait pas, et cherchait le type dans une sortie qui n'en
+ * produisait aucun.
  *
- * Trois désaccords, tous du côté du harnais :
- *
- *   · il envoyait `documentText` et `candidateAssets` ; le gabarit attend
- *     `EXTRACTED_CONTENT`, `ASSET_CONTEXT`, `SOURCE_KIND`, `EXISTING_TITLES`.
- *     Le modèle recevait un prompt aux marqueurs non substitués ;
- *
- *   · il attendait `fields` sous forme d'objet ; le prompt rend un TABLEAU
- *     de `{ fieldKey, value }` ;
- *
- *   · il lisait `documentType` dans la sortie d'extraction, qui n'en produit
- *     aucun — c'est une opération distincte.
- *
- * Les deux seuls cas conformes étaient `document_sans_information` : on
- * n'attendait rien d'eux, et le harnais ne rendait rien.
+ * Lot 16b-3 : les opérations d'étapes (`extract_source`, `classify_document`)
+ * sont supprimées ; le harnais mesure la branche ANALYZE_DOCUMENT du prompt
+ * maître T1. Les mêmes garde-fous s'appliquent : TOUTES les variables du
+ * master, la forme réelle de la sortie, le type lu dans la classification.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { inspectMasterTemplate } from '../../../prompts/prompt-loader';
+import { T1_PROMPT_VARIABLES } from '../../../source-analysis/master/prompt-context';
+import { aplatir } from '../analysis-runner';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 const RUNNER = read('src/services/ai/governance/corpus/analysis-runner.ts');
-const PROMPT_EXTRACT = read('src/services/ai/prompts/source-analysis/extract_source_v2.txt');
-const PROMPT_CLASSIFY = read('src/services/ai/prompts/source-analysis/classify_document_v2.txt');
+const MASTER = read('src/services/ai/prompts/source-analysis/t1_master_v1.txt');
 
-/** Marqueurs réellement attendus par un gabarit. */
-const marqueurs = (gabarit: string) =>
-  [...new Set([...gabarit.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))];
-
-describe('le harnais alimente tous les marqueurs des prompts', () => {
-  it('couvre ceux de extract_source', () => {
-    // Un marqueur non substitué laisse « {{EXTRACTED_CONTENT}} » dans le
-    // prompt envoyé : le modèle ne voit pas le document.
-    for (const m of marqueurs(PROMPT_EXTRACT)) {
-      expect(RUNNER, `marqueur ${m} non alimenté`).toContain(m);
-    }
+describe('le harnais alimente tous les emplacements du master T1', () => {
+  it('variables construites par la fonction de production (exactement celles du master)', () => {
+    expect(RUNNER).toMatch(/buildAnalyzeDocumentVariables\(/);
+    const info = inspectMasterTemplate(MASTER);
+    expect(info.placeholders.filter((p) => p !== 'TASK').sort()).toEqual([...T1_PROMPT_VARIABLES].sort());
   });
 
-  it('couvre ceux de classify_document', () => {
-    for (const m of marqueurs(PROMPT_CLASSIFY)) {
-      expect(RUNNER, `marqueur ${m} non alimenté`).toContain(m);
-    }
+  it('branche ANALYZE_DOCUMENT, normalisation tolérante comme en production', () => {
+    expect(RUNNER).toMatch(/task: 'ANALYZE_DOCUMENT'/);
+    expect(RUNNER).toMatch(/outputSchema: T1AnalyzeDocumentTolerantOutput/);
+    expect(RUNNER).toMatch(/splitNormalisation\(/);
   });
 
-  it('n’emploie plus les noms inventés', () => {
+  it('n’emploie plus les opérations d’étapes ni les noms inventés', () => {
+    expect(RUNNER).not.toMatch(/operationCode: '(extract_source|classify_document)'/);
     expect(RUNNER).not.toMatch(/documentText:/);
     expect(RUNNER).not.toMatch(/candidateAssets:/);
   });
 });
 
-describe('le type vient de la bonne opération', () => {
-  it('classify_document est appelée', () => {
-    // extract_source ne rend aucun documentType.
-    expect(RUNNER).toMatch(/operationCode: 'classify_document'/);
+describe('la sortie du master est aplatie vers la forme comparée', () => {
+  const sortie = {
+    task: 'ANALYZE_DOCUMENT',
+    document: {
+      title: { value: 'Facture Pneus Clio', confidence: 'certain', evidence: {} },
+      documentDate: { value: '2026-03-14', confidence: 'certain', evidence: {} },
+      supplier: { name: 'Garage Martin', confidence: 'certain', evidence: {} },
+      amountCents: { value: 42000, confidence: 'certain', evidence: {} },
+    },
+    facts: [
+      { canonicalKey: 'mileage', normalizedValue: 78000 },
+      { canonicalKey: null, rawKey: 'immatriculation', normalizedValue: 'AB-123-CD' },
+      { canonicalKey: null, rawKey: 'title', normalizedValue: 'Titre explicite' },
+      { canonicalKey: 'x', normalizedValue: null },
+    ],
+  } as never;
+
+  it('faits sous leur clé canonique, à défaut leur clé lue ; valeurs nulles ignorées', () => {
+    const c = aplatir(sortie);
+    expect(c).toMatchObject({ mileage: 78000, immatriculation: 'AB-123-CD' });
+    expect(c).not.toHaveProperty('x');
   });
 
-  it('le type est lu dans sa réponse, pas dans l’extraction', () => {
-    expect(RUNNER).toMatch(/classification\.data\.documentType/);
-    expect(RUNNER).not.toMatch(/extraction\.data\.documentType/);
+  it('un fait explicite l’emporte sur un champ de tête', () => {
+    const c = aplatir(sortie);
+    expect(c.title).toBe('Titre explicite');
+    expect(c).toMatchObject({ documentDate: '2026-03-14', dateFacture: '2026-03-14', supplier: 'Garage Martin', amountCents: 42000 });
   });
 
-  it('les deux appels ont des clés d’idempotence distinctes', () => {
-    // Une clé commune ferait servir la réponse d'extraction à la
-    // classification.
-    expect(RUNNER).toMatch(/:extract`/);
-    expect(RUNNER).toMatch(/:classify`/);
-  });
-});
-
-describe('la sortie du prompt est aplatie vers la forme comparée', () => {
-  it('le tableau fieldKey/value est parcouru', () => {
-    expect(RUNNER).toMatch(/for \(const f of sortie\.fields \?\? \[\]\)/);
-    expect(RUNNER).toMatch(/champs\[f\.fieldKey\] = f\.value/);
-  });
-
-  it('un fieldKey explicite l’emporte sur un champ de tête', () => {
-    // Le cas de corpus nomme la clé qu'il attend : elle fait autorité.
-    expect(RUNNER).toMatch(/champs\[cle\] === undefined/);
-  });
-
-  it('le coût cumule les deux appels', () => {
-    expect(RUNNER).toMatch(/extraction\.costMicros \?\? 0\) \+ \(classification\.costMicros/);
-  });
-});
-
-describe('le vocabulaire des champs est imposé au corpus, libre ailleurs', () => {
-  // ══════════════════════════════════════════════════════════════════════
-  // 6 CHAMPS CORRECTS SUR 83
-  //
-  // `fieldKey` était un `z.string()` sans vocabulaire : le modèle nommait
-  // librement — l'exemple du prompt étant `registrationNumber`, en anglais —
-  // tandis que le corpus attend `immatriculation`.
-  //
-  // Il extrayait probablement les bonnes valeurs. Le comparateur ne les
-  // reconnaissait pas.
-  // ══════════════════════════════════════════════════════════════════════
-  const ETAPE = read('src/services/ai/source-analysis/steps/extract-source.step.ts');
-
-  it('le prompt accepte une liste de clés', () => {
-    expect(PROMPT_EXTRACT).toContain('{{EXPECTED_FIELDS}}');
-  });
-
-  it('le prompt reste utilisable sans liste', () => {
-    // Le pipeline réel n'en a pas encore : sans cette règle, son marqueur
-    // vide changerait le comportement en production.
-    expect(PROMPT_EXTRACT).toMatch(/Si aucune liste n'est fournie, nomme librement/);
-  });
-
-  it('la liste ne restreint pas ce qui est extrait', () => {
-    // Une information hors liste doit remonter quand même — sinon on
-    // mesurerait la capacité à suivre une consigne, pas à extraire.
-    expect(PROMPT_EXTRACT).toMatch(/ne restreint pas ce que tu extrais/);
-  });
-
-  it('le harnais transmet les clés attendues par le cas', () => {
-    expect(RUNNER).toMatch(/EXPECTED_FIELDS: Object\.keys\(corpusCase\.expected\.fields/);
-  });
-
-  it('le pipeline réel alimente la variable, vide', () => {
-    // Non alimentée, elle laisserait « {{EXPECTED_FIELDS}} » dans le prompt
-    // envoyé en production.
-    expect(ETAPE).toMatch(/EXPECTED_FIELDS: ''/);
+  it('le type vient de la classification du master', () => {
+    expect(RUNNER).toMatch(/c\?\.canonicalType \?\? c\?\.documentTypeCode/);
   });
 });
 
@@ -151,11 +99,8 @@ describe('chaque campagne mesure vraiment', () => {
     expect(RUNNER).toMatch(/corpus:\$\{campagne\}/);
   });
 
-  it('elle reste distincte entre extraction et classification', () => {
-    // Une clé commune ferait servir la réponse d'extraction à la
-    // classification.
-    expect(RUNNER).toMatch(/:extract`/);
-    expect(RUNNER).toMatch(/:classify`/);
+  it('un seul appel par cas, clé propre à la campagne et au cas', () => {
+    expect(RUNNER).toMatch(/idempotencyKey: `corpus:\$\{campagne\}:\$\{corpusCase\.caseId\}:analyze`/);
   });
 
   it('une campagne trop rapide est signalée', () => {
@@ -206,14 +151,11 @@ describe('une campagne n’est jamais perdue', () => {
   });
 });
 
-describe('le niveau pipeline traverse réellement la bascule', () => {
+describe('le niveau pipeline traverse réellement le pipeline', () => {
   // ══════════════════════════════════════════════════════════════════════
-  // 4 CONFORMES DES DEUX CÔTÉS
-  //
   // Le runner d'opérations appelle AiGateway directement : il ne traverse
-  // pas `analyzeFileSources`, seul endroit où AI_UNIFIED_SOURCE_ANALYSIS
-  // aiguille. Les deux campagnes exécutaient le même code, et seul le
-  // libellé changeait.
+  // ni le regroupement, ni la projection, ni la persistance. Le niveau
+  // pipeline passe par `analyzeFileSources`, comme la production.
   // ══════════════════════════════════════════════════════════════════════
   const PIPELINE = read('src/services/ai/governance/corpus/pipeline-runner.ts');
   const ENTREE = read('src/services/ai/source-analysis/entrypoint.ts');
@@ -247,8 +189,11 @@ describe('le niveau pipeline traverse réellement la bascule', () => {
   });
 
   it('le résultat est relu en base, non pris au retour', () => {
-    // analyzeFileSources rend null sur le moteur historique, par conception.
     expect(PIPELINE).toMatch(/FROM asset_files WHERE id =/);
+  });
+
+  it('lot 16b-3 : un échec est mesuré, jamais remis en file', () => {
+    expect(PIPELINE).toMatch(/retryOnFailure: false/);
   });
 
   it('deux niveaux de mesure ne se comparent pas', () => {

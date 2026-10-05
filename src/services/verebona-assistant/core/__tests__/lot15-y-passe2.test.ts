@@ -11,11 +11,6 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 vi.mock('@/db', () => ({ pgClient: { unsafe: vi.fn(async () => []) }, db: {}, ensureMigrations: vi.fn(), ensureUnaccent: vi.fn() }));
 
-const archi = vi.hoisted(() => ({ value: 'steps' as 'steps' | 'master' }));
-vi.mock('@/services/ai/config/config-resolver', async (orig) => ({
-  ...(await orig<Record<string, unknown>>()),
-  getPromptArchitecture: vi.fn(async () => archi.value),
-}));
 const comprendre = vi.hoisted(() => ({ fn: vi.fn() }));
 vi.mock('@/services/ai/assistant/master/t2-understand', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -44,14 +39,13 @@ type Ports = import('../assistant-orchestrator.service').OrchestratorPorts;
 type Src = import('../../types/sources').RetrievedSource;
 
 const ENV = { ...process.env };
-beforeEach(() => { archi.value = 'steps'; comprendre.fn.mockReset(); etatCommande.fn.mockReset(); });
+beforeEach(() => { comprendre.fn.mockReset(); etatCommande.fn.mockReset(); });
 afterEach(() => { process.env = { ...ENV }; resetAssistantConfigForTests(); });
 const input = (message: string, extra: Record<string, unknown> = {}) =>
   ({ accountId: 1, userId: 2, planType: 'PREMIUM', message, clientRequestId: 'c', ...extra }) as never;
 
 describe('1. branche master de la compréhension (classification.adapter)', () => {
   it('master : t2_understand puis toIntentRoute ; faits demandés et filtres portés par la route', async () => {
-    archi.value = 'master';
     comprendre.fn.mockResolvedValue({
       plan: { intent: 'ACCOUNT_SEARCH_DOCUMENT', confidence: 'probable', entityHints: [{ type: 'period', value: 'en 2024' }, { type: 'asset', value: 'la Clio' }], reason: 'r' },
       requestedFacts: [], requestedTopics: [], events: [],
@@ -80,7 +74,6 @@ describe('1. branche master de la compréhension (classification.adapter)', () =
   it('master indisponible → null (intention inconnue) ; version ancienne en « steps » : master quand même', async () => {
     comprendre.fn.mockResolvedValue(null);
     expect(await classifyAssistantIntent('x', input('x'))).toBeNull();
-    archi.value = 'steps';
     comprendre.fn.mockClear();
     await classifyAssistantIntent('x', input('x'));
     expect(comprendre.fn).toHaveBeenCalledOnce();

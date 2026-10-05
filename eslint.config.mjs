@@ -54,6 +54,12 @@ const eslintConfig = [
             {
               name: "@google/generative-ai",
               message:
+                "Ancien SDK désinstallé (D-J5, lot 16b-3) et accès direct interdit (CDC §5.2). " +
+                "Utilisez AiGateway.execute().",
+            },
+            {
+              name: "@google/genai",
+              message:
                 "Accès direct au SDK interdit (CDC §5.2). Utilisez AiGateway.execute(). " +
                 "Seul src/services/ai/gateway/providers/ peut importer ce paquet.",
             },
@@ -68,6 +74,28 @@ const eslintConfig = [
                 "**/document-ai/gemini-client",
                 "**/document-ai/upload-to-gemini",
                 "**/agenda/AgendaClassificationService",
+                // Lot 16b-3 : ancien moteur T1 supprimé (étapes, aiguillage, document-ai).
+                "**/document-ai/analyze-document",
+                "**/document-ai/unified-analysis-pipeline",
+                "**/source-analysis/steps/group-sources.step",
+                "**/source-analysis/steps/extract-source.step",
+                "**/source-analysis/steps/classify-document.step",
+                "**/source-analysis/steps/classify-rubric.step",
+                "**/source-analysis/steps/identify-entities.step",
+                "**/source-analysis/master/analysis-mode",
+                "**/source-analysis/master/shadow",
+                // Lot 16b-3b : T3 historique, D-H1, commutateurs et drapeaux supprimés.
+                "**/document-ai/hourly-enrichment.service",
+                "**/document-ai/asset-enrichment-trigger",
+                "**/document-ai/ai-usage-tracker",
+                "**/document-ai/commit-engine",
+                "**/gateway/legacy-prompt",
+                "**/reconciliation/shadow-report.service",
+                "**/canonical/rollout",
+                "**/exports/v12/data/source-diff",
+                "**/ai/flags/ai-feature-flags",
+                "**/ai/flags/use-case-flags",
+                "**/ai/flags/flags-snapshot.service",
               ],
               message:
                 "Moteur IA historique en cours de suppression (CDC §3.4). " +
@@ -80,42 +108,14 @@ const eslintConfig = [
   },
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CLIQUET DE DETTE — AJOUT DU LOT 0
+  // CLIQUET DE DETTE — AJOUT DU LOT 0, VIDÉ AU LOT 16b-3
   //
-  // Les quatorze fichiers ci-dessous violent déjà la règle précédente : ce sont
-  // les moteurs historiques que le chantier doit supprimer. Tant qu'ils
-  // existent, `npm run lint` échoue, donc la CI ne peut pas passer, donc le
-  // garde-fou est désactivé pendant toute la durée des travaux.
-  //
-  // Cette liste est la dette connue, et rien d'autre :
-  //   • un fichier ABSENT de la liste qui importe le SDK ⇒ erreur, build rouge ;
-  //   • un fichier retiré de la liste ne peut plus y revenir sans une
-  //     modification visible de ce fichier, relue en revue.
-  //
-  // ⚠️ Cette liste ne doit JAMAIS s'allonger. Elle est vidée lot après lot et
-  //    disparaît au lot 7, en même temps que le bloc ci-dessous.
-  //    Elle est tenue en cohérence avec `scripts/ai-legacy-baseline.json`.
+  // Les moteurs historiques qui violaient la règle précédente étaient
+  // exemptés ici, le temps du chantier. Lot 16b-3 : les derniers
+  // (`ai-suggestions`, `apply-ai-suggestions`, `enrich-and-coherence`) sont
+  // supprimés — la liste est vide et le bloc d'exemption disparaît : la règle
+  // s'applique sans exception à tout `src/` hors adaptateur fournisseur.
   // ─────────────────────────────────────────────────────────────────────────
-  {
-    files: [
-      // ⚠️ Les crochets de segment dynamique Next.js sont interprétés par
-      //    minimatch comme une classe de caractères : `[id]` matche « i » ou
-      //    « d », jamais la chaîne littérale. D'où le joker.
-      'src/app/api/assets/*/ai-suggestions/route.ts',       // lot 3
-      'src/app/api/documents/*/analyze/route.ts',           // lot 2
-      'src/app/api/documents/*/commit/route.ts',            // lot 2
-      // Lot 16b-2 : recherche Gemini (D-H2) et classifieur agenda historique
-      // supprimés — `search/intelligent`, `search/route.ts`, `gemini-search`,
-      // `intelligent-search`, `AgendaClassificationService` sortis de la liste.
-      'src/services/document-ai/apply-ai-suggestions.ts',   // lot 3
-      'src/services/document-ai/enrich-and-coherence.service.ts', // lot 3
-      'src/services/document-ai/gemini-client.ts',          // lot 7
-      'src/services/document-ai/unified-analysis-pipeline.ts',    // lot 7
-    ],
-    rules: {
-      'no-restricted-imports': 'off',
-    },
-  },
 
   {
     // Fichiers/dossiers a NE PAS linter

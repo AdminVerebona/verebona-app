@@ -10,8 +10,9 @@
  *   4. Re-checks only objects marked as modified or not recently verified
  *   5. Never launches full AI analysis on the entire account
  *
- * Runs via the existing /api/cron/hourly-enrichment endpoint (renamed to
- * /api/cron/nightly-catchup) or a new dedicated cron endpoint.
+ * Not scheduled: the deterministic queue maintenance runs in-app
+ * (`coherence-maintenance.service`, hourly task of the daily scheduler) since
+ * lot 16b-3 removed /api/cron/hourly-enrichment.
  */
 
 import { db } from '@/db';

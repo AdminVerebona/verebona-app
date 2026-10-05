@@ -20,6 +20,7 @@ const { nextProbeDelay } = await import('../circuit-breaker');
 const { AiGateway } = await import('../../gateway/ai-gateway');
 const { FakeProvider, setAiProvider } = await import('../../gateway/providers');
 const { getOperation } = await import('../../registry/operations');
+const { T1_TEST_OPERATION, t1TestVariables, t1Out, t1Schema } = await import('../../gateway/__tests__/t1-master-request');
 
 const sqls = () => unsafe.mock.calls.map(([sql]) => String(sql));
 
@@ -143,11 +144,12 @@ describe('sondes (WF-09, MOD-013, MOD-014)', () => {
 describe('câblage gateway → disjoncteur', () => {
   const outcomes: GatewayOutcome[] = [];
   let fake: InstanceType<typeof FakeProvider>;
-  const op = getOperation('classify_document');
-  const Schema = z.object({ title: z.string(), amountCents: z.number() });
+  // Lot 16b-3 : opération T1 réelle (branche GROUP_UPLOAD du master).
+  const op = getOperation(T1_TEST_OPERATION);
+  const Schema = t1Schema({ title: z.string(), amountCents: z.number() });
   const req = (over: Record<string, unknown> = {}) => ({
-    useCaseCode: 'SOURCE_ANALYSIS' as const, operationCode: 'classify_document', accountId: 1,
-    promptVariables: {}, outputSchema: Schema, idempotencyKey: `cb-${Math.random()}`, ...over,
+    useCaseCode: 'SOURCE_ANALYSIS' as const, operationCode: T1_TEST_OPERATION, accountId: 1,
+    promptVariables: t1TestVariables(), outputSchema: Schema, idempotencyKey: `cb-${Math.random()}`, ...over,
   });
 
   beforeEach(() => {
@@ -160,7 +162,7 @@ describe('câblage gateway → disjoncteur', () => {
 
   it('repli réussi : échec du principal compté (MOD-009), chaîne réussie', async () => {
     fake.on(op.primaryModel, () => { throw new Error('503'); });
-    fake.onAny(() => ({ rawText: '{"title":"a","amountCents":1}', inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: t1Out({ title: 'a', amountCents: 1 }), inputTokens: 1, outputTokens: 1 }));
     await AiGateway.execute(req());
     expect(outcomes).toEqual([{
       treatment: 'T1',

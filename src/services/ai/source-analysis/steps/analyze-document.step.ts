@@ -2,7 +2,7 @@
  * T1 master, branche ANALYZE_DOCUMENT (opération `t1_analyze_document`) —
  * CDC 15 §23, §22.2, PM-T1, T1-01, T1-04, T1-08.
  *
- * Remplace, en architecture `master`, les appels `extract_source`,
+ * Remplace (lot 16b-3 : seul chemin) les anciennes étapes `extract_source`,
  * `classify_document`, `identify_entities` et `classify_rubric` : UNE analyse
  * cohérente du document regroupé (métadonnées, classification, entités,
  * transcription, visuel, tableaux, faits ciblés).
@@ -28,7 +28,7 @@ import { T1AnalyzeDocumentTolerantOutput, splitNormalisation } from '../master/t
 import { buildAnalyzeDocumentVariables } from '../master/prompt-context';
 import { checkFactEvidence, factLabel } from '../master/fact-evidence';
 import { verifyCandidates, type VerifiableEntity } from '../identifier-verifier';
-import { loadAssetFamilies } from './classify-rubric.step';
+import { loadAssetFamilies } from '../master/rubric-rules';
 import { normalizeTablesWithMap, cellAt } from '../../knowledge/document-tables';
 import { emptyTrace, mergeTrace } from '../trace';
 import type { VerifiableTargetType } from '../projection/document-projection';
@@ -55,16 +55,10 @@ export interface AnalyzeDocumentResult {
   promptVersion: string;
 }
 
-export interface AnalyzeDocumentOptions {
-  /** Mode observation : trace écrite, rien appliqué (D-18). */
-  shadow?: boolean;
-}
-
 export async function analyzeDocument(
   input: SourceInput,
   groupIndices: number[],
   ctx: AnalysisContext,
-  opts: AnalyzeDocumentOptions = {},
 ): Promise<AnalyzeDocumentResult> {
   const warnings: AnalysisWarning[] = [];
   const knownAssetId = ctx.linkedAssetId ?? null;
@@ -85,7 +79,6 @@ export async function analyzeDocument(
     // Normalisation tolérante AVANT le contrat strict (`master/tolerant-output`).
     outputSchema: T1AnalyzeDocumentTolerantOutput,
     sourceVersion: input.sourceVersion,
-    ...(opts.shadow ? { shadow: true } : {}),
   });
   const { output: out, report } = splitNormalisation(res.data);
   if (report?.truncatedFacts) {

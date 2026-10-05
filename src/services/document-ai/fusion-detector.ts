@@ -200,12 +200,6 @@ export async function detectFusionCandidates(
   }
 
   if (candidates.length > 0) {
-    // Broadcast fusion suggestion via the SSE stream of the newly uploaded file
-    try {
-      const { registerStreamWriter } = await import('./unified-analysis-pipeline');
-      // We broadcast directly to any open streams — if none, data is stored for polling
-    } catch { /* ignore */ }
-
     // Store pending fusion suggestion in assetFiles metadata for client polling
     await db.update(assetFiles)
       .set({

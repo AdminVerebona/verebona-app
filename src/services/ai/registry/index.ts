@@ -8,14 +8,14 @@ export type { AiUseCaseCode, AiUseCaseDefinition } from './use-cases';
 
 export {
   AI_OPERATIONS, getOperation, listLlmOperations, listOperationsByUseCase,
-  isMasterOperation, listMasterTasks, listMasterPrompts,
+  isMasterOperation, listMasterTasks, listMasterPrompts, isTargetArchitectureOperation, listNonTargetOperations,
 } from './operations';
-export type { AiOperationCode, AiOperationDefinition, MasterMigrationTarget } from './operations';
+export type { AiOperationCode, AiOperationDefinition } from './operations';
 
 export { syncAiRegistry } from './registry.repository';
 
 import { assertPricingReady } from '../gateway/cost-catalog';
-import { AI_OPERATIONS, isMasterOperation, type AiOperationDefinition } from './operations';
+import { AI_OPERATIONS, isTargetArchitectureOperation, type AiOperationDefinition } from './operations';
 import { isAiUseCaseCode } from './use-cases';
 
 /**
@@ -33,10 +33,12 @@ export function assertAiRegistryStartup(): void {
         'Déclarez un `promptCode`, ou `dynamicPrompt: true` si le prompt est fourni à l\'appel.',
       );
     }
-    // Exemption de masquage (§5.6) : réservée aux prompts historiques relayés.
-    if (op.unredactedVariables?.length && !op.legacyPrompt) {
+    // Lot 16b : architecture cible seule — tout appel modèle passe par un
+    // prompt maître, sauf l'évaluation d'une version candidate (`dynamicPrompt`).
+    if (op.active && !isTargetArchitectureOperation(op)) {
       throw new Error(
-        `[ai-registry] Opération « ${op.operationCode} » : \`unredactedVariables\` n'est admis que pour un prompt historique relayé (\`legacyPrompt\`).`,
+        `[ai-registry] Opération « ${op.operationCode} » : appel modèle hors prompt maître. Les étapes historiques `
+        + 'et relais legacy sont retirés (lot 16b) : déclarez une branche du master du traitement.',
       );
     }
     assertMasterDeclaration(op);
@@ -48,10 +50,8 @@ export function assertAiRegistryStartup(): void {
  *
  * · une opération master déclare `masterPromptCode` ET `task`, et son
  *   `promptCode` EST le master (une entrée prompt par traitement) ;
- * · un master n'est ni relayé (`legacyPrompt`) ni dynamique ;
- * · toutes les opérations master d'un usage partagent le même master ;
- * · `migratesTo` d'une opération historique pointe vers une opération master
- *   existante, de même usage, même master et même TASK.
+ * · un master n'est pas dynamique ;
+ * · toutes les opérations master d'un usage partagent le même master.
  */
 export function assertMasterDeclaration(op: AiOperationDefinition): void {
   const où = `[ai-registry] Opération « ${op.operationCode} »`;
@@ -62,26 +62,14 @@ export function assertMasterDeclaration(op: AiOperationDefinition): void {
     if (op.promptCode !== op.masterPromptCode) {
       throw new Error(`${où} : \`promptCode\` doit être le master « ${op.masterPromptCode} » (CDC 15 §29.1).`);
     }
-    if (op.legacyPrompt || op.dynamicPrompt) {
-      throw new Error(`${où} : un prompt maître n'est ni relayé ni dynamique.`);
+    if (op.dynamicPrompt) {
+      throw new Error(`${où} : un prompt maître n'est pas dynamique.`);
     }
     const autres = Object.values(AI_OPERATIONS).filter(
       (o) => o.useCaseCode === op.useCaseCode && o.masterPromptCode && o.masterPromptCode !== op.masterPromptCode,
     );
     if (autres.length > 0) {
       throw new Error(`${où} : un seul prompt maître par traitement (CDC 15 §22), trouvé aussi « ${autres[0].masterPromptCode} ».`);
-    }
-  }
-  if (op.migratesTo) {
-    const cible = AI_OPERATIONS[op.migratesTo.operationCode];
-    if (!cible || !isMasterOperation(cible)
-      || cible.useCaseCode !== op.useCaseCode
-      || cible.masterPromptCode !== op.migratesTo.masterPromptCode
-      || cible.task !== op.migratesTo.task) {
-      throw new Error(
-        `${où} : \`migratesTo\` incohérent (${op.migratesTo.masterPromptCode} / ${op.migratesTo.task} → ` +
-        `${op.migratesTo.operationCode}) — l'opération master cible doit exister avec ce master et cette TASK.`,
-      );
     }
   }
 }

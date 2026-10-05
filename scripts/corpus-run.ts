@@ -5,9 +5,9 @@
  *   npm run corpus:run -- --baseline      # enregistre la référence
  *   npm run corpus:run -- --compare       # compare à la référence
  *
- * Le mode `--compare` est celui qui décide d'une bascule : il répond à la
- * seule question utile, « le nouveau moteur fait-il mieux ou moins bien ? ».
- * Il sort en code 1 si la bascule n'est pas sûre.
+ * Le mode `--compare` répond à la seule question utile : « le master T1 (ou
+ * sa configuration) fait-il mieux ou moins bien que la référence ? ». Il sort
+ * en code 1 si l'évolution n'est pas sûre.
  */
 import '@/lib/load-env';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
@@ -28,8 +28,8 @@ async function main() {
   const args = process.argv.slice(2);
   const saveBaseline = args.includes('--baseline');
   const compare = args.includes('--compare');
-  const label = process.env.AI_UNIFIED_SOURCE_ANALYSIS === 'enabled'
-    ? 'moteur unifié' : 'moteur historique';
+  // Lot 16b-3 : un seul moteur (prompt maître T1), plus de drapeau à lire.
+  const label = 'prompt maître T1';
 
   const run = await runCorpus(createAnalysisRunner(), { label });
   console.log(formatReport(run));

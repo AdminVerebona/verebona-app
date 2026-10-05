@@ -9,7 +9,7 @@
  *    T4_TEMPORAL_RESOLUTION) la remplace ; T3 met la fiche à jour par la
  *    primitive canonique (motif T4_DATE_REVISED), miroir compris ;
  *  · une valeur saisie par l'utilisateur n'est jamais écrasée (conflit) ;
- *  · CANONICAL_WRITE_MODE=legacy : aucune preuve révisée.
+ *  · lot 16b-3 : `CANONICAL_WRITE_MODE` retiré — posé à legacy, il est ignoré.
  * Le choix du modèle (branche TEMPORAL_AMBIGUITY) est simulé : jamais de réseau.
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
@@ -21,11 +21,7 @@ vi.mock('@/services/ai/reconciliation/coherence-impact', () => ({ hasCoherenceIm
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-// T4 en architecture master (configuration) ; choix du modèle simulé : lecture française.
-vi.mock('@/services/ai/config/config-resolver', async (orig) => ({
-  ...(await orig<typeof import('@/services/ai/config/config-resolver')>()),
-  getPromptArchitecture: async () => 'master',
-}));
+// T4 master seul ; choix du modèle simulé : lecture française.
 vi.mock('@/services/ai/agenda/master/temporal-ambiguity', async (orig) => ({
   ...(await orig<typeof import('@/services/ai/agenda/master/temporal-ambiguity')>()),
   resolveTemporalAmbiguityMaster: async (_c: unknown, candidats: Array<{ candidateId: number; date: string; interpretation: string }>) =>
@@ -97,8 +93,7 @@ scenario('D-M-L20', 'Date tranchée par T4 : preuve révisée, fiche corrigée p
     return { compte, bien, doc, evidenceId, t4, t3 };
   };
 
-  it('enabled : preuve révisée, originale SUPERSEDED, fiche corrigée par T3 (RECONCILIATION, T4_DATE_REVISED)', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
+  it('preuve révisée, originale SUPERSEDED, fiche corrigée par T3 (RECONCILIATION, T4_DATE_REVISED)', async () => {
     const m = await chaine();
     expect(await kcDe(m.bien.id)).toMatchObject({ nextInspection: '2027-03-04', nextInspection__origin: 'RECONCILIATION' });
 
@@ -119,7 +114,6 @@ scenario('D-M-L20', 'Date tranchée par T4 : preuve révisée, fiche corrigée p
   });
 
   it('valeur USER : jamais écrasée par la preuve révisée (conflit)', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const m = await chaine();
     await facade.updateAssetDetails({
       assetId: m.bien.id, accountId: m.compte.id, section: 'vehicle_insurance', fields: { nextInspection: '2027-06-01' }, actorUserId: m.compte.ownerUserId,
@@ -132,13 +126,13 @@ scenario('D-M-L20', 'Date tranchée par T4 : preuve révisée, fiche corrigée p
     expect(await kcDe(m.bien.id)).toMatchObject({ nextInspection: '2027-06-01', nextInspection__origin: 'USER' });
   });
 
-  it('CANONICAL_WRITE_MODE=legacy : la date de l’agenda est tranchée, aucune preuve révisée', async () => {
+  it('CANONICAL_WRITE_MODE=legacy encore posé (retiré au lot 16b-3) : ignoré, preuve révisée quand même', async () => {
     process.env.CANONICAL_WRITE_MODE = 'legacy';
     const m = await chaine();
     const [decision] = await m.t4();
     expect(decision.date).toBe('2027-04-03');
     const lignes = await preuves(m.doc.id);
-    expect(lignes.some((l) => l.rule === 'T4_TEMPORAL_RESOLUTION')).toBe(false);
-    expect(lignes.find((l) => l.id === m.evidenceId)?.lifecycle ?? 'ACTIVE').toBe('ACTIVE');
+    expect(lignes.some((l) => l.rule === 'T4_TEMPORAL_RESOLUTION')).toBe(true);
+    expect(lignes.find((l) => l.id === m.evidenceId)?.lifecycle).toBe('SUPERSEDED');
   });
 });

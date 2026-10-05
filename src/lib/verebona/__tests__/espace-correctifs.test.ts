@@ -103,9 +103,13 @@ describe('suggestions pendant la frappe', () => {
     expect(moveActive(-1, 1, 0)).toBe(-1);
   });
 
-  it('jamais d’appel modèle à la frappe : mode `instant` côté serveur', () => {
+  it('jamais d’appel modèle à la frappe : recherche lexicale seule (D-H2, lot 16b-2)', () => {
     expect(read('src/components/verebona/space/VerebonaSpaceProvider.tsx')).toMatch(/\/api\/search\?instant=1&q=/);
-    expect(read('src/app/api/search/route.ts')).toMatch(/if \(!instant && shouldRunLegacy\(/);
+    const route = read('src/app/api/search/route.ts');
+    // Aucun import de moteur IA (recherche Gemini, drapeaux, passerelle).
+    expect(route).not.toMatch(/^import[^\n]*(gemini|ai-feature-flags|ai-gateway|\/services\/ai\/)/im);
+    expect(route).not.toMatch(/AiGateway/);
+    expect(route).toMatch(/aiPowered: false/);
   });
 });
 
@@ -133,11 +137,8 @@ describe('fils : suppression et accès à toutes les demandes', () => {
 
 describe('coquille', () => {
   const layout = read('src/components/DashboardLayout.tsx');
-  it('mobile (maquette D v2, 2b) : Agenda dans la barre basse, plus dans le panneau du compte', () => {
-    const nav = read('src/components/mobile/bottom-navigation.tsx');
-    expect(nav).toContain("{ id: 'agenda', name: 'Agenda', href: '/agenda', icon: CalendarDays }");
-    expect(read('src/components/mobile/mobile-account-panel.tsx')).not.toContain('/agenda');
-    expect(layout).toContain('<MobileAccountPanel');
+  it('mobile : « Mon agenda » dans le panneau du compte', () => {
+    expect(layout).toMatch(/href="\/agenda"[^]*?Mon agenda/);
   });
   it('pas de « + » global desktop (spécification) : plus de fenêtres d’ajout mortes', () => {
     expect(layout).not.toMatch(/AssetFormDialog|UnifiedDocumentDialog|CreateAgendaItemDrawer/);

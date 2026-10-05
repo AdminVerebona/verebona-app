@@ -5,9 +5,9 @@
  * Portage dans le harnais E2E (base neuve : schéma Drizzle + toutes les
  * migrations, dont 0216) du test opt-in de l'agent B
  * `src/services/canonical/asset-state/__tests__/canonical-write.pg.test.ts` :
- * mode `enabled` (transaction, `SELECT … FOR UPDATE`, colonnes miroirs avec
- * paramètres date / entiers, journal `canonical_field_writes`), `shadow`,
- * `legacy`, verrou concurrent et annulation des miroirs.
+ * écriture réelle (transaction, `SELECT … FOR UPDATE`, colonnes miroirs avec
+ * paramètres date / entiers, journal `canonical_field_writes`), commutateur
+ * retiré ignoré (lot 16b-3), verrou concurrent et annulation des miroirs.
  *
  * Source de vérité des cas : le test de l'agent B. Ce fichier n'en change
  * que l'installation (fabriques du harnais, connexion partagée non fermée).
@@ -31,6 +31,7 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     facade = await import('@/services/asset-details-write.service');
   });
   afterEach(() => {
+    // Lot 16b-3 : commutateur retiré — remis comme avant le test.
     if (modeInitial === undefined) delete process.env.CANONICAL_WRITE_MODE;
     else process.env.CANONICAL_WRITE_MODE = modeInitial;
     emitBusinessEvent.mockClear();
@@ -55,7 +56,6 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     Object.fromEntries(Object.entries(kc).filter(([k]) => !/__(origin|updatedAt|authority|sourceDate)$/.test(k)));
 
   it('T3-01 : même valeur par l’UI (façade) et par une écriture automatique → même état final, hors origine', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const c = await compte('t301');
     const a = await bien(c);
     const b = await bien(c);
@@ -87,7 +87,6 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
   });
 
   it('T3-02 / T2-38 : valeur USER protégée contre une écriture automatique ; l’automatique remplit un champ vide', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const c = await compte('t302');
     const a = await bien(c, { registrationNumber: 'AA-111-AA', registrationNumber__origin: 'DOCUMENT_EXTRACTION' });
     await facade.updateAssetDetails({ assetId: a, accountId: c.accountId, section: 'vehicle_identification', fields: { registrationNumber: 'BB-222-BB' } });
@@ -106,8 +105,7 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     expect(vide.field?.outcome).toBe('written');
   });
 
-  it('E2E-14 (enabled) : fiche = colonne = vue canonique = lecture de l’assistant = export ; compte étranger : introuvable', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
+  it('E2E-14 : fiche = colonne = vue canonique = lecture de l’assistant = export ; compte étranger : introuvable', async () => {
     const c = await compte('e2e14');
     const autre = await compte('e2e14-autre');
     const a = await bien(c);
@@ -122,15 +120,9 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     const t2 = await sqlLookup.getAssetState!(c.accountId, a);
     expect(t2?.characteristics.registrationNumber).toBe('CD-456-EF');
     // Export (source canonique, L16) : même immatriculation.
-    const exportAvant = process.env.EXPORTS_CANONICAL_SOURCE;
-    process.env.EXPORTS_CANONICAL_SOURCE = 'enabled';
-    try {
-      const { loadExportSource } = await import('@/services/exports/v12/data/source');
-      const ex = await loadExportSource({ assetId: a, accountId: c.accountId, userId: c.userId, exportType: 'DOSSIER_COMPLET' });
-      expect(ex.asset.registrationNumber).toBe('CD-456-EF');
-    } finally {
-      if (exportAvant === undefined) delete process.env.EXPORTS_CANONICAL_SOURCE; else process.env.EXPORTS_CANONICAL_SOURCE = exportAvant;
-    }
+    const { loadExportSource } = await import('@/services/exports/v12/data/source');
+    const ex = await loadExportSource({ assetId: a, accountId: c.accountId, userId: c.userId, exportType: 'DOSSIER_COMPLET' });
+    expect(ex.asset.registrationNumber).toBe('CD-456-EF');
 
     expect(await canon.getCanonicalAssetState(a, autre.accountId)).toBeNull();
     const refus = await canon.writeCanonicalAssetField({ assetId: a, accountId: autre.accountId, key: 'registrationNumber', value: 'ZZ', origin: 'USER' });
@@ -147,58 +139,25 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
     expect(vue?.fields.acquisitionDate).toMatchObject({ value: '2018-06-01', from: 'column', origin: 'USER' });
   });
 
-  it('shadow : le chemin historique écrit, la primitive n’écrit rien et journalise la divergence', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'shadow';
-    const c = await compte('shadow');
-    const a = await bien(c, { acquisitionPrice: 900, acquisitionPrice__origin: 'DOCUMENT_EXTRACTION' }, 'OBJET');
-    await facade.updateAssetDetails({ assetId: a, accountId: c.accountId, section: 'common', fields: { acquisitionPrice: '1000', notes: 'rien' } });
-    const l = await ligne(a);
-    // Chemin historique : valeur brute, pas de miroir ; origine USER posée
-    // aussi en legacy/shadow depuis le lot 13 (CDC 15 T3-02).
-    expect(l.kcObj).toMatchObject({ acquisitionPrice: '1000', acquisitionPrice__origin: 'USER' });
-    expect(l.purchase_price_cents).toBeNull();
-    // L'observation shadow est HORS du chemin de la requête (non attendue) :
-    // on attend son journal (borné) au lieu de supposer qu'il est déjà écrit.
-    const lire = () => sql<Array<{ canonical_key: string; dry_run: boolean; divergence: Record<string, unknown> | null }>>`
-      SELECT canonical_key, dry_run, divergence FROM canonical_field_writes WHERE asset_id = ${a} ORDER BY id`;
-    let j = await lire();
-    for (let i = 0; i < 40 && !j.some((r) => r.canonical_key === 'acquisitionPrice'); i += 1) {
-      await new Promise((r) => setTimeout(r, 50));
-      j = await lire();
+  it('commutateur retiré encore posé (legacy / shadow) : ignoré — façade et primitive écrivent réellement', async () => {
+    for (const v of ['legacy', 'shadow']) {
+      process.env.CANONICAL_WRITE_MODE = v;
+      const c = await compte(`retire-${v}`);
+      const a = await bien(c, { acquisitionPrice: 900, acquisitionPrice__origin: 'DOCUMENT_EXTRACTION' }, 'OBJET');
+      await facade.updateAssetDetails({ assetId: a, accountId: c.accountId, section: 'common', fields: { acquisitionPrice: '1000' } });
+      const l = await ligne(a);
+      expect(l.kcObj).toMatchObject({ acquisitionPrice__origin: 'USER' });
+      expect(l.purchase_price_cents).toBe(100000);
+      const r = await canon.writeCanonicalAssetField({ assetId: a, accountId: c.accountId, key: 'notes', value: 'x', origin: 'USER' });
+      expect(r).toMatchObject({ notFound: false, field: { outcome: 'written' } });
+      expect(r).not.toHaveProperty('dryRun');
+      const j = await sql<Array<{ dry_run: boolean; divergence: unknown }>>`SELECT dry_run, divergence FROM canonical_field_writes WHERE asset_id = ${a}`;
+      expect(j.length).toBeGreaterThan(0);
+      expect(j.every((x) => x.dry_run === false && x.divergence === null)).toBe(true);
     }
-    expect(j.every((r) => r.dry_run)).toBe(true);
-    const prix = j.find((r) => r.canonical_key === 'acquisitionPrice')!;
-    // L'origine ne diverge plus (T3-02, lot 13) : seul le miroir reste propre à la primitive.
-    expect(prix.divergence).toEqual({
-      mirrors: { purchase_price_cents: { legacy: null, canonical: 100000 } },
-    });
-    expect(j.find((r) => r.canonical_key === 'notes')!.divergence).toEqual({ mirrors: { notes: { legacy: null, canonical: 'rien' } } });
-
-    // Appel direct de la primitive en shadow : bien intact, journal dry_run.
-    const avant = await ligne(a);
-    const r = await canon.writeCanonicalAssetField({ assetId: a, accountId: c.accountId, key: 'acquisitionDate', value: '2020-01-01', origin: 'RECONCILIATION' });
-    expect(r).toMatchObject({ dryRun: true, field: { outcome: 'written' } });
-    expect(await ligne(a)).toEqual(avant);
-    expect(await sql`SELECT 1 FROM ai_field_updates WHERE asset_id = ${a}`).toHaveLength(0);
-    expect(emitBusinessEvent).not.toHaveBeenCalled();
-  });
-
-  it('legacy : la primitive ne fait rien ; la façade garde le chemin historique', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'legacy';
-    const c = await compte('legacy');
-    const a = await bien(c);
-    const r = await canon.writeCanonicalAssetField({ assetId: a, accountId: c.accountId, key: 'vin', value: 'X', origin: 'USER' });
-    expect(r.skipped).toBe(true);
-    await facade.updateAssetDetails({ assetId: a, accountId: c.accountId, section: 'vehicle_identification', fields: { registrationNumber: 'ab-1' } });
-    const l = await ligne(a);
-    // Lot 13 (T3-02) : origine humaine et date posées même en legacy.
-    expect(l.kcObj).toEqual({ registrationNumber: 'ab-1', registrationNumber__origin: 'USER', registrationNumber__updatedAt: expect.any(String) });
-    expect(l.registration_number).toBe('ab-1');
-    expect(await sql`SELECT 1 FROM canonical_field_writes WHERE asset_id = ${a}`).toHaveLength(0);
   });
 
   it('verrou : une écriture attend la transaction concurrente (autosave), sans interblocage ni perte', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const c = await compte('verrou');
     const a = await bien(c);
     let libere!: () => void;
@@ -241,7 +200,6 @@ scenario('CANON-W', 'writeCanonicalAssetField / CanonicalAssetView sur base rée
   });
 
   it('annulation : colonnes miroirs capturées puis rétablies', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
     const c = await compte('undo');
     const a = await bien(c, {}, 'OBJET');
     await canon.writeCanonicalAssetField({ assetId: a, accountId: c.accountId, key: 'acquisitionDate', value: '2019-02-02', origin: 'USER' });

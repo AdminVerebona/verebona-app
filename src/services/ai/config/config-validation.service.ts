@@ -385,12 +385,14 @@ export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): Vali
         false,
       ));
     }
-  } else if (!c.prompt || c.prompt.trim() === '') {
-    out.push(issue(c.treatment, 'prompt', 'Le prompt est obligatoire.'));
   }
+  // Lot 16b : le préambule des étapes (`prompt`) n'est plus OBLIGATOIRE — il
+  // n'existe plus d'opération par étapes pour l'appliquer, et le BO ne le
+  // propose plus (une seule zone : le texte master). Un préambule hérité est
+  // conservé tel quel et sans effet.
   // CDC 15 D-03, D-04, §29.1 : préambule sans master, texte master complet,
-  // architecture master cohérente — T5 compris depuis le lot 16b (`steps`
-  // refusé pour T2, T4, T5 et T6).
+  // architecture master cohérente — `steps` refusé pour TOUS les traitements
+  // (lot 16b, migrations 0231 à 0234).
   for (const m of masterConfigIssues(c)) out.push(issue(c.treatment, m.field, m.message, m.blocking));
   out.push(...validateModels(c, cat));
   out.push(...validateReasoning(c));

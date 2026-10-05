@@ -171,10 +171,10 @@ export const TRIGGER_CATALOG: readonly TriggerDefinition[] = [
   { code: 'document_linked', label: 'Rattachement d\'un document à un bien', kind: 'event', treatments: ['T3'] },
   { code: 'asset_updated', label: 'Modification d\'un bien', kind: 'event', treatments: ['T3'] },
   { code: 'arbitration_resolved', label: 'Arbitrage « À traiter » résolu', kind: 'event', treatments: ['T3'] },
-  // CDC 15 CFG-04 : revue IA exceptionnelle du cron `/api/cron/hourly-enrichment`
-  // (phase 3, éléments `requires_ai_review`, moteur historique T3). Les phases
-  // déterministes du cron ne sont pas concernées.
-  { code: 'coherence_ai_review', label: 'Revue IA du cron de cohérence (legacy)', kind: 'event', treatments: ['T3'], activeUnlessDeclared: true },
+  // RETIRÉ au lot 16b-3 (D-H1) : revue IA du cron `/api/cron/hourly-enrichment`
+  // (éléments `requires_ai_review`, moteur historique T3), supprimée avec la
+  // route. Reconnu pour les versions existantes, jamais appliqué ni proposé.
+  { code: 'coherence_ai_review', label: 'Revue IA du cron de cohérence (retiré, sans effet)', kind: 'event', treatments: ['T3'], retired: true },
 ];
 
 /**

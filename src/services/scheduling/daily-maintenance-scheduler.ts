@@ -51,14 +51,18 @@
  *                           anomalie de Supervision). Jusqu'ici contrôlée
  *                           seulement à l'ouverture de l'écran Supervision :
  *                           un planificateur arrêté passait inaperçu tant que
- *                           personne ne regardait.
+ *                           personne ne regardait ;
+ *   · coherence-maintenance — HORAIRE (bail de 55 min, de 5 h à minuit) :
+ *                           phases déterministes de l'ancienne route
+ *                           /api/cron/hourly-enrichment, supprimée au lot
+ *                           16b-3 avec sa revue IA (D-H1).
  *
  * Les routes restent disponibles pour un déclenchement externe ou manuel :
  * les traitements sont idempotents, un double passage est sans effet.
  *
  * ── BAIL ─────────────────────────────────────────────────────────────────
- * Pris pour 20 h et NON rendu en cas de succès : son expiration cadence le
- * jour suivant. Rendu en cas d'échec, pour qu'un tour suivant de la même
+ * Pris pour 20 h (ou la durée propre de la tâche, `leaseMs`) et NON rendu en
+ * cas de succès : son expiration cadence le passage suivant. Rendu en cas d'échec, pour qu'un tour suivant de la même
  * fenêtre réessaie.
  * ══════════════════════════════════════════════════════════════════════════
  */
@@ -95,6 +99,8 @@ export interface DailyTask {
   lock: string;
   /** Fenêtre d'exécution, heures de Paris, [début, fin[. */
   window: [number, number];
+  /** Durée du bail (défaut : 20 h, une exécution par jour). */
+  leaseMs?: number;
   run: () => Promise<void>;
 }
 
@@ -281,6 +287,24 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
     });
   }
 
+  // Maintenance déterministe de la file de cohérence (impact_queue) —
+  // phases sans IA de l'ancienne route /api/cron/hourly-enrichment (lot
+  // 16b-3, D-H1). Toutes les heures environ (bail de 55 min, tour de 30 min),
+  // de 5 h à minuit.
+  tasks.push({
+    lock: 'hourly-coherence-maintenance',
+    // Hors de la fenêtre de sauvegarde de nuit (1 h – 5 h).
+    window: [5, 24],
+    leaseMs: 55 * 60 * 1000,
+    run: async () => {
+      const { runCoherenceMaintenance } = await import('@/services/coherence/coherence-maintenance.service');
+      const r = await runCoherenceMaintenance();
+      if (r.queueImpactsProcessed || r.staleRecovered || r.coherenceIssues || r.errors) {
+        console.info('[daily-jobs] coherence-maintenance :', JSON.stringify(r));
+      }
+    },
+  });
+
   return tasks;
 }
 
@@ -308,7 +332,7 @@ export async function tour(tasks: DailyTask[], now: Date = new Date()): Promise<
   const h = heureDeParis(now);
   for (const task of tasks) {
     if (!dansLaFenetre(h, task.window)) continue;
-    const bail = await acquireJobLock(task.lock, BAIL_MS).catch(() => null);
+    const bail = await acquireJobLock(task.lock, task.leaseMs ?? BAIL_MS).catch(() => null);
     if (!bail) continue;
     try {
       await task.run();

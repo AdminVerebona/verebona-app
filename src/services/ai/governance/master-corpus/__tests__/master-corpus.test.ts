@@ -128,15 +128,22 @@ describe('garde d’activation (dépendances injectées)', () => {
     tableReady: async () => ready,
   });
   const version = (t1: Record<string, unknown> = {}) => ({
-    // T3 : encore en `steps` possible (T2 et T4 sont master seul depuis le lot 16b-2).
-    entries: [{ ...emptyTreatmentConfig('T1'), promptArchitecture: 'master' as const, ...t1 }, emptyTreatmentConfig('T3')],
+    // Lot 16b-3 : tous les traitements sont master ; la version ne porte que T1 ici.
+    entries: [{ ...emptyTreatmentConfig('T1'), promptArchitecture: 'master' as const, ...t1 }],
   });
   const texte = `${read('t1_master_v1')}\nRègle ajoutée.`;
   const shaV = masterTextFingerprint(texte);
 
-  it('traitement en steps : non concerné', async () => {
-    const r = await checkMasterActivation({ entries: [emptyTreatmentConfig('T1')] }, deps([]));
-    expect(r).toEqual({ allowed: true, entries: [] });
+  it('lot 16b-3 : T3 (master seul) exige aussi son corpus — plus aucun traitement « steps » non concerné', async () => {
+    const r = await checkMasterActivation({ entries: [emptyTreatmentConfig('T3')] }, deps([]));
+    expect(r.allowed).toBe(false);
+    expect(r.entries).toEqual([expect.objectContaining({ treatment: 'T3', status: 'NO_RUN' })]);
+  });
+
+  it('lot 16b-3 : une ligne T1 stockée « steps » est contrôlée comme master', async () => {
+    const r = await checkMasterActivation({ entries: [{ ...emptyTreatmentConfig('T1'), promptArchitecture: 'steps' }] }, deps([]));
+    expect(r.allowed).toBe(false);
+    expect(r.entries[0]).toMatchObject({ treatment: 'T1', status: 'NO_RUN' });
   });
 
   it('fichier du dépôt : un rejeu vert (ci/préprod/prod) suffit ; `local` jamais accepté', async () => {

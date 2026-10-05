@@ -64,15 +64,38 @@ beforeEach(() => {
 
 describe('refus de quota', () => {
   it('le job est REPORTÉ (JobDeferredError), jamais clos DONE', async () => {
-    analyze.mockResolvedValueOnce({ results: [], analysedCount: 0, skippedReason: 'quota' });
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 0, skippedReason: 'quota', failedSourceIds: [] });
     const err = await handler!(job(), NO_GUARD).catch((e) => e);
     expect(isJobDeferred(err)).toBe(true);
     expect(String(err.message)).toMatch(/quota/);
   });
 
   it('analyse effectuée : aucun report', async () => {
-    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1 });
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1, failedSourceIds: [] });
     await expect(handler!(job(), NO_GUARD)).resolves.toBeUndefined();
+  });
+
+  it('lot 16b-3 — échec de l’analyse (master T1) : le job ÉCHOUE pour être repris par la file (backoff)', async () => {
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 0, failedSourceIds: [42] });
+    const err = await handler!(job(), NO_GUARD).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(isJobDeferred(err)).toBe(false);
+    expect(err.name).toBe('T1AnalysisFailedError');
+    // Facturation : le job garde son contexte (même `billable`) ; aucun crédit
+    // n'a été consommé pour l'essai en échec (pipeline), la reprise n'en
+    // consommera qu'un à la réussite.
+    expect(analyze.mock.calls[0][2]).not.toHaveProperty('billable');
+  });
+
+  it('lot 16b-3 — un autre fichier en échec dans le même passage ne fait pas échouer ce job', async () => {
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1, failedSourceIds: [99] });
+    await expect(handler!(job(), NO_GUARD)).resolves.toBeUndefined();
+  });
+
+  it('reprise non facturée (WF-11) : le job transmet billable=false à chaque essai', async () => {
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 0, failedSourceIds: [42] });
+    await handler!(job({ payload: { fileId: 42, userId: 3, origin: 'analysis-recovery', billable: false } }), NO_GUARD).catch(() => null);
+    expect(analyze.mock.calls[0][2]).toMatchObject({ billable: false });
   });
 
   it('les suites sont enregistrées avec l’exécutant', () => {
@@ -92,21 +115,21 @@ describe('jamais deux analyses du même fichier (§5.7, §10.4 — ex-`dejaEnCou
 
   it('ANALYZING bloqué (plus de 10 min, même règle que la reprise serveur) : repris', async () => {
     fichier = { state: 'ANALYZING', updatedAt: new Date(Date.now() - 11 * 60_000) };
-    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1 });
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1, failedSourceIds: [] });
     await handler!(job(), NO_GUARD);
     expect(analyze).toHaveBeenCalledTimes(1);
   });
 
   it('job repris après abandon (bail expiré) : l’ANALYZING est le sien, il le reprend', async () => {
     fichier = { state: 'ANALYZING', updatedAt: new Date() };
-    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1 });
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1, failedSourceIds: [] });
     await handler!(job({ recoveredCount: 1 }), NO_GUARD);
     expect(analyze).toHaveBeenCalledTimes(1);
   });
 
   it('fichier « en file » (UPLOADED) : analysé normalement', async () => {
     fichier = { state: 'UPLOADED', updatedAt: new Date() };
-    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1 });
+    analyze.mockResolvedValueOnce({ results: [], analysedCount: 1, failedSourceIds: [] });
     await handler!(job(), NO_GUARD);
     expect(analyze).toHaveBeenCalledTimes(1);
   });
@@ -140,10 +163,18 @@ describe('état du fichier selon l’issue du job', () => {
     expect(JSON.stringify(updates[0].where)).toContain('["UPLOADED"]');
   });
 
-  it('échec avec nouvelle tentative : ANALYZING → « En file » (un job l’attend vraiment)', async () => {
+  it('échec avec nouvelle tentative : ANALYZING ou ANALYSIS_FAILED (écrit par le pipeline) → « En file » (un job l’attend vraiment)', async () => {
     await onT1JobSettled(job(), { kind: 'failed', permanent: false, timedOut: false, error: 'x' } as never);
     expect(updates[0].set.analysisState).toBe('UPLOADED');
-    expect(JSON.stringify(updates[0].where)).toContain('["ANALYZING"]');
+    expect(JSON.stringify(updates[0].where)).toContain('["ANALYZING","ANALYSIS_FAILED"]');
+    // Le motif précis n'est pas effacé : seul l'état change.
+    expect(updates[0].set).not.toHaveProperty('analysisFailReason');
+  });
+
+  it('lot 16b-3 — échec définitif après échecs du master : le motif précis écrit par le pipeline est conservé', async () => {
+    await onT1JobSettled(job(), { kind: 'failed', permanent: true, timedOut: false, error: 'analyse du fichier 42 en échec' } as never);
+    // Un fichier déjà ANALYSIS_FAILED n'est pas réécrit (états de départ : UPLOADED / ANALYZING seulement).
+    expect(JSON.stringify(updates[0].where)).toContain('["UPLOADED","ANALYZING"]');
   });
 
   it('échec définitif par délai global : ANALYSIS_FAILED motivé, compteur d’échecs incrémenté', async () => {
@@ -165,6 +196,11 @@ describe('état du fichier selon l’issue du job', () => {
 });
 
 describe('mise en file durable', () => {
+  it('lot 16b-3 — remise en file différée (échec hors file) : premier prélèvement retardé', async () => {
+    await enqueueDurableFileAnalyses([42], 5, { origin: 'documents/analyze:reprise', delaySeconds: 30 });
+    expect(enqueue.mock.calls[0][0]).toMatchObject({ delaySeconds: 30, payload: { fileId: 42, origin: 'documents/analyze:reprise' } });
+  });
+
   it('réveille le boucleur dès qu’un fichier est accepté, et porte la non-facturation', async () => {
     const r = await enqueueDurableFileAnalyses([42, 42, 43], 5, { origin: 'analysis-recovery', billable: false });
     expect(r).toEqual([42, 43]);

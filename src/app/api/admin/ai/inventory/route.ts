@@ -14,7 +14,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { requireAdmin } from '@/lib/auth-guards';
 import { listActiveUseCases, listOperationsByUseCase } from '@/services/ai/registry';
-import { snapshotFlags } from '@/services/ai/flags/ai-feature-flags';
 import { listModelsWithoutPricing, listUnverifiedPricing } from '@/services/ai/gateway/cost-catalog';
 import { isCorpusComplete } from '@/services/ai/governance/corpus/corpus-registry';
 
@@ -27,11 +26,14 @@ export async function GET(req: NextRequest) {
     return SessionService.handleSessionError(e);
   }
 
+  // Lot 16b : tous les traitements en `master`, plus aucune opération
+  // dépréciée ni drapeau de bascule.
   const useCases = listActiveUseCases().map((uc) => {
     const ops = listOperationsByUseCase(uc.code);
     return {
       code: uc.code, label: uc.label, purpose: uc.purpose,
       replacesLegacyUsages: uc.replacesLegacyUsages,
+      promptArchitecture: 'master' as const,
       operations: ops.map((o) => ({
         code: o.operationCode, label: o.label,
         deterministic: o.provider === 'none',
@@ -50,7 +52,6 @@ export async function GET(req: NextRequest) {
     expectedUseCaseCount: 6,
     compliant: useCases.length === 6,
     useCases,
-    flags: snapshotFlags(),
     // Signalements d'exploitation : présents dans l'inventaire pour que les
     // écarts ne soient pas seulement visibles dans les journaux serveur.
     warnings: {

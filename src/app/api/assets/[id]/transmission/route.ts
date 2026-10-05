@@ -247,8 +247,8 @@ export async function POST(
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
 
     // Build snapshot at transmission time
-    // X-02 (lot 16) : source selon EXPORTS_CANONICAL_SOURCE (legacy inchangé) ;
-    // `snapshot.dataSource` est figé dans `snapshotPayload` hors legacy.
+    // X-02 (lot 16) : source canonique ; `snapshot.dataSource` est figé dans
+    // `snapshotPayload`.
     const snapshot = await buildExportAssetSnapshot(assetId, session.userId, undefined, 'TRANSMISSION');
     const token = randomUUID();
     const now = new Date();

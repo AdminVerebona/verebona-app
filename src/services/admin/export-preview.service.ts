@@ -185,7 +185,7 @@ export interface PreviewAnalysis {
 
 /** Snapshot + manifeste du bien choisi, avec les données manquantes. */
 export async function analysePreview(exportType: ExportCode, asset: AdminPreviewAsset): Promise<PreviewAnalysis> {
-  // X-02 (lot 16) : même source que les exports (EXPORTS_CANONICAL_SOURCE).
+  // X-02 (lot 16) : même source (canonique) que les exports.
   const { buildExportAssetSnapshot } = await import('@/services/exports/export-snapshot-source');
   const { buildExportManifest } = await import('@/services/export-manifest.service');
   const snapshot = await buildExportAssetSnapshot(asset.id, asset.ownerUserId, undefined, 'ADMIN_PREVIEW');
@@ -197,6 +197,7 @@ export async function analysePreview(exportType: ExportCode, asset: AdminPreview
 
 /** Rendu final (PDF, ou ZIP pour l'export brut) — EXP-008, EXP-012. */
 export async function renderPreviewFile(
+  template: PreviewTemplateRow,
   analysis: PreviewAnalysis,
   isPremiumAccount: boolean,
 ): Promise<{ buffer: Buffer; contentType: string; renderer: string; fallbackReason: string | null }> {
@@ -205,7 +206,9 @@ export async function renderPreviewFile(
     const buffer = await buildExportZip(analysis.manifest, analysis.snapshot, null, isPremiumAccount);
     return { buffer, contentType: 'application/zip', renderer: 'zip', fallbackReason: null };
   }
-  // Plus d'identifiant PDFMonkey transmis (MIG-06) : moteur de l'application uniquement.
+  // Plus d'identifiant PDFMonkey transmis (MIG-06) : moteur de l'application
+  // uniquement ; `template` ne sert plus qu'au contrôle d'activation amont.
+  void template;
   // Moteur V12 (HTML/CSS + Chromium, DEC-003) : plus de jsPDF ni de PDFMonkey.
   const { renderDossierPreviewPdf } = await import('@/services/exports/v12/preview');
   const out = await renderDossierPreviewPdf({ code: analysis.exportType, assetId: analysis.snapshot.id });

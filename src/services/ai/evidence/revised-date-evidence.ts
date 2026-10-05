@@ -16,15 +16,11 @@
  *      (`isT4DateRevision`) ; une valeur USER/ADMIN n'est JAMAIS remplacée
  *      (carte de conflit à la place). La source n'est jamais USER.
  *
- * Commutateur : `CANONICAL_WRITE_MODE` (R5 et T4 sont toujours actifs
- * depuis le lot 16b-2) :
- *   legacy   rien (aucune requête) ;
- *   shadow   journal de ce qui SERAIT révisé (lecture seule) ;
- *   enabled  preuve révisée, preuve d'origine remplacée, T3 en file.
- * Ne lève jamais : l'agenda ne doit pas échouer pour cela.
+ * Toujours actif depuis le lot 16b-3 (commutateur `CANONICAL_WRITE_MODE`
+ * supprimé ; R5 et T4 le sont depuis le lot 16b-2) : preuve révisée, preuve
+ * d'origine remplacée, T3 en file. Ne lève jamais : l'agenda ne doit pas échouer pour cela.
  */
 import { pgClient } from '@/db';
-import { canonicalWriteMode, type RolloutMode } from '@/services/canonical/rollout';
 import { fieldEvidenceCanonicalReady } from './canonical-columns';
 import { recordEvidence } from './field-evidence.service';
 import type { EvidenceConfidence, EvidenceTargetType, FieldEvidenceInput } from './evidence.types';
@@ -52,10 +48,9 @@ export interface ReviseDateInput {
 }
 
 export interface ReviseDateResult {
-  mode: RolloutMode;
   /** Preuve d'origine trouvée (ACTIVE), sinon null. */
   originalId: number | null;
-  /** Preuve révisée écrite (enabled), sinon null. */
+  /** Preuve révisée écrite, sinon null. */
   revisedId: number | null;
   enqueued: boolean;
 }
@@ -92,7 +87,6 @@ export interface OriginalEvidenceRow {
 }
 
 export interface ReviseDateDeps {
-  mode: () => RolloutMode;
   schemaReady: () => Promise<boolean>;
   findOriginal: (p: ReviseDateInput) => Promise<OriginalEvidenceRow | null>;
   record: (input: FieldEvidenceInput) => Promise<number>;
@@ -144,7 +138,6 @@ async function findOriginalDefault(p: ReviseDateInput): Promise<OriginalEvidence
 }
 
 const defaultDeps: ReviseDateDeps = {
-  mode: () => canonicalWriteMode(),
   schemaReady: () => fieldEvidenceCanonicalReady(),
   findOriginal: findOriginalDefault,
   record: (input) => recordEvidence(input),
@@ -201,9 +194,7 @@ export function revisedEvidenceInput(o: OriginalEvidenceRow, p: ReviseDateInput)
 }
 
 export async function reviseDateEvidenceFromT4(p: ReviseDateInput, deps: ReviseDateDeps = defaultDeps): Promise<ReviseDateResult> {
-  const mode = deps.mode();
-  const out: ReviseDateResult = { mode, originalId: null, revisedId: null, enqueued: false };
-  if (mode === 'legacy') return out;
+  const out: ReviseDateResult = { originalId: null, revisedId: null, enqueued: false };
   if (!ISO_DATE.test(p.chosenDate) || !ISO_DATE.test(p.extractedDate) || p.chosenDate === p.extractedDate) return out;
   try {
     if (!(await deps.schemaReady())) return out;
@@ -211,15 +202,10 @@ export async function reviseDateEvidenceFromT4(p: ReviseDateInput, deps: ReviseD
     if (!o) return out;
     out.originalId = Number(o.id);
     const journal = {
-      event: 't4.revised_date_evidence', mode, accountId: p.accountId, sourceFileId: p.sourceFileId,
+      event: 't4.revised_date_evidence', accountId: p.accountId, sourceFileId: p.sourceFileId,
       // Jamais de valeur dans le journal : clé et identifiants.
       fieldKey: p.fieldKey, originalId: out.originalId,
     };
-    if (mode !== 'enabled') {
-      console.info(JSON.stringify({ ...journal, dryRun: true }));
-      return out;
-    }
-
     out.revisedId = await deps.record(revisedEvidenceInput(o, p));
     await deps.supersede({ accountId: p.accountId, originalId: out.originalId, revisedId: out.revisedId });
 

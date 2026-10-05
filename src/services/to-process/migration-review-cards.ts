@@ -138,7 +138,7 @@ async function ecrire(action: Action, accountId: number, key: string, value: unk
   const { writeCanonicalAssetField } = await import('@/services/canonical/asset-state');
   return writeCanonicalAssetField({
     assetId: action.targetId, accountId, key, value, origin: 'USER', actorUserId: userId, expectedCurrent: expected ?? null,
-    source: { type: 'to_process', id: action.publicId }, mode: 'enabled',
+    source: { type: 'to_process', id: action.publicId },
   });
 }
 

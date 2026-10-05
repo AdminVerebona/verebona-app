@@ -1,21 +1,15 @@
 /**
- * Prompt maître T1, aiguillage et observation — CDC 15 §23, §22.2, §29,
- * T1-06, T1-07, D-04, D-18.
+ * Prompt maître T1 — CDC 15 §23, §22.2, §29, T1-06, T1-07, D-04.
+ * Lot 16b-3 : seul moteur T1 (plus d'aiguillage `AI_T1_ANALYSIS_MODE`, plus
+ * d'observation D-18).
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-const analyse = vi.hoisted(() => vi.fn());
-vi.mock('../analyse-group-master', () => ({ analyseGroupWithMaster: (...a: unknown[]) => analyse(...a) }));
-
-const {
-  resolveT1Route, t1ShadowSampleRate, sampledForShadow, DEFAULT_T1_SHADOW_SAMPLE_RATE,
-} = await import('../analysis-mode');
-const { compareT1Results, scheduleT1Shadow, settleT1Shadows } = await import('../shadow');
 const { T1_PROMPT_VARIABLES } = await import('../prompt-context');
 const { checkMasterTemplate, inspectMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');
-const { rolloutSnapshot } = await import('@/services/canonical/rollout');
+const { RETIRED_AI_VARIABLES } = await import('@/services/ai/config/retired-variables');
 
 const MASTER = readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis/t1_master_v1.txt'), 'utf8');
 
@@ -63,98 +57,23 @@ describe('t1_master_v1.txt — transcription du §23', () => {
   });
 });
 
-describe('aiguillage AI_T1_ANALYSIS_MODE', () => {
-  const master = async () => 'master' as const;
-  const steps = async () => 'steps' as const;
-
-  it('legacy par défaut, et pour une valeur invalide', async () => {
-    expect(await resolveT1Route({ env: {}, architecture: master })).toBe('steps');
-    expect(await resolveT1Route({ env: { AI_T1_ANALYSIS_MODE: 'oui' }, architecture: master })).toBe('steps');
+describe('master seul (lot 16b-3)', () => {
+  it('commutateur AI_T1_ANALYSIS_MODE retiré du catalogue', () => {
+    // Lot 16b-3 : plus aucun commutateur ; la variable est listée parmi les retirées.
+    expect(RETIRED_AI_VARIABLES.map((x) => x.name)).toContain('AI_T1_ANALYSIS_MODE');
   });
 
-  it('shadow : sur échantillon seulement', async () => {
-    const env = { AI_T1_ANALYSIS_MODE: 'shadow', AI_T1_SHADOW_SAMPLE_RATE: '0.25' };
-    expect(await resolveT1Route({ env, random: () => 0.1 })).toBe('steps+shadow');
-    expect(await resolveT1Route({ env, random: () => 0.9 })).toBe('steps');
+  it('aiguillage et observation supprimés', () => {
+    for (const f of ['analysis-mode.ts', 'shadow.ts']) {
+      expect(existsSync(join(process.cwd(), 'src/services/ai/source-analysis/master', f)), f).toBe(false);
+    }
   });
 
-  it('enabled : master seulement si la version de configuration le déclare (D-04)', async () => {
-    const env = { AI_T1_ANALYSIS_MODE: 'enabled' };
-    expect(await resolveT1Route({ env, architecture: master })).toBe('master');
-    expect(await resolveT1Route({ env, architecture: steps })).toBe('steps');
-  });
-
-  it('taux d’échantillonnage : défaut 0,1, borné, une faute de frappe ne passe jamais à 100 %', () => {
-    expect(t1ShadowSampleRate({})).toBe(DEFAULT_T1_SHADOW_SAMPLE_RATE);
-    expect(t1ShadowSampleRate({ AI_T1_SHADOW_SAMPLE_RATE: '0,5' })).toBe(0.5);
-    expect(t1ShadowSampleRate({ AI_T1_SHADOW_SAMPLE_RATE: '7' })).toBe(1);
-    expect(t1ShadowSampleRate({ AI_T1_SHADOW_SAMPLE_RATE: 'tout' })).toBe(DEFAULT_T1_SHADOW_SAMPLE_RATE);
-    expect(sampledForShadow(0, () => 0)).toBe(false);
-    expect(sampledForShadow(1, () => 0.99)).toBe(true);
-  });
-
-  it('commutateur déclaré branché', () => {
-    expect(rolloutSnapshot({}).find((s) => s.name === 'AI_T1_ANALYSIS_MODE')).toMatchObject({ wired: true, mode: 'legacy' });
-  });
-});
-
-describe('mode observation', () => {
-  const legacy = {
-    sourceGroup: { sourceIds: [1], leadSourceId: 1 },
-    document: { type: { value: 'FACTURE', confidence: 'certain' as const, excerpt: '', location: {} } },
-    assetCandidates: [], roomCandidates: [], equipmentCandidates: [],
-    extractedFields: [
-      { fieldKey: 'purchaseDate', value: '2026-04-24', confidence: 'certain' as const },
-      { fieldKey: 'kilometrage', value: 78000, confidence: 'certain' as const },
-      { fieldKey: 'boilerPower', value: 24, confidence: 'certain' as const },
-    ],
-    agendaCandidates: [], warnings: [],
-    operationTrace: { traceIds: [], operationCodes: [], totalInputTokens: 0, totalOutputTokens: 0, totalCostMicros: 0, totalDurationMs: 0, usedFallback: false, models: [] },
-  };
-  const masterRes = {
-    result: { ...legacy, document: {}, extractedFields: [] },
-    facts: [
-      { canonicalKey: 'acquisitionDate', value: '2026-04-24' },
-      { canonicalKey: 'mileage', value: 78500 },
-      { canonicalKey: 'acquisitionPrice', value: 129 },
-      { canonicalKey: null, value: 'x' },
-    ],
-    projection: { appliedRules: ['PURCHASE_RECEIPT_ACQUISITION_PRICE'], purpose: 'ASSET_PURCHASE', multiAsset: false },
-    documentAssetId: 184,
-  };
-
-  beforeEach(() => {
-    analyse.mockReset();
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-  });
-
-  it('comparaison résumée : clés et compteurs, jamais les valeurs', () => {
-    const c = compareT1Results(legacy as never, masterRes as never);
-    expect(c).toMatchObject({
-      agreeing: ['acquisitionDate'], valueMismatches: ['mileage'], onlyLegacy: [], onlyMaster: ['acquisitionPrice'],
-      legacyUnmapped: 1, masterGeneric: 1, masterPurpose: 'ASSET_PURCHASE',
-    });
-    expect(JSON.stringify(c)).not.toContain('78500');
-  });
-
-  it('lancée en mode shadow, sans être attendue ; résultat journalisé', async () => {
-    let fin!: (v: unknown) => void;
-    analyse.mockReturnValue(new Promise((r) => { fin = r; }));
-    const recu = vi.fn();
-    scheduleT1Shadow({ input: {} as never, groupIndices: [0], ctx: {} as never, legacy: legacy as never, onComparison: recu });
-    expect(analyse.mock.calls[0][4]).toEqual({ shadow: true });
-    expect(recu).not.toHaveBeenCalled(); // le pipeline n'attend pas
-    fin(masterRes);
-    await settleT1Shadows();
-    expect(recu).toHaveBeenCalledTimes(1);
-    expect(console.info).toHaveBeenCalledWith('[t1-shadow] comparaison', expect.any(String));
-  });
-
-  it('un échec n’est jamais propagé', async () => {
-    analyse.mockRejectedValue(new Error('ALL_MODELS_FAILED'));
-    expect(() => scheduleT1Shadow({ input: {} as never, groupIndices: [0], ctx: {} as never, legacy: legacy as never })).not.toThrow();
-    await expect(settleT1Shadows()).resolves.toBeUndefined();
-    expect(console.warn).toHaveBeenCalled();
+  it('T1 est un traitement « master » seul ; steps refusé', async () => {
+    const { isMasterOnlyTreatment } = await import('@/services/ai/config/treatments');
+    const { checkPromptArchitectureChange } = await import('@/services/ai/config/prompt-architecture');
+    expect(isMasterOnlyTreatment('T1')).toBe(true);
+    expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: 'T1', from: 'master', to: 'steps' }))
+      .toMatchObject({ allowed: false, code: 'MASTER_ONLY_TREATMENT' });
   });
 });

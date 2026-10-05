@@ -1,38 +1,48 @@
 /**
- * Point de bascule de l'usage IA n°1 — CDC §10.1, §10.3 et §10.4.
+ * Point d'entrée unique de l'usage IA n°1 (analyse des sources) — CDC §10.1,
+ * §10.3 et §10.4.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * POURQUOI UN SEUL AIGUILLAGE, ET PAS UN TEST DE DRAPEAU PAR APPELANT
+ * UN SEUL MOTEUR DEPUIS LE LOT 16b-3
  *
- * `runUnifiedAnalysisPipeline()` est appelé depuis HUIT endroits — dépôt de
- * fichier, analyse par lot, reprise après échec, analyse rétroactive, webhook
- * de facturation, contrôle des analyses en attente, déplacement en masse,
- * consultation d'un document. L'audit n'en recensait que trois.
+ * L'aiguillage `AI_UNIFIED_SOURCE_ANALYSIS` (moteur historique
+ * `document-ai/unified-analysis-pipeline` ↔ pipeline unifié) et le
+ * commutateur `AI_T1_ANALYSIS_MODE` (étapes / observation / master) sont
+ * retirés : toute analyse passe par `runSourceAnalysis`, prompt maître T1.
  *
- * Placer un `if (isEnabled(...))` dans chacun de ces huit fichiers, c'est huit
- * occasions d'oublier une branche, et le risque que l'ancien et le nouveau
- * moteur s'exécutent sur le même document — ce que le §10.4 interdit
- * formellement.
+ * Les appelants (dépôt, analyse par lot, reprise, analyse rétroactive,
+ * webhook de facturation, déplacement en masse, changement de bien,
+ * analyse directe, montée de référentiel) continuent de passer par ces
+ * fonctions, jamais par le pipeline directement (`ai:check-legacy`,
+ * critère 24) : quota, déduplication, garde de file et reprise des échecs
+ * restent tenus à un seul endroit.
  *
- * D'où cette fonction unique, de signature identique à l'ancienne
- * (`fileIds, accountId`) : la bascule d'un appelant se réduit à changer une
- * ligne d'import, et le choix du moteur se lit à un seul endroit.
+ * ══════════════════════════════════════════════════════════════════════════
+ * ÉCHEC DU MASTER : REPRISE PAR LA FILE DURABLE, JAMAIS DE REPLI
  *
- * ⚠️ PAS DE MODE OBSERVATION POUR CET USAGE. Le §10.2 ne prévoit le mode shadow
- * que pour la réconciliation. Il n'a pas de sens ici : le pipeline d'analyse
- * écrit l'état des fichiers, ouvre des lots et supprime les sources secondaires.
- * Deux moteurs en parallèle produiraient une double écriture, interdite par le
- * §10.4. `shadow` est donc traité comme `legacy`, avec un avertissement
- * explicite plutôt qu'un comportement deviné.
+ * Plus de chemin « étapes » vers lequel se replier. Une source dont l'analyse
+ * échoue est mise en `ANALYSIS_FAILED` avec son motif par le pipeline
+ * (`failedSourceIds`), sans crédit consommé, puis :
+ *   · sous la file (garde présente) : `t1-handler` fait échouer le job, la
+ *     file le reprend avec son backoff (MOD-005) ; au dernier essai, l'état
+ *     d'échec motivé reste affiché (tiroir, bandeau) ;
+ *   · hors file (analyse directe, changement de bien…) : la source est remise
+ *     en file durable (`enqueueFileAnalyses`, après un premier délai de
+ *     backoff), avec la même règle de facturation que la demande initiale —
+ *     un seul crédit à la réussite, aucun pour les essais en échec.
+ * Un échec DÉFINITIF (sortie du master invalide sur toute la chaîne) n'a droit
+ * qu'à une reprise, puis n'est plus relancé automatiquement
+ * (`failure-policy`, revue 3a). Une ligne `asset_files` qui est un lien web
+ * est analysée par l'adaptateur lien web (`runRouted`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import type { SourceType } from './types';
-import { getFlagMode } from '../flags/ai-feature-flags';
 import type { RunSourceAnalysisOutput } from './pipeline';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
+import { REQUEUE_ORIGIN_SUFFIX } from './failure-policy';
 
 export interface AnalyzeFileSourcesOptions {
   /** Déduit du premier fichier si absent — l'ancienne signature ne le portait pas. */
@@ -40,7 +50,7 @@ export interface AnalyzeFileSourcesOptions {
   linkedAssetId?: number | null;
   /** false pour une reprise technique : ne consomme pas de crédit d'analyse. */
   billable?: boolean;
-  /** Appelant, journalisé. Indispensable pour suivre une bascule progressive. */
+  /** Appelant, journalisé (et repris dans l'origine d'une remise en file). */
   origin?: string;
   /**
    * Type de source à préparer. `'file'` par défaut — aucun des neuf appelants
@@ -49,14 +59,12 @@ export interface AnalyzeFileSourcesOptions {
    * ══════════════════════════════════════════════════════════════════════
    * POURQUOI CE PARAMÈTRE EXISTE
    *
-   * Le corpus de mesure appelait `AiGateway` directement. Il ne traversait
-   * donc jamais cette fonction — seul endroit où le drapeau aiguille — et
-   * les deux campagnes rendaient des résultats identiques à un champ près :
-   * elles exécutaient le même code.
+   * Le corpus de mesure appelait `AiGateway` directement : il ne traversait
+   * jamais le pipeline complet (regroupement, projection, persistance).
    *
    * Le type était écrit en dur plus bas. L'ouvrir permet au corpus de
-   * passer par le pipeline COMPLET, drapeau compris, en servant ses
-   * fixtures par un adaptateur dédié.
+   * passer par le pipeline COMPLET, en servant ses fixtures par un
+   * adaptateur dédié.
    *
    * Il reste hors du chemin de production : aucun appelant applicatif ne le
    * renseigne, et `'future_source'` n'est enregistré que le temps d'une
@@ -69,19 +77,22 @@ export interface AnalyzeFileSourcesOptions {
    * d'urgence, désactivation). Absente hors file.
    */
   guard?: ExecutionGuard;
+  /**
+   * Hors file : remettre en file durable les sources dont l'analyse a échoué
+   * (défaut `true`). `false` pour une mesure (corpus) qui constate l'échec
+   * sans rien relancer.
+   */
+  retryOnFailure?: boolean;
 }
-
-let shadowWarned = false;
-let webLinkFlagWarned = false;
 
 /**
  * Analyse un ou plusieurs fichiers. Seul point d'entrée autorisé depuis le code
- * applicatif : aucun appelant ne doit importer directement l'un des deux
- * moteurs.
+ * applicatif.
  *
- * Ne lève jamais — la plupart des appelants sont en « fire and forget » et une
- * exception y serait perdue, ou pire, remonterait dans une réponse HTTP déjà
- * envoyée.
+ * Ne lève jamais hors file — la plupart des appelants sont en « fire and
+ * forget » et une exception y serait perdue, ou pire, remonterait dans une
+ * réponse HTTP déjà envoyée. Sous garde de file, une panne inattendue remonte
+ * à la file (reprise avec backoff).
  */
 export async function analyzeFileSources(
   fileIds: number[],
@@ -90,27 +101,98 @@ export async function analyzeFileSources(
 ): Promise<RunSourceAnalysisOutput | null> {
   if (fileIds.length === 0 || !accountId) return null;
 
-  const mode = getFlagMode('AI_UNIFIED_SOURCE_ANALYSIS');
+  const outcome = await runRouted(fileIds, accountId, options);
 
-  if (mode === 'shadow' && !shadowWarned) {
-    shadowWarned = true;
-    console.warn(
-      '[source-analysis] AI_UNIFIED_SOURCE_ANALYSIS=shadow ignoré : ' +
-      "l'analyse unifiée n'a pas de mode observation (CDC §10.2 ne le prévoit " +
-      'que pour la réconciliation). Exécution sur le moteur historique. ' +
-      'Utilisez `enabled` pour basculer.',
+  // Hors file : les sources en échec sont confiées à la file durable.
+  if (
+    outcome && outcome.failedSourceIds.length > 0
+    && !options.guard && options.retryOnFailure !== false
+    // La file T1 ne reçoit que des lignes `asset_files` (fichiers et liens
+    // web, aiguillés à l'exécution) : une source d'un autre type (adaptateur
+    // de corpus) n'y est jamais confiée.
+    && (options.sourceType === undefined || options.sourceType === 'file')
+  ) {
+    await requeueFailedSources(outcome.failedSourceIds, accountId, options);
+  }
+  return outcome;
+}
+
+/** Remise en file durable des sources en échec d'une analyse hors file. */
+async function requeueFailedSources(
+  ids: number[],
+  accountId: number,
+  options: AnalyzeFileSourcesOptions,
+): Promise<void> {
+  try {
+    const [{ enqueueFileAnalyses }, { backoffSeconds }] = await Promise.all([
+      import('./queue/t1-handler'),
+      import('../queue/queue-policy'),
+    ]);
+    const acceptes = await enqueueFileAnalyses(ids, accountId, {
+      userId: options.userId,
+      origin: `${options.origin ?? 'inconnue'}${REQUEUE_ORIGIN_SUFFIX}`,
+      // Même règle que la demande initiale : rien n'a été consommé pour l'essai
+      // en échec, la réussite consommera un seul crédit (ou aucun si la
+      // demande n'était pas facturable).
+      ...(options.billable === false ? { billable: false } : {}),
+      delaySeconds: backoffSeconds(1),
+    });
+    console.info(
+      `[source-analysis] ${acceptes.length}/${ids.length} source(s) en échec remise(s) en file durable `
+      + `(origine : ${options.origin ?? 'inconnue'}).`,
     );
+  } catch (e) {
+    // La reprise serveur (`analysis-recovery`) retrouvera l'état ANALYSIS_FAILED.
+    console.error('[source-analysis] remise en file des sources en échec impossible :', (e as Error).message);
   }
+}
 
-  if (mode !== 'enabled') {
-    // Le moteur historique ne connaît pas la garde : elle n'est contrôlée
-    // qu'à son lancement.
-    await options.guard?.assertActive('moteur historique');
-    await runLegacy(fileIds, accountId, options);
-    return null;
+/**
+ * Revue 3a (point 3) : une ligne `asset_files` peut être un LIEN WEB
+ * (`is_web_link`). Sans type explicite, chaque lien est analysé par
+ * l'adaptateur lien web (téléchargement de la page) et les fichiers par
+ * l'adaptateur fichier — quel que soit l'appelant (dépôt, file durable,
+ * reprise serveur, réanalyse depuis le tiroir). Avant, un lien repris comme
+ * fichier était analysé SANS contenu (type `application/x-web-link` non lu)
+ * et ses preuves antérieures retirées.
+ */
+async function runRouted(
+  fileIds: number[],
+  accountId: number,
+  options: AnalyzeFileSourcesOptions,
+): Promise<RunSourceAnalysisOutput | null> {
+  if (options.sourceType !== undefined) return runUnified(fileIds, accountId, options);
+  let liens = new Set<number>();
+  try {
+    const { inArray } = await import('drizzle-orm');
+    const rows = await db.select({ id: assetFiles.id, isWebLink: assetFiles.isWebLink })
+      .from(assetFiles).where(inArray(assetFiles.id, fileIds));
+    liens = new Set(rows.filter((r) => r.isWebLink).map((r) => r.id));
+  } catch (e) {
+    console.error('[source-analysis] type des sources illisible — analysées comme fichiers :', (e as Error).message);
   }
+  if (liens.size === 0) return runUnified(fileIds, accountId, options);
 
-  return runUnified(fileIds, accountId, options);
+  const fichiers = fileIds.filter((id) => !liens.has(id));
+  const issues: Array<RunSourceAnalysisOutput | null> = [];
+  if (fichiers.length > 0) issues.push(await runUnified(fichiers, accountId, options));
+  for (const id of fileIds.filter((x) => liens.has(x))) {
+    issues.push(await runUnified([id], accountId, { ...options, sourceType: 'web_link' }));
+  }
+  return mergeOutcomes(issues);
+}
+
+/** Issue combinée : `null` seulement si toutes les exécutions ont échoué. */
+function mergeOutcomes(issues: Array<RunSourceAnalysisOutput | null>): RunSourceAnalysisOutput | null {
+  const ok = issues.filter((i): i is RunSourceAnalysisOutput => i !== null);
+  if (ok.length === 0) return null;
+  return {
+    results: ok.flatMap((i) => i.results),
+    analysedCount: ok.reduce((n, i) => n + i.analysedCount, 0),
+    failedSourceIds: ok.flatMap((i) => i.failedSourceIds),
+    definitiveFailedSourceIds: ok.flatMap((i) => i.definitiveFailedSourceIds ?? []),
+    ...(ok.length === issues.length && ok.every((i) => i.skippedReason) ? { skippedReason: ok[0].skippedReason } : {}),
+  };
 }
 
 async function runUnified(
@@ -148,81 +230,25 @@ async function runUnified(
     // clôt pas le job (déjà remis en attente pour une reprise propre).
     if (isExecutionCancelled(e)) throw e;
     console.error(
-      `[source-analysis] Échec du pipeline unifié (origine : ${options.origin ?? 'inconnue'}) :`,
+      `[source-analysis] Échec du pipeline d'analyse (origine : ${options.origin ?? 'inconnue'}) :`,
       (e as Error).message,
     );
+    // Sous la file : la panne remonte, la file reprend le job (backoff).
+    if (options.guard) throw e;
     return null;
   }
 }
 
-async function runLegacy(
-  fileIds: number[],
-  accountId: number,
-  options: AnalyzeFileSourcesOptions,
-): Promise<void> {
-  try {
-    // Import dynamique : le moteur historique n'est pas chargé du tout une fois
-    // la bascule faite, ce qui rend son extinction (lot 7) vérifiable.
-    const { runUnifiedAnalysisPipeline } = await import(
-      '@/services/document-ai/unified-analysis-pipeline'
-    );
-    await runUnifiedAnalysisPipeline(fileIds, accountId);
-  } catch (e) {
-    console.error(
-      `[source-analysis] Échec du moteur historique (origine : ${options.origin ?? 'inconnue'}) :`,
-      (e as Error).message,
-    );
-  }
-}
-
 /**
- * Analyse un lien web. Second point d'entrée autorisé.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * POURQUOI LE LIEN WEB NE SUIT PAS LE DRAPEAU
- *
- * La route `/api/web-links/[id]/analyze` appelait `runSourceAnalysis`
- * DIRECTEMENT, court-circuitant cet aiguillage. Conséquence, avec le drapeau
- * à `legacy` : un fichier partait sur le moteur historique et un lien web sur
- * le nouveau. Deux schémas de sortie différents pour le même compte, ce que le
- * §4.1.7 interdit — « un lien web produit les mêmes informations qu'un
- * document ».
- *
- * Ce comportement est en réalité INÉVITABLE, et c'est pourquoi il est nommé
- * ici plutôt que corrigé : le lien web n'a plus de moteur historique. Sa
- * logique Gemini propre — 338 lignes inlinées dans la route — a été supprimée
- * au lot 1 (§4.1.5), puisqu'elle ne servait qu'à lui. Il n'existe donc aucune
- * branche `legacy` vers laquelle basculer.
- *
- * Trois options se présentaient :
- *   • laisser l'appel direct → l'écart reste, mais invisible ;
- *   • refuser l'analyse quand le drapeau vaut `legacy` → casse une
- *     fonctionnalité qui marche, pour une pureté sans bénéfice ;
- *   • passer par l'aiguillage et NOMMER l'exception → retenu.
- *
- * L'invariant « aucun appelant applicatif n'importe le moteur » est ainsi
- * rétabli, et l'écart devient un message de journal explicite plutôt qu'une
- * surprise le jour de la bascule. Le contrôle CI (critère 24) empêche
- * désormais tout nouvel appel direct.
- * ══════════════════════════════════════════════════════════════════════════
+ * Analyse un lien web. Second point d'entrée autorisé (§4.1.7 : un lien web
+ * produit les mêmes informations qu'un document). La route rend l'issue à
+ * l'utilisateur ; une source en échec reste `ANALYSIS_FAILED`, relançable.
  */
 export async function analyzeWebLinkSource(
   webLinkId: number,
   accountId: number,
   options: { userId: number },
 ): Promise<RunSourceAnalysisOutput> {
-  const mode = getFlagMode('AI_UNIFIED_SOURCE_ANALYSIS');
-
-  if (mode !== 'enabled' && !webLinkFlagWarned) {
-    webLinkFlagWarned = true;
-    console.info(
-      `[source-analysis] AI_UNIFIED_SOURCE_ANALYSIS=${mode} : les liens web ` +
-      "sont analysés par le moteur unifié malgré tout — ils n'ont pas de " +
-      'moteur historique (CDC §4.1.5). Les fichiers, eux, suivent le drapeau. ' +
-      'Cet écart disparaît dès la bascule à `enabled`.',
-    );
-  }
-
   const { runSourceAnalysis } = await import('./pipeline');
   return runSourceAnalysis({
     sourceType: 'web_link',
@@ -242,46 +268,14 @@ async function resolveUserId(fileId: number): Promise<number | null> {
 }
 
 /**
- * Abonne un flux SSE à la progression d'analyse d'un fichier, quel que soit le
- * moteur actif.
- *
- * ⚠️ CORRECTION D'UN DÉFAUT QUI SERAIT APPARU À LA BASCULE. Il existe DEUX
- * registres d'abonnés SSE indépendants : celui de `unified-analysis-pipeline`
- * et celui de `source-analysis/stream/broadcast`. La route
- * `documents/[id]/stream` ne connaissait que le premier. Le jour où le drapeau
- * passe à `enabled`, elle n'aurait plus rien reçu : l'interface serait restée
- * bloquée sur « analyse en cours » jusqu'au délai de cinq minutes, sans erreur
- * ni trace.
- *
- * L'abonnement est fait aux deux registres, sans test de drapeau. Un abonné
- * inscrit dans un registre qui n'émet jamais ne coûte rien, et cette
- * indépendance au drapeau garantit que le flux fonctionne aussi pendant une
- * bascule à chaud, quand une analyse déjà lancée sur un moteur est observée
- * après changement de configuration.
+ * Abonne un flux SSE à la progression d'analyse d'un fichier (registre du
+ * pipeline, `stream/broadcast`). Lot 16b-3 : le second registre, celui du
+ * moteur historique, a disparu avec lui.
  */
 export async function registerAnalysisStreamWriter(
   assetFileId: number,
   writer: (data: Record<string, unknown>) => void,
 ): Promise<() => void> {
-  const [unified, legacy] = await Promise.all([
-    import('./stream/broadcast'),
-    import('@/services/document-ai/unified-analysis-pipeline'),
-  ]);
-
-  const off = [
-    unified.registerStreamWriter(assetFileId, writer),
-    legacy.registerStreamWriter(assetFileId, writer),
-  ];
-
-  return () => { for (const fn of off) fn(); };
-}
-
-/** Le pipeline unifié est-il le moteur actif ? Lecture seule, sans effet de bord. */
-export function isUnifiedAnalysisActive(): boolean {
-  return getFlagMode('AI_UNIFIED_SOURCE_ANALYSIS') === 'enabled';
-}
-
-/** Réservé aux tests : réarme l'avertissement de mode observation. */
-export function resetEntrypointWarnings(): void {
-  shadowWarned = false;
+  const { registerStreamWriter } = await import('./stream/broadcast');
+  return registerStreamWriter(assetFileId, writer);
 }

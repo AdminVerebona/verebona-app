@@ -128,19 +128,16 @@ describe('équipement / pièce (lot 18, R3)', () => {
     }
   };
 
-  it('legacy (écriture et négatif) : aucune mise en file, aucune requête', async () => {
-    delete process.env.CANONICAL_WRITE_MODE;
-    delete process.env.T3_NEGATIVE_RECONCILIATION;
+  it('commutateurs retirés (lot 16b-3) encore posés à legacy : ignorés, mise en file', async () => {
+    process.env.CANONICAL_WRITE_MODE = 'legacy';
+    process.env.T3_NEGATIVE_RECONCILIATION = 'legacy';
     const { enqueueT3ForEntities } = await import('../t3-queue');
-    const isTriggerActive = vi.fn(async () => true);
-    expect(await enqueueT3ForEntities({ accountId: 5, userId: 3, targets: [{ type: 'EQUIPMENT', id: 4 }] }, { enqueue: enqueue as never, isTriggerActive })).toEqual([]);
-    expect(isTriggerActive).not.toHaveBeenCalled();
-    expect(enqueue).not.toHaveBeenCalled();
+    expect(await enqueueT3ForEntities({ accountId: 5, userId: 3, targets: [{ type: 'EQUIPMENT', id: 4 }] }, deps())).toEqual([99]);
+    expect(enqueue).toHaveBeenCalledTimes(1);
     restaurer();
   });
 
   it('un travail ciblé par entité (dédoublonné), cible equipment / room', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'shadow';
     const { enqueueT3ForEntities } = await import('../t3-queue');
     const ids = await enqueueT3ForEntities({
       accountId: 5, userId: 3, sourceFileId: 55, reason: 'DOCUMENT_DELETED', triggeredBy: 'document_linked',

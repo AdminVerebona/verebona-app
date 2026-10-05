@@ -1,17 +1,16 @@
 /**
- * Runner de pipeline — mesure ce que la bascule change vraiment.
+ * Runner de pipeline — mesure ce que l'utilisateur verra.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * LE RUNNER PRÉCÉDENT NE TRAVERSAIT PAS LA BASCULE
+ * LE RUNNER D'OPÉRATIONS NE TRAVERSE PAS LE PIPELINE
  *
- * `analysis-runner.ts` appelle `AiGateway.execute` directement. Il court-
- * circuite `analyzeFileSources`, seul endroit où `AI_UNIFIED_SOURCE_ANALYSIS`
- * aiguille — et les deux campagnes ont rendu 4 conformes, 15 erreurs de type
- * des deux côtés. Elles exécutaient le même code.
+ * `analysis-runner.ts` appelle `AiGateway.execute` directement (branche
+ * ANALYZE_DOCUMENT du master T1) : il mesure le prompt et la passerelle, pas
+ * le regroupement, la projection ni la persistance.
  *
  * Ce runner-ci passe par `analyzeFileSources`. Tout le pipeline s'exécute :
- * regroupement, extraction, classification, entités, catégorie, persistance,
- * événements aval — et l'aiguillage décide lequel des deux moteurs travaille.
+ * regroupement, analyse par le prompt maître T1, projection, persistance,
+ * événements aval (lot 16b-3 : un seul moteur, plus d'aiguillage).
  *
  * ── IL LUI FAUT DE VRAIES LIGNES ──────────────────────────────────────────
  *
@@ -110,8 +109,7 @@ async function supprimerSource(id: number): Promise<void> {
  * Runner traversant le pipeline complet.
  *
  * Le résultat est relu en base plutôt que pris dans la valeur de retour :
- * `analyzeFileSources` rend `null` sur le moteur historique, par conception.
- * Lire ce que le pipeline a ÉCRIT est d'ailleurs plus fidèle — c'est ce que
+ * lire ce que le pipeline a ÉCRIT est plus fidèle — c'est ce que
  * l'utilisateur verra.
  */
 export function createPipelineRunner(): CorpusRunner {
@@ -133,6 +131,8 @@ export function createPipelineRunner(): CorpusRunner {
         // elle mesure, elle ne rend pas de service.
         billable: false,
         origin: 'corpus-pipeline',
+        // Un échec est un résultat mesuré : rien n'est remis en file.
+        retryOnFailure: false,
       });
 
       // ── Relecture de ce qui a été écrit ────────────────────────────────

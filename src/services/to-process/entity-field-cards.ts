@@ -114,7 +114,7 @@ async function ecrire(action: Action, accountId: number, key: string, value: unk
   const { writeCanonicalEntityField } = await import('@/services/canonical/entity-state');
   return writeCanonicalEntityField({
     target: { type: action.targetType, id: action.targetId }, accountId, key, value, origin: 'USER', actorUserId: userId,
-    expectedCurrent: expected ?? null, source: { type: 'to_process', id: action.publicId }, mode: 'enabled',
+    expectedCurrent: expected ?? null, source: { type: 'to_process', id: action.publicId },
   });
 }
 

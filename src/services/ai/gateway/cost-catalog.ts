@@ -18,7 +18,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { listLlmOperations } from '../registry/operations';
-import { isUseCaseRunning, listRunningUseCases } from '../flags/use-case-flags';
+import { AI_USE_CASE_CODES } from '../registry/use-cases';
 import { getCachedPrice, getCacheState, loadPricingCache } from './pricing/pricing.repository';
 
 const warnedModels = new Set<string>();
@@ -58,22 +58,16 @@ export function calcCostMicros(
   return Math.round(inputTokens * price.inputMicros + outputTokens * price.outputMicros);
 }
 
-export interface PricingScope {
-  /**
-   * Ne considérer que les usages dont le drapeau vaut `enabled` ou `shadow`.
-   *
-   * Par défaut `false` : l'administration affiche l'état complet du référentiel,
-   * y compris les usages non encore basculés, pour que le tarif puisse être
-   * saisi *avant* la bascule et non pendant.
-   */
-  runningOnly?: boolean;
-}
+/**
+ * Lot 16b-3 : plus aucun drapeau de bascule — tous les usages du référentiel
+ * s'exécutent ; le périmètre « actif » est le référentiel entier.
+ */
+export const runningUseCases = (): string[] => [...AI_USE_CASE_CODES];
 
 /** Modèles du référentiel dépourvus de tarif dans le cache. */
-export function listModelsWithoutPricing({ runningOnly = false }: PricingScope = {}): string[] {
+export function listModelsWithoutPricing(): string[] {
   const missing = new Set<string>();
   for (const op of listLlmOperations()) {
-    if (runningOnly && !isUseCaseRunning(op.useCaseCode)) continue;
     for (const model of [op.primaryModel, ...op.fallbackModels]) {
       if (!getCachedPrice(op.provider, model)) missing.add(`${op.provider}/${model}`);
     }
@@ -82,10 +76,9 @@ export function listModelsWithoutPricing({ runningOnly = false }: PricingScope =
 }
 
 /** Modèles dont le tarif a été saisi manuellement sans confirmation. */
-export function listUnverifiedPricing({ runningOnly = false }: PricingScope = {}): string[] {
+export function listUnverifiedPricing(): string[] {
   const unverified = new Set<string>();
   for (const op of listLlmOperations()) {
-    if (runningOnly && !isUseCaseRunning(op.useCaseCode)) continue;
     for (const model of [op.primaryModel, ...op.fallbackModels]) {
       const price = getCachedPrice(op.provider, model);
       if (price && !price.verified) unverified.add(`${op.provider}/${model}`);
@@ -95,7 +88,7 @@ export function listUnverifiedPricing({ runningOnly = false }: PricingScope = {}
 }
 
 export interface PricingReadiness {
-  /** Usages dont le nouveau moteur s'exécute (`enabled` ou `shadow`). */
+  /** Usages qui s'exécutent (tous depuis le lot 16b-3). */
   runningUseCases: string[];
   /** Tarifs manquants sur le périmètre réellement actif — seuls bloquants. */
   missingForRunning: string[];
@@ -112,15 +105,15 @@ export interface PricingReadiness {
  * (`/api/admin/ai/inventory`) et au contrôle de démarrage ci-dessous.
  */
 export function getPricingReadiness(): PricingReadiness {
-  const runningUseCases = listRunningUseCases();
-  const missingForRunning = listModelsWithoutPricing({ runningOnly: true });
+  const actifs = runningUseCases();
+  const missingForRunning = listModelsWithoutPricing();
   return {
-    runningUseCases,
+    runningUseCases: actifs,
     missingForRunning,
-    missingOverall: listModelsWithoutPricing(),
+    missingOverall: missingForRunning,
     unverified: listUnverifiedPricing(),
     cacheDegraded: getCacheState().degraded,
-    blocking: runningUseCases.length > 0 && missingForRunning.length > 0,
+    blocking: actifs.length > 0 && missingForRunning.length > 0,
   };
 }
 

@@ -23,12 +23,14 @@ const OPERATIONS = read('src/services/ai/registry/operations.ts');
 const ROUTE = read('src/app/api/cron/ai/corpus-run/route.ts');
 
 /** Codes réellement déclarés au registre. */
-const DECLARES = [...OPERATIONS.matchAll(/operationCode: '([a-z_]+)'/g)].map((m) => m[1]);
+const DECLARES = [...OPERATIONS.matchAll(/operationCode: '([a-z0-9_]+)'/g)].map((m) => m[1]);
 
 describe('le harnais n’emploie que des opérations déclarées', () => {
-  it('le code par défaut existe au registre', () => {
-    const m = RUNNER.match(/operationCode = '([A-Za-z_]+)'/);
+  it('le code par défaut existe au registre (lot 16b-3 : branche ANALYZE_DOCUMENT du master T1)', () => {
+    expect(RUNNER).toMatch(/operationCode = CORPUS_T1_OPERATION/);
+    const m = RUNNER.match(/CORPUS_T1_OPERATION = '([A-Za-z0-9_]+)'/);
     expect(m).not.toBeNull();
+    expect(m![1]).toBe('t1_analyze_document');
     expect(DECLARES).toContain(m![1]);
   });
 

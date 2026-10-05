@@ -19,9 +19,10 @@ describe('schemas.ts — réexport du contrat T1', () => {
     }
   });
 
-  it('les schémas historiques restent exportés', () => {
-    expect(schemas.ExtractSourceOutput).toBeDefined();
-    expect(schemas.GroupSourcesOutput).toBeDefined();
+  it('les schémas des étapes supprimées ne sont plus exportés (lot 16b-3)', () => {
+    for (const name of ['ExtractSourceOutput', 'GroupSourcesOutput', 'ClassifyDocumentOutput', 'ClassifyRubricOutput', 'IdentifyEntitiesOutput', 'ProposeLinksOutput']) {
+      expect((schemas as Record<string, unknown>)[name], name).toBeUndefined();
+    }
   });
 
   it('union discriminée par task, via le point d’entrée', () => {

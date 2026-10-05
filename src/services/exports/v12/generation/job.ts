@@ -89,9 +89,8 @@ export function effectiveChoices(code: DossierCode, source: ExportSource, req: G
 function buildSnapshot(code: DossierCode, source: ExportSource, choices: ExportChoices, req: GenerationRequestSnapshot, createdAt: string, rendered?: RenderedDossier) {
   return {
     asset: { id: source.asset.id, family: source.family, name: source.asset.name, fields: source.asset.characteristics },
-    // CDC 15 X-02 (lot 16) : source réellement utilisée (legacy | canonical),
-    // mode du commutateur et version du registre ; chemins de rattachement
-    // des pièces en source canonique ; compteurs d'écarts en shadow.
+    // CDC 15 X-02 (lot 16) : source utilisée (canonique seule depuis le lot
+    // 16b-3), version du registre et chemins de rattachement des pièces.
     dataSource: source.sourceTrace ?? null,
     additionalInfo: source.additionalInfo,
     export: { type: code, templateVersion: templateVersion(code), createdAt },

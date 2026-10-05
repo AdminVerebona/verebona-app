@@ -264,7 +264,12 @@ export type AnalysisWarningCode =
   | 'FACT_INVALID_DROPPED'
   /** Extrait « lu » introuvable dans le texte lisible : confiance ramenée à probable — U2, U11. */
   | 'EXCERPT_NOT_FOUND'
-  /** Échec total du prompt maître : groupe analysé par les étapes historiques — §29. */
+  /**
+   * HISTORIQUE (résultats antérieurs au lot 16b-3, encore lus par
+   * l'observabilité) : échec total du prompt maître, groupe analysé par les
+   * étapes. Plus jamais produit : un échec du master met désormais la source
+   * en `ANALYSIS_FAILED`, reprise par la file durable.
+   */
   | 'MASTER_FALLBACK_STEPS'
   /** Nombre d'articles d'un ticket non établi : prix d'acquisition gardé en proposition — T1-02. */
   | 'LINE_COUNT_UNKNOWN';

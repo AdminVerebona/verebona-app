@@ -9,27 +9,22 @@
  * Sans le point 2, la prochaine exécution comparerait une nouvelle preuve à une
  * valeur d'autorité inconnue et déciderait à l'aveugle.
  *
- * ── ÉCRITURE UNIQUE (T3-01, T3-05) selon `CANONICAL_WRITE_MODE` ────────────
- *   legacy   chemin historique inchangé (keyCharacteristics seul) ;
- *   shadow   chemin historique, puis observation : `observeLegacyWrite`
- *            journalise ce que la primitive aurait écrit et l'écart
- *            (`dry_run`) — même logique que la fiche au lot 11 ;
- *   enabled  une clé du REGISTRE passe par `writeCanonicalAssetField`
- *            (origine RECONCILIATION, normalisation, colonnes miroirs,
- *            journal 0216, `ai_field_updates`, préséance USER/ADMIN sous
- *            verrou) : une même valeur écrite par la fiche et par T3 donne le
- *            même état, à l'origine près. Une clé HORS registre (fait générique
- *            historique) garde le chemin historique.
+ * ── ÉCRITURE UNIQUE (T3-01, T3-05) ─────────────────────────────────────────
+ * Lot 16b-3 : commutateur `CANONICAL_WRITE_MODE` supprimé (comportement de
+ * l'ancien `enabled`). Une clé du REGISTRE passe toujours par
+ * `writeCanonicalAssetField` (origine RECONCILIATION, normalisation, colonnes
+ * miroirs, journal 0216, `ai_field_updates`, préséance USER/ADMIN sous
+ * verrou) : une même valeur écrite par la fiche et par T3 donne le même état,
+ * à l'origine près. Une clé HORS registre (fait générique) est écrite dans
+ * keyCharacteristics, avec son historique.
  */
 import { db, pgClient } from '@/db';
 import { assets, aiFieldUpdates } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { writeOrigin } from './field-origin';
-import { canonicalWriteMode, type RolloutMode } from '@/services/canonical/rollout';
 import { getField, resolveAlias, isExcludedKey, isInputOnlyKey } from '@/services/canonical/registry';
 import {
-  loadAssetRow, observeLegacyWrite, writeCanonicalAssetField,
-  type SqlRunner, type AssetRowJson, type CanonicalFieldWriteResult,
+  writeCanonicalAssetField, type CanonicalFieldWriteResult,
 } from '@/services/canonical/asset-state';
 import type { ReconciliationDecision, EvidenceCandidate } from './types';
 
@@ -49,8 +44,6 @@ export interface ApplyContext {
   bestCandidate?: EvidenceCandidate;
   /** Trace du run T3 (journal 0216). */
   traceId?: string | null;
-  /** Force un mode d'écriture (tests) ; défaut : `CANONICAL_WRITE_MODE`. */
-  writeMode?: RolloutMode;
 }
 
 /** Résultat d'une application (tests, rapport). */
@@ -64,9 +57,8 @@ export async function applyDecision(
   // D-D (lot 20) : un champ de saisie seule n'est jamais écrit par T3, dans
   // aucun mode (le chemin historique écrivait toute clé brute).
   if (isInputOnlyKey(decision.fieldKey)) return 'skipped';
-  const mode = ctx.writeMode ?? canonicalWriteMode();
 
-  if (mode === 'enabled' && isRegistryKey(decision.fieldKey)) {
+  if (isRegistryKey(decision.fieldKey)) {
     const res = await writeCanonicalAssetField({
       assetId: ctx.assetId, accountId: ctx.accountId,
       key: decision.fieldKey, value: decision.proposedValue,
@@ -74,7 +66,6 @@ export async function applyDecision(
       expectedCurrent: decision.currentValue ?? null,
       source: ctx.sourceFileId ? { type: 'document', id: ctx.sourceFileId } : { type: 'reconciliation', id: ctx.traceId ?? null },
       traceId: ctx.traceId ?? null,
-      mode: 'enabled',
       trace: {
         evidenceId: decision.evidenceIds[0] ?? null, decisionType: decision.action, reasonCode: decision.reasonCode,
         provider: ctx.provider ?? null, model: ctx.model ?? null, promptVersion: ctx.promptVersion ?? null,
@@ -85,30 +76,7 @@ export async function applyDecision(
     return outcomeOf(decision.fieldKey, res.notFound ? null : res.field);
   }
 
-  // Mode shadow : état avant le chemin historique, pour l'observation.
-  const before = mode === 'shadow' && isRegistryKey(decision.fieldKey)
-    ? await loadAssetRow(pgClient as unknown as SqlRunner, ctx.assetId, ctx.accountId).catch(() => null)
-    : null;
-  const outcome = await applyDecisionLegacy(decision, ctx);
-  if (before && outcome === 'written') await observe(decision, ctx, before);
-  return outcome;
-}
-
-/** Mode shadow : ce que la primitive aurait écrit (dry_run), jamais bloquant. */
-async function observe(decision: ReconciliationDecision, ctx: ApplyContext, before: AssetRowJson): Promise<void> {
-  try {
-    const after = await loadAssetRow(pgClient as unknown as SqlRunner, ctx.assetId, ctx.accountId);
-    if (!after) return;
-    await observeLegacyWrite({
-      assetId: ctx.assetId, accountId: ctx.accountId, origin: 'RECONCILIATION',
-      source: ctx.sourceFileId ? { type: 'document', id: ctx.sourceFileId } : { type: 'reconciliation', id: ctx.traceId ?? null },
-      traceId: ctx.traceId ?? null,
-      writes: [{ key: decision.fieldKey, value: decision.proposedValue, expectedCurrent: decision.currentValue ?? null }],
-      before, after,
-    });
-  } catch (e) {
-    console.warn('[reconciliation][shadow] observation impossible (non bloquant) :', (e as Error).message);
-  }
+  return applyOutsideRegistry(decision, ctx);
 }
 
 function outcomeOf(fieldKey: string, f: CanonicalFieldWriteResult | null): ApplyOutcome {
@@ -123,8 +91,8 @@ function outcomeOf(fieldKey: string, f: CanonicalFieldWriteResult | null): Apply
   return f.outcome;
 }
 
-/** Chemin historique (legacy, shadow, clé hors registre). */
-async function applyDecisionLegacy(
+/** Clé hors registre (fait générique) : keyCharacteristics et historique. */
+async function applyOutsideRegistry(
   decision: ReconciliationDecision,
   ctx: ApplyContext,
 ): Promise<ApplyOutcome> {
@@ -232,9 +200,7 @@ export interface RetractInput {
  * NULL, journal 0216 et `ai_field_updates` (motif NO_REMAINING_EVIDENCE),
  * contrôle optimiste et préséance USER/ADMIN SOUS VERROU : une valeur
  * humaine n'est jamais retirée, même si l'origine a changé entre la décision
- * et l'écriture. Toujours en mode `enabled` : ce retrait est piloté par son
- * propre commutateur (`T3_NEGATIVE_RECONCILIATION`), et la colonne miroir
- * doit suivre la fiche.
+ * et l'écriture ; la colonne miroir suit la fiche.
  *
  * Clé hors registre : suppression dans keyCharacteristics + historique.
  */
@@ -244,7 +210,6 @@ export async function retractAutomaticValue(p: RetractInput): Promise<ApplyOutco
       assetId: p.assetId, accountId: p.accountId, key: p.fieldKey, value: null,
       origin: 'RECONCILIATION', expectedCurrent: p.currentValue,
       source: { type: 'reconciliation', id: p.traceId ?? null }, traceId: p.traceId ?? null,
-      mode: 'enabled',
       trace: { decisionType: 'update', reasonCode: RETRACTION_REASON, confidence: 'certain', authority: null, sourceDate: null },
     });
     return outcomeOf(p.fieldKey, res.notFound ? null : res.field);

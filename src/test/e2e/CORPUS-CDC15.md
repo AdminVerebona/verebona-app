@@ -18,13 +18,16 @@ existent, pas qu'ils passent. La CI doit exécuter `npm run test:e2e` (job
 `e2e-pg`, PostgreSQL réel) et le rendre bloquant — les 43 scénarios doivent
 y être verts (D-17).
 
-**Commutateurs** — « cible » = `TARGET_SWITCHES` de `chain.ts` :
-`AI_T1_ANALYSIS_MODE`, `CANONICAL_WRITE_MODE`, `T3_NEGATIVE_RECONCILIATION`,
-`EXPORTS_CANONICAL_SOURCE` à `enabled`, T1 en architecture `master` par la
-version de configuration. Depuis le lot 16b-2, `AI_T4_EFFECTS` et
-`ASSISTANT_CANONICAL_READ` sont retirés (toujours actifs) et T2, T4, T5, T6
-sont toujours en `master`. Le mode est rappelé dans le titre
-de chaque test.
+**Commutateurs** — « cible » = l'unique état de l'application : il n'existe
+plus aucun commutateur ni drapeau IA (`TARGET_SWITCHES` de `chain.ts` est
+vide). Depuis le lot 16b-2, `AI_T4_EFFECTS` et `ASSISTANT_CANONICAL_READ` sont
+retirés (toujours actifs) et T2, T4, T5, T6 sont toujours en `master` ; depuis
+le lot 16b-3, `AI_T1_ANALYSIS_MODE`, `AI_UNIFIED_SOURCE_ANALYSIS`,
+`AI_RECONCILIATION_ENGINE`, `CANONICAL_WRITE_MODE`,
+`T3_NEGATIVE_RECONCILIATION` et `EXPORTS_CANONICAL_SOURCE` sont retirés et
+T1 à T6 sont toujours en `master` (prompt maître seul, plus de repli
+« étapes »). Les tests qui posent encore un commutateur retiré vérifient
+qu'il est ignoré.
 
 | ID | Fichier | Test | Commutateurs | Couverture de « Attendu » |
 |----|---------|------|--------------|---------------------------|
@@ -41,7 +44,7 @@ de chaque test.
 | E2E-11 | corpus-e2e-cycle.e2e.ts | E2E-11 — déplacement A → B | cible, T1 master | A : aucune preuve, fiche vide, agenda vide, export vide ; B = état initial de A |
 | E2E-12 | corpus-e2e-cycle.e2e.ts | E2E-12 — réanalyse, date corrigée | cible, T1 master | une preuve active, fiche corrigée, une seule échéance |
 | E2E-13 | corpus-e2e-cycle.e2e.ts | E2E-13 — correction humaine | cible, T1 master | USER conservé après nouveau document ; T2 répond la valeur USER |
-| E2E-14 | canonical-write.e2e.ts | E2E-14 (enabled) : fiche = colonne = vue canonique = … = export | CANONICAL_WRITE_MODE, EXPORTS_CANONICAL_SOURCE | fiche, colonne, vue canonique, T2 et export identiques ; compte étranger refusé (aussi `e2e-14-immatriculation.e2e.ts`, legacy/colonne) |
+| E2E-14 | canonical-write.e2e.ts | E2E-14 : fiche = colonne = vue canonique = … = export | cible | fiche, colonne, vue canonique, T2 et export identiques ; compte étranger refusé (aussi `e2e-14-immatriculation.e2e.ts`) |
 | E2E-15 | corpus-e2e-cycle.e2e.ts | E2E-15 — document via linkedAssetId | cible, T1 master | document dans l'export des deux biens et dans T2 (page du bien lié, liste) |
 | E2E-16 | corpus-e2e-cycle.e2e.ts | E2E-16 — document multi-biens | cible, T1 master | faits par bien, aucun fait non ciblé, aucune date croisée, lien SECONDARY |
 | E2E-17 | corpus-e2e-documents.e2e.ts | E2E-17 — facture équipement | cible, T1 master | preuves EQUIPMENT, fiche parente intacte, échéance liée à l'équipement |

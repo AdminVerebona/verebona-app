@@ -242,6 +242,21 @@ vi.mock('@/services/agenda/AgendaWriteService', () => {
     },
   };
 });
+// Colonnes miroirs (CDC 15, D-10) : capturées TOUJOURS depuis le lot 16b-3
+// (plus de commutateur `CANONICAL_WRITE_MODE`), simulées sur la base en mémoire.
+vi.mock('@/services/canonical/asset-state/mirror-columns', () => ({
+  async readMirrorColumns(_run: unknown, accountId: number, assetId: number) {
+    const a = h.db.assets.get(assetId);
+    if (!a || a.account_id !== accountId) return null;
+    return { registration_number: a.registration_number, purchase_date: a.purchase_date };
+  },
+  async restoreMirrorColumns(_run: unknown, accountId: number, assetId: number, mirrors: Record<string, unknown>) {
+    const a = h.db.assets.get(assetId);
+    if (!a || a.account_id !== accountId) return;
+    if ('registration_number' in mirrors) a.registration_number = mirrors.registration_number as string | null;
+    if ('purchase_date' in mirrors) a.purchase_date = mirrors.purchase_date as string | null;
+  },
+}));
 vi.mock('@/services/asset-details-write.service', () => {
   class AssetDetailsError extends Error { constructor(public code: string, message: string) { super(message); } }
   return {

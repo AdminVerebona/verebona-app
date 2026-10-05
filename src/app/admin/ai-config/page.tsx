@@ -66,11 +66,11 @@ interface TreatmentCatalog {
   guardrails: GuardrailDef[];
   triggers: TriggerDef[];
   /** CDC 15 D-04 : prompt maître déclaré pour ce traitement, sinon `null`. */
-  master?: { masterPromptCode: string; tasks: string[]; rolloutSwitch?: string | null; masterOnly?: boolean } | null;
+  master?: { masterPromptCode: string; tasks: string[] } | null;
 }
 
-/** CDC 15 D-04 : étapes historiques ou prompt maître unique. */
-type PromptArchitecture = 'steps' | 'master';
+/** CDC 15 D-04 : prompt maître unique (lot 16b : `steps` retiré, refusé par le serveur). */
+type PromptArchitecture = 'master';
 
 interface Catalogs {
   models: Array<{ model: string; available: boolean; priced: boolean; verified: boolean }>;
@@ -96,7 +96,7 @@ interface Entry {
   guardrails: Array<{ code: string; threshold: number; reaction: string }>;
   triggers: Array<{ kind: 'event' | 'schedule'; code: string; active: boolean }>;
   cascade: Cascade | null;
-  /** Absent (version antérieure au lot 12) : `steps`. */
+  /** Toujours `master` (lot 16b), renvoyé tel quel à l'enregistrement. */
   promptArchitecture?: PromptArchitecture;
   /** CDC 15 D-03 : texte complet du prompt maître, distinct du préambule. */
   masterPrompt?: string | null;
@@ -542,54 +542,22 @@ function TreatmentEditor({
         Prompt Control : l'administrateur n'a pas à rédiger un prompt pour
         obtenir un changement de comportement.
 
-        ⚠️ Mais pour T1 à T4 l'éditeur RESTE ACCESSIBLE. Prompt Control dépend
-        d'un modèle : fournisseur en panne ou arrêt d'urgence, et un
-        administrateur privé d'édition directe n'aurait plus aucun moyen de
-        corriger un prompt. Le SCR-02 le prévoit : « Éditeur du prompt T1
-        unique, versionné, sans limite artificielle imposée par le BO ».
+        ⚠️ Mais pour T1 à T4 et T6 l'éditeur du texte master RESTE ACCESSIBLE.
+        Prompt Control dépend d'un modèle : fournisseur en panne ou arrêt
+        d'urgence, et un administrateur privé d'édition directe n'aurait plus
+        aucun moyen de corriger un prompt. Le SCR-02 le prévoit : « Éditeur du
+        prompt T1 unique, versionné, sans limite artificielle imposée par le
+        BO ». Lot 16b : c'est la seule zone prompt (plus de préambule).
 
         Pour T5, aucun éditeur (T5-003, T5-UI-09, écart E-02) : son
         comportement est dans le code. Le serveur vide de toute façon ce champ
         à l'écriture et l'ignore à l'exécution.
       */}
       {/*
-        CDC 15 D-04, §29.1 : architecture des prompts du traitement. Proposée
-        seulement si un prompt maître est déclaré (lot 12 : T1). Modifiable
-        dans un Brouillon uniquement ; la bascule prend effet en préproduction
-        par la promotion « À tester », en production par l'activation. En
-        « master », le prompt ci-dessous est le MASTER COMPLET (D-03) ; vide,
-        le fichier du dépôt s'applique.
-      */}
-      {/* Lot 16b : T2, T4, T5 et T6 n'ont plus que leur master — aucun choix proposé. */}
-      {catalog.master && !catalog.master.masterOnly ? (
-        <Field
-          label="Architecture des prompts"
-          hint={
-            (entry.promptArchitecture ?? 'steps') === 'master'
-              ? `Prompt maître ${catalog.master.masterPromptCode} (branches ${catalog.master.tasks.join(', ')}), `
-                + (catalog.master.rolloutSwitch
-                  ? `texte ci-dessous. Appliqué seulement si ${catalog.master.rolloutSwitch} vaut « enabled » ; `
-                    + 'sinon les étapes historiques continuent, avec le prompt (préambule).'
-                  : 'texte ci-dessous. Appliqué dès que cette version est effective (aucun commutateur d’environnement).')
-              : 'Étapes historiques : un prompt technique par étape, précédé du prompt (préambule).'
-          }
-        >
-          <select
-            className={selectClass}
-            value={entry.promptArchitecture ?? 'steps'}
-            disabled={readOnly}
-            onChange={(e) => set('promptArchitecture', e.target.value as PromptArchitecture)}
-          >
-            <option value="steps">Étapes historiques (steps)</option>
-            <option value="master">Prompt maître unique (master)</option>
-          </select>
-        </Field>
-      ) : null}
-
-      {/*
-        CDC 15 D-03 : zone DISTINCTE du préambule. Le préambule sert toujours
-        aux étapes ; ce texte ne sert qu'au prompt maître. Vide : fichier du
-        dépôt (valeur initiale). Peut être préparé avant la bascule.
+        Lot 16b : tous les traitements n'ont plus que leur prompt maître —
+        aucun choix d'architecture proposé (migrations 0231 à 0234).
+        CDC 15 D-03 : texte COMPLET du prompt maître. Vide : fichier du dépôt
+        (valeur initiale).
       */}
       {catalog.master && !isPromptAdministrable(entry.treatment) ? (
         <p className="text-xs text-[color:var(--text-muted)]">
@@ -598,8 +566,7 @@ function TreatmentEditor({
         </p>
       ) : null}
       {catalog.master && isPromptAdministrable(entry.treatment) ? (
-        <details className="rounded-lg border border-[color:var(--border-subtle)] p-3"
-          open={(entry.promptArchitecture ?? 'steps') === 'master'}>
+        <details className="rounded-lg border border-[color:var(--border-subtle)] p-3" open>
           <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
             Texte master ({catalog.master.masterPromptCode})
           </summary>
@@ -620,34 +587,14 @@ function TreatmentEditor({
       ) : null}
 
       {/*
-        CDC 15 §22.3, §32 : « une seule zone prompt par traitement ». En
-        `master`, le préambule des étapes n'est plus proposé (il ne sert pas
-        au master) : seule la zone « Texte master » ci-dessus est éditable.
+        CDC 15 §22.3, §32 : « une seule zone prompt par traitement » — le texte
+        master ci-dessus. Lot 16b : le préambule des étapes n'existe plus.
       */}
-      {isPromptAdministrable(entry.treatment) && (entry.promptArchitecture ?? 'steps') === 'master' ? (
+      {isPromptAdministrable(entry.treatment) ? (
         <p className="text-xs text-[color:var(--text-muted)]">
           Architecture « master » : le prompt de ce traitement est le texte master ci-dessus. Le préambule et les
           prompts techniques des étapes ne sont plus utilisés ni proposés.
         </p>
-      ) : isPromptAdministrable(entry.treatment) ? (
-        <details className="rounded-lg border border-[color:var(--border-subtle)] p-3">
-          <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
-            Modifier le prompt directement
-          </summary>
-          <div className="pt-3 space-y-2">
-            <p className="text-xs text-[color:var(--text-muted)]">
-              Édition manuelle du prompt, versionnée avec le reste de la configuration.
-              À réserver aux cas où Prompt Control ne peut pas aider — panne du
-              fournisseur, correction urgente.
-            </p>
-            <Textarea
-              value={entry.prompt}
-              disabled={readOnly}
-              onChange={(e) => set('prompt', e.target.value)}
-              className="min-h-[220px] font-mono text-xs bg-[color:var(--bg-input)]"
-            />
-          </div>
-        </details>
       ) : (
         <p className="text-xs text-[color:var(--text-muted)]">
           Le comportement de Prompt Control est défini dans le code : il n&apos;a pas de

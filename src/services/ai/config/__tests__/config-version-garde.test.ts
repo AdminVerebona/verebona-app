@@ -19,12 +19,17 @@ vi.mock('../config-version.repository', () => repo);
 vi.mock('../config-resolver', () => ({ invalidateConfigCache: () => {} }));
 vi.mock('../../telemetry/execution-context', () => ({ invalidateConfigVersionCache: () => {} }));
 vi.mock('../../queue/job-queue.repository', () => ({ requeueRunning: async () => 0 }));
+// Lot 16b-3 : toute ligne est en master — la garde du corpus (§30) est
+// testée ailleurs (`master-corpus`) ; ici, corpus vert.
+vi.mock('../../governance/master-corpus/activation-guard', () => ({
+  checkMasterActivation: async () => ({ allowed: true, entries: [] }),
+}));
 
 const { promote, activate, rollback, archive, isLastRollbackPoint, ConfigOperationRefused } = await import('../config-version.service');
 
 const draft = (over: Record<string, unknown> = {}) => ({
   id: 7, status: 'DRAFT', environment: 'local', isStale: false, label: 'b', activatedAt: null,
-  entries: [{ ...emptyTreatmentConfig('T1'), prompt: 'x' }], ...over,
+  entries: [{ ...emptyTreatmentConfig('T3'), prompt: 'x' }], ...over,
 });
 
 beforeEach(() => {

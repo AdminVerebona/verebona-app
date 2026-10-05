@@ -37,8 +37,8 @@ export interface PrepSectionDef {
   /** Contenu décrit par les informations complémentaires (pas d'élément à cocher). */
   fedBy?: string;
   /**
-   * Description quand le dossier est lu en source canonique
-   * (`EXPORTS_CANONICAL_SOURCE=enabled`, X-02 lot 16) ; `description` sinon.
+   * Description en source canonique (X-02 lot 16, seule source depuis le
+   * lot 16b-3) ; à défaut, `description`.
    */
   descriptionCanonical?: string;
 }

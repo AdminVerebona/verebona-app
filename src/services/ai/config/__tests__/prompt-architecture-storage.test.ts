@@ -1,8 +1,9 @@
 /**
  * CDC 15 D-04, migration 0220 — stockage de l'architecture dans
- * `ai_config_entries.prompt_architecture`. Colonne absente (migration en
- * échec) : lecture en `steps`, `master` REFUSÉ, jamais perdu en silence ;
- * contrôle au premier usage comme 0217.
+ * `ai_config_entries.prompt_architecture`. Lot 16b : lecture TOUJOURS
+ * `master` (valeur stockée ignorée) ; colonne absente (migration en échec) :
+ * un texte master est REFUSÉ, jamais perdu en silence ; contrôle au premier
+ * usage comme 0217.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'fs';
@@ -42,8 +43,9 @@ describe('colonne 0220 présente', () => {
     ];
     const e = await repo.getEntries(3);
     expect(calls.find((c) => /FROM ai_config_entries/.test(c.q))?.q).toMatch(/cascade, prompt_architecture, master_prompt\s/);
+    // Lot 16b-3 : une ligne stockée `steps` est lue `master`.
     expect(e.map((x) => [x.promptArchitecture, x.prompt, x.masterPrompt])).toEqual([
-      ['master', 'Préambule', 'MASTER {{TASK}}'], ['steps', '', null],
+      ['master', 'Préambule', 'MASTER {{TASK}}'], ['master', '', null],
     ]);
   });
 
@@ -68,25 +70,23 @@ describe('colonne 0220 présente', () => {
 });
 
 describe('colonne 0220 absente (migration en échec)', () => {
-  it('lecture en steps, sans citer la colonne', async () => {
+  it('lecture en master, sans citer la colonne', async () => {
     colonne = false;
-    lignes = [{ treatment: 'T1', prompt: '', prompt_architecture: null }];
+    lignes = [{ treatment: 'T3', prompt: '', prompt_architecture: null }];
     const e = await repo.getEntries(3);
     expect(calls.find((c) => /FROM ai_config_entries/.test(c.q))?.q).toMatch(/NULL::text AS prompt_architecture, NULL::text AS master_prompt/);
-    expect(e[0].promptArchitecture).toBe('steps');
+    expect(e[0].promptArchitecture).toBe('master');
   });
 
-  it('steps écrit sans la colonne ; master refusé AVANT toute écriture, message explicite', async () => {
+  it('ligne sans texte master écrite sans la colonne (master par défaut) ; texte master refusé AVANT toute écriture', async () => {
     colonne = false;
-    await repo.saveEntry(3, emptyTreatmentConfig('T1'), 1);
+    await repo.saveEntry(3, emptyTreatmentConfig('T3'), 1);
     const ins = calls.find((c) => /INSERT INTO ai_config_entries/.test(c.q))!;
     expect(ins.q).not.toMatch(/prompt_architecture/);
     expect(ins.p).toHaveLength(14);
 
     calls.length = 0;
-    await expect(repo.saveEntry(3, { ...emptyTreatmentConfig('T1'), promptArchitecture: 'master' }, 1))
-      .rejects.toThrow(/migration 0220/);
-    await expect(repo.saveEntry(3, { ...emptyTreatmentConfig('T1'), masterPrompt: 'MASTER' }, 1))
+    await expect(repo.saveEntry(3, { ...emptyTreatmentConfig('T3'), masterPrompt: 'MASTER' }, 1))
       .rejects.toThrow(/migration 0220/);
     expect(calls.some((c) => /INSERT/.test(c.q))).toBe(false);
   });

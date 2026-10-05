@@ -27,16 +27,13 @@
  * Pas de ligne `ai_field_updates` : cette table (accueil « Ce que j'ai
  * fait ») ne porte pas de cible et lirait la valeur comme un champ du BIEN.
  *
- * Modes (`CANONICAL_WRITE_MODE`) :
- *   legacy   rien, AUCUNE requête (`skipped`) ;
- *   shadow   lecture sans verrou, journal `dry_run = true`, entité intacte ;
- *   enabled  écriture.
+ * Lot 16b-3 : commutateur `CANONICAL_WRITE_MODE` supprimé — la primitive
+ * écrit toujours (comportement de l'ancien `enabled`).
  * Migration 0227 absente : rien (`schemaNotReady`), signalé une fois.
  */
 import { pgClient } from '@/db';
 import { canOverwrite, isHumanOrigin, writeOrigin } from '@/services/ai/reconciliation/field-origin';
 import { eurToCents, normalizeValue } from '@/services/canonical/registry';
-import { canonicalWriteMode, type RolloutMode } from '@/services/canonical/rollout';
 import {
   sameCanonicalValue,
   type CanonicalFieldWrite, type CanonicalFieldWriteResult, type CanonicalOrigin, type SqlRunner, type TxRunner,
@@ -72,8 +69,8 @@ function versColonne(m: EntityMirrorColumn, value: unknown): unknown {
 }
 
 /**
- * État final d'une série d'écritures sur une entité, sans rien écrire
- * (mode enabled et shadow). Écritures appliquées dans l'ordre.
+ * État final d'une série d'écritures sur une entité, sans rien écrire.
+ * Écritures appliquées dans l'ordre.
  */
 export function planEntityWrites(
   row: CanonicalEntityRow,
@@ -181,7 +178,6 @@ async function journal(
   input: WriteCanonicalEntityFieldsInput,
   assetId: number,
   results: CanonicalFieldWriteResult[],
-  dryRun: boolean,
 ): Promise<void> {
   const retenues = results.filter((r) => r.outcome !== 'unchanged');
   if (retenues.length === 0) return;
@@ -192,7 +188,7 @@ async function journal(
       input.accountId, assetId, input.target.type, input.target.id, r.key, jsonb(r.previousValue), jsonb(r.nextValue),
       input.origin, input.actorUserId ?? null, input.source?.type ?? null,
       input.source?.id === undefined || input.source?.id === null ? null : String(input.source.id),
-      input.traceId ?? null, r.outcome, dryRun,
+      input.traceId ?? null, r.outcome, false,
       Object.keys(r.mirrors).length ? JSON.stringify(r.mirrors) : null,
     ];
     return `(${v.map((x, i) => { params.push(x); return `$${params.length}${casts[i]}`; }).join(', ')})`;
@@ -209,8 +205,8 @@ async function journal(
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
 const vide = (
-  mode: RolloutMode, target: CanonicalEntityTarget, extra: Partial<CanonicalEntityWriteResult> = {},
-): CanonicalEntityWriteResult => ({ mode, target, assetId: null, dryRun: true, skipped: false, notFound: false, fields: [], ...extra });
+  target: CanonicalEntityTarget, extra: Partial<CanonicalEntityWriteResult> = {},
+): CanonicalEntityWriteResult => ({ target, assetId: null, skipped: false, notFound: false, fields: [], ...extra });
 
 async function emettre(accountId: number, assetId: number): Promise<void> {
   try {
@@ -226,27 +222,17 @@ export async function writeCanonicalEntityFields(
   input: WriteCanonicalEntityFieldsInput,
   run: TxRunner = pgClient as unknown as TxRunner,
 ): Promise<CanonicalEntityWriteResult> {
-  const mode = input.mode ?? canonicalWriteMode();
-  if (mode === 'legacy') return vide(mode, input.target, { skipped: true });
-  if (!(await entityCanonicalColumnsReady())) return vide(mode, input.target, { skipped: true, schemaNotReady: true });
+  if (!(await entityCanonicalColumnsReady())) return vide(input.target, { skipped: true, schemaNotReady: true });
   const ctx = { origin: input.origin, now: new Date().toISOString() };
 
-  if (mode === 'shadow') {
-    const row = await loadEntityRow(run, input.target, input.accountId);
-    if (!row) return vide(mode, input.target, { notFound: true });
-    const plan = planEntityWrites(row, input.writes, ctx);
-    await journal(run, input, row.assetId, plan.results, true);
-    return vide(mode, input.target, { assetId: row.assetId, fields: plan.results });
-  }
-
-  let out = vide(mode, input.target, { dryRun: false });
+  let out = vide(input.target);
   await run.begin(async (t) => {
     const row = await loadEntityRow(t, input.target, input.accountId, true);
-    if (!row) { out = vide(mode, input.target, { dryRun: false, notFound: true }); return; }
+    if (!row) { out = vide(input.target, { notFound: true }); return; }
     const plan = planEntityWrites(row, input.writes, ctx);
     if (plan.changed) await persist(t, row, plan);
-    await journal(t, input, row.assetId, plan.results, false);
-    out = { mode, target: input.target, assetId: row.assetId, dryRun: false, skipped: false, notFound: false, fields: plan.results };
+    await journal(t, input, row.assetId, plan.results);
+    out = { target: input.target, assetId: row.assetId, skipped: false, notFound: false, fields: plan.results };
   });
   if (out.assetId && input.emitEvent !== false && out.fields.some((f) => f.outcome === 'written')) {
     await emettre(input.accountId, out.assetId);
@@ -303,7 +289,7 @@ export async function recordManualEntityEdit(
     if (cles.length === 0) return [];
     const res = await writeCanonicalEntityFields({
       target: p.target, accountId: p.accountId, origin: 'USER', actorUserId: p.actorUserId ?? null,
-      source: { type: 'asset_details', id: null }, mode: 'enabled', emitEvent: false,
+      source: { type: 'asset_details', id: null }, emitEvent: false,
       writes: cles.map((k) => ({ key: k, value: p.after[k] ?? null })),
     }, run);
     return res.fields.filter((f) => f.outcome === 'written').map((f) => f.key);

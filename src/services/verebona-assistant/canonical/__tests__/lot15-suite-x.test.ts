@@ -5,14 +5,12 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-const h = vi.hoisted(() => ({ arch: 'steps' as 'steps' | 'master' }));
 vi.mock('@/db', () => ({
   pgClient: { unsafe: vi.fn(async () => []) },
   db: {},
   ensureMigrations: vi.fn(async () => {}),
   ensureUnaccent: vi.fn(async () => {}),
 }));
-vi.mock('@/services/ai/config/config-resolver', () => ({ getPromptArchitecture: async () => h.arch }));
 
 const { answerFromData } = await import('../../core/data-answer.service');
 const { DEFAULT_THRESHOLDS } = await import('../../core/sufficiency');
@@ -23,7 +21,7 @@ const { expenseSumSource, aggregateExpenses } = await import('../expenses');
 type Port = import('../../core/data-answer.service').AccountDataPort;
 type Fact = import('../../core/data-answer.service').FactHit;
 
-afterEach(() => { h.arch = 'steps'; delete process.env.ASSISTANT_CANONICAL_READ; });
+afterEach(() => { delete process.env.ASSISTANT_CANONICAL_READ; });
 
 describe('T2-24 × T2-31 — source du total qualifié, vérifiable par claim-support', () => {
   const q = aggregateExpenses([
@@ -76,7 +74,6 @@ describe('T2-30 — revalidation des faits visuels en T2 master (VISUAL_RECHECK)
   const ask = (facts: Fact[]) => answerFromData({ port: port(facts), accountId: 1, message: 'état de la toiture', thresholds: DEFAULT_THRESHOLDS });
 
   it('l’observation visuelle peu sûre est proposée (VISUAL_RECHECK, master T2 seul depuis le lot 16b-2)', async () => {
-    h.arch = 'steps';
     const r = await ask([visuel(1, 'ambiguous')]);
     expect(r.revalidation).toEqual({ trigger: 'LOW_CONFIDENCE', factIds: [1] });
   });

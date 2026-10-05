@@ -17,12 +17,12 @@ import { boundedExcerpt, synthesisSourceContent } from '../synthesis-content';
 import { findReadableField, isFieldQuestion, upcomingAgendaRequest, fieldAnswer } from '../structured-answers';
 import { unchangedSinceConfirmation } from '../commands';
 import { attachCanonical } from '../repository';
-import { rolloutSnapshot, ROLLOUT_SWITCHES } from '@/services/canonical/rollout';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 describe('lecture canonique seule (lot 16b-2)', () => {
-  it('commutateur ASSISTANT_CANONICAL_READ retiré : ni déclaré, ni dans l’instantané', () => {
-    expect(Object.keys(ROLLOUT_SWITCHES)).not.toContain('ASSISTANT_CANONICAL_READ');
-    expect(rolloutSnapshot({ ASSISTANT_CANONICAL_READ: 'legacy' } as never).map((x) => x.name)).not.toContain('ASSISTANT_CANONICAL_READ');
+  it('commutateurs retirés : plus aucun module de déploiement progressif (lot 16b-3)', () => {
+    expect(existsSync(join(process.cwd(), 'src/services/canonical/rollout.ts'))).toBe(false);
   });
 });
 

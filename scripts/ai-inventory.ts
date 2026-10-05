@@ -20,8 +20,8 @@
  * OBSERVÉ — ce qui s'est réellement exécuté, lu dans `ai_usage_event`.
  *
  * Le piège, et la raison pour laquelle le verdict ne peut pas porter sur
- * `use_case_code` : `ai-usage-tracker.ts` estampille les écritures des moteurs
- * HISTORIQUES via la correspondance de la migration 0110 (`ai_legacy_usage_mapping`). Elles remontent donc sous les cinq
+ * `use_case_code` : l'ancien `ai-usage-tracker.ts` (supprimé au lot 16b-3)
+ * estampillait les écritures des moteurs HISTORIQUES via la correspondance de la migration 0110 (`ai_legacy_usage_mapping`). Elles remontent donc sous les cinq
  * codes cibles. Un `SELECT DISTINCT use_case_code` renverrait cinq usages et
  * conclurait à la conformité pendant que tout le chemin historique s'exécute —
  * exactement le « regroupement artificiel » que le critère n°24 interdit.
@@ -104,23 +104,15 @@ function afficher(report: InventoryReport): void {
     console.log(`     absorbe       : usages historiques ${uc.replacesLegacyUsages.join(', ')}`);
     console.log(`     opérations    : ${uc.operationCount} dont ${uc.llmOperationCount} avec appel modèle`);
     for (const op of uc.operations) {
-      // CDC 15 §22.3 : master exécuté, ou master cible d'une étape historique.
-      const master = op.masterPromptCode
-        ? `  [master ${op.masterPromptCode} · TASK=${op.task}]`
-        : op.migratesTo ? `  [→ ${op.migratesTo}]` : '';
+      // CDC 15 §22.3 : master exécuté (lot 16b : seul moteur).
+      const master = op.masterPromptCode ? `  [master ${op.masterPromptCode} · TASK=${op.task}]` : '';
       const inactive = op.active ? '' : '  (inactive)';
-      // CDC 15 §29 étape 15, D-02 : conservée jusqu'au retrait (check-master-cutover).
-      const deprecie = op.deprecated
-        ? `  DÉPRÉCIÉE (${op.deprecated.reason === 'LEGACY_RELAY' ? 'relais legacy' : `remplacée par ${op.deprecated.replacedBy}`})`
-        : '';
-      console.log(`       · ${op.code.padEnd(22)} ${op.deterministic ? 'déterministe' : op.model}${master}${inactive}${deprecie}`);
+      console.log(`       · ${op.code.padEnd(22)} ${op.deterministic ? 'déterministe' : op.model}${master}${inactive}`);
     }
     console.log('');
   }
-  const deprecies = declare.useCases.flatMap((u) => u.operations).filter((o) => o.deprecated);
-  console.log(`  Opérations dépréciées : ${deprecies.length} (retrait : npm run ai:cutover-check)`);
   console.log(`  Usages déclarés : ${declare.activeUseCaseCount} / ${declare.expectedUseCaseCount}`);
-  console.log(`  Bascule         : ${Object.entries(declare.flags).map(([k, v]) => `${k}=${v}`).join('  ')}\n`);
+  console.log('  Bascule         : aucune (lot 16b — prompts maîtres seuls, sans drapeau ni commutateur)\n');
 
   if (!observe) {
     console.log('── Observé ───────────────────────────────────────────────────────\n');

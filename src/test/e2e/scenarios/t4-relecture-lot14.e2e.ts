@@ -134,7 +134,9 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
 
     const velo = await make.asset(compte);
     const achat = await write.createAgendaItem({ title: 'Achat du vélo', startDate: '2026-01-10', assetIds: [velo.id], homeCategory: 'information' }, compte.id, compte.ownerUserId);
-    await sql`UPDATE assets SET purchase_date = NULL WHERE id = ${velo.id}`;
+    // Lot 16b-3 : la recopie passe toujours par la primitive canonique — la
+    // date d'acquisition (fiche ET colonne miroir) est vidée pour le test.
+    await sql`UPDATE assets SET purchase_date = NULL, key_characteristics = '{}' WHERE id = ${velo.id}`;
     await cards.proposeAgendaStatus({ accountId: compte.id, itemId: achat.id, kind: 'propose_done', sourceFileId: null });
     const [s] = await sql<{ public_id: string }[]>`SELECT public_id FROM to_process_actions WHERE account_id = ${compte.id} AND target_id = ${achat.id} AND rule_code = 'AGENDA-DONE'`;
     expect(await resolve.resolveArbitration(compte.id, s.public_id, 'realise', { userId: compte.ownerUserId })).toMatchObject({ ok: true });

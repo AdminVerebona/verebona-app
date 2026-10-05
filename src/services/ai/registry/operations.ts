@@ -9,21 +9,6 @@
  * aux jointures SQL avec les tables de suivi.
  */
 import type { AiUseCaseCode } from './use-cases';
-import { EXTRACT_SOURCE_PROMPT_VERSION } from '../source-analysis/prompt-version';
-
-/**
- * Cible « prompt maître » d'une opération HISTORIQUE (CDC 15 §22.3, §29
- * étape 11, ARCH-03) : le master de son traitement et la branche TASK qui la
- * remplace. Métadonnée seule — le prompt effectif reste `promptCode`, le
- * comportement de production est inchangé tant que la version de
- * configuration n'a pas basculé le traitement en architecture `master` (D-04).
- */
-export interface MasterMigrationTarget {
-  masterPromptCode: string;
-  task: string;
-  /** Opération master qui exécute cette branche. */
-  operationCode: string;
-}
 
 export interface AiOperationDefinition {
   operationCode: string;
@@ -72,34 +57,6 @@ export interface AiOperationDefinition {
   /** Mode JSON natif du fournisseur (`responseMimeType: application/json`). */
   jsonResponse?: boolean;
   /**
-   * Prompt HISTORIQUE, composé par l'appelant à partir de son gabarit du dépôt
-   * (`src/services/document-ai/prompts/…`) et transmis dans la variable
-   * `LEGACY_PROMPT` d'un prompt technique de simple relais.
-   *
-   * Plan de retrait WF-41 : ces modules passent par la passerelle (trace,
-   * coût, garde d'exploitation, disjoncteur, clé du BO, modèles de la version
-   * figée) SANS changer leur prompt ni leur contrat de sortie. Le préambule
-   * administrable du traitement n'y est donc PAS ajouté : il est rédigé pour
-   * le prompt technique de l'usage (sortie et schéma propres), et le préfixer
-   * à un prompt au contrat différent reproduirait le désaccord prompt/schéma
-   * de la panne du 18/09/2026.
-   */
-  legacyPrompt?: boolean;
-  /**
-   * Variables transmises SANS masquage (`redaction.ts`).
-   *
-   * ⚠️ ÉCART ASSUMÉ AU §5.6 (minimisation), limité aux prompts historiques
-   * relayés (`legacyPrompt`) — décision de la revue de migration WF-41.
-   * Le masquage porte sur des suites de 13 à 19 chiffres, IBAN et NIR : sur
-   * le texte d'un document (DOCX lu, texte extrait), il effaçait les SIRET,
-   * numéros de contrat, numéros de série et IBAN fournisseurs que ces modules
-   * ont précisément pour rôle d'extraire — alors que le même document en PDF,
-   * transmis en pièce jointe, n'est jamais masqué. Avant la migration, ces
-   * modules envoyaient le texte intégral : ce comportement est conservé.
-   * Le contrôle de démarrage refuse cette exemption hors `legacyPrompt`.
-   */
-  unredactedVariables?: readonly string[];
-  /**
    * Prompt MAÎTRE du traitement (CDC 15 §22, §29.1, D-03). Présent avec `task`
    * sur une opération master : la gateway charge alors le master
    * (`resolveMasterPrompt`) — texte de la version de configuration s'il y en
@@ -116,12 +73,6 @@ export interface AiOperationDefinition {
    * (T2, §24 : `{"mode":"ANSWER",…}`). Utilisé par la validation discriminée.
    */
   taskField?: 'task' | 'mode' | 'none';
-  /**
-   * Opération historique : master et TASK qui la remplacent (§22.3, « toutes
-   * celles d'un même traitement doivent référencer le même master prompt et
-   * un TASK explicite »). N'influence PAS l'exécution.
-   */
-  migratesTo?: MasterMigrationTarget;
   /**
    * Variables attendues par le prompt (emplacements `{{X}}`, hors TASK).
    * Facultatif ; déclaré, `prompts:check` vérifie la correspondance exacte
@@ -185,13 +136,6 @@ export const T2_MASTER_VARIABLES = [
   'INTENT', 'TODAY', 'RESOLVED_TARGETS', 'CONVERSATION', 'SOURCES',
   'FACT', 'CURRENT_VALUE', 'PROVENANCE_MODE', 'LOCATION', 'CONTENT',
 ] as const;
-
-/**
- * Variable de relais des prompts historiques (`legacy_*_v1.txt`), exemptée de
- * masquage — voir `unredactedVariables`. Même nom que
- * `gateway/legacy-prompt#LEGACY_PROMPT_VARIABLE`.
- */
-const LEGACY_RELAY_VARIABLES = ['LEGACY_PROMPT'] as const;
 
 /**
  * ⚠️ CDC Assistant V3.1 §15.10 — SÉPARATION DES FAMILLES DE TRAITEMENT
@@ -261,64 +205,16 @@ export const T5_MASTER_VARIABLES = ['CURRENT_MASTER_PROMPTS', 'INSTRUCTION'] as 
 
 export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // ── Usage 1 — Analyse unifiée des sources (CDC §4.1.4) ────────────────────
-  group_sources: {
-    operationCode: 'group_sources', useCaseCode: 'SOURCE_ANALYSIS',
-    migratesTo: { masterPromptCode: T1_MASTER, task: 'GROUP_UPLOAD', operationCode: 't1_group_upload' },
-    label: 'Regroupement de fichiers en un même document',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'group_sources_v2', timeoutMs: 45_000,
-    outputSchema: 'GroupSourcesOutput', active: true, billable: false,
-  },
-  extract_source: {
-    operationCode: 'extract_source', useCaseCode: 'SOURCE_ANALYSIS',
-    migratesTo: { masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', operationCode: 't1_analyze_document' },
-    label: 'Extraction structurée du contenu avec preuves',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: EXTRACT_SOURCE_PROMPT_VERSION, timeoutMs: 90_000,
-    outputSchema: 'ExtractSourceOutput', active: true, billable: true,
-  },
-  classify_document: {
-    operationCode: 'classify_document', useCaseCode: 'SOURCE_ANALYSIS',
-    migratesTo: { masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', operationCode: 't1_analyze_document' },
-    label: 'Classification documentaire',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'classify_document_v2', timeoutMs: 30_000,
-    outputSchema: 'ClassifyDocumentOutput', active: true, billable: false,
-  },
-  classify_rubric: {
-    operationCode: 'classify_rubric', useCaseCode: 'SOURCE_ANALYSIS',
-    migratesTo: { masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', operationCode: 't1_analyze_document' },
-    label: 'Classement par Rubrique documentaire (CDC V2)',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'classify_rubric_v1', timeoutMs: 20_000,
-    // Non facturée, et sollicitée bien plus rarement que l’ancien classement par catégorie :
-    // le §2.2 rend la Rubrique déductible dès qu'un Type V2 est déterminé, ce
-    // qui écarte l'appel modèle pour la majorité des documents.
-    outputSchema: 'ClassifyRubricOutput', active: true, billable: false,
-  },
-  identify_entities: {
-    operationCode: 'identify_entities', useCaseCode: 'SOURCE_ANALYSIS',
-    migratesTo: { masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', operationCode: 't1_analyze_document' },
-    label: 'Identification des entités (biens, pièces, équipements, fournisseurs)',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'identify_entities_v2', timeoutMs: 45_000,
-    outputSchema: 'IdentifyEntitiesOutput', active: true, billable: false,
-  },
-  propose_links: {
-    operationCode: 'propose_links', useCaseCode: 'SOURCE_ANALYSIS',
-    migratesTo: { masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', operationCode: 't1_analyze_document' },
-    label: 'Proposition de rattachements',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'propose_links_v2', timeoutMs: 45_000,
-    outputSchema: 'ProposeLinksOutput', active: true, billable: false,
-  },
+  // Lot 16b-3 (retrait de l'ancien moteur) : les opérations d'étapes
+  // `group_sources`, `extract_source`, `classify_document`, `classify_rubric`,
+  // `identify_entities` et `propose_links` sont SUPPRIMÉES — le prompt maître
+  // T1 (`t1_group_upload`, `t1_analyze_document`) est le seul moteur.
 
   // ── T1 — prompt maître (CDC 15 §23, §29, D-03, D-04, D-06) ──────────────
   // Une seule consigne `t1_master_v1`, deux branches imposées par le
-  // serveur. Exécutées seulement quand la version de configuration bascule
-  // T1 en architecture `master` (`getPromptArchitecture('T1')`). Mêmes
-  // modèles que les étapes qu'elles remplacent ; déclarées APRÈS elles (le
-  // disjoncteur sonde la première opération active de l'usage).
+  // serveur ; toujours exécutées (lot 16b-3 : plus d'architecture `steps`
+  // pour T1). Le disjoncteur sonde la première opération active de l'usage :
+  // `t1_group_upload`, mêmes modèles que `t1_analyze_document`.
   t1_group_upload: {
     operationCode: 't1_group_upload', useCaseCode: 'SOURCE_ANALYSIS',
     label: 'T1 master — regroupement des fichiers déposés (TASK=GROUP_UPLOAD)',
@@ -357,28 +253,15 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     provider: 'none', primaryModel: 'none', fallbackModels: [],
     timeoutMs: 10_000, outputSchema: 'none', active: true, billable: false,
   },
-  resolve_ambiguity: {
-    operationCode: 'resolve_ambiguity', useCaseCode: 'DATA_RECONCILIATION',
-    migratesTo: { masterPromptCode: T3_MASTER, task: 'VALUE_CONFLICT', operationCode: 't3_value_conflict' },
-    label: 'Arbitrage IA ciblé sur un cas resté ambigu',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'resolve_ambiguity_v1', timeoutMs: 30_000,
-    outputSchema: 'ResolveAmbiguityOutput', active: true, billable: true,
-  },
-  reconcile_links: {
-    operationCode: 'reconcile_links', useCaseCode: 'DATA_RECONCILIATION',
-    migratesTo: { masterPromptCode: T3_MASTER, task: 'LINK_AMBIGUITY', operationCode: 't3_link_ambiguity' },
-    label: 'Réconciliation des liaisons équipements',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'reconcile_links_v1', timeoutMs: 30_000,
-    outputSchema: 'ReconcileLinksOutput', active: true, billable: false,
-  },
+  // Lot 16b-3 (retrait de l'ancien moteur) : `resolve_ambiguity` et
+  // `reconcile_links` sont SUPPRIMÉES — le prompt maître T3
+  // (`t3_value_conflict`, `t3_link_ambiguity`) est le seul moteur.
 
   // ── T3 — prompt maître (CDC 15 §25, T3-06, T3-07, D-03, D-04) ────────────
-  // Exécutées seulement quand la version de configuration bascule T3 en
-  // architecture `master` (`getPromptArchitecture('T3')`) ; pas de
-  // commutateur d'environnement propre (D-04). Mêmes modèles et même
-  // facturation que les étapes qu'elles remplacent ; déclarées APRÈS elles.
+  // Toujours exécutées (lot 16b-3 : plus d'architecture `steps` pour T3, ni
+  // de drapeau `AI_RECONCILIATION_ENGINE`). Mêmes modèles et même
+  // facturation que les étapes qu'elles ont remplacées. Le disjoncteur sonde
+  // la première opération active de l'usage : `t3_value_conflict`.
   t3_value_conflict: {
     operationCode: 't3_value_conflict', useCaseCode: 'DATA_RECONCILIATION',
     label: 'T3 master — arbitrage d’un conflit de valeur (TASK=VALUE_CONFLICT)',
@@ -540,61 +423,10 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     outputSchema: 'T6FormulateOutput', active: true, billable: false,
   },
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // MODULES HISTORIQUES MIGRÉS SUR LA PASSERELLE — plan de retrait WF-41 (E-05)
-  //
-  // Anciennement hors passerelle (`legacy-gemini-access`, supprimé) : chacun
-  // appelait le SDK avec ses propres modèles. Ils passent désormais par
-  // `AiGateway.execute` — trace d'exécution, coût et jetons, arrêt d'urgence et
-  // état du traitement, disjoncteur, clé du BO — avec les modèles de la version
-  // de configuration de LEUR traitement (T1 à T4).
-  //
-  // Prompt et contrat de sortie inchangés (`legacyPrompt`, `outputFormat:
-  // 'text'`) : le prompt est composé par le module à partir de son gabarit, la
-  // réponse brute lui est rendue et il l'analyse comme avant.
-  //
-  // Déclarées APRÈS les opérations nominales de chaque usage : le disjoncteur
-  // sonde les modèles de la PREMIÈRE opération active d'un usage.
-  // ══════════════════════════════════════════════════════════════════════════
-
-  // T1 — analyse documentaire historique (`gemini-client`, passes
-  // `extract_full` et `detect_groups`). Pas de délai dans l'ancien client :
-  // 5 min, la durée maximale d'attente d'une vidéo côté fournisseur.
-  legacy_document_analysis: {
-    operationCode: 'legacy_document_analysis', useCaseCode: 'SOURCE_ANALYSIS',
-    label: 'Analyse documentaire historique (passe unique, regroupement)',
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'legacy_document_analysis_v1', timeoutMs: 300_000,
-    outputSchema: 'LegacyRawText', outputFormat: 'text', jsonResponse: true, legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
-    active: true, billable: true,
-  },
-
-  // T3 — complétion des champs d'un bien et cohérence (usages historiques 3 à 5).
-  legacy_asset_suggest: {
-    operationCode: 'legacy_asset_suggest', useCaseCode: 'DATA_RECONCILIATION',
-    label: "Suggestions IA à la demande pour l'onglet Informations d'un bien",
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'legacy_asset_suggest_v1', timeoutMs: 120_000,
-    outputSchema: 'LegacyRawText', outputFormat: 'text', legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
-    active: true, billable: false,
-  },
-  legacy_apply_suggestions: {
-    operationCode: 'legacy_apply_suggestions', useCaseCode: 'DATA_RECONCILIATION',
-    label: "Complétion silencieuse des champs vides d'un bien",
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'legacy_apply_suggestions_v1', timeoutMs: 120_000,
-    outputSchema: 'LegacyRawText', outputFormat: 'text', jsonResponse: true, legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
-    active: true, billable: true,
-  },
-  legacy_enrich_coherence: {
-    operationCode: 'legacy_enrich_coherence', useCaseCode: 'DATA_RECONCILIATION',
-    label: "Enrichissement et contrôle de cohérence combinés d'un bien",
-    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
-    promptCode: 'legacy_enrich_coherence_v1', timeoutMs: 45_000,
-    outputSchema: 'LegacyRawText', outputFormat: 'text', jsonResponse: true, legacyPrompt: true, unredactedVariables: LEGACY_RELAY_VARIABLES,
-    active: true, billable: true,
-  },
-
+  // Lot 16b (retrait de l'ancien moteur) : les relais `legacy_*` des modules
+  // historiques (plan WF-41) sont tous SUPPRIMÉS — T1 au lot 16b-3a, T3
+  // (`legacy_asset_suggest`, `legacy_apply_suggestions`,
+  // `legacy_enrich_coherence`) au lot 16b-3b, avec la décision PO D-H1.
 };
 
 export type AiOperationCode = keyof typeof AI_OPERATIONS;
@@ -650,48 +482,19 @@ export function listMasterPrompts(): Array<{ masterPromptCode: string; useCaseCo
   return [...byCode.values()];
 }
 
-// ── Dépréciation (CDC 15 §29 étape 15, §32, D-02) ───────────────────────────
+// ── Architecture cible (CDC 15 §29 étape 15, §32, D-02 ; lot 16b) ──────────
 
 /**
- * Motif de dépréciation d'une opération — DÉDUIT du registre, jamais saisi
- * à la main (une seule source de vérité) :
- *   · `MIGRATED_TO_MASTER` : opération d'étape remplacée par une branche de
- *     master (`migratesTo`) ; conservée tant que le traitement peut tourner
- *     en `steps` (D-04) ;
- *   · `LEGACY_RELAY` : relais `legacy_*` des prompts historiques (WF-41),
- *     conservé pendant la transition (D-02) et retiré après bascule.
- * Rien n'est supprimé ici : la liste de retrait est produite par
- * `scripts/check-master-cutover.ts`, sur préconditions.
+ * Lot 16b : plus aucune opération dépréciée (étape historique ou relais
+ * legacy). Tout appel modèle passe par une opération MASTER, à la seule
+ * exception de l'évaluation d'une version candidate (`dynamicPrompt`), qui
+ * exécute le texte soumis. `ai:cutover-check` en fait un garde.
  */
-export type DeprecationReason = 'MIGRATED_TO_MASTER' | 'LEGACY_RELAY';
-
-export interface OperationDeprecation {
-  reason: DeprecationReason;
-  /** Opération master de remplacement, s'il y en a une. */
-  replacedBy: string | null;
-  masterPromptCode: string | null;
-  task: string | null;
+export function isTargetArchitectureOperation(op: AiOperationDefinition): boolean {
+  return op.provider === 'none' || isMasterOperation(op) || op.dynamicPrompt === true;
 }
 
-export function operationDeprecation(op: AiOperationDefinition): OperationDeprecation | null {
-  if (op.migratesTo) {
-    return {
-      reason: 'MIGRATED_TO_MASTER', replacedBy: op.migratesTo.operationCode,
-      masterPromptCode: op.migratesTo.masterPromptCode, task: op.migratesTo.task,
-    };
-  }
-  if (op.legacyPrompt) return { reason: 'LEGACY_RELAY', replacedBy: null, masterPromptCode: null, task: null };
-  return null;
-}
-
-export function isDeprecatedOperation(op: AiOperationDefinition): boolean {
-  return operationDeprecation(op) !== null;
-}
-
-/** Opérations dépréciées (actives ou non), dans l'ordre du registre. */
-export function listDeprecatedOperations(): Array<AiOperationDefinition & { deprecation: OperationDeprecation }> {
-  return Object.values(AI_OPERATIONS).flatMap((op) => {
-    const d = operationDeprecation(op);
-    return d ? [{ ...op, deprecation: d }] : [];
-  });
+/** Opérations ACTIVES hors architecture cible (doit rester vide). */
+export function listNonTargetOperations(): AiOperationDefinition[] {
+  return Object.values(AI_OPERATIONS).filter((op) => op.active && !isTargetArchitectureOperation(op));
 }

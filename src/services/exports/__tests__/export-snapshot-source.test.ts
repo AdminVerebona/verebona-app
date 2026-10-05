@@ -1,12 +1,13 @@
 /**
- * X-02 (arbitrage lot 16) — export brut, transmission et aperçu admin sous
- * `EXPORTS_CANONICAL_SOURCE` : snapshot canonique (champs, sections
- * détaillées, pièces), écarts sans valeur, et branchement des trois chemins.
+ * X-02 (arbitrage lot 16) — export brut, transmission et aperçu admin :
+ * snapshot canonique (champs, sections détaillées, pièces) et branchement des
+ * trois chemins. Lot 16b-3 : `EXPORTS_CANONICAL_SOURCE`, le mode observation
+ * et le calcul d'écarts supprimés — source canonique seule.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { canonicalAssetSnapshot, diffAssetSnapshots } from '../export-snapshot-source';
+import { canonicalAssetSnapshot } from '../export-snapshot-source';
 import { buildCanonicalAssetState, type AssetRowJson } from '@/services/canonical/asset-state';
 import type { AssetSnapshot, DocumentRef } from '@/services/export-snapshot.service';
 
@@ -43,19 +44,9 @@ describe('snapshot canonique des autres chemins d’export', () => {
     expect(c.detailSections.common?.acquisitionDate).toBe('2021-05-25');
     expect(c.documents.map((d) => d.id)).toEqual([1, 3]);
   });
-  it('écarts : noms et identifiants seulement, jamais une valeur', () => {
-    const r = row();
-    const c = canonicalAssetSnapshot(legacy(), r, buildCanonicalAssetState(r), [docRef(1), docRef(3)]);
-    const d = diffAssetSnapshots(legacy(), c, { 3: ['link:SECONDARY'] }, [3]);
-    expect(d.fields).toEqual(expect.arrayContaining(['asset.purchaseDate', 'asset.address', 'keyCharacteristics.address1', 'keyCharacteristics.adresse']));
-    expect(d.documents).toEqual({
-      onlyLegacy: [2], onlyCanonical: [{ id: 3, paths: ['link:SECONDARY'], confirmed: false }], addedInCanonical: { confirmed: 0, unconfirmed: 1 },
-    });
-    expect(JSON.stringify(d)).not.toMatch(/rue|2021-05-25|2019/);
-  });
 });
 
-describe('les trois chemins suivent EXPORTS_CANONICAL_SOURCE', () => {
+describe('les trois chemins lisent la source canonique (lot 16b-3)', () => {
   const lire = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
   it.each([
     ['src/app/api/assets/[id]/exports/route.ts', 'EXPORT_BRUT'],

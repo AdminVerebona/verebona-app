@@ -302,8 +302,6 @@ export interface WithdrawEvidenceInput {
   /** Restreint à ces champs (revalidation T2 : le champ revalidé seulement). */
   fieldKeys?: string[];
   reason: EvidenceWithdrawalReason;
-  /** `shadow` : lecture seule — ce qui SERAIT retiré ; `enabled` : écriture. */
-  mode: 'shadow' | 'enabled';
   /**
    * Statut cible : WITHDRAWN (retrait) par défaut ; SUPERSEDED pour une
    * revalidation T2 (une nouvelle preuve du même document remplace).
@@ -315,7 +313,7 @@ export interface WithdrawEvidenceResult {
   evidenceIds: number[];
   /** Biens porteurs des preuves retirées — à réconcilier (T3). */
   assetIds: number[];
-  /** Vrai si rien n'a été écrit (shadow, ou 0219 absente). */
+  /** Vrai si rien n'a été écrit (0219 absente). */
   dryRun: boolean;
 }
 
@@ -323,7 +321,8 @@ export interface WithdrawEvidenceResult {
  * Fait passer en WITHDRAWN (ou SUPERSEDED) les preuves ACTIVE d'une ou
  * plusieurs sources, avec la date (`superseded_at` : date de SORTIE de l'état
  * ACTIVE, quel que soit le statut suivant). Aucune ligne supprimée ; `status`
- * (décision T3) intact. `shadow` : SELECT seulement.
+ * (décision T3) intact. Lot 16b-3 : plus de mode observation
+ * (`T3_NEGATIVE_RECONCILIATION` supprimé) — le retrait est toujours écrit.
  *
  * Sans 0219 : rien n'est lu ni écrit (résultat vide, `dryRun`).
  */
@@ -349,22 +348,20 @@ export async function withdrawEvidence(p: WithdrawEvidenceInput): Promise<Withdr
   }
   const where = conds.join(' AND ');
 
-  const rows = (p.mode === 'shadow'
-    ? await pgClient.unsafe(`SELECT id, asset_id AS "assetId" FROM field_evidence WHERE ${where}`, params as never[])
-    : await pgClient.unsafe(
-      `UPDATE field_evidence SET lifecycle_status = '${p.lifecycle ?? 'WITHDRAWN'}', superseded_at = now()
-        WHERE ${where} RETURNING id, asset_id AS "assetId"`,
-      params as never[],
-    )) as unknown as Array<{ id: number; assetId: number }>;
+  const rows = (await pgClient.unsafe(
+    `UPDATE field_evidence SET lifecycle_status = '${p.lifecycle ?? 'WITHDRAWN'}', superseded_at = now()
+      WHERE ${where} RETURNING id, asset_id AS "assetId"`,
+    params as never[],
+  )) as unknown as Array<{ id: number; assetId: number }>;
 
   const out: WithdrawEvidenceResult = {
     evidenceIds: rows.map((r) => Number(r.id)),
     assetIds: [...new Set(rows.map((r) => Number(r.assetId)))],
-    dryRun: p.mode !== 'enabled',
+    dryRun: false,
   };
-  // Journal structuré (lu par l'exploitation, et seule trace en shadow).
+  // Journal structuré (lu par l'exploitation).
   console.info(JSON.stringify({
-    event: 't3.evidence_lifecycle', mode: p.mode, reason: p.reason, lifecycle: p.lifecycle ?? 'WITHDRAWN',
+    event: 't3.evidence_lifecycle', reason: p.reason, lifecycle: p.lifecycle ?? 'WITHDRAWN',
     accountId: p.accountId, sourceIds: p.sourceIds ?? null, assetId: p.assetId ?? null, fieldKeys: p.fieldKeys ?? null,
     evidenceIds: out.evidenceIds, assetIds: out.assetIds, dryRun: out.dryRun,
   }));
@@ -539,39 +536,14 @@ export async function listRetiredEvidenceValues(
 }
 
 /**
- * Mode shadow du remplacement en mode « étapes » (CDC 15 T3-03, lot 13) :
- * preuves ACTIVE d'une source, SANS analyse datée et hors `keepIds`, qui
- * SERAIENT remplacées — lecture seule, journalisée. Vide sans 0219.
- */
-export async function previewPriorSourceEvidence(p: {
-  accountId: number; sourceType: FieldEvidenceInput['sourceType']; sourceId: number; keepIds: number[];
-}): Promise<SupersedeBySourceResult> {
-  if (!(await fieldEvidenceCanonicalReady())) return { superseded: 0, linked: 0, assetIds: [] };
-  const rows = (await pgClient.unsafe(
-    `SELECT id, asset_id AS "assetId" FROM field_evidence
-      WHERE account_id = $1 AND source_type = $2 AND source_id = $3
-        AND (lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE')
-        AND analysis_run_id IS NULL AND NOT (id = ANY($4::int[]))`,
-    [p.accountId, p.sourceType, p.sourceId, p.keepIds] as never[],
-  )) as unknown as Array<{ id: number; assetId: number }>;
-  const out = { superseded: rows.length, linked: 0, assetIds: [...new Set(rows.map((r) => Number(r.assetId)))] };
-  console.info(JSON.stringify({
-    event: 't3.evidence_lifecycle', mode: 'shadow', reason: 'SOURCE_REANALYZED', lifecycle: 'SUPERSEDED',
-    accountId: p.accountId, sourceIds: [p.sourceId], evidenceIds: rows.map((r) => Number(r.id)), assetIds: out.assetIds, dryRun: true,
-  }));
-  return out;
-}
-
-/**
  * Revalidation T2 (T2-29, relecture lot 13) : les preuves ACTIVE d'un champ,
  * pour un document et un bien, dont la valeur normalisée DIFFÈRE de
  * `keepValue` passent SUPERSEDED, reliées à la preuve de la valeur
  * revalidée — SEULEMENT si cette remplaçante existe (sinon rien : la
- * projection n'a pas abouti). `shadow` : lecture et journal seulement.
+ * projection n'a pas abouti).
  */
 export async function supersedeFieldEvidenceExcept(p: {
   accountId: number; sourceId: number; assetId: number; fieldKeys: string[]; keepValue: unknown;
-  mode: 'shadow' | 'enabled';
 }): Promise<{ superseded: number; replacementId: number | null }> {
   if (!(await fieldEvidenceCanonicalReady())) return { superseded: 0, replacementId: null };
   const { normalize } = await import('../reconciliation/decision/normalizers');
@@ -589,11 +561,11 @@ export async function supersedeFieldEvidenceExcept(p: {
   if (!remplacante) return { superseded: 0, replacementId: null };
   const anciennes = rows.filter((r) => r.id !== remplacante.id && normalize(cle, r.value) !== cible).map((r) => Number(r.id));
   console.info(JSON.stringify({
-    event: 't3.evidence_lifecycle', mode: p.mode, reason: 'FACT_REVALIDATED', lifecycle: 'SUPERSEDED',
+    event: 't3.evidence_lifecycle', reason: 'FACT_REVALIDATED', lifecycle: 'SUPERSEDED',
     accountId: p.accountId, sourceIds: [p.sourceId], assetId: p.assetId, fieldKeys: p.fieldKeys,
-    evidenceIds: anciennes, replacementId: Number(remplacante.id), dryRun: p.mode !== 'enabled',
+    evidenceIds: anciennes, replacementId: Number(remplacante.id),
   }));
-  if (p.mode !== 'enabled' || anciennes.length === 0) return { superseded: 0, replacementId: Number(remplacante.id) };
+  if (anciennes.length === 0) return { superseded: 0, replacementId: Number(remplacante.id) };
   const upd = (await pgClient.unsafe(
     `UPDATE field_evidence SET lifecycle_status = 'SUPERSEDED', superseded_at = now(), superseded_by_evidence_id = $3
       WHERE account_id = $1 AND id = ANY($2::int[]) AND (lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE')

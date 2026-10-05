@@ -182,7 +182,7 @@ export function registerAgendaHandlers(loadExisting: LoadExisting, persist: Pers
   // Sans drapeau (lot 16b-2) : l'agenda T4 suit toujours l'analyse. Une
   // réanalyse sans candidat est mise en file (synchronisation de la source,
   // T4-08).
-  onSourceAnalyzed(null, async (e) => {
+  onSourceAnalyzed('agenda', async (e) => {
     if (!e.assetId) return;
     // Complétude de l'analyse (T4-08) : portée jusqu'à la persistance.
     const { analysisCompleteness } = await import('@/services/agenda/analysis-completeness');

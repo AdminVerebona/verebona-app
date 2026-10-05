@@ -16,7 +16,7 @@
  *
  * Lecteurs : l'assistant (lot 15, lecture canonique) et les
  * exports — dossiers V12, export brut, transmission, aperçu admin (lot 16,
- * `EXPORTS_CANONICAL_SOURCE` en shadow / enabled) — par `listAssetDocuments`
+ * source canonique) — par `listAssetDocuments`
  * (liens ACTIFS seulement ; PROPOSED, REJECTED et REMOVED exclus).
  */
 import { db } from '@/db';

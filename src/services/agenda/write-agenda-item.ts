@@ -14,21 +14,20 @@
  *      service unique `agenda-source-links`) ;
  *   4. après validation : recopie « achat » (D-13) — seulement pour un
  *      événement MANUEL réalisé, d'achat, sur un champ vide, par
- *      `writeCanonicalAssetField` (origine USER) quand
- *      CANONICAL_WRITE_MODE=enabled — et notification (jamais pour un
- *      élément HISTORICAL, D-14).
+ *      `writeCanonicalAssetField` (origine USER) — et notification (jamais
+ *      pour un élément HISTORICAL, D-14).
  *
  * Lot 16b-2 : commutateur AI_T4_EFFECTS retiré, comportement = ancien
- * `enabled` (les écritures historiques legacy / shadow n'existent plus).
+ * `enabled` (les écritures historiques legacy / shadow n'existent plus) ;
+ * lot 16b-3 : CANONICAL_WRITE_MODE retiré de même.
  */
 import { db } from '@/db';
 import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
-  assetFiles, substructures, equipments, assets,
+  assetFiles, substructures, equipments,
 } from '@/db/schema';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { validateTemporalConstraints, validateLinkCoherence, type ResolvedLink } from './AgendaDomainService';
-import { canonicalWriteMode } from '@/services/canonical/rollout';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { recordAgendaItemSources, type AgendaSourceRef } from './agenda-source-links';
 import { resolveEventSemantics, type AgendaEventNature } from './agenda-functional-key';
@@ -302,8 +301,7 @@ const estAchat = (title: string, businessType: string | null) =>
  *   d'acquisition relève de T3, pas de l'agenda) ; pour un événement MANUEL
  *   réalisé (statut « réalisé », ou date passée sans statut), d'achat, et
  *   seulement si le champ est vide — par `writeCanonicalAssetField`
- *   (`acquisitionDate`, origine USER, valeur attendue vide) quand
- *   CANONICAL_WRITE_MODE=enabled, sinon par la recopie historique.
+ *   (`acquisitionDate`, origine USER, valeur attendue vide).
  */
 export async function syncPurchaseDate(p: {
   itemId: number;
@@ -322,19 +320,14 @@ export async function syncPurchaseDate(p: {
     .from(agendaAssetLinks).where(eq(agendaAssetLinks.agendaItemId, p.itemId));
 
   if (!purchaseSyncAllowed(item, p.businessType ?? null)) return;
+  const { writeCanonicalAssetField } = await import('@/services/canonical/asset-state');
   for (const { assetId } of links) {
-    if (canonicalWriteMode() === 'enabled') {
-      const { writeCanonicalAssetField } = await import('@/services/canonical/asset-state');
-      // Valeur attendue vide : si une date d'acquisition existe (fiche,
-      // colonne ou alias), rien n'est écrit (conflit optimiste).
-      await writeCanonicalAssetField({
-        assetId, accountId: p.accountId, key: 'acquisitionDate', value: item.startDate, origin: 'USER',
-        expectedCurrent: null, actorUserId: p.actorUserId, source: { type: 'agenda_item', id: p.itemId }, mode: 'enabled',
-      }).catch((e: Error) => console.error('[agenda] recopie « achat » :', e.message));
-    } else {
-      await db.update(assets).set({ purchaseDate: item.startDate })
-        .where(and(eq(assets.id, assetId), eq(assets.accountId, p.accountId), isNull(assets.purchaseDate)));
-    }
+    // Valeur attendue vide : si une date d'acquisition existe (fiche,
+    // colonne ou alias), rien n'est écrit (conflit optimiste).
+    await writeCanonicalAssetField({
+      assetId, accountId: p.accountId, key: 'acquisitionDate', value: item.startDate, origin: 'USER',
+      expectedCurrent: null, actorUserId: p.actorUserId, source: { type: 'agenda_item', id: p.itemId },
+    }).catch((e: Error) => console.error('[agenda] recopie « achat » :', e.message));
   }
 }
 

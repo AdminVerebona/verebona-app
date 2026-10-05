@@ -8,12 +8,12 @@
  * lieu.
  *
  * La règle testée ici : le blocage porte sur le périmètre RÉELLEMENT actif,
- * jamais sur le référentiel complet.
+ * jamais sur le référentiel complet. Lot 16b : plus aucun drapeau — tous les
+ * usages tournent, leur périmètre est le référentiel entier.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { AI_FLAGS } from '../../flags/ai-feature-flags';
 import { listLlmOperations } from '../../registry/operations';
-import type { AiUseCaseCode } from '../../registry/use-cases';
+import { AI_USE_CASE_CODES, type AiUseCaseCode } from '../../registry/use-cases';
 import {
   assertPricingReady, getPricingReadiness, listModelsWithoutPricing,
 } from '../cost-catalog';
@@ -36,17 +36,10 @@ function pricesFor(useCaseCode: AiUseCaseCode): CachedPrice[] {
   return [...seen.values()];
 }
 
-/**
- * Lot 16b : T5 (gouvernance) et T6 (mascotte) n'ont plus de drapeau — leur
- * nouveau moteur tourne toujours, leurs tarifs sont donc toujours exigés.
- */
-/** Usages sans drapeau, toujours actifs (lot 16b) : T2, T4, T5, T6. */
-const SANS_DRAPEAU = ['INTELLIGENT_ASSISTANT', 'AGENDA_INTELLIGENCE', 'AI_GOVERNANCE', 'HOME_MASCOT'] as const;
-const sansDrapeau = (): CachedPrice[] => SANS_DRAPEAU.flatMap((u) => pricesFor(u));
+const tous = (): CachedPrice[] => AI_USE_CASE_CODES.flatMap((u) => pricesFor(u));
 
 beforeEach(() => {
   clearPricingCache();
-  for (const f of AI_FLAGS) delete process.env[f];
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -57,67 +50,38 @@ afterEach(() => {
   clearPricingCache();
 });
 
-describe('périmètre du contrôle tarifaire', () => {
-  it('ne bloque pas quand aucun usage à drapeau n\'est basculé, même en production', async () => {
+describe('périmètre du contrôle tarifaire (lot 16b : tous les usages)', () => {
+  it('tous les usages du référentiel sont actifs, sans drapeau', () => {
+    primePricingCache([]);
+    expect(getPricingReadiness().runningUseCases).toEqual([...AI_USE_CASE_CODES]);
+  });
+
+  it('laisse démarrer en production quand tous les tarifs sont connus', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    primePricingCache(sansDrapeau()); // seuls les tarifs de T2, T4, T5, T6, toujours actifs
-
-    await expect(assertPricingReady()).resolves.toBeUndefined();
-
+    primePricingCache(tous());
     const state = getPricingReadiness();
-    expect(state.runningUseCases).toEqual([...SANS_DRAPEAU]);
+    expect(state.missingForRunning).toEqual([]);
     expect(state.blocking).toBe(false);
+    expect(listModelsWithoutPricing()).toEqual([]);
+    await expect(assertPricingReady()).resolves.toBeUndefined();
   });
 
-  it('ignore les usages non basculés dans le périmètre restreint', () => {
-    primePricingCache(sansDrapeau());
-    expect(listModelsWithoutPricing({ runningOnly: true })).toEqual([]);
-    // Sans aucun tarif, le référentiel complet est signalé incomplet.
-    clearPricingCache();
-    primePricingCache([]);
-    expect(listModelsWithoutPricing()).not.toEqual([]);
-  });
-
-  it('bloque en production dès qu\'un usage basculé manque de tarif', async () => {
+  it('bloque en production dès qu’un modèle d’un usage manque de tarif — y compris la réconciliation (T3)', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
-    primePricingCache([]);
-
+    // Le modèle principal de T3 (partagé avec T1 et T4) sans tarif.
+    const t3 = listLlmOperations().find((o) => o.operationCode === 't3_value_conflict')!.primaryModel;
+    primePricingCache(tous().filter((p) => p.model !== t3));
     expect(getPricingReadiness().blocking).toBe(true);
     await expect(assertPricingReady()).rejects.toThrow(/sans tarif sur un usage actif/);
-  });
-
-  it('bloque aussi en mode observation — le shadow consomme des appels', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    process.env.AI_RECONCILIATION_ENGINE = 'shadow';
-    primePricingCache([]);
-
-    await expect(assertPricingReady()).rejects.toThrow(/DATA_RECONCILIATION/);
-  });
-
-  it('lot 16b : T2, T4, T5 et T6, sans drapeau, sont toujours dans le périmètre', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    primePricingCache([]);
-    expect(getPricingReadiness().runningUseCases).toEqual([...SANS_DRAPEAU]);
-    await expect(assertPricingReady()).rejects.toThrow(/sans tarif sur un usage actif/);
+    // Un drapeau retiré encore posé ne retire rien du périmètre.
+    process.env.AI_RECONCILIATION_ENGINE = 'legacy';
+    expect(getPricingReadiness().blocking).toBe(true);
+    delete process.env.AI_RECONCILIATION_ENGINE;
   });
 
   it('ne bloque jamais hors production', async () => {
     vi.stubEnv('NODE_ENV', 'development');
-    process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
     primePricingCache([]);
-
-    await expect(assertPricingReady()).resolves.toBeUndefined();
-  });
-
-  it('laisse démarrer quand les tarifs de l\'usage basculé sont connus', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    process.env.AI_UNIFIED_SOURCE_ANALYSIS = 'enabled';
-    primePricingCache([...pricesFor('SOURCE_ANALYSIS'), ...sansDrapeau()]);
-
-    const state = getPricingReadiness();
-    expect(state.missingForRunning).toEqual([]);
-    expect(state.blocking).toBe(false);
     await expect(assertPricingReady()).resolves.toBeUndefined();
   });
 });

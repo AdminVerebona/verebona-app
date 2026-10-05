@@ -141,7 +141,9 @@ async function t5Variables(c: MasterCorpusCase): Promise<Vars | null> {
   const version = {
     entries: T5_TARGETS.map((t) => ({
       ...emptyTreatmentConfig(t), prompt: `Préambule ${t} (corpus).`,
-      promptArchitecture: (x.masterTargets ?? []).includes(t) ? 'master' as const : 'steps' as const,
+      // Lot 16b : tous les traitements en master ; `masterTargets` du cas ne
+      // distingue plus que les lignes dont le texte master est exposé.
+      promptArchitecture: 'master' as const,
     })),
   } as never;
   return { CURRENT_MASTER_PROMPTS: formatCurrentPrompts(version, await targetTexts(version)), INSTRUCTION: x.instruction };

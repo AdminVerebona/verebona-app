@@ -25,8 +25,7 @@
  *     déclencheur `source_analyzed` ;
  *   · équipement / pièce (`target_type = 'equipment' | 'room'`, lot 18) :
  *     valeurs lues pour la cible appliquées à SA fiche (`reconcileEntity`),
- *     même déclencheur — mis en file seulement si CANONICAL_WRITE_MODE ou
- *     T3_NEGATIVE_RECONCILIATION n'est pas `legacy` ;
+ *     même déclencheur ;
  *   · compte (`account_id`, sans cible) : contrôle global du compte, sur
  *     événement à impact de cohérence (temporisé et fusionné), planification
  *     ou lancement manuel ;
@@ -174,8 +173,7 @@ export async function enqueueT3ForAssets(
 /**
  * Réconciliation ciblée d'équipements ou de pièces (lot 18, R3) : après
  * l'analyse d'un document qui a écrit des preuves sur ces cibles, ou après
- * le retrait de leurs preuves (cycle de vie T3-03). Rien — et AUCUNE requête
- * — tant que CANONICAL_WRITE_MODE et T3_NEGATIVE_RECONCILIATION sont `legacy`.
+ * le retrait de leurs preuves (cycle de vie T3-03).
  */
 export async function enqueueT3ForEntities(
   input: {
@@ -184,8 +182,6 @@ export async function enqueueT3ForEntities(
   },
   deps?: T3QueueDeps,
 ): Promise<number[]> {
-  const { canonicalWriteMode, t3NegativeMode } = await import('@/services/canonical/rollout');
-  if (canonicalWriteMode() === 'legacy' && t3NegativeMode() === 'legacy') return [];
   const vus = new Set<string>();
   const cibles = input.targets.filter((t) => {
     const k = `${t.type}:${t.id}`;

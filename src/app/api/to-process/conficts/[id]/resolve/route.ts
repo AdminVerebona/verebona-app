@@ -114,8 +114,9 @@ export async function POST(
  * CDC 15 T3-02 (lot 13) :
  *   · `<champ>__updatedAt` est posé (la matrice compare des dates), et
  *     l'autorité de la preuve précédente retirée ;
- *   · `CANONICAL_WRITE_MODE=enabled` et clé du registre : écriture par
- *     `writeCanonicalAssetField` (origine USER, colonnes miroirs, journal) ;
+ *   · clé du registre : écriture par `writeCanonicalAssetField` (origine
+ *     USER, colonnes miroirs, journal) — toujours depuis le lot 16b-3 ;
+ *     clé hors registre : keyCharacteristics ;
  *   · correction d'un défaut : `key_characteristics` est une colonne TEXT —
  *     l'ancienne requête combinait TEXT et JSONB (`COALESCE(text, jsonb)`) et
  *     échouait ; la conversion est désormais explicite.
@@ -127,13 +128,12 @@ async function applyUserDecision(
   value: string | null,
   userId: number,
 ): Promise<void> {
-  const { canonicalWriteMode } = await import('@/services/canonical/rollout');
   const { isRegistryKey } = await import('@/services/ai/reconciliation/apply-decision');
-  if (canonicalWriteMode() === 'enabled' && isRegistryKey(fieldKey)) {
+  if (isRegistryKey(fieldKey)) {
     const { writeCanonicalAssetField } = await import('@/services/canonical/asset-state');
     await writeCanonicalAssetField({
       assetId, accountId, key: fieldKey, value, origin: 'USER', actorUserId: userId,
-      source: { type: 'to_process_conflict', id: null }, mode: 'enabled',
+      source: { type: 'to_process_conflict', id: null },
     });
     return;
   }

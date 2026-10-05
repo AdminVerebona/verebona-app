@@ -9,16 +9,14 @@
  * alertes de cohérence levées, historique de valorisation, recontrôle T3.
  *
  * CDC 15 (lot 11, T3-01, T3-02, T3-05, T2-38) — FAÇADE de
- * `writeCanonicalAssetField`, selon `CANONICAL_WRITE_MODE` :
- *   legacy   chemin historique inchangé ;
- *   shadow   chemin historique, puis observation : la primitive calcule ce
- *            qu'elle aurait écrit et journalise l'écart (`dry_run`) ;
- *   enabled  les champs canoniques passent par la primitive (origine USER ou
- *            ADMIN, `__updatedAt`, colonnes miroirs, journal), dans la même
- *            transaction et sous le même verrou que le reste de la section
- *            (nom, statut, catégorie, alertes, historique de valorisation).
+ * `writeCanonicalAssetField` : les champs canoniques passent par la primitive
+ * (origine USER ou ADMIN, `__updatedAt`, colonnes miroirs, journal), dans la
+ * même transaction et sous le même verrou que le reste de la section (nom,
+ * statut, catégorie, alertes, historique de valorisation). Lot 16b-3 :
+ * commutateur `CANONICAL_WRITE_MODE` et chemins historique / observation
+ * supprimés (comportement de l'ancien `enabled`).
  */
-import { db, pgClient } from '@/db';
+import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
@@ -26,10 +24,9 @@ import { validateDetailChanges, type DetailFieldError } from '@/lib/asset-detail
 import { assetModificationDecision } from '@/lib/asset-quota-guard';
 import { writeOrigin } from '@/services/ai/reconciliation/field-origin';
 import { isExcludedKey, toAssetFamily, type AssetFamily } from '@/services/canonical/registry';
-import { canonicalWriteMode } from '@/services/canonical/rollout';
 import {
-  loadAssetRow, observeLegacyWrite, resolveDefForFamily, sameCanonicalValue, writeCanonicalAssetFields,
-  type AssetRowJson, type CanonicalFieldWrite, type CanonicalWriteSource, type SqlRunner,
+  resolveDefForFamily, writeCanonicalAssetFields,
+  type CanonicalFieldWrite, type CanonicalWriteSource,
 } from '@/services/canonical/asset-state';
 
 export const ALL_DETAIL_SECTIONS = [
@@ -200,66 +197,8 @@ function applyEditSideEffects(kc: Record<string, unknown>, fields: Record<string
   }
 }
 
-/**
- * Clés dont la valeur change RÉELLEMENT (relecture lot 13) : le client
- * renvoie la section entière, et une valeur identique (même normalisation que
- * `sameCanonicalValue` pour une clé du registre, texte sinon) ne doit pas
- * changer d'origine. Seules les clés modifiées deviennent USER/ADMIN.
- */
-export function changedFields(
-  fields: Record<string, unknown>,
-  before: Record<string, unknown>,
-  family: AssetFamily,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(fields)) {
-    const def = IDENTITY_KEYS.has(key) ? undefined : resolveDefForFamily(key, family);
-    const avant = before[key] !== undefined ? before[key] : (def && def.key !== key ? before[def.key] : undefined);
-    const identique = def && def.families.includes(family)
-      ? sameCanonicalValue(def.key, avant ?? null, value)
-      : texteDe(avant) === texteDe(value);
-    if (!identique) out[key] = value;
-  }
-  return out;
-}
-
 const texteDe = (v: unknown): string | null =>
   (v === null || v === undefined || v === '' ? null : typeof v === 'string' ? v : JSON.stringify(v));
-
-/**
- * Pose l'origine humaine et la date sur chaque clé de fiche écrite (T3-02).
- * Les colonnes d'identité (nom, statut, sous-catégorie) et les clés
- * techniques ne portent pas d'origine.
- */
-export function markHumanOrigins(
-  kc: Record<string, unknown>,
-  fields: Record<string, unknown>,
-  origin: AssetDetailsOrigin,
-  now: string = new Date().toISOString(),
-): void {
-  for (const key of Object.keys(fields)) {
-    if (IDENTITY_KEYS.has(key) || isExcludedKey(key) || key.includes('__') || /_origin$/.test(key)) continue;
-    const next = writeOrigin(kc, key, origin, { updatedAt: now });
-    for (const k of Object.keys(kc)) delete kc[k];
-    Object.assign(kc, next);
-  }
-}
-
-/** Délai maximal de la lecture préalable à l'observation (mode shadow). */
-const SHADOW_READ_TIMEOUT_MS = 250;
-
-/** Résultat de la promesse, ou null si elle échoue ou dépasse le délai. */
-async function avecDelai<T>(pr: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      pr.catch(() => null),
-      new Promise<null>((r) => { timer = setTimeout(() => r(null), ms); }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 /** Colonnes SQL des champs atomiques hors registre (ex. immatriculation d'un objet). */
 const ATOMIC_SQL_COLUMNS: Record<string, string> = {
@@ -302,96 +241,12 @@ export async function updateAssetDetails(p: UpdateAssetDetailsInput): Promise<{ 
     throw new AssetDetailsError('VALIDATION_ERROR', invalid.map((e) => e.message).join(' '), { fields: invalid });
   }
 
-  const mode = canonicalWriteMode();
   const family: AssetFamily = toAssetFamily(assetRow.category) ?? 'OBJECT';
   const origin: AssetDetailsOrigin = p.origin ?? 'USER';
   const source: CanonicalWriteSource = p.source ?? { type: 'asset_details', id: section };
 
-  if (mode === 'enabled') {
-    await writeSectionCanonical({ ...p, origin, source }, family);
-    await fermerCartesSaisies(accountId, assetId, canonicalWritesOf(fields, family));
-    await recontroleCoherence(accountId, assetId, fields);
-    return { updated: true, section };
-  }
-
-  // Mode shadow : état AVANT le chemin historique, pour l'observation.
-  // Lecture bornée : au-delà de SHADOW_READ_TIMEOUT_MS, pas d'observation.
-  let before: AssetRowJson | null = null;
-  if (mode === 'shadow') {
-    before = await avecDelai(loadAssetRow(pgClient as unknown as SqlRunner, assetId, accountId), SHADOW_READ_TIMEOUT_MS);
-  }
-
-  // Deep merge fields into kc
-  const atomicUpdates: Record<string, unknown> = {};
-  let nameUpdate: string | undefined;
-  let statusUpdate: string | undefined;
-  let subCategoryUpdate: string | null | undefined;
-
-  for (const [key, value] of Object.entries(fields)) {
-    if (key === 'name') {
-      nameUpdate = String(value).trim();
-    } else if (key === 'subCategory') {
-      subCategoryUpdate = value === '' || value === null ? null : normalizeAssetCategory(String(value));
-    } else if (key === 'status') {
-      if (typeof value === 'string' && VALID_STATUSES.includes(value)) {
-        statusUpdate = value;
-      }
-    } else if (key in ATOMIC_FIELDS) {
-      const colKey = ATOMIC_FIELDS[key];
-      atomicUpdates[colKey] = value;
-      kc[key] = value; // also keep in JSON for redundancy
-    } else {
-      kc[key] = value;
-    }
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
-  // CDC 15 T3-02 — ORIGINE HUMAINE AUSSI EN MODE LEGACY (changement de
-  // production assumé, lot 13) : toute clé écrite par la fiche, l'assistant
-  // ou l'administration pose `<clé>__origin` = USER/ADMIN et
-  // `<clé>__updatedAt`, et retire l'autorité de la preuve précédente. Sans
-  // cela, une valeur corrigée par l'utilisateur gardait l'origine
-  // RECONCILIATION de la valeur remplacée — et un nouveau document pouvait
-  // l'écraser. Protection pure : aucune valeur n'est modifiée.
-  // ══════════════════════════════════════════════════════════════════════
-  markHumanOrigins(kc, changedFields(fields, parseKeyCharacteristics(assetRow.keyCharacteristics), family), origin);
-  applyEditSideEffects(kc, fields, origin);
-
-  const updatePayload: Record<string, unknown> = {
-    keyCharacteristics: JSON.stringify(kc),
-    updatedAt: new Date(),
-  };
-  if (nameUpdate !== undefined) updatePayload.name = nameUpdate;
-  if (statusUpdate !== undefined) updatePayload.status = statusUpdate;
-  if (atomicUpdates.address !== undefined) updatePayload.address = atomicUpdates.address;
-  if (atomicUpdates.city !== undefined) updatePayload.city = atomicUpdates.city;
-  if (atomicUpdates.postalCode !== undefined) updatePayload.postalCode = atomicUpdates.postalCode;
-  if (atomicUpdates.registrationNumber !== undefined) updatePayload.registrationNumber = atomicUpdates.registrationNumber;
-  if (subCategoryUpdate !== undefined) updatePayload.subtype = subCategoryUpdate;
-
-  await db.update(assets)
-    .set(updatePayload as never)
-    .where(eq(assets.id, assetId));
-
-  // Mode shadow : ce que la primitive aurait écrit, et l'écart constaté —
-  // HORS du chemin de la requête (non attendu, ne lève jamais).
-  if (mode === 'shadow' && before) {
-    const avant = before;
-    void (async () => {
-      try {
-        const after = await loadAssetRow(pgClient as unknown as SqlRunner, assetId, accountId);
-        if (after) {
-          await observeLegacyWrite({
-            assetId, accountId, origin, actorUserId: p.actorUserId, source, traceId: p.traceId,
-            writes: canonicalWritesOf(fields, family), before: avant, after, keepRequestedKey: true,
-          });
-        }
-      } catch (e) {
-        console.warn('[asset-details][shadow] observation impossible (non bloquant) :', (e as Error).message);
-      }
-    })();
-  }
-
+  await writeSectionCanonical({ ...p, origin, source }, family);
+  await fermerCartesSaisies(accountId, assetId, canonicalWritesOf(fields, family));
   await recontroleCoherence(accountId, assetId, fields);
   return { updated: true, section };
 }
@@ -429,7 +284,7 @@ async function recontroleCoherence(accountId: number, assetId: number, fields: R
 }
 
 /**
- * Mode enabled : UNE transaction, ligne du bien verrouillée. Les champs
+ * UNE transaction, ligne du bien verrouillée. Les champs
  * canoniques passent par la primitive ; le reste de la section (nom,
  * statut, catégorie, clés hors registre, alertes levées, historique de
  * valorisation) est appliqué dans le même `UPDATE` par le hook.
@@ -446,7 +301,7 @@ async function writeSectionCanonical(
 
   const res = await writeCanonicalAssetFields({
     assetId, accountId, origin, actorUserId: p.actorUserId, source: p.source, traceId: p.traceId,
-    writes, mode: 'enabled', emitEvent: p.emitEvent ?? false,
+    writes, emitEvent: p.emitEvent ?? false,
   }, {
     keepRequestedKey: true,
     // Section entière : une valeur inchangée garde son origine (lot 13).

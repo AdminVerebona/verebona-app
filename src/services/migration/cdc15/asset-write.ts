@@ -33,7 +33,7 @@ export async function applyAssetPlan<E>(
 ): Promise<AssetPlan<E> | null> {
   let applied: AssetPlan<E> | null = null;
   const res = await writeCanonicalAssetFields(
-    { assetId: asset.id, accountId: asset.accountId, origin: 'SYSTEM_RULE', mode: 'enabled', emitEvent: false, writes: [], source: { type: 'migration' } },
+    { assetId: asset.id, accountId: asset.accountId, origin: 'SYSTEM_RULE', emitEvent: false, writes: [], source: { type: 'migration' } },
     {
       mutate: async ({ row, kc, tx }) => {
         const p = plan(row);

@@ -40,7 +40,8 @@ export const REASON_CODES = {
   NO_EVIDENCE: 'Aucune preuve exploitable',
   UNNORMALIZABLE_VALUE: 'Valeur non normalisable, ignorée',
   ALREADY_DECIDED: 'Décision identique déjà prise sur cette version',
-  // Observation (T3_NEGATIVE_RECONCILIATION=shadow) : rien n'est écrit.
+  // Historique : observation de la réconciliation négative (mode retiré au
+  // lot 16b-3) — libellés conservés pour relire les décisions déjà en base.
   SHADOW_WOULD_RETRACT: 'Observation : cette valeur automatique serait retirée',
   SHADOW_WOULD_REPLACE_STALE: 'Observation : cette valeur automatique serait remplacée',
 } as const;

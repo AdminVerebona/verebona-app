@@ -5,7 +5,7 @@
  * Règle CDC §4.1.7 : les fichiers temporaires côté fournisseur sont supprimés
  * après usage, y compris en cas d'échec.
  */
-import type { Part } from '@google/generative-ai';
+import type { Part } from '@google/genai';
 import type { AiAttachment } from '../types';
 
 const FILES_API = 'https://generativelanguage.googleapis.com/upload/v1beta/files';

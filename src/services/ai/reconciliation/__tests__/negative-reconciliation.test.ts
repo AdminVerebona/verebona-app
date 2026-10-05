@@ -45,10 +45,10 @@ describe('planRetractions', () => {
     expect(planRetractions(kc, [], [r('acquisitionPrice', 749)]).map((x) => x.fieldKey)).toEqual(['prixAchat']);
   });
 
-  it('décision enregistrée : update vers vide (enabled) ou keep motivé (shadow)', () => {
+  it('décision enregistrée : update vers vide (plus de mode observation, lot 16b-3)', () => {
     const c = { fieldKey: 'mileage', currentValue: 1000, origin: 'DOCUMENT_EXTRACTION' as const };
-    expect(retractionDecision(c, false)).toMatchObject({ action: 'update', proposedValue: null, reasonCode: NEGATIVE_REASON.RETRACT });
-    expect(retractionDecision(c, true)).toMatchObject({ action: 'keep', proposedValue: 1000, reasonCode: NEGATIVE_REASON.SHADOW_RETRACT });
+    expect(retractionDecision(c)).toMatchObject({ action: 'update', proposedValue: null, reasonCode: NEGATIVE_REASON.RETRACT });
+    expect(NEGATIVE_REASON).not.toHaveProperty('SHADOW_RETRACT');
   });
 });
 

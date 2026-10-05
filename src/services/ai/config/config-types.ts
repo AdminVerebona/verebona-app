@@ -5,7 +5,7 @@
  * arrêtés dans « BO IA — champs administrables par traitement » ; tout ce qui
  * n'y figure pas reste dans le code, et le §2.1 dit pourquoi pour chacun.
  */
-import { isPromptAdministrable, isMasterOnlyTreatment, type Treatment } from './treatments';
+import { isPromptAdministrable, type Treatment } from './treatments';
 import type { AiEnvironment } from './environment';
 import type { ConfigVersionStatus } from './version-state-machine';
 
@@ -71,43 +71,38 @@ export interface CascadeThresholds {
 /**
  * Architecture des prompts d'un traitement — CDC 15 §29 étape 14, §29.1, D-04.
  *
- *   · `steps`  (défaut) : étapes historiques, un prompt technique du dépôt par
- *     opération, précédé du préambule administrable (`prompt`) ;
  *   · `master` : prompt maître unique, branches TASK imposées par le serveur,
  *     texte dans `masterPrompt` (D-03) ; vide, le fichier `tN_master_vK.txt`
- *     du dépôt s'applique (valeur initiale).
- *
- * `prompt` (préambule) et `masterPrompt` sont deux champs DISTINCTS : le
- * préambule continue de servir aux étapes quelle que soit l'architecture —
- * une version `master` activée alors que le commutateur de déploiement n'est
- * pas `enabled` laisse les étapes tourner avec leur préambule intact.
- *
- * La bascule se fait par version de configuration (TO_TEST en préproduction,
- * ACTIVE en production après validation), jamais en éditant une Active.
+ *     du dépôt s'applique (valeur initiale) ;
+ *   · `steps` : étapes historiques — RETIRÉES pour tous les traitements au
+ *     lot 16b (migrations 0231 à 0234). La valeur n'existe plus que comme
+ *     donnée héritée (colonne `prompt_architecture`, package ancien, client
+ *     ancien) : elle est refusée à l'enregistrement et à la promotion,
+ *     ramenée à `master` à l'import, et AUCUNE lecture n'en dépend
+ *     (`promptArchitectureOf` rend toujours `master`).
  */
 export const PROMPT_ARCHITECTURES = ['steps', 'master'] as const;
 export type PromptArchitecture = (typeof PROMPT_ARCHITECTURES)[number];
-export const DEFAULT_PROMPT_ARCHITECTURE: PromptArchitecture = 'steps';
+export const DEFAULT_PROMPT_ARCHITECTURE: PromptArchitecture = 'master';
 
 export function isPromptArchitecture(v: unknown): v is PromptArchitecture {
   return typeof v === 'string' && (PROMPT_ARCHITECTURES as readonly string[]).includes(v);
 }
 
-/** Architecture par défaut d'un traitement : `master` pour T2, T4, T5 et T6 (lot 16b), `steps` sinon. */
-export function defaultPromptArchitectureFor(treatment: Treatment): PromptArchitecture {
-  return isMasterOnlyTreatment(treatment) ? 'master' : DEFAULT_PROMPT_ARCHITECTURE;
+/** Architecture par défaut d'un traitement : `master` pour tous (lot 16b). */
+export function defaultPromptArchitectureFor(_treatment: Treatment): PromptArchitecture {
+  return DEFAULT_PROMPT_ARCHITECTURE;
 }
 
 /**
- * Architecture effective d'une entrée : absente ou illisible ⇒ `steps`.
- * T2, T4, T5 et T6 (traitement connu de l'entrée) : TOUJOURS `master`, quelle que
- * soit la valeur stockée — leur architecture `steps` est retirée (lot 16b).
+ * Architecture effective d'une entrée : TOUJOURS `master`, quelle que soit la
+ * valeur stockée — l'architecture `steps` est retirée pour tous les
+ * traitements (lot 16b). Signature conservée pour les appelants.
  */
 export function promptArchitectureOf(
-  c: (Pick<TreatmentConfig, 'promptArchitecture'> & { treatment?: Treatment }) | null | undefined,
+  _c?: (Pick<TreatmentConfig, 'promptArchitecture'> & { treatment?: Treatment }) | null,
 ): PromptArchitecture {
-  if (c?.treatment && isMasterOnlyTreatment(c.treatment)) return 'master';
-  return isPromptArchitecture(c?.promptArchitecture) ? c.promptArchitecture : DEFAULT_PROMPT_ARCHITECTURE;
+  return 'master';
 }
 
 /** Configuration d'un traitement au sein d'une version. */
@@ -132,14 +127,14 @@ export interface TreatmentConfig {
   /** T2 uniquement. `null` = non configuré, le code décide (§11.2). */
   cascade: CascadeThresholds | null;
   /**
-   * CDC 15 D-04 : architecture des prompts du traitement. Absent ⇒ `steps`
-   * (versions antérieures au lot 12). Lire par `promptArchitectureOf`.
+   * CDC 15 D-04 : architecture des prompts du traitement — valeur DEMANDÉE ou
+   * stockée (héritage). Toujours lue par `promptArchitectureOf` (= `master`).
    */
   promptArchitecture?: PromptArchitecture;
   /**
    * CDC 15 D-03 : texte COMPLET du prompt maître du traitement (colonne
-   * `master_prompt`, 0220). `null`/vide : fichier du dépôt. Lu par les seules
-   * opérations master, et seulement en architecture `master`. Toujours `null`
+   * `master_prompt`, 0220). `null`/vide : fichier du dépôt. Lu par les
+   * opérations master. Toujours `null`
    * pour T5 (non administrable) et pour un traitement sans master.
    */
   masterPrompt?: string | null;

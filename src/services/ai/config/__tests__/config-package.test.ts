@@ -24,8 +24,9 @@ const getVersion = vi.fn();
 const getActiveVersion = vi.fn(async () => null);
 let colonne0220 = true;
 const promptArchitectureInsert = vi.fn(async (arch: unknown, masterPrompt: unknown, _sql?: unknown, treatment?: unknown) => {
-  // Lot 16b : `master` est l'architecture par défaut de T2, T4, T5, T6 (relue sans colonne).
-  const parDefaut = ['T2', 'T4', 'T5', 'T6'].includes(String(treatment)) ? 'master' : 'steps';
+  // Lot 16b : `master` est l'architecture par défaut de tous (relue sans colonne).
+  void treatment;
+  const parDefaut = 'master';
   if (!colonne0220 && (arch !== parDefaut || masterPrompt !== null)) throw new Error('migration 0220 non appliquée');
   return { column: colonne0220 };
 });
@@ -119,11 +120,11 @@ describe('importPackage', () => {
     // Aucune écriture hors transaction.
     expect(unsafe).not.toHaveBeenCalled();
     // CDC 15 D-04 (0220) : l'architecture de chaque ligne est écrite dans le
-    // même INSERT (package sans champ ⇒ `steps` ; T2, T4, T5, T6 : toujours
-    // `master`, lot 16b — un package ancien est ramené au master, jamais refusé).
+    // même INSERT — toujours `master` depuis le lot 16b (un package ancien,
+    // sans le champ ou en `steps`, est ramené au master, jamais refusé).
     for (const l of lignes) {
       expect(l.sql).toMatch(/prompt_architecture, master_prompt/);
-      expect(l.params[14]).toBe(['T2', 'T4', 'T5', 'T6'].includes(String(l.params[1])) ? 'master' : 'steps');
+      expect(l.params[14]).toBe('master');
       expect(l.params[15]).toBeNull();
     }
   });
@@ -144,7 +145,7 @@ describe('importPackage', () => {
     expect(t1.params[15]).toBe('MASTER T1');
   });
 
-  it('migration 0220 absente : lignes steps sans la colonne, master refusé', async () => {
+  it('migration 0220 absente : lignes sans la colonne (master par défaut), texte master refusé', async () => {
     env = 'production';
     colonne0220 = false;
     try {
@@ -157,8 +158,10 @@ describe('importPackage', () => {
       }
       txQueries.length = 0;
       txAnswers = [[], [], [{ id: 45 }]];
+      // Lot 16b : `master` est la valeur relue sans colonne ; seul un TEXTE
+      // master ne peut pas être conservé.
       const avecMaster = buildPayload('preprod', 4, 'Printemps', entries.map((e) =>
-        e.treatment === 'T1' ? { ...e, promptArchitecture: 'master' as const } : e));
+        e.treatment === 'T3' ? { ...e, masterPrompt: 'MASTER T3' } : e));
       await expect(importPackage(avecMaster, PKG_ROW.uid, 1)).rejects.toThrow(/0220/);
     } finally {
       colonne0220 = true;

@@ -6,8 +6,8 @@
  * (migration 0228) et relu à la reprise d'un fil. Sans cela, la chronologie
  * redevenait du texte au rechargement.
  *
- *   · aucun commutateur : seule la lecture canonique (`enabled`) produit des
- *     `events` ; en `legacy`, il n'y en a pas et la colonne reste NULL ;
+ *   · lecture canonique toujours active (lot 16b-2) : les `events` sont
+ *     produits à chaque réponse qui en porte ;
  *   · colonne absente (migration non appliquée) : rien n'est écrit ni lu,
  *     comportement antérieur, signalé une fois par processus ;
  *   · à la relecture (§19.10), chaque lien est REVÉRIFIÉ : un objet supprimé

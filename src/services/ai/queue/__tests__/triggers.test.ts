@@ -21,8 +21,8 @@ describe('liste vide = défauts du code ; liste renseignée = elle fait foi', ()
       { kind: 'event', code: 'asset_updated', active: false },
       { kind: 'schedule', code: 'schedule_weekly', active: true },
     ]);
-    // + `coherence_ai_review`, introduit au lot 11 et non déclaré : actif (CDC 15 CFG-04).
-    expect([...codes]).toEqual(['schedule_weekly', 'coherence_ai_review']);
+    // `coherence_ai_review` (lot 11) retiré au lot 16b-3 : jamais ajouté.
+    expect([...codes]).toEqual(['schedule_weekly']);
   });
   it('tout inactif = manuel uniquement (codes introduits après la version : explicitement coupés)', () => {
     expect(activeTriggerCodes('T1', [{ kind: 'event', code: 'source_uploaded', active: false }])).toEqual(new Set(['analysis_recovery']));

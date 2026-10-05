@@ -7,8 +7,11 @@ import { AiGateway } from '../ai-gateway';
 import { AiGatewayError } from '../errors';
 import { FakeProvider, setAiProvider } from '../providers';
 import { primePricingCache, clearPricingCache } from '../pricing/pricing.repository';
+import { T1_TEST_OPERATION, t1TestVariables, t1Out, t1Schema } from './t1-master-request';
 
-const Schema = z.object({ title: z.string(), amountCents: z.number().int() });
+// Lot 16b-3 : opération T1 réelle (branche GROUP_UPLOAD du master) au lieu
+// de l'étape `classify_document`, supprimée.
+const Schema = t1Schema({ title: z.string(), amountCents: z.number().int() });
 
 let fake: FakeProvider;
 
@@ -30,9 +33,9 @@ beforeEach(() => {
 function request(overrides: Record<string, unknown> = {}) {
   return {
     useCaseCode: 'SOURCE_ANALYSIS' as const,
-    operationCode: 'classify_document',
+    operationCode: T1_TEST_OPERATION,
     accountId: 1,
-    promptVariables: { DOC: 'facture' },
+    promptVariables: t1TestVariables('facture'),
     outputSchema: Schema,
     // Clé explicite : évite toute collision d'idempotence entre tests.
     idempotencyKey: `test-${Math.random()}`,
@@ -57,18 +60,18 @@ describe('cohérence référentielle', () => {
 describe('validation des sorties (§5.3)', () => {
   it('accepte une sortie conforme, y compris encadrée de balises de code', async () => {
     fake.onAny(() => ({
-      rawText: '```json\n{"title":"Facture EDF","amountCents":12900}\n```',
+      rawText: `\`\`\`json\n${t1Out({ title: 'Facture EDF', amountCents: 12900 })}\n\`\`\``,
       inputTokens: 100, outputTokens: 20,
     }));
 
     const res = await AiGateway.execute(request());
-    expect(res.data).toEqual({ title: 'Facture EDF', amountCents: 12900 });
+    expect(res.data).toEqual({ task: 'GROUP_UPLOAD', title: 'Facture EDF', amountCents: 12900 });
     expect(res.costMicros).toBeGreaterThan(0);
     expect(res.usedFallback).toBe(false);
   });
 
   it('ne persiste jamais une sortie non conforme au schéma', async () => {
-    fake.onAny(() => ({ rawText: '{"title":"Facture"}', inputTokens: 10, outputTokens: 5 }));
+    fake.onAny(() => ({ rawText: t1Out({ title: 'Facture' }), inputTokens: 10, outputTokens: 5 }));
     await expect(AiGateway.execute(request())).rejects.toMatchObject({ code: 'ALL_MODELS_FAILED' });
   });
 });
@@ -77,7 +80,7 @@ describe('repli et résilience (§11.4)', () => {
   it('bascule sur le modèle de repli après échec du modèle nominal', async () => {
     fake.on('gemini-3.1-flash-lite', () => { throw new Error('503 indisponible'); });
     fake.on('gemini-3.5-flash', () => ({
-      rawText: '{"title":"OK","amountCents":100}', inputTokens: 50, outputTokens: 10,
+      rawText: t1Out({ title: 'OK', amountCents: 100 }), inputTokens: 50, outputTokens: 10,
     }));
 
     const res = await AiGateway.execute(request());
@@ -98,7 +101,7 @@ describe('repli et résilience (§11.4)', () => {
 describe('mesure du coût', () => {
   it('calcule le coût lorsque le tarif est connu', async () => {
     fake.onAny(() => ({
-      rawText: '{"title":"x","amountCents":1}', inputTokens: 1000, outputTokens: 100,
+      rawText: t1Out({ title: 'x', amountCents: 1 }), inputTokens: 1000, outputTokens: 100,
     }));
     const res = await AiGateway.execute(request());
     expect(res.costMicros).toBe(Math.round(1000 * 0.05 + 100 * 0.20));
@@ -107,20 +110,20 @@ describe('mesure du coût', () => {
   it('RENVOIE LE RÉSULTAT même sans tarif connu — un défaut de mesure ne détruit pas une réponse', async () => {
     clearPricingCache();
     fake.onAny(() => ({
-      rawText: '{"title":"Facture","amountCents":900}', inputTokens: 50, outputTokens: 10,
+      rawText: t1Out({ title: 'Facture', amountCents: 900 }), inputTokens: 50, outputTokens: 10,
     }));
     const res = await AiGateway.execute(request());
-    expect(res.data).toEqual({ title: 'Facture', amountCents: 900 });
+    expect(res.data).toEqual({ task: 'GROUP_UPLOAD', title: 'Facture', amountCents: 900 });
     expect(res.costMicros).toBe(0);
   });
 });
 
 describe('masquage avant transmission (§5.2)', () => {
   it('ne transmet jamais un IBAN en clair au fournisseur', async () => {
-    fake.onAny(() => ({ rawText: '{"title":"x","amountCents":1}', inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: t1Out({ title: 'x', amountCents: 1 }), inputTokens: 1, outputTokens: 1 }));
 
     await AiGateway.execute(request({
-      promptVariables: { DOC: 'Virement vers FR76 3000 4008 2800 0123 4567 890' },
+      promptVariables: t1TestVariables('Virement vers FR76 3000 4008 2800 0123 4567 890'),
     }));
 
     const sent = fake.calls[0].prompt;

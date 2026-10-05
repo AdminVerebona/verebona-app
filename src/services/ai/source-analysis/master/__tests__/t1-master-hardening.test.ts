@@ -1,16 +1,14 @@
 /**
- * Durcissements du chemin master — CDC 15 D-06, D-18, T1-04, U2/U11.
+ * Durcissements du chemin master — CDC 15 D-06, T1-04, U2/U11.
  *   · lecture tolérante de la sortie (sans toucher au contrat) ;
  *   · extrait introuvable dans le texte lisible → `probable` ;
  *   · contenu préextrait transmis en donnée délimitée ;
- *   · observation : interdite en production, plafond de concurrence ;
  *   · réconciliation de chaque bien touché.
+ * (Lot 16b-3 : l'observation D-18 est supprimée avec l'ancien moteur.)
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const analyse = vi.hoisted(() => vi.fn());
 const enqueueT3 = vi.hoisted(() => vi.fn());
-vi.mock('../analyse-group-master', () => ({ analyseGroupWithMaster: (...a: unknown[]) => analyse(...a) }));
 vi.mock('../../../reconciliation/t3-queue', () => ({ enqueueT3ForAnalyzedAsset: (...a: unknown[]) => enqueueT3(...a) }));
 const emitAssetUpdated = vi.hoisted(() => vi.fn());
 vi.mock('@/services/coherence/impact-propagation.service', () => ({ emitAssetUpdated: (...a: unknown[]) => emitAssetUpdated(...a) }));
@@ -18,8 +16,6 @@ vi.mock('@/services/coherence/impact-propagation.service', () => ({ emitAssetUpd
 const { T1AnalyzeDocumentTolerantOutput, splitNormalisation } = await import('../tolerant-output');
 const { verifyExcerpts } = await import('../../steps/analyze-document.step');
 const { buildAnalyzeDocumentVariables } = await import('../prompt-context');
-const { resolveT1Route, __resetT1ModeLogForTests } = await import('../analysis-mode');
-const { scheduleT1Shadow, settleT1Shadows, t1ShadowMaxConcurrency } = await import('../shadow');
 const { enqueueT3ForAffectedAssets } = await import('../reconciliation-fanout');
 
 const fait = (over: Record<string, unknown> = {}) => ({
@@ -126,51 +122,6 @@ describe('EXTRACTED_CONTENT en donnée délimitée', () => {
   });
 });
 
-describe('observation (D-18)', () => {
-  const env = { AI_T1_ANALYSIS_MODE: 'shadow', AI_T1_SHADOW_SAMPLE_RATE: '1' };
-  beforeEach(() => {
-    __resetT1ModeLogForTests();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-  });
-
-  it('interdite en production (et si l’environnement est illisible), journal une seule fois', async () => {
-    const prod = () => 'production' as const;
-    expect(await resolveT1Route({ env, environment: prod })).toBe('steps');
-    expect(await resolveT1Route({ env, environment: prod })).toBe('steps');
-    expect(console.warn).toHaveBeenCalledTimes(1);
-    expect(await resolveT1Route({ env, environment: () => { throw new Error('NEXT_PUBLIC_APP_ENV absente'); } })).toBe('steps');
-    expect(await resolveT1Route({ env, environment: () => 'preprod' as const })).toBe('steps+shadow');
-  });
-
-  describe('plafond de concurrence', () => {
-    const avant = process.env.AI_T1_SHADOW_MAX_CONCURRENCY;
-    afterEach(() => { if (avant === undefined) delete process.env.AI_T1_SHADOW_MAX_CONCURRENCY; else process.env.AI_T1_SHADOW_MAX_CONCURRENCY = avant; });
-
-    it('défaut 2 ; au-delà, l’échantillon est sauté', async () => {
-      delete process.env.AI_T1_SHADOW_MAX_CONCURRENCY;
-      expect(t1ShadowMaxConcurrency()).toBe(2);
-      const fins: Array<(v: unknown) => void> = [];
-      analyse.mockImplementation(() => new Promise((r) => { fins.push(r); }));
-      const legacy = { sourceGroup: { leadSourceId: 1 } } as never;
-      const lancer = () => scheduleT1Shadow({ input: {} as never, groupIndices: [0], ctx: {} as never, legacy });
-      expect([lancer(), lancer(), lancer()]).toEqual([true, true, false]);
-      expect(analyse).toHaveBeenCalledTimes(2);
-      fins.forEach((f) => f(new Error('fin')));
-      await settleT1Shadows();
-      expect(lancer()).toBe(true);
-      fins.forEach((f) => f(new Error('fin')));
-      await settleT1Shadows();
-    });
-
-    it('valeur lisible appliquée ; 0 désactive', () => {
-      expect(t1ShadowMaxConcurrency({ AI_T1_SHADOW_MAX_CONCURRENCY: '5' })).toBe(5);
-      expect(t1ShadowMaxConcurrency({ AI_T1_SHADOW_MAX_CONCURRENCY: '0' })).toBe(0);
-      expect(t1ShadowMaxConcurrency({ AI_T1_SHADOW_MAX_CONCURRENCY: 'deux' })).toBe(2);
-    });
-  });
-});
-
 describe('réconciliation de chaque bien touché (T1-04, T1-05)', () => {
   beforeEach(() => {
     enqueueT3.mockReset(); enqueueT3.mockResolvedValue(1);
@@ -190,15 +141,14 @@ describe('réconciliation de chaque bien touché (T1-04, T1-05)', () => {
     expect(r.enqueued).toEqual([14]);
   });
 
-  it('AI_RECONCILIATION_ENGINE en legacy : chaque bien non principal passe par le pont historique', async () => {
-    const avant = process.env.AI_RECONCILIATION_ENGINE;
-    process.env.AI_RECONCILIATION_ENGINE = 'legacy';
+  it('AI_RECONCILIATION_ENGINE (retiré au lot 16b-3) encore posé à legacy : ignoré, file T3, jamais le pont historique', async () => {
+    vi.stubEnv('AI_RECONCILIATION_ENGINE', 'legacy');
     try {
       const r = await enqueueT3ForAffectedAssets({ accountId: 1, userId: 2, leadSourceId: 1000, affectedAssetIds: [12, 13], documentAssetId: 12 });
-      expect(r).toEqual({ enqueued: [], legacy: [13] });
-    } finally { process.env.AI_RECONCILIATION_ENGINE = avant; }
-    expect(enqueueT3).not.toHaveBeenCalled();
-    expect(emitAssetUpdated).toHaveBeenCalledWith(1, 13, { _trigger: 'document_analyzed', _documentId: 1000 });
+      expect(r).toEqual({ enqueued: [13] });
+    } finally { vi.unstubAllEnvs(); }
+    expect(enqueueT3).toHaveBeenCalledTimes(1);
+    expect(emitAssetUpdated).not.toHaveBeenCalled();
   });
 
   it('aucun moteur n’a pris les biens : journalisé explicitement', async () => {

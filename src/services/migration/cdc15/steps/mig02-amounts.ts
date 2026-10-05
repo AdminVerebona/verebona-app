@@ -175,7 +175,7 @@ export async function runMig02(ctx: StepContext): Promise<StepResult> {
         if (ctx.apply && d.correction) {
           // Copie restaurable (fiche et colonnes miroirs) dans la transaction de la primitive.
           const res = await writeCanonicalAssetFields({
-            assetId: row.id, accountId: Number(row.account_id), origin: d.correction.origin as never, mode: 'enabled', emitEvent: false,
+            assetId: row.id, accountId: Number(row.account_id), origin: d.correction.origin as never, emitEvent: false,
             source: { type: 'migration', id: STEP },
             writes: [{ key: d.correction.key, value: d.correction.to, expectedCurrent: d.correction.from,
               trace: { evidenceId: d.correction.evidenceId, reasonCode: 'MIG02_EXACT_EVIDENCE_X100', promptVersion: d.correction.promptVersion } }],

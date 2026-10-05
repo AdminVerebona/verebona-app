@@ -33,6 +33,18 @@
 import { registerJobHandler, nudgeQueueWorker, type JobOutcome } from '../../queue/queue-worker';
 import { enqueue, type QueuedJob } from '../../queue/job-queue.repository';
 import { JobDeferredError } from '../../queue/queue-policy';
+import { REQUEUE_ORIGIN_SUFFIX } from '../failure-policy';
+
+/**
+ * Analyse d'un fichier en échec pendant le job (master T1, persistance) : le
+ * job échoue et la file le reprend avec backoff, puis échec définitif.
+ */
+export class T1AnalysisFailedError extends Error {
+  constructor(readonly fileId: number) {
+    super(`analyse du fichier ${fileId} en échec (motif écrit sur le fichier)`);
+    this.name = 'T1AnalysisFailedError';
+  }
+}
 
 /** Type de cible, pour la clé de déduplication. */
 const TARGET_TYPE = 'asset_file';
@@ -91,7 +103,11 @@ async function marquerEnFile(fileIds: number[], accountId: number): Promise<void
 export async function enqueueFileAnalyses(
   fileIds: number[],
   accountId: number,
-  options: { userId?: number; origin: string; billable?: boolean },
+  options: {
+    userId?: number; origin: string; billable?: boolean;
+    /** Premier prélèvement différé (remise en file après un échec hors file). */
+    delaySeconds?: number;
+  },
 ): Promise<number[]> {
   if (options.origin === UPLOAD_ORIGIN && !(await t1TriggerActive('source_uploaded'))) {
     console.info(`[t1-queue] déclencheur « source_uploaded » inactif : ${fileIds.length} fichier(s) non mis en file.`);
@@ -115,6 +131,8 @@ export async function enqueueDurableFileAnalyses(
     userId?: number; origin: string;
     /** Reprise serveur ou réanalyse d'exploitation : non facturée au compte. */
     billable?: boolean;
+    /** Premier prélèvement différé, en secondes. */
+    delaySeconds?: number;
   },
 ): Promise<number[]> {
   const acceptes: number[] = [];
@@ -132,6 +150,7 @@ export async function enqueueDurableFileAnalyses(
           fileId, userId: options.userId ?? null, origin: options.origin,
           ...(options.billable === false ? { billable: false } : {}),
         },
+        ...(options.delaySeconds ? { delaySeconds: options.delaySeconds } : {}),
       });
       // `skip` : un travail équivalent attend déjà. Ce n'est pas un refus, mais
       // le fichier n'a pas à être compté deux fois comme nouvellement accepté.
@@ -219,6 +238,27 @@ export function registerSourceAnalysisHandler(): void {
     if (outcome?.skippedReason === 'quota') {
       throw new JobDeferredError('quota d’analyse du compte épuisé');
     }
+
+    // Lot 16b-3 — échec du master T1 (plus de repli « étapes ») : le fichier
+    // est en ANALYSIS_FAILED avec son motif, aucun crédit consommé. Le job
+    // échoue pour que la file le REPRENNE avec son backoff (MOD-005) ; au
+    // dernier essai, l'échec motivé reste affiché (`onT1JobSettled`).
+    if (outcome?.failedSourceIds.includes(fileId)) {
+      // Revue 3a : échec DÉFINITIF (sortie du master invalide sur toute la
+      // chaîne — `failure-policy`) : une seule reprise. Au second essai (ou
+      // dès le premier pour une remise en file après un échec hors file, qui
+      // EST la reprise), le job est clos sans nouvelle tentative : le fichier
+      // reste en échec motivé, et la reprise serveur ne le relance plus
+      // (compteur au plafond). Borne : 2 échecs complets T1 par document,
+      // sous le seuil du disjoncteur.
+      const definitif = outcome.definitiveFailedSourceIds?.includes(fileId) ?? false;
+      const repriseDejaFaite = (job.attempts ?? 1) >= 2 || (payload.origin ?? '').endsWith(REQUEUE_ORIGIN_SUFFIX);
+      if (definitif && repriseDejaFaite) {
+        console.warn(`[t1-queue] travail ${job.id} : échec définitif du fichier ${fileId} après reprise — non relancé.`);
+        return;
+      }
+      throw new T1AnalysisFailedError(fileId);
+    }
   }, { onSettled: onT1JobSettled });
 
   console.info('[t1-queue] Exécutant T1 enregistré auprès du boucleur.');
@@ -271,10 +311,12 @@ export async function analyseConcurrenteEnCours(
  *   deferred (quota), ou définitif     `UPLOADED`/`ANALYZING` → non analysé ;
  *                                      la reprise serveur le remet en file dès
  *                                      que le compte a du crédit
- *   failed, nouvelle tentative prévue  `ANALYZING` → `UPLOADED` (« En file » :
- *                                      c'est vrai, un job l'attend)
+ *   failed, nouvelle tentative prévue  `ANALYZING`/`ANALYSIS_FAILED` → `UPLOADED`
+ *                                      (« En file » : c'est vrai, un job l'attend)
  *   failed définitif (dont timeout)    `UPLOADED`/`ANALYZING` → `ANALYSIS_FAILED`
- *                                      avec le motif
+ *                                      avec le motif ; un fichier déjà mis en
+ *                                      échec par le pipeline (master T1 en
+ *                                      échec, lot 16b-3) garde son motif précis
  *   interrupted (rollback, arrêt…)     `ANALYZING` → `UPLOADED` (remis en tête)
  *
  * Seuls les états transitoires sont touchés : un fichier déjà ANALYZED (ou
@@ -298,7 +340,9 @@ export async function onT1JobSettled(job: QueuedJob, outcome: JobOutcome): Promi
       return;
     case 'failed':
       if (!outcome.permanent) {
-        await setFileState(fileId, job.accountId, ['ANALYZING'], { analysisState: 'UPLOADED' });
+        // `ANALYSIS_FAILED` : échec écrit par le pipeline (master T1) — le
+        // fichier n'est pas en échec définitif tant que la file le reprend.
+        await setFileState(fileId, job.accountId, ['ANALYZING', 'ANALYSIS_FAILED'], { analysisState: 'UPLOADED' });
       } else {
         await setFileState(fileId, job.accountId, ['UPLOADED', 'ANALYZING'], {
           analysisState: 'ANALYSIS_FAILED',

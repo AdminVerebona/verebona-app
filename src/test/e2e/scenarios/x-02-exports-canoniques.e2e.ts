@@ -1,14 +1,13 @@
 /**
  * X-02 — exports en lecture canonique (CDC 15 X-02 P0, §12, §14 point 8,
- * T3-05 ; plan lot 16 volet B ; commutateur `EXPORTS_CANONICAL_SOURCE`),
- * sur base réelle. Données du snapshot seulement : aucun rendu Chromium.
+ * T3-05 ; plan lot 16 volet B), sur base réelle. Données du snapshot
+ * seulement : aucun rendu Chromium. Lot 16b-3 : `EXPORTS_CANONICAL_SOURCE`
+ * retiré — source canonique seule ; posé à legacy / shadow, il est ignoré.
  *
  *   · recette X-02 : un document lié par CHACUN des chemins historiques
  *     (`asset_id`, `linked_asset_id`, `linked_room_id`, lien N-N SECONDARY,
- *     lien USER, colonnes seules avant rattrapage) est présent en `enabled` ;
+ *     lien USER, colonnes seules avant rattrapage) est présent ;
  *     un document seulement MENTIONED ne l'est pas ;
- *   · `legacy` inchangé, `shadow` : source historique utilisée, rapport
- *     d'écarts journalisé sans valeur ;
  *   · recette T3-05 : même `acquisitionDate` dans la fiche, T2 et l'export ;
  *   · agenda : nature D-14 et statut à 4 états.
  */
@@ -36,13 +35,14 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     vi.restoreAllMocks();
   });
 
-  const charger = async (compte: { id: number; ownerUserId: number }, assetId: number, mode: string) => {
-    process.env.EXPORTS_CANONICAL_SOURCE = mode;
+  /** `retire` : valeur du commutateur RETIRÉ posée pour vérifier qu'elle est ignorée. */
+  const charger = async (compte: { id: number; ownerUserId: number }, assetId: number, retire?: string) => {
+    if (retire === undefined) delete process.env.EXPORTS_CANONICAL_SOURCE; else process.env.EXPORTS_CANONICAL_SOURCE = retire;
     const { loadExportSource } = await import('@/services/exports/v12/data/source');
     return loadExportSource({ assetId, accountId: compte.id, userId: compte.ownerUserId, exportType: 'DOSSIER_COMPLET' });
   };
 
-  it('recette X-02 : chaque chemin historique présent en enabled ; MENTIONED exclu ; legacy et shadow', async () => {
+  it('recette X-02 : chaque chemin historique présent ; MENTIONED exclu ; commutateur retiré ignoré', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const autre = await make.asset(compte, { category: 'IMMOBILIER', name: 'Studio' });
@@ -77,7 +77,7 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
 
     const attendus = [parAssetId, parLinkedAsset, parPiece, parSecondaire, parUser, parIa, colonneSeule, linkedSeule].map((f) => f.id).sort((a, b) => a - b);
 
-    const canon = await charger(compte, bien.id, 'enabled');
+    const canon = await charger(compte, bien.id);
     expect(canon.documents.map((d) => d.id).sort((a, b) => a - b)).toEqual(attendus);
     expect(canon.sourceTrace).toMatchObject({ mode: 'enabled', source: 'canonical', registryVersion: expect.any(String) });
     const chemins = canon.sourceTrace!.documentPaths!;
@@ -98,32 +98,18 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     const { buildDefaultChoices } = await import('@/services/exports/v12/data/choices');
     const { parisDate } = await import('@/services/exports/v12/generation/clock');
     await sql`UPDATE asset_files SET document_type_code = 'MAINTENANCE_INVOICE' WHERE account_id = ${compte.id}`;
-    const canon2 = await charger(compte, bien.id, 'enabled');
+    const canon2 = await charger(compte, bien.id);
     const choix = buildDefaultChoices('DOSSIER_COMPLET', canon2, { today: parisDate() });
     const coches = choix.items.filter((i) => i.sourceType === 'document' && i.selected).map((i) => i.sourceId).sort((a, b) => a - b);
     expect(coches).toEqual([parAssetId, parSecondaire, parUser, colonneSeule].map((f) => f.id).sort((a, b) => a - b));
 
-    // legacy : strictement la lecture historique (asset_id seul ici).
-    const legacy = await charger(compte, bien.id, 'legacy');
-    expect(legacy.documents.map((d) => d.id).sort((a, b) => a - b)).toEqual([parAssetId.id, colonneSeule.id, retire.id].sort((a, b) => a - b));
-    expect(legacy.sourceTrace).toMatchObject({ mode: 'legacy', source: 'legacy' });
-
-    // shadow : historique utilisé, écarts journalisés sans valeur.
-    await sql`UPDATE assets SET address = '12 rue des Lilas' WHERE id = ${bien.id}`;
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const ombre = await charger(compte, bien.id, 'shadow');
-    expect(ombre.documents.map((d) => d.id).sort((a, b) => a - b)).toEqual(legacy.documents.map((d) => d.id).sort((a, b) => a - b));
-    expect(ombre.sourceTrace).toMatchObject({
-      mode: 'shadow', source: 'legacy', shadowDiff: { documentsOnlyLegacy: 1, documentsOnlyCanonical: 6, addedConfirmed: 2, addedUnconfirmed: 4 },
-    });
-    const ligne = info.mock.calls.find((c) => c[0] === '[exports:canonical-shadow]');
-    expect(ligne).toBeDefined();
-    const rapport = JSON.parse(String(ligne![1]));
-    expect(rapport.documents.onlyLegacy).toEqual([retire.id]);
-    expect(rapport.documents.addedInCanonical).toEqual({ confirmed: 2, unconfirmed: 4 });
-    expect(rapport.documents.onlyCanonical.map((d: { id: number }) => d.id).sort((a: number, b: number) => a - b))
-      .toEqual([parLinkedAsset.id, parPiece.id, parSecondaire.id, parUser.id, parIa.id, linkedSeule.id].sort((a, b) => a - b));
-    expect(String(ligne![1])).not.toContain('Lilas');
+    // Commutateur retiré encore posé (legacy / shadow) : ignoré, même source.
+    for (const v of ['legacy', 'shadow']) {
+      const encore = await charger(compte, bien.id, v);
+      expect(encore.documents.map((d) => d.id).sort((a, b) => a - b)).toEqual(attendus);
+      expect(encore.sourceTrace).toMatchObject({ mode: 'enabled', source: 'canonical' });
+      expect(encore.sourceTrace).not.toHaveProperty('shadowDiff');
+    }
   });
 
   it('recette T3-05 : même acquisitionDate dans la fiche, T2 et l’export (colonne divergente)', async () => {
@@ -154,12 +140,13 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     expect(r.answer).toContain('25 mai 2021');
 
     // Export : source canonique = fiche = T2 ; unités (euros → centimes exacts).
-    const exp = await charger(compte, bien.id, 'enabled');
+    const exp = await charger(compte, bien.id);
     expect(exp.asset.purchaseDate).toBe('2021-05-25');
     expect(exp.asset.purchasePriceCents).toBe(1_250_050);
     expect(exp.asset.characteristics.acquisitionPrice).toBe(12500.5);
-    // Constat X-02 : la lecture historique imprimait la colonne divergente.
-    expect((await charger(compte, bien.id, 'legacy')).asset.purchaseDate).toBe('2019-01-01');
+    // Constat X-02 : la lecture historique imprimait la colonne divergente ;
+    // supprimée au lot 16b-3 (commutateur posé à legacy : ignoré).
+    expect((await charger(compte, bien.id, 'legacy')).asset.purchaseDate).toBe('2021-05-25');
   });
 
   it('agenda : pas d’échéance tirée d’un fait historique ; échéance passée non prouvée hors historique', async () => {
@@ -179,18 +166,17 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     const sections = (s: Awaited<ReturnType<typeof charger>>) =>
       Object.fromEntries(s.events.map((e) => [e.key, eventSection('DOSSIER_COMPLET', e, today)]));
 
-    const canon = sections(await charger(compte, bien.id, 'enabled'));
+    const canon = sections(await charger(compte, bien.id));
     expect(canon[`agenda:${fait.id}`]).toBeNull();
     expect(canon[`agenda:${futur.id}`]).toBe('deadlines');
     expect(canon[`agenda:${passe.id}`]).toBe('deadlines'); // rubrique « à confirmer » (arbitrage lot 16)
     expect(canon[`agenda:${fait2.id}`]).toBe('history');
 
-    const legacy = sections(await charger(compte, bien.id, 'legacy'));
-    expect(legacy[`agenda:${fait.id}`]).toBe('deadlines');
-    expect(legacy[`agenda:${passe.id}`]).toBe('history');
+    // Commutateur retiré posé à legacy : ignoré.
+    expect(sections(await charger(compte, bien.id, 'legacy'))).toEqual(canon);
   });
 
-  it('export brut, transmission, aperçu admin : même commutateur (legacy inchangé, shadow, enabled)', async () => {
+  it('export brut, transmission, aperçu admin : source canonique seule (commutateur retiré ignoré)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison', purchaseDate: '2019-01-01', keyCharacteristics: { acquisitionDate: '2021-05-25' } });
     const autre = await make.asset(compte, { category: 'IMMOBILIER', name: 'Studio' });
@@ -203,44 +189,24 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     const { buildExportAssetSnapshot } = await import('@/services/exports/export-snapshot-source');
     const ids = (s: { documents: Array<{ id: number }> }) => s.documents.map((d) => d.id).sort((a, b) => a - b);
 
-    process.env.EXPORTS_CANONICAL_SOURCE = 'legacy';
-    const { buildAssetSnapshot } = await import('@/services/export-snapshot.service');
-    const brut = await buildAssetSnapshot(bien.id, compte.ownerUserId, { accountId: compte.id });
-    const l = await buildExportAssetSnapshot(bien.id, compte.ownerUserId, { accountId: compte.id }, 'EXPORT_BRUT');
-    expect({ ...l, snapshotAt: '' }).toEqual({ ...brut, snapshotAt: '' });
-    expect(l.dataSource).toBeUndefined();
-
-    process.env.EXPORTS_CANONICAL_SOURCE = 'enabled';
-    for (const [scope, ctx] of [[{ accountId: compte.id }, 'EXPORT_BRUT'], [undefined, 'TRANSMISSION']] as const) {
-      const e = await buildExportAssetSnapshot(bien.id, compte.ownerUserId, scope, ctx);
-      // Sans étape de choix : le rattachement non confirmé (linked_asset_id) est exclu.
-      expect(ids(e)).toEqual([direct.id, confirme.id].sort((a, b) => a - b));
-      expect(e.dataSource?.unconfirmedDocuments).toEqual([secondaire.id]);
-      expect(e.purchaseDate).toBe('2021-05-25');
-      expect(e.detailSections.common?.acquisitionDate).toBe('2021-05-25');
-      expect(e.dataSource).toMatchObject({ mode: 'enabled', source: 'canonical' });
+    for (const retire of [undefined, 'legacy', 'shadow']) {
+      if (retire === undefined) delete process.env.EXPORTS_CANONICAL_SOURCE; else process.env.EXPORTS_CANONICAL_SOURCE = retire;
+      for (const [scope, ctx] of [[{ accountId: compte.id }, 'EXPORT_BRUT'], [undefined, 'TRANSMISSION']] as const) {
+        const e = await buildExportAssetSnapshot(bien.id, compte.ownerUserId, scope, ctx);
+        // Sans étape de choix : le rattachement non confirmé (linked_asset_id) est exclu.
+        expect(ids(e)).toEqual([direct.id, confirme.id].sort((a, b) => a - b));
+        expect(e.dataSource?.unconfirmedDocuments).toEqual([secondaire.id]);
+        expect(e.purchaseDate).toBe('2021-05-25');
+        expect(e.detailSections.common?.acquisitionDate).toBe('2021-05-25');
+        expect(e.dataSource).toMatchObject({ mode: 'enabled', source: 'canonical' });
+      }
     }
     const { analysePreview } = await import('@/services/admin/export-preview.service');
     const apercu = await analysePreview('EXPORT_BRUT', { id: bien.id, ownerUserId: compte.ownerUserId } as never);
     expect(ids(apercu.snapshot)).toEqual([direct.id, confirme.id].sort((a, b) => a - b));
-
-    process.env.EXPORTS_CANONICAL_SOURCE = 'shadow';
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const o = await buildExportAssetSnapshot(bien.id, compte.ownerUserId, undefined, 'TRANSMISSION');
-    expect(ids(o)).toEqual([direct.id]);
-    expect(o.purchaseDate).toBe('2019-01-01');
-    expect(o.dataSource).toMatchObject({ mode: 'shadow', source: 'legacy', shadowDiff: { documentsOnlyCanonical: 2, addedConfirmed: 1, addedUnconfirmed: 1 } });
-    const ligne = info.mock.calls.find((c) => c[0] === '[exports:canonical-shadow]');
-    const rapport = JSON.parse(String(ligne![1]));
-    expect(rapport).toMatchObject({ context: 'TRANSMISSION', documents: { addedInCanonical: { confirmed: 1, unconfirmed: 1 } } });
-    expect(rapport.documents.onlyCanonical).toEqual(expect.arrayContaining([
-      { id: secondaire.id, paths: ['link:SECONDARY'], confirmed: false }, { id: confirme.id, paths: ['link:SECONDARY'], confirmed: true },
-    ]));
-    expect(rapport.fields).toContain('asset.purchaseDate');
-    expect(String(ligne![1])).not.toContain('2021-05-25');
   });
 
-  it('adresse : fiche, vue canonique et export alignés dès qu’un commutateur canonique est enabled ; legacy inchangé', async () => {
+  it('adresse : fiche, vue canonique et export alignés (source canonique seule depuis le lot 16b-3)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison', keyCharacteristics: { address1: '2 rue Fiche', city: 'Lyon' } });
     await sql`UPDATE assets SET address = '1 rue Colonne', city = 'Villeurbanne' WHERE id = ${bien.id}`;
@@ -251,14 +217,13 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
       return ((await res.json()) as { sections: { location_identification: { address1: string; city: string } } }).sections.location_identification;
     };
     delete process.env.EXPORTS_CANONICAL_SOURCE; delete process.env.CANONICAL_WRITE_MODE;
-    expect(await fiche()).toMatchObject({ address1: '1 rue Colonne', city: 'Villeurbanne' });
-
-    process.env.CANONICAL_WRITE_MODE = 'enabled';
+    expect(await fiche()).toMatchObject({ address1: '2 rue Fiche', city: 'Lyon' });
+    // Commutateurs retirés posés à legacy : ignorés.
+    process.env.CANONICAL_WRITE_MODE = 'legacy';
     expect(await fiche()).toMatchObject({ address1: '2 rue Fiche', city: 'Lyon' });
     delete process.env.CANONICAL_WRITE_MODE;
 
-    const exp = await charger(compte, bien.id, 'enabled');
-    expect(await fiche()).toMatchObject({ address1: '2 rue Fiche', city: 'Lyon' });
+    const exp = await charger(compte, bien.id, 'legacy');
     expect(exp.asset).toMatchObject({ address: '2 rue Fiche', city: 'Lyon' });
     const { getCanonicalAssetState } = await import('@/services/canonical/asset-state');
     expect((await getCanonicalAssetState(bien.id, compte.id))?.fields.address1?.value).toBe('2 rue Fiche');

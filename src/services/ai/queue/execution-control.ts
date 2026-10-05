@@ -111,10 +111,12 @@ export function abortLocalExecutions(jobIds: number[], reason: string): number {
  * Attend la fin RÉELLE d'une exécution dont le délai global est dépassé, au
  * plus `maxMs`. Rend `true` si elle s'est terminée (succès ou erreur).
  *
- * Revue lot 3 : couper le chronomètre ne coupe pas le travail. Le moteur
- * historique T1 (`AI_UNIFIED_SOURCE_ANALYSIS=legacy`) ne connaît pas la garde
- * et continue d'écrire ; libérer tout de suite le job laissait une seconde exécution démarrer pendant que la première
- * tournait encore — double analyse, échéances et liens dupliqués. Le délai
+ * Revue lot 3 : couper le chronomètre ne coupe pas le travail. Une exécution
+ * peut continuer d'écrire entre deux points de contrôle de la garde (et le
+ * moteur historique T1, supprimé au lot 16b-3, ne la connaissait pas) ;
+ * libérer tout de suite le job laissait une seconde exécution démarrer pendant
+ * que la première tournait encore — double analyse, échéances et liens
+ * dupliqués. Le délai
  * dépassé déclenche donc l'interruption (signal, garde), puis on ATTEND que
  * l'exécution se termine vraiment avant de la déclarer en échec. La borne
  * `maxMs` ne sert qu'à ne pas immobiliser indéfiniment une exécution bloquée

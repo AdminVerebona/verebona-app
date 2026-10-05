@@ -1,6 +1,7 @@
 /**
  * Décision PO D-M (lot 20) : date tranchée par T4 → preuve RÉVISÉE du champ
- * (cycle ACTIVE → SUPERSEDED), puis réconciliation T3 en file.
+ * (cycle ACTIVE → SUPERSEDED), puis réconciliation T3 en file. Lot 16b-3 :
+ * plus de commutateur — toujours actif.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -29,9 +30,8 @@ const ORIGINALE: OriginalEvidenceRow = {
 };
 const INPUT = { accountId: 1, userId: 2, sourceFileId: 40, fieldKey: 'nextInspection', extractedDate: '2027-03-04', chosenDate: '2027-04-03', evidenceId: 70 };
 
-function deps(mode: 'legacy' | 'shadow' | 'enabled', originale: OriginalEvidenceRow | null = ORIGINALE): ReviseDateDeps & Record<string, ReturnType<typeof vi.fn>> {
+function deps(originale: OriginalEvidenceRow | null = ORIGINALE): ReviseDateDeps & Record<string, ReturnType<typeof vi.fn>> {
   return {
-    mode: () => mode,
     schemaReady: vi.fn(async () => true),
     findOriginal: vi.fn(async () => originale),
     record: vi.fn(async () => 71),
@@ -49,24 +49,18 @@ beforeEach(() => {
 });
 
 describe('reviseDateEvidenceFromT4', () => {
-  it('legacy : rien, aucune requête', async () => {
-    expect(await reviseDateEvidenceFromT4(INPUT)).toMatchObject({ mode: 'legacy', originalId: null, revisedId: null, enqueued: false });
-    expect(sql.calls).toHaveLength(0);
-    const d = deps('legacy');
-    await reviseDateEvidenceFromT4(INPUT, d);
-    expect(d.findOriginal).not.toHaveBeenCalled();
+  it('commutateur retiré encore posé (legacy / shadow) : ignoré, preuve révisée écrite', async () => {
+    for (const v of ['legacy', 'shadow']) {
+      vi.stubEnv('CANONICAL_WRITE_MODE', v);
+      const d = deps();
+      expect(await reviseDateEvidenceFromT4(INPUT, d)).toMatchObject({ originalId: 70, revisedId: 71, enqueued: true });
+      expect(d.supersede).toHaveBeenCalled();
+    }
+    vi.unstubAllEnvs();
   });
 
-  it('shadow : lecture seule, rien écrit, rien en file', async () => {
-    const d = deps('shadow');
-    expect(await reviseDateEvidenceFromT4(INPUT, d)).toMatchObject({ mode: 'shadow', originalId: 70, revisedId: null, enqueued: false });
-    expect(d.record).not.toHaveBeenCalled();
-    expect(d.supersede).not.toHaveBeenCalled();
-    expect(d.enqueueAsset).not.toHaveBeenCalled();
-  });
-
-  it('enabled : preuve révisée (même autorité, même source, règle tracée), originale SUPERSEDED, T3 du bien en file', async () => {
-    const d = deps('enabled');
+  it('preuve révisée (même autorité, même source, règle tracée), originale SUPERSEDED, T3 du bien en file', async () => {
+    const d = deps();
     expect(await reviseDateEvidenceFromT4(INPUT, d)).toMatchObject({ originalId: 70, revisedId: 71, enqueued: true });
     expect(d.record).toHaveBeenCalledWith(expect.objectContaining({
       fieldKey: 'nextInspection', value: '2027-04-03', normalizedValue: '2027-04-03', rawValue: '2027-03-04',
@@ -79,8 +73,8 @@ describe('reviseDateEvidenceFromT4', () => {
     expect(d.enqueueEntity).not.toHaveBeenCalled();
   });
 
-  it('enabled, preuve d’un équipement : réconciliation ciblée de l’équipement', async () => {
-    const d = deps('enabled', { ...ORIGINALE, targetType: 'EQUIPMENT', targetEntityId: 501 });
+  it('preuve d’un équipement : réconciliation ciblée de l’équipement', async () => {
+    const d = deps({ ...ORIGINALE, targetType: 'EQUIPMENT', targetEntityId: 501 });
     await reviseDateEvidenceFromT4(INPUT, d);
     expect(d.enqueueEntity).toHaveBeenCalledWith(expect.objectContaining({ targets: [{ type: 'EQUIPMENT', id: 501 }] }));
     expect(d.enqueueAsset).not.toHaveBeenCalled();
@@ -88,21 +82,21 @@ describe('reviseDateEvidenceFromT4', () => {
 
   it('même date, date invalide, preuve introuvable ou schéma absent : rien', async () => {
     for (const p of [{ ...INPUT, chosenDate: INPUT.extractedDate }, { ...INPUT, chosenDate: '03/04/2027' }]) {
-      const d = deps('enabled');
+      const d = deps();
       expect((await reviseDateEvidenceFromT4(p, d)).revisedId).toBeNull();
       expect(d.findOriginal).not.toHaveBeenCalled();
     }
-    const introuvable = deps('enabled', null);
+    const introuvable = deps(null);
     expect(await reviseDateEvidenceFromT4(INPUT, introuvable)).toMatchObject({ originalId: null, revisedId: null });
     expect(introuvable.record).not.toHaveBeenCalled();
-    const sansSchema = deps('enabled');
+    const sansSchema = deps();
     sansSchema.schemaReady = vi.fn(async () => false);
     expect((await reviseDateEvidenceFromT4(INPUT, sansSchema)).originalId).toBeNull();
   });
 
   it('jamais bloquant : une erreur d’écriture est journalisée, rien en file', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const d = deps('enabled');
+    const d = deps();
     d.record = vi.fn(async () => { throw new Error('boom'); });
     expect(await reviseDateEvidenceFromT4(INPUT, d)).toMatchObject({ originalId: 70, revisedId: null, enqueued: false });
     expect(d.enqueueAsset).not.toHaveBeenCalled();
@@ -110,21 +104,15 @@ describe('reviseDateEvidenceFromT4', () => {
   });
 
   it('sans utilisateur : preuve révisée écrite, la réconciliation du bien attend la suivante', async () => {
-    const d = deps('enabled');
+    const d = deps();
     expect(await reviseDateEvidenceFromT4({ ...INPUT, userId: null }, d)).toMatchObject({ revisedId: 71, enqueued: false });
     expect(d.enqueueAsset).not.toHaveBeenCalled();
   });
 
   it('lecture par défaut : preuve du candidat retenue seulement si sa valeur est la date extraite (bornée au compte)', async () => {
-    process.env.CANONICAL_WRITE_MODE = 'shadow';
-    try {
-      sql.rows = [{ ...ORIGINALE, value: '2027-03-04' }];
-      expect((await reviseDateEvidenceFromT4(INPUT)).originalId).toBe(70);
-      expect(sql.calls[0].p).toEqual([70, 1]);
-      expect(sql.calls.some((c) => /INSERT|UPDATE/.test(c.q))).toBe(false);
-    } finally {
-      delete process.env.CANONICAL_WRITE_MODE;
-    }
+    sql.rows = [{ ...ORIGINALE, value: '2027-03-04' }];
+    expect((await reviseDateEvidenceFromT4({ ...INPUT, userId: null })).originalId).toBe(70);
+    expect(sql.calls.find((c) => /FROM field_evidence/.test(c.q) && c.q.startsWith('SELECT'))?.p).toEqual([70, 1]);
   });
 });
 

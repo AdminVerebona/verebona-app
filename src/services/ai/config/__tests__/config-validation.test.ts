@@ -44,9 +44,9 @@ describe('une configuration complète passe', () => {
 });
 
 describe('champs obligatoires', () => {
-  it('refuse un prompt vide ou blanc', () => {
-    expect(bloquants(valide({ prompt: '' }))).toHaveLength(1);
-    expect(bloquants(valide({ prompt: '   ' }))).toHaveLength(1);
+  it('lot 16b : préambule vide ou blanc admis — plus d’étape pour l’appliquer, le texte master est la seule zone', () => {
+    expect(bloquants(valide({ prompt: '' }))).toHaveLength(0);
+    expect(bloquants(valide({ prompt: '   ' }))).toHaveLength(0);
   });
 
   it('refuse un modèle principal absent', () => {
@@ -73,9 +73,9 @@ describe('T5 — pas de prompt administrable (T5-003, E-02)', () => {
     expect(prompt?.message).toMatch(/pas administrable/);
   });
 
-  it('exige toujours le prompt de T1 à T4', () => {
+  it('lot 16b : plus de préambule exigé de T1 à T4 (masters seuls)', () => {
     for (const t of ['T1', 'T2', 'T3', 'T4'] as const) {
-      expect(bloquants(valide({ treatment: t, prompt: '', triggers: [] })).some((i) => i.field === 'prompt'), t).toBe(true);
+      expect(bloquants(valide({ treatment: t, prompt: '', triggers: [] })).some((i) => i.field === 'prompt'), t).toBe(false);
     }
   });
 
@@ -222,12 +222,12 @@ describe('version entière', () => {
   });
 
   it('rend les erreurs par traitement et par champ (WF-02)', () => {
-    const entries = cinq().map((e) => (e.treatment === 'T3' ? { ...e, prompt: '' } : e));
+    const entries = cinq().map((e) => (e.treatment === 'T3' ? { ...e, primaryModel: null } : e));
     const r = validateVersion(entries, catalogues());
     const erreur = r.issues.find((i) => i.blocking)!;
     expect(erreur.treatment).toBe('T3');
-    expect(erreur.field).toBe('prompt');
-    expect(erreur.label).toBe('Prompt');
+    expect(erreur.field).toBe('primaryModel');
+    expect(erreur.label).toBe('Modèle principal');
   });
 });
 
@@ -324,6 +324,8 @@ describe('lot 16b — T5 et T6 : master seul', () => {
       expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
       expect(bloquants(valide({ treatment: t, prompt: t === 'T5' ? '' : 'charte', triggers: [] })), t).toEqual([]);
     }
-    expect(emptyTreatmentConfig('T1').promptArchitecture).toBe('steps');
+    // Lot 16b-3 : T1 puis T3 aussi en master seul — plus aucun `steps`.
+    expect(emptyTreatmentConfig('T1').promptArchitecture).toBe('master');
+    expect(emptyTreatmentConfig('T3').promptArchitecture).toBe('master');
   });
 });

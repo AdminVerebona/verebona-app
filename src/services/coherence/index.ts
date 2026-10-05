@@ -22,12 +22,8 @@ export type { ImpactType, Confidence, DependencyRule } from './field-dependency.
 export {
   enqueue,
   enqueueBatch,
-  enqueueForAiReview,
-  hasPendingAiReviewForAsset,
   dequeue,
   dequeueBatch,
-  dequeueAiReviewItems,
-  hasAiReviewItems,
   complete,
   fail,
   skip,

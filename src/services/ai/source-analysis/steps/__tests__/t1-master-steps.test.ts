@@ -33,8 +33,8 @@ vi.mock('../../identifier-verifier', () => ({
     };
   },
 }));
-vi.mock('../classify-rubric.step', async (orig) => ({
-  ...(await orig<typeof import('../classify-rubric.step')>()),
+vi.mock('../../master/rubric-rules', async (orig) => ({
+  ...(await orig<typeof import('../../master/rubric-rules')>()),
   loadAssetFamilies: async () => ['IMMOBILIER', 'VEHICULE', 'MATERIEL_PRO', 'OBJECT'],
 }));
 

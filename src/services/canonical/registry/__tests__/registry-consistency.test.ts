@@ -6,8 +6,8 @@
  * exportées par leurs modules sont relues dans le texte source.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { getTableColumns } from 'drizzle-orm';
 import { assets } from '@/db/schema';
 import { ASSISTANT_ASSET_FIELDS } from '@/services/verebona-assistant/commands/asset-fields';
@@ -185,16 +185,10 @@ describe('registre — clés employées aujourd’hui', () => {
     expect(nonClassees(cles)).toEqual([]);
   });
 
-  it('écriture fiche : sections d’enrichissement (enrich-and-coherence, apply-ai-suggestions)', () => {
-    const cles: string[] = [];
+  it('écritures d’enrichissement historiques supprimées (lot 16b-3, D-H1) : plus aucune clé hors registre possible', () => {
     for (const p of ['services/document-ai/enrich-and-coherence.service.ts', 'services/document-ai/apply-ai-suggestions.ts']) {
-      for (const m of src(p).matchAll(/^\s+[a-z_]+:\s+\[([^\]]+)\]/gm)) {
-        // Clés de champs (camelCase) ; les listes de types documentaires (MAJUSCULES) sont ignorées.
-        for (const k of m[1].matchAll(/'([a-z][A-Za-z0-9]*)'/g)) cles.push(k[1]);
-      }
+      expect(existsSync(join(process.cwd(), 'src', p)), p).toBe(false);
     }
-    expect(cles.length).toBeGreaterThan(20);
-    expect(nonClassees(cles)).toEqual([]);
   });
 
   it('règles de saisie, T3 (champs critiques et structurants)', () => {

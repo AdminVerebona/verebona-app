@@ -83,11 +83,15 @@ describe('opération master', () => {
     expect(traces[0].promptVersion).toBe(traces[0].masterPromptVersion);
   });
 
-  it('architecture steps : ni le préambule ni un texte master préparé ne sont appliqués (fichier)', async () => {
-    __setConfigForTests({ versionId: 9, entries: [T1({ prompt: 'PRÉAMBULE', masterPrompt: 'MASTER PRÉPARÉ {{TASK}}', promptArchitecture: 'steps' })] });
+  it('lot 16b-3 : ligne T1 stockée « steps » (antérieure à 0233) lue master — texte de la version appliqué, préambule jamais', async () => {
+    const texte = 'MASTER PRÉPARÉ {{TASK}} {{SOURCES}} {{EXTRACTED_CONTENT}} {{FIELD_CATALOG}}\n'
+      + 'BRANCHE TASK = GROUP_UPLOAD\nBRANCHE TASK = ANALYZE_DOCUMENT';
+    __setConfigForTests({ versionId: 9, entries: [T1({ prompt: 'PRÉAMBULE', masterPrompt: texte, promptArchitecture: 'steps' })] });
     fake.on('m-a', () => ({ rawText: GROUP_OK, inputTokens: 1, outputTokens: 1 }));
     const r = await AiGateway.execute(groupReq());
-    expect(r.promptVersion).toBe('t1_master_v1@file');
+    expect(r.promptVersion).toMatch(/^t1_master_v1@cfg9:/);
+    expect(fake.calls[0].prompt).toContain('MASTER PRÉPARÉ');
+    expect(fake.calls[0].prompt).not.toContain('PRÉAMBULE');
   });
 
   it('refuse une requête dont la TASK ou le master contredit l’opération, sans appel', async () => {
@@ -144,17 +148,14 @@ describe('validation discriminée par task', () => {
   });
 });
 
-describe('opérations historiques : comportement inchangé', () => {
-  it('group_sources garde son prompt technique et son préambule, sans TASK tracée — même version en master', async () => {
-    __setPromptsRootForTests(null);
-    __setConfigForTests({ versionId: 6, entries: [T1({ prompt: 'PRÉAMBULE STEPS', promptArchitecture: 'master', masterPrompt: 'M' })] });
-    fake.on('m-a', () => ({ rawText: '{"groups":[[0]]}', inputTokens: 1, outputTokens: 1 }));
-    const r = await AiGateway.execute({
-      useCaseCode: 'SOURCE_ANALYSIS', operationCode: 'group_sources', accountId: 1,
-      promptVariables: { FILES: '[]' }, outputSchema: z.unknown(), idempotencyKey: `k-${Math.random()}`,
-    });
-    expect(r.promptVersion).toBe('group_sources_v2@file');
-    expect(fake.calls[0].prompt.startsWith('PRÉAMBULE STEPS')).toBe(true);
-    expect(traces[0]).toMatchObject({ task: null, masterPromptCode: null });
+describe('plus aucune opération par étapes (lot 16b-3)', () => {
+  it('une ancienne étape T3 (resolve_ambiguity) est une opération inconnue : refusée avant tout appel', async () => {
+    __setConfigForTests({ versionId: 6, entries: [{ ...emptyTreatmentConfig('T3'), primaryModel: 'm-a', fallback1: null, fallback2: null, prompt: 'PRÉAMBULE STEPS' }] });
+    fake.onAny(() => ({ rawText: '{"x":1}', inputTokens: 1, outputTokens: 1 }));
+    await expect(AiGateway.execute({
+      useCaseCode: 'DATA_RECONCILIATION', operationCode: 'resolve_ambiguity', accountId: 1,
+      promptVariables: { FIELD: 'f' }, outputSchema: z.unknown(), idempotencyKey: `k-${Math.random()}`,
+    })).rejects.toThrow(/Opération inconnue « resolve_ambiguity »/);
+    expect(fake.calls).toHaveLength(0);
   });
 });

@@ -20,81 +20,49 @@
  * client réel — et fausserait précisément la mesure qu'elle sert à produire.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { z } from 'zod';
 import { AiGateway } from '../../gateway/ai-gateway';
+import { T1_MASTER_PROMPT_CODE, type T1AnalyzeDocumentOutput } from '../../source-analysis/master/t1-contract';
+import { T1AnalyzeDocumentTolerantOutput, splitNormalisation } from '../../source-analysis/master/tolerant-output';
+import { buildAnalyzeDocumentVariables } from '../../source-analysis/master/prompt-context';
 import type { CorpusRunner } from './corpus-runner';
 import type { ObservedResult } from './corpus-comparator';
 
+/** Opération mesurée : branche ANALYZE_DOCUMENT du prompt maître T1. */
+export const CORPUS_T1_OPERATION = 't1_analyze_document';
+
 /**
- * Schéma de sortie attendu du moteur pour un document de corpus.
- *
- * Volontairement permissif sur `fields` : le corpus doit pouvoir accueillir de
- * nouveaux champs sans qu'on modifie le harnais. La rigueur est apportée par
- * les attentes de chaque cas, pas par ce schéma.
- */
-/**
- * Sortie de `extract_source`, telle que le prompt la produit réellement.
+ * Aplatit la sortie ANALYZE_DOCUMENT vers la forme que le comparateur attend.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * LE HARNAIS ATTENDAIT UNE FORME QUI N'EXISTE PAS
+ * LOT 16b-3 : LE HARNAIS MESURE LE MASTER T1
  *
- * Il déclarait `{ documentType, fields: Record, assetRefs }`. Le prompt rend
- * `{ title, description, documentDate, supplier, amountCents, fields: [] }`
- * — un TABLEAU d'objets `{ fieldKey, value }`, et aucun `documentType`.
+ * Il appelait `extract_source` puis `classify_document`, opérations d'étapes
+ * supprimées avec l'ancien moteur. Il appelle désormais la branche
+ * ANALYZE_DOCUMENT du master (`t1_analyze_document`), UN appel qui rend à la
+ * fois la classification et les faits.
  *
- * Conséquence : tous les champs remontaient `missing`, et seuls les deux cas
- * `document_sans_information` passaient — parce qu'on n'attendait rien d'eux.
- * La campagne mesurait le harnais, pas le moteur.
+ * Les faits sont rangés sous leur clé canonique (`canonicalKey`), à défaut
+ * leur clé lue (`rawKey`) ; les métadonnées de tête — titre, date, montant,
+ * fournisseur — sont ajoutées seulement si un fait ne porte pas déjà la clé
+ * attendue par le cas, qui fait autorité.
  * ══════════════════════════════════════════════════════════════════════════
  */
-const valeur = z.object({
-  value: z.unknown().optional(),
-  confidence: z.string().optional(),
-  excerpt: z.string().optional(),
-}).passthrough();
-
-const ExtractOutputSchema = z.object({
-  title: valeur.optional(),
-  description: valeur.optional(),
-  documentDate: valeur.optional(),
-  supplier: z.object({ name: z.string().optional() }).passthrough().optional(),
-  amountCents: valeur.optional(),
-  transcription: z.string().optional(),
-  fields: z.array(z.object({
-    fieldKey: z.string(),
-    value: z.unknown().optional(),
-  }).passthrough()).optional(),
-  hasExploitableContent: z.boolean().optional(),
-}).passthrough();
-
-/** Sortie de `classify_document` : le type ne vient pas de l'extraction. */
-const ClassifyOutputSchema = z.object({
-  documentType: z.string().nullable().optional(),
-}).passthrough();
-
-/**
- * Aplatit la sortie du prompt vers la forme que le comparateur attend.
- *
- * Les champs nommés — titre, date, montant, fournisseur — sont replacés parmi
- * les autres : un cas de corpus ne distingue pas un champ « de tête » d'un
- * champ extrait, et n'a pas à le faire.
- */
-function aplatir(sortie: z.infer<typeof ExtractOutputSchema>): Record<string, unknown> {
+export function aplatir(sortie: T1AnalyzeDocumentOutput): Record<string, unknown> {
   const champs: Record<string, unknown> = {};
 
-  for (const f of sortie.fields ?? []) {
-    if (f.value !== undefined && f.value !== null) champs[f.fieldKey] = f.value;
+  for (const f of sortie.facts ?? []) {
+    const cle = f.canonicalKey ?? f.rawKey ?? null;
+    if (cle && f.normalizedValue !== undefined && f.normalizedValue !== null) champs[cle] = f.normalizedValue;
   }
 
-  // Ajoutés seulement s'ils manquent : un `fieldKey` explicite l'emporte sur
-  // le champ de tête, car il porte la clé attendue par le cas.
+  const doc = sortie.document ?? {};
   const tete: Array<[string, unknown]> = [
-    ['title', sortie.title?.value],
-    ['description', sortie.description?.value],
-    ['documentDate', sortie.documentDate?.value],
-    ['dateFacture', sortie.documentDate?.value],
-    ['supplier', sortie.supplier?.name],
-    ['amountCents', sortie.amountCents?.value],
+    ['title', doc.title?.value],
+    ['description', doc.description?.value],
+    ['documentDate', doc.documentDate?.value],
+    ['dateFacture', doc.documentDate?.value],
+    ['supplier', doc.supplier?.name],
+    ['amountCents', doc.amountCents?.value],
   ];
   for (const [cle, v] of tete) {
     if (v !== undefined && v !== null && champs[cle] === undefined) champs[cle] = v;
@@ -142,41 +110,28 @@ export function htmlToPlainText(html: string): string {
 }
 
 /**
- * Runner réel.
+ * Runner réel : branche ANALYZE_DOCUMENT du prompt maître T1, par la
+ * passerelle (coût, trace, configuration de la version effective).
  *
- * ══════════════════════════════════════════════════════════════════════════
- * LE CODE D'OPÉRATION EST CELUI DU REGISTRE, PAS UN NOM INVENTÉ
+ * Le code d'opération est celui du registre (`t1_analyze_document`), jamais
+ * un nom inventé : un code inconnu échouait avant le moindre appel modèle, et
+ * le mode `dry` — qui ne passe pas par la passerelle — ne le voyait pas.
  *
- * Ce runner employait `SOURCE_ANALYSIS_EXTRACT`, qui n'existe nulle part :
- * le registre déclare `extract_source`. Les 28 cas échouaient donc tous avec
- * « Opération inconnue », avant même le moindre appel modèle.
- *
- * Le défaut ne se voyait pas en mode `dry` — qui ne passe pas par la
- * passerelle — et le contrôle du registre, lui, faisait exactement son
- * travail : refuser une opération non déclarée (§12, critère 5).
- *
- * @param operationCode opération déclarée dans `operations.ts`. Par défaut
- *   celle de l'extraction : c'est elle qu'une bascule met en jeu.
- * ══════════════════════════════════════════════════════════════════════════
+ * Variables : exactement celles du master (`buildAnalyzeDocumentVariables`),
+ * construites sur une source texte synthétique et un contexte d'entités formé
+ * des biens candidats déclarés par le cas (identifiants fictifs : la mesure
+ * de fuite porte sur les libellés, aucun identifiant n'est revérifié ici).
  */
 export function createAnalysisRunner(
-  operationCode = 'extract_source',
+  operationCode = CORPUS_T1_OPERATION,
 ): CorpusRunner {
   // ══════════════════════════════════════════════════════════════════════
   // UNE CLÉ PAR CAMPAGNE, PAS PAR CAS
   //
-  // La clé était `corpus:<cas>:extract`, stable d'une campagne à l'autre.
-  // Le commentaire d'alors disait : « rejouer la campagne sans changer le
-  // prompt ne doit pas facturer deux fois ».
-  //
-  // Mais le prompt CHANGE — c'est même l'objet des campagnes successives —
-  // et la clé, elle, ne bougeait pas. La seconde campagne a donc rejoué les
-  // réponses de la première : 2 ms par cas, coût nul, résultats identiques
-  // au champ près. Elle ne mesurait rien.
-  //
-  // L'identifiant de campagne rend chaque exécution distincte. L'idempotence
-  // garde son rôle à l'intérieur d'une campagne — un cas rejoué après une
-  // coupure réseau ne refacture pas.
+  // Une clé stable d'une campagne à l'autre faisait rejouer à la seconde
+  // campagne les réponses de la première (2 ms par cas, coût nul) : elle ne
+  // mesurait rien. L'identifiant de campagne rend chaque exécution distincte ;
+  // l'idempotence garde son rôle à l'intérieur d'une campagne.
   // ══════════════════════════════════════════════════════════════════════
   const campagne = `${Date.now().toString(36)}`;
   // `execute` est statique : la passerelle n'a pas d'état par appelant.
@@ -187,77 +142,58 @@ export function createAnalysisRunner(
 
     try {
       const texte = htmlToPlainText(content);
+      const candidats = corpusCase.expected.assetRefs ?? [];
 
-      // ── 1. Extraction ─────────────────────────────────────────────────
-      //
-      // Les noms de variables sont ceux du prompt : `EXTRACTED_CONTENT`,
-      // `ASSET_CONTEXT`… Le harnais envoyait `documentText` et
-      // `candidateAssets`, que le gabarit ne connaît pas — le modèle
-      // recevait donc un prompt aux marqueurs non substitués.
-      const extraction = await AiGateway.execute({
+      const variables = buildAnalyzeDocumentVariables({
+        input: {
+          sourceType: 'file',
+          sourceIds: [0],
+          accountId,
+          userId: 0,
+          mimeTypes: ['text/plain'],
+          displayNames: [`${corpusCase.caseId}.txt`],
+          // Le moteur reçoit ce que produirait une extraction : du texte.
+          extractedContent: texte,
+        },
+        groupIndices: [0],
+        ctx: {
+          accountId,
+          userId: 0,
+          // Le corpus déclare les biens candidats : c'est ce qui permet de
+          // détecter une fuite (rattachement hors des candidats).
+          assets: candidats.map((label, i) => ({ id: i + 1, name: label, category: null, subtype: null })),
+          rooms: [],
+          equipments: [],
+          existingTitles: [],
+          linkedAssetId: null,
+        },
+        v2Families: [],
+      });
+
+      const analyse = await AiGateway.execute({
         useCaseCode: 'SOURCE_ANALYSIS',
         operationCode,
+        task: 'ANALYZE_DOCUMENT',
+        masterPromptCode: T1_MASTER_PROMPT_CODE,
         accountId,
-        promptVariables: {
-          EXTRACTED_CONTENT: texte,
-          SOURCE_KIND: 'document',
-          // Le corpus déclare les biens candidats : c'est ce qui permet de
-          // détecter une fuite. Sans candidats, le moteur ne pourrait
-          // rattacher à rien et le contrôle serait vide de sens.
-          ASSET_CONTEXT: (corpusCase.expected.assetRefs ?? []).join(', '),
-          EXISTING_TITLES: '',
-          // ══════════════════════════════════════════════════════════════
-          // ON IMPOSE LE VOCABULAIRE, ET ON L'ASSUME
-          //
-          // Sans cette liste, le modèle nomme librement : il extrayait
-          // probablement les bonnes valeurs, sous des clés que le
-          // comparateur ne reconnaissait pas — 6 champs corrects sur 83.
-          //
-          // La mesure devient de ce fait moins sévère qu'un usage à
-          // l'aveugle. C'est assumé : le pipeline réel connaîtra lui aussi
-          // les champs attendus par type de document, et lui souffler cette
-          // liste reproduit ses conditions plutôt qu'elle ne les fausse.
-          //
-          // Ce qui reste mesuré : la VALEUR extraite, sa présence, et la
-          // capacité à ne pas inventer. Le nommage n'a jamais été l'objet.
-          // ══════════════════════════════════════════════════════════════
-          EXPECTED_FIELDS: Object.keys(corpusCase.expected.fields ?? {}).join(', '),
-        },
-        outputSchema: ExtractOutputSchema,
-        idempotencyKey: `corpus:${campagne}:${corpusCase.caseId}:extract`,
+        promptVariables: variables,
+        // Même normalisation tolérante que la production (`analyze-document.step`).
+        outputSchema: T1AnalyzeDocumentTolerantOutput,
+        idempotencyKey: `corpus:${campagne}:${corpusCase.caseId}:analyze`,
       });
+      const { output } = splitNormalisation(analyse.data);
 
-      const champs = aplatir(extraction.data);
-
-      // ── 2. Classification ─────────────────────────────────────────────
-      //
-      // `extract_source` ne rend AUCUN type : c'est une opération distincte
-      // dans le pipeline. Le harnais lisait `response.data.documentType`,
-      // toujours absent — d'où 26 `typeErrors` sur 28.
-      const classification = await AiGateway.execute({
-        useCaseCode: 'SOURCE_ANALYSIS',
-        operationCode: 'classify_document',
-        accountId,
-        promptVariables: {
-          TITLE: String(extraction.data.title?.value ?? ''),
-          SUPPLIER: extraction.data.supplier?.name ?? '',
-          CONTENT_SAMPLE: texte.slice(0, 3000),
-        },
-        outputSchema: ClassifyOutputSchema,
-        idempotencyKey: `corpus:${campagne}:${corpusCase.caseId}:classify`,
-      });
-
+      const c = output.document.classification;
       const observed: ObservedResult = {
-        documentType: classification.data.documentType ?? undefined,
-        fields: champs,
-        // Le corpus mesure la fuite entre biens : un rattachement au-delà des
-        // candidats déclarés en serait une. L'extraction ne le rend pas
-        // aujourd'hui, ce champ reste donc vide — et le contrôle de fuite
-        // porte sur le pipeline complet, pas sur cette étape.
-        assetRefs: [],
+        documentType: c?.canonicalType ?? c?.documentTypeCode ?? undefined,
+        fields: aplatir(output),
+        // Rattachements proposés, ramenés aux libellés des candidats du cas.
+        assetRefs: output.entities.assets
+          .map((a) => (a.entityId ? candidats[a.entityId - 1] : a.rawLabel) ?? null)
+          .filter((x): x is string => Boolean(x)),
         schemaValid: true,
-        usedFallback: extraction.usedFallback || classification.usedFallback,
-        costMicros: (extraction.costMicros ?? 0) + (classification.costMicros ?? 0),
+        usedFallback: analyse.usedFallback,
+        costMicros: analyse.costMicros ?? 0,
         durationMs: Date.now() - started,
       };
       return observed;

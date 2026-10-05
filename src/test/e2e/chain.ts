@@ -10,23 +10,19 @@
  * (`loadExportSource`), l'assistant répond par `runAssistant` et ses ports
  * réels.
  *
- * Commutateurs : l'état cible (`TARGET_SWITCHES`, tout `enabled`, T1 en
- * `master` par la version de configuration) est posé par `useTargetState`,
- * restauré après chaque test.
+ * Commutateurs : aucun depuis le lot 16b-3 (`TARGET_SWITCHES` vide) ;
+ * `useTargetState` ne pose plus que les variables `extra` d'un scénario,
+ * restaurées après chaque test.
  */
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import type postgres from 'postgres';
 import type { RecordedOutput, ReplayProvider } from './replay-gateway';
 
 /** État cible des commutateurs du CDC 15 (plan, § Déploiement). */
-export const TARGET_SWITCHES: Readonly<Record<string, string>> = {
-  AI_T1_ANALYSIS_MODE: 'enabled',
-  CANONICAL_WRITE_MODE: 'enabled',
-  T3_NEGATIVE_RECONCILIATION: 'enabled',
-  // AI_T4_EFFECTS et ASSISTANT_CANONICAL_READ : retirés au lot 16b-2
-  // (toujours actifs).
-  EXPORTS_CANONICAL_SOURCE: 'enabled',
-};
+// Vide depuis le lot 16b-3 : AI_T4_EFFECTS, ASSISTANT_CANONICAL_READ (16b-2),
+// AI_T1_ANALYSIS_MODE, CANONICAL_WRITE_MODE, T3_NEGATIVE_RECONCILIATION et
+// EXPORTS_CANONICAL_SOURCE (16b-3) retirés — l'état cible est le seul état.
+export const TARGET_SWITCHES: Readonly<Record<string, string>> = {};
 
 let cable = false;
 
@@ -137,8 +133,8 @@ export async function analyserDocument(
   await sql`UPDATE asset_files SET s3_bucket = 'e2e-bucket', original_filename = coalesce(original_filename, ${`doc-${p.fileId}.pdf`}),
               analysis_state = NULL WHERE id = ${p.fileId}`;
   const replay = await rejouer([{ operationCode: 't1_analyze_document', task: 'ANALYZE_DOCUMENT', output: p.output }, ...(p.extra ?? [])]);
-  // Aiguillage de production (critère 24, `ai:check-legacy`) : jamais le
-  // pipeline directement. Il ne lève pas : un échec rend `null`.
+  // Point d'entrée de production (critère 24, `ai:check-legacy`) : jamais le
+  // pipeline directement. Il ne lève pas : une panne rend `null`.
   const { analyzeFileSources } = await import('@/services/ai/source-analysis/entrypoint');
   const r = await analyzeFileSources([p.fileId], p.accountId, {
     userId: p.userId, linkedAssetId: p.linkedAssetId ?? null, billable: false, origin: 'e2e/corpus-cdc15',

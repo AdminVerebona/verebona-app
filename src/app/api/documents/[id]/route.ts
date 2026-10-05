@@ -6,7 +6,6 @@ import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
-import { triggerAssetEnrichment } from '@/services/document-ai/asset-enrichment-trigger';
 
 export async function PUT(
   request: NextRequest,
@@ -194,7 +193,7 @@ export async function PUT(
       assetCible !== undefined && assetCible !== oldDoc.assetId && !autresChampsModifies;
     // CDC 15 T3-03 : détachement ou déplacement A → B — les preuves portées
     // par A sont retirées et A réconcilié AVANT la reprojection sur B
-    // (T3_NEGATIVE_RECONCILIATION ; ne lève jamais).
+    // (ne lève jamais).
     if (accountId && assetCible !== undefined && oldDoc.assetId && assetCible !== oldDoc.assetId) {
       const { onDocumentAssetChanged } = await import('@/services/ai/evidence/document-evidence-lifecycle');
       await onDocumentAssetChanged({
@@ -233,37 +232,10 @@ export async function PUT(
       reanalyser();
     }
 
-    // ══════════════════════════════════════════════════════════════════════
-    // ⚠️ LE RATTACHEMENT À UN BIEN N'ALIMENTAIT PAS LA FICHE
-    //
-    // Rattacher un document déjà analysé à un bien est le geste attendu pour
-    // que ses données remontent dans l'onglet « Informations » — l'adresse
-    // lue sur une facture doit renseigner l'adresse du bien.
-    //
-    // Or aucun des trois déclencheurs de `applyAiSuggestionsToAsset` ne
-    // couvrait ce cas (cf. `asset-enrichment-trigger.ts`). Cette route se
-    // contentait de relancer une analyse complète en tâche de fond, soumise
-    // au quota d'analyse — qui rend la main SANS RIEN FAIRE lorsqu'il est
-    // épuisé — et qui n'alimente la fiche que si elle retombe sur ANALYZED.
-    //
-    // L'alimentation est désormais déclenchée explicitement, sans dépendre
-    // de l'issue de cette réanalyse.
-    // ══════════════════════════════════════════════════════════════════════
-    const nouvelAssetId =
-      assetId === undefined
-        ? undefined
-        : assetId === null || assetId === 0
-          ? null
-          : parseInt(assetId);
-
-    if (accountId && nouvelAssetId && nouvelAssetId !== oldDoc.assetId) {
-      void triggerAssetEnrichment({
-        assetId: nouvelAssetId,
-        accountId,
-        assetFileId: documentId,
-        reason: 'document_attached',
-      });
-    }
+    // Lot 16b-3 (D-H1) : plus d'enrichissement silencieux du bien au
+    // rattachement (`asset-enrichment-trigger`, moteur historique supprimé).
+    // La fiche du bien est alimentée par la projection des faits T1 puis la
+    // réconciliation T3 (ci-dessus), ou par la réanalyse en repli.
 
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
     if (accountId) await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });

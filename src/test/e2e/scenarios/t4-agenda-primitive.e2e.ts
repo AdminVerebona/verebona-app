@@ -133,9 +133,10 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
     });
   }
 
-  for (const canonique of ['legacy', 'enabled'] as const) {
-    it(`D-13 (enabled, CANONICAL_WRITE_MODE=${canonique}) : achat manuel réalisé recopié si vide ; achat automatique jamais`, async () => {
-      process.env.CANONICAL_WRITE_MODE = canonique;
+  // Lot 16b-3 : CANONICAL_WRITE_MODE retiré — posé à legacy, il est ignoré.
+  for (const canonique of ['legacy', 'absent'] as const) {
+    it(`D-13 (CANONICAL_WRITE_MODE retiré, ${canonique}) : achat manuel réalisé recopié si vide ; achat automatique jamais`, async () => {
+      if (canonique === 'legacy') process.env.CANONICAL_WRITE_MODE = 'legacy'; else delete process.env.CANONICAL_WRITE_MODE;
       const compte = await make.account();
 
       const auto = await make.asset(compte);
@@ -152,7 +153,7 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
       const [m] = await sql<{ p: string | null; kc: string | null }[]>`
         SELECT purchase_date::text AS p, key_characteristics AS kc FROM assets WHERE id = ${manuel.id}`;
       expect(m.p).toBe('2024-02-15');
-      if (canonique === 'enabled') expect(JSON.parse(m.kc ?? '{}').acquisitionDate__origin).toBe('USER');
+      expect(JSON.parse(m.kc ?? '{}').acquisitionDate__origin).toBe('USER');
 
       // Champ déjà renseigné : rien n'est écrasé.
       const rempli = await make.asset(compte, { purchaseDate: '2020-05-05' });

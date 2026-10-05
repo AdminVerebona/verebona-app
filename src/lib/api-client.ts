@@ -74,19 +74,6 @@ function fetchWithTimeout(url: string, config: RequestInit, timeoutMs: number): 
 /** Promesse de renouvellement en cours (CDC §7.3). */
 let pendingRefresh: Promise<boolean | 'server_error'> | null = null;
 
-/**
- * Délai maximal du renouvellement de session.
- *
- * Tous les appels qui reçoivent un 401 attendent la MÊME promesse de
- * renouvellement (ci-dessus). Sans délai, une requête `/api/auth/refresh`
- * restée sans réponse (preprod, 2 oct. 2026 : « refresh » en pending)
- * bloquait indéfiniment toutes les lectures de l'écran — accueil, biens,
- * « À traiter », assistant — sans erreur ni redirection. Au-delà de ce
- * délai, l'échec est traité comme transitoire (`server_error`) : pas de
- * déconnexion, et le prochain appel retente un renouvellement.
- */
-export const REFRESH_TIMEOUT_MS = 10_000;
-
 export const apiClient = {
   async fetch<T = unknown>(
     url: string,
@@ -115,19 +102,17 @@ export const apiClient = {
       },
     };
 
-    // ai-suggestions can take 60s (Gemini on long docs), dashboard/home 15s, mutations 20s, reads 15s
+    // dashboard/home 15s, mutations 20s, reads 15s
     const isDashboard = url.includes('/api/dashboard');
     const isHomeSummary = url.includes('/api/home/summary');
-    const isAiSuggestions = url.includes('/ai-suggestions');
     // Prompt Control (T5) peut réécrire plusieurs prompts complets : 120 s par
-    // modèle côté serveur, repli compris (opération `control_prompts`). Un délai
+    // modèle côté serveur, repli compris (opération `t5_modify`). Un délai
     // plus court abandonnait alors que l'écriture dans le brouillon pouvait
     // encore aboutir — l'administrateur voyait une erreur pour une
     // modification pourtant faite.
     const isPromptControl = url.includes('/api/admin/ai/prompt-control');
     const timeoutMs = isPromptControl ? 250_000
-      : isAiSuggestions ? 90_000
-        : (isDashboard || isHomeSummary) ? 15_000 : method === 'GET' ? 15_000 : 20_000;
+      : (isDashboard || isHomeSummary) ? 15_000 : method === 'GET' ? 15_000 : 20_000;
 
     try {
       const response = await fetchWithTimeout(url, config, timeoutMs);
@@ -242,13 +227,13 @@ export const apiClient = {
     try {
       // Le jeton de renouvellement vit dans un cookie HttpOnly : le serveur
       // le lit lui-meme, le front n'a rien a transmettre (CDC §7.2).
-      const response = await fetchWithTimeout('/api/auth/refresh', {
-        credentials: 'include',
+      const response = await fetch('/api/auth/refresh', {
+      credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-      }, REFRESH_TIMEOUT_MS);
+      });
 
       // Server error (5xx / 503) — don't treat as auth failure, could be transient
       if (response.status >= 500 || response.status === 503) {
@@ -268,8 +253,7 @@ export const apiClient = {
 
       return false;
     } catch {
-      // Erreur réseau ou délai dépassé (AbortError) : transitoire, pas de
-      // déconnexion.
+      // Network error — treat as transient server error, don't log out
       return 'server_error';
     }
     })();

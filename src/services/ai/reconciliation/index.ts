@@ -12,10 +12,8 @@ export { normalize, areEquivalent } from './decision/normalizers';
 export { REASON_CODES, reasonLabel } from './decision/reason-codes';
 export { readOrigin, writeOrigin, isHumanOrigin } from './field-origin';
 export { writeConflict, resolveObsoleteConflict } from './conflict-writer';
-export { getShadowReport, summarizeShadowDecisions } from './shadow-report.service';
 export { listOpenReconciliationConflicts, fieldLabel } from './to-process-conflicts';
-export { reconcileLinks, retainAbove, ReconcileLinksOutput, LINK_SCORE_THRESHOLDS } from './link-reconciler';
-export type { ShadowReport, ShadowSummary, ShadowDecisionRow } from './shadow-report.service';
+export { reconcileLinks, retainAbove, LINK_SCORE_THRESHOLDS } from './link-reconciler';
 
 export type {
   ReconciliationAction, ReconciliationDecision, ReconciliationRun,
@@ -40,9 +38,8 @@ import { enqueueT3ForAnalyzedAsset, t3JobHandler } from './t3-queue';
 export function registerReconciliationHandlers(): void {
   registerJobHandler('T3', t3JobHandler);
 
-  // Le drapeau est déclaré ici : l'émetteur n'exécute cet abonné que si
-  // `AI_RECONCILIATION_ENGINE` l'autorise, indépendamment des autres usages.
-  onSourceAnalyzed('AI_RECONCILIATION_ENGINE', async (e) => {
+  // Lot 16b-3 : plus de drapeau (`AI_RECONCILIATION_ENGINE` supprimé).
+  onSourceAnalyzed('réconciliation', async (e) => {
     if (!e.assetId) return;
     await enqueueT3ForAnalyzedAsset({
       accountId: e.accountId,

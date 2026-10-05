@@ -107,7 +107,7 @@ export async function saveTreatmentConfig(
   // conservée, jamais remise à `steps` en silence.
   const version = await getVersion(versionId);
   const current = version?.entries.find((e) => e.treatment === config.treatment);
-  // Valeur DEMANDÉE (brute) : pour T2, T4, T5 et T6, `steps` explicitement demandé est
+  // Valeur DEMANDÉE (brute) : pour tout traitement (lot 16b-3), `steps` explicitement demandé est
   // refusé (lot 16b) plutôt que ramené à `master` en silence.
   const next = config.promptArchitecture === undefined && current
     ? promptArchitectureOf(current)

@@ -18,7 +18,7 @@ import type {
   SourceAnalysisResult, ExtractedField, ExtractedTable, ExtractedRecurrence, FactProvenance, VisualEvidence, VisualObservation,
 } from '../source-analysis/types';
 import { cellContext } from './document-tables';
-import { EXTRACT_SOURCE_PROMPT_VERSION } from '../source-analysis/prompt-version';
+import { T1_MASTER_PROMPT_CODE } from '../source-analysis/master/t1-contract';
 
 export type KnowledgeEngine = 'source_analysis' | 'legacy';
 
@@ -404,7 +404,7 @@ export function buildKnowledgeFromSourceAnalysis(
       },
       provider: result.operationTrace.usedFallback ? 'fallback' : 'gemini',
       model: result.operationTrace.models[0] ?? null,
-      promptVersion: ctx.promptVersion ?? EXTRACT_SOURCE_PROMPT_VERSION,
+      promptVersion: ctx.promptVersion ?? T1_MASTER_PROMPT_CODE,
       operationTraceId: result.operationTrace.traceIds[0] ?? null,
     },
     tables: d.tables ?? [],

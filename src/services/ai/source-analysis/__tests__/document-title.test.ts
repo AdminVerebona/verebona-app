@@ -3,7 +3,6 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { isReferenceOnlyTitle, refineDocumentTitle } from '../document-title';
-import { EXTRACT_SOURCE_PROMPT_VERSION } from '../prompt-version';
 
 describe('titre réduit à une référence', () => {
   it.each(['Facture N° 2024-1187', 'Facture n°FA000123', 'FACTURE 12345', 'Facture', 'IMG_2031.jpg', 'scan.pdf', 'Devis #D-778', ''])(
@@ -31,15 +30,12 @@ describe('reconstruction', () => {
   });
 });
 
-describe('prompt T1 v5', () => {
-  it('est la version active et porte la règle de titre', () => {
-    expect(EXTRACT_SOURCE_PROMPT_VERSION).toBe('extract_source_v5');
-    const p = readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis/extract_source_v5.txt'), 'utf-8');
-    expect(p).toMatch(/R9 — TITRE : NATUREL ET DIFFÉRENCIANT/);
-    expect(p).toMatch(/Facture Béquille draisienne/);
-    expect(p).toMatch(/INTERDIT comme titre : un numéro/);
-    for (const v of ['{{ASSET_CONTEXT}}', '{{EXISTING_TITLES}}', '{{EXTRACTED_CONTENT}}', '{{EXPECTED_FIELDS}}', '{{SOURCE_KIND}}']) {
-      expect(p, v).toContain(v);
-    }
+describe('prompt maître T1 (lot 16b-3 : seul moteur)', () => {
+  it('porte la règle de titre naturel et différenciant (U17, ex-R9)', () => {
+    const p = readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis/t1_master_v1.txt'), 'utf-8');
+    expect(p).toMatch(/U17 — TITRE UTILISATEUR/);
+    expect(p).toMatch(/« <Type> <ce qu’il concerne> »/);
+    expect(p).toMatch(/Jamais le nom du fichier ou un numéro seul/);
+    expect(p).toContain('{{EXISTING_TITLES}}');
   });
 });

@@ -337,8 +337,8 @@ export function buildPreparation(code: DossierCode, source: ExportSource, ctx: P
     return {
       id: def.id,
       label: def.label,
-      // Libellé « à confirmer » seulement quand la source canonique est utilisée (enabled).
-      description: source.sourceTrace?.source === 'canonical' ? def.descriptionCanonical ?? def.description : def.description,
+      // Lot 16b-3 : source canonique toujours — libellé « à confirmer » toujours.
+      description: def.descriptionCanonical ?? def.description,
       required: def.required,
       toggleable,
       enabled,

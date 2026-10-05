@@ -1,13 +1,14 @@
 /**
  * CDC 15 X-02 (lot 16, volet B) — source canonique des dossiers V12 : champs
  * du bien (CanonicalAssetView, unités du registre), chemins de rattachement
- * des pièces (N-N puis repli colonnes), agenda D-14 / 4 états, rapport
- * d'écarts shadow sans valeur. Fonctions pures, sans base.
+ * des pièces (N-N puis repli colonnes), agenda D-14 / 4 états. Lot 16b-3 :
+ * `EXPORTS_CANONICAL_SOURCE` et le rapport d'écarts shadow supprimés.
+ * Fonctions pures, sans base.
  */
 import { describe, it, expect } from 'vitest';
 import {
   isConfirmedAttachment, type AttachmentLink,
-  canonicalAssetScalars, canonicalCharacteristics, documentPaths, exportsSourceMode, sameExportValue, traceOf,
+  canonicalAssetScalars, canonicalCharacteristics, documentPaths, traceOf,
   type CanonicalAssetScalars, type CanonicalDocumentRow,
 } from '../data/canonical-source';
 import { buildCanonicalAssetState, type AssetRowJson } from '@/services/canonical/asset-state';
@@ -16,7 +17,6 @@ import { isPastEvent, isUpcoming, eventSection, isUnconfirmedPastDeadline, build
 import { buildPreparation } from '../preparation/prepare';
 import { mapDossierData } from '../data/mappers';
 import { renderDossierHtml } from '../templates';
-import { diffExportSources, eventBucket } from '../data/source-diff';
 import { makeSource, event, doc, TODAY } from './fixtures/sources';
 
 const ligne = (over: Partial<AssetRowJson> & { kc?: Record<string, unknown> }): AssetRowJson => {
@@ -29,13 +29,9 @@ const VIDE: CanonicalAssetScalars = {
   generalCondition: null, objectCategory: null, description: null,
 };
 
-describe('commutateur EXPORTS_CANONICAL_SOURCE', () => {
-  it('legacy par défaut, shadow, enabled ; valeur inconnue = legacy ; trace avec version du registre', () => {
-    expect(exportsSourceMode({})).toBe('legacy');
-    expect(exportsSourceMode({ EXPORTS_CANONICAL_SOURCE: 'shadow' })).toBe('shadow');
-    expect(exportsSourceMode({ EXPORTS_CANONICAL_SOURCE: 'enabled' })).toBe('enabled');
-    expect(exportsSourceMode({ EXPORTS_CANONICAL_SOURCE: 'on' })).toBe('legacy');
-    expect(traceOf('enabled', 'canonical')).toEqual({ mode: 'enabled', source: 'canonical', registryVersion: REGISTRY_VERSION });
+describe('source canonique seule (lot 16b-3)', () => {
+  it('trace : source canonique, version du registre ; plus de commutateur', () => {
+    expect(traceOf('canonical')).toEqual({ mode: 'enabled', source: 'canonical', registryVersion: REGISTRY_VERSION });
   });
 });
 
@@ -142,12 +138,11 @@ describe('relecture lot 16 — rattachements confirmés pour un envoi à un tier
     const tiroir = choicesFromLegacyOptions('DOSSIER_COMPLET', s, { customDocIds: [1, 2] }, { outputFormat: 'PDF', today: TODAY });
     expect(tiroir.items.filter((i) => i.sourceType === 'document').map((i) => i.sourceId)).toEqual([1]);
   });
-  it('libellé « échéances passées à confirmer » seulement en source canonique', () => {
+  it('libellé « échéances passées à confirmer » (source canonique seule depuis le lot 16b-3)', () => {
     const desc = (s: ReturnType<typeof makeSource>) => buildPreparation('DOSSIER_COMPLET', s, { today: TODAY, lastGeneration: null })
       .sections.find((x) => x.id === 'deadlines')!.description;
-    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET'))).not.toContain('à confirmer');
-    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET', { sourceTrace: traceOf('shadow', 'legacy') }))).not.toContain('à confirmer');
-    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET', { sourceTrace: traceOf('enabled', 'canonical') }))).toContain('échéances passées à confirmer');
+    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET'))).toContain('échéances passées à confirmer');
+    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET', { sourceTrace: traceOf('canonical') }))).toContain('échéances passées à confirmer');
   });
 });
 
@@ -204,35 +199,5 @@ describe('arbitrage lot 16 : échéances passées « à confirmer » (dossier co
     const s = makeSource('IMMOBILIER', 'DOSSIER_COMPLET', { events: [ag(1, { title: 'CT', date: '2025-01-10' })] });
     expect(isUnconfirmedPastDeadline(s.events[0], TODAY)).toBe(false);
     expect(eventSection('DOSSIER_COMPLET', s.events[0], TODAY)).toBe('history');
-  });
-});
-
-describe('rapport d’écarts shadow — sans valeur', () => {
-  it('champs, pièces présentes d’un seul côté (avec chemin), événements reclassés', () => {
-    const legacy = makeSource('IMMOBILIER', 'DOSSIER_COMPLET');
-    legacy.asset = { ...legacy.asset, purchaseDate: '2019-01-01', address: '1 rue Secrète', characteristics: { a: 1, 'x__origin': 'USER' } };
-    legacy.documents = [doc({ id: 1, kind: 'FACTURE', title: 'A' }), doc({ id: 2, kind: 'FACTURE', title: 'B' })];
-    legacy.events = [event(3, { key: 'agenda:3', source: 'agenda', title: 'CT', date: '2025-01-01', status: null })];
-    const canonical = {
-      ...legacy,
-      asset: { ...legacy.asset, purchaseDate: '2021-05-25', characteristics: { a: '1', b: 2 } },
-      documents: [legacy.documents[0], doc({ id: 7, kind: 'FACTURE', title: 'C' })],
-      events: [{ ...legacy.events[0], nature: 'DEADLINE' as const, status4: 'not_proven' as const }],
-    };
-    const r = diffExportSources(legacy, canonical, { today: TODAY, documentPaths: { 7: ['link:SECONDARY'] }, unconfirmed: [7] });
-    expect(r.fields).toEqual(['asset.purchaseDate', 'characteristics.b']);
-    expect(r.documents).toEqual({
-      onlyLegacy: [2], onlyCanonical: [{ id: 7, paths: ['link:SECONDARY'], confirmed: false }], addedInCanonical: { confirmed: 0, unconfirmed: 1 },
-    });
-    expect(r.events).toEqual([{ key: 'agenda:3', legacy: 'history', canonical: null }]);
-    expect(r.total).toBe(5);
-    const texte = JSON.stringify(r);
-    expect(texte).not.toMatch(/2021-05-25|2019-01-01|Secrète/);
-  });
-  it('égalité tolérante (vide, nombre texte)', () => {
-    expect(sameExportValue(null, '')).toBe(true);
-    expect(sameExportValue(12, '12')).toBe(true);
-    expect(sameExportValue('a', 'b')).toBe(false);
-    expect(eventBucket(event(1, { title: 'x', date: '2020-01-01' }), TODAY)).toBe('history');
   });
 });

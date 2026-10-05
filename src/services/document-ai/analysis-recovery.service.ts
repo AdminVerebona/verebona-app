@@ -42,6 +42,7 @@ import { assetFiles, accounts } from '@/db/schema';
 import { eq, inArray, isNull, and, lt, or } from 'drizzle-orm';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { withJobLock } from '@/lib/job-lock';
+import { MAX_ANALYSIS_RETRIES } from '@/services/ai/source-analysis/failure-policy';
 /** Un document en ANALYZING depuis plus de 10 min est considéré bloqué */
 export const STUCK_THRESHOLD_MS = 10 * 60 * 1_000;
 
@@ -131,7 +132,7 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
             // Échec récupérable
             and(
               eq(assetFiles.analysisState, 'ANALYSIS_FAILED'),
-              lt(assetFiles.analysisRetryCount, 10),
+              lt(assetFiles.analysisRetryCount, MAX_ANALYSIS_RETRIES),
             ),
             // Bloqué en ANALYZING (crash serveur)
             and(

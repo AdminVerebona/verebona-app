@@ -125,10 +125,9 @@ export class AiGateway {
         `Fournisseur « ${provider.name} » non configuré.`, { recoverable: true });
     }
 
-    // Masquage AVANT construction du prompt (CDC §5.2, §5.6), sauf pour les
-    // variables explicitement exemptées par l'opération (`unredactedVariables`,
-    // réservé aux prompts historiques relayés — voir operations.ts).
-    const safeVariables = redactVariables(req.promptVariables, op.unredactedVariables);
+    // Masquage AVANT construction du prompt (CDC §5.2, §5.6). Lot 16b : plus
+    // aucune exemption (les prompts historiques relayés sont retirés).
+    const safeVariables = redactVariables(req.promptVariables);
 
     // Prompt fourni à l'appel : uniquement pour les opérations déclarées
     // `dynamicPrompt` — en pratique l'évaluation d'une version candidate.
@@ -196,9 +195,7 @@ export class AiGateway {
         ? { text: substituteOverride(req.promptOverride!, safeVariables), version: 'candidate' }
         : await resolvePrompt(op.promptCode, safeVariables, op.useCaseCode);
       promptVersion = technique.version;
-      // Prompt historique relayé tel quel (`legacyPrompt`, plan de retrait
-      // WF-41) : pas de préambule, rédigé pour un autre contrat de sortie.
-      prompt = op.dynamicPrompt || op.legacyPrompt
+      prompt = op.dynamicPrompt
         ? technique.text
         : composePrompt(configuration.promptPreamble, technique.text);
     }
@@ -233,13 +230,13 @@ export class AiGateway {
     const jobId = currentJobContext()?.jobId ?? null;
 
     // CDC 15 CFG-02, CFG-05, OBS-CFG, DP-05 : ce qui a réellement été appliqué,
-    // tracé avec chaque tentative. Le moteur se déduit de l'opération : un
-    // prompt historique relayé (`legacyPrompt`) EST le moteur legacy.
+    // tracé avec chaque tentative. Lot 16b : plus de moteur historique — le
+    // moteur est toujours `new`, sauf valeur explicite de l'appelant.
     const traceConfig = {
       task: master?.task ?? req.task ?? null,
       masterPromptCode: master?.masterPromptCode ?? req.masterPromptCode ?? null,
       masterPromptVersion: master?.masterPromptVersion ?? req.masterPromptVersion ?? null,
-      engine: req.engine ?? (op.legacyPrompt ? 'legacy' as const : 'new' as const),
+      engine: req.engine ?? ('new' as const),
       triggerCode: req.triggerCode ?? currentJobContext()?.triggerCode ?? null,
     };
     // §2.1 : le plafond ne vaut que pour le modèle principal ; les replis
@@ -389,7 +386,12 @@ export class AiGateway {
         }
       }
 
-      noteGatewayOutcome({ treatment, attempts, chainSucceeded: chaineComplete ? false : null });
+      noteGatewayOutcome({
+        treatment, attempts, chainSucceeded: chaineComplete ? false : null,
+        // Revue L16b-3 : un même document ne fait progresser le disjoncteur
+        // qu'une fois par fenêtre (`recordChainOutcome`).
+        target: req.sourceIds && req.sourceIds.length > 0 ? `sources:${[...req.sourceIds].sort((x, y) => x - y).join(',')}` : null,
+      });
       throw new AiGatewayError('ALL_MODELS_FAILED', operationCode,
         `Tous les modèles ont échoué. ${failures.join(' — ')}`, { recoverable: true, lastFailureCode });
     } finally {

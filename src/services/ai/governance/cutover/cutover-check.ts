@@ -1,164 +1,131 @@
 /**
- * Préconditions du RETRAIT des étapes historiques et du relais legacy —
- * CDC 15 §29 étape 15, §32 (« anciens prompts supprimés ou marqués
- * définitivement legacy »), D-02, D-17, HC-06.
+ * GARDE de l'architecture cible — CDC 15 §29 étape 15, §32 (« anciens
+ * prompts supprimés »), D-02, D-17, HC-06 ; lot 16b (retrait de l'ancien
+ * moteur IA).
  *
- * Calcul PUR : les entrées (architecture de la version ACTIVE, commutateurs,
- * drapeaux, corpus, appels observés) sont lues par le script
- * `check-master-cutover.ts`, en base si possible, sinon « à vérifier ».
- * Rien n'est supprimé : le résultat est la LISTE EXACTE de ce qui peut
- * l'être, opération par opération, avec ses fichiers.
+ * Jusqu'au lot 16b, ce calcul listait les préconditions du RETRAIT des
+ * opérations dépréciées. Le retrait est fait : il devient un garde, qui
+ * échoue si l'ancien moteur réapparaît.
  *
- * Une opération dépréciée est supprimable quand, pour son traitement :
- *   1. la version ACTIVE est en `master` ;
- *   2. le commutateur de déploiement du traitement vaut `enabled` ;
- *   3. le drapeau `AI_*` de l'usage vaut `enabled` (nouveau moteur, D-01) ;
- *   4. le corpus du master de la version ACTIVE est vert ;
- *   5. aucun appel à l'opération dans `ai_usage_event` sur N jours.
- * Son fichier de prompt ne l'est que si TOUTES les opérations qui le citent
- * le sont. Un fichier de prompt qu'aucune opération ne cite est orphelin.
+ * Calcul PUR : les entrées (registre, fichiers de prompt, gabarits
+ * historiques, base, environnement) sont lues par le script
+ * `check-master-cutover.ts`. Contrôles :
+ *
+ *   · NON_TARGET_OPERATION   (bloquant) une opération ACTIVE appelle un
+ *     modèle hors prompt maître (étape historique, relais legacy) — seule
+ *     exception : l'évaluation d'une version candidate (`dynamicPrompt`) ;
+ *   · ORPHAN_PROMPT_FILE     (bloquant) un fichier `ai/prompts/**` qu'aucune
+ *     opération active ne cite (prompt d'étape oublié) ;
+ *   · LEGACY_TEMPLATE        (bloquant) un gabarit historique
+ *     `document-ai/prompts/*.txt` subsiste ;
+ *   · STORED_STEPS           (bloquant en base, « à vérifier » sans base)
+ *     une ligne de configuration stockée `steps` (migrations 0231 à 0234 non
+ *     appliquées) ;
+ *   · RETIRED_VARIABLE       (avertissement) drapeau `AI_*` ou commutateur
+ *     retiré encore posé : ignoré par le code, à supprimer chez l'hébergeur ;
+ *   · RETIRED_OPERATION_CALL (avertissement) appel récent, dans
+ *     `ai_usage_event`, à une opération qui n'existe plus au registre
+ *     (historique d'avant le déploiement, ou ancien code encore en service).
  */
-import type { AiOperationDefinition, OperationDeprecation } from '../../registry/operations';
-import type { Treatment } from '../../config/treatments';
+import type { AiOperationDefinition } from '../../registry/operations';
 
-export type Check = 'ok' | 'bloquant' | 'à vérifier';
+export type Check = 'ok' | 'bloquant' | 'avertissement' | 'à vérifier';
 
-export interface Precondition { code: string; status: Check; detail: string }
-
-export interface CutoverOperation {
-  operationCode: string;
-  treatment: Treatment;
-  deprecation: OperationDeprecation;
-  preconditions: Precondition[];
-  removable: Check;
-  /** Fichiers de prompt supprimables AVEC cette opération (chemins relatifs). */
-  files: string[];
-  /** Fichiers du code qui citent encore l'opération (à adapter avant retrait). */
-  callers: string[];
-}
+export interface GuardCheck { code: string; status: Check; detail: string }
 
 export interface CutoverReport {
   mode: 'base' | 'statique';
   days: number;
-  operations: CutoverOperation[];
-  /** Opérations supprimables (liste exacte). */
-  removableOperations: string[];
-  /** Fichiers supprimables : prompts des opérations supprimables + orphelins. */
-  removableFiles: string[];
-  /** Fichiers de prompt qu'aucune opération ne cite ET qu'aucun fichier du dépôt ne référence. */
+  checks: GuardCheck[];
+  nonTargetOperations: string[];
   orphanPromptFiles: string[];
-  /** Orphelins encore référencés (historique, tests) : à vérifier avant retrait. */
-  referencedOrphans: Array<{ path: string; references: string[] }>;
+  legacyTemplates: string[];
+  /** Lignes stockées `steps` ; null : base non lue. */
+  storedSteps: Array<{ versionId: number; treatment: string }> | null;
+  retiredVariables: string[];
+  /** Opérations hors registre appelées sur la fenêtre ; null : non lu. */
+  retiredOperationCalls: Array<{ operationCode: string; calls: number }> | null;
+  /** Aucun contrôle bloquant. */
   ready: boolean;
 }
 
 export interface CutoverInputs {
   operations: AiOperationDefinition[];
-  deprecationOf(op: AiOperationDefinition): OperationDeprecation | null;
-  treatmentOf(op: AiOperationDefinition): Treatment;
-  /** Architecture de la version ACTIVE par traitement ; null : base indisponible. */
-  activeArchitecture: Partial<Record<Treatment, 'steps' | 'master'>> | null;
-  /** Commutateur de déploiement exigé par traitement (nom → mode lu). */
-  switches: Partial<Record<Treatment, { name: string; mode: string }>>;
-  /** Drapeau AI_* de l'usage de l'opération. */
-  flagOf(op: AiOperationDefinition): { name: string; mode: string };
-  /** Corpus du master de la version ACTIVE ; null : non lu. */
-  corpusGreen: Partial<Record<Treatment, boolean>> | null;
+  isTarget(op: AiOperationDefinition): boolean;
+  /** Tous les fichiers de prompt du dépôt (relatifs), et leur code. */
+  promptFiles: Array<{ promptCode: string; path: string }>;
+  /** Gabarits historiques encore présents (chemins relatifs). */
+  legacyTemplates: string[];
+  /** Lignes de configuration stockées `steps` ; null : base indisponible. */
+  storedSteps: Array<{ versionId: number; treatment: string }> | null;
+  /** Variables retirées encore posées (nom). */
+  retiredVariables: string[];
   /** Appels observés par opération sur la fenêtre ; null : non lu. */
   usage: Record<string, number> | null;
   days: number;
-  /** Chemin (relatif) du fichier d'un promptCode, ou null. */
-  promptFileOf(promptCode: string, op: AiOperationDefinition): string | null;
-  /** Tous les fichiers de prompt du dépôt (relatifs), et leur code. */
-  promptFiles: Array<{ promptCode: string; path: string }>;
-  /** Appelants de l'opération dans le code. */
-  callersOf(operationCode: string): string[];
-  /** Fichiers du dépôt (tests compris) qui citent un promptCode. */
-  referencesOf(promptCode: string): string[];
 }
 
-const pire = (xs: Check[]): Check => (xs.includes('bloquant') ? 'bloquant' : xs.includes('à vérifier') ? 'à vérifier' : 'ok');
-
 export function computeCutover(i: CutoverInputs): CutoverReport {
-  const ops: CutoverOperation[] = [];
-  for (const op of i.operations) {
-    const deprecation = i.deprecationOf(op);
-    if (!deprecation) continue;
-    const t = i.treatmentOf(op);
-    const pre: Precondition[] = [];
+  const checks: GuardCheck[] = [];
+  const actives = i.operations.filter((o) => o.active);
 
-    const arch = i.activeArchitecture ? i.activeArchitecture[t] ?? 'steps' : null;
-    pre.push(arch === null
-      ? { code: 'ACTIVE_MASTER', status: 'à vérifier', detail: `${t} : architecture de la version ACTIVE non lue (base indisponible).` }
-      : arch === 'master'
-        ? { code: 'ACTIVE_MASTER', status: 'ok', detail: `${t} en master sur la version ACTIVE.` }
-        : { code: 'ACTIVE_MASTER', status: 'bloquant', detail: `${t} encore en steps sur la version ACTIVE.` });
+  const nonTarget = actives.filter((o) => !i.isTarget(o)).map((o) => o.operationCode);
+  checks.push(nonTarget.length
+    ? { code: 'NON_TARGET_OPERATION', status: 'bloquant', detail: `opération(s) hors prompt maître : ${nonTarget.join(', ')}.` }
+    : { code: 'NON_TARGET_OPERATION', status: 'ok', detail: 'toutes les opérations modèle passent par un prompt maître.' });
 
-    const sw = i.switches[t];
-    if (sw) {
-      pre.push(sw.mode === 'enabled'
-        ? { code: 'SWITCH_ENABLED', status: 'ok', detail: `${sw.name}=enabled.` }
-        : { code: 'SWITCH_ENABLED', status: 'bloquant', detail: `${sw.name}=${sw.mode} (enabled requis).` });
-    }
-    const flag = i.flagOf(op);
-    pre.push(flag.mode === 'enabled'
-      ? { code: 'AI_FLAG_ENABLED', status: 'ok', detail: `${flag.name}=enabled.` }
-      : { code: 'AI_FLAG_ENABLED', status: 'bloquant', detail: `${flag.name}=${flag.mode} (nouveau moteur requis, D-01).` });
+  const cites = new Set(actives.flatMap((o) => [o.promptCode, o.masterPromptCode]).filter((x): x is string => Boolean(x)));
+  const orphelins = i.promptFiles.filter((f) => !cites.has(f.promptCode)).map((f) => f.path).sort();
+  checks.push(orphelins.length
+    ? { code: 'ORPHAN_PROMPT_FILE', status: 'bloquant', detail: `prompt(s) cité(s) par aucune opération : ${orphelins.join(', ')}.` }
+    : { code: 'ORPHAN_PROMPT_FILE', status: 'ok', detail: `${i.promptFiles.length} fichier(s) de prompt, tous cités.` });
 
-    const green = i.corpusGreen ? i.corpusGreen[t] : undefined;
-    pre.push(i.corpusGreen === null || green === undefined
-      ? { code: 'CORPUS_GREEN', status: i.corpusGreen === null ? 'à vérifier' : 'bloquant', detail: `${t} : corpus du master ${i.corpusGreen === null ? 'non lu' : 'absent'}.` }
-      : green
-        ? { code: 'CORPUS_GREEN', status: 'ok', detail: `${t} : corpus vert.` }
-        : { code: 'CORPUS_GREEN', status: 'bloquant', detail: `${t} : corpus non vert.` });
+  const gabarits = [...i.legacyTemplates].sort();
+  checks.push(gabarits.length
+    ? { code: 'LEGACY_TEMPLATE', status: 'bloquant', detail: `gabarit(s) historique(s) : ${gabarits.join(', ')}.` }
+    : { code: 'LEGACY_TEMPLATE', status: 'ok', detail: 'aucun gabarit historique.' });
 
-    const calls = i.usage ? i.usage[op.operationCode] ?? 0 : null;
-    pre.push(calls === null
-      ? { code: 'NO_RECENT_CALLS', status: 'à vérifier', detail: `appels des ${i.days} derniers jours non lus.` }
-      : calls === 0
-        ? { code: 'NO_RECENT_CALLS', status: 'ok', detail: `aucun appel sur ${i.days} jours.` }
-        : { code: 'NO_RECENT_CALLS', status: 'bloquant', detail: `${calls} appel(s) sur ${i.days} jours.` });
+  checks.push(i.storedSteps === null
+    ? { code: 'STORED_STEPS', status: 'à vérifier', detail: 'configuration IA non lue (base indisponible).' }
+    : i.storedSteps.length
+      ? {
+        code: 'STORED_STEPS', status: 'bloquant',
+        detail: `${i.storedSteps.length} ligne(s) de configuration encore stockée(s) « steps » `
+          + `(${i.storedSteps.map((s) => `v${s.versionId}/${s.treatment}`).join(', ')}) : appliquer les migrations 0231 à 0234.`,
+      }
+      : { code: 'STORED_STEPS', status: 'ok', detail: 'aucune ligne de configuration en « steps ».' });
 
-    ops.push({
-      operationCode: op.operationCode, treatment: t, deprecation, preconditions: pre, removable: pire(pre.map((p) => p.status)),
-      files: [], callers: i.callersOf(op.operationCode),
-    });
-  }
+  checks.push(i.retiredVariables.length
+    ? { code: 'RETIRED_VARIABLE', status: 'avertissement', detail: `variable(s) retirée(s) encore posée(s), ignorée(s) : ${i.retiredVariables.join(', ')}.` }
+    : { code: 'RETIRED_VARIABLE', status: 'ok', detail: 'aucune variable retirée posée.' });
 
-  // Fichiers : supprimables seulement si toutes les opérations qui citent le
-  // promptCode sont elles-mêmes supprimables.
-  const statut = new Map(ops.map((o) => [o.operationCode, o.removable]));
-  const parCode = new Map<string, AiOperationDefinition[]>();
-  for (const op of i.operations) {
-    for (const code of [op.promptCode, op.masterPromptCode].filter((x): x is string => Boolean(x))) {
-      parCode.set(code, [...(parCode.get(code) ?? []), op]);
-    }
-  }
-  for (const o of ops) {
-    const op = i.operations.find((x) => x.operationCode === o.operationCode)!;
-    if (!op.promptCode) continue;
-    const users = parCode.get(op.promptCode) ?? [];
-    const tous = pire(users.map((u) => statut.get(u.operationCode) ?? 'bloquant'));
-    const path = i.promptFileOf(op.promptCode, op);
-    if (path && tous === o.removable) o.files.push(path);
-  }
+  const connues = new Set(i.operations.map((o) => o.operationCode));
+  const appels = i.usage === null
+    ? null
+    : Object.entries(i.usage)
+      .filter(([code, n]) => n > 0 && !connues.has(code))
+      .map(([operationCode, calls]) => ({ operationCode, calls }))
+      .sort((a, b) => a.operationCode.localeCompare(b.operationCode));
+  checks.push(appels === null
+    ? { code: 'RETIRED_OPERATION_CALL', status: 'à vérifier', detail: `appels des ${i.days} derniers jours non lus.` }
+    : appels.length
+      ? {
+        code: 'RETIRED_OPERATION_CALL', status: 'avertissement',
+        detail: `opération(s) hors registre appelée(s) sur ${i.days} jours : `
+          + `${appels.map((a) => `${a.operationCode} (${a.calls})`).join(', ')} — historique antérieur au déploiement ?`,
+      }
+      : { code: 'RETIRED_OPERATION_CALL', status: 'ok', detail: `aucun appel hors registre sur ${i.days} jours.` });
 
-  const cites = new Set(parCode.keys());
-  const orphelins = i.promptFiles.filter((f) => !cites.has(f.promptCode));
-  const referencedOrphans = orphelins
-    .map((f) => ({ path: f.path, references: i.referencesOf(f.promptCode) }))
-    .filter((f) => f.references.length > 0);
-  const orphanPromptFiles = orphelins.map((f) => f.path).filter((p) => !referencedOrphans.some((r) => r.path === p)).sort();
-  const removableOperations = ops.filter((o) => o.removable === 'ok').map((o) => o.operationCode);
-  const removableFiles = [...new Set([...ops.filter((o) => o.removable === 'ok').flatMap((o) => o.files), ...orphanPromptFiles])].sort();
   return {
-    mode: i.activeArchitecture === null ? 'statique' : 'base',
+    mode: i.storedSteps === null ? 'statique' : 'base',
     days: i.days,
-    operations: ops,
-    removableOperations,
-    removableFiles,
-    orphanPromptFiles,
-    referencedOrphans,
-    ready: ops.length > 0 && ops.every((o) => o.removable === 'ok'),
+    checks,
+    nonTargetOperations: nonTarget,
+    orphanPromptFiles: orphelins,
+    legacyTemplates: gabarits,
+    storedSteps: i.storedSteps,
+    retiredVariables: [...i.retiredVariables],
+    retiredOperationCalls: appels,
+    ready: !checks.some((c) => c.status === 'bloquant'),
   };
 }

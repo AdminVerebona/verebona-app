@@ -86,9 +86,9 @@ describe('moteur T4', () => {
     expect(deplacee.every((x) => x.action === 'skip_duplicate')).toBe(true);
   });
 
-  it('source réellement modifiée : prompt T1 v3 (récurrence seulement si écrite)', () => {
-    const p = readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis/extract_source_v3.txt'), 'utf-8');
-    expect(p).toMatch(/R8bis — RÉCURRENCE, SEULEMENT SI ELLE EST ÉCRITE/);
-    expect(p).toMatch(/Ne calcule AUCUNE date future toi-même/);
+  it('prompt maître T1 (seul moteur depuis le lot 16b-3) : récurrence seulement si écrite, aucune occurrence calculée', () => {
+    const p = readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis/t1_master_v1.txt'), 'utf-8');
+    expect(p).toMatch(/Crée `recurrence` uniquement si la source énonce explicitement la périodicité/);
+    expect(p).toMatch(/Ne calcule aucune occurrence future dans T1/);
   });
 });

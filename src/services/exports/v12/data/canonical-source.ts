@@ -1,6 +1,7 @@
 /**
  * Source canonique des dossiers V12 — CDC 15 X-02 (P0), §12, §14 point 8,
- * T3-05 ; plan lot 16 volet B. Commutateur `EXPORTS_CANONICAL_SOURCE`.
+ * T3-05 ; plan lot 16 volet B. Seule source des dossiers depuis le lot 16b-3
+ * (commutateur `EXPORTS_CANONICAL_SOURCE` et mode d'observation supprimés).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CE QUI CHANGE PAR RAPPORT À LA LECTURE HISTORIQUE (`source.ts`)
@@ -57,14 +58,9 @@
  * 4. Traçabilité : le snapshot garde la source réellement utilisée et la
  *    version du registre (`sourceTrace`).
  *
- * Mode `shadow` : la version historique est construite ET utilisée ; la
- * version canonique est calculée en plus (4 requêtes, aucun rendu), puis
- * comparée : rapport d'écarts STRUCTURÉ, journalisé, SANS AUCUNE VALEUR —
- * noms de champs, identifiants de pièces et d'événements seulement.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
-import { getRolloutMode, type RolloutMode } from '@/services/canonical/rollout';
 import { buildCanonicalAssetState, loadAssetRow, isEmptyValue, parseKc, type AssetRowJson, type CanonicalAssetState } from '@/services/canonical/asset-state';
 import { isMetaKey } from '@/services/canonical/asset-state/canonical-asset-view';
 import { REGISTRY_VERSION, eurToCents, getField, resolveAlias, type AssetFamily } from '@/services/canonical/registry';
@@ -74,11 +70,6 @@ import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { agendaStatus4, type AgendaStatus4 } from '@/services/verebona-assistant/canonical/agenda';
 import type { DocumentRef } from '@/services/export-snapshot.service';
 import type { SourceEquipment, SourceEquipmentField } from './source';
-
-/** Mode du commutateur (lu à chaque appel). */
-export function exportsSourceMode(env: Record<string, string | undefined> = process.env): RolloutMode {
-  return getRolloutMode('EXPORTS_CANONICAL_SOURCE', env);
-}
 
 // ── Champs du bien ──────────────────────────────────────────────────────────
 
@@ -362,63 +353,27 @@ export async function loadCanonicalAgenda(accountId: number, assetId: number, to
   });
 }
 
-// ── Traçabilité et rapport d'écarts ─────────────────────────────────────────
+// ── Traçabilité ─────────────────────────────────────────────────────────────
 
-/** Rapport d'écarts historique ↔ canonique — SANS AUCUNE VALEUR. */
-export interface ExportSourceDiff {
-  /** Champs dont la valeur diffère (noms seulement ; `asset.x` ou `characteristics.x`). */
-  fields: string[];
-  documents: {
-    /** Pièces de la version historique absentes de la canonique. */
-    onlyLegacy: number[];
-    /** Pièces de la version canonique absentes de l'historique, avec leur chemin. */
-    onlyCanonical: Array<{ id: number; paths: DocumentPath[]; confirmed: boolean }>;
-    /**
-     * « Ajoutés en canonique » : pièces absentes de l'historique, par
-     * confirmation du rattachement. Les non confirmées ne partent jamais
-     * sans choix explicite (proposées décochées, ou exclues sans étape de choix).
-     */
-    addedInCanonical: { confirmed: number; unconfirmed: number };
-  };
-  /** Événements classés différemment (historique / échéance / aucun). */
-  events: Array<{ key: string; legacy: EventBucket; canonical: EventBucket }>;
-  total: number;
-}
-
-export type EventBucket = 'history' | 'deadline' | null;
-
-/** Trace de la source d'un dossier, figée dans le snapshot. */
+/**
+ * Trace de la source d'un dossier, figée dans le snapshot. Depuis le lot
+ * 16b-3, toujours `source: 'canonical'` (`mode: 'enabled'`, conservé pour
+ * la lecture des snapshots antérieurs, qui peuvent porter `legacy` / `shadow`
+ * et un `shadowDiff`).
+ */
 export interface ExportSourceTrace {
-  mode: RolloutMode;
+  mode: 'legacy' | 'shadow' | 'enabled';
   /** Source réellement utilisée pour les données du dossier. */
   source: 'legacy' | 'canonical';
   registryVersion: string;
   /** Chemins de rattachement des pièces (source canonique). */
   documentPaths?: Record<number, DocumentPath[]>;
-  /** Mode shadow : compteurs d'écarts (le détail est journalisé). */
-  shadowDiff?: {
-    fields: number; documentsOnlyLegacy: number; documentsOnlyCanonical: number; events: number;
-    /** Ajoutés en canonique, rattachement confirmé / non confirmé. */
-    addedConfirmed?: number; addedUnconfirmed?: number;
-    failed?: boolean;
-  };
   /** Pièces au rattachement non confirmé (source canonique). */
   unconfirmedDocuments?: number[];
 }
 
-export const traceOf = (mode: RolloutMode, source: 'legacy' | 'canonical', extra: Partial<ExportSourceTrace> = {}): ExportSourceTrace =>
-  ({ mode, source, registryVersion: REGISTRY_VERSION, ...extra });
-
-/** Égalité tolérante : vide = vide, nombres et dates comparés sous forme texte. */
-export function sameExportValue(a: unknown, b: unknown): boolean {
-  if (isEmptyValue(a) && isEmptyValue(b)) return true;
-  if (isEmptyValue(a) || isEmptyValue(b)) return false;
-  if (typeof a === 'object' || typeof b === 'object') return JSON.stringify(a) === JSON.stringify(b);
-  const na = Number(a);
-  const nb = Number(b);
-  if (Number.isFinite(na) && Number.isFinite(nb) && String(a).trim() !== '' && String(b).trim() !== '') return na === nb;
-  return String(a).trim() === String(b).trim();
-}
+export const traceOf = (source: 'canonical', extra: Partial<ExportSourceTrace> = {}): ExportSourceTrace =>
+  ({ mode: 'enabled', source, registryVersion: REGISTRY_VERSION, ...extra });
 
 export { REGISTRY_VERSION };
 export type { AssetRowJson, CanonicalAssetState };

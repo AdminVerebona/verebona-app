@@ -172,7 +172,7 @@ async function generateRawExport(
   try {
     const [accountRow] = await db.select({ planType: accounts.planType }).from(accounts).where(eq(accounts.id, accountId)).limit(1);
     const isPremium = isPremiumPlan(accountRow?.planType ?? '');
-    // X-02 (lot 16) : source selon EXPORTS_CANONICAL_SOURCE (legacy inchangé).
+    // X-02 (lot 16) : source canonique.
     const snapshot = await buildExportAssetSnapshot(asset.id, userId, { accountId }, 'EXPORT_BRUT');
     const manifest = buildExportManifest('EXPORT_BRUT', snapshot, { ...options, requestedOutputs: ['ZIP'] });
     const zipBuffer = await buildExportZip(manifest, snapshot, null, isPremium);

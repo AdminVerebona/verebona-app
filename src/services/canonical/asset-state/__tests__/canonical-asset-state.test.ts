@@ -1,6 +1,8 @@
 /**
  * CanonicalAssetView et writeCanonicalAssetField — tests unitaires (sans base).
  * CDC 15 SVC-04, SVC-05, T3-01, T3-02, T3-05, T2-38 ; plan lot 11 (D-09, D-10).
+ * Lot 16b-3 : `CANONICAL_WRITE_MODE`, `rollout.ts` et l'observation
+ * (`divergenceOf`) supprimés — la primitive écrit toujours.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,11 +12,10 @@ vi.mock('@/services/verebona-assistant/events/business-events', () => ({ emitBus
 
 const { buildCanonicalAssetState, readCanonicalValue } = await import('../canonical-asset-view');
 const {
-  planCanonicalWrites, divergenceOf, writeCanonicalAssetFields, writeCanonicalAssetField, fieldTargetsAsset,
+  planCanonicalWrites, writeCanonicalAssetFields, writeCanonicalAssetField, fieldTargetsAsset,
 } = await import('../write-canonical-asset-field');
 const { getField } = await import('@/services/canonical/registry');
 const { canOverwrite, writeOrigin } = await import('@/services/ai/reconciliation/field-origin');
-const { canonicalWriteMode, rolloutSnapshot, ROLLOUT_SWITCHES } = await import('@/services/canonical/rollout');
 
 type Row = Parameters<typeof buildCanonicalAssetState>[0];
 const NOW = '2026-09-29T10:00:00.000Z';
@@ -32,23 +33,6 @@ function row(kc: Record<string, unknown>, cols: Record<string, unknown> = {}, ca
 function sansOrigine(kc: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(kc).filter(([k]) => !/__(origin|updatedAt|authority|sourceDate)$/.test(k)));
 }
-
-describe('rollout — commutateurs', () => {
-  it('legacy par défaut, valeur inconnue lue legacy et signalée', () => {
-    expect(canonicalWriteMode({})).toBe('legacy');
-    expect(canonicalWriteMode({ CANONICAL_WRITE_MODE: 'Shadow' })).toBe('shadow');
-    expect(canonicalWriteMode({ CANONICAL_WRITE_MODE: 'enabled' })).toBe('enabled');
-    expect(canonicalWriteMode({ CANONICAL_WRITE_MODE: 'on' })).toBe('legacy');
-    const snap = rolloutSnapshot({ CANONICAL_WRITE_MODE: 'on', AI_T4_EFFECTS: 'shadow' });
-    expect(snap.map((s) => s.name)).toEqual(Object.keys(ROLLOUT_SWITCHES));
-    expect(snap.find((s) => s.name === 'CANONICAL_WRITE_MODE')).toMatchObject({ mode: 'legacy', invalid: true, raw: 'on', wired: true });
-    // Lot 16b-2 : AI_T4_EFFECTS et ASSISTANT_CANONICAL_READ retirés (toujours actifs).
-    expect(snap.map((s) => s.env)).not.toContain('AI_T4_EFFECTS');
-    expect(snap.map((s) => s.env)).not.toContain('ASSISTANT_CANONICAL_READ');
-    // EXPORTS_CANONICAL_SOURCE est branché depuis le lot 16 (X-02).
-    expect(snap.find((s) => s.name === 'EXPORTS_CANONICAL_SOURCE')).toMatchObject({ mode: 'legacy', wired: true });
-  });
-});
 
 describe('field-origin — préséance', () => {
   it('humain passe toujours ; automatique ne remplace jamais une valeur humaine renseignée', () => {
@@ -188,21 +172,9 @@ describe('planCanonicalWrites', () => {
     expect(t.results[0].outcome).toBe('written');
     expect(t.kc).toMatchObject({ condition: 'NEUF', generalCondition: 'NEUF' });
   });
-
-  it('divergence (shadow) : le chemin historique n’a posé ni origine ni miroir', () => {
-    const before = row({ acquisitionPrice: 900, acquisitionPrice__origin: 'DOCUMENT_EXTRACTION' }, {}, 'OBJET');
-    const p = ui(before, 'acquisitionPrice', '1000');
-    const legacyAfter = row({ acquisitionPrice: '1000', acquisitionPrice__origin: 'DOCUMENT_EXTRACTION' }, {}, 'OBJET');
-    expect(divergenceOf(p.results[0], legacyAfter)).toEqual({
-      origin: { legacy: 'DOCUMENT_EXTRACTION', canonical: 'USER' },
-      mirrors: { purchase_price_cents: { legacy: null, canonical: 100000 } },
-    });
-    const identical = row(p.kc, p.columns, 'OBJET');
-    expect(divergenceOf(p.results[0], identical)).toBeNull();
-  });
 });
 
-describe('writeCanonicalAssetFields — modes', () => {
+describe('writeCanonicalAssetFields — écriture réelle seule (lot 16b-3)', () => {
   const kc = { mileage: 1000, mileage__origin: 'DOCUMENT_EXTRACTION' };
   let calls: Array<{ q: string; p: unknown[] }>;
   const runner = () => {
@@ -216,36 +188,30 @@ describe('writeCanonicalAssetFields — modes', () => {
   beforeEach(() => { calls = []; emitBusinessEvent.mockClear(); });
   const input = { assetId: 1, accountId: 7, origin: 'RECONCILIATION' as const, source: { type: 'document', id: 55 }, writes: [{ key: 'kilometrage', value: 2000 }] };
 
-  it('legacy : rien n’est lu ni écrit', async () => {
-    const run = runner();
-    const r = await writeCanonicalAssetFields({ ...input, mode: 'legacy' }, {}, run as never);
-    expect(r).toMatchObject({ skipped: true, dryRun: true, fields: [] });
-    expect(calls).toHaveLength(0);
-    expect(emitBusinessEvent).not.toHaveBeenCalled();
+  it('commutateur retiré encore posé (legacy / shadow) : ignoré, écriture réelle sous verrou', async () => {
+    for (const v of ['legacy', 'shadow']) {
+      vi.stubEnv('CANONICAL_WRITE_MODE', v);
+      calls = [];
+      const run = runner();
+      const r = await writeCanonicalAssetFields(input, {}, run as never);
+      expect(r).toMatchObject({ notFound: false });
+      expect(r).not.toHaveProperty('dryRun');
+      expect(run.begin).toHaveBeenCalled();
+      expect(calls.some((c) => c.q.includes('FOR UPDATE'))).toBe(true);
+      expect(calls.some((c) => c.q.startsWith('UPDATE assets'))).toBe(true);
+      expect(calls.find((c) => c.q.startsWith('INSERT INTO canonical_field_writes'))!.p[11]).toBe(false); // dry_run
+    }
+    vi.unstubAllEnvs();
   });
 
-  it('shadow : lecture sans verrou, journal dry_run, bien intact, aucun événement', async () => {
-    const run = runner();
-    const r = await writeCanonicalAssetFields({ ...input, mode: 'shadow' }, {}, run as never);
-    expect(r.dryRun).toBe(true);
-    expect(r.fields[0]).toMatchObject({ key: 'mileage', outcome: 'written', nextValue: 2000 });
-    expect(run.begin).not.toHaveBeenCalled();
-    expect(calls.some((c) => c.q.includes('FOR UPDATE'))).toBe(false);
-    expect(calls.some((c) => c.q.startsWith('UPDATE assets'))).toBe(false);
-    const j = calls.find((c) => c.q.startsWith('INSERT INTO canonical_field_writes'))!;
-    expect(j.p[11]).toBe(true); // dry_run
-    expect(calls.some((c) => c.q.startsWith('INSERT INTO ai_field_updates'))).toBe(false);
-    expect(emitBusinessEvent).not.toHaveBeenCalled();
-  });
-
-  it('enabled : transaction, FOR UPDATE borné au compte, UPDATE avec miroirs, journal, ai_field_updates, événement', async () => {
+  it('transaction, FOR UPDATE borné au compte, UPDATE avec miroirs, journal, ai_field_updates, événement', async () => {
     const run = runner();
     const { writes: _w, ...un } = input;
     const r = await writeCanonicalAssetField({
-      ...un, key: 'kilometrage', value: 2000, mode: 'enabled', traceId: 'tr-1',
+      ...un, key: 'kilometrage', value: 2000, traceId: 'tr-1',
       trace: { reasonCode: 'AUTO_VALUE_BETTER_AUTHORITY', authority: 90 },
     }, run as never);
-    expect(r).toMatchObject({ dryRun: false, notFound: false });
+    expect(r).toMatchObject({ notFound: false });
     expect(r.field).toMatchObject({ key: 'mileage', requestedKey: 'kilometrage', outcome: 'written' });
     const sel = calls.find((c) => c.q.includes('row_to_json'))!;
     expect(sel.q).toMatch(/a\.account_id = \$2 AND a\.deleted_at IS NULL FOR UPDATE/);
@@ -263,10 +229,10 @@ describe('writeCanonicalAssetFields — modes', () => {
     expect(emitBusinessEvent).toHaveBeenCalledWith({ type: 'ASSET_UPDATED', accountId: 7, entityId: 1 });
   });
 
-  it('enabled : plusieurs clés → UN INSERT journal et UN INSERT ai_field_updates (multi-VALUES)', async () => {
+  it('plusieurs clés → UN INSERT journal et UN INSERT ai_field_updates (multi-VALUES)', async () => {
     const run = runner();
     await writeCanonicalAssetFields({
-      ...input, mode: 'enabled',
+      ...input,
       writes: [{ key: 'mileage', value: 3000 }, { key: 'vin', value: 'VF1', trace: { confidence: 'certain' } }, { key: 'seats', value: 5 }],
     }, {}, run as never);
     const j = calls.filter((c) => c.q.startsWith('INSERT INTO canonical_field_writes'));
@@ -278,15 +244,15 @@ describe('writeCanonicalAssetFields — modes', () => {
     expect(ai[0].p.filter((_, i) => i % 7 === 6)).toEqual([null, 'certain', null]);
   });
 
-  it('enabled : écriture USER → pas de ligne ai_field_updates ; valeur protégée → journal « protected », pas d’UPDATE', async () => {
+  it('écriture USER → pas de ligne ai_field_updates ; valeur protégée → journal « protected », pas d’UPDATE', async () => {
     const run = runner();
-    await writeCanonicalAssetFields({ ...input, origin: 'USER', mode: 'enabled', emitEvent: false }, {}, run as never);
+    await writeCanonicalAssetFields({ ...input, origin: 'USER', emitEvent: false }, {}, run as never);
     expect(calls.some((c) => c.q.startsWith('INSERT INTO ai_field_updates'))).toBe(false);
     expect(emitBusinessEvent).not.toHaveBeenCalled();
 
     calls = [];
     kc.mileage__origin = 'USER';
-    const r = await writeCanonicalAssetFields({ ...input, mode: 'enabled' }, {}, run as never);
+    const r = await writeCanonicalAssetFields(input, {}, run as never);
     kc.mileage__origin = 'DOCUMENT_EXTRACTION';
     expect(r.fields[0].outcome).toBe('protected');
     expect(calls.some((c) => c.q.startsWith('UPDATE assets'))).toBe(false);

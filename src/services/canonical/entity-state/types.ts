@@ -5,7 +5,6 @@
  * PIÈCE (`ROOM`) = SOUS-STRUCTURE (`substructures.id`) depuis la décision PO
  * D-G (lot 20, migration 0229) ; la table `rooms` n'est plus lue.
  */
-import type { RolloutMode } from '@/services/canonical/rollout';
 import type {
   CanonicalFieldState, CanonicalFieldWrite, CanonicalOrigin, CanonicalWriteResult, CanonicalWriteSource,
 } from '@/services/canonical/asset-state';
@@ -62,8 +61,6 @@ export interface WriteCanonicalEntityFieldsInput {
   actorUserId?: number | null;
   source?: CanonicalWriteSource;
   traceId?: string | null;
-  /** Force un mode (T3, tests) ; défaut : `CANONICAL_WRITE_MODE`. */
-  mode?: RolloutMode;
   /** Publie ASSET_UPDATED (bien porteur) après écriture (défaut : oui). */
   emitEvent?: boolean;
 }
@@ -79,4 +76,6 @@ export interface CanonicalEntityWriteResult extends CanonicalWriteResult {
   assetId: number | null;
   /** Migration 0227 absente : rien n'a été lu ni écrit. */
   schemaNotReady?: boolean;
+  /** Rien n'a été tenté (migration 0227 absente). */
+  skipped: boolean;
 }

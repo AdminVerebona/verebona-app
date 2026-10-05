@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { categoryOptionsWithCurrent } from '@/lib/asset-taxonomy';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { AssetDetailSection, type AiSuggestion, type FieldDef } from './AssetDetailSection';
+import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
 import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
 import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
@@ -246,10 +246,6 @@ const SECTION_LABELS: Record<string, string> = {
   object_usage: 'Usage / conservation',
 };
 
-interface AiSuggestions {
-  sections: Record<string, Record<string, AiSuggestion>>;
-}
-
 // ─── CIL Checklist ─────────────────────────────────────────────────────────────
 
 const CIL_RUBRICS = [
@@ -421,18 +417,13 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
     return () => window.removeEventListener('asset-details-updated', handler);
   }, [asset.id]);
   // Resolve forcedOpenSection immediately from URL param — no need to wait for data load
-  const [forcedOpenSection, setForcedOpenSection] = useState<string | null>(() => {
+  const [forcedOpenSection] = useState<string | null>(() => {
     if (!highlightField) return null;
     const map = buildFieldToSectionMap(asset.category);
     return map[highlightField] ?? null;
   });
   const [valuationDrawerOpen, setValuationDrawerOpen] = useState(false);
   const highlightAppliedRef = useRef(false);
-
-  // AI suggestions — fetched silently after data loads
-  const [aiSuggestions, setAiSuggestions] = useState<AiSuggestions | null>(null);
-  const [consumedSections, setConsumedSections] = useState<Set<string>>(new Set());
-  const aiFetchedRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -450,37 +441,11 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
     }
   }, [asset.id]);
 
-  // Silent AI pre-fill — runs once after initial load, premium only
-  const fetchAiSilently = useCallback(async (data: { family: string; sections: Record<string, Record<string, unknown>> }) => {
-    if (planType !== 'premium' || readOnly || aiFetchedRef.current) return;
-    aiFetchedRef.current = true;
-    try {
-      const currentSections = Object.fromEntries(
-        Object.entries(data.sections).map(([k, v]) => [
-          k,
-          k === 'common' ? { ...v, status: asset.status } : v,
-        ])
-      );
-      const result = await apiClient.post<{ hasUsableSuggestions: boolean; sections: Record<string, Record<string, AiSuggestion>>; reason?: string }>(
-        `/api/assets/${asset.id}/ai-suggestions`,
-        { currentSections }
-      );
-      if (result.hasUsableSuggestions && Object.keys(result.sections).length > 0) {
-        setAiSuggestions({ sections: result.sections });
-      }
-    } catch {
-      // silent — no feedback to user
-    }
-  }, [asset.id, asset.status, planType, readOnly]);
-
+  // Lot 16b-3 (D-H1) : plus de préremplissage IA silencieux de la fiche.
   useEffect(() => {
-    load().then(data => { if (data) fetchAiSilently(data); });
+    load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshTrigger]);
-
-  const handleSectionDraftConsumed = useCallback((sectionKey: string) => {
-    setConsumedSections(prev => new Set([...prev, sectionKey]));
-  }, []);
 
   const handleDismissAlert = useCallback(async (field: string) => {
     try {
@@ -558,9 +523,6 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
       {sectionEntries.map(([key, data]) => {
         const fields = key === 'common' ? getCommonFields(asset.category, asset.subtype) : (SECTION_FIELDS[key] ?? []);
         const sectionData = key === 'common' ? { ...data, status: asset.status } : data;
-        const sectionAiDraft = (aiSuggestions?.sections[key] && !consumedSections.has(key))
-          ? aiSuggestions.sections[key]
-          : undefined;
         const isForced = forcedOpenSection === key;
         const sectionAlerts = (detailData?.coherenceAlerts ?? []).filter(a => a.section === key);
 
@@ -580,8 +542,6 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
               defaultOpen={key === 'common' || isForced}
               forceOpen={isForced}
               highlightField={isForced ? (highlightField ?? undefined) : undefined}
-              aiDraft={sectionAiDraft}
-              onAiDraftConsumed={() => handleSectionDraftConsumed(key)}
               readOnly={readOnly}
               coherenceAlerts={sectionAlerts}
               onDismissAlert={handleDismissAlert}

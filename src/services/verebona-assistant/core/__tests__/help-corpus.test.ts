@@ -157,7 +157,6 @@ describe('génération : aucun échange précédent pour une question d’utilis
   it('ne transmet pas le fil de conversation au modèle', async () => {
     const execute = vi.fn(async () => ({ data: { claims: [] }, model: 'm' }));
     vi.doMock('@/services/ai/gateway/ai-gateway', () => ({ AiGateway: { execute } }));
-    vi.doMock('@/services/ai/flags/use-case-flags', () => ({ isUseCaseRunning: () => true }));
     vi.resetModules();
     const { generateAssistantAnswer } = await import('../generation.adapter');
     const sources = toHelpSources(searchHelpCorpus(CORPUS, 'ajouter un document'));

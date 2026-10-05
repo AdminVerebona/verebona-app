@@ -31,8 +31,6 @@ export const EVIDENCE_BASED_ORIGINS: readonly FieldOrigin[] = ['DOCUMENT_EXTRACT
 export const NEGATIVE_REASON = {
   RETRACT: 'NO_REMAINING_EVIDENCE',
   REPLACE: 'STALE_AUTO_VALUE_REPLACED',
-  SHADOW_RETRACT: 'SHADOW_WOULD_RETRACT',
-  SHADOW_REPLACE: 'SHADOW_WOULD_REPLACE_STALE',
 } as const;
 
 /** Règle de projection d'une preuve RÉVISÉE par une date tranchée par T4 (D-M, lot 20). */
@@ -42,11 +40,10 @@ export const T4_REVISION_REASON = 'T4_DATE_REVISED';
 /**
  * Décision PO D-M (lot 20) — la valeur AUTOMATIQUE en place n'est plus
  * prouvée (sa preuve a été remplacée) ET une preuve révisée par T4 la
- * corrige : comme pour une preuve remplacée sous T3_NEGATIVE_RECONCILIATION,
+ * corrige : comme pour une preuve remplacée (réconciliation négative),
  * l'autorité mémorisée de la preuve disparue ne protège plus la valeur
- * (`withoutStaleAuthority`) — quel que soit ce commutateur, puisque la
- * révision n'existe que si CANONICAL_WRITE_MODE l'a écrite. Une valeur
- * USER/ADMIN n'est jamais « non prouvée » : elle reste protégée (conflit).
+ * (`withoutStaleAuthority`). Une valeur USER/ADMIN n'est jamais « non
+ * prouvée » : elle reste protégée (conflit).
  */
 export function isT4DateRevision(unproven: boolean, input: DecisionInput): boolean {
   return unproven && input.candidates.some((c) => c.projectionRule === T4_REVISION_RULE && c.normalized !== null && c.normalized !== '');
@@ -117,15 +114,15 @@ export function planRetractions(
 }
 
 /** Décision de retrait (enregistrée comme une mise à jour vers « vide »). */
-export function retractionDecision(c: RetractionCandidate, shadow: boolean): ReconciliationDecision {
+export function retractionDecision(c: RetractionCandidate): ReconciliationDecision {
   return {
     fieldKey: c.fieldKey,
     currentValue: c.currentValue,
-    proposedValue: shadow ? c.currentValue : null,
+    proposedValue: null,
     // `reconciliation_decisions.action` est contraint (0105) : un retrait est
-    // une mise à jour vers « vide » ; en observation, rien ne change (keep).
-    action: shadow ? 'keep' : 'update',
-    reasonCode: shadow ? NEGATIVE_REASON.SHADOW_RETRACT : NEGATIVE_REASON.RETRACT,
+    // une mise à jour vers « vide ».
+    action: 'update',
+    reasonCode: NEGATIVE_REASON.RETRACT,
     confidence: 'certain',
     evidenceIds: [],
     deterministic: true,

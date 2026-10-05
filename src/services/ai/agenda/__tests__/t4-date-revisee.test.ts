@@ -7,10 +7,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ choix: 1 as number | null }));
-vi.mock('../../config/config-resolver', async (orig) => ({
-  ...(await orig<typeof import('../../config/config-resolver')>()),
-  getPromptArchitecture: async () => 'master',
-}));
 vi.mock('../master/temporal-ambiguity', async (orig) => ({
   ...(await orig<typeof import('../master/temporal-ambiguity')>()),
   resolveTemporalAmbiguityMaster: vi.fn(async (_c: unknown, candidats: Array<{ candidateId: number; date: string; interpretation: string }>) =>

@@ -70,12 +70,13 @@ export function isPromptAdministrable(code: Treatment): boolean {
  * Traitements SANS architecture `steps` (lot 16b, retrait de l'ancien moteur) :
  * leur prompt maître est leur seul moteur — T5 (`t5_master_v1`) et T6
  * (`t6_master_v1`) depuis L16b-1 (migration 0231), T2 (`t2_master_v1`) et T4
- * (`t4_master_v1`) depuis L16b-2 (migration 0232). Leur ligne de
- * configuration est lue `master` quelle que soit la valeur stockée, et une
- * demande `steps` est refusée (`checkPromptArchitectureChange`,
- * `masterConfigIssues`).
+ * (`t4_master_v1`) depuis L16b-2 (migration 0232), T1 (`t1_master_v1`) depuis
+ * L16b-3a (migration 0233), T3 (`t3_master_v1`) depuis L16b-3b (migration
+ * 0234). TOUS les traitements, désormais : une ligne de configuration est lue
+ * `master` quelle que soit la valeur stockée, et une demande `steps` est
+ * refusée (`checkPromptArchitectureChange`, `masterConfigIssues`).
  */
-export const MASTER_ONLY_TREATMENTS: readonly Treatment[] = ['T2', 'T4', 'T5', 'T6'];
+export const MASTER_ONLY_TREATMENTS: readonly Treatment[] = TREATMENTS;
 
 export function isMasterOnlyTreatment(code: Treatment): boolean {
   return MASTER_ONLY_TREATMENTS.includes(code);

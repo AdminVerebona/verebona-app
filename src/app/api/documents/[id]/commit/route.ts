@@ -1,8 +1,11 @@
 /**
  * POST /api/documents/[id]/commit
  * [id] = asset_files.id
- * Commit unitaire — même moteur que commit de lot.
- * NE MET PAS À JOUR last_analysis_at (commit ≠ analyse).
+ * Validation du document par l'utilisateur (tiroir : « Sauvegarder = valider »).
+ * Lot 16b-3 : le moteur de commit historique (`document-ai/commit-engine`) est
+ * supprimé — voir `services/documents/document-validation.service`. Le corps
+ * (`agendaEffects`) est ignoré : l'agenda relève de T4.
+ * NE MET PAS À JOUR last_analysis_at (validation ≠ analyse).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -11,10 +14,7 @@ import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { commitDocument } from '@/services/document-ai/commit-engine';
-import { isUnifiedAnalysisActive } from '@/services/ai/source-analysis/entrypoint';
-import { triggerAssetEnrichment } from '@/services/document-ai/asset-enrichment-trigger';
-import type { AgendaEffect } from '@/types/document-ai';
+import { validateDocumentProposals } from '@/services/documents/document-validation.service';
 
 export async function POST(
   request: NextRequest,
@@ -37,31 +37,11 @@ export async function POST(
 
     if (!file) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
 
-    const body = await request.json().catch(() => ({}));
-    const agendaEffects: AgendaEffect[] = body.agendaEffects ?? [];
+    const result = await validateDocumentProposals(assetFileId, accountId);
 
-    const result = await commitDocument(assetFileId, accountId, agendaEffects);
-
-    // Relire l'assetId après commit (peut avoir été mis à jour par la proposal matchedAssetId)
-    const [updated] = await db.select({ assetId: assetFiles.assetId }).from(assetFiles).where(eq(assetFiles.id, assetFileId)).limit(1);
-    const resolvedAssetId = updated?.assetId;
-    // ⚠️ Option A retenue : l'écran de validation disparaît, absorbé par
-    // « À arbitrer » (CDC §7.1). Une fois le pipeline unifié actif, la fiche du
-    // bien est alimentée par la réconciliation (usage 2) à partir des preuves,
-    // et non plus par un second appel modèle déclenché au commit.
-    //
-    // Cette route devient alors sans objet : le pipeline écrit directement,
-    // il ne reste aucune proposition en attente. `commitDocument` ci-dessus est
-    // un passage à vide, conservé le temps que l'interface cesse de l'appeler.
-    // Suppression prévue au lot 3, avec l'écran correspondant.
-    if (resolvedAssetId && !isUnifiedAnalysisActive()) {
-      void triggerAssetEnrichment({
-        assetId: resolvedAssetId,
-        accountId,
-        assetFileId,
-        reason: 'document_committed',
-      });
-    }
+    // Lot 16b-3 : plus d'enrichissement du bien déclenché au commit (second
+    // appel modèle du moteur historique). La fiche est alimentée par la
+    // réconciliation (T3) à partir des preuves écrites par l'analyse.
 
     // CDC Assistant §25.7, §31.7 : extraction validée, reportée sur le bien.
     await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: assetFileId });

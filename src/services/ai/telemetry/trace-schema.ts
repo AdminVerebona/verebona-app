@@ -7,7 +7,8 @@
  * `ensureMigrations()` poursuit après une migration en échec (le produit ne
  * s'arrête pas pour une colonne de trace). Or Drizzle cite TOUTES les colonnes
  * déclarées dans chaque INSERT : déclarer `task` & co. aurait fait échouer
- * toutes les traces IA — et `AiUsageTracker.startStep` — si la 0217 manquait.
+ * toutes les traces IA — et l'ancien suivi d'usage (retiré au lot 16b-3) —
+ * si la 0217 manquait.
  *
  * Les trois colonnes sont donc écrites à part, en SQL, uniquement quand ce
  * contrôle confirme leur présence. Absentes : les traces partent sans elles,

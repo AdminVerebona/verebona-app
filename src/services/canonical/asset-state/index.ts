@@ -11,8 +11,8 @@ export {
   type AssetRowJson, type SqlRunner,
 } from './canonical-asset-view';
 export {
-  writeCanonicalAssetField, writeCanonicalAssetFields, observeLegacyWrite,
-  planCanonicalWrites, divergenceOf, sameCanonicalValue, resolveDefForFamily,
-  type WriteHooks, type WriteHookContext, type TxRunner, type WriteDivergence, type CanonicalWritePlan,
+  writeCanonicalAssetField, writeCanonicalAssetFields,
+  planCanonicalWrites, sameCanonicalValue, resolveDefForFamily,
+  type WriteHooks, type WriteHookContext, type TxRunner, type CanonicalWritePlan,
 } from './write-canonical-asset-field';
 export { readMirrorColumns, restoreMirrorColumns, ALL_MIRROR_COLUMNS } from './mirror-columns';

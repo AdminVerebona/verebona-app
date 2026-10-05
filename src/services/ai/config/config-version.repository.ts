@@ -71,7 +71,7 @@ function toEntry(r: Row): TreatmentConfig {
     // personne n'a rendu.
     cascade: (r.cascade ?? null) as TreatmentConfig['cascade'],
     // CDC 15 D-04 : colonne absente (migration non passée) ou valeur
-    // inconnue ⇒ `steps`, le comportement historique ; T2, T4, T5 et T6 : toujours
+    // inconnue ⇒ `steps`, le comportement historique ; T1, T2, T4, T5 et T6 : toujours
     // `master` (lot 16b, `promptArchitectureOf`).
     promptArchitecture: promptArchitectureOf({
       treatment: r.treatment as Treatment,
@@ -310,7 +310,7 @@ export async function promptArchitectureInsert(
   treatment?: Treatment,
 ): Promise<{ column: boolean }> {
   const column = await hasPromptArchitectureColumn(sql);
-  // T2, T4, T5, T6 (lot 16b) : `master` est leur architecture par défaut, relue telle
+  // T1, T2, T4, T5, T6 (lot 16b) : `master` est leur architecture par défaut, relue telle
   // quelle sans colonne — rien n'est perdu à ne pas l'écrire.
   const parDefaut = treatment ? defaultPromptArchitectureFor(treatment) : DEFAULT_PROMPT_ARCHITECTURE;
   if (!column && (arch !== parDefaut || masterPrompt !== null)) {

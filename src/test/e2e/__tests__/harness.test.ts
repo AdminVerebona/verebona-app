@@ -13,14 +13,14 @@ const appel = (operationCode: string, task?: string, prompt = 'p') => ({
 describe('rejeu des sorties enregistrées', () => {
   it('par opération puis TASK, dans l’ordre, sans réutilisation implicite', async () => {
     const r = new ReplayProvider([
-      { operationCode: 'extract_source', task: 'GROUP_UPLOAD', output: { g: 1 } },
-      { operationCode: 'extract_source', task: 'ANALYZE_DOCUMENT', output: { a: 1 } },
-      { operationCode: 'extract_source', task: 'ANALYZE_DOCUMENT', output: { a: 2 } },
+      { operationCode: 't1_analyze_document', task: 'GROUP_UPLOAD', output: { g: 1 } },
+      { operationCode: 't1_analyze_document', task: 'ANALYZE_DOCUMENT', output: { a: 1 } },
+      { operationCode: 't1_analyze_document', task: 'ANALYZE_DOCUMENT', output: { a: 2 } },
     ]);
-    expect((await r.call(appel('extract_source', 'ANALYZE_DOCUMENT'))).rawText).toBe('{"a":1}');
-    expect((await r.call(appel('extract_source', 'GROUP_UPLOAD'))).rawText).toBe('{"g":1}');
-    expect((await r.call(appel('extract_source', 'ANALYZE_DOCUMENT'))).rawText).toBe('{"a":2}');
-    await expect(r.call(appel('extract_source', 'ANALYZE_DOCUMENT'))).rejects.toThrow(/aucune sortie enregistrée/);
+    expect((await r.call(appel('t1_analyze_document', 'ANALYZE_DOCUMENT'))).rawText).toBe('{"a":1}');
+    expect((await r.call(appel('t1_analyze_document', 'GROUP_UPLOAD'))).rawText).toBe('{"g":1}');
+    expect((await r.call(appel('t1_analyze_document', 'ANALYZE_DOCUMENT'))).rawText).toBe('{"a":2}');
+    await expect(r.call(appel('t1_analyze_document', 'ANALYZE_DOCUMENT'))).rejects.toThrow(/aucune sortie enregistrée/);
     expect(r.pending()).toEqual([]);
   });
 

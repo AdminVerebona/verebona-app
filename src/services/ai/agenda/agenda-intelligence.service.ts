@@ -40,7 +40,7 @@ export interface AgendaIntelligenceInput {
   /**
    * Révision de la preuve du champ d'origine quand T4 tranche une date
    * (décision PO D-M, lot 20) — injectable pour les tests ; défaut :
-   * `reviseDateEvidenceFromT4` (sous CANONICAL_WRITE_MODE, jamais bloquant).
+   * `reviseDateEvidenceFromT4` (toujours depuis le lot 16b-3, jamais bloquant).
    */
   reviseDate?: (p: import('../evidence/revised-date-evidence').ReviseDateInput) => Promise<unknown>;
 }
@@ -143,7 +143,7 @@ export async function processAgendaCandidates(
     // D-M (lot 20) : la date TRANCHÉE par T4 (branche TEMPORAL_AMBIGUITY)
     // corrige aussi la fiche — preuve révisée
     // du champ d'origine, puis T3 par les primitives canoniques (jamais
-    // au-dessus d'une valeur USER/ADMIN), sous CANONICAL_WRITE_MODE.
+    // au-dessus d'une valeur USER/ADMIN) — toujours depuis le lot 16b-3.
     if (candidate.date !== brut.date) await reviserPreuveDate(brut, candidate.date, input);
     const base = await processOne(candidate, { ...input, existing: planned, today });
     decisions.push(base);

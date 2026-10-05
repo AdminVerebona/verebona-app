@@ -304,9 +304,10 @@ export async function importPackage(
     for (const e of payload.entries) {
       // `cascade` était omise : la cascade T2 (seuils BDD / texte / sémantique)
       // était perdue à l'import, alors que `buildPayload` la transporte.
-      // CDC 15 D-04 (0220) : architecture de la ligne ; package antérieur au
-      // lot 12 ⇒ `steps`. `master` sans colonne : import refusé (transaction
-      // annulée), jamais une bascule perdue.
+      // CDC 15 D-04 (0220) : architecture de la ligne — toujours `master`
+      // depuis le lot 16b (un package ancien en `steps`, ou sans le champ, est
+      // ramené à `master`). Colonne absente : `master` est la valeur par
+      // défaut relue, rien n'est perdu.
       const architecture = promptArchitectureOf(e);
       const masterPrompt = masterPromptOf(normalizeTreatmentConfig(e));
       const { column } = await promptArchitectureInsert(architecture, masterPrompt, t, e.treatment);

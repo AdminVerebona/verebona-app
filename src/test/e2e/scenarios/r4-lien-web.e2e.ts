@@ -7,7 +7,7 @@
  * dans le MÊME espace d'identifiants que les documents. Suppression,
  * détachement et déplacement passent par les mêmes routes que les documents
  * (`DELETE /api/files/[id]`, `PUT /api/documents/[id]`) → mêmes transitions,
- * sous `T3_NEGATIVE_RECONCILIATION`.
+ * toujours actives (`T3_NEGATIVE_RECONCILIATION` retiré au lot 16b-3).
  *
  * La page est servie par un `fetch` simulé (aucun réseau) ; la sortie T1 est
  * rejouée par la vraie passerelle.
@@ -64,7 +64,7 @@ scenario('R4-LIEN-WEB', 'Preuves d’un lien web : suppression, détachement, d�
      WHERE source_id = ${fileId} AND COALESCE(lifecycle_status, 'ACTIVE') = 'ACTIVE' ORDER BY asset_id`)
     .map((r) => [Number(r.asset_id), r.source_type]);
 
-  it('R4 (enabled) — analyse : preuves `web_link` sur l’identifiant asset_files du lien', async () => {
+  it('R4 — analyse : preuves `web_link` sur l’identifiant asset_files du lien', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const lien = await lienAnalyse(compte, clio.id);
@@ -72,7 +72,7 @@ scenario('R4-LIEN-WEB', 'Preuves d’un lien web : suppression, détachement, d�
     expect(await fiche(sql, clio.id)).toMatchObject({ mileage: 45000, maintenanceDueDate: '2027-09-03' });
   });
 
-  it('R4 (enabled) — suppression du lien : preuves retirées, fiche recalculée ; une preuve `document` de même id n’existe pas', async () => {
+  it('R4 — suppression du lien : preuves retirées, fiche recalculée ; une preuve `document` de même id n’existe pas', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const lien = await lienAnalyse(compte, clio.id);
@@ -83,7 +83,7 @@ scenario('R4-LIEN-WEB', 'Preuves d’un lien web : suppression, détachement, d�
     const r = await onDocumentsDeleted({ accountId: compte.id, userId: compte.ownerUserId, fileIds: [lien] });
     await drainQueues();
 
-    expect(r).toMatchObject({ mode: 'enabled', dryRun: false });
+    expect(r).toMatchObject({ dryRun: false });
     expect(r.withdrawn).toBeGreaterThan(0);
     expect(await typesActifs(lien)).toEqual([]);
     expect(await preuves(sql, clio.id)).toEqual([]);
@@ -92,7 +92,7 @@ scenario('R4-LIEN-WEB', 'Preuves d’un lien web : suppression, détachement, d�
     expect(fi.maintenanceDueDate).toBeUndefined();
   });
 
-  it('R4 (enabled) — détachement puis déplacement A → B : rien ne reste sur A ; B reçoit des preuves `web_link`', async () => {
+  it('R4 — détachement puis déplacement A → B : rien ne reste sur A ; B reçoit des preuves `web_link`', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const polo = await make.asset(compte, { category: 'VEHICULE', name: 'Polo' });
@@ -121,7 +121,7 @@ scenario('R4-LIEN-WEB', 'Preuves d’un lien web : suppression, détachement, d�
     expect((await fiche(sql, polo.id)).mileage).toBeUndefined();
   });
 
-  it('R4 (enabled) — lien sans bien puis rattaché : la reprojection garde le type `web_link`', async () => {
+  it('R4 — lien sans bien puis rattaché : la reprojection garde le type `web_link`', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const lien = await lienAnalyse(compte, null);
@@ -134,14 +134,20 @@ scenario('R4-LIEN-WEB', 'Preuves d’un lien web : suppression, détachement, d�
     expect(await fiche(sql, clio.id)).toMatchObject({ mileage: 45000 });
   });
 
-  it('R4 (legacy) — T3_NEGATIVE_RECONCILIATION=legacy : comportement historique, rien n’est retiré (comme pour un document)', async () => {
+  it('R4 — T3_NEGATIVE_RECONCILIATION=legacy encore posé (retiré au lot 16b-3) : ignoré, preuves retirées', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const lien = await lienAnalyse(compte, clio.id);
     process.env.T3_NEGATIVE_RECONCILIATION = 'legacy';
-    await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${lien}`;
-    const { onDocumentsDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
-    expect(await onDocumentsDeleted({ accountId: compte.id, userId: compte.ownerUserId, fileIds: [lien] })).toMatchObject({ mode: 'legacy', withdrawn: 0 });
-    expect(await typesActifs(lien)).toEqual([[clio.id, 'web_link']]);
+    try {
+      await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${lien}`;
+      const { onDocumentsDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
+      const r = await onDocumentsDeleted({ accountId: compte.id, userId: compte.ownerUserId, fileIds: [lien] });
+      await drainQueues();
+      expect(r.withdrawn).toBeGreaterThan(0);
+      expect(await typesActifs(lien)).toEqual([]);
+    } finally {
+      delete process.env.T3_NEGATIVE_RECONCILIATION;
+    }
   });
 });

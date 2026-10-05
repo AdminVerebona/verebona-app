@@ -31,7 +31,6 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureMigrations, pgClient } from '@/db';
-import { getFlagMode } from '@/services/ai/flags/ai-feature-flags';
 import {
   runCorpus,
   isSafeToSwitch,
@@ -119,23 +118,22 @@ export async function GET(req: NextRequest) {
   //               la passerelle. C'est lui qui a validé le vocabulaire des
   //               champs — 6 champs corrects sur 83 devenus 61.
   //
-  //   ?pipeline=1 traverse `analyzeFileSources`, donc le drapeau. Seul
-  //               niveau capable d'arbitrer une bascule de moteur.
+  //   ?pipeline=1 traverse `analyzeFileSources` : regroupement, projection,
+  //               persistance — ce que l'utilisateur verra.
   //
-  // Le premier ne peut pas mesurer une bascule : les deux campagnes rendaient
-  // des résultats identiques à un champ près, faute de traverser
-  // l'aiguillage.
+  // Lot 16b-3 : un seul moteur (prompt maître T1). La comparaison mesure
+  // désormais une évolution du master ou de la configuration, plus une
+  // bascule de moteur.
   // ══════════════════════════════════════════════════════════════════════
   const pipeline = p.get('pipeline') === '1';
   const baseline = p.get('baseline') === '1';
   const compare = p.get('compare') === '1';
   const categories = p.get('categories')?.split(',').map((c) => c.trim()).filter(Boolean);
 
-  const mode = getFlagMode('AI_UNIFIED_SOURCE_ANALYSIS');
   const niveau = pipeline ? 'pipeline' : 'opérations';
   const label = dry
     ? 'vérification à blanc'
-    : `moteur ${mode === 'enabled' ? 'unifié' : 'historique'} (${niveau})`;
+    : `prompt maître T1 (${niveau})`;
 
   // Le compte technique n'est requis que pour une campagne réelle.
   if (!dry) {
@@ -198,7 +196,6 @@ export async function GET(req: NextRequest) {
   }
 
   const reponse: Record<string, unknown> = {
-    drapeau: mode,
     label,
     dry,
     resume: run.summary,
@@ -223,7 +220,7 @@ export async function GET(req: NextRequest) {
     const avant = await lireReference();
     if (!avant) {
       reponse.comparaison = {
-        erreur: 'Aucune référence enregistrée. Lancer d\'abord ?baseline=1 sur le moteur historique.',
+        erreur: 'Aucune référence enregistrée. Lancer d\'abord ?baseline=1.',
       };
     } else {
       const verdict = isSafeToSwitch(avant, run);
