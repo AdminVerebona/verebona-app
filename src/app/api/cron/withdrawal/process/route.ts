@@ -10,19 +10,19 @@
  *   · `failed`    — reprise automatique. Le §10 prévoit « le traitement des
  *     erreurs et les reprises automatiques ».
  *
+ * Lot 25 : planifié DANS l'application (tâche interne `withdrawal-process`,
+ * horaire, traitement `withdrawal-sweep.job.ts`). Un seul balayage à la fois
+ * (bail en base partagé avec la tâche interne) : appelée pendant un passage
+ * en cours, la route répond 200 `{ skipped: 'locked' }`.
+ *
  * Répond **409** dès qu'une demande reste en échec après reprise, ou qu'une
  * demande attend depuis plus de vingt-quatre heures. Le §21 fait de ces
  * situations des anomalies à détecter — sans ce signal, une demande bloquée
  * resterait invisible jusqu'à la réclamation du consommateur.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { db, ensureMigrations } from '@/db';
-import { withdrawalRequests } from '@/db/schema';
-import { and, inArray, lt } from 'drizzle-orm';
-import { processWithdrawal } from '@/services/withdrawal/withdrawal-processor.service';
-
-/** Au-delà, une demande non traitée est une anomalie (§21). */
-const STALE_HOURS = 24;
+import { ensureMigrations } from '@/db';
+import { runWithdrawalSweep } from '@/services/withdrawal/withdrawal-sweep.job';
 
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
@@ -31,49 +31,11 @@ export async function GET(req: NextRequest) {
   }
 
   await ensureMigrations();
-  const now = new Date();
-
-  const pending = await db
-    .select({
-      publicReference: withdrawalRequests.publicReference,
-      status: withdrawalRequests.status,
-      requestedAt: withdrawalRequests.requestedAt,
-    })
-    .from(withdrawalRequests)
-    .where(inArray(withdrawalRequests.status, ['received', 'failed', 'processing']))
-    .limit(50);
-
-  const outcome = { completed: 0, processing: 0, failed: 0, skipped: 0 };
-  const failures: Array<{ reference: string; code?: string }> = [];
-
-  for (const item of pending) {
-    const result = await processWithdrawal(item.publicReference, { now });
-    if (result.status === 'completed') outcome.completed += 1;
-    else if (result.status === 'processing') outcome.processing += 1;
-    else if (result.status === 'failed') {
-      outcome.failed += 1;
-      failures.push({ reference: item.publicReference, code: result.failureCode });
-    } else outcome.skipped += 1;
-  }
-
-  // Demandes anciennes toujours non réglées : anomalie du §21.
-  const staleThreshold = new Date(now.getTime() - STALE_HOURS * 3600 * 1000);
-  const stale = await db
-    .select({
-      publicReference: withdrawalRequests.publicReference,
-      requestedAt: withdrawalRequests.requestedAt,
-      status: withdrawalRequests.status,
-    })
-    .from(withdrawalRequests)
-    .where(
-      and(
-        inArray(withdrawalRequests.status, ['received', 'failed', 'processing']),
-        lt(withdrawalRequests.requestedAt, staleThreshold),
-      ),
-    );
+  const r = await runWithdrawalSweep(new Date());
+  if (r === null) return NextResponse.json({ skipped: 'locked' });
 
   return NextResponse.json(
-    { processed: pending.length, outcome, failures, stale },
-    { status: outcome.failed > 0 || stale.length > 0 ? 409 : 200 },
+    r,
+    { status: r.outcome.failed > 0 || r.stale.length > 0 ? 409 : 200 },
   );
 }

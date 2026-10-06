@@ -55,20 +55,8 @@ export async function acquireJobLock(
   // instance. Le défaut est resté invisible parce que le mode dégradé est
   // silencieux par conception.
   // ══════════════════════════════════════════════════════════════════════
-  const until = new Date(Date.now() + ttlMs).toISOString();
   try {
-    const rows = await db.execute(sql`
-      INSERT INTO job_locks (name, locked_until, locked_by, updated_at)
-      VALUES (${name}, ${until}::timestamptz, ${OWNER}, NOW())
-      ON CONFLICT (name) DO UPDATE
-        SET locked_until = EXCLUDED.locked_until,
-            locked_by    = EXCLUDED.locked_by,
-            updated_at   = NOW()
-        WHERE job_locks.locked_until < NOW()
-      RETURNING name
-    `);
-    const pris = Array.isArray(rows) ? rows.length > 0 : Number((rows as { count?: number })?.count ?? 0) > 0;
-    return pris ? { name, owner: OWNER } : null;
+    return await acquireJobLockOrThrow(name, ttlMs);
   } catch (err) {
     // Table absente (migration pas encore passée) ou base indisponible : on
     // ne prend pas le verrou. Refuser de travailler est le comportement sûr —
@@ -76,6 +64,31 @@ export async function acquireJobLock(
     console.error(`[job-lock] acquisition impossible (${name}) :`, err);
     return null;
   }
+}
+
+/**
+ * Comme `acquireJobLock`, mais une ERREUR (base indisponible, table absente)
+ * est levée au lieu d'être confondue avec « verrou détenu ailleurs » (`null`).
+ * Pour les appelants qui doivent distinguer un passage ignoré d'un échec
+ * (tâches planifiées, lot 25).
+ */
+export async function acquireJobLockOrThrow(
+  name: string,
+  ttlMs: number,
+): Promise<JobLockHandle | null> {
+  const until = new Date(Date.now() + ttlMs).toISOString();
+  const rows = await db.execute(sql`
+    INSERT INTO job_locks (name, locked_until, locked_by, updated_at)
+    VALUES (${name}, ${until}::timestamptz, ${OWNER}, NOW())
+    ON CONFLICT (name) DO UPDATE
+      SET locked_until = EXCLUDED.locked_until,
+          locked_by    = EXCLUDED.locked_by,
+          updated_at   = NOW()
+      WHERE job_locks.locked_until < NOW()
+    RETURNING name
+  `);
+  const pris = Array.isArray(rows) ? rows.length > 0 : Number((rows as { count?: number })?.count ?? 0) > 0;
+  return pris ? { name, owner: OWNER } : null;
 }
 
 /** Rend le bail. Sans effet si un autre processus l'a repris entre-temps. */
@@ -102,6 +115,24 @@ export async function withJobLock<T>(
   travail: () => Promise<T>,
 ): Promise<T | null> {
   const handle = await acquireJobLock(name, ttlMs);
+  if (!handle) return null;
+  try {
+    return await travail();
+  } finally {
+    await releaseJobLock(handle);
+  }
+}
+
+/**
+ * Exécute `travail` sous verrou. `null` UNIQUEMENT si le verrou est détenu
+ * ailleurs ; une erreur d'acquisition est levée (voir `acquireJobLockOrThrow`).
+ */
+export async function withJobLockOrSkip<T>(
+  name: string,
+  ttlMs: number,
+  travail: () => Promise<T>,
+): Promise<T | null> {
+  const handle = await acquireJobLockOrThrow(name, ttlMs);
   if (!handle) return null;
   try {
     return await travail();

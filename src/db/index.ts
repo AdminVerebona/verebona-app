@@ -36,6 +36,15 @@ if (process.env.NODE_ENV !== 'test') {
     );
   }
 }
+// TYPES : les sérialiseurs JSON / JSONB (114, 3802) et les parseurs /
+// sérialiseurs de dates (1184, 1114, 1082, 1083, 1182, 1185, 1115, 1231) de
+// ce client sont rendus TRANSPARENTS par `drizzle(client)` ci-dessous
+// (drizzle-orm/postgres-js/driver.js) : une chaîne `JSON.stringify(…)` passée
+// à `$n::jsonb` est lue comme du JSON, et les dates reviennent en chaînes.
+// Tout le code SQL brut (`pgClient`, services de rattrapage…) en dépend. Un
+// client `postgres(...)` créé ailleurs doit reproduire cette configuration
+// (le plus sûr : `drizzle(autreClient)`, cf. `openOpsClient`), sinon le JSON
+// est enregistré comme un scalaire chaîne.
 const client = postgres(connectionString, {
   max: poolConfig.max,
   idle_timeout: poolConfig.idleTimeoutS,

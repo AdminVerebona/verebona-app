@@ -11,12 +11,13 @@
  *  - SUP-H01 / SUP-H02 : historique des anomalies résolues, pagination
  *    classique et tri uniquement.
  *  - Aucune criticité, aucun bouton de création (SUP-012).
+ *  - Lot 25 : accès à la page « Exploitation » (lien en tête d'onglet).
  *
  * Le tri et la page vivent dans l'URL : ils sont conservés au retour de
  * l'écran de traitement (UX-004).
  */
 import Link from 'next/link';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ServerCog } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatDateTime } from '@/lib/admin/format';
 import type { AnomalyListItem, DomainCounter } from '@/services/admin/anomaly.service';
@@ -165,6 +166,14 @@ export function SupervisionTab({
 }) {
   return (
     <div className="space-y-4">
+      {/* Lot 25 : page « Exploitation » (santé détaillée, rattrapages, tâches
+          planifiées, configuration) — hors barre latérale (15 entrées du CDC). */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
+        <p className="text-sm text-muted-foreground">Santé détaillée, rattrapages de données, tâches planifiées et configuration.</p>
+        <Button asChild size="sm" variant="outline">
+          <Link href="/admin/exploitation"><ServerCog className="h-4 w-4 mr-1.5" />Exploitation</Link>
+        </Button>
+      </div>
       <Counters />
       <SectionTitle>Anomalies ouvertes</SectionTitle>
       <AnomalyTable status="open" params={open} onChange={onOpenChange} />

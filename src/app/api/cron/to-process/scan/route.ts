@@ -20,20 +20,17 @@
  * franchissement à l'heure près est déjà bien plus précis que nécessaire, et
  * un balayage par minute ferait N requêtes par compte pour ne rien trouver.
  *
+ * Lot 25 : planifié DANS l'application (tâche interne `to-process-scan`,
+ * horaire, traitement `to-process-scan.job.ts`, même bail en base) ; cette
+ * route ne sert plus qu'au déclenchement manuel.
+ *
  *   ?account=42   limite à un compte
  *   ?limit=500    nombre de comptes balayés sur ce passage
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { eq } from 'drizzle-orm';
-import { db, ensureMigrations } from '@/db';
-import { accounts } from '@/db/schema';
-import { withJobLock } from '@/lib/job-lock';
-import {
-  closeActionsForDeletedTargets,
-  produceAccountActions,
-} from '@/services/to-process/producers.service';
-import { promoteDueActions } from '@/services/to-process/priority-scheduler.service';
+import { ensureMigrations } from '@/db';
+import { runToProcessFullScan } from '@/services/to-process/to-process-scan.job';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -50,34 +47,7 @@ export async function GET(req: NextRequest) {
   const accountId = Number(p.get('account')) || undefined;
   const limit = Number(p.get('limit')) || 500;
 
-  const resultat = await withJobLock('to-process-scan', 10 * 60_000, async () => {
-    const cibles = accountId
-      ? await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, accountId))
-      : await db.select({ id: accounts.id }).from(accounts).limit(limit);
-
-    const totaux = { created: 0, updated: 0, closed: 0, promoted: 0, demoted: 0, refused: 0 };
-
-    for (const compte of cibles) {
-      try {
-        const production = await produceAccountActions(compte.id);
-        totaux.created += production.created;
-        totaux.updated += production.updated;
-        totaux.closed += production.closed;
-        totaux.closed += await closeActionsForDeletedTargets(compte.id);
-
-        const promotion = await promoteDueActions(compte.id);
-        totaux.promoted += promotion.promoted;
-        totaux.demoted += promotion.demoted;
-        totaux.refused += promotion.refused;
-      } catch (e) {
-        // Un compte en échec ne doit pas arrêter le balayage des autres : le
-        // passage suivant le rattrapera.
-        console.error('[to-process-scan] compte', compte.id, (e as Error).message);
-      }
-    }
-
-    return { accounts: cibles.length, ...totaux };
-  });
+  const resultat = await runToProcessFullScan({ accountId, limit });
 
   if (resultat === null) {
     console.warn(

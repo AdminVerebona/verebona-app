@@ -8,6 +8,9 @@
  * (pas de `vercel.json`, `render.yaml`, ni workflow planifié) : les routes
  * `/api/cron/*` sont appelées, le cas échéant, par un planificateur EXTERNE
  * configuré hors dépôt, avec `Authorization: Bearer $CRON_SECRET`.
+ * Lot 25 : ce planificateur externe n'a plus lieu d'être — les tâches qu'il
+ * appelait (notifications, essais, rétractations…) tournent désormais dans
+ * `scheduled-task-runner.ts` ; voir docs/exploitation/taches-planifiees.md.
  *
  * Le seul mécanisme de planification présent DANS le code est celui de la
  * sauvegarde (`database-backup-scheduler.ts`) : un tour périodique démarré

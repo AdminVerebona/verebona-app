@@ -22,7 +22,15 @@
  *   · web (`next start`, conteneurs `web-N` Scalingo) : UN pool par
  *     conteneur, partagé par les routes API, la file IA (AI_QUEUE_CONCURRENCY,
  *     3 par défaut), le worker d'exports V12 (une génération à la fois), la
- *     sauvegarde quotidienne et les tâches planifiées internes ;
+ *     sauvegarde quotidienne et les tâches planifiées internes (lot 25 : au
+ *     plus une tâche à la fois par conteneur + l'envoi des notifications,
+ *     SCHEDULED_TASKS_MAX_PARALLEL, aucune lancée si le pool a des requêtes
+ *     en attente ; chacune utilise ses requêtes en série, 1 connexion à la
+ *     fois, plus une lecture du planificateur toutes les 30 s) ;
+ *   · rattrapage lancé depuis le BO « Exploitation » (lot 25, client
+ *     `verebona-ops-backfill` dans pg_stat_activity) : pool PROPRE de 4
+ *     connexions, ouvert le temps du rattrapage, dans le conteneur qui
+ *     l'exécute — +4 connexions par conteneur pendant un rattrapage ;
  *   · migrations au démarrage (`ensureMigrations`) : même pool ;
  *   · étape `postdeploy` (`scripts/migrate.mjs`, Procfile) : conteneur
  *     ponctuel, pool propre de 2 connexions (`max: 2` : verrou consultatif
@@ -33,7 +41,7 @@
  *   · administration humaine (psql, console de l'hébergeur) : 1 à 2.
  *
  *   total = conteneurs_web × DB_POOL_MAX + 2 (postdeploy) + scripts ponctuels
- *           + administration
+ *           + administration + 4 × rattrapages BO simultanés
  *
  * Ce total doit rester SOUS la limite de connexions de l'offre PostgreSQL de
  * l'environnement, avec une marge (connexions réservées au superutilisateur,

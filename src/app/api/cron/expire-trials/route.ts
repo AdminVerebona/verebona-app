@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
-import { expireOverdueTrials } from '@/services/trial.service';
-import { trackFunnelEvent } from '@/services/funnel-analytics.service';
-import { emit } from '@/lib/notifications';
+import { runTrialExpiry } from '@/services/trial-expiry.job';
 
 /**
  * GET /api/cron/expire-trials
@@ -13,7 +11,9 @@ import { emit } from '@/lib/notifications';
  * n'est perdue : seul le statut d'abonnement change.
  *
  * Protege par CRON_SECRET (header Authorization: Bearer <secret>).
- * Frequence conseillee : toutes les heures.
+ * Lot 25 : planifiee DANS l'application (tache interne `expire-trials`,
+ * horaire) ; cette route ne sert plus qu'au declenchement manuel. Double
+ * passage sans effet (bascule atomique, notification dedupliquee).
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get('authorization');
@@ -24,24 +24,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const { expired, accountIds } = await expireOverdueTrials();
-
-    for (const accountId of accountIds) {
-      void trackFunnelEvent({ event: 'expired_without_conversion', accountId });
-      // Fin d'essai (configurable, cloche + email par défaut, CDC §7.6).
-      void emit({
-        type: 'TRIAL_ENDED',
-        accountId,
-        entityType: 'account',
-        entityId: accountId,
-        payload: {},
-        dedupeKey: `account:trial-ended:${accountId}`,
-      }).catch((err) => console.error('[cron/expire-trials] emit TRIAL_ENDED échoué:', err));
-    }
-
-    if (expired > 0) {
-      console.info(`[cron/expire-trials] ${expired} essai(s) bascule(s) en mode restreint`);
-    }
+    const { expired } = await runTrialExpiry();
 
     return NextResponse.json({
       ok: true,

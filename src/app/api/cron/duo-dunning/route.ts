@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/db';
-import { duoAccounts, dunningEvents } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { runDuoDunning } from '@/services/billing/duo-dunning.job';
 
 /**
  * GET /api/cron/duo-dunning
- * Suivi quotidien des impayés Premium Duo. Appelé par le planificateur externe
- * de l'hébergement (Scalingo Scheduler, crontab…) avec CRON_SECRET — non
- * planifié dans le dépôt (voir .env.example).
+ * Suivi quotidien des impayés Premium Duo. Lot 25 : planifié DANS
+ * l'application (tâche interne `duo-dunning`, traitement `duo-dunning.job.ts`) ;
+ * cette route, protégée par CRON_SECRET, ne sert plus qu'au déclenchement
+ * manuel. Double passage sans effet (une étape par duo, index unique).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * PLUS DE PÉRIODE DE GRÂCE (APP-FUNC-31)
@@ -34,41 +33,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const now = new Date();
-  const results = { d1: 0, d7: 0, d14: 0 };
-
   try {
-    const unpaidDuos = await db
-      .select()
-      .from(duoAccounts)
-      .where(eq(duoAccounts.subscriptionStatus, 'UNPAID_RECOVERY'));
-
-    for (const account of unpaidDuos) {
-      if (!account.unpaidRecoveryEndsAt) continue;
-
-      const deadline = new Date(account.unpaidRecoveryEndsAt);
-      const diffDays = Math.ceil((deadline.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-
-      let stage: 'D1' | 'D7' | 'D14' | null = null;
-      if (diffDays <= 1) stage = 'D1';
-      else if (diffDays <= 7) stage = 'D7';
-      else if (diffDays <= 14) stage = 'D14';
-      if (!stage) continue;
-
-      // Une seule fois par étape (index unique duo / étape).
-      const [existing] = await db
-        .select({ id: dunningEvents.id })
-        .from(dunningEvents)
-        .where(and(eq(dunningEvents.duoId, account.id), eq(dunningEvents.stage, stage)))
-        .limit(1);
-      if (existing) continue;
-
-      await db.insert(dunningEvents).values({ duoId: account.id, stage, sentAt: now }).onConflictDoNothing();
-      if (stage === 'D1') results.d1++;
-      else if (stage === 'D7') results.d7++;
-      else results.d14++;
-    }
-
+    const results = await runDuoDunning();
     return NextResponse.json({ success: true, results });
   } catch (error) {
     console.error('[Dunning Cron Error]', error);

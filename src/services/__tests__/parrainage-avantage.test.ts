@@ -30,7 +30,9 @@ const sansCommentaires = (source: string) =>
     .filter((l) => !l.trim().startsWith('//'))
     .join('\n');
 
-const CRON = sansCommentaires(read('src/app/api/cron/referral-rewards/route.ts'));
+// Lot 25 : le traitement de la route vit dans le job partagé avec la tâche
+// planifiée interne ; la route ne fait plus que l'appeler.
+const CRON = sansCommentaires(read('src/services/referral/referral-rewards.job.ts'));
 const SIGNUP = sansCommentaires(read('src/app/(auth)/signup/SignupForm.tsx'));
 const INVITATION = sansCommentaires(read('src/app/api/referral/send-email/route.ts'));
 

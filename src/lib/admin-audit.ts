@@ -81,10 +81,18 @@ export type AdminActionType =
   // lot 23) — auteur, date, cache, motif.
   | 'AI_CACHE_INVALIDATE'
   // Export CSV des métriques agrégées (§32.6, §32.7 consultation tracée ; lot 23).
-  | 'AI_METRICS_EXPORT';
+  | 'AI_METRICS_EXPORT'
+  // Page BO « Exploitation » (lot 25, chantier B) : rattrapages de données
+  // lancés depuis le BO — auteur, action, motif, identifiants d'exécution.
+  | 'OPS_BACKFILL_SIMULATE'
+  | 'OPS_BACKFILL_APPLY'
+  | 'OPS_BACKFILL_RESTORE'
+  // Exécution manuelle d'une tâche planifiée interne (lot 25, chantier A).
+  | 'SCHEDULED_TASK_RUN';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
-  | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS';
+  | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
+  | 'OPS_BACKFILL' | 'SCHEDULED_TASK';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

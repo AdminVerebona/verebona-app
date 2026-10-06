@@ -222,6 +222,17 @@ export async function registerNode(): Promise<void> {
   );
   startDailyMaintenanceScheduler();
 
+  // 8 bis. Tâches planifiées internes (lot 25) — plus AUCUN planificateur
+  //    externe : envoi des notifications (chaque minute), « À traiter »,
+  //    rappels du matin (8 h 30, Paris), purge des notifications, fin des
+  //    essais, rétractations, jalons Duo, parrainage, intégrité légale, et
+  //    transfert unique de l'ancienne file T3 au démarrage. Une ligne par
+  //    tâche en base (`scheduled_task_state`) : échéance, exclusivité entre
+  //    instances, dernière exécution (écran Exploitation). Arrêt d'urgence :
+  //    SCHEDULED_TASKS_DISABLED=true ou SCHEDULED_TASK_<CODE>=off.
+  const { startScheduledTasks } = await import('@/services/scheduling/scheduled-task-runner');
+  startScheduledTasks();
+
   // 9. Dossiers prêts à l'emploi V12 (CDC Exports V12 §15.3) : worker de la
   //    file durable `export_generation` (rendu HTML/CSS + Chromium, une
   //    génération à la fois par instance). EXPORTS_WORKER_DISABLED=true le
