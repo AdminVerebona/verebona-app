@@ -30,7 +30,7 @@ import { db, pgClient } from '@/db';
 import { accounts } from '@/db/schema';
 import { withJobLockOrSkip } from '@/lib/job-lock';
 import { innerLockTtlMs, TO_PROCESS_SCAN_TIMEOUT_MS } from '@/services/scheduling/task-timeouts';
-import { closeActionsForDeletedTargets, produceAccountActions } from './producers.service';
+import { closeActionsForDeletedTargets, closeInapplicableAssetFieldActions, produceAccountActions } from './producers.service';
 import { promoteDueActions } from './priority-scheduler.service';
 
 export const TO_PROCESS_SCAN_LOCK = 'to-process-scan';
@@ -177,6 +177,8 @@ export async function runToProcessFullScan(
           errorSample ??= `compte ${compte.id} — ${production.errors[0]}`;
         }
         totaux.closed += await closeActionsForDeletedTargets(compte.id);
+        // Lot 32 (L32-1) : donnée de bien sans objet (immatriculation d'un vélo).
+        totaux.closed += await closeInapplicableAssetFieldActions(compte.id);
 
         const promotion = await promoteDueActions(compte.id);
         totaux.promoted += promotion.promoted;

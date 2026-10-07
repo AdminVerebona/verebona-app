@@ -2,14 +2,15 @@
  * Contrat du prompt maître T5 — Prompt Control (CDC 15 §27, §29 étape 16,
  * T5-01, T5-02, MP-16).
  *
- * Une seule consigne (`t5_master_v1`, fichier du dépôt), deux modes imposés
- * par le serveur, discriminés par `mode` :
+ * Une seule consigne (`t5_master_v1` : version active « Prompts maîtres » du
+ * BO depuis le lot 32B — décision PO n° 15 —, sinon fichier du dépôt), deux
+ * modes imposés par le serveur, discriminés par `mode` :
  *   · `ANALYZE` : diagnostic seul — tout `proposedContent` vaut null ;
  *   · `MODIFY`  : pour chaque cible prompt, le PROMPT MAÎTRE COMPLET réécrit.
  *
  * Cibles : T1, T2, T3, T4, T6 — JAMAIS T5 (« Tu ne modifies JAMAIS T5
- * lui-même »). T5 n'a pas de prompt administrable : son master est le
- * fichier du dépôt, jamais un texte de version de configuration (§10, T5-003).
+ * lui-même », tenu par le serveur quel que soit le texte administré). Le
+ * texte T5 d'une version de configuration n'est jamais appliqué (T5-003).
  *
  * Sortie TOLÉRANTE sur la forme (listes bornées, textes tronqués) : une
  * valeur hors bornes ne doit pas faire échouer un appel de 2 minutes. Seuls

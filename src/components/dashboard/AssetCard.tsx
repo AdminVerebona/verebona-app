@@ -4,7 +4,8 @@ import { Badge } from '@/components/ui/badge';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Folder, AlertCircle } from 'lucide-react';
+import { Folder } from 'lucide-react';
+import { assetStatusLabel, isOutOfPortfolioStatus } from '@/lib/asset-status';
 
 interface AssetCardProps {
   id: number;
@@ -18,6 +19,7 @@ interface AssetCardProps {
   documentLabels?: string[];
   priority?: boolean;
   // micro-signaux (optionnels, enrichis par /api/home/summary)
+  /** @deprecated Lot 32 (L32-10) : plus affiché (pastille retirée). */
   todoCount?: number;
   nextDate?: string | null;
   nextDateTitle?: string | null;
@@ -35,19 +37,15 @@ export const AssetCard = memo(({
   documentCount = 0,
   documentLabels = [],
   priority = false,
-  todoCount = 0,
   nextDate,
   nextDateTitle,
 }: AssetCardProps) => {
   const Icon = getAssetIcon(category, subtype, name);
-  const isInactive = status === 'ARCHIVED' || status === 'TRANSMIS';
+  // Lot 32 (PO-Q11) : statuts officiels (`asset-status`) ; anciennes valeurs
+  // (maintenance, hors service…) lues comme « En service ».
+  const isInactive = isOutOfPortfolioStatus(status);
 
-  const statusLabel =
-    status === 'TRANSMIS' ? 'Transmis' :
-    status === 'ARCHIVED' ? 'Archivé' :
-    status === 'EN_MAINTENANCE' ? 'Maintenance' :
-    status === 'HORS_SERVICE' ? 'Hors service' :
-    'Actif';
+  const statusLabel = isInactive ? assetStatusLabel(status) : 'Actif';
 
   // Use pre-signed URL from server if available, otherwise fall back to client-side fetch
   const { signedUrl: hookSignedUrl, isLoading: thumbnailLoading } = useThumbnailUrl(
@@ -57,7 +55,6 @@ export const AssetCard = memo(({
   const signedUrl = signedThumbnailUrl ?? hookSignedUrl;
 
   // Micro-signal à afficher en priorité
-  const hasTodo = todoCount > 0;
   const hasNextDate = !!nextDate;
 
   const cardContent = (
@@ -121,15 +118,8 @@ export const AssetCard = memo(({
             {/* Micro-signal (priorité sur les docs) */}
             {!isInactive && (
               <div className="flex items-center gap-2 flex-wrap">
-                {hasTodo && (
-                  <div className="flex items-center gap-1 bg-amber-500/25 border border-amber-500/30 rounded-full px-2 py-0.5">
-                    <AlertCircle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                    <span className="text-[9.5px] font-semibold text-[color:var(--text-warning)]">
-                      {todoCount === 1 ? '1 action à faire' : `${todoCount} actions à faire`}
-                    </span>
-                  </div>
-                )}
-
+                {/* Lot 32 (L32-10) : plus de pastille « N actions à faire » —
+                    elle ne menait nulle part ; les actions vivent dans « À traiter ». */}
                 {/* Compteur docs */}
                 <div className="flex items-center gap-1 text-white/60 text-[10px]">
                   <Folder className="w-2.5 h-2.5 text-[#f59e0b] shrink-0" />

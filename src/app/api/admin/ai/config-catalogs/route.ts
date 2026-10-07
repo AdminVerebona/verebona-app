@@ -13,30 +13,40 @@
  * Les modèles portent leur disponibilité ET leur tarif séparément : ce sont
  * deux causes de refus distinctes, qui appellent deux gestes différents —
  * changer de modèle, ou rafraîchir la grille tarifaire.
+ *
+ * ── LOT 32B : UNE LISTE PAR TRAITEMENT ──────────────────────────────────────
+ * `modelsByTreatment[Tx]` = `usableModelsForTreatment(Tx)` : SEULE liste des
+ * sélecteurs principal / repli 1 / repli 2 du BO. `excludedByTreatment` ne
+ * sert qu'à nommer une valeur ENREGISTRÉE qui n'est plus utilisable
+ * (« gemini-X — indisponible (déprécié) ») ; ce n'est jamais un choix. La
+ * liste globale `models` est conservée pour les écrans qui la lisent.
+ * Aucun appel fournisseur : catalogue, tarifs et état opérationnel sont lus.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
-import { getCachedPrice, getCacheState, loadPricingCache } from '@/services/ai/gateway/pricing/pricing.repository';
+import { getCachedPrice } from '@/services/ai/gateway/pricing/pricing.repository';
 import { listGuardrails, listTriggers, TRIGGER_CATALOG } from '@/services/ai/config/catalogs';
 import { DEFAULT_TRIGGERS } from '@/services/ai/queue/triggers';
 import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
 import { REASONING_LEVELS, GUARDRAIL_REACTIONS } from '@/services/ai/config/config-types';
 import { masterPromptForTreatment } from '@/services/ai/config/prompt-architecture';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
-import { getCatalogState, selectableModels } from '@/services/ai/provider/model-catalog.service';
+import { selectableModels } from '@/services/ai/provider/model-catalog.service';
+import {
+  loadUsableModelsContext, usableModelsByTreatment, excludedModelsByTreatment,
+} from '@/services/ai/registry/usable-models';
 
 export async function GET(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
 
   try {
-    if (getCacheState().loadedAt === null) await loadPricingCache();
-
     // E-04, PROV-UI-06 : disponibilité lue dans le catalogue du fournisseur
     // (dernier rafraîchissement) ; un modèle indisponible n'est plus
     // sélectionnable. Jamais rafraîchi : catalogue du code, comme avant.
-    const state = await getCatalogState().catch(() => ({ refreshedAt: null, models: [] as never[] }));
-    const selectable = selectableModels(GEMINI_PUBLIC_CATALOG.map((e) => e.model), state);
+    const ctx = await loadUsableModelsContext();
+    const state = ctx.catalog;
+    const selectable = selectableModels(GEMINI_PUBLIC_CATALOG.map((e) => e.model), state as never);
     const names = [...new Set([...GEMINI_PUBLIC_CATALOG.map((e) => e.model), ...state.models.map((m: { model: string }) => m.model)])];
     const models = names.map((model) => {
       const price = getCachedPrice('gemini', model);
@@ -52,6 +62,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       models,
+      // Lot 32B : listes des sélecteurs, par traitement (source unique).
+      modelsByTreatment: usableModelsByTreatment(ctx),
+      excludedByTreatment: excludedModelsByTreatment(ctx),
       catalogRefreshedAt: state.refreshedAt,
       reasoningLevels: REASONING_LEVELS,
       guardrailReactions: GUARDRAIL_REACTIONS,

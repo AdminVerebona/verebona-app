@@ -69,3 +69,26 @@ export function isCilEligible(asset: AssetKind): boolean {
 /** Message commun aux refus d'éligibilité CIL (API et interface). */
 export const CIL_NOT_ELIGIBLE_MESSAGE =
   "Le Carnet d'information du logement est disponible pour les maisons et les appartements uniquement.";
+
+// ── Immatriculation (lot 32, ticket L32-1) ────────────────────────────────────
+
+/**
+ * Catégories Véhicule SANS immatriculation (non motorisées) : un numéro relevé
+ * sur un document de vélo (marquage antivol, numéro de cadre) n'est pas une
+ * plaque. Les champs d'immatriculation n'y sont ni proposés (« À traiter »),
+ * ni écrits par une origine automatique, ni affichés sur la fiche.
+ * Libellés comparés sans casse ni accents ; « VTT » et « Trottinette »
+ * (saisies libres anciennes) sont reconnus.
+ */
+export const UNREGISTERED_VEHICLE_CATEGORIES = ['Vélo', 'VTT', 'Trottinette'] as const;
+
+const sansAccent = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+
+/** Le bien (véhicule) porte-t-il une immatriculation ? Faux hors famille Véhicule. */
+export function assetHasRegistration(asset: AssetKind): boolean {
+  if ((asset.category ?? '').trim().toUpperCase() !== 'VEHICULE') return false;
+  const c = canonical(asset.subtype);
+  if (!c) return true;
+  const k = sansAccent(c);
+  return !UNREGISTERED_VEHICLE_CATEGORIES.some((v) => sansAccent(v) === k);
+}

@@ -25,6 +25,10 @@ const callLog: Array<{ sql: string; p: unknown[] }> = [];
 async function unsafe(sql: string, p: unknown[] = []): Promise<unknown[]> {
   sqlLog.push(sql);
   callLog.push({ sql, p });
+  // Lot 32 (PO 6) : demande durable de pré-génération — prise en charge du compte.
+  if (/UPDATE home_mascot_pregen_requests/.test(sql) && /RETURNING account_id/.test(sql)) {
+    return [{ accountId: p[2], requestedAt: '2026-09-25T10:00:00Z' }];
+  }
   if (/INSERT INTO home_mascot_acknowledgments/.test(sql)) {
     const [account, occurrenceKey, , cycleKey, by] = p as [number, string, number, string, number];
     const exist = etat.acks.find((a) => a.account === account && a.occurrenceKey === occurrenceKey && a.cycleKey === cycleKey && !a.undone);
@@ -110,6 +114,7 @@ const { collectMascotData, MASCOT_TO_PROCESS_LIMIT } = await import('../collecto
 const { buildCandidates, extActionOccurrenceKey, mascotRightsFrom } = await import('../signals');
 const { buildSecondaries, selectSubjects } = await import('../selector');
 const { buildPresentation } = await import('../presentation');
+const { buildTodoBlock } = await import('../todo-items');
 const { getMascotPresentation, scheduleMascotPregeneration, pendingPregenerations } = await import('../mascot.service');
 const { t6CacheKey, readT6Cache, formulateWithT6, logT6, gatewayCallerMode, resetT6Breaker } = await import('../t6-runner');
 const { buildT6Input } = await import('../t6-contract');
@@ -123,7 +128,10 @@ async function presenter(accountId: number) {
   const raw = await collectMascotData(accountId, NOW);
   const c = buildCandidates(raw);
   const subjects = selectSubjects(c.candidates);
-  return buildPresentation({ subjects, secondaries: buildSecondaries(c, subjects), degraded: c.degraded, messages: null });
+  return buildPresentation({
+    subjects, secondaries: buildSecondaries(c, subjects), degraded: c.degraded, messages: null,
+    todo: buildTodoBlock(raw.toProcess, raw.toProcessTotal),
+  });
 }
 
 let n = 0;
@@ -166,27 +174,29 @@ describe('À traiter (ATP-02, ATP-03, NFR-001)', () => {
     etat.toProcess.set('a-1', { account: 7, resolved: false });
     toProcessPage.mockImplementation(async () => ({ actions: [a] }));
     const avant = await presenter(7);
-    expect(avant.paragraphs.map((x) => x.occurrenceKey)).toContain('ATP:a-1');
+    // MASC2 : élément de niveau 2, ciblé par l'ID de l'action.
+    expect(avant.todo?.items.map((x) => x.todoId)).toContain('a-1');
 
     // Résolue dans le tiroir : la source ne la rend plus, la revalidation la dit traitée.
     etat.toProcess.set('a-1', { account: 7, resolved: true });
     toProcessPage.mockImplementation(async () => ({ actions: [] }));
-    const cible = avant.paragraphs[0].actions[0].target;
-    expect(await checkTarget(7, cible)).toBe('resolved');
+    const it0 = avant.todo!.items[0];
+    expect(await checkTarget(7, {
+      kind: 'to_process', publicId: it0.todoId, targetType: it0.entityType, targetId: it0.entityId, targetPublicId: null, field: null,
+    })).toBe('resolved');
     const apres = await presenter(7);
-    expect(apres.paragraphs.map((x) => x.occurrenceKey)).not.toContain('ATP:a-1');
+    expect(apres.todo?.items.map((x) => x.todoId) ?? []).not.toContain('a-1');
+    expect(apres.contextHash).not.toBe(avant.contextHash);
   });
 
   it('ATP-03 — fournisseur résolu : fiche /fournisseurs/[id] ; sinon repli sûr', () => {
-    const p = selectSubjects(buildCandidates(raw({
-      toProcess: [atp({ targetType: 'SUPPLIER', targetId: 55, target: { label: 'EDF', supplierId: 55 } })],
-    })).candidates);
-    const t = p[0].actions[0].target;
-    expect(t).toMatchObject({ kind: 'to_process', targetType: 'SUPPLIER', supplierId: 55 });
+    const todo = buildTodoBlock([atp({ targetType: 'SUPPLIER', targetId: 55, target: { label: 'EDF', supplierId: 55 } })], 1)!;
+    const c = todo.items[0].card;
+    expect(c).toMatchObject({ targetType: 'SUPPLIER', target: { supplierId: 55 } });
 
     const push = vi.fn();
     const repli = vi.fn();
-    openToProcessTarget(t as Parameters<typeof openToProcessTarget>[0], { push }, repli);
+    openToProcessTarget({ targetType: c.targetType, targetId: c.targetId, supplierId: c.target.supplierId }, { push }, repli);
     expect(push).toHaveBeenCalledWith('/fournisseurs/55');
     expect(repli).not.toHaveBeenCalled();
 
@@ -288,7 +298,11 @@ describe('pré-génération et cloisonnement (CACHE-03, SEC-01)', () => {
     expect(toProcessPage).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(600);
     expect(pendingPregenerations()).toBe(0);
-    expect(toProcessPage).toHaveBeenCalledTimes(1);
+    // Lot 32 (PO 6) : la demande est d'abord enregistrée puis prise en charge
+    // (base simulée) — la génération part juste après.
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(toProcessPage).toHaveBeenCalledTimes(1));
+    expect(callLog.some((c) => /INSERT INTO home_mascot_pregen_requests/.test(c.sql) && c.p[0] === 7)).toBe(true);
   });
 
   it('SEC-01 — changement de compte Duo : ni sujet ni cache du compte précédent', async () => {
@@ -387,8 +401,8 @@ describe('offre et droits (REC-005)', () => {
 // ── SEC-004 ──────────────────────────────────────────────────────────────────
 
 describe('questions T2 (SEC-004)', () => {
-  it('une action À traiter visible en secondaire exclut Q-TODO', () => {
-    // Deux sujets de traitement occupent le discours ; l'action À traiter passe en secondaire.
+  it('MASC2 — une action À traiter n’est jamais une pastille secondaire ; « Ou demandez-moi » reste indépendant (Q-TODO)', () => {
+    // Deux sujets de traitement occupent le discours ; l'action À traiter est un élément de niveau 2.
     const r = raw({
       processing: {
         uploads: [{ id: 1, title: 'Bail', at: '2026-09-25T09:00:00Z' }],
@@ -401,8 +415,8 @@ describe('questions T2 (SEC-004)', () => {
     const subjects = selectSubjects(c.candidates);
     expect(subjects.map((s) => s.sourceFamily)).toEqual(['PROCESSING', 'PROCESSING']);
     const sec = buildSecondaries(c, subjects);
-    expect(sec.some((s) => s.kind === 'recommendation' && s.sourceCode.startsWith('ATP-'))).toBe(true);
-    expect(sec.map((s) => s.sourceCode)).not.toContain('Q-TODO');
+    expect(sec.some((s) => s.sourceCode.startsWith('ATP-'))).toBe(false);
+    expect(sec.map((s) => s.sourceCode)).toContain('Q-TODO');
   });
 
   it('sans action À traiter visible, Q-TODO reste proposée', () => {

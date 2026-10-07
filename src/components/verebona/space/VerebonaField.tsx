@@ -19,7 +19,7 @@
  * technologies d'assistance via `aria-keyshortcuts`.
  */
 import { useRef, useState } from 'react';
-import { ArrowRight, History, Square, X } from 'lucide-react';
+import { ArrowRight, Square, X } from 'lucide-react';
 import { FocusScope } from '@radix-ui/react-focus-scope';
 import { composerState } from '@/lib/verebona/offline';
 import { exchangeCountLabel, fieldPlaceholder } from '@/lib/verebona/space';
@@ -89,23 +89,6 @@ function SendButton({ api, canSend, onSend, size }: { api: VerebonaSpaceApi; can
       style={{ width: size, height: size, background: canSend ? 'var(--accent)' : 'var(--muted)', color: canSend ? '#fff' : 'var(--text-muted)' }}
     >
       <ArrowRight className="h-[15px] w-[15px]" strokeWidth={2.2} aria-hidden />
-    </button>
-  );
-}
-
-/** Bouton « Toutes les demandes » (historique complet des fils, §8). */
-function HistoryButton({ api, size }: { api: VerebonaSpaceApi; size: 'desktop' | 'mobile' }) {
-  const on = api.historyOpen;
-  return (
-    <button
-      type="button"
-      onClick={() => api.setHistoryOpen(!on)}
-      aria-pressed={on}
-      aria-label={on ? 'Revenir à l’échange' : 'Toutes les demandes'}
-      title={on ? 'Revenir à l’échange' : 'Toutes les demandes'}
-      className={`flex items-center justify-center rounded-[10px] transition-colors hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] ${size === 'mobile' ? 'h-11 w-10' : 'h-9 w-9'} ${on ? 'text-[color:var(--accent)]' : 'text-[color:var(--text-muted)]'}`}
-    >
-      <History className="h-4 w-4" aria-hidden />
     </button>
   );
 }
@@ -195,14 +178,13 @@ export function VerebonaDesktopPanel() {
       >
         <header className="flex flex-shrink-0 items-center gap-2.5 border-b border-[color:var(--border-subtle)] py-2.5 pl-[18px] pr-3">
           <span className="text-[13px] font-semibold text-[color:var(--text-primary)]">Verebona</span>
-          <span className="text-[12px] text-[color:var(--text-muted)]">{api.historyOpen ? 'Toutes les demandes' : exchangeCountLabel(n)}</span>
+          <span className="text-[12px] text-[color:var(--text-muted)]">{exchangeCountLabel(n)}</span>
           <div className="ml-auto flex items-center gap-1">
-            {n > 0 && !api.historyOpen && (
+            {n > 0 && (
               <button type="button" onClick={api.newRequest} className="h-8 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-medium text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)]">
                 Nouvelle demande
               </button>
             )}
-            <HistoryButton api={api} size="desktop" />
             <button
               type="button"
               onClick={api.close}
@@ -275,16 +257,15 @@ export function VerebonaMobileSpace() {
           </button>
           <div className="min-w-0 flex-1 text-right">
             <div className="truncate text-[14px] font-semibold text-[color:var(--text-primary)]">
-              {api.historyOpen ? 'Toutes les demandes' : n ? 'Verebona' : 'Que puis-je faire pour vous aujourd’hui ?'}
+              {n ? 'Verebona' : 'Que puis-je faire pour vous aujourd’hui ?'}
             </div>
             <div className="text-[11.5px] text-[color:var(--text-muted)]">{exchangeCountLabel(n) || 'Rechercher, retrouver ou demander…'}</div>
           </div>
-          {n > 0 && !api.historyOpen && (
+          {n > 0 && (
             <button type="button" onClick={api.newRequest} className="h-11 whitespace-nowrap px-1 text-[12.5px] font-medium text-[color:var(--accent)]">
               Nouvelle demande
             </button>
           )}
-          <HistoryButton api={api} size="mobile" />
           <MascotPose pose={api.pose} size={46} style={{ filter: 'drop-shadow(0 8px 12px rgba(4,10,26,.5))' }} />
         </header>
         <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-[18px] pb-3 pt-4">

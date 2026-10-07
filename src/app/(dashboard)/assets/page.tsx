@@ -32,6 +32,10 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
 import { ASSET_FAMILIES, assetCategoryLabel, assetFamilyLabel } from '@/lib/asset-taxonomy';
+import {
+  ASSET_STATUS_LABELS, OUT_OF_PORTFOLIO_ASSET_STATUSES, assetStatusBadgeVariant, assetStatusLabel,
+  isOutOfPortfolioStatus, isReadOnlyAssetStatus,
+} from '@/lib/asset-status';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
 
@@ -73,10 +77,12 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
   const [isNavigating, setIsNavigating] = useState(false);
   const Icon = getAssetIcon(asset.category, asset.subtype, asset.name);
   const { signedUrl, isLoading: thumbnailLoading } = useThumbnailUrl(asset.id, asset.thumbnailUrl);
-  const isInactive = asset.status === 'INACTIF';
-  const isArchived = asset.status === 'ARCHIVED' || asset.status === 'TRANSMIS';
+  // Lot 32 (PO-Q11) : statuts officiels. Vendu / transmis / archivé = sorti
+  // du portefeuille (grisé) ; transmis / archivé = consultation seule.
+  const isOutOfPortfolio = isOutOfPortfolioStatus(asset.status);
+  const isArchived = isReadOnlyAssetStatus(asset.status);
   const isLocked = asset.lockState && asset.lockState !== 'NONE';
-  const isBlocked = isInactive || isArchived || isLocked;
+  const isBlocked = isOutOfPortfolio || isLocked;
 
   const handleMouseEnter = () => {
     // Pre-warm cache on hover so data is ready before click
@@ -94,17 +100,9 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
     router.push(`/assets/${asset.id}${isArchived ? '?readonly=1' : ''}`);
   };
 
-  const statusLabel = asset.status === 'EN_SERVICE' ? 'Actif' :
-    asset.status === 'VENDU' ? 'Vendu' :
-    asset.status === 'EN_PANNE' ? 'En panne' :
-    asset.status === 'EN_REPARATION' ? 'En réparation' :
-    asset.status === 'DETRUIT' ? 'Détruit' :
-    asset.status === 'INACTIF' ? 'Inactif' :
-    asset.status === 'TRANSMIS' ? 'Transmis' : 'Archivé';
+  const statusLabel = assetStatusLabel(asset.status) === ASSET_STATUS_LABELS.EN_SERVICE ? 'Actif' : assetStatusLabel(asset.status);
 
-  const statusVariant: 'active' | 'sold' | 'secondary' =
-    asset.status === 'EN_SERVICE' ? 'active' :
-    (asset.status === 'VENDU' || asset.status === 'TRANSMIS') ? 'sold' : 'secondary';
+  const statusVariant = assetStatusBadgeVariant(asset.status);
 
   const cardContent = (
     <div className={`relative rounded-2xl overflow-hidden h-64 transform-gpu transition-all duration-300 ${
@@ -133,23 +131,18 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/10" />
 
       {/* Blocked overlays */}
-      {isArchived && (
+      {isOutOfPortfolio && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
           <div className="bg-black/70 text-white px-3 py-1.5 rounded-full text-xs font-medium">
-            {asset.status === 'TRANSMIS' ? 'Transmis' : 'Archivé'}
+            {assetStatusLabel(asset.status)}
           </div>
         </div>
       )}
-      {!isArchived && isLocked && (
+      {!isOutOfPortfolio && isLocked && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/20 backdrop-blur-[1px]">
           <div className="bg-black/70 text-white px-3 py-1.5 rounded-full flex items-center gap-1.5 text-xs font-medium">
             <Lock className="w-3 h-3" />Verrouillé
           </div>
-        </div>
-      )}
-      {!isArchived && !isLocked && isInactive && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/20 backdrop-blur-[1px]">
-          <div className="bg-black/70 p-2 rounded-full"><Lock className="w-5 h-5 text-white" /></div>
         </div>
       )}
 
@@ -190,7 +183,8 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
     </div>
   );
 
-  if (isArchived) {
+  // Sorti du portefeuille (vendu, transmis, archivé) : grisé mais consultable.
+  if (isOutOfPortfolio && !isLocked) {
     return (
       <div className="relative group" onClick={handleClick} style={{ cursor: 'pointer' }}>
         {cardContent}
@@ -291,7 +285,7 @@ function AssetsPageContent() {
     }
   }, [user, loadAssets]);
 
-  const ARCHIVED_STATUSES = ['ARCHIVED', 'TRANSMIS'];
+  const ARCHIVED_STATUSES: readonly string[] = OUT_OF_PORTFOLIO_ASSET_STATUSES;
 
   // Active assets = non archivés/transmis — utilisés pour les compteurs freemium
   const activeAssets = useMemo(
@@ -311,15 +305,14 @@ function AssetsPageContent() {
     if (searchTerm.trim()) {
       const terms = searchTerm.trim().toLowerCase().split(/\s+/).filter(Boolean);
       const STATUS_LABELS_SEARCH: Record<string, string> = {
-        EN_SERVICE: 'en service actif', EN_PANNE: 'en panne', EN_REPARATION: 'en réparation',
-        VENDU: 'vendu', DETRUIT: 'détruit', INACTIF: 'inactif', ARCHIVED: 'archivé', TRANSMIS: 'transmis',
+        EN_SERVICE: 'en service actif', VENDU: 'vendu', ARCHIVED: 'archivé', TRANSMIS: 'transmis',
       };
       filtered = filtered.filter(asset => {
         const haystack = [
           asset.name,
           CATEGORY_LABELS[asset.category] ?? asset.category,
           assetCategoryLabel(asset) ?? '',
-          STATUS_LABELS_SEARCH[asset.status] ?? asset.status,
+          STATUS_LABELS_SEARCH[asset.status] ?? assetStatusLabel(asset.status).toLowerCase(),
         ].join(' ').toLowerCase();
         return terms.every(t => haystack.includes(t));
       });
@@ -618,7 +611,7 @@ function AssetsPageContent() {
                     )}
                   </div>
                   <span className="text-sm text-foreground" onClick={() => setPendingShowArchived(!pendingShowArchived)}>
-                    Afficher les biens transmis/archivés
+                    Afficher les biens vendus, transmis ou archivés
                   </span>
                 </label>
               </div>

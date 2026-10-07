@@ -20,7 +20,7 @@ export type {
   DecisionInput, EvidenceCandidate, CurrentValue,
 } from './types';
 
-import { onSourceAnalyzed } from '../source-analysis/events';
+import { onSourceAnalyzed, type SourceAnalyzedEvent } from '../source-analysis/events';
 import { registerJobHandler } from '../queue/queue-worker';
 import { enqueueT3ForAnalyzedAsset, registerT3SweepStarter, t3JobHandler } from './t3-queue';
 import {
@@ -52,6 +52,10 @@ export function registerReconciliationHandlers(): void {
 
   // Lot 16b-3 : plus de drapeau (`AI_RECONCILIATION_ENGINE` supprimé).
   onSourceAnalyzed('réconciliation', async (e) => {
+    // Lot 32C (PO 8 / PO 10) : document rattaché par l'utilisateur à A que
+    // l'analyse désigne comme concernant B → « À traiter » dédié, jamais de
+    // déplacement automatique. Analyse sans incohérence : carte close.
+    await syncAssetConflictFromAnalysis(e);
     if (!e.assetId) {
       // Lot 31B (ticket T3, §3) : T1 terminé SANS bien principal certain →
       // T3 DOCUMENT_ASSET immédiatement, avec les candidats et preuves de T1.
@@ -68,4 +72,25 @@ export function registerReconciliationHandlers(): void {
       leadSourceId: e.leadSourceId,
     });
   });
+}
+
+/**
+ * Carte LINK-ASSET-CONFLICT depuis le résultat d'une analyse T1 (avertissement
+ * `ASSET_TARGET_CONTRADICTION`, bien choisi = `e.assetId`). Ne lève jamais.
+ */
+export async function syncAssetConflictFromAnalysis(e: Pick<SourceAnalyzedEvent, 'accountId' | 'assetId' | 'leadSourceId' | 'result'>): Promise<void> {
+  try {
+    const { clearDocumentAssetConflict, proposeDocumentAssetConflict } = await import('@/services/to-process/document-asset-conflict');
+    const w = e.result.warnings.find((x) => x.code === 'ASSET_TARGET_CONTRADICTION' && x.assetConflict);
+    if (e.assetId && w?.assetConflict) {
+      await proposeDocumentAssetConflict({
+        accountId: e.accountId, fileId: e.leadSourceId, currentAssetId: e.assetId,
+        suggestedAssetId: w.assetConflict.assetId, basis: w.assetConflict.basis, kinds: w.assetConflict.kinds,
+      });
+    } else {
+      await clearDocumentAssetConflict(e.accountId, e.leadSourceId);
+    }
+  } catch (err) {
+    console.error(`[réconciliation] incohérence de rattachement du document ${e.leadSourceId} :`, (err as Error).message);
+  }
 }

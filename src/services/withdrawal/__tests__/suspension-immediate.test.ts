@@ -15,7 +15,11 @@ vi.mock('@/db', () => ({
   },
 }));
 vi.mock('@/lib/stripe', () => ({ getStripeServer: () => { order.push('stripe'); throw new Error('Stripe indisponible'); } }));
-vi.mock('@/services/account/scheduled-deletion.service', () => ({ scheduleDeletion: async () => { order.push('suppression-planifiée'); return { scheduledAt: new Date() }; } }));
+vi.mock('@/services/account/scheduled-deletion.service', () => ({
+  scheduleDeletion: async (i: { delayDays?: number }) => { order.push(`suppression-planifiée:${i.delayDays}`); return { id: 77, scheduledAt: new Date() }; },
+  executeScheduledDeletion: async () => { order.push('suppression-exécutée'); return { status: 'executed', preserved: { legalAcceptances: 0, withdrawalRequests: 1, invoices: 1 } }; },
+}));
+vi.mock('@/services/admin/account-status.service', () => ({ revokeUserSessionsNow: async () => { order.push('sessions-révoquées'); return new Date(); } }));
 vi.mock('../withdrawal-journal.service', () => ({ recordWithdrawalEvent: async (e: { eventType: string }) => { order.push(`journal:${e.eventType}`); } }));
 vi.mock('@/lib/server-cache', () => ({ serverCacheDeleteByPrefix: () => 0, invalidateAccountReadCache: () => 0 }));
 
@@ -28,13 +32,22 @@ beforeEach(() => {
 });
 
 describe('Stripe indisponible', () => {
-  it('le compte passe en lecture/export avant l’appel Stripe ; la demande reste en échec technique pour reprise', async () => {
+  it('le compte passe en lecture seule avant l’appel Stripe ; la demande reste en échec technique pour reprise', async () => {
     const r = await processWithdrawal('RET-X');
     expect(r).toMatchObject({ status: 'failed', failureCode: 'STRIPE_UNAVAILABLE' });
     expect(order.indexOf('droits:readonly')).toBeGreaterThan(-1);
     expect(order.indexOf('compte:WITHDRAWN')).toBeLessThan(order.indexOf('stripe'));
-    expect(order.indexOf('suppression-planifiée')).toBeLessThan(order.indexOf('stripe'));
     expect(order).toContain('demande:STRIPE_UNAVAILABLE');
+  });
+
+  // Lot 32 (PO-Q2) : la suppression du compte est IMMÉDIATE (délai 0) et ne
+  // dépend pas de Stripe — la reprise Stripe se fait sur la demande seule.
+  it('PO-Q2 — Stripe indisponible : compte supprimé quand même, immédiatement (délai 0)', async () => {
+    const r = await processWithdrawal('RET-X');
+    expect(r.accountDeletion).toBe('deleted');
+    expect(order).toContain('suppression-planifiée:0');
+    expect(order.indexOf('suppression-exécutée')).toBeGreaterThan(order.indexOf('stripe'));
+    expect(order).toContain('journal:DELETION_EXECUTED');
   });
 });
 

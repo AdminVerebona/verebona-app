@@ -251,15 +251,23 @@ export async function analyzeDocument(
   let documentAssetId: number | null;
   if (knownAssetId) {
     documentAssetId = knownAssetId;
-    if (identification.uniqueAssetId !== null && identification.uniqueAssetId !== knownAssetId) {
-      // Jamais de remplacement silencieux : le rattachement utilisateur reste,
-      // la contradiction est conservée (avertissement + bien CITÉ).
+    // Jamais de remplacement silencieux : le rattachement utilisateur reste,
+    // la contradiction est conservée (avertissement + bien CITÉ) et devient
+    // une action « À traiter » dédiée (lot 32C, PO 8 / PO 10).
+    const conflit = detectAssetContradiction({
+      knownAssetId, identification, modelAssets: verification.assets, multiAssetDeclared: out.entities.multiAsset === true,
+    });
+    if (conflit) {
       warnings.push({
         code: 'ASSET_TARGET_CONTRADICTION',
-        message: `Le document contient un identifiant exact d’un autre bien (${identification.matches
-          .filter((m) => m.assetId === identification.uniqueAssetId).map((m) => IDENTIFIER_KIND_LABELS[m.kind]).join(', ')}) : `
-          + 'le rattachement choisi par l’utilisateur est conservé.',
-        target: `asset:${identification.uniqueAssetId}`,
+        message: conflit.basis === 'IDENTIFIER'
+          ? `Le document contient un identifiant exact d’un autre bien (${conflit.kinds
+            .map((k) => IDENTIFIER_KIND_LABELS[k as keyof typeof IDENTIFIER_KIND_LABELS] ?? k).join(', ')}) : `
+            + 'le rattachement choisi par l’utilisateur est conservé.'
+          : 'L’analyse désigne avec certitude un autre bien que celui choisi par l’utilisateur : '
+            + 'le rattachement choisi est conservé.',
+        target: `asset:${conflit.assetId}`,
+        assetConflict: conflit,
       });
     }
   } else if (identification.uniqueAssetId !== null) {
@@ -304,6 +312,38 @@ export async function analyzeDocument(
     trace: { ...mergeTrace(emptyTrace(), res, T1_ANALYZE_DOCUMENT_OPERATION), accountCapabilities: capabilityTrace },
     promptVersion: res.promptVersion,
   };
+}
+
+/**
+ * Bien que l'analyse aurait retenu À LA PLACE du bien choisi par
+ * l'utilisateur (lot 32C, PO 8 / PO 10), sinon null. Pure.
+ *
+ *   · identifiant canonique exact et UNIQUE d'un autre bien (adresse,
+ *     immatriculation, VIN, série, cadastre) → base IDENTIFIER ;
+ *   · identifiants de plusieurs biens (dont éventuellement le bien choisi) :
+ *     rien de certain → null ;
+ *   · sinon, candidat UNIQUE certain et vérifié du modèle, autre que le bien
+ *     choisi, que le modèle ne cite pas lui-même avec certitude, hors
+ *     document déclaré multi-biens → base ANALYSIS.
+ * Même règle que le choix de T1 sans bien connu (`documentAssetId`).
+ */
+export function detectAssetContradiction(p: {
+  knownAssetId: number;
+  identification: Pick<IdentifierResolution, 'uniqueAssetId' | 'assetIds' | 'matches'>;
+  modelAssets: readonly LinkCandidate[];
+  multiAssetDeclared: boolean;
+}): { assetId: number; basis: 'IDENTIFIER' | 'ANALYSIS'; kinds: string[] } | null {
+  const id = p.identification;
+  if (id.uniqueAssetId !== null) {
+    if (id.uniqueAssetId === p.knownAssetId) return null;
+    const kinds = [...new Set(id.matches.filter((m) => m.assetId === id.uniqueAssetId).map((m) => m.kind))];
+    return { assetId: id.uniqueAssetId, basis: 'IDENTIFIER', kinds };
+  }
+  if (id.assetIds.length > 0 || p.multiAssetDeclared) return null;
+  const certains = p.modelAssets.filter((c) => c.verified && c.entityId !== null && c.confidence === 'certain');
+  if (certains.some((c) => c.entityId === p.knownAssetId)) return null;
+  const autres = [...new Set(certains.map((c) => c.entityId as number))];
+  return autres.length === 1 ? { assetId: autres[0], basis: 'ANALYSIS', kinds: [] } : null;
 }
 
 /** Forme de comparaison : sans accents, casse ni ponctuation ni espaces. */

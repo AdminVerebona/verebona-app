@@ -30,7 +30,7 @@
 import { pgClient } from '@/db';
 import { canOverwrite, isHumanOrigin, writeOrigin } from '@/services/ai/reconciliation/field-origin';
 import {
-  eurToCents, getField, isExcludedKey, normalizeValue, resolveAlias, toMirrorValue,
+  eurToCents, getField, isExcludedKey, isFieldApplicableToAsset, normalizeValue, resolveAlias, toMirrorValue,
   type AssetFamily, type CanonicalFieldDef,
 } from '@/services/canonical/registry';
 import {
@@ -144,6 +144,13 @@ export function planCanonicalWrites(
     // Champ d'une autre cible (pièce, équipement, document…) : jamais écrit
     // dans la fiche du BIEN (CDC 15 T1-04, relecture lot 13) — ex. `roomArea`.
     if (!fieldTargetsAsset(def)) { refuse(def.key, 'invalid', 'TARGET_NOT_ASSET'); continue; }
+    // Lot 32 (L32-1) : capacité de catégorie (immatriculation d'un vélo) —
+    // jamais écrite par une origine automatique ; la saisie humaine reste libre.
+    if (def.requiresCapability && !isHumanOrigin(ctx.origin)
+      && !isFieldApplicableToAsset(def.key, { category: row.category, subtype: typeof row.subtype === 'string' ? row.subtype : null })) {
+      refuse(def.key, 'invalid', 'FIELD_NOT_APPLICABLE');
+      continue;
+    }
     // Champ de SAISIE seule (décision PO D-D, lot 20 : prix et surface
     // d'annonce) : jamais écrit par une origine automatique (T3, extraction,
     // règle système) — seulement par l'humain ou un import qu'il a fourni.

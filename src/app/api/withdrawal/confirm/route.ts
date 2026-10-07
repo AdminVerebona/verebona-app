@@ -11,11 +11,19 @@
  *   4. répondre au consommateur avec sa référence ;
  *   5. envoyer l'accusé de réception.
  *
- * L'annulation Stripe et le remboursement n'interviennent PAS ici. Le §7.4
- * exige que « la déclaration soit considérée comme reçue, indépendamment du
- * résultat immédiat des appels Stripe » : les y placer ferait dépendre
- * l'enregistrement d'un droit de la disponibilité d'un prestataire. Ils sont
- * déclenchés en aval, sur l'état `received`.
+ * Le §7.4 exige que « la déclaration soit considérée comme reçue,
+ * indépendamment du résultat immédiat des appels Stripe » : la déclaration
+ * est écrite et l'accusé envoyé AVANT tout appel Stripe.
+ *
+ * LOT 32 (décisions PO du 07/10/2026, Q1/Q2) : traitement IMMÉDIAT. Juste
+ * après l'accusé (qui est aussi l'e-mail d'au revoir), `processWithdrawal`
+ * coupe les accès, annule l'abonnement, rembourse intégralement et supprime
+ * le compte. La réponse attend ce traitement dans une limite de temps
+ * (`PROCESSING_BUDGET_MS`) ; au-delà, il continue en arrière-plan et le
+ * balayage planifié le reprend en cas d'échec — sans action manuelle.
+ * Plus d'examen manuel : une éligibilité négative est refusée avec son motif
+ * (409), une éligibilité indéterminable (panne) est refusée temporairement
+ * (503, « réessayez ») — jamais de suppression de compte sur un doute.
  *
  * La protection CSRF exigée au §12.4 est assurée par le middleware, qui
  * contrôle l'origine de toute requête mutante.
@@ -26,7 +34,7 @@ import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { evaluateEligibility, ineligibilityMessage } from '@/services/withdrawal/eligibility.service';
 import { buildSummary } from '@/services/withdrawal/summary.service';
-import { recordDeclaration, WithdrawalError } from '@/services/withdrawal/withdrawal.service';
+import { findByIdempotencyKey, recordDeclaration, WithdrawalError } from '@/services/withdrawal/withdrawal.service';
 import {
   resolveVerificationToken,
   consumeVerificationToken,
@@ -34,6 +42,9 @@ import {
 } from '@/services/withdrawal/public-verification.service';
 import { sendWithdrawalReceipt } from '@/services/withdrawal/receipt.service';
 import { processWithdrawal } from '@/services/withdrawal/withdrawal-processor.service';
+
+/** Temps d'attente du traitement immédiat avant de répondre (le reste continue en arrière-plan). */
+const PROCESSING_BUDGET_MS = 20_000;
 
 interface Caller {
   userId: number;
@@ -57,6 +68,22 @@ export async function POST(req: NextRequest) {
 
   const publicToken = typeof body.token === 'string' ? body.token : null;
   let caller: Caller;
+
+  // Double soumission (double clic, rechargement) : la déclaration existe déjà
+  // sous cette clé — restituée telle quelle, même si le premier envoi a déjà
+  // supprimé le compte (lot 32). La clé est tirée au hasard par la page ;
+  // la réponse ne contient que la référence et l'horodatage.
+  const idempotencyKey = typeof body.idempotencyKey === 'string' ? body.idempotencyKey : null;
+  const deja = await findByIdempotencyKey(idempotencyKey);
+  if (deja) {
+    return NextResponse.json({
+      publicReference: deja.publicReference,
+      status: deja.status,
+      requestedAt: deja.requestedAt.toISOString(),
+      accountDeletion: 'immediate',
+      alreadyRecorded: true,
+    }, { status: 200 });
+  }
 
   if (publicToken) {
     const resolved = await resolveVerificationToken(publicToken);
@@ -111,6 +138,38 @@ export async function POST(req: NextRequest) {
       { status: 409 },
     );
   }
+
+  // Double soumission (autre onglet, double clic) : la demande existe déjà,
+  // elle est restituée telle quelle — aucune seconde déclaration.
+  if (eligibility.verdict === 'ineligible' && eligibility.reason === 'ALREADY_WITHDRAWN' && eligibility.existingRequest) {
+    return NextResponse.json({
+      publicReference: eligibility.existingRequest.publicReference,
+      status: eligibility.existingRequest.status,
+      requestedAt: eligibility.existingRequest.requestedAt.toISOString(),
+      accountDeletion: 'immediate',
+      alreadyRecorded: true,
+    }, { status: 200 });
+  }
+
+  // Lot 32 (PO-Q2) : plus d'examen manuel. Inéligible → motif (409).
+  if (eligibility.verdict === 'ineligible') {
+    return NextResponse.json(
+      { error: ineligibilityMessage(eligibility.reason ?? 'NO_PAID_CONTRACT'), code: `WITHDRAWAL_${eligibility.reason ?? 'INELIGIBLE'}` },
+      { status: 409 },
+    );
+  }
+  // Indéterminable (panne de lecture) → rien n'est enregistré ni supprimé.
+  if (eligibility.verdict !== 'eligible') {
+    console.error('[withdrawal] éligibilité indéterminable :', eligibility.diagnostic ?? 'motif inconnu');
+    return NextResponse.json(
+      {
+        error: 'Votre demande ne peut pas être traitée pour le moment. Réessayez dans quelques minutes ; ' +
+          'si le problème persiste, écrivez-nous : votre droit reste préservé.',
+        code: 'WITHDRAWAL_TEMPORARILY_UNAVAILABLE',
+      },
+      { status: 503 },
+    );
+  }
   const summary = await buildSummary(eligibility, {
     userId: caller.userId,
     firstName: caller.firstName,
@@ -140,7 +199,7 @@ export async function POST(req: NextRequest) {
       eligibility,
       displayedSummary: summary as unknown as Record<string, unknown>,
       amountExpected: summary.amountExpected,
-      idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : null,
+      idempotencyKey,
     });
 
     // Le jeton n'est consommé qu'ici : le consommateur a pu relire et revenir
@@ -162,22 +221,27 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ── Traitement Stripe, APRÈS l'accusé de réception ──────────────────
+    // ── Traitement IMMÉDIAT, APRÈS l'accusé de réception (lot 32) ─────────
     //
-    // Déclenché sans attendre le résultat : la réponse au consommateur ne doit
-    // pas dépendre de la disponibilité de Stripe (§7.4). Un échec laisse la
-    // demande en `failed`, et le balayage quotidien la reprendra (§10).
-    //
-    // Seules les demandes éligibles sont traitées : une demande en
-    // `manual_review` attend un examen humain, on n'annule pas un abonnement
-    // sur une éligibilité incertaine.
-    if (!declaration.alreadyRecorded && declaration.status === 'received') {
-      void processWithdrawal(declaration.publicReference).catch((e) => {
-        console.error(
-          `[withdrawal] traitement différé de ${declaration.publicReference} :`,
-          (e as Error).message,
-        );
-      });
+    // Accès coupés, annulation, remboursement intégral, suppression du
+    // compte. Attendu au plus `PROCESSING_BUDGET_MS` : la réponse ne dépend
+    // pas de Stripe (§7.4) — passé ce délai, le traitement se poursuit et le
+    // balayage reprend tout échec.
+    let processing: 'done' | 'pending' = 'pending';
+    if (declaration.status === 'received' || declaration.status === 'processing' || declaration.status === 'failed') {
+      const traitement = processWithdrawal(declaration.publicReference)
+        .then(() => 'done' as const)
+        .catch((e) => {
+          console.error(
+            `[withdrawal] traitement immédiat de ${declaration.publicReference} :`,
+            (e as Error).message,
+          );
+          return 'pending' as const;
+        });
+      processing = await Promise.race([
+        traitement,
+        new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), PROCESSING_BUDGET_MS).unref?.()),
+      ]);
     }
 
     return NextResponse.json(
@@ -186,7 +250,9 @@ export async function POST(req: NextRequest) {
         status: declaration.status,
         // Enregistré en UTC, affiché en heure de Paris par le client (§7.4).
         requestedAt: declaration.requestedAt.toISOString(),
-        dataExportDeadlineAt: declaration.dataExportDeadlineAt.toISOString(),
+        // Lot 32 : compte supprimé immédiatement (plus de délai d'export).
+        accountDeletion: 'immediate',
+        processing,
         alreadyRecorded: declaration.alreadyRecorded,
       },
       { status: declaration.alreadyRecorded ? 200 : 201 },

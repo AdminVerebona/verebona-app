@@ -1,19 +1,36 @@
 /**
- * Classification de l'intention — branche UNDERSTAND du master T2 (opération
+ * Compréhension de la demande — branche UNDERSTAND du master T2 (opération
  * `t2_understand`, CDC 15 §24), usage IA n°3. CDC Assistant §9.1, §9.5,
- * §9.10 et §15.5.
- *
- * L'orchestrateur ne recourt au modèle que si les règles déterministes n'ont
- * rien reconnu :
- *
- *     } else if (ports.classifyWithAI && isPlanAiEligible(input.planType)) {
- *
- * Lot 16b-2 : l'étape historique `understand_request` et le drapeau
- * `AI_INTELLIGENT_ASSISTANT` sont retirés — le master T2 est le seul moteur,
- * et le port est toujours branché (l'offre et le réglage `account_ai`
- * décident encore de l'appel).
+ * §9.10 et §15.5 ; lot 32 (UNDERSTAND, fallback général de compréhension).
  *
  * ══════════════════════════════════════════════════════════════════════════
+ * UNDERSTAND N'EST PAS UN SIMPLE CLASSIFIEUR D'INTENTION
+ *
+ * Le déterministe reste le PREMIER niveau de compréhension (règles, registre
+ * canonique, référentiel des biens, fil, page). UNDERSTAND prend le relais
+ * dès qu'il ne suffit pas (`core/understanding-status`) :
+ *
+ *   · UNKNOWN_INTENT — aucune règle ne donne d'intention fiable ;
+ *   · PARTIAL — intention reconnue mais demande incomplète : renvoi non levé
+ *     (« et ceux qui concernent l'autre ? »), sens non consommé (« quand ai-je
+ *     acheté la Polo et combien l'ai-je payée ? »)…
+ *
+ * Quand le serveur sait EXACTEMENT ce qui manque (« ce bien » sans contexte :
+ * QUEL bien), il clarifie directement, sans appel modèle.
+ *
+ * La sortie STRUCTURE la demande : intention du catalogue fermé, indices
+ * d'entités, faits demandés (FIELD_CATALOG), sujets, filtres, confiance. Elle
+ * ne résout rien : les indices sont ramenés au compte par le serveur
+ * (`resolveAssistantTargets` — 0 cible ou plusieurs : clarification ; une :
+ * on continue). Le modèle ne choisit JAMAIS un identifiant. L'éligibilité
+ * (traitement T2 actif, arrêt d'urgence, budgets, offre, `account_ai`) est
+ * décidée par l'orchestrateur avant l'appel ; ANSWER n'est jamais utilisé
+ * pour comprendre.
+ *
+ * Lot 16b-2 : l'étape historique `understand_request` et le drapeau
+ * `AI_INTELLIGENT_ASSISTANT` sont retirés — le master T2 est le seul moteur.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
  * LA RÈGLE ABSOLUE DU §9.1
  *
  * « Une intention inconnue n'est JAMAIS créée dynamiquement par le modèle. Le
@@ -21,20 +38,20 @@
  *
  * Elle est appliquée par le schéma de sortie du master (`T2UnderstandOutput`,
  * intention du catalogue fermé). Une intention hors catalogue fait échouer la
- * validation, et la classification rend `null` — l'orchestrateur retombe
- * alors sur `UNKNOWN`. Le modèle ne peut donc pas élargir le catalogue.
+ * validation, et la compréhension rend `null` — l'orchestrateur ne l'invente
+ * pas : clarification ou repli prudent (`UNDERSTANDING_FAILED`). Le modèle ne
+ * peut donc pas élargir le catalogue.
  *
- * Et surtout : **le modèle ne décide pas des droits.** Il propose une intention,
- * rien de plus. `aiEligible`, `requiresRetrieval` et `allowedActionTypes` sont
- * lus dans le registre côté serveur (§9.2).
- * ══════════════════════════════════════════════════════════════════════════
+ * Et surtout : **le modèle ne décide pas des droits.** Il propose une
+ * compréhension, rien de plus. `aiEligible`, `requiresRetrieval` et
+ * `allowedActionTypes` sont lus dans le registre côté serveur (§9.2).
  */
 import type { VerebonaIntent } from '../types/intents';
 import { getIntentDefinition } from '../registries/intent-registry';
 import { allowedActionsFor } from '../registries/action-registry';
 import type { IntentRoute, AssistantRequestInput, Confidence } from '../types/contracts';
 
-/** Plan proposé par le modèle — volontairement pauvre : une intention et des indices. */
+/** Plan proposé par le modèle : une intention du catalogue et des INDICES (jamais d'identifiant). */
 export interface ToolPlan {
   intent: string;
   confidence: 'exact' | 'probable' | 'ambiguous';
@@ -44,13 +61,15 @@ export interface ToolPlan {
 }
 
 /**
- * Classe une question que les règles déterministes n'ont pas reconnue, par
- * la branche UNDERSTAND du master T2.
+ * Comprend une question que le déterministe n'a pas suffi à comprendre
+ * (intention inconnue OU compréhension partielle), par la branche UNDERSTAND
+ * du master T2.
  *
  * Rend `null` en cas d'échec — jamais une exception. L'orchestrateur traite
- * `null` comme une classification indisponible et retombe sur `UNKNOWN`.
- * La route est construite ICI (droits du registre) ; faits demandés et
- * filtres suivent comme indices (`route.understanding`).
+ * `null` comme une compréhension impossible (motif `UNDERSTANDING_FAILED`,
+ * jamais « aucun résultat »). La route est construite ICI (droits du
+ * registre) ; faits demandés, sujets et filtres suivent comme indices
+ * (`route.understanding`), résolus ensuite par le serveur.
  */
 export async function classifyAssistantIntent(
   message: string,
@@ -60,7 +79,10 @@ export async function classifyAssistantIntent(
   const { understandWithT2Master } = await import('@/services/ai/assistant/master/t2-understand');
   const r = await understandWithT2Master(message, input);
   if (!r) return null;
-  return { ...toIntentRoute(r.plan, input.planType), understanding: { requestedFacts: r.requestedFacts, filters: r.filters ?? {} } };
+  return {
+    ...toIntentRoute(r.plan, input.planType),
+    understanding: { requestedFacts: r.requestedFacts, requestedTopics: r.requestedTopics, filters: r.filters ?? {} },
+  };
 }
 
 /**
@@ -93,7 +115,7 @@ export function toIntentRoute(plan: ToolPlan, planType: string): IntentRoute {
   };
 }
 
-/** Port de classification (toujours branché depuis le lot 16b-2). */
+/** Port de compréhension UNDERSTAND (toujours branché depuis le lot 16b-2). */
 export function buildClassificationPort(): (message: string, input: AssistantRequestInput) => Promise<IntentRoute | null> {
   return classifyAssistantIntent;
 }

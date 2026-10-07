@@ -13,6 +13,7 @@ import {
 } from '@/db/schema';
 import { decideThumbnail, thumbnailSourceKind, THUMBNAIL_VARIANT } from '@/services/documents/thumbnails/thumbnail-spec';
 import { eq, and, or, isNull, isNotNull, gte, lte, sql, inArray, notInArray, desc, asc } from 'drizzle-orm';
+import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import {
   deriveUpcoming, deriveVerebonaWork, docStatus, docTone,
@@ -22,6 +23,7 @@ import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { getRubric } from '@/lib/referential/v2';
 import { aiFieldUpdatesTargetReady } from '@/services/canonical/entity-state/entity-schema';
+import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 import {
   fieldUpdateTargetColumns, registryFieldLabel, visibleFieldUpdatesWhere,
 } from '@/services/canonical/entity-state/ai-field-updates-target';
@@ -248,7 +250,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       .where(and(
         eq(assets.accountId, accountId),
         isNull(assets.deletedAt),
-        notInArray(assets.status, ['ARCHIVED', 'TRANSMIS']),
+        notInArray(assets.status, [...OUT_OF_PORTFOLIO_ASSET_STATUSES]), // lot 32 (PO-Q11) : vendus exclus aussi
       ))
       .orderBy(desc(assets.createdAt))
       .limit(20),
@@ -258,7 +260,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       .where(and(
         eq(assets.accountId, accountId),
         isNull(assets.deletedAt),
-        notInArray(assets.status, ['ARCHIVED', 'TRANSMIS']),
+        notInArray(assets.status, [...OUT_OF_PORTFOLIO_ASSET_STATUSES]), // lot 32 (PO-Q11) : vendus exclus aussi
       )),
 
     // Total documents (liens web compris ; hors supprimés et envois inachevés).
@@ -414,24 +416,34 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     const [assetDocsRows] = await Promise.all([
       db.select({
         assetId: assetFiles.assetId,
+        // Lot 32C (PO 9) : un document compte pour CHACUN de ses biens
+        // (colonnes, liens PRIMARY / SECONDARY), une seule fois par bien.
+        otherAssetIds: OTHER_ASSET_IDS_SQL,
         documentType: assetFiles.documentType,
       })
         .from(assetFiles)
         .where(and(
           eq(assetFiles.accountId, accountId),
-          inArray(assetFiles.assetId, assetIds),
+          documentInAssetsCondition(assetIds),
           or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
           isNull(assetFiles.deletedAt),
         )),
     ]);
 
+    const idsDuDocument = (f: { assetId: number | null; otherAssetIds: unknown }): number[] => {
+      const autres = Array.isArray(f.otherAssetIds) ? f.otherAssetIds
+        : typeof f.otherAssetIds === 'string' ? f.otherAssetIds.replace(/[{}]/g, '').split(',') : [];
+      return [...new Set([f.assetId, ...autres.map(Number)].filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0))];
+    };
     assetDocsRows.forEach(f => {
-      if (!f.assetId) return;
-      if (!assetDocStats[f.assetId]) assetDocStats[f.assetId] = { count: 0, labels: [] };
-      assetDocStats[f.assetId].count++;
       const label = f.documentType ? (docTypeMap[f.documentType] || f.documentType) : null;
-      if (label && label.toUpperCase() !== 'AUTRE' && !assetDocStats[f.assetId].labels.includes(label) && assetDocStats[f.assetId].labels.length < 3) {
-        assetDocStats[f.assetId].labels.push(label);
+      for (const id of idsDuDocument(f)) {
+        if (!assetIds.includes(id)) continue;
+        if (!assetDocStats[id]) assetDocStats[id] = { count: 0, labels: [] };
+        assetDocStats[id].count++;
+        if (label && label.toUpperCase() !== 'AUTRE' && !assetDocStats[id].labels.includes(label) && assetDocStats[id].labels.length < 3) {
+          assetDocStats[id].labels.push(label);
+        }
       }
     });
 

@@ -15,13 +15,19 @@
  *
  *   account_id = compte courant          (toujours dans la requête appelante)
  *   deleted_at IS NULL                   → sinon : SUPPRIMÉ
- *   status NOT IN ('ARCHIVED','TRANSMIS') → sinon : ARCHIVÉ / TRANSMIS
+ *   status NOT IN ('ARCHIVED','TRANSMIS','VENDU') → sinon : ARCHIVÉ / TRANSMIS / VENDU
  *
- * Les trois cas restent DISTINCTS (aucune donnée n'est modifiée) ; pour la
+ * Les cas restent DISTINCTS (aucune donnée n'est modifiée) ; pour la
  * résolution T2 standard, ils ont la même conséquence : non candidat.
- * Les autres statuts (EN_SERVICE, EN_MAINTENANCE, EN_PANNE, EN_REPARATION,
- * HORS_SERVICE, VENDU, DÉTRUIT, INACTIF) restent accessibles : ce module ne
- * les exclut pas (AC14).
+ *
+ * Lot 32 (décision PO Q11, liste officielle EN_SERVICE, ARCHIVED, TRANSMIS,
+ * VENDU) : VENDU est exclu comme TRANSMIS. Même nature — un bien CÉDÉ, sorti
+ * du portefeuille actif (masqué des listes et de l'accueil, `asset-status`) ;
+ * le garder candidat recréerait l'ambiguïté du ticket 14 (« ma Polo » entre
+ * la Polo vendue et la Polo actuelle). Le parcours explicite ci-dessous
+ * (« ma voiture vendue l'an dernier ») reste celui des archives. Seul
+ * EN_SERVICE (et les anciennes valeurs non migrées, lues comme EN_SERVICE)
+ * reste candidat.
  *
  * Archives : aucune recherche automatique (§J). Un parcours explicite (« ma
  * voiture vendue l'an dernier ») devra passer par `includeArchived: true`,
@@ -39,7 +45,7 @@
 import { sql, type SQL, type AnyColumn } from 'drizzle-orm';
 
 /** Statuts exclus de la résolution standard de T2. */
-export const ASSISTANT_EXCLUDED_ASSET_STATUSES = ['ARCHIVED', 'TRANSMIS'] as const;
+export const ASSISTANT_EXCLUDED_ASSET_STATUSES = ['ARCHIVED', 'TRANSMIS', 'VENDU'] as const;
 /** Statut d'un bien sans statut renseigné (valeur par défaut de la colonne). */
 export const DEFAULT_ASSET_STATUS = 'EN_SERVICE';
 
@@ -62,7 +68,7 @@ export function assistantAssetStatusSql(alias = 'a', opts: AvailabilityOptions =
 
 /**
  * Condition SQL COMPLÈTE de disponibilité (hors compte, toujours posé par la
- * requête appelante) : non supprimé ET ni archivé ni transmis.
+ * requête appelante) : non supprimé ET ni archivé, ni transmis, ni vendu.
  */
 export function assistantAssetAvailableSql(alias = 'a', opts: AvailabilityOptions = {}): string {
   const del = alias ? `${alias}.deleted_at` : 'deleted_at';
@@ -71,7 +77,7 @@ export function assistantAssetAvailableSql(alias = 'a', opts: AvailabilityOption
 
 /** Même règle pour une requête Drizzle (adaptateurs de recherche). */
 export function assistantAssetStatusCondition(statusColumn: AnyColumn): SQL {
-  return sql`coalesce(${statusColumn}, ${DEFAULT_ASSET_STATUS}) NOT IN ('ARCHIVED', 'TRANSMIS')`;
+  return sql`coalesce(${statusColumn}, ${DEFAULT_ASSET_STATUS}) NOT IN (${sql.raw(LISTE_SQL)})`;
 }
 
 /** Même règle en mémoire (pure, testée). */
@@ -96,4 +102,4 @@ export const assistantAssetAvailability = {
 } as const;
 
 /** Phrase utilisateur : cible (page, fil, clarification) devenue indisponible (§D, §E). */
-export const ASSET_NO_LONGER_AVAILABLE_MESSAGE = 'Ce bien n’est plus disponible dans vos biens actifs (archivé, transmis ou supprimé).';
+export const ASSET_NO_LONGER_AVAILABLE_MESSAGE = 'Ce bien n’est plus disponible dans vos biens actifs (vendu, transmis, archivé ou supprimé).';

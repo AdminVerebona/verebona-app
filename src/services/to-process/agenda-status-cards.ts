@@ -30,14 +30,14 @@
  * ══════════════════════════════════════════════════════════════════════════
  * STATUT DU BIEN (ASSET-STATUS, D-15)
  *
- * Un événement historique « vente » ou « sinistre » créé (manuel ou T4,
- * `writeAgendaItem`) ne change jamais
- * le statut du bien : il le PROPOSE. Correspondance avec les valeurs réelles
- * du modèle (`assets.status`, valeurs modifiables par l'utilisateur de la
- * fiche — ARCHIVED relève du parcours d'archivage, EN_MAINTENANCE /
- * HORS_SERVICE ne sont pas proposées à la saisie) :
+ * Un événement historique « vente » créé (manuel ou T4, `writeAgendaItem`)
+ * ne change jamais le statut du bien : il le PROPOSE. Lot 32 (PO-Q11) :
+ * statuts officiels EN_SERVICE, VENDU, TRANSMIS, ARCHIVED (`asset-status`) —
+ * ARCHIVED relève du parcours d'archivage, jamais d'une carte :
  *   · sale  (Vente / transmission) → VENDU, TRANSMIS ;
- *   · claim (Sinistre)             → EN_REPARATION, DETRUIT.
+ *   · claim (Sinistre)             → aucune carte : la liste officielle n'a
+ *     plus de statut « en réparation » ni « détruit » (« pas besoin de
+ *     maintenance etc. »).
  * Le statut actuel est présenté comme valeur actuelle ; déjà égal à l'une
  * des propositions, aucune carte. Écrivain `ASSET_STATUS_WRITER` : bien du
  * compte, non supprimé, ni archivé ni verrouillé ; valeur de la liste ;
@@ -50,6 +50,7 @@ import { agendaItems, agendaOccurrenceEvents, assets, toProcessActionEvents, toP
 import type { ActionProposal, ResolutionReason } from './action-model';
 import type { DbClient, FieldWriter } from './resolve-action.service';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
+import { ASSET_STATUSES, assetStatusLabel } from '@/lib/asset-status';
 
 export const AGENDA_DONE_RULE = 'AGENDA-DONE';
 export const AGENDA_NOT_DONE_RULE = 'AGENDA-NOT-DONE';
@@ -232,43 +233,27 @@ export async function listOpenNotDoneProposals(
 // ── Statut du bien (D-15) ───────────────────────────────────────────────────
 
 /**
- * Statuts qu'une carte peut poser : ceux du modèle Drizzle hors ARCHIVED
- * (parcours d'archivage). La base peut être PLUS STRICTE : la contrainte
- * `assets_status_check` en vigueur (migration 0121) n'admet que
- * EN_SERVICE, EN_MAINTENANCE, HORS_SERVICE, ARCHIVED et TRANSMIS. Les
- * valeurs réellement proposées et écrites sont donc celles que la contrainte
- * ADMET, lues en base (`allowedAssetStatuses`).
+ * Statuts qu'une carte peut poser : la liste officielle (lot 32, PO-Q11) hors
+ * ARCHIVED (parcours d'archivage). La contrainte `assets_status_check` est
+ * alignée sur cette liste (migration 0278) ; `allowedAssetStatuses` la relit
+ * en base par sécurité (base pas encore migrée : valeurs non admises jamais
+ * proposées).
  */
-export const USER_SETTABLE_ASSET_STATUSES = [
-  'EN_SERVICE', 'EN_MAINTENANCE', 'EN_PANNE', 'EN_REPARATION', 'HORS_SERVICE', 'VENDU', 'DETRUIT', 'INACTIF', 'TRANSMIS',
-] as const;
+export const USER_SETTABLE_ASSET_STATUSES = ASSET_STATUSES.filter((s) => s !== 'ARCHIVED');
 
 /**
  * Correspondance D-15, par ordre de préférence ; les deux premières valeurs
- * ADMISES par la base sont proposées. Avec la contrainte 0121 :
- *   · sale  (Vente / transmission) → TRANSMIS (VENDU refusé par la base) ;
- *   · claim (Sinistre)             → HORS_SERVICE, EN_MAINTENANCE
- *                                    (DETRUIT, EN_REPARATION refusés).
- * Si la contrainte est élargie aux valeurs de l'interface, VENDU / DETRUIT /
- * EN_REPARATION reprennent la tête sans changement de code.
+ * ADMISES par la base sont proposées. Un sinistre ne propose plus rien
+ * (aucun statut officiel ne le décrit).
  */
 export const ASSET_STATUS_BY_EVENT: Readonly<Record<string, ReadonlyArray<{ value: string; label: string; confidence: number }>>> = {
   sale: [
     { value: 'VENDU', label: 'Vendu', confidence: 0.8 },
-    { value: 'TRANSMIS', label: 'Vendu ou transmis', confidence: 0.6 },
-  ],
-  claim: [
-    { value: 'DETRUIT', label: 'Détruit (perte totale)', confidence: 0.5 },
-    { value: 'EN_REPARATION', label: 'En réparation', confidence: 0.5 },
-    { value: 'HORS_SERVICE', label: 'Hors service (perte totale)', confidence: 0.4 },
-    { value: 'EN_MAINTENANCE', label: 'En réparation', confidence: 0.4 },
+    { value: 'TRANSMIS', label: 'Transmis (donné, hérité…)', confidence: 0.6 },
   ],
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  EN_SERVICE: 'En service', EN_PANNE: 'En panne', EN_REPARATION: 'En réparation', VENDU: 'Vendu',
-  DETRUIT: 'Détruit', INACTIF: 'Inactif', TRANSMIS: 'Transmis', EN_MAINTENANCE: 'En maintenance', HORS_SERVICE: 'Hors service',
-};
+const STATUS_LABEL = (s: string): string => assetStatusLabel(s);
 
 let admisCache: { values: Set<string>; at: number } | null = null;
 
@@ -338,13 +323,13 @@ export function assetStatusProposals(
   if (cibles.length === 0) return [];
   return [
     ...cibles.map((c) => ({ value: c.value, label: c.label, confidence: c.confidence, sourceContext: { label: sourceLabel } })),
-    { value: currentStatus, label: `Inchangé : ${STATUS_LABEL[currentStatus] ?? currentStatus}`, confidence: 0, isCurrentValue: true },
+    { value: currentStatus, label: `Inchangé : ${STATUS_LABEL(currentStatus)}`, confidence: 0, isCurrentValue: true },
   ];
 }
 
 /**
  * D-15 — propose le changement de statut du bien après un événement
- * historique « vente » / « sinistre » (idempotent : une carte par bien).
+ * historique « vente » (idempotent : une carte par bien).
  */
 export async function proposeAssetStatusChange(p: {
   accountId: number;

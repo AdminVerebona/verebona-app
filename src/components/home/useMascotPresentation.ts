@@ -148,6 +148,9 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
     const presents = new Map<string, { sourceCode: string; placement: 'subject' | 'secondary' }>();
     p.paragraphs.filter((x) => x.sourceCode !== 'CLEAR')
       .forEach((x) => presents.set(x.occurrenceKey, { sourceCode: x.sourceCode, placement: 'subject' }));
+    // Lot 32 (MASC2) : les « À traiter » affichés au niveau 2.
+    (p.todo?.items ?? [])
+      .forEach((t) => presents.set(`ATP:${t.todoId}`, { sourceCode: `ATP-${t.todoType}`, placement: 'subject' }));
     (visibles.current ? visibles.current(p) : p.secondaries)
       .forEach((x) => presents.set(x.occurrenceKey, { sourceCode: x.sourceCode, placement: 'secondary' }));
 

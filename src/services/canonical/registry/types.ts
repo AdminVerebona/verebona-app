@@ -152,6 +152,14 @@ export interface CanonicalFieldDef {
   inputOnly?: boolean;
   /** Section de la fiche (`AssetDetailsTab`) — information d'affichage. */
   section?: string;
+  /**
+   * Capacité de CATÉGORIE requise (lot 32, L32-1), en plus de la famille :
+   * `registration` — le bien doit porter une immatriculation
+   * (`assetHasRegistration`, `@/lib/asset-capabilities` : pas un vélo).
+   * Hors capacité, le champ n'est ni proposé ni écrit automatiquement
+   * (`isFieldApplicableToAsset`).
+   */
+  requiresCapability?: 'registration';
 }
 
 /** Résolution détaillée d'une clé brute. */

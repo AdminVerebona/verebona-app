@@ -57,6 +57,14 @@ export interface ValidationResult {
 
 /** Ce que le code sait, et que la configuration doit respecter. */
 export interface ConfigCatalogs {
+  /**
+   * Lot 32B — éligibilité d'un modèle pour un traitement, calculée par
+   * `usableModelsForTreatment` (registry/usable-models.ts), SEULE définition
+   * d'un modèle utilisable. Fournie, elle remplace les contrôles
+   * « catalogue » et « tarif » ci-dessous (qui n'en sont qu'un sous-ensemble,
+   * conservé pour les appelants qui ne la fournissent pas).
+   */
+  modelEligibility?: (treatment: Treatment, model: string) => import('../registry/usable-models').ModelEligibility;
   /** Modèles servis par le fournisseur, tels que l'écran Fournisseur IA les liste. */
   availableModels: ReadonlySet<string>;
   /** Modèles pour lesquels un tarif est connu. */
@@ -110,6 +118,16 @@ function validateModels(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssu
 
   for (const [field, model] of declares) {
     if (!model) continue;
+    if (cat.modelEligibility) {
+      // Lot 32B, §5 : selectedModel ∈ usableModelsForTreatment(treatment),
+      // pour chacun des trois rangs. Une requête manuelle ne contourne pas
+      // le filtrage du BO.
+      const e = cat.modelEligibility(t, model);
+      if (!e.usable) {
+        out.push(issue(t, field, `Le modèle « ${model} » n’est pas utilisable pour ${t} : ${e.reasonText}.`));
+      }
+      continue;
+    }
     if (!cat.availableModels.has(model)) {
       out.push(issue(t, field, `Le modèle « ${model} » ne figure pas au catalogue fournisseur.`));
     } else if (!cat.pricedModels.has(model)) {
@@ -133,15 +151,10 @@ function validateModels(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssu
   }
   if (utilises.length === 0) return out;
 
-  // §31.2 du CDC Assistant : aucun modèle Pro sur T2.
-  if (t === 'T2') {
-    for (const [field, model] of declares) {
-      if (model && /-pro\b/.test(model)) {
-        out.push(issue(t, field, `Aucun modèle Pro n'est autorisé sur l'assistant (« ${model} »).`));
-      }
-    }
-  }
-
+  // Lot 32B : plus aucune règle sur le NOM du modèle (ancien « aucun Pro sur
+  // T2 », CDC Assistant V1 §31.2). L'éligibilité T2 est celle de
+  // `usableModelsForTreatment('T2')` : compatibilité t2_master_v1 déclarée
+  // modèle par modèle, statut, capacités, tarif, preview, disponibilité.
   return out;
 }
 

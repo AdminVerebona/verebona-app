@@ -15,7 +15,7 @@ import type { VerebonaAction, VerebonaMessage } from '@/lib/verebona/useVerebona
 import { OFFLINE_PENDING_LABEL } from '@/lib/verebona/offline';
 import { processingStatus, visibleResultGroups } from '@/lib/verebona/assistant-ui';
 import {
-  exchangeCountLabel, objectsFromCards, olderLabel, railTone, showAnswerText, splitTurns, timelineRows, turnSummary,
+  objectsFromCards, olderLabel, railTone, showAnswerText, splitTurns, timelineRows, turnSummary,
   type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import { openDrawerFromLink } from '@/lib/drawers';
@@ -265,110 +265,7 @@ function Turn({ turn, variant, api }: { turn: SpaceTurn; variant: SpaceVariant; 
 
 // ── Corps de l'espace ───────────────────────────────────────────────────────
 
-/** Confirmation en ligne d'un effacement définitif (CDC assistant §24.4). */
-function ConfirmDelete({ label, confirmLabel, onConfirm }: { label: string; confirmLabel: string; onConfirm: () => void }) {
-  const [confirmer, setConfirmer] = useState(false);
-  if (!confirmer) {
-    return (
-      <button type="button" onClick={() => setConfirmer(true)} aria-label={label} title={label}
-        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-[color:var(--text-muted)] hover:bg-[color:var(--wash-red)] hover:text-[color:var(--on-red)]">
-        <Trash2 className="h-3.5 w-3.5" aria-hidden />
-      </button>
-    );
-  }
-  return (
-    <span role="alertdialog" aria-label={confirmLabel} className="flex flex-shrink-0 items-center gap-1.5 text-[11.5px] text-[color:var(--text-muted)]">
-      {confirmLabel}
-      <button type="button" className="font-semibold text-[color:var(--on-red)]" onClick={() => { setConfirmer(false); onConfirm(); }}>Oui</button>
-      <button type="button" autoFocus className="font-medium text-[color:var(--text-primary)]" onClick={() => setConfirmer(false)}>Non</button>
-    </span>
-  );
-}
-
-/** Effacement de TOUT l'historique, confirmé. */
-function ClearHistory({ api }: { api: VerebonaSpaceApi }) {
-  const [confirmer, setConfirmer] = useState(false);
-  if (!confirmer) {
-    return (
-      <button type="button" onClick={() => setConfirmer(true)} className="self-start text-[12px] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] hover:underline">
-        Effacer tout l’historique
-      </button>
-    );
-  }
-  return (
-    <span role="alertdialog" aria-label="Confirmer l’effacement" className="flex items-center gap-1.5 text-[12px] text-[color:var(--text-muted)]">
-      Effacer définitivement toutes les demandes ?
-      <button type="button" className="font-semibold text-[color:var(--on-red)]" onClick={() => { setConfirmer(false); void api.v.clearAll(); api.setHistoryOpen(false); }}>Oui</button>
-      <button type="button" autoFocus className="font-medium text-[color:var(--text-primary)]" onClick={() => setConfirmer(false)}>Non</button>
-    </span>
-  );
-}
-
-function ThreadRow({ title, sub, first, onResume, resumeLabel, onDelete }: {
-  title: string; sub: string; first: boolean; onResume?: () => void; resumeLabel?: string; onDelete?: () => void;
-}) {
-  return (
-    <li className={`flex items-center gap-1 pr-2 ${first ? '' : 'border-t border-[color:var(--border-subtle)]'}`}>
-      <button
-        type="button"
-        onClick={onResume}
-        disabled={!onResume}
-        className="flex min-h-12 min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none disabled:hover:bg-transparent"
-      >
-        <span className="flex h-[30px] w-[30px] flex-shrink-0 items-center justify-center rounded-[10px] bg-[color:var(--accent-soft)] text-[color:var(--accent)]">
-          <Clock className="h-[15px] w-[15px]" aria-hidden />
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-[13.5px] font-medium text-[color:var(--text-primary)]">{title}</span>
-          <span className="truncate text-[12px] text-[color:var(--text-muted)]">{sub}</span>
-        </span>
-        {resumeLabel && <span className="whitespace-nowrap text-[12px] font-medium text-[color:var(--accent)]">{resumeLabel}</span>}
-      </button>
-      {onDelete && <ConfirmDelete label={`Supprimer « ${title} »`} confirmLabel="Supprimer ?" onConfirm={onDelete} />}
-    </li>
-  );
-}
-
 const LIST = 'm-0 flex list-none flex-col overflow-hidden rounded-[14px] border border-[color:var(--border-subtle)] p-0';
-
-/** Toutes les demandes (§8), accessibles à tout moment : reprendre ou supprimer. */
-function HistoryView({ api }: { api: VerebonaSpaceApi }) {
-  const courant = api.v.conversationId;
-  const premiere = api.turns.find((t) => t.question)?.question;
-  return (
-    <div className="flex flex-col gap-3">
-      {courant != null && api.turns.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <span className={SECTION_LABEL}>Demande en cours</span>
-          <ul className={LIST}>
-            <ThreadRow
-              first
-              title={premiere ?? 'Demande en cours'}
-              sub={exchangeCountLabel(api.turns.length)}
-              onResume={() => api.setHistoryOpen(false)}
-              resumeLabel="Revenir"
-              onDelete={() => { void api.v.deleteThread(courant); api.setHistoryOpen(false); }}
-            />
-          </ul>
-        </div>
-      )}
-      <div className="flex flex-col gap-1.5">
-        <span className={SECTION_LABEL}>Demandes précédentes</span>
-        {api.allPrevious.length === 0 ? (
-          <p className="m-0 text-[13px] text-[color:var(--text-muted)]">Aucune demande précédente.</p>
-        ) : (
-          <ul className={LIST}>
-            {api.allPrevious.map((h, i) => (
-              <ThreadRow key={h.id} first={i === 0} title={h.title} sub={h.sub} onResume={() => api.resume(h.id)} resumeLabel="Reprendre"
-                onDelete={() => { void api.v.deleteThread(h.id); }} />
-            ))}
-          </ul>
-        )}
-      </div>
-      {(api.allPrevious.length > 0 || api.turns.length > 0) && <ClearHistory api={api} />}
-    </div>
-  );
-}
 
 /** Une recherche récente : une ligne (la question), corbeille au bout, sans confirmation. */
 function RecentRow({ title, first, onResume, onDelete }: { title: string; first: boolean; onResume: () => void; onDelete: () => void }) {
@@ -522,8 +419,7 @@ function LiveResults({ api }: { api: VerebonaSpaceApi }) {
 }
 
 /**
- * Corps défilant : suggestions pendant la frappe, état initial ou toutes les
- * demandes, tiroir des échanges regroupés, derniers échanges. Se place sur le
+ * Corps défilant : suggestions pendant la frappe, état initial, tiroir des échanges regroupés, derniers échanges. Se place sur le
  * dernier échange (ou sur les suggestions, du côté du champ).
  */
 export function SpaceBody({ variant, scrollRef }: { variant: SpaceVariant; scrollRef: React.RefObject<HTMLDivElement | null> }) {
@@ -543,7 +439,6 @@ export function SpaceBody({ variant, scrollRef }: { variant: SpaceVariant; scrol
   }, [signature, scrollRef, saisie, variant]);
 
   if (!api) return null;
-  if (api.historyOpen) return <HistoryView api={api} />;
   const suggestions = <LiveResults api={api} />;
   return (
     <>

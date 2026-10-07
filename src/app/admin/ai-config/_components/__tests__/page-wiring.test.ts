@@ -64,10 +64,37 @@ describe('T5 — messages', () => {
   });
 
   it('textes du ticket et détection', () => {
-    expect(T5_REPOSITORY_PROMPT_MESSAGE).toBe('Le prompt de Prompt Control est défini dans le dépôt. Il n’est pas modifiable depuis cette configuration.');
+    // Lot 32B (décision PO n° 15) : le texte de T5 s'administre dans « Prompts maîtres ».
+    expect(T5_REPOSITORY_PROMPT_MESSAGE).toMatch(/s’administre dans la section « Prompts maîtres »/);
     expect(T5_LEGACY_TEXT_MESSAGE).toBe('Un ancien texte de configuration est présent mais n’est pas utilisé par T5. Il sera retiré lors de l’enregistrement du brouillon.');
     expect(hasLegacyPromptText({ prompt: '', masterPrompt: null })).toBe(false);
     expect(hasLegacyPromptText({ prompt: ' x ', masterPrompt: null })).toBe(true);
     expect(hasLegacyPromptText({ prompt: '', masterPrompt: 'm' })).toBe(true);
+  });
+});
+
+// ── Lot 32B — sélecteurs de modèles par traitement ───────────────────────────
+describe('MOD — TreatmentEditor', () => {
+  const editeur = page.slice(page.indexOf('function TreatmentEditor('), page.indexOf('const toggleGuardrail'));
+
+  it('MOD-29 — les sélecteurs n’utilisent QUE modelsByTreatment[entry.treatment] (plus la liste globale)', () => {
+    expect(editeur).toContain('catalogs.modelsByTreatment?.[entry.treatment]');
+    expect(editeur).not.toContain('catalogs.models.map');
+    expect(page).not.toMatch(/catalogs\.models\.map/);
+  });
+
+  it('MOD-30 — même base pour les trois rangs, modèle déjà choisi retiré, valeur enregistrée inutilisable marquée', () => {
+    expect(editeur).toContain('chainOptions(usableNames, entry, rank, { readOnly, reasonOf: motif })');
+    for (const r of ['primaryModel', 'fallback1', 'fallback2']) expect(page).toContain(`{modelOptions('${r}')}`);
+    expect(editeur).toContain('disabled={o.unusable}');
+    expect(page).toContain('unusableRanks(usableNames, entry)');
+  });
+});
+
+describe('PO15 — section « Prompts maîtres »', () => {
+  it('PO15-09 — T5 n’est plus annoncé comme non modifiable', () => {
+    const mp = readFileSync(join(process.cwd(), 'src/app/admin/ai-config/_components/MasterPrompts.tsx'), 'utf8');
+    expect(mp).not.toContain('il n’est pas modifiable ici');
+    expect(mp).toContain('T5 (Prompt Control) s’administre ici comme les autres prompts');
   });
 });

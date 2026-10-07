@@ -24,6 +24,7 @@
 import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles, exportGenerations } from '@/db/schema';
+import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { isCilEligible } from '@/lib/asset-capabilities';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import {
@@ -224,7 +225,8 @@ export async function loadExportCatalog(asset: {
       })
       .from(assetFiles)
       .where(and(
-        eq(assetFiles.assetId, asset.id),
+        // Lot 32C (PO 9) : mêmes documents que l'export (relation N-N comprise).
+        documentInAssetsCondition([asset.id]),
         eq(assetFiles.accountId, asset.accountId),
         eq(assetFiles.uploadStatus, 'COMPLETED'),
         isNull(assetFiles.deletedAt),

@@ -215,7 +215,7 @@ describe('résultats métier (§10-11) — tous techniquement DONE', () => {
     // Compte : événement couvert seulement par une exécution `full` ; manuel jamais.
     const acc = vi.fn(async (_a: number, _s: Date, fullOnly: boolean) => !fullOnly);
     const d3 = deps({ accountReconciledSince: acc });
-    const ev = job({ triggerCode: 'asset_updated', payload: buildT3Payload('account', { scope: 'incremental', events: [{ event: 'asset_updated', at: '2026-10-07T09:00:00Z' }] }) });
+    const ev = job({ triggerCode: 'asset_updated', payload: buildT3Payload('account', { scope: 'incremental', events: [{ event: 'asset_updated', at: '2026-10-07T09:00:00Z' }] }, new Date('2026-10-07T08:30:00Z')) });
     expect((await runT3Job(ev, NO_GUARD, d3)).result).toBe('NO_CHANGE');
     expect(acc).toHaveBeenLastCalledWith(5, new Date('2026-10-07T09:00:00Z'), true);
     const sched = job({ triggerCode: 'schedule_hourly', payload: buildT3Payload('account', { scope: 'incremental', scheduled: true }) });

@@ -78,12 +78,26 @@ export interface RefreshResult {
   modelsSeen: number;
   disappeared: string[];
   error?: string;
+  /**
+   * Lot 32B (§1.H) : génération minimale sur les modèles DÉCLARÉS que le
+   * fournisseur liste — leur état opérationnel avec la clé active est
+   * conservé (`ai_model_operational_status`). Absent : pas de sonde demandée.
+   */
+  probed?: Array<{ model: string; ok: boolean; error: string | null }>;
 }
 
-/** Rafraîchit le catalogue depuis le fournisseur, avec la clé active. */
+/**
+ * Rafraîchit le catalogue depuis le fournisseur, avec la clé active.
+ *
+ * `probe` (geste « Actualiser le catalogue » du BO) : sonde ensuite, par une
+ * génération minimale, chaque modèle déclaré au registre et listé — c'est le
+ * mécanisme qui établit l'état opérationnel lu par
+ * `usableModelsForTreatment`, jamais l'affichage du BO.
+ */
 export async function refreshModelCatalog(
   userId: number | null,
   fetcher: typeof fetch = fetch,
+  options: { probe?: boolean; probeCall?: (model: string) => Promise<{ rawText: string; inputTokens?: number; outputTokens?: number }> } = {},
 ): Promise<RefreshResult> {
   const { getProviderSecret } = await import('./provider-secret');
   const key = await getProviderSecret('gemini');
@@ -147,7 +161,14 @@ export async function refreshModelCatalog(
   );
   const disappeared = gone.map((r) => String(r.model));
   console.info(`[model-catalog] ${listed.length} modèle(s) listé(s)${disappeared.length ? `, disparus : ${disappeared.join(', ')}` : ''}.`);
-  return { ok: true, modelsSeen: listed.length, disappeared };
+  if (!options.probe) return { ok: true, modelsSeen: listed.length, disappeared };
+  const [{ DECLARED_MODELS }, { probeModels }] = await Promise.all([
+    import('../registry/models'), import('./model-operational.service'),
+  ]);
+  const listes = new Set(listed.map((m) => m.model));
+  const aSonder = DECLARED_MODELS.map((m) => m.model).filter((m) => listes.has(m));
+  const probed = await probeModels(aSonder, key, options.probeCall ? { call: options.probeCall } : {});
+  return { ok: true, modelsSeen: listed.length, disappeared, probed };
 }
 
 export interface CatalogState {
@@ -190,8 +211,10 @@ export async function getCatalogState(): Promise<CatalogState> {
 }
 
 /**
- * Modèles sélectionnables (pur) : catalogue du fournisseur s'il a été
- * rafraîchi au moins une fois, sinon catalogue du code.
+ * Modèles servis (pur) : catalogue du fournisseur s'il a été rafraîchi au
+ * moins une fois, sinon catalogue du code. Disponibilité FOURNISSEUR seule —
+ * ce qui est SÉLECTIONNABLE pour un traitement est décidé par
+ * `usableModelsForTreatment` (registry/usable-models.ts, lot 32B).
  */
 export function selectableModels(
   codeCatalog: readonly string[],

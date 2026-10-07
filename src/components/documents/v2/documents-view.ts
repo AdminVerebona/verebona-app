@@ -47,6 +47,8 @@ export interface DocumentItem {
   uploadedAt?: string | null;
   mimeType: string | null;
   assetNames: string[];
+  /** Lot 32C (PO 9) : tous les biens du document, principal d'abord. */
+  assetIds?: number[];
 }
 
 /** Rubrique visible dans le périmètre, dans l'ordre du référentiel. */

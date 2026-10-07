@@ -3,12 +3,18 @@
  *
  * SEL-01 à SEL-06, PROC-01 à 03, ONB-01 à 03, ATP-01 à 03, DATE-01 à 04,
  * DONE-01 à 03, UI-03, UI-04, T2-02, ERR-01, SEC.
+ *
+ * Lot 32 (ticket MASC2) : les actions « À traiter » ne sont plus des sujets
+ * du discours mais le niveau 2 de la bulle (`presentation.todo`) — les cas
+ * SEL-02, SEL-03, SEL-06, ATP-03, ATP-004, DATE-03 sont réécrits en
+ * conséquence.
  */
 import { describe, it, expect } from 'vitest';
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
 import { buildCandidates, extActionOccurrenceKey, type MascotRawData, type MascotAgendaRow } from '../signals';
 import { buildSecondaries, selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
+import { buildTodoBlock } from '../todo-items';
 import { CLEAR_TEXT, MAX_ACTIONS_TOTAL, type MascotPresentation } from '../types';
 
 const TODAY = '2026-09-25';
@@ -47,7 +53,10 @@ const agenda = (over: Partial<MascotAgendaRow>): MascotAgendaRow => ({
 function present(r: MascotRawData): MascotPresentation {
   const c = buildCandidates(r);
   const subjects = selectSubjects(c.candidates);
-  return buildPresentation({ subjects, secondaries: buildSecondaries(c, subjects), degraded: c.degraded, messages: null });
+  return buildPresentation({
+    subjects, secondaries: buildSecondaries(c, subjects), degraded: c.degraded, messages: null,
+    todo: buildTodoBlock(r.toProcess, r.toProcessTotal),
+  });
 }
 
 const codes = (p: MascotPresentation) => p.paragraphs.map((x) => x.sourceCode);
@@ -62,23 +71,26 @@ describe('hiérarchie (§6)', () => {
       toProcess: [atp()],
     }));
     expect(codes(p)).toEqual(['PROC-DOC-ANALYSIS', 'ONB-DOC']);
-    expect(p.secondaries.some((s) => s.kind === 'recommendation')).toBe(true);
+    // MASC2 : l'« À traiter » est un élément de niveau 2, plus une pastille secondaire.
+    expect(p.secondaries.some((s) => s.kind === 'recommendation')).toBe(false);
+    expect(p.todo?.items).toHaveLength(1);
   });
 
-  it('SEL-02 — onboarding sujet 1, meilleur À traiter sujet 2', () => {
+  it('SEL-02 (MASC2) — onboarding sujet du discours ; les « À traiter » en éléments de niveau 2', () => {
     const p = present(raw({
       onboarding: { activeAssets: [{ id: 1, name: 'Maison' }], activeAssetCount: 1, documentCount: 0 },
       toProcess: [atp({ priority: 'DO_FIRST' }), atp({ priority: 'DO_NEXT' })],
     }));
-    expect(codes(p)).toEqual(['ONB-DOC', 'ATP-DOC-TYP']);
+    expect(codes(p)).toEqual(['ONB-DOC']);
+    expect(p.todo?.items.map((i) => i.priority)).toEqual(['DO_FIRST', 'DO_NEXT']);
   });
 
-  it('SEL-03 / ATP-01 — ordre de la source conservé, sans score concurrent', () => {
+  it('SEL-03 / ATP-01 (MASC2) — ordre de la source conservé, sans score concurrent', () => {
     const a = atp({ priority: 'CAN_WAIT', question: 'Question A ?' });
     const b = atp({ priority: 'DO_FIRST', question: 'Question B ?' });
     const p = present(raw({ toProcess: [a, b] }));
     // L'ordre est celui rendu par le service, même si la priorité semble l'inverse.
-    expect(p.paragraphs.map((x) => x.text.split(' Cela')[0])).toEqual(['Question A ?', 'Question B ?']);
+    expect(p.todo?.items.map((x) => x.card.question)).toEqual(['Question A ?', 'Question B ?']);
   });
 
   it('SEL-04 / DATE-01 — seule une prochaine date : formulée en date absolue, sans conseil', () => {
@@ -95,9 +107,11 @@ describe('hiérarchie (§6)', () => {
     expect(p.paragraphs.map((x) => x.text)).toEqual([CLEAR_TEXT]);
   });
 
-  it('SEL-06 — deux sujets sur le même bien restent possibles', () => {
+  it('SEL-06 (MASC2) — deux « À traiter » sur le même bien : deux éléments, jamais « Tout est à jour »', () => {
     const p = present(raw({ toProcess: [atp(), atp()] }));
-    expect(p.paragraphs).toHaveLength(2);
+    expect(p.todo?.items).toHaveLength(2);
+    expect(p.status).toBe('ok');
+    expect(p.paragraphs).toEqual([]);
   });
 });
 
@@ -152,9 +166,9 @@ describe('onboarding (§8)', () => {
 });
 
 describe('À traiter (§9)', () => {
-  it('ATP-03 — fournisseur / équipement : la cible source est transmise au resolver commun', () => {
-    const p = present(raw({ toProcess: [atp({ targetType: 'SUPPLIER', targetId: 55, target: { label: 'EDF' } })] }));
-    expect(p.paragraphs[0].actions[0].target).toMatchObject({ kind: 'to_process', targetType: 'SUPPLIER', targetId: 55 });
+  it('ATP-03 (MASC2) — fournisseur / équipement : la cible source est transmise (contrat structuré)', () => {
+    const p = present(raw({ toProcess: [atp({ targetType: 'SUPPLIER', targetId: 55, target: { label: 'EDF', supplierId: 55 } })] }));
+    expect(p.todo?.items[0]).toMatchObject({ entityType: 'SUPPLIER', entityId: 55, card: { target: { supplierId: 55 } } });
   });
 
   it('ATP-004 — une échéance déjà dans « À traiter » n’est pas reprise en date', () => {
@@ -162,7 +176,8 @@ describe('À traiter (§9)', () => {
       toProcess: [atp({ targetType: 'AGENDA_ITEM', targetId: 1 })],
       agenda: [agenda({ id: 1 })],
     }));
-    expect(codes(p)).toEqual(['ATP-DOC-TYP']);
+    expect(codes(p)).toEqual([]);
+    expect(p.todo?.items.map((i) => i.entityId)).toEqual([1]);
   });
 
   it('ATP-008 — pas de compteur dans le discours', () => {
@@ -182,10 +197,10 @@ describe('dates (§10)', () => {
       agenda: [agenda({ id: 1, title: 'Ramonage' }), agenda({ id: 2, title: 'Vidange', assetName: 'Polo', assetId: 2 })],
       toProcess: [atp()],
     }));
-    expect(codes(p)).toEqual(['ATP-DOC-TYP', 'DATE-NEXT-2']);
+    expect(codes(p)).toEqual(['DATE-NEXT-2']);
     // Lot 31 (T6) : mêmes règles que DATE-NEXT ; « Polo » sans catégorie connue → neutre.
-    expect(p.paragraphs[1].text).toBe('Deux échéances sont prévues le 15 octobre 2026 : le ramonage de la maison et la vidange (Polo).');
-    expect(p.paragraphs[1].actions.map((a) => a.label)).toEqual(['Voir « Ramonage »', 'Voir « Vidange »']);
+    expect(p.paragraphs[0].text).toBe('Deux échéances sont prévues le 15 octobre 2026 : le ramonage de la maison et la vidange (Polo).');
+    expect(p.paragraphs[0].actions.map((a) => a.label)).toEqual(['Voir « Ramonage »', 'Voir « Vidange »']);
   });
 
   it('DATE-04 — une date réalisée ou annulée n’est jamais lue (filtrée à la source)', () => {
@@ -250,8 +265,9 @@ describe('plafonds et secondaires (§4, §12)', () => {
   it('T2-02 / SEC-004 — question équivalente à un sujet affiché : exclue', () => {
     const p = present(raw({ agenda: [agenda({})] }));
     expect(p.secondaries.map((s) => s.sourceCode)).not.toContain('Q-NEXT-DATE');
+    // MASC2 : « Ou demandez-moi » est indépendant de la file — Q-TODO reste proposé.
     const q = present(raw({ toProcess: [atp()] }));
-    expect(q.secondaries.map((s) => s.sourceCode)).not.toContain('Q-TODO');
+    expect(q.secondaries.map((s) => s.sourceCode)).toContain('Q-TODO');
   });
 
   it('UX-008 — un sujet n’est jamais à la fois dans le discours et en secondaire', () => {
@@ -279,7 +295,7 @@ describe('modes dégradés (§20)', () => {
 
   it('agenda indisponible mais un sujet fiable : affiché, avec la mention', () => {
     const p = present(raw({ agenda: null, toProcess: [atp()] }));
-    expect(codes(p)).toEqual(['ATP-DOC-TYP']);
+    expect(p.todo?.items).toHaveLength(1);
     expect(p.status).toBe('degraded');
   });
 });

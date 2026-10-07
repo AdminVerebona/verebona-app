@@ -21,6 +21,14 @@
  *
  * Accessible sans session (§6.1). L'authentification sert seulement à
  * préremplir : elle n'est jamais la seule voie d'accès.
+ *
+ * LOT 32 (décisions PO du 07/10/2026, Q1/Q2) — même règle pour le parcours
+ * connecté et le parcours public par jeton : le délai court à partir du
+ * paiement ; la confirmation entraîne la suppression IMMÉDIATE du compte
+ * (accès coupés, remboursement intégral, e-mail d'au revoir). Un
+ * avertissement explicite (`DeletionWarning`) le dit sur la présentation ET
+ * juste au-dessus du bouton « Confirmer la rétractation ». Plus de délai
+ * d'export de 30 jours ni de suivi de demande.
  */
 
 import { useCallback, useEffect, useState, Suspense } from 'react';
@@ -43,11 +51,11 @@ interface Summary {
   offerLabel: string;
   billingPeriodLabel: string;
   contractConcludedAt: string | null;
+  paidAt: string | null;
   withdrawalDeadlineAt: string | null;
   deadlineDeferred: boolean;
   deadlineDeferralReason: string | null;
   amountLabel: string;
-  dataDeletionAt: string;
 }
 
 type Step = 'presentation' | 'identify' | 'sent' | 'review' | 'done' | 'blocked';
@@ -77,7 +85,7 @@ function WithdrawalContent() {
   /** Session établie ? `null` tant que l'on ne sait pas (retour, lot 26). */
   const [authenticated, setAuthenticated] = useState<boolean | null>(token ? false : null);
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', contractReference: '' });
-  const [result, setResult] = useState<{ publicReference: string; requestedAt: string; dataExportDeadlineAt: string } | null>(null);
+  const [result, setResult] = useState<{ publicReference: string; requestedAt: string } | null>(null);
 
   // Clé d'idempotence tirée une fois pour toute la page : un double clic, ou
   // un rechargement pendant l'envoi, ne crée pas deux déclarations (§7.4).
@@ -172,7 +180,8 @@ function WithdrawalContent() {
   };
 
   return (
-    <Shell back={<BackLink authenticated={authenticated} />}>
+    // Après confirmation, le compte n'existe plus : pas de retour vers Mon compte.
+    <Shell back={step === 'done' ? undefined : <BackLink authenticated={authenticated} />}>
       {step === 'presentation' && (
         <>
           <CardHeader>
@@ -197,11 +206,11 @@ function WithdrawalContent() {
               <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
                 <li>Le contrat sera annulé immédiatement.</li>
                 <li>Le remboursement sera <strong>intégral</strong>, sans retenue ni frais.</li>
-                <li>L&apos;accès aux fonctions payantes sera suspendu.</li>
-                <li>Vos données resteront exportables pendant <strong>30 jours</strong>.</li>
-                <li>Passé ce délai, et sans nouvelle souscription, elles seront supprimées.</li>
+                <li>Votre compte et toutes ses données seront <strong>supprimés immédiatement</strong>.</li>
               </ul>
             </div>
+
+            <DeletionWarning />
 
             {/* §7.1 : « aucun motif de rétractation ne doit être exigé ». */}
             <p className="text-sm text-muted-foreground">
@@ -287,7 +296,7 @@ function WithdrawalContent() {
               <Row label="Titulaire" value={`${summary.firstName} ${summary.lastName}`} />
               <Row label="Adresse de réception" value={summary.email} />
               <Row label="Offre" value={`${summary.offerLabel} — facturation ${summary.billingPeriodLabel}`} />
-              <Row label="Conclu le" value={parisDate(summary.contractConcludedAt)} />
+              <Row label="Payé le" value={parisDate(summary.paidAt ?? summary.contractConcludedAt)} />
               <Row
                 label="Délai de rétractation jusqu’au"
                 value={
@@ -299,7 +308,7 @@ function WithdrawalContent() {
               />
               <Row label="Remboursement estimé" value={summary.amountLabel} />
               <Row label="Moyen de remboursement" value="Votre moyen de paiement d’origine" />
-              <Row label="Suppression des données prévue le" value={parisDate(summary.dataDeletionAt)} />
+              <Row label="Suppression du compte et des données" value="Immédiate, dès la confirmation" />
             </dl>
 
             <p className="text-xs text-muted-foreground">
@@ -322,13 +331,16 @@ function WithdrawalContent() {
 
             {error && <ErrorBox message={error} />}
 
+            {/* Lot 32 (PO-Q1) : avertissement important, juste avant le bouton. */}
+            <DeletionWarning />
+
             {/* §7.3 : libellé exact, aucun « Valider » ou « Envoyer » seul. */}
             <Button className="w-full" onClick={confirm} disabled={busy}>
               {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
               Confirmer la rétractation
             </Button>
             <p className="text-xs text-muted-foreground text-center">
-              Cette action est définitive.
+              Cette action est définitive : votre compte sera supprimé immédiatement.
             </p>
           </CardContent>
         </>
@@ -359,21 +371,22 @@ function WithdrawalContent() {
             <CheckCircle className="w-12 h-12 mx-auto text-emerald-500" />
             <CardTitle>Rétractation enregistrée</CardTitle>
             <CardDescription>
-              Votre déclaration est reçue. Un accusé de réception vient de vous être envoyé.
+              Votre déclaration est reçue et traitée. Un e-mail de confirmation vient de vous être envoyé.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <dl className="text-sm rounded-lg border border-[color:var(--border-subtle)] divide-y divide-[color:var(--border-subtle)]">
               <Row label="Référence" value={result.publicReference} mono />
               <Row label="Reçue le" value={parisDateTime(result.requestedAt)} />
-              <Row label="Données exportables jusqu’au" value={parisDate(result.dataExportDeadlineAt)} />
             </dl>
             <p className="text-sm text-muted-foreground">
-              Conservez cette référence. Le remboursement est en cours de traitement
-              sur votre moyen de paiement d&apos;origine.
+              Votre abonnement est annulé et le remboursement intégral est lancé sur
+              votre moyen de paiement d&apos;origine. Votre compte Verebona et ses
+              données sont supprimés : vous ne pouvez plus vous y connecter.
+              Conservez la référence ci-dessus. Merci d&apos;avoir essayé Verebona.
             </p>
             <Button variant="outline" className="w-full" asChild>
-              <Link href="/mon-compte">Accéder à mon compte</Link>
+              <a href={publicSiteUrl('/')}>Retour au site Verebona</a>
             </Button>
           </CardContent>
         </>
@@ -398,6 +411,27 @@ function Field({ id, label, value, onChange, type = 'text' }: {
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
       <Input id={id} type={type} value={value} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  );
+}
+
+/**
+ * Avertissement de suppression immédiate (lot 32, PO-Q1) — composants et
+ * jetons existants (même gabarit que `ErrorBox`).
+ */
+function DeletionWarning() {
+  return (
+    <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 text-sm p-3 flex items-start gap-2">
+      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-destructive" aria-hidden />
+      <div className="space-y-1">
+        <p className="font-medium text-destructive">Votre compte sera supprimé immédiatement</p>
+        <p className="text-muted-foreground">
+          Dès la confirmation, l&apos;accès à Verebona est coupé et votre compte est
+          définitivement supprimé avec toutes ses données (biens, documents,
+          fichiers, échéances, historique). Aucune récupération ne sera possible :
+          exportez vos données avant de confirmer.
+        </p>
+      </div>
     </div>
   );
 }

@@ -1,19 +1,17 @@
 'use client';
 
 /**
- * Mon compte → Abonnement : rétractation et suivi — CDC 6 §6.2 et §7.5.
+ * Mon compte → Abonnement : rétractation — CDC 6 §6.2.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * DEUX AFFICHAGES, SELON QU'UNE DEMANDE EXISTE OU NON
+ * UN SEUL AFFICHAGE (lot 32, décisions PO Q1/Q2)
  *
- * Avant demande (§6.2) : date de souscription, date limite, bouton
- * « Renoncer au contrat ici », et une explication distinguant rétractation et
- * résiliation — la confusion entre les deux est la principale source de
- * litige, l'une remboursant intégralement et l'autre pas.
+ * Date du paiement (départ du délai), date limite, bouton « Renoncer au
+ * contrat ici », explication distinguant rétractation et résiliation, et
+ * AVERTISSEMENT : la rétractation supprime le compte immédiatement.
  *
- * Après demande (§7.5) : « Rétractation enregistrée », date et heure,
- * référence, statut de l'annulation, statut du remboursement, montant, date
- * limite de récupération des données, liens d'export et de suppression.
+ * Plus de suivi de demande : la rétractation est traitée sur-le-champ et le
+ * compte supprimé — il n'y a plus de Mon compte où suivre quoi que ce soit.
  *
  * Le §6.2 précise qu'« après expiration du délai, le bouton peut être masqué
  * dans l'espace personnel, mais le lien public reste disponible ». Lot 26 :
@@ -21,8 +19,6 @@
  * plus seulement le bouton. La décision est prise par le serveur
  * (`offerWithdrawal`, `shouldOfferWithdrawal`) — même fonction que le refus
  * de l'API. Le lien public reste au pied des pages hors session.
- * Seul le SUIVI d'une demande déjà enregistrée reste affiché (référence,
- * remboursement, date limite d'export).
  *
  * TIROIR FERMÉ PAR DÉFAUT — LE LIEN RESTE VISIBLE
  *
@@ -38,43 +34,18 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
-import { FileMinus, Download, ExternalLink } from 'lucide-react';
+import { AlertTriangle, FileMinus } from 'lucide-react';
 
 interface Contract {
   offerLabel: string;
   billingPeriodLabel: string;
   contractConcludedAt: string | null;
+  paidAt: string | null;
   withdrawalDeadlineAt: string | null;
   deadlineDeferred: boolean;
   deadlineDeferralReason: string | null;
   amountLabel: string;
 }
-
-interface ExistingRequest {
-  publicReference: string;
-  status: string;
-  requestedAt: string;
-  cancellationStatus: string;
-  amountExpected: number | null;
-  amountRefunded: number;
-  dataExportDeadlineAt: string | null;
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  received: 'Enregistrée, traitement en cours',
-  manual_review: 'En cours d’examen par nos équipes',
-  processing: 'Traitement en cours',
-  completed: 'Traitée',
-  failed: 'Incident technique — nos équipes sont alertées',
-  rejected: 'Examinée et non retenue',
-};
-
-const CANCELLATION_LABELS: Record<string, string> = {
-  pending: 'En cours',
-  cancelled: 'Abonnement annulé',
-  failed: 'Incident — nos équipes interviennent',
-  not_applicable: 'Sans objet',
-};
 
 function parisDate(iso: string | null): string {
   if (!iso) return '—';
@@ -82,22 +53,10 @@ function parisDate(iso: string | null): string {
     .format(new Date(iso));
 }
 
-function parisDateTime(iso: string): string {
-  return new Intl.DateTimeFormat('fr-FR', {
-    timeZone: 'Europe/Paris', dateStyle: 'long', timeStyle: 'short',
-  }).format(new Date(iso));
-}
-
-function euros(cents: number | null): string {
-  if (cents === null) return '—';
-  return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(cents / 100);
-}
-
 export function WithdrawalCard() {
   const [loading, setLoading] = useState(true);
   const [offerWithdrawal, setOfferWithdrawal] = useState(false);
   const [contract, setContract] = useState<Contract | null>(null);
-  const [request, setRequest] = useState<ExistingRequest | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,7 +66,6 @@ export function WithdrawalCard() {
         if (cancelled || !data) { setLoading(false); return; }
         setOfferWithdrawal(Boolean(data.offerWithdrawal));
         setContract(data.contract ?? null);
-        setRequest(data.existingRequest ?? null);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -117,48 +75,6 @@ export function WithdrawalCard() {
   // Rien pendant le chargement : la plupart des comptes n'ont aucun bloc à
   // afficher (délai écoulé, essai), un squelette apparaîtrait puis s'effacerait.
   if (loading) return null;
-
-  // ── Suivi d'une demande enregistrée (§7.5) ────────────────────────────
-  if (request) {
-    return (
-      <CollapsibleCard
-        icon={<FileMinus className="w-5 h-5" />}
-        title="Rétractation enregistrée"
-        description="Votre déclaration a bien été reçue. Voici son avancement."
-        contentClassName="space-y-4"
-      >
-          <dl className="text-sm rounded-lg border border-[color:var(--border-subtle)] divide-y divide-[color:var(--border-subtle)]">
-            <Row label="Référence" value={request.publicReference} mono />
-            <Row label="Reçue le" value={parisDateTime(request.requestedAt)} />
-            <Row label="Statut" value={STATUS_LABELS[request.status] ?? request.status} />
-            <Row label="Abonnement" value={CANCELLATION_LABELS[request.cancellationStatus] ?? request.cancellationStatus} />
-            <Row label="Remboursement" value={`${euros(request.amountRefunded)} sur ${euros(request.amountExpected)}`} />
-            <Row label="Données récupérables jusqu’au" value={parisDate(request.dataExportDeadlineAt)} />
-          </dl>
-
-          {/* §7.5 : « les liens d'export et de suppression du compte ». */}
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <Link href="/mon-compte/informations">
-                <Download className="w-4 h-4 mr-1.5" />
-                Exporter mes données
-              </Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link href={`/retractation/suivi/${request.publicReference}`}>
-                <ExternalLink className="w-4 h-4 mr-1.5" />
-                Détail de la demande
-              </Link>
-            </Button>
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            Souscrire un nouvel abonnement avant cette date réactive votre compte et
-            annule la suppression prévue.
-          </p>
-      </CollapsibleCard>
-    );
-  }
 
   // ── Avant toute demande (§6.2) ────────────────────────────────────────
   // Délai écoulé, aucun contrat payant, membre Duo : aucun bloc (lot 26).
@@ -180,6 +96,17 @@ export function WithdrawalCard() {
       headerExtra={lienRetractation}
       contentClassName="space-y-4"
     >
+      {/* Lot 32 (PO-Q1) : avertissement explicite AVANT toute action. */}
+      <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm flex items-start gap-2">
+        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-destructive" aria-hidden />
+        <p>
+          <strong>Votre compte sera supprimé immédiatement.</strong>{' '}
+          Dès la confirmation, l&apos;accès est coupé et toutes vos données
+          (biens, documents, fichiers, échéances) sont définitivement effacées.
+          Exportez-les avant, depuis Mes informations.
+        </p>
+      </div>
+
       {/* §6.2 : « une explication distincte de la résiliation ». */}
       <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 text-sm">
         <p className="text-muted-foreground">
@@ -193,7 +120,7 @@ export function WithdrawalCard() {
       {contract ? (
         <dl className="text-sm rounded-lg border border-[color:var(--border-subtle)] divide-y divide-[color:var(--border-subtle)]">
           <Row label="Offre" value={`${contract.offerLabel} — facturation ${contract.billingPeriodLabel}`} />
-          <Row label="Souscrit le" value={parisDate(contract.contractConcludedAt)} />
+          <Row label="Payé le" value={parisDate(contract.paidAt ?? contract.contractConcludedAt)} />
           <Row
             label="Délai jusqu’au"
             value={

@@ -82,6 +82,11 @@ export interface FeedDocument {
   uploadedAt: string | null;
   mimeType: string | null;
   assetNames: string[];
+  /**
+   * Lot 32C (PO 9) : tous les biens du document — principal d'abord, puis
+   * les biens liés (PRIMARY / SECONDARY) ; `assetNames` dans le même ordre.
+   */
+  assetIds?: number[];
 }
 
 export interface FeedFacet {

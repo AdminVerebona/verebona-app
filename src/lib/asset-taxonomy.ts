@@ -129,10 +129,18 @@ export function getAssetFamily(code: string | null | undefined): AssetFamilyDefi
   return code ? FAMILY_BY_CODE.get(code as AssetFamilyCode) : undefined;
 }
 
-/** Libellé de famille (« Véhicule »…), repli sur le code. */
+/**
+ * Libellé de famille (« Véhicule »…), repli sur le code.
+ *
+ * Lot 32 (décision PO Q14 : « Matériel pro ? Il n'y a pas ça comme
+ * famille ») : une famille ANCIENNE s'affiche sous le libellé de la famille
+ * actuelle vers laquelle elle est normalisée (`MATERIEL_PRO`, `AUTRE` →
+ * « Objet ») — jamais « Matériel pro ».
+ */
 export function assetFamilyLabel(code: string | null | undefined): string {
   if (!code) return '';
-  return getAssetFamily(code)?.label ?? LEGACY_FAMILY_LABELS[code] ?? code;
+  const actuelle = getAssetFamily(code) ?? getAssetFamily(toAssetFamilyCode(code));
+  return actuelle?.label ?? LEGACY_FAMILY_LABELS[code] ?? code;
 }
 
 /**

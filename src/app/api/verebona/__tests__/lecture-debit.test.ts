@@ -37,7 +37,7 @@ vi.mock('@/services/verebona-assistant/core/source-availability.service', () => 
   marquerDisponibilite: vi.fn(async (s: unknown) => s),
 }));
 vi.mock('@/services/verebona-assistant/registries/capability-registry', () => ({ suggestionsForRoute: h.suggestionsForRoute }));
-vi.mock('@/services/verebona-assistant/core/account-state', () => ({ loadAccountSuggestionState: vi.fn(async () => null) }));
+vi.mock('@/services/verebona-assistant/core/account-state', () => ({ loadSuggestionContext: vi.fn(async () => null) }));
 
 const explanation = await import('../messages/[messageId]/explanation/route');
 const sources = await import('../messages/[messageId]/sources/route');

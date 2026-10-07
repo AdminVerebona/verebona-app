@@ -186,7 +186,7 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     }
   });
 
-  it('D-15 : vente → carte ASSET-STATUS (valeurs admises par la base : TRANSMIS), résolution, annulation, valeur refusée', async () => {
+  it('D-15 / PO-Q11 : vente → carte ASSET-STATUS (VENDU, TRANSMIS — liste officielle 0278), résolution, annulation, valeur refusée', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -195,16 +195,16 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     const [carte] = (await cartes(compte.id, bien.id, 'ASSET')).filter((c) => !c.resolved_at);
     expect(carte.rule_code).toBe('ASSET-STATUS');
     const [{ p }] = await sql<{ p: Array<{ value: string }> }[]>`SELECT proposals_json AS p FROM to_process_actions WHERE public_id = ${carte.public_id}`;
-    // Contrainte 0121 : VENDU n'est pas admis en base, TRANSMIS l'est.
-    expect(p.map((x) => x.value)).toEqual(['TRANSMIS', 'EN_SERVICE']);
+    // Lot 32 (PO-Q11) : contrainte 0278 = liste officielle — VENDU admis.
+    expect(p.map((x) => x.value)).toEqual(['VENDU', 'TRANSMIS', 'EN_SERVICE']);
     const [{ s: avant }] = await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`;
     expect(avant).toBe('EN_SERVICE');
 
     expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'ARCHIVED')).toMatchObject({ ok: false, error: 'INVALID_VALUE' });
-    // Valeur du modèle refusée par la contrainte en base : refus propre, rien d'écrit.
-    expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'VENDU')).toMatchObject({ ok: false, error: 'INVALID_VALUE' });
-    expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'TRANSMIS')).toMatchObject({ ok: true, previousValue: 'EN_SERVICE' });
-    expect((await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`)[0].s).toBe('TRANSMIS');
+    // Ancienne valeur hors liste officielle : refus propre, rien d'écrit.
+    expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'EN_PANNE')).toMatchObject({ ok: false, error: 'INVALID_VALUE' });
+    expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'VENDU')).toMatchObject({ ok: true, previousValue: 'EN_SERVICE' });
+    expect((await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`)[0].s).toBe('VENDU');
     expect(await resolve.undoArbitration(compte.id, carte.public_id, 'EN_SERVICE')).toMatchObject({ ok: true });
     expect((await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`)[0].s).toBe('EN_SERVICE');
 
@@ -213,20 +213,13 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     expect(await resolve.resolveArbitration(autre.id, carte.public_id, 'TRANSMIS')).toMatchObject({ ok: false, error: 'NOT_FOUND' });
   });
 
-  it('D-15 : sinistre → HORS_SERVICE / EN_MAINTENANCE (base 0121) ; variable retirée sans effet', async () => {
+  it('D-15 / PO-Q11 : sinistre → aucune carte de statut (liste officielle sans « en réparation » ni « détruit »)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
     const sinistre = { ...echeance(doc.id, '2026-02-01', { title: 'Sinistre', category: 'information', originFieldKey: undefined }), businessType: 'claim', nature: 'HISTORICAL' } as AgendaDecision;
     await persist([sinistre], compte.id, bien.id);
-    const [carte] = await cartes(compte.id, bien.id, 'ASSET');
-    const [{ p }] = await sql<{ p: Array<{ value: string }> }[]>`SELECT proposals_json AS p FROM to_process_actions WHERE public_id = ${carte.public_id}`;
-    expect(p.map((x) => x.value)).toEqual(['HORS_SERVICE', 'EN_MAINTENANCE', 'EN_SERVICE']);
-
-    process.env.AI_T4_EFFECTS = 'legacy';
-    const bien2 = await make.asset(compte);
-    const doc2 = await make.assetFile(compte, { assetId: bien2.id });
-    await persist([{ ...sinistre, sourceFileId: doc2.id }], compte.id, bien2.id);
-    expect(await cartes(compte.id, bien2.id, 'ASSET')).toHaveLength(1);
+    expect(await cartes(compte.id, bien.id, 'ASSET')).toHaveLength(0);
+    expect((await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`)[0].s).toBe('EN_SERVICE');
   });
 });

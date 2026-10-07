@@ -7,9 +7,14 @@
  * disent exactement la même chose.
  */
 
-/** Information permanente du BO : le prompt de T5 vient du dépôt. */
+/**
+ * Information permanente du BO : le texte de T5 ne se règle pas dans la
+ * version de configuration, mais dans « Prompts maîtres » (lot 32B, décision
+ * PO n° 15).
+ */
 export const T5_REPOSITORY_PROMPT_MESSAGE =
-  'Le prompt de Prompt Control est défini dans le dépôt. Il n’est pas modifiable depuis cette configuration.';
+  'Le prompt de Prompt Control s’administre dans la section « Prompts maîtres » (brouillon, test facultatif, activation, historique), '
+  + 'indépendamment de cette version de configuration.';
 
 /** Texte hérité encore présent dans une configuration T5 (non bloquant). */
 export const T5_LEGACY_TEXT_MESSAGE =

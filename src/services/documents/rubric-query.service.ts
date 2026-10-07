@@ -38,7 +38,7 @@
  * `document-cursor.ts`). Les compteurs accompagnent le premier lot.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles, assetTypes, assets } from '@/db/schema';
 import { isRentedFromCharacteristics } from '@/lib/assets/occupancy';
@@ -72,6 +72,7 @@ import {
   type FeedKey,
   type KeysetNode,
 } from './document-cursor';
+import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition, documentWithoutAssetCondition } from './asset-document-scope';
 
 /** Identifiant de la zone « Sans rubrique ». Jamais un code de Rubrique (§2.1). */
 export const UNFILED_GROUP = FEED_UNFILED;
@@ -137,16 +138,15 @@ function keysetSql(node: KeysetNode, keys: FeedKey[], values: Array<string | nul
 
 // ── Périmètre et filtres ─────────────────────────────────────────────────
 
-/** Périmètre : compte courant, non supprimé, biens de l'onglet, résultats de recherche. */
+/**
+ * Périmètre : compte courant, non supprimé, biens de l'onglet, résultats de
+ * recherche. Lot 32C (PO 9) : un document lié au bien par la relation N-N
+ * (PRIMARY ou SECONDARY) figure dans sa liste, une seule fois.
+ */
 function scopeConditions(query: { accountId: number; assetIds: number[]; ids: number[] | null }): SQL[] {
   const scope = [eq(assetFiles.accountId, query.accountId), isNull(assetFiles.deletedAt)];
   if (query.assetIds.length > 0) {
-    scope.push(
-      or(
-        inArray(assetFiles.assetId, query.assetIds),
-        inArray(assetFiles.linkedAssetId, query.assetIds),
-      )!,
-    );
+    scope.push(documentInAssetsCondition(query.assetIds));
   }
   if (query.ids) scope.push(inArray(assetFiles.id, query.ids));
   return scope;
@@ -162,24 +162,44 @@ function dimension(values: string[], absent: string, column: SQL, nullColumn: SQ
   return parts.length === 1 ? parts[0] : sql`(${sql.join(parts, sql` OR `)})`;
 }
 
+/**
+ * Dimension « bien » (lot 32C, PO 9) : un document figure sous CHAQUE bien
+ * auquel il est rattaché (principal ou lié) ; « Sans bien » = aucun.
+ */
+function bienDimension(values: string[]): SQL | null {
+  if (values.length === 0) return null;
+  const present = values.filter((v) => v !== FEED_NO_ASSET).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  const parts: SQL[] = [];
+  if (present.length) parts.push(documentInAssetsCondition(present));
+  if (values.includes(FEED_NO_ASSET)) parts.push(documentWithoutAssetCondition());
+  if (parts.length === 0) return sql`FALSE`;
+  return parts.length === 1 ? parts[0] : sql`(${sql.join(parts, sql` OR `)})`;
+}
+
 /** Filtres combinés : ET entre dimensions, OU à l'intérieur — comme l'écran. */
 function filterConditions(f: FeedFilters): SQL[] {
   return [
-    dimension(f.biens, FEED_NO_ASSET, sql`${assetFiles.assetId}`, sql`${assetFiles.assetId}`, Number),
+    bienDimension(f.biens),
     dimension(f.rubrics, FEED_UNFILED, sql`${assetFiles.rubricCode}`, sql`${assetFiles.rubricCode}`, String),
     dimension(f.types, FEED_NO_TYPE, sql`${assetFiles.documentTypeCode}`, sql`${assetFiles.documentTypeCode}`, String),
   ].filter((c): c is SQL => c !== null);
 }
 
+/** Biens d'une ligne agrégée : principal puis liés ; `[FEED_NO_ASSET]` si aucun. */
+function biensOf(row: Pick<ScopeCountRow, 'assetId' | 'otherAssets'>): string[] {
+  const ids = [row.assetId, ...(row.otherAssets ?? []).map((o) => o.id)].filter((x): x is number => !!x);
+  return ids.length ? [...new Set(ids)].map(String) : [FEED_NO_ASSET];
+}
+
 /** Même règle que `filterConditions`, sur une ligne agrégée (compteurs). */
 export function matchesFilters(
-  row: { assetId: number | null; rubricCode: string | null; documentTypeCode: string | null },
+  row: Pick<ScopeCountRow, 'assetId' | 'otherAssets' | 'rubricCode' | 'documentTypeCode'>,
   f: FeedFilters,
 ): boolean {
-  const bien = row.assetId ? String(row.assetId) : FEED_NO_ASSET;
+  const biens = biensOf(row);
   const rubric = row.rubricCode ?? FEED_UNFILED;
   const type = row.documentTypeCode ?? FEED_NO_TYPE;
-  return (f.biens.length === 0 || f.biens.includes(bien))
+  return (f.biens.length === 0 || biens.some((b) => f.biens.includes(b)))
     && (f.rubrics.length === 0 || f.rubrics.includes(rubric))
     && (f.types.length === 0 || f.types.includes(type));
 }
@@ -189,6 +209,12 @@ export function matchesFilters(
 export interface ScopeCountRow {
   assetId: number | null;
   assetName: string | null;
+  /**
+   * Lot 32C (PO 9) : autres biens auxquels ces documents sont rattachés
+   * (colonne `linked_asset_id`, liens PRIMARY / SECONDARY) — le document
+   * compte sous chacun d'eux. Absent : aucun.
+   */
+  otherAssets?: Array<{ id: number; name: string | null }>;
   rubricCode: string | null;
   documentTypeCode: string | null;
   count: number;
@@ -221,10 +247,16 @@ export function buildFeedMeta(
       total += row.count;
       filteredByRubric.set(rubric, (filteredByRubric.get(rubric) ?? 0) + row.count);
     }
-    const bien = row.assetId ? String(row.assetId) : FEED_NO_ASSET;
-    const b = biens.get(bien) ?? { value: bien, label: row.assetId ? row.assetName : null, count: 0 };
-    b.count += row.count;
-    biens.set(bien, b);
+    const libelles = new Map<string, string | null>([
+      ...(row.assetId ? [[String(row.assetId), row.assetName] as [string, string | null]] : []),
+      ...(row.otherAssets ?? []).map((o) => [String(o.id), o.name] as [string, string | null]),
+    ]);
+    for (const bien of biensOf(row)) {
+      const b = biens.get(bien) ?? { value: bien, label: bien === FEED_NO_ASSET ? null : libelles.get(bien) ?? null, count: 0 };
+      if (b.label === null && bien !== FEED_NO_ASSET) b.label = libelles.get(bien) ?? null;
+      b.count += row.count;
+      biens.set(bien, b);
+    }
     const type = row.documentTypeCode ?? FEED_NO_TYPE;
     const t = types.get(type) ?? { value: type, label: getDocumentType(row.documentTypeCode)?.label ?? null, count: 0 };
     t.count += row.count;
@@ -314,6 +346,7 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
         mimeType: assetFiles.mimeType,
         assetId: assetFiles.assetId,
         assetName: assets.name,
+        otherAssetIds: OTHER_ASSET_IDS_SQL,
         ...keyColumns,
       })
       .from(assetFiles)
@@ -331,8 +364,11 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
     ? encodeFeedCursor(signature, keys.map((_, i) => (last[`k${i}`] as string | null) ?? null))
     : null;
 
+  // Noms des autres biens rattachés (PO 9 : le document s'affiche avec tous ses biens).
+  const autres = await otherAssetNames(query.accountId, page.flatMap((r) => toIds(r.otherAssetIds)));
   const documents: RubricDocumentView[] = page.map((row) => {
     const type = getDocumentType(row.documentTypeCode);
+    const lies = toIds(row.otherAssetIds).filter((id) => autres.has(id));
     return {
       id: row.id,
       publicId: row.publicId,
@@ -349,20 +385,42 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
         ? row.uploadedAt.toISOString()
         : (row.uploadedAt ?? null),
       mimeType: row.mimeType,
-      assetNames: row.assetName ? [row.assetName] : [],
+      assetNames: [...(row.assetName ? [row.assetName] : []), ...lies.map((id) => autres.get(id)!)],
+      assetIds: [...(row.assetId ? [row.assetId] : []), ...lies],
     };
   });
 
   return { documents, nextCursor, hasMore, limit: query.limit, ...(meta ? { meta } : {}) };
 }
 
-/** Compteurs du premier lot : une agrégation du périmètre, agrégée en base (§16.3). */
+/** Identifiants d'un `int[]` relu (tableau, ou texte `{1,2}` selon le pilote). */
+function toIds(v: unknown): number[] {
+  if (Array.isArray(v)) return v.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (typeof v === 'string') return v.replace(/[{}]/g, '').split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  return [];
+}
+
+/** Noms des biens (du compte, non supprimés), une requête. */
+async function otherAssetNames(accountId: number, ids: number[]): Promise<Map<number, string | null>> {
+  const uniques = [...new Set(ids)];
+  if (uniques.length === 0) return new Map();
+  const rows = await db.select({ id: assets.id, name: assets.name }).from(assets)
+    .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt), inArray(assets.id, uniques)));
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
+
+/**
+ * Compteurs du premier lot : une agrégation du périmètre, agrégée en base
+ * (§16.3). Lot 32C (PO 9) : la clé d'agrégation porte aussi les autres biens
+ * rattachés, pour que chaque bien compte ses documents liés.
+ */
 async function loadMeta(query: DocumentFeedQuery, scope: SQL[]): Promise<FeedMeta> {
   const [rows, context] = await Promise.all([
     db
       .select({
         assetId: assetFiles.assetId,
         assetName: assets.name,
+        otherAssetIds: OTHER_ASSET_IDS_SQL,
         rubricCode: assetFiles.rubricCode,
         documentTypeCode: assetFiles.documentTypeCode,
         count: sql<number>`COUNT(*)::int`,
@@ -370,10 +428,17 @@ async function loadMeta(query: DocumentFeedQuery, scope: SQL[]): Promise<FeedMet
       .from(assetFiles)
       .leftJoin(assets, eq(assetFiles.assetId, assets.id))
       .where(and(...scope))
-      .groupBy(assetFiles.assetId, assets.name, assetFiles.rubricCode, assetFiles.documentTypeCode),
+      .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode),
     loadVisibilityContext(query.accountId, query.assetIds),
   ]);
-  return buildFeedMeta(rows.map((r) => ({ ...r, count: Number(r.count) })), query.filters, context);
+  const noms = await otherAssetNames(query.accountId, rows.flatMap((r) => toIds(r.otherAssetIds)));
+  return buildFeedMeta(rows.map((r) => {
+    const autres = toIds(r.otherAssetIds).filter((id) => noms.has(id)).map((id) => ({ id, name: noms.get(id) ?? null }));
+    return {
+      assetId: r.assetId, assetName: r.assetName, rubricCode: r.rubricCode, documentTypeCode: r.documentTypeCode,
+      count: Number(r.count), ...(autres.length ? { otherAssets: autres } : {}),
+    };
+  }), query.filters, context);
 }
 
 /**

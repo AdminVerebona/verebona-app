@@ -87,7 +87,8 @@ export const ASSISTANT_SETTINGS: readonly AssistantSettingDef[] = [
   int('max_ai_calls_per_request', 'VEREBONA_ASSISTANT_MAX_AI_CALLS_PER_REQUEST', 'debits', 'Appels modèle par message',
     '§6.6 : 2 au plus.', 2, 0, 4),
   { key: 'monthly_budget_micros', env: 'VEREBONA_ASSISTANT_MONTHLY_BUDGET_MICROS', group: 'budget', label: 'Plafond par compte et par mois',
-    description: 'Coût IA maximal d’un compte par mois civil (0 : sans plafond).', type: 'usd_micros', default: 2_000_000, min: 0, max: 1_000_000_000 },
+    // Lot 32 (PO-Q23) : aucun plafond par défaut, tant qu'aucune valeur n'est réglée ici.
+    description: 'Coût IA maximal d’un compte par mois civil (0 : sans plafond).', type: 'usd_micros', default: 0, min: 0, max: 1_000_000_000 },
   { key: 'budget_alert_ratio', env: 'VEREBONA_ASSISTANT_BUDGET_ALERT_RATIO', group: 'alertes', label: 'Alerte de plafond',
     description: 'Part du plafond mensuel à partir de laquelle une alerte d’exploitation est émise.', type: 'ratio', default: 0.8, min: 0.1, max: 1 },
   { key: 'cost_alert_per_response_usd', env: 'VEREBONA_ASSISTANT_COST_ALERT_USD', group: 'alertes', label: 'Alerte de coût par réponse',

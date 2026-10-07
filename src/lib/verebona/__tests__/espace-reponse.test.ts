@@ -6,11 +6,11 @@
  * résumé, échanges compressés, demandes précédentes.
  */
 import { describe, it, expect } from 'vitest';
-import type { VerebonaMessage, VerebonaThread } from '../useVerebona';
+import type { VerebonaMessage } from '../useVerebona';
 import type { UiResultGroup } from '../assistant-ui';
 import {
   answerSummary, buildTurns, classifyAnswer, exchangeCountLabel, fieldPlaceholder, firstSentence,
-  mobileFieldLabel, objectsFromCards, olderLabel, poseForKind, previousRequests, railTone, relativeMoment,
+  mobileFieldLabel, objectsFromCards, olderLabel, poseForKind, railTone,
   resultCards, resumeLabel, showAnswerText, spacePose, splitTurns,
 } from '../space';
 
@@ -148,30 +148,3 @@ describe('résumés et objets', () => {
   });
 });
 
-describe('demandes précédentes (§8)', () => {
-  const now = new Date('2026-09-23T10:00:00');
-  const threads: Array<VerebonaThread> = [
-    { id: 3, title: 'Ferrari', createdAt: '2026-09-23T09:58:00', lastMessageAt: '2026-09-23T09:59:00', messageCount: 20, lastAnswer: 'C’est fait. L’immatriculation est confirmée.' },
-    { id: 2, title: 'Comment transférer un bien ?', createdAt: '2026-09-22T09:00:00', lastMessageAt: '2026-09-22T09:00:00', messageCount: 2, lastAnswer: 'Transférer un bien. Ouvrez la fiche…' },
-    { id: 1, title: 'Assurance', createdAt: '2026-09-21T09:00:00', lastMessageAt: '2026-09-21T09:00:00', messageCount: 4, lastAnswer: null },
-    { id: 9, title: 'Vide', createdAt: '2026-09-20T09:00:00', lastMessageAt: null, messageCount: 0 },
-  ];
-
-  it('exclut le fil courant et les fils vides ; moment · n échanges · résumé', () => {
-    const rows = previousRequests(threads, 3, now);
-    expect(rows.map((r) => r.id)).toEqual([2, 1]);
-    expect(rows[0]).toEqual({ id: 2, title: 'Comment transférer un bien ?', sub: 'Hier · Transférer un bien' });
-    expect(rows[1].sub).toBe('Lundi · 2 échanges');
-  });
-
-  it('4 au maximum', () => {
-    const many = Array.from({ length: 7 }, (_, i) => ({ ...threads[1], id: 100 + i }));
-    expect(previousRequests(many, null, now)).toHaveLength(4);
-  });
-
-  it('moments relatifs', () => {
-    expect(relativeMoment('2026-09-23T09:58:00', now)).toBe('À l’instant');
-    expect(relativeMoment('2026-09-23T07:00:00', now)).toBe('Aujourd’hui');
-    expect(relativeMoment('2026-09-10T07:00:00', now)).toBe('10 sept.');
-  });
-});

@@ -21,6 +21,16 @@
  * droit. L'exercice d'un droit ne dépend pas de la disponibilité d'un
  * prestataire de paiement.
  * ══════════════════════════════════════════════════════════════════════════
+ *
+ * LOT 32 — TRAITEMENT IMMÉDIAT, SUPPRESSION IMMÉDIATE (décisions PO Q1, Q2)
+ *
+ * Seule une déclaration ÉLIGIBLE est enregistrée (statut `received`) : plus
+ * d'examen manuel. Elle est traitée sur-le-champ par `processWithdrawal` —
+ * accès coupés, abonnement annulé, remboursement intégral, compte supprimé,
+ * e-mail d'au revoir — et reprise automatiquement par le balayage en cas
+ * d'échec Stripe. Plus de délai d'export : `data_deletion_scheduled_at` vaut
+ * l'instant de la déclaration, `data_export_deadline_at` reste vide.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash, randomBytes } from 'crypto';
 import { db } from '@/db';
@@ -32,9 +42,6 @@ import {
   type ContractSummary,
   type EligibilityResult,
 } from './eligibility.service';
-
-/** Durée de conservation des données après rétractation (§3.4). */
-export const DATA_RECOVERY_DAYS = 30;
 
 export type WithdrawalChannel = 'authenticated' | 'public' | 'email' | 'postal' | 'support';
 export type WithdrawalStatus =
@@ -85,7 +92,6 @@ export interface DeclarationResult {
   publicReference: string;
   status: WithdrawalStatus;
   requestedAt: Date;
-  dataExportDeadlineAt: Date;
   /** `true` si la déclaration existait déjà (double soumission). */
   alreadyRecorded: boolean;
 }
@@ -98,24 +104,16 @@ export class WithdrawalError extends Error {
 }
 
 /**
- * Statut initial d'une déclaration.
+ * Statut initial d'une déclaration (pure).
  *
- * Pure et testable : c'est la règle du §5.5, celle qui garantit qu'aucune
- * anomalie ne se transforme en refus.
+ * Lot 32 (PO-Q2) : plus d'examen manuel. Seule une déclaration éligible est
+ * enregistrée, et elle part aussitôt en traitement (`received`). Une
+ * éligibilité indéterminée ou négative n'est PAS enregistrée (`null`) :
+ * l'appelant répond « réessayez » (503) ou le motif (409). `manual_review`
+ * ne subsiste que pour les demandes historiques.
  */
-export function initialStatus(verdict: EligibilityResult['verdict']): WithdrawalStatus {
-  switch (verdict) {
-    case 'eligible':
-      return 'received';
-    // Une éligibilité indéterminable passe en examen humain, jamais en refus :
-    // « aucun motif de refus définitif n'est affiché avant examen » (§5.5).
-    case 'undetermined':
-      return 'manual_review';
-    // Un cas manifestement inéligible est tout de même enregistré et examiné :
-    // le consommateur a exprimé sa volonté, elle doit laisser une trace.
-    case 'ineligible':
-      return 'manual_review';
-  }
+export function initialStatus(verdict: EligibilityResult['verdict']): WithdrawalStatus | null {
+  return verdict === 'eligible' ? 'received' : null;
 }
 
 /**
@@ -131,10 +129,12 @@ export async function recordDeclaration(
   const now = input.now ?? new Date();
   const contract = input.eligibility.contract;
   const status = initialStatus(input.eligibility.verdict);
-
-  const dataExportDeadlineAt = new Date(
-    now.getTime() + DATA_RECOVERY_DAYS * 24 * 3600 * 1000,
-  );
+  if (!status || !contract) {
+    throw new WithdrawalError(
+      'NOT_ELIGIBLE',
+      "L'éligibilité n'est pas établie : la déclaration n'est pas enregistrée.",
+    );
+  }
 
   const declarationSnapshot = {
     // Ce que le consommateur a déclaré, mot pour mot.
@@ -171,8 +171,9 @@ export async function recordDeclaration(
       amountExpected: input.amountExpected ?? null,
       currency: 'eur',
       cancellationStatus: contract?.stripeSubscriptionId ? 'pending' : 'not_applicable',
-      dataExportDeadlineAt,
-      dataDeletionScheduledAt: dataExportDeadlineAt,
+      // Lot 32 : suppression immédiate, aucun délai d'export.
+      dataExportDeadlineAt: null,
+      dataDeletionScheduledAt: now,
       idempotencyKey: input.idempotencyKey ?? null,
       createdAt: now,
       updatedAt: now,
@@ -208,7 +209,6 @@ export async function recordDeclaration(
       publicReference: row.publicReference,
       status: row.status as WithdrawalStatus,
       requestedAt: row.requestedAt,
-      dataExportDeadlineAt,
       alreadyRecorded: false,
     };
   }
@@ -232,7 +232,6 @@ export async function recordDeclaration(
     publicReference: existing.publicReference,
     status: existing.status as WithdrawalStatus,
     requestedAt: existing.requestedAt,
-    dataExportDeadlineAt: existing.dataExportDeadlineAt ?? dataExportDeadlineAt,
     alreadyRecorded: true,
   };
 }
@@ -246,6 +245,7 @@ function snapshotContract(contract: ContractSummary): Record<string, unknown> {
     planCode: contract.planCode,
     billingPeriod: contract.billingPeriod,
     contractConcludedAt: contract.contractConcludedAt.toISOString(),
+    paidAt: contract.paidAt.toISOString(),
     withdrawalDeadlineAt: contract.withdrawalDeadlineAt.toISOString(),
     deadlineDeferred: contract.deadlineDeferred,
     deadlineDeferralReason: contract.deadlineDeferralReason ?? null,
@@ -279,27 +279,28 @@ async function findActiveRequest(params: {
   return byAccount ?? null;
 }
 
-/** Demande par référence publique (§12.5). */
+/**
+ * Demande déjà enregistrée sous cette clé d'idempotence (double soumission).
+ * Lot 32 : lue AVANT l'éligibilité — le premier envoi a pu supprimer le
+ * compte entre-temps, et le second doit retrouver la déclaration, pas
+ * conclure à une panne.
+ */
+export async function findByIdempotencyKey(idempotencyKey: string | null | undefined) {
+  if (!idempotencyKey) return null;
+  const [row] = await db
+    .select()
+    .from(withdrawalRequests)
+    .where(eq(withdrawalRequests.idempotencyKey, idempotencyKey))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Demande par référence publique (journal, BO). */
 export async function getByPublicReference(publicReference: string) {
   const [row] = await db
     .select()
     .from(withdrawalRequests)
     .where(eq(withdrawalRequests.publicReference, publicReference))
-    .limit(1);
-  return row ?? null;
-}
-
-/** Demande active d'un compte, pour l'affichage du suivi (§7.5). */
-export async function getActiveRequestForAccount(accountId: number) {
-  const [row] = await db
-    .select()
-    .from(withdrawalRequests)
-    .where(
-      and(
-        eq(withdrawalRequests.accountId, accountId),
-        inArray(withdrawalRequests.status, [...ACTIVE_WITHDRAWAL_STATUSES, 'completed']),
-      ),
-    )
     .limit(1);
   return row ?? null;
 }

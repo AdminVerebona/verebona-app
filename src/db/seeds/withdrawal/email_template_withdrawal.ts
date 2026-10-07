@@ -19,7 +19,7 @@ import { inArray } from 'drizzle-orm';
  * faire dépendre la preuve d'un droit exercé de la disponibilité d'un
  * prestataire.
  *
- * Le message annonce donc un remboursement « en cours », jamais « effectué ».
+ * Le message annonce donc un remboursement « lancé », jamais « effectué ».
  * ══════════════════════════════════════════════════════════════════════════
  *
  * Usage : npx tsx src/db/seeds/withdrawal/email_template_withdrawal.ts
@@ -27,6 +27,13 @@ import { inArray } from 'drizzle-orm';
 
 const TYPE = 'WITHDRAWAL_RECEIPT';
 
+/**
+ * Lot 32 (décision PO du 07/10/2026, Q2) : accusé de réception ET e-mail
+ * d'au revoir. La rétractation est traitée immédiatement : accès coupés,
+ * abonnement annulé, remboursement intégral lancé, compte supprimé. Plus de
+ * lien de suivi (`trackingUrl`) ni de délai d'export (`dataExportDeadlineLabel`).
+ * Même contenu que la migration 0279 (qui met à jour la base sans commande).
+ */
 export const WITHDRAWAL_RECEIPT_VARIABLES = [
   'firstName',
   'lastName',
@@ -34,15 +41,13 @@ export const WITHDRAWAL_RECEIPT_VARIABLES = [
   'requestedAtLabel',
   'contractLabel',
   'amountLabel',
-  'dataExportDeadlineLabel',
-  'trackingUrl',
   'legalPermalinkUrl',
   'contactEmail',
 ] as const;
 
-const SUBJECT = 'Votre rétractation a bien été enregistrée — {{publicReference}}';
+export const WITHDRAWAL_RECEIPT_SUBJECT = 'Votre rétractation est enregistrée et votre compte supprimé — {{publicReference}}';
 
-const HTML = `<!DOCTYPE html>
+export const WITHDRAWAL_RECEIPT_HTML = `<!DOCTYPE html>
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
@@ -64,7 +69,7 @@ const HTML = `<!DOCTYPE html>
 
               <p style="margin:0 0 16px;">
                 Nous avons bien reçu votre déclaration de rétractation. Elle est
-                enregistrée et prend effet immédiatement.
+                enregistrée et a été traitée immédiatement.
               </p>
 
               <table width="100%" cellpadding="0" cellspacing="0"
@@ -73,29 +78,25 @@ const HTML = `<!DOCTYPE html>
                   <p style="margin:0 0 6px;"><strong>Référence :</strong> {{publicReference}}</p>
                   <p style="margin:0 0 6px;"><strong>Reçue le :</strong> {{requestedAtLabel}}</p>
                   <p style="margin:0 0 6px;"><strong>Contrat :</strong> {{contractLabel}}</p>
-                  <p style="margin:0;"><strong>Remboursement prévu :</strong> {{amountLabel}}</p>
+                  <p style="margin:0;"><strong>Remboursement :</strong> {{amountLabel}}, intégral</p>
                 </td></tr>
               </table>
 
-              <p style="margin:0 0 8px;"><strong>Ce qui se passe maintenant</strong></p>
+              <p style="margin:0 0 8px;"><strong>Ce qui a été fait</strong></p>
               <ul style="margin:0 0 16px; padding-left:20px;">
                 <li style="margin:0 0 6px;">Votre abonnement est annulé : aucun nouveau prélèvement n'interviendra.</li>
-                <li style="margin:0 0 6px;">Le remboursement est <strong>en cours de traitement</strong> sur votre moyen de paiement d'origine. Aucune retenue n'est appliquée.</li>
-                <li style="margin:0 0 6px;">L'accès aux fonctions payantes est suspendu.</li>
-                <li style="margin:0;">Vos données restent <strong>consultables et exportables jusqu'au {{dataExportDeadlineLabel}}</strong>.</li>
+                <li style="margin:0 0 6px;">Le remboursement intégral est <strong>lancé</strong> sur votre moyen de paiement d'origine, sans retenue. Selon votre banque, il apparaît sous quelques jours.</li>
+                <li style="margin:0;">Votre compte Verebona et ses données (biens, documents, fichiers, échéances, historique de l'assistant) sont <strong>supprimés</strong> : vous ne pouvez plus vous y connecter.</li>
               </ul>
 
               <p style="margin:0 0 24px; font-size:14px; color:#555555;">
-                Passé cette date, et sans nouvelle souscription de votre part, elles
-                seront supprimées. Vous pouvez les exporter à tout moment depuis
-                votre compte.
+                Seules les informations que la loi nous impose de garder sont conservées,
+                détachées de votre compte : les factures, la preuve de cette rétractation
+                et celle de votre acceptation des conditions générales.
               </p>
 
               <p style="margin:0 0 24px;">
-                <a href="{{trackingUrl}}"
-                   style="display:inline-block; padding:12px 20px; background-color:#0b5fff; color:#ffffff; text-decoration:none; border-radius:6px; font-size:15px;">
-                  Suivre ma demande
-                </a>
+                Merci d'avoir essayé Verebona. Au revoir, et à bientôt peut-être.
               </p>
 
               <p style="margin:0 0 8px; font-size:13px; color:#555555;">
@@ -124,8 +125,8 @@ export async function seedWithdrawalEmailTemplate(): Promise<void> {
   await db.delete(emailTemplates).where(inArray(emailTemplates.type, [TYPE]));
   await db.insert(emailTemplates).values({
     type: TYPE,
-    subject: SUBJECT,
-    body: HTML,
+    subject: WITHDRAWAL_RECEIPT_SUBJECT,
+    body: WITHDRAWAL_RECEIPT_HTML,
     placeholders: JSON.stringify(WITHDRAWAL_RECEIPT_VARIABLES),
   });
 }

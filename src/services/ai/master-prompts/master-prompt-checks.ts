@@ -91,10 +91,17 @@ export function checkMasterPromptContent(treatment: Treatment, content: string):
     blocking.push(bloquant('BRANCH_PLACEHOLDER_MISSING',
       'L’emplacement de branche {{TASK}} (ou {{MODE}}) est absent : le serveur ne pourrait pas indiquer la branche à exécuter.'));
   }
+  // T5 (§27, lot 32B) : ses modes ne sont pas des sections « BRANCHE MODE =
+  // X » mais la ligne « Valeurs autorisées : ANALYZE | MODIFY » qui suit
+  // « MODE = {{MODE}} » — le message nomme ce que l'administrateur doit
+  // rétablir dans CE texte.
+  const sections = /BRANCHE\s+(?:TASK|MODE)\s*=/.test(content);
   for (const t of master.tasks) {
     if (!info.branches.includes(t)) {
-      blocking.push(bloquant('BRANCH_SECTION_MISSING',
-        `La section « ${masterBranchMarker(t, cle)} » est absente : les appels de cette branche échoueraient.`));
+      blocking.push(bloquant('BRANCH_SECTION_MISSING', sections
+        ? `La section « ${masterBranchMarker(t, cle)} » est absente : les appels de cette branche échoueraient.`
+        : `Le mode ${t} est absent : rétablissez la ligne « Valeurs autorisées : ${master.tasks.join(' | ')} » juste après `
+          + `« ${cle} = {{${cle}}} » (ou une section « ${masterBranchMarker(t, cle)} ») — sinon les appels de ce mode échoueraient.`));
     }
   }
 

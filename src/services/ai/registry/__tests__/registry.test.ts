@@ -6,6 +6,7 @@
  * à un usage inexistant.
  */
 import { describe, it, expect } from 'vitest';
+import { findDeclaredModel } from '../models';
 import {
   AI_USE_CASE_CODES, AI_USE_CASES, listActiveUseCases, isAiUseCaseCode,
 } from '../use-cases';
@@ -67,10 +68,11 @@ describe('catalogue des opérations', () => {
     for (const m of assistant) expect(documentaire.has(m)).toBe(false);
   });
 
-  it("n'utilise aucun modèle Pro pour l'assistant — CDC Assistant §31.2", () => {
-    for (const op of listOperationsByUseCase('INTELLIGENT_ASSISTANT')) {
+  it("PRO-06 — modèles de l'assistant : déclarés compatibles t2_master_v1 au registre (éligibilité réelle, pas le nom)", () => {
+    // Lot 32B : l'ancien test « aucun -pro » est remplacé par la vraie règle.
+    for (const op of listOperationsByUseCase('INTELLIGENT_ASSISTANT').filter((o) => o.provider !== 'none')) {
       for (const m of [op.primaryModel, ...op.fallbackModels]) {
-        expect(m).not.toMatch(/-pro$/);
+        expect(findDeclaredModel(m)?.compatiblePrompts, `${op.operationCode} : ${m}`).toContain('t2_master_v1');
       }
     }
   });

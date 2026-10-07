@@ -83,7 +83,7 @@ const DEMONSTRATIF_DOC = /\b(ce|cet|cette)\s+(document|fichier|facture|contrat|d
  * qui suit le démonstratif vient du référentiel des biens (lot 30 — ancien
  * `DEMONSTRATIF_BIEN`, liste figée qui ignorait garage, camion, camping-car…).
  */
-function demonstratifBien(m: string): string | null {
+export function demonstratifBien(m: string): string | null {
   const re = /\b(ce|cet|cette)\s+/g;
   for (let x = re.exec(m); x; x = re.exec(m)) {
     const terme = leadingAssetTerm(m.slice(x.index + x[0].length));

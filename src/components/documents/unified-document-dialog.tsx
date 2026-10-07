@@ -35,6 +35,7 @@ import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
 import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
+import { signalerEnvoiReussi } from '@/lib/upload-notification-client';
 
 const jsonPost = (body: unknown): RequestInit => ({
   method: 'POST',
@@ -567,8 +568,9 @@ export function UnifiedDocumentDialog({
     if (bilan.fileIds.length > 0) {
       await associerEtSignaler(ctx, bilan.fileIds);
       onFilesUploaded?.(bilan.fileIds);
-      // Pas de toast de succès (lot 31, L31-5) : le retour est l'indicateur
-      // d'analyse du header, puis la notification de fin de lot.
+      // Pas de toast de succès (lot 31, L31-5). Lot 32 (PO-Q18/Q19) : une
+      // notification « Documents ajoutés » par lot, pour tous les comptes.
+      signalerEnvoiReussi(bilan.fileIds, bilan.lotId);
     }
     if (bilan.tardif) return;
     if (bilan.echecs.length > 0) {
@@ -669,6 +671,8 @@ export function UnifiedDocumentDialog({
       const ids = [webLink.id as number];
       await associerEtSignaler(ctx, ids);
       onFilesUploaded?.(ids);
+      // Lot 32 (PO-Q19) : notification « Lien web ajouté », pas de toast.
+      signalerEnvoiReussi(ids, `wl-${webLink.id}`);
       // Pas de toast de succès (lot 31, L31-5) : la modale se ferme et le
       // lien apparaît dans les listes (`document-added`).
       onSuccess?.();

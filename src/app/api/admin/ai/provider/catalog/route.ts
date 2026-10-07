@@ -5,6 +5,8 @@
  *      interroge le fournisseur avec la clé active (CDC BO IA E-04,
  *      PROV-UI-06 à 08, WF-29, WF-40). En échec, le catalogue précédent est
  *      conservé et signalé obsolète ; la réponse est 502 avec la cause.
+ *      Lot 32B : génération minimale sur chaque modèle déclaré et listé
+ *      (état opérationnel avec la clé active).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getCatalogState, refreshModelCatalog } from '@/services/ai/provider/model-catalog.service';
@@ -24,7 +26,9 @@ export async function POST(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
   try {
-    const r = await refreshModelCatalog(guard.ctx.adminUserId);
+    // Lot 32B : l'actualisation sonde aussi les modèles déclarés (état
+    // opérationnel avec la clé active, lu ensuite sans appel par le BO).
+    const r = await refreshModelCatalog(guard.ctx.adminUserId, fetch, { probe: true });
     return NextResponse.json({ ...r, state: await getCatalogState() }, { status: r.ok ? 200 : 502 });
   } catch (e) {
     return toErrorResponse(e, 'POST /api/admin/ai/provider/catalog');

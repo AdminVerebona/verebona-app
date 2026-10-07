@@ -16,6 +16,7 @@
  *      générale (résolution historique inchangée).
  */
 import { toAssetFamilyCode } from '@/lib/asset-taxonomy';
+import { assetHasRegistration } from '@/lib/asset-capabilities';
 import { CANONICAL_FIELDS, CONTEXTUAL_ALIASES, EXCLUDED_KEYS, REGISTRY_VERSION } from './fields';
 import { EVENT_CATALOG, DOCUMENT_CATALOG, resolveDocumentType } from './catalogs';
 import {
@@ -81,6 +82,27 @@ export function fieldTargetTypes(def: CanonicalFieldDef): CanonicalTargetType[] 
 export function listFields(family?: AssetFamily, opts: { targetType?: CanonicalTargetType } = {}): CanonicalFieldDef[] {
   const cible = opts.targetType ?? 'ASSET';
   return CANONICAL_FIELDS.filter((d) => fieldTargetTypes(d).includes(cible) && (!family || d.families.includes(family)));
+}
+
+/**
+ * Le champ s'applique-t-il à CE bien ? (lot 32, L32-1) — famille du bien,
+ * puis capacité de catégorie (`requiresCapability`) : l'immatriculation ne
+ * s'applique pas à un vélo. Clé brute ou alias acceptés ; clé inconnue :
+ * `true` (rien n'est présumé, les autres contrôles s'appliquent).
+ */
+export function isFieldApplicableToAsset(
+  rawKey: string,
+  asset: { category: string | null | undefined; subtype?: string | null },
+): boolean {
+  const family = toAssetFamilyCode(asset.category);
+  const key = resolveAlias(rawKey, family) ?? rawKey;
+  const def = getField(key);
+  if (!def) return true;
+  if (family && !def.families.includes(family)) return false;
+  if (def.requiresCapability === 'registration') {
+    return assetHasRegistration({ category: asset.category ?? '', subtype: asset.subtype ?? null });
+  }
+  return true;
 }
 
 /** Motif de l'exclusion d'une clé brute, s'il y en a une. */

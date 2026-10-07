@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { categoryOptionsWithCurrent } from '@/lib/asset-taxonomy';
+import { assetHasRegistration } from '@/lib/asset-capabilities';
+
+/**
+ * Champs d'immatriculation (capacité `registration` du registre) : sans objet
+ * pour un vélo — ni proposés par « À traiter », ni affichés ici (lot 32, L32-1).
+ */
+const REGISTRATION_FIELD_KEYS = new Set(['registrationNumber', 'registrationExpiry', 'firstRegistrationDate']);
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
@@ -521,7 +528,8 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
 
       {/* ── Sections ──────────────────────────────────────────────────────────── */}
       {sectionEntries.map(([key, data]) => {
-        const fields = key === 'common' ? getCommonFields(asset.category, asset.subtype) : (SECTION_FIELDS[key] ?? []);
+        const fields = (key === 'common' ? getCommonFields(asset.category, asset.subtype) : (SECTION_FIELDS[key] ?? []))
+          .filter((f) => !REGISTRATION_FIELD_KEYS.has(f.key) || assetHasRegistration({ category: asset.category, subtype: asset.subtype }));
         const sectionData = key === 'common' ? { ...data, status: asset.status } : data;
         const isForced = forcedOpenSection === key;
         const sectionAlerts = (detailData?.coherenceAlerts ?? []).filter(a => a.section === key);

@@ -10,7 +10,6 @@ import { accountSubscriptions, users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { PRICE_CATALOG } from '@/lib/stripe-prices';
 import type { EligibilityResult } from './eligibility.service';
-import { DATA_RECOVERY_DAYS } from './withdrawal.service';
 
 export interface WithdrawalSummary {
   firstName: string;
@@ -19,13 +18,20 @@ export interface WithdrawalSummary {
   offerLabel: string;
   billingPeriodLabel: string;
   contractConcludedAt: string | null;
+  /** Départ du délai : premier paiement (lot 32, PO-Q1). */
+  paidAt: string | null;
   withdrawalDeadlineAt: string | null;
   deadlineDeferred: boolean;
   deadlineDeferralReason: string | null;
   /** Estimation en centimes (§7.2). */
   amountExpected: number | null;
   amountLabel: string;
-  dataDeletionAt: string;
+  /**
+   * Lot 32 (PO-Q2) : le compte et ses données sont supprimés IMMÉDIATEMENT à
+   * la confirmation (plus de délai d'export de 30 jours). Figé dans
+   * l'instantané de la déclaration : c'est ce qui a été annoncé.
+   */
+  accountDeletion: 'immediate';
   stripeSubscriptionId: string | null;
 }
 
@@ -66,7 +72,6 @@ function estimateRefund(planCode: string | null, billingPeriod: string | null): 
 export async function buildSummary(
   eligibility: EligibilityResult,
   identity: { userId: number | null; firstName?: string | null; lastName?: string | null; email?: string | null },
-  now: Date = new Date(),
 ): Promise<WithdrawalSummary> {
   const contract = eligibility.contract;
 
@@ -109,12 +114,13 @@ export async function buildSummary(
     offerLabel: OFFER_LABELS[planCode ?? ''] ?? 'Verebona',
     billingPeriodLabel: billingPeriod === 'yearly' ? 'annuelle' : billingPeriod === 'monthly' ? 'mensuelle' : '—',
     contractConcludedAt: contract?.contractConcludedAt.toISOString() ?? null,
+    paidAt: contract?.paidAt.toISOString() ?? null,
     withdrawalDeadlineAt: contract?.withdrawalDeadlineAt.toISOString() ?? null,
     deadlineDeferred: contract?.deadlineDeferred ?? false,
     deadlineDeferralReason: contract?.deadlineDeferralReason ?? null,
     amountExpected,
     amountLabel: formatAmount(amountExpected),
-    dataDeletionAt: new Date(now.getTime() + DATA_RECOVERY_DAYS * 24 * 3600 * 1000).toISOString(),
+    accountDeletion: 'immediate',
     stripeSubscriptionId: contract?.stripeSubscriptionId ?? null,
   };
 }

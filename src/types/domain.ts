@@ -1,4 +1,5 @@
 import { assetSupportsRooms } from '@/lib/asset-capabilities';
+import { ASSET_STATUSES, type AssetStatus } from '@/lib/asset-status';
 /**
  * Domain types and enums for Verebona
  * Centralizes all business domain types used across the application.
@@ -208,16 +209,10 @@ export interface ObjectHomeDetails {
 
 export type ObjectDetails = ObjectTechDetails | ObjectSportDetails | ObjectHomeDetails;
 
-export const ASSET_STATUSES = [
-  'EN_SERVICE',
-  'EN_PANNE',
-  'EN_REPARATION',
-  'VENDU',
-  'DETRUIT',
-  'INACTIF',
-  'ARCHIVED'
-] as const;
-export type AssetStatus = typeof ASSET_STATUSES[number];
+// Liste officielle des statuts d'un bien (décision PO Q11, lot 32) : source
+// unique `@/lib/asset-status`.
+export { ASSET_STATUSES } from '@/lib/asset-status';
+export type { AssetStatus } from '@/lib/asset-status';
 
 // Substructure and Equipment types
 export interface Substructure {

@@ -54,6 +54,7 @@ import { TriggersEditor } from './_components/TriggersEditor';
 import { createEditTracker } from './_components/edit-tracker';
 import type { CatalogTrigger } from './_components/triggers-model';
 import { T5_REPOSITORY_PROMPT_MESSAGE, T5_LEGACY_TEXT_MESSAGE, hasLegacyPromptText } from '@/services/ai/config/t5-messages';
+import { chainOptions, unusableRanks, type ChainRank } from '@/services/ai/registry/model-chain';
 import { useRouter } from 'next/navigation';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
@@ -80,7 +81,15 @@ interface TreatmentCatalog {
 type PromptArchitecture = 'master';
 
 interface Catalogs {
+  /** Liste globale (autres écrans) — jamais lue par les sélecteurs de modèles. */
   models: Array<{ model: string; available: boolean; priced: boolean; verified: boolean }>;
+  /**
+   * Lot 32B : modèles utilisables par traitement (`usableModelsForTreatment`,
+   * serveur) — SEULE source des sélecteurs principal / repli 1 / repli 2.
+   */
+  modelsByTreatment?: Partial<Record<Treatment, Array<{ model: string; priced: boolean; verified: boolean; providerVerified?: boolean; operational?: boolean | null }>>>;
+  /** Modèles connus non utilisables et leur motif : nomme une valeur enregistrée, jamais un choix. */
+  excludedByTreatment?: Partial<Record<Treatment, Array<{ model: string; reasonText: string }>>>;
   reasoningLevels: string[];
   guardrailReactions: string[];
   treatments: TreatmentCatalog[];
@@ -206,7 +215,11 @@ const STATUS_STYLE: Record<Status, string> = {
   ARCHIVED: 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
 };
 
-/** Miroir de `isPromptAdministrable` (services/ai/config/treatments) : T5 n'a pas de prompt BO. */
+/**
+ * Miroir de `isPromptAdministrable` (services/ai/config/treatments) : le texte
+ * de T5 n'est pas porté par la version de configuration (il s'administre dans
+ * « Prompts maîtres » depuis le lot 32B).
+ */
 function isPromptAdministrable(t: Treatment): boolean {
   return t !== 'T5';
 }
@@ -491,16 +504,26 @@ function TreatmentEditor({
 }) {
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) => onChange({ ...entry, [key]: value });
 
-  const modelOptions = (
+  // Lot 32B : uniquement les modèles utilisables pour CE traitement (calculés
+  // par le serveur, aucune règle recodée ici). Un modèle déjà choisi à un
+  // autre rang est retiré ; une valeur enregistrée devenue inutilisable reste
+  // affichée, marquée, sans redevenir un choix.
+  const usable = catalogs.modelsByTreatment?.[entry.treatment] ?? [];
+  const usableNames = usable.map((m) => m.model);
+  const motif = (model: string) => catalogs.excludedByTreatment?.[entry.treatment]?.find((x) => x.model === model)?.reasonText
+    ?? 'non utilisable pour ce traitement';
+  const modelOptions = (rank: ChainRank) => (
     <>
       <option value="">—</option>
-      {catalogs.models.map((m) => (
-        <option key={m.model} value={m.model}>
-          {m.model}{m.priced ? '' : ' (sans tarif)'}
+      {chainOptions(usableNames, entry, rank, { readOnly, reasonOf: motif }).map((o) => (
+        <option key={o.model} value={o.model} disabled={o.unusable}>
+          {o.label}
         </option>
       ))}
     </>
   );
+  const invalides = unusableRanks(usableNames, entry);
+  const RANG_LABEL: Record<ChainRank, string> = { primaryModel: 'Modèle principal', fallback1: 'Repli 1', fallback2: 'Repli 2' };
 
   const reasoning = (value: string | null, onSet: (v: string | null) => void, disabled: boolean) => (
     <select
@@ -538,9 +561,11 @@ function TreatmentEditor({
         prompt T1 unique, versionné, sans limite artificielle imposée par le
         BO ». Lot 16b : c'est la seule zone prompt (plus de préambule).
 
-        Pour T5, aucun éditeur (T5-003, T5-UI-09, écart E-02) : son
-        comportement est dans le code. Le serveur vide de toute façon ce champ
-        à l'écriture et l'ignore à l'exécution.
+        Pour T5, aucun texte dans la version de configuration (T5-003) : son
+        prompt maître s'administre dans « Prompts maîtres » (lot 32B, décision
+        PO n° 15). Le serveur vide ce champ à l'écriture et l'ignore à
+        l'exécution ; ses modèles (principal, replis) se règlent ici, comme
+        pour les autres traitements (décision PO n° 26).
       */}
       {/*
         Lot 16b : tous les traitements n'ont plus que leur prompt maître —
@@ -580,14 +605,29 @@ function TreatmentEditor({
         </p>
       ) : (
         <p className="text-xs text-[color:var(--text-muted)]">
-          Seuls ses réglages de modèle se configurent ici.
+          Ses réglages de modèle (principal, repli 1, repli 2) se configurent ici, comme pour les autres traitements.
         </p>
       )}
+
+      {invalides.length > 0 ? (
+        <p role="status" className="text-xs text-amber-500">
+          {readOnly
+            ? `Modèle(s) devenu(s) indisponible(s) pour ${entry.treatment} : `
+            : `Modèle(s) non utilisable(s) pour ${entry.treatment} — à remplacer avant la mise à l’essai ou la validation : `}
+          {invalides.map((r) => `${RANG_LABEL[r]} « ${entry[r]} » (${motif(entry[r]!)})`).join(' ; ')}.
+        </p>
+      ) : null}
+      {usable.length === 0 ? (
+        <p role="status" className="text-xs text-amber-500">
+          Aucun modèle n’est actuellement utilisable pour {entry.treatment}. Actualisez le catalogue dans « Fournisseur IA »
+          et vérifiez les tarifs.
+        </p>
+      ) : null}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Modèle principal">
           <select className={selectClass} value={entry.primaryModel ?? ''} disabled={readOnly}
-            onChange={(e) => set('primaryModel', e.target.value || null)}>{modelOptions}</select>
+            onChange={(e) => set('primaryModel', e.target.value || null)}>{modelOptions('primaryModel')}</select>
         </Field>
         <Field label="Niveau de raisonnement">
           {reasoning(entry.reasoningPrimary, (v) => set('reasoningPrimary', v), false)}
@@ -595,7 +635,7 @@ function TreatmentEditor({
 
         <Field label="Repli 1" hint="Facultatif. Sollicité sur échec technique du principal.">
           <select className={selectClass} value={entry.fallback1 ?? ''} disabled={readOnly}
-            onChange={(e) => set('fallback1', e.target.value || null)}>{modelOptions}</select>
+            onChange={(e) => set('fallback1', e.target.value || null)}>{modelOptions('fallback1')}</select>
         </Field>
         <Field label="Niveau de raisonnement du repli 1">
           {reasoning(entry.reasoningFallback1, (v) => set('reasoningFallback1', v), !entry.fallback1)}
@@ -603,7 +643,7 @@ function TreatmentEditor({
 
         <Field label="Repli 2" hint="Facultatif.">
           <select className={selectClass} value={entry.fallback2 ?? ''} disabled={readOnly}
-            onChange={(e) => set('fallback2', e.target.value || null)}>{modelOptions}</select>
+            onChange={(e) => set('fallback2', e.target.value || null)}>{modelOptions('fallback2')}</select>
         </Field>
         <Field label="Niveau de raisonnement du repli 2">
           {reasoning(entry.reasoningFallback2, (v) => set('reasoningFallback2', v), !entry.fallback2)}

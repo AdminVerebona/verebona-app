@@ -13,7 +13,9 @@
  * et vérifie, pour chaque opération modèle de l'assistant, sur la chaîne
  * EFFECTIVE (configuration versionnée, sinon code) :
  *   1. alias résolus (défaut, et escalade si le repli est actif) ;
- *   2. modèles autorisés : ni « latest », ni Pro, ni preview sans flag ;
+ *   2. modèles autorisés : ni « latest », ni preview sans flag (lot 32B :
+ *      plus d'interdit par catégorie « Pro » — la compatibilité avec
+ *      t2_master_v1 est déclarée modèle par modèle au registre, point 6) ;
  *   3. prix présents (bloquant en production — l'assistant tourne toujours
  *      depuis le lot 16b-2 —, sinon signalé) ;
  *   4. compatibilité avec les sorties structurées (schéma JSON déclaré,
@@ -112,7 +114,6 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
     for (const m of modeles) {
       // 2. Modèles autorisés.
       if (/latest/i.test(m)) errors.push(`${code} : alias fournisseur « latest » interdit (${m}) (§15.13)`);
-      if (/-pro\b/i.test(m)) errors.push(`${code} : modèle Pro interdit (${m}) (§15.6)`);
       if (isPreviewModel(m) && !previewPermis) {
         errors.push(declaredModelStatus(m) === 'unknown'
           ? `${code} : modèle ${m} absent du registre des modèles, traité comme preview — non autorisé sans flag (§15.12)`

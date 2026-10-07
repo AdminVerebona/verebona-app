@@ -32,6 +32,10 @@
  * Idempotence : une relance sur les mêmes entrées (empreinte) ne rappelle
  * pas le modèle ; le lien et l'action sont uniques par construction
  * (index uniques 0221 et 0147) ; un document résolu n'est jamais rejugé.
+ * Lot 32C : chaque issue porte la version du moteur et l'empreinte des
+ * identifiants des biens (`resolution_version`, `identifiers_fingerprint`) ;
+ * l'empreinte des entrées inclut la version — une abstention d'une version
+ * antérieure est réévaluée (déterministe d'abord), jamais réutilisée.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'node:crypto';
@@ -48,7 +52,10 @@ import {
   decideDeterministic, decideFromAiOutput, documentAssetVariables, rankCandidates,
   type DocumentAssetCandidate, type DocumentAssetDecision, type DocumentSubject,
 } from './decision';
-import { matchSignals, promptIdentifiers, resolveAssetByIdentifiers, type AssetIdentifierRecord } from './identifiers';
+import {
+  identifiersFingerprint, matchSignals, promptIdentifiers, resolveAssetByIdentifiers, type AssetIdentifierRecord,
+} from './identifiers';
+import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 import {
   getResolution, recordOutcome, restoreLastOutcome, type ResolutionStatus, type StoredCandidate,
 } from './resolution.repository';
@@ -113,9 +120,16 @@ const factValue = (f: { normalizedValue?: unknown; valueText?: unknown; valueNum
   return v === null || v === undefined || typeof v === 'object' ? null : String(v);
 };
 
-/** Empreinte des entrées : même empreinte = même décision, sans rappeler le modèle. */
-export function inputFingerprint(p: { extractionAt: string | null; candidates: DocumentAssetCandidate[]; matches: string[] }): string {
+/**
+ * Empreinte des entrées : même empreinte = même décision, sans rappeler le
+ * modèle. Lot 32C : la version du moteur en fait partie — une décision n'est
+ * réutilisable que si les entrées ET la version sont les mêmes.
+ */
+export function inputFingerprint(p: {
+  extractionAt: string | null; candidates: DocumentAssetCandidate[]; matches: string[]; version?: number;
+}): string {
   const payload = JSON.stringify({
+    v: p.version ?? DOCUMENT_ASSET_RESOLUTION_VERSION,
     e: p.extractionAt,
     c: [...p.candidates].sort((a, b) => a.assetId - b.assetId).map((c) => [c.assetId, c.t1?.confidence ?? null, c.t1?.score ?? null, c.currentRole, c.serverSignals.length]),
     m: [...p.matches].sort(),
@@ -146,6 +160,9 @@ export async function resolveDocumentAsset(
   const t1 = new Map((resolution?.t1Candidates ?? []).map((c) => [c.assetId, c]));
   const facts = knowledge?.facts ?? [];
   const records = await loadAssetIdentifiers(accountId);
+  // Identifiants des biens tels que lus pour CETTE évaluation (lot 32C) : le
+  // rattrapage ne rejoue que si l'un d'eux change depuis.
+  const idsFingerprint = identifiersFingerprint(records);
   const identification = resolveAssetByIdentifiers(records, {
     facts: facts.map((f) => ({ canonicalKey: f.canonicalKey ?? null, value: factValue(f) })),
     texts: [knowledge?.extraction.fullText, ...[...t1.values()].map((c) => c.signals)],
@@ -190,7 +207,7 @@ export async function resolveDocumentAsset(
   if (resolution && resolution.inputFingerprint === fingerprint
       && (derniere === 'ABSTAINED' || derniere === 'NO_CANDIDATE' || derniere === 'MULTI_ASSET')) {
     await g('état de résolution');
-    await restoreLastOutcome(fileId);
+    await restoreLastOutcome(fileId, { identifiersFingerprint: idsFingerprint });
     return { outcome: 'NO_CHANGE', status: derniere, aiCalled: false };
   }
 
@@ -235,7 +252,9 @@ export async function resolveDocumentAsset(
 
   // ── 5 / 6. Application ────────────────────────────────────────────────
   await input.guard?.assertActive('T3 DOCUMENT_ASSET — écriture');
-  const result = await applyDecision({ accountId, fileId, userId: input.userId ?? state.userId, decision, labels, fingerprint, extractionAt, g });
+  const result = await applyDecision({
+    accountId, fileId, userId: input.userId ?? state.userId, decision, labels, fingerprint, extractionAt, idsFingerprint, g,
+  });
   console.info(`[t3-document-asset] document ${fileId} : ${decision.kind}${decision.kind === 'ABSTAIN' ? ` (${decision.reasonCode})` : ` [${decision.method}]`} → ${result.outcome}`);
   return { ...result, decision, aiCalled };
 }
@@ -262,7 +281,7 @@ async function stopReason(accountId: number, fileId: number, s: AttachmentState,
 
 async function applyDecision(p: {
   accountId: number; fileId: number; userId: number | null; decision: DocumentAssetDecision;
-  labels: Map<number, { name: string }>; fingerprint: string; extractionAt: string | null; g: Garde;
+  labels: Map<number, { name: string }>; fingerprint: string; extractionAt: string | null; idsFingerprint: string; g: Garde;
 }): Promise<Omit<ResolveDocumentAssetResult, 'decision' | 'aiCalled'>> {
   const { accountId, fileId, decision, g } = p;
   // Relecture JUSTE AVANT l'écriture : l'utilisateur a pu trancher pendant
@@ -280,7 +299,7 @@ async function applyDecision(p: {
     await g('état de résolution');
     await recordOutcome({
       accountId, fileId, status, method: decision.reasonCode === 'NO_CANDIDATE' ? 'NONE' : 'AI', reasonCode: decision.reasonCode,
-      candidates, inputFingerprint: p.fingerprint, extractionAt: p.extractionAt,
+      candidates, inputFingerprint: p.fingerprint, extractionAt: p.extractionAt, identifiersFingerprint: p.idsFingerprint,
     });
     return { outcome: 'ABSTAIN', status };
   }
@@ -326,7 +345,7 @@ async function applyDecision(p: {
   await g('état de résolution');
   await recordOutcome({
     accountId, fileId, status, method: decision.method, reasonCode: decision.reason.slice(0, 200),
-    decidedAssetIds: cibles, inputFingerprint: p.fingerprint, extractionAt: p.extractionAt,
+    decidedAssetIds: cibles, inputFingerprint: p.fingerprint, extractionAt: p.extractionAt, identifiersFingerprint: p.idsFingerprint,
   });
   return { outcome: 'APPLIED', status };
 }

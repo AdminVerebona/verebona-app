@@ -14,6 +14,7 @@ import {
   cilBlockResolutions, assetFiles, equipments,
 } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 
 export type BlockStatus = 'complete' | 'not_applicable' | 'missing' | 'invalid' | 'unknown';
 
@@ -69,7 +70,8 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
       cilRubricCodes: assetFiles.cilRubricCodes,
     })
     .from(assetFiles)
-    .where(and(eq(assetFiles.assetId, assetId), eq(assetFiles.uploadStatus, 'COMPLETED')));
+    // Lot 32C (PO 9) : un document lié au bien (relation N-N) compte aussi.
+    .where(and(documentInAssetsCondition([assetId]), eq(assetFiles.uploadStatus, 'COMPLETED')));
 
   // Équipements pour B6
   const equips = await db.select({ id: equipments.id }).from(equipments).where(and(eq(equipments.assetId, assetId)));

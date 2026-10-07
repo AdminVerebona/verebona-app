@@ -61,14 +61,22 @@ export async function GET(
       sql<{ id: number; original_filename: string; retained_title: string | null; document_type: string; document_date: string | null }[]>`
         SELECT id, original_filename, retained_title, document_type, document_date
         FROM asset_files
-        WHERE asset_id = ${assetId} AND deleted_at IS NULL AND upload_status = 'COMPLETED'
+        -- Lot 32C (PO 9) : documents du bien = colonnes OU liens PRIMARY / SECONDARY.
+        WHERE (asset_id = ${assetId} OR linked_asset_id = ${assetId}
+               OR id IN (SELECT file_id FROM document_asset_links
+                          WHERE asset_id = ${assetId} AND status = 'ACTIVE' AND link_role IN ('PRIMARY', 'SECONDARY')))
+          AND deleted_at IS NULL AND upload_status = 'COMPLETED'
         ORDER BY COALESCE(document_date::text, uploaded_at::text) DESC NULLS LAST
         LIMIT 3
       `,
       // All counts in a single query
       sql<{ doc_count: string; agenda_count: string; room_count: string; eq_count: string }[]>`
         SELECT
-          (SELECT COUNT(*) FROM asset_files WHERE asset_id = ${assetId} AND deleted_at IS NULL AND upload_status = 'COMPLETED')::text AS doc_count,
+          (SELECT COUNT(*) FROM asset_files
+            WHERE (asset_id = ${assetId} OR linked_asset_id = ${assetId}
+                   OR id IN (SELECT file_id FROM document_asset_links
+                              WHERE asset_id = ${assetId} AND status = 'ACTIVE' AND link_role IN ('PRIMARY', 'SECONDARY')))
+              AND deleted_at IS NULL AND upload_status = 'COMPLETED')::text AS doc_count,
           (SELECT COUNT(*) FROM agenda_asset_links aal
             INNER JOIN agenda_items ai ON ai.id = aal.agenda_item_id
             WHERE aal.asset_id = ${assetId}

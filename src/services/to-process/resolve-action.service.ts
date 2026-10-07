@@ -237,7 +237,7 @@ export interface ResolveResult {
    * sur laquelle la carte a été ouverte (ou résolue) — carte marquée périmée,
    * rien n'est écrit.
    */
-  error?: 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'FIELD_NOT_RESOLVABLE' | 'INVALID_VALUE' | 'STALE';
+  error?: 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'FIELD_NOT_RESOLVABLE' | 'INVALID_VALUE' | 'STALE' | 'FIELD_NOT_APPLICABLE';
 }
 
 export interface ResolveOptions {
@@ -320,6 +320,21 @@ export async function resolveArbitration(
     if (action.ruleCode === 'ENTITY-FIELD' || action.ruleCode === 'ENTITY-FIELD-ROOM') {
       const { resolveEntityFieldCard } = await import('./entity-field-cards');
       return resolveEntityFieldCard(tx, action, value, accountId, options);
+    }
+
+    // Incohérence de rattachement (lot 32C, PO 8 / PO 10) : « Rattacher à
+    // B », « Ignorer », « Garder A » — jamais de déplacement sans ce choix.
+    if (action.ruleCode === 'LINK-ASSET-CONFLICT') {
+      const { resolveDocumentAssetConflict } = await import('./document-asset-conflict');
+      return resolveDocumentAssetConflict(tx, action, value, accountId, options);
+    }
+
+    // Donnée de BIEN décidée par la réconciliation (DATA-REGISTRATION,
+    // DATA-ACQUISITION-PRICE — lot 32, L32-1) : primitive canonique, origine
+    // USER ; champ sans objet pour ce bien (vélo) → carte retirée.
+    {
+      const { isAssetFieldCard, resolveAssetFieldCard } = await import('./asset-field-cards');
+      if (isAssetFieldCard(action)) return resolveAssetFieldCard(tx, action, value, accountId, options);
     }
 
     // Relation (T3-07, LINK-ELT) : écrivain de relation de la liste blanche,
@@ -429,6 +444,16 @@ export async function undoArbitration(
   if (action.ruleCode === 'ENTITY-FIELD' || action.ruleCode === 'ENTITY-FIELD-ROOM') {
     const { undoEntityFieldCard } = await import('./entity-field-cards');
     return undoEntityFieldCard(action, accountId);
+  }
+
+  if (action.ruleCode === 'LINK-ASSET-CONFLICT') {
+    const { undoDocumentAssetConflict } = await import('./document-asset-conflict');
+    return undoDocumentAssetConflict(action, accountId);
+  }
+
+  {
+    const { isAssetFieldCard, undoAssetFieldCard } = await import('./asset-field-cards');
+    if (isAssetFieldCard(action)) return undoAssetFieldCard(action, accountId);
   }
 
   const relation = action.relationKey

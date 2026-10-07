@@ -46,6 +46,7 @@
  *     (`multiAssetCandidate`) : c'est à T3 de conclure, jamais à T1.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { createHash } from 'node:crypto';
 import { getField, type AssetFamily } from '@/services/canonical/registry';
 import { normalizePlate, normalizeVin, vehicleIdentifiersIn } from '@/lib/vehicle-identifiers';
 
@@ -302,6 +303,20 @@ export function resolveAssetByIdentifiers(
     ambiguous: assetIds.length > 1,
     multiAssetCandidate: assetIds.length > 1 && assetIds.every((id) => matches.some((m) => m.assetId === id && m.exclusive)),
   };
+}
+
+/**
+ * Empreinte des identifiants canoniques des biens d'un compte (lot 32C) :
+ * même empreinte = mêmes entrées « biens » pour T3 DOCUMENT_ASSET. Sert au
+ * rattrapage horaire à ne pas rejouer une abstention quand un bien a été
+ * modifié SANS que ses identifiants discriminants changent. Haché (sha256) :
+ * aucune valeur (adresse : sensible) n'est stockée en clair. Pure.
+ */
+export function identifiersFingerprint(records: readonly AssetIdentifierRecord[]): string {
+  const canon = [...records]
+    .sort((a, b) => a.assetId - b.assetId)
+    .map((r) => [r.assetId, r.family, Object.keys(r.values).sort().map((k) => [k, r.values[k]])]);
+  return createHash('sha256').update(JSON.stringify(canon)).digest('hex');
 }
 
 /** Libellés des correspondances d'un bien, SANS valeur (transmissibles au modèle). */

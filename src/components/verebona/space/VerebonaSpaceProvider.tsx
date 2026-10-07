@@ -30,8 +30,8 @@ import { useVerebona } from '@/lib/verebona/useVerebona';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { buildPageContext } from '@/lib/verebona/page-context';
 import {
-  buildTurns, previousRequests, recentSearches, spacePose,
-  type MascotPoseName, type PreviousRequestRow, type RecentSearchRow, type SpaceObject, type SpaceTurn,
+  buildTurns, recentSearches, spacePose,
+  type MascotPoseName, type RecentSearchRow, type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import {
   LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, moveActive, navMatches, toLiveResults, type LiveResult,
@@ -68,10 +68,6 @@ export interface VerebonaSpaceApi {
    * suggestions + recherches récentes), vrai après une question ou une reprise.
    */
   showThread: boolean;
-  /** Toutes les demandes (vue « Toutes les demandes »), sans le fil courant. */
-  allPrevious: PreviousRequestRow[];
-  historyOpen: boolean;
-  setHistoryOpen: (open: boolean) => void;
   suggestions: Array<{ id: string; label: string }>;
   /** Saisie du champ, partagée par le champ desktop et le champ mobile. */
   draft: string;
@@ -129,7 +125,6 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   const pageContext = useMemo(() => buildPageContext(pathname), [pathname]);
   const { garder, signalerRefus } = useWriteGuard();
   const [isOpen, setIsOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const isDesktop = useIsDesktop();
   const reducedMotion = useReducedMotion();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -149,7 +144,6 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
 
   const turns = useMemo(() => buildTurns(v.messages, v.isLoading), [v.messages, v.isLoading]);
   const pose = spacePose(turns);
-  const allPrevious = useMemo(() => previousRequests(v.threads, v.conversationId, new Date(), Number.POSITIVE_INFINITY), [v.threads, v.conversationId]);
 
   // ── Pop-up : accueil (suggestions + recherches récentes) ou échange ──────
   const [threadShown, setThreadShown] = useState(false);
@@ -169,8 +163,10 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     if (!threadShownRef.current && turnsCountRef.current > 0) await v.newConversation();
   }, [v]);
 
-  // « Par exemple » (§6.5 état 1) : catalogue de la page, complété par l'état
-  // du compte côté serveur dès la première ouverture sur cette page.
+  // « Par exemple » (§6.5 état 1) : catalogue unique (`suggestionsForRoute`),
+  // rendu par le serveur avec le contexte de la page (bien de la fiche NOMMÉ,
+  // état du compte) dès la première ouverture ; en attendant, les seuls
+  // exemples qui ne dépendent d'aucune donnée (lot 32, point 8).
   const [suggestionsCompte, setSuggestionsCompte] = useState<{ route: string; items: Array<{ id: string; label: string }> } | null>(null);
   useEffect(() => {
     if (!isOpen || suggestionsCompte?.route === pageContext.route) return;
@@ -259,7 +255,6 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     // Fermer ne perd rien (§6.2) : l'échange continue, le champ propose
     // « Reprendre · n échanges ».
     setIsOpen(false);
-    setHistoryOpen(false);
     // Une question posée espace fermé (tuiles, mascotte…) ouvre une nouvelle recherche.
     setThreadShown(false);
   }, []);
@@ -287,7 +282,6 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
       return false;
     }
     setIsOpen(true);
-    setHistoryOpen(false);
     return (async () => {
       await partirDeZero();
       setThreadShown(true);
@@ -329,7 +323,6 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
       });
       setThreadShown(true);
     })();
-    setHistoryOpen(false);
     setIsOpen(true);
   }, [v, partirDeZero]);
 
@@ -340,14 +333,12 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   /** Retour à l'accueil du pop-up ; la prochaine question ouvre une nouvelle recherche. */
   const newRequest = useCallback(() => {
     setThreadShown(false);
-    setHistoryOpen(false);
     focusInput();
   }, [focusInput]);
 
   const resume = useCallback((id: number) => {
     void v.selectConversation(id);
     setThreadShown(true);
-    setHistoryOpen(false);
     focusInput();
   }, [v, focusInput]);
 
@@ -404,7 +395,7 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   }, [onOpenHelp, leaveForOverlay]);
 
   const api: VerebonaSpaceApi = {
-    v, turns, isOpen, isDesktop, reducedMotion, pose, recent, removeRecent, showThread, allPrevious, historyOpen, setHistoryOpen, suggestions,
+    v, turns, isOpen, isDesktop, reducedMotion, pose, recent, removeRecent, showThread, suggestions,
     draft, setDraft, live, liveLoading, activeLive, moveLive, openLive,
     open, close, toggle, leaveForOverlay, ask: envoyer, askLocal, runLocal, guard, newRequest, resume, registerInput, focusInput,
   };

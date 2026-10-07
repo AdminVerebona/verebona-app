@@ -13,23 +13,36 @@
  * le statut passe à `failed`, et le balayage du §10 reprendra plus tard. À
  * aucun moment une exception ne remonte jusqu'à effacer une preuve.
  *
- * ── L'ORDRE EST IMPOSÉ ────────────────────────────────────────────────────
+ * ── L'ORDRE EST IMPOSÉ (lot 32 : traitement et suppression IMMÉDIATS) ─────
  *
- *   1. SUSPENDRE LES DROITS, localement, AVANT tout appel Stripe : le compte
- *      passe en `withdrawal_recovery` (§13) dès la confirmation, même si
+ *   1. COUPER LES ACCÈS, localement, AVANT tout appel Stripe : droits
+ *      suspendus (`WITHDRAWN`, lecture seule) et sessions révoquées, même si
  *      Stripe est indisponible.
- *   2. PLANIFIER LA SUPPRESSION à trente jours (§13.3), localement aussi.
- *   3. ANNULER L'ABONNEMENT chez Stripe. Le §3.3 exige un effet immédiat et
- *      le §9.2 interdit `cancel_at_period_end`. En échec : reprise ultérieure,
- *      droits toujours suspendus.
- *   4. REMBOURSER. En dernier, parce que c'est l'étape la plus susceptible
- *      d'échouer ou de rester en attente.
+ *   2. ANNULER L'ABONNEMENT chez Stripe. Le §3.3 exige un effet immédiat et
+ *      le §9.2 interdit `cancel_at_period_end`.
+ *   3. REMBOURSER intégralement. Les identifiants Stripe et le contrat sont
+ *      portés par la demande elle-même : le remboursement n'a besoin ni du
+ *      compte ni de l'utilisateur.
+ *   4. SUPPRIMER LE COMPTE IMMÉDIATEMENT (décision PO du 07/10/2026, Q2) —
+ *      service de suppression existant (`executeScheduledDeletion`, délai 0),
+ *      qui CONSERVE ce que la loi impose : factures (10 ans, L123-22 C. com.)
+ *      détachées, demande et journal de rétractation (preuve de l'acte),
+ *      preuves d'acceptation des CGVU pseudonymisées, registre RGPD.
+ *      Faite à CHAQUE passage, que Stripe ait répondu ou non : la reprise
+ *      Stripe ne dépend pas du compte.
+ *
+ * Un échec (Stripe, suppression) laisse la demande en `failed` : le balayage
+ * planifié (`withdrawal-process`) la reprend automatiquement, sans action
+ * manuelle. Rejouer est sans effet sur ce qui a déjà abouti (clés
+ * d'idempotence Stripe, compte à rebours de suppression verrouillé).
+ * L'e-mail d'au revoir est l'accusé de réception (`receipt.service`), envoyé
+ * à la confirmation et renvoyé ici s'il n'est pas parti.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
 import { db } from '@/db';
-import { accountSubscriptions, accounts, withdrawalRequests } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { accountMemberships, accountSubscriptions, accounts, withdrawalRequests } from '@/db/schema';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { getStripeServer } from '@/lib/stripe';
 import {
   buildRefundPlan,
@@ -37,7 +50,7 @@ import {
   type RefundPlan,
 } from './refund-calculator';
 import { decideWithdrawalStatus, legacyLists, parseEntries, upsertRefund, type RefundEntry } from './refund-tracker';
-import { scheduleDeletion } from '@/services/account/scheduled-deletion.service';
+import { executeScheduledDeletion, scheduleDeletion } from '@/services/account/scheduled-deletion.service';
 import { listInvoicePaidCharges, PaymentLookupError } from '@/services/billing/stripe-payments';
 import { recordWithdrawalEvent } from './withdrawal-journal.service';
 
@@ -47,7 +60,12 @@ export interface ProcessResult {
   refundedAmount?: number;
   failureCode?: string;
   detail?: string;
+  /** Suppression du compte (lot 32) : faite, déjà faite, ou en échec (reprise). */
+  accountDeletion?: 'deleted' | 'already_deleted' | 'failed';
 }
+
+/** Délai au-delà duquel le balayage renvoie un accusé non remis (le parcours l'envoie d'abord). */
+export const RECEIPT_RETRY_AFTER_MS = 2 * 60 * 1000;
 
 /**
  * Traite une demande enregistrée.
@@ -73,6 +91,41 @@ export async function processWithdrawal(
     return { status: 'skipped', detail: `STATUS_${request.status}` };
   }
 
+  // 1 à 3 : accès coupés, annulation et remboursement Stripe.
+  let stripeResult: ProcessResult;
+  try {
+    stripeResult = await processStripe(request, publicReference, now, options.stripe);
+  } catch (e) {
+    // Jamais d'exception jusqu'à l'appelant (voir l'en-tête) ; la
+    // suppression du compte a lieu quand même.
+    stripeResult = await recordFailure(publicReference, 'PROCESSING_ERROR', (e as Error).message, now);
+  }
+
+  // 4. Suppression immédiate du compte (lot 32), quel que soit Stripe.
+  const deletion = await deleteAccountNow(request, publicReference, now);
+  if (deletion === 'failed' && stripeResult.status !== 'failed') {
+    // Stripe a abouti mais le compte est toujours là : la demande reste
+    // `failed` pour que le balayage reprenne la suppression.
+    await recordFailure(publicReference, 'ACCOUNT_DELETION_FAILED', 'Suppression du compte à reprendre.', now);
+    stripeResult = { ...stripeResult, status: 'failed', failureCode: 'ACCOUNT_DELETION_FAILED' };
+  }
+
+  // E-mail d'au revoir (= accusé de réception) non remis : renvoi.
+  await resendReceiptIfMissing(request, now);
+
+  return { ...stripeResult, accountDeletion: deletion };
+}
+
+type WithdrawalRow = typeof withdrawalRequests.$inferSelect;
+
+/** Étapes 1 à 3 : accès coupés, puis Stripe (annulation, remboursement). */
+async function processStripe(
+  request: WithdrawalRow,
+  publicReference: string,
+  now: Date,
+  injectedStripe?: Stripe,
+): Promise<ProcessResult> {
+
   // ══════════════════════════════════════════════════════════════════════
   // 1. SUSPENSION LOCALE DES DROITS — AVANT TOUT APPEL STRIPE (§3.4, §13)
   //
@@ -85,38 +138,18 @@ export async function processWithdrawal(
   // Idempotente : rejouée à chaque reprise, elle ne rend jamais de droits.
   // ══════════════════════════════════════════════════════════════════════
   if (request.accountId && (await enterRecoveryMode(request.accountId))) {
-    // §18, élément 17 : date de passage en export uniquement (première fois).
+    // §18, élément 17 : accès coupés (première fois).
     await recordWithdrawalEvent({
       publicReference,
       eventType: 'EXPORT_ONLY_ENTERED',
-      summary: 'Compte basculé en lecture et export seuls.',
+      summary: 'Accès au compte coupés (lecture seule, sessions révoquées) avant sa suppression.',
     });
   }
-
-  // ── 2. Suppression planifiée à trente jours (§13.3) — locale, elle aussi ─
-  if (request.accountId && request.userId) {
-    await scheduleDeletion({
-      accountId: request.accountId,
-      userId: request.userId,
-      reason: 'WITHDRAWAL',
-      confirmedAt: request.confirmedAt ?? request.requestedAt,
-    }).then((schedule) => recordWithdrawalEvent({
-      publicReference,
-      eventType: 'DELETION_SCHEDULED',
-      summary: `Suppression des données planifiée au ${schedule.scheduledAt.toISOString()}.`,
-      payload: { scheduledAt: schedule.scheduledAt.toISOString() },
-    })).catch((e) => {
-      // Une suppression non planifiée est un incident de conformité, pas une
-      // raison d'interrompre le remboursement.
-      console.error(
-        `[withdrawal] ${publicReference} : suppression non planifiée — ${(e as Error).message}`,
-      );
-    });
-  }
+  if (request.accountId) await revokeAccountSessions(request.accountId, publicReference);
 
   let stripe: Stripe;
   try {
-    stripe = options.stripe ?? getStripeServer();
+    stripe = injectedStripe ?? getStripeServer();
   } catch (e) {
     return await recordFailure(publicReference, 'STRIPE_UNAVAILABLE', (e as Error).message, now);
   }
@@ -398,13 +431,123 @@ export async function listContractPayments(
 }
 
 /**
- * Bascule le compte en récupération après rétractation (§13).
+ * Sessions des membres du compte révoquées (lot 32 : « couper les accès »).
+ * Best-effort : la suppression du compte, juste après, emporte de toute façon
+ * utilisateurs et jetons de rafraîchissement.
+ */
+async function revokeAccountSessions(accountId: number, publicReference: string): Promise<void> {
+  try {
+    const [acc] = await db.select({ owner: accounts.ownerUserId }).from(accounts).where(eq(accounts.id, accountId)).limit(1);
+    const members = await db
+      .select({ userId: accountMemberships.userId })
+      .from(accountMemberships)
+      .where(and(eq(accountMemberships.accountId, accountId), eq(accountMemberships.status, 'active'), isNotNull(accountMemberships.userId)));
+    const ids = new Set<number>([acc?.owner, ...members.map((m) => m.userId)].filter((v): v is number => typeof v === 'number'));
+    const { revokeUserSessionsNow } = await import('@/services/admin/account-status.service');
+    for (const id of ids) await revokeUserSessionsNow(id, 'WITHDRAWAL');
+  } catch (e) {
+    console.error(`[withdrawal] ${publicReference} : révocation des sessions impossible — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Suppression IMMÉDIATE du compte (lot 32, décision PO Q2), par le service de
+ * suppression existant : compte à rebours ouvert à délai nul (motif
+ * WITHDRAWAL, portée compte), puis exécuté sur-le-champ. Ce service conserve
+ * les factures (détachées), les demandes et le journal de rétractation, les
+ * preuves d'acceptation pseudonymisées et le registre RGPD.
  *
- * Réutilise le statut `readonly` déjà connu du moteur de droits : lecture,
- * export et nouvelle souscription restent ouverts, l'écriture est fermée —
- * exactement le périmètre des §13.1 et §13.2. Introduire un statut distinct
- * imposerait de le traiter dans chaque contrôle d'accès existant, avec le
- * risque d'en oublier un et d'y laisser passer une écriture.
+ * Idempotente : compte déjà supprimé (lien de la demande tombé à NULL par la
+ * cascade, ou compte introuvable) → `already_deleted`. Un échec est consigné
+ * et repris par le balayage. Ne lève jamais.
+ */
+export async function deleteAccountNow(
+  request: Pick<WithdrawalRow, 'accountId' | 'userId'>,
+  publicReference: string,
+  now: Date = new Date(),
+): Promise<'deleted' | 'already_deleted' | 'failed'> {
+  if (!request.accountId) return 'already_deleted';
+  try {
+    const [acc] = await db
+      .select({ id: accounts.id, owner: accounts.ownerUserId })
+      .from(accounts)
+      .where(eq(accounts.id, request.accountId))
+      .limit(1);
+    if (!acc) return 'already_deleted';
+    const userId = request.userId ?? acc.owner;
+    const schedule = await scheduleDeletion({
+      accountId: acc.id,
+      userId,
+      reason: 'WITHDRAWAL',
+      confirmedAt: now,
+      delayDays: 0,
+    });
+    const result = await executeScheduledDeletion(schedule.id, { now });
+    if (result.status === 'executed') {
+      await recordWithdrawalEvent({
+        publicReference,
+        eventType: 'DELETION_EXECUTED',
+        summary: 'Compte et données supprimés immédiatement ; factures, demande de rétractation et preuves conservées.',
+        payload: { scheduleId: schedule.id, preserved: result.preserved ?? null, deleted: result.deleted ?? null },
+      });
+      return 'deleted';
+    }
+    // Compte disparu entre-temps, ou exécution concurrente : vérifier.
+    const [still] = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, acc.id)).limit(1);
+    if (!still) return 'already_deleted';
+    await recordWithdrawalEvent({
+      publicReference,
+      eventType: 'DELETION_EXECUTED',
+      result: 'failure',
+      summary: `Suppression du compte non aboutie (${result.reason ?? result.status}) : reprise automatique.`,
+      payload: { scheduleId: schedule.id, reason: result.reason ?? null },
+    });
+    return 'failed';
+  } catch (e) {
+    console.error(`[withdrawal] ${publicReference} : suppression du compte impossible — ${(e as Error).message}`);
+    await recordWithdrawalEvent({
+      publicReference,
+      eventType: 'DELETION_EXECUTED',
+      result: 'failure',
+      summary: `Suppression du compte impossible : ${(e as Error).message.slice(0, 300)}.`,
+    }).catch(() => undefined);
+    return 'failed';
+  }
+}
+
+/** Renvoi de l'accusé de réception / e-mail d'au revoir s'il n'est pas parti. */
+async function resendReceiptIfMissing(request: WithdrawalRow, now: Date): Promise<void> {
+  if (request.receiptSentAt || !request.receiptEmail) return;
+  if (now.getTime() - request.requestedAt.getTime() < RECEIPT_RETRY_AFTER_MS) return;
+  try {
+    const decl = request.declarationSnapshotJson ? JSON.parse(request.declarationSnapshotJson) : null;
+    const shown = (decl?.displayedSummary ?? {}) as Record<string, unknown>;
+    const { sendWithdrawalReceipt } = await import('./receipt.service');
+    await sendWithdrawalReceipt({
+      publicReference: request.publicReference,
+      to: request.receiptEmail,
+      userId: null,
+      firstName: request.consumerFirstName ?? '',
+      lastName: request.consumerLastName ?? '',
+      requestedAt: request.requestedAt,
+      summary: {
+        offerLabel: String(shown.offerLabel ?? 'Verebona'),
+        billingPeriodLabel: String(shown.billingPeriodLabel ?? '—'),
+        amountLabel: String(shown.amountLabel ?? 'à déterminer'),
+      },
+    });
+  } catch (e) {
+    console.error(`[withdrawal] ${request.publicReference} : renvoi de l'accusé impossible — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Coupe les droits du compte dès la confirmation (§13).
+ *
+ * Réutilise le statut `readonly` déjà connu du moteur de droits : plus
+ * aucune écriture. Lot 32 : ce n'est plus une période de récupération de 30
+ * jours mais l'état transitoire de quelques instants qui précède la
+ * suppression immédiate (ou sa reprise si elle échoue).
  */
 export async function enterRecoveryMode(accountId: number): Promise<boolean> {
   const [before] = await db

@@ -2,13 +2,15 @@
  * GET /api/withdrawal/eligibility — CDC 6 §12.1 (authentifié).
  *
  * Alimente l'affichage de « Mon compte → Abonnement » (§6.2).
+ *
+ * Lot 32 (PO-Q2) : plus de suivi de demande — la rétractation supprime le
+ * compte immédiatement, il n'y a plus rien à suivre depuis Mon compte.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { evaluateEligibility, ineligibilityMessage } from '@/services/withdrawal/eligibility.service';
 import { buildSummary } from '@/services/withdrawal/summary.service';
-import { getActiveRequestForAccount } from '@/services/withdrawal/withdrawal.service';
 import { shouldOfferWithdrawal } from '@/services/withdrawal/withdrawal-window';
 
 export async function GET(req: NextRequest) {
@@ -27,18 +29,18 @@ export async function GET(req: NextRequest) {
   await ensureMigrations();
 
   const eligibility = await evaluateEligibility(session.userId, accountId);
-  const existing = await getActiveRequestForAccount(accountId);
 
-  // Une éligibilité indéterminable n'est jamais présentée comme un refus
-  // (§5.5) : l'utilisateur peut déclarer, l'examen se fera ensuite.
+  // Une éligibilité indéterminable (panne) n'est jamais présentée comme un
+  // refus définitif (§5.5) ; elle ne propose rien non plus (lot 32).
   const eligible = eligibility.verdict !== 'ineligible';
 
   // Lot 26 : la carte et le bouton « Renoncer au contrat ici » disparaissent à
   // la clôture du délai (J+15 à 00 h 00, Paris). Décidé ici, côté serveur, par
   // la même fonction que le refus de l'API : le client ne recalcule rien.
+  // Lot 32 (PO-Q1) : le délai court à partir du PAIEMENT.
   const offerWithdrawal = shouldOfferWithdrawal({
     verdict: eligibility.verdict,
-    subscribedAt: eligibility.contract?.contractConcludedAt ?? eligibility.subscribedAtFallback ?? null,
+    subscribedAt: eligibility.contract?.paidAt ?? null,
   });
 
   return NextResponse.json({
@@ -49,17 +51,6 @@ export async function GET(req: NextRequest) {
     message: eligibility.reason ? ineligibilityMessage(eligibility.reason) : null,
     contract: eligibility.contract
       ? await buildSummary(eligibility, { userId: session.userId })
-      : null,
-    existingRequest: existing
-      ? {
-          publicReference: existing.publicReference,
-          status: existing.status,
-          requestedAt: existing.requestedAt,
-          cancellationStatus: existing.cancellationStatus,
-          amountExpected: existing.amountExpected,
-          amountRefunded: existing.amountRefunded,
-          dataExportDeadlineAt: existing.dataExportDeadlineAt,
-        }
       : null,
   });
 }

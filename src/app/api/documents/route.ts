@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles, assets, documentTypes } from '@/db/schema';
 import { eq, and, sql, isNull, or } from 'drizzle-orm';
+import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 
 function matchesSearch(
   doc: { fileName: string | null; originalFilename?: string | null; assetName: string | null; documentType: string | null; retainedTitle?: string | null; retainedFunctionCode?: string | null; description?: string | null; extractedText?: string | null },
@@ -160,7 +161,8 @@ export async function GET(request: NextRequest) {
     if (assetId) {
       const assetIdInt = parseInt(assetId);
       if (!isNaN(assetIdInt)) {
-        conditions.push(eq(assetFiles.assetId, assetIdInt));
+        // Lot 32C (PO 9) : documents liés au bien (colonnes, liens PRIMARY / SECONDARY).
+        conditions.push(documentInAssetsCondition([assetIdInt]));
       }
     }
 

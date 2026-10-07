@@ -34,6 +34,7 @@ import type {
 } from '@/services/ai/reconciliation/types';
 import type { ActionKind, ActionProposal } from './action-model';
 import { findRule } from './rules-catalog';
+import { isFieldApplicableToAsset } from '@/services/canonical/registry';
 import { resolveActionsForData, upsertAction } from './to-process-action.service';
 
 /**
@@ -171,7 +172,16 @@ export async function syncReconciliationToProcess(
 ): Promise<SyncReconciliationResult> {
   const result: SyncReconciliationResult = { created: 0, resolved: 0, skipped: 0 };
 
-  const intents = input.decisions.map(mapReconciliationDecision);
+  // Lot 32 (L32-1) : un champ sans objet pour CE bien (immatriculation d'un
+  // vélo) n'ouvre jamais de carte ; une carte déjà ouverte est retirée.
+  const applicable = await assetApplicability(input.accountId, input.assetId);
+  const intents = input.decisions.map((d) => {
+    const intent = mapReconciliationDecision(d);
+    if (intent && !applicable(intent.fieldKey)) {
+      return { ...intent, kind: 'RESOLVE' as const, reason: 'FIELD_NOT_APPLICABLE' };
+    }
+    return intent;
+  });
   // Plusieurs décisions peuvent viser la même clé canonique (alias et clé) :
   // une carte ouverte ou mise à jour ne doit pas être refermée par la
   // décision « tranchée » d'un alias dans le même passage (X-03).
@@ -224,6 +234,21 @@ export async function syncReconciliationToProcess(
   }
 
   return result;
+}
+
+/** Applicabilité des champs au bien (famille + catégorie) ; bien illisible : tout est admis. */
+async function assetApplicability(accountId: number, assetId: number): Promise<(key: string) => boolean> {
+  try {
+    const { db } = await import('@/db');
+    const { assets } = await import('@/db/schema');
+    const { and, eq } = await import('drizzle-orm');
+    const [b] = await db.select({ category: assets.category, subtype: assets.subtype }).from(assets)
+      .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId))).limit(1);
+    if (!b) return () => true;
+    return (key) => isFieldApplicableToAsset(key, b);
+  } catch {
+    return () => true;
+  }
 }
 
 function normalize(value: unknown): string | number | boolean | null {

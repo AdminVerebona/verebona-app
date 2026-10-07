@@ -336,61 +336,6 @@ export function mobileFieldLabel(turns: SpaceTurn[]): string {
   return `Reprendre · ${s}`;
 }
 
-// ── Demandes précédentes (§8) ───────────────────────────────────────────────
-
-export const MAX_PREVIOUS_REQUESTS = 4;
-
-const JOURS = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
-const MOIS_COURTS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
-
-function startOfDay(d: Date): number {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-}
-
-/** « À l'instant », « Aujourd'hui », « Hier », « Lundi », « 12 sept. ». */
-export function relativeMoment(iso: string | null | undefined, now: Date = new Date()): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const diffMs = now.getTime() - d.getTime();
-  if (diffMs >= 0 && diffMs < 5 * 60_000) return 'À l’instant';
-  const days = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
-  if (days <= 0) return 'Aujourd’hui';
-  if (days === 1) return 'Hier';
-  if (days < 7) return JOURS[d.getDay()];
-  return `${d.getDate()} ${MOIS_COURTS[d.getMonth()]}`;
-}
-
-export interface PreviousRequestRow {
-  id: number;
-  title: string;
-  sub: string;
-}
-
-/**
- * Fils archivés (§8) : la liste « Demandes précédentes », 4 au plus, sans le
- * fil en cours ni les fils vides. Chaque ligne : première question, puis
- * moment · n échanges · résumé de la dernière réponse.
- */
-export function previousRequests(
-  threads: Array<VerebonaThread & { lastAnswer?: string | null }>,
-  currentId: number | null,
-  now: Date = new Date(),
-  max = MAX_PREVIOUS_REQUESTS,
-): PreviousRequestRow[] {
-  return threads
-    .filter((t) => t.id !== currentId && t.messageCount > 0)
-    .slice(0, max)
-    .map((t) => {
-      const n = Math.max(1, Math.round(t.messageCount / 2));
-      const parts = [relativeMoment(t.lastMessageAt ?? t.createdAt, now)];
-      if (n > 1) parts.push(exchangeCountLabel(n));
-      const resume = t.lastAnswer ? firstSentence(t.lastAnswer, 48) : '';
-      if (resume) parts.push(resume);
-      return { id: t.id, title: t.title?.trim() || 'Demande sans titre', sub: parts.filter(Boolean).join(' · ') };
-    });
-}
-
 // ── Recherches récentes (pop-up du champ) ───────────────────────────────────
 
 /** Nombre de recherches récentes affichées sous les suggestions. */

@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { apiClient } from '@/lib/api-client';
 import { drawerHref, openDrawer } from '@/lib/drawers';
 import { lotNotificationText } from '@/services/ai/source-analysis/lot-notification-text';
+import { uploadNotificationText } from '@/lib/notifications/upload-notification-text';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -37,6 +38,9 @@ interface NotificationPayload extends SubscriptionNotificationPayload {
   failedCount?: number;
   errorReason?: string;
   documentTitle?: string;
+  /** Envoi réussi (lot 32) : documents du lot, nature (fichier / lien web). */
+  count?: number;
+  kind?: 'file' | 'web_link';
   /** Quota d'analyses : période du compteur (essai / annuelle). */
   periodType?: 'trial' | 'annual';
   /** Fin de lot : documents analysés, nommés (lot-notification-text). */
@@ -109,6 +113,13 @@ function getNotificationText(
     case 'ACCOUNT_INVITATION':
       return `${p.inviterName ?? 'Quelqu\'un'} vous a invité(e) à rejoindre ${p.accountName ?? 'un compte'}`;
     // ── Documents : une notification par lot (cf. CDC §7.2) ──────────────────
+    // Lot 32 (PO-Q18/Q19) : envoi réussi, une notification par lot d'envoi.
+    case 'DOCUMENT_UPLOAD_COMPLETED':
+      return uploadNotificationText({
+        count: Number(p.count ?? 1),
+        documentTitle: p.documentTitle,
+        kind: p.kind === 'web_link' ? 'web_link' : 'file',
+      }).body;
     case 'DOCUMENT_BATCH_COMPLETED':
       return lotNotificationText(p);
     case 'DOCUMENT_BATCH_PARTIALLY_FAILED':
@@ -181,6 +192,9 @@ function getNotificationText(
       return p.scheduledAt
         ? `Suppression de votre compte prévue le ${formatDate(p.scheduledAt)}`
         : 'La suppression de votre compte est programmée';
+    // Lot 32 (PO-Q2) : suppression immédiate après rétractation (journal).
+    case 'DELETION_EXECUTED':
+      return 'Votre compte a été supprimé';
 
     default:
       // ⚠️ Repli conservé, mais il ne doit plus jamais s'afficher : un type
@@ -235,10 +249,10 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
     return `/transmission/${p.transmissionToken}`;
   }
   // Documents : vue du document concerné, ou liste des documents pour un lot.
-  if ((type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_ANALYZED') && p.assetFileId) {
+  if ((type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_ANALYZED' || type === 'DOCUMENT_UPLOAD_COMPLETED') && p.assetFileId) {
     return drawerHref({ kind: 'document', id: p.assetFileId }, '/documents');
   }
-  if (type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_BATCH_PARTIALLY_FAILED' || type === 'DOCUMENT_BATCH_FAILED' || type === 'DOCUMENT_ANALYZED') {
+  if (type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_BATCH_PARTIALLY_FAILED' || type === 'DOCUMENT_BATCH_FAILED' || type === 'DOCUMENT_ANALYZED' || type === 'DOCUMENT_UPLOAD_COMPLETED') {
     return '/documents';
   }
   if (type === 'ANALYSIS_FAILED_PERSISTENT' && p.assetFileId) {
@@ -270,6 +284,8 @@ function getNotificationIcon(type: string) {
     case 'DOCUMENT_ANALYZED':
     case 'DOCUMENT_BATCH_COMPLETED':
       return <Cpu className="w-4 h-4 flex-shrink-0" />;
+    case 'DOCUMENT_UPLOAD_COMPLETED':
+      return <CheckCheck className="w-4 h-4 flex-shrink-0" />;
     case 'ANALYSIS_FAILED_PERSISTENT':
       return <AlertTriangle className="w-4 h-4 flex-shrink-0 text-destructive" />;
     case 'TRANSMISSION_RECEIVED':

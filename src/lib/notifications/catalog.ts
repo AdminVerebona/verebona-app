@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications';
 import { subscriptionNotificationText } from './subscription-messages';
 import { formatUnpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
+import { uploadNotificationText } from './upload-notification-text';
 
 export type NotificationCategory =
   | 'deadlines'
@@ -147,6 +148,30 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       assetFileId: z.number().optional(),
       documentTitle: z.string().optional(),
       documents: z.array(z.object({ assetFileId: z.number(), title: z.string() })).optional(),
+    }),
+  },
+  // ── Lot 32 (décision PO Q18/Q19) : envoi réussi ─────────────────────────
+  // Une notification par lot d'envoi (fichiers ou lien web), pour tous les
+  // comptes. Cloche toujours ; push et e-mail selon les préférences de la
+  // catégorie « Documents » (désactivés par défaut : l'utilisateur vient
+  // d'agir, il est dans l'application). Le push reste générique (§4.3).
+  [T.DOCUMENT_UPLOAD_COMPLETED]: {
+    type: T.DOCUMENT_UPLOAD_COMPLETED,
+    category: 'documents', priority: 'low', deliveryMode: 'immediate',
+    mandatoryBell: false, mandatoryEmail: false, neverBell: false,
+    defaults: { push: false, email: false }, retentionDays: 90,
+    render: (p) => {
+      const { title, body } = uploadNotificationText(p);
+      return content(title, body, { title, body: p.count > 1 ? `${p.count} documents ajoutés.` : 'Votre document a bien été ajouté.' }, 'notif_document_upload');
+    },
+    deepLink: (p) => (p.assetFileId
+      ? drawerHref({ kind: 'document', id: p.assetFileId }, '/documents')
+      : '/documents'),
+    payloadSchema: z.object({
+      count: z.number().int().min(1),
+      assetFileId: z.number().optional(),
+      documentTitle: z.string().optional(),
+      kind: z.enum(['file', 'web_link']).optional(),
     }),
   },
   // ══════════════════════════════════════════════════════════════════════════

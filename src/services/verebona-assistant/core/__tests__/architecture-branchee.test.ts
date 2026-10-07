@@ -86,8 +86,8 @@ describe('contrôle de démarrage (§15.14) sur les modèles RÉELLEMENT appelé
   it('refuse un alias « latest »', () => {
     expect(() => assertConfigAtStartup(cfg, ops({ t2_answer: { primaryModel: 'gemini-flash-latest', fallbackModels: [] } }))).toThrow(/latest/);
   });
-  it('refuse un modèle Pro dans le chemin utilisateur', () => {
-    expect(() => assertConfigAtStartup(cfg, ops({ t2_answer: { primaryModel: 'gemini-2.5-pro', fallbackModels: [] } }))).toThrow(/Pro/);
+  it('PRO-08 — lot 32B : un modèle Pro n’est plus refusé pour son nom (registre et éligibilité décident)', () => {
+    expect(() => assertConfigAtStartup(cfg, ops({ t2_answer: { primaryModel: 'gemini-3.1-pro-preview', fallbackModels: ['gemini-3.1-flash-lite'] } }))).not.toThrow();
   });
   it('refuse une escalade identique au modèle par défaut', () => {
     expect(() => assertConfigAtStartup(cfg, ops({ t2_understand: { primaryModel: 'm', fallbackModels: ['m'] } }))).toThrow(/escalade/);
@@ -184,6 +184,11 @@ describe('plafond budgétaire mensuel (§6.6, §31.3)', () => {
   });
 
   it('lit la somme du mois du compte dans verebona_ai_runs ; plafond atteint → alerte ai_alerts', async () => {
+    // Lot 32 (PO-Q23) : aucun plafond par défaut — le mécanisme est vérifié
+    // avec une valeur réglée (ici par la variable de repli).
+    const { resetAssistantConfigForTests } = await import('../../config/assistant-config');
+    process.env.VEREBONA_ASSISTANT_MONTHLY_BUDGET_MICROS = '2000000';
+    resetAssistantConfigForTests();
     (globalThis as { __cout?: number }).__cout = 2_500_000;
     const raise = vi.fn(async () => true);
     setBudgetAlertWriterForTests(raise);
@@ -196,5 +201,17 @@ describe('plafond budgétaire mensuel (§6.6, §31.3)', () => {
     expect(q.p[0]).toBe(7);
     (globalThis as { __cout?: number }).__cout = 0;
     setBudgetAlertWriterForTests(null);
+    delete process.env.VEREBONA_ASSISTANT_MONTHLY_BUDGET_MICROS;
+    resetAssistantConfigForTests();
+  });
+
+  it('PO-Q23 — sans valeur réglée : aucun plafond (le coût reste mesuré ailleurs)', async () => {
+    const { resetAssistantConfigForTests, getAssistantConfig } = await import('../../config/assistant-config');
+    delete process.env.VEREBONA_ASSISTANT_MONTHLY_BUDGET_MICROS;
+    resetAssistantConfigForTests();
+    expect(getAssistantConfig().monthlyBudgetMicros).toBe(0);
+    (globalThis as { __cout?: number }).__cout = 50_000_000;
+    expect((await checkMonthlyBudget(7)).allowed).toBe(true);
+    (globalThis as { __cout?: number }).__cout = 0;
   });
 });

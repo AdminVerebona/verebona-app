@@ -114,11 +114,12 @@ describe('COM-008 : contexte « Paiement » et « Rétractation »', () => {
     const ctx = selectPreviewContext(options, { withdrawalId: 40 });
     const v = contextVariables(ctx, 'https://app.test/');
     expect(v.publicReference).toBe('RET-20260905-ABC123');
-    expect(v.trackingUrl).toBe('https://app.test/retractation/suivi/RET-20260905-ABC123');
+    // Lot 32 (PO-Q2) : plus de lien de suivi.
+    expect(v.trackingUrl).toBeUndefined();
     expect(v.requestedAtLabel).toMatch(/5 septembre 2026/);
     const template =
       '{{firstName}} {{lastName}} {{publicReference}} {{requestedAtLabel}} {{contractLabel}} {{amountLabel}} ' +
-      '{{dataExportDeadlineLabel}} {{trackingUrl}} {{legalPermalinkUrl}}';
+      '{{legalPermalinkUrl}}';
     const { missingCount } = resolveTemplateVariables(
       [template],
       { firstName: 'A', lastName: 'B', email: 'a@b.fr', accountName: null, planLabel: null, extra: v },

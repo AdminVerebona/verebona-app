@@ -542,16 +542,16 @@ describe('§8.2 — suggestions : page > compte > générique', () => {
     expect(suggestionsForRoute('/documents').map((s) => s.id)).toEqual(suggestionsForRoute('/documents', null).map((s) => s.id));
   });
   it('documents en erreur et exports prêts : proposés après les suggestions de la page', () => {
-    const s = suggestionsForRoute('/agenda', { ...vide, documentsFailed: 2, exportsReady: 1 });
+    const s = suggestionsForRoute('/agenda', { state: { ...vide, documentsFailed: 2, exportsReady: 1 } });
     expect(s.slice(0, 2).map((x) => x.id)).toEqual(['agenda_next', 'agenda_sync']);
     expect(s.map((x) => x.id)).toEqual(expect.arrayContaining(['state_failed', 'state_exports']));
     expect(s.length).toBeLessThanOrEqual(4);
   });
   it('rien en attente : aucune suggestion d’état', () => {
-    expect(suggestionsForRoute('/agenda', vide).some((x) => x.id.startsWith('state_'))).toBe(false);
+    expect(suggestionsForRoute('/agenda', { state: vide }).some((x) => x.id.startsWith('state_'))).toBe(false);
   });
-  it('pas de doublon avec la page (accueil : « Que dois-je traiter en priorité ? » déjà présent)', () => {
-    const labels = suggestionsForRoute('/', { ...vide, toProcessPending: 3 }).map((x) => x.label);
+  it('pas de doublon avec la page (accueil : « Quelles échéances arrivent bientôt ? » déjà présent)', () => {
+    const labels = suggestionsForRoute('/', { state: { ...vide, toProcessPending: 3, deadlinesSoon: 2 } }).map((x) => x.label);
     expect(new Set(labels).size).toBe(labels.length);
   });
 });

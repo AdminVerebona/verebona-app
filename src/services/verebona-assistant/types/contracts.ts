@@ -43,6 +43,8 @@ export interface IntentRoute {
 /** Filtres et faits demandés, lus par le master T2 (UNDERSTAND). */
 export interface RouteUnderstanding {
   requestedFacts: string[];
+  /** Sujets demandés hors FIELD_CATALOG (UNDERSTAND) — indices, jamais des clés. */
+  requestedTopics?: string[];
   filters: {
     documentType?: string | null;
     periodStart?: string | null;
@@ -305,6 +307,18 @@ export interface CascadeTrace {
    * jamais confondus dans un « rien trouvé » unique (`core/t2-diagnostics`).
    */
   diagnostic?: import('../core/t2-diagnostics').T2Diagnostic;
+  /**
+   * Lot 32 : état EXPLICITE de la compréhension (`core/understanding-status`).
+   * `initialStatus` / `reasons` : évaluation du déterministe ; `status` : état
+   * final ; `resolvedBy` : qui a complété la compréhension (déterministe, fil,
+   * UNDERSTAND, clarification posée) — `null` si elle reste incomplète.
+   */
+  understanding?: {
+    initialStatus: import('../core/understanding-status').UnderstandingStatus;
+    status: import('../core/understanding-status').UnderstandingStatus;
+    reasons: import('../core/understanding-status').UnderstandingReason[];
+    resolvedBy: import('../core/understanding-status').UnderstandingResolver;
+  };
 }
 
 export interface AssistantRunResult {

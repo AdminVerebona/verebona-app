@@ -122,6 +122,11 @@ const VERBES_DEMANDE = new Set([
   'avez', 'avons', 'suis', 'sont', 'etait', 'etaient', 'dernier', 'derniere', 'derniers', 'dernieres',
   'concernant', 'propos', 'lie', 'lies', 'liee', 'liees', 'rattache', 'rattaches', 'rattachee',
   'vous', 'votre', 'vos', 'nos', 'avoir', 'fait', 'faire',
+  // Lot 32 : mots de LIEN et RENVOIS (« qui concernent l'autre », « qui lui
+  // sont associés ») — ils désignent la cible, résolue par le serveur, jamais
+  // un contenu à retrouver dans un titre.
+  'concerne', 'concernent', 'associe', 'associes', 'associee', 'associees', 'rattachees', 'lui',
+  'autre', 'autres', 'ceux', 'celles', 'celui', 'celle',
   // Mots de TYPE génériques : ils désignent une famille de résultats, pas un
   // contenu à retrouver dans un titre.
   'document', 'documents', 'fichier', 'fichiers', 'element', 'elements', 'resultat', 'resultats',

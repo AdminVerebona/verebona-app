@@ -22,6 +22,12 @@ export const NOTIFICATION_TYPES = {
   DOCUMENT_BATCH_PARTIALLY_FAILED: 'DOCUMENT_BATCH_PARTIALLY_FAILED',
   DOCUMENT_BATCH_FAILED: 'DOCUMENT_BATCH_FAILED',
   ANALYSIS_FAILED_PERSISTENT: 'ANALYSIS_FAILED_PERSISTENT',
+  /**
+   * Lot 32 (décision PO Q18/Q19) : envoi réussi (fichiers ou lien web) —
+   * une notification par lot d'envoi, pour TOUS les comptes (Standard
+   * compris). Remplace les toasts de succès retirés au lot 31.
+   */
+  DOCUMENT_UPLOAD_COMPLETED: 'DOCUMENT_UPLOAD_COMPLETED',
 
   // ── À traiter (produit au Lot 4, jamais dans la cloche) ──────────────────
   TO_PROCESS_ITEM_CREATED: 'TO_PROCESS_ITEM_CREATED',
@@ -97,6 +103,15 @@ export interface NotificationPayloadMap {
   DOCUMENT_BATCH_PARTIALLY_FAILED: { lotId: number; analysedCount: number; failedCount: number };
   DOCUMENT_BATCH_FAILED: { lotId: number; analysedCount: number; failedCount: number };
   ANALYSIS_FAILED_PERSISTENT: { assetFileId: number; documentTitle?: string; errorReason?: string };
+  DOCUMENT_UPLOAD_COMPLETED: {
+    /** Documents du lot effectivement ajoutés. */
+    count: number;
+    /** Un seul document : il est nommé et s'ouvre en tiroir. */
+    assetFileId?: number;
+    documentTitle?: string;
+    /** `web_link` : lien web ajouté. */
+    kind?: 'file' | 'web_link';
+  };
 
   /**
    * CDC V2 §14 — deux natures au lieu des quatre familles. `family` reste

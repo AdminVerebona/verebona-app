@@ -11,13 +11,27 @@
  * mise en scène change :
  *   · une phrase naturelle à partir des sujets (au lieu d'un paragraphe par
  *     sujet) ;
- *   · au plus 2 tuiles d'action ; un clic ouvre l'espace de réponse Verebona
- *     sur le sujet, où ses actions réelles sont proposées ;
  *   · « Ou demandez-moi : » et 3 pastilles, envoyées directement.
+ *
+ * ── LOT 32 (ticket MASC2) : DEUX NIVEAUX ───────────────────────────────────
+ *
+ *   1. synthèse : « Deux sujets nécessitent votre attention aujourd’hui. »
+ *      (même total que la pastille et la page « À traiter ») ;
+ *   2. éléments d'action homogènes (`homeItems`) : « À traiter » d'abord,
+ *      puis échéances et recommandations — un seul composant. Les pastilles
+ *      « Compléter “…” » / « Choisir “…” » (3e niveau) sont supprimées.
+ *
+ *   Clic sur un « À traiter », selon le contrat (`actionType`, jamais un
+ *   libellé) : OPEN_CHOICES → les choix de la file (`TodoChoicesDialog`,
+ *   `ActionCard` + `useToProcessResolution`) ; OPEN_TODO_CARD → la carte
+ *   de la file ciblée par son ID (`/accueil/a-traiter?todo=<id>`), ouverte et
+ *   positionnée. Après résolution, l'élément disparaît aussitôt, puis la
+ *   bulle, la file et la pastille se relisent (`refresh-a-traiter`).
+ *   « Ou demandez-moi » reste séparé, sous les actions, secondaire.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { useRouter } from 'next/navigation';
-import { useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ArrowRight, CalendarDays, CircleAlert, Clock, Download, FileText, Plus } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -25,14 +39,29 @@ import { openDrawer } from '@/lib/drawers';
 import { openToProcessTarget } from '@/lib/to-process-target';
 import { greetingDateLong, greetingDateShort, greetingWord } from '@/lib/mascot-greeting';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
-import type { MascotAction, MascotParagraph, MascotTile } from '@/services/home/mascot/types';
+import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
-  actionTiles, composeSpeech, displayedSecondaries, homePose, homePoseLabel, homeSuggestions, secondaryActions, splitHighlights, type ActionTile,
+  composeSpeech, displayedSecondaries, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights, todoRemaining,
+  type ActionTile, type HomeItem,
 } from '@/services/home/mascot/bubble';
 import type { AnswerKind } from '@/lib/verebona/space';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
 import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvider';
 import { useMascotPresentation } from './useMascotPresentation';
+import { TodoChoicesDialog } from './TodoChoicesDialog';
+
+/** Page « À traiter » sur une carte précise (OPEN_TODO_CARD) — ciblage par ID. */
+export function todoCardHref(todoId: string): string {
+  return `/accueil/a-traiter?todo=${encodeURIComponent(todoId)}`;
+}
+
+/** Présentation sans les « À traiter » déjà résolus à l'écran (retrait immédiat). */
+export function withoutTodos(p: MascotPresentation | null, hidden: ReadonlySet<string>): MascotPresentation | null {
+  if (!p?.todo || hidden.size === 0) return p;
+  const items = p.todo.items.filter((i) => !hidden.has(i.todoId));
+  const retires = p.todo.items.length - items.length;
+  return { ...p, todo: { total: Math.max(0, p.todo.total - retires), items } };
+}
 
 interface MascotSpeaksProps {
   /** Nom affiché dans « Bonjour, … » : le nom d'utilisateur, à défaut le prénom. */
@@ -70,8 +99,15 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   // Télémétrie « affiché » : seulement les secondaires que la bulle montre.
   const emptyRef = useRef(empty);
   emptyRef.current = empty;
-  const { presentation, failed, refresh, trackClick } = useMascotPresentation((p) => displayedSecondaries(p, emptyRef.current));
+  const { presentation: brute, failed, refresh, trackClick } = useMascotPresentation((p) => displayedSecondaries(p, emptyRef.current));
   const now = new Date();
+
+  // « À traiter » résolus depuis la bulle : retirés aussitôt, jusqu'à la
+  // relecture (nouvelle empreinte) qui fait foi.
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => { setHidden(new Set()); }, [brute?.contextHash]);
+  const presentation = useMemo(() => withoutTodos(brute, hidden), [brute, hidden]);
+  const [choices, setChoices] = useState<MascotTodoItem | null>(null);
 
   const speech = composeSpeech({ presentation, empty, failed });
   const pose = homePose(presentation, empty, failed);
@@ -145,6 +181,27 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   };
 
   /**
+   * Clic sur un « À traiter » (MASC2) — destination lue dans le contrat :
+   * OPEN_CHOICES ouvre les choix de la file ; OPEN_TODO_CARD la carte de la
+   * file, par son ID. Jamais le haut de la page « À traiter ».
+   */
+  const openTodo = (t: MascotTodoItem) => {
+    trackClick(`ATP:${t.todoId}`, `ATP-${t.todoType}`, 'subject', `ATP:${t.todoId}:${t.actionType}`);
+    space?.close();
+    if (t.actionType === 'OPEN_CHOICES' && (t.availableChoices?.length ?? 0) >= 2) {
+      setChoices(t);
+      return;
+    }
+    router.push(todoCardHref(t.todoId));
+  };
+
+  const openItem = (it: HomeItem) => {
+    if (it.kind === 'todo') { openTodo(it.todo); return; }
+    if (it.kind === 'subject') { openTile(it.tile); return; }
+    void run(it.secondary.action, it.secondary, 'secondary');
+  };
+
+  /**
    * Clic sur une tuile (§3.2) : l'espace de réponse s'ouvre et reçoit la
    * demande correspondante — le sujet, dit par Verebona, et ses actions.
    * Une question (cible `ask`) part directement au moteur de l'assistant.
@@ -186,11 +243,9 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
     },
   ];
 
-  const tiles = empty
-    ? emptyTiles
-    : actionTiles(presentation).map((t) => ({ key: t.key, label: t.label, sub: t.sub, tone: t.tone, icon: t.icon, go: () => openTile(t) }));
+  const items = homeItems(presentation, empty);
+  const reste = empty ? 0 : todoRemaining(presentation);
   const suggestions = homeSuggestions(presentation, empty, pageSuggestions);
-  const autresActions = secondaryActions(presentation, empty);
 
   return (
     <section aria-label="Message de Verebona" className="flex flex-col md:flex-row md:items-end md:gap-1.5">
@@ -234,51 +289,43 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
           </div>
         </div>
 
-        {tiles.length > 0 && (
+        {/* Niveau 2 : un seul composant pour toutes les actions (MASC2). */}
+        {empty ? (
           <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-2.5">
-            {tiles.map((t) => {
-              const Icon = TILE_ICONS[t.icon] ?? CircleAlert;
-              const tone = TILE_TONES[t.tone] ?? TILE_TONES.blue;
-              return (
-                <button
-                  key={t.key}
-                  type="button"
-                  onClick={t.go}
-                  className="group flex min-h-[60px] items-center gap-3 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--row-muted)] px-3 py-2.5 text-left text-[color:var(--text-primary)] transition-all duration-150 hover:border-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] md:gap-3.5 md:rounded-[18px] md:px-4 md:py-3.5"
-                >
-                  <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center rounded-xl md:h-[42px] md:w-[42px] md:rounded-[13px]" style={{ background: tone.bg, color: tone.fg }}>
-                    <Icon className="h-[18px] w-[18px]" aria-hidden />
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 md:gap-[3px]">
-                    <span className="text-[14px] font-semibold md:text-[14.5px]">{t.label}</span>
-                    {t.sub && <span className="truncate text-[12px] text-[color:var(--muted-foreground)] md:whitespace-normal md:text-[12.5px]">{t.sub}</span>}
-                  </span>
-                  <ArrowRight className="h-4 w-4 flex-shrink-0 text-[color:var(--accent)]" strokeWidth={2.2} aria-hidden />
-                </button>
-              );
-            })}
+            {emptyTiles.map((t) => (
+              <ItemButton key={t.key} title={t.label} sub={t.sub} cta={null} tone={t.tone} icon={t.icon} onClick={t.go} />
+            ))}
           </div>
-        )}
-
-        {/* Secondaires du moteur qui ne sont pas des questions (onboarding,
-            recommandations) : leur action réelle, comme avant la refonte. */}
-        {autresActions.length > 0 && (
-          <div className="flex flex-wrap gap-2" aria-label="Autres suggestions">
-            {autresActions.map((sec) => (
-              <button
-                key={sec.id}
-                type="button"
-                onClick={() => { void run(sec.action, sec, 'secondary'); }}
-                className="inline-flex h-9 items-center rounded-full border border-[color:var(--accent)] px-3.5 text-[13px] font-medium text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] md:h-8"
-              >
-                {sec.action.label}
-              </button>
+        ) : items.length > 0 && (
+          <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-2.5" aria-label="Sujets à traiter">
+            {items.map((it) => (
+              <ItemButton
+                key={it.key}
+                title={it.title}
+                sub={it.sub}
+                cta={it.cta}
+                tone={it.tone}
+                icon={it.icon}
+                onClick={() => openItem(it)}
+                dataTodoId={it.kind === 'todo' ? it.todo.todoId : undefined}
+                dataActionType={it.kind === 'todo' ? it.todo.actionType : undefined}
+              />
             ))}
           </div>
         )}
 
+        {reste > 0 && (
+          <button
+            type="button"
+            onClick={() => router.push('/accueil/a-traiter')}
+            className="-mt-1 self-start text-[13px] font-medium text-[color:var(--accent)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+          >
+            {reste > 1 ? `${reste} autres sujets dans « À traiter »` : '1 autre sujet dans « À traiter »'}
+          </button>
+        )}
+
         {suggestions.length > 0 && (
-          <div className="-mx-[18px] flex items-center gap-2 overflow-x-auto px-[18px] vb-no-scrollbar md:mx-0 md:flex-wrap md:overflow-visible md:px-0">
+          <div className="-mx-[18px] flex items-center gap-2 overflow-x-auto border-t border-[color:var(--border-subtle)] px-[18px] pt-3 vb-no-scrollbar md:mx-0 md:flex-wrap md:overflow-visible md:px-0" aria-label="Ou demandez-moi">
             <span className="mr-0.5 hidden text-[12.5px] text-[color:var(--text-muted)] md:inline">Ou demandez-moi :</span>
             {suggestions.map((s) => (
               <button
@@ -297,6 +344,45 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
           </div>
         )}
       </div>
+
+      <TodoChoicesDialog
+        item={choices}
+        onClose={() => setChoices(null)}
+        onRemoved={(id) => setHidden((h) => new Set(h).add(id))}
+        onRestored={(id) => setHidden((h) => { const n = new Set(h); n.delete(id); return n; })}
+      />
     </section>
+  );
+}
+
+/**
+ * Élément de niveau 2 — même composant pour un « À traiter », une échéance,
+ * une recommandation ou une étape d'accueil (MASC2) : pictogramme coloré,
+ * libellé, contexte, appel à l'action.
+ */
+function ItemButton({ title, sub, cta, tone, icon, onClick, dataTodoId, dataActionType }: {
+  title: string; sub: string | null; cta: string | null; tone: MascotTile['tone']; icon: MascotTile['icon'];
+  onClick: () => void; dataTodoId?: string; dataActionType?: string;
+}) {
+  const Icon = TILE_ICONS[icon] ?? CircleAlert;
+  const t = TILE_TONES[tone] ?? TILE_TONES.blue;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-todo-id={dataTodoId}
+      data-action-type={dataActionType}
+      className="group flex min-h-[60px] items-center gap-3 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--row-muted)] px-3 py-2.5 text-left text-[color:var(--text-primary)] transition-all duration-150 hover:border-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] md:gap-3.5 md:rounded-[18px] md:px-4 md:py-3.5"
+    >
+      <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center rounded-xl md:h-[42px] md:w-[42px] md:rounded-[13px]" style={{ background: t.bg, color: t.fg }}>
+        <Icon className="h-[18px] w-[18px]" aria-hidden />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 md:gap-[3px]">
+        <span className="text-[14px] font-semibold md:text-[14.5px]">{title}</span>
+        {sub && <span className="truncate text-[12px] text-[color:var(--muted-foreground)] md:whitespace-normal md:text-[12.5px]">{sub}</span>}
+      </span>
+      {cta && <span className="flex-shrink-0 text-[12.5px] font-medium text-[color:var(--accent)] md:text-[13px]">{cta}</span>}
+      <ArrowRight className="h-4 w-4 flex-shrink-0 text-[color:var(--accent)]" strokeWidth={2.2} aria-hidden />
+    </button>
   );
 }

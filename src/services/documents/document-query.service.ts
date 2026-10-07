@@ -44,6 +44,7 @@ import {
   type DocumentQuery,
   type DocumentView,
 } from './document-query.contract';
+import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from './asset-document-scope';
 
 /**
  * Construit les conditions communes à toutes les requêtes.
@@ -59,14 +60,10 @@ function buildConditions(query: DocumentQuery): SQL[] {
   ];
 
   if (query.assetIds?.length) {
-    // Un document peut être rattaché par `assetId` ou par `linkedAssetId` :
-    // les deux comptent (§4.4, « documents associés à plusieurs biens »).
-    conditions.push(
-      or(
-        inArray(assetFiles.assetId, query.assetIds),
-        inArray(assetFiles.linkedAssetId, query.assetIds),
-      )!,
-    );
+    // Un document peut être rattaché par `assetId`, par `linkedAssetId` ou par
+    // la relation N-N (PRIMARY / SECONDARY) : tous comptent (§4.4, « documents
+    // associés à plusieurs biens » ; lot 32C, PO 9).
+    conditions.push(documentInAssetsCondition(query.assetIds));
   }
 
   if (query.equipmentIds?.length) {
@@ -193,12 +190,15 @@ async function loadAssociations(fileIds: number[]) {
       fileId: assetFiles.id,
       assetId: assetFiles.assetId,
       linkedAssetId: assetFiles.linkedAssetId,
+      otherAssetIds: OTHER_ASSET_IDS_SQL,
       equipmentId: assetFiles.equipmentId,
     })
     .from(assetFiles)
     .where(inArray(assetFiles.id, fileIds));
 
-  const assetIds = [...new Set(rows.flatMap((r) => [r.assetId, r.linkedAssetId]).filter(Boolean))] as number[];
+  const others = (v: unknown): number[] => (Array.isArray(v) ? v : typeof v === 'string' ? v.replace(/[{}]/g, '').split(',') : [])
+    .map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  const assetIds = [...new Set(rows.flatMap((r) => [r.assetId, r.linkedAssetId, ...others(r.otherAssetIds)]).filter(Boolean))] as number[];
   const equipmentIds = [...new Set(rows.map((r) => r.equipmentId).filter(Boolean))] as number[];
 
   const assetRows = assetIds.length
@@ -218,7 +218,8 @@ async function loadAssociations(fileIds: number[]) {
   for (const row of rows) {
     // Déduplication exigée par le §8.3 : `assetId` et `linkedAssetId` peuvent
     // désigner le même bien.
-    const ids = [...new Set([row.assetId, row.linkedAssetId].filter(Boolean))] as number[];
+    // Lot 32C (PO 9) : les biens liés par la relation N-N s'ajoutent.
+    const ids = [...new Set([row.assetId, row.linkedAssetId, ...others(row.otherAssetIds)].filter(Boolean))] as number[];
     byFileAssets.set(
       row.fileId,
       ids.map((id) => ({ id, name: assetName.get(id) ?? `Bien ${id}`, kind: 'asset' as const })),

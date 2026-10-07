@@ -169,13 +169,15 @@ describe('Ticket 14 — disponibilité des biens pour T2', () => {
   });
 
   it('T2ARCH-AC14 — non-régression : EN_PANNE, EN_REPARATION, INACTIF (et autres statuts) restent accessibles', async () => {
-    for (const st of ['EN_PANNE', 'EN_REPARATION', 'INACTIF', 'EN_MAINTENANCE', 'HORS_SERVICE', 'VENDU', 'DETRUIT', null]) {
+    // Lot 32 (PO-Q11) : VENDU rejoint ARCHIVED / TRANSMIS (voir PO-Q11 dans
+    // l32f-statuts-bien.test.ts) ; les anciennes valeurs restent lisibles.
+    for (const st of ['EN_PANNE', 'EN_REPARATION', 'INACTIF', 'EN_MAINTENANCE', 'HORS_SERVICE', 'DETRUIT', null]) {
       expect(avail.isAssetAvailableForAssistant({ status: st })).toBe(true);
     }
     const h = H.harness(H.account({ assets: [{ id: 5, name: 'Clio', category: 'VEHICULE', status: 'EN_REPARATION', fields: { mileage: 12000 } }] }));
     const r = await h.ask('Quel est le kilométrage de la Clio ?');
     expect(r.answer).toContain('12');
-    expect(avail.ASSISTANT_EXCLUDED_ASSET_STATUSES).toEqual(['ARCHIVED', 'TRANSMIS']);
+    expect(avail.ASSISTANT_EXCLUDED_ASSET_STATUSES).toEqual(['ARCHIVED', 'TRANSMIS', 'VENDU']);
   });
 
   it('T2ARCH-G — règle centralisée : aucune autre copie de la condition dans le code T2', () => {

@@ -1,10 +1,11 @@
 /**
  * Libellé d'un fil de conversation.
  *
- * Le sélecteur de fils du tiroir latéral est retiré (Direction D v2 §8) :
- * les fils archivés sont désormais les « Demandes précédentes » de l'espace
- * de réponse (`lib/verebona/space.ts`, `previousRequests`). Ce libellé court
- * reste disponible pour les écrans qui listent les fils.
+ * Le sélecteur de fils du tiroir latéral est retiré (Direction D v2 §8), et
+ * la vue « Toutes les demandes » (bouton horloge) l'est aussi (lot 32,
+ * point 11) : les fils se reprennent par les « Recherches récentes » du
+ * pop-up (`lib/verebona/space.ts`, `recentSearches`). Ce libellé court reste
+ * disponible pour les écrans qui listent les fils.
  */
 import type { VerebonaThread } from '@/lib/verebona/useVerebona';
 

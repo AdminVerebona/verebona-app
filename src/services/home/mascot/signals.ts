@@ -18,7 +18,7 @@
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
 import type { MascotAction, MascotFamily, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
-import { deadlineButtonLabel, deadlineNextText, deadlinePairText } from './deadline-label';
+import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText, deadlinePairText } from './deadline-label';
 
 export interface MascotDocRow { id: number; title: string; at: string }
 export interface MascotExportRow { id: number; exportType: string; assetId: number; assetName: string; at: string }
@@ -53,6 +53,12 @@ export interface MascotRawData {
   processing: { uploads: MascotDocRow[]; analyses: MascotDocRow[]; exports: MascotExportRow[] } | null;
   onboarding: { activeAssets: Array<{ id: number; name: string }>; activeAssetCount: number; documentCount: number } | null;
   toProcess: ToProcessActionView[] | null;
+  /**
+   * Nombre total d'actions actives de la file (lot 32, MASC2) — le MÊME que
+   * la pastille du menu et l'en-tête de la page (`getToProcessPage().total`).
+   * Absent : la longueur de `toProcess`.
+   */
+  toProcessTotal?: number | null;
   /** Échéances « action » actives (ni réalisées, ni annulées), horizon borné. */
   agenda: MascotAgendaRow[] | null;
   /** Acquittements « C'est fait » actifs du compte. */
@@ -266,43 +272,16 @@ function onboardingSubjects(raw: MascotRawData): MascotSubject[] {
 }
 
 // ── 3. À traiter (§9) ────────────────────────────────────────────────────────
+//
+// Lot 32 (ticket MASC2) : les actions « À traiter » ne sont plus des SUJETS
+// du discours (ni paragraphe T6, ni tuile, ni pastille « Compléter “…” ») :
+// elles forment le niveau 2 de la bulle, construit directement à partir de la
+// file (`todo-items.ts`, `MascotPresentation.todo`). La phrase de niveau 1 les
+// compte sans les répéter. Le moteur ne garde de la file que ce qui sert à
+// écarter les doublons (échéances déjà portées par une action, ATP-004) et
+// l'éligibilité de la question « Que dois-je faire aujourd'hui ? ».
 
 const PRIORITY_RANK = { DO_FIRST: 0, DO_NEXT: 1, CAN_WAIT: 2 } as const;
-
-function toProcessSubjects(raw: MascotRawData): MascotSubject[] {
-  // L'ordre est celui du service source (ATP-003, SEL-004) : il est conservé
-  // tel quel, sans score concurrent.
-  return (raw.toProcess ?? []).map((a) => {
-    const cible = a.target.label;
-    const bien = a.target.assetName && a.target.assetName !== cible ? a.target.assetName : null;
-    const contexte = bien ? `${q(cible)} (${bien})` : q(cible);
-    const verbe = a.actionKind === 'ARBITRATE' ? 'Choisir' : 'Compléter';
-    const dedupe = [`to_process:${a.publicId}`];
-    if (a.targetType === 'AGENDA_ITEM') dedupe.push(`agenda:${a.targetId}`);
-    if (a.targetType === 'DOCUMENT') dedupe.push(`document-action:${a.targetId}`);
-    return subject('TO_PROCESS', {
-      subjectId: `ATP:${a.publicId}`,
-      sourceCode: `ATP-${a.ruleCode}`,
-      accountId: raw.accountId,
-      targetType: a.targetType, targetId: a.targetId,
-      priority: a.priority, requiresAttention: true, intent: 'act',
-      facts: { question: a.question, targetLabel: cible, assetName: bien, actionKind: a.actionKind === 'ARBITRATE' ? 'arbitrage' : 'complément' },
-      actions: [action(`ATP:${a.publicId}:open`, verbe, {
-        kind: 'to_process', publicId: a.publicId, targetType: a.targetType, targetId: a.targetId,
-        targetPublicId: a.target.publicId ?? null, field: a.fieldKey ?? a.relationKey ?? null,
-        // ATP-005 : la fiche fournisseur n'est ouverte que sur un fournisseur
-        // résolu par le service source, jamais sur `targetId` (id de revue possible).
-        ...(a.targetType === 'SUPPLIER' ? { supplierId: a.target.supplierId ?? null } : {}),
-      })],
-      fallbackText: `${a.question} Cela concerne ${contexte}.`,
-      allowedHighlight: cible,
-      occurrenceKey: `ATP:${a.publicId}`,
-      dedupeKeys: dedupe,
-      secondaryLabel: `${verbe} ${q(cible)}`,
-      assetId: a.target.assetId ?? null, assetName: a.target.assetName ?? null,
-    });
-  });
-}
 
 // ── 4. Prochaine date (§10) ──────────────────────────────────────────────────
 
@@ -410,7 +389,6 @@ function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
   const out: MascotSubject[] = [];
   for (const i of echues) {
     const date = formatDateFr(i.date!);
-    const pour = i.assetName ? ` pour ${i.assetName}` : '';
     const voir = action(`MASC:${i.id}:open`, 'Voir', { kind: 'drawer', drawer: 'echeance', id: i.id, mode: 'view' });
 
     // MASC-BLOCKED (REC-004) : l'échéance doit d'abord être précisée. Seule la
@@ -426,11 +404,12 @@ function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
         actions: [action(`MASC-BLOCKED:${i.id}:qualify`, 'Préciser l’échéance', {
           kind: 'drawer', drawer: 'echeance', id: i.id, mode: 'edit',
         })],
-        fallbackText: `L’échéance ${q(i.title)}${pour} du ${date} doit être précisée avant de pouvoir être suivie.`,
-        allowedHighlight: i.title,
+        // Décision PO 20 (lot 32) : libellé naturel, jamais le titre technique.
+        fallbackText: deadlineBlockedText(i, date),
+        allowedHighlight: date,
         occurrenceKey: `MASC-BLOCKED:agenda:${i.id}`,
         dedupeKeys: [`agenda:${i.id}`],
-        secondaryLabel: `Préciser ${q(i.title)}`,
+        secondaryLabel: `Préciser ${q(deadlineButtonLabel(i))}`,
         assetId: i.assetId, assetName: i.assetName,
       }));
       continue;
@@ -453,13 +432,12 @@ function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
       actions: [voir, action(`MASC-EXT-ACTION:${i.id}:done`, 'C’est fait', {
         kind: 'done', occurrenceKey, cycleKey,
       })],
-      fallbackText: passee
-        ? `L’échéance ${q(i.title)}${pour} était prévue le ${date}. Si c’est fait, vous pouvez l’indiquer.`
-        : `L’échéance ${q(i.title)}${pour} est prévue le ${date}. Une fois que c’est fait, vous pouvez l’indiquer.`,
-      allowedHighlight: i.title,
+      // Décision PO 20 (lot 32) : libellé naturel, jamais le titre technique.
+      fallbackText: deadlineExtActionText(i, date, passee),
+      allowedHighlight: date,
       occurrenceKey,
       dedupeKeys: [`agenda:${i.id}`],
-      secondaryLabel: `${i.title} : c’est fait ?`,
+      secondaryLabel: `${deadlineButtonLabel(i)} : c’est fait ?`,
       assetId: i.assetId, assetName: i.assetName,
     }));
   }
@@ -473,7 +451,6 @@ export function buildCandidates(raw: MascotRawData): MascotCandidates {
   const candidates = [
     ...processingSubjects(raw),
     ...onboardingSubjects(raw),
-    ...toProcessSubjects(raw),
     ...dateSubjects(raw),
     ...mascotRuleSubjects(raw),
   ];

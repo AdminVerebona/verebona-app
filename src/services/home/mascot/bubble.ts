@@ -18,7 +18,7 @@
  * tels quels) ; le reste côté client, à partir de `MascotPresentation`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import type { MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTile } from './types';
+import type { MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTile, MascotTodoItem } from './types';
 
 // ── Tuiles (serveur) ────────────────────────────────────────────────────────
 
@@ -139,6 +139,18 @@ function isSingleSentence(t: string): boolean {
 }
 
 const NOMBRES = ['Aucun', 'Un', 'Deux', 'Trois'];
+const NOMBRES_TODO = ['Aucun', 'Un', 'Deux', 'Trois', 'Quatre', 'Cinq', 'Six', 'Sept', 'Huit', 'Neuf', 'Dix'];
+
+/**
+ * Niveau 1 de la bulle (MASC2) : « Deux sujets nécessitent votre attention
+ * aujourd’hui. » — le nombre est celui de la file (= pastille, = page).
+ */
+export function todoSummary(n: number): string {
+  const nombre = NOMBRES_TODO[n] ?? String(n);
+  return n > 1
+    ? `${nombre} sujets nécessitent votre attention aujourd’hui.`
+    : `${nombre} sujet nécessite votre attention aujourd’hui.`;
+}
 
 export interface Speech {
   text: string;
@@ -172,6 +184,14 @@ export function composeSpeech({ presentation, empty, failed }: SpeechInput): Spe
   if (!presentation) return { text: failed ? DEGRADED_SPEECH : '', highlights: [] };
   const paras = realParagraphs(presentation);
   const highlights = paras.map((p) => p.highlight).filter((h): h is string => !!h);
+  // Lot 32 (MASC2) — niveau 1 : une phrase qui COMPTE les « À traiter », sans
+  // les répéter (ils sont les éléments du niveau 2) ; les autres sujets
+  // (échéances, analyses, recommandations) gardent leur phrase.
+  const todoTotal = presentation.todo?.total ?? 0;
+  if (todoTotal > 0) {
+    const autres = paras.map((p) => p.text.trim()).filter(Boolean);
+    return { text: [todoSummary(todoTotal), ...autres].join(' '), highlights };
+  }
   if (paras.length === 0) {
     return { text: presentation.status === 'degraded' ? DEGRADED_SPEECH : CLEAR_SPEECH, highlights: [] };
   }
@@ -253,6 +273,84 @@ export function actionTiles(p: MascotPresentation | null): ActionTile[] {
     });
 }
 
+// ── Niveau 2 : éléments d'action homogènes (lot 32, MASC2) ──────────────────
+
+/** Éléments de niveau 2 affichés au plus. */
+export const MAX_HOME_ITEMS = 5;
+
+interface HomeItemBase {
+  key: string;
+  /** Ligne principale (« Numéro d’immatriculation à vérifier »). */
+  title: string;
+  /** Ligne secondaire (« Vélo Jean Fourche »), ou null. */
+  sub: string | null;
+  /** Appel à l'action (« Vérifier »). */
+  cta: string;
+  tone: MascotTile['tone'];
+  icon: MascotTile['icon'];
+}
+
+/**
+ * Un élément = un seul niveau de composant, quelle que soit sa nature :
+ *   · `todo`      — action de la file « À traiter » (contrat structuré) ;
+ *   · `subject`   — sujet du discours portant une action (échéance…) ;
+ *   · `secondary` — recommandation ou étape d'accueil (ex-pastilles du
+ *                   3e niveau, supprimées comme liste indépendante).
+ */
+export type HomeItem =
+  | (HomeItemBase & { kind: 'todo'; todo: MascotTodoItem })
+  | (HomeItemBase & { kind: 'subject'; tile: ActionTile })
+  | (HomeItemBase & { kind: 'secondary'; secondary: MascotSecondary });
+
+function todoIcon(t: MascotTodoItem): MascotTile['icon'] {
+  if (t.entityType === 'DOCUMENT') return 'file-text';
+  if (t.entityType === 'AGENDA_ITEM') return 'calendar-days';
+  return 'circle-alert';
+}
+
+/** Élément de niveau 2 d'une action « À traiter » (pure). */
+export function todoHomeItem(t: MascotTodoItem): HomeItem {
+  return {
+    kind: 'todo', key: `todo:${t.todoId}`, todo: t,
+    title: t.title, sub: t.subtitle, cta: t.cta,
+    tone: t.priority === 'DO_FIRST' ? 'red' : t.actionKind === 'ARBITRATE' ? 'amber' : 'blue',
+    icon: todoIcon(t),
+  };
+}
+
+/**
+ * Niveau 2 de la bulle : « À traiter » d'abord (ordre de la file), puis les
+ * sujets portant une action, puis les recommandations et l'étape d'accueil —
+ * même composant, au plus `MAX_HOME_ITEMS`. Compte vide : rien (tuiles
+ * d'amorce côté écran).
+ */
+export function homeItems(p: MascotPresentation | null, empty: boolean): HomeItem[] {
+  if (empty || !p) return [];
+  const out: HomeItem[] = (p.todo?.items ?? []).map(todoHomeItem);
+  for (const t of actionTiles(p)) {
+    out.push({
+      kind: 'subject', key: `subject:${t.key}`, tile: t, title: t.label,
+      sub: t.sub || null, cta: 'Voir', tone: t.tone, icon: t.icon,
+    });
+  }
+  for (const s of secondaryActions(p, empty)) {
+    const onboarding = s.kind === 'onboarding';
+    out.push({
+      kind: 'secondary', key: `secondary:${s.id}`, secondary: s, title: s.action.label, sub: null,
+      cta: onboarding ? 'Commencer' : 'Voir',
+      tone: onboarding ? 'blue' : 'amber', icon: onboarding ? 'plus' : 'clock',
+    });
+  }
+  return out.slice(0, MAX_HOME_ITEMS);
+}
+
+/** Actions « À traiter » au-delà des éléments affichés (lien « Tout voir »). */
+export function todoRemaining(p: MascotPresentation | null): number {
+  const t = p?.todo;
+  if (!t) return 0;
+  return Math.max(0, t.total - t.items.length);
+}
+
 // ── Pose (§3.2) ─────────────────────────────────────────────────────────────
 
 export type HomePose =
@@ -289,6 +387,10 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   if (empty) return 'welcome-wave';
   if (!p) return failed ? 'neutral' : 'success-check';
   const kinds = realParagraphs(p).map(kindOf);
+  // Lot 32 (MASC2) : les « À traiter » ne sont plus des paragraphes — leur
+  // nature compte toujours pour la pose (arbitrage → vérifier, sinon action).
+  for (const t of p.todo?.items ?? []) kinds.push(t.actionKind === 'ARBITRATE' ? 'verify' : 'action');
+  if ((p.todo?.total ?? 0) > 0 && !(p.todo?.items.length)) kinds.push('action');
   if (kinds.includes('overdue')) return 'alert-folder';
   if (kinds.includes('verify')) return 'questioning';
   if (kinds.includes('action')) return 'reminder-bell';

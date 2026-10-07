@@ -3,6 +3,7 @@
  * Voir l'en-tête de la migration pour la signification des statuts.
  */
 import { pgClient } from '@/db';
+import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 
 export const RESOLUTION_STATUSES = [
   'PENDING', 'RESOLVED', 'MULTI_ASSET', 'ABSTAINED', 'NO_CANDIDATE', 'USER_DECIDED', 'ALREADY_LINKED', 'TARGET_GONE',
@@ -43,6 +44,15 @@ export interface DocumentAssetResolution {
   extractionAt: string | null;
   runs: number;
   requestedAt: string;
+  /**
+   * Version du moteur ayant produit la dernière issue (lot 32C) ; `null` :
+   * ligne historique (avant la 0274) — ancienne version, rattrapable.
+   */
+  resolutionVersion: number | null;
+  /** Dernière évaluation complète (issue, ou confirmation sur entrées identiques). */
+  evaluatedAt: string | null;
+  /** Empreinte des identifiants des biens du compte lors de cette évaluation. */
+  identifiersFingerprint: string | null;
 }
 
 const parse = <T>(v: unknown, d: T): T => {
@@ -54,7 +64,7 @@ const parse = <T>(v: unknown, d: T): T => {
 export async function getResolution(fileId: number): Promise<DocumentAssetResolution | null> {
   const rows = (await pgClient.unsafe(
     `SELECT file_id, account_id, status, last_outcome, method, reason_code, t1_candidates, candidates, decided_asset_ids,
-            input_fingerprint, extraction_at, runs, requested_at
+            input_fingerprint, extraction_at, runs, requested_at, resolution_version, evaluated_at, identifiers_fingerprint
        FROM document_asset_resolutions WHERE file_id = $1`,
     [fileId] as never[],
   )) as unknown as Array<Record<string, unknown>>;
@@ -74,6 +84,9 @@ export async function getResolution(fileId: number): Promise<DocumentAssetResolu
     extractionAt: r.extraction_at ? new Date(String(r.extraction_at)).toISOString() : null,
     runs: Number(r.runs ?? 0),
     requestedAt: new Date(String(r.requested_at)).toISOString(),
+    resolutionVersion: r.resolution_version == null ? null : Number(r.resolution_version),
+    evaluatedAt: r.evaluated_at ? new Date(String(r.evaluated_at)).toISOString() : null,
+    identifiersFingerprint: (r.identifiers_fingerprint as string | null) ?? null,
   };
 }
 
@@ -98,23 +111,33 @@ export async function markPending(p: {
   );
 }
 
-/** Issue d'une exécution T3 DOCUMENT_ASSET. */
+/**
+ * Issue d'une exécution T3 DOCUMENT_ASSET. Toute issue (RESOLVED,
+ * MULTI_ASSET, ABSTAINED, NO_CANDIDATE, USER_DECIDED, ALREADY_LINKED,
+ * TARGET_GONE) porte la version du moteur qui l'a produite et l'instant de
+ * l'évaluation (lot 32C).
+ */
 export async function recordOutcome(p: {
   accountId: number; fileId: number; status: Exclude<ResolutionStatus, 'PENDING'>;
   method: ResolutionMethod; reasonCode: string; candidates?: StoredCandidate[]; decidedAssetIds?: number[];
-  inputFingerprint?: string | null; extractionAt?: string | null;
+  inputFingerprint?: string | null; extractionAt?: string | null; identifiersFingerprint?: string | null;
+  /** Défaut : version courante du moteur. */
+  resolutionVersion?: number;
 }): Promise<void> {
   await pgClient.unsafe(
     `INSERT INTO document_asset_resolutions (file_id, account_id, status, last_outcome, method, reason_code, candidates, decided_asset_ids,
-                                             input_fingerprint, extraction_at, runs, decided_at, updated_at)
-     VALUES ($1, $2, $3, $3, $4, $5, $6::jsonb, $7::int[], $8, $9::timestamptz, 1, now(), now())
+                                             input_fingerprint, extraction_at, runs, decided_at, updated_at,
+                                             resolution_version, evaluated_at, identifiers_fingerprint)
+     VALUES ($1, $2, $3, $3, $4, $5, $6::jsonb, $7::int[], $8, $9::timestamptz, 1, now(), now(), $10::int, now(), $11)
      ON CONFLICT (file_id) DO UPDATE SET
        status = $3, last_outcome = $3, method = $4, reason_code = $5, candidates = $6::jsonb, decided_asset_ids = $7::int[],
        input_fingerprint = $8, extraction_at = $9::timestamptz,
-       runs = document_asset_resolutions.runs + 1, decided_at = now(), updated_at = now()`,
+       runs = document_asset_resolutions.runs + 1, decided_at = now(), updated_at = now(),
+       resolution_version = $10::int, evaluated_at = now(), identifiers_fingerprint = $11`,
     [
       p.fileId, p.accountId, p.status, p.method, p.reasonCode, JSON.stringify(p.candidates ?? []),
       p.decidedAssetIds ?? [], p.inputFingerprint ?? null, p.extractionAt ?? null,
+      p.resolutionVersion ?? DOCUMENT_ASSET_RESOLUTION_VERSION, p.identifiersFingerprint ?? null,
     ] as never[],
   );
 }
@@ -122,11 +145,35 @@ export async function recordOutcome(p: {
 /** Statuts après lesquels l'utilisateur peut être sollicité (« À traiter »). */
 export const USER_QUESTION_STATUSES: readonly ResolutionStatus[] = ['ABSTAINED', 'NO_CANDIDATE'];
 
-/** Relance sur des entrées identiques : la ligne reprend sa dernière issue. */
-export async function restoreLastOutcome(fileId: number): Promise<void> {
+/**
+ * Relance sur des entrées identiques (même empreinte, même version) : la
+ * ligne reprend sa dernière issue, l'évaluation est datée — un vrai cas
+ * ambigu n'est plus rejoué tant que rien de pertinent ne change.
+ */
+export async function restoreLastOutcome(fileId: number, opts: { identifiersFingerprint?: string | null } = {}): Promise<void> {
   await pgClient.unsafe(
-    `UPDATE document_asset_resolutions SET status = last_outcome, updated_at = now()
+    `UPDATE document_asset_resolutions
+        SET status = last_outcome, updated_at = now(), evaluated_at = now(), resolution_version = $2::int,
+            identifiers_fingerprint = COALESCE($3, identifiers_fingerprint)
       WHERE file_id = $1 AND last_outcome IS NOT NULL`,
-    [fileId] as never[],
+    [fileId, DOCUMENT_ASSET_RESOLUTION_VERSION, opts.identifiersFingerprint ?? null] as never[],
   );
+}
+
+/**
+ * Rattrapage horaire (lot 32C) : un bien du compte a été modifié mais les
+ * identifiants canoniques sont inchangés (même empreinte) — la décision
+ * reste valable, seule la date d'évaluation avance. Aucun travail T3.
+ * Rend le nombre de lignes confirmées.
+ */
+export async function confirmEvaluation(fileIds: number[], identifiersFingerprint: string): Promise<number> {
+  if (fileIds.length === 0) return 0;
+  const rows = (await pgClient.unsafe(
+    `UPDATE document_asset_resolutions SET evaluated_at = now(), updated_at = now()
+      WHERE file_id = ANY($1::int[]) AND identifiers_fingerprint = $2
+        AND status IN ('ABSTAINED', 'NO_CANDIDATE') AND resolution_version = $3::int
+      RETURNING file_id`,
+    [fileIds, identifiersFingerprint, DOCUMENT_ASSET_RESOLUTION_VERSION] as never[],
+  )) as unknown as unknown[];
+  return rows.length;
 }

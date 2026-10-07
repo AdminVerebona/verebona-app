@@ -269,6 +269,8 @@ export type AnalysisWarningCode =
    * Lot 31B : le document contient un identifiant canonique exact (adresse,
    * immatriculation, VIN, n° de série) d'un AUTRE bien que celui choisi par
    * l'utilisateur — rattachement utilisateur conservé, contradiction remontée.
+   * Lot 32C (PO 10) : aussi quand l'analyse retiendrait avec certitude un
+   * autre bien (candidat unique certain) ; « À traiter » LINK-ASSET-CONFLICT.
    */
   | 'ASSET_TARGET_CONTRADICTION'
   /**
@@ -288,6 +290,14 @@ export interface AnalysisWarning {
   message: string;
   /** Champ ou entité concerné, si applicable. */
   target?: string;
+  /**
+   * `ASSET_TARGET_CONTRADICTION` (lot 32C, PO 8 / PO 10) : bien que
+   * l'analyse aurait retenu à la place du bien choisi par l'utilisateur, et
+   * sur quelle base — identifiant canonique exact (natures, jamais la
+   * valeur) ou candidat unique certain du modèle. Alimente l'action « À
+   * traiter » LINK-ASSET-CONFLICT ; jamais de déplacement automatique.
+   */
+  assetConflict?: { assetId: number; basis: 'IDENTIFIER' | 'ANALYSIS'; kinds: string[] };
 }
 
 export interface SupplierCandidate {

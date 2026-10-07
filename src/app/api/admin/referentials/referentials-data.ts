@@ -41,6 +41,7 @@ import {
 } from '@/lib/referential/v2';
 import {
   ASSET_FAMILIES as TAXONOMY, LEGACY_ASSET_FAMILIES, LEGACY_CATEGORY_ALIASES, assetFamilyLabel, normalizeAssetCategory,
+  toAssetFamilyCode,
 } from '@/lib/asset-taxonomy';
 import { CAPABILITY_EQUIVALENT_CATEGORIES } from '@/lib/asset-category-legacy';
 import { DOCUMENT_TYPE_LIST } from '@/lib/document-type-constants';
@@ -74,7 +75,9 @@ export interface ReferentialsSnapshot {
 /** Libellés des familles : référentiel des biens (lot 30 — plus de table locale). */
 export function applicabilityLabel(applicability: Applicability): string {
   if (applicability === 'ALL') return 'Toutes les familles';
-  return applicability.map((f) => assetFamilyLabel(f)).join(', ');
+  // Lot 32 (PO-Q14) : `MATERIEL_PRO` n'est pas une famille produit — il est
+  // affiché sous sa famille normalisée (« Objet »), sans doublon.
+  return [...new Set(applicability.map((f) => assetFamilyLabel(toAssetFamilyCode(f) ?? f)))].join(', ');
 }
 
 type CountRow = { code: string | null; n: number };
@@ -194,14 +197,21 @@ export function buildAssetTaxonomyReferentials(
   familyCounts: FamilyCountRow[],
   categoryCounts: CategoryCountRow[],
 ): Pick<ReferentialsSnapshot, 'assetFamilies' | 'assetSubcategories'> {
+  // Lot 32 (PO-Q14) : une famille ancienne (`MATERIEL_PRO`, `AUTRE`) n'est
+  // pas une famille produit — ses biens sont comptés sous leur famille
+  // normalisée (`toAssetFamilyCode`), et elle n'a pas de ligne propre.
   const familyUsage = new Map<string, number>();
-  for (const r of familyCounts) familyUsage.set(r.family, (familyUsage.get(r.family) ?? 0) + Number(r.n));
+  for (const r of familyCounts) {
+    const famille = toAssetFamilyCode(r.family) ?? r.family;
+    familyUsage.set(famille, (familyUsage.get(famille) ?? 0) + Number(r.n));
+  }
 
   // Catégorie stockée → clé « famille|valeur » ; anciens libellés ramenés aux actuels.
   const categoryUsage = new Map<string, number>();
   for (const r of categoryCounts) {
-    const value = r.family === 'OBJECT' ? (r.value?.trim() || null) : normalizeAssetCategory(r.value);
-    const key = `${r.family}|${value ?? ''}`;
+    const famille = toAssetFamilyCode(r.family) ?? r.family;
+    const value = famille === 'OBJECT' ? (r.value?.trim() || null) : normalizeAssetCategory(r.value);
+    const key = `${famille}|${value ?? ''}`;
     categoryUsage.set(key, (categoryUsage.get(key) ?? 0) + Number(r.n));
   }
 

@@ -23,6 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
+import { resolveErrorMessage } from '@/lib/to-process-resolve-errors';
 import {
   markNotApplicable,
   resolveArbitration,
@@ -36,6 +37,9 @@ const STATUS: Record<string, number> = {
   ALREADY_RESOLVED: 409,
   FIELD_NOT_RESOLVABLE: 422,
   INVALID_VALUE: 400,
+  // La situation a changé depuis l'ouverture de la carte (carte périmée).
+  STALE: 409,
+  FIELD_NOT_APPLICABLE: 422,
 };
 
 export async function POST(
@@ -73,8 +77,13 @@ export async function POST(
         : await resolveArbitration(accountId, publicId, body.value, { userId: session.userId });
 
   if (!result.ok) {
+    // Lot 32 (L32-1) : le code ET un message utile — l'écran l'affiche tel quel.
+    // Une carte retirée (sans objet, périmée) change la file : événement émis.
+    if (result.error === 'FIELD_NOT_APPLICABLE' || result.error === 'STALE') {
+      await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: publicId });
+    }
     return NextResponse.json(
-      { error: result.error },
+      { error: result.error, code: result.error, message: resolveErrorMessage(result.error) },
       { status: STATUS[result.error ?? ''] ?? 400 },
     );
   }

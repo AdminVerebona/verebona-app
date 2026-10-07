@@ -244,7 +244,11 @@ describe("les modèles de l'assistant sont tarifables", () => {
     for (const m of modeles) expect(connus.has(m), `${m} absent du catalogue tarifaire public`).toBe(true);
   });
 
-  it("n'emploie aucun modèle Pro (§31.2)", () => {
-    for (const m of modeles) expect(m, m).not.toMatch(/-pro\b/);
+  it('PRO-07 — modèles déclarés compatibles t2_master_v1, stables (l’éligibilité ne dépend plus du suffixe « -pro »)', async () => {
+    const { findDeclaredModel } = await import('../../registry/models');
+    for (const m of modeles) {
+      expect(findDeclaredModel(m)?.compatiblePrompts, m).toContain('t2_master_v1');
+      expect(findDeclaredModel(m)?.status, m).toBe('stable');
+    }
   });
 });

@@ -243,3 +243,43 @@ export function deadlinePairText(a: DeadlineWordingItem, b: DeadlineWordingItem,
   const quand = forecast ? `autour du ${dateLabel} (date estimée)` : `le ${dateLabel}`;
   return `Deux échéances sont prévues ${quand} : ${element(a)} et ${element(b)}.`;
 }
+
+// ── 3. Recommandations de la mascotte (lot 32, décision PO 20) ───────────────
+//
+// « Plus naturelle » : MASC-BLOCKED et MASC-EXT-ACTION citaient encore le
+// titre technique entre guillemets (« L’échéance “Prochain contrôle technique
+// — CUPRA LEON E-HYBRID180” pour Cupra… »). Mêmes règles que DATE-NEXT :
+// libellé naturel, articles seulement sur une donnée certaine, sinon
+// formulation neutre ; jamais de titre brut entre guillemets.
+
+const majuscule = (t: string) => t.charAt(0).toLocaleUpperCase('fr') + t.slice(1);
+
+/**
+ * MASC-BLOCKED — « Une échéance doit être précisée avant de pouvoir être
+ * suivie : le contrôle technique de la Cupra, le 18 avril 2028. » (pure)
+ */
+export function deadlineBlockedText(i: DeadlineWordingItem, dateLabel: string): string {
+  return `Une échéance doit être précisée avant de pouvoir être suivie : ${element(i)}, le ${dateLabel}.`;
+}
+
+/**
+ * MASC-EXT-ACTION — échéance du jour ou passée, que Verebona ne peut pas
+ * constater (pure) :
+ *   · « Le contrôle technique de la Cupra était prévu le 18 avril 2028. Si
+ *     c’est fait, vous pouvez l’indiquer. »
+ *   · repli neutre : « Votre échéance du 18 avril 2028 concerne Cupra :
+ *     contrôle technique. Si c’est fait, vous pouvez l’indiquer. »
+ */
+export function deadlineExtActionText(i: DeadlineWordingItem, dateLabel: string, passee: boolean): string {
+  const p = parts(i);
+  const suite = passee ? 'Si c’est fait, vous pouvez l’indiquer.' : 'Une fois que c’est fait, vous pouvez l’indiquer.';
+  if (p.art && p.gender && (p.bien || !p.assetName)) {
+    const accord = p.gender === 'f' ? 'prévue' : 'prévu';
+    const sujet = majuscule(`${p.art}${p.label}${p.bien ? ` ${p.bien.de}` : ''}`);
+    return `${sujet} ${passee ? 'était' : 'est'} ${accord} ${passee ? 'le' : 'aujourd’hui, le'} ${dateLabel}. ${suite}`;
+  }
+  if (p.assetName) {
+    return `Votre échéance du ${dateLabel} concerne ${p.bien ? p.bien.ref : p.assetName} : ${p.label}. ${suite}`;
+  }
+  return `Votre échéance du ${dateLabel} : ${p.label}. ${suite}`;
+}

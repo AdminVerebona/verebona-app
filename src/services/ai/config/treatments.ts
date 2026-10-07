@@ -45,25 +45,34 @@ export const TREATMENT_DEFINITIONS: Readonly<Record<Treatment, TreatmentDefiniti
 };
 
 /**
- * Le prompt du traitement est-il administrable depuis le BO ?
+ * Le texte du prompt est-il porté par la VERSION DE CONFIGURATION (préambule,
+ * texte master D-03) et T5 peut-il le modifier (cible de Prompt Control) ?
  *
  * ══════════════════════════════════════════════════════════════════════════
- * T5 N'A PAS DE PROMPT ADMINISTRABLE — CDC BO IA T5-003, T5-UI-09, écart E-02
+ * T5 : NI TEXTE DANS LA VERSION DE CONFIGURATION, NI CIBLE DE PROMPT CONTROL
  *
- * Le comportement de Prompt Control est défini dans le code, en totalité
- * (§27 : « Non — comportement T5 en code »). Un prompt T5 éditable dans le BO
- * permettait de modifier l'outil qui modifie les autres prompts ; c'est
- * précisément ce que le T5-002 interdit à T5 lui-même, et rien ne justifie de
- * le permettre par une autre porte.
+ * T5-002 / §27 « Tu ne modifies JAMAIS T5 » : Prompt Control ne réécrit
+ * jamais son propre prompt — règle tenue par le serveur, pas par le texte.
+ * Un texte T5 stocké dans une version de configuration reste ignoré
+ * (écriture, import, résolution à l'exécution).
  *
- * Cette règle est tenue à chaque point où un prompt T5 pourrait entrer ou
- * servir : écriture d'une entrée, import d'un package, préparation d'un
- * package, résolution à l'exécution. L'écran ne l'affiche plus, mais c'est le
- * serveur qui la garantit.
+ * Lot 32B (décision PO n° 15 du 07/10/2026) : le prompt maître T5 est
+ * néanmoins ADMINISTRABLE depuis le BO, comme les autres, dans la section
+ * « Prompts maîtres » (brouillon → actif, historique, rollback) — voir
+ * `isMasterPromptAdministrable`.
  * ══════════════════════════════════════════════════════════════════════════
  */
 export function isPromptAdministrable(code: Treatment): boolean {
   return code !== 'T5';
+}
+
+/**
+ * Le prompt maître du traitement s'administre-t-il dans la section « Prompts
+ * maîtres » du BO (versions brouillon → actif, BO-IA-PROMPTS-01) ? Tous les
+ * traitements, T5 compris depuis le lot 32B (décision PO n° 15).
+ */
+export function isMasterPromptAdministrable(code: Treatment): boolean {
+  return (TREATMENTS as readonly string[]).includes(code);
 }
 
 /**
@@ -82,7 +91,7 @@ export function isMasterOnlyTreatment(code: Treatment): boolean {
   return MASTER_ONLY_TREATMENTS.includes(code);
 }
 
-/** Traitements dont T5 peut modifier le prompt (T5-001) : tous sauf lui-même. */
+/** Traitements dont T5 peut modifier le prompt (T5-001, T5-002) : tous sauf lui-même. */
 export const T5_TARGETS: readonly Treatment[] = TREATMENTS.filter(isPromptAdministrable);
 
 export function getTreatment(code: Treatment): TreatmentDefinition {

@@ -34,7 +34,8 @@ describe('lot 26 — AC4a : cible du bouton retour', () => {
   });
 
   it('la page affiche le retour au-dessus de la carte, avec les composants existants', () => {
-    expect(page).toContain('<Shell back={<BackLink authenticated={authenticated} />}>');
+    // Lot 32 : plus de retour une fois le compte supprimé (étape « done »).
+    expect(page).toContain("<Shell back={step === 'done' ? undefined : <BackLink authenticated={authenticated} />}>");
     expect(page).toMatch(/<Button variant="ghost" size="sm"/);
     expect(page).toContain('<ArrowLeft');
     expect(page).toContain('resolveWithdrawalBackTarget({ authenticated, ...nav })');

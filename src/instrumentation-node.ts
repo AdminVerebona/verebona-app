@@ -152,6 +152,11 @@ export async function registerNode(): Promise<void> {
   const { runAssistantStartupCheck } = await import('@/services/verebona-assistant/core/model-startup-check');
   const { registerAssistantBusinessEventHandlers } = await import('@/services/verebona-assistant/events/handlers');
   registerAssistantBusinessEventHandlers();
+  // Lot 32 (décision PO 6) : tout changement de situation d'un compte
+  // prépare durablement le texte T6 de la mascotte pour l'affichage suivant.
+  const { registerMascotPregenerationHandler } = await import('@/services/home/mascot/pregen-queue');
+  await registerMascotPregenerationHandler().catch((e) =>
+    console.error('[startup] pré-génération de la mascotte non abonnée :', (e as Error).message));
   await runAssistantStartupCheck('startup').catch((e) =>
     console.error('[startup] contrôle du registre de l’assistant impossible :', (e as Error).message));
 

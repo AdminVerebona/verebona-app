@@ -2,24 +2,25 @@
  * Éligibilité à la rétractation — CDC 6 §5.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * UNE ANOMALIE NE BLOQUE JAMAIS UNE DÉCLARATION
+ * LOT 32 — DÉCISIONS PO DU 07/10/2026 (Q1, Q2)
  *
- * Le §5.5 est catégorique : « une anomalie technique ne doit pas empêcher
- * l'enregistrement de la déclaration ». Si l'éligibilité ne peut pas être
- * établie, la demande est horodatée, un accusé est envoyé, et le statut passe
- * à `manual_review` — « aucun motif de refus définitif n'est affiché avant
- * examen ».
- *
- * Ce module ne dit donc jamais « non ». Il répond `eligible`, `ineligible` ou
- * `undetermined`, et c'est l'appelant qui en tire les conséquences — lesquelles
- * n'incluent jamais le refus d'enregistrer.
+ *   · le délai court à partir du PAIEMENT (premier paiement réussi de
+ *     l'abonnement payant en cours, `withdrawalWindowStart`), plus de la
+ *     conclusion technique de l'abonnement ;
+ *   · la rétractation est traitée IMMÉDIATEMENT et supprime le compte : plus
+ *     d'examen manuel. Ce module répond toujours `eligible`, `ineligible` ou
+ *     `undetermined` ; `undetermined` ne vient plus que d'une panne de
+ *     lecture (base indisponible, compte introuvable). L'appelant REFUSE
+ *     alors temporairement (503, « réessayez ») au lieu d'enregistrer une
+ *     demande en examen : une suppression de compte ne se décide pas sur un
+ *     doute. Aucune date de paiement : aucun contrat payant (§5.4).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '@/db';
 import { accountSubscriptions, accounts, withdrawalRequests } from '@/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { computeWithdrawalDeadline } from '@/services/legal/french-calendar';
-import { isWithdrawalWindowOpen } from './withdrawal-window';
+import { isWithdrawalWindowOpen, withdrawalWindowStart } from './withdrawal-window';
 
 export type EligibilityVerdict = 'eligible' | 'ineligible' | 'undetermined';
 
@@ -42,7 +43,10 @@ export interface ContractSummary {
   stripeSubscriptionId: string | null;
   planCode: string | null;
   billingPeriod: string | null;
+  /** Conclusion de l'abonnement (`contract_concluded_at`) ; à défaut, le paiement. */
   contractConcludedAt: Date;
+  /** Départ du délai : premier paiement de l'abonnement payant (lot 32, PO-Q1). */
+  paidAt: Date;
   withdrawalDeadlineAt: Date;
   deadlineDeferred: boolean;
   deadlineDeferralReason?: string;
@@ -56,12 +60,6 @@ export interface EligibilityResult {
   existingRequest?: { publicReference: string; status: string; requestedAt: Date };
   /** Détail technique, journalisé mais jamais renvoyé au demandeur. */
   diagnostic?: string;
-  /**
-   * Repli d'AFFICHAGE quand `contract_concluded_at` manque (première
-   * facturation) : sert seulement à masquer la carte après le délai
-   * (`shouldOfferWithdrawal`), jamais à refuser une déclaration.
-   */
-  subscribedAtFallback?: Date | null;
 }
 
 /** Statuts d'une demande considérée comme encore en cours. */
@@ -119,18 +117,17 @@ export async function evaluateEligibility(
       return { verdict: 'ineligible', reason: 'NO_PAID_CONTRACT' };
     }
 
-    // §5.1 condition 3 : une date de conclusion doit exister. Sans elle, le
-    // délai n'est pas calculable — ce qui relève de l'examen humain, pas du
-    // refus (§5.5).
-    if (!subscription.contractConcludedAt) {
-      return {
-        verdict: 'undetermined',
-        diagnostic: `Abonnement ${subscription.id} sans contract_concluded_at.`,
-        subscribedAtFallback: subscription.firstBilledAt ?? null,
-      };
+    // Lot 32 (PO-Q1) : le délai court à partir du PAIEMENT. Aucun paiement
+    // constaté : aucun contrat payant à rétracter, rien à rembourser.
+    const windowStart = withdrawalWindowStart({
+      firstBilledAt: subscription.firstBilledAt,
+      contractConcludedAt: subscription.contractConcludedAt,
+    });
+    if (!windowStart) {
+      return { verdict: 'ineligible', reason: 'NO_PAID_CONTRACT', diagnostic: `Abonnement ${subscription.id} sans paiement constaté.` };
     }
 
-    const deadline = computeWithdrawalDeadline(subscription.contractConcludedAt);
+    const deadline = computeWithdrawalDeadline(windowStart);
 
     const existing = await db
       .select({
@@ -153,7 +150,8 @@ export async function evaluateEligibility(
       stripeSubscriptionId: accountRow?.stripeSubscriptionId ?? null,
       planCode: subscription.planCode,
       billingPeriod: subscription.billingPeriod,
-      contractConcludedAt: subscription.contractConcludedAt,
+      contractConcludedAt: subscription.contractConcludedAt ?? windowStart,
+      paidAt: windowStart,
       withdrawalDeadlineAt: deadline.deadlineAt,
       deadlineDeferred: deadline.deferred,
       deadlineDeferralReason: deadline.deferralReason,
@@ -172,13 +170,14 @@ export async function evaluateEligibility(
     // §5.1 condition 4 : la demande doit précéder l'expiration du délai.
     // Même fonction que l'affichage (lot 26) : ce qui est proposé est ce qui
     // est accepté, à la seconde près.
-    if (!isWithdrawalWindowOpen(subscription.contractConcludedAt, now)) {
+    if (!isWithdrawalWindowOpen(windowStart, now)) {
       return { verdict: 'ineligible', reason: 'DEADLINE_PASSED', contract };
     }
 
     return { verdict: 'eligible', contract };
   } catch (e) {
-    // Une panne ne produit pas un refus : elle produit un examen humain.
+    // Une panne ne produit ni refus définitif ni suppression : l'appelant
+    // répond « réessayez » (lot 32 — plus d'examen manuel).
     return { verdict: 'undetermined', diagnostic: (e as Error).message };
   }
 }

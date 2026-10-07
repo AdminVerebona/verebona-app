@@ -24,7 +24,19 @@ import { apiClient } from '@/lib/api-client';
 import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coalesced-refresh';
 import { scheduleIdle } from '@/lib/shell/idle';
 
-export const TO_PROCESS_REFRESH_EVENTS = ['document-added', 'refresh-a-traiter'] as const;
+/**
+ * Lot 32 (L32-6) : la pastille ne se mettait à jour qu'au dépôt d'un document
+ * ou sur `refresh-a-traiter` — une résolution, une échéance modifiée, la fin
+ * d'une analyse ou toute autre écriture (qui peut créer ou fermer des
+ * actions côté serveur) la laissaient fausse jusqu'au rechargement. Elle se
+ * relit désormais après TOUTE écriture réussie (`verebona:data-mutated`, émis
+ * par `apiClient`) et chaque événement métier, regroupés (une lecture), ainsi
+ * qu'au retour sur l'onglet (actions créées en arrière-plan).
+ */
+export const TO_PROCESS_REFRESH_EVENTS = [
+  'document-added', 'refresh-a-traiter', 'document-deleted', 'document-analysis-complete',
+  'agenda-mutated', 'verebona:data-mutated', 'asset-details-updated',
+] as const;
 export const TO_PROCESS_COUNT_EVENT = 'update-a-traiter-count';
 
 type ToProcessResponse = { total: number } | { items: unknown[] };
@@ -77,7 +89,12 @@ export function useToProcessCount(userId: number | null | undefined): number | n
     };
     window.addEventListener(TO_PROCESS_COUNT_EVENT, onCount);
 
+    // Retour sur l'onglet : des actions ont pu naître en arrière-plan (analyse).
+    const onVisible = () => { if (document.visibilityState === 'visible') c.invalidate(); };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisible);
       cancelIdle();
       TO_PROCESS_REFRESH_EVENTS.forEach((e) => window.removeEventListener(e, onEvent));
       window.removeEventListener(TO_PROCESS_COUNT_EVENT, onCount);

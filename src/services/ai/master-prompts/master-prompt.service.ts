@@ -1,6 +1,20 @@
 /**
- * Administration des prompts maîtres T1–T4 et T6 depuis le BO — ticket
- * BO-IA-PROMPTS-01.
+ * Administration des prompts maîtres T1 à T6 depuis le BO — ticket
+ * BO-IA-PROMPTS-01 (lot 27) ; T5 depuis le lot 32B (décision PO n° 15).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * T5 (PROMPT CONTROL) : MÊME CYCLE, MÊMES CONTRÔLES, SES INTERDITS RESTENT
+ * DANS LE CODE
+ *
+ * Le texte de `t5_master_v1` s'administre comme les autres (brouillon →
+ * actif, test du corpus facultatif, historique, réactivation, contrôles
+ * techniques : branches MODE=ANALYZE / MODIFY, emplacements
+ * {{CURRENT_MASTER_PROMPTS}} et {{INSTRUCTION}}). Ce que le serveur garantit
+ * indépendamment du texte est conservé : T5 ne se modifie jamais lui-même
+ * (Prompt Control ne lit ni n'écrit le brouillon T5 — `workingTexts`,
+ * `writeDraftFromPromptControl`), cibles filtrées, écriture en brouillon
+ * seulement, verdict « prompt » requis. Un texte T5 porté par une version de
+ * configuration reste ignoré : la v1 de T5 est le fichier du dépôt.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CYCLE DE VIE : BROUILLON → ACTIF, ET RIEN D'AUTRE
@@ -39,7 +53,9 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { getAiEnvironment, type AiEnvironment } from '../config/environment';
-import { T5_TARGETS, TREATMENT_DEFINITIONS, isTreatment, type Treatment } from '../config/treatments';
+import {
+  T5_TARGETS, TREATMENTS, TREATMENT_DEFINITIONS, isMasterPromptAdministrable, isPromptAdministrable, isTreatment, type Treatment,
+} from '../config/treatments';
 import { masterPromptForTreatment } from '../config/prompt-architecture';
 import { masterPromptVersionOf } from '../prompts/prompt-loader';
 import { checkMasterPromptContent, MASTER_PROMPT_MAX_CHARS, type MasterPromptIssue } from './master-prompt-checks';
@@ -59,15 +75,15 @@ export class MasterPromptRefused extends Error {
   }
 }
 
-/** Prompts administrables : T1, T2, T3, T4, T6 (T5 : dépôt, CDC BO IA T5-003). */
-export const ADMIN_MASTER_TREATMENTS: readonly Treatment[] = T5_TARGETS;
+/** Prompts administrables au BO : T1 à T6 (T5 depuis le lot 32B, décision PO n° 15). */
+export const ADMIN_MASTER_TREATMENTS: readonly Treatment[] = TREATMENTS.filter(isMasterPromptAdministrable);
+
+/** Prompts que Prompt Control lit et réécrit (T5-001, T5-002) : jamais T5 lui-même. */
+export const PROMPT_CONTROL_TREATMENTS: readonly Treatment[] = T5_TARGETS;
 
 export function assertAdministrable(raw: string): Treatment {
   if (!isTreatment(raw) || !ADMIN_MASTER_TREATMENTS.includes(raw) || !masterPromptForTreatment(raw)) {
-    throw new MasterPromptRefused('UNKNOWN_PROMPT',
-      raw === 'T5'
-        ? 'Le prompt de Prompt Control (T5) est défini dans le dépôt : il n’est pas administrable.'
-        : `Prompt « ${raw} » inconnu.`, null, 404);
+    throw new MasterPromptRefused('UNKNOWN_PROMPT', `Prompt « ${raw} » inconnu.`, null, 404);
   }
   return raw;
 }
@@ -253,15 +269,19 @@ function versionView(
  */
 export async function runtimeBaseline(treatment: Treatment, environment: AiEnvironment = getAiEnvironment()): Promise<{ content: string; source: 'config' | 'file' }> {
   const master = masterPromptForTreatment(treatment)!;
-  try {
-    const [{ getEffectiveVersion }, { masterPromptOf, promptArchitectureOf }] = await Promise.all([
-      import('../config/config-version.repository'), import('../config/config-types'),
-    ]);
-    const version = await getEffectiveVersion(environment);
-    const entry = version?.entries.find((e) => e.treatment === treatment);
-    const texte = entry && promptArchitectureOf(entry) === 'master' ? masterPromptOf(entry) : null;
-    if (texte) return { content: texte, source: 'config' };
-  } catch { /* configuration illisible : fichier du dépôt */ }
+  // T5 : un texte porté par une version de configuration n'a jamais été
+  // exécuté (ignoré, T5-003) — le texte en service est le fichier du dépôt.
+  if (isPromptAdministrable(treatment)) {
+    try {
+      const [{ getEffectiveVersion }, { masterPromptOf, promptArchitectureOf }] = await Promise.all([
+        import('../config/config-version.repository'), import('../config/config-types'),
+      ]);
+      const version = await getEffectiveVersion(environment);
+      const entry = version?.entries.find((e) => e.treatment === treatment);
+      const texte = entry && promptArchitectureOf(entry) === 'master' ? masterPromptOf(entry) : null;
+      if (texte) return { content: texte, source: 'config' };
+    } catch { /* configuration illisible : fichier du dépôt */ }
+  }
   const { readMasterFileFromRepo } = await import('../governance/master-corpus/cases');
   return { content: readMasterFileFromRepo(master.masterPromptCode), source: 'file' };
 }
@@ -624,7 +644,8 @@ export interface WorkingText {
 export async function workingTexts(mode: 'analyze' | 'modify', environment: AiEnvironment = getAiEnvironment()): Promise<Map<Treatment, WorkingText>> {
   const out = new Map<Treatment, WorkingText>();
   if (!(await repo.masterPromptTablesReady().catch(() => false))) return out;
-  for (const t of ADMIN_MASTER_TREATMENTS) {
+  // T5-002 : Prompt Control ne lit jamais son propre prompt comme cible.
+  for (const t of PROMPT_CONTROL_TREATMENTS) {
     const active = await repo.getActive(environment, t);
     const draft = mode === 'modify' ? await repo.getDraft(environment, t) : null;
     const lu = draft ?? active;
@@ -642,6 +663,12 @@ export async function workingTexts(mode: 'analyze' | 'modify', environment: AiEn
 export async function writeDraftFromPromptControl(p: {
   treatment: Treatment; expected: string; readDraftId: number | null; readActiveId: number | null; next: string; userId: number;
 }): Promise<MasterPromptVersionRow | null> {
+  // T5-002 : T5 ne modifie jamais son propre prompt — refus du serveur,
+  // quel que soit le texte du prompt maître T5 en service.
+  if (!PROMPT_CONTROL_TREATMENTS.includes(p.treatment)) {
+    throw new MasterPromptRefused('NOT_A_PROMPT_CONTROL_TARGET',
+      `Prompt Control ne peut pas modifier le prompt de ${p.treatment}.`, null, 409);
+  }
   await assertTables();
   const environment = getAiEnvironment();
   if (p.readDraftId !== null) {

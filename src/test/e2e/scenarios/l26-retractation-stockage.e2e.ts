@@ -56,7 +56,8 @@ scenario('L26-RS', 'Rétractation (fenêtre de 15 jours) et espace de stockage',
     const body = await eligibilite();
     expect(body.offerWithdrawal).toBe(false);
     expect(body.reason).toBe('DEADLINE_PASSED');
-    expect(body.existingRequest).toBeNull();
+    // Lot 32 (PO-Q2) : plus de suivi de demande dans la réponse.
+    expect(body.existingRequest).toBeUndefined();
 
     const { POST } = await import('@/app/api/withdrawal/confirm/route');
     const res = await POST(new NextRequest('http://localhost/api/withdrawal/confirm', {

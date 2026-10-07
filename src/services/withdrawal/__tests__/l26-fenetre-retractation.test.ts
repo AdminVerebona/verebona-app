@@ -69,18 +69,20 @@ describe('lot 26 — AC3 : faut-il proposer la rétractation ?', () => {
     expect(shouldOfferWithdrawal({ verdict: 'ineligible', subscribedAt: null, now: SOUSCRIT })).toBe(false);
   });
 
-  it('indéterminé : selon la date de repli (première facturation) ; sans aucune date, proposé (examen humain)', () => {
-    expect(shouldOfferWithdrawal({ verdict: 'undetermined', subscribedAt: SOUSCRIT, now: DERNIER_INSTANT })).toBe(true);
-    expect(shouldOfferWithdrawal({ verdict: 'undetermined', subscribedAt: SOUSCRIT, now: J_PLUS_15 })).toBe(false);
-    expect(shouldOfferWithdrawal({ verdict: 'undetermined', subscribedAt: null, now: J_PLUS_15 })).toBe(true);
+  // Lot 32 (PO-Q2) : plus d'examen manuel — une éligibilité indéterminée
+  // (panne de lecture) ne propose rien ; la suppression du compte est
+  // immédiate et ne peut pas reposer sur un doute.
+  it('PO-Q2 — indéterminé : rien n’est proposé (plus d’examen manuel)', () => {
+    expect(shouldOfferWithdrawal({ verdict: 'undetermined', subscribedAt: SOUSCRIT, now: DERNIER_INSTANT })).toBe(false);
+    expect(shouldOfferWithdrawal({ verdict: 'undetermined', subscribedAt: null, now: SOUSCRIT })).toBe(false);
   });
 });
 
 describe('lot 26 — AC3 : affichage et API alignés sur la même fonction', () => {
   it('l’éligibilité (refus DEADLINE_PASSED) utilise isWithdrawalWindowOpen', () => {
     const src = read('src/services/withdrawal/eligibility.service.ts');
-    expect(src).toContain("import { isWithdrawalWindowOpen } from './withdrawal-window';");
-    expect(src).toContain('if (!isWithdrawalWindowOpen(subscription.contractConcludedAt, now)) {');
+    expect(src).toContain("import { isWithdrawalWindowOpen, withdrawalWindowStart } from './withdrawal-window';");
+    expect(src).toContain('if (!isWithdrawalWindowOpen(windowStart, now)) {');
   });
 
   it('GET /api/withdrawal/eligibility décide l’affichage côté serveur (offerWithdrawal)', () => {
@@ -97,14 +99,15 @@ describe('lot 26 — AC3 : affichage et API alignés sur la même fonction', () 
     expect(refus).toBeLessThan(src.indexOf('await recordDeclaration('));
   });
 
-  it('Mon compte : tout le bloc disparaît hors fenêtre, seul le suivi d’une demande reste', () => {
+  it('Mon compte : tout le bloc disparaît hors fenêtre ; plus de suivi de demande (PO-Q2)', () => {
     const src = read('src/components/account/WithdrawalCard.tsx');
     expect(src).toContain('setOfferWithdrawal(Boolean(data.offerWithdrawal));');
     expect(src).toContain('if (!offerWithdrawal) return null;');
     // Plus de « Rétractation en ligne indisponible » ni de lien de repli.
     expect(src).not.toContain('Rétractation en ligne indisponible');
     expect(src.match(/Renoncer au contrat ici<\/Link>/g)).toHaveLength(1);
-    // Le suivi d'une demande enregistrée passe avant le masquage.
-    expect(src.indexOf('if (request) {')).toBeLessThan(src.indexOf('if (!offerWithdrawal) return null;'));
+    // Lot 32 : le compte est supprimé à la confirmation — aucun suivi.
+    expect(src).not.toContain('Rétractation enregistrée');
+    expect(src).not.toContain('/retractation/suivi/');
   });
 });

@@ -16,6 +16,7 @@
  * commutateur `CANONICAL_WRITE_MODE` et chemins historique / observation
  * supprimés (comportement de l'ancien `enabled`).
  */
+import { ASSET_STATUSES } from '@/lib/asset-status';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -56,7 +57,9 @@ const ATOMIC_FIELDS: Record<string, string> = {
   registrationNumber: 'registrationNumber',
 };
 
-const VALID_STATUSES = ['EN_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'VENDU', 'DETRUIT', 'INACTIF', 'TRANSMIS'];
+// Lot 32 (PO-Q11) : statuts officiels saisissables depuis la fiche (ARCHIVED
+// relève du parcours d'archivage).
+const VALID_STATUSES: readonly string[] = ASSET_STATUSES.filter((s) => s !== 'ARCHIVED');
 
 export type AssetDetailsErrorCode =
   | 'NOT_FOUND' | 'ASSET_UNAVAILABLE' | 'SECTION_NOT_APPLICABLE' | 'VALIDATION_ERROR' | 'WRITE_BLOCKED'

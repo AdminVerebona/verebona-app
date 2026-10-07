@@ -79,6 +79,14 @@ export interface AiOperationDefinition {
    * avec le fichier.
    */
   promptVariables?: readonly string[];
+  /**
+   * Capacités du modèle que l'opération exige EN PLUS de la sortie
+   * structurée (déduite de `jsonResponse` / `outputSchema`) — lot 32B :
+   * `usableModelsForTreatment` n'admet pour un traitement que les modèles
+   * qui les déclarent toutes (registre `models.ts`). `multimodal` : l'appel
+   * transmet des fichiers ou des images (`attachments`).
+   */
+  requiredCapabilities?: readonly ('multimodal' | 'thinking')[];
   /** Une opération inactive ne peut pas être exécutée par la gateway. */
   active: boolean;
   /** false ⇒ n'incrémente pas les compteurs de quota client. */
@@ -163,7 +171,12 @@ const DOC_FALLBACKS = ['gemini-3.5-flash', 'gemini-2.5-pro'];
 
 /**
  * Famille 2 — assistant. CDC Assistant §15.11 : alias `assistant-default` et
- * `assistant-escalation`. §31.2 : « aucune utilisation d'un modèle Pro ».
+ * `assistant-escalation`. Valeurs initiales du code (modèles rapides et
+ * économiques) ; la configuration versionnée du BO les remplace. Lot 32B :
+ * l'ancienne règle « aucun modèle Pro » (CDC Assistant V1, §31.2) n'est plus
+ * un interdit — un modèle est admis pour T2 selon ses caractéristiques
+ * déclarées (`usableModelsForTreatment`), pas selon son nom ; coût et latence
+ * restent bornés par le contrat T2 (appels, délai, plafonds, budget).
  */
 /**
  * ⚠️ MODÈLE CHANGÉ APRÈS CONSTAT EN PRÉPRODUCTION — 18/09/2026.
@@ -182,8 +195,7 @@ const DOC_FALLBACKS = ['gemini-3.5-flash', 'gemini-2.5-pro'];
  * `gemini-3.5-flash-lite` figure au catalogue public tarifaire : le contrôle de
  * démarrage passera après un `/api/cron/ai/refresh-model-pricing`.
  *
- * L'escalade reste `gemini-3.1-flash-lite`, qui répond toujours — et aucun
- * modèle Pro n'entre ici, conformément au §31.2.
+ * L'escalade reste `gemini-3.1-flash-lite`, qui répond toujours.
  */
 const ASSISTANT_PRIMARY = 'gemini-3.5-flash-lite';   // alias assistant-default
 const ASSISTANT_FALLBACKS = ['gemini-3.1-flash-lite']; // alias assistant-escalation
@@ -199,8 +211,10 @@ const GOV_PRIMARY = 'gemini-2.5-pro';
 const GOV_FALLBACKS = ['gemini-3.1-flash-lite'];
 
 /**
- * Prompt maître T5 (CDC 15 §27) — FICHIER DU DÉPÔT seulement : T5 n'a pas
- * de prompt administrable (§10, T5-003) et ne se modifie jamais lui-même.
+ * Prompt maître T5 (CDC 15 §27). Lot 32B (décision PO n° 15) : administrable
+ * depuis le BO (« Prompts maîtres », brouillon → actif) comme T1–T4 et T6 ;
+ * le fichier du dépôt en est la version initiale. T5 ne se modifie jamais
+ * lui-même : Prompt Control n'a pas T5 pour cible (règle tenue par le serveur).
  */
 const T5_MASTER = 't5_master_v1';
 /** Prompt maître T6 (CDC 15 §28) — même valeur que `T6_MASTER_PROMPT_CODE`. */
@@ -224,7 +238,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     label: 'T1 master — regroupement des fichiers déposés (TASK=GROUP_UPLOAD)',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: T1_MASTER, masterPromptCode: T1_MASTER, task: 'GROUP_UPLOAD', promptVariables: T1_MASTER_VARIABLES,
-    timeoutMs: 45_000, jsonResponse: true,
+    timeoutMs: 45_000, jsonResponse: true, requiredCapabilities: ['multimodal'],
     outputSchema: 'T1GroupUploadOutput', active: true, billable: false,
   },
   t1_analyze_document: {
@@ -232,7 +246,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     label: 'T1 master — analyse complète d’un document (TASK=ANALYZE_DOCUMENT)',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: T1_MASTER, masterPromptCode: T1_MASTER, task: 'ANALYZE_DOCUMENT', promptVariables: T1_MASTER_VARIABLES,
-    timeoutMs: 120_000, jsonResponse: true,
+    timeoutMs: 120_000, jsonResponse: true, requiredCapabilities: ['multimodal'],
     // D-06 : une seule sortie porte transcription, tableaux et jusqu'à 300
     // faits. Plancher (`minOutputTokens`) et non simple défaut
     // (`defaultMaxOutputTokens`) : le plafond de la version est PAR
@@ -327,7 +341,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     label: 'T2 master — revalidation ciblée, texte ou visuel (MODE=REVALIDATE)',
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
     promptCode: T2_MASTER, masterPromptCode: T2_MASTER, task: 'REVALIDATE', taskField: 'mode', promptVariables: T2_MASTER_VARIABLES,
-    timeoutMs: 20_000, jsonResponse: true,
+    timeoutMs: 20_000, jsonResponse: true, requiredCapabilities: ['multimodal'],
     outputSchema: 'T2RevalidateOutput', active: true, billable: true,
     defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
   },
@@ -383,8 +397,9 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // ── T5 — prompt maître (CDC 15 §27, §29 étape 16, MP-16) ──────────────────
   // Seul moteur de T5 depuis le lot 16b : `analyze_instruction`,
   // `control_prompts` et `propose_change` sont retirés, et T5 n'a plus
-  // d'architecture `steps`. Texte = fichier du dépôt, JAMAIS la version (T5
-  // non administrable).
+  // d'architecture `steps`. Texte = version active « Prompts maîtres » du BO
+  // (lot 32B), sinon fichier du dépôt — jamais le texte d'une version de
+  // configuration.
   t5_analyze: {
     operationCode: 't5_analyze', useCaseCode: 'AI_GOVERNANCE',
     label: 'T5 master — diagnostic (MODE=ANALYZE)',

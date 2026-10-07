@@ -42,7 +42,7 @@
  * sans borne, elle attend la base sur le chemin d'appel.
  */
 import { getOperation, type AiOperationDefinition } from '../registry/operations';
-import { isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
+import { isMasterPromptAdministrable, isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
 import {
   DEFAULT_PROMPT_ARCHITECTURE, promptArchitectureOf, masterPromptOf,
   type PromptArchitecture, type ReasoningLevel, type TreatmentConfig,
@@ -326,8 +326,10 @@ export async function resolveOperationConfig(
 
   // BO-IA-PROMPTS-01 (AC15) : la version ACTIVE du prompt maître administrée
   // au BO prime sur le texte de la version de configuration — avec ou sans
-  // version de configuration. Jamais pour T5 (non administrable).
-  const actif = isPromptAdministrable(treatment) ? (await activeMasterPrompts()).get(treatment) ?? null : null;
+  // version de configuration. T5 compris depuis le lot 32B (décision PO
+  // n° 15) ; pour T5, le texte d'une version de configuration reste ignoré
+  // (`promptOf`) : version active du BO, sinon fichier du dépôt.
+  const actif = isMasterPromptAdministrable(treatment) ? (await activeMasterPrompts()).get(treatment) ?? null : null;
   const avecPrompt = <T extends ResolvedOperationConfig>(c: T): T => (actif && c.promptArchitecture === 'master'
     ? { ...c, masterPromptText: actif.content, masterPromptVersionId: actif.id, masterPromptVersionNumber: actif.versionNumber }
     : c);

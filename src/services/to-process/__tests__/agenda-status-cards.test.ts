@@ -49,28 +49,31 @@ describe('statut d’une échéance', () => {
 });
 
 describe('D-15 — statut du bien', () => {
-  // Contrainte en vigueur (migration 0121) et contrainte élargie aux valeurs de l'interface.
+  // Lot 32 (PO-Q11) : contrainte officielle (migration 0278) et ancienne contrainte 0121.
+  const officielle = new Set(['EN_SERVICE', 'VENDU', 'TRANSMIS', 'ARCHIVED']);
   const base0121 = new Set(['EN_SERVICE', 'EN_MAINTENANCE', 'HORS_SERVICE', 'ARCHIVED', 'TRANSMIS']);
-  const elargie = new Set([...USER_SETTABLE_ASSET_STATUSES, 'ARCHIVED']);
 
-  it('correspondance selon les valeurs ADMISES : 0121 → TRANSMIS ; HORS_SERVICE / EN_MAINTENANCE', () => {
-    expect(assetStatusProposals('sale', 'EN_SERVICE', 'Vente', base0121).map((x) => x.value)).toEqual(['TRANSMIS', 'EN_SERVICE']);
-    expect(assetStatusProposals('claim', 'EN_SERVICE', 'Sinistre', base0121).map((x) => x.value)).toEqual(['HORS_SERVICE', 'EN_MAINTENANCE', 'EN_SERVICE']);
-  });
-  it('contrainte élargie : VENDU / TRANSMIS ; DETRUIT / EN_REPARATION', () => {
-    const p = assetStatusProposals('sale', 'EN_SERVICE', 'Vente (2027-01-01)', elargie);
+  it('PO-Q11 — vente : VENDU puis TRANSMIS (liste officielle) ; base non migrée : TRANSMIS seul', () => {
+    const p = assetStatusProposals('sale', 'EN_SERVICE', 'Vente (2027-01-01)', officielle);
     expect(p.map((x) => x.value)).toEqual(['VENDU', 'TRANSMIS', 'EN_SERVICE']);
     expect(p[2].isCurrentValue).toBe(true);
-    expect(assetStatusProposals('claim', 'EN_SERVICE', 'x', elargie).map((x) => x.value)).toEqual(['DETRUIT', 'EN_REPARATION', 'EN_SERVICE']);
-    for (const s of [...ASSET_STATUS_BY_EVENT.sale, ...ASSET_STATUS_BY_EVENT.claim]) expect(USER_SETTABLE_ASSET_STATUSES).toContain(s.value);
+    expect(assetStatusProposals('sale', 'EN_SERVICE', 'Vente', base0121).map((x) => x.value)).toEqual(['TRANSMIS', 'EN_SERVICE']);
+    for (const s of ASSET_STATUS_BY_EVENT.sale) expect(USER_SETTABLE_ASSET_STATUSES).toContain(s.value);
+  });
+  it('PO-Q11 — sinistre : plus aucune carte (ni « en réparation » ni « détruit » dans la liste officielle)', () => {
+    expect(ASSET_STATUS_BY_EVENT.claim).toBeUndefined();
+    expect(assetStatusProposals('claim', 'EN_SERVICE', 'Sinistre', officielle)).toEqual([]);
+    expect([...USER_SETTABLE_ASSET_STATUSES]).toEqual(['EN_SERVICE', 'VENDU', 'TRANSMIS']);
   });
   it('rien si déjà appliqué, type sans effet, ou aucune valeur admise', () => {
     expect(assetStatusProposals('sale', 'TRANSMIS', 'x', base0121)).toEqual([]);
-    expect(assetStatusProposals('purchase', 'EN_SERVICE', 'x', elargie)).toEqual([]);
+    expect(assetStatusProposals('purchase', 'EN_SERVICE', 'x', officielle)).toEqual([]);
     expect(assetStatusProposals('sale', 'EN_SERVICE', 'x', new Set(['EN_SERVICE']))).toEqual([]);
   });
   it('écrivain : jamais ARCHIVED ni valeur forgée ; contrôle en base (compte, verrou, contrainte)', () => {
     expect(ASSET_STATUS_WRITER.validate('TRANSMIS')).toBe(true);
+    expect(ASSET_STATUS_WRITER.validate('VENDU')).toBe(true);
+    expect(ASSET_STATUS_WRITER.validate('EN_PANNE')).toBe(false);
     expect(ASSET_STATUS_WRITER.validate('ARCHIVED')).toBe(false);
     expect(ASSET_STATUS_WRITER.validate('ROOT')).toBe(false);
     expect(ASSET_STATUS_WRITER.validate(null)).toBe(false);

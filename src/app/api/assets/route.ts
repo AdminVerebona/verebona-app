@@ -14,10 +14,13 @@ import { deleteAssetCompletely } from '@/services/assets/asset-deletion.service'
 import { isValidObjectCategory } from '@/types/domain';
 import type { PlanType } from '@/types/domain';
 import { ACCEPTED_ASSET_CATEGORY_CODES, getAssetCategories } from '@/lib/asset-taxonomy';
+import { ASSET_STATUSES, OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 
 // Lot 30 : familles du référentiel (`asset-taxonomy`) — proposées + anciennes encore stockées.
 const VALID_CATEGORIES: readonly string[] = ACCEPTED_ASSET_CATEGORY_CODES;
-const VALID_STATUSES = ['EN_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'VENDU', 'DETRUIT', 'INACTIF', 'ARCHIVED', 'TRANSMIS'];
+// Lot 32 (PO-Q11) : liste officielle EN_SERVICE, VENDU, TRANSMIS, ARCHIVED —
+// la même que la contrainte en base (migration 0278).
+const VALID_STATUSES: readonly string[] = ASSET_STATUSES;
 const VALID_OBJECT_CATEGORIES: readonly string[] = getAssetCategories('OBJECT').map((c) => c.value);
 
 export async function GET(request: NextRequest) {
@@ -114,8 +117,9 @@ export async function GET(request: NextRequest) {
         conditions.push(eq(assets.status, status));
       }
     } else if (!includeArchived) {
-      // By default, exclude archived/transmitted assets from list (they don't appear in dropdowns)
-      conditions.push(notInArray(assets.status, ['ARCHIVED', 'TRANSMIS']));
+      // Par défaut, les biens sortis du portefeuille (vendus, transmis,
+      // archivés) n'apparaissent ni dans la liste ni dans les sélecteurs.
+      conditions.push(notInArray(assets.status, [...OUT_OF_PORTFOLIO_ASSET_STATUSES]));
     }
 
     // Also exclude soft-deleted

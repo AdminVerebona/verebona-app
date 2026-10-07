@@ -21,6 +21,7 @@ import type { ResolvedFiles } from '../resolved';
 import { photoFileKey } from '../resolved';
 import { documentTone, IMAGE_FORMATS } from '../documents';
 import { assetFamilyLabel, assetCategoryLabel } from '@/lib/asset-taxonomy';
+import { assetStatusLabel } from '@/lib/asset-status';
 import { occupancyUsageLabel } from '@/lib/assets/occupancy';
 import { CANONICAL_FIELDS, getField } from '@/services/canonical/registry';
 import type { ListItem } from '@/lib/assets/additional-infos';
@@ -114,11 +115,9 @@ export function humanize(v: unknown): string | null {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  EN_SERVICE: 'En service', EN_MAINTENANCE: 'En maintenance', EN_PANNE: 'En panne', EN_REPARATION: 'En réparation',
-  HORS_SERVICE: 'Hors service', VENDU: 'Vendu', DETRUIT: 'Détruit', INACTIF: 'Inactif', ARCHIVED: 'Archivé', TRANSMIS: 'Transmis',
-};
-export const statusLabel = (s: ExportSource): string | null => STATUS_LABELS[s.asset.status] ?? humanize(s.asset.status);
+// Lot 32 (PO-Q11) : statuts officiels ; une ancienne valeur non migrée est
+// exportée sous son statut officiel (`normalizeAssetStatus`).
+export const statusLabel = (s: ExportSource): string | null => (s.asset.status ? assetStatusLabel(s.asset.status) : null);
 
 /** État déclaré (fiche bien). */
 export const conditionLabel = (s: ExportSource): string | null =>

@@ -119,7 +119,8 @@ export const assets = pgTable('assets', {
   publicIdIdx: index('assets_public_id_idx').on(table.publicId),
   scopeCheck: check('assets_scope_check', sql`${table.scope} IN ('personal', 'duo')`),
   lockStateCheck: check('assets_lock_state_check', sql`${table.lockState} IN ('NONE', 'SOFT', 'HARD')`),
-  statusCheck: check('assets_status_check', sql`${table.status} IN ('EN_SERVICE', 'EN_MAINTENANCE', 'EN_PANNE', 'EN_REPARATION', 'HORS_SERVICE', 'VENDU', 'DETRUIT', 'INACTIF', 'ARCHIVED', 'TRANSMIS')`),
+  // Lot 32 (PO-Q11, migration 0278) : liste officielle `@/lib/asset-status`.
+  statusCheck: check('assets_status_check', sql`${table.status} IN ('EN_SERVICE', 'VENDU', 'TRANSMIS', 'ARCHIVED')`),
 }));
 
 /**
@@ -3195,7 +3196,7 @@ export const aiMasterPromptVersions = pgTable('ai_master_prompt_versions', {
   firstActivatedAt: pgTimestamp('first_activated_at', { withTimezone: true }),
 }, (t) => ({
   statusCheck: check('ai_master_prompt_versions_status_ck', sql`${t.status} IN ('DRAFT', 'ACTIVE', 'PREVIOUS')`),
-  treatmentCheck: check('ai_master_prompt_versions_treatment_ck', sql`${t.treatment} IN ('T1', 'T2', 'T3', 'T4', 'T6')`),
+  treatmentCheck: check('ai_master_prompt_versions_treatment_ck', sql`${t.treatment} IN ('T1', 'T2', 'T3', 'T4', 'T5', 'T6')`),
   originCheck: check('ai_master_prompt_versions_origin_ck', sql`${t.origin} IN ('initial_file', 'initial_config', 'admin', 'prompt_control')`),
   numberUq: unique('ai_master_prompt_versions_number_uq').on(t.environment, t.treatment, t.versionNumber),
   oneActive: uniqueIndex('ai_master_prompt_versions_one_active_uidx').on(t.environment, t.treatment).where(sql`status = 'ACTIVE'`),

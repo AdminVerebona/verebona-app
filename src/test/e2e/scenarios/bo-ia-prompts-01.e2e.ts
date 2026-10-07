@@ -98,13 +98,14 @@ scenario('BO-IA-PROMPTS-01', 'Prompts maîtres : Brouillon → Actif, corpus fac
     invalidateConfigCache();
   });
 
-  it('vue d’ensemble : T1, T2, T3, T4, T6 administrables, T5 jamais ; non-admin refusé', async () => {
+  it('vue d’ensemble : T1 à T6 administrables (T5 depuis le lot 32B, PO 15) ; non-admin refusé', async () => {
     const api = await r();
     const l = await api.list();
     expect(l.status).toBe(200);
-    expect(l.body.prompts.map((p: Json) => p.treatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    expect(l.body.prompts.map((p: Json) => p.treatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
     expect(l.body.prompts.every((p: Json) => p.active.initial === true && p.draft === null)).toBe(true);
-    expect((await api.detail('T5')).status).toBe(404);
+    expect((await api.detail('T5')).status).toBe(200);
+    expect((await api.detail('T9')).status).toBe(404);
     const simple = await make.user({ role: 'USER' });
     Object.assign(session, { userId: simple.id, email: simple.email, role: 'USER' });
     expect((await api.list()).status).toBe(403);
@@ -414,10 +415,59 @@ scenario('BO-IA-PROMPTS-01', 'Prompts maîtres : Brouillon → Actif, corpus fac
     expect(ailleurs.cfg.masterPromptText).toMatch(/AC10/);
     expect(ailleurs.cfg.masterPromptVersionId).toBe(v3.id);
 
-    // T5 n'est jamais administré : toujours le fichier du dépôt.
+    // T5 sans version au BO : fichier du dépôt (parcours T5 : scénario PO15 ci-dessous).
     const t5 = await (await import('@/services/ai/config/config-resolver')).resolveOperationConfig('t5_modify');
     expect(t5.masterPromptVersionId ?? null).toBeNull();
     expect(await fichier('t5_master_v1')).toMatch(/MODE/);
+  });
+
+  it('PO15-11 — migration 0272 : une base dont la contrainte excluait T5 (0254) l’accepte après rejeu ; rejouable sans effet', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    await sql.unsafe(`ALTER TABLE ai_master_prompt_versions DROP CONSTRAINT IF EXISTS ai_master_prompt_versions_treatment_ck`);
+    await sql.unsafe(`ALTER TABLE ai_master_prompt_versions ADD CONSTRAINT ai_master_prompt_versions_treatment_ck CHECK (treatment IN ('T1', 'T2', 'T3', 'T4', 'T6'))`);
+    const migration = await readFile(join(process.cwd(), 'src/db/migrations/0272_ai_master_prompt_t5.sql'), 'utf8');
+    await sql.unsafe(migration);
+    await sql.unsafe(migration);
+    const [c] = await sql<{ def: string }[]>`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ai_master_prompt_versions_treatment_ck'`;
+    expect(c.def).toContain('T5');
+    const [t] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'ai_model_operational_status'`;
+    expect(t.n).toBe(1);
+  });
+
+  it('PO15-10 — T5 par les routes du BO, sur PostgreSQL (migration 0272) : brouillon → actif, contrôles, test du corpus, rollback, utilisé à l’exécution', async () => {
+    const api = await r();
+    const base = await fichier('t5_master_v1');
+    const d = await api.startDraft('T5');
+    expect(d.status).toBe(201);
+    const draftId = d.body.detail.draft.id as number;
+    // Contrôle technique propre à T5 : mode MODIFY retiré → activation refusée (422), motif clair.
+    await api.saveDraft('T5', draftId, base.replace('Valeurs autorisées : ANALYZE | MODIFY', 'Valeurs autorisées : ANALYZE'));
+    const ko = await api.activate('T5', draftId);
+    expect(ko.status).toBe(422);
+    expect(ko.body.message).toMatch(/mode MODIFY est absent/);
+    // Texte valide : test facultatif, puis activation.
+    await api.saveDraft('T5', draftId, `${base}\n\nR9 — RÈGLE T5 ADMINISTRÉE (E2E).`);
+    const test = await api.test('T5', draftId);
+    expect(test.status).toBe(201);
+    expect(test.body).toMatchObject({ status: 'DONE', failed: 0 });
+    const ok = await api.activate('T5', draftId);
+    expect(ok.status).toBe(200);
+    const [ligne] = await sql<{ treatment: string; status: string }[]>`SELECT treatment, status FROM ai_master_prompt_versions WHERE id = ${draftId}`;
+    expect(ligne).toEqual({ treatment: 'T5', status: 'ACTIVE' });
+    const { resolveOperationConfig } = await import('@/services/ai/config/config-resolver');
+    const enService = await resolveOperationConfig('t5_analyze');
+    expect(enService.masterPromptText).toMatch(/RÈGLE T5 ADMINISTRÉE/);
+    expect(enService.masterPromptVersionId).toBe(draftId);
+    // Rollback : la v1 (texte du dépôt) se réactive.
+    const detail = await api.detail('T5');
+    const v1 = (detail.body.history as Json[]).find((v) => v.versionNumber === 1)!;
+    const back = await api.reactivate('T5', v1.id);
+    expect(back.status).toBe(200);
+    expect((await resolveOperationConfig('t5_analyze')).masterPromptText).toBe(base);
+    // T5-002 : Prompt Control ne lit jamais T5 comme cible.
+    const svc = await import('@/services/ai/master-prompts/master-prompt.service');
+    expect([...(await svc.workingTexts('modify')).keys()]).not.toContain('T5');
   });
 
   it('Prompt Control : écriture conditionnelle dans le brouillon du prompt, jamais dans l’Actif', async () => {

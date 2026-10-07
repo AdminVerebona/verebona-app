@@ -215,13 +215,13 @@ describe('contexte de page (§13.3, §27.1)', () => {
 describe('suggestions contextuelles par page (§8.1, §8.2)', () => {
   const labels = (r: string) => suggestionsForRoute(r).map((s) => s.id);
   it('fiche d’un bien : suggestions du bien, jamais celles de l’accueil', () => {
-    const l = labels('/assets/42');
+    const l = suggestionsForRoute('/assets/42', { pageAsset: { name: 'Cupra', documents: 2 } }).map((s) => s.id);
     expect(l.slice(0, 3)).toEqual(['asset_docs', 'asset_deadlines', 'asset_complete']);
     expect(l.some((x) => x.startsWith('home_'))).toBe(false);
   });
   it('accueil : suggestions d’accueil ; agenda, À traiter, compte : les leurs', () => {
-    expect(labels('/accueil')[0]).toBe('home_priority');
-    expect(labels('/')[0]).toBe('home_priority');
+    expect(labels('/accueil')[0]).toBe('home_deadlines');
+    expect(labels('/')[0]).toBe('home_deadlines');
     expect(labels('/agenda')[0]).toBe('agenda_next');
     expect(labels('/accueil/a-traiter')[0]).toBe('todo_explain');
     expect(labels('/mon-compte')[0]).toBe('account_plan');

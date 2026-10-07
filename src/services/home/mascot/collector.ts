@@ -125,7 +125,7 @@ async function readOnboarding(accountId: number): Promise<MascotRawData['onboard
       `SELECT id, name, COUNT(*) OVER ()::int AS total
          FROM assets
         WHERE account_id = $1 AND deleted_at IS NULL
-          AND COALESCE(status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS')
+          AND COALESCE(status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS', 'VENDU')
         ORDER BY created_at ASC LIMIT 2`,
       [accountId],
     ),
@@ -253,16 +253,19 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
     safe('traitements', () => readProcessing(accountId)),
     safe('onboarding', () => readOnboarding(accountId)),
     // NFR-001 : tête de file seulement, dans l'ordre « Par priorité » du service.
-    safe('à traiter', async () => (await getToProcessPage(accountId, {
+    safe('à traiter', () => getToProcessPage(accountId, {
       orderMode: 'BY_PRIORITY', limit: MASCOT_TO_PROCESS_LIMIT,
-    })).actions),
+    })),
     safe('à traiter (échéances)', () => readToProcessAgendaIds(accountId)),
     safe('agenda', () => readAgenda(accountId, today)),
     safe('acquittements', () => readAcknowledgments(accountId)),
     safe('droits', () => readRights(accountId)),
   ]);
   return {
-    accountId, today, processing, onboarding, toProcess, agenda, acknowledgments,
+    accountId, today, processing, onboarding, agenda, acknowledgments,
+    // Lot 32 (MASC2) : la tête de file ET son total (= pastille, = page).
+    toProcess: toProcess?.actions ?? null,
+    toProcessTotal: toProcess?.total ?? null,
     // Échéances d'actions ouvertes : en échec, la file lue suffit (repli sur `toProcess`).
     toProcessAgendaIds,
     rights,

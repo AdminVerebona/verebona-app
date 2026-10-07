@@ -194,6 +194,16 @@ export async function POST(request: NextRequest) {
     // Login réussi → réinitialiser le compteur pour cette IP
     resetAuthRateLimit(ip);
 
+    // Lot 32 (décision PO 6) : la situation du compte a pu changer depuis la
+    // dernière visite (échéances passées) — sa prise de parole est préparée
+    // tout de suite, durablement. Jamais attendu, jamais bloquant.
+    if (defaultAccount?.id) {
+      const accountId = defaultAccount.id;
+      void import('@/services/home/mascot/mascot.service')
+        .then((m) => m.scheduleMascotPregeneration(accountId, 0, 'login'))
+        .catch(() => {});
+    }
+
     // Indication informative du jeton, jamais une source de droits : un
     // impayé reste connectable sans « abonnement actif » (APP-FUNC-31).
     const isSubscribedOrTrialing = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);

@@ -30,6 +30,8 @@ interface DocumentType {
   code: string;
   label: string;
   isActive: boolean;
+  /** Lot 32 (PO-Q13) : code ancien, lisible mais jamais proposé. */
+  hideFromPicker?: boolean;
 }
 
 interface DocumentEditDialogProps {
@@ -69,10 +71,17 @@ export function DocumentEditDialog({
   const [isUpdating, setIsUpdating] = useState(false);
 
   // Liste des types disponible (API si dispo, sinon fallback canonique)
-  const availableTypes: DocumentType[] = (documentTypes && documentTypes.length > 0)
-    ? documentTypes.filter(dt => dt.isActive)
+  // Lot 32 (PO-Q13) : liste du référentiel du code (`/api/document-types`) ;
+  // un code ancien (LEGACY_SUPPORTED) n'est jamais proposé, sauf comme valeur
+  // ACTUELLE du document, qui reste lisible.
+  const proposes: DocumentType[] = (documentTypes && documentTypes.length > 0)
+    ? documentTypes.filter(dt => dt.isActive && !dt.hideFromPicker)
     // Repli : types PROPOSÉS par le sélecteur (lot 30 — ni formats ni codes CIL fins).
     : PICKER_DOCUMENT_TYPES.map((t, i) => ({ id: i + 1, code: t.code, label: t.label, isActive: true }));
+  const actuel = document?.documentType
+    ? (documentTypes ?? []).find(dt => dt.code === document.documentType && dt.hideFromPicker)
+    : undefined;
+  const availableTypes: DocumentType[] = actuel ? [...proposes, actuel] : proposes;
 
   // Initialize form when document changes
   useEffect(() => {

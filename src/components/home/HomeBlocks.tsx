@@ -53,11 +53,8 @@ export function HomeAssetCard({ asset, className = '', priority = false }: { ass
         <div className="flex flex-col gap-1">
           <h3 className="m-0 text-[14px] font-bold leading-tight text-white [text-shadow:0_2px_8px_rgba(0,0,0,.5)]">{asset.name}</h3>
           <div className="flex flex-wrap items-center gap-2">
-            {asset.todoCount > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border px-2 py-px text-[9.5px] font-semibold" style={{ background: 'rgba(245,158,11,.25)', borderColor: 'var(--edge-amber)', color: '#FCD34D' }}>
-                {asset.todoCount === 1 ? '1 action à faire' : `${asset.todoCount} actions à faire`}
-              </span>
-            )}
+            {/* Lot 32 (L32-10) : plus de pastille « N actions à faire » — elle
+                ne menait nulle part ; les actions vivent dans « À traiter ». */}
             <span className="inline-flex items-center gap-1 text-[10px] text-white/60" aria-label={`${asset.documentCount} document${asset.documentCount > 1 ? 's' : ''}`}>
               <Folder className="h-2.5 w-2.5 text-[color:var(--vb-amber-500)]" aria-hidden />
               <span className="font-semibold text-white/80">{asset.documentCount}</span>

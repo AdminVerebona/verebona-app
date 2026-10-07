@@ -26,6 +26,7 @@ const { getField, fieldTargetTypes } = await import('@/services/canonical/regist
 const { formatCanonicalValue, canonicalKeyOf } = await import('../../../canonical/field-reader');
 const { normalizePlate, normalizeVin } = await import('../../vehicle-identifiers');
 const { toIntentRoute } = await import('../../classification.adapter');
+const { resolveAssistantTargets } = await import('../../assistant-targets');
 
 export interface FxAsset {
   id: number; accountId?: number; name: string; category?: string; subtype?: string | null; status?: string | null; deleted?: boolean;
@@ -196,6 +197,8 @@ export function harness(acc: Account, o: {
     hasPendingClarification: async () => false,
     saveClarification,
     readTarget: (input, targets, route) => readTargetForRequest(input, targets, route, { lookup, readers }),
+    // Lot 32 : même résolution serveur que la production, sur le compte en mémoire.
+    resolveTargets: (input, route) => resolveAssistantTargets(input, route, lookup),
     loadThreadContext: o.thread ? async () => o.thread! : undefined,
     describeEntity: async (_acc, e) => {
       if (e.type === 'asset') {

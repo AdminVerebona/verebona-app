@@ -126,12 +126,12 @@ describe('modèles', () => {
     expect(issues.some((i) => i.field === 'fallback2')).toBe(true);
   });
 
-  it("interdit un modèle Pro sur l'assistant, et lui seul", () => {
+  it('PRO-01 — lot 32B : plus aucune règle sur le nom « -pro » pour T2 (ni pour aucun traitement)', () => {
+    // Modèle « Pro » servi et tarifé : la validation ne le refuse plus pour
+    // son nom ; son éligibilité réelle relève de `usableModelsForTreatment`.
     const surT2 = bloquants({ ...valide({ treatment: 'T2', triggers: [] }), primaryModel: 'm-pro' });
-    expect(surT2.some((i) => i.message.includes('Pro'))).toBe(true);
-
-    const surT1 = bloquants(valide({ primaryModel: 'm-pro' }));
-    expect(surT1.some((i) => i.message.includes('Pro'))).toBe(false);
+    expect(surT2.filter((i) => i.field === 'primaryModel')).toEqual([]);
+    expect(surT2.some((i) => /Pro/.test(i.message))).toBe(false);
   });
 });
 

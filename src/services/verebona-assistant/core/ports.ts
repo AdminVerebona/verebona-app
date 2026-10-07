@@ -336,6 +336,12 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       const { readTargetForRequest } = await import('./target-answer');
       return readTargetForRequest(input, targets, route);
     },
+    // Lot 32 : résolution serveur des cibles (évaluation de la compréhension,
+    // indices d'UNDERSTAND ramenés au compte) — biens DISPONIBLES seulement.
+    resolveTargets: async (input, route) => {
+      const { resolveAssistantTargets } = await import('./assistant-targets');
+      return resolveAssistantTargets(input, route);
+    },
     // CDC 15 T2-10, T2-33, T2-34 (lecture canonique) : planificateurs dédiés.
     buildSynthesisContext: async (route, input) => {
       const { buildSynthesisContext } = await import('./synthesis-planner');

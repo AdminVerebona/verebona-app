@@ -24,6 +24,7 @@
  * preuve, le moteur le constate.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 import { randomUUID } from 'crypto';
 import { pgClient } from '@/db';
 import type { ReconcileInput } from './reconciliation-engine';
@@ -155,7 +156,7 @@ async function selectScope(accountId: number, scope: 'full' | 'incremental', tri
 
   return all
     .filter((a) => retenus.has(a.id))
-    .map((a) => ['ARCHIVED', 'TRANSMIS'].includes(a.status)
+    .map((a) => (OUT_OF_PORTFOLIO_ASSET_STATUSES as readonly string[]).includes(a.status)
       ? { id: a.id, eligible: false, reason: `bien ${a.status.toLowerCase()}` }
       : { id: a.id, eligible: true });
 }

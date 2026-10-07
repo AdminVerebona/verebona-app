@@ -4,9 +4,10 @@
  * Priorité page > compte > générique : le catalogue validé (§8.3) est filtré
  * par la page, puis complété par des suggestions dérivées de l'état du
  * compte (éléments « À traiter » en attente, échéances à moins de 30 jours,
- * documents en analyse ou en erreur, exports prêts). Seuls des compteurs
- * sont lus, bornés au compte de la session ; aucun contenu n'est renvoyé,
- * seulement des libellés du catalogue.
+ * documents en analyse ou en erreur, exports prêts, documents non
+ * rattachés). Lot 32 : sur la fiche d'un bien, les exemples NOMMENT le bien ;
+ * hors fiche, ils peuvent nommer un vrai bien du compte. Tout est lu borné
+ * au compte de la session ; seuls des libellés du catalogue sont renvoyés.
  *
  * Conventions du §27 : entrée validée par schéma (`SuggestionsQuerySchema`),
  * requestId renvoyé (`x-request-id`), débit limité (limiteur des lectures).
@@ -15,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
-import { loadAccountSuggestionState } from '@/services/verebona-assistant/core/account-state';
+import { loadSuggestionContext } from '@/services/verebona-assistant/core/account-state';
 import { httpRequestId, parseWith, queryObject, readRateLimited, withRequestId } from '@/lib/verebona/api-guard';
 import { SuggestionsQuerySchema } from '@/lib/verebona/api-schemas';
 
@@ -36,9 +37,9 @@ async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   if (!q.ok) return q.response;
 
   await ensureMigrations();
-  // État indisponible : suggestions de page et génériques, sans erreur.
-  const state = await loadAccountSuggestionState(accountId).catch(() => null);
+  // Contexte indisponible : exemples indépendants des données, sans erreur.
+  const ctx = await loadSuggestionContext(accountId, q.data.route).catch(() => null);
   return NextResponse.json({
-    suggestions: suggestionsForRoute(q.data.route, state).map((s) => ({ id: s.id, label: s.label })),
+    suggestions: suggestionsForRoute(q.data.route, ctx).map((s) => ({ id: s.id, label: s.label })),
   });
 }

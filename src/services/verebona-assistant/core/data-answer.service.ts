@@ -272,6 +272,8 @@ const QUESTION_NOUNS = new Set([
   'somme', 'depense', 'depenses', 'expire', 'expiration', 'renouvellement', 'quand', 'importantes',
   'retrouve', 'retrouver', 'trouve', 'trouver', 'cherche', 'chercher', 'ou', 'est', 'arrive',
   'location', 'loue', 'loues', 'louee', 'louees', 'mis', 'mise', 'biens', 'bien', 'rendez', 'vous', 'rendez-vous',
+  // Lot 32 : « quels documents lui sont liés / concernent la Polo ? ».
+  'concerne', 'concernent', 'lui', 'leur',
 ]);
 
 // Lot 30 : plus de dictionnaire de familles propre à T2 (ancien `FAMILY_WORDS`).
@@ -408,8 +410,12 @@ type Level1 = { strategy: DataAnswerStrategy; answer: string; sources: Retrieved
 /** Plusieurs biens également plausibles pour une demande qui n'en vise qu'un. */
 type Ambiguous = { ambiguous: AssetRow[]; reason: string };
 
-/** Demande de liste des documents d'un bien (« montre-moi les documents de ma maison »). */
-const LIST_DOCS = /\b(montre|affiche|liste|lister|quels? sont|donne)\b/;
+/**
+ * Demande de liste des documents d'un bien (« montre-moi les documents de ma
+ * maison ») ; lot 32 : « quels documents sont liés à la Polo ? », « quels
+ * documents concernent la maison ? ».
+ */
+const LIST_DOCS = /\b(montre|affiche|liste|lister|quels? sont|donne)\b|\bquel(le)?s? (documents?|fichiers?|pieces?)\b.*\b(lies?|liees?|rattache(e)?s?|associe(e)?s?|concernent|concerne|concernant)\b/;
 
 /**
  * Question DIRECTE sur le statut d'un document (§12.2) : « quel est le

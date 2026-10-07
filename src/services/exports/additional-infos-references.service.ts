@@ -22,6 +22,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { db } from '@/db';
 import { agendaAssetLinks, agendaItems, assetFiles, assetPhotos, equipments, events, substructures } from '@/db/schema';
 import {
@@ -105,7 +106,8 @@ export async function findInvalidReferences(assetId: number, accountId: number, 
         isNull(assetFiles.deletedAt),
         // Pièce du bien : directe, d'une pièce (sous-structure) ou d'un équipement du bien.
         or(
-          eq(assetFiles.assetId, assetId),
+          // Lot 32C (PO 9) : document lié au bien (colonnes, liens PRIMARY / SECONDARY).
+          documentInAssetsCondition([assetId]),
           inArray(assetFiles.substructureId, db.select({ id: substructures.id }).from(substructures).where(eq(substructures.assetId, assetId))),
           inArray(assetFiles.equipmentId, db.select({ id: equipments.id }).from(equipments).where(eq(equipments.assetId, assetId))),
         ),

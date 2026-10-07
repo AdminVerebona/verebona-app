@@ -25,6 +25,7 @@ export {
   fieldTargetTypes,
   toAssetFamily,
   isExcludedKey,
+  isFieldApplicableToAsset,
   catalogForPrompts,
   catalogForT2Read,
   fieldAssistantVocabulary,

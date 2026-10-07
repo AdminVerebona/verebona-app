@@ -158,19 +158,18 @@ scenario('L29-T2', 'Lot 29 — T2 lecture de données (SQL-first, équipements, 
     expect(r.sources.map((s) => s.id).sort()).toEqual([`asset_field:${polo.id}:acquisitionDate`, `asset_field:${polo.id}:acquisitionPrice`, `asset_field:${polo.id}:mileage`].sort());
   });
 
-  it('T2ARCH-E2E — findAssets / listAssets / catalogue / revalidation : même règle (ARCHIVED, TRANSMIS, supprimé exclus ; autres statuts gardés)', async () => {
+  it('T2ARCH-E2E — findAssets / listAssets / catalogue / revalidation : même règle (ARCHIVED, TRANSMIS, VENDU, supprimé exclus)', async () => {
     const c = await compte();
     const ids: Record<string, number> = {};
-    // Statuts admis par la contrainte réelle `assets_status_check` (0057, 0121) : les
-    // statuts « dégradés » du modèle (EN_PANNE, EN_REPARATION, INACTIF) n'existent pas
-    // en base ; leurs équivalents stockés (EN_MAINTENANCE, HORS_SERVICE) restent accessibles.
-    for (const [st, del] of [['EN_SERVICE', false], ['EN_MAINTENANCE', false], ['HORS_SERVICE', false], ['ARCHIVED', false], ['TRANSMIS', false], ['EN_SERVICE', true]] as const) {
+    // Lot 32 (PO-Q11) : statuts officiels (contrainte 0278) — VENDU exclu comme
+    // ARCHIVED / TRANSMIS ; seul EN_SERVICE (non supprimé) reste candidat.
+    for (const [st, del] of [['EN_SERVICE', false], ['VENDU', false], ['ARCHIVED', false], ['TRANSMIS', false], ['EN_SERVICE', true]] as const) {
       ids[`${st}${del ? '_DEL' : ''}`] = (await bien(c, `Polo ${st.toLowerCase()}${del ? ' sup' : ''}`, { status: st, deleted: del, kc: { mileage: 1000 } })).id;
     }
     const { accountDataRepository } = await import('@/services/verebona-assistant/core/account-data.repository');
     const trouves = (await accountDataRepository.findAssets(c.id, ['polo'])).map((a) => a.id).sort((a, b) => a - b);
     const listes = (await accountDataRepository.listAssets(c.id)).map((a) => a.id);
-    const attendus = [ids.EN_SERVICE, ids.EN_MAINTENANCE, ids.HORS_SERVICE].sort((a, b) => a - b);
+    const attendus = [ids.EN_SERVICE];
     expect(trouves).toEqual(attendus);
     expect(trouves.every((id) => listes.includes(id))).toBe(true);
     const { listAvailableAssets } = await import('@/services/verebona-assistant/core/target-lookup.repository');
@@ -178,7 +177,8 @@ scenario('L29-T2', 'Lot 29 — T2 lecture de données (SQL-first, équipements, 
     const { candidatToujoursValide } = await import('@/services/verebona-assistant/core/clarification.service');
     expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.ARCHIVED}`, entityId: ids.ARCHIVED, label: 'x' })).toBe(false);
     expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.TRANSMIS}`, entityId: ids.TRANSMIS, label: 'x' })).toBe(false);
-    expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.HORS_SERVICE}`, entityId: ids.HORS_SERVICE, label: 'x' })).toBe(true);
+    expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.VENDU}`, entityId: ids.VENDU, label: 'x' })).toBe(false);
+    expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.EN_SERVICE}`, entityId: ids.EN_SERVICE, label: 'x' })).toBe(true);
     // Bout en bout : une Polo active + une Polo archivée de même nom → la Polo active, sans clarification.
     const d = await compte();
     await bien(d, 'Polo', { kc: { mileage: 82000 } });

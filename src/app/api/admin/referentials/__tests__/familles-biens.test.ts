@@ -34,12 +34,15 @@ describe('buildAssetTaxonomyReferentials', () => {
     expect(assetSubcategories.find((c) => c.code === 'Vélo')?.usage).toBe(2);
   });
 
-  it('valeurs hors classement : visibles, « Inactif »', () => {
+  it('valeurs hors classement : visibles, « Inactif » ; PO-Q14 : MATERIEL_PRO compté sous « Objet », sans ligne propre', () => {
     const { assetFamilies, assetSubcategories } = buildAssetTaxonomyReferentials(
-      [{ family: 'MATERIEL_PRO', n: 1 }],
+      [{ family: 'MATERIEL_PRO', n: 1 }, { family: 'OBJECT', n: 2 }, { family: 'FAMILLE_X', n: 1 }],
       [{ family: 'IMMOBILIER', value: 'Studio', n: 1 }, { family: 'VEHICULE', value: null, n: 4 }],
     );
-    expect(assetFamilies.find((f) => f.code === 'MATERIEL_PRO')).toMatchObject({ active: false, usage: 1, details: 'Famille ancienne, plus proposée' });
+    expect(assetFamilies.find((f) => f.code === 'MATERIEL_PRO')).toBeUndefined();
+    expect(assetFamilies.some((f) => /Matériel/i.test(f.label))).toBe(false);
+    expect(assetFamilies.find((f) => f.code === 'OBJECT')?.usage).toBe(3);
+    expect(assetFamilies.find((f) => f.code === 'FAMILLE_X')).toMatchObject({ active: false, usage: 1, details: 'Famille ancienne, plus proposée' });
     expect(assetSubcategories.find((c) => c.code === 'Studio')).toMatchObject({ active: false, details: 'Immobilier — hors classement' });
     expect(assetSubcategories.find((c) => c.label === 'Catégorie non renseignée')).toMatchObject({ usage: 4, details: 'Véhicule' });
   });

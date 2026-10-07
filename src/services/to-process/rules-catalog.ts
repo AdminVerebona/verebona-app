@@ -57,7 +57,8 @@ export type RuleProducer =
   | 'T4_AGENDA_DUPLICATE'
   | 'T4_STATUS'
   | 'T4_PROPOSAL'
-  | 'MIGRATION_REVIEW';
+  | 'MIGRATION_REVIEW'
+  | 'T3_ASSET_CONFLICT';
 
 /** Où vit chaque producteur, et par quelle(s) fonction(s) il est appelé. */
 export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
@@ -77,6 +78,7 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   T4_STATUS: { module: 'src/services/to-process/agenda-status-cards.ts', entries: ['proposeAgendaStatus', 'proposeAssetStatusChange'], generic: false },
   T4_PROPOSAL: { module: 'src/services/to-process/agenda-proposal-cards.ts', entries: ['proposeAgendaCreation'], generic: false },
   MIGRATION_REVIEW: { module: 'src/services/to-process/migration-review-cards.ts', entries: ['upsertMigrationReviewCard'], generic: false },
+  T3_ASSET_CONFLICT: { module: 'src/services/to-process/document-asset-conflict.ts', entries: ['proposeDocumentAssetConflict', 'closeObsoleteAssetConflicts'], generic: false },
 };
 
 export interface ProcessingRule {
@@ -184,6 +186,25 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 75,
     producer: 'DOCUMENT_BRIDGE',
     cardinality: 'atLeastOne',
+  },
+
+  // ── Lot 32C (PO 8, PO 10) : incohérence de rattachement ─────────────────
+  // Document rattaché par l'utilisateur au bien A, que l'analyse désigne
+  // comme concernant B (identifiant exact de B, ou candidat unique certain).
+  // Le choix de l'utilisateur prévaut : rien n'est déplacé automatiquement,
+  // la carte propose « Rattacher à B », « Ignorer », « Garder A ». Une carte
+  // par document (relation `assetConflict`). Voir `document-asset-conflict.ts`.
+  {
+    code: 'LINK-ASSET-CONFLICT',
+    targetType: 'DOCUMENT',
+    relationKey: 'assetConflict',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    // « Ignorer » : état final légitime, qui ne revient pas sans élément nouveau.
+    allowNotApplicable: true,
+    question: 'Ce document semble concerner un autre bien : lequel garder ?',
+    businessImpact: 72,
+    producer: 'T3_ASSET_CONFLICT',
   },
 
   // ── §10.4 Rattachement secondaire ───────────────────────────────────────

@@ -54,6 +54,7 @@ import {
 } from '@/services/ai/telemetry/execution-filters';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
+import { CopyBlockButton, ExecutionExportButtons } from './_components/CopyJson';
 
 interface Execution {
   id: number;
@@ -104,7 +105,12 @@ interface Detail {
   call: Execution;
   traceId: string | null;
   calls: Execution[];
-  steps: Array<{ stepName: string; status: string; model: string | null; durationMs: number | null; errorMessage: string | null }>;
+  steps: Array<{
+    stepName: string; stepOrder?: number; status: string; model: string | null; durationMs: number | null;
+    errorCode?: string | null; errorMessage: string | null;
+    /** Sortie journalisée : extrait masqué, ou empreinte pour l'assistant (§29.6). */
+    outputPreview?: string | null;
+  }>;
   job: {
     id: number; treatment: string; status: string; origin: string; triggerCode: string | null;
     attempts: number; configVersionId: number | null; createdAt: string; startedAt: string | null;
@@ -387,7 +393,10 @@ function AiExecutionsScreen() {
               {r.cascade != null && (
                 <details className="text-xs text-[color:var(--text-muted)]">
                   <summary className="cursor-pointer">Cascade (niveaux atteints)</summary>
-                  <pre className="whitespace-pre-wrap break-all mt-1">{JSON.stringify(r.cascade, null, 2)}</pre>
+                  <div className="mt-1 flex items-start gap-1">
+                    <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all">{JSON.stringify(r.cascade, null, 2)}</pre>
+                    <CopyBlockButton value={r.cascade} label="la cascade" />
+                  </div>
                 </details>
               )}
               <T2RequestExtras requestId={r.requestId} />
@@ -474,7 +483,11 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
       <div className="w-full max-w-xl h-full overflow-y-auto bg-[color:var(--bg-card)] p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-[color:var(--text-primary)]">Exécution — appel {detail.call.id}</h2>
-          <Button size="sm" variant="ghost" onClick={onClose} aria-label="Fermer"><X className="w-4 h-4" /></Button>
+          <div className="flex items-center gap-1.5">
+            {/* Lot 32 : l'exécution complète, copiable ou téléchargeable pour l'analyser ailleurs. */}
+            <ExecutionExportButtons callId={detail.call.id} />
+            <Button size="sm" variant="ghost" onClick={onClose} aria-label="Fermer"><X className="w-4 h-4" /></Button>
+          </div>
         </div>
         <p className="text-xs text-[color:var(--text-muted)] break-all">
           Trace {detail.traceId ?? '—'} · {detail.call.treatment ?? '—'} · {detail.call.operationCode}
@@ -523,10 +536,21 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           <section className="space-y-1">
             <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Étapes</h3>
             {detail.steps.map((s, i) => (
-              <p key={i} className="text-xs text-[color:var(--text-secondary)]">
-                {s.stepName} · {s.status} · {s.model ?? '—'} · {duration(s.durationMs)}
-                {s.errorMessage && <span className="text-red-400"> — {s.errorMessage}</span>}
-              </p>
+              <div key={i} className="text-xs text-[color:var(--text-secondary)]">
+                <p>
+                  {s.stepName} · {s.status} · {s.model ?? '—'} · {duration(s.durationMs)}
+                  {s.errorMessage && <span className="text-red-400"> — {s.errorCode ? `${s.errorCode} — ` : ''}{s.errorMessage}</span>}
+                </p>
+                {s.outputPreview && (
+                  <div className="mt-0.5">
+                    <div className="flex items-center gap-1 text-[color:var(--text-muted)]">
+                      Sortie du modèle ({/^sha256:/.test(s.outputPreview) ? 'empreinte, contenu non conservé' : 'extrait masqué'}) :
+                      <CopyBlockButton value={s.outputPreview} label={`la sortie de l’étape ${s.stepName}`} />
+                    </div>
+                    <pre className="whitespace-pre-wrap break-all">{s.outputPreview}</pre>
+                  </div>
+                )}
+              </div>
             ))}
           </section>
         )}
@@ -536,9 +560,12 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           {detail.inputs.filter((i) => i.value != null && i.value !== '').map((i) => (
             <div key={i.label} className="text-xs text-[color:var(--text-secondary)]">
               <span className="text-[color:var(--text-muted)]">{i.label} : </span>
-              {typeof i.value === 'object'
-                ? <pre className="whitespace-pre-wrap break-all">{JSON.stringify(i.value, null, 2)}</pre>
-                : String(i.value)}
+              {typeof i.value === 'object' ? (
+                <>
+                  <CopyBlockButton value={i.value} label={i.label} />
+                  <pre className="whitespace-pre-wrap break-all">{JSON.stringify(i.value, null, 2)}</pre>
+                </>
+              ) : String(i.value)}
             </div>
           ))}
         </section>

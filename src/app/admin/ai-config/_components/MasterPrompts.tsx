@@ -1,8 +1,10 @@
 'use client';
 
 /**
- * Prompts maîtres T1–T4, T6 — administration autonome depuis le BO.
- * Ticket BO-IA-PROMPTS-01.
+ * Prompts maîtres T1 à T6 — administration autonome depuis le BO.
+ * Ticket BO-IA-PROMPTS-01 ; T5 (Prompt Control) depuis le lot 32B (décision
+ * PO n° 15) : même parcours, Prompt Control ne modifie jamais son propre
+ * prompt (règle du serveur).
  *
  * Parcours nominal : Modifier → Enregistrer → (éventuellement Tester) →
  * Activer. En cas de problème : Historique → Réactiver cette version.
@@ -639,7 +641,8 @@ export function MasterPrompts({ refreshKey }: { refreshKey?: number }) {
         </details>
       ))}
       <p className="text-xs text-[color:var(--text-muted)]">
-        Le prompt de Prompt Control (T5) est défini dans l’application : il n’est pas modifiable ici.
+        T5 (Prompt Control) s’administre ici comme les autres prompts ; Prompt Control lui-même ne modifie jamais son
+        propre prompt.
       </p>
     </section>
   );

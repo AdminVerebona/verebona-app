@@ -307,6 +307,7 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
     mirrorColumns: [{ table: 'assets', column: 'registration_number', transform: 'identity' }],
     assistantWritable: true,
     completenessRule: { required: true },
+    requiresCapability: 'registration',
   }),
   f({ key: 'vin', label: 'VIN / numéro de châssis', families: V, valueType: 'string', section: 'vehicle_identification', aliases: ['chassisNumber', 'numeroChassis', 'numeroVin', 'vehicleIdentificationNumber'] }),
   f({ key: 'year', label: 'Année', families: V, valueType: 'number', integer: true, range: { min: 1880, max: 2100 }, section: 'vehicle_identification', aliases: ['annee', 'modelYear'] }),
@@ -335,11 +336,13 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
     aliases: ['premiereImmatriculation', 'datePremiereImmatriculation', 'dateMiseEnCirculation', 'miseEnCirculation'],
     assistantPhrases: ['date de premiere immatriculation', 'premiere immatriculation', 'date de mise en circulation', 'mise en circulation'],
     assistantWritable: true,
+    requiresCapability: 'registration',
   }),
   f({
     key: 'registrationExpiry', label: 'Fin de validité d’immatriculation', families: V, valueType: 'date',
     aliases: ['finValiditeImmatriculation'],
     agendaEffect: { nature: 'DEADLINE', businessType: 'registration' },
+    requiresCapability: 'registration',
   }),
 
   /* ── Véhicule : usage / kilométrage / contrôle ─────────────────────────── */

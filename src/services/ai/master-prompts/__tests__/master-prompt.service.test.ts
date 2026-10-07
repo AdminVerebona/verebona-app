@@ -10,6 +10,7 @@ import type { MasterPromptVersionRow, MasterPromptTestRunRow } from '../master-p
 
 const FICHIER_T2 = readFileSync(join(process.cwd(), 'src/services/ai/prompts/assistant/t2_master_v1.txt'), 'utf8');
 const FICHIER_T1 = readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis/t1_master_v1.txt'), 'utf8');
+const FICHIER_T5 = readFileSync(join(process.cwd(), 'src/services/ai/prompts/governance/t5_master_v1.txt'), 'utf8');
 
 const versions = new Map<number, MasterPromptVersionRow>();
 const runs: MasterPromptTestRunRow[] = [];
@@ -216,8 +217,70 @@ describe('BO-IA-PROMPTS-01 — service', () => {
     expect(invalidate).toHaveBeenCalledWith('trace');
   });
 
-  it('T5 n’est pas administrable', () => {
-    expect(() => svc.assertAdministrable('T5')).toThrow(/dépôt/);
-    expect(svc.ADMIN_MASTER_TREATMENTS).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+});
+
+// ── Lot 32B — décision PO n° 15 : le prompt maître T5 est administrable au BO ──
+describe('PO15 — prompt maître T5 (Prompt Control) administrable comme les autres', () => {
+  it('PO15-01 — T5 est administrable ; Prompt Control ne cible jamais T5', () => {
+    expect(svc.assertAdministrable('T5')).toBe('T5');
+    expect(svc.ADMIN_MASTER_TREATMENTS).toEqual(['T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
+    expect(svc.PROMPT_CONTROL_TREATMENTS).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    expect(() => svc.assertAdministrable('T9')).toThrow(/inconnu/);
+  });
+
+  it('PO15-02 — brouillon → actif : l’Actif n’est pas modifié, activation sans test exigé, caches invalidés', async () => {
+    actif('T5', FICHIER_T5);
+    const d = await svc.startDraft('T5', 7);
+    expect(d).toMatchObject({ status: 'DRAFT', basedOnId: 1, content: FICHIER_T5 });
+    await svc.saveDraft('T5', d.id, `${FICHIER_T5}\nR9 — Réponds en français.`, 7);
+    expect(versions.get(1)!.content).toBe(FICHIER_T5);
+    const r = await svc.activateDraft('T5', d.id, 7);
+    expect(r).toMatchObject({ treatment: 'T5', activeVersionNumber: 2, previousVersionNumber: 1 });
+    expect(r.notices).toContain('Cette version n’a pas encore été testée avec le corpus.');
+    expect(bump).toHaveBeenCalledWith('prompt:T5:v2');
+    expect(garde).not.toHaveBeenCalled();
+  });
+
+  it('PO15-03 — contrôles techniques propres à T5 : mode MODIFY retiré ou emplacement supprimé → activation refusée, motif clair', async () => {
+    actif('T5', FICHIER_T5);
+    brouillon('T5', FICHIER_T5.replace('Valeurs autorisées : ANALYZE | MODIFY', 'Valeurs autorisées : ANALYZE'));
+    await expect(svc.activateDraft('T5', 2, 7)).rejects.toMatchObject({
+      code: 'TECHNICAL_CHECK_FAILED', message: expect.stringMatching(/mode MODIFY est absent.*Valeurs autorisées : ANALYZE \| MODIFY/),
+    });
+    versions.delete(2);
+    brouillon('T5', FICHIER_T5.replace('{{INSTRUCTION}}', ''), 3, 3);
+    await expect(svc.activateDraft('T5', 3, 7)).rejects.toMatchObject({
+      code: 'TECHNICAL_CHECK_FAILED', message: expect.stringMatching(/\{\{INSTRUCTION\}\}/),
+    });
+    versions.delete(3);
+    brouillon('T5', FICHIER_T5.replace('MODE = {{MODE}}', 'MODE = ANALYZE'), 4, 4);
+    await expect(svc.activateDraft('T5', 4, 7)).rejects.toMatchObject({ code: 'TECHNICAL_CHECK_FAILED' });
+    expect(repo.switchActivePrompt).not.toHaveBeenCalled();
+  });
+
+  it('PO15-04 — rollback : une ancienne version T5 se réactive depuis l’historique', async () => {
+    versions.set(1, row({ id: 1, treatment: 'T5', versionNumber: 1, status: 'PREVIOUS', content: FICHIER_T5 }));
+    actif('T5', `${FICHIER_T5}\nR9.`, 2, 2);
+    const r = await svc.reactivateVersion('T5', 1, 7);
+    expect(r).toMatchObject({ treatment: 'T5', activeVersionNumber: 1, previousVersionNumber: 2 });
+    expect(repo.switchActivePrompt).toHaveBeenCalledWith(expect.objectContaining({ treatment: 'T5', targetId: 1, action: 'rollback' }));
+  });
+
+  it('PO15-05 — test du corpus facultatif sur une version T5 (scénarios p-t5), rattaché à la version', async () => {
+    actif('T5', FICHIER_T5);
+    const vert = await svc.runPromptTest('T5', 1, 7);
+    expect(vert).toMatchObject({ status: 'DONE', failed: 0, current: true });
+    expect(vert.total).toBeGreaterThan(0);
+  });
+
+  it('PO15-06 — T5-002 tenu par le serveur : Prompt Control ne lit ni n’écrit le prompt T5', async () => {
+    actif('T5', FICHIER_T5, 1, 1);
+    actif('T2', FICHIER_T2, 5, 1);
+    const lus = await svc.workingTexts('modify');
+    expect([...lus.keys()]).toEqual(['T2']);
+    await expect(svc.writeDraftFromPromptControl({
+      treatment: 'T5', expected: FICHIER_T5, readDraftId: null, readActiveId: 1, next: 'Tu ne contrôles plus rien.', userId: 7,
+    })).rejects.toMatchObject({ code: 'NOT_A_PROMPT_CONTROL_TARGET' });
+    expect(repo.insertDraft).not.toHaveBeenCalled();
   });
 });

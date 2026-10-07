@@ -157,10 +157,10 @@ export function loadAssistantConfig(): AssistantConfig {
     maxCandidates: num('VEREBONA_ASSISTANT_MAX_CANDIDATES', 20),
     timelineMaxEvents: Math.min(Math.max(Math.trunc(num('VEREBONA_ASSISTANT_TIMELINE_MAX_EVENTS', 60)) || 60, 1), 200),
     costAlertPerResponseUsd: num('VEREBONA_ASSISTANT_COST_ALERT_USD', 0.005),
-    // 2 000 000 micro-unités ≈ 2 USD / compte / mois, soit ~1 000 réponses
-    // intelligentes à l'objectif de 0,002 USD (§31.3) : un garde-fou contre
-    // l'usage anormal, jamais atteint par un usage normal.
-    monthlyBudgetMicros: num('VEREBONA_ASSISTANT_MONTHLY_BUDGET_MICROS', 2_000_000),
+    // Lot 32 (décision PO Q23 : « pas de valeur pour l'instant ») : aucun
+    // plafond par défaut (0). Réglable sans développement (BO → Configuration
+    // IA → seuils) ; les coûts restent mesurés et les alertes de coût actives.
+    monthlyBudgetMicros: num('VEREBONA_ASSISTANT_MONTHLY_BUDGET_MICROS', 0),
     budgetAlertRatio: num('VEREBONA_ASSISTANT_BUDGET_ALERT_RATIO', 0.8),
   };
 }
@@ -250,8 +250,10 @@ export function assertConfigAtStartup(
     const modeles = [op.primaryModel, ...op.fallbackModels];
     // §15.13 : jamais d'alias fournisseur « latest ».
     for (const m of modeles) if (/latest/i.test(m)) errors.push(`${code} : alias « latest » interdit (${m}) (§15.13)`);
-    // §15.6 / §31.2 : aucun modèle Pro dans le chemin utilisateur.
-    for (const m of modeles) if (/-pro\b/i.test(m)) errors.push(`${code} : modèle Pro interdit (${m}) (§15.6)`);
+    // Lot 32B : plus d'interdit sur le NOM du modèle (ancien « aucun Pro »,
+    // CDC Assistant V1 §15.6 / §31.2). Statut, compatibilité t2_master_v1,
+    // capacités, tarif et preview sont contrôlés par le registre
+    // (`model-startup-check`, `usableModelsForTreatment`).
     // §15.14 : escalade identique au modèle par défaut sans décision explicite.
     if (op.fallbackModels.includes(op.primaryModel) && process.env.VEREBONA_ASSISTANT_ALLOW_SAME_MODEL !== 'true') {
       errors.push(`${code} : modèle d'escalade identique au modèle par défaut (§15.14)`);

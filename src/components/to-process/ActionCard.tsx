@@ -68,7 +68,15 @@ interface Handlers {
   /** « Autre » et « Compléter » mènent au même endroit : le drawer, sur le champ. */
   onOpenTarget: (action: ActionView) => void;
   busy?: boolean;
+  /**
+   * Carte ciblée par son ID (mascotte, OPEN_TODO_CARD — lot 32) : mise en
+   * évidence, le temps que l'utilisateur la repère.
+   */
+  focused?: boolean;
 }
+
+/** Ancre DOM d'une carte, par l'ID de l'action — jamais par son libellé. */
+export const todoCardDomId = (publicId: string) => `todo-${publicId}`;
 
 function TargetIcon({ action }: { action: ActionView }) {
   const className = 'h-4 w-4 text-muted-foreground shrink-0';
@@ -207,9 +215,14 @@ function Source({ action, onOpenTarget }: { action: ActionView; onOpenTarget: Ha
   );
 }
 
-export function ActionCard({ action, ...handlers }: { action: ActionView } & Handlers) {
+export function ActionCard({ action, focused, ...handlers }: { action: ActionView } & Handlers) {
   return (
-    <article className="rounded-lg border bg-card p-4 shadow-sm focus-within:ring-2 focus-within:ring-ring">
+    <article
+      id={todoCardDomId(action.publicId)}
+      data-todo-id={action.publicId}
+      aria-current={focused ? 'true' : undefined}
+      className={`scroll-mt-24 rounded-lg border bg-card p-4 shadow-sm focus-within:ring-2 focus-within:ring-ring ${focused ? 'ring-2 ring-primary' : ''}`}
+    >
       {/* §8.4 : la question est l'élément dominant. */}
       <h3 className="text-sm font-medium leading-snug">{action.question}</h3>
 
@@ -239,9 +252,14 @@ export function ActionCard({ action, ...handlers }: { action: ActionView } & Han
   );
 }
 
-export function ActionRow({ action, ...handlers }: { action: ActionView } & Handlers) {
+export function ActionRow({ action, focused, ...handlers }: { action: ActionView } & Handlers) {
   return (
-    <article className="flex flex-col gap-2 border-b py-3 last:border-b-0 focus-within:ring-2 focus-within:ring-ring sm:flex-row sm:items-center sm:justify-between">
+    <article
+      id={todoCardDomId(action.publicId)}
+      data-todo-id={action.publicId}
+      aria-current={focused ? 'true' : undefined}
+      className={`scroll-mt-24 flex flex-col gap-2 border-b py-3 last:border-b-0 focus-within:ring-2 focus-within:ring-ring sm:flex-row sm:items-center sm:justify-between ${focused ? 'ring-2 ring-primary rounded-md' : ''}`}
+    >
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{action.question}</p>
         <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">

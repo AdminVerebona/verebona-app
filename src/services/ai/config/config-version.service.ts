@@ -55,23 +55,18 @@ export class ConfigOperationRefused extends Error {
  * ceux sans tarif connu.
  */
 async function buildCatalogs(): Promise<ConfigCatalogs> {
-  const { GEMINI_PUBLIC_CATALOG } = await import('../gateway/pricing/gemini-public-catalog');
-  const { getCachedPrice, loadPricingCache, getCacheState } =
-    await import('../gateway/pricing/pricing.repository');
-
-  if (getCacheState().loadedAt === null) await loadPricingCache();
-
+  // Lot 32B : un seul contexte (catalogue fournisseur, tarifs, politique
+  // preview, état opérationnel) — celui de `usableModelsForTreatment`.
+  const { loadUsableModelsContext, evaluateModelForTreatment } = await import('../registry/usable-models');
+  const { selectableModels } = await import('../provider/model-catalog.service');
+  const ctx = await loadUsableModelsContext();
   // E-04, WF-29, WF-40 : disponibilité réelle chez le fournisseur, au dernier
   // rafraîchissement du catalogue ; jamais rafraîchi → catalogue du code.
-  const { getCatalogState, selectableModels } = await import('../provider/model-catalog.service');
-  const state = await getCatalogState().catch(() => ({ refreshedAt: null, models: [] }));
-  const available = selectableModels(GEMINI_PUBLIC_CATALOG.map((e) => e.model), state);
-  const priced = new Set<string>();
-  for (const model of available) {
-    if (getCachedPrice('gemini', model)) priced.add(model);
-  }
+  const available = selectableModels(ctx.codeCatalog, ctx.catalog as never);
+  const priced = new Set<string>([...available].filter((m) => ctx.price(m) !== null));
 
   return {
+    modelEligibility: (treatment, model) => evaluateModelForTreatment(treatment, model, ctx),
     availableModels: available,
     pricedModels: priced,
     guardrailCodes: guardrailCodes(),
@@ -79,6 +74,42 @@ async function buildCatalogs(): Promise<ConfigCatalogs> {
     // Point resté ouvert : avertissement tant que l'arbitrage n'est pas rendu.
     requireActiveTrigger: false,
   };
+}
+
+/** Champs « modèle » d'une ligne (principal et replis). */
+const MODEL_FIELDS = ['primaryModel', 'fallback1', 'fallback2'] as const;
+
+/**
+ * Lot 32B, §5 — enregistrement : un modèle NOUVELLEMENT choisi (absent de la
+ * ligne enregistrée à ce rang) doit être utilisable pour le traitement, et
+ * ne pas doubler un autre rang. Une valeur déjà enregistrée et devenue
+ * inutilisable reste acceptée (brouillon incomplet ou hérité, §4) : elle est
+ * signalée et bloque la promotion, jamais l'enregistrement d'autres champs.
+ */
+export async function assertNewModelSelections(
+  current: TreatmentConfig | null | undefined,
+  next: TreatmentConfig,
+  catalogs?: Pick<ConfigCatalogs, 'modelEligibility'>,
+): Promise<void> {
+  const nouveaux = MODEL_FIELDS.filter((f) => next[f] && next[f] !== (current?.[f] ?? null));
+  if (nouveaux.length === 0) return;
+  const eligibility = (catalogs ?? await buildCatalogs()).modelEligibility!;
+  const refus: Array<{ field: string; model: string; message: string }> = [];
+  for (const f of nouveaux) {
+    const model = next[f]!;
+    const autres = MODEL_FIELDS.filter((x) => x !== f).map((x) => next[x]);
+    if (autres.includes(model)) {
+      refus.push({ field: f, model, message: `« ${model} » est déjà choisi à un autre rang de la chaîne de ${next.treatment}.` });
+      continue;
+    }
+    const e = eligibility(next.treatment, model);
+    if (!e.usable) {
+      refus.push({ field: f, model, message: `Le modèle « ${model} » n’est pas utilisable pour ${next.treatment} : ${e.reasonText}.` });
+    }
+  }
+  if (refus.length > 0) {
+    throw new ConfigOperationRefused('MODEL_NOT_USABLE', refus.map((r) => r.message).join(' '), refus);
+  }
 }
 
 async function load(versionId: number): Promise<ConfigVersionWithEntries> {
@@ -122,6 +153,9 @@ export async function saveTreatmentConfig(
   // Même règle pour le texte master (D-03) : omis ⇒ celui en place.
   const masterPrompt = config.masterPrompt === undefined ? (current?.masterPrompt ?? null) : config.masterPrompt;
   const enregistree: TreatmentConfig = { ...config, promptArchitecture: next, masterPrompt };
+  // Lot 32B, §5 : le filtrage du BO n'est pas une règle de sécurité.
+  // Version absente ou non modifiable : `saveEntry` rend le refus explicite.
+  if (version?.status === 'DRAFT') await assertNewModelSelections(current, enregistree);
   await saveEntry(versionId, enregistree, userId);
   // CFG-01 (CDC 15) : une édition ne touche qu'un Brouillon (`saveEntry`
   // refuse tout autre statut), jamais la version effective. La clé partagée
@@ -361,8 +395,8 @@ export async function assertPreviewModelsApproved(
  * (`registry/models.ts`), à la validation (qui rend la version Active en
  * préproduction) et à l'activation :
  *   · chaque modèle (principal, repli 1, repli 2) doit être déclaré
- *     compatible avec le prompt maître du traitement — un modèle Pro n'est
- *     jamais compatible avec l'assistant ni la mascotte (§15.6) ;
+ *     compatible avec le prompt maître du traitement (compatibilité déclarée
+ *     modèle par modèle au registre, jamais déduite du nom — lot 32B) ;
  *   · son modèle de rollback doit exister au registre et être stable.
  *   · T2 (assistant) : un modèle preview OU INCONNU du registre n'est admis
  *     que si le flag `VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS` ou le réglage
@@ -424,6 +458,39 @@ export async function assertModelRegistryCoherence(
   return issues.filter((i) => i.level === 'warning');
 }
 
+/**
+ * Lot 32B, §5 — activation : les MODÈLES de la version doivent être
+ * utilisables pour leur traitement, au moment de l'activation (un modèle
+ * retiré par le fournisseur entre la validation et l'activation est refusé).
+ * Seuls les contrôles de modèles sont rejoués : la version a déjà passé les
+ * autres à sa validation. Pas appliqué au rollback (WF-06) — restaurer une
+ * version déjà active doit rester possible pendant un incident.
+ */
+export async function assertVersionModelsUsable(
+  version: Pick<ConfigVersionWithEntries, 'entries'>,
+  catalogs?: Pick<ConfigCatalogs, 'modelEligibility'>,
+): Promise<void> {
+  const eligibility = (catalogs ?? await buildCatalogs()).modelEligibility!;
+  const refus: Array<{ treatment: string; field: string; model: string; message: string }> = [];
+  for (const e of version.entries) {
+    for (const f of MODEL_FIELDS) {
+      const model = e[f];
+      if (!model) continue;
+      const r = eligibility(e.treatment, model);
+      if (!r.usable) {
+        refus.push({ treatment: e.treatment, field: f, model, message: `Le modèle « ${model} » n’est pas utilisable pour ${e.treatment} : ${r.reasonText}.` });
+      }
+    }
+  }
+  if (refus.length > 0) {
+    throw new ConfigOperationRefused(
+      'MODEL_NOT_USABLE',
+      `Activation impossible : ${refus.map((i) => i.message).join(' ')}`,
+      refus,
+    );
+  }
+}
+
 // ── WF-05 et WF-06 — Activation et restauration ─────────────────────────────
 
 export interface SwitchResult {
@@ -439,6 +506,8 @@ export interface SwitchResult {
 /** WF-05 — activation normale : n'interrompt aucune exécution en cours. */
 export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
   const version = await load(versionId);
+  // Lot 32B, §5 : chaque modèle (principal, replis) ∈ usableModelsForTreatment.
+  await assertVersionModelsUsable(version);
   // BO-IA-PROMPTS-01 : aucun corpus exigé. Contrôles techniques seulement.
   const avertissements = await assertModelRegistryCoherence(version);
   await assertPreviewModelsApproved(version);

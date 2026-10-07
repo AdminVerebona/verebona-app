@@ -16,7 +16,7 @@ import { normalize } from './decision/normalizers';
 import { readOrigin } from './field-origin';
 import { isCriticalField } from './decision/critical-fields';
 import { EVIDENCE_BASED_ORIGINS } from './negative-reconciliation';
-import { isInputOnlyKey } from '@/services/canonical/registry';
+import { isFieldApplicableToAsset, isInputOnlyKey } from '@/services/canonical/registry';
 import type { DecisionInput, EvidenceCandidate, CurrentValue } from './types';
 import type { FieldEvidence } from '../evidence/evidence.types';
 
@@ -50,7 +50,7 @@ export async function collectAssetEvidenceState(
   assetId: number,
 ): Promise<{ kc: Record<string, unknown> | null; fields: CollectedField[] }> {
   const [asset] = await db
-    .select({ keyCharacteristics: assets.keyCharacteristics })
+    .select({ keyCharacteristics: assets.keyCharacteristics, category: assets.category, subtype: assets.subtype })
     .from(assets)
     .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId)))
     .limit(1);
@@ -65,6 +65,9 @@ export async function collectAssetEvidenceState(
     // D-D (lot 20) : un champ de saisie seule n'est jamais réconcilié depuis
     // une preuve (aucune proposition, aucune écriture, aucun conflit).
     if (isInputOnlyKey(fieldKey)) continue;
+    // Lot 32 (L32-1) : champ sans objet pour ce bien (immatriculation d'un
+    // vélo) — aucune décision, donc ni écriture, ni proposition « À traiter ».
+    if (!isFieldApplicableToAsset(fieldKey, { category: asset.category, subtype: asset.subtype })) continue;
     const evidences = await getActiveEvidence(accountId, assetId, fieldKey);
 
     const candidates = toEvidenceCandidates(fieldKey, evidences);

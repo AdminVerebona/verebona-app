@@ -139,10 +139,14 @@ export async function testProviderKey(
       // available to new users » plutôt qu'un « erreur 404 » inexploitable.
       detail.error = `Génération refusée (${generation.status}) : ${nettoyer(texte, secret)}`;
       await trace(accountId, userId, model, false, Date.now() - started, detail.error);
+      // Lot 32B (§1.H) : état opérationnel du modèle POUR CETTE CLÉ (empreinte,
+      // jamais la clé) — ignoré tant que la clé n'est pas l'active.
+      await recordOperational(model, secret, false, detail.error);
       return { ok: false, detail };
     }
 
     detail.generationOk = true;
+    await recordOperational(model, secret, true, null);
     // PROV-UI-03 : jetons réels de la génération de test, tracés (coût
     // technique, jamais métier) plutôt qu'un zéro.
     const usage = ((await generation.json().catch(() => ({}))) as {
@@ -158,6 +162,11 @@ export async function testProviderKey(
     await trace(accountId, userId, model, false, Date.now() - started, detail.error);
     return { ok: false, detail };
   }
+}
+
+async function recordOperational(model: string, secret: string, ok: boolean, error: string | null): Promise<void> {
+  const { recordOperationalStatus } = await import('./model-operational.service');
+  await recordOperationalStatus({ model, secret, ok, error, source: 'provider_test' });
 }
 
 /**

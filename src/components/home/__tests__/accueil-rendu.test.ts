@@ -32,7 +32,7 @@ const asset = (id: number, name: string, extra: Partial<HomeAsset> = {}): HomeAs
 const noop = () => {};
 
 describe('Mes biens', () => {
-  it('bento (lot 8) : 1 grande carte, 3 tuiles, « Tous les biens » ; pastille d’action', () => {
+  it('bento (lot 8) : 1 grande carte, 3 tuiles, « Tous les biens » ; L32-10 — plus de pastille d’action', () => {
     const html = renderToStaticMarkup(h(HomeAssets, {
       onAddAsset: noop,
       assets: [
@@ -46,7 +46,9 @@ describe('Mes biens', () => {
     expect(html).toContain('grid-cols-3');
     expect(html.indexOf('Appartement Lyon')).toBeLessThan(html.indexOf('Ferrari Testarossa'));
     expect(html).toContain('Tous les biens');
-    expect(html).toContain('1 action à faire');
+    // L32-10 : la pastille « N action(s) à faire » ne menait nulle part.
+    expect(html).not.toContain('action à faire');
+    expect(html).not.toContain('actions à faire');
     expect(html).not.toContain('Cinquième');
     expect(html).toContain('https://s3/lyon.jpg');
   });

@@ -30,6 +30,8 @@
  *   legal-verify-integrity          le lundi à 6 h 40             lecture seule (+ journal)
  *   t3-legacy-transfer              au démarrage, puis /h tant    bail `t3-legacy-transfer`
  *                                   que des demandes subsistent
+ *   mascot-pregeneration            toutes les minutes            FOR UPDATE SKIP LOCKED + bail par compte
+ *   mascot-pregeneration-deadlines  chaque jour à 5 h 40          une ligne par compte (upsert)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -279,6 +281,38 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       // Lots de 200 : un reste avec progrès n'est pas un échec ; aucun
       // progrès, si (transferts refusés).
       return r.remaining < r.before ? { note, again: true } : { note, again: true, error: note };
+    },
+  },
+  {
+    // Lot 32 (décision PO 6) : texte T6 de l'accueil préparé dès que la
+    // situation d'un compte change — lot borné, coût plafonné par compte.
+    code: 'mascot-pregeneration',
+    label: 'Mascotte : pré-génération du texte d’accueil',
+    schedule: { kind: 'interval', everyMs: MIN },
+    timeoutMs: 4 * MIN,
+    startupDelayMs: 2 * MIN,
+    // Court (≤ 25 s), chaque minute : ne retient pas les balayages.
+    ownSlot: true,
+    run: async ({ deadline }) => {
+      const { runMascotPregeneration } = await import('@/services/home/mascot/pregen-queue');
+      const r = await runMascotPregeneration({ deadline: Math.min(deadline, Date.now() + 25_000) });
+      if (r.claimed > 0) return { note: JSON.stringify(r) };
+    },
+  },
+  {
+    // Le passage d'une échéance change la situation sans action de personne.
+    code: 'mascot-pregeneration-deadlines',
+    label: 'Mascotte : échéances du jour (pré-génération)',
+    schedule: { kind: 'daily', at: [5, 40], graceMs: 6 * HOUR },
+    timeoutMs: 10 * MIN,
+    run: async () => {
+      const [{ enqueueDeadlineSituations }, { todayParis }, { EXT_ACTION_LOOKBACK_DAYS }] = await Promise.all([
+        import('@/services/home/mascot/pregen-queue'),
+        import('@/services/home/mascot/collector'),
+        import('@/services/home/mascot/signals'),
+      ]);
+      const n = await enqueueDeadlineSituations(todayParis(), EXT_ACTION_LOOKBACK_DAYS);
+      return { note: `${n} compte(s) signalé(s)` };
     },
   },
 ];

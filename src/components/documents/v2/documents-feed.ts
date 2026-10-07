@@ -108,7 +108,9 @@ function decrement<T extends { count: number }>(list: T[], match: (item: T) => b
  */
 export function metaWithout(meta: FeedMeta, d: DocumentItem): FeedMeta {
   const rubric = d.rubricCode ?? UNFILED;
-  const bien = d.assetId ? String(d.assetId) : NO_ASSET;
+  // Lot 32C (PO 9) : le document comptait sous chacun de ses biens.
+  const ids = d.assetIds?.length ? d.assetIds : d.assetId ? [d.assetId] : [];
+  const biens = ids.length ? ids.map(String) : [NO_ASSET];
   const type = d.documentTypeCode ?? NO_TYPE;
   return {
     total: Math.max(0, meta.total - 1),
@@ -118,7 +120,7 @@ export function metaWithout(meta: FeedMeta, d: DocumentItem): FeedMeta {
       ? { ...r, count: Math.max(0, r.count - 1), scopeCount: Math.max(0, r.scopeCount - 1) }
       : r)),
     facets: {
-      biens: decrement(meta.facets.biens, (f) => f.value === bien),
+      biens: decrement(meta.facets.biens, (f) => biens.includes(f.value)),
       rubrics: decrement(meta.facets.rubrics, (f) => f.value === rubric),
       types: decrement(meta.facets.types, (f) => f.value === type),
     },

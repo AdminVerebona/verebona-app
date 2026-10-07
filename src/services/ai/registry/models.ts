@@ -75,8 +75,12 @@ export interface DeclaredModel {
   note?: string;
 }
 
-// Prompts maîtres (CDC 15 §22). Les Pro sont exclus de l'assistant et de la
-// mascotte (§15.6, §31.2 : « aucune utilisation d'un modèle Pro »).
+// Prompts maîtres (CDC 15 §22). Lot 32B : la compatibilité est DÉCLARÉE
+// MODÈLE PAR MODÈLE, jamais déduite de la catégorie commerciale (« Flash »,
+// « Pro ») — l'ancienne exclusion générale des Pro sur l'assistant (CDC
+// Assistant V1, §15.6 / §31.2) n'est plus une règle active. Un modèle n'est
+// sélectionnable pour un traitement que s'il déclare le prompt maître de ce
+// traitement ET satisfait les autres règles (`usable-models.ts`).
 const T1 = 't1_master_v1';
 const T2 = 't2_master_v1';
 const T3 = 't3_master_v1';
@@ -84,7 +88,12 @@ const T4 = 't4_master_v1';
 const T5 = 't5_master_v1';
 const T6 = 't6_master_v1';
 const TOUS = [T1, T2, T3, T4, T5, T6] as const;
-const SANS_ASSISTANT = [T1, T3, T4, T5] as const;
+/**
+ * Modèles à latence de raisonnement longue : non validés pour la mascotte
+ * (T6, délai de 8 s, `t6_formulate`) — raison technique propre à ces
+ * modèles, pas à leur nom.
+ */
+const SANS_MASCOTTE = [T1, T2, T3, T4, T5] as const;
 
 const NON_DECLARE = { requestsPerMinute: null, tokensPerMinute: null } as const;
 const STRUCT_MULTI = ['structured_output', 'multimodal'] as const;
@@ -128,12 +137,15 @@ export const DECLARED_MODELS: readonly DeclaredModel[] = [
   },
   {
     provider: 'gemini', model: 'gemini-2.5-pro', status: 'deprecated',
-    // Principal de la gouvernance (T5) et second repli documentaire. Date
+    // Principal du code de la gouvernance (T5) et second repli documentaire. Date
     // d'activation non documentée : à renseigner (point ouvert lot 23).
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: 1_048_576, maxOutputTokens: 65_536, rateLimits: NON_DECLARE,
-    compatiblePrompts: SANS_ASSISTANT, rollbackModel: 'gemini-3.5-flash',
-    note: 'Modèle Pro : jamais pour l’assistant (§15.6). Accès limité aux comptes existants (à vérifier sur la clé) ; '
+    // Lot 32B : compatible T2 (sorties structurées, multimodal) — mais
+    // DÉPRÉCIÉ, donc jamais proposé pour une nouvelle configuration, sur
+    // aucun traitement : refusé parce qu'il est déprécié, pas parce que Pro.
+    compatiblePrompts: SANS_MASCOTTE, rollbackModel: 'gemini-3.5-flash',
+    note: 'Déprécié : non sélectionnable pour une nouvelle configuration. Accès limité aux comptes existants (à vérifier sur la clé) ; '
       + 'aucune date d’arrêt annoncée par la page officielle des dépréciations.',
   },
   {
@@ -153,8 +165,10 @@ export const DECLARED_MODELS: readonly DeclaredModel[] = [
     provider: 'gemini', model: 'gemini-3.1-pro-preview', status: 'preview',
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: null, maxOutputTokens: null, rateLimits: NON_DECLARE,
-    compatiblePrompts: SANS_ASSISTANT, rollbackModel: 'gemini-3.6-flash',
-    note: 'Modèle Pro : jamais pour l’assistant (§15.6).',
+    // Lot 32B : compatible T2 ; preview, donc admis seulement si la
+    // politique preview effective l'autorise.
+    compatiblePrompts: SANS_MASCOTTE, rollbackModel: 'gemini-3.6-flash',
+    note: 'Preview : sélectionnable seulement si la politique preview l’autorise.',
   },
 ];
 

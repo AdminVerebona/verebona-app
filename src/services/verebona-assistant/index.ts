@@ -22,8 +22,8 @@ import { currentStartupVerdict, resetModelStartupForTests } from './core/model-s
  * Contrôle de démarrage — CDC §15.14.
  *
  * Configuration assistant (limites V1) ET modèles réellement appelés par la
- * passerelle (`AI_OPERATIONS`) : pas d'alias « latest », pas de modèle Pro,
- * escalade distincte du modèle par défaut.
+ * passerelle (`AI_OPERATIONS`) : pas d'alias « latest », escalade distincte
+ * du modèle par défaut (lot 32B : plus d'interdit sur le nom « Pro »).
  */
 export function assertAssistantStartup(): void {
   assertConfigAtStartup(undefined, AI_OPERATIONS);

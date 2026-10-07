@@ -45,6 +45,7 @@ import {
   assets,
   equipments,
   supplierReviewItems,
+  toProcessActionEvents,
   toProcessActions,
 } from '@/db/schema';
 import type { ActionProposal } from './action-model';
@@ -313,13 +314,17 @@ export interface AccountProductionReport extends ProducerReport {
 /** Balaye les familles nées d'un état de la base, pour un compte. */
 export async function produceAccountActions(accountId: number): Promise<AccountProductionReport> {
   const errors: string[] = [];
-  const [agenda, equipements, fournisseurs, documents] = await Promise.all([
+  const [agenda, equipements, fournisseurs, documents, incoherences] = await Promise.all([
     produceAgendaActions(accountId).catch(reportError('agenda', accountId, errors)),
     produceEquipmentActions(accountId).catch(reportError('équipements', accountId, errors)),
     produceSupplierActions(accountId).catch(reportError('fournisseurs', accountId, errors)),
     produceDocumentActions(accountId).catch(reportError('documents', accountId, errors)),
+    // Lot 32C : incohérences de rattachement devenues sans objet.
+    import('./document-asset-conflict')
+      .then(async ({ closeObsoleteAssetConflicts }) => ({ ...EMPTY, closed: await closeObsoleteAssetConflicts(accountId) }))
+      .catch(reportError('incohérences de rattachement', accountId, errors)),
   ]);
-  return { ...merge(agenda, equipements, fournisseurs, documents), errors };
+  return { ...merge(agenda, equipements, fournisseurs, documents, incoherences), errors };
 }
 
 /**
@@ -406,4 +411,38 @@ export async function closeActionsForDeletedTargets(
     .where(and(inArray(toProcessActions.id, disparus.map((a) => a.id)), isNull(toProcessActions.resolvedAt)));
 
   return disparus.length;
+}
+
+/**
+ * Cartes de donnée de BIEN sans objet pour leur bien (lot 32, L32-1) :
+ * immatriculation demandée pour un vélo (catégorie changée depuis, ou carte
+ * produite avant le correctif). Fermées OBSOLETE, tracées — le balayage
+ * horaire rattrape tout changement de catégorie.
+ */
+export async function closeInapplicableAssetFieldActions(accountId: number): Promise<number> {
+  const ouvertes = await db
+    .select({
+      id: toProcessActions.id, targetId: toProcessActions.targetId, fieldKey: toProcessActions.fieldKey,
+      ruleCode: toProcessActions.ruleCode,
+      category: assets.category, subtype: assets.subtype,
+    })
+    .from(toProcessActions)
+    .innerJoin(assets, eq(assets.id, toProcessActions.targetId))
+    .where(and(
+      eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'ASSET'),
+      isNull(toProcessActions.resolvedAt), eq(assets.accountId, accountId),
+    ));
+  const { isFieldApplicableToAsset } = await import('@/services/canonical/registry');
+  const sansObjet = ouvertes.filter((a) => a.fieldKey && !isFieldApplicableToAsset(a.fieldKey, a));
+  if (sansObjet.length === 0) return 0;
+  const now = new Date();
+  await db.update(toProcessActions)
+    .set({ resolvedAt: now, resolutionReason: 'OBSOLETE', updatedAt: now })
+    .where(and(inArray(toProcessActions.id, sansObjet.map((a) => a.id)), isNull(toProcessActions.resolvedAt)));
+  await db.insert(toProcessActionEvents).values(sansObjet.map((a) => ({
+    actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null,
+    targetType: 'ASSET', targetId: a.targetId, fieldKey: a.fieldKey,
+    details: { ruleCode: a.ruleCode, reason: 'FIELD_NOT_APPLICABLE' }, createdAt: now,
+  })));
+  return sansObjet.length;
 }

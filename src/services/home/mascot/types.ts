@@ -135,6 +135,72 @@ export interface MascotTile {
 
 export type MascotStatus = 'ok' | 'clear' | 'degraded';
 
+// ── « À traiter » de la mascotte (lot 32, MASC2) ─────────────────────────────
+
+/** OPEN_CHOICES : composant de choix de la file ; OPEN_TODO_CARD : la carte, ciblée par son ID. */
+export type MascotTodoActionType = 'OPEN_CHOICES' | 'OPEN_TODO_CARD';
+
+export interface MascotTodoChoice {
+  value: string | number | boolean | null;
+  label: string;
+  isCurrentValue?: boolean;
+}
+
+/** Vue d'une action telle que la file « À traiter » l'affiche (`ToProcessActionView`). */
+export interface MascotTodoCard {
+  publicId: string;
+  targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'AGENDA_ITEM' | 'SUPPLIER';
+  targetId: number;
+  fieldKey: string | null;
+  relationKey: string | null;
+  actionKind: 'ARBITRATE' | 'COMPLETE';
+  priority: MascotPriority;
+  ruleCode: string;
+  question: string;
+  proposals: Array<MascotTodoChoice & { sourceContext?: { label: string } }>;
+  inputType?: 'date' | 'text' | null;
+  target: {
+    label: string;
+    mimeType?: string | null;
+    publicId?: string | null;
+    assetId?: number | null;
+    assetName?: string | null;
+    supplierId?: number | null;
+  };
+}
+
+/**
+ * Élément « À traiter » de niveau 2 — contrat du ticket MASC2. La
+ * destination se lit dans `actionType`, jamais dans un libellé.
+ */
+export interface MascotTodoItem {
+  todoId: string;
+  todoType: string;
+  entityType: MascotTodoCard['targetType'];
+  entityId: number;
+  actionType: MascotTodoActionType;
+  availableChoices?: MascotTodoChoice[];
+  targetField?: string | null;
+  documentId?: number | null;
+  assetId?: number | null;
+  priority: MascotPriority;
+  actionKind: MascotTodoCard['actionKind'];
+  /** « Numéro d’immatriculation à vérifier » */
+  title: string;
+  /** « Vélo Jean Fourche » */
+  subtitle: string | null;
+  /** « Vérifier », « Choisir le bien », « Compléter » */
+  cta: string;
+  /** Vue de l'action (file) : la carte et la résolution d'« À traiter » sont réutilisées. */
+  card: MascotTodoCard;
+}
+
+/** Total de la file (= pastille du menu, = page) et premiers éléments, dans l'ordre de la file. */
+export interface MascotTodoBlock {
+  total: number;
+  items: MascotTodoItem[];
+}
+
 /** Payload servi au front — remplace `situation.message` (MIG-002). */
 export interface MascotPresentation {
   schemaVersion: 'mascot-presentation-v1';
@@ -148,6 +214,12 @@ export interface MascotPresentation {
   /** « Certaines informations n'ont pas pu être actualisées » (§20). */
   degradedNotice: string | null;
   computedAt: string;
+  /**
+   * « À traiter » (lot 32, MASC2) : niveau 2 de la bulle, depuis la même
+   * source que la file. Absent (présentation ancienne) ou `null` (file
+   * illisible) : aucun élément.
+   */
+  todo?: MascotTodoBlock | null;
 }
 
 /** Plafonds UX (UX-007, SEC-001). */

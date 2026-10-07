@@ -9,11 +9,16 @@ vi.mock('../../telemetry/ai-trace.service', () => ({
   recordCallTrace: async (t: Record<string, unknown>) => { traces.push(t); },
 }));
 
+const operationnel: Array<Record<string, unknown>> = [];
+vi.mock('../model-operational.service', () => ({
+  recordOperationalStatus: async (p: Record<string, unknown>) => { operationnel.push(p); },
+}));
+
 const { testProviderKey, missingConfiguredModels } = await import('../provider-test.service');
 
 const reponse = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
-afterEach(() => { vi.unstubAllGlobals(); traces.length = 0; });
+afterEach(() => { vi.unstubAllGlobals(); traces.length = 0; operationnel.length = 0; });
 
 describe('missingConfiguredModels', () => {
   it('compare sans le préfixe « models/ »', () => {
@@ -38,5 +43,20 @@ describe('testProviderKey', () => {
     const r = await testProviderKey('secret', 'a', 1, 1, ['a']);
     expect(r.ok).toBe(true);
     expect(traces.at(-1)).toMatchObject({ inputTokens: 7, outputTokens: 2, billable: false, status: 'success' });
+  });
+
+  it('MOD-31 — le test de clé conserve l’état opérationnel du modèle testé (succès comme refus de génération), jamais la clé', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(reponse({ models: [{ name: 'models/a' }] }))
+      .mockResolvedValueOnce(reponse({ usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 } })));
+    await testProviderKey('secret', 'a', 1, 1, ['a']);
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(reponse({ models: [{ name: 'models/b' }] }))
+      .mockResolvedValueOnce(new Response('no longer available to new users', { status: 404 })));
+    await testProviderKey('secret', 'b', 1, 1, ['b']);
+    expect(operationnel).toEqual([
+      { model: 'a', secret: 'secret', ok: true, error: null, source: 'provider_test' },
+      expect.objectContaining({ model: 'b', ok: false, source: 'provider_test', error: expect.stringMatching(/404.*no longer available/) }),
+    ]);
   });
 });

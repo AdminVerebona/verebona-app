@@ -1,8 +1,12 @@
 /**
  * Routeur d'intentions — CDC §9.1 à §9.5, CA-21.
  *
- * Ordre STRICT (§9.4). Gemini (classification) n'est sollicité qu'en dernier recours,
- * si les étapes déterministes n'ont pas tranché. Produit un `IntentRoute` (§9.5).
+ * Ordre STRICT (§9.4). Le déterministe est le PREMIER niveau de compréhension ;
+ * produit un `IntentRoute` (§9.5) ou `needs_classification` (intention
+ * inconnue). Lot 32 : une route n'est pas une demande COMPRISE — l'orchestrateur
+ * évalue ensuite la compréhension (`understanding-status` : COMPLETE, PARTIAL,
+ * UNKNOWN_INTENT) et UNDERSTAND (master T2) prend le relais dès qu'elle est
+ * incomplète, sauf manque connu exactement (clarification directe).
  *
  * Ce service ne fait AUCUN appel réseau lui-même : l'étape de classification IA est
  * déléguée à l'orchestrateur (qui contrôle le budget et l'éligibilité). La base
@@ -58,7 +62,11 @@ export interface RouteContext {
   helpCorpus?: HelpCorpus | null;
 }
 
-/** Résultat du routage déterministe : soit une route, soit « escalade classification ». */
+/**
+ * Résultat du routage déterministe : une route (intention reconnue — la
+ * compréhension complète est évaluée ensuite, lot 32), ou `needs_classification`
+ * (UNKNOWN_INTENT → UNDERSTAND).
+ */
 export type RouteOutcome =
   | { kind: 'route'; route: IntentRoute }
   | { kind: 'needs_classification'; normalized: string };
@@ -452,6 +460,7 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
     }
   }
 
-  // Étape 11 — Escalade classification IA (dernier recours — §9.4.9)
+  // Étape 11 — Intention inconnue : UNDERSTAND (§9.4.9 ; lot 32 — fallback
+  // général de compréhension, pas un simple classifieur de dernier recours).
   return { kind: 'needs_classification', normalized: ctx.message.trim().replace(/\s+/g, ' ').slice(0, 2000) };
 }

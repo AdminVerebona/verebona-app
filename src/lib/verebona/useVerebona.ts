@@ -658,15 +658,6 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     void refreshThreads();
   }, [clear, refreshThreads]);
 
-  /** Efface tout l'historique de l'utilisateur. */
-  const clearAll = useCallback(async () => {
-    await fetch('/api/verebona/conversation', { method: 'DELETE' }).catch(() => null);
-    setConversationId(null);
-    setOlderCursor(null);
-    setState({ messages: [], isLoading: false, error: null });
-    setThreads([]);
-  }, [setConversationId]);
-
   /**
    * Ajoute un échange construit par l'interface (question + réponse locale).
    * Aucune requête : il vit dans l'affichage jusqu'au prochain changement de fil.
@@ -705,7 +696,6 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     retry,
     cancel,
     clear,
-    clearAll,
     deleteThread,
     sendFeedback,
     appendLocal,

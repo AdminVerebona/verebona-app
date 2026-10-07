@@ -37,15 +37,16 @@ describe('§15.12 — registre déclaratif cohérent', () => {
     expect(M.checkModelUses(M.DECLARED_MODELS.map((m) => ({ where: 'x', model: m.model }))).filter((i) => i.level === 'error')).toEqual([]);
   });
 
-  it('prompts compatibles : masters existants, jamais un Pro pour l’assistant ni la mascotte (§15.6)', () => {
+  it('prompts compatibles : masters existants ; PRO-03 — compatibilité déclarée modèle par modèle, jamais déduite du nom', () => {
     const masters = new Set(listMasterPrompts().map((p) => p.masterPromptCode));
     for (const m of M.DECLARED_MODELS) {
       for (const p of m.compatiblePrompts) expect(masters.has(p), `${m.model} : ${p}`).toBe(true);
-      if (/-pro\b/.test(m.model)) {
-        expect(m.compatiblePrompts).not.toContain('t2_master_v1');
-        expect(m.compatiblePrompts).not.toContain('t6_master_v1');
-      }
     }
+    // Lot 32B : un modèle Pro PEUT déclarer t2_master_v1 (aucune exclusion
+    // par catégorie) — gemini-2.5-pro le déclare, et reste exclu parce que
+    // déprécié (usable-models).
+    expect(M.findDeclaredModel('gemini-2.5-pro')?.compatiblePrompts).toContain('t2_master_v1');
+    expect(M.findDeclaredModel('gemini-3.1-pro-preview')?.compatiblePrompts).toContain('t2_master_v1');
   });
 
   it('dates au format AAAA-MM-JJ ; les modèles du catalogue retirés sont dépréciés avec leur date', () => {
@@ -72,14 +73,14 @@ describe('§15.12 — registre déclaratif cohérent', () => {
 
   it('contrôle de cohérence : prompt incompatible bloquant, déprécié et inconnu signalés', () => {
     const issues = M.checkModelUses([
-      { where: 'T2', model: 'gemini-2.5-pro', promptCode: 't2_master_v1' },
+      { where: 'T6', model: 'gemini-2.5-pro', promptCode: 't6_master_v1' },
       { where: 'T1', model: 'gemini-2.5-pro', promptCode: 't1_master_v1' },
       { where: 'T4', model: 'gemini-9-flash', promptCode: 't4_master_v1' },
     ], '2026-10-05');
     expect(issues.map((i) => `${i.level}:${i.code}:${i.where}`)).toEqual([
-      'error:PROMPT_INCOMPATIBLE:T2', 'warning:MODEL_DEPRECATED:T2', 'warning:MODEL_DEPRECATED:T1', 'warning:UNKNOWN_MODEL:T4',
+      'error:PROMPT_INCOMPATIBLE:T6', 'warning:MODEL_DEPRECATED:T6', 'warning:MODEL_DEPRECATED:T1', 'warning:UNKNOWN_MODEL:T4',
     ]);
-    expect(M.coherenceMessage(issues)).toMatch(/gemini-2\.5-pro.*t2_master_v1/);
+    expect(M.coherenceMessage(issues)).toMatch(/gemini-2\.5-pro.*t6_master_v1/);
     expect(issues[1].message).toMatch(/déprécié — remplacement à tester/);
     expect(M.checkModelUses([{ where: 'T1', model: 'gemini-2.5-flash-lite' }], '2026-10-05')[0].message).toMatch(/fin prévue le 2026-10-16/);
   });
@@ -108,10 +109,13 @@ describe('§15.14 — contrôle de démarrage avec le registre déclaratif', () 
     expect((await checkModelRegistry(deps('gemini-7-flash', ['gemini-3.1-flash-lite'], true))).ok).toBe(true);
   });
 
-  it('modèle Pro sur le master de l’assistant : refusé (prompt incompatible)', async () => {
+  it('PRO-04 — startup : un modèle Pro n’est plus refusé par catégorie (gemini-2.5-pro : signalé déprécié)', async () => {
     const r = await checkModelRegistry(deps('gemini-3.5-flash-lite', ['gemini-2.5-pro']));
-    expect(r.errors.join()).toMatch(/pas déclaré compatible avec le prompt « t2_master_v1 »/);
-    expect(r.warnings.join()).toMatch(/déprécié/);
+    expect(r.errors.join()).not.toMatch(/Pro/);
+    expect(r.errors.join()).not.toMatch(/pas déclaré compatible/);
+    expect(r.warnings.join()).toMatch(/gemini-2\.5-pro.*déprécié/);
+    // Un Pro preview compatible T2, preview autorisé : accepté au démarrage.
+    expect((await checkModelRegistry(deps('gemini-3.5-flash-lite', ['gemini-3.1-pro-preview'], true))).ok).toBe(true);
   });
 });
 
@@ -120,9 +124,9 @@ describe('§15.14 — cohérence à l’activation d’une version', () => {
     entries: entries.map(([treatment, primaryModel, fallback1]) => ({ treatment, primaryModel, fallback1, fallback2: null })),
   }) as never;
 
-  it('refuse un modèle Pro pour T2 avec un message clair', async () => {
-    await expect(assertModelRegistryCoherence(version([['T2', 'gemini-3.5-flash-lite', 'gemini-2.5-pro']])))
-      .rejects.toMatchObject({ code: 'MODEL_REGISTRY_INCOHERENT', message: expect.stringMatching(/T2 : le modèle « gemini-2\.5-pro »/) });
+  it('PRO-05 — registre : gemini-2.5-pro sur T2 n’est plus incohérent pour son nom (déprécié signalé ; refus porté par usableModelsForTreatment)', async () => {
+    const w = await assertModelRegistryCoherence(version([['T2', 'gemini-3.5-flash-lite', 'gemini-2.5-pro']]));
+    expect(w.map((i) => i.code)).toEqual(['MODEL_DEPRECATED']);
   });
 
   it('T2 : même règle preview qu’au démarrage — inconnu ou preview refusé sans autorisation (pas de 503 après activation)', async () => {

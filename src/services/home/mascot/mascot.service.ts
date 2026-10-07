@@ -14,6 +14,7 @@ import { buildT6Input } from './t6-contract';
 import { formulateWithT6, logT6, type T6Mode } from './t6-runner';
 import type { MascotPresentation } from './types';
 import { parisDay, tileFor } from './bubble';
+import { buildTodoBlock } from './todo-items';
 
 export async function getMascotPresentation(
   accountId: number,
@@ -34,10 +35,14 @@ export async function getMascotPresentation(
   const candidates = buildCandidates(raw);
   const subjects = selectSubjects(candidates.candidates);
   const secondaries = buildSecondaries(candidates, subjects);
+  // Lot 32 (MASC2) : « À traiter » = niveau 2 de la bulle, depuis la file.
+  const todo = buildTodoBlock(raw.toProcess, raw.toProcessTotal);
+  // Empreinte T6 : sujets et secondaires seulement — un « À traiter » résolu
+  // ne relance pas la formulation des autres sujets.
   const contextHash = contextHashOf(subjects, secondaries, candidates.degraded);
 
   if (subjects.length === 0) {
-    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles });
+    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles, todo });
   }
 
   const input = buildT6Input(subjects);
@@ -46,28 +51,36 @@ export async function getMascotPresentation(
   const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
   void logT6({ accountId, contextHash, mode, outcome, input });
   return buildPresentation({
-    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles,
+    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles, todo,
   });
 }
 
-// ── Pré-génération (RUN-007 à RUN-011) ────────────────────────────────────────
+// ── Pré-génération (RUN-007 à RUN-011 ; durable depuis le lot 32, PO 6) ──────
 
 /** Temporisation : une rafale de changements ne produit qu'une génération (RUN-009). */
 export const PREGEN_DEBOUNCE_MS = 3_000;
 const timers = new Map<number, ReturnType<typeof setTimeout>>();
 
 /**
- * Programme une pré-génération pour le compte, après 3 s sans nouvel
- * événement. Best effort, jamais bloquante ; elle ne compte pas comme une
- * exposition (RUN-011) — elle n'écrit aucune télémétrie produit.
+ * Programme une pré-génération pour le compte. Lot 32 (décision PO 6) : la
+ * demande est d'abord ENREGISTRÉE (`home_mascot_pregen_requests`) — elle
+ * survit à un redémarrage et la tâche planifiée `mascot-pregeneration` la
+ * traite à défaut ; puis le chemin rapide la prend en charge après 3 s sans
+ * nouvel événement. Best effort, jamais bloquante ; elle ne compte pas comme
+ * une exposition (RUN-011) — elle n'écrit aucune télémétrie produit.
  */
-export function scheduleMascotPregeneration(accountId: number, delayMs = PREGEN_DEBOUNCE_MS): void {
+export function scheduleMascotPregeneration(accountId: number, delayMs = PREGEN_DEBOUNCE_MS, reason = 'change'): void {
+  const enregistree = import('./pregen-queue')
+    .then((q) => q.requestMascotPregeneration(accountId, reason))
+    .catch(() => {});
   const prev = timers.get(accountId);
   if (prev) clearTimeout(prev);
   const t = setTimeout(() => {
     timers.delete(accountId);
-    getMascotPresentation(accountId, 'pregen').catch((e) =>
-      console.error('[mascotte] pré-génération en échec :', (e as Error).message));
+    void enregistree
+      .then(() => import('./pregen-queue'))
+      .then((q) => q.processMascotPregenerationFor(accountId))
+      .catch((e) => console.error('[mascotte] pré-génération en échec :', (e as Error).message));
   }, delayMs);
   // Ne retient pas le processus à l'arrêt.
   (t as unknown as { unref?: () => void }).unref?.();

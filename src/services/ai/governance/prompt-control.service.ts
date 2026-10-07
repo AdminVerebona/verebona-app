@@ -39,8 +39,11 @@
  * ══════════════════════════════════════════════════════════════════════════
  * UN SEUL MOTEUR : LE PROMPT MAÎTRE T5 (CDC 15 §27, lot 16b)
  *
- * T5 s'exécute par `t5_analyze` / `t5_modify` (`t5_master_v1`, fichier du
- * dépôt, jamais administrable). Les opérations d'étapes historiques
+ * T5 s'exécute par `t5_analyze` / `t5_modify` (`t5_master_v1` : version
+ * active « Prompts maîtres » du BO depuis le lot 32B — décision PO n° 15 —,
+ * sinon fichier du dépôt). Les interdits ci-dessus restent tenus par le
+ * serveur quel que soit ce texte : T5 n'est jamais une cible (T5-002), ni en
+ * lecture ni en écriture. Les opérations d'étapes historiques
  * (`analyze_instruction`, `control_prompts`, `propose_change`) et leurs
  * prompts sont retirés : il n'y a plus d'architecture `steps` pour T5.
  * ══════════════════════════════════════════════════════════════════════════
@@ -418,7 +421,7 @@ async function callModel(
   mode: T5Mode, version: ConfigVersionWithEntries | null, instruction: string, accountId: number, userId: number,
   extra = '(aucun)', texts?: Map<Treatment, TargetText>,
 ): Promise<{ output: PromptControlOut; traceId: string; architecture: 'master' }> {
-  // T5 = t5_master_v1 seul (fichier du dépôt, jamais administrable).
+  // T5 = t5_master_v1 seul (version active du BO, sinon fichier du dépôt).
   const res = await AiGateway.execute<T5MasterOutput>({
     useCaseCode: 'AI_GOVERNANCE',
     operationCode: mode === 'analyze' ? 't5_analyze' : 't5_modify',

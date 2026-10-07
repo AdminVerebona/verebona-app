@@ -157,6 +157,7 @@ import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
 import { ThumbnailEditDrawer } from '@/components/assets/ThumbnailEditDrawer';
+import { assetStatusLabel, isReadOnlyAssetStatus } from '@/lib/asset-status';
 
 // Lazy-load all tab components — only the active tab's code is fetched
 const AssetOverviewTab = dynamic(() => import('@/components/assets/AssetOverviewTab').then(m => ({ default: m.AssetOverviewTab })), { ssr: false, loading: () => <TabSkeleton /> });
@@ -178,25 +179,6 @@ function TabSkeleton() {
 }
 
 export type { AssetDetail } from '@/types/asset-detail';
-
-const STATUS_LABELS: Record<string, string> = {
-  EN_SERVICE: 'En service',
-  EN_PANNE: 'En panne',
-  EN_REPARATION: 'En réparation',
-  VENDU: 'Vendu',
-  DETRUIT: 'Détruit',
-  INACTIF: 'Inactif',
-  ARCHIVED: 'Archivé',
-  TRANSMIS: 'Transmis',
-};
-
-const STATUS_VARIANTS: Record<string, 'active' | 'sold' | 'inactive' | 'pending' | 'secondary'> = {
-  EN_SERVICE: 'active',
-  VENDU: 'sold',
-  EN_PANNE: 'inactive',
-  EN_REPARATION: 'pending',
-  TRANSMIS: 'sold',
-};
 
 // Subtypes that support rooms + equipments
 // Pièces / équipements : liste unique `lib/asset-capabilities` (GAP-04),
@@ -307,7 +289,8 @@ export default function AssetDetailPage() {
   );
 
   const showRoomsAndEquipments = useMemo(() => asset ? assetSupportsRooms(asset) : false, [asset]);
-  const isReadOnly = asset?.status === 'ARCHIVED' || asset?.status === 'TRANSMIS';
+  // Lot 32 (PO-Q11) : transmis / archivé en consultation seule (`asset-status`).
+  const isReadOnly = isReadOnlyAssetStatus(asset?.status);
 
   const planType: 'freemium' | 'premium' = useMemo(() => {
     return user?.subscription?.plan === 'STANDARD' ? 'freemium' : 'premium';
@@ -342,7 +325,7 @@ export default function AssetDetailPage() {
         {/* Header */}
         {isReadOnly && (
           <div className="rounded-lg bg-muted/50 border border-border px-4 py-2.5 text-sm text-muted-foreground">
-            Ce bien est {asset.status === 'TRANSMIS' ? 'transmis' : 'archivé'} — consultation uniquement, sans modification possible.
+            Ce bien est {assetStatusLabel(asset.status).toLowerCase()} — consultation uniquement, sans modification possible.
           </div>
         )}
         <div className="flex items-start gap-4">

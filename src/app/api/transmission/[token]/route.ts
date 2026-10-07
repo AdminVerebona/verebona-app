@@ -341,8 +341,8 @@ export async function POST(
     accountId: await resolveAccountId(sessionUser.id),
   };
 
-  // Doublon check: uniquement les biens en cours d'usage actif (EN_SERVICE, EN_PANNE, EN_REPARATION).
-  // VENDU, DETRUIT, INACTIF, ARCHIVED, TRANSMIS ne comptent pas comme doublons.
+  // Doublon : uniquement les biens actifs (EN_SERVICE — liste officielle du
+  // lot 32, PO-Q11). VENDU, TRANSMIS, ARCHIVED ne comptent pas comme doublons.
   if (!confirmDuplicate) {
     const existingAssets = await db
       .select({ id: assets.id, name: assets.name })
@@ -352,7 +352,7 @@ export async function POST(
         eq(assets.name, snapshot.name),
         eq(assets.category, snapshot.category),
         isNull(assets.deletedAt),
-        inArray(assets.status, ['EN_SERVICE', 'EN_PANNE', 'EN_REPARATION']),
+        inArray(assets.status, ['EN_SERVICE']),
       ))
       .limit(1);
 

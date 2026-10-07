@@ -445,14 +445,17 @@ function sansSortieBrute(useCaseCode: string): boolean {
 }
 
 /**
- * Texte master porté par la version (D-03) — JAMAIS pour un traitement non
- * administrable (T5, §10 / T5-003 / §27 « Tu ne modifies JAMAIS T5 ») : son
- * master est toujours le fichier du dépôt.
+ * Texte master administré : version active « Prompts maîtres » du BO, sinon
+ * texte porté par la version de configuration (D-03). Pour T5 (lot 32B,
+ * décision PO n° 15) : SEULEMENT la version active du BO — un texte T5
+ * porté par une version de configuration n'est jamais appliqué (T5-003) ;
+ * sans version BO, le fichier du dépôt.
  */
 function configuredMasterText(
   useCaseCode: Parameters<typeof treatmentForUseCase>[0],
-  cfg: { promptArchitecture?: string; masterPromptText?: string | null },
+  cfg: { promptArchitecture?: string; masterPromptText?: string | null; masterPromptVersionId?: number | null },
 ): string | null {
-  if (!isPromptAdministrable(treatmentForUseCase(useCaseCode))) return null;
-  return cfg.promptArchitecture === 'master' ? cfg.masterPromptText ?? null : null;
+  if (cfg.promptArchitecture !== 'master') return null;
+  if (!isPromptAdministrable(treatmentForUseCase(useCaseCode)) && cfg.masterPromptVersionId == null) return null;
+  return cfg.masterPromptText ?? null;
 }

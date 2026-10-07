@@ -196,9 +196,9 @@ describe('pose et suggestions', () => {
     expect(displayedSecondaries(p, true)).toEqual([]);
   });
 
-  it('les clics sur les pastilles passent par le parcours et la télémétrie du moteur', () => {
+  it('les clics sur les éléments secondaires (niveau 2, MASC2) passent par le parcours et la télémétrie du moteur', () => {
     const src = readFileSync(join(process.cwd(), 'src/components/home/MascotSpeaks.tsx'), 'utf8');
-    expect(src).toMatch(/run\(sec\.action, sec, 'secondary'\)/);
+    expect(src).toMatch(/run\(it\.secondary\.action, it\.secondary, 'secondary'\)/);
     expect(src).toMatch(/run\(s\.secondary\.action, s\.secondary, 'secondary'\)/);
     expect(src).toMatch(/useMascotPresentation\(\(p\) => displayedSecondaries\(p, emptyRef\.current\)\)/);
   });

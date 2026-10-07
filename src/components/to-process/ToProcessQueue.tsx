@@ -31,23 +31,26 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { LayoutGrid, List, Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
-import { openToProcessTarget } from '@/lib/to-process-target';
 import {
   TO_PROCESS_NO_FILTER_RESULT,
   toProcessHeadline,
 } from '@/lib/referential/v2/microcopy';
+import { TO_PROCESS_COUNT_EVENT } from '@/hooks/useToProcessCount';
 import type { OrderMode } from '@/services/to-process/priority';
-import { ActionCard, ActionRow, type ActionProposalView, type ActionView } from './ActionCard';
+import { ActionCard, ActionRow, todoCardDomId, type ActionView } from './ActionCard';
+import { useToProcessResolution } from './useToProcessResolution';
 
 type Presentation = 'CARDS' | 'LIST';
 
 const PRESENTATION_KEY = 'a-traiter:presentation';
+
+/** Paramètre d'URL d'une carte ciblée par la mascotte (OPEN_TODO_CARD, lot 32). */
+export const TODO_FOCUS_PARAM = 'todo';
 
 interface PageResponse {
   actions: ActionView[];
@@ -55,15 +58,28 @@ interface PageResponse {
   shown: number;
 }
 
+/** Carte ciblée par l'URL (`?todo=<publicId>`), lue côté client seulement. */
+function focusFromUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const v = new URLSearchParams(window.location.search).get(TODO_FOCUS_PARAM);
+    return v && /^[0-9a-zA-Z-]{8,64}$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ToProcessQueue() {
-  const router = useRouter();
   const { setBreadcrumbs } = useBreadcrumb();
   // §8.2 / ATP-02 : la vue par défaut est « Par priorité » à chaque visite.
   const [orderMode, setOrderMode] = useState<OrderMode>('BY_PRIORITY');
   const [presentation, setPresentation] = useState<Presentation>('CARDS');
   const [page, setPage] = useState<PageResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // Carte ciblée par son ID (mascotte) : positionnée et mise en évidence.
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const focusPending = useRef<string | null>(null);
+  const snapshot = useRef<PageResponse | null>(null);
 
   // ATP-03 : la présentation est une préférence durable. Lue après le premier
   // rendu pour ne pas dépendre du stockage pendant l'hydratation.
@@ -74,6 +90,7 @@ export function ToProcessQueue() {
     } catch {
       /* stockage indisponible : la valeur par défaut convient. */
     }
+    focusPending.current = focusFromUrl();
   }, []);
 
   const choosePresentation = (value: Presentation) => {
@@ -92,6 +109,9 @@ export function ToProcessQueue() {
         `/api/v2/to-process?order=${mode === 'BY_ACTION' ? 'action' : 'priority'}`,
       );
       setPage(data);
+      // L32-6 : la pastille du menu (desktop + barre mobile) prend le nombre
+      // que la page vient de lire — même calcul, même instant.
+      window.dispatchEvent(new CustomEvent(TO_PROCESS_COUNT_EVENT, { detail: data.total }));
     } catch {
       toast.error('Les actions n’ont pas pu être chargées.');
     } finally {
@@ -115,80 +135,63 @@ export function ToProcessQueue() {
     return () => events.forEach((e) => window.removeEventListener(e, reload));
   }, [orderMode, load]);
 
+  // OPEN_TODO_CARD (lot 32) : la carte désignée par son ID est amenée à
+  // l'écran, mise en évidence, et le focus posé sur son action — jamais
+  // « le haut de la page ».
+  useEffect(() => {
+    const id = focusPending.current;
+    if (!id || !page) return;
+    focusPending.current = null;
+    const present = page.actions.some((a) => a.publicId === id);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete(TODO_FOCUS_PARAM);
+      window.history.replaceState(window.history.state, '', url.toString());
+    } catch { /* URL non modifiable : sans effet */ }
+    if (!present) {
+      toast.info('Cette action est déjà traitée.');
+      return;
+    }
+    setFocusId(id);
+    requestAnimationFrame(() => {
+      const el = document.getElementById(todoCardDomId(id));
+      if (!el) return;
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.querySelector<HTMLElement>('input, button:not([disabled])')?.focus({ preventScroll: true });
+    });
+  }, [page]);
+
+  // La mise en évidence s'efface d'elle-même (le focus clavier reste).
+  useEffect(() => {
+    if (!focusId) return;
+    const t = setTimeout(() => setFocusId(null), 6_000);
+    return () => clearTimeout(t);
+  }, [focusId]);
+
   /**
-   * Application d'une proposition.
+   * Application d'une proposition — parcours COMMUN avec la mascotte
+   * (`useToProcessResolution`).
    *
    * La carte disparaît immédiatement (§16.3, « mise à jour optimiste possible
    * après arbitrage, avec rollback sur erreur ») : attendre la réponse ferait
    * hésiter sur un geste qui se veut immédiat.
    */
-  const choose = async (action: ActionView, proposal: ActionProposalView) => {
-    setBusyId(action.publicId);
-    const snapshot = page;
-    setPage((current) =>
-      current
-        ? {
-            ...current,
-            actions: current.actions.filter((a) => a.publicId !== action.publicId),
-            total: Math.max(0, current.total - 1),
-            shown: Math.max(0, current.shown - 1),
-          }
-        : current,
-    );
-
-    try {
-      const res = await apiClient.post<{ ok: boolean; previousValue: unknown }>(
-        `/api/v2/to-process/${action.publicId}/resolve`,
-        { mode: 'arbitrate', value: proposal.value },
-      );
-
-      toast.success('Valeur mise à jour', {
-        action: {
-          label: 'Annuler',
-          onClick: () => void undo(action, res.previousValue),
-        },
+  const { busyId, choose, openTarget } = useToProcessResolution({
+    onRemove: (action) => {
+      setPage((current) => {
+        snapshot.current = current;
+        return current
+          ? {
+              ...current,
+              actions: current.actions.filter((a) => a.publicId !== action.publicId),
+              total: Math.max(0, current.total - 1),
+              shown: Math.max(0, current.shown - 1),
+            }
+          : current;
       });
-    } catch {
-      setPage(snapshot);
-      toast.error('La valeur n’a pas pu être appliquée.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const undo = async (action: ActionView, previousValue: unknown) => {
-    try {
-      await apiClient.post(`/api/v2/to-process/${action.publicId}/resolve`, {
-        mode: 'undo',
-        previousValue,
-      });
-      await load(orderMode);
-      toast.success('Modification annulée.');
-    } catch {
-      toast.error('L’annulation n’a pas abouti.');
-    }
-  };
-
-  /**
-   * « Autre » et « Compléter » ouvrent l'objet sur le champ concerné (§8.5, §8.6).
-   * Document, équipement et échéance s'ouvrent en tiroir, sans quitter la
-   * file : on revient à l'action suivante en fermant le tiroir. Le bien reste
-   * une page (onglets, champ mis en évidence).
-   */
-  const openTarget = (action: ActionView) => {
-    // Resolver commun avec la mascotte d'accueil (CDC Mascotte ATP-005).
-    openToProcessTarget(
-      {
-        targetType: action.targetType,
-        targetId: action.targetId,
-        targetPublicId: action.target.publicId ?? null,
-        field: action.fieldKey ?? action.relationKey ?? '',
-        supplierId: action.target.supplierId ?? null,
-      },
-      router,
-      () => toast.info('Ouvrez cet élément depuis sa page pour compléter l’information.'),
-    );
-  };
+    },
+    onRollback: () => setPage(snapshot.current),
+  });
 
   const count = page?.shown ?? 0;
 
@@ -275,17 +278,19 @@ export function ToProcessQueue() {
               <ActionCard
                 key={action.publicId}
                 action={action}
-                onChoose={choose}
+                onChoose={(a, p) => { void choose(a, p); }}
                 onOpenTarget={openTarget}
                 busy={busyId === action.publicId}
+                focused={focusId === action.publicId}
               />
             ) : (
               <ActionRow
                 key={action.publicId}
                 action={action}
-                onChoose={choose}
+                onChoose={(a, p) => { void choose(a, p); }}
                 onOpenTarget={openTarget}
                 busy={busyId === action.publicId}
+                focused={focusId === action.publicId}
               />
             ),
           )}

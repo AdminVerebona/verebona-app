@@ -122,20 +122,21 @@ describe('suggestions pendant la frappe', () => {
   });
 });
 
-describe('fils : suppression et accès à toutes les demandes', () => {
-  it('suppression d’un fil (courant ou archivé), confirmée', () => {
+describe('fils : suppression et reprise', () => {
+  it('suppression d’un fil (courant ou archivé) depuis les recherches récentes', () => {
     const hook = read('src/lib/verebona/useVerebona.ts');
     expect(hook).toMatch(/const deleteThread = useCallback\(async \(id: number\) => \{\s*if \(id === conversationRef\.current\) \{ await clear\(\); return; \}/);
+    const provider = read('src/components/verebona/space/VerebonaSpaceProvider.tsx');
+    expect(provider).toMatch(/void v\.deleteThread\(id\)/);
     const content = read('src/components/verebona/space/SpaceContent.tsx');
-    expect(content).toMatch(/api\.v\.deleteThread\(h\.id\)/);
-    expect(content).toMatch(/role="alertdialog"/);
+    expect(content).toMatch(/api\.removeRecent\(r\.id\)/);
   });
 
-  it('« Nouvelle demande » partout (plus d’« Effacer » trompeur) ; toutes les demandes accessibles', () => {
+  it('« Nouvelle demande » partout (plus d’« Effacer » trompeur) ; plus de vue « Toutes les demandes » (lot 32)', () => {
     const field = read('src/components/verebona/space/VerebonaField.tsx');
     expect(field).not.toMatch(/>\s*Effacer\s*</);
     expect(field.match(/Nouvelle demande/g)?.length).toBeGreaterThanOrEqual(2);
-    expect(field).toMatch(/Toutes les demandes/);
+    expect(field).not.toMatch(/Toutes les demandes/);
   });
 
   it('le résumé d’un fil ne lit que des messages valides du compte', () => {

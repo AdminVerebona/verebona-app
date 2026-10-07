@@ -1,6 +1,13 @@
 /**
  * Envoi de l'accusé de réception — CDC 6 §8 et §10.
  *
+ * Lot 32 (décision PO Q2) : c'est aussi l'E-MAIL D'AU REVOIR. Le compte est
+ * supprimé immédiatement après la confirmation ; le message atteste la
+ * déclaration (support durable), annonce l'annulation, le remboursement
+ * intégral en cours et la suppression du compte, et prend congé. Plus de
+ * lien de suivi ni de délai d'export. Renvoyé par le traitement
+ * (`withdrawal-processor`) s'il n'a pas pu partir à la confirmation.
+ *
  * NE LÈVE JAMAIS. Le §10 le prévoit explicitement : « l'acceptation reste
  * valide si elle a été correctement enregistrée ; l'email est retenté ; le
  * lien reste visible dans le compte ». Un incident d'envoi ne peut pas
@@ -13,11 +20,12 @@ import type { WithdrawalSummary } from './summary.service';
 export interface ReceiptInput {
   publicReference: string;
   to: string;
-  userId: number;
+  /** `null` : utilisateur déjà supprimé (renvoi par le traitement). */
+  userId: number | null;
   firstName: string;
   lastName: string;
   requestedAt: Date;
-  summary: WithdrawalSummary;
+  summary: Pick<WithdrawalSummary, 'offerLabel' | 'billingPeriodLabel' | 'amountLabel'>;
 }
 
 function appBaseUrl(): string {
@@ -33,13 +41,6 @@ function parisLabel(date: Date): string {
   }).format(date);
 }
 
-function parisDateLabel(iso: string): string {
-  return new Intl.DateTimeFormat('fr-FR', {
-    timeZone: 'Europe/Paris',
-    dateStyle: 'long',
-  }).format(new Date(iso));
-}
-
 export async function sendWithdrawalReceipt(input: ReceiptInput): Promise<{ sent: boolean }> {
   const base = appBaseUrl();
 
@@ -47,7 +48,7 @@ export async function sendWithdrawalReceipt(input: ReceiptInput): Promise<{ sent
     const result = await emailService.send({
       templateCode: 'WITHDRAWAL_RECEIPT',
       to: input.to,
-      userId: input.userId,
+      userId: input.userId ?? undefined,
       variables: {
         firstName: input.firstName,
         lastName: input.lastName,
@@ -55,8 +56,6 @@ export async function sendWithdrawalReceipt(input: ReceiptInput): Promise<{ sent
         requestedAtLabel: parisLabel(input.requestedAt),
         contractLabel: `${input.summary.offerLabel} — facturation ${input.summary.billingPeriodLabel}`,
         amountLabel: input.summary.amountLabel,
-        dataExportDeadlineLabel: parisDateLabel(input.summary.dataDeletionAt),
-        trackingUrl: `${base}/retractation/suivi/${input.publicReference}`,
         legalPermalinkUrl: `${base}/cgvu`,
         contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.fr',
       },

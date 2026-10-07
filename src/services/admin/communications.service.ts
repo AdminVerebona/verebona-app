@@ -43,6 +43,7 @@ import { formatMoney } from '@/lib/admin/format';
 /** Libellé métier des événements du catalogue (le catalogue n'en porte pas). */
 const EVENT_LABELS: Record<string, string> = {
   DEADLINE_DUE_IN_7_DAYS: 'Échéance dans 7 jours',
+  DOCUMENT_UPLOAD_COMPLETED: 'Documents ajoutés (envoi réussi)',
   DOCUMENT_BATCH_COMPLETED: 'Lot de documents analysé',
   DOCUMENT_BATCH_PARTIALLY_FAILED: 'Lot de documents partiellement analysé',
   DOCUMENT_BATCH_FAILED: 'Échec d’analyse d’un lot de documents',
@@ -807,9 +808,8 @@ export function contextVariables(ctx: SelectedPreviewContext, appUrl: string = a
     v.amountLabel = w.amountExpected == null ? 'à déterminer' : formatAmountLabel(w.amountExpected, w.currency);
     const contract = contractLabelOf(w.planCode, w.billingPeriod);
     if (contract) v.contractLabel = contract;
-    const deadline = formatFrDate(w.dataExportDeadlineAt);
-    if (deadline) v.dataExportDeadlineLabel = deadline;
-    v.trackingUrl = `${base}/retractation/suivi/${encodeURIComponent(w.publicReference)}`;
+    // Lot 32 (PO-Q2) : plus de lien de suivi ni de délai d'export dans
+    // l'accusé (compte supprimé immédiatement).
     v.legalPermalinkUrl = `${base}/cgvu`;
   }
   return v;
