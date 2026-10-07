@@ -15,15 +15,18 @@
  * · `analyze` : diagnostic seul, sur n'importe quelle version. Rien n'est
  *   écrit, aucun Brouillon créé.
  * · `modify`  : chaque prompt réécrit est écrit DIRECTEMENT dans le
- *   Brouillon, puis résumés et diffs sont rendus.
+ *   BROUILLON de ce prompt (« Prompts maîtres », BO-IA-PROMPTS-01), puis
+ *   résumés et diffs sont rendus. L'administrateur l'active lui-même :
+ *   Brouillon → Actif, prompt par prompt.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * INTERDITS TENUS PAR LE SERVEUR, PAS PAR LE PROMPT
  *
  * · T5-002 — une cible T5 (ou inconnue) rendue par le modèle est écartée ;
  * · T5-003 — seul le socle commun de T2 est dans la configuration ;
- * · T5-004 — une modification s'écrit dans un Brouillon, jamais ailleurs ;
- * · T5-007 — plusieurs Brouillons sans contexte : T5 ne choisit pas ;
+ * · T5-004 — une modification s'écrit dans le brouillon du prompt, jamais
+ *   dans l'Actif (BO-IA-PROMPTS-01 : un brouillon au plus par prompt, la
+ *   question « quel brouillon » de T5-007 ne se pose plus) ;
  * · T5-011 — verdict autre que « prompt » : rien n'est écrit ;
  * · T5-015 — IA bloquée : T5 n'opère pas ;
  * · T5-001 — seul le prompt change : modèles, replis et garde-fous restent.
@@ -45,9 +48,7 @@
 import { AiGateway } from '../gateway/ai-gateway';
 import { computeDiff, type DiffSummary } from './diff.service';
 import { T5_TARGETS, type Treatment } from '../config/treatments';
-import {
-  getVersion, getActiveVersion, listVersions, createDraft, savePromptFieldIfUnchanged,
-} from '../config/config-version.repository';
+import { getVersion } from '../config/config-version.repository';
 import type { ConfigVersionWithEntries } from '../config/config-types';
 import { recordT5Modification } from './prompt-control.audit';
 import { diffVersions, renderDiff, type ConfigDiff } from '../config/config-diff.service';
@@ -56,6 +57,7 @@ import { masterPromptForTreatment, checkMasterProposal } from '../config/prompt-
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
 import { loadMasterTemplate, inspectMasterTemplate } from '../prompts/prompt-loader';
 import { T5AnalyzeOutput, T5ModifyOutput, type T5MasterOutput } from './master/t5-contract';
+import type { WorkingText } from '../master-prompts/master-prompt.service';
 
 /**
  * Verdicts. `mixed` (CDC 15 §27 R1) : plusieurs chantiers ; comme tout
@@ -113,10 +115,17 @@ export interface T5Result {
   changes: T5Change[];
   risks: string[];
   recommendations: string[];
-  /** Au moins un prompt écrit dans le Brouillon. */
+  /** Au moins un prompt écrit dans son brouillon. */
   applied: boolean;
+  /**
+   * Historique (version de configuration) : toujours `null` depuis
+   * BO-IA-PROMPTS-01 — les prompts s'écrivent dans leurs brouillons
+   * (`promptDrafts`), plus dans un Brouillon de configuration.
+   */
   draftId: number | null;
   draftCreated: boolean;
+  /** Brouillons de prompts maîtres écrits (BO-IA-PROMPTS-01). */
+  promptDrafts?: Array<{ treatment: Treatment; versionId: number; versionNumber: number }>;
   traceId: string;
   /** T5-010 : comparaison demandée — version de référence et diff déterministe. */
   comparison?: { versionId: number; label: string; status: string; diff: ConfigDiff } | null;
@@ -215,7 +224,6 @@ async function extraContext(version: ConfigVersionWithEntries | null, o: T5Optio
   return { text: parts.length ? parts.join('\n\n') : '(aucun)', comparison, logsDigest };
 }
 
-export interface DraftChoice { id: number; label: string | null; isStale: boolean; createdAt: string }
 
 export class T5Refused extends Error {
   constructor(readonly code: string, message: string, readonly details?: Record<string, unknown>) {
@@ -284,13 +292,40 @@ export interface TargetText {
   discriminant: string | null;
   /** Texte master vide dans la version : fichier du dépôt présenté. */
   fromFile: boolean;
+  /** Brouillon du prompt lu (écriture conditionnelle), BO-IA-PROMPTS-01. */
+  readDraftId?: number | null;
+  /** Version active du prompt lue, BO-IA-PROMPTS-01. */
+  readActiveId?: number | null;
 }
 
-export async function targetTexts(version: ConfigVersionWithEntries | null): Promise<Map<Treatment, TargetText>> {
+/** Textes administrés au BO (« Prompts maîtres ») : lecture injectable, jamais bloquante. */
+async function administeredTexts(mode: T5Mode): Promise<Map<Treatment, WorkingText>> {
+  try {
+    const { workingTexts } = await import('../master-prompts/master-prompt.service');
+    return await workingTexts(mode);
+  } catch {
+    return new Map();
+  }
+}
+
+export async function targetTexts(
+  version: ConfigVersionWithEntries | null,
+  administered: Map<Treatment, WorkingText> = new Map(),
+): Promise<Map<Treatment, TargetText>> {
   const out = new Map<Treatment, TargetText>();
   for (const t of T5_TARGETS) {
     const entry = version?.entries.find((e) => e.treatment === t) as TreatmentConfig | undefined;
     const master = masterPromptForTreatment(t);
+    // BO-IA-PROMPTS-01 : texte administré au BO (brouillon ou Actif) d'abord.
+    const bo = administered.get(t);
+    if (bo && master) {
+      out.set(t, {
+        treatment: t, field: 'masterPrompt', text: bo.text, masterPromptCode: master.masterPromptCode,
+        branches: master.tasks, discriminant: inspectMasterTemplate(bo.text).discriminant, fromFile: false,
+        readDraftId: bo.draftId, readActiveId: bo.activeId,
+      });
+      continue;
+    }
     if (entry && master && promptArchitectureOf(entry) === 'master') {
       const configured = masterPromptOf(entry);
       const text = configured ?? await loadMasterTemplate(master.masterPromptCode, TREATMENT_DEFINITIONS[t].useCaseCode);
@@ -427,7 +462,7 @@ export async function analyze(
   await assertAiAvailable();
   const version = await loadVersion(versionId);
   const extra = await extraContext(version, options);
-  const texts = await targetTexts(version);
+  const texts = await targetTexts(version, await administeredTexts('analyze'));
   const { output, traceId, architecture } = await callModel('analyze', version, instruction, accountId, userId, extra.text, texts);
   const r = interpret('analyze', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt');
   return {
@@ -440,54 +475,30 @@ export async function analyze(
 
 // ── Modification ────────────────────────────────────────────────────────────
 
-type WriteTarget =
-  | { kind: 'existing'; draft: ConfigVersionWithEntries }
-  | { kind: 'create'; base: ConfigVersionWithEntries | null };
-
-/**
- * Brouillon dans lequel écrire (T5-004, T5-007) :
- * version affichée au statut Brouillon → elle ; création demandée → nouveau
- * Brouillon depuis l'Active ; aucun Brouillon → création ; sinon refus avec
- * la liste, même pour un seul Brouillon existant.
- */
-export async function resolveWriteTarget(versionId: number, createNewDraft: boolean): Promise<WriteTarget> {
-  const version = await loadVersion(versionId);
-  if (version.status === 'DRAFT') return { kind: 'existing', draft: version };
-
-  const base = await getActiveVersion(version.environment);
-  if (createNewDraft) return { kind: 'create', base };
-
-  const drafts = (await listVersions(version.environment)).filter((v) => v.status === 'DRAFT');
-  if (drafts.length === 0) return { kind: 'create', base };
-
-  const choices: DraftChoice[] = drafts.map((d) => ({
-    id: d.id, label: d.label, isStale: d.isStale, createdAt: d.createdAt.toISOString(),
-  }));
-  throw new T5Refused(
-    'DRAFT_SELECTION_REQUIRED',
-    `La version affichée est en lecture seule et ${drafts.length} brouillon(s) existe(nt) déjà : `
-    + 'ouvrez celui dans lequel écrire, ou créez-en un nouveau depuis l’Active. '
-    + 'Prompt Control ne choisit pas à votre place (T5-007).',
-    { drafts: choices },
-  );
-}
-
 export interface ModifyRequest {
+  /** Version de configuration affichée : contexte (comparaison, texte de repli). */
   versionId: number;
   instruction: string;
+  /** Historique (T5-007) : sans objet depuis BO-IA-PROMPTS-01, ignoré. */
   createDraft?: boolean;
   accountId: number;
   userId: number;
   options?: T5Options;
 }
 
+/**
+ * T5 MODIFY (BO-IA-PROMPTS-01) : chaque prompt réécrit est écrit dans le
+ * BROUILLON de ce prompt maître — créé depuis l'Actif s'il n'existe pas,
+ * jamais dans l'Actif, jamais dans une version de configuration. Écriture
+ * conditionnelle sur le texte lu : une modification concurrente n'est jamais
+ * écrasée. L'administrateur active ensuite lui-même (Brouillon → Actif).
+ */
 export async function modify(req: ModifyRequest): Promise<T5Result> {
   await assertAiAvailable();
-  const target = await resolveWriteTarget(req.versionId, Boolean(req.createDraft));
-  const source = target.kind === 'existing' ? target.draft : target.base;
+  const source = await loadVersion(req.versionId);
 
   const extra = await extraContext(source, req.options ?? {});
-  const texts = await targetTexts(source);
+  const texts = await targetTexts(source, await administeredTexts('modify'));
   const { output, traceId, architecture } = await callModel('modify', source, req.instruction, req.accountId, req.userId, extra.text, texts);
   const r = interpret('modify', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt');
   const writable = r.changes.filter((c) => c.proposedContent);
@@ -496,61 +507,48 @@ export async function modify(req: ModifyRequest): Promise<T5Result> {
     mode: 'modify', verdict: r.verdict, analysis: r.analysis, risks: r.risks, recommendations: r.recommendations,
     ...extras(output, architecture),
     changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
-    applied: false, draftId: null, draftCreated: false, traceId,
+    applied: false, draftId: null, draftCreated: false, traceId, promptDrafts: [],
     comparison: extra.comparison, logsDigest: extra.logsDigest,
   };
   if (writable.length === 0) return result;
 
-  const draft = target.kind === 'existing' ? target.draft : await createDraft(req.userId, 'Prompt Control');
-
-  // Relu juste avant l'écriture : un enregistrement concurrent pendant l'appel
-  // modèle ne doit pas être écrasé par un texte que T5 n'a pas lu.
-  const fresh = await getVersion(draft.id);
-  if (!fresh || fresh.status !== 'DRAFT') {
-    throw new T5Refused('NOT_A_DRAFT', `La version ${draft.id} n'est plus un brouillon modifiable : rien n'a été écrit (T5-004).`);
-  }
-
+  const { writeDraftFromPromptControl } = await import('../master-prompts/master-prompt.service');
   for (const c of writable) {
-    const entry = fresh.entries.find((e) => e.treatment === c.treatment);
     const changed = result.changes.find((x) => x.treatment === c.treatment)!;
-    if (!entry) { changed.rejected = `Configuration ${c.treatment} absente du brouillon.`; continue; }
     const cible = texts.get(c.treatment)!;
-    const sourceEntry = source?.entries.find((e) => e.treatment === c.treatment);
-    // Contrôle de concurrence sur la zone réellement lue par T5.
-    const inchange = cible.field === 'masterPrompt'
-      ? promptArchitectureOf(entry) === 'master' && masterPromptOf(entry) === masterPromptOf(sourceEntry)
-      : entry.prompt === promptOf(source, c.treatment);
-    if (!inchange) {
-      changed.rejected = `Le prompt ${c.treatment} a été modifié pendant l'analyse : il n'a pas été écrasé. Relancez la demande.`;
+    if (cible.field !== 'masterPrompt') {
+      changed.rejected = `Le prompt ${c.treatment} n’a pas de prompt maître administrable : rien n’a été écrit.`;
       continue;
     }
-    // Seul le prompt change (T5-001) : le préambule en `steps`, le texte
-    // master complet en `master` — jamais le préambule d'un master. Écriture
-    // CONDITIONNELLE (revue lot 16) : si la zone a changé depuis la lecture,
-    // 0 ligne ⇒ conflit explicite, rien n'est écrasé.
-    const ecrit = await savePromptFieldIfUnchanged({
-      versionId: draft.id, treatment: c.treatment, field: cible.field,
-      expected: cible.field === 'masterPrompt' ? masterPromptOf(sourceEntry) : promptOf(source, c.treatment),
-      next: c.proposedContent!, userId: req.userId,
-    });
+    // Seul le texte du prompt change (T5-001) : modèles, replis et
+    // garde-fous ne sont pas dans les prompts maîtres.
+    let ecrit: Awaited<ReturnType<typeof writeDraftFromPromptControl>>;
+    try {
+      ecrit = await writeDraftFromPromptControl({
+        treatment: c.treatment, expected: cible.text, readDraftId: cible.readDraftId ?? null,
+        readActiveId: cible.readActiveId ?? null, next: c.proposedContent!, userId: req.userId,
+      });
+    } catch (e) {
+      changed.rejected = `Le brouillon du prompt ${c.treatment} n’a pas pu être écrit : ${(e as Error).message}`;
+      continue;
+    }
     if (!ecrit) {
-      changed.rejected = `Conflit : le prompt ${c.treatment} a été modifié (ou le brouillon validé) pendant l'analyse — rien n'a été écrasé. Relancez la demande.`;
+      changed.rejected = `Conflit : le prompt ${c.treatment} a été modifié pendant l'analyse — rien n'a été écrasé. Relancez la demande.`;
       continue;
     }
     changed.applied = true;
+    result.promptDrafts!.push({ treatment: c.treatment, versionId: ecrit.id, versionNumber: ecrit.versionNumber });
     try {
       await recordT5Modification({
         adminUserId: req.userId, instruction: req.instruction, treatment: c.treatment,
-        versionId: draft.id, draftCreated: target.kind === 'create',
-        before: cible.text, after: c.proposedContent!, traceId, verdict: r.verdict, field: cible.field,
+        versionId: ecrit.id, draftCreated: cible.readDraftId == null,
+        before: cible.text, after: c.proposedContent!, traceId, verdict: r.verdict, field: 'masterPrompt',
       });
     } catch (e) {
-      console.error('[T5] Journal de modification non écrit', { traceId, versionId: draft.id, e });
+      console.error('[T5] Journal de modification non écrit', { traceId, promptVersionId: ecrit.id, e });
     }
   }
 
   result.applied = result.changes.some((c) => c.applied);
-  result.draftId = result.applied || target.kind === 'create' ? draft.id : null;
-  result.draftCreated = target.kind === 'create';
   return result;
 }

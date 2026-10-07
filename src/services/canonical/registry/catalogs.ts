@@ -10,6 +10,8 @@
  * créer.
  */
 import type { AssetFamily, DocumentCatalogEntry, EventBusinessType, EventCatalogEntry } from './types';
+import { LEGACY_DOCUMENT_CODE_EQUIVALENTS, normalizeDocumentCode } from '@/lib/referential/legacy-document-codes';
+import { resolveLegacyType } from '@/lib/referential/v2/legacy-mapping';
 
 const ALL: AssetFamily[] = ['IMMOBILIER', 'VEHICULE', 'OBJECT'];
 
@@ -288,10 +290,29 @@ export function getEventEntry(typeOrAlias: string): EventCatalogEntry | undefine
   return EVENT_BY_TYPE.get(typeOrAlias as EventBusinessType) ?? EVENT_BY_ALIAS.get(typeOrAlias.toUpperCase());
 }
 
-/** Entrée du catalogue documentaire pour un code (V1, V2 ou alias). Inconnu → undefined (non autoritaire). */
+/**
+ * Entrée du catalogue documentaire pour un code (V1, V2 ou alias). Inconnu →
+ * undefined (non autoritaire). Ordre de résolution (lot 30, documenté dans
+ * `docs/exploitation/referentiels.md`) :
+ *   1. code ou alias déclaré dans DOCUMENT_CATALOG ;
+ *   2. ancien code ÉQUIVALENT (`LEGACY_DOCUMENT_CODE_EQUIVALENTS` :
+ *      FACTURE_ACHAT → FACTURE…) ;
+ *   3. correspondance V1 → V2 CERTAINE (`legacy-mapping`, verdict MAPPED :
+ *      POLICE_ASSURANCE → INSURANCE_POLICY), puis l'alias V2 du catalogue.
+ * Un repli de stockage (TAXE_FONCIERE rangé en ACTE_TRANSACTION) n'est
+ * JAMAIS suivi : il ne donne aucune règle métier.
+ * C'est la facette « règles métier » du résolveur documentaire unique
+ * (`lib/referential/document-codes.ts`).
+ */
 export function resolveDocumentType(code: string | null | undefined): DocumentCatalogEntry | undefined {
-  if (!code) return undefined;
-  return DOC_BY_CODE.get(code.trim().toUpperCase());
+  const c = normalizeDocumentCode(code);
+  if (!c) return undefined;
+  const direct = DOC_BY_CODE.get(c);
+  if (direct) return direct;
+  const equivalent = LEGACY_DOCUMENT_CODE_EQUIVALENTS[c];
+  if (equivalent && DOC_BY_CODE.has(equivalent)) return DOC_BY_CODE.get(equivalent);
+  const v2 = resolveLegacyType({ typeCode: equivalent ?? c, userSelected: false });
+  return v2.verdict === 'MAPPED' && v2.typeCode ? DOC_BY_CODE.get(v2.typeCode) : undefined;
 }
 
 /** Alias de `resolveDocumentType`, pour la symétrie avec `getEventEntry`. */

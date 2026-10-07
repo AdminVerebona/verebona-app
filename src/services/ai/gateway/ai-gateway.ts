@@ -83,7 +83,7 @@ export class AiGateway {
 
     // ── Idempotence (CDC §5.7) ─────────────────────────────────────────────
     // Opération master : la version résolue du master entre dans la clé
-    // (`t1_master_v1@file` ou `@cfg<id>:<empreinte>`) — un nouveau master ne
+    // (`t1_master_v1@file`, `@cfg<id>:<empreinte>` ou `@pv<id>:<empreinte>`) — un nouveau master ne
     // sert jamais une sortie mise en cache sous l'ancien (revue lot 12).
     let masterVersion: string | null = null;
     if (isMasterOperation(op)) {
@@ -92,6 +92,7 @@ export class AiGateway {
         masterPromptCode: op.masterPromptCode,
         configuredText: configuredMasterText(op.useCaseCode, cfg),
         configVersionId: cfg.configVersionId,
+        promptVersionId: configuredMasterText(op.useCaseCode, cfg) ? cfg.masterPromptVersionId ?? null : null,
       });
     }
     const key = req.idempotencyKey
@@ -190,6 +191,7 @@ export class AiGateway {
           useCaseCode: op.useCaseCode,
           configuredText: configuredMasterText(op.useCaseCode, configuration),
           configVersionId: configuration.configVersionId,
+          promptVersionId: configuration.masterPromptVersionId ?? null,
         });
       } catch (e) {
         // Master absent, incomplet ou variable non déclarée : erreur de

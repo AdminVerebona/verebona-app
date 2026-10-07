@@ -8,6 +8,7 @@
  * Tous les points d'écriture (enrichissement IA, impact propagation, PATCH API)
  * DOIVENT passer par validateField avant d'écrire dans keyCharacteristics.
  */
+import { toExportFamily } from '@/services/exports/catalog';
 
 // ─── Sections autorisées par famille ──────────────────────────────────────────
 
@@ -51,9 +52,7 @@ function getAllowedFieldSet(category: string): Set<string> {
   const cached = allowedFieldSetCache.get(category);
   if (cached) return cached;
 
-  const family = category === 'IMMOBILIER' ? 'IMMOBILIER'
-    : category === 'VEHICULE' ? 'VEHICULE'
-    : 'OBJET';
+  const family = toExportFamily(category) ?? 'OBJET';
 
   const sections = FAMILY_SECTIONS[family] ?? [];
   const set = new Set<string>();
@@ -113,9 +112,7 @@ export function filterAllowedFields(
  */
 export function getApplicableSections(category: string | null | undefined): string[] {
   if (!category) return [];
-  const family = category === 'IMMOBILIER' ? 'IMMOBILIER'
-    : category === 'VEHICULE' ? 'VEHICULE'
-    : 'OBJET';
+  const family = toExportFamily(category) ?? 'OBJET';
   return FAMILY_SECTIONS[family] ?? [];
 }
 

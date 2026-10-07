@@ -10,8 +10,8 @@
  *      rendre une pièce sensible ou « occupant », jamais l'inverse.
  */
 
-import { DOCUMENT_TYPES } from '@/lib/referential/v2';
-import { DOCUMENT_TYPE_LIST } from '@/lib/document-type-constants';
+import { DOCUMENT_TYPE_LABELS } from '@/lib/document-type-constants';
+import { resolveDocumentCode } from '@/lib/referential/document-codes';
 
 /** Formats intégrables dans le PDF (SEL-GEN-003). */
 export const INTEGRABLE = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
@@ -65,13 +65,18 @@ const V2_KIND: Record<string, DocKind> = {
   PHOTO: 'PHOTO',
 };
 
+/**
+ * Codes V1 (et rubriques CIL fines) → nature. Les ANCIENS codes (TITRE_PROPRIETE,
+ * PEB, TAXE_FONCIERE, CADASTRE…) n'y figurent plus : ils passent par le
+ * résolveur documentaire unique (lot 30), comme partout ailleurs.
+ */
 const V1_KIND: Record<string, DocKind> = {
   FACTURE: 'FACTURE', DEVIS: 'DEVIS', CONTRAT: 'CONTRAT', GARANTIE: 'GARANTIE', ATTESTATION_ASSURANCE: 'ATTESTATION_ASSURANCE', MANUEL: 'MANUEL',
-  RAPPORT_ENTRETIEN: 'RAPPORT_ENTRETIEN', ACTE_TRANSACTION: 'ACTE_NOTARIE', TITRE_PROPRIETE: 'ACTE_NOTARIE', CONTRAT_ACHAT: 'ACTE_NOTARIE',
-  TAXE_FONCIERE: 'FISCAL', PERMIS_CONSTRUIRE: 'PERMIS_CONSTRUIRE', SURFACE_CARREZ: 'SURFACE_CARREZ', EXPERTISE: 'EXPERTISE',
-  CONSTAT_SINISTRE: 'SINISTRE', DIAGNOSTIC: 'AUTRE', DPE: 'DPE', PEB: 'DPE', AUDIT_ENERGETIQUE: 'AUDIT_ENERGETIQUE', AMIANTE: 'AMIANTE', PLOMB: 'PLOMB',
+  RAPPORT_ENTRETIEN: 'RAPPORT_ENTRETIEN', ACTE_TRANSACTION: 'ACTE_NOTARIE',
+  PERMIS_CONSTRUIRE: 'PERMIS_CONSTRUIRE', SURFACE_CARREZ: 'SURFACE_CARREZ', EXPERTISE: 'EXPERTISE',
+  CONSTAT_SINISTRE: 'SINISTRE', DIAGNOSTIC: 'AUTRE', DPE: 'DPE', AUDIT_ENERGETIQUE: 'AUDIT_ENERGETIQUE', AMIANTE: 'AMIANTE', PLOMB: 'PLOMB',
   TERMITES: 'TERMITES', GAZ: 'GAZ', ELECTRICITE: 'ELECTRICITE', ASSAINISSEMENT: 'ASSAINISSEMENT', ERNMT: 'ERNMT',
-  PLAN_CONSTRUCTION: 'PLAN_CONSTRUCTION', PLAN_CADASTRAL: 'PLAN_CADASTRAL', EXTRAIT_CADASTRAL: 'PLAN_CADASTRAL', CADASTRE: 'PLAN_CADASTRAL',
+  PLAN_CONSTRUCTION: 'PLAN_CONSTRUCTION', PLAN_CADASTRAL: 'PLAN_CADASTRAL',
   RE2020: 'ENERGIE_TECHNIQUE', LABEL_CERTIFICATION: 'ENERGIE_TECHNIQUE',
   ISOLATION_TOITURE: 'ENERGIE_TECHNIQUE', ISOLATION_MURS: 'ENERGIE_TECHNIQUE', ISOLATION_VITRAGE: 'ENERGIE_TECHNIQUE', ISOLATION_PLANCHERS: 'ENERGIE_TECHNIQUE',
   EQUIPEMENT_CHAUFFAGE: 'ENERGIE_TECHNIQUE', EQUIPEMENT_REFROIDISSEMENT: 'ENERGIE_TECHNIQUE', EQUIPEMENT_ECS: 'ENERGIE_TECHNIQUE',
@@ -116,12 +121,20 @@ export function fileFormatOf(mimeType: string | null | undefined, filename: stri
 
 export const isIntegrable = (format: string | null | undefined): boolean => INTEGRABLE.has(String(format ?? '').toUpperCase());
 
+/** Nature d'un code V1 ou ancien : code V1 exact, sinon sa correspondance V2 certaine, sinon son code V1 de rangement. */
+function kindOfLegacyCode(code: string): DocKind | undefined {
+  const r = resolveDocumentCode(code);
+  return (r.code ? V1_KIND[r.code] : undefined)
+    ?? (r.v2Type ? V2_KIND[r.v2Type] : undefined)
+    ?? (r.storageCode ? V1_KIND[r.storageCode] : undefined);
+}
+
 /** Nature d'une pièce. */
 export function documentKind(d: DocumentLike): DocKind {
   const v2 = d.documentTypeCode ? V2_KIND[d.documentTypeCode] : undefined;
   if (v2) return v2;
   for (const c of [d.retainedFunctionCode, d.documentType]) {
-    const k = c ? V1_KIND[c.toUpperCase()] : undefined;
+    const k = c ? kindOfLegacyCode(c) : undefined;
     if (k && k !== 'AUTRE') return k;
   }
   // `DIAGNOSTIC` générique : rubrique CIL la plus précise si l'IA l'a posée.
@@ -146,14 +159,13 @@ export function classifyDocument(d: DocumentLike): DocumentClass {
   return { kind, sensitive, occupantData };
 }
 
-const V2_LABELS = new Map(DOCUMENT_TYPES.map((t) => [t.code, t.label]));
-const V1_LABELS = new Map(DOCUMENT_TYPE_LIST.map((t) => [t.code, t.label]));
-
-/** Libellé de type affiché (« Facture », « DPE »…) ; '' si inconnu. */
+/** Libellé de type affiché (« Facture », « DPE »…) ; '' si inconnu. Résolveur documentaire unique (lot 30). */
 export function documentTypeLabel(d: DocumentLike): string {
-  if (d.documentTypeCode && V2_LABELS.has(d.documentTypeCode)) return V2_LABELS.get(d.documentTypeCode)!;
+  const v2 = resolveDocumentCode(d.documentTypeCode);
+  if (v2.origin === 'V2_TYPE' && v2.label) return v2.label;
   for (const c of [d.retainedFunctionCode, d.documentType]) {
-    if (c && c !== 'AUTRE' && V1_LABELS.has(c)) return V1_LABELS.get(c)!;
+    const v1 = resolveDocumentCode(c).storageCode;
+    if (v1 && v1 !== 'AUTRE') return DOCUMENT_TYPE_LABELS[v1] ?? '';
   }
   return '';
 }

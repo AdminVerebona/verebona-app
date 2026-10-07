@@ -134,6 +134,13 @@ export async function PATCH(
     );
   }
 
+  // Lot 28 : le Type décide de la pertinence des données documentaires
+  // (fin de contrat, fin de garantie…) — « À traiter » est réévalué.
+  if (outcome.result.documentTypeCode !== current.documentTypeCode) {
+    const { onDocumentEditedByUser } = await import('@/services/to-process/document-rule-bridge');
+    await onDocumentEditedByUser(accountId, row.id);
+  }
+
   // CDC Assistant §25.7, §31.7 : classement du document modifié.
   await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: row.id });
   return NextResponse.json({

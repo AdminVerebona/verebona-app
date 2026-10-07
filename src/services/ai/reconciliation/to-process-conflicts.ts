@@ -17,11 +17,58 @@
  * resterait fausse dans sa fiche.
  *
  * Ce module est la lecture manquante.
+ *
+ * ── LOT 28 : LEGACY ISOLÉ, EN ATTENTE DE SUPPRESSION ──────────────────────
+ *
+ * La page « À traiter » V2 ne lit plus ce module : un conflit de champ de
+ * bien y arrive comme action ARBITRATE par le pont de réconciliation
+ * (`services/to-process/reconciliation-bridge.ts`). `listOpenReconciliationConflicts`
+ * ne sert plus que la route historique `/api/to-process/conficts` (aucun
+ * écran ne l'appelle). Le format de carte V1 (familles arbitrate / attach /
+ * confirm / complete) est donc déclaré ICI, localement, et n'est plus
+ * exporté par `src/types/to-process.ts` (supprimé) : aucun nouveau code ne
+ * doit s'appuyer dessus.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentCodeLabel } from '@/lib/referential/document-codes';
 import { pgClient } from '@/db';
 import { isCriticalField } from './decision/critical-fields';
-import type { ToProcessItem } from '@/types/to-process';
+
+/**
+ * @deprecated Format de carte de la page « À traiter » V1 (lot 28 : legacy
+ * isolé). Le modèle cible est l'action V2 ARBITRATE / COMPLETE
+ * (`services/to-process/action-model.ts`).
+ */
+export interface LegacyConflictCard {
+  id: string;
+  objectType: 'asset';
+  objectId: number;
+  family: 'arbitrate';
+  reason: string;
+  priority: 'high' | 'medium' | 'low';
+  actionTitle: string;
+  objectTitle: string;
+  badge: string;
+  context: {
+    conflictingField?: string;
+    conflictingValues?: { label: string; value: string }[];
+    currentValue?: string;
+    detectedValue?: string;
+    assetName?: string;
+    currentSourceLabel?: string;
+    proposedSourceLabel?: string;
+    currentSourceDocumentId?: number;
+    proposedSourceDocumentId?: number;
+    authorityRule?: string;
+    source?: 'document_ai';
+    createdAt?: string;
+  };
+  primaryAction: 'resolve';
+  secondaryActions: Array<'view_detail' | 'view_source_document' | 'snooze'>;
+  status: 'active';
+  createdAt: string;
+}
+type ToProcessItem = LegacyConflictCard;
 
 /** PostgreSQL `undefined_table` — migrations 0104/0109 non appliquées. */
 const UNDEFINED_TABLE = '42P01';
@@ -82,28 +129,15 @@ interface ConflictRow {
  * C'est le renseignement qui permet de trancher. « 82 m² contre 78,4 m² » ne se
  * décide pas ; « 82 m² d'après l'annonce, 78,4 m² d'après l'acte notarié » se
  * décide en une seconde. Le CDC §7.1 l'exige explicitement.
+ *
+ * Sources qui ne sont pas des types documentaires : ci-dessous.
  */
-const DOCUMENT_TYPE_LABELS: Record<string, string> = {
-  ACTE_AUTHENTIQUE: 'Acte authentique',
-  ACTE_NOTARIE: 'Acte notarié',
-  COMPROMIS_VENTE: 'Compromis de vente',
-  MESURAGE_LEGAL: 'Mesurage officiel',
-  DPE: 'Diagnostic de performance énergétique',
-  DIAGNOSTIC: 'Diagnostic',
-  ANNONCE_COMMERCIALE: 'Annonce commerciale',
-  CARTE_GRISE: 'Carte grise',
-  CERTIFICAT_IMMATRICULATION: "Certificat d'immatriculation",
-  CONTRAT_ASSURANCE: "Contrat d'assurance",
-  AVIS_ECHEANCE: "Avis d'échéance",
-  FACTURE: 'Facture',
-  CERTIFICAT_GARANTIE: 'Certificat de garantie',
-  RAPPORT_ENTRETIEN: "Rapport d'entretien",
-  SAISIE_MANUELLE: 'Saisie manuelle',
-};
+const SOURCE_LABELS: Record<string, string> = { SAISIE_MANUELLE: 'Saisie manuelle' };
 
+/** Libellé de la source : résolveur documentaire unique (lot 30), plus de liste locale. */
 export function documentTypeLabel(type: string | null): string {
   if (!type) return 'Source inconnue';
-  return DOCUMENT_TYPE_LABELS[type] ?? type;
+  return SOURCE_LABELS[type] ?? documentCodeLabel(type);
 }
 
 /**

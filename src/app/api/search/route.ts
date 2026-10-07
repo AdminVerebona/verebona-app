@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { drawerHref } from '@/lib/drawers';
 import { SessionService } from '@/lib/session-service';
 import { db, ensureMigrations, ensureUnaccent } from '@/db';
+import { vehicleIdentifiersIn } from '@/services/verebona-assistant/core/vehicle-identifiers';
+import { findVehiclesByIdentifier } from '@/services/verebona-assistant/core/target-lookup.repository';
 
 /**
  * Recherche LEXICALE du compte (biens, documents, échéances), toutes offres.
@@ -37,12 +39,23 @@ export async function GET(req: NextRequest) {
     const q = (new URL(req.url).searchParams.get('q') ?? '').trim();
     if (!q || q.length < 1) return NextResponse.json({ results: [], aiPowered: false });
 
+    /* ── Identifiant EXACT de véhicule (lot 29, ticket 8b §H) ──────────── */
+    // « VF1… » (VIN) ou « AB-123-CD » / « ab123cd » (plaque normalisée) :
+    // correspondance EXACTE en SQL, proposée en tête — aucun appel modèle,
+    // aucun rapprochement approximatif. Même périmètre que la recherche :
+    // biens non supprimés du compte (la barre de recherche n'exclut pas les
+    // biens archivés).
+    const identifiants = vehicleIdentifiersIn(q);
+    const vehiculesExacts = identifiants.plates.length || identifiants.vins.length
+      ? await findVehiclesByIdentifier(accountId, identifiants, { includeArchived: true }).catch(() => [])
+      : [];
+
     /* ── SQL keyword search (toutes formules, résultats immédiats) ─────── */
     // Chaque token peut matcher n'importe quel champ de l'entité (titre, desc, bien lié…).
     // Score = nb de tokens qui matchent. On filtre avec score >= ceil(tokens/2) pour éviter
     // les faux positifs sur les mots courants ("date", "achat"…).
     const tokens = q.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
-    if (tokens.length === 0) return NextResponse.json({ results: [], aiPowered: false });
+    if (tokens.length === 0 && vehiculesExacts.length === 0) return NextResponse.json({ results: [], aiPowered: false });
 
     const likePatterns = tokens.map(t => escapeLike('%' + t + '%'));
     const minScore = tokens.length; // Tous les tokens doivent matcher
@@ -151,8 +164,16 @@ export async function GET(req: NextRequest) {
        LIMIT 5`
     );
 
+    const exacts = vehiculesExacts.map((v) => ({
+      id: `asset-${v.id}`,
+      category: 'Bien' as const,
+      label: v.name,
+      sublabel: [v.subtype, v.registrationNumber].filter(Boolean).join(' · ') || v.category || undefined,
+      href: `/assets/${v.id}`,
+    }));
     const results = [
-      ...assetRows.map((r: any) => ({
+      ...exacts,
+      ...assetRows.filter((r: any) => !vehiculesExacts.some((v) => v.id === Number(r.id))).map((r: any) => ({
         id: `asset-${r.id}`,
         category: 'Bien' as const,
         label: r.name,

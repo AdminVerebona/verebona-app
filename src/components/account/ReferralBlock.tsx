@@ -19,7 +19,11 @@ import { apiClient } from '@/lib/api-client';
 
 // ─── Composant principal ─────────────────────────────────────────────────────
 
-export function ReferralBlock() {
+/**
+ * @param withHeading titre « Parrainage » interne. `false` dans `ReferralCard`
+ *   (lot 26), dont l'en-tête de carte porte déjà ce titre et l'icône.
+ */
+export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } = {}) {
   const [data, setData] = useState<{
     eligible: boolean;
     link: { code: string; url: string; id: number } | null;
@@ -141,10 +145,12 @@ export function ReferralBlock() {
   if (!data?.eligible) {
     return (
       <div className="border border-dashed border-[color:var(--border-subtle)] rounded-lg p-4 space-y-2">
+        {withHeading && (
         <h4 className="text-sm font-medium flex items-center gap-2">
           <Gift className="w-4 h-4 text-muted-foreground" />
           Parrainage
         </h4>
+        )}
         <p className="text-xs text-muted-foreground">
           Disponible après votre première facturation sur les offres Premium ou Premium Duo annuelles.
         </p>
@@ -160,10 +166,12 @@ export function ReferralBlock() {
   if (!data.link) {
     return (
       <div className="space-y-3">
+        {withHeading && (
         <h4 className="text-sm font-medium flex items-center gap-2">
           <Gift className="w-4 h-4 text-primary" />
           Parrainage
         </h4>
+        )}
         {/* GAP-07 : le parrainage = 1 mois offert AU PARRAIN SEUL (voir
             referral-reward.service.ts). L'avantage filleul « 3 mois d'essai au
             lieu de 2 » n'existe plus côté serveur : il est retiré pour que
@@ -189,10 +197,12 @@ export function ReferralBlock() {
       {/* Titre + message récompense */}
       <div className="flex items-start justify-between gap-2">
         <div>
+          {withHeading && (
           <h4 className="text-sm font-medium flex items-center gap-2">
             <Gift className="w-4 h-4 text-primary" />
             Parrainage
           </h4>
+          )}
           <p className="text-xs text-muted-foreground mt-0.5">
             Invitez vos proches à découvrir Verebona.
           </p>

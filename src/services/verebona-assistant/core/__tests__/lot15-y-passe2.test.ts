@@ -89,7 +89,8 @@ describe('1. branche master de la compréhension (classification.adapter)', () =
       entityHints: [{ type: 'period', value: 'en 2024' }, { type: 'asset', value: 'page:5' }, { type: 'equipment', value: 'la chaudière' }],
       requestedFacts: ['mileage', 'inconnu'], requestedTopics: [], filters: {},
     });
-    expect(u.plan.entityHints).toEqual([{ type: 'period', value: 'en 2024' }, { type: 'asset', value: 'la chaudière' }]);
+    // Lot 29 (ticket 13 §A) : l'équipement RESTE un équipement (plus de rabattement sur `asset`).
+    expect(u.plan.entityHints).toEqual([{ type: 'period', value: 'en 2024' }, { type: 'equipment', value: 'la chaudière' }]);
     expect(u.requestedFacts).toEqual(['mileage']);
   });
 

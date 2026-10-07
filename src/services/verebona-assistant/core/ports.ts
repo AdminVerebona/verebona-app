@@ -39,6 +39,7 @@ import { persistResult, loadThreadContext } from './conversation.service';
 import { isPlanAiEligible } from '../registries/capability-registry';
 import { saveClarification } from './clarification.service';
 import { pgClient } from '@/db';
+import { assistantAssetAvailability } from './asset-availability';
 import { buildGenerationPort } from './generation.adapter';
 import { isTreatmentRunnable } from '@/services/ai/queue/runnable-guard';
 import { buildClassificationPort } from './classification.adapter';
@@ -332,15 +333,8 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     // CDC 15 T2-19 à T2-21 (lecture canonique) : lecture ciblée d'un document
     // ou d'une échéance désignés, par la couche canonique de X.
     readTarget: async (input, targets, route) => {
-      const { answerFromTarget } = await import('./target-answer');
-      // Fait demandé par le master T2 sans bien déjà ciblé : biens nommés et
-      // indices résolus dans le compte (jamais un identifiant du modèle).
-      let t = targets;
-      if (route?.understanding?.requestedFacts.length && !targets.asset) {
-        const { resolveAssistantTargets } = await import('./assistant-targets');
-        t = await resolveAssistantTargets(input, route);
-      }
-      return answerFromTarget(input.accountId, input.message, t, undefined, route?.understanding);
+      const { readTargetForRequest } = await import('./target-answer');
+      return readTargetForRequest(input, targets, route);
     },
     // CDC 15 T2-10, T2-33, T2-34 (lecture canonique) : planificateurs dédiés.
     buildSynthesisContext: async (route, input) => {
@@ -353,10 +347,16 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       input.conversationId ? loadThreadContext(input.accountId, input.userId, input.conversationId) : Promise.resolve(null),
 
     describeEntity: async (accountId, e) => {
+      // Lot 29 (ticket 13) : équipement / pièce revérifiés comme leur fiche
+      // (bien parent du compte et disponible, équipement non archivé).
+      if (e.type === 'equipment' || e.type === 'room') {
+        const { findEntityById } = await import('./target-lookup.repository');
+        const x = await findEntityById(accountId, e.type, e.id);
+        return x ? { label: x.name, date: null, assetId: x.assetId } : null;
+      }
       const sql = e.type === 'asset'
-        ? `SELECT name AS label, NULL::text AS date FROM assets
-            WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL
-              AND coalesce(status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS')`
+        ? `SELECT a.name AS label, NULL::text AS date FROM assets a
+            WHERE a.id = $1 AND a.account_id = $2 AND ${assistantAssetAvailability.sql('a')}`
         : e.type === 'document'
           ? `SELECT coalesce(retained_title, original_filename, 'Document') AS label,
                     to_char(document_date, 'YYYY-MM-DD') AS date

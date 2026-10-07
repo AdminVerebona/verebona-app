@@ -21,16 +21,14 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { logS3Error, signGetUrl } from '@/lib/s3-config';
+import { logS3Error } from '@/lib/s3-config';
 import { loadReadableFile } from '@/services/documents/file-access';
-import { decideThumbnail, thumbnailSourceKind, THUMBNAIL_FORMAT } from '@/services/documents/thumbnails/thumbnail-spec';
+import { decideThumbnail, thumbnailSourceKind } from '@/services/documents/thumbnails/thumbnail-spec';
 import { enqueueThumbnail, getThumbnailRow, thumbnailsEnabled } from '@/services/documents/thumbnails/thumbnail.service';
+// Signature arrondie à l'heure et mémorisée, partagée avec l'accueil (lot 26).
+import { signedThumbnailUrl } from '@/services/documents/thumbnails/thumbnail-url';
 
 export const dynamic = 'force-dynamic';
-
-/** Fenêtre d'arrondi de la signature et validité minimale garantie. */
-const SIGNING_WINDOW_MS = 60 * 60 * 1000;
-const SIGNED_TTL_S = 2 * 60 * 60;
 
 function status(code: string, httpStatus: number, asJson: boolean): NextResponse {
   return NextResponse.json({ status: code }, { status: asJson ? 200 : httpStatus, headers: { 'Cache-Control': 'private, no-store' } });
@@ -65,14 +63,7 @@ export async function GET(
 
     if (decision.action === 'serve') {
       if (asJson) return status('READY', 200, true);
-      const signingDate = new Date(Math.floor(Date.now() / SIGNING_WINDOW_MS) * SIGNING_WINDOW_MS);
-      const url = await signGetUrl({
-        key: decision.s3Key,
-        expiresIn: SIGNED_TTL_S,
-        signingDate,
-        responseContentType: THUMBNAIL_FORMAT,
-        responseCacheControl: 'private, max-age=3600',
-      });
+      const url = await signedThumbnailUrl(decision.s3Key);
       // La redirection elle-même n'est gardée qu'une minute : les droits
       // sont recontrôlés à chaque nouvel affichage au-delà.
       return NextResponse.redirect(url, { status: 302, headers: { 'Cache-Control': 'private, max-age=60' } });

@@ -193,6 +193,8 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
     mirrorColumns: [{ table: 'assets', column: 'address', transform: 'identity' }],
     completenessRule: { required: true },
     sensitive: true,
+    // « L'adresse » demandée : adresse complète, composée par le serveur (ticket 8a §G).
+    composedDisplay: [['address1'], ['address2'], ['postalCode', 'city'], ['country']],
   }),
   f({ key: 'address2', label: 'Complément d’adresse', families: I, valueType: 'string', section: 'location_identification', aliases: ['complementAdresse'], sensitive: true }),
   f({

@@ -1,7 +1,16 @@
 /**
- * Liste canonique des types de documents — source unique de vérité.
- * Utilisée par : composants, prompt IA, seed DB, export manifest CIL.
- * Toute modification ici doit être reflétée dans une migration DB.
+ * Types documentaires V1 — colonne historique `asset_files.document_type` et
+ * table `document_types` (sélecteur du tiroir document).
+ *
+ * Lot 30 (ticket « Référentiels ») : ce n'est PAS la taxonomie documentaire
+ * produit — celle-ci est le référentiel V2 (`lib/referential/v2`, Rubriques
+ * et Types). Cette liste définit seulement les codes V1 encore stockés et
+ * proposés dans le sélecteur V1. Toute TRADUCTION d'un code (V1, V2, alias,
+ * ancien code IA) passe par le résolveur unique
+ * `lib/referential/document-codes.ts` — jamais par une liste locale.
+ *
+ * Toute modification ici doit être reflétée dans une migration DB
+ * (`document_types`) : un test le vérifie (lot 30, REF-AC03).
  *
  * STRUCTURE :
  *  — Catégories fonctionnelles (affichées dans les pickers)
@@ -35,6 +44,12 @@ export const DOCUMENT_TYPE_LIST: DocumentTypeOption[] = [
   { code: 'ATTESTATION_ASSURANCE', label: "Attestation d'assurance",   description: "Contrat, attestation ou avis d'échéance d'assurance habitation / sinistre",               displayOrder: 5 },
   { code: 'MANUEL',                label: 'Notice / Manuel',           description: "Manuel d'utilisation, notice de fonctionnement, guide technique, mode d'emploi",         displayOrder: 6 },
   { code: 'RAPPORT_ENTRETIEN',     label: "Rapport d'entretien",       description: "Compte-rendu d'entretien, intervention technique, constat d'état",                       displayOrder: 7 },
+  // Présents en base depuis les migrations 0124 / seed (proposés par le
+  // sélecteur, lu en base) mais absents d'ici : un choix « Certificat » ou
+  // « Avis d'échéance » était enregistré « Autre » (lot 30).
+  { code: 'CERTIFICAT',            label: 'Certificat',                description: "Certificat, procès-verbal, rapport de contrôle",                                         displayOrder: 8 },
+  { code: 'AVIS_ECHEANCE',         label: "Avis d'échéance",           description: "Avis d'échéance d'assurance ou de cotisation",                                           displayOrder: 9 },
+  { code: 'ANNONCE_COMMERCIALE',   label: 'Annonce',                   description: "Annonce immobilière, fiche produit, page web",                                           displayOrder: 16 },
 
   // ── Immobilier ───────────────────────────────────────────────────────────────
   { code: 'ACTE_TRANSACTION',      label: 'Acte / Transaction',        description: "Titre de propriété, acte notarié, promesse de vente, compromis",                        displayOrder: 10 },
@@ -93,27 +108,8 @@ export const CIL_RUBRIC_CODES = new Set(
   DOCUMENT_TYPE_LIST.filter(t => t.isCilRubric).map(t => t.code),
 );
 
-/** Résout un code IA ou legacy vers un code DB valide */
-export function resolveDocumentTypeCode(code: string | null | undefined): string {
-  if (!code) return 'AUTRE';
-  // Alias legacy
-  if (code === 'PHOTO_BIEN')            return 'PHOTO';
-  if (code === 'ASSURANCE')             return 'ATTESTATION_ASSURANCE';
-  if (code === 'CERTIFICAT')            return 'DIAGNOSTIC';
-  if (code === 'FACTURE_TRAVAUX')       return 'FACTURE';
-  if (code === 'FACTURE_ACHAT')         return 'FACTURE';
-  if (code === 'CONTRAT_ACHAT')         return 'ACTE_TRANSACTION';
-  if (code === 'REGLEMENT_COPROPRIETE') return 'CONTRAT';
-  if (code === 'CHARGES_COPROPRIETE')   return 'CONTRAT';
-  if (code === 'TAXE_FONCIERE')         return 'ACTE_TRANSACTION';
-  if (code === 'TITRE_PROPRIETE')       return 'ACTE_TRANSACTION';
-  if (code === 'PEB')                   return 'DPE';
-  if (code === 'SURFACE_LHABITALLE')    return 'SURFACE_CARREZ';
-  if (code === 'EXTRAIT_CADASTRAL')     return 'PLAN_CADASTRAL';
-  if (code === 'CADASTRE')              return 'PLAN_CADASTRAL';
-  // DIAGNOSTIC est un code picker manuel valide en DB mais ne doit jamais sortir de l'IA
-  // (l'IA doit utiliser les codes fins : DPE, AMIANTE, PLOMB, GAZ, ELECTRICITE, ASSAINISSEMENT, ERNMT)
-  // On le laisse passer tel quel s'il vient d'une saisie manuelle existante.
-  // Les codes CIL fins (DPE, AMIANTE…) restent valides en DB — on ne les remplace pas
-  return VALID_DOCUMENT_TYPE_CODES.has(code) ? code : 'AUTRE';
-}
+/**
+ * La normalisation d'un code IA ou ancien vers un code V1 valide
+ * (`resolveDocumentTypeCode`) est dans le résolveur unique
+ * `lib/referential/document-codes.ts` (lot 30).
+ */

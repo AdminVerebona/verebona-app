@@ -23,7 +23,7 @@ import { Input } from '@/components/ui/input';
 import { DatePicker } from '@/components/ui/date-picker';
 import { toast } from 'sonner';
 import { LinkedEventsSection } from '@/components/documents/linked-events-section';
-import { DOCUMENT_TYPE_LIST } from '@/lib/document-type-constants';
+import { PICKER_DOCUMENT_TYPES } from '@/lib/document-type-constants';
 
 interface DocumentType {
   id: number;
@@ -71,7 +71,8 @@ export function DocumentEditDialog({
   // Liste des types disponible (API si dispo, sinon fallback canonique)
   const availableTypes: DocumentType[] = (documentTypes && documentTypes.length > 0)
     ? documentTypes.filter(dt => dt.isActive)
-    : DOCUMENT_TYPE_LIST.map((t, i) => ({ id: i + 1, code: t.code, label: t.label, isActive: true }));
+    // Repli : types PROPOSÉS par le sélecteur (lot 30 — ni formats ni codes CIL fins).
+    : PICKER_DOCUMENT_TYPES.map((t, i) => ({ id: i + 1, code: t.code, label: t.label, isActive: true }));
 
   // Initialize form when document changes
   useEffect(() => {

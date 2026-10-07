@@ -25,15 +25,16 @@
 
 import { useCallback, useEffect, useState, Suspense } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
 import { ForceTheme } from '@/components/ForceTheme';
-import { AlertTriangle, CheckCircle, Loader2, MailCheck, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CheckCircle, Loader2, MailCheck, ShieldAlert } from 'lucide-react';
 import { publicSiteUrl } from '@/lib/external-urls';
+import { resolveWithdrawalBackTarget } from '@/lib/withdrawal-back-target';
 
 interface Summary {
   firstName: string;
@@ -73,6 +74,8 @@ function WithdrawalContent() {
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Session établie ? `null` tant que l'on ne sait pas (retour, lot 26). */
+  const [authenticated, setAuthenticated] = useState<boolean | null>(token ? false : null);
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', contractReference: '' });
   const [result, setResult] = useState<{ publicReference: string; requestedAt: string; dataExportDeadlineAt: string } | null>(null);
 
@@ -82,14 +85,28 @@ function WithdrawalContent() {
     () => `wd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
   );
 
-  /** Arrivée par le lien reçu par courriel, ou session existante. */
+  /**
+   * Arrivée par le lien reçu par courriel, ou session existante.
+   *
+   * Lot 26 — « Jeton manquant. » s'affichait D'EMBLÉE à tout visiteur arrivé
+   * sans jeton, y compris l'utilisateur connecté venu de Mon compte : la
+   * condition `if (token)` avait disparu (bloc nu `{ … }`) et l'appel de
+   * vérification était parti sans `?token=`. Le serveur répondait 400
+   * « Jeton manquant. », affiché comme une erreur, et la branche « session »
+   * (récapitulatif prérempli) n'était plus jamais atteinte. Sans jeton, on
+   * tente donc la session ; sans session, la présentation s'affiche sans
+   * erreur — c'est le parcours public nominal.
+   */
   const loadContext = useCallback(async () => {
     setBusy(true);
     try {
-      {
-        const r = await fetch(`/api/withdrawal/public/verify`, { credentials: 'include' });
-        const data = await r.json();
-        if (!r.ok) { setError(data.error); setStep('presentation'); return; }
+      if (token) {
+        const r = await fetch(
+          `/api/withdrawal/public/verify?token=${encodeURIComponent(token)}`,
+          { credentials: 'include' },
+        );
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { setError(data.error ?? 'Ce lien n’est pas reconnu. Recommencez votre demande.'); setStep('presentation'); return; }
         if (data.reason) { setBlockedMessage(data.message); setStep('blocked'); return; }
         setSummary(data.summary);
         setStep('review');
@@ -100,6 +117,7 @@ function WithdrawalContent() {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' }, body: '{}',
       });
+      setAuthenticated(r.ok);
       if (r.ok) {
         const data = await r.json();
         if (data.eligible === false) { setBlockedMessage(data.message); setStep('blocked'); return; }
@@ -108,6 +126,9 @@ function WithdrawalContent() {
       }
       // Non connecté : on reste sur la présentation, le parcours public prend
       // le relais. C'est le cas nominal, pas une erreur.
+    } catch {
+      // Réseau : la présentation reste utilisable, sans erreur affichée.
+      setAuthenticated((a) => a ?? false);
     } finally {
       setBusy(false);
     }
@@ -151,7 +172,7 @@ function WithdrawalContent() {
   };
 
   return (
-    <Shell>
+    <Shell back={<BackLink authenticated={authenticated} />}>
       {step === 'presentation' && (
         <>
           <CardHeader>
@@ -390,7 +411,37 @@ function ErrorBox({ message }: { message: string }) {
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+/**
+ * Retour (lot 26) : Mon compte si connecté, sinon page précédente, sinon
+ * connexion — voir `resolveWithdrawalBackTarget`. `referrer` et l'historique
+ * ne sont lus qu'après montage (rendu serveur identique au premier rendu).
+ */
+function BackLink({ authenticated }: { authenticated: boolean | null }) {
+  const router = useRouter();
+  const [nav, setNav] = useState({ referrer: '', historyLength: 1 });
+  useEffect(() => {
+    setNav({ referrer: document.referrer, historyLength: window.history.length });
+  }, []);
+  const target = resolveWithdrawalBackTarget({ authenticated, ...nav });
+  if (target.kind === 'history') {
+    return (
+      <Button variant="ghost" size="sm" onClick={() => router.back()}>
+        <ArrowLeft className="w-4 h-4 mr-1.5" />
+        {target.label}
+      </Button>
+    );
+  }
+  return (
+    <Button variant="ghost" size="sm" asChild>
+      <Link href={target.href}>
+        <ArrowLeft className="w-4 h-4 mr-1.5" />
+        {target.label}
+      </Link>
+    </Button>
+  );
+}
+
+function Shell({ children, back }: { children: React.ReactNode; back?: React.ReactNode }) {
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
       <ForceTheme theme="blue" />
@@ -399,6 +450,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex justify-center">
             <LogoWithBaseline size={50} />
           </div>
+          {back ? <div className="-mb-3">{back}</div> : null}
           <Card className="bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
             {children}
           </Card>

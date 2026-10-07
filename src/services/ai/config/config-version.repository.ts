@@ -222,32 +222,6 @@ export async function saveEntry(
   await upsertEntry(versionId, config, userId);
 }
 
-/**
- * Écriture CONDITIONNELLE d'une seule zone prompt (T5, revue lot 16) : le
- * préambule (`prompt`) ou le texte master (`master_prompt`) n'est remplacé
- * que si la ligne est toujours dans un Brouillon ET que la zone vaut encore
- * `expected` (valeur lue par T5 avant l'appel modèle). Une seule instruction
- * atomique : aucune écriture concurrente ne peut s'intercaler entre le
- * contrôle et l'écriture. Rend `false` (0 ligne) en cas de conflit.
- */
-export async function savePromptFieldIfUnchanged(p: {
-  versionId: number; treatment: string; field: 'prompt' | 'masterPrompt';
-  expected: string | null; next: string; userId: number;
-}): Promise<boolean> {
-  if (p.field === 'masterPrompt') await promptArchitectureInsert('master', p.next);
-  const col = p.field === 'masterPrompt' ? 'master_prompt' : 'prompt';
-  const rows = await pgClient.unsafe(
-    `UPDATE ai_config_entries e
-        SET ${col} = $3, updated_by = $5, updated_at = NOW()
-      WHERE e.version_id = $1 AND e.treatment = $2
-        AND NULLIF(e.${col}, '') IS NOT DISTINCT FROM NULLIF($4::text, '')
-        AND EXISTS (SELECT 1 FROM ai_config_versions v WHERE v.id = e.version_id AND v.status = 'DRAFT')
-      RETURNING e.treatment`,
-    [p.versionId, p.treatment, p.next, p.expected, p.userId] as never[],
-  );
-  return (rows as unknown as Row[]).length === 1;
-}
-
 // ── Architecture et texte master (CDC 15 D-03, D-04, migration 0220) ────────
 //
 // `ensureMigrations()` poursuit après une migration en échec : les colonnes

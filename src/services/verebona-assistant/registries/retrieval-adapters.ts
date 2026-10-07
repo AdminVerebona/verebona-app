@@ -31,8 +31,7 @@
 import { db } from '@/db';
 import { assets, assetFiles, agendaItems, equipments, substructures, toProcessActions } from '@/db/schema';
 import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
-import { DOCUMENT_CATALOG } from '@/services/canonical/registry';
-import { DOCUMENT_TYPES } from '@/lib/referential/v2';
+import { documentCodesMatchingWord } from '@/lib/referential/document-codes';
 import type { DocumentAnalysisFilter } from '../core/query-terms';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { likePatterns, likePatternsTolerants, nearMatchRatio, normalizeWord, termMatchRatio, type QueryTerm } from '../core/query-terms';
@@ -41,6 +40,7 @@ import { ANALYSIS_STATUS_LABELS, documentAnalysisStatus } from '../core/document
 import type { RetrievalAdapter, RetrievalQuery } from './retrieval-adapter-registry';
 import type { RetrievedSource } from '../types/sources';
 import { normalizedSql, searchExprMode } from '../core/search-sql';
+import { assistantAssetStatusCondition } from '../core/asset-availability';
 
 /** Erreur levée si une ligne échappe au périmètre du compte. */
 export class AccountScopeViolation extends Error {
@@ -169,7 +169,8 @@ export const assetsAdapter: RetrievalAdapter = {
   sourceTypes: ['asset_field'],
 
   async search(q: RetrievalQuery): Promise<RetrievedSource[]> {
-    const conditions = [eq(assets.accountId, q.accountId), isNull(assets.deletedAt)];
+    // Ticket 14 : biens archivés / transmis exclus (règle unique `asset-availability`).
+    const conditions = [eq(assets.accountId, q.accountId), isNull(assets.deletedAt), assistantAssetStatusCondition(assets.status)];
     const termes = q.terms ?? [];
     const cond = await conditionTermes([assets.name, assets.city, assets.category, assets.subtype, assets.registrationNumber], termes, q.tolerant);
     if (cond) conditions.push(cond);
@@ -297,7 +298,8 @@ export const equipmentsAdapter: RetrievalAdapter = {
       })
       .from(equipments)
       .innerJoin(assets, eq(equipments.assetId, assets.id))
-      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), cond, ...filtreBien(q, equipments.assetId)))
+      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), assistantAssetStatusCondition(assets.status),
+        isNull(equipments.archivedAt), cond, ...filtreBien(q, equipments.assetId)))
       .limit(q.limit);
 
     verifierPerimetre('equipments', lignes, q.accountId);
@@ -339,7 +341,7 @@ export const roomsAdapter: RetrievalAdapter = {
       })
       .from(substructures)
       .innerJoin(assets, eq(substructures.assetId, assets.id))
-      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), cond, ...filtreBien(q, substructures.assetId)))
+      .where(and(eq(assets.accountId, q.accountId), isNull(assets.deletedAt), assistantAssetStatusCondition(assets.status), cond, ...filtreBien(q, substructures.assetId)))
       .limit(q.limit);
 
     verifierPerimetre('rooms', lignes, q.accountId);
@@ -487,23 +489,11 @@ const plainT = (s: string) => normalizeWord(s).replace(/[^a-z0-9]+/g, ' ').trim(
 
 /**
  * Codes de type documentaire désignés par une racine (« facture », « devis »),
- * pure et testée : catalogue documentaire du registre (code, libellé,
- * alias) et référentiel V2 (libellé). Tous en MAJUSCULES.
+ * pure et testée. Lot 30 : délégué au résolveur documentaire unique
+ * (`documentCodesMatchingWord` : catalogue métier, référentiel V2, types V1).
  */
 export function documentTypeCodesFor(stem: string): string[] {
-  const s = plainT(stem);
-  if (!s) return [];
-  const contient = (texte: string) => plainT(texte).split(' ').some((w) => w === s || w.replace(/s$/, '') === s.replace(/s$/, ''));
-  const codes = new Set<string>();
-  for (const d of DOCUMENT_CATALOG) {
-    const alias = d.aliases ?? [];
-    if (contient(d.label) || contient(d.code.replace(/_/g, ' ')) || alias.some((a) => contient(a.replace(/_/g, ' ')))) {
-      codes.add(d.code.toUpperCase());
-      for (const a of alias) codes.add(a.toUpperCase());
-    }
-  }
-  for (const t of DOCUMENT_TYPES) if (contient(t.label) || contient(t.code.replace(/_/g, ' '))) codes.add(t.code.toUpperCase());
-  return [...codes].sort();
+  return documentCodesMatchingWord(stem);
 }
 
 /** États `analysis_state` d'un statut d'analyse demandé (T2-14). */

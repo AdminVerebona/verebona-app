@@ -21,6 +21,7 @@
 import type { VerebonaActionType } from '../types/actions';
 import type { VerebonaIntent } from '../types/intents';
 import { normalizeForRouting, word } from './routing-text';
+import { assetVocabularyAlternatives } from '@/lib/asset-taxonomy';
 
 export interface NavigationTarget {
   key: 'to_process' | 'agenda' | 'documents' | 'suppliers' | 'account' | 'pricing' | 'help';
@@ -56,7 +57,8 @@ export function findNavigationTarget(message: string): NavigationTarget | null {
 
 const ADD_VERB = word('ajouter|ajoute|deposer|depose|importer|importe|televerser|telecharger|charger|scanner|creer|cree|enregistrer|upload|uploader|add|create');
 const ADD_DOC = word('documents?|factures?|fichiers?|justificatifs?|pieces? jointes?|photos?|contrats?|garanties?|document|file');
-const ADD_ASSET = word('biens?|maisons?|appartements?|vehicules?|voitures?|logements?|asset');
+/** Biens : vocabulaire du référentiel `asset-taxonomy` (lot 30). */
+const ADD_ASSET = word(`${assetVocabularyAlternatives()}|asset`);
 const ADD_AGENDA = word('echeances?|rappels?|rendez-vous|evenements?|taches?|agenda');
 
 /**

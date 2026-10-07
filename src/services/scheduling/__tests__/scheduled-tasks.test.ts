@@ -118,9 +118,9 @@ describe('catalogue', () => {
     ]));
   });
 
-  it('tâches critiques : envoi, rétractations, fin d’essai', () => {
+  it('tâches critiques : envoi, rétractations, fin d’essai, balayage « À traiter » (lot 28)', () => {
     expect(SCHEDULED_TASKS.filter((t) => t.critical).map((t) => t.code).sort())
-      .toEqual(['expire-trials', 'notifications-dispatch', 'withdrawal-process']);
+      .toEqual(['expire-trials', 'notifications-dispatch', 'to-process-scan', 'withdrawal-process']);
   });
 
   it('aucun créneau fixe dans la nuit de sauvegarde ni dans la plage 2 h – 3 h', () => {

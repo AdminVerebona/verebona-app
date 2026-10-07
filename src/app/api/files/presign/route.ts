@@ -323,7 +323,7 @@ export async function POST(request: NextRequest) {
       // ══════════════════════════════════════════════════════════════════
       // PLAFOND DE STOCKAGE DU COMPTE — CDC BO STO-001 / STO-003
       //
-      // Garde-fou distinct du quota documentaire : 2 / 10 / 15 Go selon
+      // Garde-fou distinct du quota documentaire : 1 / 5 / 10 Go selon
       // l'offre. Seul le NOUVEAU dépôt est refusé (413) ; tout le reste —
       // consultation, suppression, export, transmission — reste possible.
       // Contrôlé ici (avant l'URL signée) et de nouveau à la confirmation,

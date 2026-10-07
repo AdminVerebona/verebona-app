@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { useSession } from '@/hooks/useSession';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { apiClient, ApiClientError, isRequestAborted } from '@/lib/api-client';
-import { ReferralBlock } from '@/components/account/ReferralBlock';
+import { buildStorageQuotaUsage, type StorageQuotaUsage } from '@/lib/storage-display';
 import { DuoInvitationPanel } from './DuoInvitationPanel';
 import { DuoLeaveButton } from './DuoLeaveButton';
 import { libelleEssai } from './trial-label';
@@ -34,8 +34,12 @@ import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
  * (InformationsTab). « Abonnement » est supprimé ; ce qu'il avait en propre
  * est repris ici :
  *   - « Changer d'offre » → /mon-compte/offres ;
- *   - 2e utilisateur — Offre Duo (panneau d'invitation, ou incitation) ;
- *   - Parrainage.
+ *   - 2e utilisateur — Offre Duo (panneau d'invitation, ou incitation).
+ *
+ * Lot 26 : l'espace de stockage devient une ligne de quota sous « Documents »
+ * (même barre, « X sur Y », 1 / 5 / 10 Go selon l'offre) — l'ancienne carte
+ * « Espace de stockage » est supprimée ; le parrainage a sa propre carte
+ * (`ReferralCard`), hors de ce bloc.
  * Les trois boutons « Mes factures », « Moyen de paiement » et « Résilier »
  * — qui ouvraient tous le même portail Stripe, ou une ancre inexistante
  * (`#resiliation`) — deviennent un seul bouton « Factures et moyens de
@@ -103,7 +107,7 @@ function formatDate(iso: string | null): string {
 }
 
 /** Barre de consommation d'un quota (CDC §9.4 : alerte a partir de 80 %). */
-function QuotaBar({ label, quota }: { label: string; quota: QuotaUsage }) {
+function QuotaBar({ label, quota, fullHint }: { label: string; quota: QuotaUsage | StorageQuotaUsage; fullHint?: string }) {
   const color = quota.isFull
     ? 'bg-red-500'
     : quota.shouldWarn
@@ -122,12 +126,39 @@ function QuotaBar({ label, quota }: { label: string; quota: QuotaUsage }) {
       {quota.shouldWarn && !quota.isFull && (
         <p className="mt-1 text-xs text-amber-600">Vous approchez de la limite de votre offre.</p>
       )}
+      {quota.isFull && fullHint && <p className="mt-1 text-xs text-red-500">{fullHint}</p>}
     </div>
   );
 }
 
 /** Ligne unique du tiroir fermé. */
-const RESUME = 'Votre offre, vos quotas, vos factures et le parrainage.';
+const RESUME = 'Votre offre, vos quotas et vos factures.';
+
+/** Plein : seuls les nouveaux dépôts sont bloqués (CDC BO STO-003). */
+const STOCKAGE_PLEIN =
+  'Espace plein : les nouveaux dépôts sont bloqués. Vos documents restent consultables, exportables et supprimables.';
+
+/**
+ * Espace de stockage du compte (`/api/account/storage`, même calcul que le
+ * contrôle de dépôt). Lu ici seulement — pas dans `/api/billing/trial-status`,
+ * appelé sur chaque page : la somme des fichiers n'a rien à y faire. Échec :
+ * la ligne n'est pas affichée (jamais une valeur inventée).
+ */
+function useStorageQuota(): StorageQuotaUsage | null {
+  const [quota, setQuota] = useState<StorageQuotaUsage | null>(null);
+  useEffect(() => {
+    let annule = false;
+    fetch('/api/account/storage', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { usedBytes?: number; limitBytes?: number } | null) => {
+        if (annule || !d || typeof d.usedBytes !== 'number' || typeof d.limitBytes !== 'number') return;
+        setQuota(buildStorageQuotaUsage(d.usedBytes, d.limitBytes));
+      })
+      .catch(() => {});
+    return () => { annule = true; };
+  }, []);
+  return quota;
+}
 
 export function SubscriptionSummary() {
   const router = useRouter();
@@ -147,6 +178,7 @@ export function SubscriptionSummary() {
     : servi;
   const loading = isLoading && !servi;
   const [portalLoading, setPortalLoading] = useState(false);
+  const storage = useStorageQuota();
   const [cancelLoading, setCancelLoading] = useState(false);
 
   useEffect(() => {
@@ -342,6 +374,10 @@ export function SubscriptionSummary() {
         <div className="mb-5 grid gap-4 sm:grid-cols-2">
           {quotas.assets.limit > 0 && <QuotaBar label="Biens" quota={quotas.assets} />}
           {quotas.documents.limit > 0 && <QuotaBar label="Documents" quota={quotas.documents} />}
+          {/* Lot 26 : sous « Documents », même barre (1 / 5 / 10 Go). */}
+          {storage && storage.limit > 0 && (
+            <QuotaBar label="Espace de stockage" quota={storage} fullHint={STOCKAGE_PLEIN} />
+          )}
         </div>
       )}
 
@@ -380,12 +416,7 @@ export function SubscriptionSummary() {
         </div>
       )}
 
-      {/* Parrainage (repris de l'ancien bloc « Abonnement ») */}
-      {!isDuoMember && (
-        <div className="mt-5 border-t border-[color:var(--border)] pt-4">
-          <ReferralBlock />
-        </div>
-      )}
+      {/* Parrainage : carte dédiée (`ReferralCard`), lot 26. */}
     </CollapsibleCard>
   );
 }

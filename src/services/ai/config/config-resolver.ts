@@ -49,6 +49,9 @@ import {
 } from './config-types';
 import { currentJobContext } from '../queue/job-context';
 import { hasTestCounterStore, readConfigVersionCounter } from './config-cache-version';
+import {
+  activeMasterPromptsTestOverride, loadActiveMasterPrompts, type ActiveMasterPrompt,
+} from '../master-prompts/master-prompt-runtime';
 
 /** Configuration réellement appliquée à un appel. */
 export interface ResolvedOperationConfig {
@@ -76,6 +79,14 @@ export interface ResolvedOperationConfig {
    * dépôt s'applique.
    */
   masterPromptText: string | null;
+  /**
+   * Version de prompt maître ADMINISTRÉE depuis le BO (« Prompts maîtres »,
+   * BO-IA-PROMPTS-01) dont vient `masterPromptText` ; `null` : texte de la
+   * version de configuration ou fichier du dépôt.
+   */
+  masterPromptVersionId?: number | null;
+  /** Numéro visible (v14) de cette version de prompt maître. */
+  masterPromptVersionNumber?: number | null;
   /** Version dont vient cette configuration. `null` = configuration du code. */
   configVersionId: number | null;
   visibleNumber: number | null;
@@ -94,6 +105,12 @@ let cache: {
   versionId: number | null;
   visibleNumber: number | null;
   byTreatment: Map<string, TreatmentConfig>;
+  /**
+   * Prompts maîtres ACTIFS administrés au BO (BO-IA-PROMPTS-01), par
+   * traitement : priment sur le texte de la version de configuration.
+   * Chargés avec elle, sous la même clé de version partagée (CFG-01).
+   */
+  masterPrompts?: Map<string, ActiveMasterPrompt>;
 } | null = null;
 
 /**
@@ -212,6 +229,7 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
     };
     return cache;
   }
+  const precedents = cache?.masterPrompts;
 
   const counter = await readConfigVersionCounter();
   if (cache && cache.expiresAt > Date.now() && (counter === null || cache.counter === counter)) {
@@ -243,7 +261,30 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
     // sur le code. Le produit continue de fonctionner comme avant le BO.
     cache = vide;
   }
+  cache.masterPrompts = await loadMasterPromptsFor(precedents);
   return cache;
+}
+
+/**
+ * Prompts maîtres actifs du BO (BO-IA-PROMPTS-01, AC15). Lecture en échec
+ * (base lente, erreur passagère) : la DERNIÈRE lecture est conservée — jamais
+ * un retour silencieux à un ancien texte. Table absente : aucune.
+ */
+async function loadMasterPromptsFor(precedents: Map<string, ActiveMasterPrompt> | undefined): Promise<Map<string, ActiveMasterPrompt>> {
+  try {
+    const { getAiEnvironment } = await import('./environment');
+    const lu = await withTimeout(loadActiveMasterPrompts(getAiEnvironment()), LOOKUP_TIMEOUT_MS, null);
+    return lu ?? precedents ?? new Map();
+  } catch {
+    return precedents ?? new Map();
+  }
+}
+
+/** Prompts maîtres actifs à appliquer (cache courant, ou valeurs de test). */
+async function activeMasterPrompts(): Promise<Map<string, ActiveMasterPrompt>> {
+  const test = activeMasterPromptsTestOverride();
+  if (test) return test;
+  return (await loadEffective()).masterPrompts ?? new Map();
 }
 
 /**
@@ -274,9 +315,8 @@ export async function resolveOperationConfig(
   };
 
   const effective = await entriesForCurrentExecution();
-  if (effective.versionId === null) return duCode;
 
-  let treatment: string;
+  let treatment: Treatment;
   try {
     treatment = treatmentForUseCase(op.useCaseCode);
   } catch {
@@ -284,8 +324,18 @@ export async function resolveOperationConfig(
     return duCode;
   }
 
+  // BO-IA-PROMPTS-01 (AC15) : la version ACTIVE du prompt maître administrée
+  // au BO prime sur le texte de la version de configuration — avec ou sans
+  // version de configuration. Jamais pour T5 (non administrable).
+  const actif = isPromptAdministrable(treatment) ? (await activeMasterPrompts()).get(treatment) ?? null : null;
+  const avecPrompt = <T extends ResolvedOperationConfig>(c: T): T => (actif && c.promptArchitecture === 'master'
+    ? { ...c, masterPromptText: actif.content, masterPromptVersionId: actif.id, masterPromptVersionNumber: actif.versionNumber }
+    : c);
+
+  if (effective.versionId === null) return avecPrompt(duCode);
+
   const entry = effective.byTreatment.get(treatment);
-  if (!entry) return duCode;
+  if (!entry) return avecPrompt(duCode);
 
   const fallbacks = [entry.fallback1, entry.fallback2].filter(
     (m): m is string => Boolean(m),
@@ -297,7 +347,7 @@ export async function resolveOperationConfig(
     [entry.fallback2, entry.reasoningFallback2],
   ] as const).filter(([m]) => Boolean(m)).map(([, r]) => r ?? null);
 
-  return {
+  return avecPrompt({
     primaryModel: entry.primaryModel ?? duCode.primaryModel,
     // Une version qui ne déclare aucun repli en supprime : c'est une décision
     // d'administration, pas une valeur manquante. Le principal, lui, ne peut
@@ -316,7 +366,7 @@ export async function resolveOperationConfig(
     ...promptOf(entry),
     configVersionId: effective.versionId,
     visibleNumber: effective.visibleNumber,
-  };
+  });
 }
 
 /**

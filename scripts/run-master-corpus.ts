@@ -22,6 +22,13 @@
  *
  * Aucune modification du schéma : la table 0224 doit exister (sinon message
  * explicite). Sortie 0 : tout vert (et empreintes conformes si demandé).
+ *
+ * BO-IA-PROMPTS-01 (lot 27) : OUTIL DE DÉVELOPPEMENT, de CI et de diagnostic
+ * seulement. Aucune activation (BO ou version de configuration) ne dépend
+ * plus de ce script ni de ce qu'il enregistre ; l'administrateur teste un
+ * prompt depuis le BO (« Tester avec le corpus », rejeu sans appel modèle).
+ * `--check-fingerprints` ne porte que sur les FICHIERS du dépôt : une version
+ * activée depuis le BO ne le fait jamais échouer.
  */
 import { execSync } from 'child_process';
 import { loadEnvQuietly } from './lib/quiet-env';
@@ -77,6 +84,17 @@ async function main() {
     for (const e of version.entries) {
       const m = effectiveMasterText(e, readMasterFileFromRepo);
       if (m) texts[m.masterPromptCode] = { text: m.text, source: m.source };
+    }
+    // BO-IA-PROMPTS-01 : sur la version EFFECTIVE, le prompt maître actif
+    // administré au BO prime (même règle que la passerelle).
+    if (effective) {
+      const { loadActiveMasterPrompts } = await import('@/services/ai/master-prompts/master-prompt-runtime');
+      const { masterPromptForTreatment } = await import('@/services/ai/config/prompt-architecture');
+      const { getAiEnvironment } = await import('@/services/ai/config/environment');
+      for (const [t, p] of await loadActiveMasterPrompts(getAiEnvironment()).catch(() => new Map())) {
+        const m = masterPromptForTreatment(t as Treatment);
+        if (m) texts[m.masterPromptCode] = { text: p.content, source: 'config' };
+      }
     }
   }
 

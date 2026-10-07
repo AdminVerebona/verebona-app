@@ -125,6 +125,19 @@ export async function PATCH(
       .where(eq(documentAnalysisProposals.id, proposal.id))
       .returning();
 
+    // Lot 28 : une donnée documentaire du catalogue « À traiter » (fin de
+    // contrat, fin de garantie…) corrigée ici est une saisie de
+    // l'utilisateur — enregistrée comme telle, et l'action correspondante
+    // se ferme. Ne lève jamais.
+    if (action === 'modify' && proposal.proposalType === 'field') {
+      const { recordUserDocumentValue, onDocumentEditedByUser } = await import('@/services/to-process/document-rule-bridge');
+      const brut = value !== null && typeof value === 'object' && 'value' in (value as Record<string, unknown>)
+        ? (value as Record<string, unknown>).value : value;
+      if (await recordUserDocumentValue(accountId, assetFileId, proposal.targetKey, brut)) {
+        await onDocumentEditedByUser(accountId, assetFileId);
+      }
+    }
+
     return NextResponse.json({ proposal: updated });
   } catch (error) {
     if (error instanceof Response) return error;

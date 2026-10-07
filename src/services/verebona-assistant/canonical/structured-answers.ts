@@ -25,6 +25,7 @@ import {
 } from '../core/deterministic-format';
 import { assetFieldSource, assetFieldSourceId, type CanonicalFieldReading } from './field-reader';
 import { EXPENSE_THEME_LABELS, expenseThemeOf, expenseSumSource } from './expenses';
+import { findReadableFields, purchaseMention } from './field-vocabulary';
 
 export interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
 
@@ -46,29 +47,23 @@ const assetSrc = (a: AssetRow): RetrievedSource =>
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Formulations d'un champ : phrases de l'assistant et libellé (sans accents). */
-function phrasesOf(d: CanonicalFieldDef): string[] {
-  return [...new Set([...(d.assistantPhrases ?? []), plain(d.label)].map(plain).filter((p) => p.length >= 4))];
-}
-
-/** Champ LISIBLE désigné par le message ; la formulation la plus longue gagne (pure, testée). */
+/**
+ * Champ LISIBLE désigné par le message ; la formulation la plus longue gagne
+ * (pure, testée). Lot 29 (ticket 8a §A) : un champ `sensitive` (adresse) est
+ * lisible par son propriétaire — la sensibilité protège la valeur vis-à-vis
+ * du modèle et des traces (`assetFieldSource`), pas la réponse déterministe.
+ * Vocabulaire : `field-vocabulary.ts` (registre canonique seul).
+ */
 export function findReadableField(message: string): { def: CanonicalFieldDef; phrase: string } | null {
-  const m = plain(message);
-  let best: { def: CanonicalFieldDef; phrase: string } | null = null;
-  for (const d of listFields()) {
-    if (!d.assistantReadable || d.sensitive) continue;
-    for (const p of phrasesOf(d)) {
-      if (new RegExp(`(^|[^a-z])${esc(p)}($|[^a-z])`).test(m) && (!best || p.length > best.phrase.length)) best = { def: d, phrase: p };
-    }
-  }
-  return best;
+  const toutes = findReadableFields(message).filter((x) => listFields().some((d) => d.key === x.def.key));
+  const best = [...toutes].sort((a, b) => b.phrase.length - a.phrase.length)[0];
+  return best ? { def: best.def, phrase: best.phrase } : null;
 }
 
 /** « Quand ai-je acheté… » : la date d'achat, champ `acquisitionDate` (T2-23). */
 function purchaseQuestion(message: string): { def: CanonicalFieldDef; phrase: string } | null {
-  const hit = /\b(achete\w*|acquis\w*)\b/.exec(plain(message));
-  const def = hit ? listFields().find((d) => d.key === 'acquisitionDate') : undefined;
-  return hit && def ? { def, phrase: hit[1] } : null;
+  const x = purchaseMention(message);
+  return x ? { def: x.def, phrase: x.phrase } : null;
 }
 
 /** Question de LECTURE (pas une commande, pas un comptage) (pure, testée). */

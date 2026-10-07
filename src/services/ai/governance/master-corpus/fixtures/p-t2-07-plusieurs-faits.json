@@ -1,0 +1,12 @@
+{
+  "case": "P-T2-07",
+  "description": "UNDERSTAND (lot 29, ticket 12) — plusieurs informations sur un bien : plusieurs `requestedFacts`, dédoublonnés dans l’ordre de la question, clés hors catalogue renvoyées en sujets.",
+  "context": { "question": "Quand ai-je acheté la Polo et combien l’ai-je payée ?" },
+  "recording": {
+    "operationCode": "t2_understand", "task": "UNDERSTAND",
+    "output": { "mode": "UNDERSTAND", "intent": "ACCOUNT_FACT_ASSET", "confidence": "exact",
+      "entityHints": [{ "type": "asset", "value": "la Polo" }], "requestedFacts": ["acquisitionDate", "acquisitionPrice", "acquisitionDate", "prixPaye"],
+      "requestedTopics": [], "filters": {}, "reason": "deux champs d’un bien" }
+  },
+  "expected": { "intent": "ACCOUNT_FACT_ASSET", "requestedFacts": ["acquisitionDate", "acquisitionPrice"], "entityHintTypes": ["asset"], "readOnly": true }
+}

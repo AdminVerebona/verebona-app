@@ -13,8 +13,11 @@ const recordT5Modification = vi.fn(async (_t: unknown) => {});
 
 vi.mock('../../config/config-version.repository', () => ({
   getVersion: (id: unknown) => getVersion(id),
-  getActiveVersion: vi.fn(), listVersions: vi.fn(), createDraft: vi.fn(),
-  savePromptFieldIfUnchanged: (p: Record<string, unknown>) => saveEntry(p),
+}));
+// BO-IA-PROMPTS-01 : T5 écrit dans le brouillon du prompt maître.
+vi.mock('../../master-prompts/master-prompt.service', () => ({
+  workingTexts: async () => new Map(),
+  writeDraftFromPromptControl: async (p: Record<string, unknown>) => ((await saveEntry(p)) ? { id: 51, versionNumber: 2 } : null),
 }));
 vi.mock('../../gateway/ai-gateway', () => ({ AiGateway: { execute: (req: unknown) => execute(req) } }));
 vi.mock('../prompt-control.audit', () => ({ recordT5Modification: (t: unknown) => recordT5Modification(t) }));
@@ -99,7 +102,7 @@ describe('Prompt Control conscient des masters', () => {
     expect(txt).not.toMatch(/T5/);
   });
 
-  it('MODIFY : master complet valide écrit dans `masterPrompt` ; préambule intact ; diff master → master', async () => {
+  it('MODIFY : master complet valide écrit dans le brouillon du prompt maître ; diff master → master', async () => {
     getVersion.mockResolvedValue(version({ promptArchitecture: 'master', masterPrompt: null }));
     const nouveau = `${T1_MASTER}\n\nRÈGLE AJOUTÉE — titre par type de document.`;
     execute.mockResolvedValue({ data: {
@@ -108,8 +111,8 @@ describe('Prompt Control conscient des masters', () => {
     }, traceId: 't' });
     const r = await modify({ versionId: 1, instruction: 'titres', accountId: 1, userId: 7 });
     expect(r.changes[0]).toMatchObject({ treatment: 'T1', applied: true, field: 'masterPrompt' });
-    // Seule la zone master est écrite, conditionnellement (fichier du dépôt : valeur lue null).
-    expect(saveEntry).toHaveBeenCalledWith({ versionId: 1, treatment: 'T1', field: 'masterPrompt', expected: null, next: nouveau, userId: 7 });
+    // Brouillon du prompt T1, écrit conditionnellement sur le texte lu (fichier du dépôt).
+    expect(saveEntry).toHaveBeenCalledWith({ treatment: 'T1', expected: T1_MASTER, readDraftId: null, readActiveId: null, next: nouveau, userId: 7 });
     expect(recordT5Modification).toHaveBeenCalledWith(expect.objectContaining({ before: T1_MASTER, field: 'masterPrompt' }));
     expect(r.changes[0].diff?.identical).toBe(false);
   });

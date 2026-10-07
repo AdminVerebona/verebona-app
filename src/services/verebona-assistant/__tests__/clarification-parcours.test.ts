@@ -184,7 +184,8 @@ describe('reprise structurée', () => {
   it('le candidat est re-vérifié en base avant reprise', () => {
     const s = read('src/services/verebona-assistant/core/clarification.service.ts');
     expect(s).toMatch(/candidatToujoursValide\(p\.accountId, e\.candidateType, candidate\)/);
-    expect(s).toMatch(/deleted_at IS NULL[\s\S]{0,120}NOT IN \('ARCHIVED', 'TRANSMIS'\)/);
+    // Lot 29 (ticket 14) : règle de disponibilité UNIQUE (`asset-availability`).
+    expect(s).toMatch(/assistantAssetAvailability\.sql\('a'\)/);
   });
 
   it('chaque étape est tracée', () => {

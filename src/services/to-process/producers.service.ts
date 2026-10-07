@@ -13,6 +13,12 @@
  * définitivement : un équipement créé le lendemain de la bascule n'aurait
  * jamais remonté. Ce module est leur source permanente.
  *
+ * Lot 28 : quatrième famille, les DOCUMENTS (`produceDocumentActions`) —
+ * réévaluation sans analyse des règles du pont documentaire générique
+ * (rattachement à un bien, données requises), rattrapage des documents
+ * existants compris ; et les cibles disparues incluent désormais documents
+ * supprimés ou regroupés et biens supprimés.
+ *
  * ── UN BALAYAGE, PAS UN DÉCLENCHEUR ───────────────────────────────────────
  *
  * Ces trois problèmes ne naissent pas d'une analyse : ils naissent d'un état
@@ -35,6 +41,7 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import {
   agendaItems,
+  assetFiles,
   assets,
   equipments,
   supplierReviewItems,
@@ -277,23 +284,53 @@ async function closeObsolete(
   return closed;
 }
 
-/** Balaye les trois familles pour un compte. */
-export async function produceAccountActions(accountId: number): Promise<ProducerReport> {
-  const [agenda, equipements, fournisseurs] = await Promise.all([
-    produceAgendaActions(accountId).catch(reportError('agenda', accountId)),
-    produceEquipmentActions(accountId).catch(reportError('équipements', accountId)),
-    produceSupplierActions(accountId).catch(reportError('fournisseurs', accountId)),
+/**
+ * Documents — règles du pont générique (LINK-ASSET, DATA-*, lot 28).
+ *
+ * Réévalue, SANS analyse, les documents qui portent une action documentaire
+ * active (fermeture si la donnée a été renseignée ailleurs) et ceux à qui
+ * manque une donnée requise sans action ouverte (document sans bien, contrat
+ * sans date de fin…). C'est aussi le rattrapage automatique des documents
+ * déposés avant le lot 28 — borné par passage, repris au suivant.
+ */
+export async function produceDocumentActions(accountId: number, limit = 200): Promise<ProducerReport> {
+  const { documentsToReevaluate, syncDocumentRulesFromState } = await import('./document-rule-bridge');
+  const report = { ...EMPTY };
+  for (const fileId of await documentsToReevaluate(accountId, limit)) {
+    const r = await syncDocumentRulesFromState(accountId, fileId, { reason: 'OBSOLETE', create: true });
+    report.created += r.created;
+    report.updated += r.updated;
+    report.closed += r.closed;
+  }
+  return report;
+}
+
+export interface AccountProductionReport extends ProducerReport {
+  /** Familles en échec pour ce compte (le balayage continue). */
+  errors: string[];
+}
+
+/** Balaye les familles nées d'un état de la base, pour un compte. */
+export async function produceAccountActions(accountId: number): Promise<AccountProductionReport> {
+  const errors: string[] = [];
+  const [agenda, equipements, fournisseurs, documents] = await Promise.all([
+    produceAgendaActions(accountId).catch(reportError('agenda', accountId, errors)),
+    produceEquipmentActions(accountId).catch(reportError('équipements', accountId, errors)),
+    produceSupplierActions(accountId).catch(reportError('fournisseurs', accountId, errors)),
+    produceDocumentActions(accountId).catch(reportError('documents', accountId, errors)),
   ]);
-  return merge(agenda, equipements, fournisseurs);
+  return { ...merge(agenda, equipements, fournisseurs, documents), errors };
 }
 
 /**
- * Une famille en échec ne doit pas emporter les deux autres : le balayage est
+ * Une famille en échec ne doit pas emporter les autres : le balayage est
  * rejoué périodiquement, et perdre un tour complet pour une requête fautive
- * coûterait plus que la famille manquée.
+ * coûterait plus que la famille manquée. L'échec est COMPTÉ (trace du
+ * balayage, BO Exploitation), jamais silencieux.
  */
-function reportError(famille: string, accountId: number) {
+function reportError(famille: string, accountId: number, errors: string[]) {
   return (e: Error): ProducerReport => {
+    errors.push(`${famille} : ${e.message}`.slice(0, 300));
     console.error(
       `[to-process] production ${famille} impossible pour le compte ${accountId} :`,
       e.message,
@@ -302,7 +339,11 @@ function reportError(famille: string, accountId: number) {
   };
 }
 
-/** Actions à fermer parce que leur cible a disparu (§7.3, TARGET_DELETED). */
+/**
+ * Actions à fermer parce que leur cible a disparu (§7.3, TARGET_DELETED) :
+ * échéance supprimée, document supprimé ou regroupé dans un autre, bien
+ * supprimé.
+ */
 export async function closeActionsForDeletedTargets(
   accountId: number,
 ): Promise<number> {
@@ -316,31 +357,53 @@ export async function closeActionsForDeletedTargets(
     .where(
       and(
         eq(toProcessActions.accountId, accountId),
-        eq(toProcessActions.targetType, 'AGENDA_ITEM'),
+        inArray(toProcessActions.targetType, ['AGENDA_ITEM', 'DOCUMENT', 'ASSET']),
         isNull(toProcessActions.resolvedAt),
       ),
     );
 
   if (actions.length === 0) return 0;
 
-  const existants = await db
-    .select({ id: agendaItems.id })
-    .from(agendaItems)
-    .where(inArray(agendaItems.id, actions.map((a) => a.targetId)));
+  const ids = (type: string) => [...new Set(actions.filter((a) => a.targetType === type).map((a) => a.targetId))];
+  const vivants = new Set<string>();
 
-  const vivants = new Set(existants.map((e) => e.id));
-  const disparus = actions.filter((a) => !vivants.has(a.targetId));
-
-  for (const action of disparus) {
-    await db
-      .update(toProcessActions)
-      .set({
-        resolvedAt: new Date(),
-        resolutionReason: 'TARGET_DELETED',
-        updatedAt: new Date(),
-      })
-      .where(eq(toProcessActions.id, action.id));
+  const agendaIds = ids('AGENDA_ITEM');
+  if (agendaIds.length) {
+    for (const e of await db.select({ id: agendaItems.id }).from(agendaItems).where(inArray(agendaItems.id, agendaIds))) {
+      vivants.add(`AGENDA_ITEM:${e.id}`);
+    }
   }
+  const docIds = ids('DOCUMENT');
+  if (docIds.length) {
+    const docs = await db
+      .select({ id: assetFiles.id })
+      .from(assetFiles)
+      .where(and(
+        inArray(assetFiles.id, docIds), eq(assetFiles.accountId, accountId),
+        isNull(assetFiles.deletedAt), isNull(assetFiles.groupedIntoFileId),
+      ));
+    for (const d of docs) vivants.add(`DOCUMENT:${d.id}`);
+  }
+  const assetIds = ids('ASSET');
+  if (assetIds.length) {
+    const biens = await db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(and(inArray(assets.id, assetIds), eq(assets.accountId, accountId), isNull(assets.deletedAt)));
+    for (const b of biens) vivants.add(`ASSET:${b.id}`);
+  }
+
+  const disparus = actions.filter((a) => !vivants.has(`${a.targetType}:${a.targetId}`));
+  if (disparus.length === 0) return 0;
+
+  await db
+    .update(toProcessActions)
+    .set({
+      resolvedAt: new Date(),
+      resolutionReason: 'TARGET_DELETED',
+      updatedAt: new Date(),
+    })
+    .where(and(inArray(toProcessActions.id, disparus.map((a) => a.id)), isNull(toProcessActions.resolvedAt)));
 
   return disparus.length;
 }

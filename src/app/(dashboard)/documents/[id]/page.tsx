@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { documentCodeLabel } from '@/lib/referential/document-codes';
 import Link from 'next/link';
 import Image from 'next/image';
 import { Card, CardContent } from '@/components/ui/card';
@@ -47,14 +48,6 @@ interface DocumentDetail {
   };
 }
 
-const DOCUMENT_TYPE_LABELS: Record<string, string> = {
-  FACTURE: 'Facture',
-  GARANTIE: 'Garantie',
-  MANUEL: 'Manuel',
-  CONTRAT: 'Contrat',
-  CERTIFICAT: 'Certificat',
-  AUTRE: 'Autre',
-};
 
 const formatFileSize = (bytes: number): string => {
   if (bytes < 1024) return bytes + ' B';
@@ -279,7 +272,7 @@ export default function DocumentDetailPage() {
                     )}
                     {document.documentType && (
                       <Badge className="mt-2">
-                        {DOCUMENT_TYPE_LABELS[document.documentType] || document.documentType}
+                        {documentCodeLabel(document.documentType)}
                       </Badge>
                     )}
                   </div>

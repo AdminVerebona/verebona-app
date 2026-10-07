@@ -193,7 +193,9 @@ async function updateSourceMetadata(p: PersistResultInput): Promise<void> {
   if (d.type?.value) patch.documentType = d.type.value;
   if (d.description?.value) patch.description = d.description.value;
   if (d.transcription) patch.extractedText = d.transcription;
-  if (d.supplier?.value.name) patch.supplier = d.supplier.value.name;
+  // Lot 28 : un fournisseur CONTRADICTOIRE n'est pas écrit — il est soumis à
+  // l'utilisateur (DATA-SUPPLIER, pont « À traiter » `document-rule-bridge`).
+  if (d.supplier?.value.name && d.supplier.confidence !== 'conflictual') patch.supplier = d.supplier.value.name;
   if (typeof d.amountCents?.value === 'number') patch.amountCents = d.amountCents.value;
   if (d.date?.value) patch.documentDate = d.date.value;
 

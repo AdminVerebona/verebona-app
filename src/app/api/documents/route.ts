@@ -23,9 +23,11 @@ function matchesSearch(
   return terms.every(t => haystack.includes(t));
 }
 import { getSession } from '@/lib/auth-guards';
+import { resolveDocumentCode } from '@/lib/referential/document-codes';
 
-// Valid document types from schema
-const VALID_DOCUMENT_TYPES = ['FACTURE', 'GARANTIE', 'MANUEL', 'CONTRAT', 'CERTIFICAT', 'AUTRE'] as const;
+// Lot 30 : plus de liste locale (ancien `VALID_DOCUMENT_TYPES`, 6 codes sur
+// les 40 stockés) — le filtre accepte tout code V1 du référentiel, normalisé
+// par le résolveur documentaire unique (ancien code IA compris).
 
 // Helper to get file extension
 function getFileExtension(fileName: string): string {
@@ -162,8 +164,9 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    if (documentType && VALID_DOCUMENT_TYPES.includes(documentType as any)) {
-      conditions.push(eq(assetFiles.documentType, documentType));
+    const documentTypeFilter = documentType ? resolveDocumentCode(documentType).storageCode : null;
+    if (documentTypeFilter) {
+      conditions.push(eq(assetFiles.documentType, documentTypeFilter));
     }
 
     // Apply conditions

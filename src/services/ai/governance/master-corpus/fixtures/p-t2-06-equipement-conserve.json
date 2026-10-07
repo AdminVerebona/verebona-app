@@ -1,0 +1,12 @@
+{
+  "case": "P-T2-06",
+  "description": "UNDERSTAND (lot 29, ticket 13) — « numéro de série de la chaudière » : l’indice `equipment` est CONSERVÉ par le serveur (plus de rabattement sur `asset`) ; le champ demandé est une clé du catalogue.",
+  "context": { "question": "Quel est le numéro de série de la chaudière ?" },
+  "recording": {
+    "operationCode": "t2_understand", "task": "UNDERSTAND",
+    "output": { "mode": "UNDERSTAND", "intent": "ACCOUNT_FACT_ASSET", "confidence": "exact",
+      "entityHints": [{ "type": "equipment", "value": "la chaudière" }], "requestedFacts": ["serialNumber"],
+      "requestedTopics": [], "filters": {}, "reason": "champ d’un équipement" }
+  },
+  "expected": { "intent": "ACCOUNT_FACT_ASSET", "requestedFacts": ["serialNumber"], "entityHintTypes": ["equipment"], "readOnly": true }
+}

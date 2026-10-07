@@ -9,6 +9,7 @@ import { ensureMigrations } from '@/db';
 import { evaluateEligibility, ineligibilityMessage } from '@/services/withdrawal/eligibility.service';
 import { buildSummary } from '@/services/withdrawal/summary.service';
 import { getActiveRequestForAccount } from '@/services/withdrawal/withdrawal.service';
+import { shouldOfferWithdrawal } from '@/services/withdrawal/withdrawal-window';
 
 export async function GET(req: NextRequest) {
   let session;
@@ -32,8 +33,17 @@ export async function GET(req: NextRequest) {
   // (§5.5) : l'utilisateur peut déclarer, l'examen se fera ensuite.
   const eligible = eligibility.verdict !== 'ineligible';
 
+  // Lot 26 : la carte et le bouton « Renoncer au contrat ici » disparaissent à
+  // la clôture du délai (J+15 à 00 h 00, Paris). Décidé ici, côté serveur, par
+  // la même fonction que le refus de l'API : le client ne recalcule rien.
+  const offerWithdrawal = shouldOfferWithdrawal({
+    verdict: eligibility.verdict,
+    subscribedAt: eligibility.contract?.contractConcludedAt ?? eligibility.subscribedAtFallback ?? null,
+  });
+
   return NextResponse.json({
     eligible,
+    offerWithdrawal,
     verdict: eligibility.verdict,
     reason: eligibility.reason ?? null,
     message: eligibility.reason ? ineligibilityMessage(eligibility.reason) : null,

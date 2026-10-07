@@ -19,11 +19,32 @@ describe('bloc « Mon abonnement »', () => {
     expect(summary).not.toContain("push('/mon-compte/offres#resiliation')");
   });
 
-  it('propose « Changer d’offre », le bloc Duo et le parrainage', () => {
+  it('propose « Changer d’offre » et le bloc Duo', () => {
     expect(summary).toContain('Changer d&apos;offre');
     expect(summary).toContain('2e utilisateur — Offre Duo');
     expect(summary).toContain('<DuoInvitationPanel />');
-    expect(summary).toContain('<ReferralBlock />');
+  });
+
+  it('lot 26 — AC7 : le parrainage a sa propre carte, hors de « Mon abonnement »', () => {
+    expect(summary).not.toContain('<ReferralBlock');
+    const page = read('src/app/(dashboard)/mon-compte/page.tsx');
+    expect(page).toContain('<ReferralCard />');
+    const carte = read('src/components/account/ReferralCard.tsx');
+    expect(carte).toContain('<CollapsibleCard');
+    expect(carte).toContain('title="Parrainage"');
+    expect(carte).toContain('<ReferralBlock withHeading={false} />');
+    // Membre invité d'un compte Duo : pas de parrainage, comme avant.
+    expect(carte).toContain("user.duoRole === 'MEMBER'");
+  });
+
+  it('lot 26 — AC7 : « Espace de stockage » sous « Documents », même barre ; plus de carte séparée', () => {
+    const docs = summary.indexOf('<QuotaBar label="Documents"');
+    const sto = summary.indexOf('<QuotaBar label="Espace de stockage"');
+    expect(docs).toBeGreaterThan(-1);
+    expect(sto).toBeGreaterThan(docs);
+    const page = read('src/app/(dashboard)/mon-compte/page.tsx');
+    expect(page).not.toContain('StorageUsageCard');
+    expect(() => read('src/components/account/StorageUsageCard.tsx')).toThrow();
   });
 
   it('les actions restent accessibles si l’état de l’abonnement ne se charge pas', () => {

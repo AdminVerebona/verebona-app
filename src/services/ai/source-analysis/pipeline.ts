@@ -60,6 +60,7 @@ import { markSourcesGrouped } from '@/services/documents/grouped-sources';
 import { analyseGroupWithMaster, type MasterGroupAnalysis } from './master/analyse-group-master';
 import { enqueueT3ForAffectedAssets, enqueueT3ForAffectedEntities } from './master/reconciliation-fanout';
 import { computeMasterDocumentLinks, writeMasterDocumentLinks } from './master/document-links';
+import { syncDocumentRulesFromAnalysis } from '@/services/to-process/document-rule-bridge';
 import { groupUpload } from './steps/group-upload.step';
 
 export interface RunSourceAnalysisInput {
@@ -374,6 +375,41 @@ export async function runSourceAnalysis(
         console.error(`[source-analysis] liens document ↔ biens du fichier ${leadSourceId} non écrits :`, e.message);
       });
 
+      // ══════════════════════════════════════════════════════════════════
+      // ÉTAPE 12 quater — RÈGLES DOCUMENTAIRES « À TRAITER » (lot 28)
+      //
+      // Pont GÉNÉRIQUE piloté par `PROCESSING_RULES` : rattachement à un
+      // bien (LINK-ASSET), dates de fin de contrat / de garantie, fournisseur
+      // du document. Rattachement fiable → écrit ; candidats ambigus →
+      // À arbitrer ; aucun candidat → À compléter ; donnée non pertinente
+      // pour le Type → rien. Après le classement (le Type décide de la
+      // pertinence) et les liens N-N (un document multi-biens est déjà
+      // rattaché). Ne lève jamais.
+      // ══════════════════════════════════════════════════════════════════
+      await guard?.assertActive('règles « À traiter »');
+      await syncDocumentRulesFromAnalysis({
+        accountId: input.accountId,
+        fileId: leadSourceId,
+        observations: {
+          facts: master.facts.map((f) => ({
+            canonicalKey: f.canonicalKey, value: f.value, confidence: f.confidence, excerpt: f.evidence?.excerpt ?? null,
+          })),
+          assetCandidates: result.assetCandidates.map((c) => ({
+            entityId: c.entityId, verified: c.verified, score: c.score, confidence: c.confidence,
+          })),
+          documentAssetId: assetId,
+          metadata: {
+            supplier: result.document.supplier?.value?.name
+              ? {
+                  value: result.document.supplier.value.name,
+                  confidence: result.document.supplier.confidence,
+                  excerpt: result.document.supplier.excerpt,
+                }
+              : undefined,
+          },
+        },
+      });
+
       // ⚠️ CORRECTION §4.1.7 — la suppression des fichiers secondaires
       // n'intervient qu'ici, après persistance ET preuves réussies.
       await guard?.assertActive('finalisation');
@@ -393,10 +429,10 @@ export async function runSourceAnalysis(
       // L'ancien pipeline la pratiquait, le nouveau l'avait perdue. Elle
       // porte deux effets, et le second est financier :
       //
-      //   · l'état devient FUSION_SUGGESTED, ce qui fait remonter le
-      //     document dans « À traiter » avec sa suggestion de fusion —
-      //     `to-process.service` et le tableau de bord s'appuient tous deux
-      //     sur cet état ;
+      //   · l'état devient FUSION_SUGGESTED : le tiroir du document
+      //     présente la suggestion de fusion (l'ancienne file V1
+      //     `to-process.service`, qui s'en servait aussi, est supprimée au
+      //     lot 28) ;
       //
       //   · le document N'EST PAS COMPTÉ dans le quota. Sans cela, déposer
       //     deux fois la même facture consomme deux analyses, et

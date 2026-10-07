@@ -33,6 +33,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
+import { assistantAssetAvailability } from './asset-availability';
 import type { ClarificationCandidate, ClarificationState, ClarificationStatus } from '../types/machine';
 import type { AssistantRequestInput } from '../types/contracts';
 import { interpretTypedAnswer, isExpired, MAX_FAILED_ATTEMPTS } from './clarification-builder';
@@ -278,10 +279,15 @@ export async function candidatToujoursValide(
   // choix est valable s'il porte bien la reprise construite par le serveur.
   if (candidateType === 'period' || candidateType === 'action') return Boolean(candidate.resumeMessage);
   if (!candidate.entityId) return false;
+  // Équipement / pièce (lot 29, ticket 13) : mêmes règles que leur fiche,
+  // bien parent du compte et DISPONIBLE (ticket 14).
+  if (candidateType === 'equipment' || candidateType === 'room') {
+    const { findEntityById } = await import('./target-lookup.repository');
+    return (await findEntityById(accountId, candidateType, candidate.entityId)) !== null;
+  }
   const sql = candidateType === 'asset'
-    ? `SELECT 1 FROM assets
-        WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL
-          AND coalesce(status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS')
+    ? `SELECT 1 FROM assets a
+        WHERE a.id = $1 AND a.account_id = $2 AND ${assistantAssetAvailability.sql('a')}
         LIMIT 1`
     : candidateType === 'document'
       ? `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL LIMIT 1`
@@ -412,8 +418,13 @@ export function inputDeReprise(
   etat: ClarificationState,
   candidate: ClarificationCandidate,
 ): AssistantRequestInput {
-  const assetId = etat.candidateType === 'asset' ? candidate.entityId ?? null : null;
+  const entite = (etat.candidateType === 'equipment' || etat.candidateType === 'room') && candidate.entityId
+    ? { type: etat.candidateType, id: candidate.entityId, assetId: candidate.assetId ?? null } : null;
+  // Équipement / pièce : le bien PARENT devient le contexte (filtre, actions),
+  // l'entité choisie reste la cible (ticket 13 §G).
+  const assetId = etat.candidateType === 'asset' ? candidate.entityId ?? null : entite?.assetId ?? null;
   const documentId = etat.candidateType === 'document' ? candidate.entityId ?? null : null;
+  const requestedFacts = etat.resolvedContext?.requestedFacts?.length ? [...etat.resolvedContext.requestedFacts] : undefined;
   return {
     ...base,
     // Période ou action choisie (§20.1) : la demande rejouée est celle que le
@@ -427,8 +438,10 @@ export function inputDeReprise(
     resume: {
       clarificationId: etat.clarificationId,
       intent: candidate.resumeIntent ?? etat.originalIntent,
-      assetId,
+      assetId: entite ? null : assetId,
       documentId,
+      ...(entite ? { entity: entite } : {}),
+      ...(requestedFacts ? { requestedFacts } : {}),
       chainDepth: etat.chainDepth ?? 1,
       choiceLabel: candidate.secondaryLabel ? `${candidate.label} — ${candidate.secondaryLabel}` : candidate.label,
     },

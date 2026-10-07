@@ -16,8 +16,13 @@
  * limite de récupération des données, liens d'export et de suppression.
  *
  * Le §6.2 précise qu'« après expiration du délai, le bouton peut être masqué
- * dans l'espace personnel, mais le lien public reste disponible ». C'est ce
- * que fait ce composant : il masque le bouton et renvoie vers /retractation.
+ * dans l'espace personnel, mais le lien public reste disponible ». Lot 26 :
+ * TOUT le bloc disparaît à la clôture du délai (J+15 à 00 h 00, Paris), et
+ * plus seulement le bouton. La décision est prise par le serveur
+ * (`offerWithdrawal`, `shouldOfferWithdrawal`) — même fonction que le refus
+ * de l'API. Le lien public reste au pied des pages hors session.
+ * Seul le SUIVI d'une demande déjà enregistrée reste affiché (référence,
+ * remboursement, date limite d'export).
  *
  * TIROIR FERMÉ PAR DÉFAUT — LE LIEN RESTE VISIBLE
  *
@@ -33,8 +38,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Loader2, FileMinus, Download, ExternalLink } from 'lucide-react';
+import { FileMinus, Download, ExternalLink } from 'lucide-react';
 
 interface Contract {
   offerLabel: string;
@@ -91,8 +95,7 @@ function euros(cents: number | null): string {
 
 export function WithdrawalCard() {
   const [loading, setLoading] = useState(true);
-  const [eligible, setEligible] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [offerWithdrawal, setOfferWithdrawal] = useState(false);
   const [contract, setContract] = useState<Contract | null>(null);
   const [request, setRequest] = useState<ExistingRequest | null>(null);
 
@@ -102,8 +105,7 @@ export function WithdrawalCard() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data) { setLoading(false); return; }
-        setEligible(Boolean(data.eligible));
-        setMessage(data.message ?? null);
+        setOfferWithdrawal(Boolean(data.offerWithdrawal));
         setContract(data.contract ?? null);
         setRequest(data.existingRequest ?? null);
         setLoading(false);
@@ -112,15 +114,9 @@ export function WithdrawalCard() {
     return () => { cancelled = true; };
   }, []);
 
-  if (loading) {
-    return (
-      <CollapsibleCard icon={<FileMinus className="w-5 h-5" />} title="Droit de rétractation" description="Quatorze jours pour renoncer à un abonnement souscrit en ligne.">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="w-4 h-4 animate-spin" /> Chargement…
-        </div>
-      </CollapsibleCard>
-    );
-  }
+  // Rien pendant le chargement : la plupart des comptes n'ont aucun bloc à
+  // afficher (délai écoulé, essai), un squelette apparaîtrait puis s'effacerait.
+  if (loading) return null;
 
   // ── Suivi d'une demande enregistrée (§7.5) ────────────────────────────
   if (request) {
@@ -165,25 +161,15 @@ export function WithdrawalCard() {
   }
 
   // ── Avant toute demande (§6.2) ────────────────────────────────────────
+  // Délai écoulé, aucun contrat payant, membre Duo : aucun bloc (lot 26).
+  if (!offerWithdrawal) return null;
+
   // Le lien de rétractation est rendu hors du tiroir : visible même fermé.
-  const lienRetractation = eligible ? (
+  const lienRetractation = (
     <Button variant="outline" className="w-full" asChild>
       {/* §6.1 : libellé imposé mot pour mot. */}
       <Link href="/retractation">Renoncer au contrat ici</Link>
     </Button>
-  ) : (
-    <div className="space-y-2">
-      <Badge variant="outline" className="text-muted-foreground">
-        Rétractation en ligne indisponible
-      </Badge>
-      {message && <p className="text-sm text-muted-foreground">{message}</p>}
-      {/* §6.2 : le bouton peut être masqué, le lien public demeure. */}
-      <p className="text-xs">
-        <Link href="/retractation" className="text-primary hover:underline">
-          Renoncer au contrat ici
-        </Link>
-      </p>
-    </div>
   );
 
   return (

@@ -45,8 +45,33 @@ import {
 
 /** Branche FORMULATE du prompt maître T6 (CDC 15 §28) — seule opération de T6. */
 export const T6_MASTER_OPERATION = 't6_formulate';
-/** Budget d'attente à l'affichage : au-delà, texte de secours (RUN-001, RUN-002). */
+/**
+ * Plafond de l'attente à l'affichage (RUN-001, RUN-002) — borne de
+ * `MASCOT_T6_DISPLAY_WAIT_MS`.
+ */
 export const T6_DISPLAY_BUDGET_MS = 6_000;
+
+/**
+ * Attente d'une génération T6 à l'AFFICHAGE (lot 26, point 17). Par défaut
+ * AUCUNE : la prise de parole part tout de suite avec la formulation en cache
+ * (T6 du même contexte) ou, à défaut, le texte déterministe ; la génération
+ * s'achève en arrière-plan, écrit sous sa clé (RUN-010) et sert au prochain
+ * affichage du même contexte. Le texte affiché n'est jamais remplacé sous les
+ * yeux de l'utilisateur (RUN-001, `useMascotPresentation`).
+ *
+ * `MASCOT_T6_DISPLAY_WAIT_MS` (facultative, 0 à 6000) rétablit une attente
+ * bornée — l'ancien comportement attendait jusqu'à 6 s (≈ 1,5 à 3 s par appel
+ * modèle, repli compris) avant d'afficher quoi que ce soit.
+ */
+export function t6DisplayWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.MASCOT_T6_DISPLAY_WAIT_MS ?? '').trim();
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.min(Math.floor(n), T6_DISPLAY_BUDGET_MS) : 0;
+}
+
+/** Issue d'un affichage qui n'attend pas la génération lancée en arrière-plan. */
+export const T6_BACKGROUND_NOTE = 'formulation en arrière-plan';
 /** Une pré-génération n'est attendue par personne. */
 export const T6_PREGEN_BUDGET_MS = 30_000;
 
@@ -104,6 +129,7 @@ export async function getT6MasterPromptVersion(): Promise<string> {
   ]);
   const version = masterPromptVersionOf({
     masterPromptCode: T6_MASTER_PROMPT_CODE, configuredText: config.masterPromptText, configVersionId: config.configVersionId,
+    promptVersionId: config.masterPromptVersionId ?? null,
   });
   return `${version}|cfg:${config.configVersionId ?? 'code'}`;
 }
@@ -325,6 +351,8 @@ export interface T6Dependencies {
   previousBubbles?: (accountId: number, promptVersion: string) => Promise<T6PreviousBubble[]>;
   /** Appel passerelle du master (injectable pour les tests). */
   execute: (req: Parameters<typeof AiGateway.execute>[0]) => ReturnType<typeof AiGateway.execute>;
+  /** Attente à l'affichage (défaut : `t6DisplayWaitMs()`). */
+  displayWaitMs?: () => number;
 }
 
 const defaultDeps: T6Dependencies = {
@@ -344,23 +372,31 @@ export async function formulateWithT6(
 ): Promise<T6Outcome> {
   let promptVersion: string;
   try {
-    if (!(await deps.treatmentAvailable())) {
+    // Lectures indépendantes, en parallèle (lot 26, point 17).
+    const [available, version] = await Promise.all([deps.treatmentAvailable(), deps.promptVersion()]);
+    if (!available) {
       return { status: 'disabled', messages: null, promptVersion: null, error: 'T6 désactivé, suspendu ou arrêt d’urgence' };
     }
-    promptVersion = await deps.promptVersion();
+    promptVersion = version;
   } catch (e) {
     return { status: 'error', messages: null, promptVersion: null, error: (e as Error).message };
   }
 
   const cacheKey = t6CacheKey({ accountId: p.accountId, input: p.input, promptVersion, outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2 });
-  const cached = await readT6Cache(p.accountId, cacheKey, p.input);
+  // Cache du compte et bulles précédentes (R8) lus ensemble : un aller-retour
+  // en base de moins sur le chemin de l'affichage.
+  const [cached, prev] = await Promise.all([
+    readT6Cache(p.accountId, cacheKey, p.input),
+    deps.previousBubbles
+      ? deps.previousBubbles(p.accountId, promptVersion).catch(() => [] as T6PreviousBubble[])
+      : Promise.resolve(null),
+  ]);
   if (cached) return { status: 'cache_hit', messages: cached, promptVersion, architecture: 'master' };
 
   // R8 dans le temps : même état qu'une bulle précédente → mêmes textes,
   // sans appel ; sujets inchangés → formulation conservée.
   let pinned = new Map<number, T6Message>();
-  if (deps.previousBubbles) {
-    const prev = await deps.previousBubbles(p.accountId, promptVersion).catch(() => [] as T6PreviousBubble[]);
+  if (prev) {
     const w = previousWording(p.input, prev, p.kinds);
     if (w.reuse) {
       await writeT6Cache({
@@ -388,7 +424,13 @@ export async function formulateWithT6(
     }
   }
 
-  const budget = p.mode === 'display' ? T6_DISPLAY_BUDGET_MS : T6_PREGEN_BUDGET_MS;
+  const budget = p.mode === 'display' ? (deps.displayWaitMs ?? t6DisplayWaitMs)() : T6_PREGEN_BUDGET_MS;
+  if (budget <= 0) {
+    // Affichage immédiat : texte de secours maintenant, la génération se
+    // poursuit et sera journalisée en pré-génération (RUN-011).
+    tardive.add(run);
+    return { status: 'fallback', messages: null, promptVersion, architecture: 'master', error: T6_BACKGROUND_NOTE, latencyMs: 0 };
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const delai = new Promise<T6Outcome>((resolve) => {
     timer = setTimeout(() => {

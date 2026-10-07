@@ -138,5 +138,4 @@ const FICHIERS_A_RETIRER = [
   'src/db/seeds/documents/',
   'src/app/api/admin/document-categories/',
   'src/app/(dashboard)/documents/classement/',
-  'src/services/to-process.service.ts (et src/types/to-process.ts)',
 ];

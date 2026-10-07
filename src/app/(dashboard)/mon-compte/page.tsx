@@ -8,7 +8,7 @@ import { LegalInformationCard } from '@/components/account/LegalInformationCard'
 import { WithdrawalCard } from '@/components/account/WithdrawalCard';
 import { SubscriptionSummary } from '@/components/subscription/SubscriptionSummary';
 import { MyDataCard } from './mes-donnees/MyDataCard';
-import { StorageUsageCard } from '@/components/account/StorageUsageCard';
+import { ReferralCard } from '@/components/account/ReferralCard';
 
 export default function MonComptePage() {
   const { setBreadcrumbs } = useBreadcrumb();
@@ -27,9 +27,11 @@ export default function MonComptePage() {
           Sa place est ici : « Mon compte » annonce « gérez vos informations
           personnelles et votre abonnement ». La page des offres sert à en
           choisir une, pas à consulter la sienne. */}
+      {/* Lot 26 : l'espace de stockage (CDC BO STO-002) est une ligne de quota
+          de « Mon abonnement » ; l'ancienne carte séparée est supprimée. */}
       <SubscriptionSummary />
-      {/* Stockage : garde-fou secondaire, visible dans Mon compte (CDC BO STO-002). */}
-      <StorageUsageCard />
+      {/* Lot 26 : parrainage dans sa propre carte, sorti de « Mon abonnement ». */}
+      <ReferralCard />
       <InformationsTab />
       <NotificationsCard />
       <WithdrawalCard />

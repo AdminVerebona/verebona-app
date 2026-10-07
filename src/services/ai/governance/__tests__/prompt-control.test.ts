@@ -10,10 +10,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const getVersion = vi.fn();
-const getActiveVersion = vi.fn();
-const listVersions = vi.fn();
-const createDraft = vi.fn();
-const savePrompt = vi.fn(async (_p: Record<string, unknown>) => true);
+// BO-IA-PROMPTS-01 : T5 écrit dans le BROUILLON du prompt maître.
+const workingTexts = vi.fn(async (_mode: string) => new Map<string, unknown>());
+const savePrompt = vi.fn(async (p: Record<string, unknown>) => ({ id: 41, versionNumber: 3, treatment: p.treatment }) as unknown);
 const execute = vi.fn();
 const recordT5Modification = vi.fn(async (_t: unknown) => {});
 const getEmergencyStop = vi.fn(async (): Promise<{ active: boolean; reason: string | null; engagedAt: Date | null }> =>
@@ -21,16 +20,16 @@ const getEmergencyStop = vi.fn(async (): Promise<{ active: boolean; reason: stri
 
 vi.mock('../../config/config-version.repository', () => ({
   getVersion: (id: unknown) => getVersion(id),
-  getActiveVersion: (env: unknown) => getActiveVersion(env),
-  listVersions: (env: unknown) => listVersions(env),
-  createDraft: (u: unknown, l: unknown) => createDraft(u, l),
-  savePromptFieldIfUnchanged: (p: Record<string, unknown>) => savePrompt(p),
+}));
+vi.mock('../../master-prompts/master-prompt.service', () => ({
+  workingTexts: (m: string) => workingTexts(m),
+  writeDraftFromPromptControl: (p: Record<string, unknown>) => savePrompt(p),
 }));
 vi.mock('../../gateway/ai-gateway', () => ({ AiGateway: { execute: (req: unknown) => execute(req) } }));
 vi.mock('../prompt-control.audit', () => ({ recordT5Modification: (t: unknown) => recordT5Modification(t) }));
 vi.mock('../../queue/job-queue.repository', () => ({ getEmergencyStop: () => getEmergencyStop() }));
 
-const { analyze, modify, interpret, resolveWriteTarget, formatCurrentPrompts, VERDICTS } =
+const { analyze, modify, interpret, formatCurrentPrompts, VERDICTS } =
   await import('../prompt-control.service');
 const { AI_OPERATIONS } = await import('../../registry/operations');
 
@@ -68,7 +67,9 @@ const demande = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
-  for (const m of [getVersion, getActiveVersion, listVersions, createDraft, execute]) m.mockReset();
+  for (const m of [getVersion, execute]) m.mockReset();
+  workingTexts.mockClear();
+  workingTexts.mockResolvedValue(new Map());
   savePrompt.mockClear();
   recordT5Modification.mockClear();
   getEmergencyStop.mockResolvedValue({ active: false, reason: null, engagedAt: null });
@@ -102,10 +103,12 @@ describe('T5 choisit les cibles', () => {
     ] }));
     const r = await modify(demande());
     expect(savePrompt).toHaveBeenCalledTimes(2);
-    expect(savePrompt).toHaveBeenCalledWith(expect.objectContaining({ treatment: 'T3', field: 'masterPrompt', next: MASTER_T3 }));
-    expect(savePrompt).toHaveBeenCalledWith(expect.objectContaining({ treatment: 'T1', field: 'masterPrompt', next: masterT1 }));
+    expect(savePrompt).toHaveBeenCalledWith(expect.objectContaining({ treatment: 'T3', next: MASTER_T3 }));
+    expect(savePrompt).toHaveBeenCalledWith(expect.objectContaining({ treatment: 'T1', next: masterT1 }));
     expect(r.changes.map((c) => [c.treatment, c.applied])).toEqual([['T1', true], ['T3', true]]);
-    expect(r).toMatchObject({ applied: true, draftId: 1, mode: 'modify' });
+    // Brouillons de PROMPTS (BO-IA-PROMPTS-01), plus de Brouillon de configuration.
+    expect(r).toMatchObject({ applied: true, draftId: null, mode: 'modify' });
+    expect(r.promptDrafts?.map((d) => d.treatment)).toEqual(['T1', 'T3']);
     expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't5_modify' });
     expect(Object.keys(execute.mock.calls[0][0].promptVariables).sort()).toEqual(['CURRENT_MASTER_PROMPTS', 'INSTRUCTION']);
   });
@@ -129,7 +132,7 @@ describe('T5 choisit les cibles', () => {
     // Écriture conditionnelle de la SEULE zone prompt (revue lot 16) :
     // modèles, replis et garde-fous ne font pas partie de l'écriture.
     expect(savePrompt).toHaveBeenCalledWith({
-      versionId: 1, treatment: 'T3', field: 'masterPrompt', expected: null, next: MASTER_T3, userId: 7,
+      treatment: 'T3', expected: FICHIER_T3, readDraftId: null, readActiveId: null, next: MASTER_T3, userId: 7,
     });
   });
 
@@ -138,7 +141,7 @@ describe('T5 choisit les cibles', () => {
     execute.mockResolvedValue(sortie());
     await modify(demande());
     expect(recordT5Modification).toHaveBeenCalledWith(expect.objectContaining({
-      treatment: 'T3', before: FICHIER_T3, after: MASTER_T3, traceId: 'trace-1', versionId: 1, field: 'masterPrompt',
+      treatment: 'T3', before: FICHIER_T3, after: MASTER_T3, traceId: 'trace-1', versionId: 41, field: 'masterPrompt',
     }));
   });
 });
@@ -151,7 +154,7 @@ describe('analyse seule (T5-006)', () => {
     expect(r.applied).toBe(false);
     expect(r.changes).toEqual([expect.objectContaining({ treatment: 'T3', applied: false, diff: null })]);
     expect(savePrompt).not.toHaveBeenCalled();
-    expect(createDraft).not.toHaveBeenCalled();
+    expect(workingTexts).toHaveBeenCalledWith('analyze');
     expect(execute.mock.calls[0][0]).toMatchObject({ operationCode: 't5_analyze' });
   });
 });
@@ -179,48 +182,37 @@ describe('diagnostic non-prompt (T5-011, WF-39)', () => {
   });
 });
 
-describe('brouillon (T5-004, T5-007)', () => {
-  it('crée un brouillon depuis l’Active quand aucun n’existe, seulement s’il y a quelque chose à écrire', async () => {
-    const active = version({ id: 5, status: 'ACTIVE' });
-    const cree = version({ id: 6 });
-    getVersion.mockImplementation(async (id: number) => (id === 5 ? active : cree));
-    getActiveVersion.mockResolvedValue(active);
-    listVersions.mockResolvedValue([active]);
-    createDraft.mockResolvedValue(cree);
-
+describe('brouillon du prompt maître (T5-004, BO-IA-PROMPTS-01)', () => {
+  it('version de configuration affichée en lecture seule : écrit quand même dans le brouillon du PROMPT, sans Brouillon de configuration', async () => {
+    getVersion.mockResolvedValue(version({ id: 5, status: 'ACTIVE' }));
     execute.mockResolvedValue(sortie({ verdict: 'code', targets: [] }));
     await modify(demande({ versionId: 5 }));
-    expect(createDraft).not.toHaveBeenCalled();
+    expect(savePrompt).not.toHaveBeenCalled();
 
     execute.mockResolvedValue(sortie());
     const r = await modify(demande({ versionId: 5 }));
-    expect(createDraft).toHaveBeenCalledWith(7, 'Prompt Control');
-    expect(r).toMatchObject({ applied: true, draftId: 6, draftCreated: true });
+    expect(savePrompt).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ applied: true, draftId: null, draftCreated: false });
+    expect(r.promptDrafts).toEqual([{ treatment: 'T3', versionId: 41, versionNumber: 3 }]);
   });
 
-  it('ne choisit jamais un brouillon existant à la place de l’administrateur', async () => {
-    const active = version({ id: 5, status: 'ACTIVE' });
-    getVersion.mockResolvedValue(active);
-    getActiveVersion.mockResolvedValue(active);
-    listVersions.mockResolvedValue([active, version({ id: 8, label: 'lot agenda' })]);
-    await expect(resolveWriteTarget(5, false)).rejects.toMatchObject({ code: 'DRAFT_SELECTION_REQUIRED' });
-    await expect(resolveWriteTarget(5, true)).resolves.toMatchObject({ kind: 'create' });
-  });
-
-  it('n’écrase pas un prompt modifié pendant l’appel modèle', async () => {
-    getVersion
-      .mockResolvedValueOnce(version())
-      .mockResolvedValueOnce(version({ entries: [entree('T3', P('T3'), 'Texte master enregistré entre-temps par un autre administrateur.')] }));
+  it('lit et réécrit le brouillon EXISTANT du prompt (écriture conditionnelle sur le texte lu)', async () => {
+    getVersion.mockResolvedValue(version());
+    const enCours = `${FICHIER_T3}\nRègle en cours de rédaction.`;
+    workingTexts.mockResolvedValue(new Map([['T3', { treatment: 'T3', text: enCours, draftId: 12, activeId: 3 }]]));
     execute.mockResolvedValue(sortie());
-    const r = await modify(demande());
-    expect(savePrompt).not.toHaveBeenCalled();
-    expect(r.changes[0].rejected).toMatch(/modifié pendant l'analyse/);
+    await modify(demande());
+    expect(workingTexts).toHaveBeenCalledWith('modify');
+    expect(execute.mock.calls[0][0].promptVariables.CURRENT_MASTER_PROMPTS).toContain('Règle en cours de rédaction.');
+    expect(savePrompt).toHaveBeenCalledWith({
+      treatment: 'T3', expected: enCours, readDraftId: 12, readActiveId: 3, next: MASTER_T3, userId: 7,
+    });
   });
 
-  it('revue lot 16 — écriture concurrente APRÈS la relecture : 0 ligne, conflit explicite, rien écrasé', async () => {
+  it('écriture concurrente : 0 ligne, conflit explicite, rien écrasé, rien tracé', async () => {
     getVersion.mockResolvedValue(version());
     execute.mockResolvedValue(sortie());
-    savePrompt.mockResolvedValueOnce(false);
+    savePrompt.mockResolvedValueOnce(null);
     const r = await modify(demande());
     expect(r.applied).toBe(false);
     expect(r.changes[0].rejected).toMatch(/^Conflit/);

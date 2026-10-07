@@ -5,6 +5,7 @@
  * (§12ter).
  */
 import Link from 'next/link';
+import { useState } from 'react';
 import { ArrowRight, Download, FileText, Folder, House, Package } from 'lucide-react';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
@@ -242,6 +243,52 @@ function StatusBadge({ label }: { label: string }) {
   );
 }
 
+/**
+ * Aperçu d'un document récent (lot 26, point 16) — mêmes conventions que les
+ * vignettes de « Mes documents » (`DocumentsByRubric`) : miniature SERVEUR
+ * (jamais l'original), chargement paresseux, décodage asynchrone, repli sur
+ * l'icône. L'URL vient du résumé (signée, stable pendant l'heure, mise en
+ * cache par le navigateur) : aucune requête par carte vers l'application.
+ * Si elle n'est plus lisible (onglet resté ouvert au-delà de sa validité),
+ * un essai par la route autorisée `/api/files/:id/thumbnail` (re-signature),
+ * puis l'icône. Pas de rendu PDF dans le navigateur ici : sans miniature
+ * prête, l'icône (la génération est demandée par le serveur).
+ */
+export function RecentDocPreview({ doc, variant }: { doc: HomeRecentDocument; variant: 'tile' | 'row' }) {
+  const [step, setStep] = useState<0 | 1 | 2>(0);
+  const tone = DOC_TONES[doc.tone];
+  const src = !doc.previewUrl ? null : step === 0 ? doc.previewUrl : step === 1 ? `/api/files/${doc.id}/thumbnail` : null;
+  const icon = (
+    <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center rounded-xl" style={{ background: tone.bg, color: tone.fg }}>
+      <FileText className="h-4 w-4" aria-hidden />
+    </span>
+  );
+  if (variant === 'row') {
+    if (!src) return icon;
+    return (
+      <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center">
+        <span className="relative h-[38px] w-[30px] overflow-hidden rounded bg-white shadow-[0_1px_3px_rgba(0,0,0,.5)]">
+          {/* eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente */}
+          <img src={src} alt="" loading="lazy" decoding="async" onError={() => setStep((x) => (x === 0 ? 1 : 2))} className="block h-full w-full object-cover object-top" />
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="relative flex h-[104px] w-full items-end justify-center overflow-hidden rounded-xl border border-[rgba(148,163,184,.3)] bg-[color:var(--bg-card)] px-[18px] pt-3 [.theme-beige_&]:bg-[#F1F5F9]">
+      {src ? (
+        <span className="relative block h-full w-full overflow-hidden rounded-t bg-white shadow-[0_-2px_12px_rgba(0,0,0,.4)]">
+          {/* eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente */}
+          <img src={src} alt="" loading="lazy" decoding="async" onError={() => setStep((x) => (x === 0 ? 1 : 2))} className="absolute inset-0 h-full w-full object-cover object-top" />
+        </span>
+      ) : (
+        <span className="flex h-full w-full items-center justify-center pb-3">{icon}</span>
+      )}
+      {doc.status && <span className="absolute right-2 top-2"><StatusBadge label={doc.status} /></span>}
+    </span>
+  );
+}
+
 export function RecentDocuments({ docs, onUpload, className = '' }: { docs: HomeRecentDocument[]; onUpload: () => void; className?: string }) {
   const open = (d: HomeRecentDocument) => openDrawer({ kind: 'document', id: d.id });
   return (
@@ -287,7 +334,6 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
           {/* Desktop : 4 tuiles côte à côte, s'élèvent au survol */}
           <div className="hidden grid-cols-4 gap-3 md:grid">
             {docs.slice(0, 4).map((d) => {
-              const tone = DOC_TONES[d.tone];
               return (
                 <button
                   key={d.id}
@@ -295,12 +341,7 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
                   onClick={() => open(d)}
                   className="flex min-w-0 flex-col gap-3.5 rounded-[18px] border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 text-left transition-all duration-150 hover:-translate-y-0.5 hover:border-[color:var(--border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
                 >
-                  <span className="flex min-h-6 items-center justify-between gap-2">
-                    <span className="flex h-[38px] w-[38px] items-center justify-center rounded-xl" style={{ background: tone.bg, color: tone.fg }}>
-                      <FileText className="h-4 w-4" aria-hidden />
-                    </span>
-                    {d.status && <StatusBadge label={d.status} />}
-                  </span>
+                  <RecentDocPreview doc={d} variant="tile" />
                   <span className="flex min-w-0 flex-col gap-[3px]">
                     <span className="truncate text-[14px] font-semibold text-[color:var(--text-primary)]">{d.title}</span>
                     <span className="truncate text-[12.5px] text-[color:var(--muted-foreground)]">{d.assetName ?? 'Sans bien rattaché'}</span>
@@ -313,7 +354,6 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
           {/* Mobile : 3 lignes-cartes */}
           <div className="flex flex-col gap-2 md:hidden">
             {docs.slice(0, 3).map((d) => {
-              const tone = DOC_TONES[d.tone];
               return (
                 <button
                   key={d.id}
@@ -321,9 +361,7 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
                   onClick={() => open(d)}
                   className="flex min-h-[60px] items-center gap-3 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-3 py-2.5 text-left"
                 >
-                  <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center rounded-xl" style={{ background: tone.bg, color: tone.fg }}>
-                    <FileText className="h-4 w-4" aria-hidden />
-                  </span>
+                  <RecentDocPreview doc={d} variant="row" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[14px] font-semibold text-[color:var(--text-primary)]">{d.title}</span>
                     <span className="block truncate text-[12px] text-[color:var(--muted-foreground)]">{[d.assetName, formatDay(d.date)].filter(Boolean).join(' · ')}</span>

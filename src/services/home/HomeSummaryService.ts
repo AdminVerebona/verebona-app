@@ -9,8 +9,9 @@
  */
 import { db } from '@/db';
 import {
-  agendaItems, agendaAssetLinks, assets, assetFiles, documentTypes, accounts, aiFieldUpdates,
+  agendaItems, agendaAssetLinks, assets, assetFiles, assetFileThumbnails, documentTypes, accounts, aiFieldUpdates,
 } from '@/db/schema';
+import { decideThumbnail, thumbnailSourceKind, THUMBNAIL_VARIANT } from '@/services/documents/thumbnails/thumbnail-spec';
 import { eq, and, or, isNull, isNotNull, gte, lte, sql, inArray, notInArray, desc, asc } from 'drizzle-orm';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import {
@@ -108,6 +109,74 @@ function dateMinus(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return d.toISOString().slice(0, 10);
+}
+
+// ── Aperçus des « Documents récents » (lot 26, point 16) ────────────────────
+
+export interface RecentDocPreviewRow {
+  id: number;
+  s3Key: string | null;
+  mimeType: string | null;
+  fileExtension: string | null;
+  originalFilename: string | null;
+  isWebLink: boolean | null;
+  thumbStatus: string | null;
+  thumbSourceKey: string | null;
+  thumbS3Key: string | null;
+  thumbAttempts: number | null;
+  thumbLeaseUntil: Date | null;
+  thumbUpdatedAt: Date | null;
+}
+
+export interface RecentDocPreviewDeps {
+  enabled: () => boolean;
+  sign: (s3Key: string) => Promise<string>;
+  enqueue: (fileId: number) => void;
+}
+
+const defaultPreviewDeps = async (): Promise<RecentDocPreviewDeps> => {
+  const [{ thumbnailsEnabled, enqueueThumbnail }, { signedThumbnailUrl }] = await Promise.all([
+    import('@/services/documents/thumbnails/thumbnail.service'),
+    import('@/services/documents/thumbnails/thumbnail-url'),
+  ]);
+  return { enabled: thumbnailsEnabled, sign: (k) => signedThumbnailUrl(k), enqueue: (id) => { enqueueThumbnail(id); } };
+};
+
+/**
+ * URL d'aperçu des documents récents : la miniature PRÊTE de la version
+ * courante, par URL signée mémorisée (au plus une signature locale par dérivé
+ * et par heure — aucune requête au stockage). Miniature absente ou périmée :
+ * pas d'aperçu (icône) et génération demandée — rattrapage immédiat des
+ * documents existants, en plus de la tâche horaire `hourly-thumbnails-backfill`.
+ * Ne lève jamais : un aperçu manquant ne doit pas priver l'accueil du reste.
+ */
+export async function recentDocumentPreviews(
+  rows: RecentDocPreviewRow[],
+  depsP: Promise<RecentDocPreviewDeps> | RecentDocPreviewDeps = defaultPreviewDeps(),
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  try {
+    const deps = await depsP;
+    if (!deps.enabled()) return out;
+    await Promise.all(rows.map(async (r) => {
+      if (!r.s3Key || !thumbnailSourceKind(r)) return;
+      const row = r.thumbStatus && r.thumbSourceKey && r.thumbUpdatedAt
+        ? {
+            status: r.thumbStatus, sourceKey: r.thumbSourceKey, s3Key: r.thumbS3Key,
+            attempts: r.thumbAttempts ?? 0, leaseUntil: r.thumbLeaseUntil, updatedAt: r.thumbUpdatedAt,
+          }
+        : null;
+      const decision = decideThumbnail(row, r.s3Key);
+      if (decision.action === 'serve') {
+        try { out.set(r.id, await deps.sign(decision.s3Key)); } catch { /* icône */ }
+      } else if (decision.action === 'generate') {
+        deps.enqueue(r.id);
+      }
+    }));
+  } catch (e) {
+    console.warn('[accueil] aperçus des documents récents indisponibles :', (e as Error).message);
+  }
+  return out;
 }
 
 // ── Service principal ────────────────────────────────────────────────────────
@@ -220,9 +289,25 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       analysisState: assetFiles.analysisState,
       assetId: assetFiles.assetId,
       assetName: assets.name,
+      // Aperçu (lot 26, point 16) : état de la miniature lu dans la MÊME
+      // requête (jointure sur la clé unique fichier × variante) — pas de N+1.
+      s3Key: assetFiles.s3Key,
+      mimeType: assetFiles.mimeType,
+      fileExtension: assetFiles.fileExtension,
+      isWebLink: assetFiles.isWebLink,
+      thumbStatus: assetFileThumbnails.status,
+      thumbSourceKey: assetFileThumbnails.sourceKey,
+      thumbS3Key: assetFileThumbnails.s3Key,
+      thumbAttempts: assetFileThumbnails.attempts,
+      thumbLeaseUntil: assetFileThumbnails.leaseUntil,
+      thumbUpdatedAt: assetFileThumbnails.updatedAt,
     })
       .from(assetFiles)
       .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assetFileThumbnails, and(
+        eq(assetFileThumbnails.fileId, assetFiles.id),
+        eq(assetFileThumbnails.variant, THUMBNAIL_VARIANT),
+      ))
       .where(and(
         eq(assetFiles.accountId, accountId),
         or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
@@ -459,6 +544,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     })),
   });
 
+  const previews = await recentDocumentPreviews(latestDocs);
   const recentDocuments: HomeRecentDocument[] = latestDocs.map((d) => {
     const typeLabel = d.documentType ? (docTypeMap[d.documentType] || null) : null;
     const rubrique = getRubric(d.rubricCode)?.label ?? null;
@@ -472,6 +558,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       date: dateUtile ? String(dateUtile).slice(0, 10) : null,
       status: docStatus(d.analysisState),
       tone: docTone(d.rubricCode),
+      previewUrl: previews.get(d.id) ?? null,
     };
   });
 

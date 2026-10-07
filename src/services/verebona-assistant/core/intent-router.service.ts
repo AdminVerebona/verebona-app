@@ -35,6 +35,7 @@ import { getIntentDefinition } from '../registries/intent-registry';
 import { allowedActionsFor } from '../registries/action-registry';
 import { searchHelpCorpus, type HelpCorpus } from './help-corpus.service';
 import { normalizeForRouting, startsWith, word } from './routing-text';
+import { assetVocabularyAlternatives } from '@/lib/asset-taxonomy';
 import { analyserPeriode, aujourdhuiParis } from './query-period';
 
 export interface RouteContext {
@@ -151,7 +152,7 @@ const HOWTO = new RegExp(
 const HOWTO_GENERIC = startsWith('comment');
 const WHERE_FIND = word("ou (trouver|trouve-t-on|est|sont|se trouve|se trouvent|puis-je trouver)|where is|where are");
 /** Un objet précis du compte (« ma facture ») se cherche, il ne se navigue pas. */
-const SPECIFIC_OBJECT = word("(ma|mon|la|le|l'|cette|ce|cet) ?(facture|garantie|contrat|manuel|notice|certificat|devis|justificatif|document|fichier|bien|maison|voiture|velo)");
+const SPECIFIC_OBJECT = word(`(ma|mon|la|le|l'|cette|ce|cet) ?(facture|garantie|contrat|manuel|notice|certificat|devis|justificatif|document|fichier|${assetVocabularyAlternatives()})`);
 
 // ── Navigation (§9.4.5) ─────────────────────────────────────────────────────
 const OPEN_VERB = word('ouvre|ouvrir|montre|montre-moi|affiche|affiche-moi|va sur|aller sur|acceder|accede|emmene-moi|open|go to|show me');
@@ -161,7 +162,8 @@ const DOC = word('documents?|factures?|garanties?|contrats?|manuels?|notices?|ce
 const DOC_LIST = word('documents|factures|fichiers|pieces');
 /** « …de ma Clio », « …du chalet » : les documents DE quelque chose. */
 const OF_SOMETHING = word("(de|du|des) (ma|mon|mes|la|le|l'|notre|nos)|du [a-z]{3,}");
-const ASSET = word('biens?|proprietes?|patrimoine|maisons?|appartements?|logements?|immeubles?|terrains?|residences?|vehicules?|voitures?|motos?|bateaux?|velos?|caravanes?|chalets?');
+/** Biens : tout le vocabulaire du référentiel `asset-taxonomy` (lot 30 — plus de liste figée). */
+const ASSET = word(assetVocabularyAlternatives());
 const TO_PROCESS = word("a traiter|dois-je traiter|dois je traiter|je dois traiter|reste a traiter|faut-il traiter|en priorite|prioritaires?");
 /**
  * Faits du compte (37.2) : date d'achat, date d'un document, montant. Lus

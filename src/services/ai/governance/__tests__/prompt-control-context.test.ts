@@ -10,7 +10,9 @@ const getTreatmentMetrics = vi.fn();
 
 vi.mock('../../config/config-version.repository', () => ({
   getVersion: (id: unknown) => getVersion(id),
-  getActiveVersion: vi.fn(), listVersions: vi.fn(), createDraft: vi.fn(), savePromptFieldIfUnchanged: vi.fn(async () => true),
+}));
+vi.mock('../../master-prompts/master-prompt.service', () => ({
+  workingTexts: async () => new Map(), writeDraftFromPromptControl: vi.fn(),
 }));
 vi.mock('../../gateway/ai-gateway', () => ({ AiGateway: { execute: (req: unknown) => execute(req) } }));
 vi.mock('../prompt-control.audit', () => ({ recordT5Modification: vi.fn() }));

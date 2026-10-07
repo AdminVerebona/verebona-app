@@ -8,7 +8,7 @@ Le registre est la seule définition des clés métier d'un bien. T1, T2, T3, T4
 
 | Symbole | Rôle |
 |---|---|
-| `AssetFamily` | `'IMMOBILIER' \| 'VEHICULE' \| 'OBJECT'`, les codes de `assets.category`. `toAssetFamily()` ramène `OBJET` (assistant), `MATERIEL_PRO` et `AUTRE` à `OBJECT`. |
+| `AssetFamily` | `'IMMOBILIER' \| 'VEHICULE' \| 'OBJECT'`, les codes de `assets.category`. `toAssetFamily()` ramène `OBJET` (assistant), `MATERIEL_PRO` et `AUTRE` à `OBJECT` — délégué au résolveur unique `toAssetFamilyCode()` de `lib/asset-taxonomy` (lot 30). |
 | `CanonicalFieldDef` | Clé, libellé, familles, type, unité, alias, colonnes miroirs, effet agenda, droits T2, règle de complétude, sensibilité. Champs facultatifs en plus du contrat : `enumValues`/`enumLabels`, `integer`, `range`, `section`, `targetType`, `assistantPhrases`, `aliasUnits`. |
 | `getField(key)` | Définition d'une clé **canonique**. Un alias ne donne rien. |
 | `resolveAlias(raw, family?, { documentType }?)` / `resolveAliasDetailed` | Clé brute → clé canonique. La version détaillée renvoie aussi l'unité portée par l'alias (`purchasePriceCents` → `sourceUnit: 'cents'`). Le contexte documentaire tranche les alias contextuels (D-C, lot 20). |
@@ -20,8 +20,9 @@ Le registre est la seule définition des clés métier d'un bien. T1, T2, T3, T4
 | `toMirrorValue(key, value)` / `toMirrorPatch` | Colonnes miroirs : nom SQL → valeur, ou propriété Drizzle → valeur. |
 | `eurToCents` / `centsToEur` | Conversions exactes. |
 | `EVENT_CATALOG`, `getEventEntry` | Types d'événements agenda. |
-| `DOCUMENT_CATALOG`, `resolveDocumentType` | Types documentaires, autorité, création d'agenda et preuves d'exécution. |
-| `catalogForPrompts({ family })` | DTO sérialisable pour `EXPECTED_FIELDS` / `FIELD_CATALOG` / `EVENT_CATALOG` des prompts (R6). |
+| `DOCUMENT_CATALOG`, `resolveDocumentType` | Types documentaires, autorité, création d'agenda et preuves d'exécution. Depuis le lot 30, `resolveDocumentType` suit aussi les anciens codes équivalents et les correspondances V1 → V2 certaines (ordre unique : `docs/exploitation/referentiels.md`). |
+| `catalogForPrompts({ family })` | DTO sérialisable pour `EXPECTED_FIELDS` / `FIELD_CATALOG` / `EVENT_CATALOG` des prompts T1 (R6, inférence : `inputOnly` exclu). |
+| `catalogForT2Read()`, `fieldAssistantVocabulary(def)` | Projection officielle pour la LECTURE T2 (lot 30, AC19 / AC20) : champs `assistantReadable`, familles, cibles, type, unité, enum, sensibilité et vocabulaire (libellé + `assistantPhrases`, jamais les `aliases`). Seule source du FIELD_CATALOG de UNDERSTAND et du matcher déterministe. |
 | `EXCLUDED_KEYS`, `isExcludedKey` | Clés volontairement hors registre, avec le motif. |
 
 ## Décisions appliquées

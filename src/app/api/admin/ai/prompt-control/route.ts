@@ -7,9 +7,10 @@
  *   · `analyze` — diagnostic seul, sur n'importe quelle version. Aucune
  *     écriture, aucun Brouillon créé (T5-006).
  *   · `modify`  — T5 réécrit le prompt ciblé et l'écrit DIRECTEMENT dans le
- *     Brouillon, puis rend résumé et diff (T5-005). Si la version affichée
- *     n'est pas un Brouillon : création depuis l'Active quand aucun n'existe,
- *     ou refus `DRAFT_SELECTION_REQUIRED` avec la liste (T5-007).
+ *     brouillon de ce prompt maître (créé depuis l'Actif au besoin), puis
+ *     rend résumé et diff (T5-005). BO-IA-PROMPTS-01 : l'administrateur
+ *     active ensuite le brouillon (Brouillon → Actif) depuis « Prompts
+ *     maîtres ». `createDraft` est accepté et ignoré (client antérieur).
  *
  * L'ancienne action `apply`, qui recevait un texte de prompt du client après
  * une analyse, est supprimée (écart E-01) : elle imposait un second geste, et
@@ -49,7 +50,7 @@ const Analyze = z.object({ action: z.literal('analyze'), ...Demande });
 const Modify = z.object({
   action: z.literal('modify'),
   ...Demande,
-  /** Créer un nouveau Brouillon depuis l'Active même si d'autres existent. */
+  /** Historique (T5-007), ignoré depuis BO-IA-PROMPTS-01. */
   createDraft: z.boolean().optional(),
 });
 

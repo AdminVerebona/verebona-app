@@ -141,7 +141,7 @@ function ReferentialsScreen() {
       case 'families': return <RowsTable rows={data.assetFamilies} withStatus {...props} />;
       case 'subcategories': return <RowsTable rows={data.assetSubcategories} withStatus {...props} />;
       case 'rubrics': return <RowsTable rows={data.rubrics} withStatus={false} {...props} />;
-      case 'document-types': return <RowsTable rows={data.documentTypes} withStatus={false} {...props} />;
+      case 'document-types': return <RowsTable rows={data.documentTypes} withStatus {...props} />;
       case 'rules':
         return (
           <div className="space-y-6">

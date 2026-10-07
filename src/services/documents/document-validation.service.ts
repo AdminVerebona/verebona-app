@@ -30,7 +30,7 @@
  */
 import { db } from '@/db';
 import { documentAnalysisProposals, documentAnalysisRuns, assetFiles } from '@/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { CommitResult } from '@/types/document-ai';
 
 /**
@@ -73,6 +73,12 @@ export async function validateDocumentProposals(assetFileId: number, accountId: 
       .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.analysisState, 'VALIDATION_REQUIRED')));
   });
 
+  // Lot 28 : « Sauvegarder = valider ». Une donnée documentaire du catalogue
+  // « À traiter » (fin de contrat, fin de garantie…) validée ici avec UNE
+  // seule valeur devient une valeur utilisateur ; deux valeurs différentes
+  // restent à arbitrer. Puis « À traiter » est réévalué. Ne lève jamais.
+  await recordValidatedDocumentValues(assetFileId, accountId, run.id);
+
   // Rattachement déterministe à un équipement du bien (non bloquant), comme
   // après l'ancien commit.
   void import('@/services/equipment/equipment-auto-link.service')
@@ -81,4 +87,39 @@ export async function validateDocumentProposals(assetFileId: number, accountId: 
 
   console.info(`[documents] validation du document ${assetFileId} : ${kept} proposition(s) conservée(s).`);
   return { committed: true, appliedFields: [], agendaEffectsProcessed: 0 };
+}
+
+/** Données documentaires du pont « À traiter » validées au commit (lot 28). */
+async function recordValidatedDocumentValues(assetFileId: number, accountId: number, runId: number): Promise<void> {
+  try {
+    const { documentBridgeFieldKey, recordUserDocumentValue, onDocumentEditedByUser } =
+      await import('@/services/to-process/document-rule-bridge');
+    const rows = await db
+      .select({ targetKey: documentAnalysisProposals.targetKey, finalValueJson: documentAnalysisProposals.finalValueJson })
+      .from(documentAnalysisProposals)
+      .where(and(
+        eq(documentAnalysisProposals.runId, runId),
+        eq(documentAnalysisProposals.assetFileId, assetFileId),
+        eq(documentAnalysisProposals.proposalType, 'field'),
+        inArray(documentAnalysisProposals.status, ['kept', 'modified']),
+      ));
+    const parCle = new Map<string, Set<string>>();
+    for (const r of rows) {
+      const cle = documentBridgeFieldKey(r.targetKey);
+      if (!cle || !r.finalValueJson) continue;
+      let v: unknown;
+      try { v = JSON.parse(r.finalValueJson); } catch { continue; }
+      if (v !== null && typeof v === 'object' && 'value' in (v as Record<string, unknown>)) v = (v as Record<string, unknown>).value;
+      if (v === null || v === undefined || v === '') continue;
+      parCle.set(cle, (parCle.get(cle) ?? new Set()).add(String(v)));
+    }
+    let ecrit = false;
+    for (const [cle, valeurs] of parCle) {
+      if (valeurs.size !== 1) continue; // contradiction : l'arbitrage reste ouvert
+      ecrit = (await recordUserDocumentValue(accountId, assetFileId, cle, [...valeurs][0])) || ecrit;
+    }
+    if (ecrit) await onDocumentEditedByUser(accountId, assetFileId);
+  } catch (e) {
+    console.error(`[documents] validation « À traiter » du document ${assetFileId} :`, (e as Error).message);
+  }
 }

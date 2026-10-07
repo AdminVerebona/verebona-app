@@ -1,3 +1,4 @@
+import { ACCEPTED_ASSET_CATEGORY_CODES, assetFamilyLabel } from '@/lib/asset-taxonomy';
 import {
   Building,
   Building2,
@@ -219,13 +220,10 @@ export function getAssetIcon(
 /**
  * Retourne le label de catégorie traduit
  */
-export const CATEGORY_LABELS: Record<string, string> = {
-  IMMOBILIER: 'Immobilier',
-  VEHICULE: 'Véhicule',
-  MATERIEL_PRO: 'Matériel pro',
-  OBJECT: 'Objet',
-  AUTRE: 'Autre',
-};
+export const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(
+  // Lot 30 : dérivé du référentiel des biens (familles proposées et anciennes stockées).
+  ACCEPTED_ASSET_CATEGORY_CODES.map((code) => [code, assetFamilyLabel(code)]),
+);
 
 /**
  * Retourne la classe CSS supplémentaire pour personnaliser certaines icônes

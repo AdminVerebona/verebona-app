@@ -250,16 +250,10 @@ export interface Equipment {
   updatedAt?: string;
 }
 
-// Document types
-export const DOCUMENT_TYPES = [
-  'FACTURE',
-  'GARANTIE',
-  'MANUEL',
-  'CONTRAT',
-  'CERTIFICAT',
-  'AUTRE'
-] as const;
-export type DocumentType = typeof DOCUMENT_TYPES[number];
+// Document types : plus de liste ici (lot 30 — l'ancienne `DOCUMENT_TYPES`
+// ne connaissait que 6 des codes stockés et n'était plus lue). Types V2 :
+// `lib/referential/v2` ; codes V1 : `lib/document-type-constants` ;
+// traduction de tout code : `lib/referential/document-codes`.
 
 // Event types
 export const EVENT_TYPES = [
@@ -402,10 +396,6 @@ export function isValidSportType(value: string): value is SportType {
 
 export function isValidHomeItemType(value: string): value is HomeItemType {
   return HOME_ITEM_TYPES.includes(value as HomeItemType);
-}
-
-export function isValidDocumentType(value: string): value is DocumentType {
-  return DOCUMENT_TYPES.includes(value as DocumentType);
 }
 
 export function isValidEventType(value: string): value is EventType {

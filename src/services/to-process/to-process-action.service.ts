@@ -119,6 +119,19 @@ export function computeTriggerContextHash(p: {
  * ni résoudre ni faire disparaître.
  */
 export async function upsertAction(input: UpsertActionInput): Promise<UpsertActionResult> {
+  try {
+    return await upsertActionOnce(input);
+  } catch (e) {
+    // Deux producteurs ont ouvert le même problème au même instant (deux
+    // analyses, analyse + balayage) : l'index unique partiel (0147) a refusé
+    // la seconde insertion. On relit : c'est désormais une mise à jour — une
+    // seule carte, jamais une erreur (lot 28, déduplication).
+    if ((e as { code?: string }).code === '23505') return upsertActionOnce(input);
+    throw e;
+  }
+}
+
+async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionResult> {
   const rule = getRule(input.ruleCode);
   if (!rule) {
     return { status: 'SKIPPED', reason: `Règle inconnue : ${input.ruleCode}.` };
@@ -192,6 +205,11 @@ export async function upsertAction(input: UpsertActionInput): Promise<UpsertActi
       .update(toProcessActions)
       .set({
         proposalsJson: displayed,
+        // Même donnée, autre règle de même nature (AGENDA-DONE ↔
+        // AGENDA-NOT-DONE) : la carte porte la règle et la question actuelles.
+        ...(existing.ruleCode !== input.ruleCode
+          ? { ruleCode: input.ruleCode, question: input.question ?? rule.question }
+          : input.question && input.question !== existing.question ? { question: input.question } : {}),
         dueDate: input.dueDate ?? existing.dueDate,
         triggerContextHash: contextHash,
         triggerContext: (input.triggerContext ?? null) as never,

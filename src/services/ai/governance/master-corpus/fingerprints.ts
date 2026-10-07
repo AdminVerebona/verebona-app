@@ -6,7 +6,13 @@
  * modifié sans corpus fait échouer `ai:verify` (`ai:corpus --check-fingerprints`)
  * et `test:run` : il faut relancer le corpus, puis
  * `npm run ai:corpus -- --update-fingerprints` (refusé si un master est rouge).
- * Le texte d'un master ne peut donc plus changer sans corpus.
+ * Le texte d'un master du DÉPÔT ne peut donc plus changer sans corpus.
+ *
+ * Portée (BO-IA-PROMPTS-01) : les fichiers `tN_master_v1.txt` du dépôt
+ * seulement — garde-fou de développeur, en CI. Les versions administrées et
+ * activées depuis le BO (`ai_master_prompt_versions`) ne sont jamais lues
+ * ici : elles ne peuvent faire échouer ni le build, ni la CI, ni le
+ * déploiement.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

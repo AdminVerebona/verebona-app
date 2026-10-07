@@ -229,6 +229,12 @@ export interface HomeRecentDocument {
   /** Statut éventuel (« En analyse »). */
   status: string | null;
   tone: DocTone;
+  /**
+   * Aperçu (miniature serveur prête et de la version courante) : URL signée
+   * stable pendant l'heure, ou null — l'accueil montre alors l'icône
+   * (lot 26, point 16). Jamais l'original.
+   */
+  previewUrl?: string | null;
 }
 
 /** Couleur de l'icône par rubrique (assurance verte, contrôle bleu…). */

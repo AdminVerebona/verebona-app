@@ -26,6 +26,8 @@ export {
   toAssetFamily,
   isExcludedKey,
   catalogForPrompts,
+  catalogForT2Read,
+  fieldAssistantVocabulary,
 } from './registry';
 export {
   normalizeValue,

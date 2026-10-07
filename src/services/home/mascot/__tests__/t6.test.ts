@@ -104,6 +104,9 @@ describe('exécution et repli (RUN-001, RUN-002, BO-006, BO-007)', () => {
   // Master T6 seul (lot 16b) : `t6_formulate`, sortie t6-output-v2.
   const deps = (over: Partial<Parameters<typeof formulateWithT6>[1]> = {}) => ({
     treatmentAvailable: async () => true, promptVersion: async () => 'v1',
+    // Attente bornée à l'affichage (ancien défaut) : ces cas vérifient la
+    // génération ; le défaut du lot 26 est couvert par t6-affichage-immediat.
+    displayWaitMs: () => 6_000,
     execute: (r: unknown) => execute(r), ...over,
   }) as NonNullable<Parameters<typeof formulateWithT6>[1]>;
   const p = { accountId: 7, input, contextHash: 'h', mode: 'display' as const };

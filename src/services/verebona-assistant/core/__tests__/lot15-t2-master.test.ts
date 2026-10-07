@@ -239,7 +239,8 @@ describe('branche UNDERSTAND (fournie à la classification, Y)', () => {
     });
     expect(r.requestedFacts).toEqual(['mileage']);
     expect(r.requestedTopics).toEqual(['couleurInventee']);
-    expect(r.plan.entityHints).toEqual([{ type: 'asset', value: 'ma Clio' }, { type: 'asset', value: 'cuisine' }]);
+    // Lot 29 (ticket 13 §A) : la pièce reste une pièce.
+    expect(r.plan.entityHints).toEqual([{ type: 'asset', value: 'ma Clio' }, { type: 'room', value: 'cuisine' }]);
     expect(toIntentRoute(r.plan, 'PREMIUM')).toMatchObject({ intent: 'ACCOUNT_FACT_ASSET', accountScope: 'server-enforced' });
   });
 

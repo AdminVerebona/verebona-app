@@ -10,16 +10,10 @@ import { SQL_IS_RENTED } from '@/lib/assets/occupancy';
 import type { AccountDataPort, AssetRow, DocumentHit, ExportRow, FactHit } from './data-answer.service';
 import { searchDocumentFacts, searchDocumentText, searchTableCells } from '@/services/ai/knowledge/document-knowledge.service';
 import { createCanonicalAccountDataRepository, type BaseAccountDataPort } from '../canonical/repository';
+import { assistantAssetAvailability } from './asset-availability';
+import { assetDesignationsIn } from '@/lib/asset-taxonomy';
 
 const rows = <T>(r: unknown) => r as unknown as T[];
-
-/** Mots de famille → code de famille (recherche d'un bien par « ma voiture »). */
-const FAMILY_BY_WORD: Record<string, string> = {
-  voiture: 'VEHICULE', voitures: 'VEHICULE', vehicule: 'VEHICULE', vehicules: 'VEHICULE',
-  moto: 'VEHICULE', velo: 'VEHICULE', bateau: 'VEHICULE', camion: 'VEHICULE',
-  maison: 'IMMOBILIER', appartement: 'IMMOBILIER', logement: 'IMMOBILIER', immeuble: 'IMMOBILIER',
-  terrain: 'IMMOBILIER', garage: 'IMMOBILIER',
-};
 
 function todayParis(): string {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -44,20 +38,34 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     // 1 s'il désigne seulement la famille du bien (« ma voiture » pour un
     // véhicule sans sous-type) : un « Appartement Lyon » l'emporte ainsi sur
     // une maison pour « mon appartement ».
+    // Lot 29 (8b §C) : une CATÉGORIE précise (« maison », référentiel
+    // `asset-taxonomy`) ne vaut pour la famille que si le bien n'a pas de
+    // catégorie renseignée — « la maison » ne désigne jamais un appartement.
     const score = clean.map((w, i) => {
-      const fam = FAMILY_BY_WORD[w];
+      const d = assetDesignationsIn(w)[0];
+      const familleSeule = d?.kind === 'family' ? d.family : null;
+      const categorie = d?.kind === 'category' ? d : null;
+      // Lot 30 : plus de dictionnaire local — la taxonomie (`userTerms`
+      // compris : « logement ») dit seule quelle famille un mot désigne.
+      const fam = familleSeule ?? categorie?.family;
+      const famille = !fam ? ''
+        : categorie ? `WHEN a.category = '${categorie.family}' AND coalesce(a.subtype, '') = '' THEN 1`
+          : `WHEN a.category = '${fam}' THEN 1`;
       return `(CASE WHEN unaccent(lower(a.name)) LIKE unaccent(lower($${i * 2 + 2}))
-                  OR unaccent(lower(coalesce(a.subtype,''))) = unaccent(lower($${i * 2 + 3})) THEN 2
-                  ${fam ? `WHEN a.category = '${fam}' THEN 1` : ''}
+                  OR unaccent(lower(coalesce(a.subtype,''))) = unaccent(lower($${i * 2 + 3}))
+                  ${categorie ? `OR unaccent(lower(coalesce(a.subtype,''))) = unaccent(lower('${categorie.category!.replace(/'/g, "''")}'))` : ''} THEN 2
+                  ${famille}
                   ELSE 0 END)`;
     }).join(' + ');
     const params: unknown[] = [accountId];
     for (const w of clean) params.push(`%${w}%`, w);
+    // Ticket 14 : la règle de disponibilité s'applique AVANT le scoring —
+    // un bien archivé ou transmis n'est jamais retourné puis filtré après coup.
     const r = await pgClient.unsafe(
       `SELECT * FROM (
          SELECT ${ASSET_COLS}, (${score}) AS matched
            FROM assets a
-          WHERE a.account_id = $1 AND a.deleted_at IS NULL
+          WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')}
        ) s WHERE s.matched > 0 ORDER BY s.matched DESC, s.name LIMIT 10`,
       params as never[],
     );
@@ -67,10 +75,9 @@ const baseAccountDataRepository: BaseAccountDataPort = {
   async listAssets(accountId, opts = {}) {
     const r = await pgClient.unsafe(
       `SELECT ${ASSET_COLS} FROM assets a
-        WHERE a.account_id = $1 AND a.deleted_at IS NULL
+        WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')}
           AND ($2::text IS NULL OR a.category = $2)
           AND ($3::boolean IS NULL OR ${SQL_IS_RENTED('a')} = $3)
-          AND coalesce(a.status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS')
         ORDER BY a.name LIMIT 200`,
       [accountId, opts.family ?? null, opts.rented ?? null] as never[],
     );

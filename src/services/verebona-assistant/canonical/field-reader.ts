@@ -333,8 +333,8 @@ async function assetNameOf(accountId: number, assetId: number): Promise<string |
 
 // ── Source de niveau champ (T2-32) ───────────────────────────────────────
 
-export { assetFieldSourceId, parseAssetFieldSourceId } from './source-ids';
-import { assetFieldSourceId } from './source-ids';
+export { assetFieldSourceId, parseAssetFieldSourceId, entityFieldSourceId, parseEntityFieldSourceId } from './source-ids';
+import { assetFieldSourceId, entityFieldSourceId } from './source-ids';
 
 /**
  * Source vérifiable d'une affirmation sur un champ (T2-32) : porte la valeur,
@@ -388,4 +388,42 @@ export function assetFieldSource(r: CanonicalFieldReading): RetrievedSource {
 /** Valeurs renseignées des équipements / pièces d'une lecture (lot 18). */
 export function entityValues(r: CanonicalFieldReading): CanonicalEntityFieldReading[] {
   return (r.entities ?? []).filter((e) => e.display !== null && e.display !== '');
+}
+
+
+/**
+ * Source d'un champ d'ÉQUIPEMENT ou de PIÈCE (lot 29, ticket 13 §L) : la
+ * provenance reconstruit l'entité interrogée (type, identifiant), son bien
+ * parent et le champ — jamais attribuée au bien seul. Valeur sensible jamais
+ * en clair (modèle, traces).
+ */
+export function entityFieldSource(r: CanonicalEntityFieldReading): RetrievedSource {
+  const valeur = r.sensitive ? '(donnée protégée)' : r.display ?? 'non renseigné';
+  const nom = r.entityName ?? (r.target.type === 'ROOM' ? 'pièce' : 'équipement');
+  const parts = [`${r.label} : ${valeur}`];
+  if (r.originLabel) parts.push(`origine : ${r.originLabel}${r.updatedAt ? `, le ${r.updatedAt.slice(0, 10)}` : ''}`);
+  if (r.evidence) {
+    const doc = r.evidence.documentTitle ? `« ${r.evidence.documentTitle} »` : 'un document';
+    parts.push(r.evidence.excerpt && !r.sensitive ? `preuve : ${doc}, « ${r.evidence.excerpt.slice(0, 200)} »` : `preuve : ${doc}`);
+  }
+  return {
+    id: entityFieldSourceId(r.target.type, r.target.id, r.key),
+    type: 'asset_field',
+    title: `${r.label} — ${nom}`,
+    content: parts.join(' · ').slice(0, 1500),
+    relevanceScore: 1,
+    meta: {
+      targetType: r.target.type,
+      targetId: r.target.id,
+      assetId: r.assetId,
+      fieldKey: r.key,
+      value: r.sensitive || r.value == null ? null : typeof r.value === 'object' ? JSON.stringify(r.value) : String(r.value),
+      display: r.sensitive ? null : r.display,
+      origin: r.origin,
+      updatedAt: r.updatedAt,
+      evidenceId: r.evidence?.evidenceId ?? null,
+      evidenceFileId: r.evidence?.fileId ?? null,
+      sensitive: r.sensitive,
+    },
+  };
 }

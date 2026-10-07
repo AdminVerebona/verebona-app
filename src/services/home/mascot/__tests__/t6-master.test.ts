@@ -156,6 +156,9 @@ describe('exécution : master seul (lot 16b)', () => {
     promptVersion: async () => 't6_master_v1@file|cfg:3',
     previousBubbles: async () => [] as import('../t6-runner').T6PreviousBubble[],
     execute: (r: unknown) => execute(r),
+    // Ces cas vérifient la génération elle-même : attente bornée à l'affichage
+    // (le défaut du lot 26 n'attend pas — voir t6-affichage-immediat.test.ts).
+    displayWaitMs: () => 6_000,
   };
   const res = (data: unknown) => ({ data, model: 'm', usedFallback: false, fromCache: false, costMicros: 1, traceId: 't' });
   beforeEach(() => { execute.mockReset(); unsafe.mockClear(); R.resetT6Breaker(); });

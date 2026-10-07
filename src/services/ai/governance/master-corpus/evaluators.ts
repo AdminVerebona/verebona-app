@@ -99,6 +99,9 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(route.intent === exp(c, 'intent'), `intention ${route.intent}`),
       ...ecart(JSON.stringify(r.requestedFacts) === JSON.stringify(exp(c, 'requestedFacts') ?? r.requestedFacts), 'faits hors catalogue conservés'),
       ...ecart(!exp(c, 'readOnly') || route.allowedActionTypes.every((a) => /^(OPEN_|SHOW_)/.test(a)), 'action d’écriture permise'),
+      // Lot 29 (ticket 13) : types d'indice conservés (équipement, pièce — jamais rabattus sur `asset`).
+      ...ecart(!exp(c, 'entityHintTypes') || JSON.stringify(route.entityHints.map((h) => h.type)) === JSON.stringify(exp(c, 'entityHintTypes')),
+        `types d’indice ${route.entityHints.map((h) => h.type).join(',')}`),
     ];
   },
   async t2_answer(c, output) {

@@ -15,6 +15,7 @@
  *      `numeroContrat`, `dateEtablissement`) ; sans contexte, sa branche
  *      générale (résolution historique inchangée).
  */
+import { toAssetFamilyCode } from '@/lib/asset-taxonomy';
 import { CANONICAL_FIELDS, CONTEXTUAL_ALIASES, EXCLUDED_KEYS, REGISTRY_VERSION } from './fields';
 import { EVENT_CATALOG, DOCUMENT_CATALOG, resolveDocumentType } from './catalogs';
 import {
@@ -25,6 +26,8 @@ import {
   type CanonicalTargetType,
   type ExcludedKey,
   type PromptCatalogDTO,
+  type T2ReadCatalogDTO,
+  type T2ReadFieldDTO,
 } from './types';
 
 /** Forme de comparaison d'une clé brute. */
@@ -51,18 +54,17 @@ for (const def of CANONICAL_FIELDS) {
 /**
  * Famille de bien depuis `assets.category` ou un code historique.
  * `OBJET` (assistant), `MATERIEL_PRO` et `AUTRE` → `OBJECT`, comme la fiche.
+ * Résolveur UNIQUE : `toAssetFamilyCode` de `lib/asset-taxonomy` (lot 30) —
+ * aucun consommateur ne reconstruit cette équivalence.
  */
 export function toAssetFamily(category: string | null | undefined): AssetFamily | undefined {
-  if (!category) return undefined;
-  const c = category.toUpperCase();
-  if (c === 'IMMOBILIER' || c === 'VEHICULE') return c;
-  if (c === 'OBJECT' || c === 'OBJET' || c === 'MATERIEL_PRO' || c === 'AUTRE') return 'OBJECT';
-  return undefined;
+  return toAssetFamilyCode(category);
 }
 
 /** Définition d'une clé CANONIQUE (pas d'alias). */
 export function getField(key: string): CanonicalFieldDef | undefined {
-  return BY_KEY.get(key);
+  // Index construit au chargement ; repli sur le registre (champ ajouté depuis).
+  return BY_KEY.get(key) ?? CANONICAL_FIELDS.find((d) => d.key === key);
 }
 
 /** Cibles admises d'un champ (`['ASSET']` par défaut) — lot 13, T1-04. */
@@ -252,4 +254,54 @@ export function catalogForPrompts(opts: { family?: AssetFamily } = {}): PromptCa
     completionProofs: d.completionProofs.map((p) => ({ code: p.code, description: p.description, establishes: p.establishes })),
   }));
   return { version: REGISTRY_VERSION, family: family ?? null, fields, events, documents };
+}
+
+/** Forme d'une formulation : minuscules, sans accent, apostrophe droite, espaces simples. */
+const formulation = (s: string) =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'").replace(/\s+/g, ' ').trim();
+
+/**
+ * Vocabulaire OFFICIEL d'un champ pour l'assistant (AC20) : libellé puis
+ * `assistantPhrases`, normalisés et dédoublonnés. Les `aliases` — clés
+ * techniques ou historiques (`purchasePriceCents`, `date_achat`) — n'en font
+ * jamais partie : ils ne sont pas des formulations utilisateur.
+ */
+export function fieldAssistantVocabulary(def: Pick<CanonicalFieldDef, 'label' | 'assistantPhrases'>): string[] {
+  return [...new Set([def.label, ...(def.assistantPhrases ?? [])].map(formulation).filter(Boolean))];
+}
+
+/**
+ * Projection OFFICIELLE du registre pour la LECTURE T2 (lot 30, AC19) :
+ * source unique du FIELD_CATALOG de UNDERSTAND (`describeFieldCatalog`) et
+ * du matcher déterministe (`field-vocabulary`). Règles propres à la lecture :
+ *   · `assistantReadable` seulement ; une clé une fois (ordre du registre) ;
+ *   · toutes cibles et familles déclarées (la famille du bien est connue
+ *     après résolution de la cible, pas avant) ;
+ *   · `inputOnly` N'EST PAS un motif d'exclusion (règle d'inférence T1, pas
+ *     de lecture) ; `sensitive` non plus (lecture de sa propre donnée, 8a §A) ;
+ *   · type, unité, valeurs et libellés d'enum repris tels quels du registre.
+ * Calculée à chaque appel (aucune copie figée du registre).
+ * Différente de `catalogForPrompts` (inférence T1 : `inputOnly` exclu, cibles
+ * filtrées par famille, agenda).
+ */
+export function catalogForT2Read(): T2ReadCatalogDTO {
+  const vus = new Set<string>();
+  const fields: T2ReadFieldDTO[] = [];
+  for (const d of CANONICAL_FIELDS) {
+    if (!d.assistantReadable || vus.has(d.key)) continue;
+    vus.add(d.key);
+    fields.push({
+      key: d.key,
+      label: d.label,
+      families: [...d.families],
+      targets: fieldTargetTypes(d),
+      valueType: d.valueType,
+      ...(d.unit ? { unit: d.unit } : {}),
+      ...(d.enumValues ? { enumValues: [...d.enumValues] } : {}),
+      ...(d.enumLabels ? { enumLabels: { ...d.enumLabels } } : {}),
+      sensitive: d.sensitive === true,
+      phrases: fieldAssistantVocabulary(d),
+    });
+  }
+  return { version: REGISTRY_VERSION, fields };
 }

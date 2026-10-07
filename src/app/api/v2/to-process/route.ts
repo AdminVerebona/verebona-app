@@ -2,12 +2,12 @@
  * GET /api/v2/to-process — file unique d'actions (CDC V2.0 §8).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * ROUTE NOUVELLE, SOUS /v2, ET NON REMPLACEMENT DE L'EXISTANTE
+ * SEULE SOURCE DE LA PAGE « À TRAITER »
  *
- * `/api/dashboard/a-traiter` sert la page V1 à onglets et sa pastille. La
- * remplacer maintenant casserait l'écran en service avant que le sien soit
- * vérifié. Les deux cohabitent le temps du lot 3 ; le retrait de la V1 relève
- * du lot 4.
+ * La page et la pastille (`/api/to-process`, `countActiveActions`) lisent la
+ * même table `to_process_actions`. L'ancienne route V1
+ * `/api/dashboard/a-traiter` (page à onglets, familles arbitrate / attach /
+ * confirm / complete) est supprimée au lot 28.
  *
  * ── PARAMÈTRES ────────────────────────────────────────────────────────────
  *

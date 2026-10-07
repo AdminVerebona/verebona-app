@@ -19,6 +19,7 @@ import { db } from '@/db';
 import { accountSubscriptions, accounts, withdrawalRequests } from '@/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { computeWithdrawalDeadline } from '@/services/legal/french-calendar';
+import { isWithdrawalWindowOpen } from './withdrawal-window';
 
 export type EligibilityVerdict = 'eligible' | 'ineligible' | 'undetermined';
 
@@ -55,6 +56,12 @@ export interface EligibilityResult {
   existingRequest?: { publicReference: string; status: string; requestedAt: Date };
   /** Détail technique, journalisé mais jamais renvoyé au demandeur. */
   diagnostic?: string;
+  /**
+   * Repli d'AFFICHAGE quand `contract_concluded_at` manque (première
+   * facturation) : sert seulement à masquer la carte après le délai
+   * (`shouldOfferWithdrawal`), jamais à refuser une déclaration.
+   */
+  subscribedAtFallback?: Date | null;
 }
 
 /** Statuts d'une demande considérée comme encore en cours. */
@@ -94,6 +101,7 @@ export async function evaluateEligibility(
         billingPeriod: accountSubscriptions.billingPeriod,
         status: accountSubscriptions.status,
         contractConcludedAt: accountSubscriptions.contractConcludedAt,
+        firstBilledAt: accountSubscriptions.firstBilledAt,
       })
       .from(accountSubscriptions)
       .where(eq(accountSubscriptions.accountId, accountId))
@@ -118,6 +126,7 @@ export async function evaluateEligibility(
       return {
         verdict: 'undetermined',
         diagnostic: `Abonnement ${subscription.id} sans contract_concluded_at.`,
+        subscribedAtFallback: subscription.firstBilledAt ?? null,
       };
     }
 
@@ -161,7 +170,9 @@ export async function evaluateEligibility(
     }
 
     // §5.1 condition 4 : la demande doit précéder l'expiration du délai.
-    if (now.getTime() > deadline.deadlineAt.getTime()) {
+    // Même fonction que l'affichage (lot 26) : ce qui est proposé est ce qui
+    // est accepté, à la seconde près.
+    if (!isWithdrawalWindowOpen(subscription.contractConcludedAt, now)) {
       return { verdict: 'ineligible', reason: 'DEADLINE_PASSED', contract };
     }
 

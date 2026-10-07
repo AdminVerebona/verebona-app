@@ -29,6 +29,8 @@
  * du contexte, jamais la réponse.
  */
 import { pgClient } from '@/db';
+import { leadingAssetDesignation } from '@/lib/asset-taxonomy';
+import { assistantAssetAvailability } from './asset-availability';
 import type { IntentRoute, AssistantRequestInput, AssistantTimelineEvent } from '../types/contracts';
 import { hrefSource, parseEntityRef } from './entity-ref';
 import type { RetrievedSource } from '../types/sources';
@@ -173,17 +175,23 @@ export function timelineAnswer(plan: SynthesisPlan, max = 15): string {
 
 /* ── Biens d'une comparaison (R7) ─────────────────────────────────────── */
 
-/** Famille désignée au pluriel ou par un possessif (« mes voitures », « nos deux maisons »). */
-const FAMILLES: Array<[RegExp, string[]]> = [
-  [/\b(mes|nos|les|ces|deux|trois|quatre)\s+(\w+\s+)?(voitures?|vehicules?|autos?|motos?|camionnettes?|scooters?)\b/, ['VEHICULE']],
-  [/\b(mes|nos|les|ces|deux|trois|quatre)\s+(\w+\s+)?(maisons?|appartements?|logements?|biens immobiliers|immeubles?|studios?)\b/, ['IMMOBILIER']],
-  [/\b(mes|nos|les|ces|deux|trois|quatre)\s+(\w+\s+)?(objets?)\b/, ['OBJECT', 'OBJET']],
-];
+/**
+ * Famille désignée au pluriel ou par un possessif (« mes voitures », « nos
+ * deux maisons », « les garages ») : déterminant, au plus un mot, puis une
+ * famille ou une catégorie du référentiel `asset-taxonomy` (lot 30 — plus de
+ * liste de mots figée).
+ */
+const DETERMINANT = /\b(mes|nos|les|ces|deux|trois|quatre)\s+/g;
+const FAMILLES_COMPAREES: Record<string, string[]> = { VEHICULE: ['VEHICULE'], IMMOBILIER: ['IMMOBILIER'], OBJECT: ['OBJECT', 'OBJET'] };
 
 /** Famille visée par la question (pure, testée), ou null. */
 export function familleComparee(message: string): string[] | null {
   const m = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  for (const [re, familles] of FAMILLES) if (re.test(m)) return familles;
+  for (let x = DETERMINANT.exec(m); x; x = DETERMINANT.exec(m)) {
+    const suite = m.slice(x.index + x[0].length);
+    const d = leadingAssetDesignation(suite) ?? leadingAssetDesignation(suite.replace(/^\S+\s+/, ''));
+    if (d) { DETERMINANT.lastIndex = 0; return FAMILLES_COMPAREES[d.family]; }
+  }
   return null;
 }
 
@@ -490,7 +498,7 @@ export const defaultDeps: SynthesisDeps = {
 
   async accountAssets(accountId, limit) {
     const rows = (await pgClient.unsafe(
-      `SELECT id, name, category FROM assets WHERE account_id = $1 AND deleted_at IS NULL ORDER BY id LIMIT $2`,
+      `SELECT a.id, a.name, a.category FROM assets a WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')} ORDER BY a.id LIMIT $2`,
       [accountId, limit] as never[],
     )) as unknown as Array<{ id: number; name: string; category: string | null }>;
     return rows.map((r) => ({ id: Number(r.id), name: r.name, category: r.category ?? null }));

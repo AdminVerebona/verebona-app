@@ -14,14 +14,19 @@
  */
 import type { Claim, RetrievedSource } from '../types/sources';
 import type { VerebonaIntent } from '../types/intents';
-import type { AssistantTargets } from './assistant-targets';
+import { nestedTargetOf, type AssistantTargets, type TargetAmbiguity } from './assistant-targets';
 import type { CanonicalDocumentState } from '../canonical/document-state';
 import type { CanonicalAgendaItem } from '../canonical/agenda';
 import { formatAmountCents, formatDateFr, joinFr } from './deterministic-format';
 import { ANALYSIS_STATUS_LABELS, IN_ANALYSIS_MESSAGE } from './document-status';
 import { tokenizeQuery, DOCUMENT_TYPE_STEMS } from './query-terms';
-import type { CanonicalFieldReading } from '../canonical/field-reader';
-import type { RouteUnderstanding } from '../types/contracts';
+import type { CanonicalEntityFieldReading, CanonicalFieldReading } from '../canonical/field-reader';
+import type { DocumentFieldFact } from '../canonical/field-document';
+import type { AssistantRequestInput, IntentRoute, RouteUnderstanding } from '../types/contracts';
+import type { TargetLookup } from './target-lookup.repository';
+import { dedupeFacts } from '../canonical/field-vocabulary';
+import { readFactsOnTarget, type FactResult, type FactTarget } from './fact-reading';
+import { diagnosticMessage, type T2Diagnostic } from './t2-diagnostics';
 
 export interface TargetAnswer {
   text: string;
@@ -29,6 +34,16 @@ export interface TargetAnswer {
   claims: Claim[];
   strategy: string;
   intent: Extract<VerebonaIntent, 'ACCOUNT_FACT_DOCUMENT' | 'ACCOUNT_FACT_AGENDA' | 'ACCOUNT_FACT_ASSET'>;
+  /** Lot 29 (ticket 12) : statut et source de CHAQUE champ demandé. */
+  facts?: FactResult[];
+  /** Lot 29 (ticket 8b §K) : motif d'une réponse sans valeur. */
+  diagnostic?: T2Diagnostic;
+  /** Plusieurs cibles possibles : l'appelant pose UNE clarification pour toute la demande. */
+  ambiguity?: TargetAmbiguity;
+  /** Champs demandés (conservés pour la reprise d'une clarification). */
+  requestedFacts?: string[];
+  /** Cible lue : devient la cible courante du fil (« et son numéro de série ? »). */
+  contextUpdate?: { type: 'asset' | 'equipment' | 'room'; id: number; label?: string | null };
 }
 
 export type DocumentAttribute = 'amount' | 'supplier' | 'date' | 'type' | 'assets';
@@ -187,6 +202,10 @@ export interface TargetReaders {
   agenda(accountId: number, itemId: number): Promise<CanonicalAgendaItem | null>;
   /** Champ canonique d'un bien (`readCanonicalField` de X). */
   field?(accountId: number, assetId: number, key: string): Promise<CanonicalFieldReading | null>;
+  /** Champ canonique d'un équipement / d'une pièce (`readCanonicalEntityField`, ticket 13). */
+  entityField?(accountId: number, target: { type: 'EQUIPMENT' | 'ROOM'; id: number }, key: string): Promise<CanonicalEntityFieldReading | null>;
+  /** Cascade documentaire d'un champ absent de la fiche (ticket 12 §G). */
+  documentFact?(accountId: number, assetId: number, key: string): Promise<DocumentFieldFact | null>;
   today(): string;
 }
 
@@ -194,8 +213,82 @@ const lecteursCanoniques: TargetReaders = {
   document: async (a, f) => (await import('../canonical/document-state')).getCanonicalDocumentState(a, f),
   agenda: async (a, i) => (await import('../canonical/agenda')).getCanonicalAgendaItem(a, i),
   field: async (a, id, k) => (await import('../canonical/field-reader')).readCanonicalField(a, id, k),
+  entityField: async (a, t, k) => (await import('../canonical/field-reader')).readCanonicalEntityField(a, t, k),
+  documentFact: async (a, id, k) => (await import('../canonical/field-document')).readDocumentFactForField(a, id, k),
   today: () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()),
 };
+
+/** Question de clarification d'une ambiguïté de cible (pure). */
+export function ambiguityQuestion(a: TargetAmbiguity): string {
+  if (a.kind === 'asset') return 'De quel bien parlez-vous ?';
+  const nom = a.candidates[0]?.name?.trim();
+  const memeNom = !!nom && a.candidates.every((c) => c.name.trim().toLowerCase() === nom.toLowerCase());
+  if (memeNom) return `De quel${a.kind === 'room' ? 'le' : ''} « ${nom} » parlez-vous ?`;
+  return a.kind === 'room' ? 'De quelle pièce parlez-vous ?' : 'De quel équipement parlez-vous ?';
+}
+
+/**
+ * Faits demandés (ticket 12) sur LA cible résolue (tickets 8a, 13, 14) :
+ * clarification, cible indisponible ou introuvable, ou lecture champ par
+ * champ. `null` : pas de cible exploitable (la demande suit son cours).
+ */
+async function answerFacts(
+  accountId: number,
+  targets: AssistantTargets,
+  faits: string[],
+  readers: TargetReaders,
+): Promise<TargetAnswer | null> {
+  const nested = nestedTargetOf(targets);
+  const intent = 'ACCOUNT_FACT_ASSET' as const;
+  const vide = { sources: [], claims: [], intent, requestedFacts: faits };
+  const amb = targets.ambiguity ?? null;
+  const clarifier = (a: TargetAmbiguity): TargetAnswer => ({
+    ...vide, text: ambiguityQuestion(a), strategy: 'target.clarification', diagnostic: 'TARGET_AMBIGUOUS', ambiguity: a,
+  });
+  let cible: FactTarget | null = null;
+  if (nested) {
+    cible = { type: nested.type, id: nested.id, name: nested.label ?? null, assetId: nested.assetId, assetName: nested.assetName ?? null };
+  } else if (amb && amb.kind !== 'asset') {
+    return clarifier(amb);
+  } else if (targets.namedAssets.length > 1 && !(targets.asset && (targets.asset.origin === 'clarification' || targets.asset.origin === 'thread'))) {
+    // Plusieurs biens nommés : comparaison, pas une lecture ciblée.
+    return null;
+  } else if (targets.asset) {
+    const c = targets.catalog?.find((x) => x.id === targets.asset!.id);
+    cible = { type: 'asset', id: targets.asset.id, name: c?.name ?? targets.asset.label ?? null, category: c?.category ?? null };
+  } else if (amb) {
+    return clarifier(amb);
+  } else if (targets.unavailable?.length) {
+    return { ...vide, text: diagnosticMessage('TARGET_UNAVAILABLE'), strategy: 'target.unavailable', diagnostic: 'TARGET_UNAVAILABLE' };
+  } else if (targets.notFound) {
+    return {
+      ...vide, text: diagnosticMessage('TARGET_NOT_FOUND', { kind: targets.notFound.kind, designation: targets.notFound.designation }),
+      strategy: 'target.not_found', diagnostic: 'TARGET_NOT_FOUND',
+    };
+  }
+  if (!cible) return null;
+
+  const [{ fieldAnswer }, fr, fd] = await Promise.all([
+    import('../canonical/structured-answers'), import('../canonical/field-reader'), import('../canonical/field-document'),
+  ]);
+  const lu = await readFactsOnTarget(accountId, cible, faits, {
+    field: readers.field!,
+    entityField: readers.entityField,
+    documentFact: readers.documentFact,
+    assetSource: fr.assetFieldSource,
+    entitySource: fr.entityFieldSource,
+    documentSource: fd.documentFactSource,
+    fieldAnswer,
+  });
+  // Aucun champ lisible (clés hors registre) : la demande suit son cours.
+  if (lu.facts.every((f) => f.status === 'FIELD_UNAVAILABLE')) return null;
+  return {
+    text: lu.text, sources: lu.sources, claims: lu.claims, strategy: lu.strategy, intent,
+    facts: lu.facts, requestedFacts: faits,
+    ...(lu.allMissing ? { diagnostic: 'FIELD_NOT_SET' as const } : {}),
+    contextUpdate: { type: cible.type, id: cible.id, label: cible.name },
+  };
+}
 
 /**
  * Lecture ciblée, ou `null` : aucune cible document / échéance, question sur
@@ -210,23 +303,13 @@ export async function answerFromTarget(
   readers: TargetReaders = lecteursCanoniques,
   understanding?: RouteUnderstanding,
 ): Promise<TargetAnswer | null> {
-  // Master T2 (A4) : UN champ demandé du FIELD_CATALOG sur UN bien ciblé →
-  // lu sur la fiche canonique (valeur, origine, preuve, conflit).
-  const faits = understanding?.requestedFacts ?? [];
-  if (faits.length === 1 && targets.asset && targets.namedAssets.length <= 1 && readers.field) {
-    const r = await readers.field(accountId, targets.asset.id, faits[0]);
-    const surEntites = !!r?.entities?.some((e) => e.display && !e.sensitive);
-    if (r && !r.sensitive && ((r.value !== null && r.value !== undefined && r.display) || surEntites)) {
-      const [{ fieldAnswer }, { assetFieldSource }] = await Promise.all([
-        import('../canonical/structured-answers'), import('../canonical/field-reader'),
-      ]);
-      const text = fieldAnswer(r);
-      const src = assetFieldSource(r);
-      return {
-        text, sources: [src], strategy: 'target.asset_field', intent: 'ACCOUNT_FACT_ASSET',
-        claims: [{ claimKey: `field:${r.key}`, text, sourceIds: [src.id], derivation: 'direct' }],
-      };
-    }
+  // Faits demandés (master T2 A4, ou compréhension déterministe — 8b) :
+  // tous les champs (≤ 20, dédoublonnés, ordre conservé — ticket 12) sur LA
+  // cible résolue une seule fois (bien, équipement, pièce — tickets 8a, 13).
+  const faits = dedupeFacts(understanding?.requestedFacts ?? []);
+  if (faits.length && readers.field) {
+    const r = await answerFacts(accountId, targets, faits, readers);
+    if (r) return r;
   }
   const seul = asksOnlyAboutTarget(message);
   const cibles = [targets.primary, targets.agendaItem, targets.document]
@@ -249,4 +332,36 @@ export async function answerFromTarget(
     }
   }
   return null;
+}
+
+/** Dépendances injectables de `readTargetForRequest` (tests). */
+export interface ReadTargetDeps {
+  lookup?: TargetLookup;
+  readers?: TargetReaders;
+}
+
+/**
+ * Lecture ciblée d'une demande (port `readTarget` de l'orchestrateur) —
+ * lot 29 (8b) : faits demandés compris par le master T2 OU, à défaut, par le
+ * vocabulaire canonique (sans modèle). La cible est alors résolue UNE fois
+ * dans le compte (biens disponibles, catégorie, VIN / immatriculation,
+ * équipements, pièces), jamais par un identifiant du modèle ; les cibles de
+ * page / du fil / de clarification sont revalidées (ticket 14).
+ */
+export async function readTargetForRequest(
+  input: Pick<AssistantRequestInput, 'accountId' | 'message' | 'resume' | 'reference' | 'pageContext'>,
+  targets: AssistantTargets,
+  route?: Pick<IntentRoute, 'entityHints' | 'understanding'> | null,
+  deps: ReadTargetDeps = {},
+): Promise<TargetAnswer | null> {
+  const faits = route?.understanding?.requestedFacts?.length
+    ? route.understanding.requestedFacts
+    : (await import('../canonical/field-vocabulary')).deterministicRequestedFacts(input.message);
+  let t = targets;
+  if (faits.length) {
+    const { resolveAssistantTargets } = await import('./assistant-targets');
+    t = await resolveAssistantTargets(input, route, deps.lookup, { requestedFacts: faits });
+  }
+  return answerFromTarget(input.accountId, input.message, t, deps.readers,
+    faits.length ? { requestedFacts: faits, filters: route?.understanding?.filters ?? {} } : route?.understanding);
 }

@@ -8,6 +8,7 @@
  * biens archivés ou transmis exclus. Lecture seule.
  */
 import { pgClient } from '@/db';
+import { assistantAssetAvailability } from '../core/asset-availability';
 import { buildCanonicalAssetState, isEmptyValue, type AssetRowJson } from '@/services/canonical/asset-state';
 import { listFields, toAssetFamily, type AssetFamily, type CanonicalFieldDef } from '@/services/canonical/registry';
 import { canonicalKeyOf } from './field-reader';
@@ -48,8 +49,7 @@ export async function listMissingInformation(accountId: number, opts: { assetIds
   const ids = opts.assetIds?.length ? opts.assetIds : null;
   const assets = (await pgClient.unsafe(
     `SELECT row_to_json(a.*) AS r FROM assets a
-      WHERE a.account_id = $1 AND a.deleted_at IS NULL
-        AND coalesce(a.status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS')
+      WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')}
         AND ($2::int[] IS NULL OR a.id = ANY($2::int[]))
       ORDER BY a.name LIMIT 200`,
     [accountId, ids] as never[],

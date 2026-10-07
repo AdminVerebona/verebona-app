@@ -40,7 +40,7 @@ import {
   Archive, Play, Save, Lock, Undo2,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { MasterCorpusStatus } from './_components/MasterCorpusStatus';
+import { MasterPrompts } from './_components/MasterPrompts';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
@@ -162,6 +162,8 @@ interface T5Result {
   applied: boolean;
   draftId: number | null;
   draftCreated: boolean;
+  /** BO-IA-PROMPTS-01 : brouillons de prompts maîtres écrits par Prompt Control. */
+  promptDrafts?: Array<{ treatment: Treatment; versionId: number; versionNumber: number }>;
   traceId: string;
   comparison?: {
     versionId: number; label: string; status: string;
@@ -169,8 +171,6 @@ interface T5Result {
   } | null;
   logsDigest?: string | null;
 }
-
-interface DraftChoice { id: number; label: string | null; isStale: boolean; createdAt: string }
 
 interface Issue {
   treatment: Treatment;
@@ -248,27 +248,25 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
  *
  * · « Analyser » : diagnostic seul, sur toute version ; rien n'est écrit.
  * · « Modifier » : chaque prompt réécrit est écrit directement dans le
- *   brouillon, puis résumés et diffs s'affichent. Le filet de sécurité est le
- *   cycle Brouillon → À tester → Active, pas une confirmation de plus.
+ *   brouillon de ce prompt maître (section « Prompts maîtres »), puis résumés
+ *   et diffs s'affichent. L'administrateur l'active lui-même (Brouillon →
+ *   Actif, BO-IA-PROMPTS-01), pas une confirmation de plus.
  * ══════════════════════════════════════════════════════════════════════════
  */
 function PromptControl({
-  versionId, readOnly, hasUnsaved, onModified, onOpenVersion, versions = [],
+  versionId, hasUnsaved, onModified, versions = [],
 }: {
   /** T5-010 : versions proposées à la comparaison. */
   versions?: Version[];
   versionId: number;
-  /** La version affichée n'est pas un Brouillon : T5 en créera ou en demandera un. */
-  readOnly: boolean;
   /** Des réglages non enregistrés existent : une écriture de T5 les écraserait à l'écran. */
   hasUnsaved: boolean;
-  onModified: (draftId: number, treatments: Treatment[]) => void | Promise<void>;
-  onOpenVersion: (id: number) => void;
+  /** Brouillons de prompts maîtres écrits (BO-IA-PROMPTS-01). */
+  onModified: (treatments: Treatment[]) => void | Promise<void>;
 }) {
   const [instruction, setInstruction] = useState('');
   const [resultat, setResultat] = useState<T5Result | null>(null);
   const [encours, setEncours] = useState<null | 'analyze' | 'modify'>(null);
-  const [choixBrouillon, setChoixBrouillon] = useState<DraftChoice[] | null>(null);
   const [refus, setRefus] = useState<string | null>(null);
   // T5-010 / T5-009 : contexte complémentaire, sur demande uniquement.
   const [comparerAvec, setComparerAvec] = useState<string>('');
@@ -283,32 +281,25 @@ function PromptControl({
 
   const demandeValide = instruction.trim().length >= 5;
 
-  const envoyer = async (action: 'analyze' | 'modify', createDraft = false) => {
+  const envoyer = async (action: 'analyze' | 'modify') => {
     setEncours(action);
     setResultat(null);
-    setChoixBrouillon(null);
     setRefus(null);
     try {
       const r = await apiClient.post<T5Result>('/api/admin/ai/prompt-control', {
         action, versionId, instruction: instruction.trim(),
-        ...(action === 'modify' && createDraft ? { createDraft: true } : {}),
         ...(comparerAvec ? { compareWithVersionId: Number(comparerAvec) } : {}),
         ...(avecJournaux ? { includeLogs: true, logsDays: 7 } : {}),
       });
       setResultat(r);
       const ecrits = r.changes.filter((c) => c.applied).map((c) => c.treatment);
-      if (r.applied && r.draftId) {
-        toast.success(`${ecrits.length} prompt(s) modifié(s) dans le brouillon${r.draftCreated ? ' créé depuis l’Active' : ''}`);
-        await onModified(r.draftId, ecrits);
+      if (r.applied) {
+        toast.success(`${ecrits.length} prompt(s) modifié(s) dans leur brouillon : à activer dans « Prompts maîtres »`);
+        await onModified(ecrits);
       }
     } catch (e) {
-      const err = e as { code?: string; message?: string; details?: { drafts?: DraftChoice[] } };
-      if (err.code === 'DRAFT_SELECTION_REQUIRED' && err.details?.drafts) {
-        setChoixBrouillon(err.details.drafts);
-      } else {
-        // Le motif réel, rendu par le serveur — jamais un message générique.
-        setRefus(err.message ?? 'La demande n’a pas abouti.');
-      }
+      // Le motif réel, rendu par le serveur — jamais un message générique.
+      setRefus((e as { message?: string }).message ?? 'La demande n’a pas abouti.');
     } finally { setEncours(null); }
   };
 
@@ -319,7 +310,7 @@ function PromptControl({
         <p className="text-xs text-[color:var(--text-muted)]">
           Décrivez en français le comportement constaté ou attendu — pas le prompt lui-même.
           Prompt Control détermine quel(s) traitement(s) sont concernés, dit d&apos;abord si un
-          prompt est en cause, puis le(s) réécrit dans le brouillon si vous le demandez.
+          prompt est en cause, puis le(s) réécrit dans le brouillon du prompt maître si vous le demandez.
         </p>
       </div>
 
@@ -367,8 +358,8 @@ function PromptControl({
       </div>
 
       <p className="text-xs text-[color:var(--text-muted)]">
-        « Analyser » ne modifie rien. « Modifier » écrit directement dans le brouillon
-        {readOnly ? ' — la version affichée étant en lecture seule, un brouillon sera créé depuis l’Active s’il n’en existe aucun' : ''}.
+        « Analyser » ne modifie rien. « Modifier » écrit dans le brouillon de chaque prompt concerné (créé depuis
+        la version active s’il n’en existe pas) ; rien ne change en production avant que vous l’activiez.
         Modèles, replis et garde-fous ne sont jamais modifiés.
       </p>
 
@@ -380,26 +371,6 @@ function PromptControl({
 
       {refus && <p role="alert" className="text-sm text-amber-500 whitespace-pre-wrap">{refus}</p>}
 
-      {choixBrouillon && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
-          <p className="text-sm text-[color:var(--text-secondary)]">
-            La version affichée est en lecture seule et des brouillons existent déjà. Choisissez celui
-            dans lequel écrire — Prompt Control ne choisit pas à votre place. Votre demande est conservée.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {choixBrouillon.map((d) => (
-              <Button key={d.id} size="sm" variant="outline" onClick={() => { setChoixBrouillon(null); onOpenVersion(d.id); }}>
-                Ouvrir {d.label ?? `Brouillon ${d.id}`}
-                {d.isStale && <span className="ml-1 text-amber-500">(base dépassée)</span>}
-              </Button>
-            ))}
-            <Button size="sm" onClick={() => envoyer('modify', true)} disabled={encours !== null}>
-              <Plus className="w-3.5 h-3.5 mr-1.5" /> Nouveau brouillon depuis l&apos;Active
-            </Button>
-          </div>
-        </div>
-      )}
-
       {resultat && (
         <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -410,7 +381,7 @@ function PromptControl({
               ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
               : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'}`}>
               {resultat.applied
-                ? `Écrit dans le brouillon${resultat.draftCreated ? ' (créé depuis l’Active)' : ''}`
+                ? `Écrit dans le brouillon : ${(resultat.promptDrafts ?? []).map((d) => `${d.treatment} v${d.versionNumber}`).join(', ')}`
                 : resultat.mode === 'analyze' ? 'Analyse seule — rien n’a été modifié' : 'Aucune modification écrite'}
             </span>
           </div>
@@ -593,24 +564,10 @@ function TreatmentEditor({
         <p role="status" className="text-xs text-amber-500">{T5_LEGACY_TEXT_MESSAGE}</p>
       ) : null}
       {catalog.master && isPromptAdministrable(entry.treatment) ? (
-        <details className="rounded-lg border border-[color:var(--border-subtle)] p-3" open>
-          <summary className="text-sm text-[color:var(--text-secondary)] cursor-pointer">
-            Texte master ({catalog.master.masterPromptCode})
-          </summary>
-          <div className="pt-3 space-y-2">
-            <p className="text-xs text-[color:var(--text-muted)]">
-              Master complet : son emplacement de branche ({'{{TASK}}'} ou {'{{MODE}}'}), une section par branche
-              ({catalog.master.tasks.join(', ')}) et les mêmes emplacements {'{{X}}'} que le fichier du dépôt.
-              Laissé vide, le fichier du dépôt s’applique.
-            </p>
-            <Textarea
-              value={entry.masterPrompt ?? ''}
-              disabled={readOnly}
-              onChange={(e) => set('masterPrompt', e.target.value === '' ? null : e.target.value)}
-              className="min-h-[220px] font-mono text-xs bg-[color:var(--bg-input)]"
-            />
-          </div>
-        </details>
+        <p className="text-xs text-[color:var(--text-muted)] rounded-lg border border-[color:var(--border-subtle)] p-3">
+          Le texte du prompt maître de {entry.treatment} s’administre dans la section « Prompts maîtres » (brouillon,
+          test facultatif, activation, historique), indépendamment de cette version de configuration.
+        </p>
       ) : null}
 
       {/*
@@ -619,8 +576,7 @@ function TreatmentEditor({
       */}
       {isPromptAdministrable(entry.treatment) ? (
         <p className="text-xs text-[color:var(--text-muted)]">
-          Architecture « master » : le prompt de ce traitement est le texte master ci-dessus. Le préambule et les
-          prompts techniques des étapes ne sont plus utilisés ni proposés.
+          Les réglages ci-dessous (modèles, replis, garde-fous, déclencheurs) suivent le cycle des versions de configuration.
         </p>
       ) : (
         <p className="text-xs text-[color:var(--text-muted)]">
@@ -927,38 +883,10 @@ export default function AiConfigPage() {
     void openVersion(versionDemandee);
   }, [versionDemandee, versions, openVersion]);
 
-  /**
-   * Après une écriture de Prompt Control.
-   *
-   * Dans le Brouillon affiché : seuls les traitements modifiés sont relus.
-   * (« Modifier » est de toute façon bloqué tant qu'un réglage n'est pas
-   * enregistré.)
-   *
-   * Dans un autre Brouillon (créé depuis l'Active) : on l'ouvre. La version
-   * quittée était en lecture seule, il n'y a rien à perdre.
-   */
-  const afterT5Modification = async (draftId: number, treatments: Treatment[]) => {
-    if (current?.id !== draftId) {
-      await load();
-      await openVersion(draftId);
-      return;
-    }
-    try {
-      const v = await apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${draftId}`);
-      setDrafts((d) => {
-        const next = { ...d };
-        for (const t of treatments) {
-          const entry = v.entries.find((e) => e.treatment === t);
-          if (entry) next[t] = entry;
-        }
-        return next;
-      });
-      setCurrent((c) => (c && c.id === v.id ? { ...c, entries: v.entries } : c));
-      setDiff(null);
-    } catch {
-      toast.error('Les prompts ont été modifiés, mais l’écran n’a pas pu les relire : rechargez la version.');
-    }
-  };
+  // BO-IA-PROMPTS-01 : Prompt Control écrit dans les brouillons des prompts
+  // maîtres ; la section « Prompts maîtres » est relue.
+  const [promptsKey, setPromptsKey] = useState(0);
+  const afterT5Modification = () => { setPromptsKey((k) => k + 1); };
 
   // VER-007, WF-26 : quitter la page (fermeture, rechargement, lien externe)
   // avec des saisies non enregistrées demande confirmation au navigateur.
@@ -1053,9 +981,6 @@ export default function AiConfigPage() {
     } finally { setBusy(false); }
   };
 
-  // Relecture de l'état du corpus après un refus d'activation (§30).
-  const [corpusKey, setCorpusKey] = useState(0);
-
   const act = async (path: string, success: string, body: Record<string, unknown> = {}) => {
     if (!current) return;
     setBusy(true);
@@ -1093,19 +1018,6 @@ export default function AiConfigPage() {
             ? { label: 'Ouvrir', onClick: () => guardUnsaved(() => openVersion(err.details!.id!)) }
             : undefined,
         });
-      } else if (err.code === 'ROLLBACK_JUSTIFICATION_REQUIRED') {
-        // CDC 15 §30 : restauration d'urgence permise, justifiée et tracée.
-        setCorpusKey((k) => k + 1);
-        const justification = window.prompt(
-          `${err.message ?? 'Corpus des masters non vert.'}\n\nJustification de la restauration d'urgence (tracée dans l'audit) :`,
-        );
-        if (justification && justification.trim()) {
-          await act('rollback', 'Version restaurée (justification tracée)', { justification });
-        }
-      } else if (err.code === 'MASTER_CORPUS_NOT_GREEN') {
-        // CDC 15 §30 : refus motivé, détail sous l'en-tête de la version.
-        setCorpusKey((k) => k + 1);
-        toast.error(err.message ?? 'Corpus des prompts maîtres non vert : activation refusée.');
       } else {
         toast.error(err.message || "L'opération n'a pas abouti.");
       }
@@ -1148,6 +1060,13 @@ export default function AiConfigPage() {
           <Plus className="w-3.5 h-3.5 mr-1.5" /> Créer un brouillon
         </Button>
       </div>
+
+      {/*
+        BO-IA-PROMPTS-01 : prompts maîtres T1–T4, T6 — Brouillon → Actif,
+        test du corpus facultatif, historique et réactivation. Indépendant de
+        la version de configuration affichée.
+      */}
+      <MasterPrompts refreshKey={promptsKey} />
 
       {/* WF-04 — préparer (préproduction) ou importer (production) un package */}
       <MepPackages
@@ -1256,9 +1175,6 @@ export default function AiConfigPage() {
             )}
           </div>
 
-          {/* CDC 15 §30, D-17 : état du corpus des masters et raison d'un refus d'activation. */}
-          {current.status !== 'ARCHIVED' && <MasterCorpusStatus versionId={current.id} refreshKey={corpusKey} />}
-
           {/*
             Champ unique « Demander une modification » (SCR-06) : T5 choisit
             lui-même le ou les prompts à faire évoluer. Plus d'onglet par
@@ -1269,10 +1185,8 @@ export default function AiConfigPage() {
           <div id="prompt-control" className="scroll-mt-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
             <PromptControl
               versionId={current.id}
-              readOnly={readOnly}
               hasUnsaved={dirty.size > 0}
               onModified={afterT5Modification}
-              onOpenVersion={(id) => guardUnsaved(() => openVersion(id))}
               versions={versions}
             />
           </div>

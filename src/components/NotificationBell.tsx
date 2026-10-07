@@ -8,7 +8,6 @@ import { createPortal } from 'react-dom';
 import { apiClient } from '@/lib/api-client';
 import { drawerHref, openDrawer } from '@/lib/drawers';
 import { lotNotificationText } from '@/services/ai/source-analysis/lot-notification-text';
-import { quotaNotificationText } from '@/lib/notifications/quota-notification-text';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -124,11 +123,6 @@ function getNotificationText(
       return p.documentTitle
         ? lotNotificationText({ analysedCount: 1, documentTitle: p.documentTitle })
         : `Analyse terminée : ${p.analysedCount ?? 0} document(s) traité(s)${p.failedCount ? `, ${p.failedCount} échoué(s)` : ''}`;
-    // Quota par période (essai / annuelle), pas mensuel : texte partagé avec le catalogue.
-    case 'ANALYSIS_QUOTA_90':
-      return quotaNotificationText(90, p.periodType);
-    case 'ANALYSIS_QUOTA_100':
-      return quotaNotificationText(100, p.periodType);
     case 'REFERRAL_REWARD_GRANTED':
       return `Votre récompense de parrainage a été créditée`;
     case 'ANALYSIS_FAILED_PERSISTENT': {
@@ -253,8 +247,9 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
   // Abonnement : information seule, non cliquable — le clic marque la
   // notification comme lue, sans navigation.
   if (isSubscriptionNotification(type)) return null;
-  // Quota / parrainage → offres (cf. CDC §17).
-  if (type === 'ANALYSIS_QUOTA_90' || type === 'ANALYSIS_QUOTA_100' || type === 'REFERRAL_REWARD_GRANTED') {
+  // Parrainage → offres (cf. CDC §17). Les anciennes notifications « quota
+  // d'analyses » (retirées au lot 26) gardent leur lien rendu côté serveur.
+  if (type === 'REFERRAL_REWARD_GRANTED') {
     return '/mon-compte/offres';
   }
   return null;

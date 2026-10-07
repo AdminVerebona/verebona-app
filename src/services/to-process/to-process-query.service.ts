@@ -28,6 +28,7 @@
  */
 import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/db';
+import { documentSlotFor } from './document-slots';
 import {
   assetFiles, assets, equipments, substructures, supplierReviewItems, suppliers, toProcessActions,
 } from '@/db/schema';
@@ -73,6 +74,11 @@ export interface ToProcessActionView {
   /** §7.4 — « Non applicable » n'apparaît jamais sur la carte, mais le drawer
    *  doit savoir s'il doit l'offrir. */
   allowNotApplicable: boolean;
+  /**
+   * Lot 28 — « À compléter » saisissable directement sur la carte (date de
+   * fin de contrat, de garantie…) : type de saisie, sinon null (le tiroir).
+   */
+  inputType?: 'date' | 'text' | null;
   activeSince: string;
   target: ActionTargetContext;
 }
@@ -155,6 +161,7 @@ export async function getToProcessPage(
       question: row.question,
       proposals: selectDisplayedProposals(proposals),
       allowNotApplicable: getRule(row.ruleCode)?.allowNotApplicable ?? false,
+      inputType: cardInputType(row.ruleCode, row.targetType, row.fieldKey ?? row.relationKey),
       activeSince: row.activeSince.toISOString(),
       target: contexts.get(`${row.targetType}:${row.targetId}`) ?? {
         label: `#${row.targetId}`,
@@ -185,6 +192,13 @@ export async function getToProcessPage(
     shown: sorted.length,
     orderMode,
   };
+}
+
+/** Saisie directe sur la carte : données du pont documentaire générique (lot 28). */
+function cardInputType(ruleCode: string, targetType: string, key: string | null): 'date' | 'text' | null {
+  const rule = getRule(ruleCode);
+  if (!rule || rule.producer !== 'DOCUMENT_BRIDGE' || targetType !== 'DOCUMENT' || !key) return null;
+  return documentSlotFor(key).inputType;
 }
 
 /**

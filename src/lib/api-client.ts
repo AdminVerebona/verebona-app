@@ -217,7 +217,6 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 export const RESPONSE_CACHE_POLICIES: ReadonlyArray<{ prefix: string; ttlMs: number }> = [
   { prefix: '/api/to-process', ttlMs: 15_000 },
   { prefix: '/api/v2/to-process', ttlMs: 15_000 },
-  { prefix: '/api/dashboard/a-traiter', ttlMs: 15_000 },
   { prefix: '/api/home/summary', ttlMs: 30_000 },
   { prefix: '/api/users/me', ttlMs: 30_000 },
   { prefix: '/api/billing/', ttlMs: 30_000 },
@@ -227,7 +226,6 @@ export const RESPONSE_CACHE_POLICIES: ReadonlyArray<{ prefix: string; ttlMs: num
 /** Routes servies depuis un cache serveur, à relire « fraîches » après une écriture. */
 export const SERVER_CACHED_READS: ReadonlyArray<string> = [
   '/api/home/summary',
-  '/api/dashboard/a-traiter',
   '/api/to-process/suppliers',
   '/api/users/me',
 ];

@@ -13,10 +13,12 @@ import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { deleteAssetCompletely } from '@/services/assets/asset-deletion.service';
 import { isValidObjectCategory } from '@/types/domain';
 import type { PlanType } from '@/types/domain';
+import { ACCEPTED_ASSET_CATEGORY_CODES, getAssetCategories } from '@/lib/asset-taxonomy';
 
-const VALID_CATEGORIES = ['IMMOBILIER', 'VEHICULE', 'MATERIEL_PRO', 'OBJECT', 'AUTRE'];
+// Lot 30 : familles du référentiel (`asset-taxonomy`) — proposées + anciennes encore stockées.
+const VALID_CATEGORIES: readonly string[] = ACCEPTED_ASSET_CATEGORY_CODES;
 const VALID_STATUSES = ['EN_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'VENDU', 'DETRUIT', 'INACTIF', 'ARCHIVED', 'TRANSMIS'];
-const VALID_OBJECT_CATEGORIES = ['OBJECT_CATEGORY_TECH', 'OBJECT_CATEGORY_SPORT', 'OBJECT_CATEGORY_HOME'];
+const VALID_OBJECT_CATEGORIES: readonly string[] = getAssetCategories('OBJECT').map((c) => c.value);
 
 export async function GET(request: NextRequest) {
   try {

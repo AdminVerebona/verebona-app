@@ -39,6 +39,13 @@ const PAR_STRATEGIE: Readonly<Record<string, T2TruthSource>> = {
   'structured.asset_field': 'canonique',
   'retrieval.canonical_field': 'canonique',
   'target.asset_field': 'canonique',
+  // Lot 29 : plusieurs champs, équipement / pièce, champ non renseigné.
+  'target.asset_fields': 'canonique',
+  'target.entity_field': 'canonique',
+  'target.entity_fields': 'canonique',
+  'target.field_missing': 'canonique',
+  'target.not_applicable': 'canonique',
+  'target.field_document': 'fait',
   'structured.purchase_date': 'canonique',
   'structured.list_rented': 'canonique',
   'structured.list_assets': 'canonique',

@@ -66,6 +66,8 @@ export interface ClarificationCandidate {
   resumeMessage?: string;
   /** Intention de la reprise quand le choix la fixe (action ambiguë). */
   resumeIntent?: import('./intents').VerebonaIntent;
+  /** Équipement / pièce : bien PARENT du candidat (lot 29, ticket 13 §G). */
+  assetId?: number | null;
 }
 
 export type ClarificationStatus = 'PENDING' | 'RESOLVED' | 'EXPIRED' | 'EXHAUSTED' | 'ABANDONED';
@@ -87,16 +89,21 @@ export interface ClarificationState {
   /** Demande utilisateur initiale, rejouée telle quelle à la reprise. */
   originalMessage?: string;
   originalIntent: import('./intents').VerebonaIntent;
-  /** Paramètres déjà identifiés (bien de la page, année…). */
-  resolvedContext?: { pageAssetId?: number | null; assetId?: number | null };
+  /**
+   * Paramètres déjà identifiés (bien de la page, année…). `requestedFacts` :
+   * champs de la demande initiale, relus tous à la reprise (lot 29, ticket 12).
+   */
+  resolvedContext?: { pageAssetId?: number | null; assetId?: number | null; requestedFacts?: string[] };
   /** Ce qui est ambigu : le champ que le choix viendra fixer. */
   ambiguity?:
     | { kind: 'asset'; field: 'assetId'; reason: string }
     /** Période non identifiable (§20.1). */
     | { kind: 'period'; field: 'period'; reason: string }
     /** Action ambiguë (§20.1). */
-    | { kind: 'action'; field: 'intent'; reason: string };
-  candidateType: 'asset' | 'document' | 'agenda' | 'supplier' | 'period' | 'action';
+    | { kind: 'action'; field: 'intent'; reason: string }
+    /** Équipement / pièce homonymes (lot 29, ticket 13 §G, §H). */
+    | { kind: 'equipment' | 'room'; field: 'entityId'; reason: string };
+  candidateType: 'asset' | 'document' | 'agenda' | 'supplier' | 'period' | 'action' | 'equipment' | 'room';
   candidates: ClarificationCandidate[];
   question: string;
   createdAt?: string;

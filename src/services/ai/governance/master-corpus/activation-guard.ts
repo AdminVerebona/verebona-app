@@ -1,23 +1,18 @@
 /**
- * Garde d'activation des prompts maîtres — CDC 15 §30 (règle de recette),
- * §32 (« corpus vert avant activation »), D-17, HC-06.
+ * État du corpus des prompts maîtres d'une version de configuration —
+ * DIAGNOSTIC seulement (CDC 15 §30, D-17 ; ticket BO-IA-PROMPTS-01).
  *
- * Une version ne devient ACTIVE (validation d'une « À tester », activation
- * d'une Validée ou d'un package importé) que si CHAQUE traitement qu'elle
- * met en `master` a, sur l'EMPREINTE EXACTE de son texte master et pour
- * TOUTES les branches déclarées au registre :
+ * ⚠️ Ce module N'EST PLUS une garde d'activation. Jusqu'au lot 26, aucune
+ * version ne devenait ACTIVE sans corpus vert sur l'empreinte exacte de
+ * chaque master (rejeu ci/préprod/prod, plus passage réel en préprod pour un
+ * texte de version). Décision BO-IA-PROMPTS-01 : le corpus est un contrôle
+ * qualité facultatif ; ni `config-version.service` ni l'administration des
+ * prompts maîtres (`services/ai/master-prompts`) ne le consultent pour
+ * autoriser une activation.
  *
- *   · texte = fichier du dépôt (`file`) : une exécution `replay` verte
- *     (source ci, preprod ou prod). Le texte du dépôt ne change pas sans
- *     corpus : empreintes de référence (`fingerprints.json`, `ai:verify`) ;
- *   · texte de la version (`config`, différent du fichier) : une exécution
- *     `replay` verte ET une exécution `live` verte en PRÉPROD (D-17 :
- *     passage réel, le modèle appelé sur ce texte).
- *
- * Jamais une exécution `local`. Table 0224 absente : refus. Fichier master
- * illisible : refus explicite. Aucun contournement pour validate / activate ;
- * la RESTAURATION d'urgence passe avec une justification tracée
- * (`config-version.service#rollback`).
+ * Reste utilisé par les outils de développement et de diagnostic
+ * (`ai:corpus` : `effectiveMasterText`) et décrit, pour une version, ce que
+ * le corpus enregistré dit de chacun de ses masters.
  */
 import { promptArchitectureOf, masterPromptOf, type ConfigVersionWithEntries, type TreatmentConfig } from '../../config/config-types';
 import { masterPromptForTreatment } from '../../config/prompt-architecture';
@@ -102,7 +97,7 @@ export async function checkMasterActivation(
       entries.push({
         treatment: e.treatment, masterPromptCode: master.masterPromptCode, textSha256: null, textSource: 'file',
         branchesRequired: master.tasks, status: 'MASTER_FILE_MISSING', lastRun: null, lastLiveRun: null,
-        message: `${e.treatment} : fichier master ${master.masterPromptCode} illisible (${(err as Error).message}) — activation refusée.`,
+        message: `${e.treatment} : fichier master ${master.masterPromptCode} illisible (${(err as Error).message}).`,
       });
       continue;
     }
@@ -119,7 +114,7 @@ export async function checkMasterActivation(
     ready ??= await d.tableReady().catch(() => false);
     if (!ready) {
       entries.push({ ...base, status: 'CORPUS_TABLE_MISSING', lastRun: null, lastLiveRun: null,
-        message: `${e.treatment} : table des exécutions de corpus (0224) absente — activation refusée tant que la migration n'est pas appliquée.` });
+        message: `${e.treatment} : table des exécutions de corpus (0224) absente.` });
       continue;
     }
     const empreinte = `empreinte ${sha.slice(0, 12)} (${source === 'config' ? 'texte de la version' : 'fichier du dépôt'})`;

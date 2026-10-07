@@ -356,13 +356,22 @@ export interface ResolveMasterPromptInput {
   configuredText?: string | null;
   /** Version de configuration d'où vient `configuredText` (trace). */
   configVersionId?: number | null;
+  /**
+   * Version de prompt maître administrée au BO d'où vient `configuredText`
+   * (BO-IA-PROMPTS-01) ; prime sur `configVersionId` dans la version tracée.
+   */
+  promptVersionId?: number | null;
   /** Branches autorisées ; défaut : celles déclarées au registre pour ce master. */
   allowedTasks?: readonly string[];
 }
 
 export interface ResolvedMasterPrompt {
   text: string;
-  /** `t1_master_v1@file`, ou `t1_master_v1@cfg<id>:<empreinte>` (texte de la version). */
+  /**
+   * `t1_master_v1@file`, `t1_master_v1@cfg<id>:<empreinte>` (texte de la
+   * version de configuration) ou `t1_master_v1@pv<id>:<empreinte>` (version
+   * de prompt maître administrée au BO).
+   */
   version: string;
   masterPromptCode: string;
   task: string;
@@ -370,17 +379,19 @@ export interface ResolvedMasterPrompt {
 }
 
 /**
- * Version d'un master, SANS le charger : `code@file`, ou
- * `code@cfg<id>:<empreinte>` pour le texte d'une version de configuration.
+ * Version d'un master, SANS le charger : `code@file`, `code@cfg<id>:<empreinte>`
+ * pour le texte d'une version de configuration, ou `code@pv<id>:<empreinte>`
+ * pour une version de prompt maître administrée au BO (BO-IA-PROMPTS-01).
  * Sert aussi à la clé d'idempotence (un nouveau master ne doit jamais servir
  * une sortie mise en cache sous l'ancien).
  */
 export function masterPromptVersionOf(input: {
-  masterPromptCode: string; configuredText?: string | null; configVersionId?: number | null;
+  masterPromptCode: string; configuredText?: string | null; configVersionId?: number | null; promptVersionId?: number | null;
 }): string {
   const configured = input.configuredText?.trim() ? input.configuredText : null;
   if (!configured) return `${input.masterPromptCode}@file`;
   const digest = createHash('sha256').update(configured).digest('hex').slice(0, 12);
+  if (input.promptVersionId != null) return `${input.masterPromptCode}@pv${input.promptVersionId}:${digest}`;
   return `${input.masterPromptCode}@cfg${input.configVersionId ?? ''}:${digest}`;
 }
 
@@ -414,7 +425,9 @@ export async function resolveMasterPrompt(input: ResolveMasterPromptInput): Prom
   if (configured) {
     base = {
       text: configured,
-      version: masterPromptVersionOf({ masterPromptCode, configuredText: configured, configVersionId: input.configVersionId }),
+      version: masterPromptVersionOf({
+        masterPromptCode, configuredText: configured, configVersionId: input.configVersionId, promptVersionId: input.promptVersionId,
+      }),
       source: 'config',
     };
   } else {

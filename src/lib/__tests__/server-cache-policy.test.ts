@@ -72,7 +72,6 @@ describe('CA-01 — fraîcheur explicite et méthodes d’écriture', () => {
 
   it.each([
     'src/app/api/home/summary/route.ts',
-    'src/app/api/dashboard/a-traiter/route.ts',
     'src/app/api/to-process/suppliers/route.ts',
     'src/app/api/users/me/route.ts',
   ])('%s honore la demande de fraîcheur et n’autorise aucun cache HTTP réutilisable', (f) => {

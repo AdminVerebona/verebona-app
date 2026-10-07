@@ -18,6 +18,7 @@
  */
 import { createHash, randomUUID } from 'crypto';
 import { pgClient } from '@/db';
+import { assistantAssetAvailability } from '../core/asset-availability';
 import { getEntitlements, restrictedRefusal } from '@/services/entitlements.service';
 import { formatDateFr } from '../core/deterministic-format';
 import type { AssistantRequestInput } from '../types/contracts';
@@ -85,15 +86,14 @@ export const sqlLookup: CommandLookup = {
     const cond = w.map((_, i) => `unaccent(lower(a.name || ' ' || coalesce(a.subtype,'') || ' ' || a.category)) LIKE unaccent(lower($${i + 2}))`).join(' OR ');
     return (await pgClient.unsafe(
       `SELECT a.id, a.name, a.city FROM assets a
-        WHERE a.account_id = $1 AND a.deleted_at IS NULL
-          AND coalesce(a.status, 'EN_SERVICE') NOT IN ('ARCHIVED', 'TRANSMIS') AND (${cond})
+        WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')} AND (${cond})
         ORDER BY a.name LIMIT 10`,
       [accountId, ...w.map((x) => `%${x}%`)] as never[],
     )) as unknown as Array<{ id: number; name: string; city: string | null }>;
   },
   async getAsset(accountId, id) {
     const r = (await pgClient.unsafe(
-      `SELECT id, name, city FROM assets WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
+      `SELECT a.id, a.name, a.city FROM assets a WHERE a.id = $1 AND a.account_id = $2 AND ${assistantAssetAvailability.sql('a')}`,
       [id, accountId] as never[],
     )) as unknown as Array<{ id: number; name: string; city: string | null }>;
     return r[0] ?? null;

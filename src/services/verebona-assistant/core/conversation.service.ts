@@ -35,6 +35,7 @@
  */
 import { timelineColumnReady, timelineForStorage } from './timeline-persistence';
 import { pgClient } from '@/db';
+import { CANONICAL_FIELDS } from '@/services/canonical/registry';
 import type { AssistantRunResult, AssistantRequestInput } from '../types/contracts';
 import { getAssistantConfig } from '../config/assistant-config';
 import { assistantCachePrefix } from './assistant-cache-key';
@@ -576,7 +577,7 @@ export async function persistResult(
       let position = 0;
       for (const source of result.sources) {
         const ref = parseEntityRef(source.id);
-        if (!ref || !['asset', 'document', 'agenda_item'].includes(ref.kind)) continue;
+        if (!ref || !['asset', 'document', 'agenda_item', 'equipment', 'room'].includes(ref.kind)) continue;
         position += 1;
         await tx.unsafe(
           `INSERT INTO verebona_presented_entities
@@ -916,16 +917,22 @@ export async function loadThreadContext(
   )) as unknown as Array<{ id: number; context_json: Record<string, unknown> | null; clarification_state_json: { clarificationId?: string } | null }>;
   if (!conv[0]) return null;
 
+  // Lot 29 (ticket 8a AC10) : une réponse qui restitue une donnée SENSIBLE
+  // (affirmation `field:<clé sensible>`) est marquée — le texte reste dans
+  // l'historique de l'utilisateur, il n'est jamais recopié vers le modèle.
+  const clesSensibles = CANONICAL_FIELDS.filter((f) => f.sensitive).map((f) => `field:${f.key}`);
   const msgs = (await pgClient.unsafe(
-    `SELECT role, content FROM (
-       SELECT id, role, content, created_at FROM verebona_messages
-        WHERE conversation_id = $1 AND status = 'ready' AND role IN ('user', 'assistant')
-          AND coalesce(content, '') <> '' AND expires_at > now()
-        ORDER BY created_at DESC, id DESC
+    `SELECT role, content, sensitive FROM (
+       SELECT m.id, m.role, m.content, m.created_at,
+              EXISTS (SELECT 1 FROM verebona_message_claims c WHERE c.message_id = m.id AND c.claim_key = ANY($2::text[])) AS sensitive
+         FROM verebona_messages m
+        WHERE m.conversation_id = $1 AND m.status = 'ready' AND m.role IN ('user', 'assistant')
+          AND coalesce(m.content, '') <> '' AND m.expires_at > now()
+        ORDER BY m.created_at DESC, m.id DESC
         LIMIT 8
      ) m ORDER BY created_at ASC, id ASC`,
-    [conversationId],
-  )) as unknown as Array<{ role: 'user' | 'assistant'; content: string }>;
+    [conversationId, clesSensibles],
+  )) as unknown as Array<{ role: 'user' | 'assistant'; content: string; sensitive: boolean }>;
 
   const pres = (await pgClient.unsafe(
     `SELECT message_id, position, entity_type, entity_id, label
@@ -947,7 +954,7 @@ export async function loadThreadContext(
   const sel = c.lastSelected as ThreadContext['lastSelected'] | undefined;
   return {
     conversationId,
-    messages: msgs.map((m) => ({ role: m.role, content: m.content })),
+    messages: msgs.map((m) => ({ role: m.role, content: m.content, ...(m.sensitive === true ? { sensitive: true } : {}) })),
     presentedLists: lists,
     lastPresentedEntities: lists[0] ?? [],
     lastSelected: sel && typeof sel.id === 'number' ? sel : null,

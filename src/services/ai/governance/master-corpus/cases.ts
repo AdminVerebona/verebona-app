@@ -15,13 +15,25 @@ import { join, relative } from 'node:path';
 import { AI_OPERATIONS, isMasterOperation } from '../../registry/operations';
 import { promptFileCandidates } from '../../prompts/prompt-loader';
 
-const AI_ROOT = join(__dirname, '..', '..');
+/**
+ * Racine `src/services/ai`. Sous `tsx` / vitest, `__dirname` est le dossier
+ * source ; dans le serveur Next (BO « Tester avec le corpus », lot 27) il
+ * désigne le paquet compilé (`.next/server/…`) : repli sur le dépôt, présent
+ * à l'exécution (même parti que `prompt-loader`).
+ */
+function aiRoot(): string {
+  const parSource = join(__dirname, '..', '..');
+  return existsSync(join(parSource, 'governance', 'master-corpus', 'fixtures'))
+    ? parSource
+    : join(process.cwd(), 'src', 'services', 'ai');
+}
+const AI_ROOT = aiRoot();
 
 export const MASTER_CORPUS_DIRS: readonly string[] = [
   join(AI_ROOT, 'source-analysis', '__fixtures__', 't1'),
   join(AI_ROOT, 'reconciliation', 'master', '__fixtures__'),
   join(AI_ROOT, 'agenda', 'master', '__fixtures__'),
-  join(__dirname, 'fixtures'),
+  join(AI_ROOT, 'governance', 'master-corpus', 'fixtures'),
   join(AI_ROOT, '..', 'home', 'mascot', '__fixtures__'),
 ];
 

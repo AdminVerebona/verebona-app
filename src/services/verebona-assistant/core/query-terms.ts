@@ -19,6 +19,10 @@
  * aucun terme discriminant, ne cherche pas un objet — elle demande la liste.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import {
+  assetDesignationsIn, assetSearchSynonyms, isAssetVocabularyWord, withoutAssetDesignations,
+} from '@/lib/asset-taxonomy';
+import { DOCUMENT_TYPE_QUERY_WORDS } from '@/lib/referential/document-codes';
 
 /**
  * Mots outils du français, plus les formes interrogatives et possessives
@@ -43,15 +47,15 @@ const MOTS_OUTILS = new Set([
  *
  * Ils sont retirés des termes discriminants, mais c'est précisément leur
  * présence qui rend une question d'inventaire reconnaissable.
+ *
+ * Lot 30 : plus de liste propre (ancien `MOTS_CATEGORIE`) — familles,
+ * catégories, formulations et mots génériques viennent du référentiel des
+ * biens (`lib/asset-taxonomy`), formes en plusieurs mots comprises
+ * (« camping-car », « local commercial », « mobil home »).
  */
-const MOTS_CATEGORIE = new Set([
-  'bien', 'biens', 'propriete', 'proprietes', 'patrimoine', 'possession',
-  'possessions', 'objet', 'objets', 'actif', 'actifs',
-  'maison', 'maisons', 'appartement', 'appartements', 'logement', 'logements',
-  'immeuble', 'immeubles', 'terrain', 'terrains', 'residence', 'residences',
-  'vehicule', 'vehicules', 'voiture', 'voitures', 'auto', 'moto', 'motos',
-  'bateau', 'bateaux', 'velo', 'velos', 'caravane', 'camping',
-]);
+function mentionneUnBien(message: string): boolean {
+  return assetDesignationsIn(message).length > 0 || mots(message).some(isAssetVocabularyWord);
+}
 
 /** Retire les accents et la ponctuation, découpe en mots. */
 function mots(message: string): string[] {
@@ -69,11 +73,11 @@ function mots(message: string): string[] {
  * objet précis. Un chiffre est conservé : « Clio 3 », « lot 12 ».
  */
 export function extractSearchTerms(message: string): string[] {
-  return mots(message).filter((m) => {
+  return mots(withoutAssetDesignations(message)).filter((m) => {
     // Une lettre isolée est du bruit ; un chiffre isolé ne l'est pas — il
     // distingue une « Clio 3 » d'une « Clio 4 », un « lot 2 » d'un « lot 7 ».
     if (m.length === 1 && !/^\d$/.test(m)) return false;
-    return !MOTS_OUTILS.has(m) && !MOTS_CATEGORIE.has(m);
+    return !MOTS_OUTILS.has(m);
   });
 }
 
@@ -91,7 +95,7 @@ export function extractSearchTerms(message: string): string[] {
 export function isInventoryQuery(message: string): boolean {
   const tous = mots(message);
   if (tous.length === 0) return false;
-  if (!tous.some((m) => MOTS_CATEGORIE.has(m))) return false;
+  if (!mentionneUnBien(message)) return false;
   return extractSearchTerms(message).length === 0;
 }
 
@@ -124,10 +128,13 @@ const VERBES_DEMANDE = new Set([
   'info', 'infos', 'information', 'informations',
 ]);
 
-/** Synonymes métier (formes normalisées, sans accent). Symétriques. */
+/**
+ * Synonymes LEXICAUX de recherche (formes normalisées, sans accent).
+ * Symétriques. Les synonymes de BIENS (« voiture » ↔ « véhicule », « maison »
+ * ↔ « logement », « vélo » ↔ « bicyclette ») ne sont plus déclarés ici : ils
+ * sont dérivés du référentiel des biens (`assetSearchSynonyms`, lot 30).
+ */
 const SYNONYMES: string[][] = [
-  ['voiture', 'vehicule', 'auto', 'automobile'],
-  ['logement', 'maison', 'appartement', 'habitation'],
   ['facture', 'note', 'ticket', 'recu'],
   ['devis', 'estimation', 'proposition'],
   ['assurance', 'assureur', 'contrat'],
@@ -142,7 +149,6 @@ const SYNONYMES: string[][] = [
   ['impot', 'taxe'],
   ['fournisseur', 'artisan', 'prestataire', 'entreprise'],
   ['echeance', 'rappel', 'rendez'],
-  ['velo', 'bicyclette'],
 ];
 
 const SYNONYMES_PAR_MOT = new Map<string, string[]>();
@@ -201,7 +207,8 @@ export function tokenizeQuery(message: string): QueryTerm[] {
     if (vus.has(stem)) continue;
     vus.add(stem);
     const exact = /\d/.test(m);
-    const syn = SYNONYMES_PAR_MOT.get(stem) ?? SYNONYMES_PAR_MOT.get(m) ?? [];
+    const synBien = assetSearchSynonyms(stem);
+    const syn = SYNONYMES_PAR_MOT.get(stem) ?? SYNONYMES_PAR_MOT.get(m) ?? (synBien.length ? synBien : assetSearchSynonyms(m));
     out.push({ raw: m, stem, variants: [...new Set([stem, ...syn])], exact });
   }
   return out.slice(0, 8);
@@ -307,11 +314,13 @@ export function nearMatchRatio(terms: QueryTerm[], text: string): number {
 // modèle, puis RETIRÉES du texte cherché : elles deviennent des filtres.
 // ══════════════════════════════════════════════════════════════════════════
 
-/** Racines de types de document reconnues dans une question (§13.7). */
-export const DOCUMENT_TYPE_STEMS: ReadonlySet<string> = new Set([
-  'facture', 'devis', 'devi', 'contrat', 'garantie', 'dpe', 'notice', 'manuel', 'certificat', 'attestation',
-  'assurance', 'acte', 'bail', 'quittance', 'releve', 'diagnostic', 'rapport', 'ticket', 'constat', 'avenant',
-]);
+/**
+ * Racines de types de document reconnues dans une question (§13.7). Lot 30 :
+ * vocabulaire déclaré UNE fois dans le résolveur documentaire
+ * (`DOCUMENT_TYPE_QUERY_WORDS`), plus de liste propre à l'assistant. `devi`
+ * est la racine de « devis » après `stemFr`.
+ */
+export const DOCUMENT_TYPE_STEMS: ReadonlySet<string> = new Set([...DOCUMENT_TYPE_QUERY_WORDS, 'devi']);
 
 /** Forme canonique d'une racine de type (« devi » → « devis »). */
 const TYPE_CANONIQUE: Readonly<Record<string, string>> = { devi: 'devis' };

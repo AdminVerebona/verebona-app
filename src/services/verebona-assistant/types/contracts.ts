@@ -17,8 +17,12 @@ export interface IntentRoute {
   confidence: Confidence;
   accountScope: string;
   entityHints: Array<{
-    /** `period` : période désignée (« l'an dernier ») — CDC 15 T2-08. */
-    type: 'asset' | 'document' | 'agenda' | 'supplier' | 'help' | 'period';
+    /**
+     * `period` : période désignée (« l'an dernier ») — CDC 15 T2-08.
+     * `equipment` / `room` : CONSERVÉS tels que compris (lot 29, ticket 13) —
+     * jamais rabattus sur `asset`.
+     */
+    type: 'asset' | 'document' | 'agenda' | 'supplier' | 'help' | 'period' | 'equipment' | 'room';
     value: string;
   }>;
   requiresRetrieval: boolean;
@@ -197,7 +201,7 @@ export interface AssistantRequestInput {
    * Référence conversationnelle résolue avant le routage (« le deuxième »,
    * « ce document »…), déjà re-vérifiée en base. Jamais fournie par le client.
    */
-  reference?: { type: 'asset' | 'document' | 'agenda_item'; id: number; label?: string | null; method: string };
+  reference?: { type: 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room'; id: number; label?: string | null; method: string };
   /** Contexte borné du fil, pour le modèle s'il est appelé. */
   threadContextText?: string;
   /** Une revalidation ciblée a déjà eu lieu pour cette demande (pas de boucle). */
@@ -235,6 +239,16 @@ export interface AssistantRequestInput {
     chainDepth: number;
     /** Libellé choisi, affiché dans l'historique à la place de la question rejouée. */
     choiceLabel: string;
+    /**
+     * Équipement ou pièce choisi (lot 29, ticket 13 §G) : type, identifiant
+     * et bien parent conservés pour la reprise.
+     */
+    entity?: { type: 'equipment' | 'room'; id: number; assetId: number | null } | null;
+    /**
+     * Champs demandés par la demande initiale (lot 29, ticket 12 AC10) : la
+     * reprise lit TOUS les champs, sans re-comprendre la question.
+     */
+    requestedFacts?: string[];
   };
 }
 
@@ -284,6 +298,13 @@ export interface CascadeTrace {
   cacheHit?: boolean;
   /** §27.11 : codes fonctionnels informatifs émis avec la réponse. */
   notices?: VerebonaErrorCode[];
+  /**
+   * Lot 29 (ticket 8b §K, AC17) : motif DIAGNOSTIQUÉ d'une réponse sans
+   * valeur — cible introuvable, ambiguë, indisponible, champ non renseigné,
+   * recherche vide, compréhension impossible, erreur de lecture. Distincts :
+   * jamais confondus dans un « rien trouvé » unique (`core/t2-diagnostics`).
+   */
+  diagnostic?: import('../core/t2-diagnostics').T2Diagnostic;
 }
 
 export interface AssistantRunResult {
@@ -312,7 +333,7 @@ export interface AssistantRunResult {
    * Entité désignée par cette demande (référence résolue, choix de
    * clarification) : devient la « dernière entité sélectionnée » du fil.
    */
-  contextUpdate?: { type: 'asset' | 'document' | 'agenda_item'; id: number; label?: string | null } | null;
+  contextUpdate?: { type: 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room'; id: number; label?: string | null } | null;
   finalState: MachineState;
   mode: ResponseMode;
   route: IntentRoute;

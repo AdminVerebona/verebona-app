@@ -32,6 +32,9 @@ import { findTableIntersection, type TableAnswer, type TableCellRow } from '@/se
 import { parseFrDate } from '@/services/ai/agenda/rules/recurrence';
 import { extractSearchTerms, isInventoryQuery } from './query-terms';
 import {
+  assetDesignationsIn, assetFamilyMentionedIn, assetVocabularyAlternatives, isAssetVocabularyWord, subtypeMatchesCategory,
+} from '@/lib/asset-taxonomy';
+import {
   ANALYSIS_STATUS_LABELS, IN_ANALYSIS_MESSAGE, analysisFailedMessage, documentAnalysisStatus,
 } from './document-status';
 import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
@@ -247,7 +250,9 @@ const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerC
 const RE = {
   count: /\b(combien|nombre)\b/,
   documents: /\b(documents?|factures?|fichiers?|pieces?)\b/,
-  assets: /\b(biens?|vehicules?|logements?|proprietes?)\b/,
+  // Lot 30 : mots génériques et familles du référentiel des biens (« biens »,
+  // « véhicules », « logements », « propriétés »…), plus de liste figée.
+  assets: new RegExp(`\\b(${assetVocabularyAlternatives({ familiesOnly: true })})\\b`),
   agenda: /\b(echeances?|rappels?|rendez-vous|evenements?|dates? importantes?)\b/,
   spend: /\b(depense|depenses|depensee?s?|coute|coutes?|paye|payes?|total|somme|montant total)\b/,
   next: /\bprochaine?s?\s+(echeance|date|rendez-vous|rappel|evenement|entretien|controle)s?\b/,
@@ -269,13 +274,9 @@ const QUESTION_NOUNS = new Set([
   'location', 'loue', 'loues', 'louee', 'louees', 'mis', 'mise', 'biens', 'bien', 'rendez', 'vous', 'rendez-vous',
 ]);
 
-const FAMILY_WORDS: Record<string, string> = {
-  vehicule: 'VEHICULE', vehicules: 'VEHICULE', voiture: 'VEHICULE', voitures: 'VEHICULE',
-  moto: 'VEHICULE', motos: 'VEHICULE', velo: 'VEHICULE', velos: 'VEHICULE', bateau: 'VEHICULE',
-  immobilier: 'IMMOBILIER', logement: 'IMMOBILIER', logements: 'IMMOBILIER', maison: 'IMMOBILIER',
-  maisons: 'IMMOBILIER', appartement: 'IMMOBILIER', appartements: 'IMMOBILIER',
-  objet: 'OBJECT', objets: 'OBJECT',
-};
+// Lot 30 : plus de dictionnaire de familles propre à T2 (ancien `FAMILY_WORDS`).
+// Familles, catégories et formulations (« garage », « mobil-home »,
+// « logement »…) viennent du référentiel `lib/asset-taxonomy`.
 
 function words(message: string): string[] {
   return plain(message).replace(/['’]/g, ' ').split(/[^a-z0-9-]+/).filter((w) => w.length >= 2);
@@ -311,7 +312,7 @@ const ASSET_STOPWORDS = new Set([
 function knowledgeTerms(message: string): string[] {
   const base = extractSearchTerms(message);
   // Les mots de catégorie (« maison », « voiture ») servent aussi à retrouver un fait.
-  const cat = words(message).filter((w) => FAMILY_WORDS[w]);
+  const cat = assetDesignationsIn(message).map((d) => d.matched);
   return [...new Set([...base, ...cat])].filter((t) => !QUESTION_NOUNS.has(t) && t.length >= 3);
 }
 
@@ -515,7 +516,7 @@ async function tryStructured(
   // bien → liste exacte, sans recherche textuelle.
   if (RE.documents.test(m) && LIST_DOCS.test(m) && !RE.count.test(m) && port.listDocuments) {
     const scope = await scopeOf();
-    const autres = knowledgeTerms(message).filter((t) => !FAMILY_WORDS[t]
+    const autres = knowledgeTerms(message).filter((t) => !isAssetVocabularyWord(t) && assetDesignationsIn(t).length === 0
       && !scope.assets.some((a) => plain(a.name).includes(t) || plain(a.subtype ?? '') === t));
     if (scope.assets.length > 0 && autres.length === 0) {
       if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'LIST_DOCUMENTS_MULTIPLE_ASSETS' };
@@ -580,8 +581,9 @@ async function tryStructured(
       const sources = scope.assets.map(assetSource);
       return { strategy: 'structured.count_agenda', answer, sources, claims: [claim('count', answer, sources, 'calculated')], kind: 'count' };
     }
-    if (RE.assets.test(m) || words(m).some((w) => FAMILY_WORDS[w])) {
-      const family = words(m).map((w) => FAMILY_WORDS[w]).find(Boolean);
+    const designee = assetFamilyMentionedIn(m);
+    if (RE.assets.test(m) || designee) {
+      const family = designee;
       const list = await port.listAssets(accountId, { family });
       const answer = formatCount('bien', list.length, family === 'VEHICULE' ? '(véhicules)' : family === 'IMMOBILIER' ? '(immobilier)' : family === 'OBJECT' ? '(objets)' : undefined);
       const sources = list.slice(0, 8).map(assetSource);
@@ -671,8 +673,15 @@ async function tryStructured(
 
   // Inventaire (« quels sont mes biens ? », « mes véhicules »).
   if (isInventoryQuery(message)) {
-    const family = words(m).map((w) => FAMILY_WORDS[w]).find(Boolean);
-    const list = await port.listAssets(accountId, { family: family && /\b(vehicules?|voitures?|immobilier|logements?|objets?)\b/.test(m) ? family : undefined });
+    // Une FAMILLE désignée (« mes véhicules », « mes logements ») restreint la
+    // liste à cette famille ; une CATÉGORIE (« mes voitures », « mes garages »)
+    // à ses biens de cette catégorie — ou sans catégorie renseignée (même
+    // règle que la recherche d'un bien, lot 29).
+    const d = assetDesignationsIn(m)[0];
+    const toutes = await port.listAssets(accountId, { family: d?.family });
+    const list = d?.kind === 'category'
+      ? toutes.filter((a) => !a.subtype?.trim() || subtypeMatchesCategory(a.subtype, d.category!))
+      : toutes;
     const answer = list.length === 0
       ? formatNoResult('aucun bien enregistré')
       : formatList(`Vous avez ${list.length} bien${list.length > 1 ? 's' : ''}`, list.map((a) => a.name));

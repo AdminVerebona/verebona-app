@@ -67,6 +67,13 @@ import { getIntentDefinition } from '../registries/intent-registry';
 import { ROUTES } from './entity-ref';
 import { targetsFromInput, type AssistantTargets } from './assistant-targets';
 import type { TargetAnswer } from './target-answer';
+import { buildTargetClarification } from './clarification-builder';
+import { diagnosticMessage, TargetReadError } from './t2-diagnostics';
+import { deterministicRequestedFacts, unconsumedInformationWords } from '../canonical/field-vocabulary';
+import { isFieldQuestion } from '../canonical/structured-answers';
+import { getField } from '@/services/canonical/registry';
+import { parseEntityRef } from './entity-ref';
+import { ASSET_NO_LONGER_AVAILABLE_MESSAGE } from './asset-availability';
 import { clientTimelineEvents, planTimelineEvents, timelineAnswer, type SynthesisPlan } from './synthesis-planner';
 import { documentSearchFilters, hasDocumentFilters } from './query-terms';
 import { CLARIFICATION_TTL_MS } from './clarification-builder';
@@ -133,7 +140,7 @@ export interface OrchestratorPorts {
    * accessible ? Rend son libellé (et sa date pour un document) ou `null`.
    * Une référence conversationnelle n'est jamais une autorisation.
    */
-  describeEntity?(accountId: number, e: { type: ReferencedType; id: number }): Promise<{ label: string; date?: string | null } | null>;
+  describeEntity?(accountId: number, e: { type: ReferencedType; id: number }): Promise<{ label: string; date?: string | null; assetId?: number | null } | null>;
   /**
    * Commande métier (« ajoute un rappel… », « marque … comme réalisée »).
    * Prépare et fige un plan SANS RIEN ÉCRIRE ; l'exécution n'a lieu qu'après
@@ -314,6 +321,72 @@ export async function runAssistant(
     // ══════════════════════════════════════════════════════════════════════
     let budgetMensuelVerifie = false;
     let budgetMensuelAtteint = false;
+    // Lot 29 (8b §K) : la classification par modèle a échoué (motif distinct).
+    let comprehensionEchouee = false;
+    /**
+     * Erreur d'une lecture ciblée : une erreur TECHNIQUE de lecture remonte
+     * (réponse d'erreur tracée), jamais avalée en « aucun résultat » (8b §K) ;
+     * un délai dépassé laisse la demande suivre son cours.
+     */
+    const lectureEchouee = (e: unknown): null => {
+      if (e instanceof TargetReadError) throw e;
+      return null;
+    };
+    /**
+     * Sert une lecture ciblée de faits (lot 29) : clarification de cible
+     * (une seule pour toute la demande), motif explicite (cible introuvable
+     * ou indisponible, champ non renseigné), ou valeurs lues — sans modèle.
+     * `null` : la demande suit son cours.
+     */
+    const servirLectureCiblee = async (lu: TargetAnswer, r: IntentRoute, o: { reprise: boolean }): Promise<AssistantRunResult | null> => {
+      const intention = r.intent === 'UNKNOWN' || !r.intent.startsWith('ACCOUNT_') ? lu.intent : r.intent;
+      if (lu.ambiguity) {
+        const chainDepth = (input.resume?.chainDepth ?? 0) + 1;
+        trace.diagnostic = 'TARGET_AMBIGUOUS';
+        trace.escalationReasons.push(`CLARIFICATION:${lu.ambiguity.reason}`);
+        const routeAmb = { ...routeForIntent(intention, input.planType, 'cible ambiguë'), entityHints: r.entityHints, understanding: r.understanding };
+        base.route = routeAmb;
+        trace.intent = routeAmb.intent;
+        if (chainDepth > MAX_CLARIFICATION_CHAIN) {
+          const actions = await ports.resolveActions(routeAmb, input, []);
+          done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+        }
+        const state = buildTargetClarification({
+          ambiguity: lu.ambiguity, question: lu.text,
+          accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+          originalMessage: input.message, originalMessageId: messageId, originalIntent: intention,
+          pageAssetId: Number(input.pageContext?.assetId) || null, requestedFacts: lu.requestedFacts, chainDepth,
+        });
+        if (ports.saveClarification && await ports.saveClarification(state).catch(() => false)) {
+          done('template', 'clarification.target', 'AMBIGUOUS_TARGET', state.candidates.length);
+          return finalizeClarification(base, machine, state, ports, input);
+        }
+        // Sans fil où enregistrer la question : la poser quand même, candidats
+        // compris — jamais de choix arbitraire.
+        const texte = `${lu.text} ${state.candidates.map((c) => (c.secondaryLabel ? `${c.label} (${c.secondaryLabel})` : c.label)).join(', ')}.`;
+        done('template', 'clarification.target_unsaved', 'AMBIGUOUS_TARGET', 0);
+        return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+      }
+      // Champs tous vides qui portent une ÉCHÉANCE (garantie, contrôle,
+      // entretien…) : l'agenda peut encore la connaître — la demande suit son
+      // cours plutôt que d'affirmer « non renseigné » trop tôt.
+      if (lu.diagnostic === 'FIELD_NOT_SET' && !o.reprise
+        && (lu.facts ?? []).some((f) => f.key && getField(f.key)?.agendaEffect?.nature === 'DEADLINE')) {
+        trace.escalationReasons.push('FACT:DEADLINE_FIELD_NOT_SET');
+        return null;
+      }
+      const routeLu = { ...routeForIntent(intention, input.planType, 'lecture canonique ciblée'), entityHints: r.entityHints, understanding: r.understanding };
+      base.route = routeLu;
+      trace.intent = routeLu.intent;
+      if (lu.diagnostic) trace.diagnostic = lu.diagnostic;
+      if (lu.contextUpdate && !base.contextUpdate) base.contextUpdate = lu.contextUpdate;
+      const actions = await ports.resolveActions(routeLu, input, lu.sources);
+      const sansCible = lu.diagnostic === 'TARGET_NOT_FOUND' || lu.diagnostic === 'TARGET_UNAVAILABLE';
+      done(sansCible ? 'template' : 'structured', lu.strategy, sansCible ? 'INSUFFICIENT' : 'SUFFICIENT_STRUCTURED', lu.sources.length);
+      const resolvedLu = lu.sources.length ? await ports.resolveSources(lu.sources, input.accountId) : [];
+      return finalize(base, machine, 'deterministic', lu.text, lu.claims, resolvedLu, actions, ports, input, sansCible ? 'insufficient' : 'supported');
+    };
     const avantAppelModele = async (): Promise<'ok' | 'cancelled'> => {
       if (ports.isCancelled && await ports.isCancelled(requestId).catch(() => false)) return 'cancelled';
       if (!budgetMensuelVerifie && ports.checkMonthlyBudget) {
@@ -393,7 +466,7 @@ export async function runAssistant(
     if (ports.readTarget && !input.resume) {
       const cibles = targetsFromInput(input);
       if (cibles.primary && (cibles.primary.type === 'document' || cibles.primary.type === 'agenda_item')) {
-        const lu = await withDeadline(ports.readTarget(input, cibles), retrievalDeadline()).catch(() => null);
+        const lu = await withDeadline(ports.readTarget(input, cibles), retrievalDeadline()).catch(lectureEchouee);
         if (lu) {
           const route = routeForIntent(lu.intent, input.planType, `cible ${cibles.primary.origin}`);
           base.route = route;
@@ -472,6 +545,60 @@ export async function runAssistant(
         trace.escalationReasons.push(`CLARIFICATION:${raison}`);
         done('template', raison === 'PERIOD_UNIDENTIFIABLE' ? 'clarification.period' : 'clarification.action', 'AMBIGUOUS_TARGET', state.candidates.length);
         return finalizeClarification(base, machine, state, ports, input);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // FAITS DU COMPTE, SQL-FIRST — lot 29 (tickets 8a, 8b, 12, 13, 14)
+    //
+    // « Quelle est l'adresse de la maison ? », « numéro de série de la
+    // chaudière ? », « date d'achat et kilométrage de la Polo ? » : les champs
+    // sont compris par le VOCABULAIRE CANONIQUE (registre), la cible par SQL
+    // (nom, VIN / plaque exacts, équipement, pièce, catégorie unique) — lus
+    // sur la fiche canonique, réponse rédigée par le serveur : AUCUN appel
+    // modèle. Plusieurs cibles → une clarification ; cible indisponible ou
+    // introuvable → motif explicite. Sans cible identifiée, la demande suit
+    // son cours (le modèle peut encore la comprendre).
+    // ══════════════════════════════════════════════════════════════════════
+    let classeParFaits = false;
+    if (ports.readTarget && !isHelpIntent(route.intent)) {
+      const faitsReprise = input.resume?.requestedFacts ?? [];
+      let faits = faitsReprise.length ? faitsReprise : deterministicRequestedFacts(input.message);
+      const cibleDocument = Boolean(input.pageContext?.documentId) || input.reference?.type === 'document' || Boolean(input.resume?.documentId);
+      const intentionCompatible = needsClassification || FACT_STEP_INTENTS.has(route.intent)
+        || (route.intent === 'ACCOUNT_FACT_DOCUMENT' && !cibleDocument);
+      if (faits.length && (faitsReprise.length || (intentionCompatible && isFieldQuestion(input.message)))) {
+        let routeFaits: IntentRoute = { ...route, understanding: { requestedFacts: faits, filters: route.understanding?.filters ?? {} } };
+        // Compréhension PARTIELLE (« quand ai-je acheté la Polo et combien
+        // l'ai-je payée ? ») : le modèle comprend la demande — une intention
+        // STRUCTURÉE seulement — puis le serveur reprend la main (8b §G).
+        const partielle = !faitsReprise.length && unconsumedInformationWords(input.message).length > 0;
+        if (partielle && aiActif && ports.classifyWithAI && isPlanAiEligible(input.planType) && budget.canCall()) {
+          if (await avantAppelModele() === 'cancelled') return annuler();
+          if (budget.canCall()) {
+            trace.escalationReasons.push('UNDERSTANDING:PARTIAL_DETERMINISTIC');
+            const avantCl = budget.used;
+            const classified = await ports.classifyWithAI(input.message, input).catch(() => null);
+            reconcilierBudget(budget, avantCl, 1);
+            trace.aiCalls = budget.used;
+            classeParFaits = true;
+            if (classified) {
+              route = affinerRoute(classified, input);
+              base.route = route;
+              trace.intent = route.intent;
+              if (route.understanding?.requestedFacts.length) {
+                faits = route.understanding.requestedFacts;
+                routeFaits = route;
+              }
+            } else {
+              comprehensionEchouee = true;
+              trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED');
+            }
+          }
+        }
+        const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeFaits), routeFaits), retrievalDeadline()).catch(lectureEchouee);
+        const servi = lu ? await servirLectureCiblee(lu, routeFaits, { reprise: faitsReprise.length > 0 }) : null;
+        if (servi) return servi;
       }
     }
 
@@ -611,7 +738,8 @@ export async function runAssistant(
     // ── Classification IA, seulement maintenant (§9.4.9, §15.5) ────────────
     // Flag §39 `account_ai` (ou VEREBONA_ASSISTANT_AI_ENABLED) coupé : AUCUN
     // appel modèle — ni classification, ni revalidation, ni génération.
-    const classifier = needsClassification && ports.classifyWithAI && aiActif && isPlanAiEligible(input.planType);
+    // Déjà compris par le modèle à l'étape des faits : pas de second appel.
+    const classifier = needsClassification && !classeParFaits && ports.classifyWithAI && aiActif && isPlanAiEligible(input.planType);
     if (needsClassification && ports.classifyWithAI && !aiActif) trace.escalationReasons.push('ROUTING:AI_DISABLED');
     if (classifier) {
       if (await avantAppelModele() === 'cancelled') return annuler();
@@ -624,6 +752,9 @@ export async function runAssistant(
       const classified = await ports.classifyWithAI(outcome.kind === 'needs_classification' ? outcome.normalized : input.message, input);
       reconcilierBudget(budget, avantCl, 1);
       trace.aiCalls = budget.used;
+      // Lot 29 (8b §K) : compréhension impossible (modèle en échec) — motif
+      // distinct, jamais confondu avec « rien trouvé ».
+      if (!classified) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
       route = affinerRoute(classified ?? fallbackUnknownRoute(input.planType), input);
       base.route = route;
       trace.intent = route.intent;
@@ -679,13 +810,12 @@ export async function runAssistant(
     // canonique, sans recherche ni génération.
     // ══════════════════════════════════════════════════════════════════════
     if (ports.readTarget && route.understanding?.requestedFacts.length) {
-      const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, route), route), retrievalDeadline()).catch(() => null);
-      if (lu) {
-        const actions = await ports.resolveActions(route, input, lu.sources);
-        done('structured', lu.strategy, 'SUFFICIENT_STRUCTURED', lu.sources.length);
-        const resolvedFait = await ports.resolveSources(lu.sources, input.accountId);
-        return finalize(base, machine, 'deterministic', lu.text, lu.claims, resolvedFait, actions, ports, input, 'supported');
-      }
+      // L'IA n'a produit qu'une intention STRUCTURÉE (champs, indices) : le
+      // serveur reprend la main — résolution dans le compte, lecture
+      // canonique, réponse rédigée par le serveur (8b §G ; aucun SQL du modèle).
+      const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, route), route), retrievalDeadline()).catch(lectureEchouee);
+      const servi = lu ? await servirLectureCiblee(lu, route, { reprise: false }) : null;
+      if (servi) return servi;
     }
 
     // ── Retrieval-first (§13) ───────────────────────────────────────────────
@@ -817,6 +947,8 @@ export async function runAssistant(
       // au niveau 2 sans l'information cherchée (§12.4 : états distincts).
       const documentTrouve = adapters.length === 0 && Boolean(data?.documentState);
       if (exact.handled && exact.answer && (adapters.length > 0 || !route.aiEligible) && !documentTrouve) {
+        // Recherche effectuée, aucun résultat : seul cas du « rien trouvé » (8b §K).
+        if (adapters.length === 0) trace.diagnostic = comprehensionEchouee ? 'UNDERSTANDING_FAILED' : 'SEARCH_NO_RESULT';
         const resolvedAdapters = adapters.length ? await ports.resolveSources(adapters, input.accountId) : [];
         const actions = await ports.resolveActions(route, input, adapters);
         done('retrieval', 'retrieval.adapters', exact.decision.status, adapters.length);
@@ -885,7 +1017,12 @@ export async function runAssistant(
     // jamais « ces éléments de votre compte » (CDC Centre d'aide §5, T2-03).
     // Document trouvé mais information absente (§12.4, §19.12) : le dire,
     // plutôt que « ces éléments semblent liés ».
-    const repli = isHelpIntent(route.intent)
+    // Compréhension impossible et rien trouvé : le dire (8b §K, AC17).
+    const nonCompris = comprehensionEchouee && sources.length === 0 && !isHelpIntent(route.intent);
+    if (nonCompris) trace.diagnostic = 'UNDERSTANDING_FAILED';
+    const repli = nonCompris
+      ? diagnosticMessage('UNDERSTANDING_FAILED')
+      : isHelpIntent(route.intent)
       ? fallbackFromHelpSources(sources)
       // Chronologie planifiée (T2-34) : la liste datée elle-même, sans modèle.
       : plan?.kind === 'timeline' && plan.timeline?.events.length
@@ -928,7 +1065,14 @@ export async function runAssistant(
     // texte brut de l'exception (§4.2) — celui-ci reste dans les journaux.
     const code = (e as Error)?.message === 'REQUEST_TIMEOUT' ? 'REQUEST_TIMEOUT' as const : 'ASSISTANT_UNAVAILABLE' as const;
     console.error('[verebona] échec de la demande', code, (e as Error)?.message);
-    const libelle = assistantErrorMessage(code);
+    // Lot 29 (8b §K) : erreur technique de LECTURE — tracée comme telle,
+    // jamais présentée comme une absence de donnée.
+    const lecture = e instanceof TargetReadError;
+    if (lecture && base.cascade) {
+      base.cascade.diagnostic = 'TECHNICAL_READ_FAILURE';
+      base.cascade.escalationReasons.push('T2:TECHNICAL_READ_FAILURE');
+    }
+    const libelle = lecture ? diagnosticMessage('TECHNICAL_READ_FAILURE') : assistantErrorMessage(code);
     const result: AssistantRunResult = {
       ...base,
       finalState: machine.state,
@@ -946,13 +1090,14 @@ const DATE_REF = /\b(date|quand|date[e]?|daté|datee)\b/;
 const plainTxt = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
 /** Source synthétique d'une entité référencée (actions et affichage). */
-function entitySource(type: ReferencedType, id: number, label: string): RetrievedSource {
-  const prefix = type === 'document' ? 'doc' : type === 'asset' ? 'asset' : 'agenda';
+function entitySource(type: ReferencedType, id: number, label: string, assetId?: number | null): RetrievedSource {
+  const prefix = type === 'document' ? 'doc' : type === 'asset' ? 'asset' : type === 'equipment' || type === 'room' ? type : 'agenda';
   return {
     id: `${prefix}_${id}`,
-    type: type === 'document' ? 'document' : type === 'asset' ? 'asset_field' : 'agenda_item',
+    type: type === 'document' ? 'document' : type === 'asset' || type === 'equipment' || type === 'room' ? 'asset_field' : 'agenda_item',
     title: label, content: '', relevanceScore: 1,
-    meta: type === 'asset' ? { assetId: id } : type === 'document' ? { fileId: id } : {},
+    meta: type === 'asset' ? { assetId: id } : type === 'document' ? { fileId: id }
+      : (type === 'equipment' || type === 'room') && assetId ? { assetId } : {},
   } as RetrievedSource;
 }
 
@@ -978,12 +1123,19 @@ async function applyThreadMemory(
   // Reprise d'une clarification : le choix EST la référence.
   if (input.resume) {
     const r = input.resume;
-    const ref = r.documentId ? { type: 'document' as const, id: r.documentId } : r.assetId ? { type: 'asset' as const, id: r.assetId } : null;
+    const ref = r.documentId ? { type: 'document' as const, id: r.documentId }
+      : r.entity ? { type: r.entity.type, id: r.entity.id }
+        : r.assetId ? { type: 'asset' as const, id: r.assetId } : null;
     if (!ref) return { input };
+    // Équipement / pièce choisi : l'entité est la cible ; son bien parent
+    // devient le contexte (filtre, actions) — ticket 13 §G.
+    const pageRef = ref.type === 'document' ? { documentId: String(ref.id) }
+      : ref.type === 'asset' ? { assetId: String(ref.id) }
+        : r.entity?.assetId ? { assetId: String(r.entity.assetId) } : {};
     const enriched: AssistantRequestInput = {
       ...input,
       reference: { ...ref, label: r.choiceLabel, method: 'clarification' },
-      pageContext: { ...input.pageContext, ...(ref.type === 'document' ? { documentId: String(ref.id) } : { assetId: String(ref.id) }) },
+      pageContext: { ...input.pageContext, ...pageRef },
     };
     const update = { ...ref, label: r.choiceLabel };
     // CDC 15 T2-19 (lecture canonique) : document choisi → lecture ciblée
@@ -1040,9 +1192,15 @@ async function applyThreadMemory(
   const d = ports.describeEntity ? await ports.describeEntity(input.accountId, res.entity).catch(() => null) : null;
   if (!d) {
     trace.reference.outcome = 'unavailable';
+    // Ticket 14 §D : un BIEN du fil devenu archivé / transmis / supprimé est
+    // signalé comme tel — jamais « je n'ai rien trouvé », jamais lu.
+    if (res.entity.type === 'asset') trace.diagnostic = 'TARGET_UNAVAILABLE';
     return {
       input: enriched,
-      answer: { text: 'Cet élément n’est plus disponible dans votre compte.', sources: [], strategy: 'reference.unavailable', intent: 'NAVIGATION_OPEN' },
+      answer: {
+        text: res.entity.type === 'asset' ? ASSET_NO_LONGER_AVAILABLE_MESSAGE : 'Cet élément n’est plus disponible dans votre compte.',
+        sources: [], strategy: 'reference.unavailable', intent: 'NAVIGATION_OPEN',
+      },
     };
   }
   trace.reference.entity = { type: res.entity.type, id: res.entity.id };
@@ -1055,6 +1213,8 @@ async function applyThreadMemory(
       ...input.pageContext,
       ...(res.entity.type === 'asset' ? { assetId: String(res.entity.id) } : {}),
       ...(res.entity.type === 'document' ? { documentId: String(res.entity.id) } : {}),
+      // Équipement / pièce du fil : le bien parent devient le contexte (filtre).
+      ...((res.entity.type === 'equipment' || res.entity.type === 'room') && d.assetId ? { assetId: String(d.assetId) } : {}),
     },
   };
   const contextUpdate = { type: res.entity.type, id: res.entity.id, label };
@@ -1072,7 +1232,12 @@ async function lectureCiblee(
   ports: OrchestratorPorts,
 ): Promise<NonNullable<Awaited<ReturnType<typeof applyThreadMemory>>['answer']> | null> {
   if (!ports.readTarget) return null;
-  const lu = await ports.readTarget(input, targetsFromInput(input)).catch(() => null);
+  const lu = await ports.readTarget(input, targetsFromInput(input)).catch((e) => {
+    if (e instanceof TargetReadError) throw e;
+    return null;
+  });
+  // Ambiguïté de cible sur une question de suivi : la suite normale la traitera.
+  if (lu?.ambiguity) return null;
   return lu ? { text: lu.text, sources: lu.sources, strategy: lu.strategy, intent: lu.intent, claims: lu.claims } : null;
 }
 
@@ -1081,11 +1246,11 @@ function quickAnswer(
   message: string,
   type: ReferencedType,
   id: number,
-  d: { label: string; date?: string | null },
+  d: { label: string; date?: string | null; assetId?: number | null },
   detected?: string,
 ): { text: string; sources: RetrievedSource[]; strategy: string; intent: 'NAVIGATION_OPEN' | 'ACCOUNT_FACT_DOCUMENT' } | null {
   const m = plainTxt(message);
-  const src = [entitySource(type, id, d.label)];
+  const src = [entitySource(type, id, d.label, d.assetId)];
   if (type === 'document' && DATE_REF.test(m) && !OPEN_REF.test(m)) {
     return {
       text: d.date ? `« ${d.label} » est daté du ${formatDateFr(d.date)}.` : `Aucune date n’est enregistrée pour « ${d.label} ».`,
@@ -1190,6 +1355,13 @@ export function buildIntentClarification(p: {
 
 const SYNTHESIS_INTENTS = new Set(['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACCOUNT_TIMELINE']);
 
+/**
+ * Intentions où une question de CHAMP (« quelle est l'adresse de la
+ * maison ? ») est lue directement sur la fiche canonique (lot 29, 8b) —
+ * en plus d'une question qui demandait une classification.
+ */
+const FACT_STEP_INTENTS = new Set<string>(['ACCOUNT_FACT_ASSET', 'ACCOUNT_SEARCH_ASSET', 'UNKNOWN']);
+
 /** Dédoublonnage logique (§13.8) : même entité, même contenu, copie. */
 function dedupeSources(list: RetrievedSource[]): RetrievedSource[] {
   return dedupeLogique(list);
@@ -1257,6 +1429,20 @@ async function finalize(
     await marquerDisponibilite(sources, input.accountId).catch(() => sources),
     claims,
   );
+
+  // Lot 29 (ticket 13 AC08) : une réponse qui porte sur UN seul équipement
+  // ou UNE seule pièce en fait la cible courante du fil (« et son numéro de
+  // série ? »). Jamais pour une liste d'objets mélangés.
+  if (!base.contextUpdate && sourcesVerifiees.length) {
+    const refs = sourcesVerifiees.map((x) => ({ x, ref: parseEntityRef(x.id) }));
+    const entites = [...new Map(refs.filter((r) => r.ref && (r.ref.kind === 'equipment' || r.ref.kind === 'room'))
+      .map((r) => [`${r.ref!.kind}:${r.ref!.id}`, r])).values()];
+    const autres = refs.filter((r) => r.ref && r.ref.kind !== 'equipment' && r.ref.kind !== 'room');
+    if (entites.length === 1 && autres.length === 0) {
+      const e = entites[0];
+      base.contextUpdate = { type: e.ref!.kind as 'equipment' | 'room', id: e.ref!.id, label: e.x.title ?? null };
+    }
+  }
 
   const result: AssistantRunResult = {
     ...base, finalState: machine.state, mode,

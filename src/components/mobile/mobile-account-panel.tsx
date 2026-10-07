@@ -6,22 +6,33 @@
  * Direction D v2, maquette mobile : la barre haute porte le champ Verebona et
  * l'avatar ; la barre basse porte les CINQ onglets (Agenda compris,
  * répartition 2b) et le « + ». Ce panneau ne contient donc que le compte :
- * identité, notifications, Mon compte, aide, administration (si admin),
- * thème, déconnexion confirmée. La mascotte accueille, comme sur l'accueil.
+ * identité, notifications, aide, administration (si admin), thème,
+ * déconnexion confirmée.
+ *
+ * Lot 26 :
+ *  · l'en-tête « Bonjour, … / Compte et réglages » et sa mascotte sont
+ *    retirés — seules la cloche et la fermeture restent, alignées à droite ;
+ *  · la carte d'identité (initiales, nom, offre, chevron) ET l'entrée
+ *    « Mon compte » menaient au même endroit : l'entrée est retirée. La carte
+ *    reste, comme l'en-tête d'identité du menu de l'avatar sur ordinateur
+ *    (TopBar), et elle est l'accès à Mon compte (libellé accessible
+ *    « Mon compte », état courant marqué).
  */
 import { useState } from 'react';
 import Link from 'next/link';
-import { Bell, ChevronRight, HelpCircle, LogOut, Moon, Shield, Sun, User, X } from 'lucide-react';
+import { Bell, ChevronRight, HelpCircle, LogOut, Moon, Shield, Sun, X } from 'lucide-react';
 import { NotificationBell } from '@/components/NotificationBell';
 import { ConfirmLogoutDialog } from '@/components/ConfirmLogoutDialog';
-import { MascotPose } from '@/components/verebona/space/MascotPose';
 
 export interface MobileAccountPanelProps {
   open: boolean;
   onClose: () => void;
   pathname: string;
-  /** « Bonjour, … » : nom d'utilisateur, à défaut prénom. */
-  greetingName: string;
+  /**
+   * @deprecated Lot 26 : l'en-tête « Bonjour, … » est retiré ; la valeur est
+   * ignorée (conservée pour ne pas modifier l'appelant, DashboardLayout).
+   */
+  greetingName?: string;
   /** Nom de la personne (prénom + initiale), jamais celui du compte. */
   personName: string;
   initials: string;
@@ -38,7 +49,7 @@ export interface MobileAccountPanelProps {
 }
 
 export function MobileAccountPanel({
-  open, onClose, pathname, greetingName, personName, initials, planLabel, accountName, isAdmin,
+  open, onClose, pathname, personName, initials, planLabel, accountName, isAdmin,
   theme, onToggleTheme, onOpenHelp, onLogout, showBell = true,
 }: MobileAccountPanelProps) {
   const [logoutConfirm, setLogoutConfirm] = useState(false);
@@ -53,34 +64,25 @@ export function MobileAccountPanel({
             aria-label="Compte et réglages"
             className="fixed inset-y-0 right-0 flex w-[86%] max-w-sm flex-col overflow-y-auto rounded-l-[28px] border-l border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] shadow-relief-2xl [animation:vb-slide-in-right_.25s_cubic-bezier(.16,1,.3,1)]"
           >
-            {/* En-tête : la mascotte salue, cloche et fermeture */}
-            <div className="flex items-start gap-3 px-5 pb-4 pt-[max(18px,env(safe-area-inset-top))]">
-              <div className="relative flex h-[58px] w-[58px] flex-shrink-0 items-end justify-center">
-                <span aria-hidden className="absolute -inset-1.5 rounded-full" style={{ background: 'radial-gradient(closest-side, rgba(59,130,246,.32), rgba(59,130,246,0))' }} />
-                <MascotPose pose="welcome-wave" size={56} style={{ position: 'relative', filter: 'drop-shadow(0 10px 14px rgba(4,10,26,.55))' }} />
-              </div>
-              <div className="min-w-0 flex-1 pt-1.5">
-                <p className="m-0 truncate text-[17px] font-semibold tracking-[-0.01em] text-[color:var(--text-primary)]">
-                  Bonjour{greetingName ? `, ${greetingName}` : ''}
-                </p>
-                <p className="m-0 mt-0.5 text-[12.5px] text-[color:var(--text-muted)]">Compte et réglages</p>
-              </div>
-              <div className="flex flex-shrink-0 items-center">
-                {showBell && <NotificationBell />}
-                <button
-                  onClick={() => onClose()}
-                  aria-label="Fermer"
-                  className="flex h-11 w-11 items-center justify-center rounded-xl text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)]"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+            {/* En-tête : cloche et fermeture, alignées à droite (lot 26). */}
+            <div className="flex items-center justify-end gap-1 px-3 pb-2 pt-[max(12px,env(safe-area-inset-top))]">
+              {showBell && <NotificationBell />}
+              <button
+                onClick={() => onClose()}
+                aria-label="Fermer"
+                className="flex h-11 w-11 items-center justify-center rounded-xl text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)]"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
 
-            {/* Identité : la personne, son offre, l'espace courant */}
+            {/* Identité : la personne, son offre, l'espace courant — et l'accès
+                unique à Mon compte (l'entrée de liste en doublon est retirée). */}
             <Link
               href="/mon-compte"
               onClick={() => onClose()}
+              aria-label={`Mon compte — ${personName}${planLabel ? `, ${planLabel}` : ''}`}
+              aria-current={pathname === '/mon-compte' ? 'page' : undefined}
               className="mx-4 flex items-center gap-3 rounded-[18px] border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3.5 transition-colors hover:border-[color:var(--border)]"
             >
               <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-sm font-semibold text-white">
@@ -105,7 +107,6 @@ export function MobileAccountPanel({
 
             <nav className="flex-1 space-y-0.5 p-3 pt-4" aria-label="Compte">
               {[
-                { href: '/mon-compte', label: 'Mon compte', icon: User },
                 { href: '/mon-compte/notifications', label: 'Notifications', icon: Bell },
                 ...(isAdmin ? [{ href: '/admin', label: 'Administration', icon: Shield }] : []),
               ].map((e) => (

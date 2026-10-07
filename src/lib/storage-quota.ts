@@ -4,11 +4,13 @@
  * ══════════════════════════════════════════════════════════════════════════
  * UN GARDE-FOU TECHNIQUE, DISTINCT DU QUOTA DE DOCUMENTS
  *
- *   Standard 2 Go · Premium 10 Go · Premium Duo 15 Go   (1 Go = 1024³ octets)
+ *   Standard 1 Go · Premium 5 Go · Premium Duo 10 Go   (1 Go = 1024³ octets)
+ *   (lot 26 ; auparavant 2 / 10 / 15 Go)
  *
  * Les valeurs vivent dans `plan_limits.max_storage_bytes` (configurables par
- * offre, migration 0170) ; les constantes ci-dessous ne servent que de repli
- * si la ligne ou la colonne manque — elles doivent rester alignées.
+ * offre, migrations 0170 puis 0260) ; le repli ci-dessous, utilisé si la
+ * ligne ou la colonne manque, DÉRIVE du référentiel des offres
+ * (`SUBSCRIPTION_LIMITS.*.maxStorageGb`) — une seule valeur à changer.
  *
  * STO-003 : à 100 %, SEULS les nouveaux dépôts sont refusés
  * (`/api/files/presign` et `/api/files/confirm`). Consultation, suppression,
@@ -30,16 +32,17 @@ import {
   getCommercialPlanForAccount,
   type CommercialPlanCode,
 } from '@/services/commercial-model.service';
+import { SUBSCRIPTION_LIMITS } from '@/lib/subscription-limits';
 
 export const BYTES_PER_GB = 1024 ** 3;
 
-/** Repli code des plafonds du §13.1 (source normale : `plan_limits`). */
+/** Repli code des plafonds (source normale : `plan_limits`), dérivé du référentiel. */
 export const DEFAULT_STORAGE_LIMIT_BYTES: Record<CommercialPlanCode, number> = {
-  standard: 2 * BYTES_PER_GB,
-  premium: 10 * BYTES_PER_GB,
-  premium_duo: 15 * BYTES_PER_GB,
-  // Offre non commercialisée, hors CDC BO : aligné sur `subscription-limits.ts`.
-  premium_pro: 500 * BYTES_PER_GB,
+  standard: SUBSCRIPTION_LIMITS.STANDARD.maxStorageGb * BYTES_PER_GB,
+  premium: SUBSCRIPTION_LIMITS.PREMIUM.maxStorageGb * BYTES_PER_GB,
+  premium_duo: SUBSCRIPTION_LIMITS.PREMIUM_DUO.maxStorageGb * BYTES_PER_GB,
+  // Offre non commercialisée, hors CDC BO.
+  premium_pro: SUBSCRIPTION_LIMITS.PREMIUM_PRO.maxStorageGb * BYTES_PER_GB,
 };
 
 export interface StorageQuotaDecision {

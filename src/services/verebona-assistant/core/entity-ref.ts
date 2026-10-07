@@ -30,7 +30,7 @@
  */
 import { drawerHref } from '@/lib/drawers';
 import { SUPPLIERS_ROUTE, supplierHref } from '@/lib/supplier-routes';
-import { parseAssetFieldSourceId } from '../canonical/source-ids';
+import { parseAssetFieldSourceId, parseEntityFieldSourceId } from '../canonical/source-ids';
 
 /** Familles d'entités référençables par une source (§19.2). */
 export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process' | 'export';
@@ -122,6 +122,15 @@ export function parseEntityRef(
     const champ = parseAssetFieldSourceId(brut);
     if (!champ || (attendu && attendu !== 'asset')) return null;
     return { kind: 'asset', id: champ.assetId, sourceId: brut, fieldKey: champ.key };
+  }
+
+  // Lot 29 (ticket 13 §L) : champ d'un équipement / d'une pièce — l'entité
+  // reste l'équipement / la pièce (appartenance vérifiée par le bien parent).
+  if (brut.startsWith('equipment_field:') || brut.startsWith('room_field:')) {
+    const champ = parseEntityFieldSourceId(brut);
+    const kind: EntityKind | null = champ ? (champ.type === 'ROOM' ? 'room' : 'equipment') : null;
+    if (!champ || !kind || (attendu && attendu !== kind)) return null;
+    return { kind, id: champ.id, sourceId: brut, fieldKey: champ.key };
   }
 
   const separateur = brut.lastIndexOf('_');

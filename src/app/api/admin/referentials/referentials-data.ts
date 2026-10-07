@@ -21,8 +21,13 @@
  *     anciennes, « Studio »…) : listées « Inactif », pour rester visibles.
  *   · Rubriques et Types de documents : référentiel V2 du code
  *     (`lib/referential/v2`) ; utilisations = documents non supprimés classés.
- *   · Règles et mappings : applicabilité par famille (code) et mappings de
- *     taxonomie documentaire (`document_taxonomy_mappings`).
+ *     Chaque Type V2 indique sa règle métier (`DOCUMENT_CATALOG`) — relation
+ *     explicite (lot 30). Les codes V1 de la colonne historique
+ *     `document_type` suivent, « Actif » s'ils sont proposés par le sélecteur.
+ *   · Règles et mappings : applicabilité par famille (code), correspondances
+ *     DU CODE réellement appliquées (familles anciennes, anciens libellés de
+ *     catégorie, anciens codes documentaires — résolveur unique, lot 30), puis
+ *     mappings de taxonomie documentaire (`document_taxonomy_mappings`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -34,7 +39,16 @@ import {
   getRubric,
   type Applicability,
 } from '@/lib/referential/v2';
-import { ASSET_FAMILIES as TAXONOMY, assetFamilyLabel, normalizeAssetCategory } from '@/lib/asset-taxonomy';
+import {
+  ASSET_FAMILIES as TAXONOMY, LEGACY_ASSET_FAMILIES, LEGACY_CATEGORY_ALIASES, assetFamilyLabel, normalizeAssetCategory,
+} from '@/lib/asset-taxonomy';
+import { CAPABILITY_EQUIVALENT_CATEGORIES } from '@/lib/asset-category-legacy';
+import { DOCUMENT_TYPE_LIST } from '@/lib/document-type-constants';
+import { resolveDocumentCode } from '@/lib/referential/document-codes';
+import {
+  LEGACY_DOCUMENT_CODE_EQUIVALENTS, LEGACY_DOCUMENT_STORAGE_FALLBACKS,
+} from '@/lib/referential/legacy-document-codes';
+import { DOCUMENT_CATALOG } from '@/services/canonical/registry/catalogs';
 
 export interface ReferentialRow {
   code: string;
@@ -57,16 +71,10 @@ export interface ReferentialsSnapshot {
   mappings: ReferentialRow[];
 }
 
-const FAMILY_LABELS: Record<string, string> = {
-  IMMOBILIER: 'Immobilier',
-  VEHICULE: 'Véhicule',
-  MATERIEL_PRO: 'Matériel professionnel',
-  OBJECT: 'Objet',
-};
-
+/** Libellés des familles : référentiel des biens (lot 30 — plus de table locale). */
 export function applicabilityLabel(applicability: Applicability): string {
   if (applicability === 'ALL') return 'Toutes les familles';
-  return applicability.map((f) => FAMILY_LABELS[f] ?? f).join(', ');
+  return applicability.map((f) => assetFamilyLabel(f)).join(', ');
 }
 
 type CountRow = { code: string | null; n: number };
@@ -79,6 +87,7 @@ function toMap(rows: CountRow[]): Map<string, number> {
 export function buildCodeReferentials(
   rubricUsage: ReadonlyMap<string, number>,
   typeUsage: ReadonlyMap<string, number>,
+  legacyTypeUsage: ReadonlyMap<string, number> = new Map(),
 ): Pick<ReferentialsSnapshot, 'rubrics' | 'documentTypes' | 'applicability'> {
   const rubrics = [...RUBRICS]
     .sort((a, b) => a.displayOrder - b.displayOrder)
@@ -89,13 +98,31 @@ export function buildCodeReferentials(
       usage: rubricUsage.get(r.code) ?? 0,
       details: applicabilityLabel(r.applicability),
     }));
-  const documentTypes = DOCUMENT_TYPES.map((t) => ({
-    code: t.code,
-    label: t.label,
-    active: null,
-    usage: typeUsage.get(t.code) ?? 0,
-    details: `${getRubric(t.rubric)?.label ?? t.rubric}${t.userOnly ? ' — choix utilisateur uniquement' : ''}`,
-  }));
+  const documentTypes: ReferentialRow[] = [
+    ...DOCUMENT_TYPES.map((t) => {
+      const regle = resolveDocumentCode(t.code).catalogCode;
+      return {
+        code: t.code,
+        label: t.label,
+        active: null,
+        usage: typeUsage.get(t.code) ?? 0,
+        details: `${getRubric(t.rubric)?.label ?? t.rubric}${t.userOnly ? ' — choix utilisateur uniquement' : ''}`
+          + ` — règle métier : ${regle ?? 'aucune (non autoritaire)'}`,
+      };
+    }),
+    // Codes V1 (colonne historique `document_type`) : lisibles, « Actif »
+    // s'ils sont proposés par le sélecteur V1.
+    ...DOCUMENT_TYPE_LIST.map((t) => {
+      const r = resolveDocumentCode(t.code);
+      return {
+        code: t.code,
+        label: t.label,
+        active: r.status === 'ACTIVE',
+        usage: legacyTypeUsage.get(t.code) ?? 0,
+        details: `Type V1 (document_type)${r.v2Type ? ` — V2 : ${r.v2Type}` : ''}${r.catalogCode ? ` — règle métier : ${r.catalogCode}` : ''}`,
+      };
+    }),
+  ];
   const applicability = [
     ...RUBRICS.map((r) => ({
       code: r.code,
@@ -113,6 +140,47 @@ export function buildCodeReferentials(
     })),
   ];
   return { rubrics, documentTypes, applicability };
+}
+
+/**
+ * Correspondances DU CODE réellement appliquées (pure) : familles anciennes,
+ * anciens libellés de catégorie, anciens codes documentaires et codes du
+ * catalogue métier — chacune telle que le résolveur unique la traduit.
+ */
+export function buildCodeMappings(): ReferentialRow[] {
+  const rows: ReferentialRow[] = [];
+  for (const [code, f] of Object.entries(LEGACY_ASSET_FAMILIES)) {
+    rows.push({ code, label: `${code} → ${assetFamilyLabel(f.family)}`, active: null, usage: null, details: 'Famille de bien ancienne (code)' });
+  }
+  for (const [ancien, actuel] of Object.entries(LEGACY_CATEGORY_ALIASES)) {
+    rows.push({ code: ancien, label: `${ancien} → ${actuel}`, active: null, usage: null, details: 'Catégorie de bien : ancien libellé (code)' });
+  }
+  for (const [ancien, actuel] of Object.entries(CAPABILITY_EQUIVALENT_CATEGORIES)) {
+    rows.push({ code: ancien, label: `${ancien} → capacités de ${actuel}`, active: null, usage: null, details: 'Catégorie de bien conservée (code)' });
+  }
+  const codes = new Set<string>([
+    ...DOCUMENT_TYPE_LIST.map((t) => t.code),
+    ...Object.keys(LEGACY_DOCUMENT_CODE_EQUIVALENTS),
+    ...Object.keys(LEGACY_DOCUMENT_STORAGE_FALLBACKS),
+    ...DOCUMENT_CATALOG.flatMap((d) => [d.code, ...(d.aliases ?? [])]),
+  ]);
+  for (const code of [...codes].sort()) {
+    const r = resolveDocumentCode(code);
+    if (r.origin === 'V2_TYPE' && !r.storageCode) continue;
+    const cibles = [
+      r.v2Type && r.v2Type !== code ? `V2 ${r.v2Type}` : null,
+      r.storageCode && r.storageCode !== code ? `V1 ${r.storageCode}` : null,
+      r.catalogCode ? `règle ${r.catalogCode}${r.authoritative ? ' (autoritaire)' : ''}` : null,
+    ].filter(Boolean);
+    rows.push({
+      code,
+      label: `${code} → ${cibles.join(' · ') || 'aucune correspondance'}`,
+      active: null,
+      usage: null,
+      details: `Code documentaire (code) — ${r.status}`,
+    });
+  }
+  return rows;
 }
 
 type FamilyCountRow = { family: string; n: number };
@@ -171,7 +239,7 @@ export function buildAssetTaxonomyReferentials(
 }
 
 export async function loadReferentials(): Promise<ReferentialsSnapshot> {
-  const [familyCounts, categoryCounts, rubricCounts, typeCounts, mappings] = await Promise.all([
+  const [familyCounts, categoryCounts, rubricCounts, typeCounts, legacyTypeCounts, mappings] = await Promise.all([
     pgClient.unsafe<FamilyCountRow[]>(
       `SELECT category AS family, count(*)::int AS n FROM assets
         WHERE deleted_at IS NULL GROUP BY category`,
@@ -190,6 +258,10 @@ export async function loadReferentials(): Promise<ReferentialsSnapshot> {
       `SELECT document_type_code AS code, count(*)::int AS n FROM asset_files
         WHERE deleted_at IS NULL AND document_type_code IS NOT NULL GROUP BY document_type_code`,
     ),
+    pgClient.unsafe<CountRow[]>(
+      `SELECT document_type AS code, count(*)::int AS n FROM asset_files
+        WHERE deleted_at IS NULL AND document_type IS NOT NULL GROUP BY document_type`,
+    ),
     pgClient.unsafe<Array<{ mapping_type: string; raw_label: string; canonical_code: string; canonical_label: string; status: string; n: number | null }>>(
       `SELECT m.mapping_type, m.raw_label, m.canonical_code, m.canonical_label, m.status,
               CASE WHEN m.mapping_type = 'function_code'
@@ -201,17 +273,17 @@ export async function loadReferentials(): Promise<ReferentialsSnapshot> {
     ),
   ]);
 
-  const code = buildCodeReferentials(toMap(rubricCounts), toMap(typeCounts));
+  const code = buildCodeReferentials(toMap(rubricCounts), toMap(typeCounts), toMap(legacyTypeCounts));
   return {
     version: REFERENTIAL_VERSION,
     ...buildAssetTaxonomyReferentials(familyCounts, categoryCounts),
     ...code,
-    mappings: mappings.map((m) => ({
+    mappings: [...buildCodeMappings(), ...mappings.map((m) => ({
       code: m.canonical_code,
       label: `${m.raw_label} → ${m.canonical_label}`,
       active: m.status === 'active',
       usage: m.n === null ? null : Number(m.n),
       details: m.mapping_type === 'function_code' ? 'Fonction documentaire' : 'Libellé de date',
-    })),
+    }))],
   };
 }

@@ -2,12 +2,10 @@ import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import {
   accounts,
-  accountMemberships,
   accountSubscriptions,
   planLimits,
   accountAnalysisCounters,
   accountAnalysisCredits,
-  notificationEvents,
   referralEvents,
 } from '@/db/schema';
 import { NOTIFICATION_TYPES } from '@/types/notifications';
@@ -157,82 +155,34 @@ export async function getAnalysisQuotaState(accountId: number): Promise<{
   };
 }
 
-async function emitThresholdNotifications(accountId: number, includedConsumed: number, includedQuota: number, planCode: CommercialPlanCode, counterId: number, periodType: AnalysisPeriodType) {
-  if (includedQuota <= 0) return;
-
-  const ratio = (includedConsumed / includedQuota) * 100;
-  const thresholds: Array<{ threshold: 90 | 100; type: 'ANALYSIS_QUOTA_90' | 'ANALYSIS_QUOTA_100' }> = [];
-  if (ratio >= 90) thresholds.push({ threshold: 90, type: 'ANALYSIS_QUOTA_90' });
-  if (ratio >= 100) thresholds.push({ threshold: 100, type: 'ANALYSIS_QUOTA_100' });
-  if (thresholds.length === 0) return;
-
-  const [account] = await db.select({ ownerUserId: accounts.ownerUserId }).from(accounts).where(eq(accounts.id, accountId)).limit(1);
-  const members = await db
-    .select({ userId: accountMemberships.userId })
-    .from(accountMemberships)
-    .where(and(eq(accountMemberships.accountId, accountId), eq(accountMemberships.status, 'active')));
-
-  const userIds = new Set<number>();
-  if (account?.ownerUserId) userIds.add(account.ownerUserId);
-  for (const m of members) if (m.userId) userIds.add(m.userId);
-
-  for (const threshold of thresholds) {
-    const dedupeKey = `analysis_quota_${threshold.threshold}_${counterId}`;
-
-    const [exists] = await db
-      .select({ id: notificationEvents.id })
-      .from(notificationEvents)
-      .where(eq(notificationEvents.dedupeKey, dedupeKey))
-      .limit(1);
-
-    if (exists) continue;
-
-    await db.insert(notificationEvents).values({
-      accountId,
-      periodCounterId: counterId,
-      eventType: threshold.type === 'ANALYSIS_QUOTA_90' ? 'analysis_quota_90' : 'analysis_quota_100',
-      dedupeKey,
-      sentAt: new Date(),
-      createdAt: new Date(),
-    });
-
-    const cta = planCode === 'standard' ? 'upgrade_premium' : 'buy_pack';
-    // Émission via le service central : un seul appel, éclaté par le moteur sur
-    // tous les membres actifs (dédup par utilisateur via la clé). La dédup
-    // « une fois par période » reste assurée ci-dessus par notification_events.
-    await emit({
-      type: threshold.type,
-      recipientUserIds: Array.from(userIds),
-      accountId,
-      entityType: 'analysis_period_counter',
-      entityId: counterId,
-      payload: {
-        accountId,
-        threshold: threshold.threshold,
-        includedConsumed,
-        includedQuota,
-        cta,
-        planCode,
-        // Le libellé dépend de la période (essai / annuelle) : le quota n'est pas mensuel.
-        periodType,
-      },
-      dedupeKey: `account:${dedupeKey}`,
-    });
-  }
-}
-
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠️ LE COMPTEUR D'ANALYSES NE BLOQUE PLUS L'ANALYSE (lot 26)
+ *
+ * Le quota commercial est un quota de DOCUMENTS (CDC tarification V2 :
+ * 30 / 150 / 225, `entitlements.canAddDocument`, contrôlé au dépôt). Le
+ * compteur `account_analysis_counters` (modèle 0066 : 10/50, 30/200,
+ * 50/300…) est un autre compteur : il compte chaque passage d'analyse
+ * (réanalyses, documents multiples d'un même PDF) et peut rester sur la
+ * période d'essai (repli sur `accounts.subscription_status`). Il atteignait
+ * donc son plafond alors que le compte était loin de sa limite de documents
+ * (59 / 150 en préproduction) : l'e-mail « Votre quota d'analyses » partait
+ * à tort, et surtout la confirmation de dépôt, la réanalyse, le pipeline et
+ * la reprise serveur refusaient d'analyser les nouveaux documents.
+ *
+ * L'analyse d'un document accepté n'est donc plus refusée par ce compteur ;
+ * le coût IA reste borné par le plafond mensuel du compte (lot 22). Le
+ * compteur continue d'être alimenté (statistiques BO).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 export async function canConsumeAnalysis(accountId: number, amount = 1): Promise<{ allowed: boolean; reason?: string }> {
-  const state = await getAnalysisQuotaState(accountId);
+  const planCode = await getCommercialPlanForAccount(accountId);
 
-  if (state.planCode === 'premium_pro') {
+  if (planCode === 'premium_pro') {
     return { allowed: false, reason: 'PLAN_NOT_SUBSCRIBABLE' };
   }
 
-  if (amount <= 0) return { allowed: true };
-  if (state.totalRemaining < amount) {
-    return { allowed: false, reason: 'ANALYSIS_QUOTA_REACHED' };
-  }
-
+  void amount;
   return { allowed: true };
 }
 
@@ -240,9 +190,6 @@ export async function consumeAnalysisCredits(accountId: number, amount = 1): Pro
   if (amount <= 0) return;
 
   const state = await getAnalysisQuotaState(accountId);
-  if (state.totalRemaining < amount) {
-    throw new Error('ANALYSIS_QUOTA_REACHED');
-  }
 
   let toConsume = amount;
   const counter = await getOrCreateActiveCounter(accountId, state.planCode, state.periodType);
@@ -308,11 +255,15 @@ export async function consumeAnalysisCredits(accountId: number, amount = 1): Pro
     }
   }
 
+  // Au-delà des analyses incluses et des crédits : la consommation est
+  // enregistrée (statistiques), sans refus ni notification (lot 26 — le
+  // quota commercial est celui des documents).
   if (toConsume > 0) {
-    throw new Error('ANALYSIS_QUOTA_REACHED');
+    await db
+      .update(accountAnalysisCounters)
+      .set({ includedConsumed: newIncludedConsumed + toConsume, updatedAt: new Date() })
+      .where(eq(accountAnalysisCounters.id, counter.id));
   }
-
-  await emitThresholdNotifications(accountId, newIncludedConsumed, counter.includedQuota, state.planCode, counter.id, state.periodType);
 }
 
 export async function grantReferralRewardForFirstBilling(

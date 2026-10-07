@@ -14,8 +14,9 @@
  *     famille IMMOBILIER (génération), alors que la cible produit est
  *     « Maison + Appartement uniquement ».
  *
- * Ce module est la seule source ; il ne dépend de rien (il est importé par
- * `types/domain`, que `asset-taxonomy` importe lui-même). Les catégories sont
+ * Ce module est la seule source ; il ne dépend que de `asset-category-legacy`
+ * (sans dépendance — il est importé par `types/domain`, que `asset-taxonomy`
+ * importe lui-même). Les catégories sont
  * celles de `ASSET_FAMILIES` (lib/asset-taxonomy) ; un test vérifie que
  * chaque entrée ci-dessous y figure.
  *
@@ -24,6 +25,7 @@
  * bien existant.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { capabilityCategoryOf } from './asset-category-legacy';
 
 /** Catégories Immobilier (libellés actuels) qui gèrent pièces et équipements. */
 export const ROOM_CAPABLE_CATEGORIES = [
@@ -36,21 +38,11 @@ export const ROOM_CAPABLE_CATEGORIES = [
 /** Catégories Immobilier (libellés actuels) éligibles au CIL — Maison + Appartement. */
 export const CIL_ELIGIBLE_CATEGORIES = ['Maison', 'Appartement'] as const;
 
-/** Libellés anciens (hors liste de création) rattachés à une catégorie actuelle. */
-const LEGACY_EQUIVALENTS: Record<string, string> = {
-  studio: 'Appartement',
-  villa: 'Maison',
-  'propriété': 'Maison',
-  'local commercial': 'Local professionnel/commercial',
-  'local professionnel': 'Local professionnel/commercial',
-};
-
-function canonical(subtype: string | null | undefined): string | null {
-  if (!subtype) return null;
-  const key = subtype.trim().toLowerCase();
-  if (!key) return null;
-  return LEGACY_EQUIVALENTS[key] ?? subtype.trim();
-}
+/**
+ * Libellés anciens (renommés ou conservés) rattachés à une catégorie actuelle :
+ * table unique `asset-category-legacy` (lot 30), partagée avec la taxonomie.
+ */
+const canonical = capabilityCategoryOf;
 
 function matches(list: readonly string[], subtype: string | null | undefined): boolean {
   const c = canonical(subtype);

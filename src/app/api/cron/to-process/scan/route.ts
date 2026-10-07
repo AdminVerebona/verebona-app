@@ -25,7 +25,13 @@
  * route ne sert plus qu'au déclenchement manuel.
  *
  *   ?account=42   limite à un compte
- *   ?limit=500    nombre de comptes balayés sur ce passage
+ *   ?limit=500    nombre de comptes balayés sur ce passage (le suivant
+ *                 reprend au curseur) ; défaut : 5 000
+ *
+ * Lot 28 : chaque passage (route ou tâche) est tracé dans
+ * `to_process_scan_runs`, consultable dans le BO (Exploitation › Tâches
+ * planifiées). La notification des nouvelles actions est une AUTRE tâche
+ * (`/api/cron/notifications/to-process-scan`) : elle ne produit rien.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -45,9 +51,9 @@ export async function GET(req: NextRequest) {
 
   const p = req.nextUrl.searchParams;
   const accountId = Number(p.get('account')) || undefined;
-  const limit = Number(p.get('limit')) || 500;
+  const limit = Number(p.get('limit')) || undefined;
 
-  const resultat = await runToProcessFullScan({ accountId, limit });
+  const resultat = await runToProcessFullScan({ accountId, limit, trigger: 'route' });
 
   if (resultat === null) {
     console.warn(

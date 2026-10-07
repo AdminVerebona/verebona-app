@@ -30,8 +30,6 @@
  *
  *   /api/home/summary          30 s  acct:<compte>:home-summary
  *                              écriture du compte ; fraîcheur client
- *   /api/dashboard/a-traiter   15 s  acct:<compte>:a-traiter
- *                              écriture du compte ; fraîcheur client
  *   /api/to-process/suppliers  30 s  acct:<compte>:to-process-suppliers
  *                              écriture du compte ; fraîcheur client
  *   /api/users/me              30 s  user:<utilisateur>:me

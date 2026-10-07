@@ -94,6 +94,80 @@ export function buildAssetClarification(p: {
   };
 }
 
+/**
+ * Clarification d'une AMBIGUÏTÉ DE CIBLE résolue dans le compte (lot 29,
+ * tickets 8a §D, 12 AC10, 13 §G/§H, 14 §C) : biens d'une même catégorie,
+ * équipements ou pièces homonymes. Une seule question pour TOUTE la demande ;
+ * les champs demandés sont conservés pour la reprise. Les candidats viennent
+ * du compte (disponibles seulement — `target-lookup`), jamais du modèle.
+ */
+export function buildTargetClarification(p: {
+  ambiguity: import('./assistant-targets').TargetAmbiguity;
+  question: string;
+  accountId: number;
+  userId: number;
+  conversationId?: number;
+  originalMessage: string;
+  originalMessageId: string;
+  originalIntent: VerebonaIntent;
+  pageAssetId?: number | null;
+  requestedFacts?: string[];
+  chainDepth: number;
+  now?: Date;
+}): ClarificationState {
+  const a = p.ambiguity;
+  if (a.kind === 'asset') {
+    const etat = buildAssetClarification({
+      assets: a.candidates.map((c) => ({
+        id: c.id, name: c.name, category: c.category ?? '', subtype: c.subtype ?? null, purchaseDate: null, isRented: false,
+        city: c.city ?? null, address: c.address ?? null, registrationNumber: c.registrationNumber ?? null,
+      })),
+      reason: a.reason, accountId: p.accountId, userId: p.userId, conversationId: p.conversationId,
+      originalMessage: p.originalMessage, originalMessageId: p.originalMessageId, originalIntent: p.originalIntent,
+      pageAssetId: p.pageAssetId, chainDepth: p.chainDepth, now: p.now,
+    });
+    return { ...etat, question: p.question, resolvedContext: { ...etat.resolvedContext, requestedFacts: p.requestedFacts ?? [] } };
+  }
+  const now = p.now ?? new Date();
+  const base = a.candidates.map((c) => ({
+    id: `${a.kind}_${c.id}`,
+    entityId: c.id,
+    assetId: c.assetId,
+    label: c.name,
+    // « Chaudière — Maison Lyon » : le bien parent distingue les homonymes.
+    secondaryLabel: c.assetName ?? undefined,
+  }));
+  const cle = (c: ClarificationCandidate) => plain(`${c.label}|${c.secondaryLabel ?? ''}`);
+  const vus = new Map<string, number>();
+  for (const c of base) vus.set(cle(c), (vus.get(cle(c)) ?? 0) + 1);
+  const rang = new Map<string, number>();
+  const candidates = base.map((c) => {
+    if ((vus.get(cle(c)) ?? 0) < 2) return c;
+    const n = (rang.get(cle(c)) ?? 0) + 1;
+    rang.set(cle(c), n);
+    return { ...c, secondaryLabel: [c.secondaryLabel, `n°${n}`].filter(Boolean).join(' · ') };
+  });
+  return {
+    clarificationId: randomUUID(),
+    conversationId: p.conversationId,
+    accountId: p.accountId,
+    userId: p.userId,
+    originalMessageId: p.originalMessageId,
+    originalMessage: p.originalMessage,
+    originalIntent: p.originalIntent,
+    resolvedContext: { pageAssetId: p.pageAssetId ?? null, requestedFacts: p.requestedFacts ?? [] },
+    ambiguity: { kind: a.kind, field: 'entityId', reason: a.reason },
+    candidateType: a.kind,
+    candidates: candidates.slice(0, 6),
+    question: p.question,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
+    attemptCount: 0,
+    chainDepth: p.chainDepth,
+    status: 'PENDING',
+  };
+}
+
 /** Repli quand la clarification ne peut plus aboutir (§20.3). */
 export const FALLBACK_ASSET_MESSAGE =
   "Je n'arrive pas à identifier précisément le bien concerné. Vous pouvez ouvrir la liste de vos biens pour le sélectionner.";
@@ -162,7 +236,7 @@ export function buildEntityClarification(p: {
 }): ClarificationState {
   const now = p.now ?? new Date();
   const type = p.entities[0]?.type ?? 'document';
-  const prefix = type === 'document' ? 'doc' : type === 'asset' ? 'asset' : 'agenda';
+  const prefix = type === 'document' ? 'doc' : type === 'asset' ? 'asset' : type === 'equipment' || type === 'room' ? type : 'agenda';
   const candidateType = type === 'agenda_item' ? 'agenda' : type;
   return {
     clarificationId: randomUUID(),
@@ -181,7 +255,8 @@ export function buildEntityClarification(p: {
       label: e.label ?? `Élément n°${e.position}`,
       secondaryLabel: `n°${e.position} de la liste`,
     })),
-    question: type === 'document' ? 'De quel document parlez-vous ?' : type === 'asset' ? 'De quel bien parlez-vous ?' : 'De quelle échéance parlez-vous ?',
+    question: type === 'document' ? 'De quel document parlez-vous ?' : type === 'asset' ? 'De quel bien parlez-vous ?'
+      : type === 'equipment' ? 'De quel équipement parlez-vous ?' : type === 'room' ? 'De quelle pièce parlez-vous ?' : 'De quelle échéance parlez-vous ?',
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
     attemptCount: 0,

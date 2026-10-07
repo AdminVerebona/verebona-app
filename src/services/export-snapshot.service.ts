@@ -13,6 +13,7 @@
  * - events : isDraft=false, isIgnored=false
  */
 
+import { toExportFamily } from '@/services/exports/catalog';
 import { db } from '@/db';
 import {
   assets, assetFiles, substructures, equipments, events,
@@ -255,10 +256,7 @@ export function buildDetailSections(
   kc: Record<string, unknown>,
   assetRow: { category: string; address?: string | null; postalCode?: string | null; city?: string | null; registrationNumber?: string | null; generalCondition?: string | null; mileageOrHours?: number | null; notes?: string | null; name?: string | null },
 ): AssetDetailSections {
-  const family: 'IMMOBILIER' | 'VEHICULE' | 'OBJET' =
-    assetRow.category === 'VEHICULE' ? 'VEHICULE'
-    : assetRow.category === 'IMMOBILIER' ? 'IMMOBILIER'
-    : 'OBJET';
+  const family: 'IMMOBILIER' | 'VEHICULE' | 'OBJET' = toExportFamily(assetRow.category) ?? 'OBJET';
 
   const common = {
     name: assetRow.name ?? null,

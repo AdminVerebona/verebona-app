@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { agendaItemRemovals, aiMasterCorpusRuns, cdc15MigrationBackups, cdc15MigrationReport, cdc15MigrationRuns, roomMergeChanges, roomMergeRuns } from '../schema';
+import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15MigrationBackups, cdc15MigrationReport, cdc15MigrationRuns, roomMergeChanges, roomMergeRuns } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
 
@@ -23,7 +23,7 @@ function sqlTable(file: string, table: string) {
   }
   for (const m of sql.matchAll(new RegExp(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS (\\w+) ([^;]+);`, 'g'))) colonnes.set(m[1], /NOT NULL/i.test(m[2]));
   const checks = [...sql.matchAll(/CONSTRAINT (\w+)\s+CHECK/g)].map((m) => m[1]).filter((n) => n.startsWith(table));
-  const index = [...sql.matchAll(new RegExp(`CREATE INDEX IF NOT EXISTS (\\w+)\\s+ON ${table}\\b`, 'g'))].map((m) => m[1]);
+  const index = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\\w+)\\s+ON ${table}\\b`, 'g'))].map((m) => m[1]);
   return { colonnes, checks, index };
 }
 
@@ -35,6 +35,8 @@ const CAS: Array<[PgTable, string, string]> = [
   [cdc15MigrationBackups, '0225_cdc15_migration_report_backups.sql', 'cdc15_migration_backups'],
   [roomMergeRuns, '0229_rooms_to_substructures.sql', 'room_merge_runs'],
   [roomMergeChanges, '0229_rooms_to_substructures.sql', 'room_merge_changes'],
+  // Lot 28 : valeur retenue des données documentaires du catalogue « À traiter ».
+  [documentFieldValues, '0256_to_process_document_rules.sql', 'document_field_values'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

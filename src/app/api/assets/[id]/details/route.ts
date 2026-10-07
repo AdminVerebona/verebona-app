@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { toExportFamily } from '@/services/exports/catalog';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -228,9 +229,7 @@ export async function GET(
     try { kc = assetRow.keyCharacteristics ? JSON.parse(assetRow.keyCharacteristics) : {}; } catch {}
 
     // Determine family
-    const family = assetRow.category === 'VEHICULE' ? 'VEHICULE'
-      : assetRow.category === 'IMMOBILIER' ? 'IMMOBILIER'
-      : 'OBJET';
+    const family = toExportFamily(assetRow.category) ?? 'OBJET';
 
     // Adresse : fiche canonique (lecture unique, D-10).
     let adresse: AddressOverride | null = null;

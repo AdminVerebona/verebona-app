@@ -120,8 +120,19 @@ export interface CanonicalFieldDef {
   assistantReadable: boolean;
   assistantWritable: boolean;
   completenessRule?: CompletenessRule;
-  /** Donnée personnelle ou sensible : masquée dans les traces et prompts. */
+  /**
+   * Donnée personnelle ou sensible : masquée dans les traces, les journaux et
+   * tout ce qui est transmis au modèle. Elle reste restituable à son
+   * propriétaire par une réponse DÉTERMINISTE du serveur (lot 29, ticket 8a).
+   */
   sensitive?: boolean;
+  /**
+   * Restitution composée (lot 29, ticket 8a §G) : quand ce champ est demandé,
+   * la réponse déterministe assemble ces champs, dans cet ordre — clés d'un
+   * même groupe jointes par une espace, groupes séparés par une virgule, champs
+   * vides omis (ex. adresse complète : adresse, complément, code postal + ville, pays).
+   */
+  composedDisplay?: ReadonlyArray<ReadonlyArray<string>>;
   /** Cible par défaut du fait (ASSET si absent). */
   targetType?: CanonicalTargetType;
   /**
@@ -283,4 +294,35 @@ export interface PromptCatalogDTO {
   fields: PromptFieldDTO[];
   events: PromptEventDTO[];
   documents: PromptDocumentDTO[];
+}
+
+/* ── Projection officielle pour la LECTURE T2 (lot 30, AC19 / AC20) ───────── */
+
+/**
+ * Champ lisible par l'assistant T2, tel que le voient le matcher déterministe
+ * ET le FIELD_CATALOG de UNDERSTAND. Dérivé de `CanonicalFieldDef` seul.
+ */
+export interface T2ReadFieldDTO {
+  key: string;
+  label: string;
+  families: AssetFamily[];
+  /** Cibles admises (`fieldTargetTypes`). */
+  targets: CanonicalTargetType[];
+  valueType: CanonicalValueType;
+  unit?: string;
+  enumValues?: string[];
+  enumLabels?: Record<string, string>;
+  /** Donnée sensible : lisible par son propriétaire, masquée dans les traces. */
+  sensitive: boolean;
+  /**
+   * Vocabulaire OFFICIEL du champ pour T2 (sans accent, minuscules) : libellé
+   * puis `assistantPhrases`. Les `aliases` (clés techniques ou historiques)
+   * n'en font JAMAIS partie (AC20).
+   */
+  phrases: string[];
+}
+
+export interface T2ReadCatalogDTO {
+  version: string;
+  fields: T2ReadFieldDTO[];
 }

@@ -23,7 +23,7 @@
  *   notifications-scheduled-events  /15 min de 8 h 30 à 11 h      dedupe_key par date locale
  *   notifications-purge             chaque jour à 5 h 20          suppressions idempotentes
  *   expire-trials                   toutes les heures             UPDATE … RETURNING atomique
- *   to-process-scan                 toutes les heures             bail `to-process-scan`
+ *   to-process-scan                 toutes les heures (critique)  bail `to-process-scan`
  *   duo-dunning                     chaque jour à 6 h 10          index unique (duo, étape)
  *   withdrawal-process              toutes les heures             bail `withdrawal-sweep`
  *   referral-rewards                chaque jour à 10 h 15         prise atomique par événement
@@ -193,11 +193,18 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     schedule: { kind: 'interval', everyMs: HOUR },
     timeoutMs: TO_PROCESS_SCAN_TIMEOUT_MS,
     startupDelayMs: 8 * MIN,
-    run: async () => {
+    // Lot 28 : la production des actions nées d'un état de la base (document
+    // sans bien, agenda sans date…) en dépend — un arrêt doit se voir.
+    critical: { staleAfterMs: 3 * HOUR },
+    run: async ({ deadline, trigger }) => {
       const { runToProcessFullScan } = await import('@/services/to-process/to-process-scan.job');
-      const r = await runToProcessFullScan();
+      // Trace détaillée de chaque passage : `to_process_scan_runs` (BO).
+      const r = await runToProcessFullScan({ trigger, deadline });
       if (r === null) return { note: 'ignoré : balayage déjà en cours (route)', skipped: true };
-      return { note: JSON.stringify(r) };
+      const note = JSON.stringify(r);
+      // Tous les comptes en échec : la tâche est en échec (Supervision).
+      if (r.errors > 0 && r.accounts > 0 && r.errors >= r.accounts) return { error: `${r.errors} compte(s) en échec`, note };
+      return { note };
     },
   },
   {

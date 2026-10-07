@@ -39,7 +39,7 @@ describe('clé et durée par ressource', () => {
 
   it('compteurs 15 s, résumés 30 s, liens de fichiers 60 s, le reste 5 min (jamais allongé)', () => {
     expect(responseCacheTtl('/api/to-process')).toBe(15_000);
-    expect(responseCacheTtl('/api/dashboard/a-traiter')).toBe(15_000);
+    expect(responseCacheTtl('/api/v2/to-process')).toBe(15_000);
     expect(responseCacheTtl('/api/home/summary')).toBe(30_000);
     expect(responseCacheTtl('/api/users/me')).toBe(30_000);
     expect(responseCacheTtl('/api/files/12/view')).toBe(60_000);
@@ -60,18 +60,18 @@ describe('clé et durée par ressource', () => {
 
 describe('CA-01 / T-01 — les mutations invalident avant relecture', () => {
   it('écriture réussie → la lecture suivante va au serveur, avec demande de fraîcheur', async () => {
-    const a = await apiClient.get<{ n: number }>('/api/dashboard/a-traiter', { useCache: true });
-    expect(await apiClient.get('/api/dashboard/a-traiter', { useCache: true })).toEqual(a);
+    const a = await apiClient.get<{ n: number }>('/api/home/summary', { useCache: true });
+    expect(await apiClient.get('/api/home/summary', { useCache: true })).toEqual(a);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await apiClient.post('/api/to-process/actions/1/resolve', {});
-    const b = await apiClient.get<{ n: number }>('/api/dashboard/a-traiter', { useCache: true });
+    const b = await apiClient.get<{ n: number }>('/api/home/summary', { useCache: true });
     expect(b.n).toBeGreaterThan(a.n);
     // Le cache SERVEUR est aussi contourné, quelle que soit l'instance.
     expect(headerOf(2, 'x-verebona-fresh')).toBe('1');
 
     // Une seule fois : la lecture suivante reprend le chemin normal.
-    await apiClient.get('/api/dashboard/a-traiter', { useCache: false });
+    await apiClient.get('/api/home/summary', { useCache: false });
     expect(headerOf(3, 'x-verebona-fresh')).toBeNull();
   });
 

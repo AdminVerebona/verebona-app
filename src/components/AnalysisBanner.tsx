@@ -51,7 +51,13 @@ export function AnalysisBanner() {
   );
 }
 
-/** Mobile — fine barre sous le header fixe (top-16), disparaît quand analyse terminée */
+/**
+ * Mobile — fine barre sous la barre haute, disparaît quand l'analyse est
+ * terminée. Elle est DANS LE FLUX de la colonne (entre la barre haute et la
+ * zone de défilement) : elle réserve sa hauteur et ne recouvre jamais le
+ * contenu (lot 26 : en `fixed top-16`, elle masquait le titre de la page,
+ * la barre haute réelle n'ayant pas une hauteur fixe — encoche).
+ */
 export function MobileAnalysisBanner() {
   const { analyzingCount, analyzingFileIds } = useAnalysisBanner();
 
@@ -70,7 +76,7 @@ export function MobileAnalysisBanner() {
   };
 
   return (
-    <div className="md:hidden fixed top-16 left-0 right-0 z-30 flex items-center justify-center gap-2 px-4 py-1.5 bg-[color:var(--bg-page)]/90 backdrop-blur-sm border-b border-[color:var(--border-subtle)] animate-in slide-in-from-top-1 fade-in duration-300">
+    <div data-mobile-analysis-banner className="md:hidden flex flex-shrink-0 items-center justify-center gap-2 px-4 py-1.5 bg-[color:var(--bg-page)]/90 backdrop-blur-sm border-b border-[color:var(--border-subtle)] animate-in slide-in-from-top-1 fade-in duration-300">
       <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[color:var(--accent)] opacity-60" />
         <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[color:var(--accent)] opacity-80" />

@@ -5,6 +5,7 @@ import { documentSuppliers, assetFiles, suppliers } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
+import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
 
 // PUT /api/documents/[id]/supplier — associate a supplier to a document
 export async function PUT(
@@ -68,6 +69,9 @@ export async function PUT(
         ));
     }
 
+    // Lot 28 : « À traiter » suit la correction (DATA-SUPPLIER). Ne lève jamais.
+    await onDocumentEditedByUser(accountId, documentId);
+
     // CDC Assistant §25.7, §31.7 : fournisseur du document modifié.
     await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
     return NextResponse.json({ success: true });
@@ -114,6 +118,7 @@ export async function DELETE(
       .set({ userEditedFields: sql`coalesce(${assetFiles.userEditedFields}, '{}'::jsonb) || '{"supplier": true}'::jsonb` })
       .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountId)));
 
+    await onDocumentEditedByUser(accountId, documentId);
     await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
     return NextResponse.json({ success: true });
   } catch (err) {

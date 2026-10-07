@@ -5,7 +5,9 @@ import { db } from '@/db';
 import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
+import { isKnownStorageDocumentCode } from '@/lib/referential/document-codes';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
+import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
 
 export async function PUT(
   request: NextRequest,
@@ -40,11 +42,15 @@ export async function PUT(
       );
     }
 
-    const validDocType = await db
-      .select({ id: documentTypes.id })
-      .from(documentTypes)
-      .where(eq(documentTypes.code, documentType))
-      .limit(1);
+    // Lot 30 : le référentiel V1 (résolveur documentaire unique) valide ; la
+    // table `document_types` reste consultée pour un type ajouté en back-office.
+    const validDocType = isKnownStorageDocumentCode(documentType)
+      ? [{ id: 0 }]
+      : await db
+        .select({ id: documentTypes.id })
+        .from(documentTypes)
+        .where(eq(documentTypes.code, documentType))
+        .limit(1);
 
     if (validDocType.length === 0) {
       return NextResponse.json(
@@ -108,6 +114,22 @@ export async function PUT(
 
     if (assetId !== undefined) {
       updateData.assetId = assetId === null || assetId === 0 ? null : parseInt(assetId);
+    }
+
+    // Lot 28 (« À traiter », LINK-ASSET) : un rattachement choisi — ou RETIRÉ
+    // — par l'utilisateur est une décision utilisateur, qu'aucune analyse
+    // ultérieure ne défait automatiquement. Le tiroir renvoie
+    // `userEditedFields` en entier : la marque est conservée d'un
+    // enregistrement à l'autre.
+    {
+      const avant = (oldDoc.userEditedFields ?? {}) as Record<string, boolean>;
+      const rattachementModifie = assetId !== undefined && updateData.assetId !== oldDoc.assetId;
+      if (rattachementModifie || avant.assetId === true) {
+        updateData.userEditedFields = {
+          ...((updateData.userEditedFields ?? avant) as Record<string, boolean>),
+          assetId: true,
+        };
+      }
     }
     if (substructureId !== undefined) {
       updateData.substructureId = substructureId === null || substructureId === 0 ? null : parseInt(substructureId);
@@ -187,7 +209,9 @@ export async function PUT(
       return x === y || String(x) === String(y);
     };
     const autresChampsModifies = Object.keys(updateData)
-      .filter((k) => k !== 'updatedAt' && k !== 'assetId')
+      // `userEditedFields` ne fait que marquer les champs ci-dessus (et, lot 28,
+      // le rattachement) : il ne constitue pas une correction à lui seul.
+      .filter((k) => k !== 'updatedAt' && k !== 'assetId' && k !== 'userEditedFields')
       .some((k) => !memeValeur(updateData[k], (oldDoc as Record<string, unknown>)[k]));
     const seulLeBienChange =
       assetCible !== undefined && assetCible !== oldDoc.assetId && !autresChampsModifies;
@@ -236,6 +260,11 @@ export async function PUT(
     // rattachement (`asset-enrichment-trigger`, moteur historique supprimé).
     // La fiche du bien est alimentée par la projection des faits T1 puis la
     // réconciliation T3 (ci-dessus), ou par la réanalyse en repli.
+
+    // Lot 28 : « À traiter » suit la correction — rattachement, fournisseur…
+    // L'action résolue se ferme, un problème réapparu (document détaché) se
+    // rouvre. Ne lève jamais.
+    if (accountId) await onDocumentEditedByUser(accountId, documentId);
 
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
     if (accountId) await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });

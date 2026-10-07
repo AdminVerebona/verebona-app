@@ -24,6 +24,7 @@ import { markAccountDataMutated } from '@/lib/data-freshness';
 import { useRouter } from 'next/navigation';
 import { duoJoinErrorMessage, joinDuo, takePendingDuoJoin } from '@/lib/duo/pending-duo-join';
 import { useHomeSummary } from '@/components/home/useHomeSummary';
+import { prefetchMascotPresentation } from '@/components/home/useMascotPresentation';
 // Mêmes chunks et même préchargement que le panneau « Ajouter » (APP-PERF-05).
 import { LazyAssetFormDialog as AssetFormDialog, LazyUnifiedDocumentDialog as UnifiedDocumentDialog } from '@/components/mobile/add-forms';
 import { orderByRecentViews, readRecentAssetIds } from '@/lib/home/recent-assets';
@@ -65,6 +66,11 @@ export default function DashboardPage() {
   // et une réponse plus ancienne n'écrase jamais une plus récente
   // (APP-PERF-09). Un résumé frais n'est demandé qu'après une modification.
   const { summary, status, refreshing, refreshError, invalidate, retry } = useHomeSummary();
+
+  // Même principe pour la prise de parole de la mascotte (lot 26, point 17) :
+  // sa lecture part au montage de la page, sans attendre la session ni le
+  // montage de la carte ; `MascotSpeaks` la reprend à son premier chargement.
+  useEffect(() => { prefetchMascotPresentation(); }, []);
 
   useEffect(() => {
     setBreadcrumbs([]);

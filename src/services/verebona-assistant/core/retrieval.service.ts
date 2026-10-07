@@ -29,10 +29,11 @@ import type { RetrievalAdapter } from '../registries/retrieval-adapter-registry'
 import type { SourceType } from '../types/sources';
 import { documentSearchFilters, documentTypeStems, hasDocumentFilters, type DocumentSearchFilters } from './query-terms';
 import { resolveAssistantTargets, type AssistantTargets } from './assistant-targets';
+import { assistantAssetAvailability } from './asset-availability';
 import type { RouteUnderstanding } from '../types/contracts';
 import type { DocumentAnalysisFilter } from './query-terms';
 import { resolveDocumentType } from '@/services/canonical/registry';
-import { getDocumentType } from '@/lib/referential/v2';
+import { resolveDocumentCode } from '@/lib/referential/document-codes';
 
 export async function retrieve(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]> {
   const cfg = getAssistantConfig();
@@ -163,10 +164,10 @@ export async function helpRolesFor(accountId: number, userId: number): Promise<H
  */
 async function listAccountAssets(accountId: number, limit: number): Promise<RetrievedSource[]> {
   const rows = await pgClient.unsafe(
-    `SELECT id, name, category, city
-       FROM assets
-      WHERE account_id = $1 AND deleted_at IS NULL
-      ORDER BY name
+    `SELECT a.id, a.name, a.category, a.city
+       FROM assets a
+      WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')}
+      ORDER BY a.name
       LIMIT $2`,
     [accountId, limit],
   );
@@ -191,8 +192,8 @@ async function structuredAssetSearch(accountId: number, query: string, limit: nu
   const mode = await searchExprMode();
   const rows = await pgClient.unsafe(
     `SELECT id, name, category, city
-       FROM assets
-      WHERE account_id = $1 AND deleted_at IS NULL
+       FROM assets a
+      WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')}
         AND ${normalizedText(mode, 'name')} LIKE ${normalizedText(mode, '$2')}
       ORDER BY name
       LIMIT $3`,
@@ -296,9 +297,13 @@ export function mergeUnderstandingFilters(
   if (f.supplier && !out.documentFilters.supplierName && f.supplier.trim().length >= 2) out.documentFilters.supplierName = f.supplier.trim().toLowerCase();
   if (f.documentType && out.documentTypes.length === 0) {
     const v = f.documentType.trim();
-    const entree = resolveDocumentType(v);
-    if (/^[A-Z0-9_]+$/.test(v) && (entree || getDocumentType(v))) {
-      out.documentTypeCodes = [...new Set([v, ...(entree ? [entree.code, ...(entree.aliases ?? [])] : [])].map((c) => c.toUpperCase()))];
+    // Lot 30 : un CODE (V2, V1, catalogue, ancien code) est reconnu par le
+    // résolveur documentaire unique, comme partout ailleurs.
+    const r = /^[A-Z0-9_]+$/.test(v) ? resolveDocumentCode(v) : null;
+    const entree = r && r.status !== 'UNKNOWN' ? resolveDocumentType(v) : undefined;
+    if (r && r.status !== 'UNKNOWN') {
+      out.documentTypeCodes = [...new Set([v, ...(r.storageCode ? [r.storageCode] : []), ...(r.v2Type ? [r.v2Type] : []),
+        ...(entree ? [entree.code, ...(entree.aliases ?? [])] : [])].map((c) => c.toUpperCase()))];
     } else {
       out.documentTypes = documentTypeStems(tokenizeQuery(v));
     }

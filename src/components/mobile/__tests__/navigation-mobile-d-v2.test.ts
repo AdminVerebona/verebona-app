@@ -2,9 +2,9 @@
  * Navigation mobile — maquette Direction D v2 (« La mascotte »), répartition 2b.
  *
  *  · barre basse : cinq onglets répartis également, « + » détaché au-dessus ;
- *  · avatar : panneau du compte seul (identité, notifications, Mon compte,
- *    aide, administration si admin, thème, déconnexion confirmée), la
- *    mascotte en tête.
+ *  · avatar : panneau du compte seul (carte d'identité → Mon compte,
+ *    notifications, aide, administration si admin, thème, déconnexion
+ *    confirmée) ; lot 26 : plus d'en-tête « Bonjour » ni de mascotte.
  */
 import * as React from 'react';
 import { createElement as h } from 'react';
@@ -41,13 +41,34 @@ describe('panneau du compte', () => {
     planLabel: 'Premium', accountName: null, isAdmin: false, theme: 'blue', onToggleTheme: () => {}, onOpenHelp: () => {}, onLogout: () => {},
   };
 
-  it('la mascotte salue par le nom d’utilisateur ; compte seulement, sans navigation', () => {
+  it('compte seulement, sans navigation', () => {
     const html = renderToStaticMarkup(h(MobileAccountPanel, props));
-    expect(html).toContain('Bonjour, fab');
-    expect(html).toContain('welcome-wave');
-    for (const t of ['Mon compte', 'Notifications', 'Besoin d&#x27;aide ?', 'Thème clair', 'Se déconnecter']) expect(html).toContain(t);
+    for (const t of ['Notifications', 'Besoin d&#x27;aide ?', 'Thème clair', 'Se déconnecter']) expect(html).toContain(t);
     expect(html).not.toContain('/agenda');
     expect(html).not.toContain('Administration');
+  });
+
+  it('lot 26 — AC5 : plus d’en-tête « Bonjour / Compte et réglages » ni de mascotte ; fermeture conservée', () => {
+    const html = renderToStaticMarkup(h(MobileAccountPanel, props));
+    expect(html).not.toContain('Bonjour');
+    expect(html).not.toContain('>Compte et réglages<');
+    expect(html).not.toContain('welcome-wave');
+    expect(html).toContain('aria-label="Fermer"');
+    // La cloche et la fermeture partagent une rangée alignée à droite.
+    const rangee = html.slice(html.indexOf('class="flex items-center justify-end'));
+    expect(rangee.indexOf('aria-label="Fermer"')).toBeGreaterThan(-1);
+    expect(rangee.indexOf('aria-label="Fermer"')).toBeLessThan(rangee.indexOf('</div>'));
+  });
+
+  it('lot 26 — AC6 : un seul accès à Mon compte, la carte d’identité (nom + offre)', () => {
+    const html = renderToStaticMarkup(h(MobileAccountPanel, props));
+    expect(html.match(/href="\/mon-compte"/g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Mon compte — Fabien M., Premium"');
+    expect(html).toContain('Fabien M.');
+    expect(html).toContain('>Premium<');
+    expect(html).toContain('href="/mon-compte/notifications"');
+    const surMonCompte = renderToStaticMarkup(h(MobileAccountPanel, { ...props, pathname: '/mon-compte' }));
+    expect(surMonCompte).toMatch(/href="\/mon-compte"[^>]*aria-current="page"|aria-current="page"[^>]*href="\/mon-compte"/);
   });
 
   it('administration pour un administrateur ; fermé : rien', () => {

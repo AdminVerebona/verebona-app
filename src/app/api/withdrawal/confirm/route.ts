@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
-import { evaluateEligibility } from '@/services/withdrawal/eligibility.service';
+import { evaluateEligibility, ineligibilityMessage } from '@/services/withdrawal/eligibility.service';
 import { buildSummary } from '@/services/withdrawal/summary.service';
 import { recordDeclaration, WithdrawalError } from '@/services/withdrawal/withdrawal.service';
 import {
@@ -100,6 +100,17 @@ export async function POST(req: NextRequest) {
   // Entre l'affichage et la confirmation, le délai a pu expirer ou une
   // première demande avoir été enregistrée dans un autre onglet.
   const eligibility = await evaluateEligibility(caller.userId, caller.accountId);
+
+  // Lot 26 : hors délai, la déclaration est REFUSÉE (409), plus enregistrée en
+  // examen manuel. L'expiration du délai n'est pas une anomalie (§5.5 vise
+  // l'éligibilité indéterminable, qui reste enregistrée) : c'est un fait
+  // calculé, par la même fonction que l'affichage (`isWithdrawalWindowOpen`).
+  if (eligibility.verdict === 'ineligible' && eligibility.reason === 'DEADLINE_PASSED') {
+    return NextResponse.json(
+      { error: ineligibilityMessage('DEADLINE_PASSED'), code: 'WITHDRAWAL_WINDOW_CLOSED' },
+      { status: 409 },
+    );
+  }
   const summary = await buildSummary(eligibility, {
     userId: caller.userId,
     firstName: caller.firstName,

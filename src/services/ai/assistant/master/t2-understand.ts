@@ -14,7 +14,7 @@
  * du FIELD_CATALOG (A4), le reste renvoyé en `requestedTopics` ; indices
  * sans préfixe « page: ».
  */
-import { CANONICAL_FIELDS } from '@/services/canonical/registry';
+import { ASSET_FAMILY_CODES, catalogForT2Read, type T2ReadFieldDTO } from '@/services/canonical/registry';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import {
   callWithRepairOrEscalation, repairInstruction,
@@ -39,8 +39,10 @@ const MAX_CONVERSATION_CHARS = 2000;
 type RouteHintType = IntentRoute['entityHints'][number]['type'];
 const HINT_TYPES: Record<string, RouteHintType> = {
   asset: 'asset', document: 'document', agenda: 'agenda', supplier: 'supplier', help: 'help', period: 'period',
-  // Désignations d'équipement ou de pièce : indices de BIEN, résolus par le serveur.
-  equipment: 'asset', room: 'asset',
+  // Lot 29 (ticket 13 §A) : un équipement ou une pièce RESTE un équipement ou
+  // une pièce — résolu par le serveur dans les équipements / pièces du compte
+  // (`assistant-targets`), jamais rabattu sur un bien portant ce nom.
+  equipment: 'equipment', room: 'room',
 };
 
 export interface T2Understanding {
@@ -64,19 +66,38 @@ export function describeIntentCatalog(): string {
   return VEREBONA_INTENTS.map((i) => `- ${i} : ${getIntentDefinition(i as VerebonaIntent).label}`).join('\n');
 }
 
-/** FIELD_CATALOG : clés canoniques et libellés (registre canonique, source unique). */
-export function describeFieldCatalog(): string {
-  const vus = new Set<string>();
-  const lignes: string[] = [];
-  for (const f of CANONICAL_FIELDS) {
-    if (vus.has(f.key)) continue;
-    vus.add(f.key);
-    lignes.push(`- ${f.key} : ${f.label}`);
-  }
-  return lignes.join('\n');
+/**
+ * Ligne du FIELD_CATALOG d'un champ (pure) : clé, libellé, type / unité /
+ * valeurs, familles et cibles quand elles restreignent, puis les
+ * formulations reconnues — toutes issues de la projection officielle.
+ */
+export function describeFieldLine(f: T2ReadFieldDTO): string {
+  const type = [
+    f.valueType,
+    f.unit ? `unité ${f.unit}` : null,
+    f.enumValues?.length ? `valeurs ${f.enumValues.map((v) => (f.enumLabels?.[v] ? `${v}=${f.enumLabels[v]}` : v)).join('|')}` : null,
+  ].filter(Boolean).join(', ');
+  const portee = [
+    f.families.length < ASSET_FAMILY_CODES.length ? `familles ${f.families.join('/')}` : null,
+    f.targets.length !== 1 || f.targets[0] !== 'ASSET' ? `cibles ${f.targets.join('/')}` : null,
+  ].filter(Boolean).join(' ; ');
+  // `phrases` commence par le libellé normalisé : seules les autres formulations sont ajoutées.
+  const formulations = f.phrases.slice(1);
+  return `- ${f.key} : ${f.label} (${type}${portee ? ` ; ${portee}` : ''})`
+    + (formulations.length ? ` — formulations : ${formulations.join(', ')}` : '');
 }
 
-const FIELD_KEYS = (): Set<string> => new Set(CANONICAL_FIELDS.map((f) => f.key));
+/**
+ * FIELD_CATALOG : projection OFFICIELLE du registre pour la lecture T2
+ * (`catalogForT2Read`, lot 30 — AC19). Plus aucune projection propre ici :
+ * un champ lisible ajouté, retiré ou modifié dans le registre l'est ici, avec
+ * le même vocabulaire que le matcher déterministe (AC20).
+ */
+export function describeFieldCatalog(): string {
+  return catalogForT2Read().fields.map(describeFieldLine).join('\n');
+}
+
+const FIELD_KEYS = (): Set<string> => new Set(catalogForT2Read().fields.map((f) => f.key));
 
 /** Contrôles serveur de la sortie validée. Pure. */
 export function toT2Understanding(out: T2UnderstandOutput, events: string[] = []): T2Understanding {

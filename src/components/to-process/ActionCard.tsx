@@ -24,8 +24,10 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { FileText, Image as ImageIcon, Home, Package, Calendar, Wrench, LayoutGrid } from 'lucide-react';
 import { ACTION_KIND_LABELS, MICROCOPY } from '@/lib/referential/v2/microcopy';
 import { PRIORITY_LABELS } from '@/services/to-process/priority';
@@ -49,6 +51,8 @@ export interface ActionView {
   ruleCode: string;
   question: string;
   proposals: ActionProposalView[];
+  /** Lot 28 — « À compléter » saisissable sur la carte (sinon : le tiroir). */
+  inputType?: 'date' | 'text' | null;
   target: {
     label: string;
     mimeType?: string | null;
@@ -101,6 +105,9 @@ function Badges({ action }: { action: ActionView }) {
  * ligne plutôt que de se tronquer (§16.1).
  */
 function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView } & Handlers) {
+  if (action.actionKind === 'COMPLETE' && action.inputType) {
+    return <InlineCompletion action={action} onChoose={onChoose} onOpenTarget={onOpenTarget} busy={busy} />;
+  }
   if (action.actionKind === 'COMPLETE') {
     return (
       <Button
@@ -144,6 +151,44 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
         {MICROCOPY.otherChoice}
       </Button>
     </div>
+  );
+}
+
+/**
+ * « À compléter » en ligne (lot 28) : une date de fin de contrat ou de
+ * garantie se saisit sur la carte, sans ouvrir le document. La valeur suit
+ * le même chemin qu'une proposition retenue (résolution atomique, toast
+ * « Annuler »). « Compléter » ouvre toujours l'objet.
+ */
+function InlineCompletion({ action, onChoose, onOpenTarget, busy }: { action: ActionView } & Handlers) {
+  const [value, setValue] = useState('');
+  const trimmed = value.trim();
+  const label = action.inputType === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    ? trimmed.split('-').reverse().join('/')
+    : trimmed;
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed) onChoose(action, { value: trimmed, label });
+      }}
+    >
+      <Input
+        type={action.inputType === 'date' ? 'date' : 'text'}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        disabled={busy}
+        aria-label={action.question}
+        className="h-9 w-auto min-w-[10rem]"
+      />
+      <Button type="submit" size="sm" variant="default" disabled={busy || !trimmed} className="h-9">
+        Valider
+      </Button>
+      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onOpenTarget(action)} className="h-9">
+        {MICROCOPY.complete}
+      </Button>
+    </form>
   );
 }
 

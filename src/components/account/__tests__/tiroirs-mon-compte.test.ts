@@ -12,7 +12,7 @@ const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 
 const BLOCS = [
   'src/components/subscription/SubscriptionSummary.tsx',
-  'src/components/account/StorageUsageCard.tsx',
+  'src/components/account/ReferralCard.tsx',
   'src/app/(dashboard)/mon-compte/informations/InformationsTab.tsx',
   'src/components/account/AiHistoryBlock.tsx',
   'src/components/account/NotificationsCard.tsx',

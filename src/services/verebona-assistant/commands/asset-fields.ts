@@ -22,6 +22,7 @@
  * « Assurance » dans `vehicle_insurance`). Parité vérifiée par un test.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { toAssetFamilyCode } from '@/lib/asset-taxonomy';
 import { CANONICAL_FIELDS, type CanonicalFieldDef } from '@/services/canonical/registry';
 
 export type AssetFamily = 'IMMOBILIER' | 'VEHICULE' | 'OBJET';
@@ -87,7 +88,8 @@ export const ASSISTANT_ASSET_FIELDS: AssetFieldDefinition[] = CANONICAL_FIELDS
   .map(({ d }) => assistantFieldOf(d));
 
 export function familyOf(category: string): AssetFamily {
-  return category === 'IMMOBILIER' || category === 'VEHICULE' ? category : 'OBJET';
+  // Résolveur unique des familles (lot 30) : inconnue → objet, comme avant.
+  return FAMILLE_ASSISTANT[toAssetFamilyCode(category) ?? 'OBJECT'];
 }
 
 const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");

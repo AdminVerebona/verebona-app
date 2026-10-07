@@ -3092,6 +3092,29 @@ export const documentAssetLinks = pgTable('document_asset_links', {
   targetCheck: check('document_asset_links_target_check', sql`${t.assetId} IS NOT NULL OR ${t.roomId} IS NOT NULL OR ${t.equipmentId} IS NOT NULL OR ${t.substructureId} IS NOT NULL`),
 }));
 
+// Migration 0256 (lot 28) — valeur retenue d'une donnée documentaire du
+// catalogue « À traiter » sans colonne dédiée (contractEndDate,
+// warrantyEndDate…). Écrite par `services/to-process/document-slots.ts`.
+// `user_validated` : jamais remplacée automatiquement (P-05, §12.2).
+export const documentFieldValues = pgTable('document_field_values', {
+  id:            bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId:     integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  fileId:        integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  fieldKey:      text('field_key').notNull(),
+  valueText:     text('value_text'),
+  /** USER | DOCUMENT_EXTRACTION | RECONCILIATION | IMPORT | SYSTEM_RULE | ADMIN */
+  origin:        text('origin').notNull(),
+  userValidated: boolean('user_validated').notNull().default(false),
+  confidence:    numeric('confidence', { precision: 4, scale: 3 }),
+  evidenceIds:   jsonb('evidence_ids').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  createdAt:     pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:     pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  fileKeyUniq: uniqueIndex('document_field_values_file_key_uidx').on(t.fileId, t.fieldKey),
+  accountIdx:  index('document_field_values_account_idx').on(t.accountId, t.fieldKey),
+  confidenceChk: check('document_field_values_confidence_chk', sql`${t.confidence} IS NULL OR (${t.confidence} >= 0 AND ${t.confidence} <= 1)`),
+}));
+
 // ── Tables NEUVES des lots 14 à 17, déclarées pour `db:push` ────────────────
 // Écrites et lues en SQL par leurs services ; déclarées ICI (alignement exact
 // avec le SQL, contrôlé par `__tests__/schema-tables-neuves.test.ts`) pour
@@ -3146,6 +3169,76 @@ export const aiMasterCorpusRuns = pgTable('ai_master_corpus_runs', {
   textSourceCheck: check('ai_master_corpus_runs_text_source_ck', sql`${t.textSource} IN ('config', 'file')`),
   lookupIdx: index('ai_master_corpus_runs_lookup_idx').on(t.masterPromptCode, t.textSha256, t.runMode, t.createdAt.desc()),
   versionIdx: index('ai_master_corpus_runs_version_idx').on(t.configVersionId, t.treatment, t.createdAt.desc()),
+}));
+
+// Migrations 0254 / 0255 — prompts maîtres administrés depuis le BO
+// (BO-IA-PROMPTS-01, lot 27) : versions Brouillon → Actif, journal des
+// activations, tests facultatifs du corpus. Écrites et lues en SQL par
+// `services/ai/master-prompts` ; déclarées ici contre `db:push`.
+export const aiMasterPromptVersions = pgTable('ai_master_prompt_versions', {
+  id: serial('id').primaryKey(),
+  environment: text('environment').notNull(),
+  treatment: text('treatment').notNull(),
+  masterPromptCode: text('master_prompt_code').notNull(),
+  versionNumber: integer('version_number').notNull(),
+  status: text('status').notNull(),
+  content: text('content').notNull(),
+  contentSha256: text('content_sha256').notNull(),
+  origin: text('origin').notNull(),
+  basedOnId: integer('based_on_id'),
+  createdBy: integer('created_by'),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: integer('updated_by'),
+  updatedAt: pgTimestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  activatedBy: integer('activated_by'),
+  activatedAt: pgTimestamp('activated_at', { withTimezone: true }),
+  firstActivatedAt: pgTimestamp('first_activated_at', { withTimezone: true }),
+}, (t) => ({
+  statusCheck: check('ai_master_prompt_versions_status_ck', sql`${t.status} IN ('DRAFT', 'ACTIVE', 'PREVIOUS')`),
+  treatmentCheck: check('ai_master_prompt_versions_treatment_ck', sql`${t.treatment} IN ('T1', 'T2', 'T3', 'T4', 'T6')`),
+  originCheck: check('ai_master_prompt_versions_origin_ck', sql`${t.origin} IN ('initial_file', 'initial_config', 'admin', 'prompt_control')`),
+  numberUq: unique('ai_master_prompt_versions_number_uq').on(t.environment, t.treatment, t.versionNumber),
+  oneActive: uniqueIndex('ai_master_prompt_versions_one_active_uidx').on(t.environment, t.treatment).where(sql`status = 'ACTIVE'`),
+  oneDraft: uniqueIndex('ai_master_prompt_versions_one_draft_uidx').on(t.environment, t.treatment).where(sql`status = 'DRAFT'`),
+}));
+
+export const aiMasterPromptActivations = pgTable('ai_master_prompt_activations', {
+  id: serial('id').primaryKey(),
+  environment: text('environment').notNull(),
+  treatment: text('treatment').notNull(),
+  action: text('action').notNull(),
+  fromVersionId: integer('from_version_id'),
+  fromVersionNumber: integer('from_version_number'),
+  toVersionId: integer('to_version_id').notNull(),
+  toVersionNumber: integer('to_version_number').notNull(),
+  userId: integer('user_id'),
+  userEmail: text('user_email'),
+  testSummary: text('test_summary'),
+  createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  actionCheck: check('ai_master_prompt_activations_action_ck', sql`${t.action} IN ('activate', 'rollback')`),
+  lookupIdx: index('ai_master_prompt_activations_lookup_idx').on(t.environment, t.treatment, t.createdAt.desc()),
+}));
+
+export const aiMasterPromptTestRuns = pgTable('ai_master_prompt_test_runs', {
+  id: serial('id').primaryKey(),
+  promptVersionId: integer('prompt_version_id').notNull().references(() => aiMasterPromptVersions.id, { onDelete: 'cascade' }),
+  environment: text('environment').notNull(),
+  treatment: text('treatment').notNull(),
+  contentSha256: text('content_sha256').notNull(),
+  status: text('status').notNull(),
+  scenariosTotal: integer('scenarios_total').notNull().default(0),
+  scenariosPassed: integer('scenarios_passed').notNull().default(0),
+  scenariosFailed: integer('scenarios_failed').notNull().default(0),
+  failures: jsonb('failures').notNull().default(sql`'[]'::jsonb`),
+  details: jsonb('details').notNull().default(sql`'{}'::jsonb`),
+  error: text('error'),
+  requestedBy: integer('requested_by'),
+  startedAt: pgTimestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: pgTimestamp('finished_at', { withTimezone: true }),
+}, (t) => ({
+  statusCheck: check('ai_master_prompt_test_runs_status_ck', sql`${t.status} IN ('RUNNING', 'DONE', 'ERROR')`),
+  versionIdx: index('ai_master_prompt_test_runs_version_idx').on(t.promptVersionId, t.startedAt.desc()),
 }));
 
 // Migration 0225 — rattrapages de données CDC 15 §14 (MIG-01 à MIG-09, lot 17) :

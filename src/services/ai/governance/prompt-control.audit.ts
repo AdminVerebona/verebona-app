@@ -25,6 +25,11 @@ export interface T5ModificationTrace {
   verdict: string;
   /** Zone réécrite : préambule (`prompt`) ou texte master complet (`masterPrompt`). */
   field?: 'prompt' | 'masterPrompt';
+  /**
+   * Nature de `versionId` : brouillon de prompt maître (`master_prompt`,
+   * BO-IA-PROMPTS-01, défaut) ou version de configuration (historique).
+   */
+  versionKind?: 'master_prompt' | 'config';
 }
 
 export async function recordT5Modification(t: T5ModificationTrace): Promise<void> {
@@ -39,10 +44,11 @@ export async function recordT5Modification(t: T5ModificationTrace): Promise<void
     adminUserId: t.adminUserId,
     adminEmail: admin?.email ?? `user:${t.adminUserId}`,
     actionType: 't5_prompt_modify',
-    beforeValue: { treatment: t.treatment, versionId: t.versionId, field: t.field ?? 'prompt', prompt: t.before },
+    beforeValue: { treatment: t.treatment, versionId: t.versionId, versionKind: t.versionKind ?? 'master_prompt', field: t.field ?? 'prompt', prompt: t.before },
     afterValue: {
       treatment: t.treatment,
       versionId: t.versionId,
+      versionKind: t.versionKind ?? 'master_prompt',
       draftCreated: t.draftCreated,
       prompt: t.after,
       verdict: t.verdict,

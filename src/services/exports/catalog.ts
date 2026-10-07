@@ -18,6 +18,7 @@
  * ou une ligne écrite pendant le déploiement doit encore être comprise.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { assetFamilyLabel, toAssetFamilyCode } from '@/lib/asset-taxonomy';
 
 /** Les six dossiers du CDC V12 (§1.2), dans l'ordre d'affichage. */
 export const DOSSIER_CODES = [
@@ -126,9 +127,10 @@ export const EXPORT_FAMILIES = ['IMMOBILIER', 'VEHICULE', 'OBJET'] as const;
 export type ExportFamily = (typeof EXPORT_FAMILIES)[number];
 
 export const EXPORT_FAMILY_LABELS: Readonly<Record<ExportFamily, string>> = Object.freeze({
-  IMMOBILIER: 'Immobilier',
-  VEHICULE: 'Véhicule',
-  OBJET: 'Objet',
+  // Lot 30 : libellés du référentiel des biens.
+  IMMOBILIER: assetFamilyLabel('IMMOBILIER'),
+  VEHICULE: assetFamilyLabel('VEHICULE'),
+  OBJET: assetFamilyLabel('OBJECT'),
 });
 
 /**
@@ -137,12 +139,9 @@ export const EXPORT_FAMILY_LABELS: Readonly<Record<ExportFamily, string>> = Obje
  * traitées comme des objets. `null` : valeur inconnue.
  */
 export function toExportFamily(category: string | null | undefined): ExportFamily | null {
-  const c = category?.trim().toUpperCase();
-  if (!c) return null;
-  if (c === 'IMMOBILIER') return 'IMMOBILIER';
-  if (c === 'VEHICULE') return 'VEHICULE';
-  if (c === 'OBJET' || c === 'OBJECT' || c === 'MATERIEL_PRO' || c === 'AUTRE') return 'OBJET';
-  return null;
+  // Résolveur unique des familles (lot 30) ; seul le nom de la famille objet diffère ici.
+  const f = toAssetFamilyCode(category);
+  return f === 'OBJECT' ? 'OBJET' : f ?? null;
 }
 
 /** Familles éligibles par dossier (§1.2). LOCATION : immobilier seulement en V1. */

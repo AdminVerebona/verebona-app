@@ -69,8 +69,6 @@ const EVENT_LABELS: Record<string, string> = {
   SUBSCRIPTION_CHANGE_SCHEDULED: 'Changement d’offre programmé',
   SUBSCRIPTION_CANCELLATION_SCHEDULED: 'Résiliation programmée',
   SUBSCRIPTION_CANCELLED: 'Abonnement résilié',
-  ANALYSIS_QUOTA_90: 'Quota d’analyses à 90 %',
-  ANALYSIS_QUOTA_100: 'Quota d’analyses atteint',
   REFERRAL_REWARD_GRANTED: 'Avantage de parrainage attribué',
   PAYMENT_FAILED: 'Incident de paiement',
   PAYMENT_ACTION_REQUIRED: 'Action requise sur un paiement',

@@ -1,23 +1,25 @@
 /**
- * Garde d'activation des prompts maîtres sur base réelle — CDC 15 §30 (règle
- * de recette), §32, D-17, HC-06 ; migration 0224.
+ * Versions de configuration IA SANS garde du corpus, sur base réelle —
+ * ticket BO-IA-PROMPTS-01 (remplace le scénario « garde d'activation » du
+ * lot 16, CDC 15 §30).
  *
- * Chaîne exercée : version de configuration en base (T1 en `master`) →
- * activation refusée sans corpus, puis avec un corpus rouge → corpus rejoué
- * (`runMasterCorpus`, fixtures synthétiques D-08) enregistré en base →
- * activation acceptée → un texte master MODIFIÉ (autre empreinte) est de
- * nouveau refusé tant que son propre corpus n'est pas vert.
+ * Chaîne exercée : version de configuration en base (T1 à T6 en `master`)
+ * → activation acceptée SANS aucun corpus enregistré, puis avec un corpus
+ * ROUGE enregistré sur l'empreinte exacte → texte master modifié dans la
+ * version (autre empreinte, jamais testée) : activation acceptée →
+ * restauration sans justification. Le corpus reste un diagnostic : un master
+ * cassé est toujours détecté par `runMasterCorpus`.
  */
 import { expect, it } from 'vitest';
 import { scenario } from '../scenario';
 
-scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ sql, make }) => {
+scenario('AI-MASTER-NO-GATE', 'Versions de configuration activables sans corpus (BO-IA-PROMPTS-01)', ({ sql, make }) => {
   let numero = 9000 + Math.floor(Math.random() * 500);
 
   /** Brouillon avec T1 en master, passé « Validée » (le cycle de test est couvert ailleurs). */
   async function versionT1Master(userId: number, masterPrompt: string | null) {
     const repo = await import('@/services/ai/config/config-version.repository');
-    const draft = await repo.createDraft(userId, `e2e garde ${numero}`, 'local');
+    const draft = await repo.createDraft(userId, `e2e sans garde ${numero}`, 'local');
     const t1 = draft.entries.find((e) => e.treatment === 'T1')!;
     await repo.saveEntry(draft.id, { ...t1, promptArchitecture: 'master', masterPrompt }, userId);
     numero += 1;
@@ -26,124 +28,52 @@ scenario('AI-MASTER-GATE', 'Garde d’activation des masters (corpus §30)', ({ 
     return draft.id;
   }
 
-  /**
-   * Lot 16b : T5 et T6 (L16b-1), T2 et T4 (L16b-2), T3 (L16b-3) sont TOUJOURS
-   * en master (fichier du dépôt) — leur corpus vert est donc exigé à chaque
-   * activation, comme celui de T1 ici.
-   */
-  async function corpusVertMastersSeuls(versionId: number) {
-    const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
-    const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
-    const { recordCorpusRun } = await import('@/services/ai/governance/master-corpus/repository');
-    for (const run of await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T2', 'T3', 'T4', 'T5', 'T6'] })) {
-      expect(run.status, run.masterPromptCode).toBe('PASSED');
-      await recordCorpusRun(run, { configVersionId: versionId, source: 'ci', environment: 'local', gitSha: 'e2e' });
-    }
-  }
-
-  const refus = async (versionId: number, userId: number) => {
+  it('AC04 — aucun corpus enregistré : la version est activée', async () => {
+    const user = await make.user();
+    await sql`DELETE FROM ai_master_corpus_runs`;
+    const versionId = await versionT1Master(user.id, null);
     const { activate } = await import('@/services/ai/config/config-version.service');
-    try {
-      await activate(versionId, userId);
-      return null;
-    } catch (e) {
-      return e as { code?: string; message: string; details?: { entries?: Array<{ treatment: string; status: string }> } };
-    }
-  };
+    await expect(activate(versionId, user.id)).resolves.toMatchObject({ interrupts: false });
+    const [v] = await sql<{ status: string }[]>`SELECT status FROM ai_config_versions WHERE id = ${versionId}`;
+    expect(v.status).toBe('ACTIVE');
+  });
 
-  it('sans corpus puis corpus rouge : refus motivé ; corpus vert enregistré : activation', async () => {
+  it('AC05 / AC06 — corpus ROUGE enregistré sur T1 et rien sur T2–T6 : activation acceptée', async () => {
     const user = await make.user();
     const versionId = await versionT1Master(user.id, null);
-
-    const r1 = await refus(versionId, user.id);
-    expect(r1?.code).toBe('MASTER_CORPUS_NOT_GREEN');
-    // Lot 16b : T1 à T6, master seul, sont tous contrôlés comme T1.
-    expect(r1?.details?.entries?.map((e) => e.treatment)).toEqual(expect.arrayContaining(['T1', 'T2', 'T3', 'T4', 'T5', 'T6']));
-    await corpusVertMastersSeuls(versionId);
-    const r1b = await refus(versionId, user.id);
-    expect(r1b?.details?.entries?.filter((e) => e.status !== 'GREEN')).toEqual([expect.objectContaining({ treatment: 'T1', status: 'NO_RUN' })]);
-
     const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const { recordCorpusRun } = await import('@/services/ai/governance/master-corpus/repository');
     const [t1] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T1'] });
-    expect(t1.status).toBe('PASSED');
-
-    // Un corpus ROUGE sur la même empreinte ne suffit pas.
     await recordCorpusRun({ ...t1, status: 'FAILED', branchesPassed: ['GROUP_UPLOAD'] },
       { configVersionId: versionId, source: 'ci', environment: 'local', gitSha: null });
-    expect((await refus(versionId, user.id))?.details?.entries?.find((e) => e.treatment === 'T1')?.status).toBe('RUN_FAILED');
-
-    await recordCorpusRun(t1, { configVersionId: versionId, source: 'ci', environment: 'local', gitSha: 'e2e' });
-    expect(await refus(versionId, user.id)).toBeNull();
+    const { activate } = await import('@/services/ai/config/config-version.service');
+    await expect(activate(versionId, user.id)).resolves.toBeTruthy();
     const [v] = await sql<{ status: string }[]>`SELECT status FROM ai_config_versions WHERE id = ${versionId}`;
     expect(v.status).toBe('ACTIVE');
-
-    const [run] = await sql<{ text_sha256: string; branches_passed: string[]; source: string; text_source: string }[]>`
-      SELECT text_sha256, branches_passed, source, text_source FROM ai_master_corpus_runs
-       WHERE config_version_id = ${versionId} AND status = 'PASSED' ORDER BY id DESC LIMIT 1`;
-    expect(run).toMatchObject({ text_sha256: t1.textSha256, source: 'ci', text_source: 'file' });
-    expect([...run.branches_passed].sort()).toEqual(['ANALYZE_DOCUMENT', 'GROUP_UPLOAD']);
   });
 
-  it('texte master modifié dans la version : autre empreinte, refus tant que son corpus n’est pas vert', async () => {
+  it('AC03 — texte master modifié dans la version (jamais testé, aucun passage réel) : activation acceptée', async () => {
     const user = await make.user();
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const texte = `${readMasterFileFromRepo('t1_master_v1')}\n\nRÈGLE AJOUTÉE (e2e) — Le titre commence par le type de document.`;
     const versionId = await versionT1Master(user.id, texte);
-    await corpusVertMastersSeuls(versionId);
-
-    const r = await refus(versionId, user.id);
-    expect(r?.code).toBe('MASTER_CORPUS_NOT_GREEN');
-    expect(r?.message).toMatch(/texte de la version/);
-
-    const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
-    const { recordCorpusRun } = await import('@/services/ai/governance/master-corpus/repository');
-    const [t1] = await runMasterCorpus({
-      readMasterFile: readMasterFileFromRepo, treatments: ['T1'], texts: { t1_master_v1: { text: texte, source: 'config' } },
-    });
-    expect(t1).toMatchObject({ status: 'PASSED', textSource: 'config' });
-    // Rejeu vert, et même un rejeu `local` : insuffisant pour un texte de version.
-    await recordCorpusRun(t1, { configVersionId: versionId, source: 'local', environment: 'local', gitSha: null });
-    expect((await refus(versionId, user.id))?.details?.entries?.find((e) => e.treatment === 'T1')?.status).toBe('NO_RUN');
-    await recordCorpusRun(t1, { configVersionId: versionId, source: 'preprod', environment: 'local', gitSha: null });
-    expect((await refus(versionId, user.id))?.details?.entries?.find((e) => e.treatment === 'T1')?.status).toBe('LIVE_RUN_MISSING');
-    // Passage RÉEL en préprod (D-17) : la sortie du modèle est simulée ici par
-    // les sorties enregistrées ; l'enregistrement est celui de `ai:corpus --live`.
-    const { buildLiveRunner } = await import('@/services/ai/governance/master-corpus/live');
-    const { loadMasterCorpusCases } = await import('@/services/ai/governance/master-corpus/cases');
-    const cas = loadMasterCorpusCases(readMasterFileFromRepo);
-    const live = await buildLiveRunner(cas, { accountId: 1, userId: user.id });
-    const [reel] = await runMasterCorpus({
-      readMasterFile: readMasterFileFromRepo, treatments: ['T1'], cases: cas,
-      texts: { t1_master_v1: { text: texte, source: 'config' } },
-      live: { variablesFor: live.variablesFor, call: async (c) => c.output },
-    });
-    expect(reel.status).toBe('PASSED');
-    await recordCorpusRun(reel, { configVersionId: versionId, source: 'preprod', environment: 'local', gitSha: null, runMode: 'live' });
-    expect(await refus(versionId, user.id)).toBeNull();
-    const [trace] = await sql<{ run_mode: string }[]>`
-      SELECT run_mode FROM ai_master_corpus_runs WHERE config_version_id = ${versionId} ORDER BY id DESC LIMIT 1`;
-    expect(trace.run_mode).toBe('live');
+    const { activate } = await import('@/services/ai/config/config-version.service');
+    await expect(activate(versionId, user.id)).resolves.toBeTruthy();
   });
 
-  it('restauration d’urgence sans corpus : justification exigée, puis tracée dans l’audit', async () => {
+  it('AC11 — restauration sans corpus : aucune justification demandée', async () => {
     const user = await make.user();
     const versionId = await versionT1Master(user.id, null);
-    // Déjà active par le passé (restauration possible), corpus absent pour ce test : empreinte inconnue.
     await sql`UPDATE ai_config_versions SET activated_at = now() - interval '1 day' WHERE id = ${versionId}`;
     await sql`DELETE FROM ai_master_corpus_runs WHERE master_prompt_code = 't1_master_v1'`;
     const { rollback } = await import('@/services/ai/config/config-version.service');
-    await expect(rollback(versionId, user.id)).rejects.toMatchObject({ code: 'ROLLBACK_JUSTIFICATION_REQUIRED' });
-    const r = await rollback(versionId, user.id, { justification: 'Incident E2E : restauration de la version stable' });
-    expect(r.corpusOverride).toBe(true);
-    const [a] = await sql<{ action_type: string; reason: string; admin_user_id: number }[]>`
-      SELECT action_type, reason, admin_user_id FROM ai_admin_audit_log
-       WHERE action_type = 'ai_config_rollback_corpus_override' ORDER BY id DESC LIMIT 1`;
-    expect(a).toMatchObject({ reason: 'Incident E2E : restauration de la version stable', admin_user_id: user.id });
+    await expect(rollback(versionId, user.id)).resolves.toMatchObject({ interrupts: true });
+    const [v] = await sql<{ status: string }[]>`SELECT status FROM ai_config_versions WHERE id = ${versionId}`;
+    expect(v.status).toBe('ACTIVE');
   });
 
-  it('master cassé (branche supprimée) : corpus rouge, jamais activable', async () => {
+  it('diagnostic conservé : un master cassé (branche supprimée) est rouge au corpus', async () => {
     const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const casse = readMasterFileFromRepo('t1_master_v1').replace(/BRANCHE TASK = GROUP_UPLOAD/g, 'SECTION SUPPRIMÉE');

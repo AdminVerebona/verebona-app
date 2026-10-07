@@ -112,6 +112,16 @@ export function UploadQueuePanel({ elements, mobile, onAnnuler, onReprendre, onC
   );
 }
 
+/**
+ * Mobile : le suivi se pose AU-DESSUS de la barre basse et de son « + »
+ * détaché, jamais dessous (lot 26). Hauteur de la barre basse
+ * (`mobile/bottom-navigation.tsx`) : marge haute 8 px + « + » 58 px qui
+ * déborde de 44 px + barre ≈ 78 px, puis la marge basse
+ * `max(20px, safe-area)`. 8,75 rem (140 px) + cette même marge laisse
+ * ~18 px d'air au-dessus du « + », encoche comprise.
+ */
+export const POSITION_MOBILE = 'bottom-[calc(8.75rem+max(20px,env(safe-area-inset-bottom)))]';
+
 export function UploadQueueIndicator({ userId }: { userId?: number | null }) {
   const { elements, enCours } = useFileDepot();
   const isMobile = useIsMobile();
@@ -169,7 +179,8 @@ export function UploadQueueIndicator({ userId }: { userId?: number | null }) {
     <div
       role="status"
       aria-live="polite"
-      className={`fixed z-40 ${isMobile ? 'left-3 right-3 bottom-24' : 'right-4 bottom-4 w-[360px]'} rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] shadow-lg`}
+      data-upload-queue
+      className={`fixed z-40 ${isMobile ? `left-3 right-3 ${POSITION_MOBILE}` : 'right-4 bottom-4 w-[360px]'} rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] shadow-lg`}
     >
       <input
         ref={inputRef}

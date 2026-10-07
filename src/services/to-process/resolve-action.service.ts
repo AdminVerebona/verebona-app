@@ -32,7 +32,8 @@ import { agendaAssetLinks, agendaItems, assetFiles, assets, toProcessActionEvent
 import { REFERENTIAL_VERSION, getDocumentType, getRubric } from '@/lib/referential/v2';
 import { applyClassificationChange } from '@/services/documents/rubric-classification';
 import type { ResolutionReason, TargetType } from './action-model';
-import { getRule } from './rules-catalog';
+import { getRule, PROCESSING_RULES } from './rules-catalog';
+import { documentExists, documentSlotFor } from './document-slots';
 import { AGENDA_STATUS_WRITER, ASSET_STATUS_WRITER } from './agenda-status-cards';
 
 /**
@@ -115,8 +116,54 @@ export function findFieldWriter(
 ): FieldWriter | null {
   if (!fieldKey) return null;
   return (
-    FIELD_WRITERS.find((w) => w.targetType === targetType && w.fieldKey === fieldKey) ?? null
+    FIELD_WRITERS.find((w) => w.targetType === targetType && w.fieldKey === fieldKey)
+    ?? documentSlotWriter(targetType, fieldKey)
   );
+}
+
+/**
+ * Écrivain d'une donnée documentaire du PONT GÉNÉRIQUE (lot 28) : toute règle
+ * `producer: 'DOCUMENT_BRIDGE'` du catalogue est résoluble depuis la carte,
+ * par l'emplacement de sa donnée (`document-slots.ts`) — liste blanche
+ * dérivée du catalogue, jamais une colonne nommée par la requête.
+ * L'écriture pose la validation utilisateur ; `null` (annulation) efface.
+ */
+function documentSlotWriter(targetType: TargetType, key: string): FieldWriter | null {
+  if (targetType !== 'DOCUMENT') return null;
+  const rule = PROCESSING_RULES.find(
+    (r) => r.producer === 'DOCUMENT_BRIDGE' && r.targetType === 'DOCUMENT' && (r.fieldKey ?? r.relationKey) === key,
+  );
+  if (!rule) return null;
+  const slot = documentSlotFor(key);
+  return {
+    targetType: 'DOCUMENT',
+    fieldKey: key,
+    validate: (v) => slot.validate(v),
+    read: async (client, id, accountId) => (await slot.read(client, accountId, id)).value,
+    write: (client, id, accountId, value) => slot.writeUser(client, accountId, id, value),
+    // `null` n'est admis que pour l'annulation (le document doit exister).
+    check: async (client, id, accountId, value) =>
+      value === null || value === undefined
+        ? documentExists(client, accountId, id)
+        : slot.check ? slot.check(client, accountId, id, value) : true,
+    nullable: true,
+    afterCommit: slot.kind === 'relation' && key === 'assetIds'
+      ? async ({ accountId, targetId, value, userId }) => {
+          // Rattachement depuis la carte : la fiche du bien est alimentée par
+          // les faits déjà connus du document, sans relire le fichier.
+          const assetId = typeof value === 'number' ? value : Number(value);
+          if (!userId || !Number.isInteger(assetId) || assetId <= 0) return;
+          try {
+            const k = await import('@/services/ai/knowledge/document-knowledge.service');
+            if (await k.hasProjectableKnowledge(targetId)) {
+              await k.projectDocumentKnowledgeToAsset({ accountId, userId, fileId: targetId, assetId });
+            }
+          } catch (e) {
+            console.error(`[to-process] projection du document ${targetId} sur le bien ${assetId} impossible :`, (e as Error).message);
+          }
+        }
+      : undefined,
+  };
 }
 
 /** Le champ est-il résoluble directement depuis la carte ? (§8.5) */
@@ -280,7 +327,7 @@ export async function resolveArbitration(
     const relation = action.relationKey
       ? (await import('./document-equipment-link')).findRelationWriter(action.targetType, action.relationKey)
       : null;
-    const writer = relation ?? findFieldWriter(action.targetType as TargetType, action.fieldKey);
+    const writer = relation ?? findFieldWriter(action.targetType as TargetType, action.fieldKey ?? action.relationKey);
     if (!writer) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' as const };
     if (!writer.validate(value)) {
       return { ok: false, previousValue: null, error: 'INVALID_VALUE' as const };
@@ -387,7 +434,7 @@ export async function undoArbitration(
   const relation = action.relationKey
     ? (await import('./document-equipment-link')).findRelationWriter(action.targetType, action.relationKey)
     : null;
-  const writer = relation ?? findFieldWriter(action.targetType as TargetType, action.fieldKey);
+  const writer = relation ?? findFieldWriter(action.targetType as TargetType, action.fieldKey ?? action.relationKey);
   if (!writer) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
 
   let applied: unknown = null;

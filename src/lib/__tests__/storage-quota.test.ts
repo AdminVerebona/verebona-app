@@ -12,16 +12,16 @@ import {
 import { SUBSCRIPTION_LIMITS } from '@/lib/subscription-limits';
 
 describe('plafonds par offre (§13.1)', () => {
-  it('2 Go Standard, 10 Go Premium, 15 Go Premium Duo', () => {
-    expect(DEFAULT_STORAGE_LIMIT_BYTES.standard).toBe(2 * BYTES_PER_GB);
-    expect(DEFAULT_STORAGE_LIMIT_BYTES.premium).toBe(10 * BYTES_PER_GB);
-    expect(DEFAULT_STORAGE_LIMIT_BYTES.premium_duo).toBe(15 * BYTES_PER_GB);
+  it('lot 26 — AC7 : 1 Go Standard, 5 Go Premium, 10 Go Premium Duo', () => {
+    expect(DEFAULT_STORAGE_LIMIT_BYTES.standard).toBe(1 * BYTES_PER_GB);
+    expect(DEFAULT_STORAGE_LIMIT_BYTES.premium).toBe(5 * BYTES_PER_GB);
+    expect(DEFAULT_STORAGE_LIMIT_BYTES.premium_duo).toBe(10 * BYTES_PER_GB);
   });
 
-  it('`subscription-limits.ts` est aligné', () => {
-    expect(SUBSCRIPTION_LIMITS.STANDARD.maxStorageGb).toBe(2);
-    expect(SUBSCRIPTION_LIMITS.PREMIUM.maxStorageGb).toBe(10);
-    expect(SUBSCRIPTION_LIMITS.PREMIUM_DUO.maxStorageGb).toBe(15);
+  it('`subscription-limits.ts` est la source (référentiel des offres)', () => {
+    expect(SUBSCRIPTION_LIMITS.STANDARD.maxStorageGb).toBe(1);
+    expect(SUBSCRIPTION_LIMITS.PREMIUM.maxStorageGb).toBe(5);
+    expect(SUBSCRIPTION_LIMITS.PREMIUM_DUO.maxStorageGb).toBe(10);
   });
 });
 
