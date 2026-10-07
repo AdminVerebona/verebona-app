@@ -81,6 +81,19 @@ export interface ExecutionGuard {
   assertActive(stage?: string): Promise<void>;
 }
 
+/**
+ * Contrôle avant écriture métier, pour le code qui ne reçoit pas la garde en
+ * paramètre (moteur de réconciliation T3, réconciliation d'entité) — lot 31C.
+ *
+ * Dans une exécution de file : lève `ExecutionCancelledError` si l'exécution a
+ * perdu son jeton ou son bail (interruption, reprise ailleurs, timeout). Hors
+ * file (route synchrone, test) : sans effet.
+ */
+export async function assertJobActive(stage?: string): Promise<void> {
+  const guard = currentJobContext()?.guard;
+  if (guard) await guard.assertActive(stage);
+}
+
 /** Garde neutre, pour les appels hors file (routes, reprises manuelles). */
 export const NO_GUARD: ExecutionGuard = {
   jobId: 0,

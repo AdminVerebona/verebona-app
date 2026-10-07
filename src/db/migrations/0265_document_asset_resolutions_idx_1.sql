@@ -1,0 +1,13 @@
+-- Migration 0265 (index 1/1) : documents SANS rattachement par colonne — sert
+-- le passage planifié T3 DOCUMENT_ASSET (lot 31B), qui cherche les documents
+-- analysés sans bien principal. Partiel : seuls les documents visibles sans
+-- `asset_id` ni `linked_asset_id` y entrent (une petite fraction de la table).
+-- UNE instruction par fichier : `CREATE INDEX CONCURRENTLY` ne peut pas
+-- s'exécuter dans une transaction ; aucun verrou bloquant les dépôts pendant
+-- la construction. Idempotente ; un index laissé INVALIDE est reconstruit
+-- (`migration-index.ts`).
+--
+-- INDEX OPTIONNEL : le passage est borné (LIMIT) et fonctionne sans lui, plus
+-- lentement ; son absence (construction différée) ne crée aucune erreur.
+-- verebona:optional-index
+CREATE INDEX CONCURRENTLY IF NOT EXISTS asset_files_unattached_idx ON asset_files (id) WHERE asset_id IS NULL AND linked_asset_id IS NULL AND deleted_at IS NULL;

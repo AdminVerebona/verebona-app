@@ -74,7 +74,7 @@ describe('contrat t6-output-v2 et règles serveur', () => {
 
   it('R9 : un sujet d’information n’enjoint rien ; pas de retard sans retard ; jamais alarmiste ; confirmé ≠ estimé ; pas d’interface', () => {
     const s = INPUT.subjects[0];
-    const confirme = { ...s, facts: { ...s.facts, dateNature: 'confirmée' }, fallbackText: 'Votre prochaine échéance est « Contrôle technique » pour Clio, le 14 novembre 2026.' };
+    const confirme = { ...s, facts: { ...s.facts, dateNature: 'confirmée' }, fallbackText: 'Votre prochaine échéance est le contrôle technique de la Clio, le 14 novembre 2026.' };
     const info = { ...s, intent: 'inform' as const };
     expect(C.nuanceViolation('Le contrôle technique de la Clio est prévu le 14 novembre 2026.', confirme, 'info')).toBeNull();
     expect(C.nuanceViolation('Le contrôle technique de la Clio est estimé au 14 novembre 2026.', confirme, 'info')).toBe('confirmed_as_forecast');

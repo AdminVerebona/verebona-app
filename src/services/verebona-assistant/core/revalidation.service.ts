@@ -643,6 +643,9 @@ export async function revalidateFact(
           accountId: p.accountId, fileId: f.fileId, assetId, factKey: f.factKey, newValue: out.value, project,
           reconcile: async () => (await import('@/services/ai/reconciliation/t3-queue')).enqueueT3ForAssets({
             accountId: p.accountId, userId: p.userId, assetIds: [assetId], sourceFileId: f.fileId, reason: 'FACT_REVALIDATED',
+            // Lot 31C : revalidation d'un fait de la source, pas un changement
+            // de rattachement — déclencheur `source_analyzed` (inchangé).
+            triggerCode: 'source_analyzed',
           }),
         }).catch((e: Error) => { console.error('[revalidation] remplacement des preuves :', e.message); return null; });
         if (r) { trace.supersededEvidence = r.superseded; trace.evidenceMode = 'enabled'; trace.projected = r.projected; }

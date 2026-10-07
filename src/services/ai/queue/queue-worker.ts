@@ -59,7 +59,7 @@ import {
   releaseInterruptedJob, type QueuedJob,
 } from './job-queue.repository';
 import { isCostCapReached, costCapResumeAt } from '../gateway/errors';
-import { isJobDeferred } from './queue-policy';
+import { isJobDeferred, isPermanentJobError, isBusinessResult, type JobBusinessResult } from './queue-policy';
 import {
   createExecutionGuard, registerLocalExecution, unregisterLocalExecution,
   isExecutionCancelled, ExecutionCancelledError, waitForSettlement, type ExecutionGuard,
@@ -82,8 +82,17 @@ const HEARTBEAT_MS = Math.max(1_000, Math.floor((LEASE_SECONDS * 1000) / 3));
  * `guard` : signal d'annulation et contrôle avant écriture. Un exécutant
  * appelle `guard.assertActive()` avant chaque écriture significative ;
  * interrompu (rollback, arrêt d'urgence, désactivation), il n'écrit plus rien.
+ *
+ * Lot 31C — contrat commun à toute la file :
+ *  · rendre un `JobBusinessResult` (facultatif) : le résultat métier est
+ *    écrit sur le job DONE (T3 ; T1 et T4 n'en rendent pas, inchangés) ;
+ *  · lever `PermanentJobError` : travail inexécutable, FAILED immédiat ;
+ *  · lever toute autre erreur : échec technique, backoff puis FAILED à la
+ *    cinquième exécution ;
+ *  · interruption (`ExecutionCancelledError`, `AI_BLOCKED`) : PENDING en
+ *    tête, tentative rendue.
  */
-export type JobHandler = (job: QueuedJob, guard: ExecutionGuard) => Promise<void>;
+export type JobHandler = (job: QueuedJob, guard: ExecutionGuard) => Promise<void | JobBusinessResult>;
 
 /**
  * Issue d'une exécution, telle qu'ÉCRITE en base par le boucleur.
@@ -97,7 +106,7 @@ export type JobHandler = (job: QueuedJob, guard: ExecutionGuard) => Promise<void
  *                    au-delà du plafond de reports.
  */
 export type JobOutcome =
-  | { kind: 'done' }
+  | { kind: 'done'; result?: JobBusinessResult }
   | { kind: 'failed'; permanent: boolean; timedOut: boolean; error: string }
   | { kind: 'interrupted'; reason: string }
   | {
@@ -224,7 +233,7 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
 
   // L'issue écrite, transmise ensuite aux suites du traitement.
   let outcome: JobOutcome | null = null;
-  let execution: Promise<void> | null = null;
+  let execution: Promise<void | JobBusinessResult> | null = null;
 
   try {
     // Contexte d'exécution : version figée et job parent, lus par la
@@ -238,18 +247,24 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
         // MOD-011 : jeton de démarrage, comparé à l'ouverture du disjoncteur
         // par la garde de la passerelle (runnable-guard).
         startedAt: Date.now(),
+        // Lot 31C : garde lue par `assertJobActive` avant chaque écriture
+        // métier des modules qui ne la reçoivent pas en paramètre.
+        guard,
       },
       () => handler(job, guard),
     );
-    await (deadline ? Promise.race([execution, deadline]) : execution);
+    const rendu = await (deadline ? Promise.race([execution, deadline]) : execution);
+    const result = isBusinessResult(rendu) ? rendu : null;
     // Dernier contrôle : une exécution interrompue ne clôt jamais le job
     // (la clôture est de toute façon conditionnée au jeton).
     await guard.assertActive('clôture');
-    const done = await completeJob(job.id, job.executionId);
+    const done = result
+      ? await completeJob(job.id, job.executionId, result)
+      : await completeJob(job.id, job.executionId);
     if (done.stale) {
       console.warn(`[queue] ${treatment} job ${job.id} : exécution dépossédée, clôture ignorée.`);
     } else {
-      outcome = { kind: 'done' };
+      outcome = result ? { kind: 'done', result } : { kind: 'done' };
     }
   } catch (e) {
     if (timedOut) {
@@ -293,6 +308,14 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
         `[queue] ${treatment} job ${job.id} reporté — ${(e as Error).message}`
         + `${r.permanent ? ' (plafond de reports atteint : échec définitif)' : ''}`,
       );
+    } else if (isPermanentJobError(e) && !controller.signal.aborted) {
+      // Lot 31C : travail INEXÉCUTABLE (cible invalide, contexte incorrect,
+      // version de contexte inconnue) — FAILED immédiat, sans les cinq
+      // exécutions du MOD-005 : relancer ne l'améliorera jamais. Jamais DONE.
+      const message = `travail inexécutable : ${(e as Error).message}`;
+      const { stale } = await failJob(job.id, message, job.executionId, { permanent: true });
+      if (!stale) outcome = { kind: 'failed', permanent: true, timedOut: false, error: message };
+      console.error(`[queue] ${treatment} job ${job.id} ${message} — échec définitif immédiat.`);
     } else if (isExecutionCancelled(e) || isAiBlocked(e) || controller.signal.aborted) {
       // Interrompu (administration, dépossession) ou refusé par la garde de
       // la passerelle (`AI_BLOCKED` : arrêt d'urgence, désactivation,

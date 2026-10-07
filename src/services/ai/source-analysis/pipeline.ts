@@ -62,6 +62,9 @@ import { enqueueT3ForAffectedAssets, enqueueT3ForAffectedEntities } from './mast
 import { computeMasterDocumentLinks, writeMasterDocumentLinks } from './master/document-links';
 import { syncDocumentRulesFromAnalysis } from '@/services/to-process/document-rule-bridge';
 import { groupUpload } from './steps/group-upload.step';
+import { loadAssetIdentifiers } from '../reconciliation/document-asset/asset-identifiers.repository';
+import { automaticColumnAssetOf, userChosenAssetOf } from '../reconciliation/document-asset/attachment-state';
+import { closeAssetLinkQuestion, writeAutomaticPrimaryColumn } from '../reconciliation/document-asset/automatic-attachment';
 
 export interface RunSourceAnalysisInput {
   sourceType: SourceType;
@@ -178,6 +181,22 @@ export async function runSourceAnalysis(
     await failSources(pendingIds, (e as Error).message, lotId);
     return { results: [], analysedCount: 0, skippedReason: 'no_valid_source', failedSourceIds: [] };
   }
+  // Lot 31B (ticket T1, §7, T1-LINK-06 / 08) — KNOWN_TARGET = choix HUMAIN :
+  //   · une colonne `asset_id` posée AUTOMATIQUEMENT par une analyse
+  //     précédente (marque `assetIdAuto`) n'en est pas un : une nouvelle
+  //     analyse certaine peut la déplacer ;
+  //   · un lien N-N USER PRIMARY (sans colonne) en est un — T1 ne le
+  //     remplace jamais silencieusement.
+  if (input.sourceIds.length > 0) {
+    const lead = input.sourceIds[0];
+    if (!req.linkedAssetId && input.linkedAssetId) {
+      const auto = await automaticColumnAssetOf(req.accountId, lead).catch(() => null);
+      if (auto !== null && auto === input.linkedAssetId) input.linkedAssetId = null;
+    }
+    if (!input.linkedAssetId) {
+      input.linkedAssetId = await userChosenAssetOf(req.accountId, lead).catch(() => null);
+    }
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   // PROMPT MAÎTRE T1 SEUL — lot 16b-3 (CDC 15 §29, D-04)
@@ -234,7 +253,7 @@ export async function runSourceAnalysis(
       // retiré) ; ils remplacent ceux de l'analyse.
       result.agendaCandidates = buildAgendaCandidatesT4(result.extractedFields, {
         sourceFileId: leadSourceId,
-        documentAssetId: resolveAssetId(result, input),
+        documentAssetId: resolveAssetId(master, input),
         multiAsset: master.projection.multiAsset,
         documentTitle: result.document.title?.value ?? null,
         documentDate: result.document.date?.value ?? null,
@@ -271,7 +290,7 @@ export async function runSourceAnalysis(
         accountId: input.accountId,
         fileId: leadSourceId,
         analysisRunId: persisted.runId ?? null,
-        assetIdAtAnalysis: resolveAssetId(result, input),
+        assetIdAtAnalysis: resolveAssetId(master, input),
         sourceType: input.sourceType === 'web_link' ? 'web_link' : 'asset_file',
         sourceVersion: input.sourceVersion ?? null,
         // Multi-biens déclaré par le modèle ou constaté sur les cibles des faits (U8).
@@ -322,7 +341,7 @@ export async function runSourceAnalysis(
       });
 
       // Étape 9 (suite) — preuves.
-      const assetId = resolveAssetId(result, input);
+      const assetId = resolveAssetId(master, input);
       // T1-04, T1-05 : chaque fait projeté est écrit sur SA cible, anciennes
       // preuves du document remplacées — plus jamais tous les champs sur un
       // seul bien. Appelé MÊME sans fait : c'est ce qui retire (supersede) les
@@ -359,9 +378,18 @@ export async function runSourceAnalysis(
         accountId: req.accountId, userId: req.userId, leadSourceId,
         targets: ecrites?.affectedTargets ?? [],
       });
-      // Relation N-N (X-01, T1-05) : chaque bien vérifié d'un document
-      // multi-biens est relié (PRIMARY / SECONDARY / MENTIONED, origine AI).
-      // Non bloquant : les preuves sont écrites, le lien se rattrape.
+      // Lot 31B : bien certain retenu par l'analyse → la question « À quel
+      // bien… ? » éventuellement ouverte est close par le SYSTÈME, avant
+      // l'écriture des liens (le déclencheur 0257 la fermerait sinon avec
+      // un motif « utilisateur »).
+      if (assetId !== null && assetId !== (input.linkedAssetId ?? null)) {
+        await closeAssetLinkQuestion(input.accountId, leadSourceId).catch((e: Error) => {
+          console.error(`[source-analysis] question de rattachement du fichier ${leadSourceId} non close :`, e.message);
+        });
+      }
+      // Relation N-N (X-01, T1-05) : chaque bien vérifié est relié
+      // (PRIMARY / SECONDARY / MENTIONED, origine AI) — un seul bien compris
+      // (lot 31B). Non bloquant : les preuves sont écrites, le lien se rattrape.
       await writeMasterDocumentLinks({
         accountId: input.accountId,
         fileId: leadSourceId,
@@ -374,6 +402,14 @@ export async function runSourceAnalysis(
       }).catch((e: Error) => {
         console.error(`[source-analysis] liens document ↔ biens du fichier ${leadSourceId} non écrits :`, e.message);
       });
+      // Lot 31B : rattachement principal VISIBLE (colonne lue par les listes
+      // de documents) pour un bien retenu automatiquement — jamais par-dessus
+      // un choix ou un retrait de l'utilisateur (`ASSET_LINK_SLOT.writeAuto`).
+      if (assetId !== null && assetId !== (input.linkedAssetId ?? null)) {
+        await writeAutomaticPrimaryColumn(input.accountId, leadSourceId, assetId).catch((e: Error) => {
+          console.error(`[source-analysis] rattachement principal du fichier ${leadSourceId} non écrit :`, e.message);
+        });
+      }
 
       // ══════════════════════════════════════════════════════════════════
       // ÉTAPE 12 quater — RÈGLES DOCUMENTAIRES « À TRAITER » (lot 28)
@@ -398,6 +434,11 @@ export async function runSourceAnalysis(
             entityId: c.entityId, verified: c.verified, score: c.score, confidence: c.confidence,
           })),
           documentAssetId: assetId,
+          // Lot 31B (ticket T3, §9) : sans bien certain, T3 DOCUMENT_ASSET
+          // reprend IMMÉDIATEMENT (abonné `source_analyzed`) ; la question
+          // « À quel bien rattacher ce document ? » n'est posée qu'après
+          // l'échec ou l'abstention de T3, avec SES candidats.
+          deferAssetLinkToT3: assetId === null,
           metadata: {
             supplier: result.document.supplier?.value?.name
               ? {
@@ -421,7 +462,7 @@ export async function runSourceAnalysis(
       // `persisted.proposalCount` : nombre de propositions réellement écrites.
       // Voir `computeFinalState` — un document n'est mis à valider que s'il a
       // quelque chose à faire valider.
-      const etatFinal = computeFinalState(result, persisted.proposalCount ?? 0);
+      const etatFinal = computeFinalState(result, persisted.proposalCount ?? 0, assetId);
 
       // ══════════════════════════════════════════════════════════════════
       // DÉTECTION DE DOUBLON — ET SES DEUX CONSÉQUENCES
@@ -595,13 +636,15 @@ function failReason(e: unknown): string {
 
 // ── Helpers d'état et de persistance ───────────────────────────────────────
 
-function resolveAssetId(result: SourceAnalysisResult, input: SourceInput): number | null {
-  if (input.linkedAssetId) return input.linkedAssetId;
-  const verified = result.assetCandidates.filter((c) => c.verified && c.entityId !== null);
-  // Un seul candidat certain : rattachement possible. Sinon, la réconciliation
-  // arbitrera — l'analyse ne tranche pas un rattachement ambigu.
-  if (verified.length === 1 && verified[0].confidence === 'certain') return verified[0].entityId;
-  return null;
+/**
+ * Bien du document : celui retenu par l'analyse (`analyzeDocument` : bien
+ * connu, identifiant canonique exact et unique, unique candidat certain).
+ * Sinon `null` — T3 DOCUMENT_ASSET arbitrera, l'analyse ne tranche pas un
+ * rattachement ambigu. Lot 31B : une seule source de vérité (la décision de
+ * l'étape T1), plus de recalcul divergent depuis les candidats.
+ */
+function resolveAssetId(master: Pick<MasterGroupAnalysis, 'documentAssetId'>, input: SourceInput): number | null {
+  return input.linkedAssetId ?? master.documentAssetId ?? null;
 }
 
 /**
@@ -626,7 +669,11 @@ function resolveAssetId(result: SourceAnalysisResult, input: SourceInput): numbe
  *   état, une proposition. Tant que le pipeline n'en écrit pas, marquer le
  *   document à valider promet une décision qu'on ne présente jamais.
  */
-function computeFinalState(result: SourceAnalysisResult, proposalCount: number): string {
+export function computeFinalState(result: SourceAnalysisResult, proposalCount: number, documentAssetId: number | null): string {
+  // Lot 31B (ticket T3, §9) : sans bien certain, T3 DOCUMENT_ASSET est mis en
+  // file immédiatement ; une abstention de T1 ne suffit plus à solliciter
+  // l'utilisateur. C'est T3 qui pose VALIDATION_REQUIRED s'il échoue.
+  if (documentAssetId === null) return 'ANALYZED';
   const ambiguous = result.warnings.some(
     (w) => w.code === 'AMBIGUOUS_ASSET' || w.code === 'MULTI_ASSET_DOCUMENT',
   );
@@ -778,6 +825,13 @@ async function loadAnalysisContext(
     .limit(200);
 
   const assetIds = assetRows.map((a) => a.id);
+  // Lot 31B : identifiants canoniques (fiche canonique) — ENTITY_CONTEXT
+  // (non sensibles seulement) et correspondance déterministe serveur. Une
+  // lecture impossible n'empêche jamais l'analyse.
+  const assetIdentifiers = await loadAssetIdentifiers(accountId, assetIds).catch((e: Error) => {
+    console.error('[source-analysis] identifiants des biens non lus :', e.message);
+    return [];
+  });
 
   // Capacités du compte AU MOMENT de l'analyse (pièces, équipements) :
   // contexte T1 filtré, sortie T1 contrôlée, gardes T3 / T4 (account-capabilities).
@@ -809,5 +863,6 @@ async function loadAnalysisContext(
     existingTitles: titleRows.map((t) => t.title).filter((t): t is string => Boolean(t)),
     linkedAssetId,
     capabilities,
+    assetIdentifiers,
   };
 }

@@ -246,6 +246,11 @@ export async function reconcileAccount(
   }
 
   const details: ObjectResult[] = [];
+  // Lot 31C : une exécution INTERROMPUE (jeton révoqué, garde) ou arrêtée par
+  // une erreur n'est jamais journalisée « completed » — sinon le travail remis
+  // en file la croirait achevée (SUPERSEDED) alors qu'une partie des biens
+  // n'a pas été vue.
+  let interrompue = false;
   try {
     const candidates = await selectScope(accountId, scope, trigger);
     for (const c of candidates) {
@@ -275,6 +280,9 @@ export async function reconcileAccount(
         details.push({ objectType: 'asset', objectId: c.id, status: 'ERROR', applied: 0, conflicts: 0, aiReviews: 0, reason: (e as Error).message.slice(0, 300) });
       }
     }
+  } catch (e) {
+    interrompue = true;
+    throw e;
   } finally {
     const totals = consolidate(details);
     await pgClient.unsafe(
@@ -283,7 +291,7 @@ export async function reconcileAccount(
          decisions_applied = $5, conflicts_created = $6, arbitrations_needed = $7, errors = $8,
          ai_calls = $9, details_json = $10::jsonb
        WHERE id = $1`,
-      [runId, details.length === 0 ? 'completed' : totals.status, totals.objectsExamined, totals.objectsModified,
+      [runId, interrompue ? 'failed' : details.length === 0 ? 'completed' : totals.status, totals.objectsExamined, totals.objectsModified,
        totals.decisionsApplied, totals.conflictsCreated, totals.arbitrationsNeeded, totals.errors,
        totals.aiCalls, JSON.stringify(details)] as never[],
     );
@@ -363,7 +371,7 @@ export async function processDueAccountReconciliations(
         triggerCode: q.trigger_event ?? 'event',
         delaySeconds: q.delay,
         payload: {
-          kind: 'account', scope: 'incremental',
+          payloadVersion: 1, kind: 'account', scope: 'incremental',
           events: [{ event: q.trigger_event ?? 'event', objectType: q.trigger_object_type ?? undefined, objectId: q.trigger_object_id ?? undefined, correlationId: q.correlation_id }],
         },
         payloadOnDedupe: 'append_events',
@@ -383,7 +391,7 @@ export async function processDueAccountReconciliations(
  * T3-UI-05). La planification T3 est désormais portée par les déclencheurs
  * `schedule_*` de la version effective, mis en file par le boucleur
  * (`queue/triggers.ts`) ; sans version renseignée, le défaut du code est
- * quotidien, comme l'ancienne valeur par défaut de 24 h.
+ * horaire (`schedule_hourly`, lot 31C), en balayage paginé (`t3-queue`).
  *
  * Rend une liste vide : la route cron qui l'appelle reste compatible, et deux
  * planificateurs ne tournent jamais ensemble.

@@ -159,7 +159,8 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
             i.home_category AS "homeCategory", i.origin_type AS "originType",
             i.origin_field_key AS "originFieldKey",
             ${t4 ? 'i.event_nature AS "eventNature", i.business_type AS "businessType",' : ''}
-            l.asset_id AS "assetId", a.name AS "assetName"
+            l.asset_id AS "assetId", a.name AS "assetName",
+            a.category AS "assetCategory", a.subtype AS "assetSubtype"
        FROM agenda_items i
        LEFT JOIN LATERAL (
          SELECT asset_id FROM agenda_asset_links WHERE agenda_item_id = i.id ORDER BY asset_id LIMIT 1
@@ -192,6 +193,8 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
       requiresQualification: Boolean(i.requiresQualification),
       assetId: i.assetId == null ? null : Number(i.assetId),
       assetName: (i.assetName as string | null) ?? null,
+      assetCategory: (i.assetCategory as string | null) ?? null,
+      assetSubtype: (i.assetSubtype as string | null) ?? null,
     }));
 }
 

@@ -24,14 +24,18 @@
  * même doctrine que `config-resolver` — une console ne casse pas le produit.
  */
 import type { Treatment } from '../config/treatments';
-import { SCHEDULE_PERIOD_HOURS, TRIGGER_CATALOG, activeUnlessDeclaredCodes, retiredTriggerCodes } from '../config/catalogs';
+import {
+  SCHEDULE_PERIOD_HOURS, TRIGGER_CATALOG, T3_DEFAULT_SCHEDULE_TRIGGER, activeUnlessDeclaredCodes, retiredTriggerCodes,
+} from '../config/catalogs';
 import type { TriggerSetting } from '../config/config-types';
 
 /**
- * Déclencheurs du comportement historique, appliqués tant que la version ne
- * renseigne pas les siens. T3 quotidien = ancien `T3_ACCOUNT_RECONCILIATION_
- * INTERVAL_HOURS` (24 h par défaut). T1 n'a pas de planification par défaut :
- * sa reprise périodique reste portée par `analysis-recovery-scheduler`.
+ * Déclencheurs du comportement par défaut, appliqués tant que la version ne
+ * renseigne pas les siens. T3 : balayage HORAIRE (lot 31C — fonctionnement
+ * retenu, `T3_DEFAULT_SCHEDULE_TRIGGER` ; l'ancien défaut quotidien
+ * `schedule_daily` est supprimé), paginé et borné (`t3-queue`). T1 n'a pas de
+ * planification par défaut : sa reprise périodique reste portée par
+ * `analysis-recovery-scheduler`.
  */
 export const DEFAULT_TRIGGERS: Readonly<Record<'T1' | 'T3' | 'T4', readonly string[]>> = {
   // CDC 15 CFG-04 : `analysis_recovery` gouverne la reprise T1 toutes les
@@ -40,7 +44,7 @@ export const DEFAULT_TRIGGERS: Readonly<Record<'T1' | 'T3' | 'T4', readonly stri
   // (`activeUnlessDeclared`). `web_link_added` retiré : il n'a jamais rien
   // conditionné ; `coherence_ai_review` retiré au lot 16b-3 (D-H1).
   T1: ['source_uploaded', 'analysis_recovery'],
-  T3: ['source_analyzed', 'document_linked', 'asset_updated', 'arbitration_resolved', 'schedule_daily'],
+  T3: ['source_analyzed', 'document_linked', 'asset_updated', 'arbitration_resolved', T3_DEFAULT_SCHEDULE_TRIGGER],
   T4: ['source_analyzed'],
 };
 
@@ -146,7 +150,11 @@ const defaultScheduleDeps: ScheduleDeps = {
     const { enqueue } = await import('./job-queue.repository');
     // Périmètre global (§15.1 : « l'ensemble pertinent du traitement ») ; la
     // déduplication évite deux balayages en attente simultanés.
-    await enqueue({ treatment, scope: {}, triggerCode, payload: { scheduled: true, triggerCode } });
+    // Lot 31C : contexte T3 versionné (racine d'un cycle de balayage paginé).
+    const payload = treatment === 'T3'
+      ? { payloadVersion: 1, kind: 'sweep', scheduled: true, triggerCode, requestedAt: new Date().toISOString() }
+      : { scheduled: true, triggerCode };
+    await enqueue({ treatment, scope: {}, triggerCode, payload });
   },
   async loadTriggers(treatment) {
     return (await loader(treatment))?.triggers ?? null;

@@ -12,8 +12,11 @@
  * Entrée pour ouvrir) ; Entrée sans suggestion choisie envoie la demande à
  * Verebona.
  *
- * L'espace s'ouvre au clic, au raccourci ⌘K ou à la frappe — jamais au
- * simple focus (voir `VerebonaSpaceProvider`, « Ouvrir n'est pas écrire »).
+ * L'espace s'ouvre au clic, au raccourci Cmd/Ctrl+K ou à la frappe — jamais
+ * au simple focus (voir `VerebonaSpaceProvider`, « Ouvrir n'est pas écrire »).
+ * Aucun badge de raccourci n'est affiché (lot 31, L31-1) : « ⌘K » est
+ * inadapté sous Windows et sur mobile ; le raccourci reste annoncé aux
+ * technologies d'assistance via `aria-keyshortcuts`.
  */
 import { useRef, useState } from 'react';
 import { ArrowRight, History, Square, X } from 'lucide-react';
@@ -117,7 +120,6 @@ export function VerebonaHeaderField() {
   // Échange affiché seulement après une question ou une reprise (accueil du pop-up sinon).
   const n = api.showThread ? api.turns.length : 0;
   const actif = focused || api.isOpen;
-  const idle = !api.isOpen;
 
   return (
     <div
@@ -159,9 +161,6 @@ export function VerebonaHeaderField() {
         placeholder={fieldPlaceholder(n)}
         className="h-full min-w-0 flex-1 border-0 bg-transparent text-[14px] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
       />
-      {idle && !text && (
-        <kbd className="rounded-md bg-[color:var(--muted)] px-[7px] py-0.5 font-sans text-[10.5px] text-[color:var(--text-muted)]" aria-hidden>⌘K</kbd>
-      )}
       <SendButton api={api} canSend={etat.canSend} onSend={submit} size={34} />
     </div>
   );

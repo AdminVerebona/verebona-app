@@ -56,6 +56,12 @@ export interface AiJobContext {
    * laisser passer ses appels, et seulement les siens.
    */
   startedAt?: number;
+  /**
+   * Garde d'exécution de la file (lot 31C) : lue par `assertJobActive` avant
+   * chaque écriture métier des modules qui ne la reçoivent pas en paramètre
+   * (moteur de réconciliation T3). Absente hors file : aucun contrôle.
+   */
+  guard?: import('./execution-control').ExecutionGuard;
 }
 
 const storage = new AsyncLocalStorage<AiJobContext>();

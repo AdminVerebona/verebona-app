@@ -84,7 +84,8 @@ describe('hiérarchie (§6)', () => {
   it('SEL-04 / DATE-01 — seule une prochaine date : formulée en date absolue, sans conseil', () => {
     const p = present(raw({ agenda: [agenda({ date: '2026-10-15' })] }));
     expect(codes(p)).toEqual(['DATE-NEXT']);
-    expect(p.paragraphs[0].text).toBe('Votre prochaine échéance est « Ramonage » pour Maison, le 15 octobre 2026.');
+    // Lot 31 (T6) : libellé naturel, bien désigné par sa catégorie (« Maison »).
+    expect(p.paragraphs[0].text).toBe('Votre prochaine échéance est le ramonage de la maison, le 15 octobre 2026.');
   });
 
   it('SEL-05 — aucun signal : « Tout est à jour pour le moment. », sans T6', () => {
@@ -173,7 +174,7 @@ describe('À traiter (§9)', () => {
 describe('dates (§10)', () => {
   it('DATE-02 — prévisionnelle : jamais présentée comme certaine', () => {
     const p = present(raw({ agenda: [agenda({ forecast: true })] }));
-    expect(p.paragraphs[0].text).toContain('prévue autour du 15 octobre 2026 (date estimée)');
+    expect(p.paragraphs[0].text).toBe('Votre prochaine échéance est le ramonage de la maison, prévu autour du 15 octobre 2026 (date estimée).');
   });
 
   it('DATE-03 — deux dates le même jour : un seul sujet composé', () => {
@@ -182,7 +183,9 @@ describe('dates (§10)', () => {
       toProcess: [atp()],
     }));
     expect(codes(p)).toEqual(['ATP-DOC-TYP', 'DATE-NEXT-2']);
-    expect(p.paragraphs[1].text).toBe('Deux échéances tombent le 15 octobre 2026 : « Ramonage » et « Vidange ».');
+    // Lot 31 (T6) : mêmes règles que DATE-NEXT ; « Polo » sans catégorie connue → neutre.
+    expect(p.paragraphs[1].text).toBe('Deux échéances sont prévues le 15 octobre 2026 : le ramonage de la maison et la vidange (Polo).');
+    expect(p.paragraphs[1].actions.map((a) => a.label)).toEqual(['Voir « Ramonage »', 'Voir « Vidange »']);
   });
 
   it('DATE-04 — une date réalisée ou annulée n’est jamais lue (filtrée à la source)', () => {

@@ -39,7 +39,7 @@ const input = buildT6Input([{
   subjectId: 'DATE-NEXT:1', sourceFamily: 'DATE', sourceCode: 'DATE-NEXT', accountId: 7,
   priority: null, requiresAttention: false, intent: 'deadline',
   facts: { title: 'Ramonage', dateLabel: '15 octobre 2026', date: '2026-10-15', dateNature: 'confirmée' }, actions: [],
-  fallbackText: 'Votre prochaine échéance est « Ramonage », le 15 octobre 2026.',
+  fallbackText: 'Votre prochaine échéance est le ramonage, le 15 octobre 2026.',
   allowedHighlight: '15 octobre 2026', occurrenceKey: 'DATE-NEXT:1', dedupeKeys: [], secondaryLabel: '',
 }]);
 const OK = { schemaVersion: 't6-output-v2', messages: [{ subjectId: 'DATE-NEXT:1', text: 'Le ramonage est prévu le 15 octobre 2026.', highlight: '15 octobre 2026' }] };

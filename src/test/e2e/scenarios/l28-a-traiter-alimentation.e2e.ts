@@ -31,8 +31,11 @@ scenario('L28-ATP', 'À traiter : production réelle, déduplication, résolutio
   useTargetState();
 
   type Compte = { id: number; ownerUserId: number };
+  // Lot 31B : sans bien certain, T3 DOCUMENT_ASSET reprend (file vidée par
+  // `analyserDocument`) ; la question LINK-ASSET naît de son abstention.
+  const T3_ABSTENTION = { operationCode: 't3_link_ambiguity', task: 'LINK_AMBIGUITY', output: { task: 'LINK_AMBIGUITY', matches: [] }, repeat: true };
   const analyser = (compte: Compte, fileId: number, output: Record<string, unknown>, linkedAssetId: number | null = null) =>
-    analyserDocument(sql, useRecordings, { accountId: compte.id, userId: compte.ownerUserId, fileId, linkedAssetId, output });
+    analyserDocument(sql, useRecordings, { accountId: compte.id, userId: compte.ownerUserId, fileId, linkedAssetId, output, extra: [T3_ABSTENTION] });
 
   const actions = async (fileId: number, rule?: string): Promise<Ligne[]> => (await sql<Ligne[]>`
     SELECT id, public_id, rule_code, action_kind, resolved_at IS NULL AS active, resolution_reason, cycle_number,

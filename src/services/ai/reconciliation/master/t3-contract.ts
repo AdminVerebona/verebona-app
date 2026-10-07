@@ -57,6 +57,13 @@ export const T3LinkAmbiguityOutput = z.object({
   task: z.literal('LINK_AMBIGUITY'),
   /** Liste vide = aucun candidat suffisamment justifié (L3). */
   matches: z.array(t3LinkMatch).max(50),
+  /**
+   * Relation DOCUMENT_ASSET (lot 31B, D1 à D6 du master) : le document
+   * concerne-t-il UN bien (`SINGLE` : plusieurs candidats = A OU B, ambiguïté)
+   * ou RÉELLEMENT plusieurs (`MULTIPLE` : A ET B) ? Facultatif : absent pour
+   * les autres relations, et lu `SINGLE` par défaut.
+   */
+  documentScope: z.enum(['SINGLE', 'MULTIPLE']).nullable().optional(),
 });
 export type T3LinkAmbiguityOutput = z.infer<typeof T3LinkAmbiguityOutput>;
 

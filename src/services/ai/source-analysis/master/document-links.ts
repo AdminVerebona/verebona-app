@@ -7,10 +7,17 @@
  *                 vérifié certain) ;
  *   · SECONDARY : les autres biens cibles de faits vérifiés ;
  *   · MENTIONED : les biens seulement identifiés comme candidats vérifiés.
- * Origine AI, confiance associée. Un document mono-bien ne pose aucun lien
- * AI : ses colonnes (et donc les liens LEGACY_COLUMN du déclencheur) le
- * décrivent déjà. Une réanalyse retire les liens AI devenus sans objet.
- * Chemin legacy : rien n'est écrit ici (seul le déclencheur écrit).
+ * Origine AI, confiance associée. Une réanalyse retire les liens AI devenus
+ * sans objet.
+ *
+ * Lot 31B (ticket T1, cause 2) : la cardinalité ne conditionne plus
+ * l'existence du lien. L'ancienne règle « mono-bien : les colonnes
+ * suffisent » (`liens.size >= 2`) supposait que T1 écrivait `asset_id` — il
+ * ne l'écrit pas : un bien identifié avec certitude laissait le document
+ * visuellement non rattaché. Un seul bien certain produit donc son lien
+ * PRIMARY d'origine AI, comme 2 ou N biens. Quand ce bien est déjà celui
+ * de l'utilisateur (colonne, lien USER), `linkDocumentToAsset` ne touche
+ * pas au lien existant (`canRefresh`) : aucun doublon.
  */
 import type { ProjectedFact, T1Confidence } from './t1-contract';
 import type { LinkCandidate } from '../types';
@@ -48,10 +55,9 @@ export function computeMasterDocumentLinks(p: {
 
   const liens = new Map<number, MasterDocumentLink>();
   if (p.documentAssetId !== null) {
-    liens.set(p.documentAssetId, {
-      assetId: p.documentAssetId, role: 'PRIMARY',
-      confidence: p.documentAssetId === p.knownAssetId ? 1 : (candidats.get(p.documentAssetId) ?? cibles.get(p.documentAssetId) ?? 1),
-    });
+    // Le bien du document n'est retenu que CERTAIN (connu, identifiant exact
+    // unique ou unique candidat certain) : confiance 1 (ticket T1, §5).
+    liens.set(p.documentAssetId, { assetId: p.documentAssetId, role: 'PRIMARY', confidence: 1 });
   }
   for (const [id, score] of cibles) {
     if (!liens.has(id)) liens.set(id, { assetId: id, role: 'SECONDARY', confidence: Math.max(score, candidats.get(id) ?? 0) });
@@ -59,8 +65,8 @@ export function computeMasterDocumentLinks(p: {
   for (const [id, score] of candidats) {
     if (!liens.has(id)) liens.set(id, { assetId: id, role: 'MENTIONED', confidence: score });
   }
-  // Mono-bien : les colonnes suffisent, aucun lien AI.
-  return liens.size >= 2 ? [...liens.values()] : [];
+  // 1 bien, 2 biens ou N biens : même moteur N-N, aucun filtre de cardinalité.
+  return [...liens.values()];
 }
 
 /**

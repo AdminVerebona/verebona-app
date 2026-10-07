@@ -7,6 +7,7 @@
  * `SourceAnalysisResult` — sans exception et sans variante.
  */
 import type { EvidenceValue, EvidenceConfidence } from '../evidence/evidence.types';
+import type { AssetIdentifierRecord } from '../reconciliation/document-asset/identifiers';
 import type {
   PersistedFactTarget, ProjectionOrigin, T1SemanticEvent,
 } from './master/t1-contract';
@@ -265,6 +266,12 @@ export type AnalysisWarningCode =
   /** Extrait « lu » introuvable dans le texte lisible : confiance ramenée à probable — U2, U11. */
   | 'EXCERPT_NOT_FOUND'
   /**
+   * Lot 31B : le document contient un identifiant canonique exact (adresse,
+   * immatriculation, VIN, n° de série) d'un AUTRE bien que celui choisi par
+   * l'utilisateur — rattachement utilisateur conservé, contradiction remontée.
+   */
+  | 'ASSET_TARGET_CONTRADICTION'
+  /**
    * HISTORIQUE (résultats antérieurs au lot 16b-3, encore lus par
    * l'observabilité) : échec total du prompt maître, groupe analysé par les
    * étapes. Plus jamais produit : un échec du master met désormais la source
@@ -374,6 +381,14 @@ export interface AnalysisContext {
   equipments: Array<{ id: number; name: string; type: string | null; assetId: number }>;
   existingTitles: string[];
   linkedAssetId: number | null;
+  /**
+   * Lot 31B — identifiants canoniques des biens (adresse, code postal, ville,
+   * immatriculation, VIN, n° de série…), lus dans la fiche canonique.
+   * Contient des valeurs SENSIBLES (adresse) : jamais sérialisé vers un
+   * modèle — ENTITY_CONTEXT n'en reprend que `promptIdentifiers` (filtre
+   * `sensitive` du registre) ; la correspondance d'adresse est serveur.
+   */
+  assetIdentifiers?: AssetIdentifierRecord[];
   /**
    * Capacités effectives du compte (pièces, équipements), résolues côté
    * serveur au moment de l'analyse. Absentes : relues par l'étape T1.

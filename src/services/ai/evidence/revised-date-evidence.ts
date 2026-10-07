@@ -148,7 +148,9 @@ const defaultDeps: ReviseDateDeps = {
       [accountId, originalId, revisedId] as never[],
     );
   },
-  enqueueAsset: async (p) => (await import('../reconciliation/t3-queue')).enqueueT3ForAssets(p),
+  // Lot 31C : cause = (ré)analyse d'une source, pas un changement de
+  // rattachement — déclencheur `source_analyzed` (inchangé).
+  enqueueAsset: async (p) => (await import('../reconciliation/t3-queue')).enqueueT3ForAssets({ ...p, triggerCode: 'source_analyzed' }),
   enqueueEntity: async (p) => (await import('../reconciliation/t3-queue')).enqueueT3ForEntities({ ...p, triggeredBy: 'document_analyzed' }),
 };
 

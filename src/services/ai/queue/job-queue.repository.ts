@@ -22,7 +22,7 @@ import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import {
   dedupeKey, decideQueueing, afterFailure, afterDeferral, MAX_ATTEMPTS,
-  type JobOrigin, type JobScope, type JobStatus, type QueueDecision,
+  type JobOrigin, type JobScope, type JobStatus, type QueueDecision, type JobBusinessResult,
 } from './queue-policy';
 import { abortLocalExecutions } from './execution-control';
 import { invalidateRuntimeGuardCache } from './runnable-guard';
@@ -56,6 +56,14 @@ export interface QueuedJob {
   recoveredCount: number;
   /** Version de configuration figée au démarrage (VER-016). */
   configVersionId: number | null;
+  /**
+   * Résultat MÉTIER d'un travail DONE (lot 31C, migration 0267) : APPLIED,
+   * NO_CHANGE, ABSTAIN, SUPERSEDED, TARGET_GONE. `null` : pas encore clos,
+   * échec technique, ou exécutant qui n'en rend pas (T1, T4).
+   */
+  businessResult?: string | null;
+  /** Compteurs du résultat métier (jamais de valeur métier). */
+  businessResultDetail?: Record<string, unknown> | null;
 }
 
 function toJob(r: Row): QueuedJob {
@@ -82,6 +90,8 @@ function toJob(r: Row): QueuedJob {
     leaseExpiresAt: r.lease_expires_at ? new Date(String(r.lease_expires_at)) : null,
     recoveredCount: Number(r.recovered_count ?? 0),
     configVersionId: r.config_version_id == null ? null : Number(r.config_version_id),
+    businessResult: r.business_result == null ? null : String(r.business_result),
+    businessResultDetail: (r.business_result_detail ?? null) as Record<string, unknown> | null,
   };
 }
 
@@ -89,7 +99,7 @@ const COLS = `id, treatment, account_id, target_type, target_id, status, origin,
               trigger_code, attempts, last_error, available_at,
               coalesce_requested, head_priority, created_at, started_at, finished_at,
               payload, execution_id, worker_id, lease_expires_at, recovered_count,
-              config_version_id`;
+              config_version_id, business_result, business_result_detail`;
 
 // ── Mise en file ────────────────────────────────────────────────────────────
 
@@ -118,6 +128,14 @@ export interface EnqueueInput {
    * suivant (`completeJob` relit le contexte au moment de re-mettre en file).
    */
   payloadOnDedupe?: 'replace' | 'append_events';
+  /**
+   * Lot 31C — n'insère que si AUCUN job (quel que soit son statut) n'a jamais
+   * porté cette clé de déduplication. Sert aux continuations idempotentes
+   * (page suivante du balayage T3, clé unique par cycle et par page) : une
+   * page rejouée après une reprise ne recrée jamais la suivante. Rend
+   * `{ decision: 'skip', jobId: <existant> }` sinon.
+   */
+  onlyIfNeverQueued?: boolean;
 }
 
 /** Borne des événements fusionnés conservés dans un contexte (T3). */
@@ -138,6 +156,8 @@ export interface EnqueueResult {
 export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   const origin = input.origin ?? 'automatic';
   const key = dedupeKey(input.treatment, input.scope ?? {});
+
+  if (input.onlyIfNeverQueued) return enqueueOnce(input, key, origin);
 
   const existingRows = await pgClient.unsafe(
     `SELECT id, status FROM ai_job_queue
@@ -234,6 +254,44 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   return { decision, jobId: Number(row.id) };
 }
 
+/**
+ * Insertion conditionnée à l'absence de TOUT job portant la clé (statut
+ * indifférent) — une seule instruction : deux appels concurrents ne créent
+ * jamais deux lignes (au pire, l'index unique des jobs vivants refuse le
+ * second, rendu comme un `skip`).
+ */
+async function enqueueOnce(input: EnqueueInput, key: string, origin: JobOrigin): Promise<EnqueueResult> {
+  const scope = input.scope ?? {};
+  let rows: Row[];
+  try {
+    rows = (await pgClient.unsafe(
+      `INSERT INTO ai_job_queue
+         (treatment, account_id, target_type, target_id, dedupe_key, origin, trigger_code, payload, available_at)
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW() + ($9 || ' seconds')::interval
+        WHERE NOT EXISTS (SELECT 1 FROM ai_job_queue WHERE dedupe_key = $5)
+       RETURNING id, payload`,
+      [
+        input.treatment, scope.accountId ?? null, scope.targetType ?? null,
+        scope.targetId == null ? null : String(scope.targetId), key, origin, input.triggerCode ?? null,
+        input.payload ? JSON.stringify(input.payload) : null,
+        String(Math.max(0, Math.floor(input.delaySeconds ?? 0))),
+      ] as never[],
+    )) as unknown as Row[];
+  } catch (e) {
+    if ((e as { code?: string })?.code !== '23505') throw e;
+    rows = [];
+  }
+  if (rows[0]) return { decision: 'create', jobId: Number(rows[0].id) };
+  const existing = (await pgClient.unsafe(
+    `SELECT id FROM ai_job_queue WHERE dedupe_key = $1 ORDER BY id LIMIT 1`, [key] as never[],
+  )) as unknown as Row[];
+  if (!existing[0]) {
+    // SCR-08 : ni insérée, ni existante — ne pas acquitter.
+    throw new Error('[queue] Mise en file non persistée : la demande n\'est pas acquittée.');
+  }
+  return { decision: 'skip', jobId: Number(existing[0].id) };
+}
+
 // ── Prélèvement et fin d'exécution ──────────────────────────────────────────
 
 /** Durée du bail d'exécution, renouvelé par l'exécutant tant qu'il travaille. */
@@ -283,7 +341,8 @@ export async function claimNext(
             attempts = attempts + 1, head_priority = FALSE,
             execution_id = gen_random_uuid(), worker_id = $2,
             lease_expires_at = NOW() + ($3 || ' seconds')::interval,
-            heartbeat_at = NOW(), config_version_id = $4
+            heartbeat_at = NOW(), config_version_id = $4,
+            business_result = NULL, business_result_detail = NULL
       WHERE id IN (SELECT id FROM suivant)
       RETURNING ${COLS}`,
     [treatment, workerId, String(leaseSeconds), configVersionId] as never[],
@@ -368,22 +427,33 @@ export async function recoverAbandonedJobs(): Promise<Array<{ id: number; status
 export async function completeJob(
   jobId: number,
   executionId: string | null = null,
+  /** Lot 31C : résultat métier rendu par l'exécutant (DONE dans tous les cas). */
+  result: JobBusinessResult | null = null,
 ): Promise<{ requeued: boolean; stale?: boolean }> {
   // Seule l'exécution titulaire peut clore : une exécution reprise ailleurs
-  // ou interrompue ne passe jamais le job en DONE.
+  // ou interrompue ne passe jamais le job en DONE. Lot 31C : le jeton de la
+  // dernière exécution reste lisible sur un job clos (observabilité) — sans
+  // risque, tout contrôle d'écriture exige `status = 'RUNNING'`.
   const rows = await pgClient.unsafe(
     `UPDATE ai_job_queue
-        SET status = 'DONE', finished_at = NOW(), execution_id = NULL, lease_expires_at = NULL
+        SET status = 'DONE', finished_at = NOW(), lease_expires_at = NULL,
+            business_result = $3, business_result_detail = $4::jsonb
       WHERE id = $1 AND status = 'RUNNING'
         AND ($2::uuid IS NULL OR execution_id = $2::uuid)
       RETURNING ${COLS}`,
-    [jobId, executionId] as never[],
+    [
+      jobId, executionId, result?.result ?? null,
+      result?.detail ? JSON.stringify(result.detail) : null,
+    ] as never[],
   );
   const row = (rows as unknown as Row[])[0];
   if (!row) return { requeued: false, stale: true };
   const job = toJob(row);
   if (!job.coalesceRequested) return { requeued: false };
 
+  // Lot 31C : un passage consolidé ne remplace jamais un job vivant — s'il en
+  // existe déjà un pour la même clé (créé entre la clôture et ici), la
+  // déduplication l'absorbe : dix événements = UN passage supplémentaire.
   await enqueue({
     treatment: job.treatment,
     scope: { accountId: job.accountId, targetType: job.targetType, targetId: job.targetId },
@@ -396,25 +466,37 @@ export async function completeJob(
   return { requeued: true };
 }
 
-/** Échec d'une tentative : retour en file avec temporisation, ou échec définitif. */
+/**
+ * Échec d'une tentative : retour en file avec temporisation, ou échec définitif.
+ *
+ * `attempts` n'est pas réécrit : le prélèvement a déjà compté l'exécution
+ * (lot 31C — exactement MAX_ATTEMPTS exécutions). `permanent` (travail
+ * inexécutable, `PermanentJobError`) : FAILED tout de suite.
+ */
 export async function failJob(
   jobId: number,
   error: string,
   executionId: string | null = null,
+  options: { permanent?: boolean } = {},
 ): Promise<{ permanent: boolean; stale?: boolean }> {
   const rows0 = await pgClient.unsafe(
     `SELECT attempts FROM ai_job_queue WHERE id = $1 LIMIT 1`,
     [jobId] as never[],
   );
   const attempts = Number((rows0 as unknown as Row[])[0]?.attempts ?? 0);
-  const outcome = afterFailure(attempts);
+  const outcome = options.permanent
+    ? { status: 'FAILED' as const, retryInSeconds: null, attempts }
+    : afterFailure(attempts);
 
   const upd = await pgClient.unsafe(
     `UPDATE ai_job_queue
         SET status = $2, last_error = $3,
             available_at = NOW() + ($4 || ' seconds')::interval,
             finished_at = CASE WHEN $2 = 'FAILED' THEN NOW() ELSE NULL END,
-            execution_id = NULL, lease_expires_at = NULL
+            -- Lot 31C : un échec définitif garde le jeton de sa dernière
+            -- exécution (observabilité) ; un retour en file le révoque.
+            execution_id = CASE WHEN $2 = 'FAILED' THEN execution_id ELSE NULL END,
+            lease_expires_at = NULL
       WHERE id = $1 AND status = 'RUNNING'
         AND ($5::uuid IS NULL OR execution_id = $5::uuid)
       RETURNING id`,
@@ -723,6 +805,8 @@ export interface QueueFilters {
   /** QUE-UI-04 : période de création (bornes incluses). */
   createdFrom?: Date;
   createdTo?: Date;
+  /** Lot 31C : résultat métier (APPLIED, NO_CHANGE, ABSTAIN, SUPERSEDED, TARGET_GONE). */
+  businessResult?: string;
   limit?: number;
 }
 
@@ -737,6 +821,7 @@ export async function listJobs(filters: QueueFilters = {}): Promise<QueuedJob[]>
         AND ($6::text IS NULL OR trigger_code = $6)
         AND ($7::timestamptz IS NULL OR created_at >= $7)
         AND ($8::timestamptz IS NULL OR created_at <= $8)
+        AND ($9::text IS NULL OR business_result = $9)
       ORDER BY head_priority DESC, created_at
       LIMIT $4`,
     [
@@ -744,6 +829,7 @@ export async function listJobs(filters: QueueFilters = {}): Promise<QueuedJob[]>
       filters.accountId ?? null, Math.min(filters.limit ?? 100, 500),
       filters.origin ?? null, filters.triggerCode ?? null,
       filters.createdFrom?.toISOString() ?? null, filters.createdTo?.toISOString() ?? null,
+      filters.businessResult ?? null,
     ] as never[],
   );
   return (rows as unknown as Row[]).map(toJob);

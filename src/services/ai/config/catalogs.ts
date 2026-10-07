@@ -176,7 +176,16 @@ export const TRIGGER_CATALOG: readonly TriggerDefinition[] = [
       T4: 'Lance T4 à partir des résultats d’une analyse de source, pour traiter les informations ayant un effet sur l’agenda.',
     },
   },
-  { code: 'document_linked', label: 'Rattachement d\'un document à un bien', kind: 'event', treatments: ['T3'] },
+  // Lot 31C : déclencheur RÉEL de tout changement de relation document ↔ bien
+  // (rattachement, détachement, déplacement, suppression avec retrait des
+  // preuves) — `enqueueT3ForAssets` / `enqueueT3ForEntities` le portent et le
+  // contrôlent, indépendamment de `source_analyzed`.
+  {
+    code: 'document_linked', label: 'Rattachement, détachement ou déplacement d\'un document', kind: 'event', treatments: ['T3'],
+    help: {
+      T3: 'Relance T3 sur les biens, équipements et pièces dont un document a été rattaché, détaché, déplacé ou supprimé.',
+    },
+  },
   { code: 'asset_updated', label: 'Modification d\'un bien', kind: 'event', treatments: ['T3'] },
   { code: 'arbitration_resolved', label: 'Arbitrage « À traiter » résolu', kind: 'event', treatments: ['T3'] },
   // RETIRÉ au lot 16b-3 (D-H1) : revue IA du cron `/api/cron/hourly-enrichment`
@@ -198,6 +207,14 @@ export const SCHEDULE_PERIOD_HOURS: Readonly<Record<string, number>> = {
   schedule_weekly: 24 * 7,
   schedule_monthly: 24 * 30,
 };
+
+/**
+ * Planification NOMINALE de T3 (lot 31C) : défaut tant que la version ne
+ * renseigne pas ses déclencheurs, et repli d'un balayage dont le déclencheur
+ * serait inconnu. `schedule_daily` reste proposé au catalogue, mais n'est plus
+ * un défaut T3.
+ */
+export const T3_DEFAULT_SCHEDULE_TRIGGER = 'schedule_hourly';
 
 /** Déclencheurs proposés à l'écran — jamais les retirés (CDC 15 CFG-04). */
 export function listTriggers(treatment?: string): TriggerDefinition[] {

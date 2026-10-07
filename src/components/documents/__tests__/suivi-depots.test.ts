@@ -10,7 +10,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 vi.mock('@/lib/upload-http', () => ({ fetchDepot: vi.fn(), messageSelonStatut: () => '' }));
-import { UploadQueuePanel, libelleEtape, MESSAGE_MOBILE } from '../UploadQueueIndicator';
+import { UploadQueuePanel, libelleEtape, MESSAGE_MOBILE } from '../UploadQueuePanel';
 import type { ElementDepot } from '@/lib/upload-queue';
 
 // Le harnais (environnement node) compile le JSX en `React.createElement`.
@@ -83,9 +83,9 @@ describe('le panneau n’annule plus l’envoi en se fermant (CA-01)', () => {
     expect(DIALOGUE).toMatch(/Annuler l'envoi/);
   });
 
-  it('la file est confiée au module global, suivie dans le gabarit de l’application', () => {
+  it('la file est confiée au module global, supervisée dans le gabarit de l’application', () => {
     expect(DIALOGUE).toMatch(/fileDepot\.ajouterLot\(/);
-    expect(GABARIT).toMatch(/<UploadQueueIndicator userId=/);
+    expect(GABARIT).toMatch(/<UploadQueueSupervisor userId=/);
   });
 
   it('la fin d’un lot ne referme un panneau que s’il suit encore ce lot', () => {

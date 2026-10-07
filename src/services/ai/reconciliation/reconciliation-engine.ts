@@ -29,6 +29,7 @@ import { writeConflict, resolveObsoleteConflict } from './conflict-writer';
 import { openRun, closeRun, recordDecisions, failRun } from './reconciliation-run.repository';
 import { syncReconciliationToProcess } from '@/services/to-process/reconciliation-bridge';
 import type { ReconciliationDecision, ReconciliationRun } from './types';
+import { assertJobActive } from '../queue/execution-control';
 
 export interface ReconcileInput {
   accountId: number;
@@ -71,6 +72,7 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
 async function reconcileAgendaStatusAfter(input: ReconcileInput): Promise<void> {
   if (!input.sourceFileId) return;
   if (input.triggeredBy !== 'document_analyzed' && input.triggeredBy !== 'document_linked') return;
+  await assertJobActive('statut agenda');
   try {
     const { reconcileAgendaStatusForSource } = await import('@/services/agenda/agenda-status-sync');
     await reconcileAgendaStatusForSource({
@@ -129,6 +131,9 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
     switch (decision.action) {
       case 'apply':
       case 'update':
+        // Lot 31C : garde avant toute écriture métier — une exécution de file
+        // qui a perdu son jeton ou son bail n'écrit plus (sans effet hors file).
+        await assertJobActive(`valeur ${decision.fieldKey}`);
         await applyDecision(decision, {
           accountId: input.accountId,
           assetId: input.assetId,
@@ -146,6 +151,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
         break;
 
       case 'create_conflict':
+        await assertJobActive(`proposition ${decision.fieldKey}`);
         await writeConflict(decision, {
           accountId: input.accountId,
           assetId: input.assetId,
@@ -167,6 +173,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
     const retirees = await listRetiredEvidenceValues(input.accountId, input.assetId);
     const retraits = planRetractions(kc, collected.map((f) => f.fieldKey), retirees);
     for (const r of retraits) {
+      await assertJobActive(`retrait ${r.fieldKey}`);
       const outcome = await retractAutomaticValue({
         accountId: input.accountId, assetId: input.assetId, fieldKey: r.fieldKey, currentValue: r.currentValue, traceId,
       });
@@ -176,6 +183,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
       }
     }
   }
+  await assertJobActive('journal des décisions');
   await recordDecisions(runId, input.accountId, input.assetId, decisions);
 
   // ══════════════════════════════════════════════════════════════════════
@@ -186,6 +194,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
   // par le catalogue §10 — un champ sans règle ne produit aucune carte,
   // conformément à P-06.
   // ══════════════════════════════════════════════════════════════════════
+  await assertJobActive('file « À traiter »');
   await syncReconciliationToProcess({
     accountId: input.accountId,
     assetId: input.assetId,
@@ -209,6 +218,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
     shadow: false,
   };
 
+  await assertJobActive('clôture du run');
   await closeRun(runId, summary);
   return summary;
 }

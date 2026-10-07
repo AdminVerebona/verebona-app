@@ -178,7 +178,9 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     // §2.3 : « L'absence de rattachement à un bien n'est jamais considérée
     // comme normale. » Aucun état final sans bien.
     allowNotApplicable: false,
-    question: 'À quel bien ce document se rapporte-t-il ?',
+    // Lot 31B (ticket T3, §8) : posée seulement après l'abstention de T3
+    // DOCUMENT_ASSET, avec ses candidats.
+    question: 'À quel bien rattacher ce document ?',
     businessImpact: 75,
     producer: 'DOCUMENT_BRIDGE',
     cardinality: 'atLeastOne',

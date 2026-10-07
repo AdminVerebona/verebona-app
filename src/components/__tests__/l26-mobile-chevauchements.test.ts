@@ -7,8 +7,9 @@
  *              sa hauteur sous la barre haute, le titre de la page reste visible.
  * L26-10-AC2 : il est rendu entre la barre haute mobile et la zone de
  *              défilement de la colonne (DashboardLayout).
- * L26-10-AC3 : sur mobile, le suivi d'envoi se pose au-dessus de la barre
- *              basse et de son « + » (marge sûre comprise) ; desktop inchangé.
+ * L26-10-AC3 : (caduc) le suivi flottant « Envoi de documents » a été
+ *              supprimé au lot 31 (L31-5, `l31-5-envoi-sans-toast.test.ts`) :
+ *              il ne peut plus recouvrir la barre basse.
  */
 import * as React from 'react';
 import { createElement as h } from 'react';
@@ -19,20 +20,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 (globalThis as { React?: typeof React }).React = React;
 
-const etat = vi.hoisted(() => ({ mobile: true }));
 vi.mock('@/contexts/AnalysisBannerContext', () => ({
   useAnalysisBanner: () => ({ analyzingCount: 1, analyzingFileIds: [42], analysisStartTimes: {} }),
 }));
-vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => etat.mobile }));
-vi.mock('@/hooks/useFileDepot', () => ({
-  useFileDepot: () => ({
-    elements: [{ operationId: 'op', nom: 'facture.pdf', etape: 'termine', progression: 1, reprise: null, fichierDisponible: true, erreur: null }],
-    enCours: 0,
-  }),
-}));
 
 const { MobileAnalysisBanner } = await import('../AnalysisBanner');
-const { UploadQueueIndicator, POSITION_MOBILE } = await import('../documents/UploadQueueIndicator');
 
 const lire = (p: string) => readFileSync(resolve(__dirname, '..', '..', '..', p), 'utf8');
 
@@ -56,29 +48,5 @@ describe('bandeau « Analyse en cours » mobile', () => {
     expect(barreHaute).toBeGreaterThan(0);
     expect(bandeau).toBeGreaterThan(barreHaute);
     expect(defilement).toBeGreaterThan(bandeau);
-  });
-});
-
-describe('suivi « Envoi de documents »', () => {
-  it('L26-10-AC3 : mobile — au-dessus de la barre basse et du « + »', () => {
-    etat.mobile = true;
-    const html = renderToStaticMarkup(h(UploadQueueIndicator, { userId: 1 }));
-    expect(html).toContain('Envoi de documents');
-    expect(html).toContain(POSITION_MOBILE);
-    expect(html).not.toMatch(/\bbottom-24\b/);
-    // Même marge sûre que la barre basse, et une base qui dépasse sa hauteur
-    // hors marge : 8 (marge haute) + 44 (« + » débordant) + 78 (barre) = 130 px.
-    const nav = lire('src/components/mobile/bottom-navigation.tsx');
-    expect(nav).toContain('pb-[max(20px,env(safe-area-inset-bottom))]');
-    expect(POSITION_MOBILE).toContain('max(20px,env(safe-area-inset-bottom))');
-    const base = Number(POSITION_MOBILE.match(/calc\(([\d.]+)rem/)?.[1]) * 16;
-    expect(base).toBeGreaterThanOrEqual(130 + 8);
-  });
-
-  it('L26-10-AC3 : desktop inchangé (coin bas droit)', () => {
-    etat.mobile = false;
-    const html = renderToStaticMarkup(h(UploadQueueIndicator, { userId: 1 }));
-    expect(html).toMatch(/right-4 bottom-4 w-\[360px\]/);
-    expect(html).not.toContain(POSITION_MOBILE);
   });
 });

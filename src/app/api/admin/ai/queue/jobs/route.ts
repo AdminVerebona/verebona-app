@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listJobs } from '@/services/ai/queue/job-queue.repository';
 import { isTreatment } from '@/services/ai/config/treatments';
+import { BUSINESS_RESULTS } from '@/services/ai/queue/queue-policy';
 import { requireAdminContext, toErrorResponse } from '../../config-versions/_shared';
 
 function date(v: string | null): Date | undefined {
@@ -39,6 +40,8 @@ export async function GET(req: NextRequest) {
       triggerCode: p.get('trigger') || undefined,
       createdFrom: date(p.get('from')),
       createdTo: date(p.get('to') ? `${p.get('to')}T23:59:59.999Z` : null),
+      // Lot 31C : résultat métier d'un travail terminé.
+      businessResult: (BUSINESS_RESULTS as readonly string[]).includes(p.get('result') ?? '') ? p.get('result')! : undefined,
     });
     return NextResponse.json({ jobs, count: jobs.length });
   } catch (e) {

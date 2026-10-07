@@ -29,6 +29,7 @@ import {
   type AssetFamily as V2AssetFamily,
 } from '@/lib/referential/v2';
 import type { AnalysisContext, SourceInput } from '../types';
+import { promptIdentifiers } from '../../reconciliation/document-asset/identifiers';
 import type { AccountCapabilities } from '@/services/account-capabilities.service';
 import type { PromptCatalogDTO } from '@/services/canonical/registry/types';
 
@@ -67,11 +68,20 @@ export function describeSources(input: SourceInput, indices: number[]): string {
 /**
  * ENTITY_CONTEXT : identifiants et libellés bornés. Sans la capacité, aucune
  * pièce / aucun équipement (le modèle ne reçoit jamais leurs identifiants).
+ *
+ * Lot 31B (ticket T1, cause 1) : chaque bien porte en plus ses identifiants
+ * canoniques DISCRIMINANTS, selon sa famille (code postal, ville, référence
+ * cadastrale ; immatriculation, VIN, marque, modèle ; n° de série, marque,
+ * modèle) — jamais la fiche entière, jamais un champ `sensitive` du
+ * registre (l'adresse : sa correspondance est faite côté serveur, voir
+ * `document-asset/identifiers.ts`). Les clés absentes ne sont pas émises.
  */
 export function describeEntities(ctx: AnalysisContext, caps: AccountCapabilities): string {
+  const identifiers = new Map((ctx.assetIdentifiers ?? []).map((r) => [r.assetId, r]));
   return JSON.stringify({
     assets: ctx.assets.slice(0, MAX_ASSETS).map((a) => ({
       id: a.id, name: a.name, family: toAssetFamily(a.category) ?? null, subtype: a.subtype ?? null,
+      ...promptIdentifiers(identifiers.get(a.id)),
     })),
     rooms: caps.rooms ? ctx.rooms.slice(0, MAX_ROOMS).map((r) => ({ id: r.id, name: r.name, assetId: r.assetId })) : [],
     equipments: caps.equipments

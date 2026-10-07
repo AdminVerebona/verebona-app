@@ -9,7 +9,8 @@
  * dialogue à la fermeture — la progression était perdue. La file est
  * désormais un module unique de l'application (singleton `fileDepot`) :
  *   · fermer le panneau ou changer de page (navigation interne) ne l'arrête
- *     pas ; la progression reste visible dans `UploadQueueIndicator` ;
+ *     pas ; la progression reste visible dans la modale d’ajout (plus de
+ *     suivi flottant depuis le lot 31 : `@/lib/upload-queue-feedback`) ;
  *   · l'annulation est une action EXPLICITE (lot ou fichier) ;
  *   · chaque fichier se reprend à la bonne étape : préparation, transfert
  *     (même opération ⇒ même document côté serveur) ou confirmation seule.

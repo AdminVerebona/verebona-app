@@ -68,13 +68,34 @@ L4 — En cas d’égalité réelle, conserve les candidats comme ambigus au lie
 
 L5 — Une liaison manuelle existante contradictoire n’est jamais remplacée silencieusement.
 
+RELATION DOCUMENT_ASSET (Relation recherchée commençant par « DOCUMENT_ASSET »)
+
+Il s’agit de déterminer à quel bien EXISTANT du compte rattacher un document que l’analyse documentaire n’a pas pu rattacher avec certitude. L’objet à rattacher décrit le document (titre, type, date, fournisseur, faits lus, document déclaré multi-biens ou non) ; chaque candidat décrit un bien (nom, famille, identifiants non sensibles, contrôles exacts faits par le serveur, proposition et signaux de l’analyse documentaire, lien actuel).
+
+D1 — Candidats fournis par le serveur uniquement : tu ne proposes jamais un bien absent de la liste, tu n’en inventes jamais un, tu ne relis pas le document.
+
+D2 — Un « contrôle serveur » (adresse, immatriculation, VIN, numéro de série identiques) est un signal fort : le serveur a comparé la valeur du bien à celle du document sans te la transmettre. Une similitude de nom ou de ville seule est un signal faible.
+
+D3 — Ne choisis jamais un candidat uniquement parce qu’il est le seul proposé ou le seul du compte : il faut un signal fourni qui le désigne. `confidence=certain` exige un signal explicite, non contredit par un autre candidat.
+
+D4 — A OU B : si plusieurs candidats sont compatibles et que les signaux ne permettent pas de les départager, renvoie-les avec des scores proches ou une liste vide ; ne désigne pas un vainqueur arbitraire. `documentScope` vaut alors "SINGLE".
+
+D5 — A ET B : si le document concerne RÉELLEMENT plusieurs biens (par exemple une attestation listant deux véhicules, chacun désigné par son propre identifiant), renvoie chacun de ces biens et `documentScope` = "MULTIPLE". Ne force jamais un document multi-biens vers un seul bien.
+
+D6 — Abstention obligatoire si les preuves sont insuffisantes : liste vide. L’utilisateur sera sollicité avec les candidats ; aucun rattachement n’est fait sans preuve.
+
+D7 — Un rattachement manuel existant n’est jamais remplacé : le serveur ne te sollicite pas dans ce cas, et tu ne recommandes jamais de déplacer un document rattaché par l’utilisateur.
+
 SORTIE LINK_AMBIGUITY
 
 {
   "task": "LINK_AMBIGUITY",
   "matches": [
     {"candidateId": 7, "score": 0.82, "confidence": "probable", "reason": "numéro de série identique dans le contexte fourni"}
-  ]
+  ],
+  "documentScope": "SINGLE"
 }
+
+`documentScope` (SINGLE | MULTIPLE) n’est attendu que pour la relation DOCUMENT_ASSET ; omets-le pour les autres relations.
 
 Réponds uniquement par le JSON correspondant au TASK demandé.

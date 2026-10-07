@@ -61,17 +61,17 @@ describe('planifications simples (T3-006)', () => {
   it('met en file un passage global échu, pas un passage récent', async () => {
     const enqueueScheduled = vi.fn(async () => {});
     const fired = await runDueSchedules(new Date('2026-09-26T12:00:00Z'), {
-      loadTriggers: async (t) => (t === 'T3' ? [] : null), // T3 : défaut quotidien ; T1 : aucun
-      lastScheduledAt: async () => new Date('2026-09-25T06:00:00Z'),
+      loadTriggers: async (t) => (t === 'T3' ? [] : null), // T3 : défaut horaire (lot 31C) ; T1 : aucun
+      lastScheduledAt: async () => new Date('2026-09-26T10:30:00Z'),
       enqueueScheduled,
     });
-    expect(fired).toEqual([{ treatment: 'T3', triggerCode: 'schedule_daily' }]);
-    expect(enqueueScheduled).toHaveBeenCalledWith('T3', 'schedule_daily');
+    expect(fired).toEqual([{ treatment: 'T3', triggerCode: 'schedule_hourly' }]);
+    expect(enqueueScheduled).toHaveBeenCalledWith('T3', 'schedule_hourly');
 
     enqueueScheduled.mockClear();
     await runDueSchedules(new Date('2026-09-26T12:00:00Z'), {
       loadTriggers: async () => [],
-      lastScheduledAt: async () => new Date('2026-09-26T11:00:00Z'),
+      lastScheduledAt: async () => new Date('2026-09-26T11:30:00Z'),
       enqueueScheduled,
     });
     expect(enqueueScheduled).not.toHaveBeenCalled();

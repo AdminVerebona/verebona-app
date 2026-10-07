@@ -1,23 +1,23 @@
 "use client";
 
 /**
- * Suivi global des dépôts de documents — APP-PERF-29.
+ * Liste des fichiers d'un dépôt et de leurs actions — APP-PERF-29.
  *
- * Monté une fois dans le gabarit de l'application : la progression d'un
- * envoi reste visible après la fermeture du panneau d'ajout ou un
- * changement de page. Chaque fichier peut être annulé, repris (à l'étape où
- * il s'est arrêté) ou retiré de la liste.
+ * Affichée DANS la modale d'ajout uniquement (lot 31, L31-5) : le suivi
+ * flottant « Envoi de documents » a été supprimé (voir
+ * `@/lib/upload-queue-feedback`). Chaque fichier peut être annulé, repris (à
+ * l'étape où il s'est arrêté) ou retiré.
  *
  * ⚠️ Aucune promesse d'envoi en arrière-plan : la continuité d'un transfert
  * quand le téléphone se verrouille ou que la PWA est suspendue n'est pas
  * démontrée. Le message mobile le dit, et la reprise est proposée au retour.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Check, X, RotateCcw, FileUp, ChevronDown, AlertTriangle } from 'lucide-react';
+import { Loader2, Check, X, RotateCcw, FileUp, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { useIsMobile } from '@/hooks/use-mobile';
 import { useFileDepot } from '@/hooks/useFileDepot';
-import { fileDepot, stockageLocal, estActif, type ElementDepot } from '@/lib/upload-queue';
+import { fileDepot, estActif, type ElementDepot } from '@/lib/upload-queue';
+import { envoisAReprendre } from '@/lib/upload-queue-feedback';
 import { ACCEPT_DEPOT } from '@/lib/upload-limits';
 
 export function libelleEtape(e: ElementDepot): string {
@@ -36,7 +36,7 @@ export function libelleEtape(e: ElementDepot): string {
 
 export const MESSAGE_MOBILE =
   'Sur téléphone, gardez l’application ouverte pendant l’envoi : s’il est interrompu ' +
-  '(mise en veille, fermeture), vous pourrez le reprendre ici.';
+  '(mise en veille, fermeture), vous pourrez le reprendre depuis « Ajouter un document ».';
 
 interface PanelProps {
   elements: ElementDepot[];
@@ -48,7 +48,7 @@ interface PanelProps {
   onRetirer?: (operationId: string) => void;
 }
 
-/** Liste des fichiers d'un dépôt avec leurs actions (réutilisée par le dialogue). */
+/** Liste des fichiers d'un dépôt avec leurs actions (modale d'ajout). */
 export function UploadQueuePanel({ elements, mobile, onAnnuler, onReprendre, onChoisirFichier, onRetirer }: PanelProps) {
   const actifs = elements.some(estActif);
   return (
@@ -112,76 +112,44 @@ export function UploadQueuePanel({ elements, mobile, onAnnuler, onReprendre, onC
   );
 }
 
-/**
- * Mobile : le suivi se pose AU-DESSUS de la barre basse et de son « + »
- * détaché, jamais dessous (lot 26). Hauteur de la barre basse
- * (`mobile/bottom-navigation.tsx`) : marge haute 8 px + « + » 58 px qui
- * déborde de 44 px + barre ≈ 78 px, puis la marge basse
- * `max(20px, safe-area)`. 8,75 rem (140 px) + cette même marge laisse
- * ~18 px d'air au-dessus du « + », encoche comprise.
- */
-export const POSITION_MOBILE = 'bottom-[calc(8.75rem+max(20px,env(safe-area-inset-bottom)))]';
+/** Reprise d'un fichier ; une reprise refusée est annoncée (fichier différent…). */
+export function reprendreDepot(id: string, fichier?: File): void {
+  try { fileDepot.reprendre(id, fichier); } catch (err) { toast.error((err as Error).message); }
+}
 
-export function UploadQueueIndicator({ userId }: { userId?: number | null }) {
-  const { elements, enCours } = useFileDepot();
-  const isMobile = useIsMobile();
-  const [replie, setReplie] = useState(false);
+/**
+ * Envois échoués ou interrompus HORS du lot suivi par la modale (lot 31,
+ * L31-5) : c'est ici, dans la modale d'ajout, qu'ils se reprennent depuis la
+ * suppression du suivi flottant — y compris après fermeture de l'onglet
+ * (fichier à resélectionner).
+ */
+export function UploadResumeSection({ lotSuivi, mobile }: { lotSuivi: string | null; mobile?: boolean }) {
+  const { elements } = useFileDepot();
   const inputRef = useRef<HTMLInputElement>(null);
   const cibleRef = useRef<string | null>(null);
-  const echouesMasque = useRef(new Set<string>());
+  // Fichiers repris depuis cette section : ils y restent visibles pendant
+  // l'envoi et jusqu'à leur issue (sinon ils disparaîtraient au clic).
+  const [suivis, setSuivis] = useState<ReadonlySet<string>>(() => new Set());
+  const annonces = useRef(new Set<string>());
+  const suivre = (id: string) => setSuivis((s) => new Set(s).add(id));
 
-  // Dépôts non terminés de CET utilisateur (stockage local, 24 h).
+  // Un envoi restauré (onglet refermé) n'a plus de fin de lot en mémoire :
+  // sa réussite rafraîchit ici les listes et « À traiter ».
   useEffect(() => {
-    fileDepot.utiliserStockage(userId ? stockageLocal(userId) : null);
-  }, [userId]);
-
-  // Fermeture ou rechargement de l'onglet pendant un envoi : avertissement
-  // du navigateur (la navigation interne, elle, n'interrompt rien).
-  useEffect(() => {
-    if (enCours === 0) return;
-    const avertir = (ev: BeforeUnloadEvent) => { ev.preventDefault(); ev.returnValue = ''; };
-    window.addEventListener('beforeunload', avertir);
-    return () => window.removeEventListener('beforeunload', avertir);
-  }, [enCours]);
-
-  // Échec survenu application masquée (veille, PWA suspendue) : une reprise
-  // automatique au retour, sur la même opération — jamais de doublon.
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    if (document.visibilityState === 'hidden') {
-      for (const e of elements) {
-        if (e.etape === 'echec' && e.reprise !== null && (e.fichierDisponible || e.reprise === 'confirmation')) {
-          echouesMasque.current.add(e.operationId);
-        }
-      }
+    for (const e of elements) {
+      if (!suivis.has(e.operationId) || e.etape !== 'termine' || annonces.current.has(e.operationId)) continue;
+      annonces.current.add(e.operationId);
+      window.dispatchEvent(new CustomEvent('document-added'));
+      window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
     }
-  }, [elements]);
-  useEffect(() => {
-    const surRetour = () => {
-      if (document.visibilityState !== 'visible') return;
-      const ids = [...echouesMasque.current];
-      echouesMasque.current.clear();
-      for (const id of ids) { try { fileDepot.reprendre(id); } catch { /* reprise manuelle */ } }
-    };
-    document.addEventListener('visibilitychange', surRetour);
-    return () => document.removeEventListener('visibilitychange', surRetour);
-  }, []);
+  }, [elements, suivis]);
 
-  if (elements.length === 0) return null;
-
-  const termines = elements.filter((e) => !estActif(e)).length;
-  const reprendre = (id: string, fichier?: File) => {
-    try { fileDepot.reprendre(id, fichier); } catch (err) { toast.error((err as Error).message); }
-  };
-  const choisir = (id: string) => { cibleRef.current = id; inputRef.current?.click(); };
-
+  const aReprendre = elements.filter((e) => e.lotId !== lotSuivi && (suivis.has(e.operationId) || envoisAReprendre([e], lotSuivi).length > 0));
+  if (aReprendre.length === 0) return null;
+  const restants = envoisAReprendre(aReprendre, lotSuivi).length;
+  const enCours = aReprendre.some(estActif);
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      data-upload-queue
-      className={`fixed z-40 ${isMobile ? `left-3 right-3 ${POSITION_MOBILE}` : 'right-4 bottom-4 w-[360px]'} rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] shadow-lg`}
-    >
+    <div data-upload-resume role="alert" className="flex flex-col gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
       <input
         ref={inputRef}
         type="file"
@@ -192,37 +160,27 @@ export function UploadQueueIndicator({ userId }: { userId?: number | null }) {
           const id = cibleRef.current;
           ev.target.value = '';
           cibleRef.current = null;
-          if (f && id) reprendre(id, f);
+          if (f && id) { suivre(id); reprendreDepot(id, f); }
         }}
       />
-      <div className="flex items-center gap-2 px-3 py-2">
-        {enCours > 0
-          ? <Loader2 className="w-4 h-4 animate-spin text-[color:var(--text-muted)]" />
-          : <Check className="w-4 h-4 text-[color:var(--text-muted)]" />}
-        <span className="text-sm font-medium flex-1 text-[color:var(--text-primary)]">
-          Envoi de documents {termines}/{elements.length}
+      <div className="flex items-center gap-2 text-sm">
+        {restants > 0
+          ? <AlertTriangle className="w-4 h-4 flex-shrink-0 text-amber-500" />
+          : enCours
+            ? <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin text-[color:var(--text-muted)]" />
+            : <Check className="w-4 h-4 flex-shrink-0 text-emerald-500" />}
+        <span className="font-medium text-[color:var(--text-primary)]">
+          {restants > 1 ? `${restants} envois à reprendre` : restants === 1 ? '1 envoi à reprendre' : enCours ? 'Reprise en cours…' : 'Reprise terminée'}
         </span>
-        <button type="button" aria-label={replie ? 'Déplier' : 'Replier'} onClick={() => setReplie((v) => !v)} className="p-1 rounded hover:bg-muted/40">
-          <ChevronDown className={`w-4 h-4 transition-transform ${replie ? '' : 'rotate-180'}`} />
-        </button>
-        {enCours === 0 && (
-          <button type="button" aria-label="Masquer" onClick={() => fileDepot.retirerTermines()} className="p-1 rounded hover:bg-muted/40">
-            <X className="w-4 h-4" />
-          </button>
-        )}
       </div>
-      {!replie && (
-        <div className="max-h-[40vh] overflow-y-auto px-3 pb-3">
-          <UploadQueuePanel
-            elements={elements}
-            mobile={isMobile}
-            onAnnuler={(id) => fileDepot.annuler(id)}
-            onReprendre={(id) => reprendre(id)}
-            onChoisirFichier={choisir}
-            onRetirer={(id) => fileDepot.retirer(id)}
-          />
-        </div>
-      )}
+      <UploadQueuePanel
+        elements={aReprendre}
+        mobile={mobile}
+        onAnnuler={(id) => fileDepot.annuler(id)}
+        onReprendre={(id) => { suivre(id); reprendreDepot(id); }}
+        onChoisirFichier={(id) => { cibleRef.current = id; inputRef.current?.click(); }}
+        onRetirer={(id) => fileDepot.retirer(id)}
+      />
     </div>
   );
 }

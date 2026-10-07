@@ -1,0 +1,109 @@
+{
+  "case": "P-T3-04",
+  "description": "DOCUMENT_ASSET — A OU B : deux biens à Lyon, seule la ville est citée ; aucun choix arbitraire, abstention vers « À traiter ».",
+  "context": {
+    "variables": {
+      "FIELD": null,
+      "CURRENT_STATE": null,
+      "EVIDENCES": null,
+      "SUBJECT_CONTEXT": "{\"document\":{\"title\":\"Taxe foncière\",\"type\":\"PROPERTY_TAX\",\"date\":\"2026-09-01\",\"supplier\":null,\"description\":null,\"multiAssetDeclaredByT1\":false},\"facts\":[{\"key\":\"city\",\"value\":\"Lyon\",\"excerpt\":\"Commune : LYON\"}]}",
+      "CANDIDATES": [
+        {
+          "candidateId": 7,
+          "description": "\"Maison\" (IMMOBILIER, maison) — identifiants: city=Lyon, postalCode=69003 — T1: probable (0.6) ville citée — Lyon — lien actuel: bien cité (MENTIONED)"
+        },
+        {
+          "candidateId": 9,
+          "description": "\"Studio\" (IMMOBILIER, appartement) — identifiants: city=Lyon, postalCode=69007 — T1: probable (0.6) ville citée — Lyon — lien actuel: bien cité (MENTIONED)"
+        }
+      ],
+      "RELATION_TYPE": "DOCUMENT_ASSET — bien(s) existant(s) du compte auquel rattacher ce document : un seul bien principal, plusieurs seulement si le document concerne réellement plusieurs biens (documentScope = MULTIPLE)"
+    },
+    "documentAsset": {
+      "subject": {
+        "title": "Taxe foncière",
+        "documentType": "PROPERTY_TAX",
+        "documentDate": "2026-09-01",
+        "supplier": null,
+        "description": null,
+        "multiAssetDeclared": false,
+        "facts": [
+          {
+            "canonicalKey": "city",
+            "label": "Commune",
+            "value": "Lyon",
+            "excerpt": "Commune : LYON"
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "family": "IMMOBILIER",
+          "subtype": "maison",
+          "identifiers": {
+            "city": "Lyon",
+            "postalCode": "69003"
+          },
+          "serverSignals": [],
+          "t1": {
+            "confidence": "probable",
+            "score": 0.6,
+            "reason": "ville citée",
+            "signals": "Lyon"
+          },
+          "currentRole": "MENTIONED",
+          "assetId": 7,
+          "name": "Maison"
+        },
+        {
+          "family": "IMMOBILIER",
+          "subtype": "appartement",
+          "identifiers": {
+            "city": "Lyon",
+            "postalCode": "69007"
+          },
+          "serverSignals": [],
+          "t1": {
+            "confidence": "probable",
+            "score": 0.6,
+            "reason": "ville citée",
+            "signals": "Lyon"
+          },
+          "currentRole": "MENTIONED",
+          "assetId": 9,
+          "name": "Studio"
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_link_ambiguity",
+    "task": "LINK_AMBIGUITY",
+    "output": {
+      "task": "LINK_AMBIGUITY",
+      "documentScope": "SINGLE",
+      "matches": [
+        {
+          "candidateId": 7,
+          "score": 0.84,
+          "confidence": "certain",
+          "reason": "ville identique"
+        },
+        {
+          "candidateId": 9,
+          "score": 0.8,
+          "confidence": "probable",
+          "reason": "ville identique"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "decision": "ABSTAIN",
+    "reasonCode": "AMBIGUOUS",
+    "neverDecisions": [
+      "APPLY",
+      "MULTI_ASSET"
+    ]
+  }
+}

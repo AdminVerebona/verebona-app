@@ -85,11 +85,14 @@ describe('exécutant', () => {
     expect((d.reconcileAccount as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1]).toEqual({ type: 'manual', requestedByUserId: 8 });
   });
 
-  it('balayage planifié : un job compte par compte à rationaliser', async () => {
+  it('balayage planifié : un job compte par compte à rationaliser (page 0, période de la planification)', async () => {
     const d = h();
-    await runT3Job(job({ accountId: null, triggerCode: 'schedule_weekly' }), NO_GUARD, d);
-    expect(d.listSweepAccounts).toHaveBeenCalledWith(168);
-    expect(enqueue).toHaveBeenCalledTimes(2);
+    const startedAt = new Date('2026-10-07T10:00:00Z');
+    await runT3Job(job({ accountId: null, triggerCode: 'schedule_weekly', startedAt }), NO_GUARD, d);
+    expect(d.listSweepAccounts).toHaveBeenCalledWith({
+      since: new Date(startedAt.getTime() - 168 * 3_600_000), afterAccountId: 0, limit: 50,
+    });
+    expect(enqueue).toHaveBeenCalledTimes(2); // page incomplète : pas de continuation
     expect(enqueue.mock.calls[1][0]).toMatchObject({ scope: { accountId: 2 }, triggerCode: 'schedule_weekly' });
   });
 
@@ -100,13 +103,14 @@ describe('exécutant', () => {
 });
 
 describe('cycle de vie d’un document (CDC 15 T3-03)', () => {
-  it('un travail « bien » par bien touché, déclencheur tracé document_linked', async () => {
+  it('un travail « bien » par bien touché, déclencheur RÉEL document_linked (lot 31C)', async () => {
     const { enqueueT3ForAssets } = await import('../t3-queue');
     const ids = await enqueueT3ForAssets({ accountId: 5, userId: 3, assetIds: [10, 10, 11, 0], sourceFileId: 55, reason: 'DOCUMENT_MOVED' }, deps());
     expect(ids).toEqual([99, 99]);
     expect(enqueue.mock.calls.map((c) => (c[0] as { scope: { targetId: number } }).scope.targetId)).toEqual([10, 11]);
     expect(enqueue.mock.calls[0][0]).toMatchObject({
-      triggerCode: 'source_analyzed', payload: { kind: 'asset', userId: 3, sourceFileId: 55, triggeredBy: 'document_linked', lifecycleReason: 'DOCUMENT_MOVED' },
+      triggerCode: 'document_linked',
+      payload: { payloadVersion: 1, kind: 'asset', userId: 3, sourceFileId: 55, triggeredBy: 'document_linked', lifecycleReason: 'DOCUMENT_MOVED' },
     });
     expect(await enqueueT3ForAssets({ accountId: 5, userId: 3, assetIds: [10], reason: 'x' }, deps(false))).toEqual([]);
   });
@@ -148,8 +152,8 @@ describe('équipement / pièce (lot 18, R3)', () => {
       { accountId: 5, targetType: 'equipment', targetId: 4 }, { accountId: 5, targetType: 'room', targetId: 9 },
     ]);
     expect(enqueue.mock.calls[0][0]).toMatchObject({
-      triggerCode: 'source_analyzed', payloadOnDedupe: 'replace',
-      payload: { kind: 'entity', userId: 3, sourceFileId: 55, triggeredBy: 'document_linked', lifecycleReason: 'DOCUMENT_DELETED' },
+      triggerCode: 'document_linked', payloadOnDedupe: 'replace',
+      payload: { payloadVersion: 1, kind: 'entity', userId: 3, sourceFileId: 55, triggeredBy: 'document_linked', lifecycleReason: 'DOCUMENT_DELETED' },
     });
     restaurer();
   });

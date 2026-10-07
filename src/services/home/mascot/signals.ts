@@ -18,6 +18,7 @@
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
 import type { MascotAction, MascotFamily, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
+import { deadlineButtonLabel, deadlineNextText, deadlinePairText } from './deadline-label';
 
 export interface MascotDocRow { id: number; title: string; at: string }
 export interface MascotExportRow { id: number; exportType: string; assetId: number; assetName: string; at: string }
@@ -32,6 +33,13 @@ export interface MascotAgendaRow {
   requiresQualification: boolean;
   assetId: number | null;
   assetName: string | null;
+  /**
+   * Famille (`assets.category`) et catégorie (`assets.subtype`) du bien —
+   * lot 31 : seules données qui autorisent « de la Cupra » dans le texte
+   * d'une échéance (genre du référentiel). Absentes : formulation neutre.
+   */
+  assetCategory?: string | null;
+  assetSubtype?: string | null;
 }
 
 /**
@@ -325,6 +333,9 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
     // DATE-NEXT-2 (DAT-004) : un seul sujet composé, qui ne consomme qu'une place.
     const [a, b] = memeJour;
     const prevision = a.forecast || b.forecast;
+    // Lot 31 (T6) : mêmes libellés naturels que DATE-NEXT, jamais les titres bruts.
+    const voirA = `Voir ${q(deadlineButtonLabel(a))}`;
+    const voirB = `Voir ${q(deadlineButtonLabel(b))}`;
     out.push(subject('DATE', {
       subjectId: `DATE-NEXT-2:${a.id}:${b.id}`,
       sourceCode: 'DATE-NEXT-2',
@@ -336,20 +347,17 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
         firstTitle: a.title, firstAssetName: a.assetName,
         secondTitle: b.title, secondAssetName: b.assetName,
       },
-      actions: [voir(a, `Voir ${q(a.title)}`), voir(b, `Voir ${q(b.title)}`)],
-      fallbackText: prevision
-        ? `Deux échéances sont prévues autour du ${date} (date estimée) : ${q(a.title)} et ${q(b.title)}.`
-        : `Deux échéances tombent le ${date} : ${q(a.title)} et ${q(b.title)}.`,
+      actions: [voir(a, voirA), voir(b, voirB)],
+      fallbackText: deadlinePairText(a, b, date, prevision),
       allowedHighlight: date,
       occurrenceKey: `DATE-NEXT-2:${a.id}:${b.id}`,
       dedupeKeys: [`agenda:${a.id}`, `agenda:${b.id}`, 'date-next'],
-      secondaryLabel: `Voir ${q(a.title)}`,
+      secondaryLabel: voirA,
       assetId: a.assetId && a.assetId === b.assetId ? a.assetId : null,
       assetName: a.assetId && a.assetId === b.assetId ? a.assetName : null,
     }));
   } else {
     const i = premiere;
-    const pour = i.assetName ? ` pour ${i.assetName}` : '';
     out.push(subject('DATE', {
       subjectId: `DATE-NEXT:${i.id}`,
       sourceCode: 'DATE-NEXT',
@@ -361,10 +369,10 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
         dateNature: i.forecast ? 'prévisionnelle' : 'confirmée', assetName: i.assetName,
       },
       actions: [voir(i, 'Voir l’échéance')],
+      // Lot 31 (T6) : libellé naturel, jamais le titre technique brut ; le
+      // texte doit être présentable tel quel si T6 ne s'exécute pas.
       // DAT-003 : une date prévisionnelle n'est jamais présentée comme certaine.
-      fallbackText: i.forecast
-        ? `Votre prochaine échéance, ${q(i.title)}${pour}, est prévue autour du ${date} (date estimée).`
-        : `Votre prochaine échéance est ${q(i.title)}${pour}, le ${date}.`,
+      fallbackText: deadlineNextText(i, date),
       allowedHighlight: date,
       occurrenceKey: `DATE-NEXT:${i.id}`,
       dedupeKeys: [`agenda:${i.id}`, 'date-next'],

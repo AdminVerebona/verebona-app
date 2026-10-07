@@ -1,0 +1,89 @@
+{
+  "case": "P-T3-07",
+  "description": "DOCUMENT_ASSET — preuves insuffisantes : liste vide, abstention, l’utilisateur tranche (« À traiter »).",
+  "context": {
+    "variables": {
+      "FIELD": null,
+      "CURRENT_STATE": null,
+      "EVIDENCES": null,
+      "SUBJECT_CONTEXT": "{\"document\":{\"title\":\"Devis\",\"type\":\"QUOTE\",\"date\":null,\"supplier\":null,\"description\":null,\"multiAssetDeclaredByT1\":false},\"facts\":[]}",
+      "CANDIDATES": [
+        {
+          "candidateId": 7,
+          "description": "\"Maison\" (IMMOBILIER, maison) — identifiants: city=Lyon, postalCode=69003 — T1: probable (0.6) ville citée — Lyon — lien actuel: bien cité (MENTIONED)"
+        },
+        {
+          "candidateId": 9,
+          "description": "\"Studio\" (IMMOBILIER, appartement) — identifiants: city=Lyon, postalCode=69007 — T1: probable (0.6) ville citée — Lyon — lien actuel: bien cité (MENTIONED)"
+        }
+      ],
+      "RELATION_TYPE": "DOCUMENT_ASSET — bien(s) existant(s) du compte auquel rattacher ce document : un seul bien principal, plusieurs seulement si le document concerne réellement plusieurs biens (documentScope = MULTIPLE)"
+    },
+    "documentAsset": {
+      "subject": {
+        "title": "Devis",
+        "documentType": "QUOTE",
+        "documentDate": null,
+        "supplier": null,
+        "description": null,
+        "multiAssetDeclared": false,
+        "facts": []
+      },
+      "candidates": [
+        {
+          "family": "IMMOBILIER",
+          "subtype": "maison",
+          "identifiers": {
+            "city": "Lyon",
+            "postalCode": "69003"
+          },
+          "serverSignals": [],
+          "t1": {
+            "confidence": "probable",
+            "score": 0.6,
+            "reason": "ville citée",
+            "signals": "Lyon"
+          },
+          "currentRole": "MENTIONED",
+          "assetId": 7,
+          "name": "Maison"
+        },
+        {
+          "family": "IMMOBILIER",
+          "subtype": "appartement",
+          "identifiers": {
+            "city": "Lyon",
+            "postalCode": "69007"
+          },
+          "serverSignals": [],
+          "t1": {
+            "confidence": "probable",
+            "score": 0.6,
+            "reason": "ville citée",
+            "signals": "Lyon"
+          },
+          "currentRole": "MENTIONED",
+          "assetId": 9,
+          "name": "Studio"
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_link_ambiguity",
+    "task": "LINK_AMBIGUITY",
+    "output": {
+      "task": "LINK_AMBIGUITY",
+      "documentScope": "SINGLE",
+      "matches": []
+    }
+  },
+  "expected": {
+    "decision": "ABSTAIN",
+    "reasonCode": "INSUFFICIENT_EVIDENCE",
+    "neverDecisions": [
+      "APPLY",
+      "MULTI_ASSET"
+    ]
+  }
+}

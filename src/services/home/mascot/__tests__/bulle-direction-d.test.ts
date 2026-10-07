@@ -56,8 +56,8 @@ describe('phrase en langage naturel (§3.2)', () => {
   });
 
   it('un sujet seulement informatif suit « Tout est à jour. »', () => {
-    const s = composeSpeech({ empty: false, presentation: presentationOf({ paragraphs: [para('Votre prochaine échéance est « CT » pour Ferrari, le 12 octobre 2026.', info)] }) });
-    expect(s.text).toBe('Tout est à jour. Votre prochaine échéance est « CT » pour Ferrari, le 12 octobre 2026.');
+    const s = composeSpeech({ empty: false, presentation: presentationOf({ paragraphs: [para('Votre prochaine échéance concerne Ferrari : CT, le 12 octobre 2026.', info)] }) });
+    expect(s.text).toBe('Tout est à jour. Votre prochaine échéance concerne Ferrari : CT, le 12 octobre 2026.');
   });
 
   it('textes de plusieurs phrases : juxtaposés, jamais enchaînés après « : »', () => {

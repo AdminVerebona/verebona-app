@@ -77,6 +77,11 @@ interface Job {
   startedAt: string | null;
   finishedAt: string | null;
   configVersionId: number | null;
+  /** Lot 31C : observabilité du contrat de file. */
+  workerId?: string | null;
+  recoveredCount?: number;
+  payload?: { kind?: string; payloadVersion?: number } | null;
+  businessResult?: string | null;
 }
 
 interface Summary { treatment: Treatment; pending: number; running: number; failed: number }
@@ -101,6 +106,15 @@ const STATUS_STYLE: Record<JobStatus, string> = {
   DONE: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
   FAILED: 'bg-red-500/10 text-red-400 border-red-500/20',
   CANCELLED: 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
+};
+
+/** Résultat métier d'un travail terminé (lot 31C) — distinct du statut technique. */
+const BUSINESS_RESULT_LABEL: Record<string, string> = {
+  APPLIED: 'Modification appliquée',
+  NO_CHANGE: 'Aucune modification nécessaire',
+  ABSTAIN: 'Abstention (éléments insuffisants)',
+  SUPERSEDED: 'Rendu obsolète par un travail plus récent',
+  TARGET_GONE: 'Cible disparue',
 };
 
 const STATE_LABEL: Record<TreatmentState, string> = {
@@ -431,6 +445,8 @@ function AiQueueScreen() {
                 {job.startedAt && ` · démarré ${new Date(job.startedAt).toLocaleTimeString('fr-FR')}`}
                 {job.finishedAt && ` · fini ${new Date(job.finishedAt).toLocaleTimeString('fr-FR')}`}
                 {job.configVersionId && ` · version #${job.configVersionId}`}
+                {job.payload?.kind && ` · ${job.payload.kind}${job.payload.payloadVersion ? ` v${job.payload.payloadVersion}` : ''}`}
+                {job.workerId && ` · ${job.workerId}`}
                 {job.status !== 'PENDING' && job.status !== 'CANCELLED' && (
                   <> · <Link href={`/admin/ai-executions?jobId=${job.id}`} className="text-[color:var(--accent)] hover:underline">Voir les appels</Link></>
                 )}
@@ -449,9 +465,19 @@ function AiQueueScreen() {
               {job.lastError && job.status !== 'PENDING' && (
                 <p className="text-xs text-[color:var(--text-muted)] truncate">{job.lastError}</p>
               )}
+              {job.businessResult && (
+                <p className="text-xs text-[color:var(--text-secondary)]">
+                  Résultat : {BUSINESS_RESULT_LABEL[job.businessResult] ?? job.businessResult}
+                </p>
+              )}
               {job.attempts > 1 && (
                 <p className="text-xs text-[color:var(--text-muted)]">
                   {job.attempts} tentatives
+                </p>
+              )}
+              {(job.recoveredCount ?? 0) > 0 && (
+                <p className="text-xs text-[color:var(--text-muted)]">
+                  Repris {job.recoveredCount} fois après arrêt d’un processus
                 </p>
               )}
             </div>

@@ -1,0 +1,13 @@
+-- Migration 0267 (index 1/1) : recherche d'une clé de déduplication TOUS
+-- statuts confondus (lot 31C). Sert la continuation idempotente du balayage
+-- T3 paginé (`enqueue({ onlyIfNeverQueued })` : une page rejouée ne recrée
+-- jamais la suivante) — l'index unique 0132 ne couvre que les jobs vivants.
+-- UNE instruction par fichier : `CREATE INDEX CONCURRENTLY` ne peut pas
+-- s'exécuter dans une transaction. Idempotente ; un index laissé INVALIDE est
+-- reconstruit au démarrage (`migration-index.ts`).
+--
+-- INDEX OPTIONNEL : sans lui, la vérification d'existence (une par page de
+-- balayage, quelques-unes par heure) parcourt la table — plus lente, jamais
+-- fausse.
+-- verebona:optional-index
+CREATE INDEX CONCURRENTLY IF NOT EXISTS ai_job_queue_dedupe_key_all_idx ON ai_job_queue (dedupe_key);

@@ -295,8 +295,8 @@ describe('pré-génération et cloisonnement (CACHE-03, SEC-01)', () => {
     etat.agenda.set(21, { account: 7, date: '2026-10-20', manualStatus: null, title: 'Vidange' });
     const p7 = await getMascotPresentation(7);
     const p8 = await getMascotPresentation(8);
-    expect(p7.paragraphs.some((p) => p.text.includes('Vidange'))).toBe(true);
-    expect(p8.paragraphs.some((p) => p.text.includes('Vidange'))).toBe(false);
+    expect(p7.paragraphs.some((p) => /vidange/i.test(p.text))).toBe(true);
+    expect(p8.paragraphs.some((p) => /vidange/i.test(p.text))).toBe(false);
     // Toutes les lectures du compte 8 sont faites avec le compte 8.
     expect(toProcessPage.mock.calls.map((c) => c[0])).toEqual([7, 8]);
 
@@ -427,7 +427,7 @@ describe('traçabilité T6 (BO-009, LOG-005)', () => {
     subjectId: 'DATE-NEXT:1', sourceFamily: 'DATE', sourceCode: 'DATE-NEXT', accountId: 7,
     priority: null, requiresAttention: false, intent: 'deadline',
     facts: { title: 'Ramonage', dateLabel: '15 octobre 2026' }, actions: [],
-    fallbackText: 'Votre prochaine échéance est « Ramonage », le 15 octobre 2026.',
+    fallbackText: 'Votre prochaine échéance est le ramonage, le 15 octobre 2026.',
     allowedHighlight: '15 octobre 2026', occurrenceKey: 'DATE-NEXT:1', dedupeKeys: [], secondaryLabel: '',
   }]);
   const deps = { treatmentAvailable: async () => true, promptVersion: async () => 'v-bo009', execute: (r: Parameters<typeof execute>[0]) => execute(r) };

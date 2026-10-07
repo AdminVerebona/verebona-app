@@ -292,13 +292,23 @@ export const ASSET_LINK_SLOT: DocumentSlot = {
   async writeAuto(client, accountId, fileId, value) {
     const id = asPositiveId(value);
     if (id === null || !(await assetOfAccount(client, accountId, id))) return false;
-    // Jamais par-dessus un rattachement existant, ni un retrait de l'utilisateur.
+    // Jamais par-dessus un rattachement de l'utilisateur, ni un retrait de
+    // l'utilisateur. Lot 31B : la colonne posée AUTOMATIQUEMENT porte sa
+    // marque (`user_edited_fields.assetIdAuto` = bien écrit) ; tant que la
+    // colonne vaut cette marque, une nouvelle décision automatique certaine
+    // peut la déplacer (ticket T1, T1-LINK-08). Une colonne différente de la
+    // marque (déplacement, tiroir, dépôt sur un bien) est un choix humain.
     const rows = await client
       .update(assetFiles)
-      .set({ assetId: id, updatedAt: new Date() })
+      .set({
+        assetId: id,
+        userEditedFields: sql`COALESCE(${assetFiles.userEditedFields}, '{}'::jsonb) || jsonb_build_object('assetIdAuto', ${id}::int)`,
+        updatedAt: new Date(),
+      })
       .where(and(
         eq(assetFiles.id, fileId), eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt),
-        isNull(assetFiles.assetId), isNull(assetFiles.linkedAssetId),
+        sql`((${assetFiles.assetId} IS NULL AND ${assetFiles.linkedAssetId} IS NULL)
+             OR ${assetFiles.assetId} = (${assetFiles.userEditedFields} ->> 'assetIdAuto')::int)`,
         sql`COALESCE((${assetFiles.userEditedFields} ->> 'assetId')::boolean, false) = false`,
       ))
       .returning({ id: assetFiles.id });
@@ -310,7 +320,8 @@ export const ASSET_LINK_SLOT: DocumentSlot = {
       .update(assetFiles)
       .set({
         assetId: id,
-        userEditedFields: sql`COALESCE(${assetFiles.userEditedFields}, '{}'::jsonb) || '{"assetId": true}'::jsonb`,
+        // Choix humain : la marque « automatique » (lot 31B) ne vaut plus.
+        userEditedFields: sql`(COALESCE(${assetFiles.userEditedFields}, '{}'::jsonb) - 'assetIdAuto') || '{"assetId": true}'::jsonb`,
         updatedAt: new Date(),
       })
       .where(and(eq(assetFiles.id, fileId), eq(assetFiles.accountId, accountId)));

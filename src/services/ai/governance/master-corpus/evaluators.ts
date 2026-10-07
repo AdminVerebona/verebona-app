@@ -52,6 +52,21 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
     ];
   },
   async t3_link_ambiguity(c, output) {
+    // Lot 31B — relation DOCUMENT_ASSET : décision serveur réelle
+    // (`decideFromAiOutput` : monde fermé, seuil, certain exigé, marge A OU B,
+    // A ET B déclaré, jamais un candidat sans preuve).
+    const da = (c.context as { documentAsset?: { candidates: unknown[] } }).documentAsset;
+    if (da) {
+      const { decideFromAiOutput } = await import('../../reconciliation/document-asset/decision');
+      const r = decideFromAiOutput(output as never, da.candidates as never);
+      const ids = r.kind === 'APPLY' ? [r.assetId] : r.kind === 'MULTI_ASSET' ? r.assetIds : [];
+      return [
+        ...ecart(r.kind === exp(c, 'decision'), `décision ${r.kind} ≠ ${String(exp(c, 'decision'))}`),
+        ...ecart(exp(c, 'assetIds') === undefined || JSON.stringify(ids) === JSON.stringify(exp(c, 'assetIds')), `biens ${JSON.stringify(ids)}`),
+        ...ecart(exp(c, 'reasonCode') === undefined || (r.kind === 'ABSTAIN' && r.reasonCode === exp(c, 'reasonCode')), 'motif d’abstention inattendu'),
+        ...ecart(!(exp<string[]>(c, 'neverDecisions') ?? []).includes(r.kind), `décision interdite ${r.kind}`),
+      ];
+    }
     const { decideLinks } = await import('../../reconciliation/master/link-ambiguity');
     const o = output as { matches: Array<{ candidateId: number; score: number; confidence: string; reason: string }> };
     const r = decideLinks(o.matches as never, { exclusive: true });

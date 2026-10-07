@@ -66,6 +66,7 @@ import {
   type ProcessingRule,
 } from './rules-catalog';
 import { resolveActionsForData, upsertAction } from './to-process-action.service';
+import { ASSET_LINK_QUESTION_ALLOWED_SQL, assetLinkQuestionAllowed } from '@/services/ai/reconciliation/document-asset/question-gate';
 
 // ══════════════════════════════════════════════════════════════════════════
 // PLANIFICATION — fonction pure, testée sans base (TEST-ATP-01 à 11)
@@ -89,6 +90,12 @@ export interface PlanInput {
   active?: { actionKind: ActionKind; snapshot: string | null } | null;
   /** Création autorisée (document éligible, pas de « Non applicable » antérieur). */
   mayCreate?: boolean;
+  /**
+   * Lot 31B (ticket T3, §9) : la donnée est confiée à T3 DOCUMENT_ASSET — pas
+   * de question à l'utilisateur tant que T3 n'a pas échoué ou ne s'est pas
+   * abstenu (une donnée déjà présente reste close normalement).
+   */
+  deferredToT3?: boolean;
 }
 
 const isEmpty = (v: unknown) => v === null || v === undefined || v === '';
@@ -103,6 +110,11 @@ export function planDocumentRule(p: PlanInput): RulePlan {
   // Relation « au moins un » : un bien rattaché, quel qu'il soit, clôt la question.
   if (rule.cardinality === 'atLeastOne' && present) {
     return { kind: 'RESOLVE', reason: 'ALREADY_SATISFIED' };
+  }
+  // Confiée à T3 DOCUMENT_ASSET : ni écriture, ni question (lot 31B). Une
+  // action déjà ouverte reste en l'état — T3 la mettra à jour ou la fermera.
+  if (p.deferredToT3 && !present) {
+    return { kind: 'NONE', reason: 'DEFERRED_TO_T3' };
   }
 
   // Valeur utilisateur en place : la donnée devient pertinente quoi qu'en dise le Type.
@@ -218,6 +230,12 @@ export interface AnalysisObservations {
   documentAssetId: number | null;
   /** Métadonnées documentaires portées hors des faits (`document.supplier`…). */
   metadata?: Record<string, { value: string | number | null; confidence: T1Confidence | string; excerpt?: string | null } | undefined>;
+  /**
+   * Lot 31B : aucun bien certain — le rattachement (relation `assetIds`) est
+   * confié à T3 DOCUMENT_ASSET, mis en file immédiatement par l'abonné
+   * `source_analyzed`. La question n'est posée qu'après son échec.
+   */
+  deferAssetLinkToT3?: boolean;
 }
 
 /**
@@ -472,6 +490,7 @@ export async function syncDocumentRulesFromAnalysis(input: {
           // Juste analysé : l'état d'analyse n'est pas encore final, seule
           // compte l'ouverture du document (ni brouillon, ni écarté).
           mayCreate: ctx.open,
+          deferredToT3: key === 'assetIds' && obs.deferAssetLinkToT3 === true,
         });
         await executePlan(input.accountId, input.fileId, rule, slot, plan, state, report, 'OBSOLETE');
       } catch (e) {
@@ -523,7 +542,10 @@ export async function syncDocumentRulesFromState(
         const active = actives.get(key) ?? null;
         const relevant = isRuleRelevantForDocument(rule, ctx.documentTypeCode);
         const wantsCreation = !active && opts.create !== false && ctx.eligible && relevant && rule.completePriority !== null;
-        const mayCreate = wantsCreation && !(await declaredNotApplicable(accountId, fileId, key));
+        const mayCreate = wantsCreation && !(await declaredNotApplicable(accountId, fileId, key))
+          // Lot 31B (ticket T3, §9) : rattachement d'un document analysé —
+          // la question attend l'échec ou l'abstention de T3 DOCUMENT_ASSET.
+          && (key !== 'assetIds' || (await assetLinkQuestionAllowed(accountId, fileId)));
         const proposals = mayCreate && slot.storedProposals ? await slot.storedProposals(accountId, fileId) : [];
         const plan = planDocumentRule({ rule, state, proposals, mode: 'state', relevant, active, mayCreate });
         await executePlan(accountId, fileId, rule, slot, plan, state, report, reason);
@@ -579,7 +601,8 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
     const manque = key === 'assetIds'
       ? `f.asset_id IS NULL AND f.linked_asset_id IS NULL AND NOT EXISTS (
            SELECT 1 FROM document_asset_links l WHERE l.file_id = f.id AND l.status = 'ACTIVE'
-              AND l.asset_id IS NOT NULL AND l.link_role IN ('PRIMARY', 'SECONDARY'))`
+              AND l.asset_id IS NOT NULL AND l.link_role IN ('PRIMARY', 'SECONDARY'))
+         AND ${ASSET_LINK_QUESTION_ALLOWED_SQL}`
       : key === 'supplier'
         ? `f.supplier IS NULL`
         : `NOT EXISTS (SELECT 1 FROM document_field_values v WHERE v.file_id = f.id AND v.field_key = $4 AND v.value_text IS NOT NULL)`;

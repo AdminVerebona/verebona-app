@@ -1,0 +1,113 @@
+{
+  "case": "P-T3-03",
+  "description": "DOCUMENT_ASSET — un candidat désigné par un contrôle serveur exact (immatriculation) l’emporte nettement : rattachement PRIMARY.",
+  "context": {
+    "variables": {
+      "FIELD": null,
+      "CURRENT_STATE": null,
+      "EVIDENCES": null,
+      "SUBJECT_CONTEXT": "{\"document\":{\"title\":\"Facture vidange\",\"type\":\"MAINTENANCE_INVOICE\",\"date\":\"2026-09-12\",\"supplier\":\"Garage du Centre\",\"description\":null,\"multiAssetDeclaredByT1\":false},\"facts\":[{\"key\":\"lastRevision\",\"value\":\"2026-09-12\",\"excerpt\":\"Intervention du 12/09/2026\"}]}",
+      "CANDIDATES": [
+        {
+          "candidateId": 42,
+          "description": "\"Polo\" (VEHICULE, voiture) — identifiants: registrationNumber=AB-123-CD, make=Volkswagen, model=Polo — contrôle serveur: immatriculation du bien identique à celle du document (contrôle serveur exact) — T1: probable (0.6) véhicule cité — AB123CD — lien actuel: bien cité (MENTIONED)"
+        },
+        {
+          "candidateId": 43,
+          "description": "\"Clio\" (VEHICULE, voiture) — identifiants: make=Renault, model=Clio — T1: probable (0.55) véhicule cité — voiture — lien actuel: bien cité (MENTIONED)"
+        }
+      ],
+      "RELATION_TYPE": "DOCUMENT_ASSET — bien(s) existant(s) du compte auquel rattacher ce document : un seul bien principal, plusieurs seulement si le document concerne réellement plusieurs biens (documentScope = MULTIPLE)"
+    },
+    "documentAsset": {
+      "subject": {
+        "title": "Facture vidange",
+        "documentType": "MAINTENANCE_INVOICE",
+        "documentDate": "2026-09-12",
+        "supplier": "Garage du Centre",
+        "description": null,
+        "multiAssetDeclared": false,
+        "facts": [
+          {
+            "canonicalKey": "lastRevision",
+            "label": "Date d’intervention",
+            "value": "2026-09-12",
+            "excerpt": "Intervention du 12/09/2026"
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "family": "VEHICULE",
+          "subtype": "voiture",
+          "identifiers": {
+            "registrationNumber": "AB-123-CD",
+            "make": "Volkswagen",
+            "model": "Polo"
+          },
+          "serverSignals": [
+            "immatriculation du bien identique à celle du document (contrôle serveur exact)"
+          ],
+          "t1": {
+            "confidence": "probable",
+            "score": 0.6,
+            "reason": "véhicule cité",
+            "signals": "AB123CD"
+          },
+          "currentRole": "MENTIONED",
+          "assetId": 42,
+          "name": "Polo"
+        },
+        {
+          "family": "VEHICULE",
+          "subtype": "voiture",
+          "identifiers": {
+            "make": "Renault",
+            "model": "Clio"
+          },
+          "serverSignals": [],
+          "t1": {
+            "confidence": "probable",
+            "score": 0.55,
+            "reason": "véhicule cité",
+            "signals": "voiture"
+          },
+          "currentRole": "MENTIONED",
+          "assetId": 43,
+          "name": "Clio"
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_link_ambiguity",
+    "task": "LINK_AMBIGUITY",
+    "output": {
+      "task": "LINK_AMBIGUITY",
+      "documentScope": "SINGLE",
+      "matches": [
+        {
+          "candidateId": 42,
+          "score": 0.94,
+          "confidence": "certain",
+          "reason": "immatriculation identique (contrôle serveur)"
+        },
+        {
+          "candidateId": 43,
+          "score": 0.2,
+          "confidence": "conflictual",
+          "reason": "aucun signal propre"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "decision": "APPLY",
+    "assetIds": [
+      42
+    ],
+    "neverDecisions": [
+      "MULTI_ASSET"
+    ]
+  }
+}

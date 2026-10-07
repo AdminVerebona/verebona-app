@@ -34,7 +34,7 @@ import { useToProcessCount } from '@/hooks/useToProcessCount';
 import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
 import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
-const UploadQueueIndicator = dynamic(() => import('./documents/UploadQueueIndicator').then(m => ({ default: m.UploadQueueIndicator })), { ssr: false });
+const UploadQueueSupervisor = dynamic(() => import('./documents/UploadQueueSupervisor').then(m => ({ default: m.UploadQueueSupervisor })), { ssr: false });
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
@@ -456,8 +456,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     {/* Échéance, équipement, pièce : tiroirs ouverts depuis n'importe quel écran (src/lib/drawers.ts). */}
     <GlobalDrawerHost />
 
-    {/* Suivi des dépôts de documents : survit à la fermeture du panneau d'ajout (APP-PERF-29). */}
-    <UploadQueueIndicator userId={user?.id ?? null} />
+    {/* File des dépôts de documents (APP-PERF-29) : supervision sans suivi
+        flottant « Envoi de documents » (lot 31, L31-5). */}
+    <UploadQueueSupervisor userId={user?.id ?? null} />
 
     {/* Modale "Besoin d'aide ?" */}
     {helpMounted && <HelpModal open={helpModalOpen} onOpenChange={setHelpModalOpen} />}

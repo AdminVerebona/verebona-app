@@ -22,7 +22,13 @@ export type {
 
 import { onSourceAnalyzed } from '../source-analysis/events';
 import { registerJobHandler } from '../queue/queue-worker';
-import { enqueueT3ForAnalyzedAsset, t3JobHandler } from './t3-queue';
+import { enqueueT3ForAnalyzedAsset, registerT3SweepStarter, t3JobHandler } from './t3-queue';
+import {
+  registerDocumentAssetT3, requestDocumentAssetResolution, startDocumentSweep, t1CandidatesOf,
+} from './document-asset/queue';
+
+export { resolveDocumentAsset } from './document-asset/resolve-document-asset.service';
+export { requestDocumentAssetResolution, T3_TARGET_DOCUMENT } from './document-asset/queue';
 
 /**
  * Abonnement à l'analyse — étape 13 du §4.1.4 — et exécutant T3 de la file.
@@ -37,10 +43,24 @@ import { enqueueT3ForAnalyzedAsset, t3JobHandler } from './t3-queue';
  */
 export function registerReconciliationHandlers(): void {
   registerJobHandler('T3', t3JobHandler);
+  // Lot 31B — T3 DOCUMENT_ASSET au contrat de file 31C : sortes de travail
+  // `document_asset` / `document_asset_sweep` (registre `t3-job-contract`,
+  // exécutées par `runT3Job`) et rattrapage des documents sans bien
+  // principal ouvert par la racine du balayage planifié (pages bornées).
+  registerDocumentAssetT3();
+  registerT3SweepStarter('document_asset', ({ cycleId, triggerCode, guard }) => startDocumentSweep({ cycleId, triggerCode, guard }));
 
   // Lot 16b-3 : plus de drapeau (`AI_RECONCILIATION_ENGINE` supprimé).
   onSourceAnalyzed('réconciliation', async (e) => {
-    if (!e.assetId) return;
+    if (!e.assetId) {
+      // Lot 31B (ticket T3, §3) : T1 terminé SANS bien principal certain →
+      // T3 DOCUMENT_ASSET immédiatement, avec les candidats et preuves de T1.
+      await requestDocumentAssetResolution({
+        accountId: e.accountId, userId: e.userId, fileId: e.leadSourceId,
+        t1Candidates: t1CandidatesOf(e.result), triggerCode: 'source_analyzed',
+      });
+      return;
+    }
     await enqueueT3ForAnalyzedAsset({
       accountId: e.accountId,
       userId: e.userId,

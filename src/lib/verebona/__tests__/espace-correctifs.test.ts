@@ -36,6 +36,15 @@ describe('ouvrir n’est pas écrire (boucle de la fenêtre de fin d’essai)', 
     expect(field).toMatch(/onClick=\{\(\) => \{ if \(!api\.isOpen\) api\.open\(\); \}\}/);
   });
 
+  it('L31-1 : le badge « ⌘K » n’est plus affiché, le raccourci Cmd/Ctrl+K reste actif', () => {
+    expect(field).not.toMatch(/<kbd/);
+    expect(field).not.toMatch(/>⌘K</);
+    // Raccourci global toujours branché (Cmd sous macOS, Ctrl sous Windows/Linux).
+    expect(provider).toMatch(/\(e\.metaKey \|\| e\.ctrlKey\) && !e\.altKey && e\.key\.toLowerCase\(\) === 'k'/);
+    expect(provider).toMatch(/if \(isOpen\) close\(\); else open\(\);/);
+    expect(provider).toMatch(/window\.addEventListener\('keydown', onKey\)/);
+  });
+
   it('⌘K et Échap laissent la main à une fenêtre modale ouverte', () => {
     expect(provider.match(/if \(modalOuverte\(\)\) return;/g)?.length).toBe(2);
   });

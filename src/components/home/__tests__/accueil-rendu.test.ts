@@ -171,10 +171,14 @@ describe('header : marque toujours visible', () => {
 });
 
 describe('champ Verebona', () => {
-  it('desktop : mascotte, champ, ⌘K au repos, envoi', () => {
+  it('desktop : mascotte, champ, envoi (L31-1 : sans badge ⌘K)', () => {
     const html = renderToStaticMarkup(h(VerebonaSpaceProvider, null, h(VerebonaHeaderField)));
     expect(html).toContain('placeholder="Demander à Verebona"');
-    expect(html).toContain('⌘K');
+    // L31-1 : aucun badge de raccourci affiché (inadapté Windows/mobile)…
+    expect(html).not.toContain('⌘');
+    expect(html).not.toContain('<kbd');
+    // … mais le raccourci reste annoncé aux technologies d'assistance.
+    expect(html).toContain('aria-keyshortcuts="Meta+K Control+K"');
     expect(html).toContain('aria-label="Envoyer"');
     expect(html).toContain('/mascot/welcome-wave.webp');
     expect(html).toContain('width:min(420px');

@@ -38,6 +38,7 @@ import {
   fieldTargetsEntity, resolveEntityDef, type CanonicalEntityState, type CanonicalEntityTarget,
 } from '@/services/canonical/entity-state';
 import type { CurrentValue, ReconciliationDecision } from './types';
+import { assertJobActive } from '../queue/execution-control';
 
 export interface ReconcileEntityInput {
   accountId: number;
@@ -141,6 +142,8 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     if (decision.action !== 'apply' && decision.action !== 'update') continue;
 
     const best = candidates.find((c) => c.evidenceId === decision.evidenceIds[0]);
+    // Lot 31C : garde avant écriture (sans effet hors file).
+    await assertJobActive(`valeur ${def.key}`);
     const res = await d.write({
       target: input.target, accountId: input.accountId, origin: 'RECONCILIATION', source, traceId,
       writes: [{
@@ -162,6 +165,7 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     const retirees = await d.retiredValues(input.accountId, input.target);
     const kcVals: Record<string, unknown> = { ...state.kc };
     for (const r of planRetractions(kcVals, prouves, retirees)) {
+      await assertJobActive(`retrait ${r.fieldKey}`);
       const res = await d.write({
         target: input.target, accountId: input.accountId, origin: 'RECONCILIATION',
         source: { type: 'reconciliation', id: traceId }, traceId,
@@ -177,6 +181,7 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
 
   // « À traiter » : conflits ouverts, cartes devenues sans objet.
   if (out.decisions.length) {
+    await assertJobActive('cartes « À traiter »');
     await d.syncCards({ accountId: input.accountId, target: input.target, entityName: state.name, decisions: out.decisions })
       .catch((e: Error) => console.error(`[reconciliation] cartes de ${input.target.type} ${input.target.id} :`, e.message));
   }

@@ -28,7 +28,8 @@ import {
 } from '@/lib/upload-limits';
 import { fileDepot, estActif, type BilanLot, type MetaConfirmation } from '@/lib/upload-queue';
 import { useFileDepot } from '@/hooks/useFileDepot';
-import { UploadQueuePanel } from './UploadQueueIndicator';
+import { UploadQueuePanel, UploadResumeSection, reprendreDepot } from './UploadQueuePanel';
+import { ouvrirRepriseDepots, ACTION_REPRISE } from '@/lib/upload-queue-feedback';
 import { FusionSuggestionModal } from './FusionSuggestionModal';
 import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
 import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
@@ -508,13 +509,11 @@ export function UnifiedDocumentDialog({
   //
   // `handleClose` annulait l'envoi et vidait le formulaire. L'envoi est
   // désormais porté par la file globale : fermer masque le panneau, le
-  // transfert continue et reste visible (`UploadQueueIndicator`). Annuler
-  // est l'action explicite « Annuler l'envoi ».
+  // transfert continue. Plus de suivi flottant ni de toast (lot 31, L31-5) :
+  // l'analyse s'annonce dans le header puis par notification, un échec par
+  // un message d'erreur. Annuler est l'action explicite « Annuler l'envoi ».
   // ══════════════════════════════════════════════════════════════════════
   const handleClose = () => {
-    if (lotActif) {
-      toast.info("L'envoi continue. Suivez-le dans le panneau « Envoi de documents ».");
-    }
     resetForm();
     onOpenChange(false);
   };
@@ -568,17 +567,24 @@ export function UnifiedDocumentDialog({
     if (bilan.fileIds.length > 0) {
       await associerEtSignaler(ctx, bilan.fileIds);
       onFilesUploaded?.(bilan.fileIds);
-      const n = bilan.fileIds.length;
-      toast.success(n > 1 ? `${n} documents ajoutés` : '1 document ajouté');
+      // Pas de toast de succès (lot 31, L31-5) : le retour est l'indicateur
+      // d'analyse du header, puis la notification de fin de lot.
     }
     if (bilan.tardif) return;
     if (bilan.echecs.length > 0) {
+      // Un échec reste TOUJOURS signalé. Modale encore ouverte sur ce lot :
+      // la reprise est dessous ; sinon « Reprendre » rouvre la modale d'ajout.
+      const suivi = suitLeLot(bilan.lotId);
       toast.error(
         bilan.fileIds.length === 0 && bilan.echecs.length === 1
           ? bilan.echecs[0].erreur
           : `${bilan.echecs.length} document${bilan.echecs.length > 1 ? 's' : ''} non ajouté${bilan.echecs.length > 1 ? 's' : ''} : ` +
-            `${bilan.echecs.map((e) => e.erreur).join(' · ')}. Vous pouvez les reprendre depuis le panneau d'envoi.`,
-        { duration: 10000 },
+            `${bilan.echecs.map((e) => e.erreur).join(' · ')}.`,
+        {
+          duration: 10000,
+          description: suivi ? 'Vous pouvez les reprendre ci-dessous.' : 'Vous pouvez les reprendre depuis « Ajouter un document ».',
+          ...(suivi ? {} : { action: { label: ACTION_REPRISE, onClick: ouvrirRepriseDepots } }),
+        },
       );
       return; // Le panneau reste ouvert sur l'état du lot (reprise possible).
     }
@@ -663,7 +669,8 @@ export function UnifiedDocumentDialog({
       const ids = [webLink.id as number];
       await associerEtSignaler(ctx, ids);
       onFilesUploaded?.(ids);
-      toast.success('Lien web ajouté');
+      // Pas de toast de succès (lot 31, L31-5) : la modale se ferme et le
+      // lien apparaît dans les listes (`document-added`).
       onSuccess?.();
       resetForm();
       onOpenChange(false);
@@ -710,14 +717,16 @@ export function UnifiedDocumentDialog({
               elements={elementsLot}
               mobile={isMobile}
               onAnnuler={(id) => fileDepot.annuler(id)}
-              onReprendre={(id) => { try { fileDepot.reprendre(id); } catch (err) { toast.error((err as Error).message); } }}
+              onReprendre={(id) => reprendreDepot(id)}
             />
           )}
           {isUploading && !isSubmittingLink && (
-            <p className="text-[11px] text-white/50">Vous pouvez fermer ce panneau : l’envoi continue et reste visible en bas de l’écran.</p>
+            <p className="text-[11px] text-white/50">Vous pouvez fermer ce panneau : l’envoi continue. En cas d’échec, vous serez prévenu.</p>
           )}
         </div>
       )}
+      {/* Envois échoués ou interrompus d'un autre dépôt : repris ici (L31-5). */}
+      <UploadResumeSection lotSuivi={lotId} mobile={isMobile} />
       {/* Mode toggle — only if not a specific capture source */}
       {(!initialSource || initialSource === 'file' || initialSource === 'weblink') && (
         <div className="grid grid-cols-2 gap-2">

@@ -1,0 +1,96 @@
+{
+  "case": "P-T3-05",
+  "description": "DOCUMENT_ASSET — A ET B : attestation d’assurance flotte listant deux véhicules ; les deux biens sont reliés, aucun forçage vers un seul.",
+  "context": {
+    "variables": {
+      "FIELD": null,
+      "CURRENT_STATE": null,
+      "EVIDENCES": null,
+      "SUBJECT_CONTEXT": "{\"document\":{\"title\":\"Attestation d’assurance flotte\",\"type\":\"INSURANCE_CERTIFICATE\",\"date\":null,\"supplier\":null,\"description\":null,\"multiAssetDeclaredByT1\":true},\"facts\":[]}",
+      "CANDIDATES": [
+        {
+          "candidateId": 11,
+          "description": "\"Polo\" (VEHICULE) — identifiants: registrationNumber=AB-123-CD — contrôle serveur: immatriculation du bien identique à celle du document (contrôle serveur exact) — lien actuel: cible de faits (SECONDARY)"
+        },
+        {
+          "candidateId": 12,
+          "description": "\"Kangoo\" (VEHICULE) — identifiants: registrationNumber=EF-456-GH — contrôle serveur: immatriculation du bien identique à celle du document (contrôle serveur exact) — lien actuel: cible de faits (SECONDARY)"
+        }
+      ],
+      "RELATION_TYPE": "DOCUMENT_ASSET — bien(s) existant(s) du compte auquel rattacher ce document : un seul bien principal, plusieurs seulement si le document concerne réellement plusieurs biens (documentScope = MULTIPLE)"
+    },
+    "documentAsset": {
+      "subject": {
+        "title": "Attestation d’assurance flotte",
+        "documentType": "INSURANCE_CERTIFICATE",
+        "documentDate": null,
+        "supplier": null,
+        "description": null,
+        "multiAssetDeclared": true,
+        "facts": []
+      },
+      "candidates": [
+        {
+          "family": "VEHICULE",
+          "subtype": null,
+          "identifiers": {
+            "registrationNumber": "AB-123-CD"
+          },
+          "serverSignals": [
+            "immatriculation du bien identique à celle du document (contrôle serveur exact)"
+          ],
+          "t1": null,
+          "currentRole": "SECONDARY",
+          "assetId": 11,
+          "name": "Polo"
+        },
+        {
+          "family": "VEHICULE",
+          "subtype": null,
+          "identifiers": {
+            "registrationNumber": "EF-456-GH"
+          },
+          "serverSignals": [
+            "immatriculation du bien identique à celle du document (contrôle serveur exact)"
+          ],
+          "t1": null,
+          "currentRole": "SECONDARY",
+          "assetId": 12,
+          "name": "Kangoo"
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_link_ambiguity",
+    "task": "LINK_AMBIGUITY",
+    "output": {
+      "task": "LINK_AMBIGUITY",
+      "documentScope": "MULTIPLE",
+      "matches": [
+        {
+          "candidateId": 11,
+          "score": 0.92,
+          "confidence": "certain",
+          "reason": "immatriculation listée"
+        },
+        {
+          "candidateId": 12,
+          "score": 0.92,
+          "confidence": "certain",
+          "reason": "immatriculation listée"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "decision": "MULTI_ASSET",
+    "assetIds": [
+      11,
+      12
+    ],
+    "neverDecisions": [
+      "APPLY"
+    ]
+  }
+}

@@ -64,7 +64,15 @@ export function backoffSeconds(attempts: number, random: () => number = Math.ran
   return Math.round(base * jitter);
 }
 
-/** MOD-005 : échec permanent après un nombre de cycles défini dans le code. */
+/**
+ * MOD-005 : échec permanent après un nombre d'EXÉCUTIONS défini dans le code.
+ *
+ * `attempts` compte les exécutions déjà consommées : `claimNext` l'incrémente
+ * au prélèvement (une exécution démarrée = une tentative), une interruption
+ * d'exploitation ou un report la rend (`GREATEST(attempts - 1, 0)`), une
+ * reprise après bail expiré la garde (le processus est tombé PENDANT
+ * l'exécution).
+ */
 export function isPermanentFailure(attempts: number): boolean {
   return attempts >= MAX_ATTEMPTS;
 }
@@ -74,6 +82,13 @@ export function isPermanentFailure(attempts: number): boolean {
  *
  * Rendu comme une décision, pas comme un effet : le dépôt écrit ce que cette
  * fonction dit, et un test peut vérifier la règle sans base.
+ *
+ * ⚠️ Lot 31C (T3 — contrat de la file) : `attempts` est le compteur LU EN
+ * BASE après le prélèvement, qui a déjà compté l'exécution en cours. Il
+ * n'est plus réincrémenté ici : l'ancien `attempts + 1` décalait le compte
+ * d'une unité (4 exécutions réelles pour MAX_ATTEMPTS = 5). Désormais :
+ * exécutions 1 à 4 en échec → PENDING (backoff), exécution 5 en échec →
+ * FAILED — exactement MAX_ATTEMPTS exécutions.
  */
 export interface FailureOutcome {
   status: Extract<JobStatus, 'PENDING' | 'FAILED'>;
@@ -82,11 +97,67 @@ export interface FailureOutcome {
 }
 
 export function afterFailure(attempts: number, random?: () => number): FailureOutcome {
-  const next = attempts + 1;
-  if (isPermanentFailure(next)) {
-    return { status: 'FAILED', retryInSeconds: null, attempts: next };
+  const consumed = Math.max(1, Math.floor(attempts));
+  if (isPermanentFailure(consumed)) {
+    return { status: 'FAILED', retryInSeconds: null, attempts: consumed };
   }
-  return { status: 'PENDING', retryInSeconds: backoffSeconds(next, random), attempts: next };
+  return { status: 'PENDING', retryInSeconds: backoffSeconds(consumed, random), attempts: consumed };
+}
+
+// ── Erreur terminale ────────────────────────────────────────────────────────
+
+/**
+ * Travail techniquement INEXÉCUTABLE (lot 31C) : identifiant de cible
+ * invalide, type de cible incompatible, contexte structurellement incorrect,
+ * information obligatoire absente, version de contexte inconnue.
+ *
+ * Relancer ne l'améliorera jamais : le boucleur le passe FAILED tout de suite
+ * (`failJob(..., { permanent: true })`), sans les cinq exécutions du MOD-005.
+ * Remplace les anciens `console.error(...); return;` qui clôturaient DONE un
+ * travail que personne n'avait pu faire — une perte silencieuse.
+ *
+ * Commune à toute la file : T1 et T4 peuvent l'utiliser ; aucun exécutant
+ * existant n'est obligé d'en lever (comportements inchangés).
+ */
+export class PermanentJobError extends Error {
+  readonly code = 'PERMANENT_JOB_ERROR';
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = 'PermanentJobError';
+  }
+}
+
+export function isPermanentJobError(e: unknown): e is PermanentJobError {
+  return e instanceof PermanentJobError
+    || (typeof e === 'object' && e !== null && (e as { code?: string }).code === 'PERMANENT_JOB_ERROR');
+}
+
+// ── Résultat métier (distinct du statut technique) ──────────────────────────
+
+/**
+ * Résultats métier minimum d'un travail techniquement TERMINÉ (DONE) — lot
+ * 31C. Un FAILED est réservé à un problème technique ; un travail parfaitement
+ * exécuté qui n'a rien modifié est DONE / NO_CHANGE, pas un échec.
+ *
+ *  · APPLIED     — une modification a été appliquée ;
+ *  · NO_CHANGE   — aucune modification nécessaire ;
+ *  · ABSTAIN     — éléments insuffisants pour décider (arbitrage, conflit) ;
+ *  · SUPERSEDED  — une modification plus récente a rendu le travail obsolète ;
+ *  · TARGET_GONE — la cible a disparu depuis la mise en file.
+ */
+export const BUSINESS_RESULTS = ['APPLIED', 'NO_CHANGE', 'ABSTAIN', 'SUPERSEDED', 'TARGET_GONE'] as const;
+export type BusinessResultCode = (typeof BUSINESS_RESULTS)[number];
+
+/** Résultat métier rendu par un exécutant, écrit sur le job à la clôture. */
+export interface JobBusinessResult {
+  result: BusinessResultCode;
+  /** Compteurs et identifiants seulement (jamais de valeur métier). */
+  detail?: Record<string, unknown> | null;
+}
+
+export function isBusinessResult(v: unknown): v is JobBusinessResult {
+  return typeof v === 'object' && v !== null
+    && (BUSINESS_RESULTS as readonly string[]).includes((v as { result?: string }).result ?? '');
 }
 
 /**

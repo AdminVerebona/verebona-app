@@ -1,0 +1,65 @@
+{
+  "case": "P-T3-06",
+  "description": "DOCUMENT_ASSET — seul bien du compte, aucune preuve fournie : jamais choisi « parce qu’il est seul », même si le modèle le propose.",
+  "context": {
+    "variables": {
+      "FIELD": null,
+      "CURRENT_STATE": null,
+      "EVIDENCES": null,
+      "SUBJECT_CONTEXT": "{\"document\":{\"title\":\"Courrier\",\"type\":\"OTHER\",\"date\":null,\"supplier\":null,\"description\":null,\"multiAssetDeclaredByT1\":false},\"facts\":[]}",
+      "CANDIDATES": [
+        {
+          "candidateId": 5,
+          "description": "\"Appartement\" (IMMOBILIER) — aucune preuve fournie"
+        }
+      ],
+      "RELATION_TYPE": "DOCUMENT_ASSET — bien(s) existant(s) du compte auquel rattacher ce document : un seul bien principal, plusieurs seulement si le document concerne réellement plusieurs biens (documentScope = MULTIPLE)"
+    },
+    "documentAsset": {
+      "subject": {
+        "title": "Courrier",
+        "documentType": "OTHER",
+        "documentDate": null,
+        "supplier": null,
+        "description": null,
+        "multiAssetDeclared": false,
+        "facts": []
+      },
+      "candidates": [
+        {
+          "family": "IMMOBILIER",
+          "subtype": null,
+          "identifiers": {},
+          "serverSignals": [],
+          "t1": null,
+          "currentRole": null,
+          "assetId": 5,
+          "name": "Appartement"
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_link_ambiguity",
+    "task": "LINK_AMBIGUITY",
+    "output": {
+      "task": "LINK_AMBIGUITY",
+      "documentScope": "SINGLE",
+      "matches": [
+        {
+          "candidateId": 5,
+          "score": 0.9,
+          "confidence": "certain",
+          "reason": "seul bien du compte"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "decision": "ABSTAIN",
+    "reasonCode": "UNSUPPORTED_CHOICE",
+    "neverDecisions": [
+      "APPLY"
+    ]
+  }
+}

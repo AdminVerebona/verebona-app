@@ -27,11 +27,11 @@ const subject = (id: string, facts: Record<string, string | number | boolean | n
 
 const input = buildT6Input([
   subject('DATE-NEXT:1', { title: 'Ramonage', dateLabel: '15 octobre 2026', date: '2026-10-15', dateNature: 'confirmée' },
-    'Votre prochaine échéance est « Ramonage », le 15 octobre 2026.'),
+    'Votre prochaine échéance est le ramonage, le 15 octobre 2026.'),
 ]);
 const deux = buildT6Input([
   subject('DATE-NEXT:1', { title: 'Ramonage', dateLabel: '15 octobre 2026', date: '2026-10-15', dateNature: 'confirmée' },
-    'Votre prochaine échéance est « Ramonage », le 15 octobre 2026.'),
+    'Votre prochaine échéance est le ramonage, le 15 octobre 2026.'),
   { ...subject('ATP:x', { question: 'Quel est le type ?' }, 'Quel est le type ?'), sourceCode: 'ATP-DOC-TYP' as const },
 ]);
 const ok = (text = 'Votre prochain rendez-vous, le ramonage, est fixé au 15 octobre 2026.', highlight: string | null = '15 octobre 2026') =>

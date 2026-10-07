@@ -43,7 +43,16 @@ export interface AssetCategoryOption {
    * Reconnues partout (assistant, recherche) — jamais stockées.
    */
   userTerms?: readonly string[];
+  /**
+   * Genre grammatical du nom de la catégorie (« la voiture », « le vélo ») —
+   * lot 31 (T6, fallback des échéances). Absent : aucun article n'est
+   * construit pour un bien de cette catégorie (formulation neutre).
+   */
+  grammaticalGender?: GrammaticalGender;
 }
+
+/** Genre grammatical d'un nom (référentiel des biens, source unique). */
+export type GrammaticalGender = 'm' | 'f';
 
 export interface AssetFamilyDefinition {
   code: AssetFamilyCode;
@@ -51,10 +60,27 @@ export interface AssetFamilyDefinition {
   categories: AssetCategoryOption[];
   /** Formulations utilisateur de la FAMILLE (« logement » pour Immobilier). */
   userTerms?: readonly string[];
+  /** Genre grammatical du nom de la famille (« le véhicule »). */
+  grammaticalGender?: GrammaticalGender;
+  /**
+   * Le NOM PROPRE d'un bien de cette famille prend le genre de sa catégorie
+   * (« la Clio », « la Cupra » : voiture ; « le Hymer » : camping-car).
+   * Usage établi pour les véhicules seulement : un logement ou un objet
+   * nommé (« Chez Mamie », « Résidence du lac ») n'en dit rien.
+   */
+  namesTakeCategoryGender?: boolean;
 }
 
-const libelles = (values: string[], termes: Record<string, readonly string[]> = {}): AssetCategoryOption[] =>
-  values.map((v) => ({ value: v, label: v, ...(termes[v] ? { userTerms: termes[v] } : {}) }));
+const libelles = (
+  values: string[],
+  termes: Record<string, readonly string[]> = {},
+  genres: Record<string, GrammaticalGender> = {},
+): AssetCategoryOption[] =>
+  values.map((v) => ({
+    value: v, label: v,
+    ...(termes[v] ? { userTerms: termes[v] } : {}),
+    ...(genres[v] ? { grammaticalGender: genres[v] } : {}),
+  }));
 
 /** Familles proposées, dans l'ordre d'affichage. */
 export const ASSET_FAMILIES: AssetFamilyDefinition[] = [
@@ -66,8 +92,10 @@ export const ASSET_FAMILIES: AssetFamilyDefinition[] = [
       Moto: ['scooter'],
       'Vélo': ['bicyclette'],
       Camion: ['camionnette'],
-    }),
+    }, { Voiture: 'f', Moto: 'f', 'Vélo': 'm', 'Camping-car': 'm', Bateau: 'm', Camion: 'm' }),
     userTerms: ['automobile', 'caravane'],
+    grammaticalGender: 'm',
+    namesTakeCategoryGender: true,
   },
   {
     code: 'IMMOBILIER',
@@ -80,7 +108,9 @@ export const ASSET_FAMILIES: AssetFamilyDefinition[] = [
       'Garage/box',
       'Mobil-home',
       'Local professionnel/commercial',
-    ]),
+    ], {}, {
+      Maison: 'f', Appartement: 'm', Immeuble: 'm', Terrain: 'm', 'Mobil-home': 'm',
+    }),
     userTerms: ['logement', 'habitation', 'résidence', 'chalet', 'studio', 'villa'],
   },
   {
@@ -419,4 +449,56 @@ export function assetSearchSynonyms(word: string): string[] {
   const out = new Set<string>();
   for (const t of termes) for (const f of formesDeBase(t)) if (!/[ /-]/.test(f) && f !== w) out.add(f);
   return [...out];
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// GENRE GRAMMATICAL D'UN BIEN NOMMÉ (lot 31 — T6, fallback des échéances)
+//
+// « le contrôle technique de la Cupra », « l'entretien du vélo » : l'article
+// n'est construit que sur une donnée CERTAINE du référentiel — jamais deviné
+// depuis le nom (« Cupra » ne dit rien de son genre) :
+//   · le nom du bien EST le libellé de sa catégorie ou de sa famille
+//     (« Vélo », « Maison ») → genre de ce libellé, nom en minuscules ;
+//   · véhicule nommé (marque, modèle) → genre de sa catégorie
+//     (`namesTakeCategoryGender`) ;
+//   · sinon, ou nom précédé d'un déterminant (« Ma Clio », « Chez Paul ») :
+//     `null` — l'appelant formule sans article.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Le nom commence par un déterminant ou une préposition : aucun article ajouté. */
+const DETERMINANTS = new Set(['le', 'la', 'les', 'l', 'un', 'une', 'des', 'du', 'de', 'd', 'mon', 'ma', 'mes', 'ton', 'ta', 'tes',
+  'son', 'sa', 'ses', 'notre', 'nos', 'votre', 'vos', 'leur', 'leurs', 'ce', 'cet', 'cette', 'ces', 'chez', 'au', 'aux']);
+
+export interface AssetNameGrammar {
+  gender: GrammaticalGender;
+  /** Nom à employer après l'article (libellé de catégorie mis en minuscules). */
+  name: string;
+}
+
+/** Genre grammatical certain d'un bien désigné par son nom, sinon `null` (pure). */
+export function assetNameGrammar(asset: {
+  name: string | null | undefined;
+  category?: string | null;
+  subtype?: string | null;
+}): AssetNameGrammar | null {
+  const name = asset.name?.trim();
+  if (!name) return null;
+  const premier = sansAccents(name).split(/[\s’'-]+/)[0] ?? '';
+  if (DETERMINANTS.has(premier)) return null;
+  const nom = sansAccents(name);
+  // 1. Le nom est le libellé d'une catégorie ou d'une famille (les
+  //    formulations n'ont pas forcément le même genre : « bicyclette »).
+  const memeLibelle = (libelle: string) => sansAccents(libelle).replace(/-/g, ' ') === nom.replace(/-/g, ' ');
+  for (const fam of ASSET_FAMILIES) {
+    if (fam.grammaticalGender && memeLibelle(fam.label)) return { gender: fam.grammaticalGender, name: name.toLocaleLowerCase('fr') };
+    for (const c of fam.categories) {
+      if (c.grammaticalGender && memeLibelle(c.label)) return { gender: c.grammaticalGender, name: name.toLocaleLowerCase('fr') };
+    }
+  }
+  // 2. Bien nommé d'une famille dont les noms prennent le genre de la catégorie.
+  const fam = getAssetFamily(toAssetFamilyCode(asset.category));
+  if (!fam?.namesTakeCategoryGender) return null;
+  const categorie = normalizeAssetCategory(asset.subtype);
+  const c = categorie ? fam.categories.find((x) => sansAccents(x.value) === sansAccents(categorie)) : undefined;
+  return c?.grammaticalGender ? { gender: c.grammaticalGender, name } : null;
 }

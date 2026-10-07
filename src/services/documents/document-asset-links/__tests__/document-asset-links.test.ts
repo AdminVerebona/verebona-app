@@ -44,10 +44,14 @@ describe('computeMasterDocumentLinks — P-T1-04', () => {
     ]);
   });
 
-  it('document mono-bien : aucun lien AI (les colonnes suffisent)', () => {
+  it('T1-LINK-04 (lot 31B) — document mono-bien : le lien PRIMARY AI est conservé (règle « liens.size >= 2 » supprimée)', () => {
+    expect(computeMasterDocumentLinks({
+      facts: [fait(12)], assetCandidates: [candidat(12, 0.97)], documentAssetId: 12, knownAssetId: null,
+    })).toEqual([{ assetId: 12, role: 'PRIMARY', confidence: 1 }]);
+    // Bien de l'utilisateur : même lien (le service ne touche pas au lien humain existant).
     expect(computeMasterDocumentLinks({
       facts: [fait(12)], assetCandidates: [candidat(12, 1)], documentAssetId: 12, knownAssetId: 12,
-    })).toEqual([]);
+    })).toEqual([{ assetId: 12, role: 'PRIMARY', confidence: 1 }]);
   });
 
   it('sans bien du document : aucun PRIMARY inventé', () => {

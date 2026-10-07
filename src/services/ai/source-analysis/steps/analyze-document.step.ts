@@ -39,6 +39,9 @@ import type {
   SourceInput, AnalysisContext, AnalysisWarning, AiOperationTrace, ExtractedTable, LinkCandidate,
 } from '../types';
 import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
+import {
+  IDENTIFIER_KIND_LABELS, matchSignals, resolveAssetByIdentifiers, type IdentifierResolution,
+} from '../../reconciliation/document-asset/identifiers';
 
 export const T1_ANALYZE_DOCUMENT_OPERATION = 't1_analyze_document';
 
@@ -217,6 +220,19 @@ export async function analyzeDocument(
     });
   }
 
+  // ── Identifiants canoniques : correspondance DÉTERMINISTE serveur (lot 31B) ──
+  // Adresse, immatriculation, VIN, numéro de série, référence cadastrale des
+  // biens du compte (fiche canonique, sensibles compris — jamais transmis au
+  // modèle) comparés, après normalisation, à ce que T1 a LU : faits,
+  // transcription, texte préextrait, signaux d'entités. Une correspondance
+  // exacte et unique prime sur une interprétation du modèle.
+  const identification = resolveAssetByIdentifiers(ctx.assetIdentifiers ?? [], {
+    facts: facts.map((f) => ({ canonicalKey: f.canonicalKey, value: f.normalizedValue ?? f.rawValue ?? null })),
+    texts: [out.transcription, input.extractedContent, ...out.entities.assets.flatMap((a) => a.evidenceSignals)],
+  });
+  const verifiedFromModel = mergeIdentifierCandidates(verification.assets, identification);
+  for (const id of identification.assetIds) verifiedIds.ASSET.add(id);
+
   const known: LinkCandidate[] = knownAssetId
     ? [{
         entityId: knownAssetId, confidence: 'certain', score: 1,
@@ -225,17 +241,40 @@ export async function analyzeDocument(
     : [];
   // N-N (T1-05) : les autres biens vérifiés restent candidats, même quand un
   // bien est connu ; `resolveAssetId` retient toujours le bien connu.
-  const others = verification.assets.filter((c) => c.entityId !== knownAssetId);
+  const others = verifiedFromModel.filter((c) => c.entityId !== knownAssetId);
   const assetCandidates = [...known, ...others];
-  const verifiedAssets = verification.assets.filter((c) => c.verified);
-  if (!knownAssetId && verifiedAssets.length > 1) {
+  const verifiedAssets = verifiedFromModel.filter((c) => c.verified);
+
+  // Ordre de priorité (ticket T1, §8) : bien choisi par l'utilisateur ;
+  // identifiant exact et unique ; unique candidat certain du modèle ; sinon
+  // aucune cible — T3 DOCUMENT_ASSET reprend immédiatement.
+  let documentAssetId: number | null;
+  if (knownAssetId) {
+    documentAssetId = knownAssetId;
+    if (identification.uniqueAssetId !== null && identification.uniqueAssetId !== knownAssetId) {
+      // Jamais de remplacement silencieux : le rattachement utilisateur reste,
+      // la contradiction est conservée (avertissement + bien CITÉ).
+      warnings.push({
+        code: 'ASSET_TARGET_CONTRADICTION',
+        message: `Le document contient un identifiant exact d’un autre bien (${identification.matches
+          .filter((m) => m.assetId === identification.uniqueAssetId).map((m) => IDENTIFIER_KIND_LABELS[m.kind]).join(', ')}) : `
+          + 'le rattachement choisi par l’utilisateur est conservé.',
+        target: `asset:${identification.uniqueAssetId}`,
+      });
+    }
+  } else if (identification.uniqueAssetId !== null) {
+    documentAssetId = identification.uniqueAssetId;
+  } else if (identification.ambiguous) {
+    documentAssetId = null;
+  } else {
+    documentAssetId = verifiedAssets.length === 1 && verifiedAssets[0].confidence === 'certain' ? verifiedAssets[0].entityId : null;
+  }
+  if (!knownAssetId && documentAssetId === null && (verifiedAssets.length > 1 || identification.ambiguous)) {
     warnings.push({
       code: 'AMBIGUOUS_ASSET',
       message: 'Plusieurs biens correspondent. Le rattachement sera arbitré par la réconciliation.',
     });
   }
-  const documentAssetId = knownAssetId
-    ?? (verifiedAssets.length === 1 && verifiedAssets[0].confidence === 'certain' ? verifiedAssets[0].entityId : null);
 
   // Sortie « propre » transmise à la projection : identifiants d'entités
   // neutralisés s'ils n'existent pas dans le compte.
@@ -285,6 +324,33 @@ export function verifyExcerpts(facts: T1Fact[], textes: Array<string | undefined
     if (!cle || corpus.includes(cle)) continue;
     f.confidence = 'probable';
     out.push(factLabel(f));
+  }
+  return out;
+}
+
+/**
+ * Candidats « bien » après correspondance déterministe (lot 31B) : un bien
+ * désigné par un identifiant exact devient candidat VÉRIFIÉ (il appartient au
+ * compte : la fiche vient de `loadAnalysisContext`), certain s'il est le seul
+ * désigné, probable sinon. Les signaux ajoutés ne citent jamais la valeur
+ * (une adresse est sensible). Pure.
+ */
+export function mergeIdentifierCandidates(candidates: LinkCandidate[], identification: IdentifierResolution): LinkCandidate[] {
+  const out = candidates.map((c) => ({ ...c }));
+  for (const id of identification.assetIds) {
+    const unique = identification.uniqueAssetId === id;
+    const signals = matchSignals(identification, id).join(' ; ');
+    const existant = out.find((c) => c.entityId === id);
+    if (existant) {
+      existant.verified = true;
+      if (unique) { existant.confidence = 'certain'; existant.score = 1; }
+      existant.excerpt = [existant.excerpt, signals].filter(Boolean).join(' ; ').slice(0, 1000);
+      continue;
+    }
+    out.push({
+      entityId: id, confidence: unique ? 'certain' : 'probable', score: unique ? 1 : 0.7,
+      reason: 'identifiant canonique exact (contrôle serveur)', excerpt: signals, verified: true,
+    });
   }
   return out;
 }
