@@ -237,22 +237,28 @@ export async function tryCanonicalStructured(p: {
   return null;
 }
 
-/** Phrase de réponse d'un champ (pure, testée) : valeur, origine, preuve, conflit. */
+/**
+ * Phrase de réponse d'un champ (pure, testée) : valeur, conflit.
+ *
+ * Lot 33 : plus aucune mention de la SOURCE ni de son origine dans le texte
+ * (« Valeur saisie par vous », « Valeur lue dans un document (« … ») ») —
+ * la traçabilité reste interne : source `asset_field` (origine, preuve,
+ * date), claims en base, BO. Le conflit ouvert reste signalé : c'est une
+ * action à mener, pas une citation de source.
+ */
 export function fieldAnswer(r: CanonicalFieldReading): string {
   // Lot 18 (R3) : champ vide sur le bien mais renseigné sur ses équipements
   // ou pièces — chaque valeur est rattachée à SON équipement / SA pièce.
   if (!r.display && r.entities?.length) {
     const lignes = r.entities.filter((e) => e.display && !e.sensitive).map((e) => {
       const nom = e.entityName ?? (e.target.type === 'ROOM' ? 'la pièce' : 'l’équipement');
-      const doc = e.evidence?.documentTitle && e.origin !== 'USER' ? ` (« ${e.evidence.documentTitle} »)` : '';
-      return `${e.label} de ${nom} : ${e.display}.${e.originLabel ? ` Valeur ${e.originLabel}${doc}.` : ''}`;
+      return `${e.label} de ${nom} : ${e.display}.`;
     });
     if (lignes.length) return lignes.join(' ');
   }
   const valeur = r.key === 'acquisitionDate' && r.display
     ? `Vous avez acheté ${r.assetName ?? 'ce bien'} le ${r.display}.`
     : `${r.label} de ${r.assetName ?? 'ce bien'} : ${r.display}.`;
-  const origine = r.originLabel ? ` Valeur ${r.originLabel}${r.evidence?.documentTitle && r.origin !== 'USER' ? ` (« ${r.evidence.documentTitle} »)` : ''}.` : '';
   const conflit = r.openConflict ? ` Un autre document propose une valeur différente : c’est à arbitrer dans « À traiter » (${r.openConflict.question}).` : '';
-  return `${valeur}${origine}${conflit}`;
+  return `${valeur}${conflit}`;
 }

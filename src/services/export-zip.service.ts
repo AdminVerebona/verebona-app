@@ -24,6 +24,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import type { ExportManifest } from './export-manifest.service';
 import type { AssetSnapshot, DocumentRef } from './export-snapshot.service';
 import { occupancyUsageLabel } from '@/lib/assets/occupancy';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 async function downloadFromS3(s3Key: string, bucket?: string | null): Promise<Buffer | null> {
   try {
@@ -208,7 +209,7 @@ function buildRecapTxt(snapshot: AssetSnapshot): string {
     lines.push('  (aucun document)');
   } else {
     for (const d of realDocs) {
-      const title = d.retainedTitle || d.originalFilename || '—';
+      const title = displayDocumentTitle(d, '—');
       const parts = [`  - ${title}`, d.documentType, d.documentDate].filter(Boolean);
       lines.push(parts.join(' — '));
     }
@@ -273,7 +274,7 @@ async function buildFlatZip(snapshot: AssetSnapshot): Promise<Buffer> {
     if (!doc.s3Key || doc.isWebLink) return;
     const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
     if (!buf) return;
-    const base = sanitizeFilename(doc.retainedTitle || doc.originalFilename || `fichier_${doc.id}`);
+    const base = sanitizeFilename(displayDocumentTitle(doc, `fichier_${doc.id}`));
     const ext = getFileExtension(doc);
     let filename = `${base}.${ext}`;
     // Collision: suffixe numérique
@@ -328,7 +329,7 @@ async function buildStructuredZip(manifest: ExportManifest, fullSnapshot: AssetS
         if (!doc.s3Key) continue;
         const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
         if (!buf) continue;
-        const base = sanitizeFilename(doc.retainedTitle || doc.originalFilename || `fichier_${doc.id}`);
+        const base = sanitizeFilename(displayDocumentTitle(doc, `fichier_${doc.id}`));
         const ext = getFileExtension(doc);
         folder.file(`${base}.${ext}`, buf);
       }
@@ -393,7 +394,7 @@ export async function buildExportZip(
         if (!doc.s3Key) continue;
         const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
         if (!buf) continue;
-        const base = sanitizeFilename(doc.retainedTitle || doc.originalFilename || `doc_${doc.id}`);
+        const base = sanitizeFilename(displayDocumentTitle(doc, `doc_${doc.id}`));
         const ext = getFileExtension(doc);
         folder.file(`${base}.${ext}`, buf);
       }

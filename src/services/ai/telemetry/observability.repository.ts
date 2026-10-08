@@ -665,7 +665,7 @@ async function domainT4(s: Scope, errors: string[]): Promise<DomainResult> {
 
 const TRUTH_LABELS: Readonly<Record<T2TruthSource, string>> = {
   canonique: 'Canonique', fait: 'Fait T1', tableau: 'Tableau T1', document: 'Document', agenda: 'Agenda',
-  export: 'Export', regle_offre: 'Règle d’offre / aide', modele: 'Modèle (sans source)',
+  export: 'Export', regle_offre: 'Règle d’offre', centre_aide: 'Centre d’aide', modele: 'Modèle (sans source)',
   clarification: 'Clarification', aucune: 'Sans résultat', autre: 'Autre',
 };
 

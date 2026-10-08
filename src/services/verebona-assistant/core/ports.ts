@@ -49,6 +49,7 @@ import { loadCascadeThresholds } from './cascade-thresholds';
 import { loadHelpCorpus } from './help-corpus.service';
 import { DEFAULT_ACTION_BY_INTENT, findNavigationTarget, helpPrimaryAction } from './navigation-targets';
 import { extractSearchTerms } from './query-terms';
+import { openHelpSearch } from './help-search.port';
 
 /** Vérificateurs d'accès câblés sur les tables réelles du repo (§22.7). */
 function buildAccessChecker(): AccessChecker {
@@ -72,6 +73,14 @@ function buildAccessChecker(): AccessChecker {
     // Article publié dans le corpus du Centre d'aide de l'environnement — la
     // table `verebona_help_entries` n'est plus une source (CDC Centre d'aide §2).
     helpEntryPublished: (id) => helpArticlePublished(id),
+    // Lot 33 : libellés « Ouvrir « <nom> » » (plusieurs biens dans la réponse).
+    assetNames: async (a, ids) => {
+      const rows = (await pgClient.unsafe(
+        `SELECT id, name FROM assets WHERE account_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL`,
+        [a, ids] as never[],
+      )) as unknown as Array<{ id: number; name: string | null }>;
+      return new Map(rows.filter((r) => r.name).map((r) => [Number(r.id), String(r.name)]));
+    },
   };
 }
 
@@ -343,6 +352,9 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       return resolveAssistantTargets(input, route);
     },
     // CDC 15 T2-10, T2-33, T2-34 (lecture canonique) : planificateurs dédiés.
+    // Lot 33 : cascade du Centre d'aide (corpus, contexte et rôles lus une fois).
+    openHelpSearch: (input: AssistantRequestInput) => openHelpSearch(input),
+
     buildSynthesisContext: async (route, input) => {
       const { buildSynthesisContext } = await import('./synthesis-planner');
       return buildSynthesisContext(route, input);

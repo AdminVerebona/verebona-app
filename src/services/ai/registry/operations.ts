@@ -57,6 +57,13 @@ export interface AiOperationDefinition {
   /** Mode JSON natif du fournisseur (`responseMimeType: application/json`). */
   jsonResponse?: boolean;
   /**
+   * Lot 33D — structured output : schéma JSON réduit du contrat transmis au
+   * fournisseur (`output-resolution/provider-schema`). Absent : actif pour
+   * toute opération master en mode JSON ; `false` le coupe pour l'opération.
+   * Coupure globale : `AI_STRUCTURED_OUTPUT=off`.
+   */
+  structuredOutput?: boolean;
+  /**
    * Prompt MAÎTRE du traitement (CDC 15 §22, §29.1, D-03). Présent avec `task`
    * sur une opération master : la gateway charge alors le master
    * (`resolveMasterPrompt`) — texte de la version de configuration s'il y en

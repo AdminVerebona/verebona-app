@@ -115,6 +115,8 @@ const BUSINESS_RESULT_LABEL: Record<string, string> = {
   ABSTAIN: 'Abstention (éléments insuffisants)',
   SUPERSEDED: 'Rendu obsolète par un travail plus récent',
   TARGET_GONE: 'Cible disparue',
+  // Lot 33D : job DONE techniquement, tâche métier en échec.
+  FAILED: 'Échec métier (job terminé, résultat non produit)',
 };
 
 const STATE_LABEL: Record<TreatmentState, string> = {
@@ -151,7 +153,7 @@ function stagnationReason(job: Job, overview: Overview | null): string | null {
   const available = new Date(job.availableAt);
   if (available.getTime() > Date.now()) {
     return `Reprise après échec prévue à ${available.toLocaleTimeString('fr-FR')}`
-      + ` (tentative ${job.attempts + 1}).`;
+      + ` (tentative du job n° ${job.attempts + 1}).`;
   }
 
   return null;
@@ -467,12 +469,12 @@ function AiQueueScreen() {
               )}
               {job.businessResult && (
                 <p className="text-xs text-[color:var(--text-secondary)]">
-                  Résultat : {BUSINESS_RESULT_LABEL[job.businessResult] ?? job.businessResult}
+                  Résultat métier : {BUSINESS_RESULT_LABEL[job.businessResult] ?? job.businessResult}
                 </p>
               )}
               {job.attempts > 1 && (
                 <p className="text-xs text-[color:var(--text-muted)]">
-                  {job.attempts} tentatives
+                  Tentatives du job : {job.attempts}
                 </p>
               )}
               {(job.recoveredCount ?? 0) > 0 && (

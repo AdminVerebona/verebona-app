@@ -116,7 +116,9 @@ async function finish(
   if (!schema) return { ...base, passed: false, errors: [`schéma ${c.outputSchema} inconnu`] };
   let data: unknown;
   try {
-    data = validateOutput(JSON.stringify(output), schema, c.operationCode, 'json', { expectedTask: c.task, taskField: c.taskField });
+    // Lot 33D : même résolution déterministe que la passerelle (adaptateurs,
+    // normalisation, validation champ par champ) — sans réparation IA.
+    data = validateOutput(JSON.stringify(output), schema, c.operationCode, 'json', { expectedTask: c.task, taskField: c.taskField, schemaName: c.outputSchema });
   } catch (e) {
     return { ...base, passed: false, errors: [`sortie : ${(e as Error).message}`] };
   }

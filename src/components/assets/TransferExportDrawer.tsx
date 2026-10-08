@@ -24,6 +24,7 @@ import { CalendarDays, ChevronDown, ChevronRight, Download, FileText, Image, Loa
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { DOCUMENT_TYPE_LABELS } from '@/lib/document-type-constants';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 export type TransferUsage = 'EXPORT_BRUT' | 'TRANSMISSION';
 
@@ -115,10 +116,10 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
       type F = { id: number; mimeType?: string | null; isWebLink?: boolean; retainedTitle?: string | null; originalFilename?: string | null; documentType?: string | null; documentDate?: string | null };
       const all = list<F>(files, 'data');
       const d = all.filter((f) => !f.mimeType?.startsWith('image/')).map((f) => ({
-        id: f.id, name: f.retainedTitle || f.originalFilename || `Document ${f.id}`,
+        id: f.id, name: displayDocumentTitle(f, `Document ${f.id}`),
         meta: [DOCUMENT_TYPE_LABELS[f.documentType ?? ''] ?? f.documentType, fmtDate(f.documentDate)].filter(Boolean).join(' · ') || null,
       }));
-      const p = all.filter((f) => f.mimeType?.startsWith('image/') && !f.isWebLink).map((f) => ({ id: f.id, name: f.retainedTitle || f.originalFilename || `Photo ${f.id}` }));
+      const p = all.filter((f) => f.mimeType?.startsWith('image/') && !f.isWebLink).map((f) => ({ id: f.id, name: displayDocumentTitle(f, `Photo ${f.id}`) }));
       const e = list<{ id: number; name: string; category?: string }>(eqs, 'data', 'items').map((x) => ({ id: x.id, name: x.name, meta: x.category ?? null }));
       const a = list<{ id: number; title: string; startDate?: string | null }>(ag, 'items', 'data').map((x) => ({ id: x.id, name: x.title, meta: fmtDate(x.startDate) }));
       setDocs(d); setPhotos(p); setEquips(e); setAgenda(a);

@@ -188,16 +188,17 @@ async function structuredAssetSearch(accountId: number, query: string, limit: nu
   // Paramétré, borné au compte. unaccent pour tolérance accents (§13.5).
   // Décision V1 : recherche lexicale (T2-008), servie par l'index
   // trigrammes de la migration 0208 — même expression que l'index.
-  const { searchExprMode, normalizedText } = await import('./search-sql');
+  const { searchExprMode, normalizedText, wordStartPattern } = await import('./search-sql');
   const mode = await searchExprMode();
   const rows = await pgClient.unsafe(
     `SELECT id, name, category, city
        FROM assets a
       WHERE a.account_id = $1 AND ${assistantAssetAvailability.sql('a')}
-        AND ${normalizedText(mode, 'name')} LIKE ${normalizedText(mode, '$2')}
+        AND ${normalizedText(mode, 'name')} ~ $2
       ORDER BY name
       LIMIT $3`,
-    [accountId, `%${query}%`, limit],
+    // Lot 33 : début de mot, jamais une sous-chaîne d'un autre mot.
+    [accountId, wordStartPattern(query), limit],
   );
   return (rows as unknown as Array<{ id: number; name: string; category: string | null; city: string | null }>).map((r) => ({
     id: `asset_${r.id}`,

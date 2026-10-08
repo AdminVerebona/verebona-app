@@ -74,6 +74,18 @@ export interface CallTrace {
   engine?: 'legacy' | 'new';
   /** CDC 15 OBS-CFG : déclencheur effectif (absent : celui du job courant). */
   triggerCode?: string | null;
+  /**
+   * Lot 33D — nature de l'appel (`analysis` / `repair`), résumé de l'échec
+   * (famille, sous-type, étape, signature) et métadonnées natives du
+   * fournisseur (fin de génération, identifiant de réponse…), figés en
+   * métadonnée. Jamais de contenu : le diagnostic complet et la sortie du
+   * modèle sont dans `ai_call_diagnostics` (accès BO restreint).
+   */
+  callKind?: 'analysis' | 'repair';
+  failure?: { family: string; subtype: string | null; stage: string | null; signature: string | null };
+  providerMeta?: Record<string, unknown>;
+  /** Sortie acceptée après correction (normalisation, réparation, élagage). */
+  repaired?: boolean;
 }
 
 /**
@@ -91,7 +103,12 @@ export function configMetadata(t: CallTrace): Record<string, unknown> {
   };
 }
 
-export async function recordCallTrace(t: CallTrace): Promise<void> {
+/**
+ * Écrit la trace d'un appel. Rend l'identifiant de l'événement d'usage
+ * (`ai_usage_event.id`, lot 33D : rattachement du diagnostic), `null` s'il
+ * n'a pas pu être écrit.
+ */
+export async function recordCallTrace(t: CallTrace): Promise<number | null> {
   // Version IA effective et commit déployé (§9.1, GEN-008). Lus ici plutôt
   // que demandés à chaque appelant : une information de traçabilité qu'il
   // faut penser à passer finit par manquer là où elle compte le plus.
@@ -158,6 +175,10 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
         pricing: pricingRef(t.provider, t.model),
         ...(t.callerMode ? { callerMode: t.callerMode } : {}),
         ...configMetadata(t),
+        ...(t.callKind && t.callKind !== 'analysis' ? { callKind: t.callKind } : {}),
+        ...(t.failure ? { failure: t.failure } : {}),
+        ...(t.providerMeta && Object.keys(t.providerMeta).length ? { providerMeta: t.providerMeta } : {}),
+        ...(t.repaired ? { repaired: true } : {}),
       },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,
@@ -172,8 +193,10 @@ export async function recordCallTrace(t: CallTrace): Promise<void> {
       jobId: t.jobId ?? currentJobContext()?.jobId ?? null,
     } as never), aiUsageEvent.id);
     await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
+    return rows?.[0]?.id ?? null;
   } catch (e) {
     console.error('[ai-trace] événement d\'usage non écrit (non bloquant) :', (e as Error).message);
+    return null;
   }
 }
 

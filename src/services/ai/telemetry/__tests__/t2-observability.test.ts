@@ -16,7 +16,9 @@ describe('source de vérité T2', () => {
     ['structured.upcoming_agenda', 'agenda'],
     ['structured.exports', 'export'],
     ['template.greeting', 'regle_offre'],
-    ['help.contradiction', 'regle_offre'],
+    // Lot 33 : réponse tirée du Centre d'aide → source de vérité « centre_aide ».
+    ['help.contradiction', 'centre_aide'],
+    ['help.exact_article', 'centre_aide'],
     ['clarification.asset', 'clarification'],
     ['reference.clarification', 'clarification'],
     ['fallback.sources', 'aucune'],

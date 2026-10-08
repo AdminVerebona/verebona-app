@@ -4,6 +4,7 @@ import { assetFiles, assets, documentTypes } from '@/db/schema';
 import { eq, and, isNull, or } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 // GET /api/equipments/[id]/documents — documents linked to an equipment
 export async function GET(
@@ -56,7 +57,7 @@ export async function GET(
     const documents = rows.map(doc => ({
       id: doc.id,
       publicId: doc.publicId,
-      title: doc.retainedTitle ?? doc.originalFilename ?? doc.fileName ?? 'Document',
+      title: displayDocumentTitle(doc, 'Document'),
       documentType: doc.retainedFunctionCode ?? doc.documentType,
       documentTypeLabel: doc.retainedFunctionCode
         ? (typeLabels[doc.retainedFunctionCode] ?? doc.retainedFunctionCode)

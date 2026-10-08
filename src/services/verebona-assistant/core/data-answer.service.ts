@@ -714,7 +714,7 @@ function comparableOf(f: FactHit): string {
 // interprétation de photo pour un texte du document.
 // ══════════════════════════════════════════════════════════════════════════
 const isVisual = (f: FactHit) => f.evidenceOrigin === 'VISUAL_ANALYSIS';
-const lowerFirst = (t: string) => t.trim().replace(/^./, (c) => c.toLowerCase());
+const upperFirst = (t: string) => t.trim().replace(/^./, (c) => c.toUpperCase());
 
 export function evidenceText(f: FactHit): string {
   if (isVisual(f)) {
@@ -741,8 +741,9 @@ function formatTableAnswer(a: TableAnswer): string {
   const autres = a.rowContext.filter((o) => o.value !== a.rowLabel);
   const ctx = autres.length ? ` Même ligne : ${autres.map((o) => `${o.header} : ${o.value}`).join(' ; ')}.` : '';
   const col = (c.columnPath.length > 1 ? c.columnPath.join(' > ') : c.columnHeader) ?? 'Valeur';
-  const tableau = c.tableTitle ? `tableau « ${c.tableTitle} »` : 'tableau';
-  return `${col} pour « ${a.rowLabel} » : ${c.value} (${tableau}${c.page ? `, page ${c.page}` : ''}, document « ${c.documentTitle ?? 'document'} »).${ctx}`;
+  // Lot 33 : plus d'emplacement source (tableau, page, document) dans le
+  // texte — `tableSource` le garde dans la source de la réponse.
+  return `${col} pour « ${a.rowLabel} » : ${c.value}.${ctx}`;
 }
 
 function factSnippet(f: FactHit): string {
@@ -863,7 +864,9 @@ export async function answerFromData(p: {
       if (empty && !empty.cell.tableUncertain) {
         // La cellule désignée existe et est vide : c'est la réponse — pas la
         // valeur d'une autre ligne ou d'une autre colonne.
-        const answer = `Le ${tableWhere(empty)} de « ${empty.cell.documentTitle ?? 'document'} » ne contient aucune valeur (cellule vide).`;
+        // Lot 33 : sans citer le document (la source le porte).
+        const colVide = (empty.cell.columnPath.length > 1 ? empty.cell.columnPath.join(' > ') : empty.cell.columnHeader) ?? 'valeur';
+        const answer = `Aucune valeur n’est renseignée pour « ${empty.rowLabel} », colonne « ${colVide} » (cellule vide).`;
         const sources = [tableSource(empty)];
         const decision: SufficiencyDecision = { status: 'SUFFICIENT_RETRIEVAL', level: 2, score: 1, threshold: p.thresholds.text };
         attempts.push({ level: 2, strategy: 'retrieval.t1_table', status: decision.status, score: 1, threshold: decision.threshold, reason: 'EMPTY_CELL' });
@@ -899,7 +902,8 @@ export async function answerFromData(p: {
         const src = assetFieldSource(r);
         const autres = facts.filter((f) => f.canonical?.key === r.key && plain(displayValue(f)) !== plain(r.display ?? ''));
         const answer = fieldAnswer(r) + (autres.length && !r.openConflict
-          ? ` ${joinFr([...new Set(autres.map((f) => `« ${f.documentTitle ?? 'un document'} »`))])} indique une autre valeur (${displayValue(autres[0])}) : la valeur de votre fiche fait foi.`
+          // Lot 33 : signalé sans citer le document (la source reste dans `sources`).
+          ? ` Un document indique une autre valeur (${displayValue(autres[0])}) : la valeur de votre fiche fait foi.`
           : '');
         const decision: SufficiencyDecision = { status: 'SUFFICIENT_STRUCTURED', level: 2, score: 1, threshold: p.thresholds.text, detail: 'valeur canonique' };
         attempts.push({ level: 2, strategy: 'retrieval.canonical_field', status: decision.status, score: 1, threshold: decision.threshold });
@@ -924,11 +928,12 @@ export async function answerFromData(p: {
       const best = Math.max(...facts.map((f) => f.matchedTerms));
       const retained = facts.filter((f) => f.matchedTerms === best && comparableOf(f) === decision.retained);
       const f = retained[0];
-      const titres = [...new Set(retained.map((r) => r.documentTitle ?? 'document'))];
       const answer = isVisual(f)
         // Observation : jamais formulée comme une information écrite.
-        ? `D’après l’analyse visuelle de ${joinFr(titres.map((t) => `« ${t} »`))} : ${lowerFirst(f.visualDescription ?? f.valueText ?? '')}${/[.!?]$/.test((f.visualDescription ?? f.valueText ?? '').trim()) ? '' : '.'} Cette information est observée sur l’image, elle n’est pas écrite dans le document.`
-        : `${formatAttributeValue({ subject: f.subject, attribute: f.attribute, label: f.label, value: displayValue(f) })} Source : ${joinFr(titres.map((t) => `« ${t} »`))}.`;
+        // Lot 33 : sans citer le document ; le caractère OBSERVÉ (T2-30) reste dit.
+        ? `${upperFirst(f.visualDescription ?? f.valueText ?? '')}${/[.!?]$/.test((f.visualDescription ?? f.valueText ?? '').trim()) ? '' : '.'} Cette information est observée sur l’image, elle n’est pas écrite dans le document.`
+        // Lot 33 : la source n'est plus citée dans le texte (sources et claims la portent).
+        : formatAttributeValue({ subject: f.subject, attribute: f.attribute, label: f.label, value: displayValue(f) });
       const sources = [...new Map(retained.map((r) => [r.fileId, docSource(r.fileId, r.documentTitle ?? 'Document', evidenceText(r))])).values()];
       return { handled: true, answer, sources, claims: [claim('fact', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources };
     }

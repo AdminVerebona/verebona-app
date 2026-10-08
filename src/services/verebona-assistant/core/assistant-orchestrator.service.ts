@@ -50,9 +50,13 @@ import {
 import { dedupeLogique } from './source-dedupe';
 import { DEFAULT_THRESHOLDS, type CascadeThresholdsLike } from './sufficiency';
 import {
-  contradictionAnswer, detectHelpContradiction, fallbackFromHelpSources, HELP_EXACT_THRESHOLD,
-  isHelpIntent, type HelpCorpus,
+  contradictionAnswer, detectHelpContradiction, fallbackFromHelpSources, helpAnswerFromSources, HELP_EXACT_THRESHOLD,
+  isHelpIntent, type HelpCorpus, type HelpCorpusArticle,
 } from './help-corpus.service';
+import {
+  queriesFromUnderstanding, runHelpCascade, type HelpCascadeResult, type HelpSearcher, type HelpUnderstandOutcome,
+} from './help-cascade';
+import { maskSensitiveText, sensitiveNecessityFor } from './sensitive-data.policy';
 import { MONTHLY_BUDGET_NOTICE } from './budget.service';
 
 /** Repli sans modèle pendant un arrêt d'urgence ou une désactivation de T2 (T2-041, WF-34). */
@@ -204,6 +208,12 @@ export interface OrchestratorPorts {
    * pas de plan (recherche générique en repli).
    */
   buildSynthesisContext?(route: IntentRoute, input: AssistantRequestInput): Promise<SynthesisPlan | null>;
+  /**
+   * Lot 33 : recherche du Centre d'aide pour la cascade d'aide (corpus de
+   * l'environnement, contexte de page et rôles lus UNE fois par demande).
+   * Absent : la cascade interroge `retrieve` requête par requête.
+   */
+  openHelpSearch?(input: AssistantRequestInput): Promise<{ search: HelpSearcher; article(id: string): HelpCorpusArticle | null }>;
 }
 
 export async function runAssistant(
@@ -602,6 +612,11 @@ export async function runAssistant(
     };
     /** UNDERSTAND déjà appelé pour cette demande (jamais un second appel). */
     let comprisParModele = false;
+    /** UNDERSTAND appelé au routage (intention inconnue des règles) — lot 33. */
+    let classeAuRoutage = false;
+    /** Cascade du Centre d'aide exécutée pour cette demande (lot 33). */
+    let aideCascade: HelpCascadeResult | null = null;
+    let articleAide: ((id: string) => HelpCorpusArticle | null) | null = null;
     /** Cible retenue par l'évaluation (phrase « aucun document lié à … »). */
     let cibleComprise: { id: number; name: string } | null = null;
     const repriseAvecCible = Boolean(input.resume?.assetId || input.resume?.entity || input.resume?.documentId);
@@ -974,6 +989,7 @@ export async function runAssistant(
       const classified = await ports.classifyWithAI(outcome.kind === 'needs_classification' ? outcome.normalized : input.message, input);
       reconcilierBudget(budget, avantCl, 1);
       trace.aiCalls = budget.used;
+      classeAuRoutage = Boolean(classified);
       // Lot 29 (8b §K) : compréhension impossible (modèle en échec) — motif
       // distinct, jamais confondu avec « rien trouvé ».
       if (!classified) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
@@ -1048,7 +1064,124 @@ export async function runAssistant(
     let sources: RetrievedSource[] = [];
     let resolved: ResolvedSource[] = [];
     let plan: SynthesisPlan | null = null;
-    if (route.requiresRetrieval || det.needsSimpleRetrieval) {
+    if (isHelpIntent(route.intent) && (route.requiresRetrieval || det.needsSimpleRetrieval)) {
+      // ════════════════════════════════════════════════════════════════════
+      // CASCADE DU CENTRE D'AIDE — lot 33 (ticket T2 PRODUCT_HELP_HOW_TO)
+      //
+      // Plein texte → recherche élargie (référentiel des synonymes et
+      // concepts) → UNDERSTAND (requêtes de recherche, jamais de réponse) →
+      // nouvelle recherche → réponse fondée sur l'article ; repli seulement
+      // au bout, avec un motif explicite. Le Centre d'aide reste la seule
+      // source de vérité (§5, T2-06) : ni document ni donnée du compte.
+      // ════════════════════════════════════════════════════════════════════
+      if (machine.state !== 'RETRIEVING') machine.transition('RETRIEVING');
+      const ouvert = ports.openHelpSearch
+        ? await withDeadline(ports.openHelpSearch(input), retrievalDeadline()).catch(() => null)
+        : null;
+      articleAide = ouvert?.article ?? null;
+      const chercher: HelpSearcher = ouvert?.search ?? (async (queries, stage) => {
+        // Sans port dédié : `retrieve` requête par requête (même contrat).
+        const lots = await Promise.all(queries.map(async (q) => {
+          const r = await withDeadline(ports.retrieve(route, { ...input, message: q }), retrievalDeadline());
+          return r.filter((x) => x.type === 'help_entry').map((x) => ({ ...x, stage, query: q, queryHits: 1 }));
+        }));
+        const sources = lots.flat();
+        return {
+          corpusAvailable: true, corpusVersion: null, sources,
+          candidateCount: sources.length, rejected: { lowCoverage: 0, contextExcluded: 0 },
+        };
+      });
+      const deja = classeAuRoutage || comprisParModele || classeParFaits;
+      const comprendre = async (): Promise<HelpUnderstandOutcome> => {
+        // Déjà compris par le modèle pour cette demande : ses indices servent
+        // de requêtes, sans second appel.
+        if (deja) {
+          return {
+            status: 'reused', intent: route.intent,
+            queries: queriesFromUnderstanding({
+              requestedTopics: route.understanding?.requestedTopics, entityHints: route.entityHints, reason: route.routeReason,
+            }, input.message),
+          };
+        }
+        if (!aiActif || !route.aiEligible || !isPlanAiEligible(input.planType) || input.planLimit) return { status: 'blocked', reason: 'AI_NOT_ALLOWED' };
+        if (!ports.classifyWithAI) return { status: 'blocked', reason: 'AI_UNAVAILABLE' };
+        if (budgetMensuelAtteint || !budget.canCall()) return { status: 'blocked', reason: 'AI_BUDGET_BLOCKED' };
+        if (ports.isAiUnavailable && await ports.isAiUnavailable().catch(() => false)) return { status: 'blocked', reason: 'AI_UNAVAILABLE' };
+        if (await avantAppelModele() === 'cancelled') return { status: 'cancelled' };
+        if (budgetMensuelAtteint || !budget.canCall()) return { status: 'blocked', reason: 'AI_BUDGET_BLOCKED' };
+        const avantCl = budget.used;
+        let delai = false;
+        const compris = await withDeadline(ports.classifyWithAI(input.message, input), deadline).catch((e) => {
+          delai = (e as Error)?.message === 'REQUEST_TIMEOUT';
+          return null;
+        });
+        reconcilierBudget(budget, avantCl, 1);
+        trace.aiCalls = budget.used;
+        comprisParModele = true;
+        if (!compris) return { status: 'failed', reason: delai ? 'AI_TIMEOUT' : 'AI_UNAVAILABLE' };
+        return {
+          status: 'called', intent: compris.intent,
+          queries: queriesFromUnderstanding({
+            requestedTopics: compris.understanding?.requestedTopics, entityHints: compris.entityHints, reason: compris.routeReason,
+          }, input.message),
+        };
+      };
+      const aide = await runHelpCascade({
+        message: input.message, threshold: thresholds.text, search: chercher, understand: comprendre, maxSources: cfg.maxSources,
+      });
+      aideCascade = aide;
+      if (aide.cancelled) return annuler();
+      // Trace : chaque niveau exécuté, ses requêtes, candidats, scores, seuil.
+      const masque = (q: string) => maskSensitiveText(q, sensitiveNecessityFor(input.message)).text;
+      trace.help = {
+        ...aide.trace,
+        retrievalQueryInitial: masque(aide.trace.retrievalQueryInitial),
+        retrievalQueriesExpanded: aide.trace.retrievalQueriesExpanded.map(masque),
+        levels: aide.trace.levels.map((l) => ({ ...l, queries: l.queries.map(masque) })),
+        understanding: aide.trace.understanding ? { ...aide.trace.understanding, queries: aide.trace.understanding.queries.map(masque) } : null,
+      };
+      trace.retrievalQueryInitial = trace.help.retrievalQueryInitial;
+      trace.retrievalQueriesExpanded = trace.help.retrievalQueriesExpanded;
+      for (const l of aide.trace.levels) {
+        trace.attempts.push({ level: l.level, strategy: l.strategy, status: l.status, score: l.bestScore, threshold: l.threshold, ...(l.reason ? { reason: l.reason } : {}) });
+        if (l.status !== 'SUFFICIENT') trace.escalationReasons.push(`HELP:N${l.level}:${l.status === 'EXECUTED' ? 'UNDERSTAND_' + (aide.trace.understanding?.status ?? 'EXECUTED').toUpperCase() : l.reason ?? l.status}`);
+      }
+      if (aide.sufficient) {
+        sources = aide.sources.map(({ stage, query: _q, queryHits: _h, ...src }) => ({ ...src, meta: { ...(src.meta ?? {}), stage } }));
+        resolved = await ports.resolveSources(sources, input.accountId);
+        // T2-04 : deux articles également pertinents qui se contredisent ne
+        // sont arbitrés ni par le code, ni par le modèle.
+        const contradiction = detectHelpContradiction(sources);
+        if (contradiction) {
+          console.warn(`[verebona][alerte-éditoriale] CONTRADICTION ${contradiction.articles[0]} / ${contradiction.articles[1]} (${contradiction.unit}) — correction documentaire à prévoir (T2-04).`);
+          trace.escalationReasons.push(`HELP_CONTRADICTION:${contradiction.articles.join('|')}`);
+          const actions = await ports.resolveActions(route, input, sources);
+          done('template', 'help.contradiction', 'CONFLICTING', sources.length);
+          return finalize(base, machine, 'deterministic', contradictionAnswer(contradiction), [], resolved, actions, ports, input, 'conflicting');
+        }
+        // §10.5 / §10.6 : un article qui répond nettement (≥ seuil
+        // « exact ») suffit, sans modèle — la procédure elle-même, extraite
+        // de l'article. Entre le seuil de suffisance et le seuil « exact »,
+        // ANSWER rédige à partir des articles si l'IA est permise ; sinon
+        // l'extraction est servie.
+        const exact = aide.bestScore >= HELP_EXACT_THRESHOLD;
+        const redactionPossible = aiActif && comprehension.status === 'COMPLETE' && route.aiEligible
+          && ports.generateWithAI != null && budget.canCall() && !budgetMensuelAtteint;
+        if (exact || !redactionPossible) {
+          const actions = await ports.resolveActions(route, input, sources);
+          if (!exact) trace.escalationReasons.push('HELP:N6:ANSWER_NOT_AVAILABLE');
+          done('retrieval', exact ? 'help.exact_article' : 'help.article_excerpt', 'SUFFICIENT_RETRIEVAL', sources.length);
+          const meilleure = String(sources[0].meta?.articleId ?? '');
+          return finalize(base, machine, 'classic_search', helpAnswerFromSources(sources, route.intent, articleAide?.(meilleure) ?? null),
+            [], resolved, actions, ports, input, 'supported');
+        }
+        trace.escalationReasons.push('HELP:N6:SYNTHESIS_FROM_SOURCES');
+      } else {
+        sources = [];
+        resolved = [];
+        trace.fallbackReason = aide.trace.fallbackReason;
+      }
+    } else if (route.requiresRetrieval || det.needsSimpleRetrieval) {
       if (machine.state !== 'RETRIEVING') machine.transition('RETRIEVING');
       let adapters: RetrievedSource[];
       // Tous les candidats classés (≤ 20, §13.9) : cartes et quotas (§11.3).
@@ -1088,7 +1221,7 @@ export async function runAssistant(
         // récupérable, « Réessayer » reste possible) ; sinon, l'erreur suit
         // son cours.
         // ══════════════════════════════════════════════════════════════════
-        const deja = isHelpIntent(route.intent) ? [] : (data?.contextSources ?? []);
+        const deja = data?.contextSources ?? [];
         if ((e as Error)?.message !== 'REQUEST_TIMEOUT' || deja.length === 0) throw e;
         machine.fail(false);
         trace.escalationReasons.push('TIMEOUT:PARTIAL_RESULTS');
@@ -1106,42 +1239,11 @@ export async function runAssistant(
         return r;
       }
       // Les données T1 rassemblées au niveau 2 enrichissent le contexte : le
-      // modèle, s'il est appelé, répond sur ce que T1 a déjà extrait.
-      // Question d'utilisation : les articles seuls, jamais le contexte du
-      // compte (CDC Centre d'aide §5, T2-06).
-      const contexte = isHelpIntent(route.intent) ? [] : (data?.contextSources ?? []);
+      // modèle, s'il est appelé, répond sur ce que T1 a déjà extrait. (Les
+      // questions d'utilisation passent par la cascade du Centre d'aide.)
+      const contexte = data?.contextSources ?? [];
       sources = dedupeSources([...contexte, ...adapters]).slice(0, cfg.maxSources);
       resolved = await ports.resolveSources(sources, input.accountId);
-
-      // ══════════════════════════════════════════════════════════════════
-      // AIDE PRODUIT — contradiction, puis réponse d'article sans modèle
-      //
-      // T2-04 : deux articles également pertinents qui se contredisent ne
-      // sont pas arbitrés — ni par le code, ni par le modèle. Réponse « non
-      // fiable », renvoi au support (OPEN_CONTACT, via `resolveActions`) et
-      // alerte éditoriale journalisée avec les deux identifiants.
-      //
-      // §10.5 / §10.6 : un article qui répond exactement (score ≥ seuil)
-      // suffit, en Standard comme en Premium : extrait + lien vers l'article,
-      // sans appel modèle. Le modèle ne reformule que les cas moins nets, et
-      // seulement si le compte y est éligible.
-      // ══════════════════════════════════════════════════════════════════
-      if (isHelpIntent(route.intent) && sources.length > 0) {
-        const contradiction = detectHelpContradiction(sources);
-        if (contradiction) {
-          console.warn(`[verebona][alerte-éditoriale] CONTRADICTION ${contradiction.articles[0]} / ${contradiction.articles[1]} (${contradiction.unit}) — correction documentaire à prévoir (T2-04).`);
-          trace.escalationReasons.push(`HELP_CONTRADICTION:${contradiction.articles.join('|')}`);
-          const actions = await ports.resolveActions(route, input, sources);
-          done('template', 'help.contradiction', 'CONFLICTING', sources.length);
-          return finalize(base, machine, 'deterministic', contradictionAnswer(contradiction), [], resolved, actions, ports, input, 'conflicting');
-        }
-        const exact = (sources[0].relevanceScore ?? 0) >= HELP_EXACT_THRESHOLD;
-        if (exact || !route.aiEligible) {
-          const actions = await ports.resolveActions(route, input, sources);
-          done('retrieval', exact ? 'help.exact_article' : 'help.article_excerpt', exact ? 'SUFFICIENT_TEXT' : 'INSUFFICIENT', sources.length);
-          return finalize(base, machine, 'classic_search', fallbackFromHelpSources(sources), [], resolved, actions, ports, input, 'supported');
-        }
-      }
 
       // ══════════════════════════════════════════════════════════════════
       // AUCUN RÉSULTAT → RÉSULTATS PROCHES (§11.4)
@@ -1261,7 +1363,11 @@ export async function runAssistant(
     const repli = nonCompris
       ? diagnosticMessage('UNDERSTANDING_FAILED')
       : isHelpIntent(route.intent)
-      ? fallbackFromHelpSources(sources)
+      // Lot 33 : sources fiables (rédaction indisponible) → la procédure
+      // extraite de l'article ; aucune source fiable → l'aveu, sans plus.
+      ? (sources.length
+        ? helpAnswerFromSources(sources, route.intent, articleAide?.(String(sources[0].meta?.articleId ?? '')) ?? null)
+        : fallbackFromHelpSources([]))
       // Chronologie planifiée (T2-34) : la liste datée elle-même, sans modèle.
       : plan?.kind === 'timeline' && plan.timeline?.events.length
         ? timelineAnswer(plan)
@@ -1290,11 +1396,42 @@ export async function runAssistant(
       ? `${repli}\n\n${MONTHLY_BUDGET_NOTICE}`
       : iaIndisponible ? `${repli}\n\n${AI_UNAVAILABLE_NOTICE}` : repli;
     const answer = limiteOffre ? `${answerBase}\n\n${planLimitNotice(input.planLimit!)}` : answerBase;
-    const actionsResolues = await ports.resolveActions(route, input, sources);
+    const actionsBrutes = await ports.resolveActions(route, input, sources);
+    // Lot 33 (§12 du ticket) : repli d'aide sans source fiable — aucune
+    // action métier précise « comme si la demande était résolue », sauf
+    // action comprise AVEC CERTITUDE (concept du référentiel : verbe ET objet).
+    const aideSansSource = Boolean(aideCascade && !aideCascade.sufficient);
+    const certaine = aideSansSource && aideCascade?.concept?.certain ? aideCascade.concept.concept.action : null;
+    const actionsResolues = aideSansSource
+      ? actionsBrutes.filter((a) => !String(a.type).startsWith('START_') || a.type === certaine)
+      : actionsBrutes;
     const actions = limiteOffre && !actionsResolues.some((a) => a.type === 'OPEN_PRICING')
       ? [pricingAction(), ...actionsResolues]
       : actionsResolues;
-    done('fallback', 'fallback.sources', 'INSUFFICIENT', sources.length);
+    if (aideCascade && aideCascade.sufficient && sources.length) {
+      // Sources fiables, rédaction indisponible ou échouée : l'extraction de
+      // l'article EST la réponse (jamais « fallback » avec des sources).
+      done('retrieval', 'help.article_excerpt', 'SUFFICIENT_RETRIEVAL', sources.length);
+      return finalize(base, machine, 'classic_search', answer, [], resolved, actions, ports, input, 'supported');
+    }
+    // Lot 33 (§14 du ticket) : une escalade annoncée (N1/N2 insuffisants)
+    // mais non exécutée est TOUJOURS justifiée — jamais « SYNTHESIS_REQUIRED
+    // + 0 appel + repli » sans explication.
+    if (!aideCascade && budget.used === 0 && trace.escalationReasons.some((r) => /^N[12]:/.test(r))
+      && !trace.escalationReasons.some((r) => r.startsWith('N3:'))) {
+      const motif = !aiActif || !route.aiEligible || !isPlanAiEligible(input.planType) || input.planLimit ? 'AI_NOT_ALLOWED'
+        : iaIndisponible || !ports.generateWithAI ? 'AI_UNAVAILABLE'
+          : budgetMensuelAtteint || !budget.canCall() ? 'AI_BUDGET_BLOCKED'
+            : sources.length === 0 ? 'NO_SOURCE_FOR_SYNTHESIS'
+              : comprehension.status !== 'COMPLETE' ? 'UNDERSTANDING_INCOMPLETE' : 'GENERATION_UNAVAILABLE';
+      trace.escalationReasons.push(`N3:NOT_EXECUTED:${motif}`);
+      trace.fallbackReason = motif;
+    }
+    if (aideSansSource) {
+      trace.fallbackReason = aideCascade!.trace.fallbackReason;
+      trace.escalationReasons.push(`HELP:FALLBACK:${aideCascade!.trace.fallbackReason ?? 'NO_RELIABLE_SOURCE'}`);
+    }
+    done('fallback', aideSansSource ? 'fallback.help' : 'fallback.sources', 'INSUFFICIENT', sources.length);
     return finalize(base, machine, resolved.length ? 'classic_search' : 'fallback', answer, [], resolved, actions, ports, input);
   } catch (e) {
     machine.fail(true);

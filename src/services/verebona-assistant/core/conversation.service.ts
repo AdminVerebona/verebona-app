@@ -52,6 +52,14 @@ import { buildT2ObservabilityTrace } from '@/services/ai/telemetry/t2-observabil
 const expiresFromNow = () =>
   new Date(Date.now() + getAssistantConfig().historyDays * 86400_000).toISOString();
 
+/** Lot 33 : niveau tracé de chaque étape de la cascade du Centre d'aide. */
+const HELP_LEVELS: Readonly<Record<string, string>> = {
+  'help.fulltext': 'fulltext',
+  'help.expanded': 'expanded',
+  'help.understand': 'understand',
+  'help.reformulated': 'reformulated',
+};
+
 /** Fil de conversation tel que la liste le présente. */
 export interface ConversationThread {
   id: number;
@@ -622,8 +630,10 @@ export async function persistResult(
                 // sans plan applicable (NOT_APPLICABLE / NO_STRUCTURED_PLAN)
                 // n'a pas été « atteint ».
                 ...result.cascade.attempts
-                  .filter((a) => a.status !== 'NOT_APPLICABLE' && a.reason !== 'NO_STRUCTURED_PLAN')
-                  .map((a) => (a.level === 1 ? 'structured' : 'fulltext')),
+                  .filter((a) => a.status !== 'NOT_APPLICABLE' && a.reason !== 'NO_STRUCTURED_PLAN' && a.status !== 'SKIPPED')
+                  // Lot 33 : niveaux de la cascade du Centre d'aide (recherche
+                  // élargie, compréhension UNDERSTAND, recherche reformulée).
+                  .map((a) => HELP_LEVELS[a.strategy] ?? (a.level === 1 ? 'structured' : 'fulltext')),
                 ...(result.cascade.answeredBy === 'llm' ? ['llm'] : []),
               ]),
             ],

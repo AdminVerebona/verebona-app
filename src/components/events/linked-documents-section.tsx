@@ -10,6 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { FileIcon, Plus, Trash2, Loader2, Search, Upload, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { UnifiedDocumentDialog } from '@/components/documents/unified-document-dialog';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import {
   Popover,
   PopoverContent,
@@ -19,6 +20,8 @@ import {
 interface LinkedDocument {
   id: number;
   fileName: string;
+  /** Titre métier (lot 33C), quand l'API le fournit. */
+  retainedTitle?: string | null;
   mimeType: string;
   fileSize: number;
   documentType: string;
@@ -167,7 +170,7 @@ export function LinkedDocumentsSection({
   };
 
   const filteredDocuments = availableDocuments.filter(doc =>
-    doc.fileName.toLowerCase().includes(searchTerm.toLowerCase())
+    `${doc.retainedTitle ?? ''} ${doc.fileName}`.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -242,7 +245,7 @@ export function LinkedDocumentsSection({
                     <FileIcon className="w-5 h-5 text-[color:var(--accent)]" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{doc.fileName}</p>
+                    <p className="text-sm font-medium truncate">{displayDocumentTitle({ retainedTitle: doc.retainedTitle ?? null, originalFilename: doc.fileName }, doc.fileName)}</p>
                     <div className="flex flex-wrap gap-2 mt-1">
                       <span className="text-xs px-2 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--text-muted)]">
                         {doc.documentType}
@@ -329,7 +332,7 @@ export function LinkedDocumentsSection({
                       className="mt-1"
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{doc.fileName}</p>
+                      <p className="text-sm font-medium truncate">{displayDocumentTitle({ retainedTitle: doc.retainedTitle ?? null, originalFilename: doc.fileName }, doc.fileName)}</p>
                       <div className="flex flex-wrap gap-2 mt-1">
                         <span className="text-xs px-2 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--text-muted)]">
                           {doc.documentType}

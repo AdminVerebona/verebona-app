@@ -14,7 +14,6 @@ import { db } from '@/db';
 import { documentAnalysisRuns, documentAnalysisProposals, assetFiles } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { SourceAnalysisResult, SourceInput } from '../types';
-import { refineDocumentTitle } from '../document-title';
 
 export interface PersistResultInput {
   input: SourceInput;
@@ -178,18 +177,12 @@ async function updateSourceMetadata(p: PersistResultInput): Promise<void> {
   const d = p.result.document;
   const patch: Record<string, unknown> = { lastAnalysisAt: new Date(), updatedAt: new Date() };
 
-  // Titre différenciant (règle R9 du prompt, et filet de sécurité si le
-  // modèle rend malgré tout « Facture N° … »).
-  const title = refineDocumentTitle(d.title?.value, {
-    typeCode: d.type?.value ?? null,
-    subjects: [
-      ...p.result.extractedFields.map((f) => f.subject),
-      ...(d.visual?.observations ?? []).map((o) => o.subject),
-    ].filter((s): s is string => Boolean(s)),
-    supplier: d.supplier?.value.name ?? null,
-    documentDate: d.date?.value ?? null,
-  });
-  if (title) patch.retainedTitle = title;
+  // Lot 33C : le TITRE n'est plus écrit ici. Il l'est par le service commun
+  // `DocumentTitleService` (fin d'analyse T1, rattrapage T3), qui contrôle le
+  // titre courant, respecte un titre utilisateur (`title_source = USER`) et
+  // écrit sous contrôle de concurrence — y compris quand ce run est
+  // dédupliqué (ce chemin-ci n'est alors pas exécuté : c'était l'une des
+  // causes d'un document resté « <uuid>.pdf »).
   if (d.type?.value) patch.documentType = d.type.value;
   if (d.description?.value) patch.description = d.description.value;
   if (d.transcription) patch.extractedText = d.transcription;

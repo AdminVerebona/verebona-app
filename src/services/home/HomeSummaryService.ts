@@ -27,6 +27,7 @@ import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 import {
   fieldUpdateTargetColumns, registryFieldLabel, visibleFieldUpdatesWhere,
 } from '@/services/canonical/entity-state/ai-field-updates-target';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 // Champs visibles par l'utilisateur dans l'UI — les autres champs (techniques)
 // sont filtrés de « Ce que j'ai fait ».
@@ -523,7 +524,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
           .where(inArray(agendaAssetLinks.agendaItemId, workAgendaIds))
       : Promise.resolve([] as Array<{ agendaItemId: number; assetName: string | null }>),
   ]);
-  const docTitleById = new Map(workDocTitles.map((d) => [d.id, d.retainedTitle || d.originalFilename || 'Document']));
+  const docTitleById = new Map(workDocTitles.map((d) => [d.id, displayDocumentTitle(d, 'Document')]));
   const isoOf = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString() : new Date(0).toISOString());
 
   const verebonaWork = deriveVerebonaWork({
@@ -549,7 +550,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     })),
     documents: workDocumentRows.map((r) => ({
       id: r.id,
-      title: r.retainedTitle || r.originalFilename || 'Document',
+      title: displayDocumentTitle(r, 'Document'),
       assetName: r.assetName ?? null,
       analysisState: r.analysisState,
       at: isoOf(r.lastAnalysisAt ?? r.uploadedAt),
@@ -563,7 +564,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     const dateUtile = d.documentDate ?? (d.uploadedAt ? new Date(d.uploadedAt).toISOString().slice(0, 10) : null);
     return {
       id: d.id,
-      title: d.retainedTitle || d.webLinkTitle || d.originalFilename || 'Document',
+      title: displayDocumentTitle(d, 'Document'),
       assetId: d.assetId ?? null,
       assetName: d.assetName ?? null,
       typeLabel: (typeLabel && typeLabel.toUpperCase() !== 'AUTRE' ? typeLabel : null) ?? rubrique ?? 'Document',

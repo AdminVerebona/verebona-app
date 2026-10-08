@@ -74,7 +74,8 @@ function modeleSimule() {
   return { calls, provider };
 }
 
-const ECHEC = /Je n’ai rien trouvé de correspondant|ne peux pas répondre de façon fiable|Je ne sais pas|n’est plus disponible|une erreur/i;
+// Lot 33 : nouvel aveu du Centre d'aide (« …d’information suffisamment fiable… »).
+const ECHEC = /Je n’ai rien trouvé de correspondant|ne peux pas répondre de façon fiable|pas trouvé dans le Centre d’aide d’information suffisamment fiable|Je ne sais pas|n’est plus disponible|une erreur/i;
 
 scenario('L32E', 'Lot 32E — exemples « Par exemple » répondables, export d’une exécution IA', ({ sql, make }) => {
   useTargetState({}, { masters: ['T1', 'T2'] });

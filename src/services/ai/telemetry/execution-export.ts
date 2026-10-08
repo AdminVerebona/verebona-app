@@ -18,9 +18,12 @@
  *   · le prompt rendu n'est pas conservé par la passerelle (« jamais le
  *     texte envoyé au modèle ») : l'export le dit (`renderedPrompt: null`)
  *     et donne ses références (version, prompt maître, TASK) ;
- *   · la sortie du modèle n'existe qu'à l'état d'extrait masqué (500
+ *   · la sortie du modèle n'y figure qu'à l'état d'extrait masqué (500
  *     caractères, `previewForLog`) ou, pour l'assistant, d'empreinte
- *     (`sha256:… len:…`, CDC Assistant §29.6) — jamais la sortie brute ;
+ *     (`sha256:… len:…`, CDC Assistant §29.6). Lot 33D : la sortie COMPLÈTE
+ *     conservée pour un appel en échec (`ai_call_diagnostics`) n'est ajoutée
+ *     (`modelOutputs`) que sur demande explicite de la route
+ *     (`?includeModelOutput=1`), sous la même garde et avec journal d'accès ;
  *   · le contenu conversationnel T2 (accès restreint, justifié et tracé,
  *     LOG-UI-08) n'est pas inclus : seulement les références des sources ;
  *   · les textes libres (extraits, messages d'erreur, charge utile du job,
@@ -30,6 +33,8 @@
  */
 import { redact } from '@/services/ai/gateway/redaction';
 import type { ExecutionDetail, ExecutionRow, ExecutionStep } from './execution-log.repository';
+import { buildExecutionDiagnosis, type ExecutionDiagnosis } from './execution-diagnosis';
+import type { ModelOutputView } from '../gateway/diagnostics/diagnostic.repository';
 
 export const EXECUTION_EXPORT_FORMAT = 'verebona.ai-execution/v1';
 
@@ -148,6 +153,15 @@ export interface ExecutionExport {
   modifications: Array<{ kind: string; label: string; detail: string | null; at: string | null }>;
   job: Record<string, unknown> | null;
   t2: { requestId: string; sources: unknown[]; contentNote: string } | null;
+  /**
+   * Lot 33D — diagnostic : rapport par appel (cause, étape, erreurs par
+   * chemin, chaîne de contrôles, métadonnées fournisseur, contrat de sortie,
+   * corrections), diagnostic de cascade, compteurs, résultat métier, diagnostic
+   * final. Jamais la sortie du modèle.
+   */
+  diagnosis: ExecutionDiagnosis;
+  /** Lot 33D — sorties du modèle, UNIQUEMENT sur demande explicite (route, accès journalisé). */
+  modelOutputs?: ModelOutputView[];
   redaction: string;
 }
 
@@ -155,7 +169,9 @@ export interface ExecutionExport {
  * Construit l'export complet d'une exécution à partir de son détail (pur :
  * aucune lecture en base, testé).
  */
-export function buildExecutionExport(detail: ExecutionDetail, now: Date = new Date()): ExecutionExport {
+export function buildExecutionExport(
+  detail: ExecutionDetail, now: Date = new Date(), opts: { modelOutputs?: ModelOutputView[] } = {},
+): ExecutionExport {
   const c = detail.call;
   const calls = (detail.calls.length ? detail.calls : [c]);
   const steps = [...detail.steps].sort((a, b) => a.stepOrder - b.stepOrder);
@@ -207,8 +223,8 @@ export function buildExecutionExport(detail: ExecutionDetail, now: Date = new Da
         kind: outputKindOf(s.outputPreview!), text: redact(s.outputPreview!),
       })),
       responseNote: steps.some((s) => s.outputPreview != null)
-        ? 'Réponse brute jamais conservée : extrait masqué (500 caractères au plus) ou, pour l’assistant, empreinte sha256 et longueur.'
-        : 'Aucune sortie journalisée pour cette exécution (appel sans étape de pipeline) : la réponse brute n’est jamais conservée.',
+        ? 'Étapes : extrait masqué (500 caractères au plus) ou, pour l’assistant, empreinte sha256 et longueur. Sortie complète d’un appel en échec : BO, « Afficher la sortie modèle » (accès journalisé).'
+        : 'Aucune sortie journalisée pour cette exécution (appel sans étape de pipeline) : sortie complète d’un appel en échec consultable dans le BO (accès journalisé).',
     },
     errors,
     costs: {
@@ -236,6 +252,10 @@ export function buildExecutionExport(detail: ExecutionDetail, now: Date = new Da
       sources: detail.t2.sources,
       contentNote: 'Contenu conversationnel non inclus (accès restreint, justifié et tracé — LOG-UI-08).',
     } : null,
+    diagnosis: masquer(detail.diagnosis ?? buildExecutionDiagnosis({
+      treatment: c.treatment, calls, diagnostics: [], job: job ? { status: job.status, attempts: job.attempts } : null,
+    })) as ExecutionDiagnosis,
+    ...(opts.modelOutputs ? { modelOutputs: masquer(opts.modelOutputs) as ModelOutputView[] } : {}),
     redaction: 'Export limité au détail affiché dans le BO ; textes libres repassés par le masquage de la passerelle (IBAN, cartes, clés d’API, NIR).',
   };
 }

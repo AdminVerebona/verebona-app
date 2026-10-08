@@ -50,6 +50,7 @@ import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
 import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS } from '@/lib/document-type-constants';
 import { resolveDocumentTypeCode } from '@/lib/referential/document-codes';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import type { RoomDrawerItem } from '@/components/assets/RoomDrawer';
 import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
@@ -606,7 +607,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     if (!pendingAiProposals || !fullData) return;
 
     // Pre-fill form with current DB values
-    setEditFilename(fullData.originalFilename);
+    // Lot 33C : le champ part du titre AFFICHÉ (titre métier), plus du nom
+    // de fichier — réenregistrer écrasait le titre par « <uuid>.pdf ».
+    setEditFilename(displayDocumentTitle(fullData, ''));
     setEditDocType(fullData.documentType ?? 'AUTRE');
     setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
     setEditDocDate(fullData.documentDate ?? '');
@@ -725,7 +728,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       setIsEditing(true);
       return;
     }
-    setEditFilename(fullData.originalFilename);
+    // Lot 33C : le champ part du titre AFFICHÉ (titre métier), plus du nom
+    // de fichier — réenregistrer écrasait le titre par « <uuid>.pdf ».
+    setEditFilename(displayDocumentTitle(fullData, ''));
     setEditDocType(fullData.documentType ?? 'AUTRE');
     setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
     setEditDocDate(fullData.documentDate ?? '');
@@ -785,7 +790,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
   const handleSave = useCallback(async () => {
     if (!doc || !fullData) return;
-    if (!editFilename.trim()) { toast.error('Le nom du fichier est requis'); return; }
+    if (!editFilename.trim()) { toast.error('Le titre du document est requis'); return; }
     setIsSaving(true);
     try {
       const amountCents = editAmount ? Math.round(parseFloat(editAmount) * 100) : null;
@@ -793,7 +798,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       // Compute userEditedFields: mark fields that differ from what AI detected
     const userEdited: Record<string, boolean> = { ...(fullData.userEditedFields ?? {}) };
     if (fullData.lastAnalysisAt) {
-      if (editFilename.trim() !== (fullData.retainedTitle ?? fullData.originalFilename)) userEdited.retainedTitle = true;
+      if (editFilename.trim() !== displayDocumentTitle(fullData, '')) userEdited.retainedTitle = true;
       if (validDocType !== fullData.documentType) userEdited.retainedFunctionCode = true;
       if ((editDocDate || null) !== fullData.documentDate) userEdited.documentDate = true;
       if ((editSupplier.trim() || null) !== fullData.supplier) userEdited.supplier = true;
@@ -854,7 +859,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       setFullData(prev => prev ? {
         ...prev,
         retainedTitle: editFilename.trim(),
-        originalFilename: editFilename.trim(),
         documentType: editDocType || 'AUTRE',
         documentDate: editDocDate || null,
         supplier: editSupplier.trim() || null,
@@ -1133,7 +1137,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const getTypeLabel = (code: string) =>
     docTypes.find(t => t.code === code)?.label ?? FALLBACK_TYPE_LABELS[code] ?? code;
   const typeLabel = getTypeLabel(fullData?.documentType ?? doc.documentType);
-  const filename = fullData?.retainedTitle ?? fullData?.originalFilename ?? doc.originalFilename;
+  // Lot 33C (AC8) : titre métier → nom original exploitable → nom technique.
+  const filename = displayDocumentTitle(fullData ?? { originalFilename: doc.originalFilename }, doc.originalFilename);
 
   return (
     <>
@@ -1579,7 +1584,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label>Nom du fichier</Label>
+                  <Label>Titre du document</Label>
                   <Input value={editFilename} onChange={e => setEditFilename(e.target.value)} />
                 </div>
                 {/* Rubrique et Type (classement V2) : intégrés ici, à la place de

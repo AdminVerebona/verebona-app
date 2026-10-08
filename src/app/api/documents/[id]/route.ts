@@ -8,6 +8,7 @@ import { getSession } from '@/lib/auth-guards';
 import { isKnownStorageDocumentCode } from '@/lib/referential/document-codes';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
+import { displayDocumentTitle, isValidBusinessTitle } from '@/lib/documents/document-title-rules';
 
 export async function PUT(
   request: NextRequest,
@@ -83,15 +84,45 @@ export async function PUT(
 
     const now = new Date();
     const updateData: any = {
-      originalFilename: fileName.trim(),
       documentType,
       documentDate: documentDate || null,
       updatedAt: now,
     };
+    // Lot 33C : quand le titre est envoyé à part (tiroir), le nom ORIGINAL du
+    // fichier est conservé — il sert de repli d'affichage (« nom original
+    // exploitable ») et n'est pas le titre. Lien web et anciens appelants
+    // (sans `retainedTitle`) : comportement historique.
+    if (retainedTitle === undefined || oldDoc.isWebLink) {
+      updateData.originalFilename = fileName.trim();
+    }
 
-    // V3.3 IA fields
+    // ══════════════════════════════════════════════════════════════════════
+    // TITRE UTILISATEUR (lot 33C, ticket T1/T3) — `title_source = USER`
+    //
+    // Un titre MODIFIÉ ici n'est plus jamais réécrit automatiquement. « Modifié »
+    // s'entend par rapport au titre AFFICHÉ : un tiroir qui renvoie le titre
+    // tel qu'il l'a montré ne fait pas d'un titre système un titre
+    // utilisateur. Client antérieur au lot 33C : il renvoyait le NOM DE
+    // FICHIER (« <uuid>.pdf ») à la place d'un titre métier — ignoré.
+    // ══════════════════════════════════════════════════════════════════════
+    let titreUtilisateur: 'USER' | 'SYSTEM' | null = null;
+    let titreIgnore = false;
     if (retainedTitle !== undefined) {
-      updateData.retainedTitle = retainedTitle || null;
+      const nouveau = typeof retainedTitle === 'string' ? retainedTitle.trim() : '';
+      const ancien = oldDoc.retainedTitle?.trim() ?? '';
+      const ids = { s3Key: oldDoc.s3Key, publicId: oldDoc.publicId };
+      const affiche = displayDocumentTitle(oldDoc, '');
+      const renvoiNomFichier = nouveau === (oldDoc.originalFilename?.trim() ?? '')
+        && isValidBusinessTitle(ancien, ids) && !isValidBusinessTitle(nouveau, ids);
+      if (nouveau === ancien) {
+        // Inchangé.
+      } else if (nouveau === affiche || renvoiNomFichier) {
+        titreIgnore = true;
+      } else {
+        updateData.retainedTitle = nouveau || null;
+        titreUtilisateur = nouveau ? 'USER' : 'SYSTEM';
+        updateData.titleSource = titreUtilisateur;
+      }
     }
     if (retainedFunctionCode !== undefined) {
       updateData.retainedFunctionCode = retainedFunctionCode || null;
@@ -110,6 +141,21 @@ export async function PUT(
     }
     if (userEditedFields !== undefined && userEditedFields !== null && typeof userEditedFields === 'object') {
       updateData.userEditedFields = userEditedFields;
+    }
+    // La marque `retainedTitle` suit la source du titre (lot 33C).
+    if (titreUtilisateur || titreIgnore) {
+      const marques = { ...((updateData.userEditedFields ?? oldDoc.userEditedFields ?? {}) as Record<string, boolean>) };
+      if (titreUtilisateur === 'USER') marques.retainedTitle = true;
+      else {
+        // Titre vidé, ou titre non modifié (la marque envoyée par le client
+        // n'est pas crue : un ancien tiroir la posait à tort) — la marque
+        // antérieure n'est conservée que sur un titre courant conforme.
+        const avantMarque = (oldDoc.userEditedFields as Record<string, boolean> | null)?.retainedTitle === true;
+        const conforme = isValidBusinessTitle(oldDoc.retainedTitle, { s3Key: oldDoc.s3Key, publicId: oldDoc.publicId });
+        if (titreUtilisateur === null && avantMarque && conforme) marques.retainedTitle = true;
+        else delete marques.retainedTitle;
+      }
+      updateData.userEditedFields = marques;
     }
 
     if (assetId !== undefined) {
@@ -149,8 +195,11 @@ export async function PUT(
       .where(eq(assetFiles.id, documentId));
 
     const changes = [];
-    if (oldDoc.originalFilename !== fileName.trim()) {
+    if (updateData.originalFilename !== undefined && oldDoc.originalFilename !== fileName.trim()) {
       changes.push(`Nom: "${oldDoc.originalFilename}" → "${fileName.trim()}"`);
+    }
+    if (titreUtilisateur) {
+      changes.push(`Titre: "${oldDoc.retainedTitle ?? ''}" → "${updateData.retainedTitle ?? ''}"`);
     }
     if (oldDoc.documentType !== documentType) {
       changes.push(`Type: "${oldDoc.documentType}" → "${documentType}"`);
@@ -211,7 +260,7 @@ export async function PUT(
     const autresChampsModifies = Object.keys(updateData)
       // `userEditedFields` ne fait que marquer les champs ci-dessus (et, lot 28,
       // le rattachement) : il ne constitue pas une correction à lui seul.
-      .filter((k) => k !== 'updatedAt' && k !== 'assetId' && k !== 'userEditedFields')
+      .filter((k) => k !== 'updatedAt' && k !== 'assetId' && k !== 'userEditedFields' && k !== 'titleSource')
       .some((k) => !memeValeur(updateData[k], (oldDoc as Record<string, unknown>)[k]));
     const seulLeBienChange =
       assetCible !== undefined && assetCible !== oldDoc.assetId && !autresChampsModifies;

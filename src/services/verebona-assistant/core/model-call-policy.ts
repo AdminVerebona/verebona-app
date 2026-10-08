@@ -58,6 +58,13 @@ export function classifyModelFailure(e: unknown): { kind: ModelFailureKind; erro
   if (e.code === 'QUOTA_EXCEEDED' || e.code === 'COST_CAP_REACHED') return { kind: 'BUDGET_EXHAUSTED', errors: [] };
   if (e.code === 'AI_BLOCKED') return { kind: 'BLOCKED', errors: [] };
   if (e.code === 'TIMEOUT') return { kind: 'TIMEOUT', errors: [] };
+  // Lot 33D : diagnostic structuré de la passerelle, quand il existe.
+  const detail = (e as { detail?: { subtype?: string; issues?: Array<{ path: string; message: string }> } }).detail;
+  if (detail?.subtype === 'EMPTY_RESPONSE') return { kind: 'EMPTY_OUTPUT', errors: [] };
+  if (detail?.subtype && detail.issues?.length) {
+    const chemin = (p: string) => p.replace(/^\$\.?/, '').replace(/\[(\d+)\]/g, '.$1').replace(/^\./, '');
+    return { kind: 'INVALID_OUTPUT', errors: detail.issues.slice(0, 5).map((i) => `${chemin(i.path) || '(racine)'} : ${i.message}`) };
+  }
   const msg = e.message ?? '';
   // Sortie vide : rien à parser, extrait vide.
   if (/Aucune structure JSON d[ée]tect[ée]e\.\s*Extrait\s*:\s*$/.test(msg)) return { kind: 'EMPTY_OUTPUT', errors: [] };

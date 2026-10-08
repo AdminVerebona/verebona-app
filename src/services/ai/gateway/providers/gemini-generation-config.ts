@@ -58,6 +58,8 @@ export function buildGenerationConfig(input: {
   maxOutputTokens?: number;
   reasoning?: ReasoningLevel | null;
   jsonResponse?: boolean;
+  /** Lot 33D : schéma JSON réduit (structured output). Implique le mode JSON. */
+  responseSchema?: Record<string, unknown>;
 }): Record<string, unknown> {
   const thinkingConfig = thinkingConfigFor(input.model, input.reasoning);
   return {
@@ -68,6 +70,9 @@ export function buildGenerationConfig(input: {
     ...(thinkingConfig ? { thinkingConfig } : {}),
     // Mode JSON natif, déclaré par l'opération : repris des modules
     // historiques qui l'utilisaient (analyse documentaire, enrichissement).
-    ...(input.jsonResponse ? { responseMimeType: 'application/json' } : {}),
+    ...(input.jsonResponse || input.responseSchema ? { responseMimeType: 'application/json' } : {}),
+    // Structured output (lot 33D, §23) : la génération est contrainte par le
+    // schéma ; la normalisation et la validation restent appliquées ensuite.
+    ...(input.responseSchema ? { responseJsonSchema: input.responseSchema } : {}),
   };
 }

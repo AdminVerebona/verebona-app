@@ -12,6 +12,7 @@
 
 import { DOCUMENT_TYPE_LABELS } from '@/lib/document-type-constants';
 import { resolveDocumentCode } from '@/lib/referential/document-codes';
+import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
 
 /** Formats intégrables dans le PDF (SEL-GEN-003). */
 export const INTEGRABLE = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
@@ -178,11 +179,17 @@ export function documentTone(kind: DocKind): string | undefined {
   return undefined;
 }
 
-/** Titre affiché d'une pièce : titre retenu, sinon nom de fichier sans extension. */
+/**
+ * Titre affiché d'une pièce (lot 33C) : titre métier, sinon nom original
+ * exploitable sans extension, sinon nom technique en dernier recours.
+ */
 export function documentTitle(d: { retainedTitle?: string | null; originalFilename?: string | null; id: number }): string {
   const t = d.retainedTitle?.trim();
-  if (t) return t;
   const f = d.originalFilename?.trim();
-  if (f) return f.replace(/\.[a-z0-9]{2,5}$/i, '');
+  const sansExtension = (x: string) => x.replace(/\.[a-z0-9]{2,5}$/i, '');
+  if (t && isValidBusinessTitle(t)) return t;
+  if (f && isValidBusinessTitle(f)) return sansExtension(f);
+  if (t) return t;
+  if (f) return sansExtension(f);
   return `Document ${d.id}`;
 }

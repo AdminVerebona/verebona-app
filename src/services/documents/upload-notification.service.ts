@@ -26,6 +26,7 @@ import { and, eq, inArray, isNull, or, ne } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { emit } from '@/lib/notifications';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 /** Taille maximale d'un lot annoncé (au-delà, les identifiants sont ignorés). */
 export const MAX_UPLOAD_NOTIFICATION_IDS = 500;
@@ -78,7 +79,7 @@ export async function notifyUploadCompleted(input: UploadNotificationInput): Pro
   if (rows.length === 0) return { emitted: false, count: 0 };
 
   const seul = rows.length === 1 ? rows[0] : null;
-  const titre = seul ? (seul.retainedTitle?.trim() || seul.originalFilename?.trim() || undefined) : undefined;
+  const titre = seul ? (displayDocumentTitle(seul, '') || undefined) : undefined;
 
   await emit({
     type: 'DOCUMENT_UPLOAD_COMPLETED',

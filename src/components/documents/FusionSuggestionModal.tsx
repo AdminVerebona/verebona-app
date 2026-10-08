@@ -20,6 +20,7 @@ import { FileText, Copy, ArrowRight, X, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 interface Props {
   open: boolean;
@@ -112,7 +113,7 @@ export function FusionSuggestionModal({ open, onOpenChange, newFileId, newFilena
               <div className="flex-1 min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-0.5">Document existant</p>
                 <p className="text-sm font-medium truncate">
-                  {candidate.retainedTitle ?? candidate.originalFilename ?? `Document #${candidate.fileId}`}
+                  {displayDocumentTitle(candidate, `Document #${candidate.fileId}`)}
                 </p>
                 {candidate.documentDate && (
                   <p className="text-xs text-muted-foreground">

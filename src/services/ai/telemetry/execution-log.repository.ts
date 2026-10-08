@@ -117,6 +117,14 @@ export interface ExecutionRow {
   engine: string | null;
   /** CDC 15 OBS-CFG : déclencheur figé dans la trace de l'appel. */
   callTrigger: string | null;
+  /** Lot 33D : appel d'analyse ou passe de réparation ciblée. */
+  callKind: 'analysis' | 'repair';
+  /** Lot 33D : résumé de l'échec (famille, sous-type, étape, signature), sans contenu. */
+  failure: { family: string; subtype: string | null; stage: string | null; signature: string | null } | null;
+  /** Lot 33D : métadonnées natives du fournisseur (fin de génération, identifiant…). */
+  providerMeta: Record<string, unknown> | null;
+  /** Lot 33D : sortie acceptée après correction automatique. */
+  repaired: boolean;
 }
 
 /** Traitement correspondant à un code d'usage, sans requête. */
@@ -167,6 +175,12 @@ function toRow(r: Row): ExecutionRow {
     maxOutputTokens: typeof metadata.maxOutputTokens === 'number' ? metadata.maxOutputTokens : null,
     engine: typeof metadata.engine === 'string' ? metadata.engine : null,
     callTrigger: typeof metadata.trigger === 'string' ? metadata.trigger : null,
+    callKind: metadata.callKind === 'repair' ? 'repair' : 'analysis',
+    failure: metadata.failure && typeof metadata.failure === 'object'
+      ? metadata.failure as ExecutionRow['failure'] : null,
+    providerMeta: metadata.providerMeta && typeof metadata.providerMeta === 'object'
+      ? metadata.providerMeta as Record<string, unknown> : null,
+    repaired: metadata.repaired === true,
   };
 }
 
@@ -331,6 +345,9 @@ export interface ExecutionDetail {
     attempts: number; configVersionId: number | null; createdAt: Date; startedAt: Date | null;
     finishedAt: Date | null; lastError: string | null; accountId: number | null;
     targetType: string | null; targetId: string | null;
+    /** Lot 31C / 33D : résultat MÉTIER, distinct du statut technique. */
+    businessResult: string | null;
+    businessResultDetail: Record<string, unknown> | null;
   } | null;
   /** LOG-UI-04 : instantanés d'entrée (références figées, jamais le contenu brut). */
   inputs: ExecutionInput[];
@@ -338,6 +355,12 @@ export interface ExecutionDetail {
   modifications: ExecutionModification[];
   /** LOG-UI-07 : requête T2 rattachée et sources réellement utilisées. */
   t2: { requestId: string; sources: import('./t2-request-detail.repository').T2Source[] } | null;
+  /**
+   * Lot 33D : rapport par appel, diagnostic de cascade, compteurs (tentatives
+   * du job / appels modèle / fallbacks), statut technique vs résultat métier,
+   * diagnostic final. La sortie du modèle n'y figure JAMAIS (route dédiée).
+   */
+  diagnosis: import('./execution-diagnosis').ExecutionDiagnosis;
 }
 
 export interface ExecutionInput {
@@ -391,7 +414,9 @@ export async function getExecutionDetail(id: number): Promise<ExecutionDetail | 
   if (call.jobId) {
     const j = ((await pgClient.unsafe(
       `SELECT id, treatment, status, origin, trigger_code, attempts, config_version_id,
-              created_at, started_at, finished_at, last_error, account_id, target_type, target_id, payload
+              created_at, started_at, finished_at, last_error, account_id, target_type, target_id, payload,
+              to_jsonb(ai_job_queue)->>'business_result' AS business_result,
+              to_jsonb(ai_job_queue)->'business_result_detail' AS business_result_detail
          FROM ai_job_queue WHERE id = $1 LIMIT 1`,
       [call.jobId] as never[],
     )) as unknown as Row[])[0];
@@ -407,6 +432,8 @@ export async function getExecutionDetail(id: number): Promise<ExecutionDetail | 
         accountId: j.account_id == null ? null : Number(j.account_id),
         targetType: j.target_type == null ? null : String(j.target_type),
         targetId: j.target_id == null ? null : String(j.target_id),
+        businessResult: j.business_result == null ? null : String(j.business_result),
+        businessResultDetail: (j.business_result_detail ?? null) as Record<string, unknown> | null,
       };
       jobPayload = j.payload ?? null;
     }
@@ -414,12 +441,17 @@ export async function getExecutionDetail(id: number): Promise<ExecutionDetail | 
 
   const window = executionWindow(calls.length ? calls : [call], job);
   const assetFileId = r.asset_file_id == null ? null : Number(r.asset_file_id);
-  const [inputs, modifications, t2] = await Promise.all([
+  const [inputs, modifications, t2, diagnostics] = await Promise.all([
     buildInputs(call, r, job, jobPayload, assetFileId).catch((): ExecutionInput[] => []),
     loadModifications(call, traceId, job, window, assetFileId).catch((): ExecutionModification[] => []),
     call.treatment === 'T2' ? loadT2Link(call).catch(() => null) : Promise.resolve(null),
+    traceId
+      ? import('../gateway/diagnostics/diagnostic.repository').then((m) => m.listTraceDiagnostics(traceId)).catch(() => [])
+      : Promise.resolve([]),
   ]);
-  return { call, traceId, calls, steps, job, inputs, modifications, t2 };
+  const { buildExecutionDiagnosis } = await import('./execution-diagnosis');
+  const diagnosis = buildExecutionDiagnosis({ treatment: call.treatment, calls, diagnostics, job });
+  return { call, traceId, calls, steps, job, inputs, modifications, t2, diagnosis };
 }
 
 /** Fenêtre de l'exécution : job de file si présent, sinon appels de la trace ± 5 min. */
@@ -649,13 +681,16 @@ export async function getExecutionSteps(traceId: string): Promise<ExecutionStep[
 export async function getErrorBreakdown(sinceDays = 7): Promise<Array<{
   useCaseCode: string | null; treatment: Treatment | null;
   errorCode: string | null; model: string | null; count: number; lastSeen: Date;
+  /** Lot 33D : sous-type précis (`SCHEMA_VALIDATION_FAILED`…) ou famille, s'il est connu. */
+  failureSubtype?: string | null;
 }>> {
   const rows = await pgClient.unsafe(
     `SELECT use_case_code, error_code, model,
+            COALESCE(metadata->'failure'->>'subtype', metadata->'failure'->>'family') AS failure_subtype,
             COUNT(*)::int AS count, MAX(created_at) AS last_seen
        FROM ai_usage_event
       WHERE status = 'error' AND created_at >= NOW() - ($1 || ' days')::interval
-      GROUP BY use_case_code, error_code, model
+      GROUP BY use_case_code, error_code, model, failure_subtype
       ORDER BY count DESC
       LIMIT 50`,
     [String(sinceDays)] as never[],
@@ -667,6 +702,7 @@ export async function getErrorBreakdown(sinceDays = 7): Promise<Array<{
       useCaseCode,
       treatment: treatmentOf(useCaseCode),
       errorCode: r.error_code == null ? null : String(r.error_code),
+      failureSubtype: r.failure_subtype == null ? null : String(r.failure_subtype),
       model: r.model == null ? null : String(r.model),
       count: Number(r.count),
       lastSeen: new Date(String(r.last_seen)),

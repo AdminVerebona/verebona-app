@@ -143,9 +143,14 @@ export function isPermanentJobError(e: unknown): e is PermanentJobError {
  *  · NO_CHANGE   — aucune modification nécessaire ;
  *  · ABSTAIN     — éléments insuffisants pour décider (arbitrage, conflit) ;
  *  · SUPERSEDED  — une modification plus récente a rendu le travail obsolète ;
- *  · TARGET_GONE — la cible a disparu depuis la mise en file.
+ *  · TARGET_GONE — la cible a disparu depuis la mise en file ;
+ *  · FAILED      — lot 33D : le travail est techniquement TERMINÉ (aucune
+ *                  nouvelle tentative) mais la tâche métier a ÉCHOUÉ (T1 :
+ *                  sortie du modèle inexploitable après reprise). Un DONE ne
+ *                  doit jamais pouvoir être lu comme une analyse réussie ; la
+ *                  cause est dans `detail` (famille, sous-type, étape).
  */
-export const BUSINESS_RESULTS = ['APPLIED', 'NO_CHANGE', 'ABSTAIN', 'SUPERSEDED', 'TARGET_GONE'] as const;
+export const BUSINESS_RESULTS = ['APPLIED', 'NO_CHANGE', 'ABSTAIN', 'SUPERSEDED', 'TARGET_GONE', 'FAILED'] as const;
 export type BusinessResultCode = (typeof BUSINESS_RESULTS)[number];
 
 /** Résultat métier rendu par un exécutant, écrit sur le job à la clôture. */

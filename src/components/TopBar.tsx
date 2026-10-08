@@ -26,6 +26,7 @@ import { NotificationBell } from './NotificationBell'
 import { AnalysisBanner } from './AnalysisBanner'
 import { ConfirmLogoutDialog } from './ConfirmLogoutDialog'
 import { getPlanLabel } from '@/lib/plan-label'
+import { formatUserDisplayName, formatUserInitials } from '@/lib/user-display-name'
 import { VerebonaHeaderField } from './verebona/space/VerebonaField'
 
 interface TopBarUser {
@@ -57,8 +58,9 @@ interface TopBarProps {
 export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHelp, showBrand = false }: TopBarProps) {
   const [logoutConfirm, setLogoutConfirm] = useState(false)
 
-  const displayName = user.username || `${user.firstName} ${user.lastName.charAt(0)}.`
-  const initials = `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`.toUpperCase()
+  // Même source et même format que le panneau du compte mobile (L33-2).
+  const displayName = formatUserDisplayName(user)
+  const initials = formatUserInitials(user)
   const plan = (user.subscription.plan || 'STANDARD').toUpperCase()
 
   return (

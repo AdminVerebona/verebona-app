@@ -52,7 +52,7 @@ qu'il est ignoré.
 | E2E-19 | corpus-e2e-cycle.e2e.ts | E2E-19 — suppression d'un document | cible, T1 master | preuves retirées, champs automatiques retirés, USER intact, agenda automatique retiré |
 | E2E-20 | corpus-e2e-cycle.e2e.ts | E2E-20 — source non autoritaire | cible, T1 master | devis : aucun élément d'agenda, une carte AGENDA-PROPOSAL ouverte |
 | E2E-T2-01 | corpus-e2e-t2.e2e.ts | E2E-T2-01 — état canonique avant un ancien document | cible, T1+T2 master | fiche et T2 : valeur récente, jamais celle de l'ancien document |
-| E2E-T2-02 | corpus-e2e-t2.e2e.ts | E2E-T2-02 — valeur USER prioritaire | cible, T1+T2 master | T2 : valeur USER « saisie par vous », aucune revalidation |
+| E2E-T2-02 | corpus-e2e-t2.e2e.ts | E2E-T2-02 — valeur USER prioritaire | cible, T1+T2 master | T2 : valeur USER (origine USER tracée dans la source, plus citée dans le texte — lot 33), aucune revalidation |
 | E2E-T2-03 | corpus-e2e-t2.e2e.ts | E2E-T2-03 — « À traiter » | cible, T1+T2 master | sources T2 = actions de `getToProcessPage` (résolues exclues) |
 | E2E-T2-04 | corpus-e2e-t2.e2e.ts | E2E-T2-04 — informations manquantes | cible, T1+T2 master | = `listMissingInformation` ; une saisie sort de la liste |
 | E2E-T2-05 | corpus-e2e-t2.e2e.ts | E2E-T2-05 — fournisseurs | cible, T1+T2 master | sources `supplier` seules, dédoublonnées, compte seul |

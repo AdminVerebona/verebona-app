@@ -61,8 +61,8 @@ describe('validation discriminée par task — CDC 15 §22.2', () => {
     expect(err).toMatchObject({ code: 'INVALID_OUTPUT', recoverable: true, expectedTask: 'A', receivedTask: 'B' });
   });
 
-  it('refuse une sortie sans task ou qui n’est pas un objet', () => {
-    expect(() => validateOutput('{"a":1}', Union, 'op', 'json', { expectedTask: 'A' })).toThrow(AiOutputTaskMismatchError);
+  it('sortie sans task : branche rétablie par le serveur (lot 33D) ; sortie qui n’est pas un objet : refusée', () => {
+    expect(validateOutput('{"a":1}', Union, 'op', 'json', { expectedTask: 'A' })).toEqual({ task: 'A', a: 1 });
     expect(() => validateOutput('[{"task":"A"}]', z.unknown(), 'op', 'json', { expectedTask: 'A' })).toThrow(AiOutputTaskMismatchError);
   });
 

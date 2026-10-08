@@ -29,6 +29,7 @@ import { parseEnvironment } from '@/services/ai/config/environment';
 import type { RetrievedSource } from '../types/sources';
 import type { PageContext } from '../types/contracts';
 import { getAssistantConfig } from '../config/assistant-config';
+import { mergeHelpSources, type HelpSearchResult, type HelpStage, type StagedHelpSource } from './help-cascade';
 
 export interface HelpCorpusSection { anchor: string; heading: string; text: string }
 export interface HelpCorpusArticle {
@@ -487,7 +488,11 @@ export function setHelpCorpusForTests(corpus: HelpCorpus | null): void {
 
 const STOP = new Set(('a au aux avec ce ces comment dans de des du elle en est et il je la le les leur lui ma mais me mes mon ne '
   + 'nos notre nous on ou par pas plus pour qu que quel quelle qui sa se ses son sur ta te tes ton tu un une vos votre vous '
-  + 'y d l j m n s t c faire fait peut peux puis dois doit ca pourquoi quand verebona').split(' '));
+  + 'y d l j m n s t c faire fait peut peux puis dois doit ca pourquoi quand verebona '
+  // Lot 33 : mots de tournure sans valeur de recherche (« encore »,
+  // « je veux », « j'aimerais »…) — ils faisaient chuter la couverture.
+  + 'encore deja toujours aussi alors donc bien tres trop ici quoi tout tous toute toutes cela ceci cette cet '
+  + 'veux voudrais souhaite souhaiterais aimerais aimerai suis sont etre avoir ai as fais').split(' '));
 
 function norm(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’'`]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
@@ -516,16 +521,42 @@ export interface HelpHit {
  * peux pas répondre de façon fiable » qu'une procédure hors sujet.
  */
 export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4, ctx?: HelpSearchContext): HelpHit[] {
+  return searchHelpCorpusDetailed(corpus, question, limit, ctx).hits;
+}
+
+/**
+ * Diagnostic d'une recherche (lot 33, observabilité) : distinguer « aucun
+ * candidat » de « candidats écartés » (couverture insuffisante, plateforme).
+ */
+export interface HelpSearchDiagnostics {
+  /** Sections retenues comme candidates (couverture ≥ 50 %), avant la limite. */
+  candidateCount: number;
+  rejected: { lowCoverage: number; contextExcluded: number };
+}
+
+/**
+ * Index d'en-tête d'un article : titre, mots-clés (`synonyms`), résumé,
+ * catégorie, et libellés d'écran de l'application (`screens` : « Mes
+ * documents », « Ajout rapide »…) — lot 33.
+ */
+function enTete(a: HelpCorpusArticle): string {
+  return `${a.title} ${a.synonyms.join(' ')} ${a.summary} ${a.categoryName ?? ''} ${(a.screens ?? []).join(' ')}`;
+}
+
+/** `searchHelpCorpus` avec son diagnostic (candidats, sections écartées). */
+export function searchHelpCorpusDetailed(
+  corpus: HelpCorpus, question: string, limit = 4, ctx?: HelpSearchContext,
+): { hits: HelpHit[]; diagnostics: HelpSearchDiagnostics } {
+  const diagnostics: HelpSearchDiagnostics = { candidateCount: 0, rejected: { lowCoverage: 0, contextExcluded: 0 } };
   const q = [...new Set(terms(question))];
-  if (q.length === 0) return [];
+  if (q.length === 0) return { hits: [], diagnostics };
   const hits: HelpHit[] = [];
   for (const a of corpus.articles) {
     // §10.4 : double garde — un corpus construit sans `parseHelpCorpus`
     // (tests, cache) ne fait pas remonter un article archivé.
     if (!citable(corpus, a)) continue;
     const poids = contextWeight(a, ctx);
-    if (poids === 0) continue;
-    const head = new Set(terms(`${a.title} ${a.synonyms.join(' ')} ${a.summary}`));
+    const head = new Set(terms(enTete(a)));
     for (const s of a.sections) {
       const body = new Set(terms(`${s.heading} ${s.text}`));
       let score = 0;
@@ -536,20 +567,62 @@ export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4
         if (inHead || inBody) found += 1;
         score += (inHead ? 2 : 0) + (inBody ? 1 : 0);
       }
+      if (found === 0) continue;
       const coverage = found / q.length;
-      if (coverage < 0.5) continue;
+      if (coverage < 0.5) { diagnostics.rejected.lowCoverage += 1; continue; }
+      if (poids === 0) { diagnostics.rejected.contextExcluded += 1; continue; }
+      diagnostics.candidateCount += 1;
       hits.push({ article: a, section: s, score: (score / (3 * q.length)) * coverage * poids });
     }
   }
   hits.sort((x, y) => y.score - x.score);
   // Deux sections au plus par article : citer l'article, pas le recopier.
   const perArticle = new Map<string, number>();
-  return hits.filter((h) => {
-    const n = perArticle.get(h.article.id) ?? 0;
-    perArticle.set(h.article.id, n + 1);
-    return n < 2;
-  }).slice(0, limit);
+  return {
+    hits: hits.filter((h) => {
+      const n = perArticle.get(h.article.id) ?? 0;
+      perArticle.set(h.article.id, n + 1);
+      return n < 2;
+    }).slice(0, limit),
+    diagnostics,
+  };
 }
+
+/**
+ * Recherche MULTI-REQUÊTES (lot 33, cascade du Centre d'aide) : chaque
+ * requête est cherchée, les sections fusionnées au meilleur score, avec
+ * l'étape et la requête qui les ont retrouvées.
+ */
+export function searchHelpQueries(
+  corpus: HelpCorpus,
+  queries: string[],
+  stage: HelpStage,
+  opts: { limit?: number; ctx?: HelpSearchContext; planType?: string } = {},
+): HelpSearchResult {
+  const limit = opts.limit ?? 4;
+  const lots: StagedHelpSource[][] = [];
+  const rejected = { lowCoverage: 0, contextExcluded: 0 };
+  let candidateCount = 0;
+  for (const query of queries) {
+    const { hits, diagnostics } = searchHelpCorpusDetailed(corpus, query, limit, opts.ctx);
+    candidateCount += diagnostics.candidateCount;
+    rejected.lowCoverage += diagnostics.rejected.lowCoverage;
+    rejected.contextExcluded += diagnostics.rejected.contextExcluded;
+    lots.push(toHelpSources(hits, opts.planType, corpus.version ?? null).map((s) => ({ ...s, stage, query, queryHits: 1 })));
+  }
+  return {
+    corpusAvailable: true,
+    corpusVersion: corpus.version ?? null,
+    sources: mergeHelpSources(...lots),
+    candidateCount,
+    rejected,
+  };
+}
+
+/** Recherche sur un corpus absent : 0 résultat TECHNIQUE (trace distincte). */
+export const HELP_CORPUS_UNAVAILABLE_RESULT: HelpSearchResult = {
+  corpusAvailable: false, corpusVersion: null, sources: [], candidateCount: 0, rejected: { lowCoverage: 0, contextExcluded: 0 },
+};
 
 /**
  * Contexte de l'interaction — CDC Centre d'aide §5, T2-05.
@@ -682,11 +755,11 @@ const titreArticle = (s: RetrievedSource) => String(s.title).split(' — ')[0];
 export function fallbackFromHelpSources(sources: RetrievedSource[]): string {
   const aide = sources.filter((s) => s.type === 'help_entry');
   if (aide.length === 0) {
-    // §10.6 et CDC 14 T2-03 (D-J4) : l'aveu, puis l'aide d'abord (bouton
-    // « Ouvrir l'aide », recherche du Centre d'aide), le support ensuite.
-    return 'Je ne peux pas répondre de façon fiable à cette question à partir du Centre d’aide : '
-      + 'je n’ai pas trouvé d’explication correspondant exactement à votre demande. '
-      + 'Vous pouvez consulter l’aide Verebona, ou contacter le support.';
+    // Lot 33 : l'aveu dit ce qui s'est réellement passé — aucune
+    // correspondance « exacte » n'est exigée ; le Centre d'aide n'a rien
+    // fourni d'assez fiable. Boutons : « Ouvrir l'aide », puis le support
+    // (décision PO D-J4).
+    return HELP_FALLBACK_MESSAGE;
   }
   const meilleure = aide[0];
   const extrait = helpExcerpt(String(meilleure.content).split('\n[Offre]')[0]);
@@ -694,6 +767,58 @@ export function fallbackFromHelpSources(sources: RetrievedSource[]): string {
   const suite = autres.length ? ` Voir aussi ${autres.map((t) => `« ${t} »`).join(' et ')}.` : '';
   const offre = meilleure.meta?.notIncludedInPlan ? ` Cette fonction n’est pas incluse dans votre offre actuelle (${meilleure.meta.offersLabel}).` : '';
   return `D’après l’article « ${titreArticle(meilleure)} » : ${extrait}${offre} La procédure complète est dans l’article.${suite}`;
+}
+
+/** Repli d'aide sans source fiable — lot 33 (ticket T2 PRODUCT_HELP_HOW_TO §11). */
+export const HELP_FALLBACK_MESSAGE = 'Je n’ai pas trouvé dans le Centre d’aide d’information suffisamment fiable pour répondre à cette question. '
+  // D-J4 : l'aide d'abord, le support ensuite (boutons dans le même ordre).
+  + 'Vous pouvez consulter l’aide Verebona, ou contacter le support.';
+
+/** Étapes numérotées d'une section « Procédure » (« 1. … »), au plus `max`. */
+export function procedureSteps(text: string, max = 8): string[] {
+  return String(text ?? '').split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^\d+[.)]\s+\S/.test(l))
+    .slice(0, max);
+}
+
+/** Première phrase d'un texte (≤ `max` caractères), sans encadré « À savoir — ». */
+function premierePhrase(text: string, max = 220): string {
+  const ligne = String(text ?? '').split('\n').map((l) => l.trim()).find((l) => l && !/^[^\n—–]{1,60}\s[—–]\s/.test(l)) ?? '';
+  const fin = ligne.search(/[.!?](\s|$)/);
+  const phrase = fin >= 0 ? ligne.slice(0, fin + 1) : ligne;
+  return phrase.length <= max ? phrase : helpExcerpt(phrase, max);
+}
+
+/**
+ * Réponse DIRECTEMENT UTILE tirée de l'article (lot 33, §10 du ticket) : pour
+ * une question « comment… », la procédure elle-même — étapes recopiées du
+ * Centre d'aide, précédées de la première phrase de présentation. Sans
+ * procédure dans l'article : l'extrait de la meilleure section. Le texte
+ * vient toujours du contenu réel de l'article.
+ */
+export function helpAnswerFromSources(
+  sources: RetrievedSource[],
+  intent: string,
+  article?: HelpCorpusArticle | null,
+): string {
+  const aide = sources.filter((s) => s.type === 'help_entry');
+  if (aide.length === 0) return HELP_FALLBACK_MESSAGE;
+  const meilleure = aide[0];
+  const articleId = String(meilleure.meta?.articleId ?? '');
+  const sections = article && article.id === articleId
+    ? article.sections
+    : aide.filter((s) => String(s.meta?.articleId ?? '') === articleId)
+      .map((s) => ({ anchor: String(s.id).split('__')[1] ?? '', heading: '', text: String(s.content).split('\n[Offre]')[0] }));
+  const procedure = sections.find((s) => s.anchor === 'procedure');
+  const etapes = intent === 'PRODUCT_HELP_HOW_TO' && procedure ? procedureSteps(procedure.text) : [];
+  if (etapes.length === 0) return fallbackFromHelpSources(sources);
+  const presentation = sections.find((s) => s.anchor === 'presentation');
+  const intro = presentation ? premierePhrase(presentation.text) : '';
+  const autres = [...new Set(aide.slice(1).map(titreArticle))].filter((t) => t !== titreArticle(meilleure)).slice(0, 2);
+  const offre = meilleure.meta?.notIncludedInPlan ? `\nCette fonction n’est pas incluse dans votre offre actuelle (${meilleure.meta.offersLabel}).` : '';
+  const suite = autres.length ? `\nVoir aussi ${autres.map((t) => `« ${t} »`).join(' et ')}.` : '';
+  return `D’après l’article « ${titreArticle(meilleure)} » du Centre d’aide :${intro ? ` ${intro}` : ''}\n${etapes.join('\n')}${offre}${suite}`;
 }
 
 // ── Contradiction entre articles — T2-04 ────────────────────────────────────

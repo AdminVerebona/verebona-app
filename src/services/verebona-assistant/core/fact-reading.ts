@@ -136,9 +136,10 @@ export async function readFactsOnTarget(
         return { fact: { ...base, status: 'MISSING_CANONICAL_VALUE', sourceIds: [src.id] }, sources: [src] };
       }
       const nomE = r.v.entityName ?? nom;
-      const origine = r.v.originLabel ? ` Valeur ${r.v.originLabel}${r.v.evidence?.documentTitle && r.v.origin !== 'USER' ? ` (« ${r.v.evidence.documentTitle} »)` : ''}.` : '';
+      // Lot 33 : aucune mention de la source ni de son origine dans le texte
+      // (traçabilité interne : `sourceIds`, claims, BO).
       return {
-        fact: { ...base, status: 'VALUE_FOUND', display: r.v.display, from: 'canonical', text: `${def.label} de ${nomE} : ${r.v.display}.${origine}`, sourceIds: [src.id] },
+        fact: { ...base, status: 'VALUE_FOUND', display: r.v.display, from: 'canonical', text: `${def.label} de ${nomE} : ${r.v.display}.`, sourceIds: [src.id] },
         sources: [src],
       };
     }
@@ -186,7 +187,9 @@ export async function readFactsOnTarget(
         return {
           fact: {
             ...base, status: 'VALUE_FOUND', display: d.v.display, from: 'document',
-            text: `${def.label} de ${reading.assetName ?? nom} : ${d.v.display} (lu dans « ${d.v.documentTitle ?? 'un document'} », pas encore enregistré sur la fiche).`,
+            // Lot 33 : plus de titre de document dans le texte ; la valeur
+            // reste signalée comme non enregistrée sur la fiche (statut, pas source).
+            text: `${def.label} de ${reading.assetName ?? nom} : ${d.v.display} (pas encore enregistré sur la fiche).`,
             sourceIds: [ds.id],
           },
           sources: [ds],

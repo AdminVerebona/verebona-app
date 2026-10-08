@@ -57,7 +57,9 @@ describe('réparation (§18.6) et escalade (§15.4)', () => {
     let n = 0;
     fakeProvider.onAny(() => {
       n += 1;
-      return n === 1 ? { rawText: JSON.stringify({ ...ENV, claims: [{ text: 42 }] }), inputTokens: 5, outputTokens: 5 } : ok();
+      // Lot 33D : un nombre serait converti en texte (normalisation déterministe) ;
+      // un objet ne l'est jamais — la réparation §18.6 reste exercée.
+      return n === 1 ? { rawText: JSON.stringify({ ...ENV, claims: [{ text: { valeur: 42 } }] }), inputTokens: 5, outputTokens: 5 } : ok();
     });
     const inp = input();
     const r = await generateAssistantAnswerDetailed(ROUTE(), SOURCES, inp);

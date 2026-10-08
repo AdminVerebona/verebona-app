@@ -34,7 +34,7 @@ import {
   GoogleGenAI, FinishReason,
   type GenerateContentConfig, type GenerateContentResponse, type Part,
 } from '@google/genai';
-import type { AiProvider, AttachmentSession, ProviderCallInput, ProviderCallOutput } from './provider.port';
+import type { AiProvider, AttachmentSession, ProviderCallInput, ProviderCallOutput, ProviderResponseMeta } from './provider.port';
 import type { AiAttachment } from '../types';
 import { AiGatewayError } from '../errors';
 import { prepareAttachmentParts, cleanupTemporaryFiles } from './gemini-files';
@@ -113,9 +113,12 @@ export class GeminiProvider implements AiProvider {
     const session = input.attachmentSession instanceof GeminiAttachmentSession
       ? input.attachmentSession
       : null;
-    const { parts, temporaryFileUris } = session
-      ? { parts: await session.parts(apiKey), temporaryFileUris: [] as string[] }
-      : await prepareAttachmentParts(input.attachments, apiKey);
+    // Lot 33D : un échec de préparation des pièces jointes est une erreur de
+    // CONSTRUCTION de la requête (étape `request_build`), pas du fournisseur.
+    const { parts, temporaryFileUris } = await (session
+      ? session.parts(apiKey).then((p) => ({ parts: p, temporaryFileUris: [] as string[] }))
+      : prepareAttachmentParts(input.attachments, apiKey)
+    ).catch((e: unknown) => { throw markStage(e, 'request_build'); });
 
     const controller = new AbortController();
     try {
@@ -130,16 +133,58 @@ export class GeminiProvider implements AiProvider {
       );
 
       const usage = response.usageMetadata;
+      const meta = responseMeta(response);
+      let rawText: string;
+      try {
+        rawText = responseText(response);
+      } catch (e) {
+        // Blocage (sécurité, récitation, langue) : jetons et métadonnées
+        // conservés pour le rapport d'échec (lot 33D, §8).
+        throw Object.assign(e as Error, {
+          blocked: true, providerMeta: meta, aiStage: response.candidates?.[0] ? 'provider_generation' : 'provider_request',
+          inputTokens: usage?.promptTokenCount ?? 0, outputTokens: usage?.candidatesTokenCount ?? 0,
+        });
+      }
       return {
-        rawText: responseText(response),
+        rawText,
         inputTokens: usage?.promptTokenCount ?? 0,
         outputTokens: usage?.candidatesTokenCount ?? 0,
+        meta,
       };
     } finally {
       // Nettoyage systématique, y compris en cas d'échec (CDC §5.2).
       await cleanupTemporaryFiles(temporaryFileUris, apiKey);
     }
   }
+}
+
+/** Étape d'échec posée sur une erreur (lue par `diagnostics/classify`). */
+function markStage(e: unknown, stage: string): unknown {
+  if (e && typeof e === 'object') {
+    try { Object.assign(e, { aiStage: stage }); } catch { /* erreur gelée : sans étape */ }
+  }
+  return e;
+}
+
+/**
+ * Métadonnées natives d'une réponse (lot 33D, §7, §8) : identifiant de
+ * réponse, version servie, fin de génération, raison de sécurité, jetons de
+ * raisonnement. Pure, testée sans réseau.
+ */
+export function responseMeta(response: Pick<GenerateContentResponse, 'candidates' | 'promptFeedback' | 'usageMetadata'> & { responseId?: string; modelVersion?: string }): ProviderResponseMeta {
+  const c = response.candidates?.[0];
+  const ratings = (c?.safetyRatings ?? []).filter((r) => r.blocked);
+  return {
+    providerRequestId: response.responseId ?? null,
+    modelVersion: response.modelVersion ?? null,
+    finishReason: c?.finishReason ?? null,
+    finishMessage: c?.finishMessage ?? null,
+    safetyReason: response.promptFeedback?.blockReason
+      ?? (ratings.length ? ratings.map((r) => r.category).join(',') : null)
+      ?? null,
+    thoughtsTokens: response.usageMetadata?.thoughtsTokenCount ?? null,
+    totalTokens: response.usageMetadata?.totalTokenCount ?? null,
+  };
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number, model: string, onTimeout?: () => void): Promise<T> {

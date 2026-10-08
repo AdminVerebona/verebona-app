@@ -1,47 +1,30 @@
 /**
- * Validation structurée des sorties — CDC §5.3.
+ * Validation structurée des sorties — CDC §5.3, lot 33D.
  *
- * Règles : rejet des champs inconnus à risque, validation des enums, dates et
- * montants, vérification des identifiants, normalisation avant persistance,
- * AUCUNE persistance d'une sortie brute invalide.
+ * Règles : validation des enums, dates et montants, vérification des
+ * identifiants, normalisation avant persistance, AUCUNE persistance d'une
+ * sortie invalide.
+ *
+ * Lot 33D : la validation passe par la résolution progressive
+ * (`output-resolution/resolve-output`) — parsing strict, extraction et
+ * réparation JSON déterministes, adaptateurs de compatibilité versionnés,
+ * normalisation pilotée par le schéma, validation champ par champ. Une
+ * sortie invalide lève `AiOutputInvalidError` (code `INVALID_OUTPUT`,
+ * récupérable) avec son diagnostic : sous-type, étape, erreurs par chemin.
  */
 import type { ZodType } from 'zod';
-import { AiGatewayError, AiOutputTaskMismatchError } from './errors';
-import { previewForLog } from './redaction';
+import { AiOutputInvalidError, AiOutputTaskMismatchError, type OutputFailureDetail } from './errors';
+import { parseModelOutput } from './output-resolution/json-repair';
+import { resolveOutput, type Resolution, type ResolveInput } from './output-resolution/resolve-output';
 
 /**
  * Extrait le premier objet ou tableau JSON d'une réponse modèle, y compris
  * lorsqu'il est encadré de balises de code ou précédé d'un préambule.
  */
 export function extractJson(raw: string): unknown {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]+?)```/);
-  const candidate = (fenced ? fenced[1] : raw).trim();
-
-  try {
-    return JSON.parse(candidate);
-  } catch {
-    // Repli : première structure équilibrée rencontrée.
-    const start = candidate.search(/[[{]/);
-    if (start === -1) throw new SyntaxError('Aucune structure JSON détectée');
-    const opening = candidate[start];
-    const closing = opening === '{' ? '}' : ']';
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < candidate.length; i++) {
-      const c = candidate[i];
-      if (escaped) { escaped = false; continue; }
-      if (c === '\\') { escaped = true; continue; }
-      if (c === '"') { inString = !inString; continue; }
-      if (inString) continue;
-      if (c === opening) depth++;
-      else if (c === closing) {
-        depth--;
-        if (depth === 0) return JSON.parse(candidate.slice(start, i + 1));
-      }
-    }
-    throw new SyntaxError('Structure JSON incomplète');
-  }
+  const p = parseModelOutput(raw);
+  if (!p.ok) throw new SyntaxError(p.empty ? 'Aucune structure JSON détectée' : p.error);
+  return p.value;
 }
 
 /**
@@ -59,9 +42,9 @@ export type OutputFormat = 'json' | 'text';
  * Options de validation.
  *
  * `expectedTask` — sortie d'un prompt maître (CDC 15 §22.2) : l'objet doit
- * porter `task === expectedTask`. Contrôlé AVANT le schéma, même si celui-ci
- * est l'union discriminée complète (`T1MasterOutput`) qui accepterait l'autre
- * branche : le modèle ne choisit pas sa branche.
+ * porter `task === expectedTask`. La branche est imposée par le serveur :
+ * une sortie d'une AUTRE branche est refusée (`AiOutputTaskMismatchError`) ;
+ * un discriminant ABSENT est rétabli (lot 33D, règle `discriminant_imposed`).
  */
 export interface ValidateOutputOptions {
   expectedTask?: string;
@@ -72,6 +55,29 @@ export interface ValidateOutputOptions {
    * ce rôle ; la branche reste imposée en entrée par `{{MODE}}`).
    */
   taskField?: 'task' | 'mode' | 'none';
+  /** Nom du contrat (adaptateurs de compatibilité versionnés). */
+  schemaName?: string | null;
+  /** Retrait des champs facultatifs invalides (défaut : oui). */
+  allowPruning?: boolean;
+  jsonRequested?: boolean;
+  provider?: ResolveInput['provider'];
+}
+
+/** Diagnostic d'une résolution en échec. */
+export function failureDetailOf(r: Extract<Resolution, { ok: false }>): OutputFailureDetail {
+  return {
+    subtype: r.subtype, stage: r.stage, issues: r.issues, issueCount: r.issueCount, controls: r.controls,
+    repairs: r.repairs, extracted: r.extracted, parsed: r.parsed, originalMessage: r.issues[0]?.message ?? r.message,
+  };
+}
+
+/** Erreur typée d'une résolution en échec. */
+export function errorOf(r: Extract<Resolution, { ok: false }>, operationCode: string): AiOutputInvalidError | AiOutputTaskMismatchError {
+  const detail = failureDetailOf(r);
+  if (r.taskMismatch) {
+    return new AiOutputTaskMismatchError(operationCode, r.taskMismatch.expected, r.taskMismatch.received, r.taskMismatch.discriminant, detail);
+  }
+  return new AiOutputInvalidError(operationCode, r.message, detail);
 }
 
 export function validateOutput<T>(
@@ -81,32 +87,15 @@ export function validateOutput<T>(
   format: OutputFormat = 'json',
   options: ValidateOutputOptions = {},
 ): T {
-  let parsed: unknown;
-  try {
-    parsed = format === 'text' ? raw : extractJson(raw);
-  } catch (e) {
-    throw new AiGatewayError('INVALID_OUTPUT', operationCode,
-      `Sortie non parsable : ${(e as Error).message}. Extrait : ${previewForLog(raw, 200)}`,
-      { recoverable: true, cause: e });
-  }
-
-  if (options.expectedTask !== undefined && options.taskField !== 'none') {
-    const task = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)[options.taskField ?? 'task']
-      : undefined;
-    if (task !== options.expectedTask) {
-      throw new AiOutputTaskMismatchError(operationCode, options.expectedTask, task, options.taskField === 'mode' ? 'MODE' : 'TASK');
-    }
-  }
-
-  const result = schema.safeParse(parsed);
-  if (!result.success) {
-    const issues = result.error.issues
-      .slice(0, 5)
-      .map((i) => `${i.path.join('.') || '(racine)'} : ${i.message}`)
-      .join(' | ');
-    throw new AiGatewayError('INVALID_OUTPUT', operationCode,
-      `Sortie non conforme au schéma. ${issues}`, { recoverable: true });
-  }
-  return result.data;
+  const r = resolveOutput({
+    raw, schema, operationCode, format,
+    schemaName: options.schemaName ?? null,
+    expectedTask: options.taskField === 'none' ? undefined : options.expectedTask,
+    taskField: options.taskField,
+    jsonRequested: options.jsonRequested,
+    provider: options.provider,
+    allowPruning: options.allowPruning ?? true,
+  });
+  if (r.ok) return r.data as T;
+  throw errorOf(r, operationCode);
 }

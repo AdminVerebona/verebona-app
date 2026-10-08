@@ -122,7 +122,7 @@ describe('retrieval : pour une question d’usage, le Centre d’aide seul (§5,
       { accountId: 1, userId: 1, message: 'à quoi sert le Duo ?', planType: 'PREMIUM' } as never,
     );
     expect(sources).toEqual([]);
-    expect(fallbackFromHelpSources(sources)).toMatch(/ne peux pas répondre de façon fiable.*contacter le support/);
+    expect(fallbackFromHelpSources(sources)).toMatch(/pas trouvé dans le Centre d’aide d’information suffisamment fiable.*contacter le support/);
   });
 });
 

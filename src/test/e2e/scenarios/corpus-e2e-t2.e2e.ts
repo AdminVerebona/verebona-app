@@ -96,7 +96,10 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
 
     const r = await demander(c, 'Quel est le kilométrage de la Clio ?');
     expect(r.answer).toMatch(/47\s?000 km/);
-    expect(r.answer).toMatch(/saisie par vous/);
+    // Lot 33 : l'origine n'est plus citée dans le texte ; elle reste tracée
+    // dans la fiche (`mileage__origin`, ci-dessus) et la source du champ.
+    expect(r.answer).not.toMatch(/saisie par vous/);
+    expect(r.sources.map((s) => s.id)).toContain(`asset_field:${clio.id}:mileage`);
     expect(r.answer).not.toMatch(/45\s?000|obsol/i);
     const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM verebona_fact_revalidations WHERE account_id = ${c.id}`;
     expect(n).toBe(0);
@@ -464,7 +467,7 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
 
     const r = await demander(c, q);
     expect(r.answer).toMatch(/12\s?500\s?€/);
-    expect(r.answer).toMatch(/saisie par vous/);
+    expect(r.answer).not.toMatch(/saisie par vous/);
     expect(r.answer).not.toMatch(/12\s?000|arbitrer|deux valeurs/i);
     expect(ids(r)).toEqual([`asset_field:${clio.id}:acquisitionPrice`]);
   });

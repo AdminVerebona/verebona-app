@@ -438,6 +438,13 @@ export const assetFiles = pgTable('asset_files', {
   isIgnored: boolean('is_ignored').notNull().default(false),
   // V3.3 IA fields
   retainedTitle: text('retained_title'),
+  /**
+   * Lot 33C (migration 0282) : SYSTEM | USER. Un titre USER n'est jamais
+   * réécrit automatiquement (T1, T3) — voir `DocumentTitleService`.
+   */
+  titleSource: text('title_source').notNull().default('SYSTEM'),
+  /** Dernier contrôle « données insuffisantes » / écriture système du titre (pas un `updated_at`). */
+  titleCheckedAt: tstzOptional('title_checked_at'),
   retainedFunctionCode: text('retained_function_code'),
   cilRubricCodes: json('cil_rubric_codes').$type<string[]>(),
   extractedText: text('extracted_text'),

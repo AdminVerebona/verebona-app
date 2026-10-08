@@ -18,8 +18,10 @@ describe('taskField none', () => {
       .toThrow(/schéma/);
   });
 
-  it('sans `none`, la même sortie serait refusée (discriminant absent)', () => {
-    expect(() => validateOutput(ok, T6FormulateOutput, 't6_formulate', 'json', { expectedTask: 'FORMULATE', taskField: 'mode' }))
+  it('sans `none`, une sortie d’une autre branche serait refusée (discriminant contrôlé)', () => {
+    // Lot 33D : un discriminant ABSENT est rétabli par le serveur ; une AUTRE branche reste refusée.
+    const autre = JSON.stringify({ ...JSON.parse(ok), mode: 'ANSWER' });
+    expect(() => validateOutput(autre, T6FormulateOutput, 't6_formulate', 'json', { expectedTask: 'FORMULATE', taskField: 'mode' }))
       .toThrow(/MODE=FORMULATE/);
   });
 

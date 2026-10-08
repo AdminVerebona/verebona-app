@@ -5,10 +5,14 @@
  * même garde administrateur et même source que le détail
  * (`getExecutionDetail`) — rien de plus n'est lu, la rédaction en place
  * s'applique. `?download=1` : proposé en fichier `.json`.
+ * Lot 33D : `?includeModelOutput=1` ajoute les sorties du modèle conservées
+ * (appels en échec ou corrigés) — même règle d'accès et même journal que la
+ * route `…/model-output`.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getExecutionDetail } from '@/services/ai/telemetry/execution-log.repository';
 import { buildExecutionExport, executionExportFileName } from '@/services/ai/telemetry/execution-export';
+import { readModelOutputsForAdmin } from '@/services/ai/telemetry/model-output-access';
 import { requireAdminContext, toErrorResponse } from '../../../config-versions/_shared';
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -20,7 +24,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const detail = await getExecutionDetail(Number(id));
     if (!detail) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
     const now = new Date();
-    const body = buildExecutionExport(detail, now);
+    let modelOutputs;
+    if (req.nextUrl.searchParams.get('includeModelOutput') === '1') {
+      const acces = await readModelOutputsForAdmin({ adminUserId: guard.ctx.adminUserId, callId: detail.call.id, purpose: 'export' });
+      if (!acces.ok) return NextResponse.json({ error: acces.code, message: acces.message }, { status: acces.code === 'FORBIDDEN' ? 403 : 404 });
+      modelOutputs = acces.outputs;
+    }
+    const body = buildExecutionExport(detail, now, modelOutputs ? { modelOutputs } : {});
     const headers: Record<string, string> = { 'cache-control': 'no-store' };
     if (req.nextUrl.searchParams.get('download') === '1') {
       headers['content-disposition'] = `attachment; filename="${executionExportFileName(detail.call.id, now)}"`;

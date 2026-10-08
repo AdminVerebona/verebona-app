@@ -26,6 +26,7 @@ import { enqueueT3ForAnalyzedAsset, registerT3SweepStarter, t3JobHandler } from 
 import {
   registerDocumentAssetT3, requestDocumentAssetResolution, startDocumentSweep, t1CandidatesOf,
 } from './document-asset/queue';
+import { registerDocumentTitleT3, startDocumentTitleSweep } from './document-title-sweep';
 
 export { resolveDocumentAsset } from './document-asset/resolve-document-asset.service';
 export { requestDocumentAssetResolution, T3_TARGET_DOCUMENT } from './document-asset/queue';
@@ -49,6 +50,11 @@ export function registerReconciliationHandlers(): void {
   // principal ouvert par la racine du balayage planifié (pages bornées).
   registerDocumentAssetT3();
   registerT3SweepStarter('document_asset', ({ cycleId, triggerCode, guard }) => startDocumentSweep({ cycleId, triggerCode, guard }));
+  // Lot 33C — rattrapage des titres non conformes (« <uuid>.pdf ») des
+  // documents analysés : contrôle indépendant des autres traitements, pages
+  // bornées ouvertes par la même racine planifiée, sans relancer T1.
+  registerDocumentTitleT3();
+  registerT3SweepStarter('document_title', ({ cycleId, triggerCode, guard }) => startDocumentTitleSweep({ cycleId, triggerCode, guard }));
 
   // Lot 16b-3 : plus de drapeau (`AI_RECONCILIATION_ENGINE` supprimé).
   onSourceAnalyzed('réconciliation', async (e) => {

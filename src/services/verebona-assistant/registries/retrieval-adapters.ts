@@ -41,6 +41,7 @@ import type { RetrievalAdapter, RetrievalQuery } from './retrieval-adapter-regis
 import type { RetrievedSource } from '../types/sources';
 import { normalizedSql, searchExprMode } from '../core/search-sql';
 import { assistantAssetStatusCondition } from '../core/asset-availability';
+import { evaluateCandidate, queryFromTerms, traceOf, type SearchCandidate, type SearchPolicy } from '@/lib/search/match-engine';
 
 /** Erreur levée si une ligne échappe au périmètre du compte. */
 export class AccountScopeViolation extends Error {
@@ -160,6 +161,61 @@ function extrait(parts: Array<string | null | undefined>): string {
 
 export { documentAnalysisStatus, ANALYSIS_STATUS_LABELS, type DocumentAnalysisStatus } from '../core/document-status';
 
+/* ── Éligibilité (lot 33, ticket « T2 Recherche : faux positifs ») ───────── */
+
+/**
+ * Politique de l'assistant : un mot de la question suffit (le classement et
+ * les seuils de suffisance départagent ensuite), mais ce mot doit être
+ * retrouvé sur un champ AUTORISÉ de l'élément — jamais sa seule catégorie,
+ * jamais le bien auquel il est relié, jamais à l'intérieur d'un autre mot.
+ */
+export const ASSISTANT_SEARCH_POLICY: SearchPolicy = { requireAllTokens: false, allowSemantic: false };
+
+export interface EligibiliteAssistant {
+  /** Champs d'observabilité posés sur la source (`meta`). */
+  meta: Record<string, string | number | null>;
+  rawScore: number;
+}
+
+/**
+ * Éligibilité d'un candidat SQL (pure hors journal) : `null` = rejeté. Le
+ * SQL n'a fait que GÉNÉRER le candidat ; la décision est prise ici, AVANT
+ * tout score. Sans terme (liste structurée : type, rattachement, bien ciblé),
+ * l'élément est éligible par son filtre structuré.
+ */
+export function eligibiliteAssistant(
+  q: Pick<RetrievalQuery, 'terms' | 'normalizedQuery'>,
+  adaptateur: string,
+  candidat: Omit<SearchCandidate, 'retrievalStrategy'>,
+): EligibiliteAssistant | null {
+  const strategie = `adapter.${adaptateur}`;
+  const termes = q.terms ?? [];
+  if (termes.length === 0) {
+    return { rawScore: 0, meta: { matchedField: null, matchedValue: null, matchType: null, eligibilityReason: 'STRUCTURED_FILTER', retrievalStrategy: strategie } };
+  }
+  const query = queryFromTerms(termes, q.normalizedQuery);
+  const e = evaluateCandidate(query, { ...candidat, retrievalStrategy: strategie }, ASSISTANT_SEARCH_POLICY);
+  if (!e.eligible) {
+    if (process.env.SEARCH_TRACE === '1') console.info('[verebona] recherche : rejet', JSON.stringify(traceOf(query, e)));
+    return null;
+  }
+  return {
+    rawScore: e.rawScore,
+    meta: { matchedField: e.matchedField, matchedValue: e.matchedValue, matchType: e.matchType, eligibilityReason: e.eligibilityReason, retrievalStrategy: strategie },
+  };
+}
+
+/** Score de classement d'un élément ÉLIGIBLE (jamais une condition d'éligibilité). */
+function classer(q: RetrievalQuery, texte: string, bonus: number, e: EligibiliteAssistant): number {
+  const s = scorer(q, texte, bonus);
+  if (s != null) return s;
+  // Éligible par une forme que le classement lexical ne voit pas (alias,
+  // début de mot court, identifiant en plusieurs morceaux) : score plancher,
+  // plafonné comme un résultat proche en passe tolérante.
+  const plancher = Math.round((0.4 + 0.3 * Math.min(1, e.rawScore) + bonus) * 1000) / 1000;
+  return Math.max(0, Math.min(q.tolerant ? 0.5 : 1, plancher));
+}
+
 /* ── Biens ─────────────────────────────────────────────────────────────── */
 
 export const assetsAdapter: RetrievalAdapter = {
@@ -191,14 +247,19 @@ export const assetsAdapter: RetrievalAdapter = {
     return lignes.flatMap((l) => {
       const designe = q.entityFilters.assetId === l.id ? 0.05 : 0;
       const exact = termes.length > 0 && normalizeWord(l.name ?? '') === termes.map((t) => t.raw).join(' ') ? 0.2 : 0;
-      const score = scorer(q, [l.name, l.city, l.category, l.subtype, l.registrationNumber].filter(Boolean).join(' '), designe + exact);
-      if (score == null) return [];
+      const e = eligibiliteAssistant(q, 'assets', {
+        entityType: 'asset', entityId: l.id, displayName: l.name,
+        fields: { name: l.name, city: l.city, registrationNumber: l.registrationNumber },
+        assetTaxonomy: { family: l.category, subtype: l.subtype },
+      });
+      if (!e) return [];
+      const score = classer(q, [l.name, l.city, l.category, l.subtype, l.registrationNumber].filter(Boolean).join(' '), designe + exact, e);
       return [{
         id: `asset_${l.id}`,
         type: 'asset_field' as const,
         title: l.name,
         content: extrait([l.category, l.subtype, l.city, l.status]),
-        meta: { assetId: l.id, subtitle: extrait([l.subtype ?? l.category, l.city]) || null },
+        meta: { assetId: l.id, subtitle: extrait([l.subtype ?? l.category, l.city]) || null, ...e.meta },
         relevanceScore: score,
       }];
     });
@@ -257,14 +318,17 @@ export const agendaAdapter: RetrievalAdapter = {
 
     return lignes.flatMap((l) => {
       const date = l.startDate ? String(l.startDate).slice(0, 10) : null;
-      const score = scorer(q, [l.title, l.description].filter(Boolean).join(' '), bonusPeriode(q, date));
-      if (score == null) return [];
+      const e = eligibiliteAssistant(q, 'agenda', {
+        entityType: 'agenda_item', entityId: l.id, displayName: l.title, fields: { title: l.title, description: l.description },
+      });
+      if (!e) return [];
+      const score = classer(q, [l.title, l.description].filter(Boolean).join(' '), bonusPeriode(q, date), e);
       return [{
         id: `agenda_${l.id}`,
         type: 'agenda_item' as const,
         title: l.title,
         content: extrait([date, l.manualStatus, l.description]),
-        meta: (assetCible !== null ? { agendaItemId: l.id, date, assetId: assetCible } : { agendaItemId: l.id, date }) as Record<string, string | number | null>,
+        meta: { ...(assetCible !== null ? { agendaItemId: l.id, date, assetId: assetCible } : { agendaItemId: l.id, date }), ...e.meta } as Record<string, string | number | null>,
         relevanceScore: score,
       }];
     });
@@ -305,14 +369,17 @@ export const equipmentsAdapter: RetrievalAdapter = {
     verifierPerimetre('equipments', lignes, q.accountId);
 
     return lignes.flatMap((l) => {
-      const score = scorer(q, [l.name, l.type].filter(Boolean).join(' '), -0.05);
-      if (score == null) return [];
+      const e = eligibiliteAssistant(q, 'equipments', {
+        entityType: 'equipment', entityId: l.id, displayName: l.name, fields: { name: l.name, type: l.type, assetName: l.assetName },
+      });
+      if (!e) return [];
+      const score = classer(q, [l.name, l.type].filter(Boolean).join(' '), -0.05, e);
       return [{
         id: `equipment_${l.id}`,
         type: 'asset_field' as const,
         title: l.name,
         content: extrait([l.type, l.assetName ? `dans ${l.assetName}` : null]),
-        meta: { equipmentId: l.id, assetId: l.assetId, assetName: l.assetName ?? null },
+        meta: { equipmentId: l.id, assetId: l.assetId, assetName: l.assetName ?? null, ...e.meta },
         relevanceScore: score,
       }];
     });
@@ -347,14 +414,17 @@ export const roomsAdapter: RetrievalAdapter = {
     verifierPerimetre('rooms', lignes, q.accountId);
 
     return lignes.flatMap((l) => {
-      const score = scorer(q, l.name ?? '', -0.1);
-      if (score == null) return [];
+      const e = eligibiliteAssistant(q, 'rooms', {
+        entityType: 'room', entityId: l.id, displayName: l.name ?? '', fields: { name: l.name, assetName: l.assetName },
+      });
+      if (!e) return [];
+      const score = classer(q, l.name ?? '', -0.1, e);
       return [{
         id: `room_${l.id}`,
         type: 'asset_field' as const,
         title: l.name,
         content: extrait([l.assetName ? `dans ${l.assetName}` : null]),
-        meta: { roomId: l.id, assetId: l.assetId, assetName: l.assetName ?? null },
+        meta: { roomId: l.id, assetId: l.assetId, assetName: l.assetName ?? null, ...e.meta },
         relevanceScore: score,
       }];
     });
@@ -415,15 +485,19 @@ export const toProcessAdapter: RetrievalAdapter = {
     verifierPerimetre('to_process', lignes, q.accountId);
 
     return lignes.flatMap((l) => {
-      const score = liste ? Math.max(0.7, scorer(q, l.question) ?? 0.7) : scorer(q, l.question);
-      if (score == null) return [];
+      // Liste « que dois-je traiter ? » : éligibles par le filtre structuré.
+      const e = liste ? null : eligibiliteAssistant(q, 'to_process', {
+        entityType: 'to_process', entityId: l.id, displayName: l.question, fields: { question: l.question },
+      });
+      if (!liste && !e) return [];
+      const score = liste ? Math.max(0.7, scorer(q, l.question) ?? 0.7) : classer(q, l.question, 0, e!);
       const date = l.dueDate ? new Date(l.dueDate as unknown as string).toISOString().slice(0, 10) : null;
       return [{
         id: `todo_${l.id}`,
         type: 'to_process_item' as const,
         title: l.question,
         content: extrait([PRIORITES[l.priority] ?? null, date ? `échéance ${date}` : null]),
-        meta: { toProcessId: l.id, date, subtitle: PRIORITES[l.priority] ?? null },
+        meta: { toProcessId: l.id, date, subtitle: PRIORITES[l.priority] ?? null, ...(e?.meta ?? { eligibilityReason: 'STRUCTURED_FILTER', retrievalStrategy: 'adapter.to_process' }) },
         relevanceScore: score,
       }];
     });
@@ -615,8 +689,15 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
     const bonus = (assetId !== null ? 0.05 : 0) + (cible === l.id ? 0.1 : 0)
       + (titresIndices.some((h) => plainT(`${titre} ${l.filename ?? ''}`).includes(h)) ? 0.05 : 0)
       + bonusRecence(l.documentDate) + bonusPeriode(q, l.documentDate);
-    const score = scorer(qq, [titre, l.filename, l.supplier, l.documentType, l.documentTypeCode, l.description, l.textHead].filter(Boolean).join(' '), bonus);
-    if (score == null) return [];
+    const e = eligibiliteAssistant(qq, 'documents', {
+      entityType: 'document', entityId: l.id, displayName: titre,
+      fields: {
+        title: l.title, originalFilename: l.filename, supplier: l.supplier, description: l.description,
+        documentType: [l.documentTypeCode, l.documentType], content: l.textHead, assetName: l.assetName,
+      },
+    });
+    if (!e) return [];
+    const score = classer(qq, [titre, l.filename, l.supplier, l.documentType, l.documentTypeCode, l.description, l.textHead].filter(Boolean).join(' '), bonus, e);
     const statut = documentAnalysisStatus(l.analysisState);
     return [{
       id: `doc_${l.id}`,
@@ -631,6 +712,7 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
         supplier: l.supplier ?? null,
         contentHash: l.contentHash ?? null, size: l.size ?? null,
         logicalFileId: l.groupedIntoFileId ?? l.id,
+        ...e.meta,
       },
       relevanceScore: score,
     }];
@@ -655,8 +737,11 @@ async function searchSuppliersCanonical(q: RetrievalQuery): Promise<RetrievedSou
   const qq: RetrievalQuery = { ...q, terms: termes };
   return liste.flatMap((e, i) => {
     const src = supplierSource(e, i);
-    const score = termes.length ? scorer(qq, `${e.name} ${e.city ?? ''}`) : 0.7;
-    if (score == null) return [];
-    return [{ ...src, relevanceScore: score }];
+    if (!termes.length) return [{ ...src, relevanceScore: 0.7 }];
+    // Fournisseur désigné par un indice seul (aucun terme) : liste structurée ;
+    // sinon un terme doit correspondre au NOM ou à la ville.
+    const el = eligibiliteAssistant(qq, 'suppliers', { entityType: 'supplier', entityId: src.id, displayName: e.name, fields: { name: e.name, city: e.city ?? null } });
+    if (!el) return [];
+    return [{ ...src, meta: { ...(src.meta ?? {}), ...el.meta }, relevanceScore: classer(qq, `${e.name} ${e.city ?? ''}`, 0, el) }];
   });
 }

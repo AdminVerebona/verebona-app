@@ -7,6 +7,7 @@ import { db } from '@/db';
 import { aiOperation, assetFiles, accounts } from '@/db/schema';
 import { eq, and, sql, gte, desc, or, ilike } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 export async function GET(request: NextRequest) {
   try {
@@ -116,7 +117,7 @@ export async function GET(request: NextRequest) {
         assetFileId:     r.assetFileId,
         accountId:       r.accountId,
         accountName:     r.accountName ?? `#${r.accountId}`,
-        documentTitle:   r.retainedTitle || r.originalFilename || `Fichier #${r.assetFileId}`,
+        documentTitle:   displayDocumentTitle(r, `Fichier #${r.assetFileId}`),
         businessResult:  r.businessResult,
         isReanalysis:    r.isReanalysis,
         usedFallback:    r.usedFallback,

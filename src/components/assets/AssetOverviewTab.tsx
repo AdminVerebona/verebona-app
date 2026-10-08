@@ -30,6 +30,7 @@ const DocumentDrawer = dynamic(
 
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 import { OCCUPANCY_USAGE_LABELS } from '@/lib/assets/occupancy';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 interface TimelineItem {
   itemType: 'event' | 'reminder' | 'agenda';
@@ -565,7 +566,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                       }}
                     >
                       <FileText className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                      <span className="flex-1 truncate">{doc.retainedTitle || doc.originalFilename}</span>
+                      <span className="flex-1 truncate">{displayDocumentTitle(doc, '')}</span>
                       {doc.documentType && (
                         <Badge variant="outline" className="text-xs">
                           {DOC_TYPE_LABELS[doc.documentType] ?? doc.documentType}

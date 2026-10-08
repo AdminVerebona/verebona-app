@@ -1,0 +1,128 @@
+{
+  "case": "T1-33D-01",
+  "description": "Lot 33D (audit incident 2644) : sortie du modèle avec null pour les champs absents (fournisseur, montant, visuel, motif), entityId omis et date objet {day, month, year} — acceptée par la résolution des sorties (null = absent, date → ISO), rien d'inventé.",
+  "context": {
+    "linkedAssetId": 184,
+    "assets": [
+      {
+        "id": 184,
+        "name": "Draisienne",
+        "category": "OBJECT",
+        "subtype": "jouet"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [
+      "Facture Vélo"
+    ],
+    "verified": {
+      "ASSET": [
+        184
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    },
+    "extractedContent": "TICKET DE CAISSE — JOUETS & CIE\n24/04/2026 15:42\nDRAISIENNE BOIS 12 POUCES   129,00 €\nTOTAL TTC   129,00 €\nPAIEMENT CB",
+    "displayNames": [
+      "ticket-draisienne.jpg"
+    ],
+    "mimeTypes": [
+      "image/jpeg"
+    ]
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Ticket Draisienne",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DRAISIENNE BOIS 12 POUCES",
+            "page": 1
+          }
+        },
+        "documentDate": {
+          "value": {
+            "day": 24,
+            "month": 4,
+            "year": 2026
+          },
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "24/04/2026 15:42",
+            "page": 1
+          }
+        },
+        "supplier": null,
+        "amountCents": null,
+        "classification": {
+          "canonicalType": "TICKET_CAISSE",
+          "rubricCode": "PROPERTY_MANAGEMENT",
+          "documentTypeCode": "ACQUISITION_INVOICE",
+          "confidence": 0.95,
+          "evidence": {
+            "excerpt": "TICKET DE CAISSE"
+          }
+        },
+        "description": null
+      },
+      "entities": {
+        "assets": [
+          {
+            "rawLabel": "Draisienne",
+            "score": 0.97,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "DRAISIENNE BOIS 12 POUCES"
+            ],
+            "reason": null
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "JOUETS EXEMPLE\nTICKET DE CAISSE\n24/04/2026 15:42\nDRAISIENNE BOIS 12 POUCES 129,00\nTOTAL TTC 129,00 €",
+      "tables": [],
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "désignation",
+          "label": "Article acheté",
+          "subject": "Draisienne",
+          "attribute": "désignation",
+          "rawValue": "DRAISIENNE BOIS 12 POUCES",
+          "normalizedValue": "Draisienne bois 12 pouces",
+          "valueType": "string",
+          "target": {
+            "type": "ASSET",
+            "entityId": 184,
+            "rawLabel": "Draisienne",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Draisienne"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "DRAISIENNE BOIS 12 POUCES",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "visual": null
+    }
+  }
+}

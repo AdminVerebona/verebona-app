@@ -276,10 +276,16 @@ describe('Corpus P-T1 — analyse, projection et contrat historique', () => {
   it('chaque fixture d’analyse respecte le schéma de sortie du contrat', async () => {
     const { T1AnalyzeDocumentOutput, T1GroupUploadOutput } = await import('../../master/t1-contract');
     const { listT1Fixtures } = await import('../../__fixtures__/t1/load');
+    const { validateOutput } = await import('../../../gateway/output-validator');
     for (const file of listT1Fixtures()) {
       const f = loadT1Fixture(file);
       const schema: z.ZodTypeAny = f.recording.task === 'GROUP_UPLOAD' ? T1GroupUploadOutput : T1AnalyzeDocumentOutput;
-      expect(schema.safeParse(f.recording.output).success, file).toBe(true);
+      // Lot 33D : les fixtures `t1-33d-*` simulent des sorties FAUTIVES (null,
+      // date objet, ancien format) que seule la résolution des sorties absorbe.
+      if (!file.startsWith('t1-33d-')) expect(schema.safeParse(f.recording.output).success, file).toBe(true);
+      expect(() => validateOutput(JSON.stringify(f.recording.output), schema, 'op', 'json', {
+        expectedTask: f.recording.task, schemaName: f.recording.task === 'GROUP_UPLOAD' ? 'T1GroupUploadOutput' : 'T1AnalyzeDocumentOutput',
+      }), file).not.toThrow();
     }
   });
 });

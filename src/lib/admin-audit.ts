@@ -88,11 +88,14 @@ export type AdminActionType =
   | 'OPS_BACKFILL_APPLY'
   | 'OPS_BACKFILL_RESTORE'
   // Exécution manuelle d'une tâche planifiée interne (lot 25, chantier A).
-  | 'SCHEDULED_TASK_RUN';
+  | 'SCHEDULED_TASK_RUN'
+  // Lot 33D : consultation de la sortie d'un modèle IA (données issues des
+  // documents des utilisateurs) depuis « Exécutions & logs ».
+  | 'AI_MODEL_OUTPUT_READ';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
-  | 'OPS_BACKFILL' | 'SCHEDULED_TASK';
+  | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

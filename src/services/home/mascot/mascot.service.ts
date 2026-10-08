@@ -89,3 +89,13 @@ export function scheduleMascotPregeneration(accountId: number, delayMs = PREGEN_
 
 /** Réservé aux tests. */
 export function pendingPregenerations(): number { return timers.size; }
+
+/**
+ * Réservé aux tests : annule les pré-générations rapides encore en attente
+ * (les e2e partagent un processus ; un minuteur d'un fichier ne doit pas
+ * s'exécuter pendant le suivant).
+ */
+export function cancelPendingPregenerations(): void {
+  for (const t of timers.values()) clearTimeout(t);
+  timers.clear();
+}

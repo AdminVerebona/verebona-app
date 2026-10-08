@@ -15,8 +15,19 @@ import type { AiGatewayRequest, AiGatewayResponse } from './types';
 import { AiGatewayError, isAiGatewayError, type AiErrorCode } from './errors';
 import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
-import { validateOutput } from './output-validator';
+import { errorOf } from './output-validator';
 import { redactVariables, previewForLog, outputDigestForLog, stripRawExcerpt } from './redaction';
+import { masterOutputSchemaFor } from './master-output-schemas';
+import { resolveOutput, reporterCompteurs, type Resolution } from './output-resolution/resolve-output';
+import { outputSchemaRef } from './output-resolution/contracts';
+import { parseModelOutput } from './output-resolution/json-repair';
+import {
+  providerJsonSchema, structuredOutputEnabled, noteSchemaRejected, schemaRejectedRecently,
+} from './output-resolution/provider-schema';
+import { buildRepairPrompt, mergeRepair, repairPassEnabled, REPAIR_MAX_INPUT_CHARS } from './output-resolution/repair-pass';
+import { classifyCallError, failureSignature, type ClassifiedFailure } from './diagnostics/classify';
+import { emptyControlChain, type CallDiagnostic, type ProviderCallMetadata } from './diagnostics/taxonomy';
+import { recordCallDiagnostic } from './diagnostics/diagnostic.repository';
 import { getAiProvider } from './providers';
 import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, MasterPromptError } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
@@ -28,7 +39,9 @@ import { noteGatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.
 import { currentJobContext } from '../queue/job-context';
 import { assertAccountCostCap } from './account-cost-cap';
 import type { ModelRank } from '../telemetry/execution-context';
-import type { ProviderCallOutput } from './providers/provider.port';
+import type { AiProvider, ProviderCallInput, ProviderCallOutput, ProviderResponseMeta } from './providers/provider.port';
+import type { ZodType } from 'zod';
+import type { AiOperationDefinition } from '../registry/operations';
 
 /**
  * Rang d'un modèle dans la chaîne (§9.1, CST-UI-05, LOG-UI-05). L'indice suffit :
@@ -271,6 +284,39 @@ export class AiGateway {
       ? provider.openAttachmentSession(req.attachments!)
       : undefined;
 
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 33D — DIAGNOSTIC ET RÉSOLUTION PROGRESSIVE DES SORTIES
+    //
+    // Chaque modèle de la chaîne passe par la MÊME résolution (§22) :
+    // parsing strict → extraction / réparation JSON → adaptateurs de
+    // compatibilité → normalisation → validation → passe de réparation IA
+    // ciblée (format seulement, champs valides verrouillés) → validation
+    // champ par champ. Le repli d'analyse (modèle suivant) n'est que le
+    // dernier recours, et il est INFORMÉ de l'erreur précédente (§21).
+    // Chaque appel (analyse ou réparation) a son rapport : famille,
+    // sous-type, étape, erreurs par chemin, chaîne de contrôles, métadonnées
+    // fournisseur, contrat de sortie, corrections (`ai_call_diagnostics`).
+    // ══════════════════════════════════════════════════════════════════════
+    const schemaName = op.outputSchema && op.outputSchema !== 'none' ? op.outputSchema : null;
+    const contractSchema = (schemaName ? masterOutputSchemaFor(schemaName) : null) ?? req.outputSchema;
+    const schemaRef = outputSchemaRef(schemaName, contractSchema, operationCode);
+    const discriminant = master && (op.taskField ?? 'task') !== 'none'
+      ? { field: op.taskField ?? 'task', value: master.task } : null;
+    const providerSchema = structuredOutputEnabled() && (op.structuredOutput ?? (jsonResponse && isMasterOperation(op)))
+      ? providerJsonSchema(contractSchema) : null;
+    // Réparation ciblée : jamais sous un budget d'appels modèle (CA-07), ni
+    // pour l'assistant, qui a sa propre réparation bornée (CDC Assistant
+    // §18.6 : une réparation, même modèle, comptée dans son budget).
+    const repairAllowed = repairPassEnabled() && req.maxModelAttempts === undefined && op.outputFormat !== 'text'
+      && op.useCaseCode !== 'INTELLIGENT_ASSISTANT';
+    // Retrait des champs facultatifs invalides : pas pour l'assistant, dont la
+    // réponse n'est valide qu'entière (§18.6 : réparation, sinon repli).
+    const pruningAllowed = op.useCaseCode !== 'INTELLIGENT_ASSISTANT';
+    const keepRawOutput = !sansSortieBrute(op.useCaseCode);
+    const sourceIds = (req.sourceIds ?? []).filter((x) => Number.isInteger(x));
+    let callIndex = 0;
+    let previousFailure: CallDiagnostic | null = null;
+
     try {
       for (let i = 0; i < models.length; i++) {
         const model = models[i];
@@ -280,124 +326,208 @@ export class AiGateway {
         // sollicité. Indexé sur le rang dans la chaîne complète : une escalade
         // (`firstModelIndex`) ne doit pas recevoir le niveau du principal.
         const reasoning = configuration.reasoningByRank[i + premierRang] ?? null;
+        const timeoutMs = req.timeoutMsCap && req.timeoutMsCap > 0 ? Math.min(op.timeoutMs, req.timeoutMsCap) : op.timeoutMs;
+        // §21 : un repli après une sortie invalide connaît l'erreur précédente.
+        const informed = previousFailure?.family === 'INVALID_OUTPUT' && previousFailure.subtype !== 'OUTPUT_TRUNCATED'
+          && previousFailure.subtype !== 'EMPTY_RESPONSE';
+        const attemptPrompt = informed ? `${prompt}${fallbackNotice(previousFailure!)}` : prompt;
+        const attemptStart = Date.now();
         // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
         // les jetons ont été consommés et facturés — COST-005 exige de garder
         // le coût réel de l'appel échoué.
         let out: ProviderCallOutput | null = null;
+        let soStatus: string = providerSchema?.schema ? 'requested_schema' : jsonResponse ? 'json_mode' : 'none';
+        if (providerSchema && !providerSchema.schema) soStatus = `schema_omitted_${providerSchema.omitted ?? 'unknown'}`;
+
+        const baseTrace = {
+          traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
+          parentOperationId: req.parentOperationId, provider: provider.name, model, promptVersion, usedFallback,
+          shadow: Boolean(req.shadow), modelRank, jobId, configVersionId: configuration.configVersionId,
+          callerMode: req.callerMode, ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
+        };
 
         try {
-          out = await provider.call({
-            model,
-            prompt,
-            attachments: req.attachments ?? [],
-            timeoutMs: req.timeoutMsCap && req.timeoutMsCap > 0 ? Math.min(op.timeoutMs, req.timeoutMsCap) : op.timeoutMs,
-            maxOutputTokens,
-            reasoning,
-            operationCode,
+          out = await callWithSchemaFallback(provider, {
+            model, prompt: attemptPrompt, attachments: req.attachments ?? [], timeoutMs, maxOutputTokens, reasoning, operationCode,
             ...(traceConfig.task ? { task: traceConfig.task } : {}),
             ...(jsonResponse ? { jsonResponse: true } : {}),
             ...(attachmentSession ? { attachmentSession } : {}),
-          });
-
-          // Aucune persistance d'une sortie brute invalide (CDC §5.3).
-          // Validation discriminée (CDC 15 §22.2) : une sortie master doit
-          // porter la branche demandée, sinon erreur récupérable (modèle suivant).
-          const data = validateOutput<T>(
-            out.rawText, req.outputSchema, operationCode, op.outputFormat ?? 'json',
-            master ? { expectedTask: master.task, taskField: op.taskField ?? 'task' } : undefined,
-          );
-
-          const durationMs = Date.now() - startedAt;
-          // Le tarif est indexé sur le fournisseur DÉCLARÉ dans le référentiel,
-          // non sur l'instance d'exécution : un double de test reste tarifé comme
-          // le fournisseur qu'il remplace.
-          // COST-008 : sans tarif, le coût reste NULL (« non calculable »), jamais
-          // un 0 qui se confondrait avec un appel gratuit dans les agrégats.
-          const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
-
-          await recordCallTrace({
-            traceId,
-            useCaseCode: op.useCaseCode,
-            operationCode,
-            accountId: req.accountId,
-            userId: req.userId,
-            parentOperationId: req.parentOperationId,
-            provider: provider.name,
-            model,
-            promptVersion,
-            usedFallback,
-            inputTokens: out.inputTokens,
-            outputTokens: out.outputTokens,
-            costMicros,
-            durationMs,
-            status: 'success',
-            billable: op.billable && !req.shadow,
-            shadow: Boolean(req.shadow),
-            // CDC Assistant §29.6 : pour l'assistant, la sortie brute n'a pas
-            // encore passé la validation serveur (sources, sécurité) — jamais
-            // stockée, même en extrait : empreinte et longueur seulement.
-            outputPreview: sansSortieBrute(op.useCaseCode) ? outputDigestForLog(out.rawText) : previewForLog(out.rawText),
-            modelRank,
-            jobId,
-            configVersionId: configuration.configVersionId,
-            callerMode: req.callerMode,
-            ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
-          });
-
-          attempts.push({ model, succeeded: true });
-          noteGatewayOutcome({ treatment, attempts, chainSucceeded: true });
-
-          return {
-            data, provider: provider.name, model, promptVersion, usedFallback,
-            inputTokens: out.inputTokens, outputTokens: out.outputTokens,
-            costMicros: costMicros ?? 0, durationMs, traceId, fromCache: false,
-          };
+          }, providerSchema?.schema && !schemaRejectedRecently(model, schemaRef.hash) ? providerSchema.schema : null,
+          (s) => { soStatus = s; }, () => noteSchemaRejected(model, schemaRef.hash));
+          if (soStatus === 'requested_schema' && schemaRejectedRecently(model, schemaRef.hash)) soStatus = 'schema_skipped_recent_rejection';
         } catch (e) {
+          // ── Échec AVANT toute sortie exploitable (fournisseur, réseau, délai) ──
           const message = e instanceof Error ? e.message : String(e);
+          const c = classifyCallError(e);
+          const blockedMeta = (e as { providerMeta?: ProviderResponseMeta })?.providerMeta;
+          const tokens = {
+            input: Number((e as { inputTokens?: number })?.inputTokens ?? 0),
+            output: Number((e as { outputTokens?: number })?.outputTokens ?? 0),
+          };
           failures.push(`${model} : ${message}`);
           lastFailureCode = isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE';
           attempts.push({ model, succeeded: false });
-
-          await recordCallTrace({
-            traceId,
-            useCaseCode: op.useCaseCode,
-            operationCode,
-            accountId: req.accountId,
-            userId: req.userId,
-            parentOperationId: req.parentOperationId,
-            provider: provider.name,
-            model,
-            promptVersion,
-            usedFallback,
-            // COST-005 : réponse obtenue puis rejetée (sortie invalide) → jetons
-            // et coût réels ; aucune réponse → rien de consommé.
-            inputTokens: out?.inputTokens ?? 0,
-            outputTokens: out?.outputTokens ?? 0,
-            costMicros: out ? calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider) : 0,
-            durationMs: Date.now() - startedAt,
-            status: 'error',
-            errorCode: isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE',
-            // §29.6 : le message d'une sortie invalide cite un extrait de la
-            // sortie brute — retiré pour l'assistant (code et longueur restent).
-            errorMessage: sansSortieBrute(op.useCaseCode) ? stripRawExcerpt(message) : message,
-            ...(sansSortieBrute(op.useCaseCode) && out ? { outputPreview: outputDigestForLog(out.rawText) } : {}),
-            // Un appel facturé par le fournisseur reste une dépense métier.
-            billable: Boolean(out) && op.billable && !req.shadow,
-            shadow: Boolean(req.shadow),
-            modelRank,
-            jobId,
-            configVersionId: configuration.configVersionId,
-            callerMode: req.callerMode,
-            ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
-          }).catch(() => { /* la trace ne doit jamais masquer l'erreur d'origine */ });
-
+          const diag = buildDiagnostic({
+            outcome: 'FAILED', callKind: 'analysis', family: c.family, subtype: c.subtype, stage: c.stage,
+            outputReceived: false, error: c.error, issues: [], issueCount: 0,
+            controls: { ...emptyControlChain(), providerResponse: 'failed' },
+            provider: providerMetaOf(provider.name, model, blockedMeta, tokens, Date.now() - attemptStart, maxOutputTokens, soStatus, c),
+            schema: schemaRef, repairs: [], informedOfPreviousError: informed,
+          });
+          const usageId = await recordCallTrace({
+            ...baseTrace,
+            // COST-005 : aucune réponse → rien de consommé (blocage : jetons réels).
+            inputTokens: tokens.input, outputTokens: tokens.output,
+            costMicros: tokens.input || tokens.output ? calcCostMicros(model, tokens.input, tokens.output, op.provider) : 0,
+            durationMs: Date.now() - startedAt, status: 'error',
+            errorCode: lastFailureCode, errorMessage: sansSortieBrute(op.useCaseCode) ? stripRawExcerpt(message) : message,
+            billable: Boolean(tokens.input || tokens.output) && op.billable && !req.shadow,
+            failure: failureSummary(diag), providerMeta: compactProviderMeta(diag.provider), callKind: 'analysis',
+          }).catch(() => null);
+          await recordCallDiagnostic({
+            traceId, usageEventId: usageId ?? null, callIndex: callIndex++, accountId: req.accountId, useCaseCode: op.useCaseCode,
+            operationCode, task: traceConfig.task, model, modelRank, sourceIds, diagnostic: diag, output: null,
+          });
+          previousFailure = diag;
           // Une erreur non récupérable arrête immédiatement la chaîne de repli.
           // Elle compte pour le modèle, pas comme échec complet de la chaîne.
           if (isAiGatewayError(e) && !e.recoverable) {
             noteGatewayOutcome({ treatment, attempts, chainSucceeded: null });
             throw e;
           }
+          continue;
         }
+
+        // ── Sortie reçue : résolution progressive ─────────────────────────
+        const analysisDuration = Date.now() - attemptStart;
+        const meta = providerMetaOf(provider.name, model, out.meta, { input: out.inputTokens, output: out.outputTokens }, analysisDuration, maxOutputTokens, soStatus, null);
+        const resolveBase = {
+          schema: req.outputSchema as ZodType, schemaName, operationCode, format: op.outputFormat ?? 'json',
+          expectedTask: discriminant ? master!.task : undefined,
+          taskField: master ? (op.taskField ?? 'task') : undefined,
+          jsonRequested: jsonResponse || soStatus === 'requested_schema',
+          provider: meta,
+        } as const;
+        const first = resolveOutput({ ...resolveBase, raw: out.rawText, allowPruning: !repairAllowed && pruningAllowed });
+        let final: Resolution = first;
+        let repairRun: RepairRun | null = null;
+        if (!first.ok && repairAllowed && first.repairable && !first.taskMismatch) {
+          repairRun = await this.repairPass({
+            provider, model, operationCode, op, resolveBase, first, reasoning, maxOutputTokens, timeoutMs,
+            providerSchema: providerSchema?.schema && !schemaRejectedRecently(model, schemaRef.hash) ? providerSchema.schema : null,
+            discriminant, traceConfig, schemaHash: schemaRef.hash,
+          });
+          final = repairRun?.resolution ?? first;
+        }
+        if (!final.ok && !(!first.ok && first.taskMismatch) && repairAllowed) {
+          // Validation champ par champ sur la sortie d'origine (réparation absente ou insuffisante).
+          const pruned = resolveOutput({ ...resolveBase, raw: out.rawText, allowPruning: true });
+          if (pruned.ok) final = pruned;
+        }
+
+        const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
+        const succeeded = final.ok;
+        const diag = buildDiagnostic({
+          outcome: succeeded ? (final.repairs.length > 0 || repairRun?.resolution?.ok ? 'REPAIRED' : 'SUCCEEDED') : 'FAILED',
+          callKind: 'analysis',
+          family: succeeded ? null : 'INVALID_OUTPUT',
+          subtype: succeeded ? null : (first.ok ? null : first.subtype),
+          stage: succeeded ? null : (first.ok ? null : first.stage),
+          outputReceived: out.rawText.trim() !== '',
+          error: succeeded || first.ok ? null : { message: redactMessage(first.message, keepRawOutput) },
+          issues: first.ok ? [] : first.issues,
+          issueCount: first.ok ? 0 : first.issueCount,
+          controls: succeeded ? { ...final.controls, businessValidation: 'not_applicable', persistence: 'not_applicable' } : first.ok ? final.controls : first.controls,
+          provider: meta,
+          schema: schemaRef,
+          repairs: [...(final.repairs ?? [])],
+          informedOfPreviousError: informed,
+        });
+        // Rapport du premier passage conservé même après réparation réussie :
+        // il dit POURQUOI la sortie d'origine ne passait pas.
+        if (succeeded && !first.ok) {
+          diag.issues = first.issues; diag.issueCount = first.issueCount;
+          diag.subtype = first.subtype; diag.stage = first.stage; diag.family = 'INVALID_OUTPUT';
+          diag.signature = failureSignature(diag);
+        }
+
+        const usageId = await recordCallTrace({
+          ...baseTrace,
+          inputTokens: out.inputTokens, outputTokens: out.outputTokens,
+          // COST-005 / COST-008 : coût réel, y compris d'un appel rejeté ;
+          // sans tarif, NULL (« non calculable »), jamais 0.
+          costMicros,
+          durationMs: Date.now() - startedAt,
+          status: succeeded ? 'success' : 'error',
+          ...(succeeded ? {} : {
+            errorCode: 'INVALID_OUTPUT',
+            // §29.6 : le message d'une sortie invalide cite un extrait de la
+            // sortie brute — retiré pour l'assistant (code et longueur restent).
+            errorMessage: first.ok ? 'Sortie invalide' : redactMessage(first.message, keepRawOutput),
+          }),
+          // Un appel facturé par le fournisseur reste une dépense métier.
+          billable: op.billable && !req.shadow,
+          // CDC Assistant §29.6 : pour l'assistant, la sortie brute n'a pas
+          // encore passé la validation serveur (sources, sécurité) — jamais
+          // stockée, même en extrait : empreinte et longueur seulement.
+          outputPreview: keepRawOutput ? previewForLog(out.rawText) : outputDigestForLog(out.rawText),
+          failure: failureSummary(diag), providerMeta: compactProviderMeta(meta), callKind: 'analysis',
+          ...(diag.outcome === 'REPAIRED' ? { repaired: true } : {}),
+        }).catch(() => null);
+        const thisIndex = callIndex++;
+        if (diag.outcome !== 'SUCCEEDED') {
+          await recordCallDiagnostic({
+            traceId, usageEventId: usageId ?? null, callIndex: thisIndex, accountId: req.accountId, useCaseCode: op.useCaseCode,
+            operationCode, task: traceConfig.task, model, modelRank, sourceIds, diagnostic: diag,
+            output: keepRawOutput ? {
+              raw: out.rawText,
+              extracted: first.extracted,
+              parsed: first.extracted !== null ? first.parsed : null,
+            } : null,
+          });
+        }
+        if (repairRun) {
+          const repairUsage = await recordCallTrace({
+            ...baseTrace,
+            inputTokens: repairRun.inputTokens, outputTokens: repairRun.outputTokens,
+            costMicros: repairRun.inputTokens || repairRun.outputTokens
+              ? calcCostMicros(model, repairRun.inputTokens, repairRun.outputTokens, op.provider) : 0,
+            durationMs: repairRun.durationMs,
+            status: repairRun.diagnostic.outcome === 'FAILED' ? 'error' : 'success',
+            ...(repairRun.diagnostic.outcome === 'FAILED'
+              ? { errorCode: repairRun.errorCode ?? 'INVALID_OUTPUT', errorMessage: redactMessage(repairRun.errorMessage ?? 'Réparation insuffisante', keepRawOutput) }
+              : {}),
+            billable: repairRun.outputTokens > 0 && op.billable && !req.shadow,
+            outputPreview: repairRun.rawText == null ? undefined : keepRawOutput ? previewForLog(repairRun.rawText) : outputDigestForLog(repairRun.rawText),
+            failure: failureSummary(repairRun.diagnostic), providerMeta: compactProviderMeta(repairRun.diagnostic.provider), callKind: 'repair',
+          }).catch(() => null);
+          await recordCallDiagnostic({
+            traceId, usageEventId: repairUsage ?? null, callIndex: callIndex++, accountId: req.accountId, useCaseCode: op.useCaseCode,
+            operationCode, task: traceConfig.task, model, modelRank, sourceIds, diagnostic: repairRun.diagnostic,
+            output: keepRawOutput && repairRun.rawText != null ? { raw: repairRun.rawText, extracted: null, parsed: null } : null,
+          });
+        }
+
+        if (final.ok) {
+          attempts.push({ model, succeeded: true });
+          noteGatewayOutcome({ treatment, attempts, chainSucceeded: true });
+          const totalIn = out.inputTokens + (repairRun?.inputTokens ?? 0);
+          const totalOut = out.outputTokens + (repairRun?.outputTokens ?? 0);
+          const totalCost = (costMicros ?? 0) + (repairRun ? calcCostMicros(model, repairRun.inputTokens, repairRun.outputTokens, op.provider) ?? 0 : 0);
+          return {
+            data: final.data as T, provider: provider.name, model, promptVersion, usedFallback,
+            inputTokens: totalIn, outputTokens: totalOut,
+            costMicros: totalCost, durationMs: Date.now() - startedAt, traceId, fromCache: false,
+            outputRepairs: final.repairs,
+          };
+        }
+
+        // ── Sortie inexploitable : échec de ce modèle ─────────────────────
+        const err = errorOf(first.ok ? (final as Extract<Resolution, { ok: false }>) : first, operationCode);
+        failures.push(`${model} : ${err.message}`);
+        lastFailureCode = 'INVALID_OUTPUT';
+        attempts.push({ model, succeeded: false });
+        previousFailure = diag;
       }
 
       noteGatewayOutcome({
@@ -413,6 +543,92 @@ export class AiGateway {
       await attachmentSession?.release().catch(() => { /* non bloquant : expiration à 48 h */ });
     }
   }
+  /**
+   * Passe de réparation ciblée (lot 33D, §8 à §13) : même modèle, AUCUN
+   * document joint, sortie précédente + erreurs + schéma ; seuls les chemins
+   * en erreur sont repris de la réponse (`mergeRepair`). Rend `null` si la
+   * sortie précédente est trop volumineuse pour être retransmise.
+   */
+  private static async repairPass(p: {
+    provider: AiProvider; model: string; operationCode: string; op: AiOperationDefinition;
+    resolveBase: Omit<Parameters<typeof resolveOutput>[0], 'raw' | 'allowPruning' | 'candidate'>;
+    first: Extract<Resolution, { ok: false }>;
+    reasoning: ProviderCallInput['reasoning']; maxOutputTokens: number | undefined; timeoutMs: number;
+    providerSchema: Record<string, unknown> | null;
+    discriminant: { field: string; value: string } | null;
+    traceConfig: { task: string | null };
+    schemaHash: string;
+  }): Promise<RepairRun | null> {
+    const { first } = p;
+    const previous = typeof first.best === 'string' ? first.best : JSON.stringify(first.best ?? first.parsed ?? null);
+    if (!previous || previous === 'null' || previous.length > REPAIR_MAX_INPUT_CHARS) return null;
+    const malformed = first.subtype === 'MALFORMED_JSON';
+    const prompt = buildRepairPrompt({
+      previousOutput: previous, issues: first.issues, malformedJson: malformed,
+      schemaJson: p.providerSchema ? JSON.stringify(p.providerSchema) : null, discriminant: p.discriminant,
+    });
+    const start = Date.now();
+    let soStatus = p.providerSchema ? 'requested_schema' : 'json_mode';
+    const schemaHash = p.schemaHash;
+    let out: ProviderCallOutput;
+    try {
+      out = await callWithSchemaFallback(p.provider, {
+        model: p.model, prompt, attachments: [], timeoutMs: Math.min(p.timeoutMs, 60_000),
+        maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, operationCode: p.operationCode,
+        ...(p.traceConfig.task ? { task: p.traceConfig.task } : {}), jsonResponse: true, callKind: 'repair',
+      }, p.providerSchema, (s) => { soStatus = s; }, () => noteSchemaRejected(p.model, schemaHash));
+    } catch (e) {
+      const c = classifyCallError(e);
+      return {
+        resolution: null, rawText: null, inputTokens: 0, outputTokens: 0, durationMs: Date.now() - start,
+        errorCode: isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE', errorMessage: c.error.message,
+        diagnostic: buildDiagnostic({
+          outcome: 'FAILED', callKind: 'repair', family: c.family, subtype: c.subtype, stage: c.stage, outputReceived: false,
+          error: c.error, issues: [], issueCount: 0, controls: { ...emptyControlChain(), providerResponse: 'failed' },
+          provider: providerMetaOf(p.provider.name, p.model, (e as { providerMeta?: ProviderResponseMeta })?.providerMeta, { input: 0, output: 0 }, Date.now() - start, p.maxOutputTokens, soStatus, c),
+          schema: null, repairs: [],
+        }),
+      };
+    }
+    const meta = providerMetaOf(p.provider.name, p.model, out.meta, { input: out.inputTokens, output: out.outputTokens }, Date.now() - start, p.maxOutputTokens, soStatus, null);
+    const parsed = parseModelOutput(out.rawText);
+    let resolution: Resolution;
+    if (!parsed.ok) {
+      resolution = resolveOutput({ ...p.resolveBase, raw: out.rawText, allowPruning: true, provider: meta });
+    } else {
+      const merge = malformed ? { value: parsed.value, replaced: ['$'] } : mergeRepair(first.best, parsed.value, first.allPaths);
+      resolution = resolveOutput({
+        ...p.resolveBase, raw: out.rawText, allowPruning: true, provider: meta,
+        candidate: {
+          value: merge.value,
+          repairs: [...first.repairs, ...parsed.repairs, {
+            stage: 'ai_repair', rule: 'targeted_repair', path: '$',
+            detail: malformed ? 'JSON reconstruit par la passe de réparation' : `${merge.replaced.length} chemin(s) repris de la réparation, champs valides verrouillés`,
+          }],
+        },
+      });
+      // Compteurs de préparation du premier passage (faits écartés…) conservés.
+      if (resolution.ok) reporterCompteurs(first.prepared, resolution.data);
+    }
+    const ok = resolution.ok;
+    return {
+      resolution, rawText: out.rawText, inputTokens: out.inputTokens, outputTokens: out.outputTokens,
+      durationMs: Date.now() - start,
+      errorCode: ok ? null : 'INVALID_OUTPUT', errorMessage: ok ? null : (resolution as Extract<Resolution, { ok: false }>).message,
+      diagnostic: buildDiagnostic({
+        outcome: ok ? 'SUCCEEDED' : 'FAILED', callKind: 'repair',
+        family: ok ? null : 'INVALID_OUTPUT',
+        subtype: ok ? null : (resolution as Extract<Resolution, { ok: false }>).subtype,
+        stage: ok ? null : (resolution as Extract<Resolution, { ok: false }>).stage,
+        outputReceived: out.rawText.trim() !== '',
+        error: ok ? null : { message: (resolution as Extract<Resolution, { ok: false }>).message },
+        issues: ok ? [] : (resolution as Extract<Resolution, { ok: false }>).issues,
+        issueCount: ok ? 0 : (resolution as Extract<Resolution, { ok: false }>).issueCount,
+        controls: resolution.controls, provider: meta, schema: null, repairs: resolution.repairs,
+      }),
+    };
+  }
+
 }
 
 /**
@@ -458,4 +674,114 @@ function configuredMasterText(
   if (cfg.promptArchitecture !== 'master') return null;
   if (!isPromptAdministrable(treatmentForUseCase(useCaseCode)) && cfg.masterPromptVersionId == null) return null;
   return cfg.masterPromptText ?? null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 33D — aides du diagnostic et de la résolution des sorties
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Issue d'une passe de réparation ciblée. */
+interface RepairRun {
+  resolution: Resolution | null;
+  diagnostic: CallDiagnostic;
+  rawText: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+/**
+ * Appel fournisseur avec structured output ; un REFUS du schéma (HTTP 400 sur
+ * le schéma, `STRUCTURED_OUTPUT_REJECTED`) est rattrapé : même modèle, sans
+ * schéma (mode JSON seul), et le refus est mémorisé pour ne pas le rejouer.
+ * Le modèle reste dans la cascade (§24).
+ */
+async function callWithSchemaFallback(
+  provider: AiProvider,
+  input: ProviderCallInput,
+  schema: Record<string, unknown> | null,
+  setStatus: (s: string) => void,
+  onRejected: () => void,
+): Promise<ProviderCallOutput> {
+  if (!schema) return provider.call(input);
+  try {
+    return await provider.call({ ...input, responseSchema: schema });
+  } catch (e) {
+    const c = classifyCallError(e);
+    if (c.subtype !== 'STRUCTURED_OUTPUT_REJECTED') throw e;
+    onRejected();
+    setStatus('schema_rejected_retried_without');
+    return provider.call(input);
+  }
+}
+
+/**
+ * Consigne ajoutée au prompt d'un REPLI après une sortie invalide (§21) : le
+ * modèle suivant connaît l'erreur exacte au lieu de recevoir les mêmes
+ * instructions. Seulement des chemins, attendus et types reçus — jamais de
+ * valeur issue du document.
+ */
+export function fallbackNotice(prev: Pick<CallDiagnostic, 'subtype' | 'issues'>): string {
+  const lignes = prev.issues.slice(0, 5).map((i) =>
+    `- ${i.path} : ${i.subtype}${i.expected ? `, attendu ${i.expected}` : ''}${i.received ? `, reçu ${i.received}` : ''}`
+    + `${i.allowedValues?.length ? ` (valeurs autorisées : ${i.allowedValues.slice(0, 12).join(' | ')})` : ''}`);
+  return [
+    '', '', '---', 'REPRISE APRÈS SORTIE INVALIDE (information du serveur)',
+    `Le modèle précédent a renvoyé une réponse invalide (${prev.subtype ?? 'INVALID_OUTPUT'}).`,
+    ...(lignes.length ? ['Erreurs constatées :', ...lignes] : []),
+    'Tu dois impérativement respecter le format de sortie décrit ci-dessus : types exacts, dates AAAA-MM-JJ,',
+    'valeurs d’énumération autorisées uniquement ; omets un champ facultatif plutôt que d’écrire null.',
+  ].join('\n');
+}
+
+function buildDiagnostic(d: Omit<CallDiagnostic, 'signature'>): CallDiagnostic {
+  const out: CallDiagnostic = { ...d, signature: null };
+  out.signature = d.outcome === 'FAILED' || d.family ? failureSignature(out) : null;
+  return out;
+}
+
+function providerMetaOf(
+  providerName: string, model: string, meta: ProviderResponseMeta | undefined,
+  tokens: { input: number; output: number }, latencyMs: number, maxOutputTokens: number | undefined,
+  structuredOutputStatus: string, c: ClassifiedFailure | null,
+): ProviderCallMetadata {
+  const m: ProviderCallMetadata = {
+    provider: providerName,
+    model,
+    providerRequestId: meta?.providerRequestId ?? null,
+    modelVersion: meta?.modelVersion ?? null,
+    finishReason: meta?.finishReason ?? null,
+    stopReason: meta?.stopReason ?? null,
+    finishMessage: meta?.finishMessage ?? null,
+    safetyReason: meta?.safetyReason ?? null,
+    structuredOutputStatus,
+    tokenUsage: { input: tokens.input, output: tokens.output, thoughts: meta?.thoughtsTokens ?? null, total: meta?.totalTokens ?? null },
+    latencyMs,
+    configuredMaxOutputTokens: maxOutputTokens ?? null,
+    providerErrorCode: c?.providerErrorCode ?? null,
+    providerErrorMessage: c?.providerErrorMessage ?? null,
+    httpStatus: c?.httpStatus ?? null,
+  };
+  m.maxTokensReached = String(m.finishReason ?? '').toUpperCase() === 'MAX_TOKENS';
+  return m;
+}
+
+/** Résumé d'échec figé dans `ai_usage_event.metadata` (listes, filtres). */
+function failureSummary(d: CallDiagnostic): { family: string; subtype: string | null; stage: string | null; signature: string | null } | undefined {
+  return d.family ? { family: d.family, subtype: d.subtype, stage: d.stage, signature: d.signature } : undefined;
+}
+
+/** Métadonnées fournisseur figées dans `ai_usage_event.metadata` (sans contenu). */
+function compactProviderMeta(m: ProviderCallMetadata): Record<string, unknown> {
+  return Object.fromEntries(Object.entries({
+    finishReason: m.finishReason, providerRequestId: m.providerRequestId, modelVersion: m.modelVersion,
+    thoughtsTokens: m.tokenUsage?.thoughts, structuredOutput: m.structuredOutputStatus, safetyReason: m.safetyReason,
+  }).filter(([, v]) => v !== null && v !== undefined));
+}
+
+/** §29.6 : message sans extrait de sortie brute pour l'assistant. */
+function redactMessage(message: string, keepRawOutput: boolean): string {
+  return keepRawOutput ? message : stripRawExcerpt(message);
 }

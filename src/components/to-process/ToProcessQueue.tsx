@@ -36,10 +36,7 @@ import { toast } from 'sonner';
 import { LayoutGrid, List, Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
-import {
-  TO_PROCESS_NO_FILTER_RESULT,
-  toProcessHeadline,
-} from '@/lib/referential/v2/microcopy';
+import { TO_PROCESS_NO_FILTER_RESULT } from '@/lib/referential/v2/microcopy';
 import { TO_PROCESS_COUNT_EVENT } from '@/hooks/useToProcessCount';
 import type { OrderMode } from '@/services/to-process/priority';
 import { ActionCard, ActionRow, todoCardDomId, type ActionView } from './ActionCard';
@@ -212,12 +209,9 @@ export function ToProcessQueue() {
         </div>
       </div>
 
-      {/* §17.1 : un message global en haut d'écran, aucun dans les cartes. */}
-      {count > 0 && (
-        <p className="text-sm text-muted-foreground -mt-2">
-          {toProcessHeadline(count, orderMode)}
-        </p>
-      )}
+      {/* L33-6 : la phrase d'introduction (nombre d'actions, ordre
+          d'affichage) est retirée (demande produit) ; le décompte sous le
+          titre suffit. Aucun message dans les cartes (§17.1). */}
 
       {/* Bascules : même composant visuel que les vues de l'agenda. */}
       {count > 0 && (

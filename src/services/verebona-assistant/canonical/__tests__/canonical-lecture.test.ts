@@ -59,9 +59,9 @@ describe('T2-22 / T2-32 — champ canonique et source de niveau champ', () => {
     expect(sensible.meta?.value).toBeNull();
   });
   it('réponse : valeur, origine, preuve (hors saisie), conflit', () => {
-    expect(fieldAnswer(lecture())).toBe('Vous avez acheté Clio le 25 mai 2021. Valeur saisie par vous.');
+    expect(fieldAnswer(lecture())).toBe('Vous avez acheté Clio le 25 mai 2021.');
     expect(fieldAnswer(lecture({ key: 'mileage', label: 'Kilométrage', display: '45 000 km', origin: 'RECONCILIATION', originLabel: 'retenue après rapprochement de vos documents' })))
-      .toBe('Kilométrage de Clio : 45 000 km. Valeur retenue après rapprochement de vos documents (« Facture »).');
+      .toBe('Kilométrage de Clio : 45 000 km.');
     expect(fieldAnswer(lecture({ openConflict: { publicId: 'p', ruleCode: 'R', question: 'Quelle est la date ?', proposals: [] } })))
       .toContain('à arbitrer dans « À traiter »');
   });

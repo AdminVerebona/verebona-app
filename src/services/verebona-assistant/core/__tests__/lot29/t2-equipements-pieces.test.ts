@@ -191,7 +191,7 @@ describe('Ticket 13 — équipements et pièces, cibles à part entière', () =>
   it('T2EQ-AC13 — non-régression cible bien : « Quel est le kilométrage de la Polo ? » inchangé', async () => {
     const h = H.harness(H.account({ assets: [MAISON, { id: 2, name: 'Polo', category: 'VEHICULE', fields: { mileage: 82000 } }], entities: [CHAUDIERE] }));
     const r = await h.ask('Quel est le kilométrage de la Polo ?');
-    expect(r.answer).toMatch(/^Kilométrage de Polo : 82\s000 km\. Valeur saisie par vous\.$/);
+    expect(r.answer).toMatch(/^Kilométrage de Polo : 82\s000 km\.$/);
     expect(r.sources.map((s) => s.id)).toEqual(['asset_field:2:mileage']);
     expect(h.lookup.calls.entities).toBe(0);
   });

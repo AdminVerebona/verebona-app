@@ -55,6 +55,7 @@ import {
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
 import { CopyBlockButton, ExecutionExportButtons } from './_components/CopyJson';
+import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/ExecutionDiagnosisPanel';
 
 interface Execution {
   id: number;
@@ -92,12 +93,25 @@ interface Execution {
   maxOutputTokens?: number | null;
   engine?: string | null;
   callTrigger?: string | null;
+  /** Lot 33D : nature de l'appel, cause précise de l'échec, correction appliquée. */
+  callKind?: 'analysis' | 'repair';
+  failure?: { family: string; subtype: string | null; stage: string | null; signature: string | null } | null;
+  repaired?: boolean;
+}
+
+/** `INVALID_OUTPUT / SCHEMA_VALIDATION_FAILED · étape schema_validation`, sinon le code enregistré. */
+function causeOf(r: Pick<Execution, 'errorCode' | 'failure'>): string | null {
+  const f = r.failure;
+  if (f?.family) return `${f.family === 'INVALID_OUTPUT' ? `INVALID_OUTPUT / ${f.subtype ?? 'UNKNOWN'}` : f.family}${f.stage ? ` · étape ${f.stage}` : ''}`;
+  return r.errorCode;
 }
 
 interface Page { rows: Execution[]; total: number; limit: number; offset: number }
 
 interface ErrorRow {
   treatment: string | null; errorCode: string | null;
+  /** Lot 33D : sous-type précis de l'échec. */
+  failureSubtype?: string | null;
   model: string | null; count: number; lastSeen: string;
 }
 
@@ -119,6 +133,8 @@ interface Detail {
   inputs: Array<{ label: string; value: unknown }>;
   modifications: Array<{ kind: string; label: string; detail: string | null; at: string | null }>;
   t2: { requestId: string; sources: T2Source[] } | null;
+  /** Lot 33D : rapport par appel, cascade, compteurs, résultat métier, diagnostic final. */
+  diagnosis?: DiagnosisView;
 }
 
 interface T2Source {
@@ -279,7 +295,7 @@ function AiExecutionsScreen() {
                 onClick={() => setFilters({ ...filters, treatment: e.treatment ?? '', model: e.model ?? '', errorsOnly: true })}>
                 <span className="font-medium text-[color:var(--text-primary)]">{e.count}×</span>
                 {' '}{e.treatment ?? 'traitement inconnu'}
-                {e.errorCode && ` · ${e.errorCode}`}
+                {e.errorCode && ` · ${e.errorCode}${e.failureSubtype && e.failureSubtype !== e.errorCode ? ` / ${e.failureSubtype}` : ''}`}
                 {e.model && ` · ${e.model}`}
                 <span className="text-[color:var(--text-muted)]">
                   {' '}— dernier le {new Date(e.lastSeen).toLocaleDateString('fr-FR')}
@@ -449,8 +465,12 @@ function AiExecutionsScreen() {
                 {r.appVersion && ` · code ${r.appVersion.slice(0, 8)}`}
               </p>
               {r.errorMessage && (
-                <p className="text-xs text-red-400">{r.errorCode ? `${r.errorCode} — ` : ''}{r.errorMessage}</p>
+                <p className="text-xs text-red-400">{causeOf(r) ? `${causeOf(r)} — ` : ''}{r.errorMessage}</p>
               )}
+              {!r.errorMessage && r.repaired && (
+                <p className="text-xs text-amber-500">Sortie acceptée après correction automatique{r.failure?.subtype ? ` (${r.failure.subtype})` : ''}</p>
+              )}
+              {r.callKind === 'repair' && <p className="text-xs text-[color:var(--text-muted)]">Passe de réparation ciblée (sans relecture du document)</p>}
             </button>
           ))}
         </div>
@@ -521,16 +541,21 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           </dl>
         </section>
 
-        <section className="space-y-1">
-          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Appels de la chaîne de modèles</h3>
-          {detail.calls.map((c) => (
-            <p key={c.id} className="text-xs text-[color:var(--text-secondary)]">
-              {RANK_LABEL[c.modelRank ?? ''] ?? 'rang inconnu'} · {c.model} · {c.status === 'error' ? `échec ${c.errorCode ?? ''}` : 'succès'}
-              {' · '}{duration(c.durationMs)} · {cost(c.costMicros)}
-              {c.inputTokens !== null && ` · ${c.inputTokens} + ${c.outputTokens} tokens`}
-            </p>
-          ))}
-        </section>
+        {/* Lot 33D : diagnostic final, résultat métier, compteurs, rapport par appel. */}
+        {detail.diagnosis ? (
+          <ExecutionDiagnosisPanel callId={detail.call.id} diagnosis={detail.diagnosis} />
+        ) : (
+          <section className="space-y-1">
+            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Appels de la chaîne de modèles</h3>
+            {detail.calls.map((c) => (
+              <p key={c.id} className="text-xs text-[color:var(--text-secondary)]">
+                {RANK_LABEL[c.modelRank ?? ''] ?? 'rang inconnu'} · {c.model} · {c.status === 'error' ? `échec ${c.errorCode ?? ''}` : 'succès'}
+                {' · '}{duration(c.durationMs)} · {cost(c.costMicros)}
+                {c.inputTokens !== null && ` · ${c.inputTokens} + ${c.outputTokens} tokens`}
+              </p>
+            ))}
+          </section>
+        )}
 
         {detail.steps.length > 0 && (
           <section className="space-y-1">
@@ -594,7 +619,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           {job ? (
             <p className="text-xs text-[color:var(--text-secondary)]">
               Job {job.id} · {job.treatment} · {job.status} · origine {job.origin}
-              {job.triggerCode && ` · déclencheur ${job.triggerCode}`} · {job.attempts} tentative(s)
+              {job.triggerCode && ` · déclencheur ${job.triggerCode}`} · Tentatives du job : {job.attempts}
               {job.configVersionId && ` · version figée #${job.configVersionId}`}
               {job.targetType && ` · cible ${job.targetType} ${job.targetId}`}
               {job.lastError && <span className="text-red-400"> — {job.lastError}</span>}

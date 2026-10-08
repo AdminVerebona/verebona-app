@@ -10,6 +10,7 @@ import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles, notifications } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 export async function POST(
   request: NextRequest,
@@ -38,7 +39,7 @@ export async function POST(
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    const documentTitle = file.retainedTitle || file.originalFilename || undefined;
+    const documentTitle = displayDocumentTitle(file, '') || undefined;
 
     await db.insert(notifications).values({
       userId: session.userId,

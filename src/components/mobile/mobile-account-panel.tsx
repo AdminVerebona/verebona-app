@@ -17,6 +17,10 @@
  *    reste, comme l'en-tête d'identité du menu de l'avatar sur ordinateur
  *    (TopBar), et elle est l'accès à Mon compte (libellé accessible
  *    « Mon compte », état courant marqué).
+ *
+ * Lot 33 (L33-2) : la carte affiche la même identité que le menu de l'avatar
+ * sur ordinateur — nom d'affichage (`formatUserDisplayName`, partagé avec
+ * TopBar) puis e-mail.
  */
 import { useState } from 'react';
 import Link from 'next/link';
@@ -33,8 +37,14 @@ export interface MobileAccountPanelProps {
    * ignorée (conservée pour ne pas modifier l'appelant, DashboardLayout).
    */
   greetingName?: string;
-  /** Nom de la personne (prénom + initiale), jamais celui du compte. */
+  /**
+   * Nom d'affichage de la personne, jamais celui du compte : la valeur de
+   * `formatUserDisplayName` (src/lib/user-display-name.ts), la même que le
+   * menu de l'avatar sur ordinateur (TopBar) — lot 33, L33-2.
+   */
   personName: string;
+  /** E-mail de connexion, affiché sous le nom comme sur ordinateur (L33-2). */
+  email?: string | null;
   initials: string;
   planLabel: string;
   /** Espace courant, affiché seulement si l'utilisateur en a plusieurs. */
@@ -49,7 +59,7 @@ export interface MobileAccountPanelProps {
 }
 
 export function MobileAccountPanel({
-  open, onClose, pathname, personName, initials, planLabel, accountName, isAdmin,
+  open, onClose, pathname, personName, email, initials, planLabel, accountName, isAdmin,
   theme, onToggleTheme, onOpenHelp, onLogout, showBell = true,
 }: MobileAccountPanelProps) {
   const [logoutConfirm, setLogoutConfirm] = useState(false);
@@ -93,6 +103,9 @@ export function MobileAccountPanel({
                 <span className="block truncate text-sm font-semibold text-[color:var(--text-primary)]">
                   {personName}
                 </span>
+                {email && (
+                  <span className="block truncate text-xs text-[color:var(--text-muted)]">{email}</span>
+                )}
                 {planLabel && (
                   <span className="mt-1 inline-block rounded-full bg-[color:var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[color:var(--accent)]">
                     {planLabel}

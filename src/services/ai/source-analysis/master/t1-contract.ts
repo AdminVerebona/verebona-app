@@ -17,6 +17,12 @@
 import { z } from 'zod';
 
 export const T1_MASTER_PROMPT_CODE = 't1_master_v1';
+/**
+ * Version du contrat de sortie ANALYZE_DOCUMENT (lot 33D, registre
+ * `gateway/output-resolution/contracts`) : v1 ancien moteur, v2 lot 12,
+ * v3 lot 33 (`entityId` absent = null). Affichée « t1_analyze_document@v3 ».
+ */
+export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 3;
 export const T1_TASKS = ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] as const;
 export type T1Task = (typeof T1_TASKS)[number];
 
@@ -124,7 +130,12 @@ export const t1Fact = z.object({
 export type T1Fact = z.infer<typeof t1Fact>;
 
 const entityCandidate = z.object({
-  entityId: z.number().int().positive().nullable(),
+  /**
+   * Lot 33D (contrat v3) : un identifiant ABSENT vaut `null` (entité lue mais
+   * inconnue du compte, U9) — un modèle qui l'omet au lieu d'écrire `null`
+   * ne fait plus échouer toute la sortie.
+   */
+  entityId: z.number().int().positive().nullable().default(null),
   rawLabel: z.string().max(200).nullable().optional(),
   score: z.number().min(0).max(1),
   confidence,

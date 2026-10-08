@@ -58,6 +58,7 @@ import type { RoomDrawerItem } from "@/components/assets/RoomDrawer";
 import { EquipmentDrawer } from "@/components/assets/EquipmentDrawer";
 import type { EquipmentDrawerItem } from "@/components/assets/EquipmentDrawer";
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 type EffectiveStatus = "a_venir" | "en_retard" | "realise" | "annule";
 
@@ -977,7 +978,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {item.fileLinks.map((l) => {
-                      const displayName = l.retainedTitle || l.originalFilename || l.filename || `Doc #${l.assetFileId}`;
+                      const displayName = displayDocumentTitle(l, `Doc #${l.assetFileId}`);
                       return onOpenDocument ? (
                         <button
                           key={l.assetFileId}

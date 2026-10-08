@@ -34,12 +34,25 @@ export interface ProviderCallInput {
    */
   jsonResponse?: boolean;
   /**
+   * Lot 33D — structured output : schéma JSON (réduit, `provider-schema`)
+   * imposé à la génération quand le fournisseur le permet. Absent : mode JSON
+   * seul (ou texte libre). Un refus du schéma par le fournisseur est une
+   * erreur HTTP 400 que la passerelle rattrape (rejeu sans schéma).
+   */
+  responseSchema?: Record<string, unknown>;
+  /**
    * Opération et branche TASK de l'appel — information seulement : les
    * fournisseurs réels l'ignorent. Sert au rejeu des sorties enregistrées du
    * harnais E2E (CDC 15 T2-41, `src/test/e2e/replay-gateway.ts`).
    */
   operationCode?: string;
   task?: string;
+  /**
+   * Lot 33D — nature de l'appel, information seulement : `analysis` (appel
+   * complet, défaut) ou `repair` (passe de réparation ciblée, sans pièce
+   * jointe). Sert au rejeu E2E des sorties enregistrées.
+   */
+  callKind?: 'analysis' | 'repair';
   /**
    * Pièces jointes préparées UNE fois pour toute la chaîne de modèles d'une
    * exécution (`openAttachmentSession`). Absent : l'adaptateur prépare et
@@ -64,6 +77,27 @@ export interface ProviderCallOutput {
   rawText: string;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Lot 33D — métadonnées natives de la réponse (rapport d'échec, §7, §8).
+   * Facultatives : un adaptateur qui ne les connaît pas n'en rend pas.
+   */
+  meta?: ProviderResponseMeta;
+}
+
+/** Métadonnées natives d'une réponse fournisseur (lot 33D). */
+export interface ProviderResponseMeta {
+  /** Identifiant de réponse du fournisseur (`responseId`). */
+  providerRequestId?: string | null;
+  /** Version de modèle réellement servie. */
+  modelVersion?: string | null;
+  /** Fin de génération (`STOP`, `MAX_TOKENS`, `SAFETY`…). */
+  finishReason?: string | null;
+  finishMessage?: string | null;
+  stopReason?: string | null;
+  safetyReason?: string | null;
+  /** Jetons de raisonnement (comptés dans le plafond de sortie chez Gemini). */
+  thoughtsTokens?: number | null;
+  totalTokens?: number | null;
 }
 
 export interface AiProvider {

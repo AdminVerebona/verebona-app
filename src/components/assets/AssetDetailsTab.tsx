@@ -19,6 +19,7 @@ import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
 import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 interface Props {
   asset: AssetDetail;
@@ -302,7 +303,7 @@ function CilChecklist({ assetId, naRubrics = new Set<string>() }: { assetId: num
         result.push({
           code: rubric.code,
           date: match?.documentDate ?? null,
-          title: match ? (match.retainedTitle || match.originalFilename || null) : null,
+          title: match ? (displayDocumentTitle(match, '') || null) : null,
         });
       }
       setDocs(result);

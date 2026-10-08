@@ -164,7 +164,7 @@ describe('réponse d’aide en Standard : extrait + lien vers l’article préci
         resolveActions: (route, input, s) => resolveActions({ accountId: 1, intent: route.intent, actionIntents: construireActionIntents(route, input, s), access: ACCESS }),
       },
     );
-    expect(out.answer).toMatch(/ne peux pas répondre de façon fiable/);
+    expect(out.answer).toMatch(/pas trouvé dans le Centre d’aide d’information suffisamment fiable/);
     expect(out.actions.map((a) => a.type)).toContain('OPEN_CONTACT');
   });
 

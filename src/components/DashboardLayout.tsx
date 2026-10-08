@@ -19,6 +19,7 @@ const DocumentDrawer = dynamic(
 import { publicSiteUrl } from '@/lib/external-urls';
 import { TrialBanner } from '@/components/subscription/TrialBanner';
 import { isUnpaid } from '@/lib/trial-status';
+import { formatUserDisplayName, formatUserInitials } from '@/lib/user-display-name';
 import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
 import { BottomNavigation } from './mobile/bottom-navigation';
@@ -215,15 +216,11 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     quitterVersSite();
   }, [quitterVersSite]);
 
-  const getUserDisplayName = useMemo(() => {
-    if (!user) return '';
-    return user.accountName || `${user.firstName} ${user.lastName.charAt(0)}.`;
-  }, [user]);
-
-  const getUserInitials = useMemo(() => {
-    if (!user) return '';
-    return `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`.toUpperCase();
-  }, [user]);
+  // Nom d'affichage et initiales : la même fonction que le menu de l'avatar
+  // sur ordinateur (TopBar), pour que mobile et desktop disent la même chose
+  // (L33-2).
+  const userDisplayName = useMemo(() => formatUserDisplayName(user), [user]);
+  const getUserInitials = useMemo(() => formatUserInitials(user), [user]);
 
   const isAdmin = useMemo(() => user?.role === 'ADMIN', [user?.role]);
   const { items: breadcrumbItems } = useBreadcrumb();
@@ -413,7 +410,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       onClose={() => setIsMobileMenuOpen(false)}
       pathname={pathname}
       greetingName={user.username?.trim() || user.firstName || ''}
-      personName={`${user.firstName} ${user.lastName.charAt(0)}.`}
+      personName={userDisplayName}
+      email={user.email}
       initials={getUserInitials}
       planLabel={statutAbonnement}
       accountName={plusieursEspaces ? user.accountName : null}

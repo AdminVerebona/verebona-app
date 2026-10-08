@@ -248,4 +248,11 @@ Réponds uniquement par un JSON conforme à ce contrat :
 
 Les faits de l’exemple illustrent des cas distincts (achat, entretien réalisé, observation visuelle), pas un document unique. Les champs absents de la source sont omis ; `facts`, `tables` et les listes d’entités peuvent être vides.
 
+FORMAT STRICT DE LA SORTIE
+- Un champ facultatif sans valeur est OMIS : n’écris jamais `null` pour `title`, `description`, `documentDate`, `supplier`, `amountCents`, `classification`, `transcription`, `visual`, `evidence` ou leurs sous-champs. `null` n’est permis que là où le contrat l’autorise : `canonicalKey`, `rawKey`, `label`, `subject`, `attribute`, `rawValue`, `normalizedValue`, `valueType`, `canonicalUnit`, `entityId`, `rawLabel`, `semanticEvent`, `recurrence`, `periodStart`, `periodEnd`, `siret`, les codes de `classification` et la `value` d’une cellule vide.
+- Toute date est une chaîne AAAA-MM-JJ, jamais un objet (`{"day": 24, "month": 4, "year": 2026}` est interdit, écris `"2026-04-24"`).
+- Les nombres sont des nombres JSON (`12900`, pas `"12900"`) ; `classification.confidence` et `score` sont entre 0 et 1.
+- Les valeurs d’énumération sont recopiées exactement : `confidence` = certain | probable | conflictual ; `provenance` = TEXT_EXTRACTION | VISUAL_ANALYSIS ; `target.type` = ASSET | EQUIPMENT | ROOM | DOCUMENT | SUPPLIER | GENERIC ; `semanticEvent.nature` = HISTORICAL | DEADLINE | FACT_ONLY.
+- Chaque candidat de `entities` porte `entityId` (identifiant fourni ou `null`), `score` et `confidence`.
+
 Réponds uniquement par le JSON de la branche TASK demandée, sans texte autour.

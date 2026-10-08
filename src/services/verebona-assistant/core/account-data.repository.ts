@@ -12,6 +12,7 @@ import { searchDocumentFacts, searchDocumentText, searchTableCells } from '@/ser
 import { createCanonicalAccountDataRepository, type BaseAccountDataPort } from '../canonical/repository';
 import { assistantAssetAvailability } from './asset-availability';
 import { assetDesignationsIn } from '@/lib/asset-taxonomy';
+import { wordStartPattern } from './search-sql';
 
 const rows = <T>(r: unknown) => r as unknown as T[];
 
@@ -51,14 +52,15 @@ const baseAccountDataRepository: BaseAccountDataPort = {
       const famille = !fam ? ''
         : categorie ? `WHEN a.category = '${categorie.family}' AND coalesce(a.subtype, '') = '' THEN 1`
           : `WHEN a.category = '${fam}' THEN 1`;
-      return `(CASE WHEN unaccent(lower(a.name)) LIKE unaccent(lower($${i * 2 + 2}))
+      return `(CASE WHEN unaccent(lower(a.name)) ~ $${i * 2 + 2}
                   OR unaccent(lower(coalesce(a.subtype,''))) = unaccent(lower($${i * 2 + 3}))
                   ${categorie ? `OR unaccent(lower(coalesce(a.subtype,''))) = unaccent(lower('${categorie.category!.replace(/'/g, "''")}'))` : ''} THEN 2
                   ${famille}
                   ELSE 0 END)`;
     }).join(' + ');
     const params: unknown[] = [accountId];
-    for (const w of clean) params.push(`%${w}%`, w);
+    // Lot 33 : un mot du NOM, jamais une sous-chaîne (« polo » ⊄ « Apolon »).
+    for (const w of clean) params.push(wordStartPattern(w), w);
     // Ticket 14 : la règle de disponibilité s'applique AVANT le scoring —
     // un bien archivé ou transmis n'est jamais retourné puis filtré après coup.
     const r = await pgClient.unsafe(
@@ -151,7 +153,8 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     const clean = terms.filter((t) => t.length >= 3).slice(0, 8);
     if (clean.length === 0) return [];
     const hay = `unaccent(lower(coalesce(f.retained_title,'') || ' ' || coalesce(f.original_filename,'') || ' ' || coalesce(f.supplier,'') || ' ' || coalesce(f.description,'')))`;
-    const score = clean.map((_, i) => `(CASE WHEN ${hay} LIKE unaccent(lower($${i + 3})) THEN 1 ELSE 0 END)`).join(' + ');
+    // Lot 33 : début de mot, jamais une sous-chaîne d'un autre mot.
+    const score = clean.map((_, i) => `(CASE WHEN ${hay} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
     const meta = rows<DocumentHit & { matchedTerms: number }>(await pgClient.unsafe(
       `SELECT * FROM (
          SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
@@ -162,7 +165,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
           WHERE f.account_id = $1 AND f.deleted_at IS NULL
             AND ($2::int IS NULL OR f.asset_id = $2 OR f.linked_asset_id = $2)
        ) s WHERE s."matchedTerms" > 0 ORDER BY s."matchedTerms" DESC LIMIT 10`,
-      [accountId, assetId ?? null, ...clean.map((t) => `%${t}%`)] as never[],
+      [accountId, assetId ?? null, ...clean.map(wordStartPattern)] as never[],
     ));
     const text = await searchDocumentText(accountId, clean, { assetId: assetId ?? null, limit: 10 }).catch(() => []);
 

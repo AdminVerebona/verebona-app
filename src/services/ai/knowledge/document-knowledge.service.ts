@@ -31,6 +31,7 @@
  * APRÈS son analyse sans relire le fichier.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { wordStartPattern } from '@/lib/search/match-engine';
 import { pgClient } from '@/db';
 import type { DocumentKnowledge, DocumentFactRecord } from './document-knowledge';
 import { factsToExtractedFields } from './document-knowledge';
@@ -264,7 +265,8 @@ export async function searchTableCells(
   const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
   if (clean.length === 0) return [];
   const hay = `unaccent(lower(coalesce(c.row_header,'') || ' ' || coalesce(c.column_header,'') || ' ' || coalesce(c.value_text,'') || ' ' || coalesce(t.title,'')))`;
-  const cond = clean.map((_, i) => `${hay} LIKE unaccent(lower($${i + 3}))`).join(' OR ');
+  // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
+  const cond = clean.map((_, i) => `${hay} ~ $${i + 3}`).join(' OR ');
   const rows = await pgClient.unsafe(
     `WITH lignes AS (
        SELECT DISTINCT c.table_id, c.row_index
@@ -287,7 +289,7 @@ export async function searchTableCells(
        JOIN document_tables t ON t.id = c.table_id
        JOIN asset_files af ON af.id = t.file_id
       ORDER BY c.table_id, c.row_index, c.column_index`,
-    [accountId, opts.assetId ?? null, ...clean.map((t) => `%${t}%`)] as never[],
+    [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)] as never[],
   );
   return rows as unknown as TableCellRow[];
 }
@@ -436,8 +438,9 @@ export async function searchDocumentFacts(
   const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
   if (clean.length === 0) return [];
   const haystack = `unaccent(lower(coalesce(f.fact_key,'') || ' ' || coalesce(f.subject,'') || ' ' || coalesce(f.attribute,'') || ' ' || coalesce(f.label,'') || ' ' || coalesce(f.value_text,'')))`;
-  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} LIKE unaccent(lower($${i + 3})) THEN 1 ELSE 0 END)`).join(' + ');
-  const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map((t) => `%${t}%`)];
+  // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
+  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
+  const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)];
   const rows = await pgClient.unsafe(
     `SELECT * FROM (
        SELECT ${factColumns('f')},
@@ -469,8 +472,9 @@ export async function searchDocumentText(
   const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
   if (clean.length === 0) return [];
   const haystack = `unaccent(lower(coalesce(e.title,'') || ' ' || coalesce(e.description,'') || ' ' || coalesce(e.supplier_name,'') || ' ' || coalesce(e.full_text,'')))`;
-  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} LIKE unaccent(lower($${i + 3})) THEN 1 ELSE 0 END)`).join(' + ');
-  const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map((t) => `%${t}%`)];
+  // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
+  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
+  const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)];
   const rows = await pgClient.unsafe(
     `SELECT * FROM (
        SELECT e.file_id AS "fileId", e.title,

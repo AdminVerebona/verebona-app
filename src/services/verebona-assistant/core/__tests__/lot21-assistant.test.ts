@@ -75,7 +75,8 @@ describe('D-J3 — jeton OPEN_SEARCH_RESULTS', () => {
 describe('D-J4 — aide sans article : « Ouvrir l’aide », puis le support', () => {
   it('texte : aveu (T2-03), puis aide, puis support', () => {
     const t = fallbackFromHelpSources([]);
-    expect(t).toMatch(/^Je ne peux pas répondre de façon fiable/);
+    // Lot 33 : l'aveu dit la réalité technique (aucune correspondance « exacte » exigée).
+    expect(t).toMatch(/^Je n’ai pas trouvé dans le Centre d’aide d’information suffisamment fiable pour répondre à cette question\./);
     expect(t).toMatch(/consulter l’aide Verebona, ou contacter le support/);
   });
 

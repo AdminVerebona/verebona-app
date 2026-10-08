@@ -40,6 +40,7 @@ import { allowedActionsFor } from '../registries/action-registry';
 import { searchHelpCorpus, type HelpCorpus } from './help-corpus.service';
 import { normalizeForRouting, startsWith, word } from './routing-text';
 import { assetVocabularyAlternatives } from '@/lib/asset-taxonomy';
+import { detectHelpConcept } from '@/lib/help-center/concepts';
 import { analyserPeriode, aujourdhuiParis } from './query-period';
 
 export interface RouteContext {
@@ -158,6 +159,17 @@ const HOWTO = new RegExp(
   'u',
 );
 const HOWTO_GENERIC = startsWith('comment');
+/**
+ * Lot 33 : tournure de besoin d'usage — question (« comment », « où… »),
+ * souhait (« je veux », « j'aimerais ») ou infinitif d'action en tête
+ * (« Ajouter un fichier »). Ne suffit jamais seule : il faut AUSSI un concept
+ * certain du référentiel (`lib/help-center/concepts` : verbe ET objet).
+ */
+const HELP_NEED = new RegExp(
+  "^(?:ou|comment|puis-je|peut-on|est-il possible de|how|where|ajouter|importer|deposer|joindre|televerser|mettre)(?![\\p{L}])"
+  + "|(?<![\\p{L}])(?:je veux|je voudrais|je souhaite|j'aimerais|je dois|comment)(?![\\p{L}])",
+  'u',
+);
 const WHERE_FIND = word("ou (trouver|trouve-t-on|est|sont|se trouve|se trouvent|puis-je trouver)|where is|where are");
 /** Un objet précis du compte (« ma facture ») se cherche, il ne se navigue pas. */
 const SPECIFIC_OBJECT = word(`(ma|mon|la|le|l'|cette|ce|cet) ?(facture|garantie|contrat|manuel|notice|certificat|devis|justificatif|document|fichier|${assetVocabularyAlternatives()})`);
@@ -387,6 +399,14 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
   if (HOWTO.test(t)) return R('PRODUCT_HELP_HOW_TO', 'probable', 'how-to produit');
   if (HOWTO_GENERIC.test(t) && !DOC.test(t) && !OF_SOMETHING.test(t)) {
     return R('PRODUCT_HELP_HOW_TO', 'probable', 'how-to produit');
+  }
+  // Lot 33 : « je veux mettre une facture dans Verebona », « où déposer ma
+  // facture ? », « comment joindre un fichier ? » — un besoin d'usage
+  // reconnu par le référentiel des concepts (verbe ET objet), pas une
+  // recherche dans les documents du compte.
+  if (HELP_NEED.test(t)) {
+    const concept = detectHelpConcept(ctx.message);
+    if (concept?.certain) return R('PRODUCT_HELP_HOW_TO', 'probable', `how-to produit — concept ${concept.concept.id}`);
   }
   // « Où trouver mes documents ? » : une fonction de l'application.
   // « Où est la facture de mon vélo ? » : un objet du compte → plus bas.

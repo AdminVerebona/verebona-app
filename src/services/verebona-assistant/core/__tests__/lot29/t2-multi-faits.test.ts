@@ -61,7 +61,9 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
     const h = H.harness(acc);
     const lu = await answerFromTarget(1, 'x', pageDe(20), h.readers, { requestedFacts: ['acquisitionDate', 'acquisitionPrice', 'mileage'], filters: {} });
     expect(lu!.text).toContain('date d’achat : 15 juin 2021');
-    expect(lu!.text).toContain('Prix d’achat de Polo : 18 500 € (lu dans « Facture achat Polo »');
+    // Lot 33 : plus de titre de document dans le texte (la source `doc_300` le porte).
+    expect(lu!.text).toContain('Prix d’achat de Polo : 18 500 € (pas encore enregistré sur la fiche)');
+    expect(lu!.text).not.toContain('Facture achat Polo');
     expect(lu!.facts!.map((f) => [f.key, f.from])).toEqual([['acquisitionDate', 'canonical'], ['acquisitionPrice', 'document'], ['mileage', 'canonical']]);
     expect(lu!.sources.map((s) => s.id)).toEqual(['asset_field:20:acquisitionDate', 'doc_300', 'asset_field:20:mileage']);
     // Le document n'est consulté QUE pour le champ manquant.
@@ -155,7 +157,7 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
   it('T2MULTI-AC13 — non-régression mono-champ : « Quel est le kilométrage de la Polo ? » inchangé', async () => {
     const h = H.harness(H.account({ assets: [POLO] }));
     const r = await h.ask('Quel est le kilométrage de la Polo ?');
-    expect(nb(r.answer)).toBe('Kilométrage de Polo : 82 000 km. Valeur saisie par vous.');
+    expect(nb(r.answer)).toBe('Kilométrage de Polo : 82 000 km.');
     expect(r.cascade?.strategy).toBe('target.asset_field');
     expect(r.sources.map((s) => s.id)).toEqual(['asset_field:20:mileage']);
     expect(h.llmCalls()).toBe(0);

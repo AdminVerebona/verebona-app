@@ -12,7 +12,14 @@
  * concerné, à défaut le fournisseur, à défaut le mois. Rien n'est inventé :
  * sans aucun de ces éléments, le titre du modèle est conservé.
  * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Lot 33C : ces règles sont appliquées par le service commun
+ * `services/documents/document-title.service.ts` (T1 en fin d'analyse, T3 en
+ * rattrapage) ; `titleInputsFromAnalysis` est l'UNIQUE lecture d'un résultat
+ * d'analyse pour le titre — en mémoire (T1) ou relu du run persisté (T3).
+ * Les règles elles-mêmes sont inchangées.
  */
+import type { SourceAnalysisResult } from './types';
 
 const TYPE_WORDS = [
   'facture', 'devis', 'avoir', 'reçu', 'recu', 'ticket', 'quittance', 'commande', 'bon de commande',
@@ -84,4 +91,33 @@ export function refineDocumentTitle(title: string | null | undefined, ctx: Title
   if (named) return `${label} ${named.charAt(0).toUpperCase()}${named.slice(1)}`.slice(0, 120);
   const period = monthYear(ctx.documentDate);
   return period ? `${label} ${period}` : title?.trim() || null;
+}
+
+/** Entrées du titre lues d'un résultat d'analyse : titre du modèle et contexte. */
+export interface TitleInputs {
+  modelTitle: string | null;
+  ctx: TitleContext;
+}
+
+/**
+ * Entrées du titre d'un résultat d'analyse T1 — mêmes champs qu'avant le
+ * lot 33C (titre R9, type, sujets des faits et observations, fournisseur,
+ * date). Partiel accepté : un run persisté ancien peut ne pas tout porter.
+ */
+export function titleInputsFromAnalysis(
+  result: { document?: Partial<SourceAnalysisResult['document']> | null; extractedFields?: Array<{ subject?: string | null }> | null },
+): TitleInputs {
+  const d = result.document ?? {};
+  return {
+    modelTitle: d.title?.value ?? null,
+    ctx: {
+      typeCode: d.type?.value ?? null,
+      subjects: [
+        ...(result.extractedFields ?? []).map((f) => f?.subject),
+        ...(d.visual?.observations ?? []).map((o) => o?.subject),
+      ].filter((s): s is string => typeof s === 'string' && s.length > 0),
+      supplier: d.supplier?.value?.name ?? null,
+      documentDate: d.date?.value ?? null,
+    },
+  };
 }

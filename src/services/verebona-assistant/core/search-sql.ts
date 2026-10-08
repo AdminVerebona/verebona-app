@@ -67,3 +67,7 @@ export function normalizedText(mode: SearchExprMode, expr: string): string {
   if (mode === 'unaccent') return `unaccent(lower(coalesce(${expr}, '')))`;
   return `lower(coalesce(${expr}, ''))`;
 }
+
+
+/** Motif « début de mot » (lot 33) — défini dans le moteur de correspondance (pur). */
+export { wordStartPattern } from '@/lib/search/match-engine';

@@ -1,0 +1,81 @@
+{
+  "case": "T1-33D-02",
+  "description": "Lot 33D (cas 7) : ancien format de sortie T1 v1 (extract_source_v5 : métadonnées à la racine, fields[]) produit par un ancien texte de prompt — migré par l'adaptateur versionné t1_v1_to_v2.",
+  "context": {
+    "linkedAssetId": 184,
+    "assets": [
+      {
+        "id": 184,
+        "name": "Draisienne",
+        "category": "OBJECT",
+        "subtype": "jouet"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [
+      "Facture Vélo"
+    ],
+    "verified": {
+      "ASSET": [
+        184
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    },
+    "extractedContent": "TICKET DE CAISSE — JOUETS & CIE\n24/04/2026 15:42\nDRAISIENNE BOIS 12 POUCES   129,00 €\nTOTAL TTC   129,00 €\nPAIEMENT CB",
+    "displayNames": [
+      "ticket-draisienne.jpg"
+    ],
+    "mimeTypes": [
+      "image/jpeg"
+    ]
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "title": {
+        "value": "Ticket Draisienne",
+        "confidence": "certain",
+        "excerpt": "DRAISIENNE BOIS 12 POUCES",
+        "page": 1
+      },
+      "documentDate": {
+        "value": "2026-04-24",
+        "confidence": "certain",
+        "excerpt": "24/04/2026 15:42",
+        "page": 1
+      },
+      "amountCents": {
+        "value": 12900,
+        "confidence": "certain",
+        "excerpt": "TOTAL TTC 129,00 €",
+        "page": 1
+      },
+      "supplier": {
+        "name": "Jouets Exemple",
+        "siret": null,
+        "confidence": "certain",
+        "excerpt": "JOUETS EXEMPLE"
+      },
+      "transcription": "JOUETS EXEMPLE\nTICKET DE CAISSE\n24/04/2026 15:42\nDRAISIENNE BOIS 12 POUCES 129,00\nTOTAL TTC 129,00 €",
+      "fields": [
+        {
+          "fieldKey": "désignation",
+          "provenance": "TEXT_EXTRACTION",
+          "value": "Draisienne bois 12 pouces",
+          "confidence": "certain",
+          "excerpt": "DRAISIENNE BOIS 12 POUCES",
+          "page": 1,
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        }
+      ],
+      "hasExploitableContent": true
+    }
+  }
+}

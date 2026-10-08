@@ -149,7 +149,7 @@ export const EVAL_CASES: EvalCase[] = [
 
   // ── Aide produit (Centre d'aide §5) ──────────────────────────────────────
   { id: 'aide-1', ref: 'CA §5 T2-01', category: 'aide', message: 'Comment ajouter un document ?', intent: 'PRODUCT_HELP_HOW_TO', answer: /Ajouter un document/ },
-  { id: 'aide-3', ref: 'CA §5 T2-03', category: 'absent', message: 'Comment ajouter un document ?', intent: 'PRODUCT_HELP_HOW_TO', sources: 'none', primaryAction: 'START_ADD_DOCUMENT', answer: /ne peux pas répondre de façon fiable/ },
+  { id: 'aide-3', ref: 'CA §5 T2-03', category: 'absent', message: 'Comment ajouter un document ?', intent: 'PRODUCT_HELP_HOW_TO', sources: 'none', primaryAction: 'START_ADD_DOCUMENT', answer: /pas trouvé dans le Centre d’aide d’information suffisamment fiable/ },
 
   // ── Recherche découpée et cartes groupées (§11.2, §11.3, §22.3, 37.1) ────
   { id: 'rech-1', ref: '§11.3, 37.1', category: 'recherche', message: 'Retrouve mes factures', intent: 'ACCOUNT_SEARCH_DOCUMENT', resultCards: true, answer: /J’ai trouvé \d+ résultats/ },

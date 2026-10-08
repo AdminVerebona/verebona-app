@@ -47,6 +47,8 @@ const COST_CAP_REASON_PREFIX = 'Plafond IA du mois atteint';
 import { buildAgendaCandidatesT4, attachEvidenceToCandidates } from './steps/build-agenda-candidates.step';
 import { persistProjectedFacts } from './steps/persist-evidence.step';
 import { persistAnalysisResult } from './persistence/analysis-result.repository';
+import { titleInputsFromAnalysis } from './document-title';
+import { ensureBusinessTitle } from '@/services/documents/document-title.service';
 import { notifyLotCompleted } from './lot-notification';
 import { broadcast } from './stream/broadcast';
 import { emitSourceAnalyzed } from './events';
@@ -299,6 +301,28 @@ export async function runSourceAnalysis(
         promptVersion: master.promptVersion,
       })).catch((e: Error) => {
         console.error(`[source-analysis] base de connaissance du fichier ${leadSourceId} non écrite :`, e.message);
+      });
+
+      // ══════════════════════════════════════════════════════════════════
+      // ÉTAPE 12 bis-2 — TITRE MÉTIER (lot 33C, ticket T1/T3)
+      //
+      // Analyse terminée, données persistées → contrôle du titre courant →
+      // (re)construction si nécessaire → persistance, par le service COMMUN
+      // à T1 et T3. Avant le lot 33C, le titre n'était écrit que par
+      // `persistAnalysisResult` : jamais sur un run dédupliqué, jamais par-
+      // dessus la marque `user_edited_fields.retainedTitle` — que le tiroir
+      // posait À TORT en réenregistrant le nom de fichier (« <uuid>.pdf »).
+      // Ne lève jamais (sauf interruption) : une analyse réussie n'est pas
+      // perdue pour un titre ; T3 rattrape.
+      // ══════════════════════════════════════════════════════════════════
+      await guard?.assertActive('titre du document');
+      await ensureBusinessTitle({
+        fileId: leadSourceId,
+        accountId: input.accountId,
+        origin: 'T1',
+        mode: 'refresh',
+        inputs: titleInputsFromAnalysis(result),
+        guard: guard ?? undefined,
       });
 
       // ══════════════════════════════════════════════════════════════════

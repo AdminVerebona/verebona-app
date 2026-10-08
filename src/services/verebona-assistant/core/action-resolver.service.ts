@@ -52,6 +52,12 @@ export interface AccessChecker {
    */
   supplierInAccount?(accountId: number, supplierId: number): Promise<boolean>;
   helpEntryPublished(slug: string): Promise<boolean>;
+  /**
+   * Noms des biens du compte (lot 33) : libellé « Ouvrir « <nom> » » quand
+   * la réponse propose PLUSIEURS biens. Facultatif : sans lui, le libellé
+   * générique est conservé.
+   */
+  assetNames?(accountId: number, assetIds: number[]): Promise<Map<number, string>>;
 }
 
 /**
@@ -264,14 +270,6 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     if (!allowed.has(ai.type)) continue;
     const def = getActionDefinition(ai.type);
 
-    // Un même bien remonté par plusieurs sources (le bien lui-même, une de ses
-    // pièces, un de ses équipements) ne doit pas produire trois fois le même
-    // bouton — et surtout pas consommer trois fois le quota du §22.9.
-    const cle = `${ai.type}:${ai.targetId ?? ''}:${ai.params?.tab ?? ''}`;
-    if (vues.has(cle)) continue;
-
-    if (def.isBusinessAction && businessCount >= 3) continue;
-
     // ── Décodage de la cible (§18.4) ────────────────────────────────────
     // Le type de l'action impose la famille attendue. Une cible d'une autre
     // famille — ou fabriquée — donne `null`, donc un refus.
@@ -282,6 +280,20 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     const sansCible = CIBLE_FACULTATIVE.has(ai.type) && (ai.targetId == null || ai.targetId === '');
     const ref = attendu && !sansCible ? parseEntityRef(ai.targetId, attendu) : null;
     if (attendu && !sansCible && !ref) continue;
+
+    // Un même bien remonté par plusieurs sources (le bien lui-même, une de ses
+    // pièces, un de ses équipements, ou — lot 33 — plusieurs CHAMPS de sa
+    // fiche : adresse, code postal, ville) ne produit qu'UN bouton, et ne
+    // consomme qu'une fois le quota du §22.9. La clé est la CIBLE décodée,
+    // pas l'identifiant de source (`asset_field:12:address` ≠
+    // `asset_field:12:city` désignent le même bien). « Ouvrir le bien » :
+    // un bouton par bien, quel que soit l'onglet.
+    const cle = ref
+      ? `${ai.type}:${ref.kind}:${ref.id}${ai.type === 'OPEN_ASSET' ? '' : `:${ai.params?.tab ?? ''}`}`
+      : `${ai.type}:${ai.targetId ?? ''}:${ai.params?.tab ?? ''}`;
+    if (vues.has(cle)) continue;
+
+    if (def.isBusinessAction && businessCount >= 3) continue;
 
     // Offre (§22.7 étape 3), avant tout accès en base.
     if (!offrePermet(ai.type, ai.params, input.planType, input.planLimit)) continue;
@@ -324,7 +336,33 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     if (def.isBusinessAction) businessCount++;
   }
 
-  return out;
+  return libellerBiensMultiples(out, input);
+}
+
+/** Longueur maximale d'un nom de bien dans un libellé de bouton. */
+const NOM_BOUTON_MAX = 40;
+
+/** Libellé d'ouverture d'un bien NOMMÉ (pure, testée) : « Ouvrir « Maison » ». */
+export function libelleOuvrirBien(nom: string): string {
+  const n = nom.trim().replace(/\s+/g, ' ');
+  return `Ouvrir « ${n.length > NOM_BOUTON_MAX ? `${n.slice(0, NOM_BOUTON_MAX - 1).trimEnd()}…` : n} »`;
+}
+
+/**
+ * Lot 33 : réponse qui concerne PLUSIEURS biens → un bouton par bien,
+ * libellé « Ouvrir « <nom du bien> » » (nom lu en base, borné au compte).
+ * Un seul bien : « Ouvrir le bien » inchangé.
+ */
+async function libellerBiensMultiples(out: VerebonaAction[], input: ResolveActionsInput): Promise<VerebonaAction[]> {
+  const biens = out.filter((a) => a.type === 'OPEN_ASSET' && a.targetRef?.startsWith('asset:'));
+  const ids = [...new Set(biens.map((a) => Number(a.targetRef!.slice('asset:'.length))))].filter((n) => Number.isInteger(n) && n > 0);
+  if (ids.length < 2 || !input.access.assetNames) return out;
+  const noms = await input.access.assetNames(input.accountId, ids).catch(() => new Map<number, string>());
+  return out.map((a) => {
+    if (!biens.includes(a)) return a;
+    const nom = noms.get(Number(a.targetRef!.slice('asset:'.length)));
+    return nom && nom.trim() ? { ...a, label: libelleOuvrirBien(nom) } : a;
+  });
 }
 
 async function checkAccess(

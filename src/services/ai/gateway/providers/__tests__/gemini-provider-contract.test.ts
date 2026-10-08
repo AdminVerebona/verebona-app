@@ -106,12 +106,14 @@ describe('réponse rendue à la passerelle', () => {
       candidates: [{ content: { parts: [{ text: 'pensée', thought: true }, { text: '{"ok":true}' }] }, finishReason: 'STOP' }],
     }));
     const out = await new GeminiProvider().call(appel());
-    expect(out).toEqual({ rawText: '{"ok":true}', inputTokens: 120, outputTokens: 30 });
+    expect(out).toMatchObject({ rawText: '{"ok":true}', inputTokens: 120, outputTokens: 30 });
+    // Lot 33D : métadonnées natives conservées pour le rapport d'appel.
+    expect(out.meta).toMatchObject({ finishReason: 'STOP', thoughtsTokens: 50 });
   });
 
   it('sans usage : jetons à 0 ; réponse vide : chaîne vide (sortie invalide pour le validateur)', async () => {
     sdk.generateContent.mockResolvedValue({ candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] });
-    expect(await new GeminiProvider().call(appel())).toEqual({ rawText: '', inputTokens: 0, outputTokens: 0 });
+    expect(await new GeminiProvider().call(appel())).toMatchObject({ rawText: '', inputTokens: 0, outputTokens: 0, meta: { finishReason: 'STOP' } });
     expect(responseText({})).toBe('');
   });
 

@@ -72,11 +72,12 @@ describe('exécutant T1 : une seule reprise pour un échec définitif', () => {
   });
 
   it('second essai en échec définitif : job clos sans nouvelle tentative', async () => {
-    await expect(lancer(definitif, job({ attempts: 2 }))).resolves.toBeUndefined();
+    // Lot 33D (cas 7) : job DONE, mais résultat MÉTIER en échec — jamais lisible comme une réussite.
+    await expect(lancer(definitif, job({ attempts: 2 }))).resolves.toMatchObject({ result: 'FAILED', detail: { fileId: 42 } });
   });
 
   it('remise en file après un échec hors file (`:reprise`) = la reprise : close dès le premier essai', async () => {
-    await expect(lancer(definitif, job({ payload: { fileId: 42, origin: 'documents/analyze:reprise' } }))).resolves.toBeUndefined();
+    await expect(lancer(definitif, job({ payload: { fileId: 42, origin: 'documents/analyze:reprise' } }))).resolves.toMatchObject({ result: 'FAILED' });
   });
 
   it('échec transitoire : toujours repris par la file (backoff), même au second essai', async () => {

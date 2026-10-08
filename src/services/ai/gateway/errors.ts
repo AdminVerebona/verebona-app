@@ -113,6 +113,35 @@ export function costCapResumeAt(e: unknown): Date | null {
 }
 
 /**
+ * Diagnostic attaché à une sortie invalide (lot 33D) : sous-type, étape,
+ * erreurs par chemin, chaîne de contrôles et corrections tentées. Le code
+ * reste `INVALID_OUTPUT` (compatibilité des appelants et de la politique
+ * d'échec), le détail voyage avec l'erreur jusqu'à la trace.
+ */
+export interface OutputFailureDetail {
+  subtype: import('./diagnostics/taxonomy').InvalidOutputSubtype;
+  stage: import('./diagnostics/taxonomy').AiFailureStage;
+  issues: import('./diagnostics/taxonomy').ValidationIssueDetail[];
+  issueCount: number;
+  controls: import('./diagnostics/taxonomy').ControlChain;
+  repairs: import('./diagnostics/taxonomy').OutputRepairStep[];
+  /** Texte JSON réellement parsé (extraction), s'il diffère de la réponse brute. */
+  extracted: string | null;
+  /** Sortie parsée, si le parsing a réussi. */
+  parsed: unknown;
+  /** Message d'origine (parseur, validateur). */
+  originalMessage: string | null;
+}
+
+/** Sortie modèle invalide, avec son diagnostic (récupérable : modèle suivant). */
+export class AiOutputInvalidError extends AiGatewayError {
+  constructor(operationCode: string, message: string, readonly detail: OutputFailureDetail, cause?: unknown) {
+    super('INVALID_OUTPUT', operationCode, message, { recoverable: true, cause });
+    this.name = 'AiOutputInvalidError';
+  }
+}
+
+/**
  * Sortie d'une opération master dont `task` n'est pas la branche demandée
  * (CDC 15 §22.2, validation discriminée). Code `INVALID_OUTPUT` et
  * récupérable, comme toute sortie invalide : le modèle suivant est essayé et
@@ -126,6 +155,8 @@ export class AiOutputTaskMismatchError extends AiGatewayError {
     readonly receivedTask: unknown,
     /** Discriminant du master : `TASK` (T1, T3, T4) ou `MODE` (T2, §24). */
     readonly discriminant: 'TASK' | 'MODE' = 'TASK',
+    /** Lot 33D : diagnostic de la sortie (INVALID_ENUM sur le discriminant). */
+    readonly detail?: OutputFailureDetail,
   ) {
     super('INVALID_OUTPUT', operationCode,
       `Sortie de la branche ${JSON.stringify(receivedTask ?? null)} au lieu de ${discriminant}=${expectedTask} (CDC 15 §22.2).`,

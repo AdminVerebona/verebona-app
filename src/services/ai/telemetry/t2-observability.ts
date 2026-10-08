@@ -19,11 +19,11 @@
 /** Source de vérité ayant produit la réponse. */
 export type T2TruthSource =
   | 'canonique' | 'fait' | 'tableau' | 'document' | 'agenda' | 'export'
-  | 'regle_offre' | 'modele' | 'clarification' | 'aucune' | 'autre';
+  | 'regle_offre' | 'centre_aide' | 'modele' | 'clarification' | 'aucune' | 'autre';
 
 export const T2_TRUTH_SOURCES: readonly T2TruthSource[] = [
   'canonique', 'fait', 'tableau', 'document', 'agenda', 'export',
-  'regle_offre', 'modele', 'clarification', 'aucune', 'autre',
+  'regle_offre', 'centre_aide', 'modele', 'clarification', 'aucune', 'autre',
 ];
 
 export interface T2ObservabilityTrace {
@@ -81,7 +81,8 @@ const PAR_TYPE_DE_SOURCE: Readonly<Record<string, T2TruthSource>> = {
   document_extraction: 'fait',
   agenda_item: 'agenda',
   export_item: 'export',
-  help_entry: 'regle_offre',
+  // Lot 33 : le Centre d'aide est une source de vérité à part entière.
+  help_entry: 'centre_aide',
   product_rule: 'regle_offre',
 };
 
@@ -94,7 +95,10 @@ export function truthSourceOf(strategy: string | null | undefined, sourceTypes: 
   const s = strategy ?? '';
   if (PAR_STRATEGIE[s]) return PAR_STRATEGIE[s];
   if (s.startsWith('clarification.') || s === 'reference.clarification') return 'clarification';
-  if (s.startsWith('template') || s.startsWith('help.') || s.startsWith('flag.')) return 'regle_offre';
+  // Lot 33 : réponse tirée d'un article (`help.exact_article`,
+  // `help.article_excerpt`, `help.contradiction`) → Centre d'aide.
+  if (s.startsWith('help.')) return 'centre_aide';
+  if (s.startsWith('template') || s.startsWith('flag.')) return 'regle_offre';
   if (s === 'llm' || s.startsWith('llm.')) {
     const dominant = Object.entries(sourceTypes).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
     return (dominant && PAR_TYPE_DE_SOURCE[dominant[0]]) || 'modele';

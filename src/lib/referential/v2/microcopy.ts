@@ -18,17 +18,12 @@
  * vérifiable — le test `microcopy.test.ts` balaie tous les textes.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import type { OrderMode } from '@/services/to-process/priority';
-
-/** §17.2 — page « À traiter ». */
-export function toProcessHeadline(count: number, mode: OrderMode): string {
-  if (count === 0) return 'Rien à traiter pour le moment.';
-  if (count === 1) return '1 action nécessite votre attention.';
-  return mode === 'BY_PRIORITY'
-    ? `${count} actions nécessitent votre attention. Les plus importantes sont affichées en premier.`
-    : `${count} actions nécessitent votre attention. Les actions sont classées par type.`;
-}
-
+/**
+ * §17.2 — page « À traiter ». Lot 33 (L33-6) : la phrase d'introduction
+ * (nombre d'actions et ordre d'affichage, singulier/pluriel/par type) est
+ * retirée de la page à la demande produit ; seul le message « filtres sans
+ * résultat » subsiste.
+ */
 export const TO_PROCESS_NO_FILTER_RESULT = 'Aucune action ne correspond à ces filtres.';
 
 /** §17.3 — pages documentaires. */

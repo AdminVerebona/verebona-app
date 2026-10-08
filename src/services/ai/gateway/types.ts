@@ -146,4 +146,11 @@ export interface AiGatewayResponse<T> {
   traceId: string;
   /** true si le résultat provient du cache d'idempotence (aucun appel émis). */
   fromCache: boolean;
+  /**
+   * Lot 33D — corrections appliquées à la sortie avant acceptation
+   * (extraction JSON, adaptateur de compatibilité, normalisation, réparation
+   * ciblée, retrait de champs facultatifs invalides). Vide ou absent : sortie
+   * acceptée telle quelle.
+   */
+  outputRepairs?: import('./diagnostics/taxonomy').OutputRepairStep[];
 }

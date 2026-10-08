@@ -21,9 +21,9 @@ const lecture = (entities: CanonicalEntityFieldReading[]): CanonicalFieldReading
 describe('réponse sur un champ porté par un équipement', () => {
   it('la valeur est rattachée à SON équipement, avec origine et preuve — jamais au bien', () => {
     expect(fieldAnswer(lecture([entite()])))
-      .toBe('Numéro de série de Chaudière : SN-77. Valeur retenue après rapprochement de vos documents (« Facture chaudière »).');
+      .toBe('Numéro de série de Chaudière : SN-77.');
     expect(fieldAnswer(lecture([entite(), entite({ target: { type: 'EQUIPMENT', id: 5 }, entityName: 'Ballon', display: 'B-1', origin: 'USER', originLabel: 'saisie par vous' })])))
-      .toContain('Numéro de série de Ballon : B-1. Valeur saisie par vous.');
+      .toContain('Numéro de série de Ballon : B-1.');
   });
 
   it('source de niveau champ : valeurs par entité, cibles et preuves dans la méta', () => {
@@ -37,6 +37,6 @@ describe('réponse sur un champ porté par un équipement', () => {
 
   it('pièce : surface', () => {
     const r = lecture([entite({ target: { type: 'ROOM', id: 2 }, entityName: 'Salon', key: 'roomArea', label: 'Surface de la pièce', value: 18.5, display: '18,5 m2', origin: 'USER', originLabel: 'saisie par vous', evidence: null })]);
-    expect(fieldAnswer({ ...r, key: 'roomArea', label: 'Surface de la pièce' })).toBe('Surface de la pièce de Salon : 18,5 m2. Valeur saisie par vous.');
+    expect(fieldAnswer({ ...r, key: 'roomArea', label: 'Surface de la pièce' })).toBe('Surface de la pièce de Salon : 18,5 m2.');
   });
 });

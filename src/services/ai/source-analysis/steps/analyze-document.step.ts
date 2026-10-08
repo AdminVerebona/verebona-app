@@ -115,6 +115,16 @@ export async function analyzeDocument(
     // Observabilité : compteurs seulement, aucune valeur métier.
     console.info(`[t1-capabilities] compte ${ctx.accountId} ${JSON.stringify(capabilityTrace)}`);
   }
+  // Lot 33D (§12, §13) : champs invalides retirés par la validation champ par
+  // champ — jamais silencieux ; le reste de l'analyse est conservé.
+  const retires = (res.outputRepairs ?? []).filter((r) => r.stage === 'field_pruning');
+  if (retires.length > 0) {
+    warnings.push({
+      code: 'PARTIAL_EXTRACTION',
+      message: `${retires.length} champ(s) invalide(s) de la sortie retiré(s) (${[...new Set(retires.map((r) => r.path))].slice(0, 5).join(', ')}) ; le reste de l’analyse est conservé.`,
+      target: 't1-master:fields-pruned',
+    });
+  }
   if (report?.truncatedFacts) {
     warnings.push({
       code: 'FACTS_TRUNCATED',

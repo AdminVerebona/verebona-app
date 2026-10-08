@@ -313,6 +313,24 @@ export interface CascadeTrace {
    * final ; `resolvedBy` : qui a complété la compréhension (déterministe, fil,
    * UNDERSTAND, clarification posée) — `null` si elle reste incomplète.
    */
+  /**
+   * Lot 33 : cascade du Centre d'aide (questions d'utilisation) — requêtes
+   * (initiale, élargies, issues d'UNDERSTAND), niveaux exécutés avec leurs
+   * candidats, scores et seuils, sources retenues avec l'étape qui les a
+   * trouvées, motif du repli (`core/help-cascade`).
+   */
+  help?: import('../core/help-cascade').HelpCascadeTrace;
+  /** Lot 33 : requête de recherche initiale (texte masqué des données sensibles). */
+  retrievalQueryInitial?: string;
+  /** Lot 33 : requêtes élargies et reformulées réellement exécutées. */
+  retrievalQueriesExpanded?: string[];
+  /**
+   * Lot 33 : motif d'un repli ou d'une escalade non exécutée —
+   * HELP_CORPUS_UNAVAILABLE, NO_RELIABLE_SOURCE, AI_NOT_ALLOWED,
+   * AI_UNAVAILABLE, AI_BUDGET_BLOCKED, AI_TIMEOUT, UNDERSTAND_NO_QUERY,
+   * NO_SOURCE_FOR_SYNTHESIS…
+   */
+  fallbackReason?: string | null;
   understanding?: {
     initialStatus: import('../core/understanding-status').UnderstandingStatus;
     status: import('../core/understanding-status').UnderstandingStatus;

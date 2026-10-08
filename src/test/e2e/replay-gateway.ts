@@ -34,9 +34,23 @@ export interface RecordedOutput {
   repeat?: boolean;
   /** Filtre optionnel sur le prompt envoyé (sous-chaîne attendue). */
   promptIncludes?: string;
+  /**
+   * Lot 33D — appel visé : `analysis` (défaut) ou `repair` (passe de
+   * réparation ciblée). Un enregistrement d'analyse n'est jamais consommé par
+   * une réparation, et inversement.
+   */
+  callKind?: 'analysis' | 'repair';
+  /** Lot 33D — métadonnées natives simulées (finish_reason MAX_TOKENS…). */
+  meta?: import('@/services/ai/gateway/providers/provider.port').ProviderResponseMeta;
+  /**
+   * Lot 33D — erreur fournisseur simulée (délai, 429, 400 sur le schéma…) :
+   * l'appel lève au lieu de rendre `output`.
+   */
+  error?: { message: string; status?: number; code?: string; recoverable?: boolean };
 }
 
-const cle = (operationCode: string, task?: string) => `${operationCode}::${task ?? '*'}`;
+const cle = (operationCode: string, task?: string, callKind?: 'analysis' | 'repair') =>
+  `${callKind === 'repair' ? 'repair:' : ''}${operationCode}::${task ?? '*'}`;
 
 export class ReplayProvider implements AiProvider {
   readonly name = 'replay';
@@ -53,7 +67,7 @@ export class ReplayProvider implements AiProvider {
 
   add(...recordings: RecordedOutput[]): this {
     for (const r of recordings) {
-      const k = cle(r.operationCode, r.task);
+      const k = cle(r.operationCode, r.task, r.callKind);
       const file = this.files.get(k) ?? [];
       file.push(r);
       this.files.set(k, file);
@@ -69,15 +83,23 @@ export class ReplayProvider implements AiProvider {
   async call(input: ProviderCallInput): Promise<ProviderCallOutput> {
     this.calls.push(input);
     const op = input.operationCode ?? '?';
-    const r = this.take(cle(op, input.task), input) ?? this.take(cle(op), input);
+    const kind = input.callKind;
+    const r = this.take(cle(op, input.task, kind), input) ?? this.take(cle(op, undefined, kind), input);
     if (!r) {
       throw new Error(
         `[replay] aucune sortie enregistrée pour l'opération « ${op} »`
-        + `${input.task ? ` (TASK ${input.task})` : ''} — aucun appel réseau n'est permis en E2E.`,
+        + `${input.task ? ` (TASK ${input.task})` : ''}${kind === 'repair' ? ' (réparation)' : ''} — aucun appel réseau n'est permis en E2E.`,
       );
     }
+    if (r.error) {
+      if (r.error.code === 'TIMEOUT') {
+        const { AiGatewayError } = await import('@/services/ai/gateway/errors');
+        throw new AiGatewayError('TIMEOUT', op, r.error.message, { recoverable: r.error.recoverable ?? true });
+      }
+      throw Object.assign(new Error(r.error.message), { ...(r.error.status ? { status: r.error.status } : {}), ...(r.error.code ? { code: r.error.code } : {}) });
+    }
     const rawText = typeof r.output === 'string' ? r.output : JSON.stringify(r.output);
-    return { rawText, inputTokens: r.inputTokens ?? 0, outputTokens: r.outputTokens ?? 0 };
+    return { rawText, inputTokens: r.inputTokens ?? 0, outputTokens: r.outputTokens ?? 0, ...(r.meta ? { meta: r.meta } : {}) };
   }
 
   private take(k: string, input: ProviderCallInput): RecordedOutput | null {

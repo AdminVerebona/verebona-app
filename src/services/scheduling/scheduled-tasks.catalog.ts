@@ -32,6 +32,10 @@
  *                                   que des demandes subsistent
  *   mascot-pregeneration            toutes les minutes            FOR UPDATE SKIP LOCKED + bail par compte
  *   mascot-pregeneration-deadlines  chaque jour à 5 h 40          une ligne par compte (upsert)
+ *   t1-invalid-output-replay        au démarrage, puis /h tant    contrainte unique (document,
+ *                                   qu'il reste des rejeux        version de résolution) — 0285
+ *   ai-call-diagnostics-purge       chaque jour à 5 h 50          suppressions idempotentes
+ *   ai-output-coherence-check       au démarrage                  lecture seule (diagnostic)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -313,6 +317,52 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       ]);
       const n = await enqueueDeadlineSituations(todayParis(), EXT_ACTION_LOOKBACK_DAYS);
       return { note: `${n} compte(s) signalé(s)` };
+    },
+  },
+  {
+    // Lot 33D (cas 8) : après un correctif de la résolution des sorties IA,
+    // les documents en échec « sortie invalide » repassent dans la file T1,
+    // sans action de l'utilisateur — un rejeu par document et par version.
+    code: 't1-invalid-output-replay',
+    label: 'IA : rejeu des analyses en échec « sortie invalide »',
+    schedule: { kind: 'startup', delayMs: 4 * MIN, retryMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async () => {
+      const { runInvalidOutputReplay } = await import('@/services/ai/source-analysis/invalid-output-replay.job');
+      const r = await runInvalidOutputReplay();
+      if (r.disabled) return { note: 'rejeu désactivé (AI_INVALID_OUTPUT_REPLAY=off)' };
+      return { note: JSON.stringify(r), again: r.more || r.pending > 0 || r.enqueued > 0 };
+    },
+  },
+  {
+    // Lot 33D : diagnostics d'appel et sorties modèle conservées — même
+    // horizon que les traces IA (AI_LOG_ARCHIVE_AFTER_DAYS, 88 jours).
+    code: 'ai-call-diagnostics-purge',
+    label: 'IA : purge des diagnostics et sorties modèle (rétention)',
+    schedule: { kind: 'daily', at: [5, 50], graceMs: 6 * HOUR },
+    timeoutMs: 15 * MIN,
+    run: async ({ deadline }) => {
+      const [{ purgeCallDiagnostics }, { archiveAfterDays }] = await Promise.all([
+        import('@/services/ai/gateway/diagnostics/diagnostic.repository'),
+        import('@/services/ai/telemetry/log-archive.job'),
+      ]);
+      const n = await purgeCallDiagnostics({ olderThanDays: archiveAfterDays(), deadline });
+      return { note: `${n} diagnostic(s) supprimé(s) (plus de ${archiveAfterDays()} jours)` };
+    },
+  },
+  {
+    // Lot 33D (§26) : cohérence prompt ↔ schéma ↔ adaptateurs au démarrage.
+    // Diagnostic seulement : ne bloque jamais rien (résultat dans la note).
+    code: 'ai-output-coherence-check',
+    label: 'IA : cohérence prompts / schémas de sortie (diagnostic)',
+    schedule: { kind: 'startup', delayMs: 2 * MIN, retryMs: 24 * HOUR },
+    timeoutMs: 2 * MIN,
+    run: async () => {
+      const { runOutputCoherenceCheck } = await import('@/services/ai/governance/output-coherence');
+      const r = await runOutputCoherenceCheck();
+      const alertes = r.report.flatMap((o) => o.findings.filter((f) => f.severity === 'warning').map((f) => `${o.operationCode} [${f.source}] ${f.message}`));
+      if (alertes.length) console.warn(`[ai-coherence] ${alertes.length} adaptation(s) nécessaire(s) :\n${alertes.join('\n')}`);
+      return { note: `${r.operations} opération(s) : ${r.warnings} adaptation(s) nécessaire(s), ${r.infos} information(s)${alertes.length ? ` — ${alertes.slice(0, 3).join(' | ').slice(0, 600)}` : ''}` };
     },
   },
 ];

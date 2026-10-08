@@ -32,7 +32,7 @@
  */
 import { registerJobHandler, nudgeQueueWorker, type JobOutcome } from '../../queue/queue-worker';
 import { enqueue, type QueuedJob } from '../../queue/job-queue.repository';
-import { JobDeferredError } from '../../queue/queue-policy';
+import { JobDeferredError, type JobBusinessResult } from '../../queue/queue-policy';
 import { AiCostCapReachedError } from '../../gateway/errors';
 import { REQUEUE_ORIGIN_SUFFIX } from '../failure-policy';
 
@@ -275,13 +275,35 @@ export function registerSourceAnalysisHandler(): void {
       const repriseDejaFaite = (job.attempts ?? 1) >= 2 || (payload.origin ?? '').endsWith(REQUEUE_ORIGIN_SUFFIX);
       if (definitif && repriseDejaFaite) {
         console.warn(`[t1-queue] travail ${job.id} : échec définitif du fichier ${fileId} après reprise — non relancé.`);
-        return;
+        // Lot 33D (§15, cas 7) : le job est DONE techniquement, mais le
+        // résultat MÉTIER est un échec — jamais lisible comme une réussite.
+        return t1FailedBusinessResult(fileId);
       }
       throw new T1AnalysisFailedError(fileId);
     }
   }, { onSettled: onT1JobSettled });
 
   console.info('[t1-queue] Exécutant T1 enregistré auprès du boucleur.');
+}
+
+/**
+ * Résultat métier FAILED d'un job T1 clos sans nouvelle tentative (lot 33D) :
+ * cause du dernier échec constaté pour le fichier (famille, sous-type, étape,
+ * signature) — identifiants et codes seulement, jamais de valeur métier.
+ */
+export async function t1FailedBusinessResult(fileId: number): Promise<JobBusinessResult> {
+  const { latestFailureForSource } = await import('../../gateway/diagnostics/diagnostic.repository');
+  const cause = await latestFailureForSource(fileId).catch(() => null);
+  return {
+    result: 'FAILED',
+    detail: {
+      fileId,
+      ...(cause ? {
+        cause: cause.subtype ? `${cause.family} / ${cause.subtype}` : cause.family,
+        stage: cause.stage, signature: cause.signature, traceId: cause.traceId,
+      } : { cause: 'INVALID_OUTPUT' }),
+    },
+  };
 }
 
 /**

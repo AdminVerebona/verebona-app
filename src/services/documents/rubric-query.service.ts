@@ -73,6 +73,7 @@ import {
   type KeysetNode,
 } from './document-cursor';
 import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition, documentWithoutAssetCondition } from './asset-document-scope';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
 /** Identifiant de la zone « Sans rubrique ». Jamais un code de Rubrique (§2.1). */
 export const UNFILED_GROUP = FEED_UNFILED;
@@ -374,7 +375,8 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
       publicId: row.publicId,
       // §4.3 : jamais le nom de fichier comme titre principal, mais un repli
       // vaut mieux qu'une carte anonyme.
-      title: row.title ?? row.filename ?? row.fallback ?? 'Document',
+      // Lot 33C : titre métier → nom original exploitable → nom technique.
+      title: displayDocumentTitle({ retainedTitle: row.title, originalFilename: row.filename, filename: row.fallback, publicId: row.publicId }, 'Document'),
       originalFilename: row.filename ?? row.fallback ?? null,
       assetId: row.assetId ?? null,
       rubricCode: row.rubricCode ?? null,

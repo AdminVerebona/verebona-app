@@ -62,7 +62,7 @@ describe('lecture canonique', () => {
   it('T2-22 / T2-32 : un champ du registre, source de niveau champ', async () => {
     const r = await ask('Quel est le kilométrage de la Clio ?');
     expect(r.strategy).toBe('structured.asset_field');
-    expect(r.answer).toBe('Kilométrage de Clio : 45 000 km. Valeur retenue après rapprochement de vos documents.');
+    expect(r.answer).toBe('Kilométrage de Clio : 45 000 km.');
     expect(r.sources[0].id).toBe('asset_field:42:mileage');
     expect(r.claims[0].sourceIds).toEqual(['asset_field:42:mileage']);
   });
@@ -112,7 +112,7 @@ describe('lecture canonique', () => {
     const r = await ask('le compteur de la Clio', port({ searchFacts: async () => [fait] }));
     expect(r.strategy).toBe('retrieval.canonical_field');
     expect(r.answer).toContain('45 000 km');
-    expect(r.answer).toMatch(/« PV CT » indique une autre valeur \(44\s000\skm\) : la valeur de votre fiche fait foi\./);
+    expect(r.answer).toMatch(/Un document indique une autre valeur \(44\s000\skm\) : la valeur de votre fiche fait foi\./);
   });
 });
 

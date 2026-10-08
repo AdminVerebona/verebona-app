@@ -4,7 +4,7 @@
  * Exécuté AVANT tout import de `@/db` par les scénarios : la connexion
  * applicative vise la base E2E de l'exécution.
  */
-import { inject, beforeEach } from 'vitest';
+import { inject, beforeEach, afterAll } from 'vitest';
 
 process.env.DATABASE_URL = inject('e2eDatabaseUrl');
 // Ni clé ni réseau : la passerelle passe par le rejeu (`replay-gateway.ts`).
@@ -23,4 +23,13 @@ beforeEach(() => {
     throw new Error(`[e2e] appel réseau interdit : ${String((input as { url?: string })?.url ?? input)}`);
   }) as typeof fetch;
   return () => { globalThis.fetch = fetchOrigine; };
+});
+
+// Lot 33 : les pré-générations rapides de la mascotte (minuteurs de 3 s) ne
+// doivent pas survivre au fichier qui les a déclenchées — sinon elles
+// tournent pendant le fichier suivant (même processus) et faussent ses
+// compteurs d'appels IA.
+afterAll(async () => {
+  const m = await import('@/services/home/mascot/mascot.service');
+  m.cancelPendingPregenerations();
 });
