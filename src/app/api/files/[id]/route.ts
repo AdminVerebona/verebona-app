@@ -68,7 +68,11 @@ export async function GET(
       return accessErrorResponse('not-found', requestId, { code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.' });
     }
 
-    return NextResponse.json(file, { status: 200 });
+    // Lot 34C : jamais de motif technique d'analyse vers l'application ;
+    // statut fonctionnel calculé sur l'état réel (job de file, document).
+    const { toUserFiles } = await import('@/services/ai/processing-status/processing-status.service');
+    const [projete] = await toUserFiles([file]);
+    return NextResponse.json(projete, { status: 200 });
   } catch (error) {
     // Refus de session (absente, invalide, révoquée…) ou vérification
     // impossible : 401/403/503 du contrat commun (APP-PERF-20), non

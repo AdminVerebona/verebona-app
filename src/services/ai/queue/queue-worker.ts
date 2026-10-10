@@ -56,7 +56,7 @@ import type { Treatment } from '../config/treatments';
 import { listBatchTreatments } from '../config/treatments';
 import {
   claimNext, completeJob, failJob, deferJob, deferJobUntil, renewLease, recoverAbandonedJobs, isExecutionActive, LEASE_SECONDS,
-  releaseInterruptedJob, type QueuedJob,
+  releaseInterruptedJob, recordJobAttempt, type QueuedJob,
 } from './job-queue.repository';
 import { isCostCapReached, costCapResumeAt } from '../gateway/errors';
 import { isJobDeferred, isPermanentJobError, isBusinessResult, type JobBusinessResult } from './queue-policy';
@@ -241,6 +241,8 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
     execution = runInJobContext(
       {
         jobId: job.id, treatment, configVersionId: job.configVersionId ?? configVersionId,
+        // Lot 34C : tentative en cours, tracée avec chaque appel modèle.
+        jobAttempt: job.attempts ?? null,
         // CDC 15 OBS-CFG : déclencheur effectif, tracé avec chaque appel.
         triggerCode: job.triggerCode ?? null,
         signal: controller.signal,
@@ -351,7 +353,21 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
     if (heartbeat) clearInterval(heartbeat);
     unregisterLocalExecution(job.id, controller);
   }
-  if (outcome) await settle(treatment, job, outcome);
+  if (outcome) {
+    // Lot 34C : historique de la tentative (BO › Exécutions IA), lu après la
+    // clôture — retry réellement prévu ou non, prochaine tentative.
+    try {
+      await recordJobAttempt(job.id, {
+        attempt: job.attempts,
+        startedAt: job.startedAt,
+        outcome: outcome.kind,
+        businessResult: outcome.kind === 'done' ? outcome.result?.result ?? null : null,
+        error: outcome.kind === 'failed' ? outcome.error : outcome.kind === 'done' ? null : outcome.reason,
+        timedOut: outcome.kind === 'failed' && outcome.timedOut,
+      });
+    } catch { /* l'historique ne bloque jamais la file */ }
+    await settle(treatment, job, outcome);
+  }
   return true;
 }
 

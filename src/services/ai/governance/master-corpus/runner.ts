@@ -8,6 +8,10 @@
  *   2. validation discriminée de la sortie enregistrée (branche + schéma du
  *      contrat), exactement comme la passerelle ;
  *   3. contrôle serveur de la branche (`evaluators.ts`) contre l'attendu.
+ * Lot 34D — prompt en CONTEXTE STRUCTURÉ (T4) : l'étape 1 ne rend plus
+ * d'emplacements ; elle construit et VALIDE le contexte d'exécution du cas
+ * (contrat d'entrée de la configuration, mêmes variables que les appelants
+ * réels — `liveVariablesFor`), exactement comme la passerelle.
  * Aucun appel modèle, aucune écriture métier : exécutable en CI, en
  * préproduction ou en production (seul le résultat est enregistré, par
  * `recordCorpusRun`).
@@ -25,6 +29,10 @@ import { declaredMasterVariables } from '../../config/prompt-architecture';
 import { treatmentForUseCase, type Treatment } from '../../config/treatments';
 import { loadMasterCorpusCases, type MasterCorpusCase, type MasterFileReader } from './cases';
 import { MASTER_CORPUS_EVALUATORS } from './evaluators';
+import {
+  buildExecutionContext, checkExecutionConfig, executionConfigFor, structuredSpecFor, type MasterExecutionConfig,
+} from '../../master-prompts/structured-context';
+import { contractVersionsOf } from '../../gateway/output-resolution/runtime-contract';
 
 export interface CorpusCaseOutcome {
   id: string;
@@ -55,8 +63,12 @@ export interface MasterCorpusResult {
 }
 
 export interface RunMasterCorpusOptions {
-  /** Texte à évaluer par master (sinon fichier du dépôt). */
-  texts?: Record<string, { text: string; source: 'file' | 'config' }>;
+  /**
+   * Texte à évaluer par master (sinon fichier du dépôt). `execution` (lot
+   * 34D) : mode de la version évaluée ; absent : LEGACY_TEMPLATE pour un
+   * texte de configuration, mode déclaré pour le fichier du dépôt.
+   */
+  texts?: Record<string, { text: string; source: 'file' | 'config'; execution?: MasterExecutionConfig | null }>;
   /** Limiter aux masters de ces traitements. */
   treatments?: Treatment[];
   /** Lecture du fichier master (injectable) — aussi pour `@@MASTER_FILE@@`. */
@@ -76,9 +88,30 @@ export interface RunMasterCorpusOptions {
 
 async function runCase(
   c: MasterCorpusCase, text: string, readMasterFile: MasterFileReader, tasks: string[],
-  live?: RunMasterCorpusOptions['live'],
+  live?: RunMasterCorpusOptions['live'], execution?: MasterExecutionConfig,
 ): Promise<CorpusCaseOutcome | null> {
   const base = { id: c.id, task: c.task, file: c.file, level: c.operationCode in MASTER_CORPUS_EVALUATORS ? 'full' as const : 'schema' as const };
+  const spec = structuredSpecFor(c.masterPromptCode);
+  if (spec && execution?.mode === 'STRUCTURED_CONTEXT') {
+    // 1 (lot 34D). Contexte structuré : configuration, puis contexte du cas.
+    const reelles = live ? live.variablesFor(c) : null;
+    if (live && !reelles) return null;
+    try {
+      const issues = checkExecutionConfig(spec, execution, (name, v) => contractVersionsOf(name).includes(v));
+      if (issues.length) return { ...base, passed: false, errors: issues.map((i) => `configuration : ${i.message}`) };
+      const { liveVariablesFor } = await import('./live');
+      const variables = reelles ?? await liveVariablesFor(c) ?? (c.context.variables as Record<string, unknown> | undefined) ?? {};
+      buildExecutionContext(spec, execution, c.task, variables);
+      if (live) {
+        let sortie: unknown;
+        try { sortie = await live.call(c, variables); } catch (e) { return { ...base, passed: false, errors: [`appel réel : ${(e as Error).message}`] }; }
+        return finish(c, sortie, base, text, readMasterFile);
+      }
+    } catch (e) {
+      return { ...base, passed: false, errors: [`contexte : ${(e as Error).message}`] };
+    }
+    return finish(c, c.output, base, text, readMasterFile);
+  }
   // 1. Rendu de la branche sur le texte évalué.
   try {
     // Tous les emplacements déclarés par le code (valeur nulle par défaut) ;
@@ -147,8 +180,10 @@ export async function runMasterCorpus(o: RunMasterCorpusOptions): Promise<Master
     const mine = cases.filter((c) => c.masterPromptCode === m.masterPromptCode);
     const outcomes: CorpusCaseOutcome[] = [];
     const ignores: string[] = [];
+    const execution = given?.execution
+      ?? executionConfigFor({ masterPromptCode: m.masterPromptCode, source: given ? (given.source === 'file' ? 'file' : 'config') : 'file' });
     for (const c of mine) {
-      const r = await runCase(c, text, o.readMasterFile, m.tasks, o.live);
+      const r = await runCase(c, text, o.readMasterFile, m.tasks, o.live, execution);
       if (r) outcomes.push(r); else ignores.push(c.id);
     }
     const branchesPassed = m.tasks.filter((t) => outcomes.some((x) => x.task === t && x.passed));

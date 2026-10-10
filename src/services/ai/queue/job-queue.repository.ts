@@ -408,13 +408,60 @@ export async function recoverAbandonedJobs(): Promise<Array<{ id: number; status
               ELSE 'exécution abandonnée (processus arrêté) — reprise automatique' END,
             execution_id = NULL, worker_id = NULL, lease_expires_at = NULL,
             started_at = NULL, head_priority = TRUE, available_at = NOW(),
-            recovered_count = q.recovered_count + 1
+            recovered_count = q.recovered_count + 1,
+            -- Lot 34C : la tentative abandonnée figure dans l'historique du job.
+            attempt_history = COALESCE(q.attempt_history, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+              'attempt', q.attempts, 'startedAt', q.started_at, 'endedAt', NOW(), 'outcome', 'abandoned',
+              'error', 'exécution abandonnée (processus arrêté)',
+              'retryScheduled', q.attempts < $2,
+              'nextAttemptAt', CASE WHEN q.attempts < $2 THEN NOW() END,
+              'statusAfter', CASE WHEN q.attempts >= $2 THEN 'FAILED' ELSE 'PENDING' END))
        FROM abandonnes a
       WHERE q.id = a.id
       RETURNING q.id, q.status`,
     [String(LEGACY_STALE_SECONDS), MAX_ATTEMPTS] as never[],
   );
   return (rows as unknown as Row[]).map((r) => ({ id: Number(r.id), status: String(r.status) as JobStatus }));
+}
+
+/**
+ * Issue d'une tentative, ajoutée à l'historique du job — lot 34C.
+ *
+ * Écrite APRÈS la clôture (succès, échec, report, interruption) : le retry
+ * prévu et la date de la prochaine tentative sont LUS sur la ligne du job
+ * telle que la clôture l'a laissée (`PENDING` = une nouvelle tentative
+ * attend réellement), jamais supposés. Le motif est technique (BO
+ * seulement), borné. Best effort : l'historique ne fait jamais échouer la
+ * file (migration 0288 absente, base indisponible).
+ */
+export interface AttemptRecord {
+  attempt: number;
+  startedAt: Date | null;
+  outcome: 'done' | 'failed' | 'interrupted' | 'deferred';
+  businessResult?: string | null;
+  error?: string | null;
+  timedOut?: boolean;
+}
+
+export async function recordJobAttempt(jobId: number, rec: AttemptRecord): Promise<void> {
+  try {
+    await pgClient.unsafe(
+      `UPDATE ai_job_queue
+          SET attempt_history = COALESCE(attempt_history, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+                'attempt', $2::int, 'startedAt', $3::timestamptz, 'endedAt', NOW(), 'outcome', $4::text,
+                'businessResult', $5::text, 'error', $6::text, 'timedOut', $7::boolean,
+                'retryScheduled', status = 'PENDING' AND $4::text = 'failed',
+                'nextAttemptAt', CASE WHEN status = 'PENDING' THEN available_at END,
+                'statusAfter', status))
+        WHERE id = $1`,
+      [
+        jobId, rec.attempt, rec.startedAt ? rec.startedAt.toISOString() : null, rec.outcome,
+        rec.businessResult ?? null, rec.error ? rec.error.slice(0, 500) : null, rec.timedOut === true,
+      ] as never[],
+    );
+  } catch (e) {
+    console.warn(`[queue] historique de la tentative du job ${jobId} non écrit (non bloquant) :`, (e as Error).message);
+  }
 }
 
 /**

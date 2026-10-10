@@ -367,6 +367,16 @@ export async function canUsePremiumFeature(accountId: number): Promise<Decision>
 }
 
 /**
+ * Peut-on creer des dossiers (et ecrire leurs informations de preparation) ?
+ * Lot 34, point 6 : droit FONCTIONNEL, jamais le nom d'une offre. C'est le
+ * droit deja applique a la preparation et a la generation des dossiers
+ * (`canUsePremiumFeature`) : Premium, Premium Duo, essai, futures offres.
+ */
+export async function canCreateDossiers(accountId: number): Promise<Decision> {
+  return canUsePremiumFeature(accountId);
+}
+
+/**
  * Etat d'usage d'un quota, pour l'affichage « 1 bien sur 2 »
  * et l'alerte a partir de 80 % (CDC §9.4).
  */

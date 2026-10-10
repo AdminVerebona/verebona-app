@@ -5,7 +5,7 @@
  * Desktop : pilule centrée dans le header, 420 px au repos, 640 px quand
  * l'espace est ouvert ; le panneau de réponse est accroché dessous.
  * Mobile : pilule de 46 px dans la barre haute ; un tap ouvre l'espace en
- * plein écran, champ ancré en bas.
+ * plein écran, champ EN HAUT et panneau dessous, comme desktop (lot 34).
  *
  * Un seul champ pour chercher et demander : la frappe propose les biens,
  * documents, échéances et pages qui correspondent (flèches pour choisir,
@@ -232,8 +232,16 @@ export function VerebonaMobileField() {
 }
 
 /**
- * Espace plein écran mobile (§6.3), champ ancré en bas au-dessus du clavier.
- * Fenêtre modale : le focus y est piégé et revient à la pilule à la fermeture.
+ * Espace plein écran mobile (§6.3) — même comportement que desktop (lot 34,
+ * point 2) : le CHAMP EN HAUT, à la place du titre, et le panneau
+ * (suggestions, recherches récentes, correspondances, échanges) DESSOUS.
+ *
+ * Le champ ancré en bas venait du lot 8 (maquette D v2), qui avait remplacé
+ * l'ancien `MobileSearchOverlay` (champ en haut). En haut, le clavier iOS
+ * ne recouvre jamais le champ : plus de saut de page à l'ouverture du
+ * clavier, la saisie reste visible pendant la frappe. Police 16 px (pas de
+ * zoom iOS au focus). Fenêtre modale : le focus y est piégé et revient à la
+ * pilule à la fermeture.
  */
 export function VerebonaMobileSpace() {
   const api = useVerebonaSpace();
@@ -248,53 +256,54 @@ export function VerebonaMobileSpace() {
         role="dialog"
         aria-modal="true"
         aria-label="Verebona"
+        data-field-position="top"
         className="fixed inset-0 z-[70] flex flex-col bg-[color:var(--bg-page)] pt-[env(safe-area-inset-top)] [animation:vb-slide-up_.3s_cubic-bezier(.16,1,.3,1)]"
         style={{ height: '100dvh' }}
       >
-        <header className="flex flex-shrink-0 items-center gap-1.5 border-b border-[color:var(--border-subtle)] px-3.5 pb-2.5 pt-1">
-          <button type="button" onClick={api.close} aria-label="Fermer" className="-ml-2 flex h-11 w-11 items-center justify-center text-[color:var(--text-primary)]">
-            <X className="h-5 w-5" aria-hidden />
-          </button>
-          <div className="min-w-0 flex-1 text-right">
-            <div className="truncate text-[14px] font-semibold text-[color:var(--text-primary)]">
-              {n ? 'Verebona' : 'Que puis-je faire pour vous aujourd’hui ?'}
+        <header className="flex flex-shrink-0 flex-col gap-2 border-b border-[color:var(--border-subtle)] px-3.5 pb-2.5 pt-2">
+          <div className="flex items-center gap-2">
+            <div
+              className="flex h-12 min-w-0 flex-1 items-center gap-2 rounded-full border pl-2.5 pr-1.5"
+              style={{ background: 'var(--field-bg)', borderColor: 'var(--accent)', boxShadow: '0 0 0 3px rgba(59,130,246,.2)' }}
+            >
+              <MascotPose pose={api.pose} size={28} priority />
+              <input
+                ref={api.registerInput}
+                type="text"
+                role="combobox"
+                aria-expanded={api.live.length > 0}
+                aria-controls={LIVE_LIST_ID}
+                aria-label="Demander à Verebona"
+                {...a11y}
+                value={text}
+                maxLength={2000}
+                enterKeyHint="send"
+                autoComplete="off"
+                autoCorrect="off"
+                onChange={(e) => api.setDraft(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder={fieldPlaceholder(n)}
+                className="h-full min-w-0 flex-1 border-0 bg-transparent text-[16px] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
+              />
+              <SendButton api={api} canSend={etat.canSend} onSend={submit} size={38} />
             </div>
-            <div className="text-[11.5px] text-[color:var(--text-muted)]">{exchangeCountLabel(n) || 'Rechercher, retrouver ou demander…'}</div>
-          </div>
-          {n > 0 && (
-            <button type="button" onClick={api.newRequest} className="h-11 whitespace-nowrap px-1 text-[12.5px] font-medium text-[color:var(--accent)]">
-              Nouvelle demande
+            <button type="button" onClick={api.close} aria-label="Fermer" className="-mr-1.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-[10px] text-[color:var(--text-primary)]">
+              <X className="h-5 w-5" aria-hidden />
             </button>
-          )}
-          <MascotPose pose={api.pose} size={46} style={{ filter: 'drop-shadow(0 8px 12px rgba(4,10,26,.5))' }} />
-        </header>
-        <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-[18px] pb-3 pt-4">
-          <SpaceBody variant="mobile" scrollRef={scrollRef} />
-        </div>
-        <div className="flex-shrink-0 border-t border-[color:var(--border-subtle)] bg-[color:var(--bg-page)] px-3.5 pb-[max(12px,env(safe-area-inset-bottom))] pt-2.5">
-          {etat.notice && <p role="status" className="mb-2 text-[12px] text-[color:var(--on-amber)]">{etat.notice}</p>}
-          <div
-            className="flex h-12 items-center gap-2 rounded-full border pl-4 pr-1.5"
-            style={{ background: 'var(--field-bg)', borderColor: 'var(--accent)', boxShadow: '0 0 0 3px rgba(59,130,246,.2)' }}
-          >
-            <input
-              ref={api.registerInput}
-              type="text"
-              role="combobox"
-              aria-expanded={api.live.length > 0}
-              aria-controls={LIVE_LIST_ID}
-              aria-label="Demander à Verebona"
-              {...a11y}
-              value={text}
-              maxLength={2000}
-              enterKeyHint="send"
-              onChange={(e) => api.setDraft(e.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder={n ? 'Poursuivre…' : 'Rechercher, retrouver ou demander…'}
-              className="h-full min-w-0 flex-1 border-0 bg-transparent text-[16px] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
-            />
-            <SendButton api={api} canSend={etat.canSend} onSend={submit} size={38} />
           </div>
+          {etat.notice && <p role="status" className="m-0 px-1 text-[12px] text-[color:var(--on-amber)]">{etat.notice}</p>}
+          {n > 0 && (
+            <div className="flex items-center gap-2.5 pl-1">
+              <span className="text-[13px] font-semibold text-[color:var(--text-primary)]">Verebona</span>
+              <span className="text-[12px] text-[color:var(--text-muted)]">{exchangeCountLabel(n)}</span>
+              <button type="button" onClick={api.newRequest} className="ml-auto h-9 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-medium text-[color:var(--accent)]">
+                Nouvelle demande
+              </button>
+            </div>
+          )}
+        </header>
+        <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-[18px] pb-[max(16px,env(safe-area-inset-bottom))] pt-4">
+          <SpaceBody variant="mobile" scrollRef={scrollRef} />
         </div>
       </section>
     </FocusScope>

@@ -57,17 +57,19 @@ export async function getT1QueueStatus(accountId: number): Promise<T1QueueStatus
     [accountId, LIMIT] as never[],
   );
 
+  // Lot 34C (cas 7) : seul `ANALYZING` (analyse directe, hors file) compte
+  // sans job. Un document `UPLOADED` n'est « en file » que si un job T1
+  // l'attend réellement (lecture ci-dessous) : sans job, il n'est pas
+  // affiché comme une analyse en attente.
   const parFichier = new Map<number, T1FileStatus>();
   for (const r of fichiers as unknown as Row[]) {
     const fileId = Number(r.id);
-    parFichier.set(fileId, {
-      fileId,
-      state: r.analysis_state === 'ANALYZING' ? 'analyzing' : 'queued',
-      nextAttemptAt: null,
-    });
+    if (r.analysis_state !== 'ANALYZING') continue;
+    parFichier.set(fileId, { fileId, state: 'analyzing', nextAttemptAt: null });
   }
 
-  // Illisible (migration absente…) : l'état des fichiers suffit.
+  // Illisible (migration absente…) : seules les analyses directes restent —
+  // jamais un « en file » non vérifié.
   try {
     const jobs = await pgClient.unsafe(
       `SELECT target_id, status, available_at,

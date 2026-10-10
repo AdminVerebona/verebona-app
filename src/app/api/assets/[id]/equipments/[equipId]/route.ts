@@ -203,6 +203,9 @@ export async function PUT(
 
     // CDC Assistant §25.7, §31.7 : équipement modifié.
     await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: effectiveAssetId });
+    // Lot 34E : équipement modifié (nom, n° de série…) → réconciliation continue T3.
+    const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
+    notifyCoherenceEvent(session.currentAccountId!, { event: 'entity_updated', objectType: 'equipment', objectId: equipmentId });
     return NextResponse.json({
       id: rows[0].id,
       name: rows[0].name,

@@ -56,6 +56,9 @@ import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import {
+  displayAnalysisState, isProcessingStatus, userMessageText, ANALYSIS_FAILED_FINAL_MESSAGE, type ProcessingStatus,
+} from '@/lib/ai/processing-status';
+import {
   RubricTypeFields,
   effectiveRubric,
   rubricTypeLabels,
@@ -97,7 +100,13 @@ interface FullFileData {
   equipmentId: number | null;
   assetId: number | null;
   analysisState: string | null;
-  analysisFailReason: string | null;
+  /**
+   * Lot 34C : statut FONCTIONNEL calculé par le serveur (état réel du
+   * traitement) et code du référentiel fermé — jamais de motif technique.
+   */
+  processingStatus: ProcessingStatus | null;
+  userMessageCode: string | null;
+  processingResumeAt: string | null;
   userEditedFields: Record<string, boolean> | null;
 }
 
@@ -498,11 +507,15 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             equipmentId: f.equipmentId ?? f.equipment_id ?? null,
             assetId: f.assetId ?? f.asset_id ?? null,
             analysisState: f.analysisState ?? f.analysis_state ?? null,
-            analysisFailReason: f.analysisFailReason ?? f.analysis_fail_reason ?? null,
+            processingStatus: isProcessingStatus(f.processingStatus) ? f.processingStatus : null,
+            userMessageCode: typeof f.userMessageCode === 'string' ? f.userMessageCode : null,
+            processingResumeAt: typeof f.processingResumeAt === 'string' ? f.processingResumeAt : null,
             userEditedFields: f.userEditedFields ?? f.user_edited_fields ?? null,
           };
           setFullData(fd);
-          setAnalysisState(fd.analysisState);
+          // Lot 34C : l'affichage suit le statut fonctionnel (job réel), pas
+          // l'état transitoire du document.
+          setAnalysisState(displayAnalysisState(fd.analysisState, fd.processingStatus));
         }
         if (viewData.status === 'fulfilled') {
           setViewUrl(viewData.value.viewUrl ?? null);
@@ -960,8 +973,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         const relu = await apiClient.get<any>(`/api/files/${doc.id}`).catch(() => null);
         if (relu) {
           const etat = relu.analysisState ?? relu.analysis_state ?? null;
-          setAnalysisState(etat);
-          setFullData(prev => prev ? { ...prev, analysisState: etat, analysisFailReason: relu.analysisFailReason ?? relu.analysis_fail_reason ?? null } : prev);
+          const statut = isProcessingStatus(relu.processingStatus) ? relu.processingStatus : null;
+          setAnalysisState(displayAnalysisState(etat, statut));
+          setFullData(prev => prev ? {
+            ...prev, analysisState: etat, processingStatus: statut,
+            userMessageCode: typeof relu.userMessageCode === 'string' ? relu.userMessageCode : null,
+            processingResumeAt: typeof relu.processingResumeAt === 'string' ? relu.processingResumeAt : null,
+          } : prev);
         }
         window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId: doc.id } }));
         return;
@@ -999,11 +1017,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           equipmentId: rf.equipmentId ?? rf.equipment_id ?? null,
           assetId: rf.assetId ?? rf.asset_id ?? null,
           analysisState: rf.analysisState ?? rf.analysis_state ?? null,
-          analysisFailReason: rf.analysisFailReason ?? rf.analysis_fail_reason ?? null,
+          processingStatus: isProcessingStatus(rf.processingStatus) ? rf.processingStatus : null,
+          userMessageCode: typeof rf.userMessageCode === 'string' ? rf.userMessageCode : null,
+          processingResumeAt: typeof rf.processingResumeAt === 'string' ? rf.processingResumeAt : null,
           userEditedFields: rf.userEditedFields ?? rf.user_edited_fields ?? null,
         };
         setFullData(fd);
-        setAnalysisState(fd.analysisState);
+        setAnalysisState(displayAnalysisState(fd.analysisState, fd.processingStatus));
       }
 
       if (propRes.ok) {
@@ -1311,7 +1331,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   bg: 'bg-amber-500/10 border-amber-500/20',
                 },
                 ANALYSIS_FAILED: {
-                  label: 'Analyse impossible',
+                  label: fullData?.processingStatus === 'NEEDS_USER_ACTION' ? 'Action requise' : 'Analyse non finalisée',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
                   color: 'text-muted-foreground',
                   bg: 'bg-muted/30 border-border',
@@ -1359,10 +1379,11 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       ) : null}
                     </div>
 
-                    {/* Lot 22 : analyse reportée (plafond IA du mois du compte) — motif et date de reprise. */}
-                    {analysisState === 'UPLOADED' && fullData?.analysisFailReason?.startsWith('Plafond IA du mois atteint') && (
+                    {/* Lot 22 : analyse reportée (plafond IA du mois du compte) — motif et date de reprise.
+                        Lot 34C : texte du référentiel fermé (code + date), plus le motif brut du document. */}
+                    {analysisState === 'UPLOADED' && fullData?.userMessageCode === 'ANALYSIS_DEFERRED_COST_CAP' && (
                       <p className="text-[10px] text-muted-foreground/70 leading-relaxed pl-1">
-                        {fullData.analysisFailReason}
+                        {userMessageText(fullData.userMessageCode, { resumeAt: fullData.processingResumeAt })}
                       </p>
                     )}
 
@@ -1415,23 +1436,14 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     })()}
 
 
+                    {/* Lot 34C : au plus le message fonctionnel du référentiel fermé —
+                        jamais de motif technique (modèle, schéma, champ…), qui reste
+                        dans BO › Exécutions IA. */}
                     {analysisState === 'ANALYSIS_FAILED' && !isAnalyzing && (
                       <div className="pl-1 space-y-1">
-                        {fullData?.analysisFailReason && (
-                          <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
-                            {fullData.analysisFailReason}
-                          </p>
-                        )}
-
-                        {retryCount >= 2 ? (
-                          <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
-                            L'analyse a échoué plusieurs fois. Notre équipe en est informée et s'en occupe. Vous pouvez renseigner les informations manuellement en attendant.
-                          </p>
-                        ) : retryCount > 0 ? (
-                          <p className="text-[10px] text-muted-foreground/70">
-                            L'analyse a échoué à nouveau. Vous pouvez réessayer ou renseigner les informations manuellement.
-                          </p>
-                        ) : null}
+                        <p className="text-[10px] text-muted-foreground/70 leading-relaxed" data-testid="document-analysis-user-message">
+                          {userMessageText(fullData?.userMessageCode ?? 'ANALYSIS_FAILED_FINAL') ?? ANALYSIS_FAILED_FINAL_MESSAGE}
+                        </p>
                       </div>
                     )}
 

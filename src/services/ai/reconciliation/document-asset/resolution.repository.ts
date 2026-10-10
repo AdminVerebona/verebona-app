@@ -53,7 +53,16 @@ export interface DocumentAssetResolution {
   evaluatedAt: string | null;
   /** Empreinte des identifiants des biens du compte lors de cette évaluation. */
   identifiersFingerprint: string | null;
+  /** Révision de connaissance du compte lue au début de la dernière évaluation (lot 34E). */
+  knowledgeRevision: number | null;
+  /** Empreinte du contexte pertinent de la dernière évaluation (lot 34E). */
+  contextFingerprint: string | null;
+  /** Monitoring de la dernière évaluation (lot 34E). */
+  lastEvaluation: Record<string, unknown> | null;
 }
+
+/** Issues qui ne sont JAMAIS définitives : réévaluables dès que le contexte change. */
+export const OPEN_OUTCOMES: readonly ResolutionStatus[] = ['ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET'];
 
 const parse = <T>(v: unknown, d: T): T => {
   if (v == null) return d;
@@ -64,7 +73,8 @@ const parse = <T>(v: unknown, d: T): T => {
 export async function getResolution(fileId: number): Promise<DocumentAssetResolution | null> {
   const rows = (await pgClient.unsafe(
     `SELECT file_id, account_id, status, last_outcome, method, reason_code, t1_candidates, candidates, decided_asset_ids,
-            input_fingerprint, extraction_at, runs, requested_at, resolution_version, evaluated_at, identifiers_fingerprint
+            input_fingerprint, extraction_at, runs, requested_at, resolution_version, evaluated_at, identifiers_fingerprint,
+            knowledge_revision, context_fingerprint, last_evaluation
        FROM document_asset_resolutions WHERE file_id = $1`,
     [fileId] as never[],
   )) as unknown as Array<Record<string, unknown>>;
@@ -87,6 +97,9 @@ export async function getResolution(fileId: number): Promise<DocumentAssetResolu
     resolutionVersion: r.resolution_version == null ? null : Number(r.resolution_version),
     evaluatedAt: r.evaluated_at ? new Date(String(r.evaluated_at)).toISOString() : null,
     identifiersFingerprint: (r.identifiers_fingerprint as string | null) ?? null,
+    knowledgeRevision: r.knowledge_revision == null ? null : Number(r.knowledge_revision),
+    contextFingerprint: (r.context_fingerprint as string | null) ?? null,
+    lastEvaluation: parse<Record<string, unknown> | null>(r.last_evaluation, null),
   };
 }
 
@@ -123,21 +136,28 @@ export async function recordOutcome(p: {
   inputFingerprint?: string | null; extractionAt?: string | null; identifiersFingerprint?: string | null;
   /** Défaut : version courante du moteur. */
   resolutionVersion?: number;
+  /** Contexte d'évaluation (lot 34E). */
+  knowledgeRevision?: number | null; contextFingerprint?: string | null; lastEvaluation?: Record<string, unknown> | null;
 }): Promise<void> {
   await pgClient.unsafe(
     `INSERT INTO document_asset_resolutions (file_id, account_id, status, last_outcome, method, reason_code, candidates, decided_asset_ids,
                                              input_fingerprint, extraction_at, runs, decided_at, updated_at,
-                                             resolution_version, evaluated_at, identifiers_fingerprint)
-     VALUES ($1, $2, $3, $3, $4, $5, $6::jsonb, $7::int[], $8, $9::timestamptz, 1, now(), now(), $10::int, now(), $11)
+                                             resolution_version, evaluated_at, identifiers_fingerprint,
+                                             knowledge_revision, context_fingerprint, last_evaluation)
+     VALUES ($1, $2, $3, $3, $4, $5, $6::jsonb, $7::int[], $8, $9::timestamptz, 1, now(), now(), $10::int, now(), $11,
+             $12::bigint, $13, $14::jsonb)
      ON CONFLICT (file_id) DO UPDATE SET
        status = $3, last_outcome = $3, method = $4, reason_code = $5, candidates = $6::jsonb, decided_asset_ids = $7::int[],
        input_fingerprint = $8, extraction_at = $9::timestamptz,
        runs = document_asset_resolutions.runs + 1, decided_at = now(), updated_at = now(),
-       resolution_version = $10::int, evaluated_at = now(), identifiers_fingerprint = $11`,
+       resolution_version = $10::int, evaluated_at = now(), identifiers_fingerprint = $11,
+       knowledge_revision = $12::bigint, context_fingerprint = $13,
+       last_evaluation = COALESCE($14::jsonb, document_asset_resolutions.last_evaluation)`,
     [
       p.fileId, p.accountId, p.status, p.method, p.reasonCode, JSON.stringify(p.candidates ?? []),
       p.decidedAssetIds ?? [], p.inputFingerprint ?? null, p.extractionAt ?? null,
       p.resolutionVersion ?? DOCUMENT_ASSET_RESOLUTION_VERSION, p.identifiersFingerprint ?? null,
+      p.knowledgeRevision ?? null, p.contextFingerprint ?? null, p.lastEvaluation ? JSON.stringify(p.lastEvaluation) : null,
     ] as never[],
   );
 }
@@ -150,30 +170,40 @@ export const USER_QUESTION_STATUSES: readonly ResolutionStatus[] = ['ABSTAINED',
  * ligne reprend sa dernière issue, l'évaluation est datée — un vrai cas
  * ambigu n'est plus rejoué tant que rien de pertinent ne change.
  */
-export async function restoreLastOutcome(fileId: number, opts: { identifiersFingerprint?: string | null } = {}): Promise<void> {
+export async function restoreLastOutcome(fileId: number, opts: {
+  identifiersFingerprint?: string | null; knowledgeRevision?: number | null; lastEvaluation?: Record<string, unknown> | null;
+} = {}): Promise<void> {
   await pgClient.unsafe(
     `UPDATE document_asset_resolutions
         SET status = last_outcome, updated_at = now(), evaluated_at = now(), resolution_version = $2::int,
-            identifiers_fingerprint = COALESCE($3, identifiers_fingerprint)
+            identifiers_fingerprint = COALESCE($3, identifiers_fingerprint),
+            knowledge_revision = COALESCE($4::bigint, knowledge_revision),
+            last_evaluation = COALESCE($5::jsonb, last_evaluation)
       WHERE file_id = $1 AND last_outcome IS NOT NULL`,
-    [fileId, DOCUMENT_ASSET_RESOLUTION_VERSION, opts.identifiersFingerprint ?? null] as never[],
+    [fileId, DOCUMENT_ASSET_RESOLUTION_VERSION, opts.identifiersFingerprint ?? null, opts.knowledgeRevision ?? null,
+     opts.lastEvaluation ? JSON.stringify(opts.lastEvaluation) : null] as never[],
   );
 }
 
 /**
- * Rattrapage horaire (lot 32C) : un bien du compte a été modifié mais les
- * identifiants canoniques sont inchangés (même empreinte) — la décision
- * reste valable, seule la date d'évaluation avance. Aucun travail T3.
- * Rend le nombre de lignes confirmées.
+ * CONFIRMED_NO_CHANGE (lot 34E) : la connaissance du compte a évolué mais le
+ * contexte PERTINENT de cette décision ouverte est identique (même
+ * empreinte, même version) — la décision reste valable : seules la révision
+ * évaluée, la date et le monitoring avancent. Aucun travail T3, aucun appel
+ * IA, aucune écriture métier (rien de journalisé : pas de boucle). Rend
+ * `true` si la ligne a été confirmée (statut ouvert inchangé entre-temps).
  */
-export async function confirmEvaluation(fileIds: number[], identifiersFingerprint: string): Promise<number> {
-  if (fileIds.length === 0) return 0;
+export async function confirmContext(p: {
+  fileId: number; contextFingerprint: string; knowledgeRevision: number; lastEvaluation: Record<string, unknown>;
+}): Promise<boolean> {
   const rows = (await pgClient.unsafe(
-    `UPDATE document_asset_resolutions SET evaluated_at = now(), updated_at = now()
-      WHERE file_id = ANY($1::int[]) AND identifiers_fingerprint = $2
-        AND status IN ('ABSTAINED', 'NO_CANDIDATE') AND resolution_version = $3::int
+    `UPDATE document_asset_resolutions
+        SET evaluated_at = now(), updated_at = now(), knowledge_revision = GREATEST(COALESCE(knowledge_revision, 0), $3::bigint),
+            last_evaluation = $4::jsonb
+      WHERE file_id = $1 AND context_fingerprint = $2
+        AND status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET') AND resolution_version = $5::int
       RETURNING file_id`,
-    [fileIds, identifiersFingerprint, DOCUMENT_ASSET_RESOLUTION_VERSION] as never[],
+    [p.fileId, p.contextFingerprint, p.knowledgeRevision, JSON.stringify(p.lastEvaluation), DOCUMENT_ASSET_RESOLUTION_VERSION] as never[],
   )) as unknown as unknown[];
-  return rows.length;
+  return rows.length > 0;
 }

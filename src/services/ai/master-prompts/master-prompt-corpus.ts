@@ -16,6 +16,7 @@
 import type { Treatment } from '../config/treatments';
 import { masterPromptForTreatment } from '../config/prompt-architecture';
 import type { TestFailure } from './master-prompt.repository';
+import type { MasterExecutionConfig } from './structured-context';
 
 export interface CorpusTestOutcome {
   total: number;
@@ -36,8 +37,12 @@ export function describeExpected(expected: Record<string, unknown> | null): stri
   return court(Object.entries(expected).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join(' ; '));
 }
 
-/** Rejoue le corpus d'un traitement sur un texte donné. */
-export async function runCorpusOnText(treatment: Treatment, text: string): Promise<CorpusTestOutcome> {
+/**
+ * Rejoue le corpus d'un traitement sur un texte donné. `execution` (lot 34D) :
+ * mode de la version testée — en contexte structuré (T4), chaque scénario
+ * construit et valide son EXECUTION_CONTEXT au lieu de rendre des emplacements.
+ */
+export async function runCorpusOnText(treatment: Treatment, text: string, execution?: MasterExecutionConfig | null): Promise<CorpusTestOutcome> {
   const master = masterPromptForTreatment(treatment);
   if (!master) throw new Error(`Aucun prompt maître pour ${treatment}.`);
   const [{ runMasterCorpus }, { readMasterFileFromRepo, loadMasterCorpusCases }] = await Promise.all([
@@ -46,7 +51,7 @@ export async function runCorpusOnText(treatment: Treatment, text: string): Promi
   const cases = loadMasterCorpusCases(readMasterFileFromRepo);
   const [r] = await runMasterCorpus({
     readMasterFile: readMasterFileFromRepo, cases, treatments: [treatment],
-    texts: { [master.masterPromptCode]: { text, source: 'config' } },
+    texts: { [master.masterPromptCode]: { text, source: 'config', ...(execution ? { execution } : {}) } },
   });
   if (!r) throw new Error(`Corpus introuvable pour ${master.masterPromptCode}.`);
   const parId = new Map(cases.filter((c) => c.masterPromptCode === master.masterPromptCode).map((c) => [c.id, c]));

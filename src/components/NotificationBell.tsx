@@ -36,7 +36,6 @@ interface NotificationPayload extends SubscriptionNotificationPayload {
   accountName?: string;
   analysedCount?: number;
   failedCount?: number;
-  errorReason?: string;
   documentTitle?: string;
   /** Envoi réussi (lot 32) : documents du lot, nature (fichier / lien web). */
   count?: number;
@@ -137,9 +136,10 @@ function getNotificationText(
     case 'REFERRAL_REWARD_GRANTED':
       return `Votre récompense de parrainage a été créditée`;
     case 'ANALYSIS_FAILED_PERSISTENT': {
+      // Lot 34C : jamais le motif technique (`errorReason` des lignes
+      // historiques), seulement le message fonctionnel.
       const title = p.documentTitle ? ` : ${p.documentTitle}` : '';
-      const reason = p.errorReason ? ` (${p.errorReason})` : '';
-      return `Analyse impossible${title}${reason} — notre équipe en est informée`;
+      return `Analyse non finalisée${title} — notre équipe en est informée`;
     }
     case 'TRANSMISSION_RECEIVED':
       return `${p.senderName ?? 'Quelqu\'un'} vous a transmis le bien "${p.assetName ?? 'un bien'}"`;

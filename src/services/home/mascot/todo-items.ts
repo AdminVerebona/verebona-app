@@ -41,8 +41,15 @@
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
 import type { MascotTodoBlock, MascotTodoItem } from './types';
 
-/** Éléments « À traiter » affichés au plus (le reste : « Tout voir »). */
-export const MAX_TODO_ITEMS = 3;
+/**
+ * Lot 34 (MASC3) : la mascotte n'affiche QUE les actions « À faire en
+ * premier » (`priority === 'DO_FIRST'`), au plus deux — jamais complétées
+ * par des DO_NEXT / CAN_WAIT. Le reste de la file vit dans « À traiter »
+ * (pastille du menu inchangée).
+ */
+export const MAX_TODO_ITEMS = 2;
+/** Seule priorité affichée par la mascotte (MASC3). */
+export const MASCOT_TODO_PRIORITY = 'DO_FIRST' as const;
 
 /**
  * Nom de la donnée visée, par règle (catalogue `PROCESSING_RULES`). Phrase
@@ -137,8 +144,11 @@ export function todoItemFrom(a: ToProcessActionView): MascotTodoItem {
 }
 
 /**
- * Bloc « À traiter » de la mascotte : total de la file (= pastille, = page)
- * et ses premiers éléments, dans l'ordre du service. `null` : file illisible.
+ * Bloc « À traiter » de la mascotte : les actions DO_FIRST de la file, dans
+ * l'ordre du service, filtrées AVANT la limite (MASC3), au plus `max`.
+ * `total` reste le total de la file : il n'est JAMAIS affiché ni compté dans
+ * la phrase (seulement pour ne pas dire « Tout est à jour » quand la file
+ * n'est pas vide). `null` : file illisible.
  */
 export function buildTodoBlock(
   actions: ToProcessActionView[] | null,
@@ -148,6 +158,9 @@ export function buildTodoBlock(
   if (!actions) return null;
   return {
     total: Math.max(total ?? actions.length, actions.length),
-    items: actions.slice(0, max).map(todoItemFrom),
+    items: actions
+      .filter((a) => a.priority === MASCOT_TODO_PRIORITY)
+      .slice(0, Math.max(0, Math.min(max, MAX_TODO_ITEMS)))
+      .map(todoItemFrom),
   };
 }

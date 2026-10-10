@@ -56,6 +56,9 @@ import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
 import { CopyBlockButton, ExecutionExportButtons } from './_components/CopyJson';
 import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/ExecutionDiagnosisPanel';
+import { RuntimeContractPanel, type ContractCallView } from './_components/RuntimeContractPanel';
+import { T1CompletenessPanel } from './_components/T1CompletenessPanel';
+import { JobAttemptsPanel, type JobExecutionViewDto, type UserViewDto } from './_components/JobAttemptsPanel';
 
 interface Execution {
   id: number;
@@ -97,6 +100,10 @@ interface Execution {
   callKind?: 'analysis' | 'repair';
   failure?: { family: string; subtype: string | null; stage: string | null; signature: string | null } | null;
   repaired?: boolean;
+  /** Lot 34D : contrat runtime, transformations, contexte structuré (T4). */
+  runtimeContract?: ContractCallView['runtimeContract'];
+  transformations?: ContractCallView['transformations'];
+  structuredContext?: ContractCallView['structuredContext'];
 }
 
 /** `INVALID_OUTPUT / SCHEMA_VALIDATION_FAILED · étape schema_validation`, sinon le code enregistré. */
@@ -135,6 +142,9 @@ interface Detail {
   t2: { requestId: string; sources: T2Source[] } | null;
   /** Lot 33D : rapport par appel, cascade, compteurs, résultat métier, diagnostic final. */
   diagnosis?: DiagnosisView;
+  /** Lot 34C : tentatives du job (chacune avec sa cascade), retry, vue utilisateur. */
+  jobExecution?: JobExecutionViewDto | null;
+  userView?: UserViewDto | null;
 }
 
 interface T2Source {
@@ -305,6 +315,9 @@ function AiExecutionsScreen() {
           </div>
         </div>
       )}
+
+      {/* Lot 34F : anomalies fonctionnelles de complétude T1 (masqué sans anomalie). */}
+      {tab === 'calls' && (filters.treatment === '' || filters.treatment === 'T1') && <T1CompletenessPanel />}
 
       {/* Filtres — lus depuis l'URL, réécrits à chaque changement */}
       <div className="flex flex-wrap gap-2 items-center">
@@ -541,6 +554,13 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           </dl>
         </section>
 
+        {/* Lot 34D : contrat runtime transmis / validé, structured output, transformations (composant dédié). */}
+        <RuntimeContractPanel calls={detail.calls.length ? detail.calls : [detail.call]} />
+        {/* Lot 34C : tentatives du job (n / max), retry, historique — chaque tentative avec sa cascade. */}
+        {detail.jobExecution && (
+          <JobAttemptsPanel view={detail.jobExecution} userView={detail.userView ?? null} treatment={detail.job?.treatment ?? 'métier'} />
+        )}
+
         {/* Lot 33D : diagnostic final, résultat métier, compteurs, rapport par appel. */}
         {detail.diagnosis ? (
           <ExecutionDiagnosisPanel callId={detail.call.id} diagnosis={detail.diagnosis} />
@@ -619,7 +639,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           {job ? (
             <p className="text-xs text-[color:var(--text-secondary)]">
               Job {job.id} · {job.treatment} · {job.status} · origine {job.origin}
-              {job.triggerCode && ` · déclencheur ${job.triggerCode}`} · Tentatives du job : {job.attempts}
+              {job.triggerCode && ` · déclencheur ${job.triggerCode}`} · Tentatives du job (exécutions) : {job.attempts}
               {job.configVersionId && ` · version figée #${job.configVersionId}`}
               {job.targetType && ` · cible ${job.targetType} ${job.targetId}`}
               {job.lastError && <span className="text-red-400"> — {job.lastError}</span>}

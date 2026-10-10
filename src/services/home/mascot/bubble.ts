@@ -19,6 +19,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTile, MascotTodoItem } from './types';
+import { emptyAccountSuggestions } from '@/services/verebona-assistant/registries/capability-registry';
 
 // ── Tuiles (serveur) ────────────────────────────────────────────────────────
 
@@ -142,15 +143,23 @@ const NOMBRES = ['Aucun', 'Un', 'Deux', 'Trois'];
 const NOMBRES_TODO = ['Aucun', 'Un', 'Deux', 'Trois', 'Quatre', 'Cinq', 'Six', 'Sept', 'Huit', 'Neuf', 'Dix'];
 
 /**
- * Niveau 1 de la bulle (MASC2) : « Deux sujets nécessitent votre attention
- * aujourd’hui. » — le nombre est celui de la file (= pastille, = page).
+ * Niveau 1 de la bulle (MASC3, lot 34) : le nombre d'« À traiter »
+ * AFFICHÉS (DO_FIRST, au plus deux) — jamais le total de la file.
+ *   0 → aucune phrase ; 1 → « Un sujet nécessite… » ; 2 → « Deux sujets… ».
  */
 export function todoSummary(n: number): string {
+  if (n <= 0) return '';
   const nombre = NOMBRES_TODO[n] ?? String(n);
   return n > 1
     ? `${nombre} sujets nécessitent votre attention aujourd’hui.`
     : `${nombre} sujet nécessite votre attention aujourd’hui.`;
 }
+
+/**
+ * MASC3 : la file contient des actions, mais aucune « À faire en premier » —
+ * on ne dit ni leur nombre, ni « Tout est à jour ».
+ */
+export const NOTHING_URGENT = 'Rien d’urgent aujourd’hui.';
 
 export interface Speech {
   text: string;
@@ -184,23 +193,26 @@ export function composeSpeech({ presentation, empty, failed }: SpeechInput): Spe
   if (!presentation) return { text: failed ? DEGRADED_SPEECH : '', highlights: [] };
   const paras = realParagraphs(presentation);
   const highlights = paras.map((p) => p.highlight).filter((h): h is string => !!h);
-  // Lot 32 (MASC2) — niveau 1 : une phrase qui COMPTE les « À traiter », sans
-  // les répéter (ils sont les éléments du niveau 2) ; les autres sujets
-  // (échéances, analyses, recommandations) gardent leur phrase.
-  const todoTotal = presentation.todo?.total ?? 0;
-  if (todoTotal > 0) {
+  // Lot 32 (MASC2) / lot 34 (MASC3) — niveau 1 : une phrase qui COMPTE les
+  // « À traiter » AFFICHÉS (DO_FIRST, au plus deux), sans les répéter ; les
+  // autres sujets (échéances, analyses, recommandations) gardent leur phrase.
+  const todoShown = presentation.todo?.items.length ?? 0;
+  if (todoShown > 0) {
     const autres = paras.map((p) => p.text.trim()).filter(Boolean);
-    return { text: [todoSummary(todoTotal), ...autres].join(' '), highlights };
+    return { text: [todoSummary(todoShown), ...autres].join(' '), highlights };
   }
+  // File non vide sans DO_FIRST : ni son total, ni « Tout est à jour ».
+  const fileNonVide = (presentation.todo?.total ?? 0) > 0;
   if (paras.length === 0) {
-    return { text: presentation.status === 'degraded' ? DEGRADED_SPEECH : CLEAR_SPEECH, highlights: [] };
+    if (presentation.status === 'degraded') return { text: DEGRADED_SPEECH, highlights: [] };
+    return { text: fileNonVide ? NOTHING_URGENT : CLEAR_SPEECH, highlights: [] };
   }
   const attention = paras.filter((p) => p.tile?.attention ?? true);
   const info = paras.filter((p) => !(p.tile?.attention ?? true));
   const texts = (list: MascotParagraph[]) => list.map((p) => p.text.trim()).filter(Boolean);
 
   if (attention.length === 0) {
-    return { text: ['Tout est à jour.', ...texts(info)].join(' '), highlights };
+    return { text: [fileNonVide ? NOTHING_URGENT : 'Tout est à jour.', ...texts(info)].join(' '), highlights };
   }
   const n = attention.length;
   const intro = `${NOMBRES[n] ?? n} ${n > 1 ? 'sujets méritent' : 'sujet mérite'} votre attention aujourd’hui`;
@@ -344,13 +356,6 @@ export function homeItems(p: MascotPresentation | null, empty: boolean): HomeIte
   return out.slice(0, MAX_HOME_ITEMS);
 }
 
-/** Actions « À traiter » au-delà des éléments affichés (lien « Tout voir »). */
-export function todoRemaining(p: MascotPresentation | null): number {
-  const t = p?.todo;
-  if (!t) return 0;
-  return Math.max(0, t.total - t.items.length);
-}
-
 // ── Pose (§3.2) ─────────────────────────────────────────────────────────────
 
 export type HomePose =
@@ -389,8 +394,8 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   const kinds = realParagraphs(p).map(kindOf);
   // Lot 32 (MASC2) : les « À traiter » ne sont plus des paragraphes — leur
   // nature compte toujours pour la pose (arbitrage → vérifier, sinon action).
+  // Lot 34 (MASC3) : seuls les « À traiter » affichés (DO_FIRST) comptent.
   for (const t of p.todo?.items ?? []) kinds.push(t.actionKind === 'ARBITRATE' ? 'verify' : 'action');
-  if ((p.todo?.total ?? 0) > 0 && !(p.todo?.items.length)) kinds.push('action');
   if (kinds.includes('overdue')) return 'alert-folder';
   if (kinds.includes('verify')) return 'questioning';
   if (kinds.includes('action')) return 'reminder-bell';
@@ -412,11 +417,12 @@ export function homePoseLabel(pose: HomePose): string {
 
 // ── Suggestions « Ou demandez-moi : » ───────────────────────────────────────
 
-export const EMPTY_ACCOUNT_SUGGESTIONS = [
-  'Que pouvez-vous faire pour moi ?',
-  'Quels documents ajouter en premier ?',
-  'Mes données sont-elles en sécurité ?',
-];
+/**
+ * Compte vide : questions du catalogue unique (lot 34) — les anciennes
+ * (« Que pouvez-vous faire pour moi ? »…) n'avaient aucune intention T2
+ * déterministe ni réponse garantie.
+ */
+export const EMPTY_ACCOUNT_SUGGESTIONS: string[] = emptyAccountSuggestions().map((s) => s.label);
 
 export interface HomeSuggestion {
   label: string;
@@ -426,9 +432,11 @@ export interface HomeSuggestion {
 }
 
 /**
- * 3 pastilles « Ou demandez-moi : » : les questions proposées par le moteur
- * (secondaires de type `ask`), complétées par les suggestions de la page ;
- * compte vide : les trois questions d'amorce (§12ter).
+ * Jusqu'à 3 pastilles « Ou demandez-moi : » : les questions proposées par le
+ * moteur (secondaires de type `ask`, catalogue unique rendu côté serveur),
+ * puis les suggestions de la page qui ne dépendent d'aucune donnée — jamais
+ * d'autres questions pour atteindre 3 (lot 34) ; compte vide : les questions
+ * d'amorce du catalogue (§12ter).
  */
 export function homeSuggestions(
   p: MascotPresentation | null,

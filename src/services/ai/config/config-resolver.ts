@@ -87,6 +87,12 @@ export interface ResolvedOperationConfig {
   masterPromptVersionId?: number | null;
   /** Numéro visible (v14) de cette version de prompt maître. */
   masterPromptVersionNumber?: number | null;
+  /**
+   * Lot 34D — configuration d'exécution EXPLICITE de cette version de prompt
+   * maître (T4 : LEGACY_TEMPLATE / STRUCTURED_CONTEXT, contrats, TASK).
+   * `null` : aucune (LEGACY_TEMPLATE).
+   */
+  masterExecution?: import('../master-prompts/structured-context').MasterExecutionConfig | null;
   /** Version dont vient cette configuration. `null` = configuration du code. */
   configVersionId: number | null;
   visibleNumber: number | null;
@@ -331,7 +337,7 @@ export async function resolveOperationConfig(
   // (`promptOf`) : version active du BO, sinon fichier du dépôt.
   const actif = isMasterPromptAdministrable(treatment) ? (await activeMasterPrompts()).get(treatment) ?? null : null;
   const avecPrompt = <T extends ResolvedOperationConfig>(c: T): T => (actif && c.promptArchitecture === 'master'
-    ? { ...c, masterPromptText: actif.content, masterPromptVersionId: actif.id, masterPromptVersionNumber: actif.versionNumber }
+    ? { ...c, masterPromptText: actif.content, masterPromptVersionId: actif.id, masterPromptVersionNumber: actif.versionNumber, masterExecution: actif.execution ?? null }
     : c);
 
   if (effective.versionId === null) return avecPrompt(duCode);

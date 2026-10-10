@@ -60,15 +60,16 @@ const { isModelOutputAccessAllowed } = await import('../../telemetry/model-outpu
 const { t1FailedBusinessResult } = await import('../../source-analysis/queue/t1-handler');
 const { BUSINESS_RESULTS, isBusinessResult } = await import('../../queue/queue-policy');
 const { T1_TEST_OPERATION, t1TestVariables } = await import('./t1-master-request');
+const { asTestContract } = await import('../output-resolution/runtime-contract');
 const modelOutputRoute = await import('@/app/api/admin/ai/executions/[id]/model-output/route');
 const exportRoute = await import('@/app/api/admin/ai/executions/[id]/export/route');
 
-const Schema = z.object({
+const Schema = asTestContract(z.object({
   task: z.literal('GROUP_UPLOAD'),
   title: z.string(),
   purchaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
   type: z.enum(['INVOICE', 'RECEIPT', 'CONTRACT', 'OTHER']),
-});
+}));
 let fake: InstanceType<typeof FakeProvider>;
 const requete = (over: Record<string, unknown> = {}) => ({
   useCaseCode: 'SOURCE_ANALYSIS' as const, operationCode: T1_TEST_OPERATION, accountId: 1, sourceIds: [167],
@@ -209,7 +210,7 @@ describe('DIAG-08 — familles d’erreur fournisseur (§1, §14)', () => {
   });
   it('taxonomie complète du ticket', () => {
     expect(AI_FAILURE_FAMILIES).toEqual(expect.arrayContaining(['INVALID_OUTPUT', 'TIMEOUT', 'PROVIDER_ERROR', 'RATE_LIMIT', 'AUTH_ERROR', 'CONTEXT_TOO_LARGE', 'INPUT_ERROR', 'SAFETY_BLOCK', 'NETWORK_ERROR', 'INTERNAL_ERROR']));
-    expect(INVALID_OUTPUT_SUBTYPES).toEqual(['EMPTY_RESPONSE', 'MALFORMED_JSON', 'SCHEMA_VALIDATION_FAILED', 'MISSING_REQUIRED_FIELD', 'INVALID_ENUM', 'INVALID_TYPE', 'OUTPUT_TRUNCATED', 'STRUCTURED_OUTPUT_REJECTED', 'PARSER_ERROR', 'BUSINESS_VALIDATION_FAILED', 'UNKNOWN']);
+    expect(INVALID_OUTPUT_SUBTYPES).toEqual(['EMPTY_RESPONSE', 'MALFORMED_JSON', 'SCHEMA_VALIDATION_FAILED', 'MISSING_REQUIRED_FIELD', 'INVALID_ENUM', 'INVALID_TYPE', 'OUTPUT_TRUNCATED', 'STRUCTURED_OUTPUT_REJECTED', 'PARSER_ERROR', 'BUSINESS_VALIDATION_FAILED', 'RUNTIME_CONTRACT_MISMATCH', 'UNKNOWN']);
     expect(AI_FAILURE_STAGES).toEqual(['request_build', 'provider_request', 'provider_generation', 'response_reception', 'structured_output', 'json_parse', 'schema_validation', 'business_validation', 'result_mapping', 'persistence', 'post_processing']);
   });
 });
@@ -353,7 +354,7 @@ describe('DIAG-18 — assistant (T2) : diagnostic sans sortie brute (CDC Assista
     await AiGateway.execute({
       useCaseCode: 'INTELLIGENT_ASSISTANT' as never, operationCode: 't2_answer', accountId: 1,
       promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q' }),
-      outputSchema: z.object({ mode: z.literal('ANSWER'), ok: z.boolean() }), idempotencyKey: `k-${Math.random()}`, maxModelAttempts: 1,
+      outputSchema: asTestContract(z.object({ mode: z.literal('ANSWER'), ok: z.boolean() })), idempotencyKey: `k-${Math.random()}`, maxModelAttempts: 1,
     }).catch(() => null);
     expect(capture.diags[0].diagnostic).toMatchObject({ family: 'INVALID_OUTPUT', subtype: 'MALFORMED_JSON' });
     expect(capture.diags[0].output).toBeNull();

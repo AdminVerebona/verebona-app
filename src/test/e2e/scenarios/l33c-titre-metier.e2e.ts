@@ -105,7 +105,7 @@ scenario('L33C', 'Titre métier des documents : renommage T1, rattrapage T3, tit
     const { isValidBusinessTitle } = await import('@/lib/documents/document-title-rules');
     expect(f.retained_title).not.toBe(UUID_PDF);
     expect(isValidBusinessTitle(f.retained_title)).toBe(true);
-    expect(f.retained_title).toMatch(/avril 2024/);
+    expect(f.retained_title).toMatch(/avril 2024/i);
   });
 
   it('TITLE-AC1 — causes racines : marque « titre modifié » posée à tort par l’ancien tiroir ET run dédupliqué ne bloquent plus le renommage T1', async () => {
@@ -175,14 +175,14 @@ scenario('L33C', 'Titre métier des documents : renommage T1, rattrapage T3, tit
     const ev1 = (await evenements(doc.id)).length;
 
     const c2 = await balayer(compte);
-    expect(c2).toEqual({ UPDATED: 0, SKIP_VALID_TITLE: 0, SKIP_USER_TITLE: 0, SKIP_INSUFFICIENT_DATA: 0, FAILED: 0 });
-    // Appel direct (comme une page rejouée) : SKIP_VALID_TITLE, sans écriture.
+    expect(c2).toEqual({ UPDATED: 0, NO_CHANGE: 0, SKIP_USER_TITLE: 0, INSUFFICIENT_DATA: 0, FAILED: 0 });
+    // Appel direct (comme une page rejouée) : NO_CHANGE (lot 34E), sans écriture.
     const { ensureBusinessTitle } = await service();
     expect(await ensureBusinessTitle({ fileId: doc.id, accountId: compte.id, origin: 'T3', mode: 'repair' }))
-      .toMatchObject({ outcome: 'SKIP_VALID_TITLE' });
+      .toMatchObject({ outcome: 'NO_CHANGE' });
     // T1 relancé sur les mêmes données : titre identique → aucune écriture non plus.
     expect(await ensureBusinessTitle({ fileId: doc.id, accountId: compte.id, origin: 'T1', mode: 'refresh' }))
-      .toMatchObject({ outcome: 'SKIP_VALID_TITLE' });
+      .toMatchObject({ outcome: 'NO_CHANGE' });
     const apres2 = await fichier(doc.id);
     expect(apres2.updated_at).toEqual(apres1.updated_at);
     expect(apres2.title_checked_at).toEqual(apres1.title_checked_at);
@@ -233,7 +233,7 @@ scenario('L33C', 'Titre métier des documents : renommage T1, rattrapage T3, tit
     const { ensureBusinessTitle } = await service();
     const rs = await Promise.all([1, 2].map(() => ensureBusinessTitle({ fileId: doc.id, accountId: compte.id, origin: 'T3', mode: 'repair' })));
     expect(rs.filter((r) => r.outcome === 'UPDATED')).toHaveLength(1);
-    expect(rs.filter((r) => r.outcome === 'SKIP_VALID_TITLE')).toHaveLength(1);
+    expect(rs.filter((r) => r.outcome === 'NO_CHANGE')).toHaveLength(1);
     expect((await evenements(doc.id)).filter((e) => e.origin === 'T3' && e.outcome === 'UPDATED')).toHaveLength(1);
   });
 
@@ -264,15 +264,15 @@ scenario('L33C', 'Titre métier des documents : renommage T1, rattrapage T3, tit
     expect((await fichier(c.id)).title_source).toBe('USER');
   });
 
-  it('SKIP_INSUFFICIENT_DATA — sans données exploitables : aucune écriture du titre, événement unique, pas de reprise horaire tant qu’aucune nouvelle analyse', async () => {
+  it('INSUFFICIENT_DATA — sans données exploitables : aucune écriture du titre, événement unique, pas de reprise horaire tant qu’aucune nouvelle analyse', async () => {
     const compte = await make.account();
     const doc = await deposer(compte);
     await sql`UPDATE asset_files SET analysis_state = 'ANALYZED', last_analysis_at = now() - interval '1 hour', document_type = NULL WHERE id = ${doc.id}`;
     const c1 = await balayer(compte);
-    expect(c1.SKIP_INSUFFICIENT_DATA).toBe(1);
+    expect(c1.INSUFFICIENT_DATA).toBe(1);
     expect((await fichier(doc.id)).retained_title).toBe(UUID_PDF);
-    expect(await evenements(doc.id)).toEqual([expect.objectContaining({ origin: 'T3', outcome: 'SKIP_INSUFFICIENT_DATA' })]);
-    expect(await balayer(compte)).toMatchObject({ SKIP_INSUFFICIENT_DATA: 0 });
+    expect(await evenements(doc.id)).toEqual([expect.objectContaining({ origin: 'T3', outcome: 'INSUFFICIENT_DATA' })]);
+    expect(await balayer(compte)).toMatchObject({ INSUFFICIENT_DATA: 0 });
     expect(await evenements(doc.id)).toHaveLength(1);
   });
 

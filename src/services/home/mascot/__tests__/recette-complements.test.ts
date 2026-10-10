@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
+import { EMPTY_ACCOUNT_STATE as EMPTY_STATE_L34, suggestionsForRoute as suggestionsForRouteL34 } from '@/services/verebona-assistant/registries/capability-registry';
 
 // ── Base simulée ─────────────────────────────────────────────────────────────
 
@@ -398,6 +399,10 @@ describe('offre et droits (REC-005)', () => {
   });
 });
 
+/** Lot 34 : questions du catalogue unique de l'accueil pour un état donné. */
+const Q = (state: Partial<import('@/services/verebona-assistant/registries/capability-registry').AccountSuggestionState>) =>
+  suggestionsForRouteL34('/accueil', { state: { ...EMPTY_STATE_L34, assetsTotal: 2, documentsTotal: 3, ...state } });
+
 // ── SEC-004 ──────────────────────────────────────────────────────────────────
 
 describe('questions T2 (SEC-004)', () => {
@@ -414,23 +419,22 @@ describe('questions T2 (SEC-004)', () => {
     const c = buildCandidates(r);
     const subjects = selectSubjects(c.candidates);
     expect(subjects.map((s) => s.sourceFamily)).toEqual(['PROCESSING', 'PROCESSING']);
-    const sec = buildSecondaries(c, subjects);
+    const sec = buildSecondaries(c, subjects, Q({ toProcessPending: 1 }));
     expect(sec.some((s) => s.sourceCode.startsWith('ATP-'))).toBe(false);
-    expect(sec.map((s) => s.sourceCode)).toContain('Q-TODO');
+    expect(sec.map((s) => s.sourceCode)).toContain('Q:home_todo_priority');
   });
 
-  it('sans action À traiter visible, Q-TODO reste proposée', () => {
+  it('sans action À traiter visible, la question « À traiter » du catalogue reste proposée', () => {
     // Le seul sujet affiché est une date ; aucune action À traiter n'est visible
     // (la famille n'a pas de candidat lu) mais la file en contient : question gardée.
     const c = buildCandidates(raw({
       agenda: [{ id: 5, title: 'Ramonage', date: '2026-10-15', forecast: false, requiresQualification: false, assetId: null, assetName: null }],
     }));
-    c.hints.hasToProcess = true;
     const subjects = selectSubjects(c.candidates);
-    const sec = buildSecondaries(c, subjects);
-    expect(sec.map((s) => s.sourceCode)).toContain('Q-TODO');
+    const sec = buildSecondaries(c, subjects, Q({ toProcessPending: 2, deadlinesUpcoming: 1 }));
+    expect(sec.map((s) => s.sourceCode)).toContain('Q:home_todo_priority');
     // La date est un sujet : sa question équivalente reste exclue (T2-02).
-    expect(sec.map((s) => s.sourceCode)).not.toContain('Q-NEXT-DATE');
+    expect(sec.map((s) => s.sourceCode)).not.toContain('Q:home_next_deadline');
   });
 });
 

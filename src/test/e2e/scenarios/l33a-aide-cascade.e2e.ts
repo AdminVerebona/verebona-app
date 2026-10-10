@@ -67,7 +67,8 @@ scenario('L33A-AIDE', 'Lot 33A — cascade du Centre d’aide (PRODUCT_HELP_HOW_
     const r = await demander(c, 'comment ajouter un document', { pageContext: { route: '/documents', platform: 'web' } });
     expect(r.route.intent).toBe('PRODUCT_HELP_HOW_TO');
     expect(articles(r)[0]).toBe('AID-DOC-001');
-    expect(r.answer).toContain('1. Ouvrez l’ajout de document');
+    // Lot 34G : réponse courte (synthèse déterministe de l'article).
+    expect(r.answer).toMatch(/^Pour ajouter un document, sélectionnez le fichier, choisissez le bien si nécessaire puis lancez l’import\./);
     expect(r.answer).not.toMatch(FALLBACK);
     expect(r.actions.map((a) => a.type)).toEqual(expect.arrayContaining(['START_ADD_DOCUMENT', 'OPEN_HELP']));
     expect(replay.calls).toHaveLength(0);
@@ -142,7 +143,8 @@ scenario('L33A-AIDE', 'Lot 33A — cascade du Centre d’aide (PRODUCT_HELP_HOW_
     expect(j!.strategy).toBe('fallback.help');
     expect(j!.answeredBy).toBe('fallback');
     expect(j!.aiCalls).toBe(1);
-    expect(j!.fallbackReason).toBe('NO_RELIABLE_SOURCE');
+    // Lot 34G : « aucune source fiable » qualifiée (aucun article / score insuffisant).
+    expect(['NO_RELEVANT_HELP_ARTICLE', 'HELP_SCORE_INSUFFICIENT']).toContain(j!.fallbackReason);
     expect(j!.observability.truthSource).toBe('aucune');
     expect(j!.help.levels.map((l: { level: number }) => l.level)).toEqual([2, 3, 4, 5]);
   });

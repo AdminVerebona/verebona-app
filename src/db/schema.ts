@@ -445,6 +445,10 @@ export const assetFiles = pgTable('asset_files', {
   titleSource: text('title_source').notNull().default('SYSTEM'),
   /** Dernier contrôle « données insuffisantes » / écriture système du titre (pas un `updated_at`). */
   titleCheckedAt: tstzOptional('title_checked_at'),
+  /** Lot 34E (0293) : version des règles de titre au dernier contrôle (NULL / ancienne : à reprendre par T3). */
+  titleRuleVersion: integer('title_rule_version'),
+  /** Lot 34E (0293) : empreinte des données utiles au titre au dernier contrôle. */
+  titleContextFingerprint: text('title_context_fingerprint'),
   retainedFunctionCode: text('retained_function_code'),
   cilRubricCodes: json('cil_rubric_codes').$type<string[]>(),
   extractedText: text('extracted_text'),

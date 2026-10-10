@@ -71,14 +71,17 @@ export function BottomNavigation({ toProcessCount }: { toProcessCount?: number |
 
   return (
     <>
-      <div data-mobile-bottom-nav className="fixed inset-x-0 bottom-0 z-50 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)]/90 to-transparent px-3.5 pb-[max(20px,env(safe-area-inset-bottom))] pt-2 md:hidden">
+      {/* Lot 34 (point 8) : le bandeau (dégradé + marges) laisse passer les
+          touchers — seuls le « + » et la barre les captent. Il recouvrait
+          la flèche « Retour en haut », dont le clic ne faisait rien. */}
+      <div data-mobile-bottom-nav className="pointer-events-none fixed inset-x-0 bottom-0 z-50 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)]/90 to-transparent px-3.5 pb-[max(20px,env(safe-area-inset-bottom))] pt-2 md:hidden">
         <div className="flex flex-col items-center">
           {/* « + » détaché, au-dessus de la barre, centré (2b). */}
           <button
             type="button"
             onClick={() => setShowActionsSheet(true)}
             aria-label="Ajouter un bien, un document ou une échéance"
-            className="group relative z-[2] -mb-3.5 flex h-[58px] w-[58px] items-center justify-center rounded-full border-4 border-[color:var(--bg-page)] text-white shadow-relief-2xl transition-transform duration-150 hover:scale-[1.06]"
+            className="pointer-events-auto group relative z-[2] -mb-3.5 flex h-[58px] w-[58px] items-center justify-center rounded-full border-4 border-[color:var(--bg-page)] text-white shadow-relief-2xl transition-transform duration-150 hover:scale-[1.06]"
             style={{ background: 'linear-gradient(135deg, var(--vb-blue-500), var(--vb-blue-700))' }}
           >
             <Plus
@@ -89,7 +92,7 @@ export function BottomNavigation({ toProcessCount }: { toProcessCount?: number |
           </button>
           <nav
             aria-label="Navigation principale"
-            className="grid w-full grid-cols-5 items-center gap-0.5 rounded-[30px] border border-[color:var(--border)] px-1.5 pb-1.5 pt-4 shadow-relief-lg backdrop-blur-[18px]"
+            className="pointer-events-auto grid w-full grid-cols-5 items-center gap-0.5 rounded-[30px] border border-[color:var(--border)] px-1.5 pb-1.5 pt-4 shadow-relief-lg backdrop-blur-[18px]"
             style={{ background: 'color-mix(in srgb, var(--bg-card) 86%, transparent)' }}
           >
             {NAV_ITEMS.map(item)}

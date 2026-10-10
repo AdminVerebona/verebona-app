@@ -22,10 +22,9 @@
  * incluse (T2-07) — jamais à pousser un changement d'offre (T2-08).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { PUBLIC_SITE_URL } from '@/lib/external-urls';
 import { HELP_T2_CORPUS_PATH } from '@/lib/help-center/catalog';
 import { helpScreenForRoute } from '@/lib/help-center/screens';
-import { parseEnvironment } from '@/services/ai/config/environment';
+import { parseEnvironment, type AiEnvironment } from '@/services/ai/config/environment';
 import type { RetrievedSource } from '../types/sources';
 import type { PageContext } from '../types/contracts';
 import { getAssistantConfig } from '../config/assistant-config';
@@ -91,6 +90,50 @@ export function isHelpIntent(intent: string): boolean {
 }
 
 // ── Lecture ─────────────────────────────────────────────────────────────────
+//
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 34G — « COMMENT AJOUTER UN DOCUMENT ? » SANS RÉPONSE EN PRÉPRODUCTION
+//
+// AID-DOC-001 publié, cascade correcte en local, et pourtant « pas
+// d'information fiable » en préproduction. Le défaut n'était pas dans la
+// recherche mais dans l'ACCÈS au corpus, et il était muet :
+//
+//  1. Variables figées au build. `PUBLIC_SITE_URL` et `NEXT_PUBLIC_APP_ENV`
+//     sont des `NEXT_PUBLIC_*` : Next les INLINE au build, côté serveur
+//     aussi. Une variable posée (ou corrigée) sur l'hébergeur sans nouveau
+//     build n'était jamais vue ; absente au build, l'URL retombait sur le
+//     site de PRODUCTION (`https://www.verebona.fr`) — corpus `production`
+//     refusé par la préproduction (ENV-02), aucun dernier corpus valide :
+//     aucune source. Les deux variables sont désormais relues à l'exécution
+//     (`process.env[nom]`, jamais inliné), la valeur du build en repli, et
+//     une préproduction sans URL de site public refuse d'emblée le site de
+//     production au lieu de le lire.
+//  2. Site public bâti sans `VITE_ENVIRONMENT=preprod` : son corpus se
+//     déclare `production` (défaut du site) — même refus. Le diagnostic le
+//     dit désormais avec les deux environnements et l'URL réellement lue
+//     (redirection comprise : un `CANONICAL_HOST` posé par erreur en
+//     préproduction renvoie vers la production).
+//  3. Chargement borné par l'échéance de RECHERCHE (3 s) égale au délai du
+//     téléchargement (3 s) : à froid (démarrage, TTL échu, nouvel essai après
+//     échec), l'ouverture de la recherche d'aide expirait et l'orchestrateur
+//     basculait SILENCIEUSEMENT sur un autre chercheur qui se déclarait
+//     « corpus disponible » — d'où « aucune source fiable » au lieu de
+//     HELP_CORPUS_TIMEOUT. Désormais : un seul téléchargement à la fois,
+//     dernier corpus valide servi IMMÉDIATEMENT pendant le rafraîchissement
+//     (une question n'attend jamais le réseau quand un corpus valide est en
+//     mémoire), préchargement au démarrage, et un échec d'ouverture est un
+//     corpus INDISPONIBLE tracé avec son code.
+//  4. En local, le contrôle d'environnement était désactivé (« tout corpus
+//     convient ») : rien ne pouvait s'y reproduire. Il est désormais le même
+//     partout — local → aide locale, préproduction → aide de préproduction,
+//     production → aide de production.
+//
+// Codes distincts (trace de la demande, `/api/health`, tableau de bord IA) :
+// HELP_CORPUS_UNAVAILABLE (injoignable, URL invalide), HELP_CORPUS_TIMEOUT,
+// HELP_CORPUS_HTTP_ERROR (statut HTTP), HELP_CORPUS_INVALID (JSON, schéma,
+// aucun article citable), HELP_CORPUS_WRONG_ENVIRONMENT (corpus d'un autre
+// environnement, ou configuration qui y mènerait).
+// ══════════════════════════════════════════════════════════════════════════
 
 /**
  * Durée de cache du corpus : `VEREBONA_ASSISTANT_HELP_CACHE_TTL_SECONDS`
@@ -101,8 +144,17 @@ function ttlMs(): number {
   const s = getAssistantConfig().helpCacheTtlSeconds;
   return (Number.isFinite(s) && s > 0 ? s : 86_400) * 1000;
 }
-const TIMEOUT_MS = 3_000;
+/** Délai du téléchargement du corpus (le repli en base suit, borné lui aussi). */
+export const HELP_CORPUS_FETCH_TIMEOUT_MS = 3_000;
+/**
+ * Budget d'OUVERTURE de la recherche d'aide pour une demande : téléchargement
+ * à froid + lecture du dernier corpus valide en base. Plus large que
+ * l'échéance de recherche (3 s), qui l'interrompait avant son terme.
+ */
+export const HELP_CORPUS_OPEN_BUDGET_MS = HELP_CORPUS_FETCH_TIMEOUT_MS + 1_500;
 let cache: { at: number; corpus: HelpCorpus | null } | null = null;
+/** Téléchargement en cours : un seul à la fois, partagé par les demandes. */
+let enCours: Promise<HelpCorpus | null> | null = null;
 /** Dernière version de corpus lue par ce processus (détection des publications). */
 let derniereVersion: string | null = null;
 
@@ -139,17 +191,112 @@ export function invalidateHelpCorpusCache(): void {
 /** Réservé aux tests. */
 export function resetHelpCorpusCacheForTests(): void {
   cache = null;
+  enCours = null;
   derniereVersion = null;
   dernierValide = null;
   versionStockee = null;
   alerte = null;
   servi = null;
+  derniereTentative = null;
 }
 
-/** Site du Centre d'aide : `HELP_CENTER_URL` côté serveur, sinon le site public. */
+// ── Configuration lue À L'EXÉCUTION ─────────────────────────────────────────
+
+/**
+ * Variable d'environnement lue à l'exécution. L'accès par clé CALCULÉE n'est
+ * jamais remplacé au build par Next (contrairement à
+ * `process.env.NEXT_PUBLIC_X`) : une valeur posée sur l'hébergeur est vue au
+ * redémarrage, sans nouveau build.
+ */
+function runtimeEnv(name: string): string | undefined {
+  const v = process.env[name];
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
+
+// Valeurs du BUILD (inlinées), en repli seulement — `undefined` si la
+// variable n'existait pas au build.
+const BUILD_PUBLIC_SITE_URL: string | undefined = process.env.NEXT_PUBLIC_PUBLIC_SITE_URL;
+const BUILD_APP_ENV: string | undefined = process.env.NEXT_PUBLIC_APP_ENV;
+
+/** Site public de PRODUCTION (repli historique de `PUBLIC_SITE_URL`). */
+export const PRODUCTION_HELP_SITE = 'https://www.verebona.fr';
+const HOTES_PRODUCTION = new Set(['www.verebona.fr', 'verebona.fr']);
+
+/**
+ * Environnement de l'application : `NEXT_PUBLIC_APP_ENV` (exécution, puis
+ * build). Absent : `local` en test et en développement (`next dev`), sinon
+ * INCONNU — aucun corpus ne peut alors être reconnu comme le sien.
+ */
+export function helpApplicationEnvironment(): AiEnvironment | null {
+  const env = parseEnvironment(runtimeEnv('NEXT_PUBLIC_APP_ENV') ?? BUILD_APP_ENV);
+  if (env) return env;
+  const nodeEnv = runtimeEnv('NODE_ENV');
+  return nodeEnv === 'test' || nodeEnv === 'development' ? 'local' : null;
+}
+
+export type HelpCorpusUrlSource = 'HELP_CENTER_URL' | 'NEXT_PUBLIC_PUBLIC_SITE_URL' | 'default_production';
+
+export interface HelpCorpusConfig {
+  /** URL complète du corpus, `null` si elle ne peut pas être construite. */
+  url: string | null;
+  /** Variable qui a fourni l'URL. */
+  urlSource: HelpCorpusUrlSource;
+  applicationEnvironment: AiEnvironment | null;
+  /** Configuration qui interdit la lecture (aucun appel réseau). */
+  problem: { code: HelpCorpusAlertCode; message: string } | null;
+}
+
+/**
+ * Où lire le corpus, et peut-on le lire ? (pure vis-à-vis du réseau).
+ *
+ * `HELP_CENTER_URL` (serveur) prime, puis `NEXT_PUBLIC_PUBLIC_SITE_URL`,
+ * enfin le site de production — seulement POUR la production : ailleurs,
+ * c'est le signe d'une configuration incomplète, et lire la production
+ * mélangerait les corpus (ENV-02).
+ */
+export function resolveHelpCorpusConfig(): HelpCorpusConfig {
+  const applicationEnvironment = helpApplicationEnvironment();
+  const surcharge = runtimeEnv('HELP_CENTER_URL');
+  const site = runtimeEnv('NEXT_PUBLIC_PUBLIC_SITE_URL') ?? (BUILD_PUBLIC_SITE_URL?.trim() || undefined);
+  const urlSource: HelpCorpusUrlSource = surcharge ? 'HELP_CENTER_URL' : site ? 'NEXT_PUBLIC_PUBLIC_SITE_URL' : 'default_production';
+  const base = (surcharge ?? site ?? PRODUCTION_HELP_SITE).replace(/\/+$/, '');
+  let url: string | null = null;
+  try {
+    const u = new URL(`${base}${HELP_T2_CORPUS_PATH}`);
+    url = u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null;
+  } catch {
+    url = null;
+  }
+  const out = (problem: HelpCorpusConfig['problem']): HelpCorpusConfig => ({ url, urlSource, applicationEnvironment, problem });
+  if (!applicationEnvironment) {
+    return out({
+      code: 'HELP_CORPUS_WRONG_ENVIRONMENT',
+      message: 'NEXT_PUBLIC_APP_ENV absente ou illisible : environnement de l’application inconnu, aucun corpus d’aide ne peut être reconnu comme le sien (ENV-02).',
+    });
+  }
+  if (!url) {
+    return out({ code: 'HELP_CORPUS_UNAVAILABLE', message: `URL du Centre d’aide invalide (${urlSource} = « ${base.slice(0, 80)} »).` });
+  }
+  if (applicationEnvironment !== 'production') {
+    if (urlSource === 'default_production') {
+      return out({
+        code: 'HELP_CORPUS_WRONG_ENVIRONMENT',
+        message: `NEXT_PUBLIC_PUBLIC_SITE_URL absente : l’application « ${applicationEnvironment} » lirait le Centre d’aide de PRODUCTION — refusé (ENV-02). Renseigner l’URL du site public de cet environnement.`,
+      });
+    }
+    if (HOTES_PRODUCTION.has(new URL(url).hostname)) {
+      return out({
+        code: 'HELP_CORPUS_WRONG_ENVIRONMENT',
+        message: `${urlSource} désigne le site de PRODUCTION (${new URL(url).origin}) pour l’application « ${applicationEnvironment} » — refusé (ENV-02).`,
+      });
+    }
+  }
+  return out(null);
+}
+
+/** URL du corpus de l'environnement (diagnostic, scripts). */
 export function helpCorpusUrl(): string {
-  const base = (process.env.HELP_CENTER_URL || PUBLIC_SITE_URL).replace(/\/+$/, '');
-  return `${base}${HELP_T2_CORPUS_PATH}`;
+  return resolveHelpCorpusConfig().url ?? `${PRODUCTION_HELP_SITE}${HELP_T2_CORPUS_PATH}`;
 }
 
 // ── Encadrés éditoriaux « Limites et points d'attention » ──────────────────
@@ -257,21 +404,57 @@ export function articlePublie(a: Pick<HelpCorpusArticle, 'status' | 'validatedAt
 // et en base (`ai_operation_idempotency`, clé `help-corpus:last-valid:<env>`)
 // pour qu'une instance qui redémarre ne reparte pas de rien. L'incident est
 // signalé dans `/api/health` et au tableau de bord IA (`helpCorpusHealth`).
+// Le dernier corpus valide n'est JAMAIS celui d'un autre environnement : son
+// environnement est revérifié à chaque service (mémoire comme base).
 
-export type HelpCorpusAlertCode = 'HELP_CORPUS_INVALID' | 'HELP_CORPUS_WRONG_ENVIRONMENT' | 'HELP_CORPUS_UNAVAILABLE';
+export type HelpCorpusAlertCode =
+  | 'HELP_CORPUS_UNAVAILABLE'
+  | 'HELP_CORPUS_TIMEOUT'
+  | 'HELP_CORPUS_HTTP_ERROR'
+  | 'HELP_CORPUS_INVALID'
+  | 'HELP_CORPUS_WRONG_ENVIRONMENT';
+
+export const HELP_CORPUS_ALERT_CODES: readonly HelpCorpusAlertCode[] = [
+  'HELP_CORPUS_UNAVAILABLE', 'HELP_CORPUS_TIMEOUT', 'HELP_CORPUS_HTTP_ERROR', 'HELP_CORPUS_INVALID', 'HELP_CORPUS_WRONG_ENVIRONMENT',
+];
+
+export type HelpCorpusSource = 'live' | 'last_valid_memory' | 'last_valid_db' | 'none';
 
 export interface HelpCorpusHealth {
   /** `warning` : le corpus publié est refusé ou injoignable. */
   status: 'ok' | 'warning' | 'unknown';
   /** Corpus réellement servi. */
-  source: 'live' | 'last_valid_memory' | 'last_valid_db' | 'none';
+  source: HelpCorpusSource;
   version: string | null;
+  /** Environnement du corpus servi. */
   environment: string | null;
+  /** Environnement de l'application (`NEXT_PUBLIC_APP_ENV` à l'exécution). */
+  applicationEnvironment: AiEnvironment | null;
+  /** Origine lue (jamais de chemin ni de paramètre) et variable qui l'a fournie. */
+  url: string | null;
+  urlSource: HelpCorpusUrlSource;
   /** Lecture du dernier corpus valide (ISO), s'il y en a un. */
   lastValidAt: string | null;
   /** Âge du dernier corpus valide, en secondes (`null` sans corpus valide). */
   lastValidAgeSeconds: number | null;
+  /** Dernière tentative de lecture en direct (succès ou code d'échec). */
+  lastAttempt: { at: string; durationMs: number; code: HelpCorpusAlertCode | null; httpStatus: number | null; finalUrl: string | null } | null;
   alert: { code: HelpCorpusAlertCode; message: string; at: string } | null;
+}
+
+/**
+ * État du corpus pour UNE question d'aide (observabilité, lot 34G) :
+ * disponible ou non, source servie, version, environnements, et le code
+ * de diagnostic de la dernière lecture en direct si elle a échoué.
+ */
+export interface HelpCorpusLoadInfo {
+  corpusAvailable: boolean;
+  corpusSource: HelpCorpusSource;
+  corpusVersion: string | null;
+  applicationEnvironment: AiEnvironment | null;
+  corpusEnvironment: string | null;
+  /** Code du dernier échec de lecture en direct (corpus servi en repli, ou aucun). */
+  diagnostic: HelpCorpusAlertCode | null;
 }
 
 /** Stockage durable du dernier corpus valide (base par défaut, injectable en test). */
@@ -314,10 +497,13 @@ let store: HelpCorpusStore | null = process.env.NODE_ENV === 'test' ? null : dbH
 let dernierValide: { corpus: HelpCorpus; at: string; origin: 'live' | 'db' } | null = null;
 let versionStockee: string | null = null;
 let alerte: HelpCorpusHealth['alert'] = null;
-let servi: HelpCorpusHealth['source'] | null = null;
+let servi: HelpCorpusSource | null = null;
+let derniereTentative: HelpCorpusHealth['lastAttempt'] = null;
 /** Nouvel essai après un refus, tant qu'un corpus de repli est servi. */
 const REESSAI_REFUS_MS = 5 * 60_000;
 const REESSAI_PANNE_MS = 30_000;
+/** Lecture du dernier corpus valide en base : bornée (la demande attend). */
+const LECTURE_BASE_MS = 1_500;
 
 /** Réservé aux tests : stockage durable (`null` : aucun). */
 export function setHelpCorpusStoreForTests(s: HelpCorpusStore | null): void {
@@ -326,7 +512,12 @@ export function setHelpCorpusStoreForTests(s: HelpCorpusStore | null): void {
 
 /** Environnement servi (clé de stockage) : celui de l'application. */
 function envApplication(): string {
-  return parseEnvironment(process.env.NEXT_PUBLIC_APP_ENV) ?? 'local';
+  return helpApplicationEnvironment() ?? 'inconnu';
+}
+
+/** Le corpus est-il celui de l'environnement de l'application ? */
+function duBonEnvironnement(c: Pick<HelpCorpus, 'environment'>): boolean {
+  return corpusMatchesEnvironment(c.environment, helpApplicationEnvironment() ?? undefined);
 }
 
 function retenirValide(corpus: HelpCorpus): void {
@@ -341,16 +532,26 @@ function retenirValide(corpus: HelpCorpus): void {
   }
 }
 
+function avecDelai<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`délai de ${ms} ms dépassé`)), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
 /** Dernier corpus valide : mémoire, sinon base (même environnement, revalidé). */
 async function dernierCorpusValide(): Promise<HelpCorpus | null> {
-  if (dernierValide) {
+  if (dernierValide && duBonEnvironnement(dernierValide.corpus)) {
     servi = dernierValide.origin === 'db' ? 'last_valid_db' : 'last_valid_memory';
     if (dernierValide.corpus.legacyPublication) aRepublier();
     return dernierValide.corpus;
   }
-  if (store) {
+  // Mémoire d'un autre environnement (configuration changée) : oubliée.
+  if (dernierValide) dernierValide = null;
+  const env = helpApplicationEnvironment();
+  if (store && env) {
     try {
-      const lu = await store.read(envApplication());
+      const lu = await avecDelai(store.read(env), LECTURE_BASE_MS);
       let corpus = lu ? parseHelpCorpus(lu.corpus) : null;
       // Transition D-O : copie enregistrée à l'ANCIEN format (sans statut ni
       // date de validation) — servie avec l'ancienne règle, jamais vidée, et
@@ -362,7 +563,7 @@ async function dernierCorpusValide(): Promise<HelpCorpus | null> {
           aRepublier();
         }
       }
-      if (corpus && corpus.articles.length > 0 && corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
+      if (corpus && corpus.articles.length > 0 && duBonEnvironnement(corpus)) {
         dernierValide = { corpus, at: lu!.at, origin: 'db' };
         versionStockee = corpus.version;
         servi = 'last_valid_db';
@@ -387,18 +588,133 @@ function signaler(code: HelpCorpusAlertCode, message: string): void {
   alerte = { code, message: message.slice(0, 500), at: new Date().toISOString() };
 }
 
+/** Origine seule d'une URL (jamais de chemin ni de paramètre dans les journaux). */
+function origine(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Corpus servi actuellement (cache, sinon dernier valide). */
+function corpusServi(): HelpCorpus | null {
+  return cache?.corpus ?? (servi && servi !== 'none' ? dernierValide?.corpus ?? null : null);
+}
+
 /** État du corpus d'aide de cette instance — `/api/health`, tableau de bord IA. */
 export function helpCorpusHealth(): HelpCorpusHealth {
-  const c = cache?.corpus ?? null;
+  const c = corpusServi();
+  const cfg = resolveHelpCorpusConfig();
   return {
     status: servi === null ? 'unknown' : alerte ? 'warning' : 'ok',
     source: servi ?? 'none',
     version: c?.version ?? null,
     environment: c?.environment ?? null,
+    applicationEnvironment: cfg.applicationEnvironment,
+    url: origine(cfg.url),
+    urlSource: cfg.urlSource,
     lastValidAt: dernierValide?.at ?? null,
     lastValidAgeSeconds: dernierValide ? Math.max(0, Math.round((Date.now() - new Date(dernierValide.at).getTime()) / 1000)) : null,
+    lastAttempt: derniereTentative,
     alert: alerte,
   };
+}
+
+/** État du corpus servi à une demande (trace de la question d'aide). */
+export function helpCorpusLoadInfo(corpus: HelpCorpus | null): HelpCorpusLoadInfo {
+  return {
+    corpusAvailable: Boolean(corpus),
+    corpusSource: corpus ? (servi && servi !== 'none' ? servi : 'live') : 'none',
+    corpusVersion: corpus?.version ?? null,
+    applicationEnvironment: helpApplicationEnvironment(),
+    corpusEnvironment: corpus?.environment ?? null,
+    diagnostic: alerte?.code ?? (corpus ? null : 'HELP_CORPUS_UNAVAILABLE'),
+  };
+}
+
+/** Échec d'une lecture en direct : code, message, et dernier corpus valide. */
+async function echec(
+  code: HelpCorpusAlertCode, message: string, debut: number, reessaiMs: number,
+  extra: { httpStatus?: number | null; finalUrl?: string | null } = {},
+): Promise<HelpCorpus | null> {
+  derniereTentative = {
+    at: new Date().toISOString(), durationMs: Date.now() - debut, code,
+    httpStatus: extra.httpStatus ?? null, finalUrl: origine(extra.finalUrl ?? null),
+  };
+  const log = code === 'HELP_CORPUS_WRONG_ENVIRONMENT' || code === 'HELP_CORPUS_INVALID' ? console.error : console.warn;
+  log(`[assistant] ${code} — ${message}`);
+  signaler(code, message);
+  const repli = await dernierCorpusValide();
+  cache = { at: Date.now() - ttlMs() + reessaiMs, corpus: repli };
+  return repli;
+}
+
+/** Lecture en direct (un seul appel à la fois). Ne lève jamais. */
+async function lireEnDirect(): Promise<HelpCorpus | null> {
+  const debut = Date.now();
+  const cfg = resolveHelpCorpusConfig();
+  if (cfg.problem) return echec(cfg.problem.code, `${cfg.problem.message} Dernier corpus valide conservé.`, debut, REESSAI_REFUS_MS);
+  const url = cfg.url!;
+  let res: Response;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HELP_CORPUS_FETCH_TIMEOUT_MS);
+    res = await fetch(url, { signal: ctrl.signal, cache: 'no-store', headers: { accept: 'application/json' } })
+      .finally(() => clearTimeout(timer));
+  } catch (e) {
+    const err = e as Error;
+    const delai = err?.name === 'AbortError' || err?.name === 'TimeoutError' || estAbandon(err);
+    return delai
+      ? echec('HELP_CORPUS_TIMEOUT', `Centre d’aide trop lent (${origine(url)}, plus de ${HELP_CORPUS_FETCH_TIMEOUT_MS} ms) : dernier corpus valide conservé.`, debut, REESSAI_PANNE_MS)
+      : echec('HELP_CORPUS_UNAVAILABLE', `Corpus d’aide injoignable (${origine(url)} : ${String(err?.message ?? e).slice(0, 120)}) : dernier corpus valide conservé.`, debut, REESSAI_PANNE_MS);
+  }
+  const finalUrl = res.url || url;
+  const redirige = origine(finalUrl) !== origine(url) ? ` (redirigé vers ${origine(finalUrl)})` : '';
+  if (!res.ok) {
+    return echec('HELP_CORPUS_HTTP_ERROR', `Corpus d’aide non publié ou inaccessible : HTTP ${res.status} sur ${origine(url)}${redirige} — dernier corpus valide conservé.`, debut, REESSAI_REFUS_MS, { httpStatus: res.status, finalUrl });
+  }
+  let brut: unknown;
+  try {
+    brut = await res.json();
+  } catch {
+    brut = undefined;
+  }
+  if (brut === undefined) {
+    return echec('HELP_CORPUS_INVALID', `Corpus d’aide illisible (réponse non JSON de ${origine(finalUrl)}${redirige}) : dernier corpus valide conservé.`, debut, REESSAI_REFUS_MS, { httpStatus: res.status, finalUrl });
+  }
+  const corpus = parseHelpCorpus(brut);
+  const bruts = Array.isArray((brut as { articles?: unknown } | null)?.articles) ? (brut as { articles: unknown[] }).articles.length : 0;
+  if (!corpus) {
+    return echec('HELP_CORPUS_INVALID', `Corpus d’aide publié invalide (schéma ou articles) sur ${origine(finalUrl)} : dernier corpus valide conservé.`, debut, REESSAI_REFUS_MS, { httpStatus: res.status, finalUrl });
+  }
+  if (bruts > 0 && corpus.articles.length === 0) {
+    // D-O : des articles, mais aucun citable (statut ou date de validation
+    // absents — ancien format) : le corpus doit être republié.
+    return echec('HELP_CORPUS_INVALID', `Corpus d’aide publié sans article citable (${bruts} article(s) sans statut « published » ni date de validation) : corpus d’aide à republier ; dernier corpus valide conservé.`, debut, REESSAI_REFUS_MS, { httpStatus: res.status, finalUrl });
+  }
+  if (!duBonEnvironnement(corpus)) {
+    // ENV-02 : la préproduction de l'application ne lit jamais le corpus de
+    // production, et inversement. Les deux environnements sont nommés.
+    const declare = res.headers.get('x-verebona-environment');
+    return echec('HELP_CORPUS_WRONG_ENVIRONMENT',
+      `Corpus d’aide d’environnement « ${String(corpus.environment).slice(0, 20)} » refusé : application « ${envApplication()} » (ENV-02). `
+      + `Lu sur ${origine(finalUrl)}${redirige}${declare ? `, site déclaré « ${declare.slice(0, 20)} »` : ''} — vérifier ${cfg.urlSource} et VITE_ENVIRONMENT du site public. Dernier corpus valide conservé.`,
+      debut, REESSAI_REFUS_MS, { httpStatus: res.status, finalUrl });
+  }
+  derniereTentative = { at: new Date().toISOString(), durationMs: Date.now() - debut, code: null, httpStatus: res.status, finalUrl: origine(finalUrl) };
+  // Jamais retenu comme « dernier valide » sans article citable.
+  if (corpus.articles.length > 0) retenirValide(corpus);
+  else { alerte = null; servi = 'live'; }
+  cache = { at: Date.now(), corpus };
+  await noteHelpCorpusVersion(corpus.version).catch(() => false);
+  return corpus;
+}
+
+/** Abandon par le minuteur (certains environnements lèvent un `DOMException` générique). */
+function estAbandon(e: Error): boolean {
+  return /abort/i.test(String(e?.message ?? ''));
 }
 
 /**
@@ -407,75 +723,55 @@ export function helpCorpusHealth(): HelpCorpusHealth {
  * injoignable : DERNIER CORPUS VALIDE (PUB-01), alerte levée ; sans aucun
  * corpus valide connu, l'assistant dit qu'il ne peut pas répondre de façon
  * fiable (T2-03) au lieu d'improviser une procédure.
+ *
+ * `staleWhileRevalidate` (question d'un utilisateur) : cache échu mais
+ * dernier corpus valide en mémoire → servi tout de suite, relecture en
+ * arrière-plan — la question n'attend pas le réseau.
  */
-export async function loadHelpCorpus(): Promise<HelpCorpus | null> {
+export async function loadHelpCorpus(opts: { staleWhileRevalidate?: boolean } = {}): Promise<HelpCorpus | null> {
   if (cache && Date.now() - cache.at < ttlMs()) return cache.corpus;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-    const res = await fetch(helpCorpusUrl(), { signal: ctrl.signal }).finally(() => clearTimeout(timer));
-    if (!res.ok) {
-      signaler('HELP_CORPUS_UNAVAILABLE', `Corpus d’aide non publié ou inaccessible (HTTP ${res.status}) : dernier corpus valide conservé.`);
-      const repli = await dernierCorpusValide();
-      cache = { at: Date.now() - ttlMs() + REESSAI_REFUS_MS, corpus: repli };
-      return repli;
-    }
-    let brut: unknown;
-    try {
-      brut = await res.json();
-    } catch {
-      brut = null;
-    }
-    const corpus = parseHelpCorpus(brut);
-    const bruts = Array.isArray((brut as { articles?: unknown } | null)?.articles) ? (brut as { articles: unknown[] }).articles.length : 0;
-    let refus: { code: HelpCorpusAlertCode; message: string } | null = null;
-    if (!corpus) {
-      refus = { code: 'HELP_CORPUS_INVALID', message: 'Corpus d’aide publié invalide (schéma ou articles) : dernier corpus valide conservé.' };
-    } else if (bruts > 0 && corpus.articles.length === 0) {
-      // D-O : des articles, mais aucun citable (statut ou date de validation
-      // absents — ancien format) : le corpus doit être republié.
-      refus = {
-        code: 'HELP_CORPUS_INVALID',
-        message: `Corpus d’aide publié sans article citable (${bruts} article(s) sans statut « published » ni date de validation) : corpus d’aide à republier ; dernier corpus valide conservé.`,
-      };
-    } else if (!corpusMatchesEnvironment(corpus.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
-      // ENV-02 : la préproduction de l'application ne lit jamais le corpus de
-      // production, et inversement.
-      refus = {
-        code: 'HELP_CORPUS_WRONG_ENVIRONMENT',
-        message: `Corpus d’aide d’environnement « ${String(corpus.environment).slice(0, 20)} » refusé (application « ${envApplication()} », ENV-02) : dernier corpus valide conservé.`,
-      };
-    }
-    if (refus) {
-      console.error(`[assistant] ${refus.message}`);
-      signaler(refus.code, refus.message);
-      const repli = await dernierCorpusValide();
-      cache = { at: Date.now() - ttlMs() + REESSAI_REFUS_MS, corpus: repli };
-      return repli;
-    }
-    // Jamais retenu comme « dernier valide » sans article citable.
-    if (corpus!.articles.length > 0) retenirValide(corpus!);
-    else { alerte = null; servi = 'live'; }
-    cache = { at: Date.now(), corpus: corpus! };
-    await noteHelpCorpusVersion(corpus!.version);
-    return corpus;
-  } catch (e) {
-    console.warn(`[assistant] Corpus du Centre d'aide indisponible (${(e as Error).message}).`);
-    signaler('HELP_CORPUS_UNAVAILABLE', `Corpus d’aide injoignable (${(e as Error).message.slice(0, 120)}) : dernier corpus valide conservé.`);
-    const repli = await dernierCorpusValide();
-    cache = { at: Date.now() - ttlMs() + REESSAI_PANNE_MS, corpus: repli };
-    return repli;
+  const lecture = enCours ??= lireEnDirect().finally(() => { enCours = null; });
+  if (opts.staleWhileRevalidate && dernierValide && duBonEnvironnement(dernierValide.corpus)) {
+    void lecture.catch(() => null);
+    if (servi === null || servi === 'live') servi = 'last_valid_memory';
+    return dernierValide.corpus;
   }
+  return lecture;
+}
+
+/** Corpus et état de chargement, pour une question d'aide (trace). */
+export async function loadHelpCorpusDetailed(opts: { staleWhileRevalidate?: boolean } = {}): Promise<{ corpus: HelpCorpus | null; info: HelpCorpusLoadInfo }> {
+  const corpus = await loadHelpCorpus(opts);
+  return { corpus, info: helpCorpusLoadInfo(corpus) };
+}
+
+/**
+ * Préchargement au démarrage (instrumentation) : la première question d'aide
+ * ne paie pas le téléchargement, et la configuration est journalisée — une
+ * préproduction mal branchée se voit dès le démarrage.
+ */
+export async function warmHelpCorpus(): Promise<HelpCorpusHealth> {
+  await loadHelpCorpus();
+  const h = helpCorpusHealth();
+  const resume = `[aide] corpus du Centre d’aide : source ${h.source}, version ${h.version ?? '—'}, environnement ${h.environment ?? '—'} `
+    + `(application ${h.applicationEnvironment ?? 'inconnu'}), ${h.url ?? 'URL invalide'} via ${h.urlSource}`;
+  if (h.alert) console.error(`${resume} — ${h.alert.code} : ${h.alert.message}`);
+  else console.info(resume);
+  return h;
 }
 
 /**
  * Le corpus appartient-il à l'environnement de l'application (ENV-02) ?
- * Seules la production et la préproduction sont contraintes : en local, lire
- * le corpus de préproduction est l'usage normal.
+ *
+ * Lot 34G : la même règle PARTOUT — local → aide locale (`development` du
+ * site public), préproduction → préproduction, production → production.
+ * Environnement de l'application inconnu : `local` en test et en
+ * développement seulement, sinon aucun corpus ne convient.
  */
 export function corpusMatchesEnvironment(corpusEnv: string | undefined, appEnvRaw: string | undefined): boolean {
-  const app = parseEnvironment(appEnvRaw);
-  if (app !== 'production' && app !== 'preprod') return true;
+  const nodeEnv = process.env.NODE_ENV;
+  const app = parseEnvironment(appEnvRaw) ?? (nodeEnv === 'test' || nodeEnv === 'development' ? 'local' : null);
+  if (!app) return false;
   return parseEnvironment(corpusEnv) === app;
 }
 
@@ -791,11 +1087,19 @@ function premierePhrase(text: string, max = 220): string {
 }
 
 /**
- * Réponse DIRECTEMENT UTILE tirée de l'article (lot 33, §10 du ticket) : pour
- * une question « comment… », la procédure elle-même — étapes recopiées du
- * Centre d'aide, précédées de la première phrase de présentation. Sans
- * procédure dans l'article : l'extrait de la meilleure section. Le texte
- * vient toujours du contenu réel de l'article.
+ * Réponse DIRECTEMENT UTILE tirée de l'article.
+ *
+ * Lot 34G (ticket « T2 Aide produit », §2) : pour une question « comment… »
+ * dont l'article porte une procédure, une SYNTHÈSE DÉTERMINISTE en une ou
+ * deux phrases (`shortHowToAnswer`) — l'action directe et « Lire l'article »
+ * suivent en boutons ; le Centre d'aide garde la procédure complète. Avant,
+ * les étapes étaient recopiées une à une, précédées de « D'après
+ * l'article… ». Aucun appel IA pour raccourcir : la synthèse ne reprend que
+ * les intitulés d'étapes et le texte de l'article.
+ *
+ * Sans procédure : l'extrait de la meilleure section (deux phrases au plus
+ * pour un « comment… »). Le texte vient toujours du contenu réel de
+ * l'article.
  */
 export function helpAnswerFromSources(
   sources: RetrievedSource[],
@@ -804,21 +1108,95 @@ export function helpAnswerFromSources(
 ): string {
   const aide = sources.filter((s) => s.type === 'help_entry');
   if (aide.length === 0) return HELP_FALLBACK_MESSAGE;
+  if (intent !== 'PRODUCT_HELP_HOW_TO') return fallbackFromHelpSources(sources);
+  const meilleure = aide[0];
+  const offre = meilleure.meta?.notIncludedInPlan ? ` Cette fonction n’est pas incluse dans votre offre actuelle (${meilleure.meta.offersLabel}).` : '';
+  const court = howToSynthesis(sources, article);
+  if (court) return `${court}${offre}`;
+  // Pas de procédure : l'essentiel de la meilleure section, sans recopie.
+  const extrait = phrasesCourtes(String(meilleure.content).split('\n[Offre]')[0], 2);
+  return extrait ? `${extrait}${offre}` : fallbackFromHelpSources(sources);
+}
+
+/**
+ * Synthèse courte de la procédure de l'article en tête des sources, ou
+ * `null` s'il n'en porte pas (lot 34G). L'article complet du corpus est
+ * préféré ; à défaut, les sections retrouvées.
+ */
+export function howToSynthesis(sources: RetrievedSource[], article?: HelpCorpusArticle | null): string | null {
+  const aide = sources.filter((s) => s.type === 'help_entry');
+  if (aide.length === 0) return null;
   const meilleure = aide[0];
   const articleId = String(meilleure.meta?.articleId ?? '');
-  const sections = article && article.id === articleId
-    ? article.sections
-    : aide.filter((s) => String(s.meta?.articleId ?? '') === articleId)
-      .map((s) => ({ anchor: String(s.id).split('__')[1] ?? '', heading: '', text: String(s.content).split('\n[Offre]')[0] }));
-  const procedure = sections.find((s) => s.anchor === 'procedure');
-  const etapes = intent === 'PRODUCT_HELP_HOW_TO' && procedure ? procedureSteps(procedure.text) : [];
-  if (etapes.length === 0) return fallbackFromHelpSources(sources);
-  const presentation = sections.find((s) => s.anchor === 'presentation');
-  const intro = presentation ? premierePhrase(presentation.text) : '';
-  const autres = [...new Set(aide.slice(1).map(titreArticle))].filter((t) => t !== titreArticle(meilleure)).slice(0, 2);
-  const offre = meilleure.meta?.notIncludedInPlan ? `\nCette fonction n’est pas incluse dans votre offre actuelle (${meilleure.meta.offersLabel}).` : '';
-  const suite = autres.length ? `\nVoir aussi ${autres.map((t) => `« ${t} »`).join(' et ')}.` : '';
-  return `D’après l’article « ${titreArticle(meilleure)} » du Centre d’aide :${intro ? ` ${intro}` : ''}\n${etapes.join('\n')}${offre}${suite}`;
+  if (article && article.id === articleId) return shortHowToAnswer(article);
+  const sections = aide.filter((s) => String(s.meta?.articleId ?? '') === articleId)
+    .map((s) => ({ anchor: String(s.id).split('__')[1] ?? '', text: String(s.content).split('\n[Offre]')[0] }));
+  return shortHowToAnswer({ title: titreArticle(meilleure), sections });
+}
+
+/** Étape de procédure : « 2. Sélectionnez le fichier — Choisissez un format… ». */
+export interface HelpProcedureStep { title: string; detail: string }
+
+/** Étapes d'une section « Procédure », intitulé et précision séparés (pure). */
+export function parseProcedureSteps(text: string): HelpProcedureStep[] {
+  return procedureSteps(text, 20).map((l) => {
+    const corps = l.replace(/^\d+[.)]\s+/, '');
+    const m = /^(.+?)\s+[—–]\s+(.+)$/.exec(corps);
+    return m ? { title: m[1].trim(), detail: m[2].trim() } : { title: corps.trim(), detail: '' };
+  }).filter((e) => e.title.length > 0);
+}
+
+/** Étape de simple accès à l'écran : le bouton d'action la remplace. */
+const ETAPE_ACCES = /^(ouvrez|allez|rendez-vous|accédez|accedez|depuis)\b/i;
+const minusculeInitiale = (s: string) => (s ? s.charAt(0).toLocaleLowerCase('fr') + s.slice(1) : s);
+const sansPoint = (s: string) => s.replace(/[\s.;:]+$/, '');
+
+/** « a », « a puis b », « a, b puis c ». */
+function enchainer(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? '';
+  return `${parts.slice(0, -1).join(', ')} puis ${parts[parts.length - 1]}`;
+}
+
+/**
+ * Synthèse DÉTERMINISTE d'une procédure en une ou deux phrases (lot 34G, pure).
+ *
+ *   « Pour <but de l'article>, <étape>, <étape> puis <étape>. »
+ *   « <Dernière étape> : <sa précision>. »
+ *
+ * · le but est le titre de l'article (« Ajouter un document » ; « Comprendre
+ *   et créer un élément d'agenda » → « créer un élément d'agenda ») ;
+ * · l'étape d'accès à l'écran (« Ouvrez… ») est omise : l'action directe
+ *   l'accomplit ;
+ * · trois étapes au plus dans la première phrase ; la dernière étape, quand
+ *   il y en a d'autres, forme la seconde avec sa précision — jamais toutes
+ *   les étapes, jamais un mot qui ne soit pas dans l'article.
+ * `null` : aucune étape exploitable (l'appelant sert l'extrait).
+ */
+export function shortHowToAnswer(article: { title: string; sections: Array<Pick<HelpCorpusSection, 'anchor' | 'text'>> }): string | null {
+  const procedure = article.sections.find((s) => s.anchor === 'procedure');
+  if (!procedure) return null;
+  let etapes = parseProcedureSteps(procedure.text);
+  if (etapes.length === 0) return null;
+  while (etapes.length > 1 && ETAPE_ACCES.test(etapes[0].title)) etapes = etapes.slice(1);
+  const titre = String(article.title ?? '').trim();
+  const but = minusculeInitiale((/^\S+\s+et\s+(.+)$/i.exec(titre)?.[1] ?? titre).trim());
+  const coeur = etapes.length >= 4 ? etapes.slice(0, 3) : etapes;
+  const conclusion = etapes.length >= 4 ? etapes[etapes.length - 1] : null;
+  const premiere = `${but ? `Pour ${but}, ` : ''}${enchainer(coeur.map((e) => minusculeInitiale(sansPoint(e.title))))}.`;
+  const phrase1 = but ? premiere : premiere.charAt(0).toLocaleUpperCase('fr') + premiere.slice(1);
+  if (!conclusion) return phrase1;
+  const precision = conclusion.detail ? premierePhrase(conclusion.detail, 180) : '';
+  const phrase2 = precision && precision.length <= 180
+    ? `${sansPoint(conclusion.title)} : ${minusculeInitiale(sansPoint(precision))}.`
+    : `${sansPoint(conclusion.title)}.`;
+  return `${phrase1} ${phrase2}`;
+}
+
+/** Les `n` premières phrases d'un texte, sans encadré « Libellé — » (pure). */
+function phrasesCourtes(text: string, n: number): string {
+  const lignes = String(text ?? '').split('\n').map((l) => l.trim()).filter((l) => l && !/^[^\n—–]{1,60}\s[—–]\s/.test(l));
+  const phrases = lignes.join(' ').match(/[^.!?]+[.!?]+(?=\s|$)|[^.!?]+$/g) ?? [];
+  return phrases.slice(0, n).map((p) => p.trim()).join(' ').trim();
 }
 
 // ── Contradiction entre articles — T2-04 ────────────────────────────────────

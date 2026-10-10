@@ -16,6 +16,12 @@ import { buildSecondaries, selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
 import { buildTodoBlock } from '../todo-items';
 import { CLEAR_TEXT, MAX_ACTIONS_TOTAL, type MascotPresentation } from '../types';
+import { EMPTY_ACCOUNT_STATE, emptyAccountSuggestions, suggestionsForRoute, type AccountSuggestionState } from '@/services/verebona-assistant/registries/capability-registry';
+import type { CatalogQuestion } from '../selector';
+
+/** Lot 34 : questions du catalogue unique de l'accueil, pour un état donné. */
+const catalogue = (state: Partial<AccountSuggestionState>, accountAsset?: { id: number; name: string; documents: number }): CatalogQuestion[] =>
+  suggestionsForRoute('/accueil', { state: { ...EMPTY_ACCOUNT_STATE, assetsTotal: 2, documentsTotal: 12, ...state }, accountAsset });
 
 const TODAY = '2026-09-25';
 
@@ -50,11 +56,11 @@ const agenda = (over: Partial<MascotAgendaRow>): MascotAgendaRow => ({
   assetId: 1, assetName: 'Maison', ...over,
 });
 
-function present(r: MascotRawData): MascotPresentation {
+function present(r: MascotRawData, questions: CatalogQuestion[] = []): MascotPresentation {
   const c = buildCandidates(r);
   const subjects = selectSubjects(c.candidates);
   return buildPresentation({
-    subjects, secondaries: buildSecondaries(c, subjects), degraded: c.degraded, messages: null,
+    subjects, secondaries: buildSecondaries(c, subjects, questions), degraded: c.degraded, messages: null,
     todo: buildTodoBlock(r.toProcess, r.toProcessTotal),
   });
 }
@@ -82,14 +88,15 @@ describe('hiérarchie (§6)', () => {
       toProcess: [atp({ priority: 'DO_FIRST' }), atp({ priority: 'DO_NEXT' })],
     }));
     expect(codes(p)).toEqual(['ONB-DOC']);
-    expect(p.todo?.items.map((i) => i.priority)).toEqual(['DO_FIRST', 'DO_NEXT']);
+    // Lot 34 (MASC3) : seuls les DO_FIRST sont affichés.
+    expect(p.todo?.items.map((i) => i.priority)).toEqual(['DO_FIRST']);
   });
 
   it('SEL-03 / ATP-01 (MASC2) — ordre de la source conservé, sans score concurrent', () => {
-    const a = atp({ priority: 'CAN_WAIT', question: 'Question A ?' });
-    const b = atp({ priority: 'DO_FIRST', question: 'Question B ?' });
+    const a = atp({ priority: 'DO_FIRST', activeSince: '2026-10-01T10:00:00Z', question: 'Question A ?' });
+    const b = atp({ priority: 'DO_FIRST', activeSince: '2026-09-01T10:00:00Z', question: 'Question B ?' });
     const p = present(raw({ toProcess: [a, b] }));
-    // L'ordre est celui rendu par le service, même si la priorité semble l'inverse.
+    // L'ordre est celui rendu par le service (pas de tri concurrent côté mascotte).
     expect(p.todo?.items.map((x) => x.card.question)).toEqual(['Question A ?', 'Question B ?']);
   });
 
@@ -131,10 +138,10 @@ describe('traitements en cours (PROC)', () => {
 });
 
 describe('onboarding (§8)', () => {
-  it('ONB-01 — compte vide : créer le premier bien + questions « vide »', () => {
-    const p = present(raw({ onboarding: { activeAssets: [], activeAssetCount: 0, documentCount: 0 } }));
+  it('ONB-01 — compte vide : créer le premier bien + questions « vide » (catalogue unique, lot 34)', () => {
+    const p = present(raw({ onboarding: { activeAssets: [], activeAssetCount: 0, documentCount: 0 } }), emptyAccountSuggestions());
     expect(codes(p)).toEqual(['ONB-ASSET']);
-    expect(p.secondaries.map((s) => s.sourceCode)).toEqual(['Q-EMPTY-ADD', 'Q-EMPTY-SCOPE', 'Q-EMPTY-AI']);
+    expect(p.secondaries.map((s) => s.sourceCode)).toEqual(['Q:home_add_asset', 'Q:home_add_doc', 'Q:home_analysis_help']);
   });
 
   it('ONB-02 — premier bien créé : premier document', () => {
@@ -258,16 +265,21 @@ describe('plafonds et secondaires (§4, §12)', () => {
   it('UI-04 — aucune action liée : jusqu’à 3 secondaires, sans remplissage', () => {
     const p = present(raw({ onboarding: { activeAssets: [], activeAssetCount: 0, documentCount: 0 } }));
     expect(p.secondaries.length).toBeLessThanOrEqual(3);
-    const clear = present(raw({ onboarding: { activeAssets: [{ id: 1, name: 'M' }], activeAssetCount: 1, documentCount: 3 } }));
-    expect(clear.secondaries.map((s) => s.sourceCode)).toEqual(['Q-ANALYSIS']);
+    // Lot 34 : aucune donnée exploitable → aucune question (plus de
+    // « Où en est l'analyse ? » sur la seule présence de documents).
+    const clear = present(raw({ onboarding: { activeAssets: [{ id: 1, name: 'M' }], activeAssetCount: 1, documentCount: 3 } }), catalogue({}));
+    expect(clear.secondaries).toEqual([]);
+    const enAnalyse = present(raw({ onboarding: { activeAssets: [{ id: 1, name: 'M' }], activeAssetCount: 1, documentCount: 3 } }), catalogue({ documentsInAnalysis: 1 }));
+    expect(enAnalyse.secondaries.map((s) => s.sourceCode)).toEqual(['Q:home_analysis']);
   });
 
   it('T2-02 / SEC-004 — question équivalente à un sujet affiché : exclue', () => {
-    const p = present(raw({ agenda: [agenda({})] }));
-    expect(p.secondaries.map((s) => s.sourceCode)).not.toContain('Q-NEXT-DATE');
-    // MASC2 : « Ou demandez-moi » est indépendant de la file — Q-TODO reste proposé.
-    const q = present(raw({ toProcess: [atp()] }));
-    expect(q.secondaries.map((s) => s.sourceCode)).toContain('Q-TODO');
+    const p = present(raw({ agenda: [agenda({})] }), catalogue({ deadlinesUpcoming: 1, deadlinesSoon: 1 }));
+    expect(p.secondaries.map((s) => s.sourceCode)).not.toContain('Q:home_next_deadline');
+    // MASC2 : « Ou demandez-moi » est indépendant de la file — la question
+    // « À traiter » du catalogue reste proposée.
+    const q = present(raw({ toProcess: [atp()] }), catalogue({ toProcessPending: 1 }));
+    expect(q.secondaries.map((s) => s.sourceCode)).toContain('Q:home_todo_priority');
   });
 
   it('UX-008 — un sujet n’est jamais à la fois dans le discours et en secondaire', () => {
@@ -276,11 +288,12 @@ describe('plafonds et secondaires (§4, §12)', () => {
     expect(p.secondaries.some((s) => discours.has(s.occurrenceKey))).toBe(false);
   });
 
-  it('T2-01 — une question transporte son intention et, s’il y a lieu, le bien', () => {
-    const p = present(raw({ agenda: [agenda({ date: '2026-09-20', id: 8 })] }));
-    const qAsset = p.secondaries.find((s) => s.sourceCode === 'Q-ASSET');
-    expect(qAsset?.action.target).toEqual({
-      kind: 'ask', question: 'Que sais-tu sur Maison ?', context: { intent: 'asset_summary', assetId: 1 },
+  it('T2-01 — une question transporte son intention T2 CANONIQUE et, s’il y a lieu, le bien (jamais « Que sais-tu sur X ? »)', () => {
+    const p = present(raw({ agenda: [agenda({ date: '2026-09-20', id: 8 })] }), catalogue({}, { id: 1, name: 'Maison', documents: 4 }));
+    expect(p.secondaries.some((s) => /Que sais-tu/.test(s.action.label))).toBe(false);
+    const qDocs = p.secondaries.find((s) => s.sourceCode === 'Q:home_asset_docs');
+    expect(qDocs?.action.target).toEqual({
+      kind: 'ask', question: 'Quels sont les documents de Maison ?', context: { intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 1 },
     });
   });
 });

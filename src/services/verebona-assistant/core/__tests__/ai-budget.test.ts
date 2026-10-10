@@ -23,6 +23,7 @@ const { runAssistant } = await import('../assistant-orchestrator.service');
 const { classifyAssistantIntent } = await import('../classification.adapter');
 const { generateAssistantAnswer } = await import('../generation.adapter');
 const { t2MasterVariables } = await import('@/services/ai/assistant/master/t2-answer');
+const { asTestContract } = await import('@/services/ai/gateway/output-resolution/runtime-contract');
 type Ports = import('../assistant-orchestrator.service').OrchestratorPorts;
 type Input = import('../../types/contracts').AssistantRequestInput;
 type Source = import('../../types/sources').RetrievedSource;
@@ -59,7 +60,8 @@ const CLASSIFICATION = JSON.stringify({ mode: 'UNDERSTAND', intent: 'ACCOUNT_SUM
 const ANSWER_OK = JSON.stringify({ mode: 'ANSWER', format: 'claims', status: 'answered', claims: [] });
 const reqT2 = (Schema: z.ZodTypeAny) => ({
   useCaseCode: 'INTELLIGENT_ASSISTANT' as const, operationCode: 't2_answer', accountId: 1,
-  promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q', INTENT: 'ACCOUNT_SUMMARY' }), outputSchema: Schema,
+  // Lot 34D : schéma de test déclaré contrat de test (sinon RUNTIME_CONTRACT_MISMATCH).
+  promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q', INTENT: 'ACCOUNT_SUMMARY' }), outputSchema: asTestContract(Schema),
 });
 
 beforeEach(() => {

@@ -40,6 +40,10 @@ scenario('MIG-0229', 'Migration 0229 sur le schéma réel d’avant : échec, re
 
       // ── État « lot 21 » : 0229 défaite objet par objet ──────────────────
       await sql.unsafe(`
+        -- Déclencheurs du journal de connaissance T3 (0292, postérieurs) : ils
+        -- citent des colonnes 0229 (substructure_id, key_characteristics).
+        DROP TRIGGER IF EXISTS t3_knowledge_links_upd ON document_asset_links;
+        DROP TRIGGER IF EXISTS t3_knowledge_substructures_upd ON substructures;
         DROP TRIGGER IF EXISTS substructures_links_before_delete ON substructures;
         DROP FUNCTION IF EXISTS substructures_links_before_delete();
         DROP INDEX IF EXISTS document_asset_links_active_uniq2;

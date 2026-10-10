@@ -44,6 +44,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { RetrievedSource } from '../types/sources';
+import type { HelpCorpusAlertCode, HelpCorpusLoadInfo } from './help-corpus.service';
 import { expandHelpQueries, normalizeHelpText, type HelpConceptMatch } from '@/lib/help-center/concepts';
 
 export type HelpStage = 'fulltext' | 'expanded' | 'reformulated';
@@ -68,6 +69,12 @@ export interface HelpSearchResult {
   candidateCount: number;
   /** Sections écartées : couverture insuffisante, contexte (plateforme), non publiées. */
   rejected: { lowCoverage: number; contextExcluded: number };
+  /**
+   * Lot 34G : état du corpus servi (source, version, environnements, code de
+   * diagnostic de la lecture en direct). Absent : recherche sans corpus
+   * (port de repli des tests).
+   */
+  corpus?: HelpCorpusLoadInfo;
 }
 
 /** Recherche dans le corpus de l'environnement, pour un lot de requêtes. */
@@ -82,11 +89,42 @@ export type HelpUnderstandOutcome =
   | { status: 'failed'; reason: HelpAiBlockReason }
   | { status: 'cancelled' };
 
+/**
+ * Motif d'un repli d'aide — lot 34G : chaque cause a son code.
+ *   · corpus : HELP_CORPUS_UNAVAILABLE / _TIMEOUT / _HTTP_ERROR / _INVALID /
+ *     _WRONG_ENVIRONMENT (aucun corpus valide de l'environnement servi) ;
+ *   · recherche : NO_RELEVANT_HELP_ARTICLE (aucun candidat, ou tous écartés)
+ *     ou HELP_SCORE_INSUFFICIENT (candidats sous le seuil, jamais abaissé) ;
+ *   · HELP_CONTRADICTION : deux articles également pertinents se
+ *     contredisent (T2-04, posé par l'orchestrateur) ;
+ *   · UNDERSTAND indisponible ou sans requête.
+ */
 export type HelpFallbackReason =
-  | 'HELP_CORPUS_UNAVAILABLE'
-  | 'NO_RELIABLE_SOURCE'
+  | HelpCorpusAlertCode
+  | 'NO_RELEVANT_HELP_ARTICLE'
+  | 'HELP_SCORE_INSUFFICIENT'
+  | 'HELP_CONTRADICTION'
   | HelpAiBlockReason
   | 'UNDERSTAND_NO_QUERY';
+
+/**
+ * Résumé d'observabilité d'une question d'aide (lot 34G) — les champs
+ * exigés par le ticket, à plat, persistés avec la trace de la demande.
+ */
+export interface HelpObservability {
+  corpusAvailable: boolean;
+  corpusSource: HelpCorpusLoadInfo['corpusSource'] | 'unknown';
+  corpusVersion: string | null;
+  applicationEnvironment: string | null;
+  corpusEnvironment: string | null;
+  /** Code de la dernière lecture en direct en échec (corpus servi en repli, ou aucun). */
+  corpusDiagnostic: HelpCorpusAlertCode | null;
+  /** Article retenu (meilleure source), `null` en repli. */
+  articleId: string | null;
+  candidateCount: number;
+  sourceCount: number;
+  fallbackReason: HelpFallbackReason | null;
+}
 
 export interface HelpLevelTrace {
   level: 2 | 3 | 4 | 5;
@@ -104,7 +142,15 @@ export interface HelpLevelTrace {
 
 /** Trace détaillée du Centre d'aide (persistée avec la cascade). */
 export interface HelpCascadeTrace {
-  corpus: { available: boolean; version: string | null };
+  corpus: {
+    available: boolean;
+    version: string | null;
+    /** Lot 34G : corpus servi et environnements comparés. */
+    source?: HelpObservability['corpusSource'];
+    applicationEnvironment?: string | null;
+    environment?: string | null;
+    diagnostic?: HelpCorpusAlertCode | null;
+  };
   retrievalQueryInitial: string;
   retrievalQueriesExpanded: string[];
   concept: { id: string; certain: boolean } | null;
@@ -124,6 +170,8 @@ export interface HelpCascadeTrace {
    * seuil, ou candidats écartés (couverture, contexte).
    */
   failureKind?: 'TECHNICAL_NO_CORPUS' | 'NO_CANDIDATE' | 'LOW_SCORE' | 'REJECTED';
+  /** Lot 34G : résumé à plat (voir `HelpObservability`). */
+  observability?: HelpObservability;
 }
 
 export interface HelpCascadeResult {
@@ -251,7 +299,6 @@ export async function runHelpCascade(p: {
     const ordonnees = conceptuelles.length ? conceptuelles : fiables;
     const retenues = sufficient ? limiterParArticle(ordonnees, p.maxSources) : [];
     trace.sufficiency = sufficient ? 'SUFFICIENT' : 'INSUFFICIENT';
-    trace.fallbackReason = sufficient ? null : fallbackReason;
     trace.sources = retenues.map((s) => ({
       type: s.type, id: s.id, title: s.title, score: Math.round((s.relevanceScore ?? 0) * 1000) / 1000, stage: s.stage,
     }));
@@ -260,6 +307,12 @@ export async function runHelpCascade(p: {
         : toutes.length > 0 ? 'LOW_SCORE'
           : candidats === 0 && ecartes > 0 ? 'REJECTED' : 'NO_CANDIDATE';
     }
+    // Lot 34G : « aucune source fiable » distingue l'absence d'article
+    // pertinent d'un score insuffisant (le seuil n'est jamais abaissé).
+    trace.fallbackReason = sufficient ? null
+      : fallbackReason === 'NO_RELEVANT_HELP_ARTICLE' && trace.failureKind === 'LOW_SCORE' ? 'HELP_SCORE_INSUFFICIENT'
+        : fallbackReason;
+    trace.observability = helpObservability(trace, candidats);
     return {
       sufficient, sources: retenues, bestScore: best(toutes), concept: expansion.concept, trace, understandCalled, ...extra,
     };
@@ -267,15 +320,26 @@ export async function runHelpCascade(p: {
 
   // ── N2 : plein texte ────────────────────────────────────────────────────
   const n2 = await p.search([message], 'fulltext');
-  trace.corpus = { available: n2.corpusAvailable, version: n2.corpusVersion };
+  trace.corpus = {
+    available: n2.corpusAvailable,
+    version: n2.corpusVersion,
+    ...(n2.corpus ? {
+      source: n2.corpus.corpusSource,
+      applicationEnvironment: n2.corpus.applicationEnvironment,
+      environment: n2.corpus.corpusEnvironment,
+      diagnostic: n2.corpus.diagnostic,
+    } : {}),
+  };
   toutes = mergeHelpSources(n2.sources);
   const expansion = expandHelpQueries(message);
   trace.concept = expansion.concept ? { id: expansion.concept.concept.id, certain: expansion.concept.certain } : null;
   if (!n2.corpusAvailable) {
     // 0 résultat TECHNIQUE : aucune source ne peut être retrouvée, et l'IA ne
     // la remplace pas — repli explicite, sans appel modèle.
-    levels.push({ level: 2, stage: 'fulltext', strategy: 'help.fulltext', queries: [message], candidateCount: 0, bestScore: 0, threshold, status: 'FAILED', reason: 'HELP_CORPUS_UNAVAILABLE' });
-    return terminer(false, 'HELP_CORPUS_UNAVAILABLE');
+    // Lot 34G : le code dit POURQUOI (délai, HTTP, invalide, environnement).
+    const code = n2.corpus?.diagnostic ?? 'HELP_CORPUS_UNAVAILABLE';
+    levels.push({ level: 2, stage: 'fulltext', strategy: 'help.fulltext', queries: [message], candidateCount: 0, bestScore: 0, threshold, status: 'FAILED', reason: code });
+    return terminer(false, code);
   }
   const n2Suffisant = niveau(2, 'fulltext', [message], n2, toutes);
   // Concept certain : la recherche élargie est TOUJOURS menée (déterministe,
@@ -296,7 +360,7 @@ export async function runHelpCascade(p: {
 
   // ── N4 : UNDERSTAND (compréhension / reformulation) ─────────────────────
   const u = await p.understand();
-  if (u.status === 'cancelled') return terminer(false, 'NO_RELIABLE_SOURCE', { cancelled: true });
+  if (u.status === 'cancelled') return terminer(false, 'NO_RELEVANT_HELP_ARTICLE', { cancelled: true });
   if (u.status === 'blocked' || u.status === 'failed') {
     trace.understanding = { task: 'UNDERSTAND', operation: 't2_understand', status: u.status, queries: [], reason: u.reason };
     if (u.status === 'failed') understandCalled = true;
@@ -314,7 +378,24 @@ export async function runHelpCascade(p: {
   const n5 = await p.search(nouvelles, 'reformulated');
   toutes = mergeHelpSources(toutes, n5.sources);
   if (niveau(5, 'reformulated', nouvelles, n5, toutes)) return terminer(true, null);
-  return terminer(false, 'NO_RELIABLE_SOURCE');
+  return terminer(false, 'NO_RELEVANT_HELP_ARTICLE');
+}
+
+/** Résumé d'observabilité d'une cascade terminée (pure). */
+export function helpObservability(trace: HelpCascadeTrace, candidateCount: number): HelpObservability {
+  const premiere = trace.sources[0]?.id ?? null;
+  return {
+    corpusAvailable: trace.corpus.available,
+    corpusSource: trace.corpus.source ?? (trace.corpus.available ? 'unknown' : 'none'),
+    corpusVersion: trace.corpus.version,
+    applicationEnvironment: trace.corpus.applicationEnvironment ?? null,
+    corpusEnvironment: trace.corpus.environment ?? null,
+    corpusDiagnostic: trace.corpus.diagnostic ?? null,
+    articleId: premiere ? premiere.replace(/^help_/, '').split('__')[0] : null,
+    candidateCount,
+    sourceCount: trace.sources.length,
+    fallbackReason: trace.fallbackReason,
+  };
 }
 
 /** Deux sections au plus par article (citer l'article, pas le recopier). */

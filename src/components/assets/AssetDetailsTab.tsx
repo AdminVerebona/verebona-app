@@ -571,9 +571,11 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
         );
       })}
 
-      {/* ── Informations complémentaires (CDC Exports V12 §4, DEC-007) ─────────
+      {/* ── Préparation des dossiers (ex-« Informations complémentaires »,
+          lot 34 point 6 ; CDC Exports V12 §4, DEC-007) ─────────────────────
           Vente, location (immobilier), assurance, sinistre : reprises dans les
-          dossiers prêts à l'emploi. Enregistrement automatique. */}
+          dossiers prêts à l'emploi. Écriture réservée au droit de créer des
+          dossiers (le composant applique la garde commune). */}
       <AssetAdditionalInfosSection
         assetId={asset.id}
         category={asset.category}

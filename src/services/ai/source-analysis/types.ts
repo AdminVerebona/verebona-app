@@ -181,6 +181,8 @@ export interface ExtractedField {
   origin?: ProjectionOrigin;
   /** Règle déterministe appliquée (ex. `PURCHASE_RECEIPT_ACQUISITION`). */
   ruleCode?: string | null;
+  /** Lot 34F — provenance : unités de la source (`document_source_units`) qui prouvent le fait. */
+  sourceUnitIds?: string[];
 }
 
 /** Récurrence telle que la source l'énonce (T1) — le calcul des dates relève de T4. */
@@ -265,6 +267,10 @@ export type AnalysisWarningCode =
   | 'FACT_INVALID_DROPPED'
   /** Extrait « lu » introuvable dans le texte lisible : confiance ramenée à probable — U2, U11. */
   | 'EXCERPT_NOT_FOUND'
+  /** Lot 34F : unité(s) de la source non analysée(s) (lot de pages ou réparation en échec) — contenu conservé. */
+  | 'SOURCE_UNIT_FAILED'
+  /** Lot 34F : couverture de la source incomplète (état INCOMPLETE_RETRYABLE / INCOMPLETE_FINAL). */
+  | 'COVERAGE_INCOMPLETE'
   /**
    * Lot 31B : le document contient un identifiant canonique exact (adresse,
    * immatriculation, VIN, n° de série) d'un AUTRE bien que celui choisi par

@@ -86,6 +86,60 @@ export interface CallTrace {
   providerMeta?: Record<string, unknown>;
   /** Sortie acceptée après correction (normalisation, réparation, élagage). */
   repaired?: boolean;
+  /**
+   * Lot 34D — contrat runtime de l'appel (identifiant, version, version et
+   * empreinte du schéma, structured output transmis ou non, empreinte du
+   * schéma fournisseur, version de la table de compatibilité). Figé en
+   * métadonnée de CHAQUE appel (réussi compris) : BO › Exécutions IA.
+   */
+  runtimeContract?: RuntimeContractTrace;
+  /**
+   * Lot 34D — transformations appliquées à la sortie : normalisations,
+   * mappings de compatibilité, passe de réparation (SUCCESS / FAILED).
+   */
+  transformations?: OutputTransformationsTrace;
+  /**
+   * Lot 34D (T4) — contexte d'exécution structuré : mode, TASK, versions de
+   * prompt / contrat d'entrée / contrat de sortie (tracées séparément),
+   * empreinte du prompt et du contexte construit.
+   */
+  structuredContext?: StructuredContextTrace;
+}
+
+/** Contrat runtime tracé avec un appel (lot 34D). */
+export interface RuntimeContractTrace {
+  contractId: string;
+  contractVersion: number;
+  schemaVersion: string;
+  schemaHash: string;
+  structuredOutput: boolean;
+  providerSchemaHash: string | null;
+  compatTableVersion: number;
+  /** Présent seulement en cas de désaccord génération / validation. */
+  mismatch?: { generationHash: string; validationHash: string; validationVersion: string };
+}
+
+/** Transformations d'une sortie (lot 34D). */
+export interface OutputTransformationsTrace {
+  /** `amountCents string → integer` : règle et chemin. */
+  normalizations: string[];
+  /** `t1_document_date_to_documentDate`, `t1_v1_to_v2`, `enum_synonym` : règle et chemin. */
+  compatMappings: string[];
+  /** Passe de réparation IA : null si non lancée. */
+  repair: 'SUCCESS' | 'FAILED' | null;
+  /** Champs retirés (validation champ par champ). */
+  pruned: string[];
+}
+
+/** Contexte d'exécution structuré (T4, lot 34D). */
+export interface StructuredContextTrace {
+  mode: 'LEGACY_TEMPLATE' | 'STRUCTURED_CONTEXT';
+  task: string;
+  promptVersion: string;
+  promptHash: string;
+  inputContractVersion: string | null;
+  outputContractVersion: string | null;
+  contextHash: string | null;
 }
 
 /**
@@ -101,6 +155,13 @@ export function configMetadata(t: CallTrace): Record<string, unknown> {
     ...(t.engine ? { engine: t.engine } : {}),
     ...(trigger ? { trigger } : {}),
   };
+}
+
+/** Tentative du job courant (lot 34C), si l'appel a lieu dans ce job. */
+export function jobAttemptMetadata(t: Pick<CallTrace, 'jobId'>): { jobAttempt?: number } {
+  const ctx = currentJobContext();
+  if (!ctx?.jobAttempt || (t.jobId != null && t.jobId !== ctx.jobId)) return {};
+  return { jobAttempt: ctx.jobAttempt };
 }
 
 /**
@@ -179,6 +240,13 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
         ...(t.failure ? { failure: t.failure } : {}),
         ...(t.providerMeta && Object.keys(t.providerMeta).length ? { providerMeta: t.providerMeta } : {}),
         ...(t.repaired ? { repaired: true } : {}),
+        ...(t.runtimeContract ? { runtimeContract: t.runtimeContract } : {}),
+        ...(t.transformations ? { transformations: t.transformations } : {}),
+        ...(t.structuredContext ? { structuredContext: t.structuredContext } : {}),
+        // Lot 34C : tentative du JOB de file pendant laquelle l'appel a eu
+        // lieu — BO › Exécutions IA regroupe la cascade de modèles par
+        // tentative (fallback modèle ≠ retry du job).
+        ...jobAttemptMetadata(t),
       },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,

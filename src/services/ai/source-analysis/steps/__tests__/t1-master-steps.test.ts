@@ -145,7 +145,7 @@ describe('ANALYZE_DOCUMENT — variables structurées et contrôles serveur', ()
     expect(r.warnings.find((w) => w.code === 'FIELD_WITHOUT_EVIDENCE')?.message).toMatch(/2 information/);
   });
 
-  it('sortie tolérée : >300 faits tronqués, fait invalide écarté, extrait introuvable déclassé — avertissements', async () => {
+  it('sortie tolérée : >300 faits traités en deux lots (lot 34F, aucune troncature), fait invalide écarté, extrait introuvable déclassé — avertissements', async () => {
     const f = loadT1Fixture('p-t1-03-facture-reparation.json');
     const out = structuredClone(f.recording.output) as { facts: Array<Record<string, unknown>> };
     const base = out.facts[1];
@@ -157,9 +157,14 @@ describe('ANALYZE_DOCUMENT — variables structurées et contrôles serveur', ()
     installer(f, out);
     const r = await analyzeDocument(sourceInput(f), [0], fixtureAnalysisContext(f));
     const cibles = r.warnings.map((w) => w.target);
-    expect(cibles).toEqual(expect.arrayContaining(['t1-master:facts-truncated', 't1-master:facts-invalid', 't1-master:excerpt-not-found']));
+    expect(cibles).toEqual(expect.arrayContaining(['t1-master:facts-invalid', 't1-master:excerpt-not-found']));
+    // Lot 34F : plus de FACTS_TRUNCATED — les 306 faits valides sont tous retenus.
+    expect(cibles).not.toContain('t1-master:facts-truncated');
+    expect(r.analysis.facts).toHaveLength(306);
+    expect(r.extraction?.batchedSections).toBeGreaterThanOrEqual(1);
+    expect(r.extraction?.dropped).toEqual([expect.objectContaining({ reason: 'INVALID_SCHEMA', pass: 'PASS_1' })]);
     // Codes dédiés, plus de PARTIAL_EXTRACTION générique.
-    expect(r.warnings.map((w) => w.code)).toEqual(expect.arrayContaining(['FACTS_TRUNCATED', 'FACT_INVALID_DROPPED', 'EXCERPT_NOT_FOUND']));
+    expect(r.warnings.map((w) => w.code)).toEqual(expect.arrayContaining(['FACT_INVALID_DROPPED', 'EXCERPT_NOT_FOUND']));
     expect(r.warnings.map((w) => w.code)).not.toContain('PARTIAL_EXTRACTION');
     expect(r.analysis.facts.find((x) => x.canonicalKey === 'vin')?.confidence).toBe('probable');
     expect(r.analysis.facts.find((x) => x.canonicalKey === 'mileage')?.confidence).toBe('certain');

@@ -1,8 +1,18 @@
 "use client"
 
 /**
- * Rubrique « Informations complémentaires » de la fiche bien —
+ * Tiroir « Préparation des dossiers » de la fiche bien (ex-« Informations
+ * complémentaires », renommé au lot 34 point 6 — libellé UI seulement) —
  * CDC Exports V12 §4, DEC-007, IC-GEN-001..009, PREP-INFOFORM.
+ *
+ * Droit (lot 34, point 6) : l'écriture suit le droit fonctionnel de créer des
+ * dossiers (`canCreateDossiers`, droits actuels du magasin partagé — jamais
+ * le nom de l'offre). Sans ce droit (Standard), le tiroir reste visible mais
+ * ne s'ouvre pas : un clic passe par la garde commune (`useWriteGuard`) et
+ * ouvre la fenêtre de fonctionnalité limitée partagée (`PREMIUM_REQUIRED`),
+ * exactement comme l'ajout d'une pièce ou d'un équipement. Aucun champ n'est
+ * rendu (donc ni modifiable, ni clavier mobile) tant que le droit n'est pas
+ * CONNU et accordé ; le serveur refuse de toute façon l'écriture (403).
  *
  * Sous-rubriques selon la famille (§4.2) : commerciales, locatives
  * (immobilier seulement), assurance, sinistre, valeur et charges. Chaque
@@ -41,6 +51,11 @@ import {
   createAutosaveQueue, patchListPaths, rebaseAfterConflict, withRequeue, type AutosaveQueue, type AutosaveState,
 } from '@/lib/assets/additional-infos-autosave';
 import { toExportFamily } from '@/services/exports/catalog';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { useEntitlements } from '@/hooks/useEntitlements';
+import {
+  canCreateDossiers, decideDossierDrawerClick, DOSSIER_PREPARATION_INTRO, DOSSIER_PREPARATION_PREMIUM_MESSAGE, DOSSIER_PREPARATION_TITLE,
+} from '@/lib/entitlements/dossier-rights';
 import { AdditionalInfosListField } from './additional-infos/AdditionalInfosListField';
 
 interface AdditionalInfosResponse extends AdditionalInfosData {
@@ -110,15 +125,26 @@ function SaveIndicator({ state, onRetry }: { state: AutosaveState; onRetry: () =
 }
 
 export function AssetAdditionalInfosSection({
-  assetId, category, readOnly = false, sections, variant = 'card', defaultOpen = false, onSaveStateChange, onSectionsSaved,
+  assetId, category, readOnly: readOnlyProp = false, sections, variant = 'card', defaultOpen = false, onSaveStateChange, onSectionsSaved,
 }: Props) {
   const family = toExportFamily(category);
+  // Lot 34, point 6 — droit ACTUEL de créer des dossiers (`null` : inconnu).
+  const { entitlements, refresh: refreshEntitlements } = useEntitlements();
+  const { garder, signalerRefus } = useWriteGuard();
+  const droitDossiers = canCreateDossiers(entitlements);
+  // Écriture seulement si le droit est connu ET accordé (aucun champ
+  // brièvement modifiable pendant le chargement des droits).
+  const readOnly = readOnlyProp || droitDossiers !== true;
   const visible = useMemo(() => {
     const bySection = sectionsForCategory(category);
     return sections ? bySection.filter((s) => sections.includes(s)) : bySection;
   }, [category, sections]);
 
-  const [open, setOpen] = useState(defaultOpen || variant === 'embedded');
+  // Tiroir (variante carte) : ouvert seulement avec le droit — voir `toggle`.
+  const [open, setOpen] = useState(variant === 'embedded');
+  /** Clic reçu alors que les droits n'étaient pas encore connus. */
+  const openPending = useRef(false);
+  const defaultOpenDone = useRef(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   /** Texte des champs, clé `section.champ`. */
@@ -343,6 +369,40 @@ export function AssetAdditionalInfosSection({
     if (ev?.date && dateDef && !(inputs['claim.occurredOn'] ?? '').trim()) onChange('claim', dateDef, ev.date.slice(0, 10));
   }, [onChange, references, inputs]);
 
+  /** Refus commun (fenêtre partagée, garde d'abord l'état du compte). */
+  const refuser = useCallback(() => {
+    garder(() => signalerRefus({ code: 'PREMIUM_REQUIRED', message: DOSSIER_PREPARATION_PREMIUM_MESSAGE }));
+  }, [garder, signalerRefus]);
+
+  /** Clic sur l'en-tête : fermer, ouvrir (droit accordé) ou refuser (Standard). */
+  const toggle = useCallback(() => {
+    const decision = decideDossierDrawerClick(open, droitDossiers);
+    if (decision === 'close') setOpen(false);
+    else if (decision === 'open') setOpen(true);
+    else if (decision === 'refuse') refuser();
+    else {
+      // Droits inconnus : rien ne s'ouvre ; la décision est prise à leur arrivée.
+      openPending.current = true;
+      void refreshEntitlements();
+    }
+  }, [open, droitDossiers, refuser, refreshEntitlements]);
+
+  useEffect(() => {
+    if (variant === 'embedded' || droitDossiers === null) return;
+    if (openPending.current) {
+      openPending.current = false;
+      if (droitDossiers) setOpen(true); else refuser();
+    }
+    // Lien profond (`highlightField=additional_infos`) : ouvert si le droit
+    // est accordé, sans fenêtre de refus non demandée sinon.
+    if (defaultOpen && !defaultOpenDone.current) {
+      defaultOpenDone.current = true;
+      if (droitDossiers) setOpen(true);
+    }
+    // Droit perdu pendant l'affichage (downgrade) : le tiroir se referme.
+    if (!droitDossiers) setOpen(false);
+  }, [droitDossiers, defaultOpen, variant, refuser]);
+
   if (visible.length === 0) return null;
 
   const filled = Object.values(inputs).filter((v) => v.trim() !== '').length
@@ -424,7 +484,7 @@ export function AssetAdditionalInfosSection({
   ) : loadError ? (
     <div className="p-4 text-sm text-muted-foreground flex items-center gap-2">
       <AlertCircle className="w-4 h-4 text-red-400" />
-      Les informations complémentaires n&apos;ont pas pu être chargées.
+      Les informations de préparation des dossiers n&apos;ont pas pu être chargées.
       <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => void load()}>Réessayer</button>
     </div>
   ) : (
@@ -541,7 +601,7 @@ export function AssetAdditionalInfosSection({
     return (
       <div className="space-y-3" id={`asset-additional-infos-${assetId}`}>
         <div className="flex items-center justify-between gap-2">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Informations complémentaires</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{DOSSIER_PREPARATION_TITLE}</p>
           <SaveIndicator state={saveState} onRetry={() => void queueRef.current?.retry()} />
         </div>
         <p className="text-[11px] text-muted-foreground leading-snug">
@@ -557,11 +617,12 @@ export function AssetAdditionalInfosSection({
       <div className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-muted/30">
         <button
           type="button"
-          onClick={() => setOpen((o) => !o)}
+          onClick={toggle}
           className="flex items-center gap-2 min-w-0 text-left flex-1"
           aria-expanded={open}
+          data-dossier-right={droitDossiers === null ? 'unknown' : droitDossiers ? 'granted' : 'denied'}
         >
-          <span className="font-medium text-sm">Informations complémentaires</span>
+          <span className="font-medium text-sm">{DOSSIER_PREPARATION_TITLE}</span>
           {!loading && filled > 0 && (
             <span className="text-[10px] font-medium text-primary bg-primary/10 rounded-full px-1.5 py-0.5 shrink-0">
               {filled} renseignée{filled > 1 ? 's' : ''}
@@ -570,16 +631,16 @@ export function AssetAdditionalInfosSection({
         </button>
         <div className="flex items-center gap-3 shrink-0">
           <SaveIndicator state={saveState} onRetry={() => void queueRef.current?.retry()} />
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-label={open ? 'Réduire' : 'Développer'}>
+          <button type="button" onClick={toggle} aria-label={open ? 'Réduire' : 'Développer'}>
             {open ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
           </button>
         </div>
       </div>
-      {open && (
+      {/* Lot 34, point 6 : jamais de champ sans le droit connu et accordé. */}
+      {open && droitDossiers === true && (
         <>
           <p className="px-4 pt-3 text-xs text-muted-foreground leading-snug">
-            Prix, points forts, loyer, protections, sinistre, valeur et charges : saisis une fois ici, ils sont repris dans vos dossiers prêts à l&apos;emploi.
-            {!readOnly && ' Enregistrement automatique.'}
+            {DOSSIER_PREPARATION_INTRO}
           </p>
           {body}
         </>

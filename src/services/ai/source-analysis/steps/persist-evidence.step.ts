@@ -414,6 +414,8 @@ export function projectedFactToExtractedField(f: ProjectedFact): ExtractedField 
     semanticEvent: f.semanticEvent,
     origin: f.origin,
     ruleCode: f.ruleCode,
+    // Lot 34F : provenance (unités de la source), si elle a été posée.
+    ...(f.sourceUnitIds?.length ? { sourceUnitIds: f.sourceUnitIds } : {}),
   };
 }
 

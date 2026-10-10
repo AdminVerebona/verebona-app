@@ -3,97 +3,47 @@
 import { useEffect, useState } from "react";
 import { ArrowUp } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { maxScrollTop, scrollAllToTop, SCROLL_TOP_THRESHOLD } from "@/lib/shell/scroll-to-top";
 
+/**
+ * Flèche « Retour en haut ».
+ *
+ * Lot 34 (point 8) — le clic ne faisait rien sur mobile :
+ *   · le bandeau fixe de la barre basse (z-50, dégradé + « + ») recouvrait
+ *     le bouton (z-40) : il laisse désormais passer les touchers et la
+ *     flèche est posée AU-DESSUS de la barre, plus haut dans la pile ;
+ *   · le défilement se fait dans `#main-scroll-container` (pas `window`) :
+ *     on remonte chaque élément réellement défilé (`scrollAllToTop`).
+ */
 export function ScrollToTop() {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    // Determine visibility based on scroll position of main scrollable containers
-    const checkScroll = () => {
-      let isVisible = window.scrollY > 300 || document.documentElement.scrollTop > 300;
-
-      if (!isVisible) {
-        // Specifically check the container used in DashboardLayout
-        const mainContainer = document.getElementById("main-scroll-container");
-        if (mainContainer && mainContainer.scrollTop > 300) {
-          isVisible = true;
-        } else {
-          // Check all potential scrollable containers if the main one isn't scrolled
-          const containers = [
-            document.querySelector("main"),
-            ...Array.from(document.querySelectorAll(".overflow-y-auto, .overflow-auto, [class*='overflow-y-']"))
-          ];
-
-          for (const container of containers) {
-            if (container && (container as HTMLElement).scrollTop > 300) {
-              isVisible = true;
-              break;
-            }
-          }
-        }
-      }
-
-      setVisible(isVisible);
-    };
-
-    const onScroll = () => checkScroll();
-
-    // Check scroll on any container scroll event
-    const onContainerScroll = (e: Event) => {
-      checkScroll();
-    };
-
-    window.addEventListener("scroll", onScroll, { passive: true });
-
-    // Use capture phase to catch scroll events from any container, specifically targeting the div that scrolls
-    window.addEventListener("scroll", onContainerScroll, { passive: true, capture: true });
-
-    // Add specific listener to the main container when it exists
-    const mainContainer = document.getElementById("main-scroll-container");
-    if (mainContainer) {
-      mainContainer.addEventListener("scroll", onContainerScroll, { passive: true });
-    }
-
-    // Initial check
-    checkScroll();
-
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("scroll", onContainerScroll, { capture: true });
-      const mainContainer = document.getElementById("main-scroll-container");
-      if (mainContainer) {
-        mainContainer.removeEventListener("scroll", onContainerScroll);
-      }
-    };
+    const check = () => setVisible(maxScrollTop(document, window.scrollY) > SCROLL_TOP_THRESHOLD);
+    // Capture : reçoit aussi le défilement des conteneurs (il ne remonte pas à window).
+    window.addEventListener("scroll", check, { passive: true, capture: true });
+    check();
+    return () => window.removeEventListener("scroll", check, { capture: true });
   }, []);
 
   const scrollToTop = () => {
-    // Scroll window
-    window.scrollTo({ top: 0, behavior: "smooth" });
-    document.documentElement.scrollTo({ top: 0, behavior: "smooth" });
-
-    // Scroll specific containers
-    document.querySelector("main")?.scrollTo({ top: 0, behavior: "smooth" });
-    document.getElementById("main-scroll-container")?.scrollTo({ top: 0, behavior: "smooth" });
-
-    // Scroll all scrollable parents
-    const scrollContainers = document.querySelectorAll(".overflow-y-auto, .overflow-auto, .h-screen, [style*='overflow']");
-    scrollContainers.forEach(container => {
-      if (container.scrollTop > 0) {
-        container.scrollTo({ top: 0, behavior: "smooth" });
-      }
-    });
+    const reduce = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scrollAllToTop(document, window, !reduce);
   };
 
   return (
     <Tooltip delayDuration={500}>
       <TooltipTrigger asChild>
         <button
+          type="button"
           onClick={scrollToTop}
           aria-label="Retour en haut"
+          data-scroll-to-top
           className={[
-            "fixed z-40",
-            "right-4 bottom-28",           // mobile: juste au-dessus de la bottom nav
+            // Au-dessus du bandeau de la barre basse (z-50) : jamais recouvert.
+            "fixed z-[60] touch-manipulation",
+            // mobile : au-dessus de la barre basse (marge sûre + hauteur de la barre)
+            "right-4 bottom-[calc(max(20px,env(safe-area-inset-bottom))+96px)]",
             "md:right-6 md:bottom-6",      // desktop: coin bas-droit
             "w-10 h-10 rounded-full p-0",
             "bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)]",

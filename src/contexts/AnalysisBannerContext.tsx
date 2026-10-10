@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { isSettledProcessingStatus } from '@/lib/ai/processing-status';
 
 const TERMINAL_STATES = ['ANALYZED', 'VALIDATION_REQUIRED', 'CONFLICT_DETECTED', 'ANALYSIS_FAILED'];
 /** Délai entre deux polls de vérification (quand une analyse est en cours) */
@@ -134,8 +135,13 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
             if (!res.ok) return;
             const data = await res.json();
             const state: string | null = data?.analysisState ?? null;
-            // Si l'état est terminal, signaler la completion
-            if (state && TERMINAL_STATES.includes(state)) {
+            // Lot 34C : le statut FONCTIONNEL calculé par le serveur fait foi —
+            // un échec intermédiaire suivi d'une reprise réelle n'est pas une
+            // fin d'analyse. État brut seulement si le serveur ne le fournit pas.
+            const termine = typeof data?.processingStatus === 'string'
+              ? isSettledProcessingStatus(data.processingStatus)
+              : Boolean(state && TERMINAL_STATES.includes(state));
+            if (termine) {
               window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId } }));
             }
             // Si le doc est bloqué depuis trop longtemps (> MAX_WAIT_MS), forcer completion aussi

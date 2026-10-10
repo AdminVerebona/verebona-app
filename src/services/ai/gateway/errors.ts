@@ -38,7 +38,42 @@ export type AiErrorCode =
    * au début de la période suivante, les usages synchrones prennent leur
    * repli sans IA.
    */
-  | 'COST_CAP_REACHED';
+  | 'COST_CAP_REACHED'
+  /**
+   * Lot 34D (contrat runtime source unique) : le schéma de validation n'est
+   * pas celui transmis au modèle (empreintes différentes) — défaut INTERNE du
+   * moteur, détecté avant tout appel fournisseur. Jamais récupérable ;
+   * diagnostiqué dans BO › Exécutions IA, jamais exposé à l'utilisateur final
+   * (`isInternalAiErrorCode`).
+   */
+  | 'RUNTIME_CONTRACT_MISMATCH'
+  /**
+   * Lot 34D (T4, contexte d'exécution structuré) : contrat d'entrée T4 violé
+   * ou introuvable, refusé AVANT tout appel fournisseur (0 appel). Erreurs de
+   * configuration ou d'appelant, jamais récupérables.
+   */
+  | 'T4_INPUT_CONTRACT_MISSING_FIELD'
+  | 'T4_INPUT_CONTRACT_INVALID_TYPE'
+  | 'T4_TASK_NOT_ALLOWED'
+  | 'T4_OUTPUT_CONTRACT_MISSING'
+  | 'T4_CONTRACT_VERSION_NOT_FOUND'
+  | 'T4_EXECUTION_CONTEXT_BUILD_FAILED';
+
+/**
+ * Codes TECHNIQUES internes (lot 34D) : défaut du moteur ou de sa
+ * configuration, jamais affiché tel quel à l'utilisateur final — l'écran
+ * utilisateur montre un message générique, le BO (Exécutions IA) le détail.
+ */
+export const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiErrorCode>([
+  'RUNTIME_CONTRACT_MISMATCH',
+  'T4_INPUT_CONTRACT_MISSING_FIELD', 'T4_INPUT_CONTRACT_INVALID_TYPE', 'T4_TASK_NOT_ALLOWED',
+  'T4_OUTPUT_CONTRACT_MISSING', 'T4_CONTRACT_VERSION_NOT_FOUND', 'T4_EXECUTION_CONTEXT_BUILD_FAILED',
+]);
+
+/** Code interne au moteur (jamais exposé à l'utilisateur final) ? */
+export function isInternalAiErrorCode(code: unknown): boolean {
+  return typeof code === 'string' && INTERNAL_AI_ERROR_CODES.has(code as AiErrorCode);
+}
 
 export class AiGatewayError extends Error {
   readonly code: AiErrorCode;
@@ -51,12 +86,18 @@ export class AiGatewayError extends Error {
    * (`INVALID_OUTPUT`) d'une panne technique sans analyser le message.
    */
   readonly lastFailureCode?: AiErrorCode;
+  /**
+   * Lot 34D — détail structuré d'un refus de contrat (T4 : TASK, champ,
+   * contrat, étape ; contrat runtime : empreintes de génération et de
+   * validation). Destiné au BO, jamais à l'utilisateur final.
+   */
+  readonly contractDetail?: Record<string, unknown>;
 
   constructor(
     code: AiErrorCode,
     operationCode: string,
     message: string,
-    opts?: { recoverable?: boolean; cause?: unknown; lastFailureCode?: AiErrorCode },
+    opts?: { recoverable?: boolean; cause?: unknown; lastFailureCode?: AiErrorCode; contractDetail?: Record<string, unknown> },
   ) {
     super(message);
     this.name = 'AiGatewayError';
@@ -65,6 +106,7 @@ export class AiGatewayError extends Error {
     this.recoverable = opts?.recoverable ?? false;
     this.cause = opts?.cause;
     this.lastFailureCode = opts?.lastFailureCode;
+    this.contractDetail = opts?.contractDetail;
   }
 }
 

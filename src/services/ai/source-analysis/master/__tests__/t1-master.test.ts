@@ -30,9 +30,10 @@ describe('t1_master_v1.txt — transcription du §23', () => {
   it('T1-06 : « Dernier entretien » illustre lastRevision, jamais maintenanceDueDate', () => {
     const u15 = MASTER.slice(MASTER.indexOf('U15 — '), MASTER.indexOf('U16 — '));
     expect(u15).toContain('« Dernier entretien : 15/11/2026 » établit une date d’entretien réalisé (`lastRevision`');
-    const exemple = MASTER.slice(MASTER.indexOf('"canonicalKey": "lastRevision"'));
-    expect(exemple).toContain('"excerpt": "Dernier entretien : 15/11/2026"');
-    expect(MASTER).not.toMatch(/"canonicalKey": "maintenanceDueDate"[^}]*Dernier entretien/);
+    // Lot 34D : l'exemple JSON est retiré (le contrat runtime porte la structure) ;
+    // le cas typique reste décrit en sémantique.
+    expect(MASTER).toContain('mention « Dernier entretien : 15/11/2026 » : `lastRevision`, événement `maintenance` HISTORICAL, jamais une prochaine échéance');
+    expect(MASTER).not.toMatch(/maintenanceDueDate[^\n]*Dernier entretien/);
   });
 
   it('T1-07 : probable = lecture incertaine, jamais une inférence', () => {
@@ -46,14 +47,25 @@ describe('t1_master_v1.txt — transcription du §23', () => {
     expect(MASTER).toContain('ne multiplie jamais une valeur métier par 100');
   });
 
-  it('les champs du JSON d’exemple sont ceux du contrat Zod', () => {
+  it('RTC — le prompt ne recopie plus le schéma : les champs sont portés par le contrat runtime', async () => {
+    // Lot 34D : plus de JSON d'exemple ni de liste d'énumérations / de nullabilité dans le texte.
+    expect(MASTER).not.toContain('"canonicalKey"');
+    expect(MASTER).not.toMatch(/n’écris jamais `null` pour/);
+    expect(MASTER).toContain('fixée par le contrat runtime joint à l’appel');
+    // La sémantique est conservée (date du document, montant documentaire en centimes, preuve lue).
+    expect(MASTER).toContain('`documentDate`');
+    expect(MASTER).toContain('`amountCents`');
+    const { resolveRuntimeContract, contractJsonSchemaText } = await import('@/services/ai/gateway/output-resolution/runtime-contract');
+    const { T1AnalyzeDocumentOutput } = await import('../t1-contract');
+    const { contract, mismatch } = resolveRuntimeContract({ schemaName: 'T1AnalyzeDocumentOutput', operationCode: 't1_analyze_document', callerSchema: T1AnalyzeDocumentOutput });
+    expect(mismatch).toBeNull();
+    const schema = contractJsonSchemaText(contract);
     for (const cle of ['"canonicalKey"', '"rawKey"', '"rawValue"', '"normalizedValue"', '"valueType"', '"canonicalUnit"',
       '"target"', '"provenance"', '"evidence"', '"visualEvidence"', '"semanticEvent"', '"hasExploitableContent"',
-      '"classification"', '"canonicalType"', '"rubricCode"', '"documentTypeCode"', '"multiAsset"', '"evidenceSignals"']) {
-      expect(MASTER).toContain(cle);
+      '"classification"', '"canonicalType"', '"rubricCode"', '"documentTypeCode"', '"multiAsset"', '"evidenceSignals"',
+      '"documentDate"', '"amountCents"', '"supplier"']) {
+      expect(schema).toContain(cle);
     }
-    // Le contrat porte la preuve d'une métadonnée dans `evidence` (pas d'`excerpt` à plat).
-    expect(MASTER).toContain('"documentDate": {"value": "2026-04-24", "confidence": "certain", "evidence": {"excerpt"');
   });
 });
 

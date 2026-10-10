@@ -67,6 +67,7 @@ async function tableReady(): Promise<boolean> {
 /** Réservé aux tests. */
 export function resetDiagnosticTableState(): void {
   tableEtat = null;
+  contractColumns = null;
 }
 
 const borne = (s: string | null | undefined): string | null => {
@@ -82,6 +83,9 @@ function masquerJson(v: unknown): unknown {
   return v;
 }
 
+/** Colonnes de contrat runtime (0291) : inconnu, présentes, absentes. */
+let contractColumns: boolean | null = null;
+
 export async function recordCallDiagnostic(r: CallDiagnosticRecord): Promise<void> {
   if (!dbDisponible()) return;
   try {
@@ -90,20 +94,36 @@ export async function recordCallDiagnostic(r: CallDiagnosticRecord): Promise<voi
     const d = r.diagnostic;
     const raw = borne(r.output?.raw);
     const parsed = r.output?.parsed === undefined || r.output?.parsed === null ? null : JSON.stringify(masquerJson(r.output.parsed));
-    await pgClient.unsafe(
-      `INSERT INTO ai_call_diagnostics
-         (trace_id, usage_event_id, call_index, call_kind, account_id, use_case_code, operation_code, task, model, model_rank,
+    const base = [
+      r.traceId, r.usageEventId, r.callIndex, d.callKind, r.accountId, r.useCaseCode, r.operationCode, r.task, r.model, r.modelRank,
+      d.outcome, d.family, d.subtype, d.stage, d.signature, r.sourceIds.filter((x) => Number.isInteger(x)),
+      d.schema?.name ?? null, d.schema?.version ?? null, d.schema?.hash ?? null,
+      JSON.stringify(d), raw, borne(r.output?.extracted), parsed, r.output?.raw == null ? null : r.output.raw.length,
+    ];
+    const colonnes = `trace_id, usage_event_id, call_index, call_kind, account_id, use_case_code, operation_code, task, model, model_rank,
           outcome, failure_family, failure_subtype, failure_stage, signature, source_ids, schema_name, schema_version, schema_hash,
-          diagnostic, raw_output, extracted_output, parsed_output, output_chars)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::int[], $17, $18, $19,
-               $20::jsonb, $21, $22, $23::jsonb, $24)`,
-      [
-        r.traceId, r.usageEventId, r.callIndex, d.callKind, r.accountId, r.useCaseCode, r.operationCode, r.task, r.model, r.modelRank,
-        d.outcome, d.family, d.subtype, d.stage, d.signature, r.sourceIds.filter((x) => Number.isInteger(x)),
-        d.schema?.name ?? null, d.schema?.version ?? null, d.schema?.hash ?? null,
-        JSON.stringify(d), raw, borne(r.output?.extracted), parsed, r.output?.raw == null ? null : r.output.raw.length,
-      ] as never[],
-    );
+          diagnostic, raw_output, extracted_output, parsed_output, output_chars`;
+    const valeurs = `$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::int[], $17, $18, $19,
+               $20::jsonb, $21, $22, $23::jsonb, $24`;
+    // Lot 34D (0291) : contrat runtime en colonnes. Colonnes absentes
+    // (migration pas encore appliquée) : écriture sans elles, le détail
+    // reste dans `diagnostic`.
+    if (contractColumns !== false) {
+      try {
+        await pgClient.unsafe(
+          `INSERT INTO ai_call_diagnostics (${colonnes}, contract_id, contract_version, structured_output, provider_schema_hash)
+           VALUES (${valeurs}, $25, $26, $27, $28)`,
+          [...base, d.schema?.contractId ?? null, d.schema?.contractVersion ?? null,
+            d.schema?.structuredOutput ?? null, d.schema?.providerSchemaHash ?? null] as never[],
+        );
+        contractColumns = true;
+        return;
+      } catch (e) {
+        if ((e as { code?: string }).code !== '42703') throw e;
+        contractColumns = false;
+      }
+    }
+    await pgClient.unsafe(`INSERT INTO ai_call_diagnostics (${colonnes}) VALUES (${valeurs})`, base as never[]);
   } catch (e) {
     // Jamais la sortie dans le journal : le message d'erreur SQL seulement.
     console.error('[ai-diagnostics] diagnostic non écrit (non bloquant) :', String((e as Error).message ?? e).slice(0, 200));

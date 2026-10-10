@@ -429,4 +429,11 @@ async function setFileState(
       eq(assetFiles.accountId, accountId),
       inArray(assetFiles.analysisState, from),
     ));
+  // Lot 34C : le flux du tiroir apprend l'issue réelle (« En file
+  // d'attente » si une reprise attend, échec définitif sinon) — le relais
+  // (`userStreamEvent`) recalcule le statut fonctionnel, sans aucun texte.
+  try {
+    const { broadcast } = await import('../stream/broadcast');
+    broadcast(fileId, { type: 'state_update', analysisState: patch.analysisState });
+  } catch { /* diffusion facultative */ }
 }

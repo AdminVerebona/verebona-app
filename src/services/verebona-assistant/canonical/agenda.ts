@@ -31,7 +31,7 @@ export const HISTORICAL_FIELD_KEYS: readonly string[] = CANONICAL_FIELDS
  * Condition SQL « élément non historique » (D-14) : nature 0223, sinon
  * champ d'origine du registre. `$param` : `HISTORICAL_FIELD_KEYS`.
  */
-const NOT_HISTORICAL = (col: boolean, param: string) =>
+export const NOT_HISTORICAL = (col: boolean, param: string) =>
   `coalesce(${col ? 'i.event_nature' : 'NULL::text'}, CASE WHEN i.origin_field_key = ANY(${param}::text[]) THEN 'HISTORICAL' END, '') <> 'HISTORICAL'`;
 
 export type AgendaStatus4 = 'completed' | 'not_completed' | 'unknown' | 'not_proven';

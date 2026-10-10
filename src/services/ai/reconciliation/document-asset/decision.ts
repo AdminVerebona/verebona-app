@@ -20,6 +20,7 @@ import { closedWorldLinkAmbiguity, type T3LinkAmbiguityOutput } from '../master/
 import { decideLinks, LINK_MIN_MARGIN } from '../master/link-ambiguity';
 import type { IdentifierResolution } from './identifiers';
 import { isPromptSafeKey } from './identifiers';
+import type { CandidateSource } from './candidate-builder';
 
 /** Seuil de rattachement automatique par le modèle (et confiance `certain`). */
 export const DOCUMENT_ASSET_AUTO_THRESHOLD = 0.8;
@@ -42,7 +43,21 @@ export interface DocumentAssetCandidate {
   t1: { confidence: string; score: number; reason: string; signals: string } | null;
   /** Rôle du lien IA actuel (bien cité par T1, ou cible de faits). */
   currentRole: 'SECONDARY' | 'MENTIONED' | null;
+  /** Provenance (Candidate Builder, lot 34E). Absente : candidat construit à l'ancienne. */
+  sources?: CandidateSource[];
+  /** Indices de contexte (catégorie, ville…) — transmis au modèle, jamais une preuve. */
+  contextSignals?: string[];
+  /** Nom / alias discriminant cité dans une zone désignante (règle « nom distinctif unique »). */
+  distinctiveNameMatch?: boolean;
 }
+
+/**
+ * Limite du CONTEXTE ENVOYÉ AU MODÈLE (prompt T3), jamais une limite de
+ * découverte : le Candidate Builder examine tous les biens du compte ; seuls
+ * les mieux classés sont transmis, et la décision reste en monde fermé sur
+ * ceux-là.
+ */
+export const DOCUMENT_ASSET_PROMPT_MAX_CANDIDATES = 60;
 
 export type DocumentAssetDecision =
   | { kind: 'APPLY'; assetId: number; score: number; reason: string; method: 'DETERMINISTIC' | 'AI' }
@@ -63,9 +78,29 @@ export function hasEvidence(c: DocumentAssetCandidate): boolean {
 
 /** Score a priori d'un candidat (ordre des propositions sans avis du modèle). */
 export function priorScore(c: DocumentAssetCandidate): number {
-  if (c.serverSignals.length > 0) return 0.85;
-  const t1 = c.t1 ? Math.min(0.85, Math.max(0, Number.isFinite(c.t1.score) ? c.t1.score : 0.5)) : 0;
-  return Math.max(t1, c.currentRole === 'SECONDARY' ? 0.6 : c.currentRole === 'MENTIONED' ? 0.4 : 0.2);
+  const src = c.sources;
+  if (src) {
+    if (src.includes('STRONG_IDENTIFIER')) return 0.85;
+    if (src.includes('SHARED_REFERENCE')) return 0.8;
+    if (c.distinctiveNameMatch) return 0.75;
+  } else if (c.serverSignals.length > 0) return 0.85;
+  if (src && (src.includes('EXACT_NAME') || src.includes('ALIAS'))) return Math.max(0.65, t1Score(c));
+  if (src && src.includes('BRAND_MODEL')) return Math.max(0.6, t1Score(c));
+  return Math.max(t1Score(c), c.currentRole === 'SECONDARY' ? 0.6 : c.currentRole === 'MENTIONED' ? 0.4
+    : (c.contextSignals?.length ?? 0) > 0 ? 0.3 : 0.2);
+}
+
+function t1Score(c: DocumentAssetCandidate): number {
+  return c.t1 ? Math.min(0.85, Math.max(0, Number.isFinite(c.t1.score) ? c.t1.score : 0.5)) : 0;
+}
+
+/**
+ * Candidats transmis au modèle : les `DOCUMENT_ASSET_PROMPT_MAX_CANDIDATES`
+ * mieux classés (score a priori, puis identifiant). Pure.
+ */
+export function promptCandidates(candidates: DocumentAssetCandidate[], max = DOCUMENT_ASSET_PROMPT_MAX_CANDIDATES): DocumentAssetCandidate[] {
+  if (candidates.length <= max) return candidates;
+  return [...candidates].sort((a, b) => priorScore(b) - priorScore(a) || a.assetId - b.assetId).slice(0, max);
 }
 
 /** Classement neutre des candidats (abstention sans avis exploitable du modèle). */
@@ -74,7 +109,8 @@ export function rankCandidates(candidates: DocumentAssetCandidate[]): Array<{ as
     .map((c) => ({
       assetId: c.assetId,
       score: priorScore(c),
-      reason: c.serverSignals[0] ?? c.t1?.reason ?? (c.currentRole === 'SECONDARY' ? 'cible de faits du document' : 'bien cité par le document'),
+      reason: c.serverSignals[0] ?? c.t1?.reason ?? (c.currentRole === 'SECONDARY' ? 'cible de faits du document'
+        : c.contextSignals?.[0] ?? 'bien cité par le document'),
     }))
     .sort((a, b) => b.score - a.score || a.assetId - b.assetId);
 }
@@ -90,6 +126,39 @@ export function decideDeterministic(
   }
   if (identification.multiAssetCandidate && opts.multiAssetDeclared) {
     return { kind: 'MULTI_ASSET', assetIds: identification.assetIds, reason: 'IDENTIFIERS_EXCLUSIVE_PER_ASSET', method: 'DETERMINISTIC' };
+  }
+  return null;
+}
+
+/**
+ * Règles déterministes ÉTENDUES (lot 34E), appliquées après les identifiants
+ * forts quand aucun identifiant ne désigne de bien :
+ *   · SHARED_REFERENCE : un seul bien porte, sur un AUTRE document déjà
+ *     rattaché, le même n° de contrat / police ;
+ *   · DISTINCT_NAME : un seul bien est désigné par un nom (ou alias)
+ *     discriminant — au moins deux mots significatifs, hors catégorie —
+ *     cité dans le titre, la description ou un fait ; aucun autre bien n'est
+ *     cité par son nom.
+ * Jamais quand le document est déclaré multi-biens, ni quand T1 (certain) ou
+ * un fait désigne un AUTRE bien : le modèle tranche alors. Un nom générique,
+ * une catégorie ou une ville ne rattachent jamais.
+ */
+export function decideContextualDeterministic(
+  candidates: DocumentAssetCandidate[],
+  identification: IdentifierResolution,
+  opts: { multiAssetDeclared: boolean },
+): DocumentAssetDecision | null {
+  if (opts.multiAssetDeclared || identification.assetIds.length > 0) return null;
+  const has = (c: DocumentAssetCandidate, s: CandidateSource) => !!c.sources?.includes(s);
+  const autresDesignes = (id: number) => candidates.some((c) => c.assetId !== id
+    && (has(c, 'FACT_TARGET') || (has(c, 'T1_CANDIDATE') && c.t1?.confidence === 'certain')));
+  const refs = candidates.filter((c) => has(c, 'SHARED_REFERENCE'));
+  if (refs.length === 1 && !autresDesignes(refs[0].assetId)) {
+    return { kind: 'APPLY', assetId: refs[0].assetId, score: 1, reason: 'SHARED_REFERENCE', method: 'DETERMINISTIC' };
+  }
+  const nommes = candidates.filter((c) => has(c, 'EXACT_NAME') || has(c, 'ALIAS'));
+  if (nommes.length === 1 && nommes[0].distinctiveNameMatch && !autresDesignes(nommes[0].assetId)) {
+    return { kind: 'APPLY', assetId: nommes[0].assetId, score: 1, reason: 'DISTINCT_NAME', method: 'DETERMINISTIC' };
   }
   return null;
 }
@@ -118,6 +187,7 @@ export function describeCandidate(c: DocumentAssetCandidate): string {
   const ids = Object.entries(c.identifiers).filter(([k]) => isPromptSafeKey(k)).map(([k, v]) => `${k}=${v}`);
   if (ids.length) parts.push(`identifiants: ${ids.join(', ')}`);
   if (c.serverSignals.length) parts.push(`contrôle serveur: ${c.serverSignals.join(' ; ')}`);
+  if (c.contextSignals?.length) parts.push(`indices de contexte (insuffisants seuls): ${c.contextSignals.join(' ; ')}`);
   if (c.t1) parts.push(`T1: ${c.t1.confidence} (${c.t1.score}) ${borne([c.t1.reason, c.t1.signals].filter(Boolean).join(' — '), 240) ?? ''}`.trim());
   if (c.currentRole) parts.push(`lien actuel: ${c.currentRole === 'SECONDARY' ? 'cible de faits (SECONDARY)' : 'bien cité (MENTIONED)'}`);
   if (!hasEvidence(c)) parts.push('aucune preuve fournie');

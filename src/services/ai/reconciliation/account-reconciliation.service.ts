@@ -22,6 +22,13 @@
  *
  * Il ne relit AUCUN fichier et ne relance aucune extraction : s'il manque une
  * preuve, le moteur le constate.
+ *
+ * Lot 34E (réconciliation CONTINUE) : après les biens, l'exécution reprend la
+ * CONNAISSANCE OUVERTE du compte (`continuous/open-knowledge.service.ts`) —
+ * faits sans cible rapprochables d'un équipement / d'un bien, documents en
+ * NO_CANDIDATE / ABSTAINED / MULTI_ASSET dont le contexte pertinent a changé
+ * depuis la révision de connaissance évaluée. Déterministe d'abord ; un
+ * contexte inchangé est confirmé sans IA.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
@@ -74,6 +81,8 @@ export interface AccountRunResult {
   errors: number;
   aiCalls: number;
   details: ObjectResult[];
+  /** Connaissance ouverte reprise (lot 34E) ; absente si la phase n'a pas tourné. */
+  openKnowledge?: import('./continuous/open-knowledge.service').OpenKnowledgeResult;
 }
 
 /** Au-delà, un run « en cours » est réputé abandonné (processus arrêté). */
@@ -88,12 +97,18 @@ const LOCAL_TRIGGER: Record<T3TriggerType, ReconcileInput['triggeredBy']> = {
 
 export interface AccountReconciliationDeps {
   reconcile(input: ReconcileInput): Promise<ReconciliationRun>;
+  /** Connaissance ouverte (lot 34E). Absente : phase omise (tests de l'orchestrateur). */
+  reconcileOpenKnowledge?: typeof import('./continuous/open-knowledge.service').reconcileOpenKnowledge;
 }
 
 const defaultDeps: AccountReconciliationDeps = {
   async reconcile(input) {
     const { reconcileAsset } = await import('./reconciliation-engine');
     return reconcileAsset(input);
+  },
+  async reconcileOpenKnowledge(accountId, opts) {
+    const { reconcileOpenKnowledge } = await import('./continuous/open-knowledge.service');
+    return reconcileOpenKnowledge(accountId, opts);
   },
 };
 
@@ -223,6 +238,8 @@ export async function reconcileAccount(
     scope?: 'full' | 'incremental'; queuedRunId?: number; userId?: number;
     /** Garde d'exécution de la file (rollback, arrêt d'urgence, désactivation). */
     guard?: import('../queue/execution-control').ExecutionGuard;
+    /** Déclencheur du travail (monitoring des reprises de connaissance ouverte). */
+    triggerCode?: string | null;
   } = {},
   deps: AccountReconciliationDeps = defaultDeps,
 ): Promise<AccountRunResult> {
@@ -247,6 +264,7 @@ export async function reconcileAccount(
   }
 
   const details: ObjectResult[] = [];
+  let openKnowledge: AccountRunResult['openKnowledge'];
   // Lot 31C : une exécution INTERROMPUE (jeton révoqué, garde) ou arrêtée par
   // une erreur n'est jamais journalisée « completed » — sinon le travail remis
   // en file la croirait achevée (SUPERSEDED) alors qu'une partie des biens
@@ -281,6 +299,17 @@ export async function reconcileAccount(
         details.push({ objectType: 'asset', objectId: c.id, status: 'ERROR', applied: 0, conflicts: 0, aiReviews: 0, reason: (e as Error).message.slice(0, 300) });
       }
     }
+    // Connaissance ouverte (lot 34E) : faits sans cible, documents non
+    // résolus dont le contexte a changé. Non bloquante (sauf interruption).
+    if (deps.reconcileOpenKnowledge) {
+      if (options.guard) await options.guard.assertActive('connaissance ouverte du compte');
+      try {
+        openKnowledge = await deps.reconcileOpenKnowledge(accountId, { guard: options.guard, triggerCode: options.triggerCode ?? null });
+      } catch (e) {
+        if (isExecutionCancelled(e)) throw e;
+        console.error(`[t3] connaissance ouverte du compte ${accountId} non reprise :`, (e as Error).message);
+      }
+    }
   } catch (e) {
     interrompue = true;
     throw e;
@@ -302,6 +331,7 @@ export async function reconcileAccount(
   return {
     runId, accountId, triggerType: trigger.type, scope, startedAt, finishedAt: new Date().toISOString(),
     details, ...totals, status: details.length === 0 ? 'completed' : totals.status,
+    ...(openKnowledge ? { openKnowledge } : {}),
   };
 }
 

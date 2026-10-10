@@ -256,6 +256,48 @@ export interface AssistantRequestInput {
 
 /** Résultat interne complet d'une demande (avant sérialisation API). */
 /**
+ * Trace d'une demande d'actions (lot 34, ticket T2 « Que dois-je faire
+ * aujourd'hui ? »). Codes, dates et identifiants seulement — aucun contenu.
+ */
+export interface ActionableTrace {
+  intent: string;
+  /** Famille résolue : ACTIONS_TEMPORAL, ACTIONS_OVERDUE, ACTIONS_URGENT, TO_PROCESS_OPEN, DEADLINES_PERIOD. */
+  intentResolution: string;
+  /** SUCCESS (y compris 0 résultat) | INSUFFICIENT (bien désigné introuvable, lecture impossible). */
+  resolution: 'SUCCESS' | 'INSUFFICIENT';
+  requestedTimeScope: string;
+  appliedTimeScope: string;
+  resolvedStartDate: string | null;
+  resolvedEndDate: string | null;
+  allowedSourceTypes: string[];
+  queriedSources: string[];
+  /** Toujours une lecture canonique SQL : jamais plein texte, sémantique ni recherche globale. */
+  queryStrategy: 'SQL_CANONICAL';
+  assetScope: number[] | null;
+  todoCount: number;
+  deadlineCount: number;
+  actionCount: number;
+  overdueCount: number;
+  todayCount: number;
+  resultCount: number;
+  fallbackUsed: false;
+  fallbackReason: string | null;
+  answeredBy: 'structured';
+  results: Array<{
+    sourceType: string;
+    sourceId: string;
+    reasonForInclusion: string;
+    status: string;
+    dueDate: string | null;
+    relatedAssetId: number | null;
+    /** Formes du même besoin fusionnées (relations canoniques). */
+    mergedSourceIds: string[];
+    /** Documents de contexte (jamais des résultats). */
+    contextDocumentIds: number[];
+  }>;
+}
+
+/**
  * Trace de la cascade T2 (non-escalade) — quel niveau a répondu, et pourquoi
  * les niveaux précédents n'ont pas suffi. Persistée dans
  * `verebona_request_runs.retrieval_methods_json`.
@@ -326,11 +368,26 @@ export interface CascadeTrace {
   retrievalQueriesExpanded?: string[];
   /**
    * Lot 33 : motif d'un repli ou d'une escalade non exécutée —
-   * HELP_CORPUS_UNAVAILABLE, NO_RELIABLE_SOURCE, AI_NOT_ALLOWED,
-   * AI_UNAVAILABLE, AI_BUDGET_BLOCKED, AI_TIMEOUT, UNDERSTAND_NO_QUERY,
-   * NO_SOURCE_FOR_SYNTHESIS…
+   * AI_NOT_ALLOWED, AI_UNAVAILABLE, AI_BUDGET_BLOCKED, AI_TIMEOUT,
+   * UNDERSTAND_NO_QUERY, NO_SOURCE_FOR_SYNTHESIS… Lot 34G, aide :
+   * HELP_CORPUS_UNAVAILABLE / _TIMEOUT / _HTTP_ERROR / _INVALID /
+   * _WRONG_ENVIRONMENT, NO_RELEVANT_HELP_ARTICLE, HELP_SCORE_INSUFFICIENT,
+   * HELP_CONTRADICTION (`core/help-cascade`, `HelpFallbackReason`).
    */
   fallbackReason?: string | null;
+  /**
+   * Lot 34 : repli générique utilisé (liste d'éléments approchants) — faux
+   * pour toute réponse servie par la résolution de l'intention, y compris
+   * « aucun résultat ».
+   */
+  fallbackUsed?: boolean;
+  /**
+   * Lot 34 : résolution d'une demande d'ACTIONS (À traiter, échéances,
+   * retards, période) — lisible d'un coup d'œil dans la trace : intention,
+   * période, sources interrogées, compteurs, raison d'inclusion de chaque
+   * résultat.
+   */
+  actionable?: ActionableTrace;
   understanding?: {
     initialStatus: import('../core/understanding-status').UnderstandingStatus;
     status: import('../core/understanding-status').UnderstandingStatus;

@@ -62,6 +62,8 @@ describe('union et texte du master', () => {
     const texte = readFileSync(join(process.cwd(), 'src/services/ai/prompts/agenda/t4_master_v1.txt'), 'utf8');
     expect(texte).not.toMatch(/reconduction tacite|gardiennage/i);
     expect(texte).toMatch(/C4 — N’applique pas de règle générale par type de contrat/);
-    for (const b of ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY']) expect(texte).toContain(`BRANCHE TASK = ${b}`);
+    // Lot 34D : texte libre (contexte structuré) — chaque TASK reste expliquée, sans titre imposé.
+    for (const b of ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY']) expect(texte).toContain(`task = ${b}`);
+    expect(texte).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
 });

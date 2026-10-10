@@ -18,6 +18,7 @@ import type {
 } from './types';
 import { MAX_ACTIONS_TOTAL, MAX_SECONDARIES, MAX_SUBJECTS } from './types';
 import type { MascotCandidates } from './signals';
+import type { RenderedSuggestion } from '@/services/verebona-assistant/registries/capability-registry';
 
 /** SEL-001 à SEL-003 : au plus deux sujets distincts. */
 export function selectSubjects(candidates: MascotSubject[]): MascotSubject[] {
@@ -33,45 +34,45 @@ export function selectSubjects(candidates: MascotSubject[]): MascotSubject[] {
   return retenus;
 }
 
-// ── Questions T2 (§12, annexe B) ─────────────────────────────────────────────
+// ── Questions T2 (§12, annexe B) — catalogue UNIQUE (lot 34) ────────────────
+//
+// La mascotte n'a plus de catalogue propre (`T2_QUESTIONS` : « Que dois-je
+// faire aujourd'hui ? » dès qu'un « À traiter » existait, « Que sais-tu sur
+// X ? », pseudo-intentions sans contrat T2). Ses questions sont celles du
+// catalogue validé de Verebona (`capability-registry` → `suggestionsForRoute`
+// pour l'accueil), rendues côté serveur avec l'état du compte : intention T2
+// canonique, préconditions explicites, 0 à 3 questions, jamais de
+// remplissage. Le moteur ne fait ici que retirer celles qui répètent un sujet
+// déjà affiché (SEC-004, T2-02).
 
-export interface QuestionDefinition {
-  code: string;
-  label: (ctx: { assetName?: string | null }) => string;
-  intent: string;
-}
+/** Question du catalogue unique, telle que rendue pour l'accueil. */
+export type CatalogQuestion = Pick<RenderedSuggestion, 'id' | 'label' | 'canonicalIntent' | 'topic' | 'assetId'>;
 
-/** Catalogue V1 — liste autorisée (Q-001). T6 n'en génère jamais (SEC-003). */
-export const T2_QUESTIONS: Record<string, QuestionDefinition> = {
-  'Q-EMPTY-ADD': { code: 'Q-EMPTY-ADD', label: () => 'Comment ajouter un bien ?', intent: 'help_add_asset' },
-  'Q-EMPTY-SCOPE': { code: 'Q-EMPTY-SCOPE', label: () => 'Que puis-je suivre avec Verebona ?', intent: 'help_scope' },
-  'Q-EMPTY-AI': { code: 'Q-EMPTY-AI', label: () => 'L’analyse automatique, c’est quoi ?', intent: 'help_analysis' },
-  'Q-TODO': { code: 'Q-TODO', label: () => 'Que dois-je faire aujourd’hui ?', intent: 'account_next_actions' },
-  'Q-NEXT-DATE': { code: 'Q-NEXT-DATE', label: () => 'Quelle est ma prochaine échéance ?', intent: 'next_deadline' },
-  'Q-ANALYSIS': { code: 'Q-ANALYSIS', label: () => 'Où en est l’analyse de mes documents ?', intent: 'document_analysis_status' },
-  'Q-ASSET': { code: 'Q-ASSET', label: ({ assetName }) => `Que sais-tu sur ${assetName} ?`, intent: 'asset_summary' },
-};
+/** Sujet de catalogue équivalent à une famille de sujet de la mascotte. */
+const TOPIC_OF_FAMILY: Readonly<Partial<Record<string, string>>> = { DATE: 'deadlines' };
+/** Sujet de catalogue équivalent à un code source affiché. */
+const TOPIC_OF_CODE: Readonly<Record<string, string>> = { 'PROC-DOC-ANALYSIS': 'analysis' };
 
-function questionAction(code: string, assetId?: number | null, assetName?: string | null): MascotSecondary {
-  const def = T2_QUESTIONS[code];
-  const question = def.label({ assetName });
+function questionAction(q: CatalogQuestion): MascotSecondary {
   return {
-    id: `Q:${code}`,
+    id: `Q:${q.id}`,
     kind: 'question',
-    sourceCode: code,
-    occurrenceKey: `Q:${code}${assetId ? `:${assetId}` : ''}`,
+    sourceCode: `Q:${q.id}`,
+    occurrenceKey: `Q:${q.id}${q.assetId ? `:${q.assetId}` : ''}`,
     action: {
-      actionId: `Q:${code}`,
-      label: question,
+      actionId: `Q:${q.id}`,
+      label: q.label,
       target: {
-        kind: 'ask', question,
-        context: { intent: def.intent, ...(assetId ? { assetId } : {}) },
+        kind: 'ask', question: q.label,
+        // Intention T2 CANONIQUE (jamais une pseudo-intention) ; le bien est
+        // revalidé côté serveur.
+        context: { intent: q.canonicalIntent, ...(q.assetId ? { assetId: q.assetId } : {}) },
       },
     },
   };
 }
 
-/** Famille d'un code source (`ATP-…` → À traiter, `DATE-NEXT…` → Date). */
+/** Famille d'un code source (`DATE-NEXT…` → Date). */
 function familyOfCode(code: string): MascotSubject['sourceFamily'] | null {
   if (code.startsWith('ATP-')) return 'TO_PROCESS';
   if (code === 'DATE-NEXT' || code === 'DATE-NEXT-2') return 'DATE';
@@ -79,40 +80,28 @@ function familyOfCode(code: string): MascotSubject['sourceFamily'] | null {
 }
 
 /**
- * Questions éligibles, dans l'ordre du catalogue, sans celles qui répètent un
- * sujet OU une action déjà affichés (SEC-004, T2-02) : une action À traiter
- * ou une date visible en élément secondaire exclut aussi Q-TODO / Q-NEXT-DATE.
+ * Questions du catalogue unique, dans son ordre, sans celles qui répètent
+ * un sujet OU une action déjà affichés (SEC-004, T2-02) : une date visible
+ * exclut la question d'échéance, une analyse en cours affichée exclut la
+ * question d'analyse. Les « À traiter » (niveau 2, MASC2) n'excluent rien :
+ * « Ou demandez-moi » reste indépendant de la file.
  */
 export function eligibleQuestions(
-  input: MascotCandidates,
+  catalog: readonly CatalogQuestion[],
   shown: MascotSubject[],
-  onboarding: 'ONB-ASSET' | 'ONB-DOC' | null,
   visibleSecondaries: MascotSecondary[] = [],
 ): MascotSecondary[] {
-  const codes = new Set([...shown.map((s) => s.sourceCode), ...visibleSecondaries.map((s) => s.sourceCode)]);
-  const familles = new Set<string>(shown.map((s) => s.sourceFamily));
+  const sujets = new Set<string>();
+  for (const s of shown) {
+    const t = TOPIC_OF_FAMILY[s.sourceFamily] ?? TOPIC_OF_CODE[s.sourceCode];
+    if (t) sujets.add(t);
+  }
   for (const s of visibleSecondaries) {
     const f = familyOfCode(s.sourceCode);
-    if (f) familles.add(f);
+    const t = (f && TOPIC_OF_FAMILY[f]) ?? TOPIC_OF_CODE[s.sourceCode];
+    if (t) sujets.add(t);
   }
-  const out: MascotSecondary[] = [];
-
-  if (onboarding === 'ONB-ASSET') {
-    out.push(questionAction('Q-EMPTY-ADD'), questionAction('Q-EMPTY-SCOPE'));
-  }
-  if (onboarding) out.push(questionAction('Q-EMPTY-AI'));
-  if (input.hints.hasToProcess && !familles.has('TO_PROCESS')) out.push(questionAction('Q-TODO'));
-  if (input.hints.hasFutureDate && !familles.has('DATE')) out.push(questionAction('Q-NEXT-DATE'));
-  if ((input.hints.hasDocuments || input.hints.hasProcessing) && !codes.has('PROC-DOC-ANALYSIS')) {
-    out.push(questionAction('Q-ANALYSIS'));
-  }
-  // Q-ASSET : un seul bien est clairement le contexte des sujets affichés.
-  const biens = new Map(shown.filter((s) => s.assetId).map((s) => [s.assetId!, s.assetName ?? null]));
-  if (shown.length > 0 && biens.size === 1 && shown.every((s) => s.assetId)) {
-    const [[assetId, assetName]] = [...biens.entries()];
-    if (assetName) out.push(questionAction('Q-ASSET', assetId, assetName));
-  }
-  return out;
+  return catalog.filter((q) => !sujets.has(q.topic)).map(questionAction);
 }
 
 // ── Éléments secondaires (§12) ───────────────────────────────────────────────
@@ -121,13 +110,14 @@ export function eligibleQuestions(
  * SEC-001, SEC-002, SEL-006 :
  *   1. l'onboarding actif, s'il n'est pas déjà dans le discours (place réservée) ;
  *   2. les recommandations actionnables non retenues (À traiter, règles mascotte) ;
- *   3. les questions T2.
+ *   3. les questions T2 du catalogue unique (`catalog`, rendu côté serveur).
  * Dans la limite de 5 actions au total et de 3 secondaires (UX-007). Rien
  * n'est ajouté pour « remplir » (UI-04).
  */
 export function buildSecondaries(
   input: MascotCandidates,
   subjects: MascotSubject[],
+  catalog: readonly CatalogQuestion[] = [],
 ): MascotSecondary[] {
   const actionsSujets = subjects.reduce((n, s) => n + s.actions.length, 0);
   const places = Math.max(0, Math.min(MAX_SECONDARIES, MAX_ACTIONS_TOTAL - actionsSujets));
@@ -162,10 +152,9 @@ export function buildSecondaries(
     c.dedupeKeys.forEach((k) => affiches.add(k));
   }
 
-  const step = onboarding ? (onboarding.sourceCode as 'ONB-ASSET' | 'ONB-DOC') : null;
   // SEC-004 : seules les recommandations qui seront réellement visibles
   // (dans la limite des places) excluent leur question équivalente.
-  liste.push(...eligibleQuestions(input, subjects, step, liste.slice(0, places)));
+  liste.push(...eligibleQuestions(catalog, subjects, liste.slice(0, places)));
 
   // L'onboarding garde sa place même si la file de recommandations est longue
   // (SEL-006) : il est en tête, et la troncature se fait par la fin.

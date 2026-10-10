@@ -71,15 +71,21 @@ export async function GET(
         return;
       }
 
+      // Lot 34C : tout événement passe par `userStreamEvent` — aucun texte
+      // technique, statut fonctionnel relu sur l'état réel (job vivant).
+      const { userStreamEvent } = await import('@/services/ai/processing-status/processing-status.service');
+      const initial = await userStreamEvent(assetFileId, accountId, { type: 'state_update', analysisState: file.analysisState ?? 'ANALYZING' });
+      const etatAffiche = (initial.analysisState as string | null | undefined) ?? null;
+
       // If already terminal, send current state and close
-      if (isTerminalAnalysisState(file.analysisState)) {
-        await writer.write(sseEvent({ type: 'state_update', analysisState: file.analysisState }));
-        await writer.write(sseEvent({ type: 'done', analysisState: file.analysisState }));
+      if (isTerminalAnalysisState(etatAffiche)) {
+        await writer.write(sseEvent(initial));
+        await writer.write(sseEvent({ ...initial, type: 'done' }));
         return;
       }
 
       // Send current state immediately
-      await writer.write(sseEvent({ type: 'state_update', analysisState: file.analysisState ?? 'ANALYZING' }));
+      await writer.write(sseEvent(initial));
 
       // Keep-alive ping every 20s
       const keepAlive = setInterval(async () => {
@@ -89,8 +95,9 @@ export async function GET(
       // Abonnement aux deux registres de diffusion — voir
        // `registerAnalysisStreamWriter`. Sans cela, le flux se tairait dès que
        // le drapeau passe à `enabled`.
-      const unregister = await registerAnalysisStreamWriter(assetFileId, async (data) => {
+      const unregister = await registerAnalysisStreamWriter(assetFileId, async (brut) => {
         try {
+          const data = await userStreamEvent(assetFileId, accountId, brut);
           await writer.write(sseEvent(data));
           // Close stream on terminal state
           if (data.type === 'done' || data.type === 'error' || isTerminalAnalysisState(data.analysisState as string | null)) {

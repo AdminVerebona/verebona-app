@@ -47,7 +47,9 @@ export async function GET(request: NextRequest) {
       notifications: notifs.map(n => ({
         id: n.id,
         type: n.type,
-        payload: n.payloadJson ? JSON.parse(n.payloadJson) : null,
+        // Lot 34C : le motif technique d'un échec d'analyse (`errorReason`,
+        // lignes historiques) ne quitte jamais le serveur.
+        payload: n.payloadJson ? sansMotifTechnique(JSON.parse(n.payloadJson)) : null,
         // Contenu rendu par le catalogue à l'émission : filet de sécurité de
         // la cloche pour un type qu'elle ne sait pas libeller (au lieu de
         // « Nouvelle notification »).
@@ -113,4 +115,11 @@ export async function PATCH(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+/** Charge utile d'une notification sans motif technique (lot 34C). */
+function sansMotifTechnique(p: unknown): unknown {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return p;
+  const { errorReason: _ignore, ...reste } = p as Record<string, unknown>;
+  return reste;
 }

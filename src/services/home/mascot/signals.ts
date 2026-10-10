@@ -108,13 +108,9 @@ export interface MascotCandidates {
   candidates: MascotSubject[];
   /** Une source au moins n'a pas pu être lue. */
   degraded: boolean;
-  /** Faits d'éligibilité des questions T2 (annexe B). */
-  hints: {
-    hasToProcess: boolean;
-    hasFutureDate: boolean;
-    hasDocuments: boolean;
-    hasProcessing: boolean;
-  };
+  // Lot 34 : plus de « faits d'éligibilité » des questions T2 ici
+  // (`hasToProcess`…) — les questions viennent du catalogue unique
+  // (`capability-registry`), avec ses préconditions explicites.
 }
 
 // ── Formats ──────────────────────────────────────────────────────────────────
@@ -456,15 +452,5 @@ export function buildCandidates(raw: MascotRawData): MascotCandidates {
   ];
   const degraded = raw.processing === null || raw.onboarding === null || raw.toProcess === null
     || raw.agenda === null || raw.acknowledgments === null;
-  const exclues = agendaInToProcess(raw);
-  return {
-    candidates,
-    degraded,
-    hints: {
-      hasToProcess: (raw.toProcess?.length ?? 0) > 0,
-      hasFutureDate: (raw.agenda ?? []).some((i) => i.date && i.date > raw.today && !exclues.has(i.id)),
-      hasDocuments: (raw.onboarding?.documentCount ?? 0) > 0,
-      hasProcessing: !!raw.processing && (raw.processing.uploads.length + raw.processing.analyses.length) > 0,
-    },
-  };
+  return { candidates, degraded };
 }

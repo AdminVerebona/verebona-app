@@ -261,7 +261,7 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
         )}
         <p className="text-xs text-[color:var(--text-secondary)]" data-testid="execution-counters">
           {counters.jobAttempts !== null && <>Tentatives du job : {counters.jobAttempts} · </>}
-          Appels modèle : {counters.modelCalls} · Fallbacks modèle : {counters.modelFallbacks}
+          Appels modèle de cette tentative : {counters.modelCalls} · Fallbacks modèle : {counters.modelFallbacks}
           {counters.repairCalls > 0 && <> · Réparations ciblées : {counters.repairCalls}</>}
         </p>
       </section>

@@ -19,6 +19,8 @@ import {
   type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import { openDrawerFromLink } from '@/lib/drawers';
+import { openCreateFlow } from '@/lib/create-flows';
+import { assistantActionKind, executeAssistantAction } from '@/lib/verebona/assistant-actions';
 import { trackAssistantUsage } from '@/lib/verebona/usage-events';
 import { VerebonaCommandPlan } from '../VerebonaCommandPlan';
 import { VerebonaExplanation } from '../VerebonaExplanation';
@@ -105,13 +107,16 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
   const cards = groups.flatMap((g) => g.items.map((c) => ({ ...c, groupType: g.type })));
   const objects: SpaceObject[] = [...objectsFromCards(cards), ...(msg.local?.objects ?? [])];
 
-  const onAction = (a: VerebonaAction) => {
-    switch (a.type) {
-      case 'SHOW_EXPLANATION': setExplanationOpen((o) => !o); break;
-      case 'RETRY_REQUEST': api.guard(() => { void v.retry(msg.id); }); break;
-      default: break;
-    }
-  };
+  // Lot 34G : dispatcher générique (NAVIGATION, OPEN_ENTITY, CREATE,
+  // ASSISTANT_UI) — une création ouvre son formulaire, jamais une page.
+  const onAction = (a: VerebonaAction, e?: React.MouseEvent) => executeAssistantAction(a, {
+    navigate: (href) => { api.leaveForOverlay(); if (e) openDrawerFromLink(e, href); },
+    create: (command) => { api.leaveForOverlay(); openCreateFlow({ flow: command.flow, assetId: command.assetId }); },
+    assistantUi: (type) => {
+      if (type === 'SHOW_EXPLANATION') setExplanationOpen((o) => !o);
+      else if (type === 'RETRY_REQUEST') api.guard(() => { void v.retry(msg.id); });
+    },
+  });
   // Ni « Voir les sources » ni avis 👍/👎 sous les réponses (décision produit
   // du 2 oct. 2026) : l'action SHOW_SOURCES proposée par le serveur est écartée.
   const serverActions = (msg.actions ?? []).filter((a) => a.type !== 'SHOW_SOURCES');
@@ -202,8 +207,8 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
             <button key={a.id} type="button" className={pillClass(!!a.primary, variant)} onClick={() => api.runLocal(a.id)}>{a.label}</button>
           ))}
           {serverActions.map((a, rang) => (
-            a.href ? (
-              <a key={a.actionId} href={a.href} data-analytics={a.analyticsCode} className={pillClass(false, variant)} onClick={(e) => { clicAction(a, rang); api.leaveForOverlay(); openDrawerFromLink(e, a.href); }}>
+            a.href && assistantActionKind(a.type) !== 'CREATE' ? (
+              <a key={a.actionId} href={a.href} data-analytics={a.analyticsCode} className={pillClass(false, variant)} onClick={(e) => { clicAction(a, rang); onAction(a, e); }}>
                 {a.label}
               </a>
             ) : (
@@ -434,15 +439,16 @@ export function SpaceBody({ variant, scrollRef }: { variant: SpaceVariant; scrol
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // Desktop : le champ est au-dessus, les suggestions en tête ; sinon le dernier échange.
-    el.scrollTop = saisie && variant === 'desktop' ? 0 : el.scrollHeight;
-  }, [signature, scrollRef, saisie, variant]);
+    // Desktop et mobile (lot 34) : le champ est au-dessus ; suggestions et accueil
+    // du pop-up en tête, sinon le dernier échange.
+    el.scrollTop = saisie || turns.length === 0 ? 0 : el.scrollHeight;
+  }, [signature, scrollRef, saisie, turns.length]);
 
   if (!api) return null;
   const suggestions = <LiveResults api={api} />;
   return (
     <>
-      {variant === 'desktop' && suggestions}
+      {suggestions}
       {turns.length === 0 && !saisie && <InitialState variant={variant} api={api} />}
       {api.v.hasOlder && turns.length > 0 && (
         <button
@@ -458,7 +464,6 @@ export function SpaceBody({ variant, scrollRef }: { variant: SpaceVariant; scrol
       <div aria-live="polite" className="flex flex-col gap-4">
         {recent.map((t) => <Turn key={t.id} turn={t} variant={variant} api={api} />)}
       </div>
-      {variant === 'mobile' && suggestions}
     </>
   );
 }

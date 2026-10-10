@@ -79,7 +79,8 @@ describe('T2-07 — contrat de sources de l’intention', () => {
     expect(noms('ACCOUNT_SEARCH_DOCUMENT')).toEqual(['documents']);
     expect(noms('ACCOUNT_SEARCH_AGENDA')).toEqual(['agenda']);
     expect(noms('ACCOUNT_SEARCH_SUPPLIER')).toEqual(['suppliers']);
-    expect(noms('ACCOUNT_TO_PROCESS')).toEqual(['to_process']);
+    // Lot 34 : demandes d'actions — À traiter et échéances (jamais de document).
+    expect(noms('ACCOUNT_TO_PROCESS')).toEqual(['agenda', 'to_process']);
     expect(noms('PRODUCT_PLAN_LIMIT')).toEqual(['product_rules']);
     expect(noms('ACCOUNT_MISSING_INFORMATION')).toEqual(['assets', 'documents', 'equipments', 'rooms', 'to_process', 'product_rules']);
   });

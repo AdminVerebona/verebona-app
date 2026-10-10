@@ -6,6 +6,11 @@
  * Parties pures (contrat, bulle) et structure des écrans (sources). Le
  * parcours sur base réelle (même source que la file, synchronisation après
  * résolution, compteur) : `l32-a-traiter-mascotte.e2e.ts`.
+ *
+ * Lot 34 (MASC3) : la mascotte n'affiche plus que les DO_FIRST, au plus
+ * deux, et compte les éléments affichés (jamais le total de la file) —
+ * les exemples ci-dessous sont donc en DO_FIRST ; voir aussi
+ * `src/__tests__/lot34/masc3-mascotte-do-first.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';
@@ -15,8 +20,9 @@ import { buildTodoBlock, todoActionType, todoItemFrom, todoTitle, MAX_TODO_ITEMS
 import { buildCandidates, type MascotRawData } from '@/services/home/mascot/signals';
 import { buildSecondaries, selectSubjects } from '@/services/home/mascot/selector';
 import { buildPresentation } from '@/services/home/mascot/presentation';
+import { EMPTY_ACCOUNT_STATE, suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import {
-  composeSpeech, homeItems, homePose, homeSuggestions, secondaryActions, todoRemaining, todoSummary,
+  composeSpeech, homeItems, homePose, homeSuggestions, secondaryActions, todoSummary,
 } from '@/services/home/mascot/bubble';
 import type { MascotPresentation } from '@/services/home/mascot/types';
 
@@ -29,7 +35,7 @@ function atp(over: Partial<ToProcessActionView> = {}): ToProcessActionView {
   n += 1;
   return {
     publicId: `0000000${n}-aaaa-bbbb-cccc-dddddddddddd`, targetType: 'DOCUMENT', targetId: 100 + n, fieldKey: 'documentTypeCode', relationKey: null,
-    actionKind: 'COMPLETE', priority: 'DO_NEXT', ruleCode: 'DOC-TYP',
+    actionKind: 'COMPLETE', priority: 'DO_FIRST', ruleCode: 'DOC-TYP',
     question: 'Quel est le type de ce document ?', proposals: [], allowNotApplicable: false,
     activeSince: '2026-09-20T10:00:00Z',
     target: { label: `Facture d’électricité EDF – 14/03/2024 (${n})`, publicId: `doc-${n}`, assetId: 1, assetName: 'Maison' },
@@ -65,8 +71,13 @@ function raw(toProcess: ToProcessActionView[] | null, over: Partial<MascotRawDat
 function present(r: MascotRawData): MascotPresentation {
   const c = buildCandidates(r);
   const subjects = selectSubjects(c.candidates);
+  // Lot 34 : questions du catalogue unique — des « À traiter » en attente,
+  // rien de daté pour aujourd'hui.
+  const questions = suggestionsForRoute('/accueil', {
+    state: { ...EMPTY_ACCOUNT_STATE, assetsTotal: 1, documentsTotal: 1, toProcessPending: r.toProcess?.length ?? 0 },
+  });
   return buildPresentation({
-    subjects, secondaries: buildSecondaries(c, subjects), degraded: c.degraded, messages: null,
+    subjects, secondaries: buildSecondaries(c, subjects, questions), degraded: c.degraded, messages: null,
     todo: buildTodoBlock(r.toProcess, r.toProcessTotal),
   });
 }
@@ -101,9 +112,10 @@ describe('critères d’acceptation (MASC2)', () => {
   it('MASC2-AC01 — deux niveaux seulement : une synthèse + des éléments d’action', () => {
     const p = present(raw([immat(), rattacher(), completer()]));
     const speech = composeSpeech({ presentation: p, empty: false });
-    expect(speech.text).toBe('Trois sujets nécessitent votre attention aujourd’hui.');
+    // MASC3 : au plus deux DO_FIRST affichés, la phrase compte les affichés.
+    expect(speech.text).toBe('Deux sujets nécessitent votre attention aujourd’hui.');
     const items = homeItems(p, false);
-    expect(items.map((i) => i.kind)).toEqual(['todo', 'todo', 'todo']);
+    expect(items.map((i) => i.kind)).toEqual(['todo', 'todo']);
     // Aucune autre liste d'actions : pas de secondaire « recommandation » issu de la file.
     expect(p.secondaries.filter((s) => s.sourceCode.startsWith('ATP-'))).toEqual([]);
   });
@@ -114,7 +126,8 @@ describe('critères d’acceptation (MASC2)', () => {
     expect(t).toBe('Deux sujets nécessitent votre attention aujourd’hui.');
     expect(t).not.toMatch(/immatriculation|rattacher|Cela concerne/);
     expect(todoSummary(1)).toBe('Un sujet nécessite votre attention aujourd’hui.');
-    expect(todoSummary(14)).toBe('14 sujets nécessitent votre attention aujourd’hui.');
+    // MASC3 : 0 affiché → aucune phrase sur les « À traiter ».
+    expect(todoSummary(0)).toBe('');
   });
 
   it('MASC2-AC03 — les pastilles « Compléter “…” » / « Choisir “…” » (3e niveau) ont disparu', () => {
@@ -205,19 +218,22 @@ describe('critères d’acceptation (MASC2)', () => {
     const p = present(raw([immat()]));
     const s = homeSuggestions(p, false, ['Comment ajouter un document ?']);
     expect(s.every((x) => !x.secondary || x.secondary.action.target.kind === 'ask')).toBe(true);
-    expect(s.map((x) => x.label)).toContain('Que dois-je faire aujourd’hui ?');
+    // Lot 34 : « Que dois-je traiter en priorité ? » (ACCOUNT_TO_PROCESS) —
+    // jamais « Que dois-je faire aujourd’hui ? » sur la seule file À traiter.
+    expect(s.map((x) => x.label)).toContain('Que dois-je traiter en priorité ?');
+    expect(s.map((x) => x.label)).not.toContain('Que dois-je faire aujourd’hui ?');
     const src = MASCOTTE();
     expect(src.indexOf('aria-label="Sujets à traiter"')).toBeLessThan(src.indexOf('aria-label="Ou demandez-moi"'));
   });
 });
 
 describe('bulle (MASC2)', () => {
-  it('MASC2 — au plus 3 « À traiter » affichés ; le reste annoncé (« N autres sujets ») ; pose de vérification', () => {
+  it('MASC2/MASC3 — au plus 2 « À traiter » affichés ; le reste n’est plus annoncé ; pose de vérification', () => {
     const actions = [immat(), rattacher(), completer(), atp(), atp()];
     const p = present(raw(actions));
+    expect(MAX_TODO_ITEMS).toBe(2);
     expect(p.todo?.items).toHaveLength(MAX_TODO_ITEMS);
-    expect(p.todo?.total).toBe(5);
-    expect(todoRemaining(p)).toBe(2);
+    expect(MASCOTTE()).not.toMatch(/autres? sujets? dans « À traiter »/);
     expect(homePose(p, false)).toBe('questioning');
     expect(p.status).toBe('ok');
   });

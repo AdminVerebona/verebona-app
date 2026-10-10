@@ -11,7 +11,10 @@ import { db } from '@/db';
 import {
   agendaItems, agendaAssetLinks, assets, assetFiles, assetFileThumbnails, documentTypes, accounts, aiFieldUpdates,
 } from '@/db/schema';
-import { decideThumbnail, thumbnailSourceKind, THUMBNAIL_VARIANT } from '@/services/documents/thumbnails/thumbnail-spec';
+import { THUMBNAIL_VARIANT } from '@/services/documents/thumbnails/thumbnail-spec';
+import {
+  defaultDocumentPreviewDeps, documentPreviews, type DocumentPreviewDeps, type DocumentPreviewRow,
+} from '@/services/documents/thumbnails/document-previews';
 import { eq, and, or, isNull, isNotNull, gte, lte, sql, inArray, notInArray, desc, asc } from 'drizzle-orm';
 import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
@@ -28,6 +31,7 @@ import {
   fieldUpdateTargetColumns, registryFieldLabel, visibleFieldUpdatesWhere,
 } from '@/services/canonical/entity-state/ai-field-updates-target';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effective-state-sql';
 
 // Champs visibles par l'utilisateur dans l'UI — les autres champs (techniques)
 // sont filtrés de « Ce que j'ai fait ».
@@ -115,71 +119,18 @@ function dateMinus(days: number): string {
 }
 
 // ── Aperçus des « Documents récents » (lot 26, point 16) ────────────────────
+// Décision et signature partagées avec la file « À traiter » (lot 34, point 11) :
+// `services/documents/thumbnails/document-previews.ts`.
 
-export interface RecentDocPreviewRow {
-  id: number;
-  s3Key: string | null;
-  mimeType: string | null;
-  fileExtension: string | null;
-  originalFilename: string | null;
-  isWebLink: boolean | null;
-  thumbStatus: string | null;
-  thumbSourceKey: string | null;
-  thumbS3Key: string | null;
-  thumbAttempts: number | null;
-  thumbLeaseUntil: Date | null;
-  thumbUpdatedAt: Date | null;
-}
+export type RecentDocPreviewRow = DocumentPreviewRow;
+export type RecentDocPreviewDeps = DocumentPreviewDeps;
 
-export interface RecentDocPreviewDeps {
-  enabled: () => boolean;
-  sign: (s3Key: string) => Promise<string>;
-  enqueue: (fileId: number) => void;
-}
-
-const defaultPreviewDeps = async (): Promise<RecentDocPreviewDeps> => {
-  const [{ thumbnailsEnabled, enqueueThumbnail }, { signedThumbnailUrl }] = await Promise.all([
-    import('@/services/documents/thumbnails/thumbnail.service'),
-    import('@/services/documents/thumbnails/thumbnail-url'),
-  ]);
-  return { enabled: thumbnailsEnabled, sign: (k) => signedThumbnailUrl(k), enqueue: (id) => { enqueueThumbnail(id); } };
-};
-
-/**
- * URL d'aperçu des documents récents : la miniature PRÊTE de la version
- * courante, par URL signée mémorisée (au plus une signature locale par dérivé
- * et par heure — aucune requête au stockage). Miniature absente ou périmée :
- * pas d'aperçu (icône) et génération demandée — rattrapage immédiat des
- * documents existants, en plus de la tâche horaire `hourly-thumbnails-backfill`.
- * Ne lève jamais : un aperçu manquant ne doit pas priver l'accueil du reste.
- */
-export async function recentDocumentPreviews(
+/** Aperçus des documents récents (voir `documentPreviews`). Ne lève jamais. */
+export function recentDocumentPreviews(
   rows: RecentDocPreviewRow[],
-  depsP: Promise<RecentDocPreviewDeps> | RecentDocPreviewDeps = defaultPreviewDeps(),
+  depsP?: Promise<RecentDocPreviewDeps> | RecentDocPreviewDeps,
 ): Promise<Map<number, string>> {
-  const out = new Map<number, string>();
-  try {
-    const deps = await depsP;
-    if (!deps.enabled()) return out;
-    await Promise.all(rows.map(async (r) => {
-      if (!r.s3Key || !thumbnailSourceKind(r)) return;
-      const row = r.thumbStatus && r.thumbSourceKey && r.thumbUpdatedAt
-        ? {
-            status: r.thumbStatus, sourceKey: r.thumbSourceKey, s3Key: r.thumbS3Key,
-            attempts: r.thumbAttempts ?? 0, leaseUntil: r.thumbLeaseUntil, updatedAt: r.thumbUpdatedAt,
-          }
-        : null;
-      const decision = decideThumbnail(row, r.s3Key);
-      if (decision.action === 'serve') {
-        try { out.set(r.id, await deps.sign(decision.s3Key)); } catch { /* icône */ }
-      } else if (decision.action === 'generate') {
-        deps.enqueue(r.id);
-      }
-    }));
-  } catch (e) {
-    console.warn('[accueil] aperçus des documents récents indisponibles :', (e as Error).message);
-  }
-  return out;
+  return documentPreviews(rows, depsP ?? defaultDocumentPreviewDeps(), 'accueil');
 }
 
 // ── Service principal ────────────────────────────────────────────────────────
@@ -289,7 +240,9 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       rubricCode: assetFiles.rubricCode,
       documentDate: assetFiles.documentDate,
       uploadedAt: assetFiles.uploadedAt,
-      analysisState: assetFiles.analysisState,
+      // Lot 34C : état EFFECTIF (job de file réel) — « En analyse » seulement
+      // si un traitement l'attend vraiment.
+      analysisState: sql<string | null>`${sql.raw(effectiveAnalysisStateSql('asset_files'))}`,
       assetId: assetFiles.assetId,
       assetName: assets.name,
       // Aperçu (lot 26, point 16) : état de la miniature lu dans la MÊME
@@ -365,7 +318,9 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       id: assetFiles.id,
       originalFilename: assetFiles.originalFilename,
       retainedTitle: assetFiles.retainedTitle,
-      analysisState: assetFiles.analysisState,
+      // Lot 34C : état EFFECTIF (job de file réel) — « En analyse » seulement
+      // si un traitement l'attend vraiment.
+      analysisState: sql<string | null>`${sql.raw(effectiveAnalysisStateSql('asset_files'))}`,
       lastAnalysisAt: assetFiles.lastAnalysisAt,
       uploadedAt: assetFiles.uploadedAt,
       assetName: assets.name,

@@ -92,6 +92,11 @@ function appel(c: ExecutionRow) {
     appVersion: c.appVersion,
     jobId: c.jobId,
     object: c.objectType || c.objectId ? { type: c.objectType, id: c.objectId } : null,
+    // Lot 34D : contrat runtime transmis / validé, structured output, schéma
+    // fournisseur, transformations appliquées, contexte structuré (T4).
+    runtimeContract: c.runtimeContract ?? null,
+    transformations: c.transformations ? masquer(c.transformations) : null,
+    structuredContext: c.structuredContext ?? null,
   };
 }
 

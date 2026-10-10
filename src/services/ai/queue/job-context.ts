@@ -35,6 +35,12 @@ import type { Treatment } from '../config/treatments';
 export interface AiJobContext {
   /** Job de `ai_job_queue` à l'origine des appels, s'il y en a un. */
   jobId: number | null;
+  /**
+   * Lot 34C : numéro de la tentative du job en cours (`attempts` après le
+   * prélèvement). Tracé avec chaque appel modèle : BO › Exécutions IA
+   * distingue ainsi les tentatives du job des appels de la cascade.
+   */
+  jobAttempt?: number | null;
   treatment: Treatment | null;
   /**
    * Version de configuration figée pour toute l'exécution. `null` = aucune

@@ -182,12 +182,19 @@ describe('réponse d’aide en Standard : extrait + lien vers l’article préci
 });
 
 describe('corpus de l’environnement (ENV-02)', () => {
-  it('production ne lit que le corpus de production, préproduction le sien ; local libre', () => {
+  // Lot 34G (HELP2-05) : la même règle partout — « local libre » laissait
+  // passer n'importe quel corpus en local, et rien ne pouvait s'y reproduire.
+  it('chaque environnement ne lit que le sien : production, préproduction ET local (HELP2-05)', () => {
     expect(help.corpusMatchesEnvironment('production', 'production')).toBe(true);
     expect(help.corpusMatchesEnvironment('preprod', 'production')).toBe(false);
     expect(help.corpusMatchesEnvironment('production', 'staging')).toBe(false);
-    expect(help.corpusMatchesEnvironment('preprod', 'local')).toBe(true);
-    expect(help.corpusMatchesEnvironment('preprod', undefined)).toBe(true);
+    expect(help.corpusMatchesEnvironment('preprod', 'staging')).toBe(true);
+    expect(help.corpusMatchesEnvironment('development', 'local')).toBe(true);
+    expect(help.corpusMatchesEnvironment('preprod', 'local')).toBe(false);
+    expect(help.corpusMatchesEnvironment('production', 'local')).toBe(false);
+    // Environnement de l'application absent : `local` en test seulement.
+    expect(help.corpusMatchesEnvironment('development', undefined)).toBe(true);
+    expect(help.corpusMatchesEnvironment('preprod', undefined)).toBe(false);
   });
 });
 
@@ -215,20 +222,24 @@ describe('contexte de page (§13.3, §27.1)', () => {
 describe('suggestions contextuelles par page (§8.1, §8.2)', () => {
   const labels = (r: string) => suggestionsForRoute(r).map((s) => s.id);
   it('fiche d’un bien : suggestions du bien, jamais celles de l’accueil', () => {
-    const l = suggestionsForRoute('/assets/42', { pageAsset: { name: 'Cupra', documents: 2 } }).map((s) => s.id);
+    const l = suggestionsForRoute('/assets/42', { pageAsset: { name: 'Cupra', documents: 2, deadlines: 1 } }).map((s) => s.id);
     expect(l.slice(0, 3)).toEqual(['asset_docs', 'asset_deadlines', 'asset_complete']);
     expect(l.some((x) => x.startsWith('home_'))).toBe(false);
   });
   it('accueil : suggestions d’accueil ; agenda, À traiter, compte : les leurs', () => {
-    expect(labels('/accueil')[0]).toBe('home_deadlines');
-    expect(labels('/')[0]).toBe('home_deadlines');
-    expect(labels('/agenda')[0]).toBe('agenda_next');
+    // Lot 34 : l'accueil ne propose que des questions dont les données
+    // existent — sans contexte serveur, aucune ; avec, celles de l'accueil.
+    expect(labels('/accueil')).toEqual([]);
+    const ctx = { state: { toProcessPending: 0, deadlinesSoon: 1, deadlinesUpcoming: 1, documentsInAnalysis: 0, documentsFailed: 0, exportsReady: 0 } };
+    expect(suggestionsForRoute('/', ctx)[0].id).toBe('home_next_deadline');
+    expect(suggestionsForRoute('/agenda', ctx)[0].id).toBe('agenda_next');
+    expect(labels('/agenda')[0]).toBe('agenda_sync');
     expect(labels('/accueil/a-traiter')[0]).toBe('todo_explain');
     expect(labels('/mon-compte')[0]).toBe('account_plan');
   });
-  it('page sans suggestion propre : 3 génériques, sans doublon', () => {
+  it('page sans suggestion propre : les génériques (aide), sans doublon ni remplissage', () => {
     const l = suggestionsForRoute('/page-inconnue');
-    expect(l).toHaveLength(3);
-    expect(new Set(l.map((s) => s.label)).size).toBe(3);
+    expect(l.map((s) => s.id)).toEqual(['generic_ask', 'generic_add_doc']);
+    expect(new Set(l.map((s) => s.label)).size).toBe(2);
   });
 });

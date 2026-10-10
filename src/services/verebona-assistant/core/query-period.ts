@@ -155,6 +155,95 @@ export function sansExpressionDePeriode(message: string, p: PeriodeResolue): str
   return `${t.slice(0, i)} ${t.slice(i + p.expression.length)}`.replace(/\s+/g, ' ').trim();
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// PORTÉE TEMPORELLE D'UNE DEMANDE D'ACTIONS — lot 34 (ticket T2 « Que dois-je
+// faire aujourd'hui ? »)
+//
+// `analyserPeriode` lit les périodes CALENDAIRES (mois, année, date, « ce
+// mois-ci »…) qui filtrent une recherche de documents. Une demande d'actions
+// parle aussi en JOURS relatifs (« aujourd'hui », « demain », « cette
+// semaine ») et en ÉTATS (« en retard », « à venir »). Ces expressions ne
+// sont PAS ajoutées à `analyserPeriode` : elles filtreraient par date les
+// documents de « quel est le kilométrage aujourd'hui ? ». La portée ci-dessous
+// les ajoute, et délègue tout le reste à `analyserPeriode` — une seule
+// résolution des dates, même date du jour, mêmes bornes ISO incluses.
+// ══════════════════════════════════════════════════════════════════════════
+
+export type TimeScope =
+  | 'TODAY' | 'TOMORROW' | 'THIS_WEEK' | 'NEXT_WEEK' | 'THIS_MONTH' | 'NEXT_MONTH'
+  | 'OVERDUE' | 'UPCOMING' | 'PERIOD' | 'NONE';
+
+export interface PorteeTemporelle {
+  scope: TimeScope;
+  /** Bornes ISO incluses ; `from` nul pour « en retard » (tout le passé). */
+  from: string | null;
+  to: string | null;
+  label: string;
+  /** Expression retrouvée (texte normalisé), `null` sans mention. */
+  expression: string | null;
+}
+
+/** Horizon de « à venir » / « bientôt » : même défaut que les échéances (30 jours, T2-15). */
+export const UPCOMING_WINDOW_DAYS = 30;
+
+function decaler(today: string, jours: number): string {
+  const [a, m, j] = today.slice(0, 10).split('-').map(Number);
+  const d = new Date(Date.UTC(a, m - 1, j));
+  d.setUTCDate(d.getUTCDate() + jours);
+  return iso(d);
+}
+
+/** Lundi de la semaine (ISO, semaine du lundi au dimanche) de `today`. */
+function lundi(today: string): string {
+  const [a, m, j] = today.slice(0, 10).split('-').map(Number);
+  const jourSemaine = (new Date(Date.UTC(a, m - 1, j)).getUTCDay() + 6) % 7; // 0 = lundi
+  return decaler(today, -jourSemaine);
+}
+
+const RE_RETARD = /(?<![\p{L}])(en retard|retards?|depasse(?:e|es|s)?|echu(?:e|es|s)?|en souffrance|pas (?:ete )?fait(?:e|es|s)? a temps|aurai(?:s|t)? du (?:faire|etre fait))(?![\p{L}])/u;
+const RE_AUJOURDHUI = /(?<![\p{L}])(aujourd'hui|aujourd hui|aujourdhui|ce jour|ce matin|cet apres-midi|ce soir|today)(?![\p{L}])/u;
+const RE_APRES_DEMAIN = /(?<![\p{L}])apres-demain(?![\p{L}])/u;
+const RE_DEMAIN = /(?<![\p{L}-])demain(?![\p{L}])/u;
+const RE_SEMAINE = /(?<![\p{L}])(cette semaine(?:-ci)?|la semaine en cours)(?![\p{L}])/u;
+const RE_SEMAINE_PROCHAINE = /(?<![\p{L}])(la semaine prochaine|semaine prochaine)(?![\p{L}])/u;
+const RE_MOIS_PROCHAIN = /(?<![\p{L}])(le mois prochain|mois prochain)(?![\p{L}])/u;
+const RE_A_VENIR = /(?<![\p{L}])(a venir|bientot|prochainement|dans les prochains jours|qui arrive(?:nt)?)(?![\p{L}])/u;
+
+/**
+ * Portée temporelle d'une demande d'actions (pure, testée). `today` : date
+ * du jour ISO (fuseau de l'application, `aujourdhuiParis`). Une période
+ * ambiguë (« en mars ») n'est pas résolue ici : la clarification du routage
+ * (§20.1) s'en charge.
+ */
+export function analyserPorteeTemporelle(message: string, today: string): PorteeTemporelle {
+  const t = plain(message);
+  const j = today.slice(0, 10);
+  let m: RegExpMatchArray | null;
+  if ((m = t.match(RE_RETARD))) return { scope: 'OVERDUE', from: null, to: decaler(j, -1), label: 'en retard', expression: m[1] };
+  if ((m = t.match(RE_AUJOURDHUI))) return { scope: 'TODAY', from: j, to: j, label: 'aujourd’hui', expression: m[1] };
+  if ((m = t.match(RE_APRES_DEMAIN))) { const d = decaler(j, 2); return { scope: 'PERIOD', from: d, to: d, label: 'après-demain', expression: m[0] }; }
+  if ((m = t.match(RE_DEMAIN))) { const d = decaler(j, 1); return { scope: 'TOMORROW', from: d, to: d, label: 'demain', expression: m[0] }; }
+  if ((m = t.match(RE_SEMAINE_PROCHAINE))) {
+    const debut = decaler(lundi(j), 7);
+    return { scope: 'NEXT_WEEK', from: debut, to: decaler(debut, 6), label: 'la semaine prochaine', expression: m[1] };
+  }
+  if ((m = t.match(RE_SEMAINE))) { const debut = lundi(j); return { scope: 'THIS_WEEK', from: debut, to: decaler(debut, 6), label: 'cette semaine', expression: m[1] }; }
+  if ((m = t.match(RE_MOIS_PROCHAIN))) {
+    const [a, mo] = j.split('-').map(Number);
+    const p = mois(mo === 12 ? a + 1 : a, mo === 12 ? 1 : mo + 1, m[1]);
+    return { scope: 'NEXT_MONTH', from: p.from, to: p.to, label: 'le mois prochain', expression: m[1] };
+  }
+  // Périodes calendaires communes (« ce mois-ci », « mars 2026 », « 2026 »…).
+  const p = analyserPeriode(message, j);
+  if (p?.kind === 'resolved') {
+    return p.expression === 'ce mois'
+      ? { scope: 'THIS_MONTH', from: p.from, to: p.to, label: 'ce mois-ci', expression: t.match(/(?<![\p{L}])ce mois(?:-ci)?(?![\p{L}])/u)?.[0] ?? p.expression }
+      : { scope: 'PERIOD', from: p.from, to: p.to, label: p.label, expression: p.expression };
+  }
+  if ((m = t.match(RE_A_VENIR))) return { scope: 'UPCOMING', from: j, to: decaler(j, UPCOMING_WINDOW_DAYS), label: 'à venir', expression: m[1] };
+  return { scope: 'NONE', from: null, to: null, label: '', expression: null };
+}
+
 /**
  * Formateur construit une seule fois, au chargement du module : sa
  * construction (données de fuseau) coûte plusieurs dizaines de

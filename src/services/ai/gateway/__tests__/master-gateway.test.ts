@@ -19,6 +19,7 @@ const { __setConfigForTests } = await import('../../config/config-resolver');
 const { emptyTreatmentConfig } = await import('../../config/config-types');
 const { __setPromptsRootForTests } = await import('../../prompts/prompt-loader');
 const { AiOutputTaskMismatchError } = await import('../errors');
+const { asTestContract } = await import('../output-resolution/runtime-contract');
 const { T1GroupUploadOutput, T1MasterOutput, T1AnalyzeDocumentOutput } =
   await import('../../source-analysis/master/t1-contract');
 
@@ -120,7 +121,8 @@ describe('validation discriminée par task', () => {
     fake.on('m-b', () => ({ rawText: GROUP_OK, inputTokens: 1, outputTokens: 1 }));
 
     // Union complète : accepterait ANALYZE_DOCUMENT sans le contrôle de TASK.
-    const r = await AiGateway.execute(groupReq({ outputSchema: T1MasterOutput }));
+    // Lot 34D : schéma d'appelant ≠ contrat de la branche — déclaré contrat de test.
+    const r = await AiGateway.execute(groupReq({ outputSchema: asTestContract(T1MasterOutput) }));
     expect(r.model).toBe('m-b');
     expect(traces[0]).toMatchObject({ status: 'error', errorCode: 'INVALID_OUTPUT', task: 'GROUP_UPLOAD' });
     expect(String(traces[0].errorMessage)).toMatch(/ANALYZE_DOCUMENT.*TASK=GROUP_UPLOAD/);
@@ -129,7 +131,7 @@ describe('validation discriminée par task', () => {
   it('toutes les sorties dans la mauvaise branche : ALL_MODELS_FAILED, dernier échec INVALID_OUTPUT', async () => {
     __setConfigForTests({ versionId: 4, entries: [T1()] });
     fake.onAny(() => ({ rawText: ANALYZE_OK, inputTokens: 1, outputTokens: 1 }));
-    await expect(AiGateway.execute(groupReq({ outputSchema: T1MasterOutput })))
+    await expect(AiGateway.execute(groupReq({ outputSchema: asTestContract(T1MasterOutput) })))
       .rejects.toMatchObject({ code: 'ALL_MODELS_FAILED', lastFailureCode: 'INVALID_OUTPUT' });
     expect(fake.calls).toHaveLength(2);
     expect(AiOutputTaskMismatchError.name).toBe('AiOutputTaskMismatchError');

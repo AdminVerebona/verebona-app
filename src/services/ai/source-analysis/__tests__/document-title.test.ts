@@ -13,17 +13,19 @@ describe('titre réduit à une référence', () => {
   );
 });
 
+// Lot 34E (moteur de titre v2) : le fournisseur et le mois sont des
+// discriminants utiles ajoutés au sujet ; la période suit « _ ».
 describe('reconstruction', () => {
   it('garde un titre déjà différenciant', () => {
     expect(refineDocumentTitle('Facture Béquille draisienne', { subjects: ['Autre'] })).toBe('Facture Béquille draisienne');
   });
   it('remplace un numéro par l’objet concerné', () => {
     expect(refineDocumentTitle('Facture N° 2024-1187', { subjects: ['Béquille draisienne'], supplier: 'Décathlon' }))
-      .toBe('Facture Béquille draisienne');
+      .toBe('Facture Béquille draisienne Décathlon');
   });
   it('à défaut d’objet, le fournisseur ; à défaut, le mois', () => {
     expect(refineDocumentTitle('Facture N° 88', { subjects: [], supplier: 'Vélo Jean' })).toBe('Facture Vélo Jean');
-    expect(refineDocumentTitle('FA-2026-03', { typeCode: 'invoice', documentDate: '2026-03-14' })).toBe('Facture mars 2026');
+    expect(refineDocumentTitle('FA-2026-03', { typeCode: 'invoice', documentDate: '2026-03-14' })).toBe('Facture _ Mars 2026');
   });
   it('n’invente rien sans élément : le titre du modèle est conservé', () => {
     expect(refineDocumentTitle('Facture N° 88', {})).toBe('Facture N° 88');

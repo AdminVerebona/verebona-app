@@ -176,12 +176,14 @@ describe('pose et suggestions', () => {
   it('3 pastilles : questions du moteur, puis catalogue de la page ; compte vide : questions d’amorce', () => {
     const p = presentationOf({
       paragraphs: [],
-      secondaries: [{ id: 'q', kind: 'question', sourceCode: 'Q-ASSET', occurrenceKey: 'q', action: { actionId: 'q', label: 'Que sais-tu sur Ferrari ?', target: { kind: 'ask', question: 'Que sais-tu sur Ferrari ?', context: { intent: 'Q_ASSET', assetId: 3 } } } }],
+      secondaries: [{ id: 'q', kind: 'question', sourceCode: 'Q:home_asset_docs', occurrenceKey: 'q', action: { actionId: 'q', label: 'Quels sont les documents de Ferrari ?', target: { kind: 'ask', question: 'Quels sont les documents de Ferrari ?', context: { intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 3 } } } }],
     });
-    const s = homeSuggestions(p, false, ['Comment transférer un bien ?', 'Que sais-tu sur Ferrari ?', 'Mes échéances', 'Autre']);
-    expect(s.map((x) => x.label)).toEqual(['Que sais-tu sur Ferrari ?', 'Comment transférer un bien ?', 'Mes échéances']);
-    expect(s[0].context).toEqual({ intent: 'Q_ASSET', assetId: 3 });
+    const s = homeSuggestions(p, false, ['Comment transférer un bien ?', 'Quels sont les documents de Ferrari ?', 'Mes échéances', 'Autre']);
+    expect(s.map((x) => x.label)).toEqual(['Quels sont les documents de Ferrari ?', 'Comment transférer un bien ?', 'Mes échéances']);
+    expect(s[0].context).toEqual({ intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 3 });
     expect(homeSuggestions(p, true, []).map((x) => x.label)).toEqual(EMPTY_ACCOUNT_SUGGESTIONS);
+    // Lot 34 : compte vide = questions d'aide du catalogue unique (intention déterministe).
+    expect(EMPTY_ACCOUNT_SUGGESTIONS).toEqual(['Comment ajouter un bien ?', 'Comment ajouter un document ?', 'L’analyse automatique, c’est quoi ?']);
   });
 
   it('secondaires non-questions (onboarding, recommandations) : pastilles d’action ; télémétrie de ce qui est montré', () => {

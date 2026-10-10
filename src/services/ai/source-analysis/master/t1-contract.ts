@@ -291,4 +291,10 @@ export interface ProjectedFact {
   origin: ProjectionOrigin;
   /** Règle déterministe appliquée (ex. `PURCHASE_RECEIPT_ACQUISITION`), sinon null. */
   ruleCode: string | null;
+  /**
+   * Lot 34F (additif, contrat INTERNE — jamais produit par le modèle) :
+   * unités de la source qui prouvent le fait (`page:2:block:14`,
+   * `page:5:table:2:row:4:cell:3`…), posées après projection.
+   */
+  sourceUnitIds?: string[];
 }

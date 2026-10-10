@@ -245,6 +245,15 @@ export async function registerNode(): Promise<void> {
   const { startExportWorker } = await import('@/services/exports/v12/generation/worker');
   startExportWorker();
 
+  // 10. Lot 34G : corpus du Centre d'aide préchargé (sans bloquer le
+  //     démarrage) — la première question d'aide ne paie pas le
+  //     téléchargement, et l'environnement lu est journalisé : une
+  //     préproduction branchée sur l'aide de production se voit au démarrage
+  //     (HELP_CORPUS_WRONG_ENVIRONMENT), pas à la première question.
+  void import('@/services/verebona-assistant/core/help-corpus.service')
+    .then((m) => m.warmHelpCorpus())
+    .catch((e) => console.error('[startup] corpus du Centre d’aide non préchargé :', (e as Error).message));
+
   // Lot 16b : plus aucun drapeau de bascule — tous les usages tournent sur
   // leur prompt maître.
   const { AI_USE_CASE_CODES } = await import('@/services/ai/registry/use-cases');

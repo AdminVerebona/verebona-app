@@ -121,7 +121,8 @@ describe('reconcileStatus', () => {
     fake.onAny(() => ({ rawText: JSON.stringify(P2.recording.output), inputTokens: 1, outputTokens: 1 }));
     const r = await reconcileStatus(ITEM, e, { accountId: 1 });
     expect(r).toMatchObject({ engine: 'completion_v2', status: 'not_proven', reasonCode: 'MODEL_INSUFFICIENT' });
-    expect(fake.calls[0].prompt).toContain('TASK = VERIFY_COMPLETION');
+    // Lot 34D : contexte structuré — la TASK passe par EXECUTION_CONTEXT.
+    expect(fake.calls[0].prompt).toContain('"task":"VERIFY_COMPLETION"');
     expect(fake.calls[0].prompt).toContain('FACTURE_ACQUITTEE_PRESTATION_DATEE');
     expect(traces[0]).toMatchObject({ operationCode: 't4_verify_completion', task: 'VERIFY_COMPLETION' });
   });

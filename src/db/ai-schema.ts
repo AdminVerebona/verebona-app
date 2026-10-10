@@ -7,7 +7,7 @@
  *    appliquées par `ensureMigrations()`.
  */
 import {
-  pgTable, serial, bigserial, integer, bigint, numeric, text, boolean, jsonb, uuid, index, uniqueIndex,
+  pgTable, serial, bigserial, integer, smallint, bigint, numeric, text, boolean, jsonb, uuid, index, uniqueIndex, check,
   date as pgDate, timestamp as pgTimestamp,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -222,6 +222,8 @@ export const documentFacts = pgTable('document_facts', {
   recurrence: jsonb('recurrence'),
   projectionOrigin: text('projection_origin'),
   projectionRule: text('projection_rule'),
+  /** Lot 34F (0297) — provenance : unités de `document_source_units`. NULL = fait antérieur non repris. */
+  sourceUnitIds: text('source_unit_ids').array(),
 }, (t) => ({
   fileIdx: index('document_facts_file_idx').on(t.fileId, t.status),
   // Index partiels de la 0218 (fichiers `_idx_N`, CONCURRENTLY).
@@ -229,6 +231,102 @@ export const documentFacts = pgTable('document_facts', {
     .where(sql`canonical_key IS NOT NULL AND status = 'active'`),
   targetIdx: index('document_facts_target_idx').on(t.targetType, t.targetEntityId)
     .where(sql`target_entity_id IS NOT NULL`),
+}));
+
+/**
+ * Lot 34F (0295) — couche A de T1 : unités de la source, contenu intégral,
+ * identifiant stable, état de couverture. Écrite et lue en SQL direct
+ * (`source-analysis/source-units/repository.ts`) ; déclarée ici pour
+ * drizzle-kit / studio. Clés étrangères portées par la migration.
+ */
+export const documentSourceUnits = pgTable('document_source_units', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  fileId: integer('file_id').notNull(),
+  extractionId: integer('extraction_id'),
+  sourceUnitId: text('source_unit_id').notNull(),
+  kind: text('kind').notNull(),
+  page: integer('page'),
+  ordinal: integer('ordinal').notNull(),
+  parentUnitId: text('parent_unit_id'),
+  contentText: text('content_text'),
+  label: text('label'),
+  valueText: text('value_text'),
+  payload: jsonb('payload').notNull().default({}),
+  location: jsonb('location').notNull().default({}),
+  origin: text('origin').notNull().default('PASS_1'),
+  salient: boolean('salient').notNull().default(false),
+  coverageStatus: text('coverage_status').notNull(),
+  coverageReason: text('coverage_reason'),
+  factCount: integer('fact_count').notNull().default(0),
+  repairAttempts: smallint('repair_attempts').notNull().default(0),
+  layerVersion: smallint('layer_version').notNull().default(1),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  fileUnitUidx: uniqueIndex('document_source_units_file_unit_uidx').on(t.fileId, t.sourceUnitId),
+  kindChk: check('document_source_units_kind_chk', sql`${t.kind} IN ('DOCUMENT_METADATA', 'TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD', 'TABLE', 'TABLE_ROW', 'VISUAL_OBSERVATION', 'VISUAL_SUMMARY', 'PAGE_GAP')`),
+  coverageChk: check('document_source_units_coverage_chk', sql`${t.coverageStatus} IN ('COVERED', 'NON_INFORMATIONAL', 'UNRESOLVED', 'UNCERTAIN', 'FAILED')`),
+  originChk: check('document_source_units_origin_chk', sql`${t.origin} IN ('PASS_1', 'OVERFLOW', 'CHUNK', 'REPAIR', 'BACKFILL')`),
+  accountOpenIdx: index('document_source_units_account_open_idx').on(t.accountId, t.coverageStatus, t.fileId)
+    .where(sql`coverage_status IN ('UNRESOLVED', 'UNCERTAIN', 'FAILED')`),
+}));
+
+/** Lot 34F (0295) — rapport de complétude T1 courant d'un document. */
+export const documentExtractionCoverage = pgTable('document_extraction_coverage', {
+  fileId: integer('file_id').primaryKey(),
+  accountId: integer('account_id').notNull(),
+  extractionId: integer('extraction_id'),
+  totalUnits: integer('total_units').notNull().default(0),
+  coveredUnits: integer('covered_units').notNull().default(0),
+  nonInformationalUnits: integer('non_informational_units').notNull().default(0),
+  unresolvedUnits: integer('unresolved_units').notNull().default(0),
+  uncertainUnits: integer('uncertain_units').notNull().default(0),
+  failedUnits: integer('failed_units').notNull().default(0),
+  factsCount: integer('facts_count').notNull().default(0),
+  droppedFactsCount: integer('dropped_facts_count').notNull().default(0),
+  truncatedSectionsCount: integer('truncated_sections_count').notNull().default(0),
+  batchedSectionsCount: integer('batched_sections_count').notNull().default(0),
+  chunkCount: integer('chunk_count').notNull().default(0),
+  repairPassCount: integer('repair_pass_count').notNull().default(0),
+  coverageRatio: numeric('coverage_ratio').notNull().default('1'),
+  qualityState: text('quality_state').notNull(),
+  anomalies: text('anomalies').array().notNull().default(sql`'{}'::text[]`),
+  origin: text('origin').notNull().default('ANALYSIS'),
+  layerVersion: smallint('layer_version').notNull().default(1),
+  retryAttempts: smallint('retry_attempts').notNull().default(0),
+  nextRetryAt: pgTimestamp('next_retry_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  qualityIdx: index('document_extraction_coverage_quality_idx').on(t.qualityState, t.nextRetryAt)
+    .where(sql`quality_state <> 'COMPLETE'`),
+  // Règle du ticket : aucune unité silencieusement ignorée (somme des états = total).
+  sumChk: check('document_extraction_coverage_sum_chk', sql`${t.totalUnits} = ${t.coveredUnits} + ${t.nonInformationalUnits} + ${t.unresolvedUnits} + ${t.uncertainUnits} + ${t.failedUnits}`),
+  qualityChk: check('document_extraction_coverage_quality_chk', sql`${t.qualityState} IN ('COMPLETE', 'COMPLETE_WITH_UNRESOLVED', 'INCOMPLETE_RETRYABLE', 'INCOMPLETE_FINAL')`),
+  originChk: check('document_extraction_coverage_origin_chk', sql`${t.origin} IN ('ANALYSIS', 'BACKFILL', 'RETRY')`),
+}));
+
+/** Lot 34F (0296) — faits rendus par T1 mais non intégrés tels quels : conservés, jamais supprimés. */
+export const documentUnresolvedFacts = pgTable('document_unresolved_facts', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  fileId: integer('file_id').notNull(),
+  extractionId: integer('extraction_id'),
+  reason: text('reason').notNull(),
+  status: text('status').notNull().default('UNRESOLVED'),
+  sourceUnitIds: text('source_unit_ids').array().notNull().default(sql`'{}'::text[]`),
+  rawKey: text('raw_key'),
+  canonicalKey: text('canonical_key'),
+  rawValue: text('raw_value'),
+  originalPayload: jsonb('original_payload'),
+  pass: text('pass').notNull().default('PASS_1'),
+  detail: text('detail'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  fileIdx: index('document_unresolved_facts_file_idx').on(t.fileId, t.status),
+  statusChk: check('document_unresolved_facts_status_chk', sql`${t.status} IN ('UNRESOLVED', 'RETAINED', 'RECOVERED')`),
 }));
 
 /** Tableaux T1, structure ligne/colonne conservée — migration 0162. */

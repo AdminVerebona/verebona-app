@@ -137,7 +137,8 @@ function traceCoherente(r: AssistantRunResult): void {
   if (c.answeredBy === 'fallback') {
     expect(r.sources).toEqual([]);
     expect(c.fallbackReason).toBeTruthy();
-    if (c.aiCalls === 0) expect(c.fallbackReason).not.toBe('NO_RELIABLE_SOURCE');
+    // Lot 34G : « aucune source fiable » est désormais qualifiée.
+    if (c.aiCalls === 0) expect(['NO_RELEVANT_HELP_ARTICLE', 'HELP_SCORE_INSUFFICIENT']).not.toContain(c.fallbackReason);
   } else {
     expect(c.fallbackReason ?? null).toBeNull();
   }
@@ -247,10 +248,10 @@ describe('Lot 33 — tests 1 à 8 du ticket (orchestrateur réel, corpus réel, 
     expect(r.cascade?.answeredBy).not.toBe('fallback');
     expect(r.cascade?.notices ?? []).not.toContain('NO_RELEVANT_SOURCE');
     expect(r.answer).not.toMatch(FALLBACK);
-    // Réponse directement utile : les étapes RÉELLES de l'article.
-    expect(r.answer).toContain('D’après l’article « Ajouter un document » du Centre d’aide');
-    expect(r.answer).toContain('1. Ouvrez l’ajout de document — Utilisez « Ajouter un document » depuis la page ou le raccourci d’ajout.');
-    expect(r.answer).toContain('4. Lancez l’import');
+    // Lot 34G : réponse COURTE tirée de l'article (synthèse déterministe en
+    // deux phrases), la procédure complète reste dans l'article.
+    expect(r.answer).toBe('Pour ajouter un document, sélectionnez le fichier, choisissez le bien si nécessaire puis lancez l’import. '
+      + 'Laissez le traitement se poursuivre : lorsque l’analyse automatique est active, elle peut continuer en arrière-plan après l’envoi.');
     expect(r.answer).not.toMatch(/Consultez le Centre d’aide\.?$/);
     // Action comprise avec certitude : « Ajouter un document » et l'article.
     expect(r.actions.map((a) => a.type)).toEqual(expect.arrayContaining(['START_ADD_DOCUMENT', 'OPEN_HELP']));
@@ -263,7 +264,7 @@ describe('Lot 33 — tests 1 à 8 du ticket (orchestrateur réel, corpus réel, 
     const r = await b.ask('Comment importer un document ?');
     expect(r.route.intent).toBe('PRODUCT_HELP_HOW_TO');
     expect(articles(r)[0]).toBe('AID-DOC-001');
-    expect(r.answer).toContain('Ajouter un document');
+    expect(r.answer).toContain('Pour ajouter un document');
     llm(b, r, 0);
     traceCoherente(r);
   });
@@ -273,7 +274,7 @@ describe('Lot 33 — tests 1 à 8 du ticket (orchestrateur réel, corpus réel, 
     const r = await b.ask('Je veux mettre une facture dans Verebona');
     expect(r.route.intent).toBe('PRODUCT_HELP_HOW_TO');
     expect(articles(r)[0]).toBe('AID-DOC-001');
-    expect(r.answer).toContain('1. Ouvrez l’ajout de document');
+    expect(r.answer).toContain('Pour ajouter un document, sélectionnez le fichier');
     // Le plein texte seul retient « facture » (article de facturation) ; le
     // concept DOCUMENT_UPLOAD (verbe ET objet) mène la recherche élargie, qui
     // corrige le classement.
@@ -305,7 +306,7 @@ describe('Lot 33 — tests 1 à 8 du ticket (orchestrateur réel, corpus réel, 
     const r = await b.ask('Ajouter un fichier');
     expect(r.route.intent).toBe('PRODUCT_HELP_HOW_TO');
     expect(articles(r)[0]).toBe('AID-IMP-001');
-    expect(r.answer).toContain('1. Ouvrez la page — Choisissez « Importer ».');
+    expect(r.answer).toBe('Pour importer un document, choisissez le document.');
     expect(r.cascade!.help!.levels.find((l) => l.status === 'SUFFICIENT')?.stage).toBe('expanded');
     llm(b, r, 0);
     traceCoherente(r);
@@ -353,8 +354,9 @@ describe('Lot 33 — tests 1 à 8 du ticket (orchestrateur réel, corpus réel, 
     expect(r.route.intent).toBe('PRODUCT_HELP_HOW_TO');
     const h = r.cascade!.help!;
     expect(h.levels.map((l) => l.level)).toEqual([2, 3, 4, 5]);
-    expect(h.fallbackReason).toBe('NO_RELIABLE_SOURCE');
-    expect(r.cascade?.fallbackReason).toBe('NO_RELIABLE_SOURCE');
+    // Lot 34G : candidats trouvés mais sous le seuil (jamais abaissé).
+    expect(h.fallbackReason).toBe('HELP_SCORE_INSUFFICIENT');
+    expect(r.cascade?.fallbackReason).toBe('HELP_SCORE_INSUFFICIENT');
     expect(r.cascade?.strategy).toBe('fallback.help');
     expect(r.answer).toMatch(FALLBACK);
     expect(r.sources).toEqual([]);
@@ -398,7 +400,7 @@ describe('Lot 33 — escalade réelle ou motif explicite (jamais de repli silenc
     const messages = b.retrieve.mock.calls.map((c) => (c[1] as AssistantRequestInput).message);
     expect(messages[0]).toBe('comment ajouter un document');
     expect(messages).toEqual(expect.arrayContaining(['ajouter un document', 'importer un document']));
-    expect(r.cascade?.fallbackReason).toBe('NO_RELIABLE_SOURCE');
+    expect(r.cascade?.fallbackReason).toBe('NO_RELEVANT_HELP_ARTICLE');
     expect(r.cascade!.help!.failureKind).toBe('NO_CANDIDATE');
     llm(b, r, 1);
     traceCoherente(r);

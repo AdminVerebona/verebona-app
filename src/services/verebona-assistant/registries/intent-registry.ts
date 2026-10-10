@@ -41,7 +41,10 @@ export const INTENT_DEFINITIONS: Record<VerebonaIntent, IntentDefinition> = {
   ACCOUNT_FACT_ASSET: D('ACCOUNT_FACT_ASSET', "Lire une donnée d'un bien", 'sql+template', false, true, ['asset_field', 'document']),
   ACCOUNT_FACT_DOCUMENT: D('ACCOUNT_FACT_DOCUMENT', "Lire une donnée d'un document", 'sql+template', false, true, ['document', 'document_extraction']),
   ACCOUNT_FACT_AGENDA: D('ACCOUNT_FACT_AGENDA', "Lire une date/statut d'agenda", 'sql+template', false, true, ['agenda_item']),
-  ACCOUNT_TO_PROCESS: D('ACCOUNT_TO_PROCESS', 'Compter/lister À traiter', 'sql', false, true, ['to_process_item']),
+  // Lot 34 : l'intention porte aussi les demandes d'ACTIONS (« que dois-je
+  // faire aujourd'hui ? », « quelque chose en retard ? ») — À traiter ET
+  // échéances actives ; jamais de document (contexte seulement).
+  ACCOUNT_TO_PROCESS: D('ACCOUNT_TO_PROCESS', 'Compter/lister À traiter', 'sql', false, true, ['to_process_item', 'agenda_item']),
   // CDC 15 T2-04, T2-07 (lot 15) : les informations manquantes sont aussi
   // les éléments « À traiter » en attente — le contrat de sources le dit.
   ACCOUNT_MISSING_INFORMATION: D('ACCOUNT_MISSING_INFORMATION', 'Données manquantes', 'business_rules', false, true, ['asset_field', 'document', 'product_rule', 'to_process_item']),

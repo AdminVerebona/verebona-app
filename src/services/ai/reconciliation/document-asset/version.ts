@@ -28,6 +28,13 @@
  *     DOCUMENT_ASSET ;
  *   · 2 — lot 32C : version persistée ; correspondance d'adresse côté
  *     serveur (`address1` normalisé) appliquée au rattrapage des anciennes
- *     abstentions ; invalidation par les identifiants canoniques des biens.
+ *     abstentions ; invalidation par les identifiants canoniques des biens ;
+ *   · 3 — lot 34E : Candidate Builder serveur indépendant des candidats T1
+ *     (noms, alias, catégories, marque / modèle, références partagées,
+ *     séries d'équipements…), règles déterministes « référence partagée » et
+ *     « nom distinctif unique », empreinte du CONTEXTE pertinent et révision
+ *     de connaissance du compte. Toutes les abstentions (NO_CANDIDATE,
+ *     ABSTAINED, MULTI_ASSET) sans décision utilisateur sont réévaluées au
+ *     moins une fois avec le nouveau Candidate Builder (rattrapage horaire).
  */
-export const DOCUMENT_ASSET_RESOLUTION_VERSION = 2;
+export const DOCUMENT_ASSET_RESOLUTION_VERSION = 3;

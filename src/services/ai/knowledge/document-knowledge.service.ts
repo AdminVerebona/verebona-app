@@ -38,6 +38,7 @@ import { factsToExtractedFields } from './document-knowledge';
 import type { TableCellRow } from './document-tables';
 import type { ExtractedTableCell, ExtractedField } from '../source-analysis/types';
 import { documentFactsCanonicalReady } from '../evidence/canonical-columns';
+import { sourceLayerReady, writeSourceLayer } from '../source-analysis/source-units/repository';
 import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
 
 const json = (v: unknown) => JSON.stringify(v ?? null);
@@ -67,6 +68,9 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
     // T4-06 : sans 0218, la récurrence ne peut pas être persistée — signalé.
     console.warn(`[knowledge] fichier ${e.fileId} : récurrence non persistée (migration 0218 absente).`);
   }
+  // Lot 34F : couche A (0295-0297) — contrôle HORS transaction, comme 0218.
+  const couche = k.sourceLayer || k.facts.some((f) => f.sourceUnitIds?.length) ? await sourceLayerReady() : false;
+  let coucheEcrite = couche;
 
   await pgClient.begin(async (tx) => {
     const rows = await tx.unsafe(
@@ -169,41 +173,86 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
       );
     }
 
-    for (const f of k.facts) {
-      const base = [
-        e.accountId, e.fileId, extractionId, f.factKey, f.subject, f.attribute, f.label,
-        f.valueText, f.valueNumber, f.valueUnit, json(f.valueJson), f.normalizedValue, f.periodStart, f.periodEnd,
-        // Observation visuelle : aucune citation (la contrainte 0161 l'impose aussi).
-        f.confidence, f.evidenceOrigin === 'VISUAL_ANALYSIS' ? null : f.excerpt, json(f.location), e.sourceType, e.provider, e.model, e.promptVersion,
-        f.evidenceOrigin ?? 'TEXT_EXTRACTION',
-        f.evidenceOrigin === 'VISUAL_ANALYSIS' && f.visualEvidence ? json({ ...f.visualEvidence, fileId: e.fileId }) : null,
-      ];
-      if (canonical && hasCanonicalFactData(f)) {
-        await tx.unsafe(
-          `INSERT INTO document_facts (${FACT_INSERT_COLUMNS},
-             canonical_key, raw_key, raw_value, value_type, canonical_unit,
-             target_type, target_entity_id, target_entity_label, target_confidence,
-             semantic_event_type, semantic_event_nature, recurrence, projection_origin, projection_rule
-           ) VALUES (${FACT_INSERT_VALUES},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35::jsonb,$36,$37)`,
-          [
-            ...base,
-            f.canonicalKey ?? null, f.rawKey ?? null, f.rawValue ?? null, f.valueType ?? null, f.canonicalUnit ?? null,
-            f.targetType ?? null, f.targetEntityId ?? null, f.targetEntityLabel ?? null, f.targetConfidence ?? null,
-            f.semanticEventType ?? null, f.semanticEventNature ?? null,
-            f.recurrence ? json(f.recurrence) : null,
-            f.projectionOrigin ?? null, f.projectionRule ?? null,
-          ] as never[],
-        );
-      } else {
-        await tx.unsafe(
-          `INSERT INTO document_facts (${FACT_INSERT_COLUMNS}) VALUES (${FACT_INSERT_VALUES})`,
-          base as never[],
-        );
-      }
+    await insertFactRows(tx as unknown as SqlTx, e, extractionId, k.facts, { canonical, provenance: couche });
+
+    // Lot 34F : couche A (unités, couverture, faits non résolus) — même
+    // transaction que les faits : jamais de provenance vers une unité absente.
+    // Point de sauvegarde : une couche A impossible à écrire n'emporte jamais
+    // les faits (écrits comme avant) — signalé, rattrapé par la reprise.
+    if (k.sourceLayer && couche) {
+      const layer = k.sourceLayer;
+      await (tx as unknown as { savepoint: (f: (sp: unknown) => Promise<void>) => Promise<void> })
+        .savepoint((sp) => writeSourceLayer(sp as never, { accountId: e.accountId, fileId: e.fileId, extractionId, layer, origin: 'ANALYSIS' }))
+        .catch((err: Error) => {
+          coucheEcrite = false;
+          console.error(`[t1-source-units] couche A du fichier ${e.fileId} non écrite :`, err.message);
+        });
     }
   });
 
+  if (k.sourceLayer) {
+    // Surveillance (journal T1, anomalies BO) : jamais bloquante.
+    const { recordT1Completeness } = await import('../source-analysis/source-units/monitoring');
+    await recordT1Completeness({
+      accountId: e.accountId, fileId: e.fileId, report: k.sourceLayer.report, persisted: coucheEcrite,
+    }).catch((err: Error) => console.error('[t1-completeness] surveillance impossible :', err.message));
+  }
+
   return extractionId;
+}
+
+/** Transaction (ou client) SQL minimal. */
+type SqlTx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+
+/**
+ * Écrit des faits ACTIFS d'une extraction (colonnes historiques, contrat
+ * enrichi 0218 s'il est appliqué, provenance 0297 si elle l'est). Lot 34F :
+ * factorisé pour la reprise ciblée, qui AJOUTE des faits sans réécrire les
+ * autres.
+ */
+export async function insertFactRows(
+  tx: SqlTx,
+  e: Pick<DocumentKnowledge['extraction'], 'accountId' | 'fileId' | 'sourceType' | 'provider' | 'model' | 'promptVersion'>,
+  extractionId: number,
+  facts: readonly DocumentFactRecord[],
+  opts: { canonical: boolean; provenance: boolean },
+): Promise<void> {
+  const { canonical, provenance: couche } = opts;
+  for (const f of facts) {
+    const base = [
+      e.accountId, e.fileId, extractionId, f.factKey, f.subject, f.attribute, f.label,
+      f.valueText, f.valueNumber, f.valueUnit, json(f.valueJson), f.normalizedValue, f.periodStart, f.periodEnd,
+      // Observation visuelle : aucune citation (la contrainte 0161 l'impose aussi).
+      f.confidence, f.evidenceOrigin === 'VISUAL_ANALYSIS' ? null : f.excerpt, json(f.location), e.sourceType, e.provider, e.model, e.promptVersion,
+      f.evidenceOrigin ?? 'TEXT_EXTRACTION',
+      f.evidenceOrigin === 'VISUAL_ANALYSIS' && f.visualEvidence ? json({ ...f.visualEvidence, fileId: e.fileId }) : null,
+    ];
+    // Lot 34F (0297) : provenance fait → sourceUnitId[].
+    const prov = couche && f.sourceUnitIds?.length ? f.sourceUnitIds : null;
+    if (canonical && hasCanonicalFactData(f)) {
+      await tx.unsafe(
+        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS},
+           canonical_key, raw_key, raw_value, value_type, canonical_unit,
+           target_type, target_entity_id, target_entity_label, target_confidence,
+           semantic_event_type, semantic_event_nature, recurrence, projection_origin, projection_rule${prov ? ', source_unit_ids' : ''}
+         ) VALUES (${FACT_INSERT_VALUES},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35::jsonb,$36,$37${prov ? ',$38::text[]' : ''})`,
+        [
+          ...base,
+          f.canonicalKey ?? null, f.rawKey ?? null, f.rawValue ?? null, f.valueType ?? null, f.canonicalUnit ?? null,
+          f.targetType ?? null, f.targetEntityId ?? null, f.targetEntityLabel ?? null, f.targetConfidence ?? null,
+          f.semanticEventType ?? null, f.semanticEventNature ?? null,
+          f.recurrence ? json(f.recurrence) : null,
+          f.projectionOrigin ?? null, f.projectionRule ?? null,
+          ...(prov ? [prov] : []),
+        ] as never[],
+      );
+    } else {
+      await tx.unsafe(
+        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS}${prov ? ', source_unit_ids' : ''}) VALUES (${FACT_INSERT_VALUES}${prov ? ',$24::text[]' : ''})`,
+        [...base, ...(prov ? [prov] : [])] as never[],
+      );
+    }
+  }
 }
 
 // ── Lecture ────────────────────────────────────────────────────────────────

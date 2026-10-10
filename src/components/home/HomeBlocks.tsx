@@ -250,8 +250,13 @@ function StatusBadge({ label }: { label: string }) {
  * un essai par la route autorisée `/api/files/:id/thumbnail` (re-signature),
  * puis l'icône. Pas de rendu PDF dans le navigateur ici : sans miniature
  * prête, l'icône (la génération est demandée par le serveur).
+ *
+ * Variante `card` (lot 34, point 1) : grande vignette arrondie du carrousel
+ * mobile — la même miniature serveur (pas une seconde URL, pas de N+1),
+ * plein cadre ; `loading="lazy"` : les cartes hors champ (défilement
+ * horizontal) ne sont chargées qu'à l'approche.
  */
-export function RecentDocPreview({ doc, variant }: { doc: HomeRecentDocument; variant: 'tile' | 'row' }) {
+export function RecentDocPreview({ doc, variant }: { doc: HomeRecentDocument; variant: 'tile' | 'card' }) {
   const [step, setStep] = useState<0 | 1 | 2>(0);
   const tone = DOC_TONES[doc.tone];
   const src = !doc.previewUrl ? null : step === 0 ? doc.previewUrl : step === 1 ? `/api/files/${doc.id}/thumbnail` : null;
@@ -260,14 +265,21 @@ export function RecentDocPreview({ doc, variant }: { doc: HomeRecentDocument; va
       <FileText className="h-4 w-4" aria-hidden />
     </span>
   );
-  if (variant === 'row') {
-    if (!src) return icon;
+  if (variant === 'card') {
     return (
-      <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center">
-        <span className="relative h-[38px] w-[30px] overflow-hidden rounded bg-white shadow-[0_1px_3px_rgba(0,0,0,.5)]">
-          {/* eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente */}
-          <img src={src} alt="" loading="lazy" decoding="async" onError={() => setStep((x) => (x === 0 ? 1 : 2))} className="block h-full w-full object-cover object-top" />
-        </span>
+      <span
+        className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-[18px] border border-[color:var(--border-subtle)]"
+        style={{ background: src ? '#fff' : tone.bg }}
+      >
+        {src ? (
+          // eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente
+          <img src={src} alt="" loading="lazy" decoding="async" onError={() => setStep((x) => (x === 0 ? 1 : 2))} className="absolute inset-0 h-full w-full object-cover object-top" />
+        ) : (
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[color:var(--bg-card)]" style={{ color: tone.fg }}>
+            <FileText className="h-[22px] w-[22px]" aria-hidden />
+          </span>
+        )}
+        {doc.status && <span className="absolute left-2 top-2"><StatusBadge label={doc.status} /></span>}
       </span>
     );
   }
@@ -348,26 +360,41 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
               );
             })}
           </div>
-          {/* Mobile : 3 lignes-cartes */}
-          <div className="flex flex-col gap-2 md:hidden">
-            {docs.slice(0, 3).map((d) => {
-              return (
+          {/* Mobile (lot 34, point 1) : carrousel horizontal de grandes
+              vignettes arrondies, calées au défilement ; la carte suivante
+              dépasse à droite pour inviter à faire glisser. */}
+          <ul className="-mx-4 my-0 flex list-none snap-x snap-mandatory scroll-pl-4 gap-2.5 overflow-x-auto px-4 pb-1 vb-no-scrollbar md:hidden" aria-label="Documents récents">
+            {docs.slice(0, 4).map((d) => (
+              <li key={d.id} className="w-[148px] flex-shrink-0 snap-start">
                 <button
-                  key={d.id}
                   type="button"
                   onClick={() => open(d)}
-                  className="flex min-h-[60px] items-center gap-3 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-3 py-2.5 text-left"
+                  aria-label={`${d.title}${d.assetName ? ` — ${d.assetName}` : ''}`}
+                  className="flex w-full flex-col gap-2 rounded-[18px] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
                 >
-                  <RecentDocPreview doc={d} variant="row" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[14px] font-semibold text-[color:var(--text-primary)]">{d.title}</span>
-                    <span className="block truncate text-[12px] text-[color:var(--muted-foreground)]">{[d.assetName, formatDay(d.date)].filter(Boolean).join(' · ')}</span>
+                  <RecentDocPreview doc={d} variant="card" />
+                  <span className="flex min-w-0 flex-col gap-0.5 px-0.5">
+                    <span className="truncate text-[13.5px] font-semibold text-[color:var(--text-primary)]">{d.title}</span>
+                    <span className="truncate text-[12px] text-[color:var(--muted-foreground)]">{[d.assetName, formatDay(d.date)].filter(Boolean).join(' · ') || d.typeLabel}</span>
                   </span>
-                  {d.status && <StatusBadge label={d.status} />}
                 </button>
-              );
-            })}
-          </div>
+              </li>
+            ))}
+            <li className="w-[148px] flex-shrink-0 snap-start">
+              <Link
+                href="/documents"
+                className="flex aspect-square w-full flex-col justify-between rounded-[18px] border border-dashed border-[color:var(--border)] p-3.5 text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+              >
+                <span className="flex h-[34px] w-[34px] items-center justify-center rounded-[11px] bg-[color:var(--accent-soft)] text-[color:var(--accent)]">
+                  <FileText className="h-4 w-4" aria-hidden />
+                </span>
+                <span className="flex items-center justify-between text-[13.5px] font-semibold">
+                  Tous les documents
+                  <ArrowRight className="h-4 w-4 flex-shrink-0 text-[color:var(--accent)]" strokeWidth={2.2} aria-hidden />
+                </span>
+              </Link>
+            </li>
+          </ul>
         </>
       )}
     </section>

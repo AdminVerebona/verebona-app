@@ -32,15 +32,15 @@ beforeEach(() => {
   m.enqueue.mockResolvedValue({ decision: 'enqueued', jobId: 1 });
 });
 
-describe('buildTitle — règles de nommage EXISTANTES (inchangées)', () => {
+describe('buildTitle — moteur de titre commun (v2, lot 34E)', () => {
   it('titre du modèle conforme : conservé', () => {
     expect(buildTitle({ modelTitle: "Certificat d'immatriculation CUPRA", ctx: {} })).toBe("Certificat d'immatriculation CUPRA");
   });
   it('titre du modèle technique : reconstruit (type / sujet / fournisseur / mois), jamais l’UUID', () => {
     expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: { typeCode: 'invoice', supplier: 'EDF' } })).toBe('Facture EDF');
-    expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: { documentDate: '2024-04-18' } })).toBe('Document avril 2024');
+    expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: { documentDate: '2024-04-18' } })).toBe('Document _ Avril 2024');
   });
-  it('SKIP_INSUFFICIENT_DATA : rien d’exploitable → null (jamais un titre technique)', () => {
+  it('INSUFFICIENT_DATA : rien d’exploitable → null (jamais un titre technique)', () => {
     expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: {} })).toBeNull();
     expect(buildTitle(null)).toBeNull();
   });
@@ -69,8 +69,8 @@ describe('TITLE-AC4 — T1 et T3 utilisent la même implémentation', () => {
 });
 
 describe('TITLE-AC7 — sélection indépendante des autres traitements', () => {
-  it('aucune condition sur rattachement, classement, agenda ni autre travail T3', () => {
-    expect(TITLE_SWEEP_SQL).not.toMatch(/asset_id IS NULL|document_asset_links|rubric_code|classification_state|agenda|ai_job_queue|document_asset_resolutions/);
+  it('aucune condition sur classement, agenda ni autre travail T3 (les liens ne servent qu’à détecter un contexte de titre modifié)', () => {
+    expect(TITLE_SWEEP_SQL).not.toMatch(/asset_id IS NULL|rubric_code|classification_state|agenda|ai_job_queue|document_asset_resolutions/);
     expect(TITLE_SWEEP_SQL).toContain("f.title_source = 'SYSTEM'");
     expect(TITLE_SWEEP_SQL).toMatch(/f\.analysis_state IN \('ANALYZED'/);
   });
@@ -83,10 +83,10 @@ describe('page du rattrapage T3 (contrat 31C)', () => {
   it('page pleine : chaque document passe par le service (origine T3, mode repair), puis UNE continuation unique', async () => {
     vi.stubEnv('T3_TITLE_SWEEP_PAGE_SIZE', '2');
     m.unsafe.mockResolvedValueOnce(page(2));
-    m.ensure.mockResolvedValueOnce({ outcome: 'UPDATED' }).mockResolvedValueOnce({ outcome: 'SKIP_INSUFFICIENT_DATA' });
+    m.ensure.mockResolvedValueOnce({ outcome: 'UPDATED' }).mockResolvedValueOnce({ outcome: 'INSUFFICIENT_DATA' });
     const r = await runDocumentTitleSweepPage(job, { kind: DOCUMENT_TITLE_SWEEP_KIND, cycleId: 'c', page: 0, afterFileId: 0, requestedAt: null }, guard, { enqueue: m.enqueue });
     expect(m.ensure).toHaveBeenCalledWith(expect.objectContaining({ fileId: 100, accountId: 1, origin: 'T3', mode: 'repair' }));
-    expect(r).toMatchObject({ result: 'APPLIED', detail: expect.objectContaining({ examined: 2, UPDATED: 1, SKIP_INSUFFICIENT_DATA: 1, last: false }) });
+    expect(r).toMatchObject({ result: 'APPLIED', detail: expect.objectContaining({ examined: 2, UPDATED: 1, INSUFFICIENT_DATA: 1, last: false }) });
     expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({
       treatment: 'T3', onlyIfNeverQueued: true,
       scope: { targetType: 'document_title_sweep', targetId: 'c:1' },
@@ -97,7 +97,7 @@ describe('page du rattrapage T3 (contrat 31C)', () => {
 
   it('dernière page : aucune continuation ; TITLE-AC6 — rien à corriger → NO_CHANGE', async () => {
     m.unsafe.mockResolvedValueOnce(page(1));
-    m.ensure.mockResolvedValueOnce({ outcome: 'SKIP_VALID_TITLE' });
+    m.ensure.mockResolvedValueOnce({ outcome: 'NO_CHANGE' });
     const r = await runDocumentTitleSweepPage(job, { kind: DOCUMENT_TITLE_SWEEP_KIND, cycleId: 'c', page: 3, afterFileId: 50, requestedAt: null }, guard, { enqueue: m.enqueue });
     expect(r.result).toBe('NO_CHANGE');
     expect(m.enqueue).not.toHaveBeenCalled();
@@ -106,7 +106,7 @@ describe('page du rattrapage T3 (contrat 31C)', () => {
   it('repairTitles compte chaque issue', async () => {
     m.ensure.mockResolvedValueOnce({ outcome: 'FAILED' }).mockResolvedValueOnce({ outcome: 'SKIP_USER_TITLE' });
     expect(await repairTitles([{ fileId: 1, accountId: 1 }, { fileId: 2, accountId: 1 }])).toEqual({
-      UPDATED: 0, SKIP_VALID_TITLE: 0, SKIP_USER_TITLE: 1, SKIP_INSUFFICIENT_DATA: 0, FAILED: 1,
+      UPDATED: 0, NO_CHANGE: 0, SKIP_USER_TITLE: 1, INSUFFICIENT_DATA: 0, FAILED: 1,
     });
   });
 

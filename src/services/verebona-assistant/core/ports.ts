@@ -119,8 +119,16 @@ export function construireActionIntents(
     if (nav && autorisees.has(nav.action)) return [{ type: nav.action }];
   }
 
+  // Lot 34G : un bien DÉJÀ RÉSOLU (page, référence du fil, clarification)
+  // est la cible de l'ajout de document ou d'échéance — le formulaire
+  // l'ouvre présélectionné. Le résolveur revérifie son appartenance au compte.
   const aide = helpPrimaryAction(input.message, route.intent);
-  if (aide && autorisees.has(aide)) intents.push({ type: aide });
+  const bienResolu = resolvedAssetId(input);
+  if (aide && autorisees.has(aide)) {
+    intents.push(bienResolu && (aide === 'START_ADD_DOCUMENT' || aide === 'START_ADD_AGENDA_ITEM')
+      ? { type: aide, targetId: `asset_${bienResolu}` }
+      : { type: aide });
+  }
 
   // ── Aide produit : l'ARTICLE précis, et le support si besoin ───────────
   // Lien profond vers l'article le plus pertinent (« Lire l'article ») au
@@ -199,7 +207,8 @@ export function construireActionIntents(
   const assetContexte = input.pageContext?.assetId;
   if (assetContexte) {
     for (const type of ['START_ADD_DOCUMENT', 'START_ADD_AGENDA_ITEM', 'OPEN_EXPORT_AREA'] as const) {
-      if (autorisees.has(type)) intents.push({ type, targetId: `asset_${assetContexte}` });
+      // Une seule action de création par type (lot 34G) : déjà ciblée ci-dessus.
+      if (autorisees.has(type) && !intents.some((i) => i.type === type)) intents.push({ type, targetId: `asset_${assetContexte}` });
     }
   }
 
@@ -224,6 +233,19 @@ export function construireActionIntents(
   if (autorisees.has('RETRY_REQUEST')) intents.push({ type: 'RETRY_REQUEST' });
 
   return intents;
+}
+
+/**
+ * Bien déjà résolu pour la demande (pure) : page ouverte, puis bien fixé par
+ * une clarification, puis référence du fil (« cette maison »).
+ */
+export function resolvedAssetId(input: Pick<AssistantRequestInput, 'pageContext' | 'resume' | 'reference'>): number | null {
+  const candidats = [
+    Number(input.pageContext?.assetId),
+    Number(input.resume?.assetId),
+    input.reference?.type === 'asset' ? Number(input.reference.id) : NaN,
+  ];
+  return candidats.find((n) => Number.isSafeInteger(n) && n > 0) ?? null;
 }
 
 export function buildOrchestratorPorts(): OrchestratorPorts {

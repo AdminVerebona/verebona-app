@@ -40,7 +40,10 @@ import { createHash } from 'crypto';
  * rend exploitables des sorties auparavant rejetées : les documents en échec
  * seront rejoués une fois avec la nouvelle version.
  */
-export const OUTPUT_RESOLUTION_VERSION = '33d.1';
+// 34d.1 : contrat runtime source unique (consigne de priorité, schéma dérivé
+// en prompt sans structured output, mapping explicite document.date →
+// documentDate, champ non déclaré → réparation avec le contrat exact).
+export const OUTPUT_RESOLUTION_VERSION = '34d.1';
 
 export const MAX_PER_RUN = 25;
 /** Rejeux de nouveau en échec sur une même signature au-delà desquels elle n'est plus rejouée. */

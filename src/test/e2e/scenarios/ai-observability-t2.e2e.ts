@@ -121,6 +121,10 @@ scenario('AI-OBS-T2', 'Observabilité assistant : §32.2, §32.5, PUB-01', ({ sq
 
     svc.resetHelpCorpusCacheForTests();
     svc.setHelpCorpusStoreForTests(svc.dbHelpCorpusStore);
+    // Lot 34G : site public de l'environnement (local) — sans lui, l'URL
+    // retomberait sur la production, refusée hors production.
+    const site = process.env.NEXT_PUBLIC_PUBLIC_SITE_URL;
+    process.env.NEXT_PUBLIC_PUBLIC_SITE_URL = 'http://localhost:3000';
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ schema: 'cassé' }), { status: 200 })));
     vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -130,6 +134,7 @@ scenario('AI-OBS-T2', 'Observabilité assistant : §32.2, §32.5, PUB-01', ({ sq
       vi.unstubAllGlobals();
       svc.setHelpCorpusStoreForTests(null);
       svc.resetHelpCorpusCacheForTests();
+      if (site === undefined) delete process.env.NEXT_PUBLIC_PUBLIC_SITE_URL; else process.env.NEXT_PUBLIC_PUBLIC_SITE_URL = site;
     }
   });
 

@@ -7,6 +7,7 @@
  */
 import type { AssistantApiResponse, AssistantRunResult } from '../types/contracts';
 import { isAssistantFlagOn } from '../config/assistant-flags.server';
+import { createCommandFor } from '@/lib/verebona/assistant-actions';
 
 export function toApiPayload(result: AssistantRunResult, conversationId?: number | null): AssistantApiResponse {
   const sourcesOn = isAssistantFlagOn('sources');
@@ -23,7 +24,11 @@ export function toApiPayload(result: AssistantRunResult, conversationId?: number
     sourceCount: sourcesOn ? result.sources.length : 0,
     // Cible et paramètres internes (§28.6) : persistés, jamais exposés.
     actions: (sourcesOn ? result.actions : result.actions.filter((a) => a.type !== 'SHOW_SOURCES'))
-      .map(({ targetRef: _cible, payload: _parametres, ...publique }) => publique),
+      .map(({ targetRef: _cible, payload: _parametres, ...publique }) => {
+        // Lot 34G : une création porte sa commande, jamais un `href`.
+        const command = createCommandFor(publique.type, _cible);
+        return command ? { ...publique, href: null, command: publique.command ?? command } : publique;
+      }),
     clarification: result.clarification
       ? {
           clarificationId: result.clarification.clarificationId,

@@ -40,8 +40,10 @@ export async function GET(
       .innerJoin(assetFiles, eq(eventDocuments.fileId, assetFiles.id))
       .where(eq(eventDocuments.eventId, eventId));
 
+    // Lot 34C : jamais de motif technique d'analyse vers l'application.
+    const { toUserFile } = await import('@/services/ai/processing-status/user-file');
     return NextResponse.json({
-      data: linkedDocs,
+      data: linkedDocs.map((d) => ({ ...d, file: toUserFile(d.file) })),
       count: linkedDocs.length,
     }, { status: 200 });
   } catch (error) {

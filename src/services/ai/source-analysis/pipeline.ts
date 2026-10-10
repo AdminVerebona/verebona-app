@@ -20,7 +20,7 @@
  *  3. Le résultat est identique pour un fichier et pour un lien web
  *     (critère d'acceptation n°6).
  */
-import { isDefinitiveGatewayFailure, MAX_ANALYSIS_RETRIES } from './failure-policy';
+import { isDefinitiveGatewayFailure, userFacingFailReason, MAX_ANALYSIS_RETRIES } from './failure-policy';
 import { buildKnowledgeFromSourceAnalysis } from '../knowledge/document-knowledge';
 import { persistDocumentKnowledge } from '../knowledge/document-knowledge.service';
 import { db } from '@/db';
@@ -299,6 +299,8 @@ export async function runSourceAnalysis(
         multiAsset: master.projection.multiAsset,
         // Version résolue du master (fichier ou version de configuration).
         promptVersion: master.promptVersion,
+        // Lot 34F : couche A (unités de la source, couverture, faits non résolus).
+        sourceLayer: master.sourceLayer,
       })).catch((e: Error) => {
         console.error(`[source-analysis] base de connaissance du fichier ${leadSourceId} non écrite :`, e.message);
       });
@@ -650,9 +652,15 @@ export class T1MasterAnalysisError extends Error {
   }
 }
 
-/** Motif d'échec affiché dans le tiroir du document (borné, sans pile). */
+/**
+ * Motif TECHNIQUE de l'échec, conservé sur le document (borné, sans pile).
+ * Lot 34C : jamais rendu à l'application (`toUserFile`, `userStreamEvent`) —
+ * lu par BO › Exécutions IA, la fiche document du BO et le rejeu des sorties
+ * invalides ; classé en code fonctionnel (`classifyUserFailure`).
+ */
 function failReason(e: unknown): string {
-  const message = ((e as Error)?.message ?? 'erreur inconnue').slice(0, 300);
+  // Lot 34D : défaut interne du moteur (contrat runtime) — message générique.
+  const message = (userFacingFailReason(e) ?? (e as Error)?.message ?? 'erreur inconnue').slice(0, 300);
   return e instanceof T1MasterAnalysisError
     ? `Analyse impossible (prompt maître T1) : ${message}`
     : message;
@@ -791,7 +799,11 @@ async function failSources(
       updatedAt: new Date(),
     })
     .where(inArray(assetFiles.id, ids));
-  for (const id of ids) broadcast(id, { type: 'error', analysisState: 'ANALYSIS_FAILED', message: reason });
+  // Lot 34C : le motif TECHNIQUE reste sur le document (BO › Exécutions IA,
+  // rejeu) ; le flux de l'application ne reçoit que l'état — le relais
+  // (`userStreamEvent`) le traduit en statut fonctionnel (une reprise
+  // prévue n'est pas un échec affiché).
+  for (const id of ids) broadcast(id, { type: 'error', analysisState: 'ANALYSIS_FAILED' });
   await markLotItems(lotId, ids, 'failed');
 }
 
@@ -838,8 +850,8 @@ async function closeLot(lotId: number | null): Promise<void> {
     .where(eq(documentLots.id, lotId));
 }
 
-/** Contexte du compte — borné, réutilisé par toutes les étapes (§5.6). */
-async function loadAnalysisContext(
+/** Contexte du compte — borné, réutilisé par toutes les étapes (§5.6). Lot 34F : exporté (reprise ciblée). */
+export async function loadAnalysisContext(
   accountId: number, linkedAssetId: number | null,
 ): Promise<AnalysisContext> {
   const assetRows = await db

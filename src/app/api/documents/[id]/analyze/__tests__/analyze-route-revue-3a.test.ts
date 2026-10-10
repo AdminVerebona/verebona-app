@@ -2,9 +2,10 @@
  * Revue L16b-3a, points 4 et 5 — réanalyse depuis le tiroir :
  *   · un job T1 vivant pour le document → `ALREADY_ANALYZING` avec un motif,
  *     sans analyse directe (pas de double appel au master) ;
- *   · panne inattendue du pipeline (`null`) → message exact (relance par la
- *     reprise serveur), jamais « remis en file » ni un `done` trompeur ;
- *   · échec motivé → `ANALYSIS_FAILED` avec le motif écrit sur le fichier.
+ *   · panne inattendue du pipeline (`null`) → `ANALYSIS_INTERRUPTED`, jamais
+ *     « remis en file » ni un `done` trompeur ;
+ *   · échec motivé → `ANALYSIS_FAILED` avec le statut FONCTIONNEL (lot 34C :
+ *     jamais le motif technique écrit sur le fichier, UXERR-04).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -21,6 +22,12 @@ vi.mock('@/db', () => {
   return { db: { select: () => chain } };
 });
 vi.mock('@/services/ai/queue/job-queue.repository', () => ({ listLiveTargets: async () => h.live }));
+vi.mock('@/services/ai/processing-status/processing-status.service', async (o) => ({
+  ...(await o<object>()),
+  getFileProcessingView: async () => ({
+    processingStatus: 'FAILED_FINAL', userMessageCode: 'ANALYSIS_FAILED_FINAL', retryScheduled: false, nextAttemptAt: null, resumeAt: null,
+  }),
+}));
 vi.mock('@/services/ai/source-analysis/entrypoint', () => ({
   analyzeFileSources: (...a: unknown[]) => h.analyze(...a),
   registerAnalysisStreamWriter: async () => () => {},
@@ -44,16 +51,20 @@ describe('POST /api/documents/[id]/analyze — revue 3a', () => {
     expect(h.analyze).not.toHaveBeenCalled();
   });
 
-  it('panne du pipeline (null) : message exact, pas de « done »', async () => {
+  it('panne du pipeline (null) : code d’interruption, aucun texte technique, pas de « done »', async () => {
     h.analyze.mockResolvedValue(null);
     const ev = await evenements();
-    expect(ev.at(-1)).toMatchObject({ type: 'error', code: 'ANALYSIS_FAILED', message: expect.stringMatching(/relancée automatiquement/) });
+    expect(ev.at(-1)).toEqual({ type: 'error', code: 'ANALYSIS_INTERRUPTED' });
   });
 
-  it('échec motivé : motif du fichier transmis', async () => {
+  it('UXERR-04 — échec motivé : statut fonctionnel, JAMAIS le motif technique du fichier', async () => {
     h.analyze.mockResolvedValue({ results: [], analysedCount: 0, failedSourceIds: [42] });
     const ev = await evenements();
-    expect(ev.at(-1)).toMatchObject({ type: 'error', code: 'ANALYSIS_FAILED', message: expect.stringMatching(/sortie invalide/) });
+    expect(ev.at(-1)).toEqual({
+      type: 'error', code: 'ANALYSIS_FAILED', processingStatus: 'FAILED_FINAL', userMessageCode: 'ANALYSIS_FAILED_FINAL',
+      retryScheduled: false, nextAttemptAt: null, processingResumeAt: null,
+    });
+    expect(JSON.stringify(ev)).not.toMatch(/prompt|sortie invalide/);
   });
 
   it('déjà en cours (pipeline) : ALREADY_ANALYZING avec un motif', async () => {

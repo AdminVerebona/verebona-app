@@ -35,6 +35,8 @@ import { useToProcessCount } from '@/hooks/useToProcessCount';
 import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
 import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
+// Lot 34G : parcours de création (document, bien, échéance) ouverts depuis n'importe quel écran (src/lib/create-flows.ts).
+const GlobalCreateFlowHost = dynamic(() => import('./drawers/GlobalCreateFlowHost').then(m => ({ default: m.GlobalCreateFlowHost })), { ssr: false });
 const UploadQueueSupervisor = dynamic(() => import('./documents/UploadQueueSupervisor').then(m => ({ default: m.UploadQueueSupervisor })), { ssr: false });
 const HelpModal = dynamic(() => import('./help/HelpModal').then(m => ({ default: m.HelpModal })), { ssr: false });
 const WelcomeOnboardingModal = dynamic(() => import('./onboarding/WelcomeOnboardingModal').then(m => ({ default: m.WelcomeOnboardingModal })), { ssr: false });
@@ -453,6 +455,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
 
     {/* Échéance, équipement, pièce : tiroirs ouverts depuis n'importe quel écran (src/lib/drawers.ts). */}
     <GlobalDrawerHost />
+    {/* Ajouter un document / un bien / créer une échéance, ouverts directement (actions de l'assistant). */}
+    <GlobalCreateFlowHost />
 
     {/* File des dépôts de documents (APP-PERF-29) : supervision sans suivi
         flottant « Envoi de documents » (lot 31, L31-5). */}

@@ -17,12 +17,15 @@
  * configuration puis le dépôt s'appliquent — jamais d'échec d'appel.
  */
 import type { Treatment } from '../config/treatments';
+import type { MasterExecutionConfig } from './structured-context';
 
 export interface ActiveMasterPrompt {
   id: number;
   treatment: Treatment;
   versionNumber: number;
   content: string;
+  /** Lot 34D (0290) — configuration d'exécution explicite de la version (T4) ; `null` : LEGACY_TEMPLATE. */
+  execution?: MasterExecutionConfig | null;
 }
 
 let override: Map<string, ActiveMasterPrompt> | null = null;
@@ -48,7 +51,7 @@ export async function loadActiveMasterPrompts(environment: string): Promise<Map<
   try {
     const actives = await listActivePromptVersions(environment);
     return new Map(actives.map((v) => [v.treatment, {
-      id: v.id, treatment: v.treatment as Treatment, versionNumber: v.versionNumber, content: v.content,
+      id: v.id, treatment: v.treatment as Treatment, versionNumber: v.versionNumber, content: v.content, execution: v.execution,
     }]));
   } catch (e) {
     if ((e as { code?: string }).code === '42P01') return new Map();

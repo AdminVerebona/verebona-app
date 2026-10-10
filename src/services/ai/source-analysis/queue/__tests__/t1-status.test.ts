@@ -29,12 +29,11 @@ const { getT1QueueStatus } = await import('../t1-status');
 beforeEach(() => { calls.length = 0; fichiers = []; jobs = []; vi.spyOn(console, 'warn').mockImplementation(() => {}); });
 
 describe('getT1QueueStatus', () => {
-  it('sans job vivant : état des fichiers du compte, en attente et en cours', async () => {
+  it('UXERR-07 — sans job vivant : seule l’analyse directe (ANALYZING) compte, jamais un « en file » sans job', async () => {
     fichiers = [{ id: 1, analysis_state: 'UPLOADED' }, { id: 2, analysis_state: 'ANALYZING' }];
     const s = await getT1QueueStatus(9);
     expect(s.mode).toBe('durable');
     expect(s.files).toEqual([
-      { fileId: 1, state: 'queued', nextAttemptAt: null },
       { fileId: 2, state: 'analyzing', nextAttemptAt: null },
     ]);
     // Lecture seule, bornée au compte.
@@ -56,11 +55,11 @@ describe('getT1QueueStatus', () => {
     ]);
   });
 
-  it('file durable illisible : l’état des fichiers suffit', async () => {
-    fichiers = [{ id: 4, analysis_state: 'UPLOADED' }];
+  it('UXERR-07 — file durable illisible : aucun « en file » non vérifié', async () => {
+    fichiers = [{ id: 4, analysis_state: 'UPLOADED' }, { id: 5, analysis_state: 'ANALYZING' }];
     jobs = new Error('relation "ai_job_queue" does not exist');
     const s = await getT1QueueStatus(9);
-    expect(s.files).toEqual([{ fileId: 4, state: 'queued', nextAttemptAt: null }]);
+    expect(s.files).toEqual([{ fileId: 5, state: 'analyzing', nextAttemptAt: null }]);
   });
 });
 

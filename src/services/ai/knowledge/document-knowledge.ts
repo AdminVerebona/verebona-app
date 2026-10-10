@@ -19,6 +19,8 @@ import type {
 } from '../source-analysis/types';
 import { cellContext } from './document-tables';
 import { T1_MASTER_PROMPT_CODE } from '../source-analysis/master/t1-contract';
+import { VISUAL_SUMMARY_UNIT_ID, visualUnitId } from '../source-analysis/source-units/build-units';
+import type { SourceLayer } from '../source-analysis/source-units/types';
 
 export type KnowledgeEngine = 'source_analysis' | 'legacy';
 
@@ -100,6 +102,11 @@ export interface DocumentFactRecord {
   recurrence?: ExtractedRecurrence | null;
   projectionOrigin?: string | null;
   projectionRule?: string | null;
+  /**
+   * Lot 34F (0297) — provenance : unités de la source (`document_source_units`)
+   * qui prouvent le fait. Absent : fait historique ou sans unité retrouvée.
+   */
+  sourceUnitIds?: string[];
 }
 
 export interface DocumentKnowledge {
@@ -107,6 +114,11 @@ export interface DocumentKnowledge {
   facts: DocumentFactRecord[];
   /** Tableaux structurés (0162) ; absents = aucun tableau. */
   tables?: ExtractedTable[];
+  /**
+   * Lot 34F — couche A (unités de la source, couverture, faits non résolus,
+   * rapport de complétude), écrite dans la MÊME transaction que les faits.
+   */
+  sourceLayer?: SourceLayer;
 }
 
 // ── Valeurs et unités ──────────────────────────────────────────────────────
@@ -223,6 +235,7 @@ export function toFact(field: ExtractedField): DocumentFactRecord {
     location,
     evidenceOrigin: visual ? 'VISUAL_ANALYSIS' : 'TEXT_EXTRACTION',
     visualEvidence: visual ? (field.visualEvidence ?? null) : null,
+    ...(field.sourceUnitIds?.length ? { sourceUnitIds: field.sourceUnitIds } : {}),
   };
 }
 
@@ -345,8 +358,12 @@ export function buildKnowledgeFromSourceAnalysis(
      * Absent (moteur « étapes ») : NULL en base, rien n'est écrit.
      */
     multiAsset?: boolean;
+    /** Lot 34F — couche A de l'analyse (`MasterGroupAnalysis.sourceLayer`). */
+    sourceLayer?: SourceLayer;
   },
 ): DocumentKnowledge {
+  // Lot 34F : une observation enregistrée comme fait garde son unité source.
+  const avecUnite = (f: DocumentFactRecord, id: string): DocumentFactRecord => (ctx.sourceLayer ? { ...f, sourceUnitIds: [id] } : f);
   const d = result.document;
   const evidence: DocumentExtractionRecord['structuralEvidence'] = {};
   const keep = (key: string, v?: { confidence: string; excerpt: string; location?: object }) => {
@@ -410,11 +427,14 @@ export function buildKnowledgeFromSourceAnalysis(
     tables: d.tables ?? [],
     facts: [
       ...result.extractedFields.map((f) => withTableContext(toFact(f), f, d.tables ?? [])),
-      ...(d.visual?.observations ?? []).map((o, i) => observationToFact(o, i)),
+      ...(d.visual?.observations ?? []).map((o, i) => avecUnite(observationToFact(o, i), visualUnitId(o, i))),
       // Photo sans texte : la vue d'ensemble est la seule information — elle
       // doit rester trouvable, avec une confiance modérée.
-      ...(d.visual?.summary ? [observationToFact({ description: d.visual.summary, confidence: 'probable' }, 0, 'visual.summary')] : []),
+      ...(d.visual?.summary
+        ? [avecUnite(observationToFact({ description: d.visual.summary, confidence: 'probable' }, 0, 'visual.summary'), VISUAL_SUMMARY_UNIT_ID)]
+        : []),
     ].filter(hasEvidence),
+    ...(ctx.sourceLayer ? { sourceLayer: ctx.sourceLayer } : {}),
   };
 }
 
@@ -469,6 +489,7 @@ export function factsToExtractedFields(facts: Array<Pick<DocumentFactRecord,
       const origin = oneOf(ORIGINS, f.projectionOrigin);
       if (origin) field.origin = origin;
       if (f.projectionRule) field.ruleCode = f.projectionRule;
+      if (f.sourceUnitIds?.length) field.sourceUnitIds = f.sourceUnitIds;
       return field;
     });
 }

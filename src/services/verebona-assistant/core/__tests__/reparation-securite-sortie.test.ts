@@ -216,12 +216,13 @@ describe('limites avant appel (§13.9, §17.7, §30.1, §31.2)', () => {
 
   it('t2_revalidate : 12 s par tentative (l’opération en déclare 20)', async () => {
     const { z } = await import('zod');
+    const { asTestContract } = await import('@/services/ai/gateway/output-resolution/runtime-contract');
     const { executeWithinBudget } = await import('../ai-call-budget');
     const { t2MasterVariables } = await import('@/services/ai/assistant/master/t2-answer');
     fakeProvider.onAny(() => ({ rawText: '{"mode":"REVALIDATE","status":"confirmed"}', inputTokens: 1, outputTokens: 1 }));
     await executeWithinBudget(createAiCallBudget(2), {
       useCaseCode: 'INTELLIGENT_ASSISTANT', operationCode: 't2_revalidate', accountId: 1,
-      promptVariables: t2MasterVariables('REVALIDATE', { QUESTION: 'q' }), outputSchema: z.object({ mode: z.literal('REVALIDATE') }).passthrough(),
+      promptVariables: t2MasterVariables('REVALIDATE', { QUESTION: 'q' }), outputSchema: asTestContract(z.object({ mode: z.literal('REVALIDATE') }).passthrough()),
       idempotencyKey: `k-${Math.random()}`,
     });
     expect(fakeProvider.calls[0].timeoutMs).toBe(12_000);

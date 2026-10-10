@@ -18,13 +18,16 @@ import {
 import { verifierFichier, verifierLot, MAX_DOCUMENTS_PAR_DEPOT } from '@/lib/upload-limits';
 import { deciderConfirm, empreinteConfirm, estCleOperation, uploadOperationLockKey } from '@/lib/upload-idempotence';
 import { verificationObjetActive, verifierObjetDepose } from '@/lib/upload-object-check';
+import { toUserFile } from '@/services/ai/processing-status/user-file';
 
 type LigneFichier = typeof assetFiles.$inferSelect;
 
 /** Réponse d'une confirmation (nouvelle ou rejouée). */
 function reponseConfirmee(fichiers: LigneFichier[], fileIdInt: number, replay: boolean): NextResponse {
-  const file = fichiers.find((f) => f.id === fileIdInt) ?? fichiers[0];
-  return NextResponse.json({ success: true, file, files: fichiers, ...(replay ? { replay: true } : {}) }, { status: 200 });
+  // Lot 34C : jamais de motif technique d'analyse vers l'application.
+  const projetes = fichiers.map((f) => toUserFile(f));
+  const file = projetes.find((f) => f.id === fileIdInt) ?? projetes[0];
+  return NextResponse.json({ success: true, file, files: projetes, ...(replay ? { replay: true } : {}) }, { status: 200 });
 }
 
 /**

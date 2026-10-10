@@ -42,8 +42,9 @@ import { tryDeterministic } from './deterministic-answer.service';
 import { isPlanAiEligible } from '../registries/capability-registry';
 import type { CascadeTrace } from '../types/contracts';
 import {
+  admissibleSourceTypes,
   answerFromRetrievedSources,
-  fallbackFromSources,
+  fallbackUnderContract,
   nearResultsAnswer,
   type DataAnswerOutcome,
 } from './data-answer.service';
@@ -51,10 +52,11 @@ import { dedupeLogique } from './source-dedupe';
 import { DEFAULT_THRESHOLDS, type CascadeThresholdsLike } from './sufficiency';
 import {
   contradictionAnswer, detectHelpContradiction, fallbackFromHelpSources, helpAnswerFromSources, HELP_EXACT_THRESHOLD,
-  isHelpIntent, type HelpCorpus, type HelpCorpusArticle,
+  HELP_CORPUS_OPEN_BUDGET_MS, HELP_CORPUS_UNAVAILABLE_RESULT, helpCorpusLoadInfo, howToSynthesis,
+  isHelpIntent, type HelpCorpus, type HelpCorpusArticle, type HelpCorpusLoadInfo,
 } from './help-corpus.service';
 import {
-  queriesFromUnderstanding, runHelpCascade, type HelpCascadeResult, type HelpSearcher, type HelpUnderstandOutcome,
+  helpObservability, queriesFromUnderstanding, runHelpCascade, type HelpCascadeResult, type HelpSearcher, type HelpUnderstandOutcome,
 } from './help-cascade';
 import { maskSensitiveText, sensitiveNecessityFor } from './sensitive-data.policy';
 import { MONTHLY_BUDGET_NOTICE } from './budget.service';
@@ -213,7 +215,7 @@ export interface OrchestratorPorts {
    * l'environnement, contexte de page et rôles lus UNE fois par demande).
    * Absent : la cascade interroge `retrieve` requête par requête.
    */
-  openHelpSearch?(input: AssistantRequestInput): Promise<{ search: HelpSearcher; article(id: string): HelpCorpusArticle | null }>;
+  openHelpSearch?(input: AssistantRequestInput): Promise<{ search: HelpSearcher; article(id: string): HelpCorpusArticle | null; corpus?: HelpCorpusLoadInfo }>;
 }
 
 export async function runAssistant(
@@ -921,6 +923,24 @@ export async function runAssistant(
       if (data) {
         trace.attempts.push(...data.attempts);
 
+        // ── Demande d'actions (lot 34) : trace dédiée, route alignée ──────
+        // La famille reconnue porte une intention EXISTANTE (À traiter ou
+        // agenda) : une intention voisine proposée par UNDERSTAND est
+        // ramenée à celle-ci, pour que le contrat de sources et les actions
+        // proposées soient ceux de la réponse.
+        if (data.actionable) {
+          trace.actionable = data.actionable;
+          const intention = data.actionable.intent as VerebonaIntent;
+          if (route.intent !== intention && data.actionable.resolution === 'SUCCESS') {
+            trace.escalationReasons.push(`ROUTING:ACTIONABLE_${data.actionable.intentResolution}`);
+            route = { ...routeForIntent(intention, input.planType, `demande d’actions — ${data.actionable.intentResolution}`), entityHints: route.entityHints };
+            base.route = route;
+            trace.intent = route.intent;
+          }
+          // Demande comprise par la règle (ou par UNDERSTAND) : résolue.
+          if (data.handled && comprehension.status === 'UNKNOWN_INTENT') marquer('COMPLETE', [], comprisParModele ? 'understand' : 'deterministic');
+        }
+
         // ══════════════════════════════════════════════════════════════════
         // AMBIGUÏTÉ → CLARIFICATION (§20)
         //
@@ -964,6 +984,7 @@ export async function runAssistant(
           // Listes et document retrouvé : cartes de résultats (§22.2, §22.3).
           if (CARD_STRATEGIES.has(data.strategy)) base.resultGroups = buildResultGroups(data.sources);
           if (data.documentState) trace.escalationReasons.push(`DOCUMENT:${data.documentState.kind}`);
+          trace.fallbackUsed = false;
           return finalize(base, machine, 'deterministic', data.answer, data.claims, resolvedData, actions, ports, input,
             data.decision.status === 'CONFLICTING' ? 'conflicting' : data.documentState ? 'insufficient' : 'supported');
         }
@@ -1075,11 +1096,25 @@ export async function runAssistant(
       // source de vérité (§5, T2-06) : ni document ni donnée du compte.
       // ════════════════════════════════════════════════════════════════════
       if (machine.state !== 'RETRIEVING') machine.transition('RETRIEVING');
+      // Lot 34G : l'ouverture (corpus à froid + dernier corpus valide en
+      // base) a son propre budget — l'échéance de recherche (3 s) l'
+      // interrompait avant le terme du téléchargement. Échec d'ouverture :
+      // corpus INDISPONIBLE tracé avec son code — jamais un autre chercheur
+      // qui se dirait « corpus disponible » (le repli muet du lot 33).
+      let echecOuverture: 'HELP_CORPUS_TIMEOUT' | 'HELP_CORPUS_UNAVAILABLE' | null = null;
       const ouvert = ports.openHelpSearch
-        ? await withDeadline(ports.openHelpSearch(input), retrievalDeadline()).catch(() => null)
+        ? await withDeadline(ports.openHelpSearch(input), Math.min(deadline, Date.now() + Math.max(cfg.retrievalTimeoutMs || 3000, HELP_CORPUS_OPEN_BUDGET_MS)))
+          .catch((e) => {
+            echecOuverture = (e as Error)?.message === 'REQUEST_TIMEOUT' ? 'HELP_CORPUS_TIMEOUT' : 'HELP_CORPUS_UNAVAILABLE';
+            console.warn(`[verebona] ${echecOuverture} — ouverture de la recherche d’aide impossible (${(e as Error)?.message}).`);
+            return null;
+          })
         : null;
       articleAide = ouvert?.article ?? null;
-      const chercher: HelpSearcher = ouvert?.search ?? (async (queries, stage) => {
+      const indisponible: HelpSearcher | null = echecOuverture
+        ? async () => ({ ...HELP_CORPUS_UNAVAILABLE_RESULT, corpus: { ...helpCorpusLoadInfo(null), diagnostic: echecOuverture } })
+        : null;
+      const chercher: HelpSearcher = ouvert?.search ?? indisponible ?? (async (queries, stage) => {
         // Sans port dédié : `retrieve` requête par requête (même contrat).
         const lots = await Promise.all(queries.map(async (q) => {
           const r = await withDeadline(ports.retrieve(route, { ...input, message: q }), retrievalDeadline());
@@ -1155,6 +1190,10 @@ export async function runAssistant(
         if (contradiction) {
           console.warn(`[verebona][alerte-éditoriale] CONTRADICTION ${contradiction.articles[0]} / ${contradiction.articles[1]} (${contradiction.unit}) — correction documentaire à prévoir (T2-04).`);
           trace.escalationReasons.push(`HELP_CONTRADICTION:${contradiction.articles.join('|')}`);
+          // Lot 34G : motif tracé comme tel (le support est alors proposé).
+          trace.fallbackReason = 'HELP_CONTRADICTION';
+          trace.help.fallbackReason = 'HELP_CONTRADICTION';
+          trace.help.observability = { ...helpObservability(trace.help, trace.help.observability?.candidateCount ?? 0), articleId: null };
           const actions = await ports.resolveActions(route, input, sources);
           done('template', 'help.contradiction', 'CONFLICTING', sources.length);
           return finalize(base, machine, 'deterministic', contradictionAnswer(contradiction), [], resolved, actions, ports, input, 'conflicting');
@@ -1167,10 +1206,19 @@ export async function runAssistant(
         const exact = aide.bestScore >= HELP_EXACT_THRESHOLD;
         const redactionPossible = aiActif && comprehension.status === 'COMPLETE' && route.aiEligible
           && ports.generateWithAI != null && budget.canCall() && !budgetMensuelAtteint;
-        if (exact || !redactionPossible) {
+        // Lot 34G (§2 du ticket) : procédure SIMPLE — action comprise avec
+        // certitude (ajouter un document, créer un bien, une échéance) et
+        // article qui porte la procédure → synthèse DÉTERMINISTE en 1-2
+        // phrases, jamais un appel IA pour la raccourcir. Une question
+        // d'explication (« comment fonctionne… ») garde la rédaction.
+        const meilleureId = String(sources[0].meta?.articleId ?? '');
+        const syntheseCourte = route.intent === 'PRODUCT_HELP_HOW_TO' && Boolean(aide.concept?.certain)
+          && howToSynthesis(sources, articleAide?.(meilleureId) ?? null) !== null;
+        if (exact || !redactionPossible || syntheseCourte) {
           const actions = await ports.resolveActions(route, input, sources);
-          if (!exact) trace.escalationReasons.push('HELP:N6:ANSWER_NOT_AVAILABLE');
-          done('retrieval', exact ? 'help.exact_article' : 'help.article_excerpt', 'SUFFICIENT_RETRIEVAL', sources.length);
+          if (!exact && !syntheseCourte) trace.escalationReasons.push('HELP:N6:ANSWER_NOT_AVAILABLE');
+          if (!exact && syntheseCourte) trace.escalationReasons.push('HELP:N6:SHORT_SYNTHESIS');
+          done('retrieval', exact ? 'help.exact_article' : syntheseCourte ? 'help.short_synthesis' : 'help.article_excerpt', 'SUFFICIENT_RETRIEVAL', sources.length);
           const meilleure = String(sources[0].meta?.articleId ?? '');
           return finalize(base, machine, 'classic_search', helpAnswerFromSources(sources, route.intent, articleAide?.(meilleure) ?? null),
             [], resolved, actions, ports, input, 'supported');
@@ -1221,7 +1269,10 @@ export async function runAssistant(
         // récupérable, « Réessayer » reste possible) ; sinon, l'erreur suit
         // son cours.
         // ══════════════════════════════════════════════════════════════════
-        const deja = data?.contextSources ?? [];
+        // Lot 34 : seules les sources du contrat de l'intention sont rendues
+        // (jamais un document pour une demande d'actions ou d'échéances).
+        const contrat = admissibleSourceTypes(route.intent);
+        const deja = (data?.contextSources ?? []).filter((x) => !contrat || contrat.includes(x.type));
         if ((e as Error)?.message !== 'REQUEST_TIMEOUT' || deja.length === 0) throw e;
         machine.fail(false);
         trace.escalationReasons.push('TIMEOUT:PARTIAL_RESULTS');
@@ -1229,8 +1280,10 @@ export async function runAssistant(
         const resolvedPartiel = await ports.resolveSources(partiel, input.accountId).catch(() => []);
         const actionsPartiel = await ports.resolveActions(route, input, partiel).catch(() => []);
         done('fallback', 'timeout.partial', 'INSUFFICIENT', partiel.length);
+        trace.fallbackUsed = true;
+        const titresPartiels = [...new Set(partiel.map((x) => x.title))].slice(0, 5).map((t) => `« ${t} »`);
         const r = await finalize(base, machine, 'classic_search',
-          `La recherche complète a pris trop de temps. Voici ce que j’ai déjà trouvé : ${fallbackFromSources(partiel)}`,
+          `La recherche complète a pris trop de temps. Éléments déjà trouvés : ${titresPartiels.join(', ')}.`,
           [], resolvedPartiel, actionsPartiel, ports, input, 'insufficient');
         // État récupérable, mais PAS de `error` dans la réponse : le client
         // remplacerait le texte par le libellé d'erreur et perdrait les
@@ -1360,6 +1413,26 @@ export async function runAssistant(
     // Compréhension impossible et rien trouvé : le dire (8b §K, AC17).
     const nonCompris = comprehensionEchouee && sources.length === 0 && !isHelpIntent(route.intent);
     if (nonCompris) trace.diagnostic = 'UNDERSTANDING_FAILED';
+    // ── Repli sous contrat (lot 34) ─────────────────────────────────────────
+    // Intention à type de réponse connu : aucune source hors contrat n'est
+    // présentée, et jamais « ces éléments semblent liés » (substitution
+    // inter-domaines interdite) — résultats proches du BON type, ou « rien
+    // trouvé ». Intention inconnue : repli générique, tracé comme tel.
+    const chronologie = plan?.kind === 'timeline' && Boolean(plan.timeline?.events.length);
+    const sousContrat = !nonCompris && !isHelpIntent(route.intent) && !chronologie && data?.documentState?.kind !== 'FOUND_WITHOUT_INFO'
+      ? fallbackUnderContract(route.intent, sources, input.message, isPlanAiEligible(input.planType))
+      : null;
+    if (sousContrat) {
+      if (sousContrat.dropped > 0) {
+        const admis = new Set(sousContrat.sources.map((x) => x.id));
+        sources = sousContrat.sources;
+        resolved = resolved.filter((x) => admis.has(x.id));
+        trace.escalationReasons.push(`FALLBACK:OUT_OF_CONTRACT_DROPPED:${sousContrat.dropped}`);
+      }
+      trace.fallbackUsed = sousContrat.fallbackUsed;
+      trace.escalationReasons.push(`FALLBACK:${sousContrat.fallbackReason}`);
+      trace.fallbackReason = sousContrat.fallbackReason;
+    }
     const repli = nonCompris
       ? diagnosticMessage('UNDERSTANDING_FAILED')
       : isHelpIntent(route.intent)
@@ -1373,7 +1446,7 @@ export async function runAssistant(
         ? timelineAnswer(plan)
         : data?.documentState?.kind === 'FOUND_WITHOUT_INFO'
         ? foundWithoutInfoMessage(data.documentState.title)
-        : fallbackFromSources(sources);
+        : sousContrat!.answer;
     if (data?.documentState?.kind === 'FOUND_WITHOUT_INFO') trace.escalationReasons.push('DOCUMENT:FOUND_WITHOUT_INFO');
     // Chronologie planifiée servie sans modèle : liste structurée aussi.
     if (!isHelpIntent(route.intent) && plan?.kind === 'timeline' && plan.timeline?.events.length) base.events = planTimelineEvents(plan);
@@ -1429,7 +1502,7 @@ export async function runAssistant(
     }
     if (aideSansSource) {
       trace.fallbackReason = aideCascade!.trace.fallbackReason;
-      trace.escalationReasons.push(`HELP:FALLBACK:${aideCascade!.trace.fallbackReason ?? 'NO_RELIABLE_SOURCE'}`);
+      trace.escalationReasons.push(`HELP:FALLBACK:${aideCascade!.trace.fallbackReason ?? 'NO_RELEVANT_HELP_ARTICLE'}`);
     }
     done('fallback', aideSansSource ? 'fallback.help' : 'fallback.sources', 'INSUFFICIENT', sources.length);
     return finalize(base, machine, resolved.length ? 'classic_search' : 'fallback', answer, [], resolved, actions, ports, input);
@@ -1756,6 +1829,8 @@ const CARD_STRATEGIES = new Set<string>([
   'retrieval.document_status',
   // Statut d'un document en question directe et exports disponibles (§12.1, §12.2).
   'structured.document_status', 'structured.exports',
+  // Lot 34 : À traiter et échéances d'une demande d'actions.
+  'structured.actionable',
 ]);
 
 /** Lot 32 : cible exigée, aucun bien disponible à proposer. */

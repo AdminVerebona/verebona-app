@@ -9,6 +9,7 @@ import {
 } from '@/db/schema';
 import { eq, count, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
+import { buildReferralUrl } from '@/services/referral/referral-invitation.service';
 
 /**
  * Génère un code de parrainage de 8 caractères alphanumériques (uppercase).
@@ -114,14 +115,12 @@ export async function GET(request: NextRequest) {
     const MOIS_PAR_PARRAINAGE = 1;
     const monthsEarned = validatedCount * MOIS_PAR_PARRAINAGE;
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-
     return NextResponse.json({
       eligible: true,
       link: {
         id: link.id,
         code: link.code,
-        url: `${appUrl}/r/${link.code}`,
+        url: buildReferralUrl(link.code),
         createdAt: link.createdAt,
       },
       stats: {
@@ -170,10 +169,9 @@ export async function POST(request: NextRequest) {
       .limit(1);
 
     if (existing) {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
       return NextResponse.json({
         code: existing.code,
-        url: `${appUrl}/r/${existing.code}`,
+        url: buildReferralUrl(existing.code),
         createdAt: existing.createdAt,
       });
     }
@@ -209,11 +207,9 @@ export async function POST(request: NextRequest) {
       })
       .returning();
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-
     return NextResponse.json({
       code: created.code,
-      url: `${appUrl}/r/${created.code}`,
+      url: buildReferralUrl(created.code),
       createdAt: created.createdAt,
     });
   } catch (error) {

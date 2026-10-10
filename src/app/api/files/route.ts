@@ -77,6 +77,9 @@ export async function GET(request: NextRequest) {
       .limit(limit + 1);
 
     const paginatedResponse = buildPaginationResponse(results, limit);
+    // Lot 34C : motif technique d'analyse retiré, statut fonctionnel ajouté.
+    const { toUserFiles } = await import('@/services/ai/processing-status/processing-status.service');
+    const fichiersProjetes = await toUserFiles(paginatedResponse.data);
 
     // URL signées des images (configuration S3 canonique, APP-PERF-26).
     // Un échec de signature n'est plus masqué : il est journalisé (typé, sans
@@ -84,7 +87,7 @@ export async function GET(request: NextRequest) {
     // miniature autorisée (APP-PERF-06/27), à préférer pour les listes.
     let signatureKo: string | null = null;
     const itemsWithPreviews = await Promise.all(
-      paginatedResponse.data.map(async (file: any) => {
+      fichiersProjetes.map(async (file: any) => {
         const isImage = file.mimeType?.startsWith('image/');
         let previewUrl: string | null = null;
         let previewError: string | undefined;

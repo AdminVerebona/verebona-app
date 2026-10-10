@@ -542,10 +542,12 @@ describe('§8.2 — suggestions : page > compte > générique', () => {
     expect(suggestionsForRoute('/documents').map((s) => s.id)).toEqual(suggestionsForRoute('/documents', null).map((s) => s.id));
   });
   it('documents en erreur et exports prêts : proposés après les suggestions de la page', () => {
+    // Lot 34 : « Quelles échéances arrivent bientôt ? » exige une échéance ;
+    // au plus 3 suggestions.
     const s = suggestionsForRoute('/agenda', { state: { ...vide, documentsFailed: 2, exportsReady: 1 } });
-    expect(s.slice(0, 2).map((x) => x.id)).toEqual(['agenda_next', 'agenda_sync']);
-    expect(s.map((x) => x.id)).toEqual(expect.arrayContaining(['state_failed', 'state_exports']));
-    expect(s.length).toBeLessThanOrEqual(4);
+    expect(s.map((x) => x.id)).toEqual(['agenda_sync', 'state_failed', 'state_exports']);
+    const t = suggestionsForRoute('/agenda', { state: { ...vide, deadlinesSoon: 1, documentsFailed: 2, exportsReady: 1 } });
+    expect(t.map((x) => x.id)).toEqual(['agenda_next', 'agenda_sync', 'state_failed']);
   });
   it('rien en attente : aucune suggestion d’état', () => {
     expect(suggestionsForRoute('/agenda', { state: vide }).some((x) => x.id.startsWith('state_'))).toBe(false);

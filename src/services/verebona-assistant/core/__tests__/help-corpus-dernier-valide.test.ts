@@ -48,6 +48,9 @@ async function relire() {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   process.env.NEXT_PUBLIC_APP_ENV = 'preprod';
+  // Lot 34G : site public de l'environnement (sans lui, une préproduction
+  // refuse de lire le Centre d'aide de production — HELP2-04).
+  process.env.NEXT_PUBLIC_PUBLIC_SITE_URL = 'https://preprod.verebona.fr';
   resetHelpCorpusCacheForTests();
   memoire.clear();
   vi.mocked(store.write).mockClear();
@@ -61,6 +64,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   setHelpCorpusStoreForTests(null);
   delete process.env.NEXT_PUBLIC_APP_ENV;
+  delete process.env.NEXT_PUBLIC_PUBLIC_SITE_URL;
 });
 
 describe('PUB-01 — dernier corpus valide', () => {

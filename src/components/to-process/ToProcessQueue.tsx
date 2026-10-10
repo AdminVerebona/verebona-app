@@ -276,6 +276,8 @@ export function ToProcessQueue() {
                 onOpenTarget={openTarget}
                 busy={busyId === action.publicId}
                 focused={focusId === action.publicId}
+                // Lot 34, point 11 : vignette du document / icône de la cible.
+                visual
               />
             ) : (
               <ActionRow

@@ -56,6 +56,8 @@ export interface ActionView {
   target: {
     label: string;
     mimeType?: string | null;
+    /** Lot 34, point 11 — miniature signée du document (vue Cartes). */
+    thumbnailUrl?: string | null;
     publicId?: string | null;
     assetName?: string | null;
     /** Fournisseur résolu (cible SUPPLIER) — ouvre `/fournisseurs/[id]`. */
@@ -78,8 +80,7 @@ interface Handlers {
 /** Ancre DOM d'une carte, par l'ID de l'action — jamais par son libellé. */
 export const todoCardDomId = (publicId: string) => `todo-${publicId}`;
 
-function TargetIcon({ action }: { action: ActionView }) {
-  const className = 'h-4 w-4 text-muted-foreground shrink-0';
+function TargetIcon({ action, className = 'h-4 w-4 text-muted-foreground shrink-0' }: { action: ActionView; className?: string }) {
   if (action.targetType === 'DOCUMENT') {
     return action.target.mimeType?.startsWith('image/')
       ? <ImageIcon className={className} aria-hidden />
@@ -89,7 +90,46 @@ function TargetIcon({ action }: { action: ActionView }) {
   if (action.targetType === 'EQUIPMENT') return <Wrench className={className} aria-hidden />;
   if (action.targetType === 'ROOM') return <LayoutGrid className={className} aria-hidden />;
   if (action.targetType === 'AGENDA_ITEM') return <Calendar className={className} aria-hidden />;
+  // Icône générique (fournisseur, cible inconnue).
   return <Package className={className} aria-hidden />;
+}
+
+/**
+ * Visuel à droite de la carte (lot 34, point 11).
+ *
+ * Document : sa miniature SERVEUR (jamais l'original), fournie par la réponse
+ * de la file (`target.thumbnailUrl`, URL signée stable pendant l'heure — mêmes
+ * vignettes que l'accueil et « Mes documents ») : aucune requête par carte vers
+ * l'application, chargement paresseux, décodage asynchrone. URL devenue
+ * illisible (onglet resté ouvert) : un essai par la route autorisée
+ * `/api/files/:id/thumbnail`, puis l'icône — comme `RecentDocPreview`.
+ * Sans miniature : l'icône de la cible (échéance → agenda, bien, équipement,
+ * pièce…), sinon une icône générique. Plus petit sur mobile.
+ */
+export function CardVisual({ action }: { action: ActionView }) {
+  const [step, setStep] = useState<0 | 1 | 2>(0);
+  const url = action.targetType === 'DOCUMENT' ? action.target.thumbnailUrl ?? null : null;
+  const src = !url ? null : step === 0 ? url : step === 1 ? `/api/files/${action.targetId}/thumbnail` : null;
+  if (src) {
+    return (
+      <span data-card-visual="thumbnail" className="relative block h-14 w-11 shrink-0 overflow-hidden rounded border bg-white shadow-sm sm:h-[88px] sm:w-[68px]">
+        {/* eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente */}
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setStep((x) => (x === 0 ? 1 : 2))}
+          className="absolute inset-0 h-full w-full object-cover object-top"
+        />
+      </span>
+    );
+  }
+  return (
+    <span data-card-visual="icon" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border bg-muted/40 sm:h-14 sm:w-14">
+      <TargetIcon action={action} className="h-5 w-5 text-muted-foreground sm:h-6 sm:w-6" />
+    </span>
+  );
 }
 
 function Badges({ action }: { action: ActionView }) {
@@ -215,14 +255,30 @@ function Source({ action, onOpenTarget }: { action: ActionView; onOpenTarget: Ha
   );
 }
 
-export function ActionCard({ action, focused, ...handlers }: { action: ActionView } & Handlers) {
+export function ActionCard({ action, focused, visual = false, ...handlers }: { action: ActionView; visual?: boolean } & Handlers) {
   return (
     <article
       id={todoCardDomId(action.publicId)}
       data-todo-id={action.publicId}
       aria-current={focused ? 'true' : undefined}
-      className={`scroll-mt-24 rounded-lg border bg-card p-4 shadow-sm focus-within:ring-2 focus-within:ring-ring ${focused ? 'ring-2 ring-primary' : ''}`}
+      className={`scroll-mt-24 rounded-lg border bg-card p-4 shadow-sm focus-within:ring-2 focus-within:ring-ring ${visual ? 'flex items-start gap-3 sm:gap-4' : ''} ${focused ? 'ring-2 ring-primary' : ''}`}
     >
+      {visual ? (
+        <>
+          <div className="min-w-0 flex-1"><CardBody action={action} {...handlers} /></div>
+          {/* Lot 34, point 11 : vignette ou icône de la cible, à droite. */}
+          <CardVisual action={action} />
+        </>
+      ) : (
+        <CardBody action={action} {...handlers} />
+      )}
+    </article>
+  );
+}
+
+function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
+  return (
+    <>
       {/* §8.4 : la question est l'élément dominant. */}
       <h3 className="text-sm font-medium leading-snug">{action.question}</h3>
 
@@ -248,7 +304,7 @@ export function ActionCard({ action, focused, ...handlers }: { action: ActionVie
       <div className="mt-2">
         <Source action={action} onOpenTarget={handlers.onOpenTarget} />
       </div>
-    </article>
+    </>
   );
 }
 

@@ -69,6 +69,9 @@ export async function GET(req: NextRequest) {
       targetType,
       assetIds: assetIds.length > 0 ? assetIds : undefined,
     },
+    // Lot 34, point 11 : vignettes des documents (vue Cartes) dans la même
+    // réponse — une requête pour toute la file, URL signées mémorisées.
+    withThumbnails: true,
   });
 
   return NextResponse.json(page, {

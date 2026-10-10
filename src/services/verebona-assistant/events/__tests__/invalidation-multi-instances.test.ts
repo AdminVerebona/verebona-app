@@ -245,6 +245,9 @@ describe('§25.7 — HELP_ENTRY_PUBLISHED : nouvelle version du corpus d’aide 
     const corpus = (version: string) => ({ schema: 'verebona-help-t2-v1', version, environment: 'test', articles: [] });
     const env = process.env.NEXT_PUBLIC_APP_ENV;
     process.env.NEXT_PUBLIC_APP_ENV = 'test';
+    // Lot 34G : site public de l'environnement (local).
+    const site = process.env.NEXT_PUBLIC_PUBLIC_SITE_URL;
+    process.env.NEXT_PUBLIC_PUBLIC_SITE_URL = 'http://localhost:3000';
     process.env.VEREBONA_ASSISTANT_HELP_CACHE_TTL_SECONDS = '1';
     let v = 'v1';
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(corpus(v)), { status: 200 }));
@@ -260,6 +263,7 @@ describe('§25.7 — HELP_ENTRY_PUBLISHED : nouvelle version du corpus d’aide 
     now.mockRestore();
     fetchMock.mockRestore();
     process.env.NEXT_PUBLIC_APP_ENV = env;
+    if (site === undefined) delete process.env.NEXT_PUBLIC_PUBLIC_SITE_URL; else process.env.NEXT_PUBLIC_PUBLIC_SITE_URL = site;
     delete process.env.VEREBONA_ASSISTANT_HELP_CACHE_TTL_SECONDS;
     resetAssistantConfigForTests();
   });

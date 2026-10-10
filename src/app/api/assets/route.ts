@@ -323,6 +323,12 @@ export async function POST(request: NextRequest) {
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
     // §31.7 : attendu (ne lève jamais) — l'invalidation précède la réponse.
     await emitBusinessEvent({ type: 'ASSET_CREATED', accountId: session.currentAccountId, entityId: newAsset[0]?.id ?? null });
+    // Lot 34E : nouveau bien → la réconciliation continue T3 reprend les
+    // documents et faits encore ouverts du compte (temporisée, dédupliquée).
+    if (session.currentAccountId && newAsset[0]?.id) {
+      const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
+      notifyCoherenceEvent(session.currentAccountId, { event: 'asset_updated', objectType: 'asset', objectId: newAsset[0].id });
+    }
     return NextResponse.json(newAsset[0], { status: 201 });
   } catch (error) {
     console.error('POST error:', error);

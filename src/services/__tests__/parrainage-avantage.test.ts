@@ -34,7 +34,10 @@ const sansCommentaires = (source: string) =>
 // planifiée interne ; la route ne fait plus que l'appeler.
 const CRON = sansCommentaires(read('src/services/referral/referral-rewards.job.ts'));
 const SIGNUP = sansCommentaires(read('src/app/(auth)/signup/SignupForm.tsx'));
-const INVITATION = sansCommentaires(read('src/app/api/referral/send-email/route.ts'));
+// Lot 34I : le texte de l'invitation est le gabarit REFERRAL_INVITATION
+// (migration 0301, modifiable dans le BO), plus du HTML dans la route.
+const INVITATION = sansCommentaires(read('src/app/api/referral/send-email/route.ts'))
+  + read('src/db/migrations/0301_referral_invitation_email_template.sql').replace(/''/g, "'");
 
 describe('la règle : le parrain seul est récompensé', () => {
   it('l’avantage n’est accordé qu’au compte du parrain', () => {

@@ -181,6 +181,9 @@ scenario('L32-A', 'Immatriculation d’un vélo, mascotte à deux niveaux, compt
       proposals: [{ value: 'GK-482-RT', label: 'GK-482-RT', confidence: 0.6 }, { value: 'AB-123-CD', label: 'AB-123-CD', confidence: 1, isCurrentValue: true }],
     });
     await upsertAction({ accountId: compte.id, targetType: 'ASSET', targetId: maison.id, fieldKey: 'acquisitionPrice', actionKind: 'ARBITRATE', ruleCode: 'DATA-ACQUISITION-PRICE', proposals: [{ value: 320000, label: '320 000 €', confidence: 0.6 }] });
+    // Lot 34 (MASC3) : la mascotte n'affiche que les DO_FIRST — les deux
+    // actions du scénario le sont (la priorité vient sinon du catalogue).
+    await sql`UPDATE to_process_actions SET priority = 'DO_FIRST' WHERE account_id = ${compte.id}`;
 
     const { getMascotPresentation } = await import('@/services/home/mascot/mascot.service');
     const r = await routes();
@@ -208,7 +211,9 @@ scenario('L32-A', 'Immatriculation d’un vélo, mascotte à deux niveaux, compt
 
     // Création d'une action : les trois lectures la voient ensemble.
     await upsertAction({ accountId: compte.id, targetType: 'ASSET', targetId: clio.id, fieldKey: 'acquisitionPrice', actionKind: 'ARBITRATE', ruleCode: 'DATA-ACQUISITION-PRICE', proposals: [{ value: 18500, label: '18 500 €', confidence: 0.6 }] });
-    expect((await getMascotPresentation(compte.id, 'display')).todo!.total).toBe(2);
+    const recree = await getMascotPresentation(compte.id, 'display');
+    expect(recree.todo!.total).toBe(2); // total de la file (jamais affiché, MASC3)
+    expect(recree.todo!.items.every((i) => i.priority === 'DO_FIRST')).toBe(true);
     expect(await r.pastille()).toBe(2);
     expect((await r.page()).total).toBe(2);
   });

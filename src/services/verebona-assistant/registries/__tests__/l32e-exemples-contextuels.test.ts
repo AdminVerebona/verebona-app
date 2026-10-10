@@ -42,7 +42,7 @@ describe('AC8.1 — jamais « ce bien » ni « sa fiche »', () => {
 
 describe('AC8.2 — fiche d’un bien : le bien est nommé', () => {
   it('« Quels sont les documents de Cupra ? », « Quelles sont les prochaines échéances de Cupra ? »', () => {
-    const l = suggestionsForRoute('/assets/42', { state: vide, pageAsset: { name: 'Cupra', documents: 2 } }).map((s) => s.label);
+    const l = suggestionsForRoute('/assets/42', { state: vide, pageAsset: { name: 'Cupra', documents: 2, deadlines: 1 } }).map((s) => s.label);
     expect(l.slice(0, 3)).toEqual([
       'Quels sont les documents de Cupra ?',
       'Quelles sont les prochaines échéances de Cupra ?',
@@ -56,11 +56,11 @@ describe('AC8.2 — fiche d’un bien : le bien est nommé', () => {
     expect(deBien('Appartement d’Annecy')).toBe('d’Appartement d’Annecy');
     expect(deBien('Écurie')).toBe('d’Écurie');
     expect(deBien('Peugeot 3008')).toBe('de Peugeot 3008');
-    expect(suggestionsForRoute('/assets/7', { pageAsset: { name: 'Appartement d’Annecy', documents: 0 } })[0].label)
+    expect(suggestionsForRoute('/assets/7', { pageAsset: { name: 'Appartement d’Annecy', documents: 0, deadlines: 2 } })[0].label)
       .toBe('Quelles sont les prochaines échéances d’Appartement d’Annecy ?');
   });
   it('bien sans document : pas de question sur ses documents (réponse vide), échéances et aide à la place', () => {
-    const l = suggestionsForRoute('/assets/42', { pageAsset: { name: 'Cupra', documents: 0 } }).map((s) => s.id);
+    const l = suggestionsForRoute('/assets/42', { pageAsset: { name: 'Cupra', documents: 0, deadlines: 1 } }).map((s) => s.id);
     expect(l).not.toContain('asset_docs');
     expect(l.slice(0, 3)).toEqual(['asset_deadlines', 'asset_complete', 'asset_add_doc']);
   });
@@ -68,7 +68,8 @@ describe('AC8.2 — fiche d’un bien : le bien est nommé', () => {
     const l = suggestionsForRoute('/assets/42', { state: vide, pageAsset: null });
     expect(l.map((s) => s.id)).not.toContain('asset_docs');
     expect(l.map((s) => s.id)).not.toContain('asset_deadlines');
-    expect(l.length).toBeGreaterThanOrEqual(3);
+    // Lot 34 : aucun remplissage — l'aide de la page seulement.
+    expect(l.map((s) => s.id)).toEqual(['asset_complete', 'asset_add_doc']);
   });
 });
 
@@ -80,7 +81,7 @@ describe('AC8.3 — hors fiche : général, ou un vrai bien du compte', () => {
     }
   });
   it('accueil, documents, biens : le bien du compte est nommé (documents seulement s’il en a)', () => {
-    const ctx = { state: vide, accountAsset: { name: 'Polo', documents: 2 } };
+    const ctx = { state: vide, accountAsset: { name: 'Polo', documents: 2, deadlines: 1 } };
     expect(suggestionsForRoute('/accueil', ctx).map((s) => s.label)).toContain('Quels sont les documents de Polo ?');
     expect(suggestionsForRoute('/documents', ctx).map((s) => s.label)).toContain('Quels sont les documents de Polo ?');
     expect(suggestionsForRoute('/assets', ctx).map((s) => s.label)).toContain('Quelles sont les prochaines échéances de Polo ?');
@@ -94,7 +95,7 @@ describe('AC8.4 — exemples dépendant des données', () => {
     for (const r of ROUTES) {
       for (const s of suggestionsForRoute(r)) {
         const e = [...SUGGESTIONS, ...ACCOUNT_STATE_SUGGESTIONS].find((x) => x.id === s.id)!;
-        expect(e.when, `${r} ${s.id}`).toBeUndefined();
+        expect(e.requires, `${r} ${s.id}`).toBeUndefined();
         expect(e.asset, `${r} ${s.id}`).toBeUndefined();
       }
     }
@@ -108,12 +109,12 @@ describe('AC8.4 — exemples dépendant des données', () => {
     expect(suggestionsForRoute('/documents', { state: vide }).map((s) => s.id)).not.toContain('docs_unlinked');
     expect(suggestionsForRoute('/documents', { state: { ...vide, documentsUnlinked: 3 } })[0].id).toBe('docs_unlinked');
   });
-  it('3 à 4 exemples, sans doublon, sur chaque page', () => {
+  // Lot 34 : 3 est un MAXIMUM — 0, 1 ou 2 exemples sont une réponse valide.
+  it('0 à 3 exemples, sans doublon, sur chaque page', () => {
     for (const r of ROUTES) {
       for (const c of [undefined, { state: vide }, { state: { ...vide, toProcessPending: 1, deadlinesSoon: 1, documentsFailed: 1, exportsReady: 1 }, accountAsset: { name: 'Polo', documents: 1 } }]) {
         const l = suggestionsForRoute(r, c).map((s) => s.label);
-        expect(l.length, r).toBeGreaterThanOrEqual(3);
-        expect(l.length, r).toBeLessThanOrEqual(4);
+        expect(l.length, r).toBeLessThanOrEqual(3);
         expect(new Set(l).size, r).toBe(l.length);
       }
     }
@@ -141,10 +142,10 @@ describe('AC8.5 — noms citables sans ambiguïté', () => {
       { id: 4, name: 'Maison Lyon', documents: 5 },
     ];
     expect(pickSuggestionAssets(biens, 1)).toEqual({ pageAsset: null, accountAsset: null });
-    expect(pickSuggestionAssets(biens, 4)).toEqual({ pageAsset: { name: 'Maison Lyon', documents: 5 }, accountAsset: null });
+    expect(pickSuggestionAssets(biens, 4)).toEqual({ pageAsset: { id: 4, name: 'Maison Lyon', documents: 5 }, accountAsset: null });
     expect(pickSuggestionAssets(biens, 99)).toEqual({ pageAsset: null, accountAsset: null });
-    expect(pickSuggestionAssets(biens, null).accountAsset).toEqual({ name: 'Maison Lyon', documents: 5 });
-    expect(pickSuggestionAssets([biens[2]], null).accountAsset).toEqual({ name: 'Polo', documents: 0 });
+    expect(pickSuggestionAssets(biens, null).accountAsset).toEqual({ id: 4, name: 'Maison Lyon', documents: 5 });
+    expect(pickSuggestionAssets([biens[2]], null).accountAsset).toEqual({ id: 3, name: 'Polo', documents: 0 });
     expect(pickSuggestionAssets([], null).accountAsset).toBeNull();
   });
   it('identifiant de fiche lu dans la route', () => {

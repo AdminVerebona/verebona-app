@@ -392,6 +392,9 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     // Analyse antérieure à l'adresse de la fiche : T1 n'a rien rattaché ; puis travail perdu.
     await sql`UPDATE assets SET key_characteristics = NULL WHERE id = ${maison.id}`;
     const { replay } = await analyser(compte, doc.id, sortie({ texte: ['Chantier au 12 rue Exemple, 69003 Lyon'] }), { drain: false });
+    // Lot 34F : l'adresse non structurée déclenche, PENDANT l'analyse, la
+    // réparation ciblée de son unité (passe bornée) — comptée ici, avant le rattrapage.
+    const appelsT1 = replay.calls.filter((c) => c.operationCode === 't1_analyze_document').length;
     await sql`DELETE FROM ai_job_queue WHERE treatment = 'T3' AND target_type = 'document' AND target_id = ${String(doc.id)}`;
     await sql`DELETE FROM document_asset_resolutions WHERE file_id = ${doc.id}`;
     await sql`UPDATE assets SET key_characteristics = ${JSON.stringify({ address1: '12 rue Exemple', postalCode: '69003', city: 'Lyon' })} WHERE id = ${maison.id}`;
@@ -403,7 +406,8 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     expect(await sweepDocumentsWithoutPrimary({ accountId: compte.id })).toBe(0);
     await drainQueues();
     expect(await liens(doc.id)).toEqual([[maison.id, 'PRIMARY', 'AI', 1]]);
-    expect(replay.calls.filter((c) => c.operationCode === 't1_analyze_document')).toHaveLength(1);
+    // Le rattrapage ne relance jamais T1 (ni analyse, ni réparation).
+    expect(replay.calls.filter((c) => c.operationCode === 't1_analyze_document')).toHaveLength(appelsT1);
     // Résolu : plus jamais repris.
     expect(await sweepDocumentsWithoutPrimary({ accountId: compte.id })).toBe(0);
   });

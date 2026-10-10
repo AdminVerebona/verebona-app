@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from '@/hooks/useSession';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
@@ -104,7 +104,14 @@ function CalendarTutorial() {
   );
 }
 
-export default function InformationsTab() {
+/**
+ * `beforeDangerZone` (lot 34, point 10) : blocs de la page « Mon compte »
+ * (Gestion des notifications, rétractation, données, informations légales)
+ * rendus AVANT la « Zone dangereuse », qui reste le dernier bloc de la page.
+ * Enveloppe à clé (`display: contents`) : ces blocs gardent leur état
+ * quand le squelette de chargement laisse place au contenu.
+ */
+export default function InformationsTab({ beforeDangerZone }: { beforeDangerZone?: ReactNode } = {}) {
   const router = useRouter();
   const { user: sessionUser, isLoading: sessionLoading, refetch: refetchSession } = useSession({ required: true });
   
@@ -309,9 +316,10 @@ export default function InformationsTab() {
 
   if (sessionLoading || loading) {
     return (
-      <div className="space-y-6">
+      <div className="flex w-full max-w-full flex-col gap-6">
         <Skeleton className="h-[200px] w-full" />
         <Skeleton className="h-[300px] w-full" />
+        {beforeDangerZone && <div key="avant-zone-dangereuse" className="contents">{beforeDangerZone}</div>}
       </div>
     );
   }
@@ -486,7 +494,11 @@ export default function InformationsTab() {
       {/* Historique des modifications automatiques IA */}
       <AiHistoryBlock />
 
-      {/* Zone dangereuse */}
+      {/* Lot 34 (point 10) : Gestion des notifications et blocs suivants, puis
+          la Zone dangereuse, en dernier. */}
+      {beforeDangerZone && <div key="avant-zone-dangereuse" className="contents">{beforeDangerZone}</div>}
+
+      {/* Zone dangereuse — dernier bloc de « Mon compte » */}
       <DeleteAccountCard
         duoRole={sessionUser?.duoRole ?? null}
         hasPaidSubscription={Boolean(subscription?.has_stripe_subscription)}

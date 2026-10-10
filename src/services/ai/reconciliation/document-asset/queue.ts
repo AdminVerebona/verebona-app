@@ -20,9 +20,18 @@
  * Lot 32C : une décision T3 n'est réutilisable que si les entrées
  * pertinentes ET la version du moteur (`DOCUMENT_ASSET_RESOLUTION_VERSION`)
  * sont inchangées — une ancienne abstention (version antérieure ou NULL),
- * une nouvelle analyse T1 ou un identifiant canonique de bien modifié
- * (journal 0274, empreinte comparée) la rendent obsolète ; un vrai cas
- * ambigu de la version courante n'est jamais rejoué d'heure en heure.
+ * une nouvelle analyse T1 la rendent obsolète ; un vrai cas ambigu de la
+ * version courante n'est jamais rejoué d'heure en heure.
+ *
+ * Lot 34E (réconciliation CONTINUE) : NO_CANDIDATE, ABSTAINED et MULTI_ASSET
+ * ne sont jamais définitifs. Toute évolution de la connaissance du compte
+ * (journal 0292 : bien créé / renommé / alias / catégorie / identifiant,
+ * équipement, fait, extraction, relation, « À traiter » résolu…) rend la
+ * décision POTENTIELLEMENT obsolète ; la page de balayage reconstruit alors
+ * son contexte (Candidate Builder, index du compte construit UNE fois par
+ * compte et par page) et compare l'empreinte : identique → CONFIRMED_NO_CHANGE
+ * sur place (aucun travail, aucune IA) ; différente → travail T3 (déterministe
+ * d'abord, IA seulement si nécessaire).
  */
 import type { QueuedJob } from '../../queue/job-queue.repository';
 import type { ExecutionGuard } from '../../queue/execution-control';
@@ -30,8 +39,10 @@ import { isPermanentFailure, PermanentJobError, type JobBusinessResult } from '.
 import type { SourceAnalysisResult } from '../../source-analysis/types';
 import { envNumber } from '@/lib/env-number';
 import { buildT3Payload, parseTargetId, registerT3JobKind } from '../t3-job-contract';
-import { confirmEvaluation, markPending, type StoredT1Candidate } from './resolution.repository';
-import { resolveDocumentAsset } from './resolve-document-asset.service';
+import { confirmContext, getResolution, markPending, type StoredT1Candidate } from './resolution.repository';
+import { evaluationBase, resolveDocumentAsset, type DocumentAssetEvaluation } from './resolve-document-asset.service';
+import { compactKnowledgeChanges, getAccountKnowledgeRevision, knowledgeChangedSince, knowledgeChangedSql } from '../continuous/knowledge-revision';
+import { MatchingIndexCache } from './matching-index';
 import { T1_SETTLED_STATES } from './question-gate';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 
@@ -54,14 +65,6 @@ const backlogDelaySeconds = () => Math.floor(envNumber('T3_SWEEP_BACKLOG_DELAY_S
 /** Délai au-delà duquel une demande PENDING sans travail vivant est considérée perdue. */
 export const LOST_REQUEST_MINUTES = 60;
 
-/**
- * Marge (minutes) entre la modification d'un identifiant de bien et la date
- * d'évaluation d'une abstention (lot 32C) : une modification commise par une
- * transaction longue, datée AVANT l'évaluation mais invisible pendant
- * celle-ci, rend tout de même la décision obsolète. Coût borné : une
- * confirmation de plus (sans travail T3 si l'empreinte est inchangée).
- */
-export const IDENTIFIER_CHANGE_MARGIN_MINUTES = 10;
 
 export interface DocumentAssetQueueDeps {
   enqueue: typeof import('../../queue/job-queue.repository').enqueue;
@@ -101,20 +104,23 @@ export async function requestDocumentAssetResolution(
   p: {
     accountId: number; userId: number | null; fileId: number;
     t1Candidates?: StoredT1Candidate[]; triggerCode: string;
+    /** Motif de la reprise (monitoring) : CONTEXT_CHANGED, ENGINE_VERSION, NEW_ANALYSIS… */
+    reprocessReason?: string | null;
   },
   deps?: DocumentAssetQueueDeps,
 ): Promise<number | null> {
   const d = deps ?? await defaultDeps();
   await markPending({ accountId: p.accountId, fileId: p.fileId, t1Candidates: p.t1Candidates, triggerCode: p.triggerCode });
   if (p.triggerCode === 'source_analyzed' && !(await d.isTriggerActive('T3', 'source_analyzed'))) {
-    await resolveDocumentAsset({ accountId: p.accountId, fileId: p.fileId, userId: p.userId, skipAi: true });
+    await resolveDocumentAsset({ accountId: p.accountId, fileId: p.fileId, userId: p.userId, skipAi: true, triggerCode: p.triggerCode, reprocessReason: 'NEW_ANALYSIS' });
     return null;
   }
+  const reprocessReason = p.reprocessReason ?? (p.t1Candidates ? 'NEW_ANALYSIS' : null);
   const { jobId } = await d.enqueue({
     treatment: 'T3',
     scope: { accountId: p.accountId, targetType: T3_TARGET_DOCUMENT, targetId: p.fileId },
     triggerCode: p.triggerCode,
-    payload: buildT3Payload(DOCUMENT_ASSET_KIND, { userId: p.userId }),
+    payload: buildT3Payload(DOCUMENT_ASSET_KIND, { userId: p.userId, ...(reprocessReason ? { reprocessReason } : {}) }),
     payloadOnDedupe: 'replace',
   });
   return jobId;
@@ -127,6 +133,8 @@ export interface DocumentAssetPayload {
   fileId: number;
   userId: number | null;
   requestedAt: string | null;
+  /** Motif de la reprise (monitoring, facultatif). */
+  reprocessReason: string | null;
 }
 
 export interface DocumentSweepPayload {
@@ -160,12 +168,16 @@ export async function runDocumentAssetJob(job: QueuedJob, p: DocumentAssetPayloa
     guard,
     // Après cette tentative, la file abandonnerait : on sollicite l'utilisateur.
     finalAttempt: isPermanentFailure(job.attempts + 1),
+    triggerCode: job.triggerCode ?? null,
+    reprocessReason: p.reprocessReason,
   });
   const decision = r.decision;
   return {
     result: r.outcome,
     detail: {
       fileId: p.fileId, status: r.status, aiCalled: r.aiCalled,
+      // Monitoring de la réconciliation continue (lot 34E).
+      ...(r.evaluation ? { evaluation: r.evaluation } : {}),
       ...(decision ? { decision: decision.kind } : {}),
       ...(decision?.kind === 'ABSTAIN' ? { reasonCode: decision.reasonCode, candidates: decision.ranked.length } : {}),
       ...(decision?.kind === 'APPLY' ? { assetIds: [decision.assetId], method: decision.method } : {}),
@@ -195,7 +207,8 @@ export async function runDocumentSweepPage(
   let confirmed = 0;
   if (backlog < size) {
     const rows = await listDocumentsWithoutPrimary({ afterFileId: p.afterFileId, limit: size });
-    const done = await requestStaleResolutions(rows, { guard, triggerCode, deps: d, label: 'rattrapage planifié' });
+    // Un index de rapprochement par compte pour toute la page.
+    const done = await requestStaleResolutions(rows, { guard, triggerCode, deps: d, label: 'rattrapage planifié', indexes: new MatchingIndexCache() });
     fileIds = done.enqueued;
     confirmed = done.confirmed;
     if (rows.length > 0) suivant = rows[rows.length - 1].fileId;
@@ -240,6 +253,7 @@ export function registerDocumentAssetT3(): void {
         fileId: parseTargetId(job),
         userId: entierPositifOuNul(job, raw, 'userId', 1),
         requestedAt: dateOpt(job, raw),
+        reprocessReason: typeof raw.reprocessReason === 'string' ? raw.reprocessReason.slice(0, 60) : null,
       };
     },
     run: ({ job, payload, guard }) => runDocumentAssetJob(job, payload, guard),
@@ -270,7 +284,7 @@ export async function startDocumentSweep(
 ): Promise<void> {
   const d = deps ?? await defaultDeps();
   await ctx.guard.assertActive('T3 DOCUMENT_ASSET — ouverture du rattrapage');
-  await compactIdentifierChanges();
+  await compactKnowledgeChanges();
   await d.enqueue({
     treatment: 'T3',
     scope: { targetType: T3_TARGET_DOCUMENT_SWEEP, targetId: `${ctx.cycleId}:0` },
@@ -284,34 +298,36 @@ export async function startDocumentSweep(
 
 /**
  * Documents à reprendre (SQL pur, borné, curseur par identifiant). Critères
- * du ticket T3, §10, et du ticket « rattrapage des abstentions » (lot 32C) :
+ * du ticket T3, §10, du rattrapage versionné (lot 32C) et de la
+ * réconciliation continue (lot 34E) :
  *   · T1 terminé (état d'analyse abouti ET représentation persistée) ;
  *   · aucun rattachement principal (colonne, lien PRIMARY) — un lien
- *     MENTIONED ne compte pas ;
+ *     MENTIONED ou SECONDARY ne compte pas ;
  *   · aucune décision utilisateur (lien USER, choix ou retrait explicite) —
  *     jamais rejugée, quelle que soit la version ;
  *   · aucun travail T3 DOCUMENT_ASSET vivant ;
  *   · décision encore VALABLE exclue :
- *       – multi-biens ou décision utilisateur sur la MÊME analyse ;
- *       – abstention (ABSTAINED, NO_CANDIDATE) sur la MÊME analyse, par la
- *         version COURANTE du moteur, sans modification d'un identifiant de
- *         bien du compte depuis son évaluation ;
+ *       – décision utilisateur sur la MÊME analyse ;
+ *       – décision OUVERTE (ABSTAINED, NO_CANDIDATE, MULTI_ASSET) sur la MÊME
+ *         analyse, par la version COURANTE du moteur, SANS évolution de la
+ *         connaissance du compte depuis la révision évaluée (journal 0292) ;
  *       – demande de moins d'une heure (perdue au-delà).
- *     Une abstention d'une version antérieure — ou sans version (NULL,
- *     lignes historiques) — est donc rejouée UNE fois, à partir des données
- *     T1 persistées : jamais T1. (`IS NOT DISTINCT FROM` : sous `NOT (…)`,
- *     une comparaison à NULL rendrait la condition entière NULL — la ligne
- *     serait écartée au lieu d'être reprise.)
- * `identifiers_only` : la seule raison de la reprise est une modification
- * d'identifiant de bien — le balayage compare alors l'empreinte des
- * identifiants avant de mettre quoi que ce soit en file.
+ *     Une décision ouverte n'est donc JAMAIS définitive. (`IS NOT DISTINCT
+ *     FROM` : sous `NOT (…)`, une comparaison à NULL rendrait la condition
+ *     entière NULL — la ligne serait écartée au lieu d'être reprise.)
+ * `context_check` : la seule raison de la reprise est une évolution de la
+ * connaissance du compte — la page compare alors l'empreinte du contexte
+ * pertinent avant de mettre quoi que ce soit en file.
  */
 export const SWEEP_SQL = `
   SELECT f.id, f.account_id, f.user_id,
-         (r.file_id IS NOT NULL AND r.status IN ('ABSTAINED', 'NO_CANDIDATE')
+         (r.file_id IS NOT NULL AND r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET')
           AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at)
-          AND r.resolution_version IS NOT DISTINCT FROM $5::int) AS identifiers_only,
-         r.identifiers_fingerprint
+          AND r.resolution_version IS NOT DISTINCT FROM $5::int
+          AND r.context_fingerprint IS NOT NULL) AS context_check,
+         r.context_fingerprint, r.knowledge_revision,
+         (r.file_id IS NOT NULL AND r.resolution_version IS DISTINCT FROM $5::int) AS engine_changed,
+         (r.file_id IS NOT NULL AND (r.extraction_at IS NULL OR r.extraction_at < date_trunc('milliseconds', e.extracted_at))) AS analysis_changed
     FROM asset_files f
     JOIN document_extractions e ON e.file_id = f.id AND e.account_id = f.account_id
     LEFT JOIN document_asset_resolutions r ON r.file_id = f.id
@@ -332,15 +348,12 @@ export const SWEEP_SQL = `
           AND q.status IN ('PENDING', 'RUNNING'))
      AND (r.file_id IS NULL OR NOT COALESCE((
           -- Millisecondes : l'instant est relu côté serveur (précision JS).
-          (r.status IN ('MULTI_ASSET', 'USER_DECIDED')
+          (r.status = 'USER_DECIDED'
             AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at))
-       OR (r.status IN ('ABSTAINED', 'NO_CANDIDATE')
+       OR (r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET')
             AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at)
             AND r.resolution_version IS NOT DISTINCT FROM $5::int
-            AND NOT EXISTS (
-              SELECT 1 FROM document_asset_identifier_changes c
-               WHERE c.account_id = f.account_id
-                 AND c.changed_at > COALESCE(r.evaluated_at, r.decided_at, r.updated_at) - ($6 || ' minutes')::interval))
+            AND NOT ${knowledgeChangedSql('f.account_id', 'r.knowledge_revision')})
        OR (r.status = 'PENDING' AND r.requested_at > now() - ($1 || ' minutes')::interval)), false))
    ORDER BY f.id
    LIMIT $2`;
@@ -349,84 +362,92 @@ export interface SweepCandidate {
   fileId: number;
   accountId: number;
   userId: number | null;
-  /** Abstention courante, rejouée seulement si les identifiants des biens ont changé. */
-  identifiersOnly: boolean;
-  /** Empreinte des identifiants lors de l'abstention (comparée avant toute mise en file). */
-  identifiersFingerprint: string | null;
+  /** Décision ouverte courante, reprise seulement parce que la connaissance du compte a évolué. */
+  contextCheck: boolean;
+  /** Empreinte du contexte lors de la dernière évaluation (comparée avant toute mise en file). */
+  contextFingerprint: string | null;
+  knowledgeRevision: number | null;
+  /** Motif de la reprise (monitoring). */
+  reprocessReason: 'FIRST_EVALUATION' | 'ENGINE_VERSION' | 'NEW_ANALYSIS' | 'KNOWLEDGE_CHANGED' | 'LOST_REQUEST';
 }
 
 export async function listDocumentsWithoutPrimary(q: { afterFileId?: number; limit: number; accountId?: number | null }): Promise<SweepCandidate[]> {
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(SWEEP_SQL, [
-    String(LOST_REQUEST_MINUTES), q.limit, q.accountId ?? null, q.afterFileId ?? 0,
-    DOCUMENT_ASSET_RESOLUTION_VERSION, String(IDENTIFIER_CHANGE_MARGIN_MINUTES),
+    String(LOST_REQUEST_MINUTES), q.limit, q.accountId ?? null, q.afterFileId ?? 0, DOCUMENT_ASSET_RESOLUTION_VERSION,
   ] as never[])) as unknown as Array<{
-    id: number; account_id: number; user_id: number | null; identifiers_only: boolean | null; identifiers_fingerprint: string | null;
+    id: number; account_id: number; user_id: number | null; context_check: boolean | null; context_fingerprint: string | null;
+    knowledge_revision: string | number | null; engine_changed: boolean | null; analysis_changed: boolean | null;
   }>;
   return rows.map((r) => ({
     fileId: Number(r.id), accountId: Number(r.account_id), userId: r.user_id == null ? null : Number(r.user_id),
-    identifiersOnly: r.identifiers_only === true, identifiersFingerprint: r.identifiers_fingerprint ?? null,
+    contextCheck: r.context_check === true, contextFingerprint: r.context_fingerprint ?? null,
+    knowledgeRevision: r.knowledge_revision == null ? null : Number(r.knowledge_revision),
+    reprocessReason: r.context_check === true ? 'KNOWLEDGE_CHANGED'
+      : r.engine_changed === true ? 'ENGINE_VERSION'
+        : r.analysis_changed === true ? 'NEW_ANALYSIS'
+          : r.context_fingerprint == null && r.knowledge_revision == null ? 'FIRST_EVALUATION' : 'LOST_REQUEST',
   }));
 }
 
 /**
- * Met en file les documents retenus par le balayage. Une abstention de la
- * version courante, reprise seulement parce qu'un bien du compte a été
- * modifié, est d'abord comparée à l'empreinte ACTUELLE des identifiants :
- * inchangée → évaluation confirmée, aucun travail (pas de boucle horaire).
+ * Traite les documents retenus par le balayage. Une décision ouverte de la
+ * version courante, reprise seulement parce que la connaissance du compte a
+ * évolué, est d'abord RÉÉVALUÉE SUR PLACE sans IA : contexte reconstruit
+ * (index du compte construit une fois par compte — `indexes`), empreinte
+ * comparée. Identique → CONFIRMED_NO_CHANGE (révision évaluée avancée, aucun
+ * travail, pas de boucle). Différente, ancienne version, nouvelle analyse,
+ * première évaluation → travail T3 DOCUMENT_ASSET.
  */
 export async function requestStaleResolutions(
   rows: readonly SweepCandidate[],
-  opts: { guard?: ExecutionGuard; triggerCode: string; deps?: DocumentAssetQueueDeps; label?: string },
+  opts: {
+    guard?: ExecutionGuard; triggerCode: string; deps?: DocumentAssetQueueDeps; label?: string;
+    /** Cache d'index partagé (réconciliation compte, page de balayage). */
+    indexes?: MatchingIndexCache;
+  },
 ): Promise<{ enqueued: number[]; confirmed: number }> {
   const label = `T3 DOCUMENT_ASSET — ${opts.label ?? 'rattrapage'}`;
-  const empreintes = new Map<number, string>();
-  const aConfirmer = new Map<string, number[]>();
+  const indexes = opts.indexes ?? new MatchingIndexCache();
   const enqueued: number[] = [];
+  let confirmed = 0;
   for (const r of rows) {
-    if (r.identifiersOnly && r.identifiersFingerprint) {
-      let fp = empreintes.get(r.accountId);
-      if (fp === undefined) {
-        const [{ loadAssetIdentifiers }, { identifiersFingerprint }] = await Promise.all([
-          import('./asset-identifiers.repository'), import('./identifiers'),
-        ]);
-        fp = identifiersFingerprint(await loadAssetIdentifiers(r.accountId));
-        empreintes.set(r.accountId, fp);
-      }
-      if (fp === r.identifiersFingerprint) {
-        aConfirmer.set(fp, [...(aConfirmer.get(fp) ?? []), r.fileId]);
-        continue;
-      }
+    let reason: string = r.reprocessReason;
+    if (r.contextCheck && r.contextFingerprint) {
+      if (await confirmIfUnchanged(r, indexes, opts.triggerCode, opts.guard, label)) { confirmed += 1; continue; }
+      reason = 'CONTEXT_CHANGED';
     }
     await opts.guard?.assertActive(label);
-    await requestDocumentAssetResolution({ accountId: r.accountId, userId: r.userId, fileId: r.fileId, triggerCode: opts.triggerCode }, opts.deps);
+    await requestDocumentAssetResolution({
+      accountId: r.accountId, userId: r.userId, fileId: r.fileId, triggerCode: opts.triggerCode, reprocessReason: reason,
+    }, opts.deps);
     enqueued.push(r.fileId);
-  }
-  let confirmed = 0;
-  for (const [fp, ids] of aConfirmer) {
-    await opts.guard?.assertActive(`${label} (évaluation confirmée)`);
-    confirmed += await confirmEvaluation(ids, fp);
   }
   return { enqueued, confirmed };
 }
 
-/**
- * Journal des modifications d'identifiants de biens (déclencheur 0274) : seule
- * la plus récente par compte compte pour le balayage — les autres sont
- * retirées à l'ouverture de chaque cycle (table minuscule). Ne lève jamais.
- */
-export async function compactIdentifierChanges(): Promise<void> {
-  try {
-    const { pgClient } = await import('@/db');
-    await pgClient.unsafe(
-      `DELETE FROM document_asset_identifier_changes c
-        WHERE EXISTS (SELECT 1 FROM document_asset_identifier_changes d
-                       WHERE d.account_id = c.account_id
-                         AND (d.changed_at > c.changed_at OR (d.changed_at = c.changed_at AND d.id > c.id)))`,
-    );
-  } catch (e) {
-    console.error('[t3-document-asset] compactage du journal des identifiants impossible :', (e as Error).message);
-  }
+/** Réévaluation sans IA d'une décision ouverte : `true` si le contexte pertinent est inchangé (décision confirmée). */
+async function confirmIfUnchanged(
+  r: SweepCandidate, indexes: MatchingIndexCache, triggerCode: string, guard: ExecutionGuard | undefined, label: string,
+): Promise<boolean> {
+  const [{ readAttachmentState }, { computeDocumentAssetContext }] = await Promise.all([
+    import('./attachment-state'), import('./context'),
+  ]);
+  const revision = await getAccountKnowledgeRevision(r.accountId);
+  const [state, resolution, index] = await Promise.all([
+    readAttachmentState(r.accountId, r.fileId), getResolution(r.fileId), indexes.get(r.accountId),
+  ]);
+  if (!resolution || !state.exists) return false;
+  const ctx = await computeDocumentAssetContext({ accountId: r.accountId, fileId: r.fileId, state, resolution, index });
+  if (ctx.fingerprint !== r.contextFingerprint) return false;
+  const changed = await knowledgeChangedSince(r.accountId, r.knowledgeRevision);
+  const evaluation: DocumentAssetEvaluation = {
+    ...evaluationBase({ fileId: r.fileId, ctx, resolution, revision, changed, triggerCode, reprocessReason: 'KNOWLEDGE_CHANGED' }),
+    newResolution: resolution.lastOutcome, aiCalled: false, decision: null, linkedAssetId: null,
+    toProcessAction: 'UNCHANGED', result: 'CONFIRMED_NO_CHANGE', promptCandidateCount: 0,
+  };
+  await guard?.assertActive(`${label} (évaluation confirmée)`);
+  return confirmContext({ fileId: r.fileId, contextFingerprint: ctx.fingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation } });
 }
 
 /**
@@ -442,6 +463,21 @@ export async function sweepDocumentsWithoutPrimary(opts: {
     guard: opts.guard, triggerCode: opts.triggerCode ?? 'schedule_hourly', deps: opts.deps,
   });
   return enqueued.length;
+}
+
+/**
+ * Variante détaillée (réconciliation compte, BO, tests) : documents remis en
+ * file ET décisions confirmées sans changement.
+ */
+export async function sweepAccountDocuments(opts: {
+  accountId: number; guard?: ExecutionGuard; triggerCode?: string | null; limit?: number; deps?: DocumentAssetQueueDeps;
+  indexes?: MatchingIndexCache;
+}): Promise<{ enqueued: number[]; confirmed: number; examined: number }> {
+  const rows = await listDocumentsWithoutPrimary({ limit: opts.limit ?? documentSweepPageSize(), accountId: opts.accountId });
+  const r = await requestStaleResolutions(rows, {
+    guard: opts.guard, triggerCode: opts.triggerCode ?? 'schedule_hourly', deps: opts.deps, indexes: opts.indexes, label: 'réconciliation du compte',
+  });
+  return { ...r, examined: rows.length };
 }
 
 registerDocumentAssetT3();

@@ -10,7 +10,9 @@
  */
 import { toAssetFamily, type AssetFamily } from '@/services/canonical/registry';
 import { getVisibleRubrics } from '@/lib/referential/v2';
-import { analyzeDocument } from '../steps/analyze-document.step';
+import { analyzeDocument, callAnalyzeDocument, verifyAll } from '../steps/analyze-document.step';
+import { completeT1Extraction, finalizeSourceLayer } from '../source-units/complete-extraction';
+import type { SourceLayer } from '../source-units/types';
 import { deduceFromType, loadAssetFamilies, validateProposal } from './rubric-rules';
 import { projectDocumentFacts, type DocumentProjection } from '../projection/document-projection';
 import { combineTraces } from '../trace';
@@ -26,6 +28,12 @@ export interface MasterGroupAnalysis {
   documentAssetId: number | null;
   /** Version réellement résolue du master (fichier ou version de configuration). */
   promptVersion: string;
+  /**
+   * Lot 34F — couche A (unités de la source, couverture, faits non résolus,
+   * rapport de complétude), persistée avec la base de connaissance.
+   * Absente pour une analyse sans matière (étape simulée en test).
+   */
+  sourceLayer?: SourceLayer;
 }
 
 export async function analyseGroupWithMaster(
@@ -35,6 +43,17 @@ export async function analyseGroupWithMaster(
   groupTrace: SourceAnalysisResult['operationTrace'],
 ): Promise<MasterGroupAnalysis> {
   const analysed = await analyzeDocument(input, groupIndices, ctx);
+
+  // Lot 34F : couche A, contrôle de couverture et réparation CIBLÉE (bornée,
+  // jamais systématique) — avant la projection, qui voit les faits réparés.
+  const draft = await completeT1Extraction({
+    input, groupIndices, ctx, analysed,
+    call: (c) => callAnalyzeDocument(c),
+    verifyTargets: async (facts) => {
+      const v = await verifyAll({ ...analysed.analysis, entities: { assets: [], rooms: [], equipments: [], suppliers: [], multiAsset: false } }, facts, input.accountId);
+      return { verifiedIds: v.verifiedIds, warnings: v.warnings };
+    },
+  });
 
   const assetFamilies = new Map<number, AssetFamily | undefined>(
     ctx.assets.map((a) => [a.id, toAssetFamily(a.category)]),
@@ -72,9 +91,28 @@ export async function analyseGroupWithMaster(
     trace: combineTraces(groupTrace, analysed.trace),
   });
 
+  // Lot 34F : provenance des faits (sourceUnitIds), rapport de complétude,
+  // anomalies fonctionnelles (SOURCE_UNIT_FAILED, COVERAGE_INCOMPLETE).
+  let sourceLayer: SourceLayer | undefined;
+  if (draft) {
+    const fin = finalizeSourceLayer(draft, {
+      analysisFacts: analysed.analysis.facts,
+      projected: projection.facts,
+      projectionWarnings: projection.warnings,
+      warningCodes: result.warnings.map((w) => w.code),
+    });
+    sourceLayer = fin.layer;
+    result.warnings.push(...fin.warnings);
+    result.extractedFields.forEach((f, i) => {
+      const ids = projection.facts[i]?.sourceUnitIds;
+      if (ids?.length) f.sourceUnitIds = ids;
+    });
+  }
+
   return {
     result, facts: projection.facts, projection, documentAssetId: analysed.documentAssetId,
     promptVersion: analysed.promptVersion,
+    ...(sourceLayer ? { sourceLayer } : {}),
   };
 }
 

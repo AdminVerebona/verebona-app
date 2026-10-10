@@ -32,12 +32,20 @@ export default function MonComptePage() {
       <SubscriptionSummary />
       {/* Lot 26 : parrainage dans sa propre carte, sorti de « Mon abonnement ». */}
       <ReferralCard />
-      <InformationsTab />
-      <NotificationsCard />
-      <WithdrawalCard />
-      {/* Export RGPD « Mes données » (CDC BO GDP-020). */}
-      <MyDataCard />
-      <LegalInformationCard />
+      {/* Lot 34 (point 10) : « Gestion des notifications » (et les blocs qui
+          la suivent) AVANT la « Zone dangereuse », rendue en dernier par
+          InformationsTab. */}
+      <InformationsTab
+        beforeDangerZone={
+          <>
+            <NotificationsCard />
+            <WithdrawalCard />
+            {/* Export RGPD « Mes données » (CDC BO GDP-020). */}
+            <MyDataCard />
+            <LegalInformationCard />
+          </>
+        }
+      />
     </div>
   );
 }

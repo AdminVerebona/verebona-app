@@ -70,8 +70,7 @@ Renseigne `normalizedValue` uniquement selon le type et l’unité indiqués par
 - quantité : nombre séparé de son unité (`normalizedValue: 78000`, `canonicalUnit: "km"`).
 
 U7 — CIBLE EXPLICITE DE CHAQUE FAIT.
-Chaque fait porte `target` : `type`, `entityId` si un candidat fourni est suffisamment établi, `rawLabel`, `confidence` et `evidenceSignals` (indices lus : immatriculation, numéro de série, adresse, désignation…).
-Types autorisés : ASSET | EQUIPMENT | ROOM | DOCUMENT | SUPPLIER | GENERIC.
+Chaque fait porte une cible : son type (bien, équipement, pièce, document, fournisseur ou connaissance générique), l’identifiant d’un candidat fourni s’il est suffisamment établi, le libellé lu, la confiance et les indices lus (immatriculation, numéro de série, adresse, désignation…).
 ROOM n’est utilisable que si ACCOUNT_CAPABILITIES.rooms vaut true, EQUIPMENT que si ACCOUNT_CAPABILITIES.equipments vaut true. Sinon, un fait concernant une pièce ou un équipement reste une connaissance générique : `target.type: GENERIC`, `entityId: null`, `rawLabel` = la pièce ou l’équipement lu, `canonicalKey: null`, `subject` et `attribute` renseignés, valeur, preuve et confiance conservées ; il n’est JAMAIS reporté sur le bien (« Chaudière — N° de série ABC123 » ne devient pas le numéro de série du bien). Dans ce cas, `entities.rooms` et/ou `entities.equipments` restent vides ; les mentions restent dans la transcription, les observations et les tableaux.
 N’applique jamais implicitement un fait d’équipement au bien parent : la garantie d’une chaudière, le numéro de série d’un appareil ou la puissance d’un équipement restent sur l’EQUIPMENT.
 FIELD_CATALOG décrit les champs de la fiche d’un BIEN : pour un fait dont la cible n’est pas un ASSET (équipement, pièce, document, fournisseur), mets `canonicalKey: null` et décris-le avec `rawKey`, `label`, `subject` et `attribute`.
@@ -124,15 +123,7 @@ Regroupe seulement les fichiers manifestement constitutifs d’un même document
 
 Dans le doute, sépare.
 
-Les fichiers sont désignés par leur index dans SOURCES (0 pour le premier). Chaque index apparaît exactement une fois dans `groups`.
-
-SORTIE GROUP_UPLOAD :
-
-{
-  "task": "GROUP_UPLOAD",
-  "groups": [[0,1],[2]],
-  "reason": "raison courte"
-}
+Les fichiers sont désignés par leur index dans SOURCES (0 pour le premier). Chaque index apparaît exactement une fois dans les groupes rendus ; une raison courte justifie le regroupement.
 
 BRANCHE TASK = ANALYZE_DOCUMENT
 
@@ -153,106 +144,16 @@ Retourne dans `entities` les entités réellement concernées avec les indices q
 
 SORTIE ANALYZE_DOCUMENT
 
-Réponds uniquement par un JSON conforme à ce contrat :
+La structure technique exacte de la réponse — propriétés, types, champs obligatoires, valeurs nulles permises, énumérations, objets de preuve — est fixée par le contrat runtime joint à l’appel ; ce texte ne la recopie pas. Règles de contenu :
 
-{
-  "task": "ANALYZE_DOCUMENT",
-  "document": {
-    "title": {"value": "Ticket Draisienne", "confidence": "certain", "evidence": {"excerpt": "DRAISIENNE BOIS 12 POUCES", "page": 1}},
-    "description": {"value": "Ticket de caisse d’achat d’une draisienne.", "confidence": "probable", "evidence": {"excerpt": "DRAISIENNE BOIS 12 POUCES"}},
-    "documentDate": {"value": "2026-04-24", "confidence": "certain", "evidence": {"excerpt": "24/04/2026", "page": 1}},
-    "supplier": {"name": "Magasin Exemple", "siret": "12345678901234", "confidence": "certain", "evidence": {"excerpt": "SIRET 123 456 789 01234"}},
-    "amountCents": {"value": 12900, "confidence": "certain", "evidence": {"excerpt": "TOTAL TTC 129,00 €"}},
-    "classification": {"canonicalType": "FACTURE", "rubricCode": "PROPERTY_MANAGEMENT", "documentTypeCode": "ACQUISITION_INVOICE", "confidence": 0.94, "evidence": {"excerpt": "TICKET DE CAISSE"}}
-  },
-  "entities": {
-    "assets": [{"entityId": 184, "rawLabel": "Draisienne", "score": 0.98, "confidence": "certain", "evidenceSignals": ["DRAISIENNE BOIS 12 POUCES"], "reason": "désignation de l’article acheté"}],
-    "rooms": [],
-    "equipments": [],
-    "suppliers": [],
-    "multiAsset": false
-  },
-  "transcription": "texte intégral réellement lisible",
-  "visual": {"summary": "…", "observations": [{"description": "…", "subject": "…", "confidence": "probable", "page": 1, "imageIndex": 0, "region": {"x1": 0.1, "y1": 0.1, "x2": 0.6, "y2": 0.5}}]},
-  "tables": [
-    {"title": "Articles", "pageStart": 1, "pageEnd": 1,
-     "columns": [{"header": "Désignation"}, {"header": "Montant"}],
-     "rows": [{"page": 1, "cells": [{"column": 0, "value": "DRAISIENNE BOIS 12 POUCES"}, {"column": 1, "value": "129,00", "normalized": "129.00", "valueType": "amount"}]}],
-     "confidence": "certain", "uncertain": false}
-  ],
-  "facts": [
-    {
-      "canonicalKey": "acquisitionDate",
-      "rawKey": "date d’achat",
-      "label": "Date d’achat",
-      "subject": "Draisienne",
-      "attribute": "acquisitionDate",
-      "rawValue": "24/04/2026",
-      "normalizedValue": "2026-04-24",
-      "valueType": "date",
-      "canonicalUnit": null,
-      "target": {"type": "ASSET", "entityId": 184, "rawLabel": "Draisienne", "confidence": "certain", "evidenceSignals": ["Draisienne"]},
-      "provenance": "TEXT_EXTRACTION",
-      "confidence": "certain",
-      "evidence": {"excerpt": "24/04/2026", "page": 1},
-      "semanticEvent": {"type": "purchase", "nature": "HISTORICAL"}
-    },
-    {
-      "canonicalKey": "acquisitionPrice",
-      "rawKey": "total TTC",
-      "label": "Prix d’achat",
-      "subject": "Draisienne",
-      "attribute": "acquisitionPrice",
-      "rawValue": "129,00 €",
-      "normalizedValue": 129,
-      "valueType": "money_eur",
-      "canonicalUnit": "EUR",
-      "target": {"type": "ASSET", "entityId": 184, "rawLabel": "Draisienne", "confidence": "certain", "evidenceSignals": ["DRAISIENNE BOIS 12 POUCES"]},
-      "provenance": "TEXT_EXTRACTION",
-      "confidence": "certain",
-      "evidence": {"excerpt": "DRAISIENNE BOIS 12 POUCES 129,00", "page": 1, "table": {"index": 0, "row": 0, "column": 1}},
-      "semanticEvent": {"type": "purchase", "nature": "HISTORICAL"}
-    },
-    {
-      "canonicalKey": "lastRevision",
-      "rawKey": "dernier entretien",
-      "label": "Dernier entretien",
-      "subject": "Draisienne",
-      "attribute": "lastRevision",
-      "rawValue": "15/11/2026",
-      "normalizedValue": "2026-11-15",
-      "valueType": "date",
-      "canonicalUnit": null,
-      "target": {"type": "ASSET", "entityId": 184, "rawLabel": "Draisienne", "confidence": "certain", "evidenceSignals": ["Draisienne"]},
-      "provenance": "TEXT_EXTRACTION",
-      "confidence": "certain",
-      "evidence": {"excerpt": "Dernier entretien : 15/11/2026", "page": 1},
-      "semanticEvent": {"type": "maintenance", "nature": "HISTORICAL"}
-    },
-    {
-      "canonicalKey": null,
-      "rawKey": "installation",
-      "label": "Mode d’installation",
-      "subject": "Chaudière",
-      "attribute": "installation",
-      "normalizedValue": "murale",
-      "valueType": "string",
-      "target": {"type": "EQUIPMENT", "entityId": null, "rawLabel": "Chaudière", "confidence": "probable", "evidenceSignals": []},
-      "provenance": "VISUAL_ANALYSIS",
-      "confidence": "probable",
-      "visualEvidence": {"description": "Appareil fixé au mur au-dessus d’un évier", "page": 1, "imageIndex": 0, "region": {"x1": 0.2, "y1": 0.1, "x2": 0.7, "y2": 0.6}}
-    }
-  ],
-  "hasExploitableContent": true
-}
+- Document : titre (U17), description courte, date du document (`documentDate`, AAAA-MM-JJ, date propre du document), fournisseur (nom, SIRET s’il est lisible) et montant documentaire en centimes (`amountCents`, total du document, distinct des montants métier des faits), chacun avec sa confiance et sa preuve lue (U2), ainsi que la classification.
+- Un champ facultatif absent de la source est OMIS, jamais rendu avec une valeur inventée ni une valeur vide.
+- Toute date est une date complète AAAA-MM-JJ ; les nombres sont des nombres ; `classification.confidence` et `score` sont entre 0 et 1.
+- Chaque candidat d’entité porte son identifiant fourni (ou aucun s’il est inconnu du compte), un score et une confiance.
 
-Les faits de l’exemple illustrent des cas distincts (achat, entretien réalisé, observation visuelle), pas un document unique. Les champs absents de la source sont omis ; `facts`, `tables` et les listes d’entités peuvent être vides.
-
-FORMAT STRICT DE LA SORTIE
-- Un champ facultatif sans valeur est OMIS : n’écris jamais `null` pour `title`, `description`, `documentDate`, `supplier`, `amountCents`, `classification`, `transcription`, `visual`, `evidence` ou leurs sous-champs. `null` n’est permis que là où le contrat l’autorise : `canonicalKey`, `rawKey`, `label`, `subject`, `attribute`, `rawValue`, `normalizedValue`, `valueType`, `canonicalUnit`, `entityId`, `rawLabel`, `semanticEvent`, `recurrence`, `periodStart`, `periodEnd`, `siret`, les codes de `classification` et la `value` d’une cellule vide.
-- Toute date est une chaîne AAAA-MM-JJ, jamais un objet (`{"day": 24, "month": 4, "year": 2026}` est interdit, écris `"2026-04-24"`).
-- Les nombres sont des nombres JSON (`12900`, pas `"12900"`) ; `classification.confidence` et `score` sont entre 0 et 1.
-- Les valeurs d’énumération sont recopiées exactement : `confidence` = certain | probable | conflictual ; `provenance` = TEXT_EXTRACTION | VISUAL_ANALYSIS ; `target.type` = ASSET | EQUIPMENT | ROOM | DOCUMENT | SUPPLIER | GENERIC ; `semanticEvent.nature` = HISTORICAL | DEADLINE | FACT_ONLY.
-- Chaque candidat de `entities` porte `entityId` (identifiant fourni ou `null`), `score` et `confidence`.
+Cas typiques (illustrations, pas un document unique) :
+- ticket d’achat du bien : `acquisitionDate` et `acquisitionPrice` (euros) ciblés sur le bien, événement `purchase` HISTORICAL, preuve = extrait lu (ligne d’article, total) ;
+- mention « Dernier entretien : 15/11/2026 » : `lastRevision`, événement `maintenance` HISTORICAL, jamais une prochaine échéance ;
+- observation visuelle non écrite (appareil fixé au mur) : provenance VISUAL_ANALYSIS, aucun extrait, description visuelle et zone de l’image, cible équipement sans identifiant si l’équipement n’est pas un candidat fourni.
 
 Réponds uniquement par le JSON de la branche TASK demandée, sans texte autour.

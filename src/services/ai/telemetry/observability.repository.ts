@@ -348,6 +348,8 @@ export const T1_WARNING_CODES = [
   'FACT_REQUALIFIED_GENERIC', 'FACT_REJECTED_BY_RULE', 'UNIT_MISMATCH', 'FACTS_TRUNCATED', 'FACT_INVALID_DROPPED',
   'EXCERPT_NOT_FOUND', 'MASTER_FALLBACK_STEPS', 'LINE_COUNT_UNKNOWN', 'FORBIDDEN_TARGET_REQUALIFIED',
   'ASSET_TARGET_CONTRADICTION',
+  // Lot 34F : anomalies de complétude de la source.
+  'SOURCE_UNIT_FAILED', 'COVERAGE_INCOMPLETE',
 ] as const satisfies readonly AnalysisWarningCode[];
 // Exhaustivité vérifiée à la compilation : un code ajouté au contrat doit
 // l'être ici.

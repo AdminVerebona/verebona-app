@@ -36,6 +36,10 @@
  *                                   qu'il reste des rejeux        version de résolution) — 0285
  *   ai-call-diagnostics-purge       chaque jour à 5 h 50          suppressions idempotentes
  *   ai-output-coherence-check       au démarrage                  lecture seule (diagnostic)
+ *   t1-source-units-backfill        au démarrage, puis /h tant    NOT EXISTS + remplacement par
+ *                                   qu'il reste des documents     document (idempotent) — 0295
+ *   t1-completeness-retry           toutes les 15 min             tentatives comptées par document,
+ *                                                                 `next_retry_at` (0295)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -363,6 +367,36 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const alertes = r.report.flatMap((o) => o.findings.filter((f) => f.severity === 'warning').map((f) => `${o.operationCode} [${f.source}] ${f.message}`));
       if (alertes.length) console.warn(`[ai-coherence] ${alertes.length} adaptation(s) nécessaire(s) :\n${alertes.join('\n')}`);
       return { note: `${r.operations} opération(s) : ${r.warnings} adaptation(s) nécessaire(s), ${r.infos} information(s)${alertes.length ? ` — ${alertes.slice(0, 3).join(' | ').slice(0, 600)}` : ''}` };
+    },
+  },
+  {
+    // Lot 34F (ticket T1 « extraction exhaustive ») : couche A des documents
+    // analysés avant le lot, construite depuis les données DÉJÀ persistées —
+    // aucune réanalyse, aucun appel IA, lots bornés (T1_BACKFILL_BATCH).
+    code: 't1-source-units-backfill',
+    label: 'IA : couche source des documents historiques (sans réanalyse)',
+    schedule: { kind: 'startup', delayMs: 6 * MIN, retryMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runSourceUnitsBackfill } = await import('@/services/ai/source-analysis/source-units/jobs');
+      const r = await runSourceUnitsBackfill({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.disabled) return { note: 'migrations 0295-0297 absentes : rien à faire' };
+      return { note: JSON.stringify(r), again: r.more, ...(r.failed > 0 && r.processed === 0 ? { error: `${r.failed} document(s) en échec` } : {}) };
+    },
+  },
+  {
+    // Lot 34F : reprise CIBLÉE des documents INCOMPLETE_RETRYABLE (unités en
+    // échec seulement), bornée (T1_COMPLETENESS_MAX_RETRIES, T1_RETRY_BATCH).
+    code: 't1-completeness-retry',
+    label: 'IA : reprise ciblée des analyses T1 incomplètes',
+    schedule: { kind: 'interval', everyMs: 15 * MIN },
+    timeoutMs: 10 * MIN,
+    startupDelayMs: 8 * MIN,
+    run: async ({ deadline }) => {
+      const { runCompletenessRetry } = await import('@/services/ai/source-analysis/source-units/jobs');
+      const r = await runCompletenessRetry({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.disabled) return { note: 'migrations 0295-0297 absentes : rien à faire' };
+      if (r.examined > 0) return { note: JSON.stringify(r) };
     },
   },
 ];

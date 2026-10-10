@@ -13,6 +13,9 @@ import { createCanonicalAccountDataRepository, type BaseAccountDataPort } from '
 import { assistantAssetAvailability } from './asset-availability';
 import { assetDesignationsIn } from '@/lib/asset-taxonomy';
 import { wordStartPattern } from './search-sql';
+// Lot 34C : état d'analyse EFFECTIF (job de file réel) — jamais « en cours
+// d'analyse » pour un document qu'aucun traitement n'attend.
+import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effective-state-sql';
 
 const rows = <T>(r: unknown) => r as unknown as T[];
 
@@ -120,7 +123,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     const r = rows<DocumentHit>(await pgClient.unsafe(
       `SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
               to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms",
-              f.analysis_state AS "analysisState"
+              ${effectiveAnalysisStateSql('f')} AS "analysisState"
          FROM asset_files f
          LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
         WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
@@ -159,7 +162,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
       `SELECT * FROM (
          SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
                 to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", (${score}) AS "matchedTerms",
-                f.analysis_state AS "analysisState"
+                ${effectiveAnalysisStateSql('f')} AS "analysisState"
            FROM asset_files f
            LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
           WHERE f.account_id = $1 AND f.deleted_at IS NULL
@@ -185,8 +188,8 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     const sansEtat = [...byFile.values()].filter((d) => d.analysisState === undefined).map((d) => d.fileId);
     if (sansEtat.length) {
       const etats = rows<{ id: number; analysisState: string | null }>(await pgClient.unsafe(
-        `SELECT id, analysis_state AS "analysisState" FROM asset_files
-          WHERE account_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL`,
+        `SELECT f.id, ${effectiveAnalysisStateSql('f')} AS "analysisState" FROM asset_files f
+          WHERE f.account_id = $1 AND f.id = ANY($2::int[]) AND f.deleted_at IS NULL`,
         [accountId, sansEtat] as never[],
       ).catch(() => []));
       for (const e of etats) { const d = byFile.get(e.id); if (d) d.analysisState = e.analysisState; }

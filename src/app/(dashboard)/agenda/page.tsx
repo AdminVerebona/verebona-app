@@ -258,6 +258,13 @@ function CalendarView({ items, month, onItemClick, onNew }: { items: AgendaItemF
   );
 }
 
+/**
+ * Bouton du sélecteur de vue (lot 34, points 3/4) : sur mobile, trois parts
+ * égales de la ligne, libellé jamais coupé ; desktop (md+) : taille du
+ * contenu, comme avant.
+ */
+const VIEW_TAB = 'flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-2 py-1.5 text-sm md:flex-none md:px-3';
+
 const MONTHS_FR = ['Janv.', 'Févr.', 'Mars', 'Avr.', 'Mai', 'Juin', 'Juil.', 'Août', 'Sept.', 'Oct.', 'Nov.', 'Déc.'];
 
 const PREVIEW_COUNT = 5;
@@ -516,40 +523,53 @@ function AgendaPageInner() {
           </div>
         </div>
 
-        {/* View toggle + month/year nav — inutile tant qu'il n'y a rien à voir. */}
-        <div className={`relative flex items-center justify-between mb-4 ${masquerCommandes ? 'hidden' : ''}`}>
-          <div className="flex rounded-md border overflow-hidden">
+        {/* View toggle + month/year nav — inutile tant qu'il n'y a rien à voir.
+            Lot 34 (points 3/4) — mobile : le sélecteur occupe une ligne pleine
+            largeur (trois boutons égaux, jamais tronqués), la navigation de
+            période passe dessous, centrée. Desktop (md+) : une seule ligne,
+            sélecteur à gauche, navigation à droite (année centrée dès lg). */}
+        <div
+          data-agenda-view-controls
+          className={`relative mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between ${masquerCommandes ? 'hidden' : ''}`}
+        >
+          <div className="flex w-full overflow-hidden rounded-md border md:w-auto" role="group" aria-label="Affichage de l’agenda">
             <button
-              className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${view === 'list' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+              type="button"
+              aria-pressed={view === 'list'}
+              className={`${VIEW_TAB} ${view === 'list' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
               onClick={() => updateURL({ view: 'list' })}
             >
-              <List className="h-3.5 w-3.5" /> Liste
+              <List className="h-3.5 w-3.5 shrink-0" /> Liste
             </button>
             <button
-              className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${view === 'calendar' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+              type="button"
+              aria-pressed={view === 'calendar'}
+              className={`${VIEW_TAB} ${view === 'calendar' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
               onClick={() => updateURL({ view: 'calendar' })}
             >
-              <Calendar className="h-3.5 w-3.5" /> Mensuel
+              <Calendar className="h-3.5 w-3.5 shrink-0" /> Mensuel
             </button>
             <button
-              className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${view === 'year' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+              type="button"
+              aria-pressed={view === 'year'}
+              className={`${VIEW_TAB} ${view === 'year' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
               onClick={() => updateURL({ view: 'year' })}
             >
-              <CalendarRange className="h-3.5 w-3.5" /> Annuel
+              <CalendarRange className="h-3.5 w-3.5 shrink-0" /> Annuel
             </button>
           </div>
 
           {view === 'calendar' && (
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => {
+            <div data-agenda-period-nav className="flex items-center justify-center gap-2">
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => {
                 const [y, m] = month.split('-').map(Number);
                 const d = new Date(y, m - 2, 1);
                 updateURL({ month: d.toISOString().slice(0, 7) });
               }} aria-label="Mois précédent"><ChevronLeft className="h-4 w-4" /></Button>
-              <span className="text-sm font-medium w-28 text-center">
+              <span className="min-w-[9rem] whitespace-nowrap text-center text-sm font-medium" aria-live="polite">
                 {new Date(month + '-15').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
               </span>
-              <Button variant="outline" size="sm" onClick={() => {
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => {
                 const [y, m] = month.split('-').map(Number);
                 const d = new Date(y, m, 1);
                 updateURL({ month: d.toISOString().slice(0, 7) });
@@ -558,10 +578,10 @@ function AgendaPageInner() {
           )}
 
           {view === 'year' && (
-            <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => updateURL({ year: String(year - 1) })} aria-label="Année précédente"><ChevronLeft className="h-4 w-4" /></Button>
-              <span className="text-sm font-bold w-16 text-center">{year}</span>
-              <Button variant="outline" size="sm" onClick={() => updateURL({ year: String(year + 1) })} aria-label="Année suivante"><ChevronRight className="h-4 w-4" /></Button>
+            <div data-agenda-period-nav className="flex items-center justify-center gap-2 lg:absolute lg:left-1/2 lg:-translate-x-1/2">
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => updateURL({ year: String(year - 1) })} aria-label="Année précédente"><ChevronLeft className="h-4 w-4" /></Button>
+              <span className="w-16 text-center text-sm font-bold" aria-live="polite">{year}</span>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => updateURL({ year: String(year + 1) })} aria-label="Année suivante"><ChevronRight className="h-4 w-4" /></Button>
             </div>
           )}
         </div>
@@ -570,7 +590,7 @@ function AgendaPageInner() {
         {loading ? (
           <div className="space-y-2">
             {view === 'year' ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                 {[...Array(12)].map((_, i) => <Skeleton key={i} className="h-48 w-full rounded-2xl" />)}
               </div>
             ) : (

@@ -36,32 +36,88 @@
  * identifiants des biens (`resolution_version`, `identifiers_fingerprint`) ;
  * l'empreinte des entrées inclut la version — une abstention d'une version
  * antérieure est réévaluée (déterministe d'abord), jamais réutilisée.
+ *
+ * Lot 34E (réconciliation CONTINUE) :
+ *   · les candidats sont RECONSTRUITS à chaque évaluation par le Candidate
+ *     Builder serveur (`candidate-builder.ts`) depuis la connaissance
+ *     persistée du document et l'état ACTUEL du compte — les candidats T1 ne
+ *     sont plus qu'un indice parmi d'autres ;
+ *   · NO_CANDIDATE, ABSTAINED, MULTI_ASSET ne sont jamais définitifs : chaque
+ *     issue porte la révision de connaissance du compte et l'empreinte du
+ *     contexte PERTINENT (`context.ts`) ; contexte identique → CONFIRMED_NO_CHANGE
+ *     sans IA ; contexte modifié → réévaluation, déterministe d'abord
+ *     (identifiant fort, référence partagée, nom distinctif unique), IA
+ *     seulement si nécessaire ;
+ *   · la carte « À traiter » LINK-ASSET reflète l'état COURANT : fermée au
+ *     rattachement, COMPLETE → ARBITRATE quand des candidats apparaissent,
+ *     propositions actualisées quand le jeu de candidats change ;
+ *   · monitoring : `last_evaluation` et détail du travail (révisions, motif,
+ *     empreintes, sources testées, candidats, IA, décision, action).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
 import { AiGateway } from '../../gateway/ai-gateway';
 import { isExecutionCancelled, type ExecutionGuard } from '../../queue/execution-control';
 import { T3LinkAmbiguityOutput } from '../master/t3-contract';
-import { getDocumentKnowledge } from '../../knowledge/document-knowledge.service';
 import { unlinkDocument } from '@/services/documents/document-asset-links';
 import { attachAutomatically, clearAutomaticPrimaryColumn, closeAssetLinkQuestion } from './automatic-attachment';
-import { loadAssetIdentifiers } from './asset-identifiers.repository';
 import { hasPrimaryAttachment, hasUserDecision, readAttachmentState, type AttachmentState } from './attachment-state';
 import {
-  decideDeterministic, decideFromAiOutput, documentAssetVariables, rankCandidates,
-  type DocumentAssetCandidate, type DocumentAssetDecision, type DocumentSubject,
+  decideContextualDeterministic, decideDeterministic, decideFromAiOutput, documentAssetVariables, promptCandidates, rankCandidates,
+  type DocumentAssetDecision, type DocumentSubject,
 } from './decision';
-import {
-  identifiersFingerprint, matchSignals, promptIdentifiers, resolveAssetByIdentifiers, type AssetIdentifierRecord,
-} from './identifiers';
+import { candidateSourcesOf, computeDocumentAssetContext, type DocumentAssetContext } from './context';
+import type { AccountMatchingIndex } from './matching-index';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 import {
-  getResolution, recordOutcome, restoreLastOutcome, type ResolutionStatus, type StoredCandidate,
+  getResolution, OPEN_OUTCOMES, recordOutcome, restoreLastOutcome,
+  type DocumentAssetResolution, type ResolutionStatus, type StoredCandidate,
 } from './resolution.repository';
+import { getAccountKnowledgeRevision, knowledgeChangedSince } from '../continuous/knowledge-revision';
 
 /** Issue métier d'une exécution (vocabulaire de la file T3). */
 export type DocumentAssetOutcome = 'APPLIED' | 'NO_CHANGE' | 'ABSTAIN' | 'SUPERSEDED' | 'TARGET_GONE';
+
+/**
+ * Résultat lisible d'une évaluation (monitoring, ticket « réconciliation
+ * continue » : « Context changed: NO / Result: CONFIRMED_NO_CHANGE / AI call: NO »).
+ */
+export type DocumentAssetEvaluationResult =
+  | 'CONFIRMED_NO_CHANGE' | 'RESOLVED_DETERMINISTICALLY' | 'RESOLVED_BY_AI' | 'MULTI_ASSET'
+  | 'ABSTAINED' | 'NO_CANDIDATE' | 'USER_DECIDED' | 'ALREADY_LINKED' | 'TARGET_GONE';
+
+/** Action « À traiter » consécutive à l'évaluation. */
+export type ToProcessEffect = 'NONE' | 'CREATED' | 'UPDATED' | 'UNCHANGED' | 'CLOSED' | 'SKIPPED';
+
+/** Monitoring d'une évaluation DOCUMENT_ASSET (persisté dans `last_evaluation`, rendu dans le détail du travail). */
+export interface DocumentAssetEvaluation {
+  documentId: number;
+  at: string;
+  trigger: string | null;
+  reprocessReason: string | null;
+  previousKnowledgeRevision: number | null;
+  currentKnowledgeRevision: number;
+  /** Natures de connaissance modifiées depuis la révision précédente. */
+  knowledgeChanged: string[];
+  previousResolution: ResolutionStatus | null;
+  newResolution: ResolutionStatus | null;
+  previousFingerprint: string | null;
+  currentFingerprint: string;
+  fingerprintChanged: boolean;
+  candidateCount: number;
+  /** `assetId` → sources de découverte. */
+  candidateSources: Record<string, string[]>;
+  /** Sources effectivement testées (NO_CANDIDATE : `candidateCount = 0` et ces sources). */
+  testedSources: string[];
+  deterministicMatches: string[];
+  /** Candidats transmis au modèle (borne du prompt, jamais de la découverte). */
+  promptCandidateCount: number;
+  aiCalled: boolean;
+  decision: string | null;
+  linkedAssetId: number | null;
+  toProcessAction: ToProcessEffect;
+  result: DocumentAssetEvaluationResult;
+}
 
 export interface ResolveDocumentAssetInput {
   accountId: number;
@@ -76,6 +132,11 @@ export interface ResolveDocumentAssetInput {
   finalAttempt?: boolean;
   /** T3 inactif : pas d'appel modèle (déterministe seul, puis « À traiter »). */
   skipAi?: boolean;
+  /** Index de rapprochement du compte déjà construit (balayage, réconciliation compte). */
+  index?: AccountMatchingIndex;
+  /** Déclencheur et motif de la reprise (monitoring). */
+  triggerCode?: string | null;
+  reprocessReason?: string | null;
 }
 
 export interface ResolveDocumentAssetResult {
@@ -84,13 +145,13 @@ export interface ResolveDocumentAssetResult {
   decision?: DocumentAssetDecision;
   /** Appel modèle effectué. */
   aiCalled: boolean;
+  evaluation?: DocumentAssetEvaluation;
 }
 
 /** Points d'injection (tests unitaires). */
 export interface ResolveDocumentAssetDeps {
   callModel?: (p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown> }) => Promise<T3LinkAmbiguityOutput>;
 }
-
 
 async function defaultCallModel(p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown> }) {
   const res = await AiGateway.execute({
@@ -105,36 +166,38 @@ async function defaultCallModel(p: { accountId: number; userId: number | null; f
   return res.data as T3LinkAmbiguityOutput;
 }
 
-/** Noms, familles et sous-types des biens candidats (du compte, actifs). */
-async function loadAssetLabels(accountId: number, ids: number[]): Promise<Map<number, { name: string; category: string | null; subtype: string | null }>> {
-  if (ids.length === 0) return new Map();
-  const rows = (await pgClient.unsafe(
-    `SELECT id, name, category, subtype FROM assets WHERE account_id = $1 AND deleted_at IS NULL AND id = ANY($2::int[])`,
-    [accountId, ids] as never[],
-  )) as unknown as Array<{ id: number; name: string | null; category: string | null; subtype: string | null }>;
-  return new Map(rows.map((r) => [Number(r.id), { name: r.name ?? `Bien ${r.id}`, category: r.category, subtype: r.subtype }]));
+/** Le contexte de la décision ouverte est-il inchangé (même empreinte, même version) ? (pure) */
+export function isUnchangedOpenContext(
+  r: Pick<DocumentAssetResolution, 'lastOutcome' | 'contextFingerprint' | 'resolutionVersion'> | null,
+  fingerprint: string,
+): boolean {
+  return !!r && r.contextFingerprint === fingerprint && r.resolutionVersion === DOCUMENT_ASSET_RESOLUTION_VERSION
+    && r.lastOutcome !== null && OPEN_OUTCOMES.includes(r.lastOutcome);
 }
 
-const factValue = (f: { normalizedValue?: unknown; valueText?: unknown; valueNumber?: unknown }): string | null => {
-  const v = f.normalizedValue ?? f.valueText ?? f.valueNumber;
-  return v === null || v === undefined || typeof v === 'object' ? null : String(v);
-};
-
-/**
- * Empreinte des entrées : même empreinte = même décision, sans rappeler le
- * modèle. Lot 32C : la version du moteur en fait partie — une décision n'est
- * réutilisable que si les entrées ET la version sont les mêmes.
- */
-export function inputFingerprint(p: {
-  extractionAt: string | null; candidates: DocumentAssetCandidate[]; matches: string[]; version?: number;
-}): string {
-  const payload = JSON.stringify({
-    v: p.version ?? DOCUMENT_ASSET_RESOLUTION_VERSION,
-    e: p.extractionAt,
-    c: [...p.candidates].sort((a, b) => a.assetId - b.assetId).map((c) => [c.assetId, c.t1?.confidence ?? null, c.t1?.score ?? null, c.currentRole, c.serverSignals.length]),
-    m: [...p.matches].sort(),
-  });
-  return createHash('sha256').update(payload).digest('hex');
+/** Base du monitoring d'une évaluation (pure). */
+export function evaluationBase(p: {
+  fileId: number; ctx: DocumentAssetContext; resolution: DocumentAssetResolution | null; revision: number;
+  changed: string[]; triggerCode?: string | null; reprocessReason?: string | null;
+}): Omit<DocumentAssetEvaluation, 'newResolution' | 'aiCalled' | 'decision' | 'linkedAssetId' | 'toProcessAction' | 'result' | 'promptCandidateCount'> {
+  const prev = p.resolution?.contextFingerprint ?? null;
+  return {
+    documentId: p.fileId,
+    at: new Date().toISOString(),
+    trigger: p.triggerCode ?? null,
+    reprocessReason: p.reprocessReason ?? (p.resolution ? (prev ? 'KNOWLEDGE_CHANGED' : 'LEGACY_RESOLUTION') : 'FIRST_EVALUATION'),
+    previousKnowledgeRevision: p.resolution?.knowledgeRevision ?? null,
+    currentKnowledgeRevision: p.revision,
+    knowledgeChanged: p.changed,
+    previousResolution: p.resolution?.lastOutcome ?? null,
+    previousFingerprint: prev,
+    currentFingerprint: p.ctx.fingerprint,
+    fingerprintChanged: prev !== p.ctx.fingerprint,
+    candidateCount: p.ctx.candidates.length,
+    candidateSources: candidateSourcesOf(p.ctx),
+    testedSources: p.ctx.build.testedSources,
+    deterministicMatches: p.ctx.build.deterministicMatches,
+  };
 }
 
 /** Exécute la réconciliation DOCUMENT_ASSET d'un document. Lève seulement pour être relancé (panne du modèle, interruption). */
@@ -152,92 +215,62 @@ export async function resolveDocumentAsset(
   const stop = await stopReason(accountId, fileId, state, g);
   if (stop) return stop;
 
-  // ── 2. Entrées persistées ─────────────────────────────────────────────
-  const [resolution, knowledge] = await Promise.all([
-    getResolution(fileId),
-    getDocumentKnowledge(accountId, fileId),
-  ]);
-  const t1 = new Map((resolution?.t1Candidates ?? []).map((c) => [c.assetId, c]));
-  const facts = knowledge?.facts ?? [];
-  const records = await loadAssetIdentifiers(accountId);
-  // Identifiants des biens tels que lus pour CETTE évaluation (lot 32C) : le
-  // rattrapage ne rejoue que si l'un d'eux change depuis.
-  const idsFingerprint = identifiersFingerprint(records);
-  const identification = resolveAssetByIdentifiers(records, {
-    facts: facts.map((f) => ({ canonicalKey: f.canonicalKey ?? null, value: factValue(f) })),
-    texts: [knowledge?.extraction.fullText, ...[...t1.values()].map((c) => c.signals)],
-  });
-  const factTargets = facts
-    .filter((f) => f.targetType === 'ASSET' && f.targetEntityId != null)
-    .map((f) => Number(f.targetEntityId));
+  // ── 2. Contexte ACTUEL : révision lue AVANT la relecture (une écriture
+  //       concurrente rendra la décision de nouveau réévaluable), puis
+  //       connaissance persistée + Candidate Builder sur TOUS les biens.
+  const revision = await getAccountKnowledgeRevision(accountId);
+  const resolution = await getResolution(fileId);
+  const ctx = await computeDocumentAssetContext({ accountId, fileId, state, resolution, index: input.index });
+  const changed = resolution?.knowledgeRevision != null ? await knowledgeChangedSince(accountId, resolution.knowledgeRevision) : [];
+  const base = evaluationBase({ fileId, ctx, resolution, revision, changed, triggerCode: input.triggerCode, reprocessReason: input.reprocessReason });
 
-  const candidateIds = [...new Set([
-    ...t1.keys(), ...identification.assetIds, ...state.secondaryAssetIds, ...state.mentionedAssetIds, ...factTargets,
-  ])];
-  const labels = await loadAssetLabels(accountId, candidateIds);
-  const recordById = new Map<number, AssetIdentifierRecord>(records.map((r) => [r.assetId, r]));
-  const missing = candidateIds.filter((id) => labels.has(id) && !recordById.has(id));
-  if (missing.length) for (const r of await loadAssetIdentifiers(accountId, missing)) recordById.set(r.assetId, r);
-
-  const candidates: DocumentAssetCandidate[] = candidateIds
-    .filter((id) => labels.has(id))
-    .map((id) => {
-      const l = labels.get(id)!;
-      const c = t1.get(id);
-      return {
-        assetId: id,
-        name: l.name,
-        family: recordById.get(id)?.family ?? null,
-        subtype: l.subtype,
-        identifiers: promptIdentifiers(recordById.get(id)),
-        serverSignals: matchSignals(identification, id),
-        t1: c ? { confidence: c.confidence, score: c.score, reason: c.reason, signals: c.signals } : null,
-        currentRole: state.secondaryAssetIds.includes(id) || factTargets.includes(id)
-          ? 'SECONDARY' as const
-          : state.mentionedAssetIds.includes(id) ? 'MENTIONED' as const : null,
-      };
-    });
-
-  const extractionAt = knowledge?.extraction.extractedAt ? new Date(String(knowledge.extraction.extractedAt)).toISOString() : null;
-  const fingerprint = inputFingerprint({
-    extractionAt, candidates, matches: identification.matches.map((m) => `${m.assetId}:${m.kind}`),
-  });
-  // Relance sur des entrées identiques : décision déjà prise, aucun appel modèle.
-  const derniere = resolution?.lastOutcome ?? null;
-  if (resolution && resolution.inputFingerprint === fingerprint
-      && (derniere === 'ABSTAINED' || derniere === 'NO_CANDIDATE' || derniere === 'MULTI_ASSET')) {
+  // Contexte pertinent inchangé : la décision ouverte reste valable, sans IA.
+  if (isUnchangedOpenContext(resolution, ctx.fingerprint)) {
+    const evaluation: DocumentAssetEvaluation = {
+      ...base, newResolution: resolution!.lastOutcome, aiCalled: false, decision: null, linkedAssetId: null,
+      toProcessAction: 'UNCHANGED', result: 'CONFIRMED_NO_CHANGE', promptCandidateCount: 0,
+    };
     await g('état de résolution');
-    await restoreLastOutcome(fileId, { identifiersFingerprint: idsFingerprint });
-    return { outcome: 'NO_CHANGE', status: derniere, aiCalled: false };
+    await restoreLastOutcome(fileId, { identifiersFingerprint: ctx.idsFingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation } });
+    logEvaluation(evaluation);
+    return { outcome: 'NO_CHANGE', status: resolution!.lastOutcome, aiCalled: false, evaluation };
   }
 
-  // ── 3. Déterministe ───────────────────────────────────────────────────
-  let decision = decideDeterministic(identification, { multiAssetDeclared: knowledge?.extraction.multiAsset === true });
+  // ── 3. Déterministe : identifiants forts, puis référence partagée / nom distinctif ──
+  let decision = decideDeterministic(ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared })
+    ?? decideContextualDeterministic(ctx.candidates, ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared });
   let aiCalled = false;
+  const pourModele = promptCandidates(ctx.candidates);
 
-  // ── 4. Modèle (candidats fournis seulement) ───────────────────────────
+  // ── 4. Modèle (candidats du serveur seulement, monde fermé) ───────────
   if (!decision) {
-    if (candidates.length === 0) {
+    if (ctx.candidates.length === 0) {
       decision = { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] };
     } else if (input.skipAi) {
-      decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(candidates) };
+      decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(ctx.candidates) };
     } else {
       await input.guard?.assertActive('T3 DOCUMENT_ASSET — appel du modèle');
+      const ext = ctx.sources?.extraction;
       const subject: DocumentSubject = {
-        title: knowledge?.extraction.title ?? null,
-        documentType: knowledge?.extraction.documentTypeCode ?? null,
-        documentDate: knowledge?.extraction.documentDate ?? null,
-        supplier: knowledge?.extraction.supplierName ?? null,
-        description: knowledge?.extraction.description ?? null,
-        multiAssetDeclared: knowledge?.extraction.multiAsset ?? null,
-        facts: facts.map((f) => ({ canonicalKey: f.canonicalKey ?? null, label: f.label, value: factValue(f), excerpt: f.excerpt })),
+        title: ext?.title ?? null,
+        documentType: ext?.documentType ?? null,
+        documentDate: ext?.documentDate ?? null,
+        supplier: ext?.supplier ?? null,
+        description: ext?.description ?? null,
+        multiAssetDeclared: ext?.multiAsset ?? null,
+        facts: (ctx.sources?.facts ?? []).map((f) => ({ canonicalKey: f.canonicalKey, label: f.label, value: f.value, excerpt: f.excerpt })),
       };
       try {
         aiCalled = true;
         const output = await (deps.callModel ?? defaultCallModel)({
-          accountId, userId: input.userId ?? state.userId, fileId, variables: documentAssetVariables(subject, candidates),
+          accountId, userId: input.userId ?? state.userId, fileId, variables: documentAssetVariables(subject, pourModele),
         });
-        decision = decideFromAiOutput(output, candidates);
+        decision = decideFromAiOutput(output, pourModele);
+        // Candidats découverts au-delà de la borne du prompt : toujours proposés à l'utilisateur.
+        if (decision.kind === 'ABSTAIN' && pourModele.length < ctx.candidates.length) {
+          const vus = new Set(decision.ranked.map((r) => r.assetId));
+          decision.ranked.push(...rankCandidates(ctx.candidates).filter((r) => !vus.has(r.assetId)).map((r) => ({ ...r, score: Math.min(r.score, 0.3) })));
+        }
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
         // Panne du modèle : nouvelle tentative par la file (backoff) ; à la
@@ -245,7 +278,7 @@ export async function resolveDocumentAsset(
         // document sans bien.
         if (!input.finalAttempt) throw e;
         console.warn(`[t3-document-asset] document ${fileId} : modèle indisponible (${(e as Error).message}) — « À traiter ».`);
-        decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(candidates) };
+        decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(ctx.candidates) };
       }
     }
   }
@@ -253,10 +286,20 @@ export async function resolveDocumentAsset(
   // ── 5 / 6. Application ────────────────────────────────────────────────
   await input.guard?.assertActive('T3 DOCUMENT_ASSET — écriture');
   const result = await applyDecision({
-    accountId, fileId, userId: input.userId ?? state.userId, decision, labels, fingerprint, extractionAt, idsFingerprint, g,
+    accountId, fileId, userId: input.userId ?? state.userId, decision, ctx, revision, g,
+    evaluation: { ...base, aiCalled, promptCandidateCount: aiCalled ? pourModele.length : 0 },
   });
   console.info(`[t3-document-asset] document ${fileId} : ${decision.kind}${decision.kind === 'ABSTAIN' ? ` (${decision.reasonCode})` : ` [${decision.method}]`} → ${result.outcome}`);
+  if (result.evaluation) logEvaluation(result.evaluation);
   return { ...result, decision, aiCalled };
+}
+
+/** Une ligne de journal lisible par évaluation (exploitation). */
+function logEvaluation(e: DocumentAssetEvaluation): void {
+  console.info(`[t3-document-asset] document ${e.documentId} — révision ${e.previousKnowledgeRevision ?? '∅'} → ${e.currentKnowledgeRevision}`
+    + ` · motif ${e.reprocessReason ?? '∅'}${e.knowledgeChanged.length ? ` (${e.knowledgeChanged.join(', ')})` : ''}`
+    + ` · contexte modifié : ${e.fingerprintChanged ? 'OUI' : 'NON'} · candidats ${e.candidateCount}`
+    + ` · IA : ${e.aiCalled ? 'OUI' : 'NON'} · résultat ${e.result} · À traiter ${e.toProcessAction}`);
 }
 
 /** Arrêt avant tout travail (pure vis-à-vis du modèle). */
@@ -279,29 +322,42 @@ async function stopReason(accountId: number, fileId: number, s: AttachmentState,
   return null;
 }
 
+type EvaluationDraft = Omit<DocumentAssetEvaluation, 'newResolution' | 'decision' | 'linkedAssetId' | 'toProcessAction' | 'result'>;
+
 async function applyDecision(p: {
   accountId: number; fileId: number; userId: number | null; decision: DocumentAssetDecision;
-  labels: Map<number, { name: string }>; fingerprint: string; extractionAt: string | null; idsFingerprint: string; g: Garde;
+  ctx: DocumentAssetContext; revision: number; g: Garde; evaluation: EvaluationDraft;
 }): Promise<Omit<ResolveDocumentAssetResult, 'decision' | 'aiCalled'>> {
-  const { accountId, fileId, decision, g } = p;
+  const { accountId, fileId, decision, g, ctx } = p;
+  const fin = (o: { newResolution: ResolutionStatus | null; linkedAssetId?: number | null; toProcessAction: ToProcessEffect; result: DocumentAssetEvaluationResult }): DocumentAssetEvaluation => ({
+    ...p.evaluation, decision: decision.kind === 'ABSTAIN' ? `ABSTAIN:${decision.reasonCode}` : `${decision.kind}:${decision.method}`,
+    linkedAssetId: o.linkedAssetId ?? null, newResolution: o.newResolution, toProcessAction: o.toProcessAction, result: o.result,
+  });
   // Relecture JUSTE AVANT l'écriture : l'utilisateur a pu trancher pendant
   // l'appel au modèle (ticket T3, §11).
   const avant = await readAttachmentState(accountId, fileId);
   const stop = await stopReason(accountId, fileId, avant, g);
   if (stop) return stop.outcome === 'NO_CHANGE' ? { ...stop, outcome: 'SUPERSEDED' } : stop;
+  const commun = {
+    inputFingerprint: ctx.fingerprint, extractionAt: ctx.extractionAt, identifiersFingerprint: ctx.idsFingerprint,
+    knowledgeRevision: p.revision, contextFingerprint: ctx.fingerprint,
+  };
 
   if (decision.kind === 'ABSTAIN') {
     const candidates: StoredCandidate[] = decision.ranked.map((r) => ({
-      assetId: r.assetId, label: p.labels.get(r.assetId)?.name ?? `Bien ${r.assetId}`, score: r.score, reason: r.reason,
+      assetId: r.assetId, label: ctx.labels.get(r.assetId)?.name ?? `Bien ${r.assetId}`, score: r.score, reason: r.reason,
     }));
-    await openUserQuestion({ accountId, fileId, state: avant, candidates, g });
+    // Carte LINK-ASSET synchronisée sur l'état COURANT (créée, ou
+    // COMPLETE → ARBITRATE, ou propositions actualisées).
+    const effet = await openUserQuestion({ accountId, fileId, state: avant, candidates, g });
     const status = decision.reasonCode === 'NO_CANDIDATE' ? 'NO_CANDIDATE' : 'ABSTAINED';
+    const evaluation = fin({ newResolution: status, toProcessAction: effet, result: status });
     await g('état de résolution');
     await recordOutcome({
       accountId, fileId, status, method: decision.reasonCode === 'NO_CANDIDATE' ? 'NONE' : 'AI', reasonCode: decision.reasonCode,
-      candidates, inputFingerprint: p.fingerprint, extractionAt: p.extractionAt, identifiersFingerprint: p.idsFingerprint,
+      candidates, ...commun, lastEvaluation: { ...evaluation },
     });
-    return { outcome: 'ABSTAIN', status };
+    return { outcome: 'ABSTAIN', status, evaluation };
   }
 
   const cibles = decision.kind === 'APPLY' ? [decision.assetId] : decision.assetIds;
@@ -309,7 +365,7 @@ async function applyDecision(p: {
   // Fermer l'éventuelle question AVANT d'écrire : le déclencheur 0257 la
   // fermerait sinon avec un motif « utilisateur ».
   await g('question « À traiter »');
-  await closeAssetLinkQuestion(accountId, fileId);
+  const fermees = await closeAssetLinkQuestion(accountId, fileId);
   for (const assetId of cibles) {
     await g('lien et colonne de rattachement');
     await attachAutomatically({
@@ -342,12 +398,24 @@ async function applyDecision(p: {
   await afterLink({ accountId, fileId, userId: p.userId, assetIds: cibles });
 
   const status = decision.kind === 'APPLY' ? 'RESOLVED' : 'MULTI_ASSET';
+  // Multi-biens : la décision reste OUVERTE (aucun bien principal). Son
+  // empreinte est celle du contexte APRÈS l'écriture (ses propres liens
+  // SECONDARY compris) : le passage suivant ne la rejoue pas pour ses
+  // propres liens.
+  const fingerprint = decision.kind === 'MULTI_ASSET'
+    ? (await computeDocumentAssetContext({ accountId, fileId, state: apres, resolution: { t1Candidates: ctx.t1Candidates }, index: ctx.index })).fingerprint
+    : ctx.fingerprint;
+  const evaluation = fin({
+    newResolution: status, linkedAssetId: decision.kind === 'APPLY' ? decision.assetId : null,
+    toProcessAction: fermees > 0 ? 'CLOSED' : 'NONE',
+    result: decision.kind === 'MULTI_ASSET' ? 'MULTI_ASSET' : decision.method === 'AI' ? 'RESOLVED_BY_AI' : 'RESOLVED_DETERMINISTICALLY',
+  });
   await g('état de résolution');
   await recordOutcome({
     accountId, fileId, status, method: decision.method, reasonCode: decision.reason.slice(0, 200),
-    decidedAssetIds: cibles, inputFingerprint: p.fingerprint, extractionAt: p.extractionAt, identifiersFingerprint: p.idsFingerprint,
+    decidedAssetIds: cibles, ...commun, contextFingerprint: fingerprint, inputFingerprint: fingerprint, lastEvaluation: { ...evaluation },
   });
-  return { outcome: 'APPLIED', status };
+  return { outcome: 'APPLIED', status, evaluation };
 }
 
 /**
@@ -377,6 +445,20 @@ async function afterLink(p: { accountId: number; fileId: number; userId: number 
   } catch (e) {
     console.error(`[t3-document-asset] événement document_linked du document ${p.fileId} non émis :`, (e as Error).message);
   }
+  // Nouvelle connaissance T3 (document → bien) : contrôle ciblé du titre
+  // (moteur de titre commun, origine T3 ; un titre USER n'est jamais touché).
+  await refreshDocumentTitle(p.accountId, p.fileId);
+}
+
+/** Contrôle ciblé du titre après une nouvelle connaissance T3 (ne lève jamais, sauf interruption). */
+export async function refreshDocumentTitle(accountId: number, fileId: number): Promise<void> {
+  try {
+    const { ensureBusinessTitle } = await import('@/services/documents/document-title.service');
+    await ensureBusinessTitle({ fileId, accountId, origin: 'T3', mode: 'repair', trigger: 'CONTEXT_CHANGED' });
+  } catch (e) {
+    if (isExecutionCancelled(e)) throw e;
+    console.error(`[t3-document-asset] contrôle du titre du document ${fileId} impossible :`, (e as Error).message);
+  }
 }
 
 /**
@@ -384,8 +466,8 @@ async function afterLink(p: { accountId: number; fileId: number; userId: number 
  * actions actives), ARBITRATE avec les candidats de T3, ou COMPLETE sans
  * candidat. Document « à valider » si une proposition l'accompagne.
  */
-async function openUserQuestion(p: { accountId: number; fileId: number; state: AttachmentState; candidates: StoredCandidate[]; g: Garde }): Promise<void> {
-  if (!p.state.open) return;
+async function openUserQuestion(p: { accountId: number; fileId: number; state: AttachmentState; candidates: StoredCandidate[]; g: Garde }): Promise<ToProcessEffect> {
+  if (!p.state.open) return 'NONE';
   await p.g('question « À traiter »');
   const { upsertAction } = await import('@/services/to-process/to-process-action.service');
   const proposals = p.candidates.slice(0, 5).map((c) => ({
@@ -407,6 +489,7 @@ async function openUserQuestion(p: { accountId: number; fileId: number; state: A
     await p.g('état du document');
     await setAnalysisState(p.accountId, p.fileId, 'ANALYZED', 'VALIDATION_REQUIRED');
   }
+  return res.status === 'CREATED' ? 'CREATED' : res.status === 'UPDATED' ? 'UPDATED' : 'SKIPPED';
 }
 
 /** Transition d'état d'analyse conditionnelle, diffusée au tiroir du document (SSE). */

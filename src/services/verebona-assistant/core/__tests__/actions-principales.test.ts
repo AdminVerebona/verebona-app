@@ -93,7 +93,8 @@ describe('navigation explicite (§22.10, 37.11)', () => {
 describe('aide produit : l’action qui fait ce que la question demande (§10.5)', () => {
   it('« Comment ajouter un document ? » → « Ajouter un document » en principal, sans « Ajouter un bien »', async () => {
     const a = await actionsFor('Comment ajouter un document ?');
-    expect(a[0]).toMatchObject({ type: 'START_ADD_DOCUMENT', label: 'Ajouter un document', href: '/documents' });
+    // Lot 34G : une commande de création, plus une navigation vers /documents.
+    expect(a[0]).toMatchObject({ type: 'START_ADD_DOCUMENT', label: 'Ajouter un document', href: null, command: { kind: 'CREATE', flow: 'document', assetId: null } });
     expect(a.map((x) => x.type)).not.toContain('START_ADD_ASSET');
     expect(a.map((x) => x.type)).not.toContain('START_ADD_AGENDA_ITEM');
   });
@@ -110,7 +111,10 @@ describe('aide produit : l’action qui fait ce que la question demande (§10.5)
 
   it('sur la page d’un bien, « Ajouter un document » vise ce bien', async () => {
     const a = await actionsFor('Comment ajouter un document ?', [], { pageContext: { assetId: '42' } });
-    expect(a.some((x) => x.type === 'START_ADD_DOCUMENT' && x.href === '/assets/42?tab=documents')).toBe(true);
+    // Lot 34G : le bien est PRÉSÉLECTIONNÉ dans le formulaire (une seule action).
+    const ajout = a.filter((x) => x.type === 'START_ADD_DOCUMENT');
+    expect(ajout).toHaveLength(1);
+    expect(ajout[0]).toMatchObject({ href: null, command: { kind: 'CREATE', flow: 'document', assetId: 42 } });
   });
 });
 

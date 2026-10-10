@@ -130,9 +130,18 @@ export function declaredMasterVariables(masterPromptCode: string): string[] {
  * que le code fournit (registre) — un emplacement supprimé ou inventé ferait
  * échouer chaque appel (`UNDECLARED_VARIABLE` / `UNRESOLVED_PLACEHOLDER`).
  */
-export function checkMasterProposal(treatment: Treatment, text: string): string[] {
+export function checkMasterProposal(
+  treatment: Treatment, text: string,
+  /**
+   * Lot 34D — configuration d'exécution du prompt visé. En contexte
+   * structuré (T4), le texte est libre : aucun emplacement ni titre de
+   * branche n'est exigé (les données passent par EXECUTION_CONTEXT).
+   */
+  execution?: { mode: 'LEGACY_TEMPLATE' | 'STRUCTURED_CONTEXT' } | null,
+): string[] {
   const master = masterPromptForTreatment(treatment);
   if (!master) return [`aucun prompt maître déclaré pour ${treatment}`];
+  if (execution?.mode === 'STRUCTURED_CONTEXT') return text.trim() === '' ? ['prompt vide'] : [];
   const out = checkMasterTemplate(text, master.tasks);
   const attendus = declaredMasterVariables(master.masterPromptCode);
   if (attendus.length) {

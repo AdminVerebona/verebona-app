@@ -12,9 +12,10 @@
  * Lot 16b-3 : le chemin historique (`analyzeDocument`, complétion des champs
  * vides, seuil de confiance 0,7, ancien suivi d'usage, coût codé en dur) est supprimé —
  * le coût est mesuré par la seule passerelle, aux tarifs de `ai_model_pricing`.
- * Échec de l'analyse : `error` / `ANALYSIS_FAILED` sur le flux avec le motif
- * (affiché par le tiroir), le document garde son motif et repart en file
- * durable (nouvelle tentative avec backoff). Un job T1 vivant pour ce document
+ * Échec de l'analyse : `error` / `ANALYSIS_FAILED` sur le flux avec le
+ * statut fonctionnel (lot 34C : jamais le motif technique, conservé sur le
+ * document pour BO › Exécutions IA), le document repart en file durable
+ * (nouvelle tentative avec backoff). Un job T1 vivant pour ce document
  * → `ALREADY_ANALYZING` (pas de double appel au master).
  */
 
@@ -119,9 +120,9 @@ export async function POST(
       } else {
         // Le pipeline ne lève pas (échecs écrits sur le fichier) : seule une
         // panne de transport ou d'authentification arrive ici.
-        const failReason = (error as Error).message ?? 'Erreur inconnue';
+        // Lot 34C : l'exception reste dans les journaux, jamais dans le flux.
         console.error('POST /api/documents/[id]/analyze error:', error);
-        await writer.write(sseEvent({ type: 'error', code: 'INTERNAL_ERROR', message: failReason }));
+        await writer.write(sseEvent({ type: 'error', code: 'INTERNAL_ERROR' }));
       }
     } finally {
       try { await writer.close(); } catch { /* already closed */ }
@@ -189,9 +190,12 @@ async function streamUnifiedAnalysis(args: {
   const { analyzeFileSources, registerAnalysisStreamWriter } =
     await import('@/services/ai/source-analysis/entrypoint');
 
-  // Relais de la progression émise par le pipeline vers ce flux.
+  // Relais de la progression émise par le pipeline vers ce flux — lot 34C :
+  // sans texte technique, avec le statut fonctionnel (`userStreamEvent`).
+  const { userStreamEvent, getFileProcessingView, processingFields } =
+    await import('@/services/ai/processing-status/processing-status.service');
   const unregister = await registerAnalysisStreamWriter(assetFileId, (data) => {
-    void write(data);
+    void userStreamEvent(assetFileId, accountId, data).then(write).catch(() => undefined);
   });
 
   const keepAlive = setInterval(() => { void write({ type: 'ping' }); }, 20_000);
@@ -235,20 +239,21 @@ async function streamUnifiedAnalysis(args: {
     // remis en file — la reprise serveur (`analysis-recovery`) retrouvera le
     // document bloqué après une dizaine de minutes. Jamais un `done` trompeur.
     if (!outcome) {
-      await write({
-        type: 'error', code: 'ANALYSIS_FAILED',
-        message: 'Analyse interrompue par une erreur technique : elle sera relancée automatiquement dans une dizaine de minutes.',
-      });
+      await write({ type: 'error', code: 'ANALYSIS_INTERRUPTED' });
       return;
     }
 
     // Échec de l'analyse (master T1, persistance) : le document garde son
     // motif (ANALYSIS_FAILED) et repart en file durable (`analyzeFileSources`),
     // sauf échec définitif déjà repris (voir `failure-policy`).
+    //
+    // Lot 34C : jamais le motif technique. Le statut FONCTIONNEL relu après
+    // la remise en file (job réellement en attente → « En file d'attente »,
+    // aucun job → échec définitif générique ou action utilisateur ciblée) ;
+    // le tiroir en tire son texte (référentiel fermé).
     if (outcome.failedSourceIds.includes(assetFileId)) {
-      const [f] = await db.select({ reason: assetFiles.analysisFailReason })
-        .from(assetFiles).where(eq(assetFiles.id, assetFileId)).limit(1);
-      await write({ type: 'error', code: 'ANALYSIS_FAILED', message: f?.reason ?? 'Analyse impossible.' });
+      const vue = await getFileProcessingView(assetFileId, accountId).catch(() => null);
+      await write({ type: 'error', code: 'ANALYSIS_FAILED', ...(vue ? processingFields(vue) : {}) });
       return;
     }
 

@@ -16,7 +16,10 @@
  * ── LOT 32 (ticket MASC2) : DEUX NIVEAUX ───────────────────────────────────
  *
  *   1. synthèse : « Deux sujets nécessitent votre attention aujourd’hui. »
- *      (même total que la pastille et la page « À traiter ») ;
+ *      Lot 34 (MASC3) : seuls les « À traiter » DO_FIRST sont affichés, au
+ *      plus deux ; la phrase compte les éléments AFFICHÉS, jamais le total
+ *      de la file (la pastille du menu le garde) ; plus de « N autres
+ *      sujets dans « À traiter » » ;
  *   2. éléments d'action homogènes (`homeItems`) : « À traiter » d'abord,
  *      puis échéances et recommandations — un seul composant. Les pastilles
  *      « Compléter “…” » / « Choisir “…” » (3e niveau) sont supprimées.
@@ -41,7 +44,7 @@ import { greetingDateLong, greetingDateShort, greetingWord } from '@/lib/mascot-
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
-  composeSpeech, displayedSecondaries, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights, todoRemaining,
+  composeSpeech, displayedSecondaries, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights,
   type ActionTile, type HomeItem,
 } from '@/services/home/mascot/bubble';
 import type { AnswerKind } from '@/lib/verebona/space';
@@ -244,7 +247,6 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   ];
 
   const items = homeItems(presentation, empty);
-  const reste = empty ? 0 : todoRemaining(presentation);
   const suggestions = homeSuggestions(presentation, empty, pageSuggestions);
 
   return (
@@ -312,16 +314,6 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
               />
             ))}
           </div>
-        )}
-
-        {reste > 0 && (
-          <button
-            type="button"
-            onClick={() => router.push('/accueil/a-traiter')}
-            className="-mt-1 self-start text-[13px] font-medium text-[color:var(--accent)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
-          >
-            {reste > 1 ? `${reste} autres sujets dans « À traiter »` : '1 autre sujet dans « À traiter »'}
-          </button>
         )}
 
         {suggestions.length > 0 && (

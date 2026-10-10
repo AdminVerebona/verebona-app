@@ -92,6 +92,12 @@ export interface VerebonaAction {
   targetRef?: string | null;
   /** Paramètres validés de l'action (onglet, chemin d'article…) — §28.6. Interne. */
   payload?: Record<string, string | number | boolean | null>;
+  /**
+   * Lot 34G : COMMANDE d'une action de création (START_ADD_*) — parcours à
+   * ouvrir directement et bien présélectionné, contrôlé par le serveur.
+   * Une création n'a plus de `href` (`lib/verebona/assistant-actions`).
+   */
+  command?: import('@/lib/verebona/assistant-actions').AssistantCreateCommand | null;
 }
 
 export function isVerebonaActionType(value: string): value is VerebonaActionType {

@@ -1,22 +1,38 @@
 /**
- * Tables CENTRALISÉES de normalisation — lot 33D (ticket « réussite malgré
- * les désalignements », §3 et §5).
+ * Table CENTRALISÉE des équivalences d'énumération — lot 33D, revue au lot
+ * 34D (ticket « contrat runtime source unique de vérité »).
  *
- * Une seule source pour tous les traitements (T1 à T6) : une équivalence
- * n'est appliquée que si la valeur canonique figure dans l'énumération (ou
- * la clé dans l'objet) attendue À CET ENDROIT, et si elle est UNIQUE — une
- * équivalence qui désignerait deux valeurs autorisées n'est jamais appliquée
- * (aucune conversion ambiguë).
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 34D — AUCUN RAPPROCHEMENT HEURISTIQUE
  *
- * Ajouter une ligne ici suffit : la normalisation pilotée par le schéma
- * (`normalize.ts`) la prend en compte partout, et les tests DIAG/REPAIR
- * vérifient qu'aucune équivalence n'est ambiguë.
+ * Le lot 33D rapprochait les noms de champs « proches » (casse, accents,
+ * séparateurs : `purchase_date` = `purchaseDate` = `PURCHASE-DATE`, plus une
+ * table d'alias génériques `datePurchase`, `date_achat`…) et les valeurs
+ * d'énumération sans séparateurs (`purchase-receipt` = `PURCHASE_RECEIPT`).
+ * C'est RETIRÉ : un nom de champ inconnu n'est jamais deviné (passe de
+ * réparation avec le contrat exact), et une valeur d'énumération n'est
+ * remplacée que par :
+ *   · la normalisation SÛRE de casse seule (`invoice` → `INVOICE` : même
+ *     valeur, casse différente — jamais une autre valeur) ;
+ *   · une équivalence EXPLICITE de cette table (`PURCHASE_RECEIPT` →
+ *     `RECEIPT`), versionnée (`COMPAT_TABLE_VERSION`), testée, appliquée
+ *     seulement à l'étape « mappings de compatibilité » (après un premier
+ *     échec de validation) et consignée `compat_mapping`.
+ * Les renommages de champs explicites (path, version source → cible) sont
+ * dans `compat-mappings.ts`.
+ *
+ * Une équivalence n'est appliquée que si la valeur canonique figure dans
+ * l'énumération attendue À CET ENDROIT et si elle est UNIQUE (aucune
+ * conversion ambiguë — tests REPAIR-15).
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
 /**
- * Énumérations : valeur canonique → synonymes rencontrés dans les sorties.
- * La comparaison ignore la casse, les accents, espaces, tirets et
- * soulignés (`purchase-receipt` = `PURCHASE_RECEIPT`).
+ * Énumérations : valeur canonique → équivalences EXPLICITES (table de
+ * compatibilité, version `COMPAT_TABLE_VERSION` de `compat-mappings.ts`).
+ * Comparaison à la casse près SEULEMENT : `purchase-receipt` n'est PAS
+ * `PURCHASE_RECEIPT` (lot 34D). Ajouter une équivalence = ajouter une ligne
+ * ici, incrémenter `COMPAT_TABLE_VERSION` et compléter les tests RTC/REPAIR.
  */
 export const ENUM_SYNONYMS: Readonly<Record<string, readonly string[]>> = {
   // Types documentaires (exemple du ticket : PURCHASE_RECEIPT → RECEIPT).
@@ -57,57 +73,28 @@ export const ENUM_SYNONYMS: Readonly<Record<string, readonly string[]>> = {
   amount: ['money', 'currency', 'price', 'montant'],
 };
 
-/**
- * Noms de champs alternatifs : clé canonique → variantes. S'ajoute à
- * l'équivalence automatique de casse et de séparateurs (`purchase_date` =
- * `purchaseDate` = `PURCHASE-DATE`), appliquée sans table.
- */
-export const FIELD_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  purchaseDate: ['datePurchase', 'date_achat', 'dateAchat', 'achatDate', 'date_d_achat'],
-  documentDate: ['date_document', 'dateDocument', 'docDate', 'document_date_value'],
-  amountCents: ['amount_in_cents', 'montantCentimes', 'montant_centimes', 'totalCents'],
-  supplier: ['fournisseur', 'vendor', 'seller'],
-  title: ['titre'],
-  transcription: ['fullText', 'full_text', 'ocrText', 'ocr_text'],
-  normalizedValue: ['normalized', 'valueNormalized', 'valeurNormalisee'],
-  canonicalKey: ['fieldKey', 'field_key', 'cleCanonique'],
-  canonicalUnit: ['unit', 'unite', 'unité'],
-  rawValue: ['valueRaw', 'valeurBrute'],
-  evidence: ['preuve', 'proof'],
-  visualEvidence: ['visual_proof', 'preuveVisuelle'],
-  hasExploitableContent: ['exploitable', 'hasContent', 'has_exploitable_content_flag'],
-  evidenceSignals: ['signals', 'indices'],
-  assetCandidate: ['candidateAsset', 'asset_candidate'],
-};
-
-/** Forme de comparaison d'un nom ou d'une valeur : sans casse, accents ni séparateurs. */
-export function canon(s: string): string {
-  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Forme de comparaison SÛRE d'une valeur d'énumération : casse et espaces de bord seulement. */
+export function caseFold(s: string): string {
+  return s.trim().toUpperCase();
 }
 
 /**
  * Valeur canonique d'une énumération pour `value`, ou `null` si aucune
  * équivalence UNIQUE n'existe parmi `allowed`. Rend aussi la règle appliquée.
+ *
+ *   · `enum_case` : même valeur à la casse près (normalisation sûre) ;
+ *   · `enum_synonym` : équivalence EXPLICITE de `ENUM_SYNONYMS`, seulement
+ *     si `synonyms` est demandé (étape « mappings de compatibilité »).
+ * Jamais de rapprochement par ressemblance (séparateurs, accents, préfixes).
  */
-export function matchEnum(value: string, allowed: readonly string[]): { value: string; rule: 'enum_case' | 'enum_synonym' } | null {
-  const c = canon(value);
+export function matchEnum(
+  value: string, allowed: readonly string[], opts: { synonyms?: boolean } = {},
+): { value: string; rule: 'enum_case' | 'enum_synonym' } | null {
+  const c = caseFold(value);
   if (!c) return null;
-  const direct = allowed.filter((a) => canon(a) === c);
+  const direct = allowed.filter((a) => caseFold(a) === c);
   if (direct.length === 1) return { value: direct[0], rule: 'enum_case' };
-  if (direct.length > 1) return null;
-  const viaSynonyme = allowed.filter((a) => (ENUM_SYNONYMS[a] ?? []).some((s) => canon(s) === c));
+  if (direct.length > 1 || !opts.synonyms) return null;
+  const viaSynonyme = allowed.filter((a) => (ENUM_SYNONYMS[a] ?? []).some((s) => caseFold(s) === c));
   return viaSynonyme.length === 1 ? { value: viaSynonyme[0], rule: 'enum_synonym' } : null;
-}
-
-/**
- * Clé canonique d'un nom de champ reçu, parmi `known`, ou `null` (aucune
- * correspondance, ou plusieurs).
- */
-export function matchField(received: string, known: readonly string[]): string | null {
-  const c = canon(received);
-  const direct = known.filter((k) => canon(k) === c);
-  if (direct.length === 1) return direct[0];
-  if (direct.length > 1) return null;
-  const viaAlias = known.filter((k) => (FIELD_ALIASES[k] ?? []).some((a) => canon(a) === c));
-  return viaAlias.length === 1 ? viaAlias[0] : null;
 }

@@ -122,44 +122,61 @@ export function capabilitiesForPlan(plan: string): { open: AssistantCapability[]
 
 /**
  * Suggestions initiales contextuelles — CDC §8. Catalogue VALIDÉ, jamais généré par
- * Gemini (§8.3). Priorité : page > compte > action utile > aide fréquente > générique.
+ * Gemini (§8.3). Priorité : page > compte > action utile > aide fréquente.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * SOURCE UNIQUE, TOUJOURS RÉPONDABLE (lot 32, point 8)
+ * SOURCE UNIQUE, RÉPONDABLE AVANT AFFICHAGE (lot 32 point 8, lot 34)
  *
- * « Quels documents sont liés à ce bien ? » s'affichait hors de toute fiche
- * (« ce bien » n'y désigne rien) et, même sur une fiche, T2 ne le résolvait
- * pas (« ce bien » n'est pas un nom : recherche vide). Chaque exemple de ce
- * catalogue est désormais :
- *   · CONTEXTUEL — sur une fiche, il NOMME le bien (« Quels sont les
- *     documents de Cupra ? ») ; hors fiche, il est général ou nomme un vrai
- *     bien du compte ;
- *   · RÉPONDABLE — formulé comme T2 le traite (vérifié de bout en bout par
- *     `src/test/e2e/scenarios/l32e-exemples-verebona.e2e.ts`, orchestrateur
- *     réel et modèle simulé) ; un exemple qui dépend des données (documents
- *     d'un bien, éléments « À traiter », documents non rattachés, exports)
- *     n'est proposé que si la donnée existe (`when`).
- * Le champ desktop, l'espace mobile et la mascotte lisent tous cette liste
- * (`suggestionsForRoute`, route `/api/verebona/suggestions`).
+ * Lot 32 : chaque exemple NOMME le bien qu'il désigne (jamais « ce bien »).
+ *
+ * Lot 34 (ticket « ne proposer que des questions pertinentes et réellement
+ * répondables par T2 ») : la mascotte avait son propre catalogue
+ * (`T2_QUESTIONS` : « Que dois-je faire aujourd'hui ? » dès qu'un « À
+ * traiter » existait, « Que sais-tu sur Cupra ? »), avec des
+ * pseudo-intentions (`account_next_actions`, `asset_summary`…) qu'aucun
+ * contrat T2 ne garantissait, et passait AVANT ce catalogue. Désormais :
+ *   · UNE seule liste (`SUGGESTIONS`, `ACCOUNT_STATE_SUGGESTIONS`) et UNE
+ *     seule éligibilité (`suggestionsForRoute`) — champ desktop, espace
+ *     mobile, route `/api/verebona/suggestions` ET mascotte d'accueil
+ *     (`mascot.service` → `buildSecondaries`) ;
+ *   · chaque entrée déclare son INTENTION T2 CANONIQUE (`canonicalIntent`,
+ *     une vraie `VerebonaIntent`), son DOMAINE de réponse (`domain`) et ses
+ *     PRÉCONDITIONS explicites (`requires`, sur des compteurs lus côté
+ *     serveur) — aucune IA ne décide d'une suggestion ;
+ *   · « Que sais-tu sur X ? » n'existe plus (trop ouvert) ;
+ *   · « Que dois-je faire aujourd'hui ? » n'est proposé que si le résolveur
+ *     des demandes d'actions (lot 34, `actionable-request`) reconnaît la
+ *     question ET trouve des éléments datés (retards actifs, dus aujourd'hui) ;
+ *     sinon « Que dois-je traiter en priorité ? » (`toProcessPending > 0`) ;
+ *   · 0 à 3 suggestions : jamais de remplissage (les génériques ne servent
+ *     que de liste de page aux pages sans liste propre).
+ * Le contrat « affichée → cliquée → intention attendue → source du bon
+ * domaine → réponse non fallback » est vérifié pour CHAQUE entrée par
+ * `src/test/e2e/scenarios/l34-suggestions-repondables.e2e.ts`.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
 /** Bien nommable dans un exemple (lu côté serveur, borné au compte). */
 export interface SuggestionAsset {
+  /** Identifiant (contexte transmis au clic, revalidé côté serveur). Absent : inconnu. */
+  id?: number;
   name: string;
   /** Documents rattachés (asset_id ou linked_asset_id), non supprimés. */
   documents: number;
+  /** Échéances actives à venir (règle canonique `countUpcomingAgenda`). Absent : inconnu. */
+  deadlines?: number;
 }
 
 /**
  * État du compte utile aux suggestions (§8.2 « compte » et « prochaine
  * action utile ») : des COMPTEURS seulement, lus côté serveur et bornés au
- * compte — jamais un contenu.
+ * compte — jamais un contenu. Un compteur absent est INCONNU : une
+ * précondition qui le lit n'est pas satisfaite.
  */
 export interface AccountSuggestionState {
   /** Éléments « À traiter » non résolus. */
   toProcessPending: number;
-  /** Échéances dans les 30 prochains jours. */
+  /** Échéances actives dans les 30 prochains jours (règle canonique `listUpcomingAgenda`). */
   deadlinesSoon: number;
   /** Documents en cours d'analyse. */
   documentsInAnalysis: number;
@@ -167,8 +184,20 @@ export interface AccountSuggestionState {
   documentsFailed: number;
   /** Exports ou dossiers prêts. */
   exportsReady: number;
-  /** Documents rattachés à aucun bien (lot 32). Absent : inconnu. */
+  /** Documents rattachés à aucun bien (lot 32). */
   documentsUnlinked?: number;
+  /** Lot 34 : échéances actives à venir, sans fenêtre (`countUpcomingAgenda`). */
+  deadlinesUpcoming?: number;
+  /**
+   * Lot 34 : éléments en retard ou dus aujourd'hui que le RÉSOLVEUR des
+   * demandes d'actions rend pour « Que dois-je faire aujourd'hui ? » (0 si
+   * le résolveur ne reconnaît pas la question).
+   */
+  actionsDueToday?: number;
+  /** Lot 34 : biens disponibles du compte. */
+  assetsTotal?: number;
+  /** Lot 34 : documents non supprimés du compte. */
+  documentsTotal?: number;
 }
 
 /**
@@ -184,6 +213,30 @@ export interface SuggestionContext {
   accountAsset?: SuggestionAsset | null;
 }
 
+/** Compteur lu par une précondition ; `asset.*` : le bien désigné par l'entrée (`asset`). */
+export type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.deadlines';
+
+/**
+ * Précondition explicite : `positive` (connu et > 0), `zero` (connu et nul),
+ * `notPositive` (nul ou inconnu).
+ */
+export interface SuggestionRequirement { fact: SuggestionFact; is: 'positive' | 'zero' | 'notPositive' }
+
+/** Domaine de la réponse attendue (sources admissibles, vérifiées par le test contractuel). */
+export type SuggestionDomain = 'ACTIONS' | 'TO_PROCESS' | 'AGENDA' | 'DOCUMENTS' | 'DOCUMENT_STATUS' | 'EXPORTS' | 'HELP' | 'PLAN';
+
+/** Types de sources T2 admissibles pour chaque domaine (aide : article ou règle produit). */
+export const SUGGESTION_DOMAIN_SOURCES: Readonly<Record<SuggestionDomain, readonly string[]>> = {
+  ACTIONS: ['to_process_item', 'agenda_item'],
+  TO_PROCESS: ['to_process_item'],
+  AGENDA: ['agenda_item'],
+  DOCUMENTS: ['document'],
+  DOCUMENT_STATUS: ['document'],
+  EXPORTS: ['export_item'],
+  HELP: ['help_entry', 'product_rule'],
+  PLAN: ['product_rule', 'help_entry'],
+};
+
 export interface SuggestionEntry {
   id: string;
   /**
@@ -191,6 +244,16 @@ export interface SuggestionEntry {
    * une voyelle) du bien désigné par `asset`.
    */
   label: string;
+  /** Intention T2 canonique que le libellé déclenche (routage déterministe vérifié). */
+  canonicalIntent: VerebonaIntent;
+  /** Domaine de la réponse. */
+  domain: SuggestionDomain;
+  /**
+   * Sujet : deux entrées du même sujet ne sont jamais proposées ensemble
+   * (« Quelle est ma prochaine échéance ? » et « Quelles échéances arrivent
+   * bientôt ? »). Défaut : l'identifiant.
+   */
+  topic?: string;
   routePrefix?: string; // contexte de page (§8.2)
   /** Routes exactes (l'accueil : « / » préfixe TOUTES les routes). */
   routeExact?: string[];
@@ -199,65 +262,87 @@ export interface SuggestionEntry {
   priority: number;     // plus bas = plus prioritaire
   /** Bien nommé dans le libellé : celui de la fiche, ou un bien du compte. */
   asset?: 'page' | 'account';
-  /** Condition sur les données : l'exemple n'est proposé que si elle est vraie. */
-  when?: (ctx: SuggestionContext) => boolean;
+  /** Préconditions sur les données : toutes doivent être vraies. */
+  requires?: readonly SuggestionRequirement[];
 }
 
 /** Suggestion rendue (libellé final, sans gabarit). */
-export interface RenderedSuggestion { id: string; label: string; priority: number }
+export interface RenderedSuggestion {
+  id: string;
+  label: string;
+  priority: number;
+  canonicalIntent: VerebonaIntent;
+  domain: SuggestionDomain;
+  topic: string;
+  /** Bien désigné (contexte transmis au clic, revalidé côté serveur). */
+  assetId?: number;
+}
 
 const HOME = ['/', '/accueil'];
 const FICHE = /^\/assets\/\d+(\/|$)/;
 
-const docsDuBien = (cle: 'pageAsset' | 'accountAsset') => (c: SuggestionContext) => (c[cle]?.documents ?? 0) > 0;
+const R = (fact: SuggestionFact, is: SuggestionRequirement['is'] = 'positive'): SuggestionRequirement => ({ fact, is });
 
 export const SUGGESTIONS: SuggestionEntry[] = [
-  // Accueil
-  { id: 'home_deadlines', label: 'Quelles échéances arrivent bientôt ?', routeExact: HOME, priority: 2 },
-  { id: 'home_asset_docs', label: 'Quels sont les documents {de_bien} ?', routeExact: HOME, priority: 3, asset: 'account', when: docsDuBien('accountAsset') },
-  { id: 'home_add_doc', label: 'Comment ajouter un document ?', routeExact: HOME, priority: 4 },
+  // Accueil — ce qui attend une action, puis ce qui arrive, puis les documents.
+  { id: 'home_today', label: 'Que dois-je faire aujourd’hui ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'ACTIONS', topic: 'actions', routeExact: HOME, priority: 1, requires: [R('actionsDueToday')] },
+  { id: 'home_todo_priority', label: 'Que dois-je traiter en priorité ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'TO_PROCESS', topic: 'actions', routeExact: HOME, priority: 1, requires: [R('toProcessPending'), R('actionsDueToday', 'notPositive')] },
+  { id: 'home_next_deadline', label: 'Quelle est ma prochaine échéance ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routeExact: HOME, priority: 2, requires: [R('deadlinesUpcoming')] },
+  { id: 'home_analysis', label: 'Où en est l’analyse de mes documents ?', canonicalIntent: 'ACCOUNT_FACT_DOCUMENT', domain: 'DOCUMENT_STATUS', topic: 'analysis', routeExact: HOME, priority: 3, requires: [R('documentsInAnalysis')] },
+  { id: 'home_asset_docs', label: 'Quels sont les documents {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', topic: 'asset-docs', routeExact: HOME, priority: 4, asset: 'account', requires: [R('asset.documents')] },
+  // Accueil, premiers pas (compte vide, aucun document) : l'aide d'ajout.
+  { id: 'home_add_asset', label: 'Comment ajouter un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: HOME, priority: 5, requires: [R('assetsTotal', 'zero')] },
+  { id: 'home_add_doc', label: 'Comment ajouter un document ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: HOME, priority: 6, requires: [R('documentsTotal', 'zero')] },
+  { id: 'home_analysis_help', label: 'L’analyse automatique, c’est quoi ?', canonicalIntent: 'PRODUCT_HELP_EXPLAIN', domain: 'HELP', routeExact: HOME, priority: 7, requires: [R('documentsTotal', 'zero')] },
   // À traiter
-  { id: 'todo_priority', label: 'Que dois-je traiter en priorité ?', routePrefix: '/accueil/a-traiter', priority: 1, when: (c) => (c.state?.toProcessPending ?? 0) > 0 },
-  { id: 'todo_explain', label: 'Comment fonctionne la page « À traiter » ?', routePrefix: '/accueil/a-traiter', priority: 2 },
-  { id: 'todo_arbitrate', label: 'Comment arbitrer entre deux valeurs ?', routePrefix: '/accueil/a-traiter', priority: 3 },
+  { id: 'todo_priority', label: 'Que dois-je traiter en priorité ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'TO_PROCESS', topic: 'actions', routePrefix: '/accueil/a-traiter', priority: 1, requires: [R('toProcessPending')] },
+  { id: 'todo_explain', label: 'Comment fonctionne la page « À traiter » ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/accueil/a-traiter', priority: 2 },
+  { id: 'todo_arbitrate', label: 'Comment arbitrer entre deux valeurs ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/accueil/a-traiter', priority: 3 },
   // Fiche d'un bien : le bien est NOMMÉ (jamais « ce bien »)
-  { id: 'asset_docs', label: 'Quels sont les documents {de_bien} ?', routePattern: FICHE, priority: 1, asset: 'page', when: docsDuBien('pageAsset') },
-  { id: 'asset_deadlines', label: 'Quelles sont les prochaines échéances {de_bien} ?', routePattern: FICHE, priority: 2, asset: 'page' },
-  { id: 'asset_complete', label: 'Comment compléter la fiche d’un bien ?', routePattern: FICHE, priority: 3 },
-  { id: 'asset_add_doc', label: 'Comment ajouter un document ?', routePattern: FICHE, priority: 4 },
+  { id: 'asset_docs', label: 'Quels sont les documents {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', topic: 'asset-docs', routePattern: FICHE, priority: 1, asset: 'page', requires: [R('asset.documents')] },
+  { id: 'asset_deadlines', label: 'Quelles sont les prochaines échéances {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routePattern: FICHE, priority: 2, asset: 'page', requires: [R('asset.deadlines')] },
+  { id: 'asset_complete', label: 'Comment compléter la fiche d’un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePattern: FICHE, priority: 3 },
+  { id: 'asset_add_doc', label: 'Comment ajouter un document ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePattern: FICHE, priority: 4 },
   // Liste des biens
-  { id: 'assets_add', label: 'Comment ajouter un bien ?', routeExact: ['/assets'], priority: 1 },
-  { id: 'assets_deadlines', label: 'Quelles sont les prochaines échéances {de_bien} ?', routeExact: ['/assets'], priority: 2, asset: 'account' },
-  { id: 'assets_transfer', label: 'Comment transmettre un bien ?', routeExact: ['/assets'], priority: 3 },
+  { id: 'assets_add', label: 'Comment ajouter un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: ['/assets'], priority: 1 },
+  { id: 'assets_deadlines', label: 'Quelles sont les prochaines échéances {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routeExact: ['/assets'], priority: 2, asset: 'account', requires: [R('asset.deadlines')] },
+  { id: 'assets_transfer', label: 'Comment transmettre un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: ['/assets'], priority: 3 },
   // Documents
-  { id: 'docs_unlinked', label: 'Quels documents ne sont rattachés à aucun bien ?', routePrefix: '/documents', priority: 1, when: (c) => (c.state?.documentsUnlinked ?? 0) > 0 },
-  { id: 'docs_asset', label: 'Quels sont les documents {de_bien} ?', routePrefix: '/documents', priority: 2, asset: 'account', when: docsDuBien('accountAsset') },
-  { id: 'docs_in_analysis', label: 'Pourquoi un document est-il encore en analyse ?', routePrefix: '/documents', priority: 3 },
-  { id: 'docs_add', label: 'Comment ajouter un document ?', routePrefix: '/documents', priority: 4 },
+  { id: 'docs_unlinked', label: 'Quels documents ne sont rattachés à aucun bien ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', routePrefix: '/documents', priority: 1, requires: [R('documentsUnlinked')] },
+  { id: 'docs_asset', label: 'Quels sont les documents {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', topic: 'asset-docs', routePrefix: '/documents', priority: 2, asset: 'account', requires: [R('asset.documents')] },
+  { id: 'docs_in_analysis', label: 'Pourquoi un document est-il encore en analyse ?', canonicalIntent: 'PRODUCT_HELP_STATUS', domain: 'HELP', topic: 'analysis', routePrefix: '/documents', priority: 3, requires: [R('documentsInAnalysis')] },
+  { id: 'docs_add', label: 'Comment ajouter un document ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/documents', priority: 4 },
   // Agenda
-  { id: 'agenda_next', label: 'Quelles échéances arrivent bientôt ?', routePrefix: '/agenda', priority: 1 },
-  { id: 'agenda_sync', label: 'Comment synchroniser mon agenda ?', routePrefix: '/agenda', priority: 2 },
+  { id: 'agenda_next', label: 'Quelles échéances arrivent bientôt ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routePrefix: '/agenda', priority: 1, requires: [R('deadlinesSoon')] },
+  { id: 'agenda_sync', label: 'Comment synchroniser mon agenda ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/agenda', priority: 2 },
   // Mon compte
-  { id: 'account_plan', label: 'Que comprend mon offre ?', routePrefix: '/mon-compte', priority: 1 },
-  { id: 'account_notif', label: 'Comment gérer mes notifications ?', routePrefix: '/mon-compte', priority: 2 },
-  // Génériques (complément)
-  { id: 'generic_ask', label: 'Comment poser une question à Verebona ?', priority: 9 },
-  { id: 'generic_add_doc', label: 'Comment ajouter un document ?', priority: 10 },
-  { id: 'generic_deadlines', label: 'Quelles échéances arrivent bientôt ?', priority: 11 },
+  { id: 'account_plan', label: 'Que comprend mon offre ?', canonicalIntent: 'PRODUCT_PLAN_LIMIT', domain: 'PLAN', routePrefix: '/mon-compte', priority: 1 },
+  { id: 'account_notif', label: 'Comment gérer mes notifications ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/mon-compte', priority: 2 },
+  // Génériques : la liste des pages qui n'en ont pas — jamais un complément.
+  { id: 'generic_ask', label: 'Comment poser une question à Verebona ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', priority: 9 },
+  { id: 'generic_add_doc', label: 'Comment ajouter un document ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', priority: 10 },
 ];
 
 /**
  * Suggestions dérivées de l'état du compte (§8.2), dans l'ordre d'utilité :
  * ce qui attend une action, puis ce qui arrive, puis l'état des documents.
  * Libellés du catalogue validé (§8.3) — aucune donnée du compte n'y figure.
+ * Elles suivent la liste de la page, dans la limite de 3 et sans répéter un
+ * sujet déjà proposé.
  */
-export const ACCOUNT_STATE_SUGGESTIONS: Array<SuggestionEntry & { when: (c: SuggestionContext) => boolean }> = [
-  { id: 'state_todo', label: 'Que dois-je traiter en priorité ?', priority: 1, when: (c) => (c.state?.toProcessPending ?? 0) > 0 },
-  { id: 'state_deadlines', label: 'Quelles échéances arrivent bientôt ?', priority: 2, when: (c) => (c.state?.deadlinesSoon ?? 0) > 0 },
-  { id: 'state_failed', label: 'Pourquoi un document est-il en erreur ?', priority: 3, when: (c) => (c.state?.documentsFailed ?? 0) > 0 },
-  { id: 'state_analysis', label: 'Pourquoi un document est-il encore en analyse ?', priority: 4, when: (c) => (c.state?.documentsInAnalysis ?? 0) > 0 },
-  { id: 'state_exports', label: 'Quels exports sont disponibles ?', priority: 5, when: (c) => (c.state?.exportsReady ?? 0) > 0 },
+export const ACCOUNT_STATE_SUGGESTIONS: Array<SuggestionEntry & { requires: readonly SuggestionRequirement[] }> = [
+  { id: 'state_todo', label: 'Que dois-je traiter en priorité ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'TO_PROCESS', topic: 'actions', priority: 1, requires: [R('toProcessPending')] },
+  { id: 'state_deadlines', label: 'Quelles échéances arrivent bientôt ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', priority: 2, requires: [R('deadlinesSoon')] },
+  { id: 'state_failed', label: 'Pourquoi un document est-il en erreur ?', canonicalIntent: 'PRODUCT_HELP_STATUS', domain: 'HELP', topic: 'failed', priority: 3, requires: [R('documentsFailed')] },
+  { id: 'state_analysis', label: 'Pourquoi un document est-il encore en analyse ?', canonicalIntent: 'PRODUCT_HELP_STATUS', domain: 'HELP', topic: 'analysis', priority: 4, requires: [R('documentsInAnalysis')] },
+  { id: 'state_exports', label: 'Quels exports sont disponibles ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'EXPORTS', topic: 'exports', priority: 5, requires: [R('exportsReady')] },
 ];
+
+/** Toutes les entrées publiables (catalogue unique, couvert par le test contractuel). */
+export const ALL_SUGGESTIONS: readonly SuggestionEntry[] = [...SUGGESTIONS, ...ACCOUNT_STATE_SUGGESTIONS];
+
+/** Nombre maximal de suggestions affichées (un maximum, jamais un objectif). */
+export const MAX_SUGGESTIONS = 3;
 
 /** Longueur maximale d'un nom de bien cité dans un exemple. */
 export const SUGGESTION_ASSET_NAME_MAX = 40;
@@ -296,42 +381,85 @@ function matchesPage(s: SuggestionEntry, route: string): boolean {
   return s.routePrefix != null && route.startsWith(s.routePrefix);
 }
 
+const isGeneric = (s: SuggestionEntry) => !s.routeExact && !s.routePrefix && !s.routePattern;
+
+/** Valeur d'un compteur dans un contexte (`undefined` : inconnue). */
+function factValue(fact: SuggestionFact, ctx: SuggestionContext, asset: SuggestionAsset | null | undefined): number | undefined {
+  if (fact === 'asset.documents') return asset?.documents;
+  if (fact === 'asset.deadlines') return asset?.deadlines;
+  const v = ctx.state?.[fact];
+  return typeof v === 'number' ? v : undefined;
+}
+
+/** Préconditions satisfaites ? (pure, testée) */
+export function requirementsMet(s: SuggestionEntry, ctx: SuggestionContext | null): boolean {
+  if (!s.requires?.length) return true;
+  if (!ctx) return false;
+  const bien = s.asset === 'page' ? ctx.pageAsset : s.asset === 'account' ? ctx.accountAsset : null;
+  return s.requires.every((r) => {
+    const v = factValue(r.fact, ctx, bien);
+    if (r.is === 'positive') return v != null && v > 0;
+    if (r.is === 'zero') return v === 0;
+    return v == null || v <= 0;
+  });
+}
+
 /**
  * Rend une entrée dans un contexte : `null` si elle dépend d'une donnée
  * inconnue ou absente (sans contexte serveur, aucun exemple dépendant des
  * données n'est proposé).
  */
 function render(s: SuggestionEntry, ctx: SuggestionContext | null): RenderedSuggestion | null {
-  if ((s.when || s.asset) && !ctx) return null;
-  if (s.when && !s.when(ctx!)) return null;
+  if ((s.requires?.length || s.asset) && !ctx) return null;
+  if (!requirementsMet(s, ctx)) return null;
   let label = s.label;
+  let assetId: number | undefined;
   if (s.asset) {
     const bien = s.asset === 'page' ? ctx!.pageAsset : ctx!.accountAsset;
     if (!bien?.name) return null;
     label = label.replace('{de_bien}', deBien(bien.name));
+    assetId = bien.id;
   }
-  return { id: s.id, label, priority: s.priority };
+  return {
+    id: s.id, label, priority: s.priority, canonicalIntent: s.canonicalIntent, domain: s.domain, topic: s.topic ?? s.id,
+    ...(assetId ? { assetId } : {}),
+  };
 }
 
 /**
- * Renvoie 3–4 suggestions selon la route (§8.1 / §8.2) : page d'abord, puis
- * état du compte (quand il est connu), génériques ensuite. Sans contexte
- * serveur, seuls les exemples indépendants des données.
+ * Suggestions d'une route (§8.1 / §8.2) : la liste de la page (les
+ * génériques pour une page sans liste propre), puis l'état du compte quand
+ * il est connu — au plus 3, sans sujet répété, JAMAIS complétées pour
+ * atteindre 3 (0, 1 ou 2 est une réponse valide). Sans contexte serveur,
+ * seuls les exemples indépendants des données.
  */
 export function suggestionsForRoute(route: string | undefined, ctx?: SuggestionContext | null): RenderedSuggestion[] {
   const c = ctx ?? null;
   const r = (route ?? '/').split(/[?#]/)[0].replace(/(.)\/$/, '$1');
-  const rendre = (l: SuggestionEntry[]) => l.map((s) => render(s, c)).filter((s): s is RenderedSuggestion => s !== null);
-  const page = rendre(SUGGESTIONS.filter((s) => matchesPage(s, r)).sort((a, b) => a.priority - b.priority));
-  const vus = new Set(page.map((s) => s.label));
-  // §8.2 : « compte » et « prochaine action utile », entre la page et les
-  // génériques. Sur une page qui a déjà ses 3 suggestions, une seule
-  // suggestion d'état vient compléter.
-  const compte = rendre(ACCOUNT_STATE_SUGGESTIONS)
-    .filter((s) => !vus.has(s.label))
-    .slice(0, page.length >= 3 ? 1 : 2);
-  for (const s of compte) vus.add(s.label);
-  const generiques = rendre(SUGGESTIONS.filter((s) => !s.routeExact && !s.routePrefix && !s.routePattern).sort((a, b) => a.priority - b.priority))
-    .filter((s) => !vus.has(s.label));
-  return [...page, ...compte, ...generiques].slice(0, page.length + compte.length >= 3 ? 4 : 3);
+  const rendre = (l: SuggestionEntry[]) => [...l].sort((a, b) => a.priority - b.priority)
+    .map((s) => render(s, c)).filter((s): s is RenderedSuggestion => s !== null);
+  const dePage = SUGGESTIONS.filter((s) => !isGeneric(s) && matchesPage(s, r));
+  const page = rendre(dePage.length ? dePage : SUGGESTIONS.filter(isGeneric));
+  const out: RenderedSuggestion[] = [];
+  const labels = new Set<string>();
+  const sujets = new Set<string>();
+  for (const s of [...page, ...rendre(ACCOUNT_STATE_SUGGESTIONS)]) {
+    if (out.length >= MAX_SUGGESTIONS) break;
+    if (labels.has(s.label) || sujets.has(s.topic)) continue;
+    labels.add(s.label);
+    sujets.add(s.topic);
+    out.push(s);
+  }
+  return out;
+}
+
+/** État d'un compte vide (aucun bien, aucun document, rien en attente). */
+export const EMPTY_ACCOUNT_STATE: AccountSuggestionState = {
+  toProcessPending: 0, deadlinesSoon: 0, documentsInAnalysis: 0, documentsFailed: 0, exportsReady: 0, documentsUnlinked: 0,
+  deadlinesUpcoming: 0, actionsDueToday: 0, assetsTotal: 0, documentsTotal: 0,
+};
+
+/** Questions de l'accueil d'un compte vide (§12ter) : le même catalogue, mêmes règles. */
+export function emptyAccountSuggestions(): RenderedSuggestion[] {
+  return suggestionsForRoute('/accueil', { state: EMPTY_ACCOUNT_STATE });
 }

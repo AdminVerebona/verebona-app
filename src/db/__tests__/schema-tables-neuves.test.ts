@@ -3,17 +3,19 @@
  * (protection contre `db:push`) : alignement EXACT avec le SQL de leur
  * migration (colonnes, NOT NULL, contraintes CHECK, index).
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15MigrationBackups, cdc15MigrationReport, cdc15MigrationRuns, roomMergeChanges, roomMergeRuns } from '../schema';
+import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15MigrationBackups, cdc15MigrationReport, cdc15MigrationRuns, roomMergeChanges, roomMergeRuns, documentSourceUnits, documentExtractionCoverage, documentUnresolvedFacts } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
 
 /** Colonnes (nom → NOT NULL) d'un CREATE TABLE, et noms des contraintes / index du fichier. */
 function sqlTable(file: string, table: string) {
-  const sql = readFileSync(join(MIG, file), 'utf8').replace(/--.*$/gm, '');
+  // Lot 34F : les index CONCURRENTLY des fichiers `_idx_N` de la migration comptent aussi.
+  const idx = readdirSync(MIG).filter((f) => f.startsWith(`${file.replace(/\.sql$/, '')}_idx_`));
+  const sql = [file, ...idx].map((f) => readFileSync(join(MIG, f), 'utf8')).join('\n').replace(/--.*$/gm, '');
   const bloc = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\);`).exec(sql)![1];
   const colonnes = new Map<string, boolean>();
   for (const l of bloc.split(',\n').map((x) => x.trim()).filter(Boolean)) {
@@ -23,7 +25,7 @@ function sqlTable(file: string, table: string) {
   }
   for (const m of sql.matchAll(new RegExp(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS (\\w+) ([^;]+);`, 'g'))) colonnes.set(m[1], /NOT NULL/i.test(m[2]));
   const checks = [...sql.matchAll(/CONSTRAINT (\w+)\s+CHECK/g)].map((m) => m[1]).filter((n) => n.startsWith(table));
-  const index = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\\w+)\\s+ON ${table}\\b`, 'g'))].map((m) => m[1]);
+  const index = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?INDEX (?:CONCURRENTLY )?IF NOT EXISTS (\\w+)\\s+ON ${table}\\b`, 'g'))].map((m) => m[1]);
   return { colonnes, checks, index };
 }
 
@@ -37,6 +39,10 @@ const CAS: Array<[PgTable, string, string]> = [
   [roomMergeChanges, '0229_rooms_to_substructures.sql', 'room_merge_changes'],
   // Lot 28 : valeur retenue des données documentaires du catalogue « À traiter ».
   [documentFieldValues, '0256_to_process_document_rules.sql', 'document_field_values'],
+  // Lot 34F : couche A de T1 (unités de la source, couverture, faits non résolus).
+  [documentSourceUnits, '0295_document_source_units.sql', 'document_source_units'],
+  [documentExtractionCoverage, '0295_document_source_units.sql', 'document_extraction_coverage'],
+  [documentUnresolvedFacts, '0296_document_unresolved_facts.sql', 'document_unresolved_facts'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

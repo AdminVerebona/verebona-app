@@ -26,6 +26,7 @@ export { ProductRuleProvider, productRuleSources, loadProductRuleData, type Prod
 export { buildSynthesisContent, boundedExcerpt, isSensitiveFact, maskedExcerpt, synthesisSourceContent, type SynthesisContentOptions } from './synthesis-content';
 export { createCanonicalAccountDataRepository, canonicalAcquisitionDates, attachCanonical, readCanonicalFields } from './repository';
 export { commandAssetState, unchangedSinceConfirmation } from './commands';
+export { listActionables, listOpenTodos, listActiveDeadlines, type ActionableReadOptions } from './actionables';
 export {
   tryCanonicalStructured, findReadableField, isFieldQuestion, upcomingAgendaRequest, fieldAnswer,
   type CanonicalStrategy,

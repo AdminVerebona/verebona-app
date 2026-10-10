@@ -19,6 +19,9 @@ export const INCOMPLETE_ANALYSIS_WARNINGS: ReadonlySet<string> = new Set([
   'SOURCE_UNREACHABLE',
   // Équivalent : un fait mal formé écarté peut être celui d'une échéance.
   'FACT_INVALID_DROPPED',
+  // Lot 34F : une partie de la source n'a pas pu être analysée.
+  'SOURCE_UNIT_FAILED',
+  'COVERAGE_INCOMPLETE',
 ]);
 
 export interface AnalysisCompleteness {

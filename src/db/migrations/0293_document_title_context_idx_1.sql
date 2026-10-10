@@ -1,0 +1,12 @@
+-- Migration 0293 (index 1/1) : documents à titre SYSTÈME visibles — sert le
+-- balayage T3 `document_title_sweep` (lot 34E), qui ne lit que ces documents
+-- (curseur par identifiant). Partiel : les titres USER et documents supprimés
+-- n'y entrent pas.
+-- UNE instruction par fichier : `CREATE INDEX CONCURRENTLY` ne peut pas
+-- s'exécuter dans une transaction ; aucun verrou bloquant les dépôts.
+-- Idempotente ; un index laissé INVALIDE est reconstruit (`migration-index.ts`).
+--
+-- INDEX OPTIONNEL : le balayage est borné (LIMIT) et fonctionne sans lui, plus
+-- lentement ; son absence (construction différée) ne crée aucune erreur.
+-- verebona:optional-index
+CREATE INDEX CONCURRENTLY IF NOT EXISTS asset_files_system_title_idx ON asset_files (id) WHERE title_source = 'SYSTEM' AND deleted_at IS NULL;

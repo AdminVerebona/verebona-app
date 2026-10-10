@@ -11,6 +11,7 @@
  */
 import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
+import type { MasterExecutionConfig } from './structured-context';
 
 export type MasterPromptStatus = 'DRAFT' | 'ACTIVE' | 'PREVIOUS';
 export type MasterPromptOrigin = 'initial_file' | 'initial_config' | 'admin' | 'prompt_control';
@@ -33,6 +34,11 @@ export interface MasterPromptVersionRow {
   activatedBy: number | null;
   activatedAt: Date | null;
   firstActivatedAt: Date | null;
+  /**
+   * Lot 34D (0290) — configuration d'exécution EXPLICITE de la version
+   * (T4) ; `null` : aucune (prompt sans contrat d'exécution, LEGACY_TEMPLATE).
+   */
+  execution?: MasterExecutionConfig | null;
 }
 
 export interface MasterPromptActivationRow {
@@ -102,7 +108,26 @@ const toVersion = (r: Row): MasterPromptVersionRow => ({
   activatedBy: n(r.activated_by),
   activatedAt: d(r.activated_at),
   firstActivatedAt: d(r.first_activated_at),
+  execution: executionOf(r),
 });
+
+/** Configuration d'exécution lue en base (colonnes 0290 ; absentes ou nulles : `null`). */
+function executionOf(r: Row): MasterExecutionConfig | null {
+  if (r.execution_mode == null) return null;
+  const mode = String(r.execution_mode) === 'STRUCTURED_CONTEXT' ? 'STRUCTURED_CONTEXT' : 'LEGACY_TEMPLATE';
+  const taches = Array.isArray(r.allowed_tasks) ? (r.allowed_tasks as unknown[]).map(String) : null;
+  return {
+    mode,
+    inputContractVersion: r.input_contract_version == null ? null : String(r.input_contract_version),
+    outputContractVersion: r.output_contract_version == null ? null : String(r.output_contract_version),
+    allowedTasks: taches,
+  };
+}
+
+/** Colonnes et valeurs d'exécution à écrire (aucune si `null` : schéma antérieur à 0290 toléré). */
+function executionValues(e: MasterExecutionConfig | null | undefined): unknown[] {
+  return e ? [e.mode, e.inputContractVersion, e.outputContractVersion, e.allowedTasks ? JSON.stringify(e.allowedTasks) : null] : [];
+}
 
 const toActivation = (r: Row): MasterPromptActivationRow => ({
   id: Number(r.id),
@@ -199,6 +224,8 @@ const NEXT_NUMBER = `(SELECT COALESCE(MAX(version_number), 0) + 1 FROM ai_master
  */
 export async function ensureInitialVersion(p: {
   environment: string; treatment: string; masterPromptCode: string; content: string; origin: 'initial_file' | 'initial_config';
+  /** Lot 34D : configuration d'exécution de la version (T4) ; absente : aucune colonne écrite. */
+  execution?: MasterExecutionConfig | null;
 }): Promise<MasterPromptVersionRow> {
   return pgClient.begin(async (tx) => {
     const sql = tx as unknown as Sql;
@@ -208,13 +235,14 @@ export async function ensureInitialVersion(p: {
       [p.environment, p.treatment], sql,
     );
     if (existante[0]) return toVersion(existante[0]);
+    const ex = executionValues(p.execution);
     const r = await rows(
       `INSERT INTO ai_master_prompt_versions
          (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin,
-          activated_at, first_activated_at)
-       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'ACTIVE', $4, $5, $6, now(), now())
+          activated_at, first_activated_at${ex.length ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
+       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'ACTIVE', $4, $5, $6, now(), now()${ex.length ? ', $7, $8, $9, $10::jsonb' : ''})
        RETURNING *`,
-      [p.environment, p.treatment, p.masterPromptCode, p.content, contentSha256(p.content), p.origin], sql,
+      [p.environment, p.treatment, p.masterPromptCode, p.content, contentSha256(p.content), p.origin, ...ex], sql,
     );
     return toVersion(r[0]);
   }) as Promise<MasterPromptVersionRow>;
@@ -244,6 +272,8 @@ export async function getActive(environment: string, treatment: string): Promise
 export async function insertDraft(p: {
   environment: string; treatment: string; masterPromptCode: string; content: string;
   origin: 'admin' | 'prompt_control'; basedOnId: number | null; userId: number;
+  /** Lot 34D : configuration d'exécution du brouillon (T4) ; absente : aucune colonne écrite. */
+  execution?: MasterExecutionConfig | null;
 }): Promise<MasterPromptVersionRow | null> {
   return pgClient.begin(async (tx) => {
     const sql = tx as unknown as Sql;
@@ -253,13 +283,14 @@ export async function insertDraft(p: {
       [p.environment, p.treatment], sql,
     );
     if (existant[0]) return null;
+    const ex = executionValues(p.execution);
     const r = await rows(
       `INSERT INTO ai_master_prompt_versions
          (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin,
-          based_on_id, created_by, updated_by)
-       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'DRAFT', $4, $5, $6, $7, $8, $8)
+          based_on_id, created_by, updated_by${ex.length ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
+       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'DRAFT', $4, $5, $6, $7, $8, $8${ex.length ? ', $9, $10, $11, $12::jsonb' : ''})
        RETURNING *`,
-      [p.environment, p.treatment, p.masterPromptCode, p.content, contentSha256(p.content), p.origin, p.basedOnId, p.userId], sql,
+      [p.environment, p.treatment, p.masterPromptCode, p.content, contentSha256(p.content), p.origin, p.basedOnId, p.userId, ...ex], sql,
     );
     return toVersion(r[0]);
   }) as Promise<MasterPromptVersionRow | null>;
@@ -280,6 +311,22 @@ export async function updateDraftContent(p: {
       WHERE id = $1 AND status = 'DRAFT'${conditionnel ? ' AND content = $5' : ''}
       RETURNING *`,
     [p.id, p.content, contentSha256(p.content), p.userId, ...(conditionnel ? [p.expectedContent] : [])],
+  );
+  return r[0] ? toVersion(r[0]) : null;
+}
+
+/**
+ * Lot 34D — configuration d'exécution d'un BROUILLON (mode, contrats, TASK).
+ * Rend la ligne écrite, ou `null` (plus un brouillon).
+ */
+export async function updateDraftExecution(p: { id: number; execution: MasterExecutionConfig; userId: number }): Promise<MasterPromptVersionRow | null> {
+  const r = await rows(
+    `UPDATE ai_master_prompt_versions
+        SET execution_mode = $2, input_contract_version = $3, output_contract_version = $4, allowed_tasks = $5::jsonb,
+            updated_by = $6, updated_at = now()
+      WHERE id = $1 AND status = 'DRAFT'
+      RETURNING *`,
+    [p.id, ...executionValues(p.execution), p.userId],
   );
   return r[0] ? toVersion(r[0]) : null;
 }

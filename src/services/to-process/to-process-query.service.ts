@@ -30,8 +30,10 @@ import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { documentSlotFor } from './document-slots';
 import {
-  assetFiles, assets, equipments, substructures, supplierReviewItems, suppliers, toProcessActions,
+  assetFiles, assetFileThumbnails, assets, equipments, substructures, supplierReviewItems, suppliers, toProcessActions,
 } from '@/db/schema';
+import { THUMBNAIL_VARIANT } from '@/services/documents/thumbnails/thumbnail-spec';
+import { documentPreviews, type DocumentPreviewRow } from '@/services/documents/thumbnails/document-previews';
 import type {
   ActionKind,
   ActionPriority,
@@ -48,6 +50,13 @@ export interface ActionTargetContext {
   label: string;
   /** Miniature si document, sinon icône côté client. */
   mimeType?: string | null;
+  /**
+   * Lot 34, point 11 — vignette du document (vue Cartes) : URL signée de la
+   * miniature PRÊTE, même source que l'accueil (`thumbnail-url.ts`, une
+   * signature par dérivé et par heure). Fournie seulement sur demande
+   * (`withThumbnails`) ; absente → icône selon la cible côté client.
+   */
+  thumbnailUrl?: string | null;
   publicId?: string | null;
   assetId?: number | null;
   assetName?: string | null;
@@ -102,7 +111,18 @@ export interface ToProcessPage {
 
 export async function getToProcessPage(
   accountId: number,
-  options: { orderMode?: OrderMode; filters?: ToProcessFilters; limit?: number } = {},
+  options: {
+    orderMode?: OrderMode;
+    filters?: ToProcessFilters;
+    limit?: number;
+    /**
+     * Vignettes des documents (lot 34, point 11) : lues dans la requête
+     * d'hydratation des documents (jointure, pas de N+1) et signées une fois
+     * par dérivé et par heure. Demandées par la page « À traiter » seulement :
+     * la pastille, l'accueil et la mascotte ne les affichent pas.
+     */
+    withThumbnails?: boolean;
+  } = {},
 ): Promise<ToProcessPage> {
   // §8.2 : « Par priorité » est la vue par défaut à CHAQUE visite ; le choix
   // n'est pas mémorisé. Le défaut est donc posé ici et non lu d'une préférence.
@@ -145,7 +165,7 @@ export async function getToProcessPage(
       ),
   ]);
 
-  const contexts = await hydrateTargets(accountId, rows);
+  const contexts = await hydrateTargets(accountId, rows, { withThumbnails: options.withThumbnails === true });
 
   let views: ToProcessActionView[] = rows.map((row) => {
     const proposals = (row.proposalsJson as ActionProposal[] | null) ?? [];
@@ -212,6 +232,7 @@ function cardInputType(ruleCode: string, targetType: string, key: string | null)
 async function hydrateTargets(
   accountId: number,
   rows: Array<{ targetType: string; targetId: number }>,
+  opts: { withThumbnails?: boolean } = {},
 ): Promise<Map<string, ActionTargetContext>> {
   const byType = new Map<string, number[]>();
   for (const row of rows) {
@@ -235,9 +256,24 @@ async function hydrateTargets(
         assetId: assetFiles.assetId,
         linkedAssetId: assetFiles.linkedAssetId,
         assetName: assets.name,
+        // Vignette (lot 34, point 11) : état de la miniature lu dans la MÊME
+        // requête (clé unique fichier × variante) — comme l'accueil.
+        s3Key: assetFiles.s3Key,
+        fileExtension: assetFiles.fileExtension,
+        isWebLink: assetFiles.isWebLink,
+        thumbStatus: assetFileThumbnails.status,
+        thumbSourceKey: assetFileThumbnails.sourceKey,
+        thumbS3Key: assetFileThumbnails.s3Key,
+        thumbAttempts: assetFileThumbnails.attempts,
+        thumbLeaseUntil: assetFileThumbnails.leaseUntil,
+        thumbUpdatedAt: assetFileThumbnails.updatedAt,
       })
       .from(assetFiles)
       .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assetFileThumbnails, and(
+        eq(assetFileThumbnails.fileId, assetFiles.id),
+        eq(assetFileThumbnails.variant, THUMBNAIL_VARIANT),
+      ))
       .where(
         and(
           eq(assetFiles.accountId, accountId),
@@ -245,12 +281,17 @@ async function hydrateTargets(
         ),
       );
 
+    const previews = opts.withThumbnails
+      ? await documentPreviews(docs.map((d) => toPreviewRow(d)), undefined, 'à traiter')
+      : new Map<number, string>();
+
     for (const doc of docs) {
       contexts.set(`DOCUMENT:${doc.id}`, {
         // §4.3 : jamais le nom de fichier comme titre principal — mais un
         // repli vaut mieux qu'une carte anonyme.
         label: doc.title ?? doc.filename ?? doc.fallback ?? 'Document',
         mimeType: doc.mimeType,
+        ...(opts.withThumbnails ? { thumbnailUrl: previews.get(doc.id) ?? null } : {}),
         publicId: doc.publicId,
         assetId: doc.assetId ?? doc.linkedAssetId ?? null,
         assetName: doc.assetName,
@@ -317,6 +358,19 @@ async function hydrateTargets(
   }
 
   return contexts;
+}
+
+/** Ligne d'hydratation → entrée de `documentPreviews`. */
+export function toPreviewRow(d: {
+  id: number; s3Key: string | null; mimeType: string | null; fileExtension: string | null; filename: string | null;
+  isWebLink: boolean | null; thumbStatus: string | null; thumbSourceKey: string | null; thumbS3Key: string | null;
+  thumbAttempts: number | null; thumbLeaseUntil: Date | null; thumbUpdatedAt: Date | null;
+}): DocumentPreviewRow {
+  return {
+    id: d.id, s3Key: d.s3Key, mimeType: d.mimeType, fileExtension: d.fileExtension, originalFilename: d.filename,
+    isWebLink: d.isWebLink, thumbStatus: d.thumbStatus, thumbSourceKey: d.thumbSourceKey, thumbS3Key: d.thumbS3Key,
+    thumbAttempts: d.thumbAttempts, thumbLeaseUntil: d.thumbLeaseUntil, thumbUpdatedAt: d.thumbUpdatedAt,
+  };
 }
 
 /**

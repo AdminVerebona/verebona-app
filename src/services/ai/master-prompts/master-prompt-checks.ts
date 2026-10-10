@@ -17,12 +17,23 @@
  *
  * Fonctions pures (registre et texte seulement) : instantanées, testées sans
  * base. Messages en français, sans référence technique interne.
+ *
+ * Lot 34D — prompt en mode CONTEXTE STRUCTURÉ (T4) : le texte est LIBRE. Plus
+ * aucun contrôle d'emplacement `{{X}}` ni de titre « BRANCHE TASK = … » (le
+ * serveur transmet les données lui-même). Bloquants : prompt vide ou
+ * invalide, contrat d'entrée absent ou invalide, TASK non configurées ou
+ * inconnues, contrat de sortie absent ou invalide, configuration modèle
+ * incomplète. La QUALITÉ fonctionnelle (une branche mal décrite) relève des
+ * tests et du corpus, jamais d'une recherche de chaînes dans le texte.
  */
 import {
   inspectMasterTemplate, isOptionalMasterVariable, masterBranchMarker, renderMasterPrompt, MasterPromptError,
 } from '../prompts/prompt-loader';
 import { declaredMasterVariables, masterPromptForTreatment } from '../config/prompt-architecture';
 import type { Treatment } from '../config/treatments';
+import { AI_OPERATIONS } from '../registry/operations';
+import { contractVersionsOf } from '../gateway/output-resolution/runtime-contract';
+import { checkExecutionConfig, structuredSpecFor, type MasterExecutionConfig } from './structured-context';
 
 /**
  * Taille maximale d'un prompt maître (caractères). Les masters du dépôt font
@@ -42,7 +53,14 @@ export type MasterPromptIssueCode =
   | 'UNKNOWN_PLACEHOLDER'
   | 'REQUIRED_PLACEHOLDER_MISSING'
   | 'RENDER_FAILED'
-  | 'OPTIONAL_PLACEHOLDER_MISSING';
+  | 'OPTIONAL_PLACEHOLDER_MISSING'
+  // Lot 34D — mode contexte structuré (T4).
+  | 'EXECUTION_MODE_UNSUPPORTED'
+  | 'INPUT_CONTRACT_INVALID'
+  | 'OUTPUT_CONTRACT_INVALID'
+  | 'TASKS_INVALID'
+  | 'MODEL_CONFIG_INVALID'
+  | 'STRUCTURED_PLACEHOLDER_PRESENT';
 
 export interface MasterPromptIssue {
   code: MasterPromptIssueCode;
@@ -62,8 +80,14 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 const bloquant = (code: MasterPromptIssueCode, message: string): MasterPromptIssue => ({ code, message, blocking: true });
 
-/** Contrôle complet d'un texte de prompt maître pour un traitement. */
-export function checkMasterPromptContent(treatment: Treatment, content: string): MasterPromptCheckResult {
+/**
+ * Contrôle complet d'un texte de prompt maître pour un traitement.
+ * `execution` (lot 34D) : configuration d'exécution de la version ; absente
+ * ou LEGACY_TEMPLATE : contrôles historiques des emplacements.
+ */
+export function checkMasterPromptContent(
+  treatment: Treatment, content: string, execution?: MasterExecutionConfig | null,
+): MasterPromptCheckResult {
   const blocking: MasterPromptIssue[] = [];
   const warnings: MasterPromptIssue[] = [];
   const fin = () => ({ ok: blocking.length === 0, blocking, warnings });
@@ -83,6 +107,17 @@ export function checkMasterPromptContent(treatment: Treatment, content: string):
   }
   if (CONTROL_CHARS.test(content)) {
     blocking.push(bloquant('INVALID_CONTENT', 'Le texte contient des caractères invalides (caractères de contrôle invisibles) : recollez-le depuis un éditeur de texte.'));
+  }
+
+  const spec = structuredSpecFor(master.masterPromptCode);
+  if (execution?.mode === 'STRUCTURED_CONTEXT') {
+    if (!spec) {
+      blocking.push(bloquant('EXECUTION_MODE_UNSUPPORTED',
+        `Le mode « contexte structuré » n’est pas disponible pour ${treatment} : ce prompt garde ses emplacements {{…}}.`));
+      return fin();
+    }
+    checkStructured(spec, execution, content, blocking, warnings);
+    return fin();
   }
 
   const info = inspectMasterTemplate(content);
@@ -139,4 +174,41 @@ export function checkMasterPromptContent(treatment: Treatment, content: string):
     }
   }
   return fin();
+}
+
+const CODE_PAR_CHAMP: Record<string, MasterPromptIssueCode> = {
+  inputContractVersion: 'INPUT_CONTRACT_INVALID',
+  outputContractVersion: 'OUTPUT_CONTRACT_INVALID',
+  allowedTasks: 'TASKS_INVALID',
+  mode: 'EXECUTION_MODE_UNSUPPORTED',
+};
+
+/**
+ * Contrôles TECHNIQUES d'un prompt en contexte structuré (lot 34D, T4) : la
+ * configuration d'exécution et le registre, jamais la formulation du texte.
+ */
+function checkStructured(
+  spec: NonNullable<ReturnType<typeof structuredSpecFor>>, execution: MasterExecutionConfig, content: string,
+  blocking: MasterPromptIssue[], warnings: MasterPromptIssue[],
+): void {
+  for (const i of checkExecutionConfig(spec, execution, (name, v) => contractVersionsOf(name).includes(v))) {
+    blocking.push(bloquant(CODE_PAR_CHAMP[i.field] ?? 'INPUT_CONTRACT_INVALID', i.message));
+  }
+  // Configuration modèle : chaque TASK autorisée a une opération active avec un modèle principal.
+  for (const t of (execution.allowedTasks ?? [...spec.knownTasks]).filter((x) => spec.knownTasks.includes(x))) {
+    const op = Object.values(AI_OPERATIONS).find((o) => o.active && o.masterPromptCode === spec.masterPromptCode && o.task === t);
+    if (!op || !op.primaryModel) {
+      blocking.push(bloquant('MODEL_CONFIG_INVALID', `Aucune opération active avec un modèle configuré pour la TASK ${t}.`));
+    }
+  }
+  // Emplacements historiques restés dans le texte : ils ne seraient plus
+  // remplacés (les données passent par EXECUTION_CONTEXT). Signalé, jamais bloquant.
+  const restes = inspectMasterTemplate(content).placeholders;
+  if (restes.length > 0) {
+    warnings.push({
+      code: 'STRUCTURED_PLACEHOLDER_PRESENT', blocking: false,
+      message: `En contexte structuré, ${restes.map((p) => `{{${p}}}`).join(', ')} ne sont plus remplacés : les données sont transmises `
+        + 'automatiquement au modèle (bloc EXECUTION_CONTEXT). Vous pouvez retirer ces emplacements du texte.',
+    });
+  }
 }

@@ -97,6 +97,8 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   { templateCode: 'LEGAL_CONFIRMATION', label: 'Confirmation d’acceptation des conditions' },
   { templateCode: 'WITHDRAWAL_VERIFICATION', label: 'Rétractation — vérification de la demande' },
   { templateCode: 'WITHDRAWAL_RECEIPT', label: 'Rétractation — accusé de réception' },
+  // Lot 34I (migration 0301) : désactivable — le parrain peut toujours copier son lien.
+  { templateCode: 'REFERRAL_INVITATION', label: 'Invitation de parrainage (envoyée par un abonné)' },
 ];
 
 export const CHANNEL_LABELS: Record<CommunicationChannel, string> = {
@@ -466,6 +468,8 @@ export function resolveTemplateVariables(
     firstName: ctx.firstName,
     lastName: ctx.lastName,
     fullName: `${ctx.firstName} ${ctx.lastName}`.trim(),
+    // REFERRAL_INVITATION (lot 34I) : l'administrateur est l'expéditeur de son test.
+    senderName: `${ctx.firstName} ${ctx.lastName}`.trim(),
     email: ctx.email,
     accountName: ctx.accountName ?? '',
     planType: ctx.planLabel ?? '',

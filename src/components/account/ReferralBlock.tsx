@@ -15,7 +15,9 @@ import {
   Loader2,
   CheckCheck,
 } from 'lucide-react';
-import { apiClient } from '@/lib/api-client';
+import { apiClient, ApiClientError } from '@/lib/api-client';
+
+const INVITATION_ERROR = 'L\'invitation n\'a pas pu être envoyée. Réessayez plus tard ou copiez votre lien pour le partager.';
 
 // ─── Composant principal ─────────────────────────────────────────────────────
 
@@ -112,6 +114,8 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
       // La route réelle est /api/referral/send-email ({ emails: [] }) :
       // l'ancien appel visait /api/account/referral/invitations, qui n'existe
       // pas — l'envoi échouait à chaque fois.
+      // Lot 34I : la route ne répond 200 que si le fournisseur d'e-mail a
+      // ACCEPTÉ l'invitation ; sinon 502 avec un message lisible.
       const result = await apiClient.post<{ sent: number; total: number }>(
         '/api/referral/send-email',
         { emails: [email.trim()] }
@@ -120,10 +124,12 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
         toast.success('Invitation envoyée.');
         setEmail('');
       } else {
-        toast.error('L\'invitation n\'a pas pu être envoyée. Réessayez.');
+        toast.error(INVITATION_ERROR);
       }
     } catch (e) {
-      toast.error((e as { message?: string }).message || 'L\'invitation n\'a pas pu être envoyée. Réessayez.');
+      // Message du serveur seulement s'il en a donné un (jamais « API Error 500 »).
+      const serverMessage = e instanceof ApiClientError ? e.serverMessage : undefined;
+      toast.error(serverMessage || INVITATION_ERROR);
     } finally {
       setSendingEmail(false);
     }

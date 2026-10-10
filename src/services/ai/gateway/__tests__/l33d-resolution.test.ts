@@ -10,7 +10,8 @@
  *  · REPAIR-05 (cas 5) réparation ciblée sans nouvel appel complet ;
  *  · REPAIR-06 (cas 6) réparation insuffisante → repli INFORMÉ → normalisation → réussite ;
  *  · REPAIR-07 (cas 7) ancien format T1 v1 → adaptateur versionné ;
- *  · REPAIR-08 à REPAIR-18 : noms alternatifs, types, réparation JSON, audit
+ *  · REPAIR-08 à REPAIR-18 : noms alternatifs (lot 34D : plus aucun
+ *    rapprochement heuristique), types, réparation JSON, audit
  *    T1 (null pour un champ absent), structured output, cohérence, élagage,
  *    discriminant, tables non ambiguës.
  * Le cas 8 (rejeu automatique) : REPAIR-17 (décision) et E2E
@@ -36,7 +37,8 @@ const { FakeProvider, setAiProvider } = await import('../providers');
 const { resolveOutput } = await import('../output-resolution/resolve-output');
 const { parseModelOutput } = await import('../output-resolution/json-repair');
 const { normalizeToSchema, textDateToIso, numericString } = await import('../output-resolution/normalize');
-const { ENUM_SYNONYMS, matchEnum, matchField, canon } = await import('../output-resolution/normalization-tables');
+const { ENUM_SYNONYMS, matchEnum, caseFold } = await import('../output-resolution/normalization-tables');
+const { asTestContract } = await import('../output-resolution/runtime-contract');
 const { applyCompatAdapters, outputSchemaRef, T1_V1_TO_V2 } = await import('../output-resolution/contracts');
 const { providerJsonSchema, clearSchemaRejections } = await import('../output-resolution/provider-schema');
 const { pruneInvalidFields } = await import('../output-resolution/field-validation');
@@ -52,6 +54,8 @@ const { T1_TEST_OPERATION, t1TestVariables } = await import('./t1-master-request
 
 const repo = (code: string) => readFileSync(join(process.cwd(), 'src/services/ai/prompts/source-analysis', `${code}.txt`), 'utf8');
 const cdc15T1 = () => readFileSync(join(process.cwd(), 'src/services/ai/source-analysis/__fixtures__/compat/t1_master_v1.cdc15-v2.txt'), 'utf8');
+/** Lot 34D : l'exemple JSON complet n'est plus dans le prompt (contrat runtime) — conservé en fixture. */
+const exempleT1 = () => JSON.parse(readFileSync(join(process.cwd(), 'src/services/ai/source-analysis/__fixtures__/compat/t1-analyze-document.lot33-example.json'), 'utf8')) as Record<string, unknown>;
 
 const Doc = z.object({
   title: z.string(),
@@ -88,10 +92,13 @@ describe('REPAIR-02 (cas 2) — enum synonyme', () => {
     expect(r.ok && (r.data as { documentType: string }).documentType).toBe('RECEIPT');
     expect(r.repairs).toContainEqual(expect.objectContaining({ rule: 'enum_synonym', path: '$.documentType' }));
   });
-  it('casse et séparateurs ignorés (`invoice`, `purchase-receipt`) ; valeur inconnue jamais devinée', () => {
+  it('lot 34D : casse seule en normalisation ; synonyme EXPLICITE en mapping de compatibilité ; aucune ressemblance', () => {
     expect(matchEnum('invoice', ['INVOICE', 'RECEIPT'])).toEqual({ value: 'INVOICE', rule: 'enum_case' });
-    expect(matchEnum('purchase-receipt', ['INVOICE', 'RECEIPT'])).toEqual({ value: 'RECEIPT', rule: 'enum_synonym' });
-    expect(matchEnum('BANANE', ['INVOICE', 'RECEIPT'])).toBeNull();
+    expect(matchEnum('PURCHASE_RECEIPT', ['INVOICE', 'RECEIPT'])).toBeNull();
+    expect(matchEnum('purchase_receipt', ['INVOICE', 'RECEIPT'], { synonyms: true })).toEqual({ value: 'RECEIPT', rule: 'enum_synonym' });
+    // Séparateurs différents : plus de rapprochement par ressemblance.
+    expect(matchEnum('purchase-receipt', ['INVOICE', 'RECEIPT'], { synonyms: true })).toBeNull();
+    expect(matchEnum('BANANE', ['INVOICE', 'RECEIPT'], { synonyms: true })).toBeNull();
   });
 });
 
@@ -120,17 +127,18 @@ describe('REPAIR-10 — réparation JSON déterministe, jamais d’invention', (
   });
 });
 
-describe('REPAIR-08 — noms de champs alternatifs (§3)', () => {
-  it('purchase_date, date_achat, PURCHASE-DATE → purchaseDate', () => {
+describe('REPAIR-08 — noms de champs alternatifs (§3), revu au lot 34D (RTC-06)', () => {
+  it('purchase_date, date_achat, PURCHASE-DATE, datePurchase : JAMAIS renommés (aucun mapping déclaré)', () => {
     for (const k of ['purchase_date', 'date_achat', 'PURCHASE-DATE', 'datePurchase']) {
       const { purchaseDate, ...rest } = valide;
-      const r = resolve({ ...rest, [k]: purchaseDate });
-      expect(r.ok, k).toBe(true);
-      expect(r.repairs).toContainEqual(expect.objectContaining({ rule: 'field_alias', path: '$.purchaseDate' }));
+      const r = resolve({ ...rest, [k]: purchaseDate }, Doc, { allowPruning: false });
+      expect(r.ok, k).toBe(false);
+      expect(r.repairs.some((x) => x.rule === 'field_alias')).toBe(false);
+      // Le champ inconnu est signalé : la passe de réparation décidera, avec le contrat.
+      expect((r as { allPaths: string[] }).allPaths).toContain(`$.${k}`);
     }
   });
-  it('ambiguïté ou clé déjà présente : aucun renommage', () => {
-    expect(matchField('date', ['startDate', 'endDate'])).toBeNull();
+  it('clé déjà présente : aucun renommage, la valeur valide reste', () => {
     const report: never[] = [];
     const out = normalizeToSchema({ ...valide, purchase_date: '2020-01-01' }, Doc, report) as Record<string, unknown>;
     expect(out.purchaseDate).toBe('2026-04-24');
@@ -232,7 +240,7 @@ describe('REPAIR-11 — audit T1 : `null` pour un champ absent, `entityId` omis'
   };
   /** Sortie « à la Gemini » : champs absents du document rendus `null`. */
   const sortieAvecNulls = () => {
-    const ex = structuredClone(exempleDuPrompt(repo('t1_master_v1')));
+    const ex = structuredClone(exempleT1());
     const doc = ex.document as Record<string, unknown>;
     doc.supplier = null; doc.amountCents = null; doc.description = null;
     ex.visual = null;
@@ -242,8 +250,9 @@ describe('REPAIR-11 — audit T1 : `null` pour un champ absent, `entityId` omis'
     return ex;
   };
 
-  it('l’exemple du prompt du dépôt est conforme au contrat (aucun désalignement de structure)', () => {
-    expect(T1AnalyzeDocumentOutput.safeParse(exempleDuPrompt(repo('t1_master_v1'))).success).toBe(true);
+  it('l’exemple du lot 33 (désormais fixture, hors prompt) est conforme au contrat ; le prompt du dépôt n’en contient plus', () => {
+    expect(T1AnalyzeDocumentOutput.safeParse(exempleT1()).success).toBe(true);
+    expect(exempleDuPrompt(repo('t1_master_v1'))).toBeUndefined();
   });
   it('cause de l’incident reproduite : le contrat strict rejette `null` sur les champs absents', () => {
     const strict = T1AnalyzeDocumentOutput.safeParse(sortieAvecNulls());
@@ -270,11 +279,12 @@ describe('REPAIR-11 — audit T1 : `null` pour un champ absent, `entityId` omis'
     expect(t1.findings.filter((f) => f.code === 'PROMPT_EXAMPLE_INVALID')).toEqual([]);
     expect(t1.contract).toMatch(/^t1_analyze_document@v3 · [0-9a-f]{12}$/);
   });
-  it('le prompt du dépôt impose désormais le format strict (omission plutôt que null, dates ISO)', () => {
+  it('lot 34D : le prompt du dépôt renvoie au contrat runtime, garde les règles de contenu (omission, dates ISO)', () => {
     const t = repo('t1_master_v1');
-    expect(t).toMatch(/FORMAT STRICT DE LA SORTIE/);
-    expect(t).toMatch(/n’écris jamais `null`/);
-    expect(t).toMatch(/jamais un objet/);
+    expect(t).toMatch(/fixée par le contrat runtime joint à l’appel/);
+    expect(t).toMatch(/OMIS/);
+    expect(t).toMatch(/AAAA-MM-JJ/);
+    expect(t).not.toMatch(/FORMAT STRICT DE LA SORTIE/);
   });
 });
 
@@ -313,14 +323,14 @@ describe('REPAIR-15 — table d’équivalences centralisée, jamais ambiguë', 
         if (!values.includes(canonique)) continue;
         for (const syn of syns) {
           // Valeur autorisée telle quelle : elle prime (aucune équivalence appliquée).
-          if (values.some((v) => canon(v) === canon(syn))) {
-            expect(matchEnum(syn, values)?.rule).toBe('enum_case');
+          if (values.some((v) => caseFold(v) === caseFold(syn))) {
+            expect(matchEnum(syn, values, { synonyms: true })?.rule).toBe('enum_case');
             continue;
           }
-          const cibles = values.filter((v) => (ENUM_SYNONYMS[v] ?? []).some((x) => canon(x) === canon(syn)));
+          const cibles = values.filter((v) => (ENUM_SYNONYMS[v] ?? []).some((x) => caseFold(x) === caseFold(syn)));
           // Un synonyme ambigu dans une énumération n'est jamais appliqué (matchEnum rend null).
-          if (cibles.length > 1) expect(matchEnum(syn, values)).toBeNull();
-          else expect(matchEnum(syn, values)).toEqual({ value: canonique, rule: 'enum_synonym' });
+          if (cibles.length > 1) expect(matchEnum(syn, values, { synonyms: true })).toBeNull();
+          else expect(matchEnum(syn, values, { synonyms: true })).toEqual({ value: canonique, rule: 'enum_synonym' });
         }
       }
     }
@@ -358,11 +368,11 @@ describe('REPAIR-17 (cas 8) — rejeu automatique : décision et signature (pure
 
 // ── Passerelle : réparation ciblée, repli informé, structured output ───────
 
-const Schema = z.object({
+const Schema = asTestContract(z.object({
   task: z.literal('GROUP_UPLOAD'),
   title: z.string(), vendor: z.string(), amount: z.number(), documentType: z.string(),
   purchaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-});
+}));
 const sortie = (o: Record<string, unknown>) => JSON.stringify({ task: 'GROUP_UPLOAD', title: 'Facture', vendor: 'Darty', amount: 1299, documentType: 'INVOICE', ...o });
 let fake: InstanceType<typeof FakeProvider>;
 const requete = (over: Record<string, unknown> = {}) => ({

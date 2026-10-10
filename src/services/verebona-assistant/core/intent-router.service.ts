@@ -42,6 +42,7 @@ import { normalizeForRouting, startsWith, word } from './routing-text';
 import { assetVocabularyAlternatives } from '@/lib/asset-taxonomy';
 import { detectHelpConcept } from '@/lib/help-center/concepts';
 import { analyserPeriode, aujourdhuiParis } from './query-period';
+import { analyserDemandeActionnable } from './actionable-request';
 
 export interface RouteContext {
   message: string;
@@ -429,6 +430,14 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
 
   // Étape 7 — Règles « données » déterministes (§9.4.6)
   if (MISSING_INFO.test(t)) return R('ACCOUNT_MISSING_INFORMATION', 'probable', 'informations manquantes', true);
+  // Lot 34 : demande d'ACTIONS (« que dois-je faire aujourd'hui ? », « j'ai
+  // quoi cette semaine ? », « quelque chose en retard ? », « mes échéances
+  // de demain »…) — intentions EXISTANTES (À traiter, agenda), famille et
+  // période lues par `actionable-request` ; jamais une recherche de documents.
+  if (!SUMMARY.test(t) && !COMPARE.test(t)) {
+    const actions = analyserDemandeActionnable(ctx.message, today ?? aujourdhuiParis());
+    if (actions) return R(actions.intent, 'probable', `demande d’actions — ${actions.intentResolution}`, true);
+  }
   if (TO_PROCESS.test(t)) return R('ACCOUNT_TO_PROCESS', 'probable', 'éléments à traiter', true);
   // Exports et dossiers DÉJÀ générés (§12.1) : une donnée du compte, pas
   // une question d'usage.

@@ -29,11 +29,15 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { isInternalAiErrorCode } from '../gateway/errors';
+
 /** Relances au-delà desquelles la reprise serveur n'insiste plus (`analysis-recovery`). */
 export const MAX_ANALYSIS_RETRIES = 10;
 
 /** Codes de passerelle d'un échec définitif du master T1. */
-const DEFINITIVE_CODES = new Set(['INVALID_OUTPUT', 'MASTER_PROMPT_INVALID']);
+const DEFINITIVE_CODES = new Set(['INVALID_OUTPUT', 'MASTER_PROMPT_INVALID',
+  // Lot 34D : contrat runtime incohérent (défaut interne, identique à chaque essai).
+  'RUNTIME_CONTRACT_MISMATCH']);
 
 /**
  * L'échec de la passerelle est-il définitif ? `ALL_MODELS_FAILED` : code du
@@ -44,6 +48,22 @@ export function isDefinitiveGatewayFailure(e: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const code = err.code === 'ALL_MODELS_FAILED' ? err.lastFailureCode : err.code;
   return typeof code === 'string' && DEFINITIVE_CODES.has(code);
+}
+
+/**
+ * Motif d'échec ENREGISTRÉ sur le document (lot 34D) : un défaut INTERNE du
+ * moteur (contrat runtime incohérent, contrat T4 violé) n'est jamais exposé
+ * tel quel à l'utilisateur final — message générique ; le détail (empreintes,
+ * contrat, étape) reste dans BO › Exécutions IA. Les autres causes gardent
+ * leur message historique.
+ */
+export function userFacingFailReason(e: unknown): string | null {
+  const err = e as { code?: unknown; lastFailureCode?: unknown } | null;
+  if (!err || typeof err !== 'object') return null;
+  if (isInternalAiErrorCode(err.code) || isInternalAiErrorCode(err.lastFailureCode)) {
+    return 'erreur technique interne du moteur d’analyse (détail transmis à l’équipe Verebona)';
+  }
+  return null;
 }
 
 /** Origine d'une remise en file après un échec HORS file (`entrypoint`). */

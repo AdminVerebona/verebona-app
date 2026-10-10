@@ -1,0 +1,12 @@
+-- Migration 0292 (index 1/1) : faits ACTIFS sans cible porteurs d'une clé
+-- canonique — sert la réconciliation continue T3 « fait sans cible ↔
+-- équipement / bien » (lot 34E), qui ne lit que les faits encore ouverts d'un
+-- compte. Partiel : une petite fraction de la table.
+-- UNE instruction par fichier : `CREATE INDEX CONCURRENTLY` ne peut pas
+-- s'exécuter dans une transaction ; aucun verrou bloquant les écritures.
+-- Idempotente ; un index laissé INVALIDE est reconstruit (`migration-index.ts`).
+--
+-- INDEX OPTIONNEL : la lecture est bornée et fonctionne sans lui, plus
+-- lentement ; son absence (construction différée) ne crée aucune erreur.
+-- verebona:optional-index
+CREATE INDEX CONCURRENTLY IF NOT EXISTS document_facts_untargeted_key_idx ON document_facts (account_id) WHERE status = 'active' AND target_entity_id IS NULL AND canonical_key IS NOT NULL;

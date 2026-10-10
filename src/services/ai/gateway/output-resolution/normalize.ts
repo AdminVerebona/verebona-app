@@ -10,7 +10,6 @@
  *
  *   règle                     exemple
  *   ────────────────────────  ─────────────────────────────────────────────
- *   field_alias               `purchase_date` → `purchaseDate` (table + casse)
  *   envelope_unwrapped        `{"result": {…}}` → `{…}` (aucune clé connue)
  *   single_element_unwrapped  `[{…}]` → `{…}` (objet attendu)
  *   null_as_absent            `"supplier": null` → absent (champ facultatif)
@@ -21,9 +20,16 @@
  *   numeric_string            `"1250"` → `1250`
  *   number_to_string          `1250` → `"1250"` (chaîne attendue)
  *   boolean_string            `"true"` / `"oui"` → `true`
- *   enum_case / enum_synonym  `invoice` → `INVOICE`, `PURCHASE_RECEIPT` → `RECEIPT`
+ *   enum_case                 `invoice` → `INVOICE` (casse seule, même valeur)
  *   single_value_to_array     `"x"` → `["x"]` (liste attendue)
  *   discriminant_imposed      `task` absent → TASK imposée par le serveur
+ *
+ * Lot 34D (contrat runtime source unique) : plus AUCUN rapprochement de noms
+ * de champs (`purchase_date` n'est plus `purchaseDate`) ni de valeurs
+ * d'énumération par ressemblance. Les équivalences EXPLICITES de la table de
+ * compatibilité (`enum_synonym` : `PURCHASE_RECEIPT` → `RECEIPT`) ne sont
+ * appliquées qu'en mode `compat` — étape « mappings de compatibilité », après
+ * un premier échec de validation — et consignées `compat_mapping`.
  *
  * Toute transformation est consignée (`OutputRepairStep`) : rien n'est
  * appliqué silencieusement. Travaille sur une COPIE.
@@ -31,7 +37,7 @@
 import type { ZodType } from 'zod';
 import type { OutputRepairStep } from '../diagnostics/taxonomy';
 import { describe, resolveUnion, type FieldDesc, type ShapeNode } from './schema-introspect';
-import { matchEnum, matchField } from './normalization-tables';
+import { matchEnum } from './normalization-tables';
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -100,6 +106,12 @@ const FAUX = new Set(['false', 'non', 'no', 'faux']);
 export interface NormalizeOptions {
   /** Discriminant imposé par le serveur (`task` / `mode`) et sa valeur. */
   discriminant?: { field: string; value: string };
+  /**
+   * Lot 34D — étape « mappings de compatibilité » : les équivalences
+   * EXPLICITES d'énumération (`ENUM_SYNONYMS`) sont appliquées, consignées
+   * `compat_mapping`. Absent : normalisation sûre seulement.
+   */
+  compat?: boolean;
 }
 
 /**
@@ -125,7 +137,7 @@ export function normalizeToSchema(value: unknown, schema: ZodType, report: Outpu
       }
     }
   }
-  v = walk(v, root, [], report, true);
+  v = walk(v, root, [], report, true, options.compat === true);
   return v;
 }
 
@@ -135,7 +147,7 @@ function structuredCloneSafe<T>(v: T): T {
 
 const ENVELOPES = new Set(['result', 'results', 'data', 'output', 'response', 'json', 'answer', 'analysis', 'resultat', 'résultat', 'sortie']);
 
-function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, report: OutputRepairStep[], isRoot = false): unknown {
+function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, report: OutputRepairStep[], isRoot = false, compat = false): unknown {
   const at = pathOf(path);
   const note = (rule: string, detail?: string) => report.push({ stage: 'normalization', rule, path: at, ...(detail ? { detail } : {}) });
   const d = resolveUnion(desc, value);
@@ -155,24 +167,16 @@ function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, rep
       if (!isObj(v)) return v;
       const known = Object.keys(n.shape);
       // Enveloppe : aucune clé connue, une seule clé portant un objet.
-      if (known.length > 0 && !Object.keys(v).some((k) => known.includes(k) || matchField(k, known))) {
+      if (known.length > 0 && !Object.keys(v).some((k) => known.includes(k))) {
         const keys = Object.keys(v);
         if (keys.length === 1 && (ENVELOPES.has(keys[0].toLowerCase()) || isRoot) && isObj(v[keys[0]])) {
           note('envelope_unwrapped', `${keys[0]}`);
-          return walk(v[keys[0]], desc, path, report, isRoot);
+          return walk(v[keys[0]], desc, path, report, isRoot, compat);
         }
       }
       const out: Obj = { ...v };
-      // Noms de champs alternatifs (sans ambiguïté, sans écraser une clé présente).
-      for (const k of Object.keys(out)) {
-        if (known.includes(k)) continue;
-        const target = matchField(k, known);
-        if (target && out[target] === undefined) {
-          out[target] = out[k];
-          delete out[k];
-          report.push({ stage: 'normalization', rule: 'field_alias', path: pathOf([...path, target]), detail: `${k} → ${target}` });
-        }
-      }
+      // Lot 34D : aucun renommage de champ ici (ni casse, ni alias) — un nom
+      // inconnu reste tel quel ; la validation le signale (champ non déclaré).
       for (const k of known) {
         if (!(k in out)) continue;
         const f = n.shape[k];
@@ -190,7 +194,7 @@ function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, rep
             continue;
           }
         }
-        out[k] = walk(child, f, [...path, k], report);
+        out[k] = walk(child, f, [...path, k], report, false, compat);
       }
       return out;
     }
@@ -202,7 +206,7 @@ function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, rep
         // Valeur unique là où une liste est attendue (compatible avec l'élément).
         if (el.kind !== 'array' && compatibleScalar(el, v)) { v = [v]; note('single_value_to_array'); } else return v;
       }
-      return (v as unknown[]).map((x, i) => walk(x, n.element, [...path, i], report));
+      return (v as unknown[]).map((x, i) => walk(x, n.element, [...path, i], report, false, compat));
     }
     case 'string': {
       if (typeof value === 'string') {
@@ -216,7 +220,7 @@ function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, rep
       if (iso) { note('date_object_to_iso', 'objet {jour, mois, année} → AAAA-MM-JJ'); return iso; }
       if (Array.isArray(value) && value.length === 1 && (typeof value[0] === 'string' || typeof value[0] === 'number')) {
         note('single_element_unwrapped');
-        return walk(value[0], d, path, report);
+        return walk(value[0], d, path, report, false, compat);
       }
       if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') {
         if (n.isoDate) return value;
@@ -232,7 +236,7 @@ function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, rep
       }
       if (Array.isArray(value) && value.length === 1 && (typeof value[0] === 'number' || typeof value[0] === 'string')) {
         note('single_element_unwrapped');
-        return walk(value[0], d, path, report);
+        return walk(value[0], d, path, report, false, compat);
       }
       return value;
     }
@@ -248,7 +252,11 @@ function walk(value: unknown, desc: FieldDesc, path: Array<string | number>, rep
     case 'literal': {
       const allowed = n.kind === 'enum' ? n.values : n.values.filter((x): x is string => typeof x === 'string');
       if (typeof value === 'string' && !allowed.includes(value)) {
-        const m = matchEnum(value, allowed);
+        const m = matchEnum(value, allowed, { synonyms: compat });
+        if (m?.rule === 'enum_synonym') {
+          report.push({ stage: 'compat_mapping', rule: 'enum_synonym', path: at, detail: `${value} → ${m.value}` });
+          return m.value;
+        }
         if (m) { note(m.rule, `${value} → ${m.value}`); return m.value; }
       }
       return value;

@@ -15,6 +15,27 @@ import { formulateWithT6, logT6, type T6Mode } from './t6-runner';
 import type { MascotPresentation } from './types';
 import { parisDay, tileFor } from './bubble';
 import { buildTodoBlock } from './todo-items';
+import type { CatalogQuestion } from './selector';
+
+/**
+ * Lot 34 : questions « Ou demandez-moi » = catalogue UNIQUE de Verebona pour
+ * l'accueil (`suggestionsForRoute`), rendu avec l'état du compte (mêmes
+ * préconditions que le champ « Demander à Verebona »). Indisponible : aucune
+ * question (jamais une question non garantie).
+ */
+export async function homeCatalogQuestions(accountId: number): Promise<CatalogQuestion[]> {
+  try {
+    const [{ loadSuggestionContext }, { suggestionsForRoute }] = await Promise.all([
+      import('@/services/verebona-assistant/core/account-state'),
+      import('@/services/verebona-assistant/registries/capability-registry'),
+    ]);
+    const ctx = await loadSuggestionContext(accountId, '/accueil');
+    return suggestionsForRoute('/accueil', ctx);
+  } catch (e) {
+    console.error('[mascotte] questions du catalogue indisponibles :', (e as Error).message);
+    return [];
+  }
+}
 
 export async function getMascotPresentation(
   accountId: number,
@@ -34,7 +55,7 @@ export async function getMascotPresentation(
   const tiles = { unprovenOverdueIsQuestion: true };
   const candidates = buildCandidates(raw);
   const subjects = selectSubjects(candidates.candidates);
-  const secondaries = buildSecondaries(candidates, subjects);
+  const secondaries = buildSecondaries(candidates, subjects, await homeCatalogQuestions(accountId));
   // Lot 32 (MASC2) : « À traiter » = niveau 2 de la bulle, depuis la file.
   const todo = buildTodoBlock(raw.toProcess, raw.toProcessTotal);
   // Empreinte T6 : sujets et secondaires seulement — un « À traiter » résolu

@@ -11,34 +11,44 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const m = vi.hoisted(() => ({
   enqueue: vi.fn(async () => ({ decision: 'create', jobId: 1 })),
   markPending: vi.fn(async () => {}),
-  confirmEvaluation: vi.fn(async (ids: number[]) => ids.length),
-  loadAssetIdentifiers: vi.fn(async () => [] as unknown[]),
+  confirmContext: vi.fn(async () => true),
+  getResolution: vi.fn(async () => ({ lastOutcome: 'ABSTAINED', t1Candidates: [], contextFingerprint: 'fp-a', knowledgeRevision: 5 })),
+  computeContext: vi.fn(async () => ({ fingerprint: 'fp-a' })),
+  revision: vi.fn(async () => 7),
 }));
-vi.mock('../resolution.repository', () => ({ markPending: m.markPending, confirmEvaluation: m.confirmEvaluation }));
-vi.mock('../asset-identifiers.repository', () => ({ loadAssetIdentifiers: m.loadAssetIdentifiers }));
+vi.mock('../resolution.repository', () => ({ markPending: m.markPending, confirmContext: m.confirmContext, getResolution: m.getResolution }));
+vi.mock('../attachment-state', () => ({ readAttachmentState: async () => ({ exists: true, secondaryAssetIds: [], mentionedAssetIds: [] }) }));
+vi.mock('../context', () => ({ computeDocumentAssetContext: m.computeContext }));
+vi.mock('../matching-index', () => ({ MatchingIndexCache: class { get = vi.fn(async () => ({ accountId: 3 })); } }));
+vi.mock('../../continuous/knowledge-revision', () => ({
+  getAccountKnowledgeRevision: m.revision, knowledgeChangedSince: async () => ['ASSET'], compactKnowledgeChanges: async () => {},
+  knowledgeChangedSql: (a: string, r: string) => `EXISTS (SELECT 1 FROM account_knowledge_changes kc WHERE kc.account_id = ${a} AND kc.id > COALESCE(${r}, 0))`,
+}));
 vi.mock('../resolve-document-asset.service', async (orig) => ({
   ...(await orig<typeof import('../resolve-document-asset.service')>()),
   resolveDocumentAsset: vi.fn(),
+  evaluationBase: () => ({}),
 }));
 
 const { DOCUMENT_ASSET_RESOLUTION_VERSION } = await import('../version');
 const { identifiersFingerprint } = await import('../identifiers');
-const { inputFingerprint } = await import('../resolve-document-asset.service');
 const { SWEEP_SQL, requestStaleResolutions } = await import('../queue');
 
 const deps = { enqueue: m.enqueue as never, isTriggerActive: async () => true };
 const maison = { assetId: 42, family: 'IMMOBILIER' as const, values: { address1: '12 rue Exemple', postalCode: '69003' } };
 
 describe('T3RV-AC2 — version métier du moteur DOCUMENT_ASSET', () => {
-  it('constante entière explicite (≥ 2), jamais un hash de commit', () => {
+  it('constante entière explicite (≥ 3 depuis le Candidate Builder 34E), jamais un hash de commit', () => {
     expect(Number.isInteger(DOCUMENT_ASSET_RESOLUTION_VERSION)).toBe(true);
-    expect(DOCUMENT_ASSET_RESOLUTION_VERSION).toBeGreaterThanOrEqual(2);
+    expect(DOCUMENT_ASSET_RESOLUTION_VERSION).toBeGreaterThanOrEqual(3);
   });
 
-  it('la version entre dans l’empreinte des entrées : une décision n’est réutilisable que sur la MÊME version', () => {
-    const base = { extractionAt: '2026-10-01T10:00:00.000Z', candidates: [], matches: [] };
-    expect(inputFingerprint(base)).toBe(inputFingerprint({ ...base, version: DOCUMENT_ASSET_RESOLUTION_VERSION }));
-    expect(inputFingerprint({ ...base, version: DOCUMENT_ASSET_RESOLUTION_VERSION - 1 })).not.toBe(inputFingerprint(base));
+  it('la version entre dans l’empreinte du contexte : une décision n’est réutilisable que sur la MÊME version', async () => {
+    const { documentAssetContextFingerprint } = await vi.importActual<typeof import('../context')>('../context');
+    const base = { documentDigest: 'd', candidates: [], candidateIdentifiers: {}, matches: [] };
+    expect(documentAssetContextFingerprint(base)).not.toBe(documentAssetContextFingerprint({
+      ...base, versions: { resolution: DOCUMENT_ASSET_RESOLUTION_VERSION - 1, builder: 1, rules: 1 },
+    }));
   });
 
   it('la version est persistée à CHAQUE issue (recordOutcome) et à chaque confirmation (restoreLastOutcome)', () => {
@@ -52,10 +62,10 @@ describe('T3RV-AC2 — version métier du moteur DOCUMENT_ASSET', () => {
 });
 
 describe('T3RV-AC3 / AC7 / AC9 — sélection du balayage', () => {
-  it('abstention exclue seulement si même analyse + version COURANTE + aucun identifiant modifié ; NULL = ancienne version', () => {
+  it('décision ouverte exclue seulement si même analyse + version COURANTE + connaissance du compte inchangée ; NULL = ancienne version', () => {
     const sql = SWEEP_SQL.replace(/\s+/g, ' ');
-    // Même analyse ET même version ET pas de modification d'identifiant depuis l'évaluation.
-    expect(sql).toContain("r.status IN ('ABSTAINED', 'NO_CANDIDATE') AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at) AND r.resolution_version IS NOT DISTINCT FROM $5::int AND NOT EXISTS ( SELECT 1 FROM document_asset_identifier_changes c");
+    // Même analyse ET même version ET aucune évolution de la connaissance depuis la révision évaluée (34E).
+    expect(sql).toContain("r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET') AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at) AND r.resolution_version IS NOT DISTINCT FROM $5::int AND NOT EXISTS (SELECT 1 FROM account_knowledge_changes kc WHERE kc.account_id = f.account_id AND kc.id > COALESCE(r.knowledge_revision, 0))");
     // NULL (ligne historique) : `IS NOT DISTINCT FROM` est FAUX, jamais NULL — sous `NOT (…)`, une
     // comparaison `=` à NULL rendrait la condition NULL et écarterait la ligne au lieu de la reprendre.
     expect(sql).not.toMatch(/r\.resolution_version = /);
@@ -64,7 +74,7 @@ describe('T3RV-AC3 / AC7 / AC9 — sélection du balayage', () => {
 
   it('T3RV-AC6 — décision utilisateur jamais rejugée : USER_DECIDED exclu quelle que soit la version ; choix / retrait / lien USER filtrés', () => {
     const sql = SWEEP_SQL.replace(/\s+/g, ' ');
-    expect(sql).toContain("(r.status IN ('MULTI_ASSET', 'USER_DECIDED') AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at))");
+    expect(sql).toContain("(r.status = 'USER_DECIDED' AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at))");
     expect(sql).toContain("COALESCE((f.user_edited_fields ->> 'assetId')::boolean, false) = false");
     expect(sql).toContain("(l.link_role = 'PRIMARY' OR l.origin = 'USER')");
   });
@@ -81,7 +91,7 @@ describe('T3RV-AC3 / AC7 / AC9 — sélection du balayage', () => {
   });
 });
 
-describe('T3RV-AC7 — identifiants des biens modifiés : empreinte comparée avant toute mise en file', () => {
+describe('T3RV-AC7 / 34E — évolution de la connaissance : contexte comparé avant toute mise en file', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
   it('empreinte stable (ordre des biens et des clés), sensible à une valeur, sans valeur en clair', () => {
@@ -93,38 +103,37 @@ describe('T3RV-AC7 — identifiants des biens modifiés : empreinte comparée av
     expect(a).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('abstention courante, empreinte inchangée → évaluation confirmée, AUCUN travail (pas de boucle horaire)', async () => {
-    m.loadAssetIdentifiers.mockResolvedValue([maison]);
-    const fp = identifiersFingerprint([maison]);
-    const r = await requestStaleResolutions([
-      { fileId: 1, accountId: 3, userId: 2, identifiersOnly: true, identifiersFingerprint: fp },
-      { fileId: 2, accountId: 3, userId: 2, identifiersOnly: true, identifiersFingerprint: fp },
-    ], { triggerCode: 'schedule_hourly', deps });
-    expect(r).toEqual({ enqueued: [], confirmed: 2 });
-    expect(m.enqueue).not.toHaveBeenCalled();
-    expect(m.confirmEvaluation).toHaveBeenCalledWith([1, 2], fp);
-    // Empreinte calculée UNE fois par compte et par page.
-    expect(m.loadAssetIdentifiers).toHaveBeenCalledTimes(1);
+  const row = (o: Partial<Parameters<typeof requestStaleResolutions>[0][number]>) => ({
+    fileId: 1, accountId: 3, userId: 2, contextCheck: true, contextFingerprint: 'fp-a', knowledgeRevision: 5,
+    reprocessReason: 'KNOWLEDGE_CHANGED' as const, ...o,
   });
 
-  it('identifiant réellement modifié, ancienne version ou nouvelle analyse → remis en file', async () => {
-    m.loadAssetIdentifiers.mockResolvedValue([{ ...maison, values: { address1: '14 rue Exemple' } }]);
+  it('T3C-07 — décision ouverte, connaissance modifiée mais contexte identique → CONFIRMED_NO_CHANGE, AUCUN travail', async () => {
+    const r = await requestStaleResolutions([row({ fileId: 1 }), row({ fileId: 2 })], { triggerCode: 'schedule_hourly', deps });
+    expect(r).toEqual({ enqueued: [], confirmed: 2 });
+    expect(m.enqueue).not.toHaveBeenCalled();
+    expect(m.confirmContext).toHaveBeenCalledWith(expect.objectContaining({ fileId: 1, contextFingerprint: 'fp-a', knowledgeRevision: 7 }));
+  });
+
+  it('contexte modifié, ancienne version ou nouvelle analyse → remis en file avec le motif', async () => {
+    m.computeContext.mockResolvedValueOnce({ fingerprint: 'fp-b' });
     const r = await requestStaleResolutions([
-      { fileId: 1, accountId: 3, userId: 2, identifiersOnly: true, identifiersFingerprint: identifiersFingerprint([maison]) },
-      { fileId: 2, accountId: 3, userId: 2, identifiersOnly: false, identifiersFingerprint: null },
-      { fileId: 3, accountId: 3, userId: null, identifiersOnly: true, identifiersFingerprint: null },
+      row({ fileId: 1 }),
+      row({ fileId: 2, contextCheck: false, contextFingerprint: null, reprocessReason: 'ENGINE_VERSION' }),
+      row({ fileId: 3, userId: null, contextCheck: false, reprocessReason: 'NEW_ANALYSIS' }),
     ], { triggerCode: 'schedule_hourly', deps });
     expect(r).toEqual({ enqueued: [1, 2, 3], confirmed: 0 });
     expect(m.markPending).toHaveBeenCalledTimes(3);
     // Rattrapage : aucun candidat T1 fourni (données T1 persistées conservées, T1 jamais relancé).
     expect(m.markPending).toHaveBeenCalledWith(expect.objectContaining({ fileId: 1, t1Candidates: undefined, triggerCode: 'schedule_hourly' }));
-    expect(m.enqueue).toHaveBeenCalledTimes(3);
-    expect(m.confirmEvaluation).not.toHaveBeenCalled();
+    expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({ reprocessReason: 'CONTEXT_CHANGED' }) }));
+    expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({ reprocessReason: 'ENGINE_VERSION' }) }));
+    expect(m.confirmContext).not.toHaveBeenCalled();
   });
 
   it('garde d’exécution vérifiée avant chaque écriture', async () => {
     const guard = { assertActive: vi.fn(async () => {}) };
-    await requestStaleResolutions([{ fileId: 9, accountId: 3, userId: 2, identifiersOnly: false, identifiersFingerprint: null }], {
+    await requestStaleResolutions([row({ fileId: 9, contextCheck: false, contextFingerprint: null })], {
       triggerCode: 'schedule_hourly', deps, guard: guard as never,
     });
     expect(guard.assertActive).toHaveBeenCalled();

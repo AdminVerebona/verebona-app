@@ -70,6 +70,8 @@ const PAR_STRATEGIE: Readonly<Record<string, T2TruthSource>> = {
   'structured.deadline_of': 'agenda',
   'structured.count_agenda': 'agenda',
   'structured.upcoming_agenda': 'agenda',
+  // Lot 34 : demandes d'actions (échéances actives et « À traiter » ouverts).
+  'structured.actionable': 'agenda',
   // Exports.
   'structured.exports': 'export',
 };

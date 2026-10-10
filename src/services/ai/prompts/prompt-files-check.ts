@@ -11,6 +11,12 @@
  *     fichier correspondent exactement (hors TASK) — sinon, non vérifiable,
  *     signalé en information.
  *
+ * Lot 34D — master dont le FICHIER du dépôt est en contexte structuré (T4) :
+ * ni `{{TASK}}`, ni section de branche, ni emplacement n'est exigé ; le
+ * contrôle porte sur le contrat d'exécution (contrat d'entrée, TASK,
+ * contrat de sortie reliés au registre des contrats runtime) et sur la
+ * correspondance des variables des opérations avec les champs du contrat.
+ *
  * Fonction pure sur un lecteur injecté : testable sur un répertoire de
  * fixtures, sans dépendre du master écrit en parallèle.
  */
@@ -20,6 +26,14 @@ import type { AiOperationDefinition } from '../registry/operations';
 import {
   promptFileCandidates, inspectMasterTemplate, checkMasterTemplate, MASTER_TASK_PLACEHOLDER,
 } from './prompt-loader';
+import { structuredSpecFor, checkExecutionConfig, type StructuredContextSpec } from '../master-prompts/structured-context';
+import { contractVersionsOf } from '../gateway/output-resolution/runtime-contract';
+
+/** Contrat d'exécution du fichier du dépôt, s'il est en contexte structuré. */
+function structuredFileSpec(code: string): StructuredContextSpec | null {
+  const spec = structuredSpecFor(code);
+  return spec && spec.defaults.mode === 'STRUCTURED_CONTEXT' ? spec : null;
+}
 
 export interface PromptFilesReport {
   errors: string[];
@@ -78,7 +92,14 @@ export function checkPromptFiles(input: PromptFilesCheckInput): PromptFilesRepor
         else report.warnings.push(`${msg} — opération inactive (ARCH-02)`);
         continue;
       }
-      if (op.promptVariables) {
+      if (op.promptVariables && structuredFileSpec(code)) {
+        // Contexte structuré : chaque variable de l'opération doit être un champ du contrat d'entrée.
+        const spec = structuredFileSpec(code)!;
+        const champs = new Set(Object.values(spec.inputContracts[spec.defaults.inputContractVersion ?? '']?.fields ?? {}).map((f) => f.legacyVariable));
+        for (const v of op.promptVariables) {
+          if (!champs.has(v)) report.errors.push(`${op.operationCode} : variable ${v} sans champ dans le contrat d’entrée ${spec.defaults.inputContractVersion}`);
+        }
+      } else if (op.promptVariables) {
         const attendus = new Set(op.promptVariables);
         const info = inspectMasterTemplate(text);
         const presents = info.placeholders.filter((p) => p !== (info.discriminant ?? MASTER_TASK_PLACEHOLDER));
@@ -94,7 +115,20 @@ export function checkPromptFiles(input: PromptFilesCheckInput): PromptFilesRepor
     if (op.masterPromptCode && !mastersVus.has(op.masterPromptCode)) {
       mastersVus.add(op.masterPromptCode);
       const { text } = lire(op.masterPromptCode, op);
-      if (text !== null) {
+      const structure = structuredFileSpec(op.masterPromptCode);
+      if (text !== null && structure) {
+        const d = structure.defaults;
+        for (const i of checkExecutionConfig(structure, d, (name, v) => contractVersionsOf(name).includes(v))) {
+          report.errors.push(`master « ${op.masterPromptCode} » (contexte structuré) : ${i.message}`);
+        }
+        const taches = [...(tachesParMaster.get(op.masterPromptCode) ?? [])];
+        for (const t of taches.filter((x) => !(d.allowedTasks ?? structure.knownTasks).includes(x))) {
+          report.errors.push(`master « ${op.masterPromptCode} » : TASK ${t} déclarée au registre mais non autorisée par la configuration d’exécution`);
+        }
+        const restes = inspectMasterTemplate(text).placeholders;
+        if (restes.length) report.warnings.push(`master « ${op.masterPromptCode} » (contexte structuré) : emplacement(s) ${restes.map((p) => `{{${p}}}`).join(', ')} jamais remplacé(s)`);
+        report.infos.push(`master « ${op.masterPromptCode} » : contexte structuré (${d.inputContractVersion} / ${d.outputContractVersion}), aucun emplacement exigé`);
+      } else if (text !== null) {
         const taches = [...(tachesParMaster.get(op.masterPromptCode) ?? [])];
         for (const a of checkMasterTemplate(text, taches)) {
           report.errors.push(`master « ${op.masterPromptCode} » : ${a}`);

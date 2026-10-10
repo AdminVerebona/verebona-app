@@ -17,7 +17,7 @@ export const PREP_MESSAGES = {
   /** Fichier indisponible (SEL-GEN-006, ALT-004). */
   'MSG-PREP-005': 'Un fichier sélectionné n’est plus disponible. Il sera exclu du dossier généré.',
   /** Échec de l'enregistrement automatique (IC-GEN-004). */
-  'MSG-PREP-006': 'Les informations complémentaires n’ont pas pu être enregistrées. Réessayez avant de générer.',
+  'MSG-PREP-006': 'Les informations de préparation des dossiers n’ont pas pu être enregistrées. Réessayez avant de générer.',
   /** Génération partielle (ALT-004). */
   'MSG-PREP-007': 'Le dossier a été généré, mais certains fichiers n’ont pas pu être intégrés.',
   /** Génération longue. */

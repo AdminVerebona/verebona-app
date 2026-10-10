@@ -81,9 +81,14 @@ const CIBLE_FILE: Record<'EQUIPMENT' | 'ROOM', string> = { EQUIPMENT: T3_TARGET_
  */
 export const T3_EVENT_TRIGGERS: Readonly<Record<string, string>> = {
   document_linked: 'document_linked',
+  document_unlinked: 'document_linked',
   asset_updated: 'asset_updated',
   arbitration: 'arbitration_resolved',
   arbitration_resolved: 'arbitration_resolved',
+  // Lot 34E (réconciliation continue) — codes du catalogue ACTUEL : un
+  // équipement / une pièce créé ou modifié, une connaissance consolidée.
+  entity_updated: 'asset_updated',
+  knowledge_updated: 'document_linked',
 };
 
 /** Temporisation d'un contrôle compte après un événement (ancien `T3_EVENT_DEBOUNCE_MS`). */
@@ -432,7 +437,7 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     }
   }
 
-  const result = await deps.reconcileAccount(accountId, trigger, { scope, guard, userId: p.requestedByUserId ?? undefined });
+  const result = await deps.reconcileAccount(accountId, trigger, { scope, guard, userId: p.requestedByUserId ?? undefined, triggerCode: job.triggerCode ?? null });
 
   if (result.status === 'skipped_concurrent') {
     // Une exécution compte est en cours hors file (route historique) : on
@@ -454,7 +459,10 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
   const detail = {
     runId: result.runId, scope, status: result.status, objectsExamined: result.objectsExamined,
     decisionsApplied: result.decisionsApplied, conflictsCreated: result.conflictsCreated, errors: result.errors,
+    ...(result.openKnowledge ? { openKnowledge: result.openKnowledge } : {}),
   };
+  const ok = result.openKnowledge;
+  if (ok && ((ok.facts?.retargeted ?? 0) > 0 || ok.documents.enqueued > 0 || ok.titles.updated > 0)) return { result: 'APPLIED', detail };
   if (result.decisionsApplied > 0) return { result: 'APPLIED', detail };
   if (result.conflictsCreated > 0) return { result: 'ABSTAIN', detail };
   return { result: 'NO_CHANGE', detail };

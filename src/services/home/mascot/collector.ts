@@ -13,6 +13,8 @@ import { EXT_ACTION_LOOKBACK_DAYS, mascotRightsFrom } from './signals';
 import { MAX_SECONDARIES, MAX_SUBJECTS } from './types';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { classifyByRules } from '@/services/ai/agenda/rules/deterministic-classification';
+// Lot 34C : « en cours d'analyse » seulement si un traitement l'attend réellement.
+import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effective-state-sql';
 
 /** Un envoi ou une analyse bloqués depuis plus longtemps ne sont plus « en cours ». */
 const PROCESSING_WINDOW_HOURS = 24;
@@ -89,9 +91,9 @@ async function readProcessing(accountId: number): Promise<MascotRawData['process
     rows(
       `SELECT id, COALESCE(NULLIF(retained_title, ''), NULLIF(original_filename, ''), filename) AS title,
               COALESCE(updated_at, created_at) AS at
-         FROM asset_files
+         FROM asset_files f
         WHERE account_id = $1 AND deleted_at IS NULL
-          AND analysis_state IN ('UPLOADED', 'ANALYZING')
+          AND ${effectiveAnalysisStateSql('f')} IN ('UPLOADED', 'ANALYZING')
           AND COALESCE(upload_status, 'COMPLETED') = 'COMPLETED'
           AND COALESCE(updated_at, created_at) > NOW() - $2::interval
         ORDER BY at DESC LIMIT 20`,

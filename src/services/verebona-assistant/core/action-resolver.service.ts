@@ -35,6 +35,7 @@ import {
 } from './entity-ref';
 import { supplierHref } from '@/lib/supplier-routes';
 import { isPlanAiEligible } from '../registries/capability-registry';
+import { createCommandFor } from '@/lib/verebona/assistant-actions';
 
 /**
  * Vérificateurs d'appartenance au compte (§22.7).
@@ -81,9 +82,10 @@ export const CIBLE_ATTENDUE: Readonly<Partial<Record<VerebonaActionType, EntityK
  *
  * « Comment ajouter un document ? » doit proposer « Ajouter un document »
  * même sans bien désigné : l'action exigeait une cible bien et disparaissait,
- * alors que « Ajouter un bien » apparaissait. Sans cible, elles mènent à la
- * page où l'ajout se fait (documents, agenda) ; avec une cible, la cible est
- * contrôlée comme avant (famille, appartenance au compte).
+ * alors que « Ajouter un bien » apparaissait. Sans cible, le formulaire
+ * s'ouvre sans bien présélectionné ; avec une cible, la cible est contrôlée
+ * comme avant (famille, appartenance au compte) puis présélectionnée
+ * (lot 34G : commande de création, plus de navigation).
  */
 export const CIBLE_FACULTATIVE: ReadonlySet<VerebonaActionType> = new Set<VerebonaActionType>([
   'START_ADD_DOCUMENT',
@@ -97,8 +99,6 @@ export function exigeUneCible(type: VerebonaActionType): boolean {
 
 /** Onglet de la fiche bien ouvert par une action, quand elle en vise un. */
 const ONGLET_PAR_ACTION: Readonly<Partial<Record<VerebonaActionType, OngletBien>>> = {
-  START_ADD_DOCUMENT: 'documents',
-  START_ADD_AGENDA_ITEM: 'agenda',
   OPEN_EXPORT_AREA: 'exports',
 };
 
@@ -153,16 +153,15 @@ function buildHref(
     }
     case 'OPEN_CONTACT':
       return integratedHelpHref(HELP_CONTACT_PATH);
-    // La création d'un bien se fait par une boîte de dialogue depuis la liste,
-    // il n'existe pas de page `/assets/nouveau`.
+    // Lot 34G : une création n'est PLUS une navigation. Les START_ADD_*
+    // ouvrent directement leur formulaire (UnifiedDocumentDialog,
+    // AssetFormDialog, CreateAgendaItemDrawer) d'après leur COMMANDE
+    // (`createCommandFor`) — aucun faux `href` (/documents, /assets, /agenda)
+    // utilisé comme commande.
     case 'START_ADD_ASSET':
-      return ROUTES.BIENS;
-    // Sans bien désigné : la page où l'ajout se fait (les pages n'exposent
-    // pas de paramètre d'ouverture directe du formulaire — pas d'URL devinée).
     case 'START_ADD_DOCUMENT':
-      return ref ? hrefBien(ref.id, ONGLET_PAR_ACTION[type]) : ROUTES.DOCUMENTS;
     case 'START_ADD_AGENDA_ITEM':
-      return ref ? hrefBien(ref.id, ONGLET_PAR_ACTION[type]) : ROUTES.AGENDA;
+      return null;
     case 'OPEN_EXPORT_AREA':
       return ref ? hrefBien(ref.id, ONGLET_PAR_ACTION[type]) : null;
     case 'OPEN_SEARCH_RESULTS':
@@ -331,6 +330,8 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
       // (jamais renvoyés au client : `toApiPayload` les retire).
       targetRef: ref ? `${ref.kind}:${ref.id}` : null,
       payload: ai.params ? { ...ai.params } : {},
+      // Lot 34G : création → commande (parcours + bien contrôlé ci-dessus).
+      ...(createCommandFor(ai.type) ? { command: createCommandFor(ai.type, ref ? `${ref.kind}:${ref.id}` : null) } : {}),
     });
     vues.add(cle);
     if (def.isBusinessAction) businessCount++;

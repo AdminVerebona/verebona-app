@@ -37,7 +37,9 @@ export async function GET(
       ))
       .orderBy(desc(documentAnalysisRuns.startedAt));
 
-    return NextResponse.json({ runs });
+    // Lot 34C : le message d'erreur technique d'une analyse (modèle, schéma,
+    // fournisseur…) reste dans BO › Exécutions IA — jamais dans l'application.
+    return NextResponse.json({ runs: runs.map(({ errorMessage: _technique, ...run }) => run) });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error('GET /api/documents/[id]/analysis-runs error:', error);

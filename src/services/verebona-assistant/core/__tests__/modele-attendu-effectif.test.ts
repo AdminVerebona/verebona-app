@@ -45,9 +45,10 @@ describe('modèle attendu = chaîne effective', () => {
   it('l’appel réel trace le modèle de la version BO comme attendu : aucun écart', async () => {
     fakeProvider.onAny(() => ({ rawText: '{"mode":"ANSWER","format":"claims","status":"answered","claims":[]}', inputTokens: 1, outputTokens: 1 }));
     const { t2MasterVariables } = await import('@/services/ai/assistant/master/t2-answer');
+    const { asTestContract } = await import('@/services/ai/gateway/output-resolution/runtime-contract');
     await executeWithinBudget(createAiCallBudget(2), {
       useCaseCode: 'INTELLIGENT_ASSISTANT', operationCode: 't2_answer', accountId: 1,
-      promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q', INTENT: 'ACCOUNT_SUMMARY' }), outputSchema: z.object({ mode: z.literal('ANSWER') }).passthrough(), idempotencyKey: `k-${Math.random()}`,
+      promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q', INTENT: 'ACCOUNT_SUMMARY' }), outputSchema: asTestContract(z.object({ mode: z.literal('ANSWER') }).passthrough()), idempotencyKey: `k-${Math.random()}`,
     }, { requestId: 'req-bo', routeReason: 'x', promptId: 'p', promptVersion: 'v' });
     await awaitAiRuns('req-bo');
     const insertion = h.unsafe.mock.calls.find(([sql]) => /INSERT INTO verebona_ai_runs/.test(String(sql)))!;

@@ -26,17 +26,28 @@
  * commun `DocumentTitleService` — jamais d'OCR, d'extraction, d'appel T1 ni
  * de classification. Un titre utilisateur n'est jamais repris.
  *
- * Préfiltre SQL = sur-ensemble des titres techniques
- * (`technicalTitleSqlPredicate`) ; la règle JS tranche. Un document « données
- * insuffisantes » n'est repris qu'après une nouvelle analyse
- * (`title_checked_at` < `last_analysis_at`) : pas de boucle horaire.
+ * Lot 34E (moteur de titre v2) : la sélection ne se limite plus aux titres
+ * techniques. Sont repris tous les titres SYSTEM d'un document analysé et
+ * actif dont :
+ *   · la version des règles est antérieure (`title_rule_version` <
+ *     `DOCUMENT_TITLE_RULE_VERSION`) — rattrapage AUTOMATIQUE de tout
+ *     l'existant, y compris les titres jusque-là jugés valides ;
+ *   · ou le CONTEXTE du titre a pu changer depuis le dernier contrôle : nouvelle
+ *     analyse, rattachement / détachement (lien), bien / équipement lié
+ *     modifié (nom…), nouvelle représentation documentaire.
+ * Le service recalcule alors l'empreinte du contexte : identique → aucune
+ * écriture ; modifiée → titre réévalué (renommé seulement s'il est
+ * réellement meilleur). Pas de boucle horaire : un document contrôlé n'est
+ * plus sélectionné tant que rien ne change. Le préfiltre technique
+ * (`technicalTitleSqlPredicate`) reste une optimisation de tri, plus un
+ * critère d'éligibilité.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { QueuedJob } from '../queue/job-queue.repository';
 import type { ExecutionGuard } from '../queue/execution-control';
 import { PermanentJobError, type JobBusinessResult } from '../queue/queue-policy';
 import { envNumber } from '@/lib/env-number';
-import { technicalTitleSqlPredicate } from '@/lib/documents/document-title-rules';
+import { DOCUMENT_TITLE_RULE_VERSION } from '@/lib/documents/document-title-rules';
 import { buildT3Payload, registerT3JobKind } from './t3-job-contract';
 import { T1_SETTLED_STATES } from './document-asset/question-gate';
 import type { TitleOutcome } from '@/services/documents/document-title.service';
@@ -72,10 +83,9 @@ export interface DocumentTitleSweepPayload {
  *   · analyse T1 aboutie (état abouti, analyse datée ou représentation durable) ;
  *   · visible (ni supprimé, ni regroupé, ni brouillon, ni ignoré), pas un lien web ;
  *   · titre SYSTÈME (`title_source = 'SYSTEM'`) ;
- *   · titre potentiellement technique (préfiltre) ;
- *   · pas déjà jugé « données insuffisantes » depuis la dernière analyse.
- * AUCUNE condition sur le rattachement, le classement, l'agenda ou une autre
- * action T3 (§5 du ticket).
+ *   · règles de titre antérieures, OU contexte du titre potentiellement
+ *     obsolète depuis le dernier contrôle (`title_checked_at`).
+ * AUCUNE condition sur le classement, l'agenda ou une autre action T3.
  */
 export const TITLE_SWEEP_SQL = `
   SELECT f.id, f.account_id
@@ -88,20 +98,29 @@ export const TITLE_SWEEP_SQL = `
      AND f.title_source = 'SYSTEM'
      AND f.analysis_state IN ('${T1_SETTLED_STATES.join("', '")}')
      AND (f.last_analysis_at IS NOT NULL OR EXISTS (SELECT 1 FROM document_extractions e WHERE e.file_id = f.id))
-     AND (f.title_checked_at IS NULL OR f.last_analysis_at IS NULL OR f.title_checked_at < f.last_analysis_at)
-     AND (${technicalTitleSqlPredicate('f.retained_title')}
-          OR f.retained_title = f.s3_key OR f.retained_title = f.public_id::text)
+     AND (
+          f.title_rule_version IS DISTINCT FROM $4::int
+       OR f.title_context_fingerprint IS NULL
+       OR f.title_checked_at IS NULL
+       OR (f.last_analysis_at IS NOT NULL AND f.title_checked_at < f.last_analysis_at)
+       OR EXISTS (SELECT 1 FROM document_extractions e WHERE e.file_id = f.id AND e.extracted_at > f.title_checked_at)
+       OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.file_id = f.id AND l.updated_at > f.title_checked_at)
+       OR EXISTS (SELECT 1 FROM document_asset_links l JOIN assets a ON a.id = l.asset_id
+                   WHERE l.file_id = f.id AND l.status = 'ACTIVE' AND a.updated_at > f.title_checked_at)
+       OR EXISTS (SELECT 1 FROM document_asset_links l JOIN equipments x ON x.id = l.equipment_id
+                   WHERE l.file_id = f.id AND l.status = 'ACTIVE' AND x.updated_at > f.title_checked_at)
+       OR EXISTS (SELECT 1 FROM assets a WHERE a.id = COALESCE(f.asset_id, f.linked_asset_id) AND a.updated_at > f.title_checked_at))
    ORDER BY f.id
    LIMIT $2`;
 
 export async function listDocumentsWithNonCompliantTitle(q: { afterFileId?: number; limit: number; accountId?: number | null }): Promise<Array<{ fileId: number; accountId: number }>> {
   const { pgClient } = await import('@/db');
-  const rows = (await pgClient.unsafe(TITLE_SWEEP_SQL, [q.afterFileId ?? 0, q.limit, q.accountId ?? null] as never[])) as unknown as Array<{ id: number; account_id: number }>;
+  const rows = (await pgClient.unsafe(TITLE_SWEEP_SQL, [q.afterFileId ?? 0, q.limit, q.accountId ?? null, DOCUMENT_TITLE_RULE_VERSION] as never[])) as unknown as Array<{ id: number; account_id: number }>;
   return rows.map((r) => ({ fileId: Number(r.id), accountId: Number(r.account_id) }));
 }
 
 type Compteurs = Record<TitleOutcome, number>;
-const compteursVides = (): Compteurs => ({ UPDATED: 0, SKIP_VALID_TITLE: 0, SKIP_USER_TITLE: 0, SKIP_INSUFFICIENT_DATA: 0, FAILED: 0 });
+const compteursVides = (): Compteurs => ({ UPDATED: 0, NO_CHANGE: 0, SKIP_USER_TITLE: 0, INSUFFICIENT_DATA: 0, FAILED: 0 });
 
 /** Contrôle (et corrige) une liste de documents par le service commun, origine T3. */
 export async function repairTitles(rows: ReadonlyArray<{ fileId: number; accountId: number }>, guard?: ExecutionGuard): Promise<Compteurs> {
@@ -111,8 +130,18 @@ export async function repairTitles(rows: ReadonlyArray<{ fileId: number; account
     await guard?.assertActive('T3 titre des documents');
     const res = await ensureBusinessTitle({ fileId: r.fileId, accountId: r.accountId, origin: 'T3', mode: 'repair', guard });
     c[res.outcome]++;
+    // Sélectionné pour un changement SANS effet sur le titre (contexte
+    // identique) : la date de contrôle avance, sans autre écriture — il
+    // n'est plus repris au passage suivant.
+    if (res.outcome === 'NO_CHANGE' && res.reason === null) await markTitleChecked(r.fileId, r.accountId);
   }
   return c;
+}
+
+/** Date de contrôle seule (jamais `updated_at`). */
+async function markTitleChecked(fileId: number, accountId: number): Promise<void> {
+  const { pgClient } = await import('@/db');
+  await pgClient.unsafe(`UPDATE asset_files SET title_checked_at = now() WHERE id = $1 AND account_id = $2`, [fileId, accountId] as never[]);
 }
 
 /** Page du rattrapage planifié des titres. */

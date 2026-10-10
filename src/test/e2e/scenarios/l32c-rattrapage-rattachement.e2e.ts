@@ -18,12 +18,15 @@ import { expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { drainQueues, sortieT1, useTargetState } from '../chain';
 import type { RecordedOutput } from '../replay-gateway';
+import { DOCUMENT_ASSET_RESOLUTION_VERSION } from '@/services/ai/reconciliation/document-asset/version';
 
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
 
 type Compte = { id: number; ownerUserId: number };
+/** Version courante du moteur DOCUMENT_ASSET (3 depuis le lot 34E). */
+const VERSION = DOCUMENT_ASSET_RESOLUTION_VERSION;
 
 scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, incohérences, documents multi-biens', ({ sql, make, useRecordings: rejouer }) => {
   useTargetState();
@@ -75,6 +78,8 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     await sql`UPDATE document_asset_resolutions SET resolution_version = NULL, evaluated_at = NULL, identifiers_fingerprint = NULL,
                 decided_at = now() WHERE file_id = ${fileId}`;
     await sql`DELETE FROM document_asset_identifier_changes WHERE account_id = ${compte.id}`;
+    // Lot 34E : décision historique, sans contexte d'évaluation.
+    await sql`UPDATE document_asset_resolutions SET knowledge_revision = NULL, context_fingerprint = NULL WHERE file_id = ${fileId}`;
   };
 
   const ADRESSE = { address1: '12 rue Exemple', postalCode: '69003', city: 'Lyon' };
@@ -92,7 +97,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
       assets: [{ id: maison.id, label: 'Maison', confidence: 'probable', score: 0.6 }, { id: studio.id, label: 'Studio', confidence: 'probable', score: 0.6 }],
       texte: ['Intervention au 12 rue Exemple, 69003 Lyon'],
     }), { extra: [T3_ABSTENTION] });
-    expect(await resolution(doc.id)).toMatchObject({ status: 'ABSTAINED', resolution_version: 2 });
+    expect(await resolution(doc.id)).toMatchObject({ status: 'ABSTAINED', resolution_version: VERSION });
     expect((await actions(doc.id, 'LINK-ASSET')).filter((a) => a.active)).toHaveLength(1);
 
     // L'adresse est renseignée ; la décision est celle de l'ancien moteur.
@@ -106,7 +111,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     expect(appels(replay, 't1_analyze_document')).toBe(0); // T3RV-AC4 : T1 jamais relancé
     expect(await liens(doc.id)).toContainEqual([maison.id, 'PRIMARY', 'AI']);
     expect((await fichier(doc.id)).asset_id).toBe(maison.id);
-    expect(await resolution(doc.id)).toMatchObject({ status: 'RESOLVED', method: 'DETERMINISTIC', resolution_version: 2 });
+    expect(await resolution(doc.id)).toMatchObject({ status: 'RESOLVED', method: 'DETERMINISTIC', resolution_version: VERSION });
     // T3RV-07 : plus aucune action LINK-ASSET active.
     expect((await actions(doc.id, 'LINK-ASSET')).filter((a) => a.active)).toEqual([]);
     expect((await fichier(doc.id)).analysis_state).toBe('ANALYZED');
@@ -142,7 +147,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
       assets: [{ id: maison.id, label: 'Maison', confidence: 'probable', score: 0.6 }, { id: studio.id, label: 'Studio', confidence: 'probable', score: 0.6 }],
     }), { extra: [T3_ABSTENTION] });
     const avant = await resolution(doc.id);
-    expect(avant).toMatchObject({ status: 'ABSTAINED', resolution_version: 2 });
+    expect(avant).toMatchObject({ status: 'ABSTAINED', resolution_version: VERSION });
 
     // Trois « heures » : rien à rejouer.
     for (let h = 0; h < 3; h += 1) expect(await balayer(compte)).toBe(0);
@@ -150,7 +155,8 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
 
     // Bien modifié hors identifiants (surface) : journalisé, mais empreinte inchangée → confirmation, aucun travail.
     await sql`UPDATE assets SET key_characteristics = ${JSON.stringify({ ...ADRESSE, livingArea: 120 })} WHERE id = ${maison.id}`;
-    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM document_asset_identifier_changes WHERE account_id = ${compte.id}`;
+    // Lot 34E : la connaissance du compte a évolué (journal 0292)…
+    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM account_knowledge_changes WHERE account_id = ${compte.id} AND kind = 'ASSET'`;
     expect(n).toBeGreaterThan(0);
     await sql`UPDATE document_asset_resolutions SET evaluated_at = evaluated_at - interval '1 hour' WHERE file_id = ${doc.id}`;
     expect(await balayer(compte)).toBe(0);
@@ -159,8 +165,9 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     expect(apres.status).toBe('ABSTAINED');
     expect(apres.runs).toBe(avant.runs);
     expect(new Date(apres.evaluated_at!).getTime()).toBeGreaterThan(new Date(avant.evaluated_at!).getTime() - 3_600_000);
-    // Évaluation confirmée : l'heure suivante, plus rien.
-    await sql`UPDATE document_asset_identifier_changes SET changed_at = now() - interval '2 hours' WHERE account_id = ${compte.id}`;
+    // … mais le contexte pertinent est identique : CONFIRMED_NO_CHANGE, révision avancée ; l'heure suivante, plus rien.
+    expect((await sql<{ e: { result: string; aiCalled: boolean } }[]>`SELECT last_evaluation AS e FROM document_asset_resolutions WHERE file_id = ${doc.id}`)[0].e)
+      .toMatchObject({ result: 'CONFIRMED_NO_CHANGE', aiCalled: false });
     expect(await balayer(compte)).toBe(0);
   });
 
@@ -169,12 +176,12 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const doc = await make.assetFile(compte, { assetId: null });
     await analyser(compte, doc.id, sortie({}));
-    expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE', resolution_version: 2 });
+    expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE', resolution_version: VERSION });
     expect(await balayer(compte)).toBe(0);
     await sql`UPDATE document_extractions SET extracted_at = now() + interval '1 minute' WHERE file_id = ${doc.id}`;
     expect(await balayer(compte)).toBe(1);
     await drainQueues();
-    expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE', resolution_version: 2 });
+    expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE', resolution_version: VERSION });
   });
 
   it('T3RV-05 / T3RV-AC6 — ancienne abstention puis choix OU retrait par l’utilisateur : aucun rattachement automatique', async () => {
@@ -199,7 +206,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
       expect(r).toMatchObject({ outcome: 'SUPERSEDED', status: 'USER_DECIDED', aiCalled: false });
       expect((await fichier(d.id)).asset_id).toBeNull();
       expect((await liens(d.id)).filter((l) => l[0] === maison.id)).toEqual([]);
-      expect(await resolution(d.id)).toMatchObject({ status: 'USER_DECIDED', resolution_version: 2 });
+      expect(await resolution(d.id)).toMatchObject({ status: 'USER_DECIDED', resolution_version: VERSION });
     }
     // Décision utilisateur, même avec une version future du moteur : jamais reprise.
     await sql`UPDATE document_asset_resolutions SET resolution_version = 1 WHERE file_id IN (${choisi.id}, ${retire.id})`;
@@ -211,7 +218,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const maison = await maisonSansAdresse(compte);
     const doc = await make.assetFile(compte, { assetId: null });
     await analyser(compte, doc.id, sortie({ texte: ['Travaux : 12 rue Exemple 69003 Lyon'] }));
-    expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE', resolution_version: 2 });
+    expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE', resolution_version: VERSION });
     expect(await balayer(compte)).toBe(0);
 
     await sql`UPDATE assets SET key_characteristics = ${JSON.stringify(ADRESSE)} WHERE id = ${maison.id}`;

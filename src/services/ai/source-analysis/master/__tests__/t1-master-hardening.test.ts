@@ -44,12 +44,16 @@ describe('lecture tolérante de ANALYZE_DOCUMENT', () => {
     expect('_normalisation' in output).toBe(false);
   });
 
-  it('plus de 300 faits : tronqué à 300, compté ; un fait invalide est écarté seul', () => {
+  it('T1X-02 — plus de 300 faits : lot de 300 + lot de débordement (aucune perte) ; un fait invalide est écarté seul, conservé', () => {
     const facts = Array.from({ length: 305 }, () => fait());
     facts[0] = fait({ target: { type: 'BATIMENT' } });
     const { output, report } = splitNormalisation(T1AnalyzeDocumentTolerantOutput.parse({ task: 'ANALYZE_DOCUMENT', facts }));
-    expect(output.facts).toHaveLength(299);
-    expect(report).toMatchObject({ truncatedFacts: 5, droppedFacts: 1 });
+    // Lot 34F : 300 au plus dans le lot principal, le reste en lot suivant.
+    expect(output.facts).toHaveLength(300);
+    expect(report?.overflow?.facts).toHaveLength(4);
+    expect(report).toMatchObject({ truncatedFacts: 4, droppedFacts: 1 });
+    // Le fait invalide n'est pas perdu : charge d'origine conservée.
+    expect(report?.dropped).toEqual([expect.objectContaining({ reason: 'INVALID_SCHEMA', path: 'facts[0]', payload: expect.objectContaining({ target: { type: 'BATIMENT' } }) })]);
   });
 
   it('cas qui invalidaient toute la sortie : normalisés, sans modifier la sortie brute', () => {
@@ -81,11 +85,19 @@ describe('lecture tolérante de ANALYZE_DOCUMENT', () => {
     expect(output.document.classification?.evidence.page).toBeUndefined();
     expect(output.entities.assets[0].score).toBe(0.97);
     expect(output.visual?.observations.map((o) => o.description)).toEqual(['Chaudière murale']);
-    expect(output.tables).toHaveLength(1);
-    // Valeur trop longue : fait écarté, jamais tronqué.
+    // Lot 34F : un tableau de plus de 1000 lignes n'est plus écarté — tous
+    // les tableaux passent au lot de débordement (ordre conservé) ; seul le
+    // tableau VIDE est écarté, et conservé.
+    expect(output.tables).toHaveLength(0);
+    expect(report?.overflow?.tables).toHaveLength(2);
+    expect(report?.overflow?.tables?.[0].rows).toHaveLength(1001);
+    // Valeur trop longue : fait écarté, jamais tronqué — conservé intégralement.
     expect(output.facts).toHaveLength(1);
     expect(output.facts[0].evidence.page).toBeUndefined();
-    expect(report).toMatchObject({ droppedTables: 2, droppedObservations: 1, tooLongFacts: 1 });
+    expect(report).toMatchObject({ droppedTables: 1, droppedObservations: 1, tooLongFacts: 1 });
+    expect(report?.dropped?.map((d) => d.reason).sort()).toEqual(['EMPTY_TABLE', 'OBSERVATION_WITHOUT_DESCRIPTION', 'VALUE_TOO_LONG']);
+    const long = report?.dropped?.find((d) => d.reason === 'VALUE_TOO_LONG')?.payload as { normalizedValue: string };
+    expect(long.normalizedValue).toHaveLength(2001);
   });
 
   it('la branche reste discriminée : une sortie GROUP_UPLOAD est refusée', () => {

@@ -1,0 +1,250 @@
+{
+  "task": "ANALYZE_DOCUMENT",
+  "document": {
+    "title": {
+      "value": "Ticket Draisienne",
+      "confidence": "certain",
+      "evidence": {
+        "excerpt": "DRAISIENNE BOIS 12 POUCES",
+        "page": 1
+      }
+    },
+    "description": {
+      "value": "Ticket de caisse d’achat d’une draisienne.",
+      "confidence": "probable",
+      "evidence": {
+        "excerpt": "DRAISIENNE BOIS 12 POUCES"
+      }
+    },
+    "documentDate": {
+      "value": "2026-04-24",
+      "confidence": "certain",
+      "evidence": {
+        "excerpt": "24/04/2026",
+        "page": 1
+      }
+    },
+    "supplier": {
+      "name": "Magasin Exemple",
+      "siret": "12345678901234",
+      "confidence": "certain",
+      "evidence": {
+        "excerpt": "SIRET 123 456 789 01234"
+      }
+    },
+    "amountCents": {
+      "value": 12900,
+      "confidence": "certain",
+      "evidence": {
+        "excerpt": "TOTAL TTC 129,00 €"
+      }
+    },
+    "classification": {
+      "canonicalType": "FACTURE",
+      "rubricCode": "PROPERTY_MANAGEMENT",
+      "documentTypeCode": "ACQUISITION_INVOICE",
+      "confidence": 0.94,
+      "evidence": {
+        "excerpt": "TICKET DE CAISSE"
+      }
+    }
+  },
+  "entities": {
+    "assets": [
+      {
+        "entityId": 184,
+        "rawLabel": "Draisienne",
+        "score": 0.98,
+        "confidence": "certain",
+        "evidenceSignals": [
+          "DRAISIENNE BOIS 12 POUCES"
+        ],
+        "reason": "désignation de l’article acheté"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "suppliers": [],
+    "multiAsset": false
+  },
+  "transcription": "texte intégral réellement lisible",
+  "visual": {
+    "summary": "…",
+    "observations": [
+      {
+        "description": "…",
+        "subject": "…",
+        "confidence": "probable",
+        "page": 1,
+        "imageIndex": 0,
+        "region": {
+          "x1": 0.1,
+          "y1": 0.1,
+          "x2": 0.6,
+          "y2": 0.5
+        }
+      }
+    ]
+  },
+  "tables": [
+    {
+      "title": "Articles",
+      "pageStart": 1,
+      "pageEnd": 1,
+      "columns": [
+        {
+          "header": "Désignation"
+        },
+        {
+          "header": "Montant"
+        }
+      ],
+      "rows": [
+        {
+          "page": 1,
+          "cells": [
+            {
+              "column": 0,
+              "value": "DRAISIENNE BOIS 12 POUCES"
+            },
+            {
+              "column": 1,
+              "value": "129,00",
+              "normalized": "129.00",
+              "valueType": "amount"
+            }
+          ]
+        }
+      ],
+      "confidence": "certain",
+      "uncertain": false
+    }
+  ],
+  "facts": [
+    {
+      "canonicalKey": "acquisitionDate",
+      "rawKey": "date d’achat",
+      "label": "Date d’achat",
+      "subject": "Draisienne",
+      "attribute": "acquisitionDate",
+      "rawValue": "24/04/2026",
+      "normalizedValue": "2026-04-24",
+      "valueType": "date",
+      "canonicalUnit": null,
+      "target": {
+        "type": "ASSET",
+        "entityId": 184,
+        "rawLabel": "Draisienne",
+        "confidence": "certain",
+        "evidenceSignals": [
+          "Draisienne"
+        ]
+      },
+      "provenance": "TEXT_EXTRACTION",
+      "confidence": "certain",
+      "evidence": {
+        "excerpt": "24/04/2026",
+        "page": 1
+      },
+      "semanticEvent": {
+        "type": "purchase",
+        "nature": "HISTORICAL"
+      }
+    },
+    {
+      "canonicalKey": "acquisitionPrice",
+      "rawKey": "total TTC",
+      "label": "Prix d’achat",
+      "subject": "Draisienne",
+      "attribute": "acquisitionPrice",
+      "rawValue": "129,00 €",
+      "normalizedValue": 129,
+      "valueType": "money_eur",
+      "canonicalUnit": "EUR",
+      "target": {
+        "type": "ASSET",
+        "entityId": 184,
+        "rawLabel": "Draisienne",
+        "confidence": "certain",
+        "evidenceSignals": [
+          "DRAISIENNE BOIS 12 POUCES"
+        ]
+      },
+      "provenance": "TEXT_EXTRACTION",
+      "confidence": "certain",
+      "evidence": {
+        "excerpt": "DRAISIENNE BOIS 12 POUCES 129,00",
+        "page": 1,
+        "table": {
+          "index": 0,
+          "row": 0,
+          "column": 1
+        }
+      },
+      "semanticEvent": {
+        "type": "purchase",
+        "nature": "HISTORICAL"
+      }
+    },
+    {
+      "canonicalKey": "lastRevision",
+      "rawKey": "dernier entretien",
+      "label": "Dernier entretien",
+      "subject": "Draisienne",
+      "attribute": "lastRevision",
+      "rawValue": "15/11/2026",
+      "normalizedValue": "2026-11-15",
+      "valueType": "date",
+      "canonicalUnit": null,
+      "target": {
+        "type": "ASSET",
+        "entityId": 184,
+        "rawLabel": "Draisienne",
+        "confidence": "certain",
+        "evidenceSignals": [
+          "Draisienne"
+        ]
+      },
+      "provenance": "TEXT_EXTRACTION",
+      "confidence": "certain",
+      "evidence": {
+        "excerpt": "Dernier entretien : 15/11/2026",
+        "page": 1
+      },
+      "semanticEvent": {
+        "type": "maintenance",
+        "nature": "HISTORICAL"
+      }
+    },
+    {
+      "canonicalKey": null,
+      "rawKey": "installation",
+      "label": "Mode d’installation",
+      "subject": "Chaudière",
+      "attribute": "installation",
+      "normalizedValue": "murale",
+      "valueType": "string",
+      "target": {
+        "type": "EQUIPMENT",
+        "entityId": null,
+        "rawLabel": "Chaudière",
+        "confidence": "probable",
+        "evidenceSignals": []
+      },
+      "provenance": "VISUAL_ANALYSIS",
+      "confidence": "probable",
+      "visualEvidence": {
+        "description": "Appareil fixé au mur au-dessus d’un évier",
+        "page": 1,
+        "imageIndex": 0,
+        "region": {
+          "x1": 0.2,
+          "y1": 0.1,
+          "x2": 0.7,
+          "y2": 0.6
+        }
+      }
+    }
+  ],
+  "hasExploitableContent": true
+}

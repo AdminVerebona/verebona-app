@@ -57,6 +57,7 @@ import { recordT5Modification } from './prompt-control.audit';
 import { diffVersions, renderDiff, type ConfigDiff } from '../config/config-diff.service';
 import { promptArchitectureOf, masterPromptOf, type TreatmentConfig } from '../config/config-types';
 import { masterPromptForTreatment, checkMasterProposal } from '../config/prompt-architecture';
+import { executionConfigFor, type MasterExecutionConfig } from '../master-prompts/structured-context';
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
 import { loadMasterTemplate, inspectMasterTemplate } from '../prompts/prompt-loader';
 import { T5AnalyzeOutput, T5ModifyOutput, type T5MasterOutput } from './master/t5-contract';
@@ -299,6 +300,11 @@ export interface TargetText {
   readDraftId?: number | null;
   /** Version active du prompt lue, BO-IA-PROMPTS-01. */
   readActiveId?: number | null;
+  /**
+   * Lot 34D — mode d'exécution du texte lu (T4) : en contexte structuré, une
+   * proposition n'a pas à contenir d'emplacements `{{…}}`.
+   */
+  execution?: MasterExecutionConfig | null;
 }
 
 /** Textes administrés au BO (« Prompts maîtres ») : lecture injectable, jamais bloquante. */
@@ -326,6 +332,7 @@ export async function targetTexts(
         treatment: t, field: 'masterPrompt', text: bo.text, masterPromptCode: master.masterPromptCode,
         branches: master.tasks, discriminant: inspectMasterTemplate(bo.text).discriminant, fromFile: false,
         readDraftId: bo.draftId, readActiveId: bo.activeId,
+        execution: executionConfigFor({ masterPromptCode: master.masterPromptCode, source: 'version', stored: bo.execution ?? null }),
       });
       continue;
     }
@@ -335,6 +342,7 @@ export async function targetTexts(
       out.set(t, {
         treatment: t, field: 'masterPrompt', text, masterPromptCode: master.masterPromptCode,
         branches: master.tasks, discriminant: inspectMasterTemplate(text).discriminant, fromFile: configured === null,
+        execution: executionConfigFor({ masterPromptCode: master.masterPromptCode, source: configured === null ? 'file' : 'config' }),
       });
     } else {
       out.set(t, {
@@ -375,6 +383,8 @@ export function interpret(
   d: PromptControlOut,
   current: (t: Treatment) => string,
   fieldOf: (t: Treatment) => 'prompt' | 'masterPrompt' = () => 'prompt',
+  /** Lot 34D — mode d'exécution du prompt visé (contrôle de la proposition). */
+  executionOf: (t: Treatment) => MasterExecutionConfig | null = () => null,
 ): { verdict: Verdict; analysis: string; changes: Array<T5Change & { proposedContent: string | null }>; risks: string[]; recommendations: string[] } {
   const seen = new Set<string>();
   const changes: Array<T5Change & { proposedContent: string | null }> = [];
@@ -405,7 +415,7 @@ export function interpret(
     // discriminant, une section par branche, emplacements identiques à ceux
     // du code (§22, §29.1). Sinon elle n'est pas écrite.
     if (field === 'masterPrompt') {
-      const anomalies = checkMasterProposal(tr, text);
+      const anomalies = checkMasterProposal(tr, text, executionOf(tr));
       if (anomalies.length) {
         changes.push({ ...base, diff, proposedContent: null, rejected: `Prompt maître proposé incomplet : ${anomalies.join(' ; ')}.` });
         continue;
@@ -467,7 +477,7 @@ export async function analyze(
   const extra = await extraContext(version, options);
   const texts = await targetTexts(version, await administeredTexts('analyze'));
   const { output, traceId, architecture } = await callModel('analyze', version, instruction, accountId, userId, extra.text, texts);
-  const r = interpret('analyze', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt');
+  const r = interpret('analyze', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt', (t) => texts.get(t)?.execution ?? null);
   return {
     mode: 'analyze', ...r, ...extras(output, architecture),
     changes: r.changes.map(({ proposedContent: _p, ...c }) => c),
@@ -503,7 +513,7 @@ export async function modify(req: ModifyRequest): Promise<T5Result> {
   const extra = await extraContext(source, req.options ?? {});
   const texts = await targetTexts(source, await administeredTexts('modify'));
   const { output, traceId, architecture } = await callModel('modify', source, req.instruction, req.accountId, req.userId, extra.text, texts);
-  const r = interpret('modify', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt');
+  const r = interpret('modify', output, (t) => texts.get(t)?.text ?? '', (t) => texts.get(t)?.field ?? 'prompt', (t) => texts.get(t)?.execution ?? null);
   const writable = r.changes.filter((c) => c.proposedContent);
 
   const result: T5Result = {

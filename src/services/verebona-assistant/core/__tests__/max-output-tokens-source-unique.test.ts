@@ -14,6 +14,7 @@ import { emptyTreatmentConfig } from '@/services/ai/config/config-types';
 import { ASSISTANT_MAX_OUTPUT_TOKENS, getOperation } from '@/services/ai/registry/operations';
 import { executeWithinBudget } from '../ai-call-budget';
 import { t2MasterVariables } from '@/services/ai/assistant/master/t2-answer';
+import { asTestContract } from '@/services/ai/gateway/output-resolution/runtime-contract';
 import {
   getAssistantConfig, assistantMaxOutputTokensCap, __resetOutputTokensWarningForTests,
 } from '../../config/assistant-config';
@@ -25,7 +26,8 @@ const req = () => ({
   operationCode: 't2_answer',
   accountId: 1,
   promptVariables: t2MasterVariables('ANSWER', { QUESTION: 'q', INTENT: 'ACCOUNT_FACT_ASSET' }),
-  outputSchema: z.object({ mode: z.literal('ANSWER') }).passthrough(),
+  // Lot 34D : schéma de test déclaré contrat de test (sinon RUNTIME_CONTRACT_MISMATCH).
+  outputSchema: asTestContract(z.object({ mode: z.literal('ANSWER') }).passthrough()),
   idempotencyKey: `k-${Math.random()}`,
 });
 

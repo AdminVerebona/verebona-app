@@ -522,7 +522,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
             <AlertDialogDescription>
               {closingWhileGenerating
                 ? 'La génération continue : le dossier apparaîtra dans l’historique des exports dès qu’il sera prêt.'
-                : 'Vos choix de sections et de pièces ne sont pas conservés. Les informations complémentaires saisies sont déjà enregistrées dans la fiche du bien.'}
+                : 'Vos choix de sections et de pièces ne sont pas conservés. Les informations de préparation des dossiers saisies sont déjà enregistrées dans la fiche du bien.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

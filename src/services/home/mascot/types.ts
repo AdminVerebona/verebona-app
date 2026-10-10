@@ -195,7 +195,11 @@ export interface MascotTodoItem {
   card: MascotTodoCard;
 }
 
-/** Total de la file (= pastille du menu, = page) et premiers éléments, dans l'ordre de la file. */
+/**
+ * `total` : total de la file (= pastille du menu, = page) — lot 34 (MASC3) :
+ * jamais affiché ni compté par la bulle. `items` : les DO_FIRST seulement,
+ * au plus deux, dans l'ordre de la file.
+ */
 export interface MascotTodoBlock {
   total: number;
   items: MascotTodoItem[];

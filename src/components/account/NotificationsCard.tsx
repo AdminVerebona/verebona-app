@@ -41,7 +41,7 @@ export function NotificationsCard() {
     // Tiroir fermé par défaut : titre, une ligne, chevron (modèle « Informations légales »).
     <CollapsibleCard
       icon={<Bell className="w-5 h-5" />}
-      title="Notifications"
+      title="Gestion des notifications"
       description="Notifications de vos échéances et de vos documents sur vos appareils."
       contentClassName="flex flex-wrap items-center justify-between gap-3"
     >

@@ -34,6 +34,7 @@
 import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
+import type { RuntimeContractTrace, OutputTransformationsTrace, StructuredContextTrace } from './ai-trace.service';
 
 type Row = Record<string, unknown>;
 
@@ -125,6 +126,20 @@ export interface ExecutionRow {
   providerMeta: Record<string, unknown> | null;
   /** Lot 33D : sortie acceptée après correction automatique. */
   repaired: boolean;
+  /**
+   * Lot 34D : contrat runtime de l'appel (identifiant, version, version et
+   * empreinte du schéma, structured output, schéma fournisseur), figé en
+   * métadonnée — `null` pour un appel antérieur au lot 34D.
+   */
+  runtimeContract: RuntimeContractTrace | null;
+  /** Lot 34D : normalisations, mappings de compatibilité, passe de réparation. */
+  transformations: OutputTransformationsTrace | null;
+  /** Lot 34D (T4) : mode d'exécution, versions prompt / contrat d'entrée / contrat de sortie. */
+  structuredContext: StructuredContextTrace | null;
+  /** Lot 34C : tentative du job de file pendant laquelle l'appel a eu lieu (`null` : hors file ou trace antérieure). */
+  jobAttempt: number | null;
+  /** Lot 34C : trace (cascade) de l'appel. */
+  traceId: string | null;
 }
 
 /** Traitement correspondant à un code d'usage, sans requête. */
@@ -181,7 +196,17 @@ function toRow(r: Row): ExecutionRow {
     providerMeta: metadata.providerMeta && typeof metadata.providerMeta === 'object'
       ? metadata.providerMeta as Record<string, unknown> : null,
     repaired: metadata.repaired === true,
+    runtimeContract: objet<RuntimeContractTrace>(metadata.runtimeContract),
+    transformations: objet<OutputTransformationsTrace>(metadata.transformations),
+    structuredContext: objet<StructuredContextTrace>(metadata.structuredContext),
+    jobAttempt: typeof metadata.jobAttempt === 'number' ? metadata.jobAttempt : null,
+    traceId: typeof metadata.traceId === 'string' ? metadata.traceId : null,
   };
+}
+
+/** Métadonnée objet, sinon `null` (appel antérieur, valeur illisible). */
+function objet<T>(v: unknown): T | null {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v as T : null;
 }
 
 /**
@@ -361,6 +386,18 @@ export interface ExecutionDetail {
    * diagnostic final. La sortie du modèle n'y figure JAMAIS (route dédiée).
    */
   diagnosis: import('./execution-diagnosis').ExecutionDiagnosis;
+  /**
+   * Lot 34C : tentatives du job (n / max), retry automatique (oui / non,
+   * état, motif, prochaine tentative) et historique des tentatives, chacune
+   * avec sa propre cascade de modèles. `null` hors file.
+   */
+  jobExecution: import('./job-attempts').JobExecutionView | null;
+  /**
+   * Lot 34C : ce que l'application montre à l'utilisateur pour ce document
+   * (statut fonctionnel + code du référentiel fermé). T1 sur un document
+   * seulement ; `null` sinon.
+   */
+  userView: { processingStatus: string; userMessageCode: string | null; retryScheduled: boolean } | null;
 }
 
 export interface ExecutionInput {
@@ -411,12 +448,14 @@ export async function getExecutionDetail(id: number): Promise<ExecutionDetail | 
 
   let job: ExecutionDetail['job'] = null;
   let jobPayload: unknown = null;
+  let jobRaw: Row | null = null;
   if (call.jobId) {
     const j = ((await pgClient.unsafe(
       `SELECT id, treatment, status, origin, trigger_code, attempts, config_version_id,
               created_at, started_at, finished_at, last_error, account_id, target_type, target_id, payload,
               to_jsonb(ai_job_queue)->>'business_result' AS business_result,
-              to_jsonb(ai_job_queue)->'business_result_detail' AS business_result_detail
+              to_jsonb(ai_job_queue)->'business_result_detail' AS business_result_detail,
+              available_at, to_jsonb(ai_job_queue)->'attempt_history' AS attempt_history
          FROM ai_job_queue WHERE id = $1 LIMIT 1`,
       [call.jobId] as never[],
     )) as unknown as Row[])[0];
@@ -436,6 +475,7 @@ export async function getExecutionDetail(id: number): Promise<ExecutionDetail | 
         businessResultDetail: (j.business_result_detail ?? null) as Record<string, unknown> | null,
       };
       jobPayload = j.payload ?? null;
+      jobRaw = j;
     }
   }
 
@@ -451,7 +491,64 @@ export async function getExecutionDetail(id: number): Promise<ExecutionDetail | 
   ]);
   const { buildExecutionDiagnosis } = await import('./execution-diagnosis');
   const diagnosis = buildExecutionDiagnosis({ treatment: call.treatment, calls, diagnostics, job });
-  return { call, traceId, calls, steps, job, inputs, modifications, t2, diagnosis };
+  const [jobExecution, userView] = await Promise.all([
+    job && jobRaw ? loadJobExecution(job, jobRaw).catch((e) => {
+      console.warn('[executions] tentatives du job illisibles :', (e as Error).message);
+      return null;
+    }) : Promise.resolve(null),
+    job?.treatment === 'T1' && job.targetType === 'asset_file' && job.targetId
+      ? loadUserView(Number(job.targetId)).catch(() => null) : Promise.resolve(null),
+  ]);
+  return { call, traceId, calls, steps, job, inputs, modifications, t2, diagnosis, jobExecution, userView };
+}
+
+/**
+ * Lot 34C : tous les appels modèle du job (toutes tentatives, toutes traces)
+ * et leurs diagnostics, assemblés par tentative (`job-attempts`).
+ */
+async function loadJobExecution(
+  job: NonNullable<ExecutionDetail['job']>, raw: Row,
+): Promise<import('./job-attempts').JobExecutionView> {
+  const calls = ((await pgClient.unsafe(
+    `SELECT ${DETAIL_COLS} FROM ai_usage_event e
+       LEFT JOIN ai_config_versions v ON v.id = e.config_version_id
+       ${JOB_JOIN}
+      WHERE e.job_id = $1
+      ORDER BY e.created_at, e.id LIMIT 100`,
+    [job.id] as never[],
+  )) as unknown as Row[]).map(toRow);
+  const traces = [...new Set(calls.map((c) => c.traceId).filter((t): t is string => !!t))].slice(0, 20);
+  const { listTraceDiagnostics } = await import('../gateway/diagnostics/diagnostic.repository');
+  const diagnostics = (await Promise.all(traces.map((t) => listTraceDiagnostics(t).catch(() => [])))).flat();
+  const history = Array.isArray(raw.attempt_history) ? raw.attempt_history as import('./job-attempts').AttemptHistoryEntry[] : [];
+  const { buildJobExecutionView } = await import('./job-attempts');
+  const { MAX_ATTEMPTS } = await import('../queue/queue-policy');
+  return buildJobExecutionView({
+    job: {
+      id: job.id, treatment: job.treatment, status: job.status, attempts: job.attempts,
+      availableAt: raw.available_at ? new Date(String(raw.available_at)) : null,
+      businessResult: job.businessResult, lastError: job.lastError,
+    },
+    history, calls, diagnostics, maxAttempts: MAX_ATTEMPTS,
+  });
+}
+
+/** Lot 34C : statut fonctionnel du document tel que l'application le montre. */
+async function loadUserView(fileId: number): Promise<ExecutionDetail['userView']> {
+  if (!Number.isInteger(fileId)) return null;
+  const rows = (await pgClient.unsafe(
+    `SELECT id, analysis_state, analysis_fail_reason FROM asset_files WHERE id = $1 LIMIT 1`,
+    [fileId] as never[],
+  )) as unknown as Row[];
+  const r = rows[0];
+  if (!r) return null;
+  const { getProcessingViews } = await import('../processing-status/processing-status.service');
+  const v = (await getProcessingViews([{
+    id: fileId,
+    analysisState: r.analysis_state == null ? null : String(r.analysis_state),
+    analysisFailReason: r.analysis_fail_reason == null ? null : String(r.analysis_fail_reason),
+  }])).get(fileId);
+  return v ? { processingStatus: v.processingStatus, userMessageCode: v.userMessageCode, retryScheduled: v.retryScheduled } : null;
 }
 
 /** Fenêtre de l'exécution : job de file si présent, sinon appels de la trace ± 5 min. */

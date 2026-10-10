@@ -6,7 +6,10 @@
  * contient l'information, le modèle est rappelé pour REFORMATER, jamais
  * pour réanalyser :
  *   · aucun document joint (pas de relecture de la source) ;
- *   · il reçoit la sortie précédente, les erreurs exactes et le schéma ;
+ *   · il reçoit la sortie précédente, les erreurs exactes et le CONTRAT
+ *     RUNTIME EXACT de l'exécution (lot 34D : schéma JSON dérivé du contrat
+ *     figé, identité du contrat) — jamais une représentation reconstruite ;
+ *     la sortie réparée est revalidée avec ce même contrat ;
  *   · les champs déjà VALIDES sont verrouillés : la réponse n'est retenue
  *     qu'aux chemins en erreur (`mergeRepair`) — une réparation de
  *     `purchaseDate` ne peut pas modifier `amount`, `vendor`… ;
@@ -68,7 +71,14 @@ function setAt(root: unknown, path: Array<string | number>, value: unknown): voi
  * dans la réparation. Sans sortie d'origine exploitable (JSON illisible),
  * rien n'est verrouillable : la réparation est prise entière.
  */
-export function mergeRepair(original: unknown, repaired: unknown, invalidPaths: string[]): { value: unknown; replaced: string[] } {
+export function mergeRepair(
+  original: unknown, repaired: unknown, invalidPaths: string[],
+  /**
+   * Lot 34D — champs facultatifs ABSENTS voisins d'un champ non déclaré :
+   * repris de la réparation s'ils y figurent, sans jamais remonter au parent.
+   */
+  optionalPaths: string[] = [],
+): { value: unknown; replaced: string[] } {
   if (original === null || typeof original !== 'object' || repaired === null || typeof repaired !== 'object') {
     return { value: repaired, replaced: ['$'] };
   }
@@ -90,6 +100,13 @@ export function mergeRepair(original: unknown, repaired: unknown, invalidPaths: 
     faits.push(JSON.stringify(cible));
     replaced.push('$' + cible.map((s) => (typeof s === 'number' ? `[${s}]` : `.${s}`)).join(''));
   }
+  for (const path of [...new Set(optionalPaths)]) {
+    const p = parsePath(path);
+    const v = valueAt(repaired, p);
+    if (v === undefined || valueAt(original, p) !== undefined) continue;
+    setAt(out, p, structuredClone(v));
+    replaced.push(path);
+  }
   return { value: out, replaced };
 }
 
@@ -100,6 +117,8 @@ export function buildRepairPrompt(p: {
   schemaJson: string | null;
   discriminant?: { field: string; value: string } | null;
   malformedJson: boolean;
+  /** Lot 34D — identité du contrat runtime (`T1_ANALYZE_DOCUMENT v3 · … · empreinte`). */
+  contractLabel?: string | null;
 }): string {
   const erreurs = p.issues.slice(0, 20).map((i) => {
     const parts = [`- ${i.path} : ${i.subtype}`];
@@ -120,12 +139,16 @@ export function buildRepairPrompt(p: {
     '- N’ajoute aucune information absente de la réponse précédente : aucune date, valeur, entité ou preuve nouvelle.',
     '- Ne modifie aucune valeur valide : recopie à l’identique tout ce qui n’est pas en erreur.',
     '- Convertis seulement la FORME (type, format de date AAAA-MM-JJ, nom de champ, valeur d’énumération autorisée).',
+    '- Un champ non déclaré par le contrat est renommé vers le champ du contrat qui porte la même information, ou supprimé : le contrat runtime est prioritaire.',
     '- Si une valeur ne peut pas être corrigée sans invention et que le champ est facultatif, supprime ce champ.',
     p.discriminant ? `- Le champ "${p.discriminant.field}" vaut obligatoirement "${p.discriminant.value}".` : '',
     '- Réponds uniquement par le JSON complet corrigé, sans texte autour.',
     '',
     ...(erreurs ? ['ERREURS DE VALIDATION', erreurs, ''] : []),
-    ...(p.schemaJson ? ['SCHÉMA ATTENDU (JSON Schema)', p.schemaJson, ''] : []),
+    ...(p.schemaJson ? [
+      p.contractLabel ? `CONTRAT RUNTIME (${p.contractLabel}) — SCHÉMA ATTENDU (JSON Schema)` : 'SCHÉMA ATTENDU (JSON Schema)',
+      p.schemaJson, '',
+    ] : []),
     'RÉPONSE PRÉCÉDENTE',
     p.previousOutput,
   ].filter((l) => l !== '').join('\n');

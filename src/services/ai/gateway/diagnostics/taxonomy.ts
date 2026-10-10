@@ -49,6 +49,13 @@ export const INVALID_OUTPUT_SUBTYPES = [
   'STRUCTURED_OUTPUT_REJECTED',
   'PARSER_ERROR',
   'BUSINESS_VALIDATION_FAILED',
+  /**
+   * Lot 34D (contrat runtime source unique) : le schéma utilisé pour la
+   * validation n'est pas celui transmis au modèle (empreintes différentes).
+   * Défaut INTERNE du moteur : diagnostiqué au BO, jamais montré à
+   * l'utilisateur final.
+   */
+  'RUNTIME_CONTRACT_MISMATCH',
   'UNKNOWN',
 ] as const;
 export type InvalidOutputSubtype = (typeof INVALID_OUTPUT_SUBTYPES)[number];
@@ -164,8 +171,14 @@ export interface ProviderCallMetadata {
 
 /** Transformation appliquée à une sortie avant acceptation (ticket 2, rapport). */
 export interface OutputRepairStep {
-  /** `json_extraction`, `json_repair`, `compat_adapter`, `normalization`, `field_pruning`, `ai_repair`. */
-  stage: 'json_extraction' | 'json_repair' | 'compat_adapter' | 'normalization' | 'field_pruning' | 'ai_repair';
+  /**
+   * `json_extraction`, `json_repair`, `normalization` (règles déterministes
+   * sûres), `compat_adapter` (adaptateur structurel versionné),
+   * `compat_mapping` (lot 34D : mapping EXPLICITE de la table de
+   * compatibilité — nom de champ ou valeur d'énumération), `field_pruning`,
+   * `ai_repair`.
+   */
+  stage: 'json_extraction' | 'json_repair' | 'compat_adapter' | 'compat_mapping' | 'normalization' | 'field_pruning' | 'ai_repair';
   /** Règle précise (`null_as_absent`, `date_object_to_iso`, `t1_v1_to_v2`…). */
   rule: string;
   path: string;
@@ -176,10 +189,20 @@ export interface OutputRepairStep {
 export interface OutputSchemaRef {
   /** Nom du schéma (`T1AnalyzeDocumentOutput`) ou opération. */
   name: string;
-  /** Libellé versionné (`t1_analyze_document@v3`). */
+  /** Libellé versionné (`t1_analyze_document@v3`) — « Schema version ». */
   version: string;
-  /** Empreinte SHA-256 (12) du schéma JSON dérivé. */
+  /** Empreinte SHA-256 (12) du schéma JSON dérivé — « Schema hash ». */
   hash: string;
+  /** Lot 34D — identifiant du contrat runtime (`T1_ANALYZE_DOCUMENT`). */
+  contractId?: string;
+  /** Lot 34D — version du contrat runtime (entier du registre). */
+  contractVersion?: number;
+  /** Lot 34D — structured output transmis au fournisseur pour CET appel. */
+  structuredOutput?: boolean;
+  /** Lot 34D — empreinte (12) du schéma fournisseur dérivé, s'il a été transmis. */
+  providerSchemaHash?: string | null;
+  /** Lot 34D — version de la table de compatibilité appliquée. */
+  compatTableVersion?: number;
 }
 
 /** Statut d'un appel modèle dans le rapport (ticket §9). */
@@ -237,6 +260,7 @@ export const SUBTYPE_LABELS: Record<InvalidOutputSubtype, string> = {
   STRUCTURED_OUTPUT_REJECTED: 'structured output refusé',
   PARSER_ERROR: 'erreur du parseur',
   BUSINESS_VALIDATION_FAILED: 'règle métier non respectée',
+  RUNTIME_CONTRACT_MISMATCH: 'contrat runtime incohérent (moteur)',
   UNKNOWN: 'non classé',
 };
 

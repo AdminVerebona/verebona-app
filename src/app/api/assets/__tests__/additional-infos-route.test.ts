@@ -83,6 +83,12 @@ vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async (e: unknown) => { emitted.push(e); },
 }));
 
+// Lot 34, point 6 : droit de créer des dossiers (Standard refusé).
+let dossierDecision: { allowed: boolean; reason?: string; message?: string } = { allowed: true };
+vi.mock('@/services/entitlements.service', () => ({
+  canCreateDossiers: async () => dossierDecision,
+}));
+
 const loadCatalog = vi.fn();
 vi.mock('@/services/exports/export-catalog.service', () => ({
   loadExportCatalog: (...a: unknown[]) => loadCatalog(...a),
@@ -104,6 +110,7 @@ const EMPTY = { assetId: 5, commercial: {}, rental: {}, insurance: {}, claim: {}
 beforeEach(() => {
   session = { userId: 1, currentAccountId: 10 };
   writeDecision = { allowed: true };
+  dossierDecision = { allowed: true };
   emitted.length = 0;
   getInfos.mockReset().mockResolvedValue(EMPTY);
   updateInfos.mockReset().mockImplementation(async (assetId: number, _acc: number, userId: number) => ({
@@ -339,5 +346,48 @@ describe('GET /export-catalog', () => {
     const res = await CATALOG(new NextRequest('http://x'), ctx(5));
     expect(res.status).toBe(200);
     expect(loadCatalog.mock.calls[0][0]).toMatchObject({ id: 5, accountId: 10 });
+  });
+});
+
+describe('Lot 34, point 6 — écriture réservée au droit de créer des dossiers', () => {
+  const STANDARD = { allowed: false, reason: 'PREMIUM_REQUIRED', message: 'Cette fonctionnalité est disponible avec Premium et Premium Duo.' };
+
+  it('DOSS-08 — Standard : 403 PREMIUM_REQUIRED, rien n’est écrit ni émis (route et alias)', async () => {
+    dossierDecision = STANDARD;
+    for (const call of [
+      () => patch(5, { rental: { depositCents: 0 } }),
+      () => alias.PATCH(new NextRequest('http://x', { method: 'PATCH', body: JSON.stringify({ commercial: { salePitch: 'x' } }) }), ctx(5)),
+    ]) {
+      const res = await call();
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body).toMatchObject({ error: 'PREMIUM_REQUIRED', code: 'PREMIUM_REQUIRED' });
+      expect(body.message).toBe('La préparation des dossiers est disponible avec les offres Premium et Premium Duo.');
+    }
+    expect(updateInfos).not.toHaveBeenCalled();
+    expect(invalidReferences).not.toHaveBeenCalled();
+    expect(emitted).toHaveLength(0);
+  });
+
+  it('DOSS-08 — refus de droit avant la lecture du corps (corps illisible : 403, pas 400)', async () => {
+    dossierDecision = STANDARD;
+    expect((await patch(5, '{oops', true)).status).toBe(403);
+  });
+
+  it('DOSS-08 — bien d’un autre compte : 404 avant le contrôle de droit (aucune fuite)', async () => {
+    dossierDecision = STANDARD;
+    expect((await patch(9, { rental: { depositCents: 0 } })).status).toBe(404);
+  });
+
+  it('DOSS-10 — Standard : la lecture reste ouverte (données conservées et consultables)', async () => {
+    dossierDecision = STANDARD;
+    expect((await get(5)).status).toBe(200);
+  });
+
+  it('DOSS-11 — droit retrouvé : écriture admise à la requête suivante (droits relus à chaque appel)', async () => {
+    dossierDecision = STANDARD;
+    expect((await patch(5, { rental: { depositCents: 0 } })).status).toBe(403);
+    dossierDecision = { allowed: true };
+    expect((await patch(5, { rental: { depositCents: 0 } })).status).toBe(200);
   });
 });

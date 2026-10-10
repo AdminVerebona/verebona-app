@@ -58,10 +58,18 @@ export async function GET(
       proposalCount = Number(cnt?.count ?? 0);
     }
 
+    // Lot 34C : statut FONCTIONNEL calculé sur l'état réel (job de file
+    // vivant, document) — jamais de message technique. Le bandeau d'analyse
+    // s'arrête sur un statut terminé, pas sur un état transitoire du document
+    // (un échec intermédiaire suivi d'une reprise n'est pas une fin).
+    const { getFileProcessingView, processingFields } = await import('@/services/ai/processing-status/processing-status.service');
+    const vue = await getFileProcessingView(assetFileId, accountId);
+
     return NextResponse.json({
       status,
       proposalCount,
-      analysisState: file?.analysisState ?? null
+      analysisState: file?.analysisState ?? null,
+      ...(vue ? processingFields(vue) : {}),
     });
   } catch (error) {
     if (error instanceof Response) return error;

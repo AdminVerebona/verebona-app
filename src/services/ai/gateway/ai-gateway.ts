@@ -17,10 +17,18 @@ import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
 import { errorOf } from './output-validator';
 import { redactVariables, previewForLog, outputDigestForLog, stripRawExcerpt } from './redaction';
-import { masterOutputSchemaFor } from './master-output-schemas';
 import { resolveOutput, reporterCompteurs, type Resolution } from './output-resolution/resolve-output';
-import { outputSchemaRef } from './output-resolution/contracts';
 import { parseModelOutput } from './output-resolution/json-repair';
+import {
+  resolveRuntimeContract, contractStamp, contractJsonSchemaText, providerSchemaHash, runtimeContractBlock,
+  contractVersionsOf, ContractResolutionError, type RuntimeContract, type ContractMismatch, type ResolvedContract,
+} from './output-resolution/runtime-contract';
+import type { OutputRepairStep, OutputSchemaRef } from './diagnostics/taxonomy';
+import type { RuntimeContractTrace, OutputTransformationsTrace, StructuredContextTrace } from '../telemetry/ai-trace.service';
+import {
+  structuredSpecFor, executionConfigFor, executionSignature, checkExecutionConfig, buildExecutionContext,
+  renderStructuredPrompt, promptHash, StructuredContextError, type MasterExecutionConfig, type BuiltExecutionContext,
+} from '../master-prompts/structured-context';
 import {
   providerJsonSchema, structuredOutputEnabled, noteSchemaRejected, schemaRejectedRecently,
 } from './output-resolution/provider-schema';
@@ -29,7 +37,7 @@ import { classifyCallError, failureSignature, type ClassifiedFailure } from './d
 import { emptyControlChain, type CallDiagnostic, type ProviderCallMetadata } from './diagnostics/taxonomy';
 import { recordCallDiagnostic } from './diagnostics/diagnostic.repository';
 import { getAiProvider } from './providers';
-import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, MasterPromptError } from '../prompts/prompt-loader';
+import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTemplate, MasterPromptError } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
@@ -107,6 +115,11 @@ export class AiGateway {
         configVersionId: cfg.configVersionId,
         promptVersionId: configuredMasterText(op.useCaseCode, cfg) ? cfg.masterPromptVersionId ?? null : null,
       });
+      // Lot 34D : le mode d'exécution et les versions de contrats entrent
+      // dans la clé — basculer T4 en contexte structuré ne sert jamais une
+      // sortie mise en cache sous l'autre mode. Inchangé en LEGACY_TEMPLATE.
+      const sig = executionSignature(masterExecutionOf(op.masterPromptCode, op.useCaseCode, cfg));
+      if (sig !== 'legacy') masterVersion = `${masterVersion}+${sig}`;
     }
     const key = req.idempotencyKey
       ? (masterVersion ? `${req.idempotencyKey}:${masterVersion}` : req.idempotencyKey)
@@ -194,7 +207,57 @@ export class AiGateway {
     let promptVersion: string;
     let prompt: string;
     let master: { task: string; masterPromptCode: string; masterPromptVersion: string } | null = null;
-    if (isMasterOperation(op)) {
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 34D — CONTEXTE D'EXÉCUTION STRUCTURÉ (T4)
+    //
+    // Mode EXPLICITE de la configuration (version BO, fichier du dépôt) —
+    // jamais déduit du texte. En STRUCTURED_CONTEXT : contrat d'entrée validé
+    // AVANT tout appel (0 appel fournisseur si violé), texte maître envoyé
+    // tel quel + bloc EXECUTION_CONTEXT unique. Aucun repli vers la
+    // substitution d'emplacements. LEGACY_TEMPLATE (T1, T2, T3, T5, T6, et T4
+    // tant que sa version active l'est) : comportement historique inchangé.
+    // ══════════════════════════════════════════════════════════════════════
+    let structured: { built: BuiltExecutionContext; execution: MasterExecutionConfig } | null = null;
+    let structuredTrace: StructuredContextTrace | null = null;
+    let preCallRefusal: { code: AiErrorCode; message: string; detail: Record<string, unknown> } | null = null;
+    const spec = isMasterOperation(op) ? structuredSpecFor(op.masterPromptCode) : null;
+    const execution = isMasterOperation(op) ? masterExecutionOf(op.masterPromptCode, op.useCaseCode, configuration) : null;
+    if (isMasterOperation(op) && spec && execution?.mode === 'STRUCTURED_CONTEXT') {
+      const configured = configuredMasterText(op.useCaseCode, configuration);
+      let text: string;
+      try {
+        text = configured ?? await loadMasterTemplate(op.masterPromptCode, op.useCaseCode);
+      } catch (e) {
+        if (e instanceof MasterPromptError) throw new AiGatewayError('MASTER_PROMPT_INVALID', operationCode, e.message, { cause: e });
+        throw e;
+      }
+      promptVersion = masterPromptVersionOf({
+        masterPromptCode: op.masterPromptCode, configuredText: configured, configVersionId: configuration.configVersionId,
+        promptVersionId: configured ? configuration.masterPromptVersionId ?? null : null,
+      });
+      master = { task: op.task, masterPromptCode: op.masterPromptCode, masterPromptVersion: promptVersion };
+      prompt = text;
+      try {
+        const issues = checkExecutionConfig(spec, execution, (name, v) => contractVersionsOf(name).includes(v));
+        if (issues.length > 0) {
+          throw new StructuredContextError(issues[0].code, `Configuration d’exécution invalide : ${issues.map((i) => i.message).join(' ; ')}`, {
+            task: op.task, field: issues[0].field, step: issues[0].field === 'outputContractVersion' ? 'output_contract' : issues[0].field === 'allowedTasks' ? 'task' : 'input_contract',
+            contract: issues[0].field === 'outputContractVersion' ? execution.outputContractVersion : execution.inputContractVersion,
+          });
+        }
+        const built = buildExecutionContext(spec, execution, op.task, safeVariables);
+        structured = { built, execution };
+        prompt = renderStructuredPrompt(text, built);
+      } catch (e) {
+        if (!(e instanceof StructuredContextError)) throw e;
+        preCallRefusal = { code: e.code as AiErrorCode, message: `${e.code} : ${e.message}`, detail: { ...e.detail } };
+      }
+      structuredTrace = {
+        mode: 'STRUCTURED_CONTEXT', task: op.task, promptVersion, promptHash: promptHash(text),
+        inputContractVersion: execution.inputContractVersion, outputContractVersion: execution.outputContractVersion,
+        contextHash: structured?.built.hash ?? null,
+      };
+    } else if (isMasterOperation(op)) {
       let resolved;
       try {
         resolved = await resolveMasterPrompt({
@@ -217,6 +280,16 @@ export class AiGateway {
       prompt = resolved.text;
       promptVersion = resolved.version;
       master = { task: resolved.task, masterPromptCode: resolved.masterPromptCode, masterPromptVersion: resolved.version };
+      // Master qui déclare un contrat d'exécution, resté en LEGACY_TEMPLATE :
+      // le mode est tracé (versions de contrats : aucune).
+      if (spec) {
+        structuredTrace = {
+          mode: 'LEGACY_TEMPLATE', task: op.task, promptVersion,
+          promptHash: promptHash(configuredMasterText(op.useCaseCode, configuration)
+            ?? await loadMasterTemplate(op.masterPromptCode, op.useCaseCode).catch(() => prompt)),
+          inputContractVersion: null, outputContractVersion: null, contextHash: null,
+        };
+      }
     } else {
       const technique = op.dynamicPrompt
         ? { text: substituteOverride(req.promptOverride!, safeVariables), version: 'candidate' }
@@ -298,12 +371,62 @@ export class AiGateway {
     // fournisseur, contrat de sortie, corrections (`ai_call_diagnostics`).
     // ══════════════════════════════════════════════════════════════════════
     const schemaName = op.outputSchema && op.outputSchema !== 'none' ? op.outputSchema : null;
-    const contractSchema = (schemaName ? masterOutputSchemaFor(schemaName) : null) ?? req.outputSchema;
-    const schemaRef = outputSchemaRef(schemaName, contractSchema, operationCode);
     const discriminant = master && (op.taskField ?? 'task') !== 'none'
       ? { field: op.taskField ?? 'task', value: master.task } : null;
-    const providerSchema = structuredOutputEnabled() && (op.structuredOutput ?? (jsonResponse && isMasterOperation(op)))
-      ? providerJsonSchema(contractSchema) : null;
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 34D — CONTRAT RUNTIME, SOURCE UNIQUE DE VÉRITÉ
+    //
+    // Résolu UNE fois, avant tout appel, puis figé pour toute l'exécution :
+    // le schéma fournisseur en est dérivé, la validation, la réparation et
+    // les replis l'utilisent tel quel — même si une autre version devient
+    // active pendant le traitement (RTC-03, RTC-04). Un schéma d'appelant
+    // différent du contrat (empreintes différentes) est refusé AVANT l'appel :
+    // RUNTIME_CONTRACT_MISMATCH (RTC-07), diagnostiqué au BO seulement.
+    // ══════════════════════════════════════════════════════════════════════
+    let resolvedContract: ResolvedContract | null = null;
+    if (!preCallRefusal) {
+      try {
+        resolvedContract = resolveRuntimeContract({
+          schemaName: structured?.built.output.schemaName ?? schemaName, operationCode,
+          callerSchema: req.outputSchema as ZodType,
+          requestedVersion: structured?.built.output.contractVersion ?? null,
+        });
+      } catch (e) {
+        if (!(e instanceof ContractResolutionError)) throw e;
+        preCallRefusal = structured && spec
+          ? { code: spec.errorCodes.versionNotFound as AiErrorCode, message: `${spec.errorCodes.versionNotFound} : ${e.message}`,
+            detail: { task: op.task ?? null, field: null, contract: structured.execution.outputContractVersion, step: 'output_contract' } }
+          : { code: 'RUNTIME_CONTRACT_MISMATCH', message: `RUNTIME_CONTRACT_MISMATCH : ${e.message}`, detail: { step: 'contract_resolution' } };
+      }
+      if (resolvedContract?.mismatch) {
+        preCallRefusal = { code: 'RUNTIME_CONTRACT_MISMATCH', message: resolvedContract.mismatch.message, detail: mismatchDetail(resolvedContract.mismatch) };
+      }
+    }
+    // Contrat de repli (refus avant appel seulement : rien n'est validé avec lui).
+    const contract: RuntimeContract = resolvedContract?.contract
+      ?? resolveRuntimeContractSafe(operationCode, req.outputSchema as ZodType);
+    const structuredWanted = structuredOutputEnabled() && (op.structuredOutput ?? (jsonResponse && isMasterOperation(op)));
+    const providerSchema = structuredWanted ? providerJsonSchema(contract.canonical) : null;
+    const psHash = providerSchemaHash(providerSchema?.schema ?? null);
+    const generationStamp = contractStamp(contract);
+    // Consigne commune « le contrat runtime est prioritaire » : tout appel
+    // structuré (sortie JSON), sauf l'évaluation d'un texte candidat
+    // (`dynamicPrompt`, texte évalué tel quel).
+    const contractBlockApplies = op.outputFormat !== 'text' && !op.dynamicPrompt;
+    const withContract = (schemaInPrompt: boolean) => (contractBlockApplies ? `${prompt}${runtimeContractBlock(contract, { schemaInPrompt })}` : prompt);
+    /** Référence de contrat d'UN appel (structured output transmis ou non). */
+    const schemaRefOf = (soStatus: string | null): OutputSchemaRef => ({
+      name: contract.schemaName ?? operationCode, version: contract.schemaVersion, hash: contract.schemaHash,
+      contractId: contract.contractId, contractVersion: contract.contractVersion, compatTableVersion: contract.compatTableVersion,
+      structuredOutput: soStatus === 'requested_schema', providerSchemaHash: soStatus === 'requested_schema' ? psHash : null,
+    });
+    const contractTraceOf = (soStatus: string | null, mismatch?: ContractMismatch | null): RuntimeContractTrace => ({
+      contractId: contract.contractId, contractVersion: contract.contractVersion, schemaVersion: contract.schemaVersion,
+      schemaHash: contract.schemaHash, structuredOutput: soStatus === 'requested_schema',
+      providerSchemaHash: soStatus === 'requested_schema' ? psHash : null, compatTableVersion: contract.compatTableVersion,
+      ...(mismatch ? { mismatch: { generationHash: mismatch.generation.schemaHash, validationHash: mismatch.validation.schemaHash, validationVersion: mismatch.validation.schemaVersion } } : {}),
+    });
     // Réparation ciblée : jamais sous un budget d'appels modèle (CA-07), ni
     // pour l'assistant, qui a sa propre réparation bornée (CDC Assistant
     // §18.6 : une réparation, même modèle, comptée dans son budget).
@@ -316,6 +439,39 @@ export class AiGateway {
     const sourceIds = (req.sourceIds ?? []).filter((x) => Number.isInteger(x));
     let callIndex = 0;
     let previousFailure: CallDiagnostic | null = null;
+
+    // ── Lot 34D : refus AVANT tout appel fournisseur (contrat T4 violé,
+    //    contrat runtime incohérent) — tracé et diagnostiqué au BO, 0 appel ──
+    if (preCallRefusal) {
+      const refus = preCallRefusal;
+      const model = models[0] ?? configuration.primaryModel;
+      const mismatch = resolvedContract?.mismatch ?? null;
+      const diag = buildDiagnostic({
+        outcome: 'FAILED', callKind: 'analysis', family: 'INTERNAL_ERROR',
+        subtype: refus.code === 'RUNTIME_CONTRACT_MISMATCH' ? 'RUNTIME_CONTRACT_MISMATCH' : null, stage: 'request_build',
+        outputReceived: false, error: { message: refus.message, exception: refus.code }, issues: [], issueCount: 0,
+        controls: emptyControlChain(),
+        provider: providerMetaOf(provider.name, model, undefined, { input: 0, output: 0 }, 0, maxOutputTokens, 'none', null),
+        schema: schemaRefOf(null), repairs: [],
+      });
+      const usageId = await recordCallTrace({
+        traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
+        parentOperationId: req.parentOperationId, provider: provider.name, model, promptVersion, usedFallback: false,
+        shadow: Boolean(req.shadow), modelRank: rankAt(premierRang), jobId, configVersionId: configuration.configVersionId,
+        callerMode: req.callerMode, ...traceConfig, reasoning: null, maxOutputTokens: maxOutputTokens ?? null,
+        inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: Date.now() - startedAt, status: 'error',
+        errorCode: refus.code, errorMessage: refus.message, billable: false,
+        failure: failureSummary(diag), callKind: 'analysis',
+        runtimeContract: contractTraceOf(null, mismatch),
+        ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
+      }).catch(() => null);
+      await recordCallDiagnostic({
+        traceId, usageEventId: usageId ?? null, callIndex: 0, accountId: req.accountId, useCaseCode: op.useCaseCode,
+        operationCode, task: traceConfig.task, model, modelRank: rankAt(premierRang), sourceIds, diagnostic: { ...diag, contractRefusal: refus.detail } as CallDiagnostic, output: null,
+      });
+      await attachmentSession?.release().catch(() => { /* expiration à 48 h */ });
+      throw new AiGatewayError(refus.code, operationCode, refus.message, { recoverable: false, contractDetail: refus.detail });
+    }
 
     try {
       for (let i = 0; i < models.length; i++) {
@@ -330,7 +486,10 @@ export class AiGateway {
         // §21 : un repli après une sortie invalide connaît l'erreur précédente.
         const informed = previousFailure?.family === 'INVALID_OUTPUT' && previousFailure.subtype !== 'OUTPUT_TRUNCATED'
           && previousFailure.subtype !== 'EMPTY_RESPONSE';
-        const attemptPrompt = informed ? `${prompt}${fallbackNotice(previousFailure!)}` : prompt;
+        const notice = informed ? fallbackNotice(previousFailure!) : '';
+        // Structured output transmis à CE modèle ? (refus récent mémorisé : non.)
+        const sendSchema = providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null;
+        const attemptPrompt = `${withContract(!sendSchema)}${notice}`;
         const attemptStart = Date.now();
         // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
         // les jetons ont été consommés et facturés — COST-005 exige de garder
@@ -352,9 +511,12 @@ export class AiGateway {
             ...(traceConfig.task ? { task: traceConfig.task } : {}),
             ...(jsonResponse ? { jsonResponse: true } : {}),
             ...(attachmentSession ? { attachmentSession } : {}),
-          }, providerSchema?.schema && !schemaRejectedRecently(model, schemaRef.hash) ? providerSchema.schema : null,
-          (s) => { soStatus = s; }, () => noteSchemaRejected(model, schemaRef.hash));
-          if (soStatus === 'requested_schema' && schemaRejectedRecently(model, schemaRef.hash)) soStatus = 'schema_skipped_recent_rejection';
+          }, sendSchema,
+          (s) => { soStatus = s; }, () => noteSchemaRejected(model, contract.schemaHash),
+          // Schéma refusé : même modèle, sans structured output — le schéma
+          // DÉRIVÉ du même contrat passe alors dans le prompt.
+          `${withContract(true)}${notice}`);
+          if (soStatus === 'requested_schema' && !sendSchema) soStatus = 'schema_skipped_recent_rejection';
         } catch (e) {
           // ── Échec AVANT toute sortie exploitable (fournisseur, réseau, délai) ──
           const message = e instanceof Error ? e.message : String(e);
@@ -372,7 +534,7 @@ export class AiGateway {
             outputReceived: false, error: c.error, issues: [], issueCount: 0,
             controls: { ...emptyControlChain(), providerResponse: 'failed' },
             provider: providerMetaOf(provider.name, model, blockedMeta, tokens, Date.now() - attemptStart, maxOutputTokens, soStatus, c),
-            schema: schemaRef, repairs: [], informedOfPreviousError: informed,
+            schema: schemaRefOf(soStatus), repairs: [], informedOfPreviousError: informed,
           });
           const usageId = await recordCallTrace({
             ...baseTrace,
@@ -383,6 +545,8 @@ export class AiGateway {
             errorCode: lastFailureCode, errorMessage: sansSortieBrute(op.useCaseCode) ? stripRawExcerpt(message) : message,
             billable: Boolean(tokens.input || tokens.output) && op.billable && !req.shadow,
             failure: failureSummary(diag), providerMeta: compactProviderMeta(diag.provider), callKind: 'analysis',
+            runtimeContract: contractTraceOf(soStatus),
+            ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
           }).catch(() => null);
           await recordCallDiagnostic({
             traceId, usageEventId: usageId ?? null, callIndex: callIndex++, accountId: req.accountId, useCaseCode: op.useCaseCode,
@@ -401,8 +565,9 @@ export class AiGateway {
         // ── Sortie reçue : résolution progressive ─────────────────────────
         const analysisDuration = Date.now() - attemptStart;
         const meta = providerMetaOf(provider.name, model, out.meta, { input: out.inputTokens, output: out.outputTokens }, analysisDuration, maxOutputTokens, soStatus, null);
+        // Lot 34D : validation avec le contrat runtime FIGÉ (celui de la génération).
         const resolveBase = {
-          schema: req.outputSchema as ZodType, schemaName, operationCode, format: op.outputFormat ?? 'json',
+          schema: contract.schema, schemaName: contract.schemaName, contract, generationStamp, operationCode, format: op.outputFormat ?? 'json',
           expectedTask: discriminant ? master!.task : undefined,
           taskField: master ? (op.taskField ?? 'task') : undefined,
           jsonRequested: jsonResponse || soStatus === 'requested_schema',
@@ -414,8 +579,8 @@ export class AiGateway {
         if (!first.ok && repairAllowed && first.repairable && !first.taskMismatch) {
           repairRun = await this.repairPass({
             provider, model, operationCode, op, resolveBase, first, reasoning, maxOutputTokens, timeoutMs,
-            providerSchema: providerSchema?.schema && !schemaRejectedRecently(model, schemaRef.hash) ? providerSchema.schema : null,
-            discriminant, traceConfig, schemaHash: schemaRef.hash,
+            providerSchema: providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null,
+            discriminant, traceConfig, contract, schemaRefOf,
           });
           final = repairRun?.resolution ?? first;
         }
@@ -439,10 +604,16 @@ export class AiGateway {
           issueCount: first.ok ? 0 : first.issueCount,
           controls: succeeded ? { ...final.controls, businessValidation: 'not_applicable', persistence: 'not_applicable' } : first.ok ? final.controls : first.controls,
           provider: meta,
-          schema: schemaRef,
+          schema: schemaRefOf(soStatus),
           repairs: [...(final.repairs ?? [])],
           informedOfPreviousError: informed,
         });
+        // Défaut interne : la sortie serait validée avec un autre contrat que
+        // celui de sa génération (RTC-07) — famille INTERNAL_ERROR.
+        if (!first.ok && first.contractMismatch) {
+          diag.family = 'INTERNAL_ERROR';
+          diag.signature = failureSignature(diag);
+        }
         // Rapport du premier passage conservé même après réparation réussie :
         // il dit POURQUOI la sortie d'origine ne passait pas.
         if (succeeded && !first.ok) {
@@ -473,6 +644,9 @@ export class AiGateway {
           outputPreview: keepRawOutput ? previewForLog(out.rawText) : outputDigestForLog(out.rawText),
           failure: failureSummary(diag), providerMeta: compactProviderMeta(meta), callKind: 'analysis',
           ...(diag.outcome === 'REPAIRED' ? { repaired: true } : {}),
+          runtimeContract: contractTraceOf(soStatus, first.ok ? null : first.contractMismatch ?? null),
+          transformations: transformationsOf(final.ok ? final.repairs : first.repairs, repairRun),
+          ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
         }).catch(() => null);
         const thisIndex = callIndex++;
         if (diag.outcome !== 'SUCCEEDED') {
@@ -500,6 +674,9 @@ export class AiGateway {
             billable: repairRun.outputTokens > 0 && op.billable && !req.shadow,
             outputPreview: repairRun.rawText == null ? undefined : keepRawOutput ? previewForLog(repairRun.rawText) : outputDigestForLog(repairRun.rawText),
             failure: failureSummary(repairRun.diagnostic), providerMeta: compactProviderMeta(repairRun.diagnostic.provider), callKind: 'repair',
+            runtimeContract: contractTraceOf(repairRun.diagnostic.provider.structuredOutputStatus ?? null),
+            transformations: transformationsOf(repairRun.resolution?.repairs ?? [], repairRun),
+            ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
           }).catch(() => null);
           await recordCallDiagnostic({
             traceId, usageEventId: repairUsage ?? null, callIndex: callIndex++, accountId: req.accountId, useCaseCode: op.useCaseCode,
@@ -520,6 +697,15 @@ export class AiGateway {
             costMicros: totalCost, durationMs: Date.now() - startedAt, traceId, fromCache: false,
             outputRepairs: final.repairs,
           };
+        }
+
+        // ── Contrat runtime incohérent : défaut interne, aucun repli ───────
+        if (!first.ok && first.contractMismatch) {
+          attempts.push({ model, succeeded: false });
+          noteGatewayOutcome({ treatment, attempts, chainSucceeded: null });
+          throw new AiGatewayError('RUNTIME_CONTRACT_MISMATCH', operationCode, first.message, {
+            recoverable: false, contractDetail: mismatchDetail(first.contractMismatch),
+          });
         }
 
         // ── Sortie inexploitable : échec de ce modèle ─────────────────────
@@ -557,19 +743,25 @@ export class AiGateway {
     providerSchema: Record<string, unknown> | null;
     discriminant: { field: string; value: string } | null;
     traceConfig: { task: string | null };
-    schemaHash: string;
+    /** Lot 34D : contrat runtime EXACT de l'exécution (jamais reconstruit). */
+    contract: RuntimeContract;
+    schemaRefOf: (soStatus: string | null) => OutputSchemaRef;
   }): Promise<RepairRun | null> {
     const { first } = p;
     const previous = typeof first.best === 'string' ? first.best : JSON.stringify(first.best ?? first.parsed ?? null);
     if (!previous || previous === 'null' || previous.length > REPAIR_MAX_INPUT_CHARS) return null;
     const malformed = first.subtype === 'MALFORMED_JSON';
+    // Contrat runtime EXACT : schéma JSON complet dérivé du contrat figé,
+    // avec son identité (le modèle répare contre CE contrat, la sortie est
+    // revalidée avec lui — `resolveBase.contract`).
     const prompt = buildRepairPrompt({
       previousOutput: previous, issues: first.issues, malformedJson: malformed,
-      schemaJson: p.providerSchema ? JSON.stringify(p.providerSchema) : null, discriminant: p.discriminant,
+      schemaJson: contractJsonSchemaText(p.contract), discriminant: p.discriminant,
+      contractLabel: `${p.contract.contractId} v${p.contract.contractVersion} · ${p.contract.schemaVersion} · ${p.contract.schemaHash}`,
     });
     const start = Date.now();
     let soStatus = p.providerSchema ? 'requested_schema' : 'json_mode';
-    const schemaHash = p.schemaHash;
+    const schemaHash = p.contract.schemaHash;
     let out: ProviderCallOutput;
     try {
       out = await callWithSchemaFallback(p.provider, {
@@ -586,7 +778,7 @@ export class AiGateway {
           outcome: 'FAILED', callKind: 'repair', family: c.family, subtype: c.subtype, stage: c.stage, outputReceived: false,
           error: c.error, issues: [], issueCount: 0, controls: { ...emptyControlChain(), providerResponse: 'failed' },
           provider: providerMetaOf(p.provider.name, p.model, (e as { providerMeta?: ProviderResponseMeta })?.providerMeta, { input: 0, output: 0 }, Date.now() - start, p.maxOutputTokens, soStatus, c),
-          schema: null, repairs: [],
+          schema: p.schemaRefOf(soStatus), repairs: [],
         }),
       };
     }
@@ -596,7 +788,7 @@ export class AiGateway {
     if (!parsed.ok) {
       resolution = resolveOutput({ ...p.resolveBase, raw: out.rawText, allowPruning: true, provider: meta });
     } else {
-      const merge = malformed ? { value: parsed.value, replaced: ['$'] } : mergeRepair(first.best, parsed.value, first.allPaths);
+      const merge = malformed ? { value: parsed.value, replaced: ['$'] } : mergeRepair(first.best, parsed.value, first.allPaths, first.optionalPaths);
       resolution = resolveOutput({
         ...p.resolveBase, raw: out.rawText, allowPruning: true, provider: meta,
         candidate: {
@@ -624,7 +816,7 @@ export class AiGateway {
         error: ok ? null : { message: (resolution as Extract<Resolution, { ok: false }>).message },
         issues: ok ? [] : (resolution as Extract<Resolution, { ok: false }>).issues,
         issueCount: ok ? 0 : (resolution as Extract<Resolution, { ok: false }>).issueCount,
-        controls: resolution.controls, provider: meta, schema: null, repairs: resolution.repairs,
+        controls: resolution.controls, provider: meta, schema: p.schemaRefOf(soStatus), repairs: resolution.repairs,
       }),
     };
   }
@@ -704,6 +896,8 @@ async function callWithSchemaFallback(
   schema: Record<string, unknown> | null,
   setStatus: (s: string) => void,
   onRejected: () => void,
+  /** Lot 34D : prompt du nouvel essai sans structured output (schéma du contrat inclus). */
+  promptWithoutSchema?: string,
 ): Promise<ProviderCallOutput> {
   if (!schema) return provider.call(input);
   try {
@@ -713,7 +907,7 @@ async function callWithSchemaFallback(
     if (c.subtype !== 'STRUCTURED_OUTPUT_REJECTED') throw e;
     onRejected();
     setStatus('schema_rejected_retried_without');
-    return provider.call(input);
+    return provider.call(promptWithoutSchema !== undefined ? { ...input, prompt: promptWithoutSchema } : input);
   }
 }
 
@@ -731,8 +925,8 @@ export function fallbackNotice(prev: Pick<CallDiagnostic, 'subtype' | 'issues'>)
     '', '', '---', 'REPRISE APRÈS SORTIE INVALIDE (information du serveur)',
     `Le modèle précédent a renvoyé une réponse invalide (${prev.subtype ?? 'INVALID_OUTPUT'}).`,
     ...(lignes.length ? ['Erreurs constatées :', ...lignes] : []),
-    'Tu dois impérativement respecter le format de sortie décrit ci-dessus : types exacts, dates AAAA-MM-JJ,',
-    'valeurs d’énumération autorisées uniquement ; omets un champ facultatif plutôt que d’écrire null.',
+    'Tu dois impérativement respecter le CONTRAT RUNTIME de cet appel : types exacts, dates AAAA-MM-JJ,',
+    'valeurs d’énumération autorisées uniquement, noms de champs du contrat ; omets un champ facultatif plutôt que d’écrire null.',
   ].join('\n');
 }
 
@@ -784,4 +978,50 @@ function compactProviderMeta(m: ProviderCallMetadata): Record<string, unknown> {
 /** §29.6 : message sans extrait de sortie brute pour l'assistant. */
 function redactMessage(message: string, keepRawOutput: boolean): string {
   return keepRawOutput ? message : stripRawExcerpt(message);
+}
+
+/**
+ * Configuration d'exécution APPLIQUÉE d'un prompt maître (lot 34D) : celle
+ * de la version BO active, LEGACY_TEMPLATE pour un texte de version de
+ * configuration, le mode déclaré du fichier du dépôt sinon.
+ */
+function masterExecutionOf(
+  masterPromptCode: string,
+  useCaseCode: Parameters<typeof treatmentForUseCase>[0],
+  cfg: { promptArchitecture?: string; masterPromptText?: string | null; masterPromptVersionId?: number | null; masterExecution?: Partial<MasterExecutionConfig> | null },
+): MasterExecutionConfig {
+  const text = configuredMasterText(useCaseCode, cfg);
+  return executionConfigFor({
+    masterPromptCode,
+    source: text ? (cfg.masterPromptVersionId != null ? 'version' : 'config') : 'file',
+    stored: cfg.masterExecution ?? null,
+  });
+}
+
+/** Contrat de l'appelant, quand la résolution a échoué (refus avant appel). */
+function resolveRuntimeContractSafe(operationCode: string, callerSchema: ZodType): RuntimeContract {
+  return resolveRuntimeContract({ schemaName: null, operationCode, callerSchema }).contract;
+}
+
+/** Détail BO d'un désaccord de contrat (jamais montré à l'utilisateur). */
+function mismatchDetail(m: ContractMismatch): Record<string, unknown> {
+  return {
+    step: 'contract_check',
+    generation: m.generation, validation: m.validation,
+  };
+}
+
+const NORMALIZATION_STAGES = new Set<OutputRepairStep['stage']>(['normalization', 'json_extraction', 'json_repair']);
+const COMPAT_STAGES = new Set<OutputRepairStep['stage']>(['compat_adapter', 'compat_mapping']);
+const ligne = (r: OutputRepairStep) => `${r.rule} ${r.path}${r.detail ? ` (${r.detail})` : ''}`;
+
+/** Transformations appliquées à une sortie, pour BO › Exécutions IA (lot 34D). */
+function transformationsOf(repairs: OutputRepairStep[], repairRun: RepairRun | null): OutputTransformationsTrace | undefined {
+  const t: OutputTransformationsTrace = {
+    normalizations: repairs.filter((r) => NORMALIZATION_STAGES.has(r.stage)).slice(0, 50).map(ligne),
+    compatMappings: repairs.filter((r) => COMPAT_STAGES.has(r.stage)).slice(0, 50).map(ligne),
+    repair: repairRun ? (repairRun.resolution?.ok ? 'SUCCESS' : 'FAILED') : null,
+    pruned: repairs.filter((r) => r.stage === 'field_pruning').slice(0, 50).map(ligne),
+  };
+  return t.normalizations.length || t.compatMappings.length || t.repair || t.pruned.length ? t : undefined;
 }

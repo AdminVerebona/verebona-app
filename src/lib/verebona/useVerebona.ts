@@ -21,6 +21,8 @@ export interface VerebonaAction {
   href: string | null;
   requiresConfirmation: boolean;
   analyticsCode: string;
+  /** Lot 34G : commande d'une action de création (formulaire ouvert directement). */
+  command?: import('./assistant-actions').AssistantCreateCommand | null;
 }
 
 /** Commande préparée par l'assistant, à confirmer explicitement. */

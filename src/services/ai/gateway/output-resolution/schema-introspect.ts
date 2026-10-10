@@ -16,7 +16,8 @@
 import type { ZodType } from 'zod';
 
 export type ShapeNode =
-  | { kind: 'object'; shape: Record<string, FieldDesc> }
+  /** `open` : clés supplémentaires acceptées (`looseObject`, `catchall`) — lot 34D. */
+  | { kind: 'object'; shape: Record<string, FieldDesc>; open?: boolean }
   | { kind: 'array'; element: FieldDesc; min: number | null; max: number | null }
   | { kind: 'string'; isoDate: boolean }
   | { kind: 'number'; int: boolean }
@@ -91,7 +92,8 @@ function nodeOf(s: unknown, depth: number): ShapeNode {
           get: () => (memo ??= build(shape[k], depth + 1)),
         });
       }
-      return { kind: 'object', shape: out };
+      const catchall = d.catchall ? defOf(d.catchall).type : null;
+      return { kind: 'object', shape: out, open: catchall !== null && catchall !== 'never' };
     }
     case 'array': {
       const checks = (d.checks ?? []) as Array<{ _zod?: { def?: Record<string, unknown> } }>;

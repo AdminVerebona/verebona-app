@@ -36,6 +36,7 @@ import {
 import { Loader2, Pencil, Save, FlaskConical, CheckCircle2, RotateCcw, Trash2, AlertTriangle, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
+import { MasterPromptExecutionPanel, executionSummary, type ExecutionConfig, type StructuredInfo } from './MasterPromptExecutionPanel';
 
 // ─── Types rendus par /api/admin/ai/master-prompts ────────────────────────────
 
@@ -55,6 +56,8 @@ interface VersionView {
   activatedAt: string | null; activatedBy: string | null; basedOnVersionNumber: number | null;
   test: TestState;
   technical: { masterPromptCode: string; contentSha256: string; runtimeVersion: string; versionId: number };
+  /** Lot 34D : configuration d'exécution (T4) ; `null` pour les autres prompts. */
+  execution?: ExecutionConfig | null;
 }
 interface Issue { code: string; message: string; blocking: boolean }
 interface Activation {
@@ -69,6 +72,10 @@ interface Detail {
   history: VersionView[];
   activations: Activation[];
   limits: { maxChars: number };
+  /** Lot 34D : texte livré avec l'application (rechargeable dans le brouillon). */
+  reference?: { content: string; execution: ExecutionConfig | null };
+  /** Lot 34D : contexte structuré (T4). */
+  structured?: StructuredInfo | null;
 }
 interface Summary {
   treatment: string; label: string; masterPromptCode: string;
@@ -208,10 +215,12 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
   const [busy, setBusy] = useState<null | 'draft' | 'save' | 'test' | 'activate' | 'discard' | 'reactivate'>(null);
   const [confirm, setConfirm] = useState<null | { kind: 'activate' } | { kind: 'reactivate'; version: VersionView } | { kind: 'discard' }>(null);
   const [apercu, setApercu] = useState<null | (VersionView & { content: string })>(null);
+  const [execution, setExecution] = useState<ExecutionConfig | null>(null);
 
   const appliquer = useCallback((d: Detail) => {
     setDetail(d);
     setTexte(d.draft?.content ?? '');
+    setExecution(d.draft?.execution ?? null);
     setDirty(false);
   }, []);
 
@@ -264,7 +273,11 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
     if (!draft) return null;
     setBusy('save');
     try {
-      const r = await apiClient.put<{ detail: Detail }>(`/api/admin/ai/master-prompts/${treatment}/draft`, { versionId: draft.id, content: texte });
+      const r = await apiClient.put<{ detail: Detail }>(`/api/admin/ai/master-prompts/${treatment}/draft`, {
+        versionId: draft.id, content: texte,
+        // Lot 34D : mode d'exécution explicite (T4), enregistré avec le texte.
+        ...(detail?.structured && execution ? { execution } : {}),
+      });
       appliquer(r.detail);
       if (!silencieux) toast.success(`Brouillon v${draft.versionNumber} enregistré`);
       onChanged();
@@ -382,6 +395,15 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
             versionLabel={nomActive} busy={busy === 'test'} onRun={() => void tester(active ? active.id : 'active')}
           />
         )}
+        {!draft && detail.structured && (
+          <MasterPromptExecutionPanel
+            treatment={treatment} info={detail.structured}
+            execution={active?.execution ?? (detail.initialContent?.source === 'config'
+              ? { mode: 'LEGACY_TEMPLATE', inputContractVersion: null, outputContractVersion: null, allowedTasks: null }
+              : detail.reference?.execution ?? null)}
+            editable={false} versionTarget="active"
+          />
+        )}
       </div>
 
       {/* Brouillon */}
@@ -408,6 +430,21 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
           <p className={`text-xs ${tropLong ? 'text-red-400' : 'text-[color:var(--text-muted)]'}`}>
             {texte.length.toLocaleString('fr-FR')} / {detail.limits.maxChars.toLocaleString('fr-FR')} caractères
           </p>
+          {/* Lot 34D : texte livré avec l'application (nouvelle version du dépôt). */}
+          {!detail.structured && detail.reference?.content && detail.reference.content !== texte && (
+            <Button size="sm" variant="ghost" disabled={busy !== null}
+              onClick={() => { setTexte(detail.reference!.content); setDirty(true); }}>
+              Repartir du texte livré avec l’application
+            </Button>
+          )}
+          {detail.structured && (
+            <MasterPromptExecutionPanel
+              treatment={treatment} info={detail.structured} execution={execution} editable
+              versionTarget={draft.id} disabled={busy !== null}
+              onChange={(e) => { setExecution(e); setDirty(true); }}
+              onLoadReference={(t) => { setTexte(t); setDirty(true); }}
+            />
+          )}
 
           {bloquants.length > 0 && (
             <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 space-y-1">
@@ -474,7 +511,10 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
                 {detail.history.map((v) => (
                   <tr key={v.id} className="border-t border-[color:var(--border-subtle)]">
                     <td className="py-1.5 pr-3 text-[color:var(--text-primary)]">v{v.versionNumber}</td>
-                    <td className="py-1.5 pr-3"><StatusPill status={v.status} label={v.statusLabel} /></td>
+                    <td className="py-1.5 pr-3">
+                      <StatusPill status={v.status} label={v.statusLabel} />
+                      {v.execution && <span className="block text-[color:var(--text-muted)]">{executionSummary(v.execution)}</span>}
+                    </td>
                     <td className="py-1.5 pr-3 text-[color:var(--text-secondary)]">{dateHeure(v.activatedAt ?? v.createdAt)}</td>
                     <td className="py-1.5 pr-3"><TestBadge test={v.test} /></td>
                     <td className="py-1.5 text-right whitespace-nowrap">

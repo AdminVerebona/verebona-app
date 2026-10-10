@@ -24,10 +24,15 @@ import {
   type T1AnalyzeDocumentOutput,
   type T1Fact,
 } from '../master/t1-contract';
-import { T1AnalyzeDocumentTolerantOutput, splitNormalisation } from '../master/tolerant-output';
+import { T1AnalyzeDocumentTolerantOutput, splitNormalisation, type T1NormalisationReport } from '../master/tolerant-output';
 import { buildAnalyzeDocumentVariables, catalogForCapabilities, contextFilterStats, knownTargetFamily } from '../master/prompt-context';
 import { enforceT1Capabilities } from '../master/capability-guard';
-import { getAccountCapabilities } from '@/services/account-capabilities.service';
+import { getAccountCapabilities, type AccountCapabilities } from '@/services/account-capabilities.service';
+import type { AiAttachment } from '../../gateway/types';
+import { applyOverflow } from '../source-units/merge';
+import { continueByPages } from '../source-units/continuation';
+import { fullTextOf } from '../source-units/build-units';
+import type { T1ExtractionExtras } from '../source-units/complete-extraction';
 import { catalogForPrompts } from '@/services/canonical/registry';
 import { checkFactEvidence, factLabel } from '../master/fact-evidence';
 import { verifyCandidates, type VerifiableEntity } from '../identifier-verifier';
@@ -59,6 +64,67 @@ export interface AnalyzeDocumentResult {
   warnings: AnalysisWarning[];
   trace: AiOperationTrace;
   promptVersion: string;
+  /**
+   * Lot 34F — matière de la couche A : texte lu par segment (passe, lots de
+   * pages), lacunes, éléments écartés CONSERVÉS, lots et capacités (pour la
+   * réparation ciblée). Lu par `completeT1Extraction`.
+   */
+  extraction?: T1ExtractionExtras;
+}
+
+/**
+ * Un appel ANALYZE_DOCUMENT (passe principale, lot de pages ou réparation
+ * ciblée) : variables du master, pièces jointes, lecture tolérante, puis
+ * réintégration du lot de débordement (lot 34F : aucune borne du contrat
+ * n'est une borne du document).
+ */
+export async function callAnalyzeDocument(p: {
+  input: SourceInput;
+  groupIndices: number[];
+  ctx: AnalysisContext;
+  capabilities: AccountCapabilities;
+  v2Families: V2AssetFamily[];
+  /** Absent : les fichiers du groupe. */
+  attachments?: AiAttachment[];
+  /** Remplace `SOURCES` (lot de pages, extrait ciblé). */
+  sources?: string;
+  triggerCode?: string;
+}) {
+  const promptVariables = buildAnalyzeDocumentVariables({
+    input: p.input, groupIndices: p.groupIndices, ctx: p.ctx, v2Families: p.v2Families, capabilities: p.capabilities,
+  });
+  if (p.sources) promptVariables.SOURCES = p.sources;
+  const res = await AiGateway.execute({
+    useCaseCode: 'SOURCE_ANALYSIS',
+    operationCode: T1_ANALYZE_DOCUMENT_OPERATION,
+    task: 'ANALYZE_DOCUMENT',
+    masterPromptCode: T1_MASTER_PROMPT_CODE,
+    accountId: p.input.accountId,
+    userId: p.input.userId,
+    sourceIds: p.groupIndices.map((i) => p.input.sourceIds[i]),
+    promptVariables,
+    attachments: p.attachments ?? buildAttachments(p.input, p.groupIndices),
+    // Normalisation tolérante AVANT le contrat strict (`master/tolerant-output`).
+    outputSchema: T1AnalyzeDocumentTolerantOutput,
+    sourceVersion: p.input.sourceVersion,
+    ...(p.triggerCode ? { triggerCode: p.triggerCode } : {}),
+  });
+  const { output: brut, report } = splitNormalisation(res.data);
+  const { output, batches } = applyOverflow(brut, report);
+  return { output, report, res, batches };
+}
+
+/** Compteurs de plusieurs lectures tolérantes (passe principale et lots de pages). */
+function sommeRapports(reports: Array<T1NormalisationReport | null>): T1NormalisationReport | null {
+  const l = reports.filter((r): r is T1NormalisationReport => r !== null);
+  if (l.length === 0) return null;
+  const n = (k: keyof T1NormalisationReport) => l.reduce((s, r) => s + (typeof r[k] === 'number' ? (r[k] as number) : 0), 0);
+  return {
+    truncatedFacts: n('truncatedFacts'), droppedFacts: n('droppedFacts'), tooLongFacts: n('tooLongFacts'),
+    droppedTables: n('droppedTables'), droppedObservations: n('droppedObservations'), truncatedStrings: n('truncatedStrings'),
+    overflowTables: n('overflowTables'), overflowObservations: n('overflowObservations'), overflowEntities: n('overflowEntities'),
+    transcriptionTailChars: n('transcriptionTailChars'),
+  };
 }
 
 export async function analyzeDocument(
@@ -76,21 +142,27 @@ export async function analyzeDocument(
   // filtrent le contexte transmis ET la sortie (garde-fou ci-dessous).
   const capabilities = ctx.capabilities ?? await getAccountCapabilities(ctx.accountId);
 
-  const res = await AiGateway.execute({
-    useCaseCode: 'SOURCE_ANALYSIS',
-    operationCode: T1_ANALYZE_DOCUMENT_OPERATION,
-    task: 'ANALYZE_DOCUMENT',
-    masterPromptCode: T1_MASTER_PROMPT_CODE,
-    accountId: input.accountId,
-    userId: input.userId,
-    sourceIds: groupIndices.map((i) => input.sourceIds[i]),
-    promptVariables: buildAnalyzeDocumentVariables({ input, groupIndices, ctx, v2Families, capabilities }),
-    attachments: buildAttachments(input, groupIndices),
-    // Normalisation tolérante AVANT le contrat strict (`master/tolerant-output`).
-    outputSchema: T1AnalyzeDocumentTolerantOutput,
-    sourceVersion: input.sourceVersion,
+  const first = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families });
+  const res = first.res;
+
+  // ── Lot 34F : poursuite par lots de pages si la sortie est saturée ──────
+  // (document normal : aucun effet, aucun appel). Puis fusion idempotente.
+  const suite = await continueByPages({
+    input, groupIndices, first: first.output, firstOutputTokens: res.outputTokens ?? 0, firstReport: first.report,
+    call: async (c) => {
+      const r = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, ...c });
+      return { output: r.output, report: r.report, batches: r.batches, outputTokens: r.res.outputTokens ?? 0 };
+    },
   });
-  const { output: brut, report } = splitNormalisation(res.data);
+  const report = sommeRapports([first.report, ...suite.reports]);
+  // Texte INTÉGRAL lu (passe + lots de pages) : persisté, contrôlé, découpé en unités.
+  const brut: T1AnalyzeDocumentOutput = {
+    ...suite.output,
+    transcription: suite.segments.some((x) => x.text.trim()) ? fullTextOf(suite.segments) : suite.output.transcription,
+  };
+  // Débordement perdu en route (sortie réparée par la passerelle, lot 33D :
+  // les lots de débordement de la 1re lecture n'y survivent pas) — mesuré, signalé.
+  const debordementPerdu = Math.max(0, (first.report?.truncatedFacts ?? 0) - (first.report?.overflow?.facts.length ?? 0));
 
   // ── Capacités du compte : garde-fou serveur (le modèle n'est pas une garantie) ──
   // Avant vérification des identifiants, projection et persistance : une cible
@@ -125,38 +197,43 @@ export async function analyzeDocument(
       target: 't1-master:fields-pruned',
     });
   }
-  if (report?.truncatedFacts) {
+  // Lot 34F : au-delà de 300 faits, le surplus est traité en lot suivant —
+  // FACTS_TRUNCATED ne signale plus qu'une perte RÉELLE (débordement perdu,
+  // saturation sans découpage possible).
+  if (debordementPerdu > 0 || suite.truncatedSections > 0) {
     warnings.push({
       code: 'FACTS_TRUNCATED',
-      message: `Sortie limitée à 300 faits : ${report.truncatedFacts} fait(s) au-delà non retenus.`,
+      message: debordementPerdu > 0
+        ? `${debordementPerdu} fait(s) au-delà de 300 non retrouvé(s) après correction de la sortie ; le texte source reste conservé.`
+        : `Sortie saturée, poursuite par pages impossible (${suite.notContinuable ?? 'cause inconnue'}) : la fin du document peut manquer.`,
       target: 't1-master:facts-truncated',
     });
   }
   if (report?.tooLongFacts) {
     warnings.push({
       code: 'FACT_INVALID_DROPPED',
-      message: `${report.tooLongFacts} fait(s) à valeur trop longue écarté(s) (jamais tronqués : la valeur serait fausse).`,
+      message: `${report.tooLongFacts} fait(s) à valeur trop longue écarté(s) (jamais tronqués : la valeur serait fausse) — conservé(s) intégralement pour reprise.`,
       target: 't1-master:facts-too-long',
     });
   }
   if (report?.droppedTables) {
     warnings.push({
       code: 'TABLE_STRUCTURE_UNCERTAIN',
-      message: `${report.droppedTables} tableau(x) inexploitable(s) écarté(s) (sans colonne ou plus de 1000 lignes).`,
+      message: `${report.droppedTables} tableau(x) vide(s) ou invalide(s) écarté(s) — conservé(s) tel(s) quel(s) pour reprise.`,
       target: 't1-master:tables-dropped',
     });
   }
   if (report?.droppedObservations) {
     warnings.push({
       code: 'PARTIAL_EXTRACTION',
-      message: `${report.droppedObservations} observation(s) visuelle(s) sans description écartée(s).`,
+      message: `${report.droppedObservations} observation(s) visuelle(s) sans description écartée(s) — conservée(s) pour reprise.`,
       target: 't1-master:observations-dropped',
     });
   }
   if (report?.droppedFacts) {
     warnings.push({
       code: 'FACT_INVALID_DROPPED',
-      message: `${report.droppedFacts} fait(s) mal formé(s) écarté(s) ; le reste de l’analyse est conservé.`,
+      message: `${report.droppedFacts} fait(s) mal formé(s) écarté(s) — conservé(s) pour reprise ; le reste de l’analyse est conservé.`,
       target: 't1-master:facts-invalid',
     });
   }
@@ -177,11 +254,13 @@ export async function analyzeDocument(
   // ── Preuve obligatoire par fait (U2) ────────────────────────────────────
   const facts: T1Fact[] = [];
   const rejected: string[] = [];
+  const sansPreuve: T1Fact[] = [];
   for (const f of out.facts) {
     const check = checkFactEvidence(f);
     if (!check.ok) {
       // Une valeur vide n'est pas une information : elle n'a pas à voyager.
-      if (check.reason !== 'NO_VALUE') rejected.push(factLabel(f));
+      // Lot 34F : un fait sans preuve n'est plus perdu — conservé (NO_EVIDENCE).
+      if (check.reason !== 'NO_VALUE') { rejected.push(factLabel(f)); sansPreuve.push(f); }
       continue;
     }
     const cell = f.evidence?.table ? tableRef(f.evidence.table, tables, locate) : undefined;
@@ -192,7 +271,7 @@ export async function analyzeDocument(
   if (rejected.length > 0) {
     warnings.push({
       code: 'FIELD_WITHOUT_EVIDENCE',
-      message: `${rejected.length} information(s) écartée(s) faute de preuve adaptée (${rejected.slice(0, 5).join(', ')}).`,
+      message: `${rejected.length} information(s) écartée(s) faute de preuve adaptée (${rejected.slice(0, 5).join(', ')}) — conservée(s) pour reprise.`,
     });
   }
   // Un extrait « lu » doit se retrouver dans le texte lisible (transcription
@@ -321,6 +400,27 @@ export async function analyzeDocument(
     warnings,
     trace: { ...mergeTrace(emptyTrace(), res, T1_ANALYZE_DOCUMENT_OPERATION), accountCapabilities: capabilityTrace },
     promptVersion: res.promptVersion,
+    extraction: {
+      segments: input.extractedContent?.trim() && !suite.segments.some((x) => x.text.trim())
+        ? [{ text: input.extractedContent, pageOffset: 0, origin: 'PASS_1' }]
+        : input.extractedContent?.trim() && input.sourceType === 'web_link'
+          // Lien web : le contenu préextrait EST la source (la transcription en est une relecture).
+          ? [{ text: input.extractedContent, pageOffset: 0, origin: 'PASS_1' }]
+          : suite.segments,
+      gaps: suite.gaps,
+      dropped: [
+        ...(first.report?.dropped ?? []).map((d) => ({ ...d, pass: 'PASS_1' as const })),
+        ...suite.dropped,
+      ],
+      noEvidence: sansPreuve,
+      prunedPaths: [...new Set(retires.map((r) => r.path))],
+      batchedSections: first.batches + suite.batches + suite.chunkCount,
+      truncatedSections: suite.truncatedSections + (debordementPerdu > 0 ? 1 : 0),
+      chunkCount: suite.chunkCount,
+      pageCount: suite.pageCount,
+      capabilities,
+      v2Families,
+    },
   };
 }
 
@@ -429,7 +529,7 @@ const ENTITE: Record<VerifiableTargetType, VerifiableEntity> = {
  * cibles de faits. Les avertissements sont dédoublonnés (un même identifiant
  * halluciné cité par dix faits n'en produit qu'un).
  */
-async function verifyAll(out: T1AnalyzeDocumentOutput, facts: T1Fact[], accountId: number) {
+export async function verifyAll(out: T1AnalyzeDocumentOutput, facts: T1Fact[], accountId: number) {
   const lists: Record<VerifiableTargetType, LinkCandidate[]> = {
     ASSET: out.entities.assets.map(toLinkCandidate),
     ROOM: out.entities.rooms.map(toLinkCandidate),

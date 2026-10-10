@@ -40,6 +40,11 @@ import {
 import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
 import { getIntentDefinition } from '../registries/intent-registry';
 import type { VerebonaIntent } from '../types/intents';
+import type { ActionableTrace } from '../types/contracts';
+import {
+  ACTIONABLE_SOURCE_TYPES, actionableReadWindow, analyserDemandeActionnable, compterActionnables, formatActionnables, selectionnerActionnables,
+  type ActionableRequest, type ActionableResult,
+} from './actionable-request';
 import { tryCanonicalStructured, fieldAnswer } from '../canonical/structured-answers';
 import { assetFieldSource } from '../canonical/field-reader';
 import { exportCodeLabel } from '@/services/exports/catalog';
@@ -162,6 +167,20 @@ export interface AccountDataPort {
   listMissingInformation?(accountId: number, opts: { assetIds?: number[] }): Promise<import('../canonical/completeness').AssetCompleteness[]>;
   /** Échéances à venir dans une fenêtre, HISTORICAL exclu (T2-15). */
   listUpcomingAgenda?(accountId: number, opts: { assetIds?: number[]; from?: string; windowDays?: number | null; limit?: number; terms?: string[] }): Promise<import('../canonical/agenda').UpcomingAgendaRow[]>;
+  /**
+   * Lot 34 : éléments ACTIONNABLES (« À traiter » ouverts, échéances actives),
+   * lecture canonique SQL bornée au compte (`canonical/actionables`).
+   */
+  /**
+   * Lot 34 : documents en cours d'analyse ou en échec (statut d'analyse),
+   * bornés au compte — « Où en est l'analyse de mes documents ? ».
+   */
+  listDocumentsInAnalysis?(accountId: number, opts?: { limit?: number }): Promise<DocumentHit[]>;
+  listActionables?(accountId: number, opts: import('../canonical/actionables').ActionableReadOptions): Promise<{
+    todos: import('./actionable-request').TodoRow[];
+    deadlines: import('./actionable-request').DeadlineRow[];
+    queried: Array<'TODO' | 'DEADLINE'>;
+  }>;
 }
 
 /** Export ou dossier généré pour un bien (`export_generation`). */
@@ -196,6 +215,8 @@ export type DataAnswerStrategy =
   | 'structured.upcoming_agenda'
   | 'structured.missing_information'
   | 'structured.sum_qualified'
+  // Lot 34 : demandes d'actions (À traiter, échéances, retards, période).
+  | 'structured.actionable'
   | 'retrieval.canonical_field'
   | 'retrieval.t1_fact'
   | 'retrieval.t1_table'
@@ -241,6 +262,12 @@ export interface DataAnswerOutcome {
    * fusionnés dans « aucun résultat »).
    */
   documentState?: { kind: 'IN_ANALYSIS' | 'ANALYSIS_FAILED' | 'FOUND_WITHOUT_INFO'; fileId: number; title: string };
+  /**
+   * Lot 34 : résolution d'une demande d'actions — intention, famille,
+   * période, contrat de sources, compteurs, raison d'inclusion de chaque
+   * résultat (`ActionableTrace`). Présente dès que la demande est reconnue.
+   */
+  actionable?: import('../types/contracts').ActionableTrace;
 }
 
 // ── Analyse de la question ─────────────────────────────────────────────────
@@ -424,6 +451,9 @@ const LIST_DOCS = /\b(montre|affiche|liste|lister|quels? sont|donne)\b|\bquel(le
  */
 export const DOCUMENT_STATUS_QUESTION = /\b(statut|etat)\s+(de|du|d'|des)\b|\bou en est\b|\best-(il|elle) (bien )?analyse|\ba-t-(il|elle) ete analyse|\bdeja ete analyse|\b(analyse|analysee) (est-elle|est elle) terminee/;
 
+/** Lot 34 : état des analyses de TOUS ses documents (« où en est l'analyse de mes documents ? »). */
+const GENERIC_DOCS_ANALYSIS = /\b(analyses?)\b.*\b(mes|des|nos|les) (documents|fichiers)\b|\b(mes|nos|les) (documents|fichiers)\b.*\b(analyses?|analyses?es?)\b/;
+
 /** Liste des exports et dossiers disponibles (§12.1). */
 const EXPORTS_QUESTION = /\b(exports?|dossiers?)\b/;
 const EXPORTS_LIST = /\b(quels?|quelles?|mes|liste|lister|montre|affiche|disponibles?|generes?|prets?|ai-je|j'ai)\b/;
@@ -491,6 +521,22 @@ async function tryStructured(
       const answer = statutDocumentPhrase(doc);
       const sources = [statusDocSource(doc)];
       return { strategy: 'structured.document_status', answer, sources, claims: [claim('document_status', answer, sources, 'direct')], kind: 'exact' };
+    }
+    // Lot 34 : « Où en est l'analyse de MES documents ? » — aucun document
+    // désigné : l'état des analyses du compte (en cours, en échec), lu tel
+    // quel. Jamais un document pris au hasard.
+    if (!pageDocumentId && GENERIC_DOCS_ANALYSIS.test(m) && port.listDocumentsInAnalysis) {
+      const docs = await port.listDocumentsInAnalysis(accountId, { limit: 10 });
+      const sources = docs.map((d) => statusDocSource(d));
+      const enCours = docs.filter((d) => documentAnalysisStatus(d.analysisState) === 'IN_ANALYSIS');
+      const echecs = docs.filter((d) => documentAnalysisStatus(d.analysisState) === 'ANALYSIS_FAILED');
+      const pl = (n: number, a: string, b: string) => (n > 1 ? b : a);
+      const parts = [
+        enCours.length ? `${enCours.length} ${pl(enCours.length, 'document est', 'documents sont')} en cours d’analyse : ${joinFr(enCours.slice(0, 5).map((d) => `« ${d.title} »`))}. Certaines informations peuvent ne pas être disponibles immédiatement.` : null,
+        echecs.length ? `${echecs.length} ${pl(echecs.length, 'document n’a', 'documents n’ont')} pas pu être ${pl(echecs.length, 'analysé', 'analysés')} : ${joinFr(echecs.slice(0, 5).map((d) => `« ${d.title} »`))}.` : null,
+      ].filter(Boolean);
+      const answer = parts.length ? parts.join(' ') : 'Aucun document n’est en cours d’analyse : toutes les analyses de vos documents sont terminées.';
+      return { strategy: 'structured.document_status', answer, sources, claims: [claim('document_status', answer, sources, 'direct')], kind: docs.length ? 'list' : 'no_result' };
     }
   }
 
@@ -787,6 +833,22 @@ export async function answerFromData(p: {
     handled: false, sources: [], claims: [], decision, strategy, attempts, contextSources,
   });
 
+  // ══════════════════════════════════════════════════════════════════════
+  // DEMANDE D'ACTIONS — lot 34 (ticket T2 « Que dois-je faire aujourd'hui ? »)
+  //
+  // Intention → famille → contrat de sources → période → lecture canonique
+  // SQL. Résolue ICI, avant toute recherche textuelle : une demande d'actions
+  // comprise n'atteint jamais les documents. Zéro élément est une réponse
+  // (SUCCESS, resultCount 0), jamais un échec ni un repli documentaire.
+  // ══════════════════════════════════════════════════════════════════════
+  if (p.port.listActionables && ACTIONABLE_INTENTS.has(p.intent ?? '')) {
+    const req = analyserDemandeActionnable(p.message, p.port.today(), p.intent);
+    if (req) {
+      const r = await resolveActionable(p, req, attempts);
+      if (r) return r;
+    }
+  }
+
   // Une demande de synthèse n'est pas « résolue » par une valeur exacte.
   // « Où en est l'analyse de ma facture ? » n'en est pas une : c'est le
   // statut d'un document (§12.2), lu tel quel.
@@ -1019,6 +1081,181 @@ export async function answerFromData(p: {
   );
   if (best) out.documentState = { kind: 'FOUND_WITHOUT_INFO', fileId: best.fileId, title: best.title };
   return out;
+}
+
+// ── Demandes d'actions (lot 34) ────────────────────────────────────────────
+
+/** Intentions EXISTANTES qui portent une demande d'actions (aucune intention nouvelle). */
+const ACTIONABLE_INTENTS = new Set(['ACCOUNT_TO_PROCESS', 'ACCOUNT_SEARCH_AGENDA', 'ACCOUNT_FACT_AGENDA', 'UNKNOWN']);
+
+const PRIORITY_LABELS_T2: Record<string, string> = { DO_FIRST: 'À faire d’abord', DO_NEXT: 'À faire ensuite', CAN_WAIT: 'Peut attendre' };
+
+/** Source T2 d'un résultat actionnable (jamais un document ni un bien). */
+function actionableSource(r: ActionableResult): RetrievedSource {
+  const contexte = r.contextDocuments.map((d) => `doc_${d.id}`).join(',') || null;
+  if (r.sourceType === 'TODO') {
+    return {
+      id: r.sourceId, type: ACTIONABLE_SOURCE_TYPES.TODO, title: r.title,
+      content: [r.priority ? PRIORITY_LABELS_T2[r.priority] : null, r.dueDate ? `échéance ${r.dueDate}` : null, r.relatedAssetName].filter(Boolean).join(' · '),
+      relevanceScore: 1,
+      meta: {
+        toProcessId: r.id, date: r.dueDate, subtitle: r.priority ? PRIORITY_LABELS_T2[r.priority] : null, assetId: r.relatedAssetId,
+        reasonForInclusion: r.reasonForInclusion, contextDocuments: contexte, retrievalStrategy: 'structured.actionable',
+      },
+    };
+  }
+  return {
+    id: r.sourceId, type: ACTIONABLE_SOURCE_TYPES.DEADLINE, title: r.title,
+    content: [r.dueDate, r.status === 'FORECAST' ? 'date prévisionnelle' : null, r.relatedAssetName].filter(Boolean).join(' · '),
+    relevanceScore: 1,
+    meta: {
+      agendaItemId: r.id, date: r.dueDate, assetId: r.relatedAssetId, status: r.status,
+      reasonForInclusion: r.reasonForInclusion, contextDocuments: contexte, retrievalStrategy: 'structured.actionable',
+    },
+  };
+}
+
+/** Bornes de lecture des échéances (règle unique, `actionable-request`). */
+export { actionableReadWindow };
+
+/** Bornes de trace (`ActionableTrace` sans résultats). */
+function actionableTraceBase(req: ActionableRequest): Omit<ActionableTrace, 'resolution' | 'queriedSources' | 'assetScope' | 'todoCount'
+  | 'deadlineCount' | 'actionCount' | 'overdueCount' | 'todayCount' | 'resultCount' | 'fallbackReason' | 'results'> {
+  return {
+    intent: req.intent, intentResolution: req.intentResolution,
+    requestedTimeScope: req.requestedTimeScope, appliedTimeScope: req.appliedTimeScope,
+    resolvedStartDate: req.resolvedStartDate, resolvedEndDate: req.resolvedEndDate,
+    allowedSourceTypes: [...req.allowedSourceTypes], queryStrategy: 'SQL_CANONICAL',
+    fallbackUsed: false, answeredBy: 'structured',
+  };
+}
+
+/**
+ * Résolution d'une demande d'actions. `null` : la demande désigne autre
+ * chose qu'un bien du compte (mot non reconnu) — la suite habituelle
+ * s'applique, sous le contrat de sources de l'intention.
+ */
+async function resolveActionable(
+  p: Parameters<typeof answerFromData>[0],
+  req: ActionableRequest,
+  attempts: CascadeAttempt[],
+): Promise<DataAnswerOutcome | null> {
+  const today = p.port.today();
+  const echec = (reason: SufficiencyDecision['reason'], detail?: string): DataAnswerOutcome => ({
+    handled: false, sources: [], claims: [], strategy: 'structured.actionable', attempts, contextSources: [],
+    decision: { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason, detail },
+    actionable: {
+      ...actionableTraceBase(req), resolution: 'INSUFFICIENT', queriedSources: [], assetScope: null,
+      todoCount: 0, deadlineCount: 0, actionCount: 0, overdueCount: 0, todayCount: 0, resultCount: 0,
+      fallbackReason: detail ?? reason ?? null, results: [],
+    },
+  });
+
+  // Bien éventuellement désigné (« que dois-je faire pour la Clio ? »).
+  // Une clarification ou une référence du fil fait foi ; un mot qui ne
+  // désigne aucun bien n'est jamais ignoré (pas de réponse à l'échelle du
+  // compte pour « ma Clio » sans Clio).
+  let assetIds: number[] = [];
+  if (p.resolvedAssetId || req.residualWords.length) {
+    const scope = await resolveAssetScope(p.port, p.accountId, req.residualWords.join(' '), p.pageAssetId ?? null, p.resolvedAssetId ?? null);
+    if (scope.ambiguous) {
+      const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'AMBIGUOUS_TARGET', detail: `${scope.assets.length} biens` };
+      attempts.push({ level: 1, strategy: 'structured.actionable', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
+      return { ...echec('AMBIGUOUS_TARGET'), decision, ambiguity: { kind: 'asset', reason: 'ACTIONABLE_MULTIPLE_ASSETS', candidates: scope.assets } };
+    }
+    if (scope.unresolved) {
+      attempts.push({ level: 1, strategy: 'structured.actionable', status: 'NOT_APPLICABLE', score: 0, threshold: p.thresholds.database, reason: 'NO_STRUCTURED_PLAN' });
+      return null;
+    }
+    assetIds = scope.assets.map((a) => a.id);
+  }
+
+  const fenetre = actionableReadWindow(req, today);
+  const lu = await p.port.listActionables!(p.accountId, {
+    assetIds, from: fenetre.from, to: fenetre.to,
+    todos: req.allowedSourceTypes.includes('TODO'), deadlines: req.allowedSourceTypes.includes('DEADLINE'),
+  });
+  const results = selectionnerActionnables(req, lu, today);
+  const counts = compterActionnables(results);
+  const sources = results.slice(0, 50).map(actionableSource);
+  const answer = formatActionnables(req, results, formatDateFr);
+  const decision = decideStructured(results.length ? 'list' : 'no_result', p.thresholds);
+  attempts.push({ level: 1, strategy: 'structured.actionable', status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason });
+  const actionable: ActionableTrace = {
+    ...actionableTraceBase(req), resolution: 'SUCCESS', queriedSources: lu.queried, assetScope: assetIds.length ? assetIds : null,
+    ...counts, fallbackReason: null,
+    results: results.slice(0, 50).map((r) => ({
+      sourceType: r.sourceType, sourceId: r.sourceId, reasonForInclusion: r.reasonForInclusion, status: r.status,
+      dueDate: r.dueDate, relatedAssetId: r.relatedAssetId, mergedSourceIds: [...r.mergedSourceIds],
+      contextDocumentIds: r.contextDocuments.map((d) => d.id),
+    })),
+  };
+  const handled = decision.status === 'SUFFICIENT_STRUCTURED';
+  return {
+    handled, answer: handled ? answer : undefined, sources: handled ? sources : [],
+    claims: handled ? [claim('actionable', answer, sources.slice(0, 10), 'calculated')] : [],
+    decision, strategy: 'structured.actionable', attempts,
+    // Seuil de gouvernance « toujours escalader » : le modèle ne reçoit que
+    // les éléments actionnables, jamais des documents.
+    contextSources: handled ? [] : sources,
+    actionable,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// REPLI SOUS CONTRAT — lot 34 (mécanisme générique, pas un cas « aujourd'hui »)
+//
+// Le repli « ces éléments de votre compte semblent liés à votre question »
+// listait les MEILLEURS objets trouvés, quel que soit leur type : une
+// demande d'actions recevait des documents, une demande d'échéances des
+// biens. Désormais, pour toute intention dont le type de réponse est connu
+// (contrat `expectedSourceTypes` non vide) :
+//   · une source hors contrat n'est JAMAIS présentée (substitution
+//     inter-domaines interdite : action → document, échéance → bien…) ;
+//   · des éléments du BON type, non exacts, sont présentés comme « résultats
+//     proches » (§11.4) — jamais comme « liés à votre question » ;
+//   · aucun élément du bon type : « rien trouvé », sans substitut.
+// Seule une intention SANS type de réponse connu (UNKNOWN) garde le repli
+// générique — l'aide a son propre repli (Centre d'aide).
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Types de sources admissibles comme réponse d'une intention ; `null` : type de réponse inconnu. */
+export function admissibleSourceTypes(intent: string | undefined): string[] | null {
+  if (!intent) return null;
+  const def = (() => { try { return getIntentDefinition(intent as VerebonaIntent); } catch { return undefined; } })();
+  const attendus = def?.expectedSourceTypes ?? [];
+  return attendus.length ? [...attendus] : null;
+}
+
+export interface ContractFallback {
+  answer: string;
+  /** Sources présentables (toutes admissibles au contrat). */
+  sources: RetrievedSource[];
+  /** Repli générique « éléments approchants » réellement utilisé. */
+  fallbackUsed: boolean;
+  fallbackReason: 'GENERIC_UNKNOWN_INTENT' | 'NEAR_RESULTS_SAME_DOMAIN' | 'NO_ADMISSIBLE_RESULT' | 'OUT_OF_CONTRACT_SOURCES_DROPPED' | 'NO_SOURCE';
+  /** Sources écartées car hors contrat. */
+  dropped: number;
+}
+
+/** Repli sans réponse exacte, sous le contrat de sources de l'intention (pure, testée). */
+export function fallbackUnderContract(intent: string | undefined, sources: RetrievedSource[], message: string, aiEligible = true): ContractFallback {
+  const attendus = admissibleSourceTypes(intent);
+  if (!attendus) {
+    return {
+      answer: fallbackFromSources(sources), sources, fallbackUsed: sources.length > 0,
+      fallbackReason: sources.length ? 'GENERIC_UNKNOWN_INTENT' : 'NO_SOURCE', dropped: 0,
+    };
+  }
+  const admis = sources.filter((s) => attendus.includes(s.type));
+  const dropped = sources.length - admis.length;
+  if (admis.length === 0) {
+    return {
+      answer: noResultAnswer(message, aiEligible), sources: [], fallbackUsed: false,
+      fallbackReason: dropped ? 'OUT_OF_CONTRACT_SOURCES_DROPPED' : 'NO_ADMISSIBLE_RESULT', dropped,
+    };
+  }
+  return { answer: nearResultsAnswer(message, admis, aiEligible), sources: admis, fallbackUsed: true, fallbackReason: 'NEAR_RESULTS_SAME_DOMAIN', dropped };
 }
 
 /** Réponse sans modèle quand l'IA est indisponible et que rien n'est suffisant. */

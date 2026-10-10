@@ -24,12 +24,14 @@ beforeEach(() => {
 });
 
 const { t2MasterVariables } = await import('../../assistant/master/t2-answer');
+const { asTestContract } = await import('../output-resolution/runtime-contract');
 
 const req = (useCaseCode: string, operationCode: string, schema: z.ZodType<unknown>) => ({
   useCaseCode: useCaseCode as never, operationCode, accountId: 1,
   // Lot 16b-2 : l'assistant n'a plus que son master T2 (variables déclarées).
   promptVariables: operationCode.startsWith('t2_') ? t2MasterVariables('ANSWER', { QUESTION: 'q' }) : { QUESTION: 'q' },
-  outputSchema: schema, idempotencyKey: `k-${Math.random()}`, maxModelAttempts: 1,
+  // Lot 34D : schéma de test déclaré contrat de test (sinon RUNTIME_CONTRACT_MISMATCH).
+  outputSchema: asTestContract(schema), idempotencyKey: `k-${Math.random()}`, maxModelAttempts: 1,
 });
 
 describe('trace d’un appel de l’assistant', () => {

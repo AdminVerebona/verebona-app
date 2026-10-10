@@ -107,7 +107,9 @@ describe('P-T4-01 et master T4 seul', () => {
     const cand = P1.context.candidate;
     const c = await classifyAgendaEvent({ title: cand.title, originType: 'document', description: null }, { ...ctx, excerpt: cand.excerpt, date: cand.date });
     expect(c).toMatchObject({ category: 'action', confidence: 'certain', source: 'model', businessType: 'inspection' });
-    expect(fake.calls[0].prompt).toContain('TASK = CLASSIFY_EVENT');
+    // Lot 34D : contexte structuré — la TASK et le catalogue passent par EXECUTION_CONTEXT.
+    expect(fake.calls[0].prompt).toContain('EXECUTION_CONTEXT');
+    expect(fake.calls[0].prompt).toContain('"task":"CLASSIFY_EVENT"');
     expect(fake.calls[0].prompt).toContain('"businessType":"inspection"');
     expect(traces[0]).toMatchObject({ operationCode: 't4_classify_event', task: 'CLASSIFY_EVENT', masterPromptCode: 't4_master_v1' });
   });

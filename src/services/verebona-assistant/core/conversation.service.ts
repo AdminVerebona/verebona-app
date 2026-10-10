@@ -43,6 +43,7 @@ import { parseEntityRef } from './entity-ref';
 import { INTENT_CATALOG_VERSION } from '../types/intents';
 import { ACTION_CATALOG_VERSION } from '../types/actions';
 import type { VerebonaAction } from '../types/actions';
+import { createCommandFor } from '@/lib/verebona/assistant-actions';
 import { RESPONSE_SCHEMA_VERSION } from '../types/contracts';
 import type { PresentedEntity, ReferencedType, ThreadContext } from './reference-resolver';
 import { awaitAiRuns } from './usage-tracking.service';
@@ -266,9 +267,9 @@ export async function findReplayedAnswer(
     `SELECT count(*)::int AS n FROM verebona_message_sources WHERE message_id = $1`, [r.id],
   )) as unknown as Array<{ n: number }>;
   const act = (await pgClient.unsafe(
-    `SELECT id, action_type, label, resolved_href, requires_confirmation, analytics_code, expires_at
+    `SELECT id, action_type, label, resolved_href, requires_confirmation, analytics_code, expires_at, target_type, target_id
        FROM verebona_message_actions WHERE message_id = $1 ORDER BY id ASC`, [r.id],
-  )) as unknown as Array<{ id: number; action_type: string; label: string; resolved_href: string | null; requires_confirmation: boolean; analytics_code: string | null; expires_at: Date | null }>;
+  )) as unknown as Array<{ id: number; action_type: string; label: string; resolved_href: string | null; requires_confirmation: boolean; analytics_code: string | null; expires_at: Date | null; target_type: string | null; target_id: string | number | null }>;
   return {
     conversationId: r.conversation_id, messageId: r.id, requestId: r.request_id, content: r.content ?? '',
     intent: r.intent, mode: r.mode,
@@ -276,7 +277,13 @@ export async function findReplayedAnswer(
     actions: act
       .filter((a) => !a.expires_at || new Date(a.expires_at).getTime() > Date.now())
       .map((a) => ({
-        actionId: `replay-${a.id}`, type: a.action_type, label: a.label, href: a.resolved_href,
+        // Lot 34G : une création rejouée ouvre son formulaire (commande
+        // reconstruite depuis la cible enregistrée), jamais l'ancien `href`.
+        ...(() => {
+          const command = createCommandFor(a.action_type, a.target_type && a.target_id != null ? `${a.target_type}:${a.target_id}` : null);
+          return command ? { href: null, command } : { href: a.resolved_href };
+        })(),
+        actionId: `replay-${a.id}`, type: a.action_type, label: a.label,
         requiresConfirmation: Boolean(a.requires_confirmation), expiresAt: a.expires_at ? new Date(a.expires_at).toISOString() : null,
         analyticsCode: a.analytics_code ?? `verebona.action.${a.action_type.toLowerCase()}`,
       })),
